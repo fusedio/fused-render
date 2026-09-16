@@ -41,7 +41,7 @@
 // shared with the listing's in-folder box, which is now the same kind of box,
 // and they live in platform/lib/instant-search.
 import type { IndexRankResult, RankReason } from "@platform/lib/api";
-import { substringMatch } from "@platform/lib/fuzzy";
+import { globMatch, substringMatch } from "@platform/lib/fuzzy";
 
 // Rows rendered at most. Far smaller than the listing's SEARCH_RESULT_CAP, and
 // the number is set by what has to stay VISIBLE rather than by how many hits are
@@ -110,7 +110,10 @@ export interface HomeAnswer {
    */
   base: string;
   /** Which matcher produced `hits` — see `IndexRankResult.mode` (api.ts).
-   * Substring hits highlight against `positions`; glob hits carry none. */
+   * Both modes highlight against `positions`, computed by different means
+   * (see `answerFrom`): a substring hit via `substringMatch` against the
+   * query text, a glob hit via `globMatch` against the server's resolved
+   * pattern. */
   mode: "substring" | "glob";
   hits: HomeHit[];
   /** More matched than were returned; the count note owns up to it. */
@@ -192,15 +195,22 @@ export function answerFrom(
       // guarantee that this finds something is EXPLICIT rather than
       // incidental — against `pattern`, not the raw query text, since a
       // `~`/`/`-leading query's `rel`s are relative to `res.base`, not to
-      // whatever came before the last "/" in what was typed. Glob hits
-      // carry no positions: a glob match is not necessarily a substring of
-      // the query text at all (`*.csv` matching `report.csv` has no literal
-      // `"*.csv"` anywhere in `report.csv`), so re-running `substringMatch`
-      // on one would either find nothing (no highlight — fine) or, worse,
-      // find an accidental unrelated substring and mark the wrong
-      // characters. Rendering unhighlighted is honest; marking a
-      // coincidence is not.
-      positions: res.mode === "substring" ? (substringMatch(pattern, h.rel)?.positions ?? []) : [],
+      // whatever came before the last "/" in what was typed.
+      //
+      // A glob hit is matched against `res.pattern` (`IndexRankResult.
+      // pattern` — the server's resolved, base-peeled, whitespace-expanded
+      // pattern) via `globMatch` instead: a glob match is not necessarily a
+      // substring of the query text at all (`*.csv` matching `report.csv`
+      // has no literal `"*.csv"` anywhere in `report.csv`), so
+      // `substringMatch` cannot even be asked here (SPEC-search-space-
+      // wildcard.md §4). A glob hit `globMatch` itself does not confirm
+      // (should not happen for a hit the server already matched) renders
+      // unhighlighted rather than dropped — the same honest-over-lucky
+      // posture the substring branch always had.
+      positions:
+        res.mode === "substring"
+          ? substringMatch(pattern, h.rel)?.positions ?? []
+          : globMatch(res.pattern, h.rel)?.positions ?? [],
     })),
     truncated: res.truncated,
     total: res.total,

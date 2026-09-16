@@ -48,6 +48,7 @@ function rankResult(over: Partial<IndexRankResult> = {}): IndexRankResult {
     total: 1,
     base: HOME,
     mode: "substring",
+    pattern: "",
     ...over,
   };
 }
@@ -200,7 +201,10 @@ describe("answerFrom", () => {
     // A glob hit is not necessarily a substring of the typed query at all —
     // "*.csv" matching "report.csv" has no literal "*.csv" anywhere in
     // "report.csv" — so re-running substringMatch and dropping what fails
-    // would silently discard a real server hit.
+    // would silently discard a real server hit. With no `pattern` supplied
+    // (the default in this file's `rankResult` helper), `globMatch` finds
+    // nothing to mark, which renders unhighlighted rather than dropped —
+    // the row itself is what this test actually pins.
     const out = answerFrom(
       rankResult({ mode: "glob", hits: [rankHit("report.csv")] }),
       "*.csv",
@@ -217,6 +221,25 @@ describe("answerFrom", () => {
       },
     ]);
     expect(out.mode).toBe("glob");
+  });
+
+  it("highlights a glob hit's literal pieces via the server's resolved pattern (§4)", () => {
+    // "hello world" -> "**/*hello*world*" (expand_whitespace_query,
+    // fused_render/index/query.py) — the resolved pattern the server sends
+    // back on `res.pattern`, NOT the raw typed query, is what `globMatch`
+    // needs to find the literal pieces.
+    const out = answerFrom(
+      rankResult({
+        mode: "glob",
+        pattern: "**/*hello*world*",
+        hits: [rankHit("my_hello_big_world.py")],
+      }),
+      "hello world",
+      0,
+    );
+    expect(out.hits[0]!.positions!.map((i) => "my_hello_big_world.py"[i]).join("")).toBe(
+      "helloworld",
+    );
   });
 
   it("still highlights a substring-mode hit exactly as before", () => {

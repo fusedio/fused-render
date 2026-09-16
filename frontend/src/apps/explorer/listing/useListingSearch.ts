@@ -506,7 +506,7 @@ export function useListingSearch(
             query: q,
             gen: genRef.current,
             lifecycle: lifecycleRef.current,
-            hits: hitsFromRank(res.hits, q, res.mode),
+            hits: hitsFromRank(res.hits, q, res.mode, res.pattern),
             truncated: res.truncated,
             total: res.total,
             reason: res.reason ?? "",

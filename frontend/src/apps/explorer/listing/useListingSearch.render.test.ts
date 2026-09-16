@@ -69,6 +69,7 @@ function answer(over: Partial<IndexRankResult> = {}): IndexRankResult {
     total: 0,
     base: "/d",
     mode: "substring",
+    pattern: "",
     ...over,
   };
 }

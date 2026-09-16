@@ -673,6 +673,18 @@ export interface IndexRankResult {
   // literal `"*.csv"` anywhere in the path), so re-running a substring test
   // over it and dropping what fails would silently discard real hits.
   mode: "substring" | "glob";
+  // What `resolve_query` (fused_render/index/query.py) actually matched
+  // against, after peeling off any leading base and expanding whitespace
+  // into wildcards (SPEC-search-space-wildcard.md §1) — always populated,
+  // in BOTH modes, but only meaningful for highlighting when `mode ===
+  // "glob"`: that is the one case a hit's `rel` is not promised to be a
+  // literal substring of `pattern`, so recomputing highlight positions needs
+  // the exact pattern text, not the raw query. The browser cannot recompute
+  // this itself: the base walk is filesystem-dependent (`os.path.isdir`
+  // against the server's own disk), so the server that just walked it is the
+  // only place that can produce it. `globMatch` (platform/lib/fuzzy.ts)
+  // matches `pattern` against `h.rel`, never the raw typed query.
+  pattern: string;
   // No `fresh`/`age_s`/`updated`/`root`: those are `search_under`'s wire
   // fields (`IndexCorpus`/the walk-search path), load-bearing there for the
   // in-folder corpus box's "indexing…" caveat. `search_ranked` used to
