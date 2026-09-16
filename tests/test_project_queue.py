@@ -1282,24 +1282,6 @@ def test_an_anonymous_send_never_claims_a_folder_a_claim_is_holding(
     assert pq.reserve_if_free(folder_key(work), "") is False
 
 
-def test_the_reserved_sessions_are_the_sends_just_admitted(home, agent):
-    """What the listing reads to say `in_progress` the instant a send is
-    admitted. A reservation with no session names nobody and is left out — an
-    empty id would match every task on the machine that has no session yet."""
-    work = home / "work"
-    work.mkdir()
-    other = home / "other"
-    other.mkdir()
-    assert pq.reserved_sessions() == set()
-
-    pq.reserve(folder_key(work), SID)
-    pq.reserve(folder_key(other), "")
-    assert pq.reserved_sessions() == {SID}
-
-    pq.reserve(folder_key(work), SID2, ttl=0.0)
-    assert pq.reserved_sessions() == set()
-
-
 # ================================================================= order_key
 
 

@@ -428,6 +428,15 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
     return _update(TASK_IDS_FILE, mutate)
 
 
+def stored_number(store: dict, key: str) -> str:
+    """The number `key` already holds in a `task_ids()` snapshot, or "" — a
+    READ, never an allocation. For the caller that must not mint (a task whose
+    project is only guessed, `routers/tasks.py::_numbers`) but must still show
+    the number a task was given before."""
+    rec = _record(store, str(key or ""))
+    return format_task_id(rec["n"]) if rec is not None else ""
+
+
 def rekey(old: str, new: str) -> str:
     """Move a task's number from `old` to `new` — the pending row's key to the
     session id its first run minted (§5). Returns the number `new` ends up with,

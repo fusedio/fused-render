@@ -663,26 +663,6 @@ def reserved_run(key: str) -> str:
         return found[2]
 
 
-def reserved_sessions() -> set:
-    """Every session holding an unexpired reservation, anywhere.
-
-    The listing's half of "instant running" (`tasks._running_now`). A send the
-    server has just admitted is a turn that has started as far as the person who
-    pressed Enter is concerned, and for the seconds before `claude` registers a
-    session there is nothing on disk to say so — the row read `done` for 3.4 s
-    after a send, which is the sidebar telling the user their message went
-    nowhere. The reservation is the one record of that instant, it is already
-    taken on the admission path, and it expires on its own
-    (`RESERVATION_TTL`), so a spawn that never happened costs at most one row
-    reading `in_progress` for twenty seconds — the same overshoot the folder
-    gate already accepts, and the opposite of the failure it replaces.
-
-    A reservation with no session names nobody and is left out: an empty id
-    would match every task with no session on the machine at once.
-    """
-    return {session_id for session_id, _run in _live_reservations().values()
-            if session_id}
-
 
 def reserve_if_free(key: str, session_id: str, run_id: str = "",
                     now: float | None = None) -> bool:

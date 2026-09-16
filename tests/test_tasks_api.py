@@ -3718,3 +3718,17 @@ def test_a_transcript_with_no_cwd_yet_gets_no_number_until_it_has_one(
     assert rows["sess-new"]["project"] == real
     assert rows["sess-new"]["task_id"] == "TASK-002"
     assert rows["sess-old"]["task_id"] == "TASK-001"
+
+
+def test_a_guessed_project_still_shows_the_number_it_already_has(
+        client, projects_dir):
+    # Bugbot, PR #1124: leaving a guessed row out of the allocation must not
+    # also leave it out of the ANSWER. A session numbered before the rule — or
+    # one whose transcript never records a cwd — keeps wearing its number.
+    encoded = "-private-tmp-pqueue-qa-alpha"
+    _write_transcript(projects_dir, "sess-old", None, [
+        {"type": "summary", "summary": "Untitled", "timestamp": T9},
+    ], encoded=encoded)
+    tasks_store.ensure_ids([("sess-old", "/private/tmp/pqueue/qa/alpha", 1.0)])
+    rows = {t["key"]: t for t in _tasks(client)}
+    assert rows["sess-old"]["task_id"] == "TASK-001"

@@ -2683,6 +2683,11 @@ function ChatBody(props: ChatBodyProps) {
     // …and the deletions with them: both are memories of the rows that were on
     // this screen, and the next conversation's waiting messages are its own.
     setDroppedEntries(NO_DROPPED);
+    // …AND THE RUN NEXT CLAIM (Bugbot, PR #1124). `claimedNext` reads as true
+    // until `recGen` moves, so a claim left standing here would paint
+    // `queue_priority` on the NEXT conversation's waiting card and hide its own
+    // Run next until that row re-read.
+    setNextClaim(null);
     leader.forget();
     // AND THE DOOR THIS PANE CAME IN BY. `?queued=` names the conversation that
     // is being left; carried into the next one it would re-adopt the leader the
@@ -2715,6 +2720,7 @@ function ChatBody(props: ChatBodyProps) {
       setAdmitAhead(null);
       setAdmitTaskId("");
       setDroppedEntries(NO_DROPPED);
+      setNextClaim(null);
       // …and the LEADER, same as Back: `leaderId` reads `leader.peek()` before
       // it reads the session, so a leader left behind here would keep drawing
       // (and acting on) the previous chat's waiting rows under the new

@@ -854,24 +854,29 @@ def test_a_new_chats_second_message_is_not_queued_behind_its_own_teardown(
     assert r.json() == {"run": True}
 
 
-def test_an_admitted_send_says_running_before_anything_has_spawned(
+def test_an_admitted_send_changes_no_row_by_itself(
         client, projects_dir, folders, flag, rings):
-    """INSTANT STATUS (browser QA, 2026-09-12: the sidebar took 3.4 s to say
-    running, where the spec asks for two). Nothing on disk says a turn has
-    started until `claude` registers a session — the chat spawns its own run, so
-    there is no scheduler entry either — and the row went on reading the
-    previous verdict for the whole of that gap. The reservation this endpoint
-    takes is the one record of the instant, and the ring is what stops a page
-    waiting out its own long-poll to hear about a send it just made."""
+    """INSTANT STATUS IS THE SENDER'S MARK, NOT THE RESERVATION (2026-09-16).
+    The queue used to read its own admission reservation as `in_progress` for
+    the seconds before `claude` registered (browser QA, 2026-09-12). #1163 now
+    answers the same instant for every send, flag or no flag: the page marks the
+    session as it sends (`tasks_watch.mark_running`) and `_live` believes it. So
+    admission itself moves nothing and rings nothing — the reservation is the
+    folder gate's record and only that — and the mark is what flips the row."""
     flag()
     alpha, _beta = folders
     _transcript(projects_dir, "sess-a", alpha, "hello")
-    assert _rows(client)["sess-a"]["status"] != "in_progress"
+    before = _rows(client)["sess-a"]["status"]
+    assert before != "in_progress"
 
     assert _post(client, "/api/tasks/queue/admit",
                  {"project": alpha, "session_id": "sess-a", "message": "go"}
                  ).json() == {"run": True}
-    assert {"sess-a"} in rings
+    assert rings == []
+    assert project_queue.reserved(alpha) == "sess-a"   # the gate's record stands
+    assert _rows(client)["sess-a"]["status"] == before
+
+    tasks_watch.mark_running("sess-a")
     assert _rows(client)["sess-a"]["status"] == "in_progress"
 
 
@@ -889,7 +894,7 @@ def test_with_the_flag_off_an_admitted_send_changes_no_row(
                  {"project": alpha, "session_id": "sess-a", "message": "go"}
                  ).json() == {"run": True}
     assert rings == []
-    assert project_queue.reserved_sessions() == set()
+    assert project_queue.reserved(alpha) == ""
     assert _rows(client)["sess-a"]["status"] == before
 
 
