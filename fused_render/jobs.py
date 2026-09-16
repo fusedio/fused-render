@@ -657,7 +657,18 @@ def upsert(body: dict, *, page: str = "", origin: str | None = None,
             # reinstating that default, the same "only the keys present are
             # applied, literally" rule every other field in this function
             # follows.
-            job.group = _text(body.get("group"), GROUP_MAX)
+            #
+            # One exception: a `sys:`-prefixed value is off limits for a
+            # non-server report, the same spoof-proofing `page` already gets
+            # from `X-Fused-Page` rather than the request body — otherwise an
+            # ordinary page could file its own row under a system group's row
+            # and borrow its title. Silently dropped (the value is simply not
+            # applied), same shape as the `tier`/`waiting_for` gate above,
+            # rather than raising: the worst case here is a misfiled row, not
+            # a hidden failure, so a hard error would be disproportionate.
+            group = _text(body.get("group"), GROUP_MAX)
+            if server or not group.startswith(SERVER_ID_PREFIX):
+                job.group = group
         if "done" in body:
             job.done = _number(body.get("done"), "done")
         if "total" in body:

@@ -1158,6 +1158,29 @@ def test_a_report_may_declare_its_own_group_explicitly(client):
     assert res.json()["group"] == "downloads-page"
 
 
+def test_a_page_report_cannot_claim_a_sys_prefixed_group(client):
+    """`group` carries no `server=True` gate (the previous test), but a
+    `sys:`-prefixed value is still off limits for a plain page report — the
+    same spoof-proofing `page` already gets from `X-Fused-Page` rather than
+    the request body. Without this, an ordinary page could file its own row
+    under a system group's row and borrow its title. Silently dropped, same
+    shape as `test_a_page_owned_report_cannot_set_tier` above — the id-derived
+    default (its own id, a group of one) stands instead."""
+    res = report(client, id="my-download", title="a", group="sys:ai-image")
+    assert res.json()["group"] == "my-download"
+
+
+def test_a_worker_token_report_may_still_set_a_sys_prefixed_group():
+    """The gate is about an untrusted page, not about the value itself — a
+    `server=True` caller (already trusted to write `sys:` ids at all) may
+    set a `sys:`-prefixed group explicitly."""
+    res = jobs.upsert(
+        {"id": "sys:ai-image:boom", "title": "a", "group": "sys:ai-image"},
+        server=True,
+    )
+    assert res["group"] == "sys:ai-image"
+
+
 def test_the_default_group_is_set_once_at_creation_not_reapplied_each_tick():
     """A later tick that explicitly clears `group` back to "" really clears
     it — the id-derived default is a CREATION-time fallback, not something
