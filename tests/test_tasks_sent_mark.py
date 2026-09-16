@@ -538,3 +538,32 @@ def test_the_send_arrives_and_departs_down_the_changes_long_poll(client,
                       params={"since": at, "wait": 0}).json()
     assert body["rows"] == []
     assert body["gone"] == [SID]
+
+
+def test_a_re_mark_without_words_keeps_the_words(client, tmp_path):
+    """Re-attach and the poll's session-id ping mark without text on purpose.
+    The listing must go on drawing the send's words (bugbot)."""
+    tasks_watch.mark_running(SID, text="pull today's news", file=str(tmp_path))
+    tasks_watch.mark_running(SID, turn=5.0)
+    mark = tasks_watch.sent_marks()[SID]
+    assert mark["text"] == "pull today's news"
+    assert mark["file"] == str(tmp_path)
+    row = _by_key(client)[SID]
+    assert row["status"] == "in_progress"
+    assert row["messages"][0]["body"] == "pull today's news"
+
+
+def test_a_re_mark_with_new_words_replaces_them(client, tmp_path):
+    tasks_watch.mark_running(SID, text="first", file=str(tmp_path))
+    tasks_watch.mark_running(SID, text="second")
+    mark = tasks_watch.sent_marks()[SID]
+    assert (mark["text"], mark["file"]) == ("second", str(tmp_path))
+
+
+def test_the_full_thread_holds_the_in_flight_send(client, tmp_path):
+    """`GET /api/tasks/{key}/messages` must show the sentence the row shows."""
+    tasks_watch.mark_running(SID, text="pull today's news", file=str(tmp_path))
+    r = client.get(f"/api/tasks/{SID}/messages")
+    assert r.status_code == 200
+    bodies = [m["body"] for m in r.json()["messages"]]
+    assert bodies == ["pull today's news"]

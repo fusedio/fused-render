@@ -3466,6 +3466,12 @@ def _thread(task: dict, read: dict, now: float) -> list[dict]:
     live, _active, _marked = _live(task["path"], now, task["session_id"])
     prompts = _full_prompts(task["path"]) if task["path"] else []
     messages = _merge(prompts, task["entries"])
+    # The live send is part of the thread here for the same reason it is part
+    # of the listing row: "Show more" on a row that reads "running, on these
+    # words" must show those words, not an empty thread until the transcript
+    # lands (bugbot). Same fold, same dedupe.
+    if task.get("sent"):
+        _fold_sent_mark(messages, task["sent"])
     _turn_of_newest_chat(messages, live)
     _mark_unread(messages, task["key"], read)
     return messages

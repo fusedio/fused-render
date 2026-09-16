@@ -393,12 +393,24 @@ def mark_running(session_id: str, ttl_sec: float = MARK_TTL_SEC,
             last_idle_turn = _last_idle_turn.get(session_id)
             if last_idle_turn is not None and turn <= last_idle_turn:
                 return
+        # A RE-MARK WITH NOTHING TO SAY KEEPS WHAT THE LAST ONE SAID. Re-attach,
+        # reload and the poll's own "I now know the session id" ping all mark
+        # without words on purpose — they are not sends — and the listing is
+        # drawing the words the send did carry. Blanking them here would drop
+        # the folded message mid-turn and file a placeholder `done` while the
+        # turn is still open (bugbot). Only a live mark is inherited from: an
+        # expired one described a send that is over.
+        prev = _marks.get(session_id)
+        if prev is not None and prev["until"] <= now:
+            prev = None
+        text = str(text or "")[:MARK_TEXT_MAX] or (prev["text"] if prev else "")
+        file = str(file or "") or (prev["file"] if prev else "")
         _marks[session_id] = {
             "until": now + max(0.0, ttl_sec),
-            "at": now,
+            "at": prev["at"] if prev and text and text == prev["text"] else now,
             "turn": turn,
-            "text": str(text or "")[:MARK_TEXT_MAX],
-            "file": str(file or ""),
+            "text": text,
+            "file": file,
         }
         if turn is not None:
             _mark_turns[session_id] = turn
