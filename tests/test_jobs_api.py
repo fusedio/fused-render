@@ -1109,4 +1109,65 @@ def test_the_bridge_exposes_track_job_on_window_fused():
     api = runtime.split("window.fused = {", 1)[1].split("};", 1)[0]
     assert "\n    trackJob,\n" in api
     assert "\n    watchJob,\n" in api
-    assert "\n    job,\n" not in api
+
+
+# ---- §3 grouping (SPEC-quiet-notifications.md) ------------------------------
+#
+# `Job.group`, defaulted centrally in `upsert()` from the id's own
+# `sys:<name>:` prefix when it has one, else the whole id — the latter case
+# is a group of exactly one member, which is the mechanism behind "a
+# lone-member group renders and behaves exactly as today" on the client side
+# (the frontend never has to special-case "no group" at all).
+
+
+def test_an_ordinary_page_owned_id_groups_with_itself_alone(client):
+    """No `sys:` prefix at all — the id IS the group, so this job can never
+    share a group with anything else (a group of one, today's behaviour)."""
+    res = report(client, id="my-download", title="a")
+    assert res.json()["group"] == "my-download"
+
+
+def test_a_sys_id_with_no_second_colon_also_groups_with_itself_alone():
+    """`sys:` alone is not enough to name a FAMILY — `_default_group` needs a
+    second colon to find where the family name ends, so an id like
+    `sys:oneoff` (no second segment) falls back to the whole id, same as an
+    ordinary page-owned one. `server=True` here only because `sys:` ids are
+    server-only to WRITE at all (`SERVER_ID_PREFIX`) — unrelated to `group`
+    itself, which carries no such gate (see the next test)."""
+    res = jobs.upsert({"id": "sys:oneoff", "title": "a"}, server=True)
+    assert res["group"] == "sys:oneoff"
+
+
+def test_two_ids_sharing_a_sys_prefix_share_a_group():
+    """The whole point: `sys:ai-image:boom` and `sys:ai-image:done` are two
+    different runs of the SAME family, and grouping by `(page, group)` is
+    what lets the client fold them into one row once there are 2+."""
+    boom = jobs.upsert({"id": "sys:ai-image:boom", "title": "a"}, server=True)
+    done = jobs.upsert({"id": "sys:ai-image:done", "title": "b"}, server=True)
+    assert boom["group"] == "sys:ai-image"
+    assert done["group"] == "sys:ai-image"
+
+
+def test_a_report_may_declare_its_own_group_explicitly(client):
+    """"Producers may set it explicitly" (spec) — no server gate: unlike
+    `tier`/`waiting_for`, a forged `group` can only misfile a row among
+    other rows, never hide a failure or fake a finish, so an ordinary page
+    report (through the real HTTP endpoint, no worker token) is allowed to
+    set it directly."""
+    res = report(client, id="my-download", title="a", group="downloads-page")
+    assert res.json()["group"] == "downloads-page"
+
+
+def test_the_default_group_is_set_once_at_creation_not_reapplied_each_tick():
+    """A later tick that explicitly clears `group` back to "" really clears
+    it — the id-derived default is a CREATION-time fallback, not something
+    every tick re-applies over an explicit later value (the same "only the
+    keys present are applied" rule this whole endpoint already follows for
+    every other field)."""
+    jobs.upsert({"id": "sys:ai-image:boom", "title": "a"}, server=True)
+    res = jobs.upsert({"id": "sys:ai-image:boom", "group": ""}, server=True)
+    assert res["group"] == ""
+    # A further tick that says nothing about `group` leaves the empty value
+    # standing rather than reinstating the id-derived default.
+    res2 = jobs.upsert({"id": "sys:ai-image:boom", "done": 1}, server=True)
+    assert res2["group"] == ""

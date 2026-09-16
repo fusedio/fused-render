@@ -227,6 +227,10 @@ PAGE_MAX = 1024
 # same room as `title`/`model` since it renders in the same kind of small
 # caption.
 ORIGIN_MAX = TITLE_MAX
+# §3 (SPEC-quiet-notifications.md): the client-side grouping key's own field
+# cap. A group id is either a job id (same shape/length as `id` itself) or a
+# short `sys:<name>` prefix, so `TITLE_MAX` is generous room for either.
+GROUP_MAX = TITLE_MAX
 # The model name is a dimmed SUFFIX on the title row, never the detail line —
 # detail is the one thing a running worker's progress ticks own, and a model
 # name concatenated in there would get overwritten by the next "step 2/4" and
@@ -440,6 +444,22 @@ class Job:
     # through the SAME id, so each must restate its own tier explicitly
     # rather than relying on what an earlier report on that id left behind.
     tier: str = TRAIL
+    # §3 (SPEC-quiet-notifications.md): the client-side grouping key —
+    # `frontend/src/shell` groups running/terminal rows by `(page, group)`
+    # into one row once a group has more than one live member (D-C's pop
+    # rule, the attention-stripe/"N of M done" rendering). Defaulted
+    # CENTRALLY, once, at creation (`upsert`'s `_default_group`) from the
+    # id's own `sys:<name>:` prefix when it has one, else the job id itself
+    # — the latter is a group of exactly one member, which is what makes "a
+    # lone-member group renders and behaves exactly as today" true by
+    # construction rather than by a client-side special case: a group query
+    # that never finds a second member is indistinguishable from no
+    # grouping at all. Producers may set it explicitly in a report body (no
+    # `server=True` gate — unlike `tier`/`waiting_for`, a forged `group`
+    # can only misfile a row's own row among other rows, never hide a
+    # failure or fake being finished, so the page-forgery risk those two
+    # guard against does not apply here).
+    group: str = ""
 
 
 _lock = threading.Lock()
@@ -519,6 +539,24 @@ def clean_id(value: object) -> str:
     return text
 
 
+# The `sys:<name>:` shape a handful of server-owned id families already
+# share (`sys:ai-image:<id>`, `sys:ai-model:<repo>`, `sys:schedule:<id>`) —
+# everything up to and including the SECOND colon names the family, and
+# everything after it is per-run. A page-owned id (no `sys:` prefix at all,
+# or a `sys:` id with no second colon) has no such family, and `_default_
+# group` falls back to the whole id, i.e. a group of one.
+_GROUP_PREFIX_RE = re.compile(r"^(sys:[^:]+):")
+
+
+def _default_group(job_id: str) -> str:
+    """§3: the default `Job.group` for an id with no explicit one — see the
+    field's own comment on `Job` for why "a group of one" (the `else`
+    branch here) is what makes an ungrouped row's behaviour identical to
+    today's."""
+    m = _GROUP_PREFIX_RE.match(job_id)
+    return m.group(1) if m else job_id
+
+
 # -------------------------------------------------------------------- mutation
 
 
@@ -592,6 +630,7 @@ def upsert(body: dict, *, page: str = "", origin: str | None = None,
                 started_at=now,
                 updated_at=now,
                 owner=OWNER_SERVER if job_id.startswith(SERVER_ID_PREFIX) else OWNER_PAGE,
+                group=_default_group(job_id),
             )
             _jobs[job_id] = job
         elif "title" in body:
@@ -609,6 +648,16 @@ def upsert(body: dict, *, page: str = "", origin: str | None = None,
             job.kind = _one_of(body.get("kind"), KINDS, "kind", job.kind)
         if "unit" in body:
             job.unit = _text(body.get("unit"), 16)
+        if "group" in body:
+            # No `server=True` gate — see `Job.group`'s own comment on why a
+            # page setting this carries none of the forgery risk `tier`/
+            # `waiting_for` guard against. The id-derived DEFAULT is only
+            # ever applied once, at creation (above) — a later tick that
+            # sends `"group": ""` really does clear it to empty rather than
+            # reinstating that default, the same "only the keys present are
+            # applied, literally" rule every other field in this function
+            # follows.
+            job.group = _text(body.get("group"), GROUP_MAX)
         if "done" in body:
             job.done = _number(body.get("done"), "done")
         if "total" in body:
