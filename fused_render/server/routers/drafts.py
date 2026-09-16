@@ -61,11 +61,65 @@ Routes take `{key:path}` rather than `{key}` for one reason: a `new:<file>` key
 carries a file path, separators and all, and a plain path parameter stops at
 the first one.
 """
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from fused_render import drafts, tasks_watch
 
 router = APIRouter()
+
+
+def _if_version(request: Request, body: dict | None = None):
+    """The version this write is conditional on, or None for "unconditional".
+
+    `If-Match` first, the body's `version` second, and nothing at all is the
+    third answer — which is the one that keeps every client written before this
+    round working, and the reason the header is not required (design-drafts-one
+    -record.md, §2: "Missing header = unconditional").
+
+    ETag spellings are accepted (`7`, `"7"`, `W/"7"`) because that is what an
+    `If-Match` looks like everywhere else on the web and a client library may
+    quote it for us. `*` is HTTP's "any current version", which is exactly
+    unconditional. Anything else unparseable is read as absent rather than
+    refused: a draft write must not be lost to a malformed header."""
+    raw = request.headers.get("if-match")
+    if raw is None and isinstance(body, dict):
+        raw = body.get("version")
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw if raw >= 0 else None
+    if not isinstance(raw, str):
+        return None
+    token = raw.strip()
+    if token.startswith("W/"):
+        token = token[2:].strip()
+    token = token.strip('"').strip()
+    if not token or token == "*":
+        return None
+    try:
+        value = int(token)
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+def _conflict(exc: drafts.VersionConflict, **extra) -> JSONResponse:
+    """409 with the record the caller lost to.
+
+    A BODY AND NOT A BARE STATUS, because the client's next move needs it: the
+    editor that lost has to choose between adopting what is on disk and
+    re-sending its own words (design-drafts-one-record.md, §2), and both answers
+    are read out of this record — its text, its attachments, its form and the
+    version to write back against. `record` is null when the key was DELETED
+    elsewhere, which is the other thing that can have happened.
+
+    `JSONResponse` rather than `HTTPException`, because the shape is the point:
+    a raise would wrap all of this in FastAPI's `detail` envelope and every
+    reader would have to dig it back out."""
+    return JSONResponse(status_code=409,
+                        content=dict({"error": "version", "record": exc.record,
+                                      "version": exc.version}, **extra))
 
 
 def _chat_key(raw: str) -> str:
@@ -108,13 +162,21 @@ def api_drafts():
     message to and marked `bound_draft` (`drafts.chat_view`, "one record, two
     doors"). It is the same read the tasks listing makes, so what the composer
     seeds from and what the row's chip says can never be two different
-    answers."""
+    answers.
+
+    EVERY RECORD CARRIES ITS `version`, which is what makes a conditional write
+    possible at all: a client seeds an editor from here and writes back with
+    `If-Match`, and a save that would land on top of another window's is refused
+    with a 409 instead (`_conflict`). A chat record also carries `form` — the
+    settings the Schedule hop's modal edited on this very record, `{}` on a
+    draft nobody has scheduled — since after this round the modal and the
+    composer are two doors onto one key (design-drafts-one-record.md, §1)."""
     task, chat = drafts.list_all()  # one file, one read
     return {"chat": chat, "task": task}
 
 
 @router.put("/api/drafts/chat/{key:path}")
-def api_draft_chat_put(key: str, body: dict = Body(default={})):
+def api_draft_chat_put(key: str, request: Request, body: dict = Body(default={})):
     """Upsert one chat draft. An empty one is a DELETE, and the answer says so
     (`draft: null`) rather than making the caller infer it — the composer's
     autosave fires on every pause including the one after the send cleared the
@@ -127,6 +189,7 @@ def api_draft_chat_put(key: str, body: dict = Body(default={})):
     uses. The answer is that form read as a chat draft, `bound_draft` naming
     it, so this route has one shape whichever record it wrote."""
     chat = _chat_key(key)
+    want = _if_version(request, body)
     # WHICH FORM'S ROW IS AT STAKE BESIDES THIS SESSION'S, read BEFORE the write
     # for the reason the task PUT reads its binding first: a write that empties
     # the box deletes the form, and afterwards there is nothing left to ask.
@@ -134,14 +197,18 @@ def api_draft_chat_put(key: str, body: dict = Body(default={})):
     # so what the announcement does is tell a page holding a stale one to drop
     # it — and tell the changes endpoint the session's chip moved.
     bound = drafts.bound_chat_draft(chat)
-    record = drafts.put_chat(chat, body.get("text"), body.get("attachments"))
+    try:
+        record = drafts.put_chat(chat, body.get("text"), body.get("attachments"),
+                                 form=body.get("form"), if_version=want)
+    except drafts.VersionConflict as exc:
+        return _conflict(exc, key=chat)
     bound = bound or str((record or {}).get("bound_draft") or "")
     _announce(chat, drafts.task_key(bound) if bound else "")
     return {"ok": True, "key": chat, "draft": record}
 
 
 @router.delete("/api/drafts/chat/{key:path}")
-def api_draft_chat_delete(key: str):
+def api_draft_chat_delete(key: str, request: Request, body: dict = Body(default={})):
     """Drop one chat draft — on send, or on an explicit clear. Answers whether
     there was one, and is not a 404 when there was not: the composer clears
     after a send whether or not the debounce ever got round to a first save,
@@ -163,7 +230,10 @@ def api_draft_chat_delete(key: str):
     `drafts.delete_bound` for the other half (`routers/tasks.py`)."""
     chat = _chat_key(key)
     bound = drafts.bound_chat_draft(chat)
-    removed = drafts.delete_chat(chat)
+    try:
+        removed = drafts.delete_chat(chat, if_version=_if_version(request, body))
+    except drafts.VersionConflict as exc:
+        return _conflict(exc, key=chat)
     if bound:
         removed = drafts.delete_task(bound) or removed
     _announce(chat, drafts.task_key(bound) if bound else "")
@@ -171,16 +241,24 @@ def api_draft_chat_delete(key: str):
 
 
 @router.put("/api/drafts/task/{draft_id:path}")
-def api_draft_task_put(draft_id: str, body: dict = Body(default={})):
+def api_draft_task_put(draft_id: str, request: Request, body: dict = Body(default={})):
     """Upsert one task draft from the modal's form fields.
 
     The body IS the form — `title`, `description`, `target`, `when`, `repeat`,
     `custom_rule`, `model`, `effort`, `permission`, `attachments`,
-    `new_task_each_run`, `from_chat_key`, `session_id` — and
-    anything else in it is dropped by the store rather than refused here, so
-    the modal may grow a field without this endpoint learning about it. An
-    all-empty form is a delete, the same bargain the chat half makes."""
+    `new_task_each_run`, `session_id` — and anything else in it is dropped by
+    the store rather than refused here, so the modal may grow a field without
+    this endpoint learning about it. An all-empty form is a delete, the same
+    bargain the chat half makes.
+
+    `from_chat_key` IS NO LONGER ONE OF THEM (design-drafts-one-record.md, §1).
+    It named the chat draft a hop had just copied out of, so that this write
+    could delete the copy it left behind; there is no copy any more, because the
+    hop's modal edits the chat record itself (`PUT /api/drafts/chat/<key>` with
+    a `form`). A client that still sends the field is not refused — it is
+    dropped, like every other key this store does not know."""
     ident = _draft_id(draft_id)
+    want = _if_version(request, body)
     # WHICH SESSION'S CHIP IS AT STAKE BESIDES THIS DRAFT'S KEY, read BEFORE the
     # write.
     #
@@ -196,32 +274,21 @@ def api_draft_task_put(draft_id: str, body: dict = Body(default={})):
     # debounced autosave, against a chip that would otherwise be stuck showing
     # stale words until the 20-second listing.
     bound = str((drafts.get_task(ident) or {}).get("session_id") or "")
-    record, canonical = drafts.put_task(ident, body)
+    try:
+        record, canonical = drafts.put_task(ident, body, if_version=want)
+    except drafts.VersionConflict as exc:
+        return _conflict(exc, draft_id=ident)
     bound = bound or str((record or {}).get("session_id") or "")
-    # A DRAFT MOVES, IT NEVER DUPLICATES. The composer → New task hop mints the
-    # task draft out of what was in the chat box, so for one instant the same
-    # unfinished sentence is two drafts and two rows. `from_chat_key` is the
-    # client naming the one it came from, and this is the same request that
-    # made the new one — a client that deleted the old one afterwards would
-    # leave both listed through any failure between the two calls, which is the
-    # one outcome the rule forbids (design.md, "Round 2"; Akshil, 2026-09-11).
+    # A DRAFT MOVES, IT NEVER DUPLICATES — and after this round it does not even
+    # move (design-drafts-one-record.md, §1). The composer → New task hop used to
+    # mint a task draft out of the chat box and name its origin here
+    # (`from_chat_key`) so this same request could delete the copy it left
+    # behind; two records existed for one sentence, if only for an instant, and
+    # every duplicate and resurrection this round is about started there. The
+    # hop now opens the modal ON the chat record — one key, one record, edited
+    # through `PUT /api/drafts/chat/<key>` with a `form` — so there is no second
+    # copy to delete and nothing for this route to do about it.
     #
-    # Only on SUCCESS: an all-empty form is a delete (the store says so by
-    # answering None), and dropping the chat draft over a write that stored
-    # nothing would lose the text outright. Optional and silently ignored when
-    # absent or malformed — the modal's ordinary autosave sends no such key,
-    # and a hop is not worth a 400.
-    #
-    # IT IS ALSO A STORED FIELD, not only a side effect (`drafts.TASK_FIELDS`),
-    # and every later save that omits it keeps what was stored. That is what
-    # rides down in the draft row's `form`, and it is what lets a draft REOPENED
-    # from the List still know which conversation to put its words back into:
-    # such a card has no `?back=` in its URL and no sessionStorage stash left,
-    # so without a stored key "Back to chat" had nothing to aim at and the move
-    # was one-way the moment the modal closed (Akshil, 2026-09-11).
-    from_chat = drafts.chat_key(body.get("from_chat_key")) if record else ""
-    if from_chat:
-        drafts.delete_chat(from_chat)
     # ...and THE ID THIS WRITE ACTUALLY LANDED ON, when it turned out to be
     # about a session another draft already held and the store folded it into
     # that one (`drafts.put_task`, Bugbot PR #1126: a merge, not an eviction).
@@ -231,14 +298,14 @@ def api_draft_task_put(draft_id: str, body: dict = Body(default={})):
     # every later call the card makes (the next autosave, Discard, Schedule)
     # names the draft by id and would otherwise aim at a record that is not
     # there.
-    _announce(drafts.task_key(ident), from_chat, bound,
+    _announce(drafts.task_key(ident), bound,
               drafts.task_key(canonical) if canonical and canonical != ident else "")
-    return {"ok": True, "draft_id": canonical or ident, "draft": record,
-            "from_chat_key": from_chat}
+    return {"ok": True, "draft_id": canonical or ident, "draft": record}
 
 
 @router.delete("/api/drafts/task/{draft_id:path}")
-def api_draft_task_delete(draft_id: str):
+def api_draft_task_delete(draft_id: str, request: Request,
+                          body: dict = Body(default={})):
     """Discard one task draft — the modal's Discard button, and the tidy-up
     after a draft has been scheduled for real (which `POST /api/schedule` does
     for itself, given a `draft_id`)."""
@@ -248,6 +315,9 @@ def api_draft_task_delete(draft_id: str):
     # it, and that row has to repaint — chip gone — in the same round the
     # draft's own key goes out on (Akshil, 2026-09-12).
     bound = str((drafts.get_task(ident) or {}).get("session_id") or "")
-    removed = drafts.delete_task(ident)
+    try:
+        removed = drafts.delete_task(ident, if_version=_if_version(request, body))
+    except drafts.VersionConflict as exc:
+        return _conflict(exc, draft_id=ident)
     _announce(drafts.task_key(ident), bound)
     return {"ok": True, "draft_id": ident, "removed": removed}

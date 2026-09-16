@@ -404,44 +404,64 @@ def api_schedule_create(body: dict = Body(...),
         except OSError:
             pass
 
+    # ...AND SO IS THE CHAT DRAFT THIS ONE WAS WRITTEN IN — `draft_key`, the
+    # other half of `draft_id` (design-drafts-one-record.md, §5).
+    #
+    # The Schedule hop no longer mints a `draft:<id>`: the New task modal it
+    # opens edits the chat record the words were typed in, under that record's
+    # own key (`new:<file>` before the conversation exists, the session id
+    # after). So the draft this create is spending may be a CHAT draft, and the
+    # two moves it needs are the two `draft_id` already makes — carry the TASK
+    # number forward, then drop the record — for exactly the same reasons:
+    # without the rekey the reader watches the TASK-118 they were typing into
+    # become TASK-119 the moment they press Schedule, and without the delete the
+    # task they just booked is listed twice.
+    #
+    # NOT FOR A KEY THAT NAMES A SESSION, on the same guard `draft_id` takes: a
+    # chat draft on a real session borrows that conversation's number
+    # (`_draft_numbers` mints none for it), and this message is landing IN that
+    # conversation, which is where the number stays. Only `new:<file>` — the
+    # shape that IS a row with a number of its own — has anything to move.
+    #
+    # Best-effort and optional like every other clean-up here: the message IS
+    # scheduled, and a draft that could not be dropped costs one stale row.
+    chat_draft = drafts.chat_key(body.get("draft_key"))
+    if chat_draft:
+        try:
+            if (drafts.is_new_chat_key(chat_draft)
+                    and not str(entry.get("session_id") or "")):
+                tasks_store.rekey(chat_draft,
+                                  tasks_store.pending_key(str(entry.get("id") or "")))
+            if drafts.delete_chat(chat_draft):
+                tasks_watch.notify(
+                    {chat_draft, str(entry.get("session_id") or "")} - {""})
+        except OSError:
+            pass
+
     # ...AND SO IS THE CHAT DRAFT THIS CAME FROM. Scheduling into a session is
     # the composer's other exit: the words in the box are now a booked message,
     # and text left behind would paint a `✎ Draft` chip on the very task that
     # just consumed it. Same request as the create for the same reason the
     # `draft_id` delete is, and best-effort for the same one (Akshil,
     # 2026-09-11).
+    #
+    # NOT TWICE. `draft_key` above may name this very session — the composer
+    # sends the key it is spending, and on a conversation that already exists
+    # that key IS the session id — and the delete has already happened then.
     session = drafts.chat_key(body.get("session_id"))
-    if session:
+    if session and session != chat_draft:
         try:
             if drafts.delete_chat(session):
                 tasks_watch.notify({session})
         except OSError:
             pass
 
-    # ...AND THE CHAT THE COMPOSER HOP CAME FROM, WHICH `session_id` CANNOT NAME
-    # (Bugbot, PR #1118).
-    #
-    # The Schedule button carries what is in the composer into the New task card,
-    # and the card's FIRST autosave is what tells the server to drop the chat's
-    # copy (`from_chat_key` on `PUT /api/drafts/task/<id>`). Press Schedule
-    # inside the 600 ms debounce and that write never happens: no draft id is
-    # minted, none is sent here, and the chat draft — row, TASK number and all —
-    # survives beside the task it just became. `session_id` above covers a chat
-    # that HAS a session; a brand-new one is keyed `new:<file>`, which is not a
-    # session id and never rides in that field.
-    #
-    # So the card names its origin here too. Validated through `chat_key` (both
-    # shapes), optional, and silently ignored when absent — every client that
-    # predates drafts sends none. Best-effort like the two deletes above: the
-    # task IS scheduled, and a draft that could not be dropped costs one stale
-    # row, never the task.
-    origin = drafts.chat_key(body.get("from_chat_key"))
-    if origin and origin != session:
-        try:
-            if drafts.delete_chat(origin):
-                tasks_watch.notify({origin})
-        except OSError:
-            pass
+    # (`from_chat_key` used to be a third key here, naming the chat a hop had
+    # copied out of when the copy's own autosave had not run yet. There is no
+    # copy any more — the hop edits the chat record itself — so the key it is
+    # spending is `draft_key` above, sent by the card that was editing it, and a
+    # body that still carries `from_chat_key` is simply ignored rather than
+    # refused: design-drafts-one-record.md, §1.)
     return {"entry": entry}
 
 

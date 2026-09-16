@@ -2441,9 +2441,19 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
     THE SAME FIELD SET as `_draft_row` and `_row`, with a draft's answers: no
     session (there is none until the first send — and the run that send starts
     is what carries this number forward, `_settle_new_chats`),
-    no messages, nothing that has happened. `form` is null rather than a dict:
-    a chat draft is text and attachments, which is what `draft` already
-    carries, and there is no form to reopen.
+    no messages, nothing that has happened.
+
+    `form` IS THE HOP'S SETTINGS WHEN THERE ARE ANY, and null when there are
+    none. It used to be null always, on the reasoning that a chat draft is text
+    and attachments and there is no form to reopen — true until the Schedule hop
+    stopped minting a `draft:<id>` and started editing THIS record
+    (design-drafts-one-record.md, §1). A person who pressed Schedule on an
+    unsent chat, set it for Friday and went back is looking at this row, and
+    without the time on it the row reads as an ordinary half-written message
+    rather than as something booked for Friday. Same field as `_draft_row`
+    carries and read the same way (`row.form.when`, `row.form.repeat`); `when`
+    on the row itself stays null on both, which is how the List knows to print
+    `Draft` in its when-column.
     """
     raw = drafts.new_chat_file(key)
     folder = _workdir(raw)
@@ -2451,6 +2461,7 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
     updated = float(record.get("updated_at") or 0.0)
     line = drafts.preview(record.get("text"))
     rows = record.get("attachments") or []
+    form = record.get("form") or {}
     return {
         "key": key,
         "task_id": number,
@@ -2500,8 +2511,10 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
         "next_run_entry": "",
         "next_run_repeats": False,
         "messages": [],
-        # Nothing to reopen a modal on — see the docstring.
-        "form": None,
+        # The hop's settings, or null — see the docstring. `updated_at` rides
+        # along inside it for the same reason it does on a task draft's form:
+        # `tasks-lib.draftUpdatedAt` reads it as one of its three sources.
+        "form": dict(form, updated_at=updated) if form else None,
     }
 
 
@@ -3123,6 +3136,42 @@ def api_tasks():
     return {"tasks": rows, "generation": tasks_watch.generation()}
 
 
+def _draft_changes(keys) -> dict:
+    """What the DRAFTS under these keys are at now: `{changed: [{key, version}],
+    gone: [key]}`.
+
+    THE PUSH HALF OF VERSIONED WRITES (design-drafts-one-record.md, §3). A
+    composer and a New task modal open on one key in two windows have to hear
+    about each other, and the rows this endpoint already sends cannot say it: a
+    row carries a preview, not the record, and a draft edited in another tab
+    changes nothing about the row's shape. So the keys the watcher announced are
+    looked up in the drafts store and reported as a version apiece — enough for
+    a client to know whether what it holds is stale without asking for it.
+
+    ONE READ AND NO ROW BUILDING. `list_all` is a single json read, which is
+    what makes this cheap enough to ride on every long-poll answer;
+    `_task_rows` is not asked anything, and no number is allocated.
+
+    `gone` IS NOISY BY CONSTRUCTION and is documented as such for the client
+    (drafts-api-contract.md): these keys are announced for every reason a row
+    moves, so most of them never had a draft and "there is no draft under this
+    key" is simply true of them. What a client may do with it is bounded by
+    that — clear an editor it has already adopted a server version for, and
+    never discard words it has not saved yet (the same care #1171's cheap `gone`
+    for rows is read with)."""
+    task_drafts, chat_drafts = drafts.list_all()
+    changed: list[dict] = []
+    gone: list[str] = []
+    for key in sorted(keys):
+        ident = drafts.task_draft_id(key)
+        record = task_drafts.get(ident) if ident else chat_drafts.get(key)
+        if record is None:
+            gone.append(key)
+        else:
+            changed.append({"key": key, "version": int(record.get("version") or 0)})
+    return {"changed": changed, "gone": gone}
+
+
 @router.get("/api/tasks/changes")
 def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MAX_WAIT_SEC)):
     """What moved since generation `since` — the Tasks page's fast lane.
@@ -3141,7 +3190,8 @@ def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MA
     if keys is None:
         return {"generation": gen, "full": True}
     if not keys:
-        return {"generation": gen, "rows": [], "gone": []}
+        return {"generation": gen, "rows": [], "gone": [],
+                "drafts": {"changed": [], "gone": []}}
     rows = _task_rows(only=keys)
     listed = {row["key"] for row in rows}
     gone = {key for key in keys if key not in listed}
@@ -3149,6 +3199,10 @@ def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MA
     # (§5): the watcher names the session, the session is listed, and the
     # `pending:<entry>` row the client still shows is nobody's key. Name it
     # gone, or two rows stand for one task until the full poll (bugbot #892).
+    #
+    # `drafts` rides alongside the rows: the same keys, answered out of the
+    # drafts store with a version apiece, so a composer or a modal open on one
+    # of them learns that another window has written it (`_draft_changes`).
     tasks = _collect()
     for key in listed:
         task = tasks.get(key)
@@ -3156,7 +3210,8 @@ def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MA
             pending = tasks_store.pending_key(str(entry.get("id") or ""))
             if pending != key:
                 gone.add(pending)
-    return {"generation": gen, "rows": rows, "gone": sorted(gone)}
+    return {"generation": gen, "rows": rows, "gone": sorted(gone),
+            "drafts": _draft_changes(keys)}
 
 
 # `project` rides along for the sidebar's Current apps section (D487): the
