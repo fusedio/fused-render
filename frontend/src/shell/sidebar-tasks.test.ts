@@ -663,11 +663,13 @@ describe("pokeTasks", () => {
     expect(QUEUE_DOCK).not.toContain("pokeTasks");
   });
 
-  it("a done/failed schedule event pokes too — handed down from the shell", () => {
+  it("a started/done/failed schedule event pokes too — handed down from the shell", () => {
     // platform may not import shell (check-boundaries), so scheduleEvents takes
-    // the callback and App supplies the store's pokeTasks.
+    // the callback and App supplies the store's pokeTasks. `started` joined
+    // this list in §5: a scheduled run's row also changes (queued → running)
+    // the moment it begins, not only when it ends.
     expect(EVENTS).toMatch(
-      /fresh\.some\(\(e\) => e\.kind === "done" \|\| e\.kind === "failed"\)/,
+      /fresh\.some\(\(e\) => e\.kind === "started" \|\| e\.kind === "done" \|\| e\.kind === "failed"\)/,
     );
     // NOTHING IS NARRATED FOR A PARKED RUN (Akshil, 2026-09-03): the Tasks page
     // says it on its own, with the ring and the row's place at the top.

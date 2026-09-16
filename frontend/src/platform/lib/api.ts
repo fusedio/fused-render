@@ -5160,7 +5160,7 @@ export function cancelScheduledMessage(id: string): Promise<{ entry: ScheduledMe
 // 2026-09-03): the Tasks page says it on its own — the row wears the Needs
 // attention ring and sorts to the top — and a toast for it would interrupt the
 // reader for a run that has not finished doing anything yet.
-export type ScheduleEventKind = "done" | "failed" | "missed";
+export type ScheduleEventKind = "started" | "done" | "failed" | "missed";
 
 export interface ScheduleEvent {
   id: number;
