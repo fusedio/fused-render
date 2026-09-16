@@ -232,6 +232,116 @@ included yet, for the reason above — add them when §5 actually lands.
 - `pytest tests/test_jobs_api.py tests/test_index_jobs.py` → 109 passed.
 - No pre-existing red tests found anywhere touched by this branch.
 
+## §3 built so far: server-side `Job.group` (data model only — client not started)
+
+Commit `9fae370eb`. This is the SERVER half of §3 only. Nothing client-side
+has been touched yet — the TypeScript `Job` type does not even have a
+`group` field. See "What the next builder should do first" below for the
+exact resume point.
+
+- `fused_render/jobs.py`: new `Job.group: str = ""` field, defaulted
+  CENTRALLY in `upsert()` at creation time via `_default_group(job_id)`
+  (`_GROUP_PREFIX_RE = re.compile(r"^(sys:[^:]+):")`): a `sys:<name>:...`
+  id groups under `sys:<name>`; anything else (including a bare `sys:name`
+  with no second colon) groups under its own full id.
+- **Why this makes the single-member regression impossible by
+  construction, not by a special case**: a job whose id has no
+  `sys:<name>:` sibling gets `group === its own id` — an id nothing else
+  on the server ever collides with — so it is a "group of one" and can
+  never be client-grouped with anything else, no matter what the client
+  grouping logic ends up doing. The spec's own highest-named regression
+  risk ("today's single-member behaviour must not change") is closed here,
+  on the server, before any client code exists to get it wrong.
+- **No `server=True` gate on `group`** (unlike `tier`/`waiting_for`,
+  both of which ARE gated): an ordinary page report may set `group`
+  explicitly via the request body with no worker token. Reasoning: a
+  forged `group` can only misfile a row among other rows on the same
+  page — it cannot hide a failure (that's `tier`) or fake a "someone is
+  waiting on you" state (`waiting_for`), so it carries none of the
+  forgery risk those two guard against. This is a judgement call made
+  without explicit spec text beyond "producers may set it explicitly" —
+  flagging it here for review.
+- The default is applied ONCE, at creation, and never reapplied — a later
+  tick that explicitly sends `"group": ""` really clears it (pinned by
+  `test_the_default_group_is_set_once_at_creation_not_reapplied_each_tick`),
+  matching every other field's "only the keys present are applied"
+  contract in this same function.
+- `_public()`'s existing `asdict(job)` call serializes `group` onto the
+  wire automatically — no separate wire-format change needed.
+- Tests: `tests/test_jobs_api.py`, 5 new tests under the "§3 grouping"
+  comment block — an ordinary page-owned id groups alone; a `sys:` id
+  with no second colon also groups alone; two ids sharing a `sys:` prefix
+  share a group; a report may declare `group` explicitly through the
+  plain HTTP endpoint (no worker token — proves the no-gate decision
+  above); the default is creation-only. The three tests that write a
+  `sys:`-prefixed id call `jobs.upsert({...}, server=True)` directly
+  rather than going through the HTTP `report()` test helper, because
+  `report()` only ever sends `headers={"X-Fused": "1"}` with no worker
+  token, and `upsert()` raises `JobError` for any `sys:`-prefixed id when
+  `server=False` (`SERVER_ID_PREFIX` guard) — this matches the
+  established pattern already used ~20 other places in the same file.
+- Verified: grepped `tests/` for exact-dict-equality/closed-shape
+  assertions on a job record (`.json() == {...}`, `set(...keys())`) that
+  a new field could silently break — none found; the only
+  `.json() == {...}` hits in this file are on the unrelated
+  `/api/jobs/clear` response shape (`{"cleared": N}`).
+- Ran `pytest tests/test_jobs_api.py` (81 passed) and a broader sweep
+  (`tests/test_index_jobs.py tests/test_ai_supervisor_job_page.py
+  tests/test_supervisor_job.py tests/test_ai_text_job_row.py`, 54 passed
+  + 1 pre-existing skip) — no collateral breakage from the new field.
+
+### What the next builder should do first (§3 continued, then §5)
+
+The client side of §3 is **entirely unbuilt**: no `group` field on the
+TypeScript `Job` type, no grouping-by-`(page, group)` data function, no
+pop-rule change, no UI rendering of a multi-member group row. This was
+deliberately left as its own unit rather than rushed, because:
+
+1. The pop rule (D-C) is a NEW mechanism, not a tweak to an existing one:
+   today `popupJobs`/`popupTick` pop only on a TERMINAL event
+   (`terminalJobs(mergedRows(jobs))`). D-C requires a multi-member group to
+   ALSO pop on a 0→some-running START transition, which nothing in
+   `jobs.ts` currently tracks (there is no "job just started" event source
+   today, only "job just went terminal"). Designing that alongside the
+   existing terminal-pop path, without touching how a single-member "group"
+   pops (which must stay byte-for-byte identical to today), is exactly the
+   kind of change worth a dedicated, unhurried TDD pass rather than a
+   last-minute addition.
+2. The UI side (one row for a multi-member group: title, "N of M done"
+   sub-line, attention stripe on any member's error) means either a new
+   component or a meaningful `JobRow` extension, plus wiring through
+   `RepoUpdatesDock.tsx`'s three-layer view/wrapper/top-level structure the
+   same way §4's `Recent` section was — that's a full slice of UI work on
+   top of the popup-mechanism work above.
+3. Suppression composition: a group is suppressed under §2b only when
+   EVERY member satisfies `isRecentOnly` — this has to be checked against
+   BOTH `jobRows` and `recentJobs` (§4), since §4 already shipped and a
+   group's members can now legitimately split across "Worth keeping" and
+   "Recent" individually before grouping is even applied. Whether grouping
+   happens BEFORE or AFTER the jobRows/recentJobs split (i.e., do you
+   group first and then decide where the whole group goes, or filter each
+   member first and then group what's left) is an open design question the
+   next builder needs to resolve against the spec text before writing
+   code — get this backwards and a group can silently vanish or double up
+   across the two sections.
+
+Concretely, next steps in order: (a) add `group: string` to the `Job`
+interface in `platform/lib/jobs.ts`, mirroring the server doc comment; (b)
+write the single-member-regression test FIRST (a lone job's popup/panel
+behavior with today's exact assertions, now with a `group` field present)
+before writing any grouping function at all, so it is red for the right
+reason (missing function) and then genuinely proves nothing regressed once
+the grouping function exists; (c) design and build the `(page, group)`
+grouping data function with that test as the pinned baseline; (d) resolve
+the suppression-composition question above with a dedicated test per
+outcome; (e) only then touch the popup/pop-rule mechanism and the UI.
+
+§5 (Claude task notifications) has not been started at all — see the
+"Pending Tasks" list carried over from the prior session summary for its
+four moments and open questions. Do not write the D661 /
+`schedule-toast.ts:30` decision-log reversal entries until that code
+actually lands.
+
 ## State after this branch's commits
 
 - `bun test src/platform src/shell` → 2546 pass, 0 fail.
