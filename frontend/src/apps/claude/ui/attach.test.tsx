@@ -614,7 +614,7 @@ test("discard() also disowns a capture and a path registration still in flight",
   });
   const tray = mountTray(api);
   let capturing!: Promise<void>;
-  let adding!: Promise<void>;
+  let adding!: Promise<() => void>;
   await act(async () => {
     capturing = tray.get().capture();
     await Promise.resolve();

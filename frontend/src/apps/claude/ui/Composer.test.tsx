@@ -1086,22 +1086,25 @@ test("restore can resurrect a spent draft — Send does not let it back in", asy
     sessionId: "sess-resurrect",
     attachments: () => tray as never,
     onRestoreAttachments: (paths: string[]) =>
-      new Promise<void>((resolve) => {
+      new Promise<() => void>((resolve) => {
         land = () => {
           // WHAT `addPaths` DOES ON ITS OWN, past its await: it commits the
-          // paths into the tray whatever else has happened meanwhile.
-          tray = paths.map((path) => ({
+          // paths into the tray whatever else has happened meanwhile, and
+          // hands back THIS CALL'S OWN undo (Bugbot 4028927464) — here, the
+          // only restore in flight, so undoing its own chips empties the tray
+          // exactly the way the old blanket `discard()` did.
+          const mine = paths.map((path) => ({
             pending: false,
             view: path,
             name: path.slice(path.lastIndexOf("/") + 1),
             kind: path.endsWith(".png") ? "image" : "file",
           }));
-          resolve();
+          tray = [...tray, ...mine];
+          resolve(() => {
+            tray = tray.filter((s) => !mine.includes(s));
+          });
         };
       }),
-    onDiscardAttachments: () => {
-      tray = [];
-    },
   });
   await act(async () => {
     await tick();
@@ -1129,6 +1132,116 @@ test("restore can resurrect a spent draft — Send does not let it back in", asy
   expect(seen.filter((r) => r.method === "PUT")).toEqual([]);
   expect(seen.filter((r) => r.method === "DELETE")).toHaveLength(1);
   forgetDraftVersion("sess-resurrect");
+});
+
+test("a stale restore's abort takes back only its own chips, never a newer restore's", async () => {
+  // Bugbot 4028927464. A stale `restoreTray` landing used to call
+  // `discardAttachments` — the WHOLE tray, plus the epoch bump `addPaths`
+  // reads. That is fine when it is the only restore anyone has started, but
+  // a NEWER one (another session's seed, an adopted record) can already be
+  // sitting in the same tray, its own files landed or still on the way, and
+  // the blanket wipe took those too. The fix: a stale restore removes only
+  // what IT added.
+  const seen = storeWith({
+    "sess-old": {
+      text: "",
+      attachments: [{ path: "/shots/a.png", name: "a.png", kind: "image" }],
+      updated_at: 1,
+      version: 3,
+      form: {},
+    },
+    "sess-new": {
+      text: "",
+      attachments: [{ path: "/shots/b.csv", name: "b.csv", kind: "file" }],
+      updated_at: 1,
+      version: 3,
+      form: {},
+    },
+  });
+  let tray: { pending: boolean; view: string; name: string; kind: string }[] = [];
+  const landers: (() => void)[] = [];
+  const c = mount({
+    file: "/p/overlap.py",
+    sessionId: "sess-old",
+    attachments: () => tray as never,
+    onRestoreAttachments: (paths: string[]) =>
+      new Promise<() => void>((resolve) => {
+        // Each call is its OWN restore: it lands (appends its own chips) only
+        // when THIS test tells it to, in whatever order the test picks.
+        landers.push(() => {
+          const mine = paths.map((path) => ({
+            pending: false,
+            view: path,
+            name: path.slice(path.lastIndexOf("/") + 1),
+            kind: path.endsWith(".png") ? "image" : "file",
+          }));
+          tray = [...tray, ...mine];
+          resolve(() => {
+            tray = tray.filter((s) => !mine.includes(s));
+          });
+        });
+      }),
+    // Still wired, exactly as the real host wires it (`attach.discard`) — RED
+    // pre-fix: the old code reached for this on every stale landing, wiping
+    // b.csv along with a.png. GREEN post-fix: this path calls `revert()`
+    // instead and never touches this at all.
+    onDiscardAttachments: () => {
+      tray = [];
+    },
+  });
+  await act(async () => {
+    await tick();
+  });
+  // `sess-old`'s seed dispatched its restore and is holding — nothing in the
+  // tray yet.
+  expect(landers.length).toBe(1);
+  expect(tray).toEqual([]);
+
+  // ANOTHER SESSION'S SEED, while the first is still in flight — the key
+  // changes under the box, which is exactly what makes the first's eventual
+  // landing stale.
+  c.rerender({ sessionId: "sess-new" });
+  await act(async () => {
+    await tick();
+  });
+  expect(landers.length).toBe(2);
+
+  // THE NEWER RESTORE LANDS FIRST — its files are in the tray.
+  await act(async () => {
+    landers[1]!();
+    await tick();
+  });
+  expect(tray.map((s) => s.view)).toEqual(["/shots/b.csv"]);
+
+  // …AND ONLY THEN THE STALE ONE. Landing at all commits its own chip
+  // (`addPaths`' own behavior, past its await) before this box ever sees it,
+  // so the moment of truth is what the stale-abort branch does next.
+  await act(async () => {
+    landers[0]!();
+    await tick();
+  });
+  // The newer restore's file is still here; only the stale one's is gone —
+  // NOT an emptied tray.
+  expect(tray.map((s) => s.view)).toEqual(["/shots/b.csv"]);
+
+  // …and nothing here ever asked to persist an empty tray: a keystroke forces
+  // the render that reads it, and the PUT it produces still carries b.csv.
+  c.type("still here");
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 700));
+    await tick();
+  });
+  const puts = seen.filter((r) => r.method === "PUT");
+  expect(puts.length).toBeGreaterThan(0);
+  for (const put of puts) {
+    const paths = (put.body?.attachments as { path: string }[] | undefined)?.map((a) => a.path);
+    expect(paths).not.toEqual([]);
+  }
+  expect(puts[puts.length - 1]!.body?.attachments).toEqual([
+    { path: "/shots/b.csv", name: "b.csv", kind: "file" },
+  ]);
+  forgetDraftVersion("sess-old");
+  forgetDraftVersion("sess-new");
 });
 
 test("words typed before the session lands move onto the session's record", async () => {

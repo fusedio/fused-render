@@ -314,8 +314,15 @@ export interface ComposerCardProps {
    * chips past an await, and the box holds its autosave until that has landed
    * (`restoreTray`, Bugbot 4027549715). A host that restores synchronously —
    * and every test double — may go on returning nothing.
+   *
+   * THE PROMISE MAY RESOLVE WITH A REVERT — the host's does, straight off
+   * `addPaths`' own answer (`useAttachments.ts`): a function that undoes
+   * exactly what THIS call put in the tray, and nothing else. `restoreTray`
+   * below calls it, instead of `onDiscardAttachments`, when this particular
+   * restore turns out to be stale — a newer one already got there first, and
+   * the whole-tray wipe would have taken its files too (Bugbot 4028927464).
    */
-  onRestoreAttachments?(paths: string[]): void | Promise<void>;
+  onRestoreAttachments?(paths: string[]): void | Promise<void | (() => void)>;
   /** Empty the tray. What an answered "unsent message" question does to the
    *  files, what adopting a record from elsewhere does to them, and what the
    *  Schedule hop does once they are on the card — the way `take()` does it on
@@ -590,19 +597,27 @@ export function ComposerCard({
       // synchronously, every test double), and a hold nobody ever releases is
       // an autosave that never speaks again — so the sync answer releases here.
       const back = restoreAttachments.current?.(files.map((a) => a.path));
-      if (back && typeof (back as Promise<void>).then === "function") {
-        void (back as Promise<void>).then(() => {
+      if (back && typeof (back as Promise<void | (() => void)>).then === "function") {
+        void (back as Promise<void | (() => void)>).then((revert) => {
           // ABORT: a Send, an adopted delete, or a key change already moved
           // this box past the episode this hold was about (Bugbot 4028710588).
           // `addPaths` commits past its own await, so landing here at all is
           // exactly a spent draft's files coming back into the tray — put
           // right back out, and nothing is said to the syncer about them.
+          //
+          // ONLY WHAT THIS CALL ADDED, and NEVER `discardAttachments` (Bugbot
+          // 4028927464): a NEWER restore — another seed, an adopted record —
+          // can be sitting in the same tray right now, its own files already
+          // landed or still on the way, and the whole-tray wipe took those
+          // too, on top of bumping the epoch out from under its own pending
+          // `addPaths`. `revert` is this call's own undo and touches nothing
+          // else.
           if (
             draftKeyRef.current !== key ||
             episode.current !== era ||
             peekDraftSyncer(key)?.isGone()
           ) {
-            discardAttachments.current?.();
+            revert?.();
           }
           done();
         }, done);
