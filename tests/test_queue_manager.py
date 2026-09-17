@@ -2102,3 +2102,19 @@ def test_reset_for_tests_installs_a_manager():
     m = idle_world().manager()
     qm.reset_for_tests(m)
     assert qm.get() is m
+
+
+def test_the_real_spawn_keeps_the_placeholders_claim_tokens():
+    """Bugbot PR #1194: renaming an `admit:` placeholder to the spawned run
+    used to write a fresh owner with no `claims`, so the token admission had
+    minted was gone by the time the run gate presented it — and the gate then
+    counted the send a second time."""
+    manager = idle_world().manager()
+    ok, took, token = manager.claim_for_send(F1, qm.PLACEHOLDER_PREFIX + "abc")
+    assert ok and took and token
+    manager.started(F1, "sess-1", run_id="run-1", session_id="sess-1")
+    owner = manager.owner(F1)
+    assert owner["task"] == "sess-1"
+    assert owner["turns"] == 1
+    assert manager.consume_claim(F1, token) is True
+    assert manager.consume_claim(F1, token) is False

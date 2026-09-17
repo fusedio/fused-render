@@ -1152,8 +1152,15 @@ class QueueManager:
             # claimed the folder and this is trusted to say so. `_own`
             # defaults `turns` to 1, which is right for both — a placeholder's
             # `turns` was already 1 from the `claim` that filed it.
-            self._own(rec, {"task": task_key, "entry_id": ""},
-                      _text(run_id), _text(session_id))
+            owner = self._own(rec, {"task": task_key, "entry_id": ""},
+                              _text(run_id), _text(session_id))
+            if previous is not None and _is_placeholder(previous.get("task")):
+                # THE PLACEHOLDER'S TOKENS AND TURNS SURVIVE THE RENAME (Bugbot,
+                # PR #1194). Admission minted a claim on the placeholder and the
+                # chat is about to present it at the run gate; dropping it here
+                # made the gate call that send unadmitted and count it twice.
+                owner["claims"] = list(previous.get("claims") or [])
+                owner["turns"] = max(1, int(previous.get("turns") or 1))
             keys.add(task_key)
 
     def card_raised(self, task_key: str, run_id: str = "") -> None:
