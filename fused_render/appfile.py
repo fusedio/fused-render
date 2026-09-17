@@ -769,7 +769,8 @@ def clone_app_file(fused_path: str) -> dict:
     as an ordinary, editable app folder. Answers ``clone_target``'s shape, with
     ``cloned`` True when the destination was ALREADY there and nothing was
     copied — a re-clone is a no-op that reports where the copy lives, never a
-    second folder and never an overwrite of the user's edits.
+    second folder and never an overwrite of the user's edits. Overwriting is
+    a separate, explicitly-confirmed verb: ``overwrite_app_file``.
 
     The payload comes from ``open_app_file``'s extract, not from a second unzip
     of our own: one hardened extractor for every archive this app accepts
@@ -812,3 +813,93 @@ def clone_app_file(fused_path: str) -> dict:
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return {**target, "cloned": False}
+
+
+#: Top-level names an overwrite never touches in the local copy. `.venv` is
+#: the user's environment (minutes to rebuild, never in a payload), `.fused`
+#: is the app's own data/state dir (D548) — losing it is losing the user's
+#: data — and `.git` is a legacy per-app repo (D626's unmigrated case). The
+#: export already drops every dotted name, so a payload cannot carry these;
+#: the set is the guarantee spelled out, not a filter that ever fires today.
+_OVERWRITE_KEEP = frozenset({".venv", ".fused", ".git"})
+
+
+def overwrite_app_file(fused_path: str) -> dict:
+    """Re-copy the ``.fused`` at ``fused_path`` OVER its existing local copy
+    (``clone_target``'s ``path``): every payload file lands at its relative
+    path, replacing what is there. Answers ``clone_target``'s shape with
+    ``cloned: True`` and ``overwritten: True``. A file with no local copy yet
+    is simply cloned — same destination, same result.
+
+    MERGE semantics, not a tree replace: files in the local copy that the
+    payload does not carry are left alone. The export already leaves home
+    everything gitignored (a build ``dist/``, data, ``node_modules``) and
+    every dotted name, so "wipe then copy" would delete exactly the content
+    the export was built to exclude. The named cost is that a file the author
+    DELETED between exports lingers in the copy. ``_OVERWRITE_KEEP`` names the
+    top-level dirs that are never touched even if a payload somehow carried
+    them.
+
+    Not atomic — a merge over a live folder has no staging trick that does not
+    involve copying the ``.venv`` — so a failure mid-way leaves a partly
+    updated copy; a retry finishes the job. The copy rides ``open_app_file``
+    like the clone (one hardened extractor, D386).
+
+    Mode handling is scoped to the payload paths being WRITTEN, never a walk
+    of the copy: ``_lift_read_only(dest)`` would chmod the ``.venv`` (killing
+    its exec bits) and, since ``os.chmod`` follows symlinks, the interpreter
+    ``.venv/bin/python`` points at. ``_copy_over`` copies BYTES only
+    (``copyfile``, so the extract's 0o444 is not carried across): an existing
+    file keeps its mode, a new one gets the umask default, and a read-only
+    counterpart is made writable before the write instead of raising.
+    """
+    target = clone_target(fused_path)
+    if not target["cloned"]:
+        return {**clone_app_file(fused_path), "overwritten": False}
+    src = open_app_file(fused_path)["dir"]
+    dest = target["path"]
+    _merge_tree(src, dest, skip=_OVERWRITE_KEEP)
+    return {**target, "cloned": True, "overwritten": True}
+
+
+def _merge_tree(src: str, dst: str, skip: frozenset[str] = frozenset()) -> None:
+    """Lay ``src``'s files over ``dst`` at every depth, the payload's SHAPE
+    winning wherever the two disagree: a file, symlink or anything else in the
+    copy where the payload has a folder is removed and a real folder made; a
+    real folder in the copy where the payload has a file is removed. Entries
+    of ``dst`` the payload does not name are left alone. Our own walk rather
+    than ``copytree(dirs_exist_ok=True)``: that one raises on a nested
+    file-vs-folder clash (a partial merge no retry can finish) and ENTERS a
+    directory symlink in the copy, writing the payload — and a trailing
+    ``copystat`` — onto whatever it points at. ``skip`` names top-level
+    entries of ``src`` never copied."""
+    for name in sorted(os.listdir(src)):
+        if name in skip:
+            continue
+        s_path = os.path.join(src, name)
+        d_path = os.path.join(dst, name)
+        if os.path.isdir(s_path) and not os.path.islink(s_path):
+            # A symlink at d_path is unlinked, never entered — even one that
+            # resolves to a directory — so nothing lands on its target.
+            if os.path.islink(d_path) or (os.path.lexists(d_path) and not os.path.isdir(d_path)):
+                os.unlink(d_path)
+            os.makedirs(d_path, exist_ok=True)
+            _merge_tree(s_path, d_path)
+        elif os.path.isfile(s_path) and not os.path.islink(s_path):
+            if os.path.isdir(d_path) and not os.path.islink(d_path):
+                shutil.rmtree(d_path)
+            _copy_over(s_path, d_path)
+        # A symlink or special file in the extract is not something the
+        # export produces (symlinks are skipped on the way out); ignored.
+
+
+def _copy_over(src: str, dst: str) -> None:
+    """Replace ``dst``'s bytes with ``src``'s, touching no mode but ``dst``'s
+    own when it is read-only. A symlink at ``dst`` is unlinked rather than
+    written THROUGH — the payload's file replaces the link, and whatever it
+    pointed at is left alone."""
+    if os.path.islink(dst):
+        os.unlink(dst)
+    elif os.path.isfile(dst) and not os.access(dst, os.W_OK):
+        os.chmod(dst, 0o644)
+    shutil.copyfile(src, dst)
