@@ -260,6 +260,32 @@ describe("fs-clipboard persistence (Fix 2)", () => {
     expect(fresh.getClipboard()).toBeNull();
   });
 
+  it("a failed persist write removes any stale entry rather than leaving it behind", async () => {
+    // An earlier, successful write left a real entry in storage.
+    setClipboard({ paths: ["/old"], op: "cut" });
+    await settle();
+    const real = globalThis.sessionStorage;
+    Object.defineProperty(globalThis, "sessionStorage", {
+      configurable: true,
+      value: {
+        ...real,
+        setItem: () => {
+          throw new Error("QuotaExceededError");
+        },
+      },
+    });
+    try {
+      // The user clears the clipboard, but this write's own setItem fails
+      // (quota, or storage revoked mid-session) — the stale "/old" entry
+      // must not survive to be restored on the next reload.
+      setClipboard(null);
+    } finally {
+      Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: real, writable: true });
+    }
+    const fresh = await reloadClipboard();
+    expect(fresh.getClipboard()).toBeNull();
+  });
+
   it("blocked storage degrades to in-memory only — never throws", () => {
     const real = globalThis.sessionStorage;
     Object.defineProperty(globalThis, "sessionStorage", {

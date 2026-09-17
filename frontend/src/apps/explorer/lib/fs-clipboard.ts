@@ -95,7 +95,18 @@ function writeStoredState(state: StoredClipboardState): void {
   } catch {
     // A private window, cleared site data, or blocked storage costs the
     // persistence, never the clipboard itself — the module variables below
-    // are still the live answer for the rest of this document's life.
+    // are still the live answer for the rest of this document's life. But a
+    // failed setItem leaves whatever was written last time still sitting
+    // under the key, and that is STALE persistence, not no persistence: the
+    // next reload would restore a clipboard/token pair the user has since
+    // replaced or explicitly cleared. Best-effort drop it instead — it can
+    // throw for the same reasons setItem did, so it's wrapped too.
+    try {
+      sessionStorage.removeItem(CLIPBOARD_STORAGE_KEY);
+    } catch {
+      // Nothing more to do — the live module variables are still correct,
+      // only a reload of this document would see the stale entry.
+    }
   }
 }
 
