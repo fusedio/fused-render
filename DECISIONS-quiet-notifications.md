@@ -2195,3 +2195,140 @@ existing row an hour later (well past the old `GROUP_GAP_MS`), a repeat
 AFTER the earlier row was dismissed starting a fresh row instead of
 resurrecting the old one, and two different tasks sharing a folder-fallback
 page NOT collapsing into each other.
+
+## Fix: `origin` vs `source` — the caption regression, and the card content it exposed (2026-09-17)
+
+**User report**: "why do you always want to make the notification smaller? I
+want a proper looking card with clear context of the creator. I don't want a
+single line of text" / "we had this correct some time back and now its this
+shit again" — a finished-task card read only **Transcripto YouTube
+transcriber finished** and a dismiss ✕. No caption, no detail.
+
+**Root cause, confirmed by reading, not re-diagnosed**: `notifications.ts`'s
+`toStored` computed the card's caption ONLY as `labelForSource(input.source)`.
+The prior code-review round (see "9." and the "SECOND REVERSAL" comment in
+`task-status-notify.ts`) correctly dropped `source` from the `in_progress ->
+done` branch, because a FINISHED task must never be presence-suppressed
+(`isSuppressed`/`isPopupSuppressed` key off `source`). But `source` had been
+doing two unrelated jobs at once — "suppress this when its page is open" AND
+"caption this row" — so removing it to fix the first also silently deleted
+the second. This is exactly the trap the branch's own "Settled decisions"
+section warns future readers about with grouping/suppression composition;
+here it bit a field, not a section.
+
+**Fix — separate the two jobs onto two fields, not one dual-purpose one**:
+added `origin?: string` to `NotificationInput` (`notifications.ts`). `source`
+now means, unambiguously, "the suppression key" (still also feeds the caption
+as a fallback, via `labelForSource(source)`, so every existing `source`-only
+caller — `AppPage.tsx`'s two error sites — keeps its caption unchanged with
+zero code changes there). `origin` means "the caption, full stop" — a caller
+sets it when it wants creator context WITHOUT opting into "quiet when this
+page is open." `toStored` reads `input.origin || (labelForSource(input.source)
+|| undefined)` — explicit `origin` wins. `forwardToShell` (pane -> shell
+ingest) now forwards the pane's own resolved `n.origin` rather than leaving it
+implicit, so a pane's caption survives the hop.
+
+Chose an explicit new field over "a flag that exempts a notification from
+suppression while keeping `source`" because the exemption-flag shape still
+leaves one field meaning two things depending on a second flag's value —
+readable at the type definition, not at the call site. Two fields, one job
+each, is legible from the call site alone: `task-status-notify.ts`'s
+`in_progress -> done` branch now visibly sets `origin: caption` and no
+`source`, which reads as "captioned, never suppressed" without following a
+comment to a flag elsewhere.
+
+**`task-status-notify.ts`'s `in_progress -> done` branch, rebuilt as a proper
+card, not a single line**:
+- Added `taskCaption(task)` = `labelForSource(task.project || task.target)`
+  — **project-first**, matching `folderHref` (schedule-lib.ts) and
+  `attentionRows` (tasks-lib.ts:4872)'s own already-settled rule. Target-first
+  was tried and rejected here on purpose: a task made from inside an app
+  targets that app's own entry page (`.../Transcripto/index.html`), and
+  target-first reproduces the exact "index" caption bug `attentionRows`'s own
+  comment names for the identical task. Pinned directly: a test constructs a
+  task with `project: ""`, `target: ".../Transcripto/index.html"` and asserts
+  the caption reads "Transcripto", not "index" — proving this exercises
+  `format.ts`'s entry-page basename fallback, not a coincidence.
+- Added `titleWithoutCaption(title, caption)`: strips a leading, exact,
+  case-insensitive repeat of the caption (followed by whitespace/`:`/`-`) off
+  the task's own title — "Transcripto YouTube transcriber" next to a
+  "Transcripto" eyebrow reads as the same word twice; stripped to "YouTube
+  transcriber" it reads as two different pieces of information, per the
+  task brief's own instruction not to restate a slot's word in another slot.
+  Deliberately narrow and prefix-only: a title that doesn't happen to start
+  with its own caption (most tasks aren't named "<project> <description>")
+  passes through completely untouched — this must never mangle an unrelated
+  title into something shorter and wrong. Falls back to the untouched title
+  whenever there is no caption, no prefix match, or stripping would leave
+  nothing.
+- Moved "finished" OUT of the title (`"${title} finished"`) and into `detail`
+  (`"Finished"`, rendered as `.dl-model`/`secondary` by both `MessageRowView`
+  and `MessagePopupCard`), rather than into `status`. `status` was rejected
+  because it is already spoken for by `MessageRowView`'s own repeat-count line
+  ("Happened N times", from `notifications.ts`'s `count`/`family` collapse) —
+  a task that finishes more than once needs that line free, and overloading
+  it with "Finished" would either collide with or permanently hide the repeat
+  count. `detail` was empty at this call site otherwise, so using it costs
+  nothing and reads as a real second line rather than a word wedged into the
+  title.
+
+**Exact render for a task titled "Transcripto YouTube transcriber" in
+project "sandbox/Transcripto", finishing** (verified via
+`task-status-notify.test.ts`'s new cases and `notifications.ts`'s
+`toStored`/`MessageRowView`/`MessagePopupCard`, not eyeballed in a browser —
+UI-blind, per this build's own instructions):
+1. **Eyebrow** (`.dl-origin.dl-eyebrow`, above the title): `Transcripto`.
+2. **Title** (`.dl-title`): `YouTube transcriber` (the "Transcripto " prefix
+   stripped because it repeats the eyebrow).
+3. **Secondary line** (`.dl-model`, under the title): `Finished`.
+4. **Status line** (`.dl-status`): renders NOTHING on a first finish
+   (`notification.count === 1`); on a SECOND finish of the same task while the
+   first row is still retained (same `family` — `page:<dest>::<title>`, title
+   here being the STRIPPED title since `family` is computed from `input.title`
+   after stripping), it reads `Happened 2 times`.
+5. **Dismiss ✕**: present (`onDismiss` always set by `MessageRowView`).
+6. The whole row is clickable (`rowClick`, since `page` is set) and opens
+   `taskDestination(task)`, dismissing the row on click — same as before this
+   fix, unchanged.
+
+A task with NO project and NO target-derived caption (`taskCaption` resolves
+to `""`) renders with **no eyebrow at all** (`caption != null && caption !==
+""` in `NotificationCard` — the empty string draws nothing, same rule
+`Job.origin`/message `origin` always followed) and its UNSTRIPPED title,
+since `titleWithoutCaption` returns the title unchanged when `caption` is
+falsy.
+
+**Not changed in this fix, deliberately, to keep the blast radius to the one
+reported card**: the `in_progress -> blocked` ("failed") and `*
+-> needs_attention` branches keep their existing title wording and carry no
+`origin` — the user's report and the screenshot were specifically about the
+FINISHED card; the failed/needs-input cards were not named as broken, and
+`attentionRows` (tasks-lib.ts) already gives `needs_attention` its own
+always-current, captioned row via a completely different code path. Widening
+this fix to those two branches without a specific complaint would be scope
+creep this round did not need.
+
+**Regression checks preserved, each still pinned by its own existing test,
+none touched by this fix**:
+- A finished task's popup is still never presence-suppressed
+  (`n?.source` is asserted `undefined` in `task-status-notify.test.ts`, and
+  the new `origin`-only suppression test in `notifications.test.ts` proves
+  `isSuppressed` has nothing to key off an `origin`-only input).
+- Errors/actionable rows are unaffected — `isSuppressed`'s own `tier ===
+  "attention"` / `input.action || input.page` early-outs are untouched.
+- `isPopupSuppressed` (jobs.ts, server job rows) is untouched — this fix only
+  touches `notifications.ts`'s client-message path.
+- Repeat-collapse (family keyed on page+title, no time window) is untouched —
+  `messageFamily` still reads `input.page`/`input.title` exactly as before;
+  the STRIPPED title now flows into that key consistently since stripping
+  happens before the `NotificationInput` is built.
+- No "Recent" section anywhere — not reintroduced; this fix touches captions
+  and title/detail content only.
+
+**Commands run**: `bun test src/platform/lib/notifications.test.ts
+src/shell/task-status-notify.test.ts src/shell/useTaskStatusNotify.test.ts
+src/shell/RepoUpdatesDock.test.tsx` → 151 pass, 0 fail, 372 expect() calls.
+`bun --cwd frontend test` (full suite) → 6578 pass, 0 fail, 24259 expect()
+calls, Ran 6578 tests across 305 files. `bunx tsc --noEmit -p frontend` →
+clean. `node frontend/scripts/check-boundaries.mjs` → `boundaries OK (831
+files)`.

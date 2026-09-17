@@ -49,7 +49,58 @@ describe("notificationForTransition", () => {
     expect(n?.tone).toBe("info");
     expect(n?.source).toBeUndefined();
     expect(n?.page).toBe(taskDestination(t));
-    expect(n?.title).toContain("finished");
+  });
+
+  // Regression: dropping `source` (above) to stop presence-suppressing a
+  // finished task silently deleted the card's ONLY caption source too, since
+  // `notifications.ts`'s old `toStored` computed the caption from `source`
+  // alone. The card the user saw was a single bold line with no creator
+  // context at all ("why do you always want to make the notification
+  // smaller? ... I don't want a single line of text"). `origin` restores the
+  // caption without reintroducing suppression — see notifications.ts's own
+  // `origin` field.
+  test("in_progress -> done carries a project-first caption via `origin`, not `source`", () => {
+    const t = task({ status: "done", project: "/sandbox/Transcripto", target: "/other/index.html" });
+    const n = notificationForTransition("in_progress", t);
+    expect(n?.origin).toBe("Transcripto");
+    expect(n?.source).toBeUndefined();
+  });
+
+  test("in_progress -> done falls back to `target` for its caption when the task has no project", () => {
+    const t = task({ status: "done", project: "", target: "/sandbox/Transcripto/index.html" });
+    const n = notificationForTransition("in_progress", t);
+    // project-first, but target-first WOULD have produced "index" here —
+    // the exact bug `attentionRows`'s own comment names — proving this
+    // reads the entry-page basename fallback in format.ts, not a coincidence.
+    expect(n?.origin).toBe("Transcripto");
+  });
+
+  test("in_progress -> done strips a leading repeat of its own caption from the title", () => {
+    const t = task({
+      status: "done",
+      project: "/sandbox/Transcripto",
+      title: "Transcripto YouTube transcriber",
+    });
+    const n = notificationForTransition("in_progress", t);
+    expect(n?.origin).toBe("Transcripto");
+    expect(n?.title).toBe("YouTube transcriber");
+    // "finished" moved to `detail`, not the title.
+    expect(n?.detail).toBe("Finished");
+    expect(n?.title).not.toContain("finished");
+  });
+
+  test("in_progress -> done leaves a title untouched when it doesn't start with its own caption", () => {
+    const t = task({ status: "done", project: "/sandbox/Transcripto", title: "render the tiles" });
+    const n = notificationForTransition("in_progress", t);
+    expect(n?.title).toBe("render the tiles");
+    expect(n?.detail).toBe("Finished");
+  });
+
+  test("in_progress -> done with no title falls back to a generic noun, caption stripping is a no-op", () => {
+    const t = task({ status: "done", project: "/sandbox/Transcripto", title: "" });
+    const n = notificationForTransition("in_progress", t);
+    expect(n?.title).toBe("A task");
+    expect(n?.origin).toBe("Transcripto");
   });
 
   test("in_progress -> blocked is a never-suppressed, retained, actioned failure", () => {

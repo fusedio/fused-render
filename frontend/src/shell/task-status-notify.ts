@@ -60,6 +60,7 @@
 // an ordinary retained row in the one unified list.
 import type { TaskPulseTask } from "@platform/lib/api";
 import type { NotificationInput } from "@platform/lib/notifications";
+import { labelForSource } from "@platform/lib/format";
 import { taskColumn } from "@shell/tasks-lib";
 import { taskHref } from "@shell/tasks-lib";
 import { folderHref } from "@shell/schedule-lib";
@@ -69,6 +70,35 @@ import { folderHref } from "@shell/schedule-lib";
  *  the folder, else the Tasks page itself). */
 export function taskDestination(task: TaskPulseTask): string {
   return taskHref(task) ?? folderHref(task) ?? "/tasks";
+}
+
+/** The "who made this" caption for a task's own notification — SAME
+ *  project-first order `folderHref` (schedule-lib.ts) and `attentionRows`
+ *  (tasks-lib.ts:4872) already settled on, not target-first: a task made
+ *  from inside an app targets that app's own ENTRY PAGE
+ *  (".../Transcripto/index.html"), so target-first here reproduces the
+ *  exact "index" caption bug `attentionRows`'s own comment names. `project`
+ *  names the containing app/folder; `target` is only a fallback for a task
+ *  with no project at all. */
+function taskCaption(task: TaskPulseTask): string {
+  return labelForSource(task.project || task.target);
+}
+
+/** A task's own title, with a leading repeat of its own caption stripped —
+ *  "Transcripto YouTube transcriber" next to a "Transcripto" eyebrow reads as
+ *  the same word twice; "YouTube transcriber" under a "Transcripto" eyebrow
+ *  reads as two different pieces of information. Deliberately narrow: only
+ *  strips an actual PREFIX match (case-insensitive, followed by whitespace
+ *  or punctuation), never touches a title that doesn't happen to start with
+ *  its own caption — most tasks aren't named "<project> <description>", and
+ *  this must never mangle those into something shorter and wrong. Falls back
+ *  to the untouched title whenever there is no caption, no match, or the
+ *  match would consume the whole title. */
+function titleWithoutCaption(title: string, caption: string): string {
+  if (!caption) return title;
+  const escaped = caption.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const stripped = title.replace(new RegExp(`^${escaped}[\\s:-]+`, "i"), "");
+  return stripped || title;
 }
 
 /**
@@ -101,9 +131,35 @@ export function notificationForTransition(
     };
   }
   if (previous === "in_progress" && column === "done") {
+    // THIRD REVERSAL, 2026-09-17 — the code-review-round fix (see
+    // DECISIONS-quiet-notifications.md's "notification card regression"
+    // entry) restoring what the SECOND reversal above accidentally deleted.
+    // Dropping `source` (rightly — see the header comment above) also
+    // silently dropped the ONLY thing that fed the card's caption, because
+    // `notifications.ts`'s `toStored` computed the caption from `source`
+    // alone: no `source`, no caption, no matter how good `origin`
+    // resolved. The card the user actually saw was a single bold line —
+    // "why do you always want to make the notification smaller? ... I don't
+    // want a single line of text" — with no creator context at all.
+    // `notifications.ts` now has a separate `origin` field for exactly this:
+    // "caption this row" without "suppress it when its page is open" (the
+    // two `source` used to conflate). Set `origin` here, never `source` —
+    // the whole point of the second reversal above stands.
+    const caption = taskCaption(task);
     return {
-      title: `${task.title || "A task"} finished`,
+      title: titleWithoutCaption(task.title || "A task", caption),
+      // "Finished" moves OUT of the title and into `detail` (`.dl-model`,
+      // MessageRowView's `secondary`) rather than staying baked into the
+      // title string or landing in `status`: `status` is already spoken for
+      // by MessageRowView's own "Happened N times" repeat-count line
+      // (notifications.ts's `count`/`family` collapse), which must keep
+      // working for a task that finishes more than once. `detail` is empty
+      // for this call site otherwise, so it costs nothing and reads as a
+      // real second line ("YouTube transcriber" / "Finished"), not a
+      // repeated word wedged into the title.
+      detail: "Finished",
       tone: "info",
+      origin: caption || undefined,
       page: taskDestination(task),
     };
   }

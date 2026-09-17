@@ -155,8 +155,15 @@ describe("useTaskStatusNotify", () => {
     await publish([task({ status: "in_progress" })]);
     await publish([task({ status: "done" })]);
 
+    // THIRD REVERSAL, 2026-09-17 (code review round): "finished" moved out
+    // of the title into `detail`, and the caption (`origin`) is restored —
+    // see task-status-notify.ts's own header comment on the regression this
+    // closes (dropping `source` above also silently deleted the caption,
+    // since nothing else fed it).
     const popup = getPopupNotification();
-    expect(popup?.title).toContain("finished");
+    expect(popup?.title).not.toContain("finished");
+    expect(popup?.detail).toBe("Finished");
+    expect(popup?.origin).toBeTruthy();
     expect(popup?.tone).toBe("info");
 
     const retained = getRetainedNotifications();

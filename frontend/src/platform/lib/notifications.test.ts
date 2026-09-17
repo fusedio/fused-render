@@ -501,6 +501,32 @@ test("a message with no source carries no origin at all", () => {
   expect(getRetainedNotifications()[0]?.origin).toBeUndefined();
 });
 
+// `origin` (2026-09-17 fix): a caption INDEPENDENT of suppression — a caller
+// wants "who made this" without also opting into "suppress when its page is
+// open" (a task-status-notify.ts caller says exactly why: a FINISHED task's
+// chat being open no longer means "already knows"). See notifications.ts's
+// own `NotificationInput.origin` doc comment for the full regression story
+// this closes.
+test("an explicit `origin` sets the caption without opting into suppression", () => {
+  notify({ title: "Transcripto YouTube transcriber", tone: "info", page: "/tasks", origin: "Transcripto" });
+  expect(getRetainedNotifications()[0]?.origin).toBe("Transcripto");
+  expect(getRetainedNotifications()[0]?.page).toBe("/tasks");
+});
+
+test("`origin` wins over a `source`-derived label when both are given", () => {
+  notify({ title: "x", tone: "error", source: "/Users/me/Projects/my-app", origin: "Custom Label" });
+  expect(getRetainedNotifications()[0]?.origin).toBe("Custom Label");
+});
+
+test("`origin` alone (no `source`) never suppresses, even when its own text names a focused page", () => {
+  // isFocusedHere is keyed on `source`, not `origin` — an `origin`-only
+  // caller has nothing `isSuppressed` can match against, so this must always
+  // pop regardless of what document/page is focused.
+  const id = notify({ title: "Finished", tone: "info", page: "/somewhere", origin: "Somewhere" });
+  expect(id).not.toBe(-1);
+  expect(getPopupNotification()?.title).toBe("Finished");
+});
+
 // ---- family grouping/collapse (user: "better notification grouping/
 // updation for same source") — two genuine repeat finishes of the same
 // client-raised task collapse into ONE retained row that updates in place,

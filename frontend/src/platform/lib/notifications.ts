@@ -80,12 +80,38 @@ export interface NotificationInput {
   page?: string;
   /** OPT-IN ONLY (SPEC-quiet-notifications.md §2a) — the page/route this
    *  message is ABOUT, for the "you're already looking at this" suppression
-   *  check. Deliberately never defaulted to the raising document's own
-   *  current page: that would suppress "Path copied" and every other
-   *  gesture confirmation whose only feedback IS the card. Set this only
-   *  where the page already shows the same result on screen (the app
-   *  install/run lifecycle messages this branch wires it for). */
+   *  check ONLY (`isSuppressed` below). Deliberately never defaulted to the
+   *  raising document's own current page: that would suppress "Path copied"
+   *  and every other gesture confirmation whose only feedback IS the card.
+   *  Set this only where the page already shows the same result on screen
+   *  (the app install/run lifecycle messages this branch wires it for) —
+   *  and where a caller genuinely wants a finished/still-visible source to
+   *  go quiet. A caller that wants the "who raised this" caption WITHOUT
+   *  that suppression meaning (a task that already ended, so "the chat is
+   *  open" no longer means "already knows") sets `origin` instead — see its
+   *  own comment for why the two are not the same field. `toStored` still
+   *  falls back to `labelForSource(source)` when no explicit `origin` is
+   *  given, so every existing `source`-only caller keeps its caption exactly
+   *  as before. */
   source?: string;
+  /** THE CAPTION, INDEPENDENT OF SUPPRESSION (2026-09-17 fix). Pre-computed
+   *  by the caller (typically `labelForSource(...)` — see `format.ts`) and
+   *  drawn verbatim as `.dl-origin`'s eyebrow text via `toStored`. This
+   *  field exists because `source` used to do BOTH jobs at once — "caption
+   *  this row" AND "suppress it when its page is open" — and the two are
+   *  not the same question. Removing `source` from a call site (as
+   *  `task-status-notify.ts`'s `in_progress -> done` branch did, correctly,
+   *  to stop presence-suppressing a FINISHED task) silently deleted the
+   *  caption too, because nothing else fed `toStored`'s caption computation.
+   *  A caller sets `origin` whenever it wants the "who made this" label
+   *  without opting into suppression; it sets `source` (with no `origin`)
+   *  when the old "caption AND suppress" pairing is what it actually wants;
+   *  it can set both if a future case genuinely needs a caption computed
+   *  differently from the suppression key. Never string-empty on purpose —
+   *  pass `undefined`, not `""`, when there is nothing to show (`toStored`
+   *  treats `""` the same as absent either way, but an explicit `undefined`
+   *  reads honestly at the call site). */
+  origin?: string;
 }
 
 export interface StoredNotification {
@@ -290,7 +316,12 @@ function toStored(input: NotificationInput, id: number): StoredNotification {
     family: messageFamily(input),
     count: 1,
     updatedAt: Date.now(),
-    origin: labelForSource(input.source) || undefined,
+    // `input.origin` wins when the caller gave one explicitly — see its own
+    // doc comment on `NotificationInput` for why this is a SEPARATE field
+    // from `source` rather than the same one doing double duty. Falling back
+    // to `labelForSource(input.source)` keeps every existing `source`-only
+    // caller's caption unchanged.
+    origin: input.origin || (labelForSource(input.source) || undefined),
     leaving: false,
   };
 }
@@ -374,6 +405,13 @@ function forwardToShell(n: StoredNotification): number | undefined {
       action: n.action,
       extraAction: n.extraAction,
       page: n.page,
+      // Forward the ALREADY-RESOLVED caption as `origin`, not `source` — the
+      // pane's own `n.origin` is `toStored`'s output (a label, not a
+      // suppression key), and the shell has no way to re-derive a
+      // `labelForSource` input from it. Forwarding it as `origin` reproduces
+      // the same caption on the shell's own copy without accidentally
+      // opting that copy into suppression it never asked for.
+      origin: n.origin,
     };
     return top?._fusedIngestNotification?.(input);
   } catch {
