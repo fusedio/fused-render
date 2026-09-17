@@ -6,6 +6,7 @@ import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterEach, expect, test } from "bun:test";
 import { createElement, useCallback } from "react";
+import type { Attachment } from "../shots/types";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 const { SchedButton } = await import("./SchedButton");
@@ -616,6 +617,275 @@ test("an EMPTY never-sent composer mints nothing and opens a blank card", async 
   expect(went[0]).not.toContain("new%3A");
   globalThis.fetch = real;
   resetDraftSyncers();
+});
+
+// ── ONE GESTURE AT A TIME ON ONE SET OF WORDS ───────────────────────────────
+//
+// Bugbot 4034977395 (HIGH) and 4034977406 (MED), PR #1180. Continue closed its
+// confirm and then spent a round trip per attachment with the composer still
+// fully live: `leaving` only ever blocked a SECOND Continue. So a Send, a
+// Discard or a leave-dialog answer landing in that window spent the same words,
+// and the hop wrote its latched copy afterwards anyway — on a session that put
+// `setText` behind the send's `markDeleted` and the spent sentence came back as
+// a scheduled follow-up. And a copy that failed was simply dropped: the hop
+// minted and navigated with a partial (even empty) set, wiping the attachments
+// the record was holding, where "Save as draft" had always refused.
+
+interface HopCall {
+  url: string;
+  method: string;
+  body?: Record<string, unknown>;
+}
+
+/** A tray chip whose bytes exist — the only kind either road carries. */
+const shot = (n: number): Attachment => ({
+  id: `a${n}`,
+  kind: "image",
+  view: `/w/app/shot${n}.png`,
+  name: `shot${n}.png`,
+});
+
+/**
+ * Every request the document makes, with the attachment's RAW READ held open —
+ * that gate is the whole window the bugs live in, so a test holds the hop there
+ * and does the competing thing.
+ */
+function hopFetch(opts: { failUpload?: number } = {}) {
+  const calls: HopCall[] = [];
+  let open!: () => void;
+  const gate = new Promise<void>((r) => {
+    open = r;
+  });
+  let uploads = 0;
+  let version = 0;
+  globalThis.fetch = ((url: string, init?: RequestInit) => {
+    const at = String(url);
+    const method = init?.method ?? "GET";
+    const body = typeof init?.body === "string"
+      ? (JSON.parse(init.body) as Record<string, unknown>)
+      : undefined;
+    calls.push(body ? { url: at, method, body } : { url: at, method });
+    if (at.startsWith("/api/fs/raw")) {
+      return gate.then(() => ({
+        ok: true,
+        status: 200,
+        blob: () => Promise.resolve(new Blob(["bytes"])),
+      }) as unknown as Response);
+    }
+    if (at === "/api/schedule/shot") {
+      uploads += 1;
+      const bad = opts.failUpload === uploads;
+      const n = uploads;
+      return Promise.resolve({
+        ok: !bad,
+        status: bad ? 500 : 200,
+        json: () => Promise.resolve(
+          bad ? { error: "no room" } : { path: `/task-shots/s${n}.png`, kind: "image" },
+        ),
+      } as unknown as Response);
+    }
+    version += 1;
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({
+        ok: true,
+        key: HOP_KEY,
+        draft_id: at.split("/").pop(),
+        removed: method === "DELETE",
+        draft: method === "DELETE" ? null : {
+          ...(body ?? {}),
+          text: (body?.text as string) ?? "",
+          attachments: (body?.attachments as unknown[]) ?? [],
+          updated_at: 1,
+          version,
+          form: {},
+        },
+      }),
+    } as unknown as Response);
+  }) as typeof fetch;
+  return { calls, open };
+}
+
+/** The real button, with a tray and the composer's two new wires. */
+function mountHop(o: {
+  sessionId?: string;
+  tray?: readonly Attachment[];
+  episode?(): number;
+}) {
+  const went: string[] = [];
+  const hops: boolean[] = [];
+  let renderer!: ReactTestRenderer;
+  act(() => {
+    renderer = create(
+      createElement(SchedButton, {
+        file: "/w/app/page.html",
+        sessionId: o.sessionId ?? HOP_SESSION,
+        draft: () => "a scheduled line",
+        attachments: () => o.tray ?? [],
+        back: "/w/app/page.html",
+        ...(o.episode ? { episode: o.episode } : {}),
+        onHopChange: (on: boolean) => hops.push(on),
+        onNavigate: (url: string) => went.push(url),
+      }),
+      { createNodeMock: () => ({ focus: () => {} }) },
+    );
+  });
+  mounted.push(renderer);
+  const go = (renderer.root.findByType(SchedConfirm).props as { onGo(): void }).onGo;
+  const trigger = () =>
+    renderer.root.findAll((n) => typeof n.type === "string" && n.type === "button")[0]!;
+  return { renderer, go, went, hops, trigger };
+}
+
+const settle = async (): Promise<void> => {
+  for (let i = 0; i < 12; i += 1) await Promise.resolve();
+};
+const draftCalls = (calls: HopCall[]): HopCall[] =>
+  calls.filter((c) => c.url.startsWith("/api/drafts"));
+
+test("a SEND during the hop aborts it — no PUT from the hop, and no resurrection", async () => {
+  forgetDraftVersion(HOP_KEY);
+  _resetNotificationsForTest();
+  const real = globalThis.fetch;
+  const { calls, open } = hopFetch();
+  // THE COMPOSER IS WATCHING THIS KEY, as a mounted one always is (`Composer`
+  // registers its conflict rule for the life of the chat). It is load-bearing
+  // here: a syncer nobody is watching and that wants nothing is swept out of the
+  // registry, and the next `draftSyncer(key)` is a fresh object with no memory
+  // of the delete — which is precisely how the spent draft came back.
+  const unwatch = draftSyncer(HOP_KEY).watch({
+    focused: () => false,
+    localText: () => "",
+    adopt: () => {},
+  });
+  const { go, went, hops } = mountHop({ tray: [shot(1)] });
+
+  await act(async () => {
+    go();
+  });
+  // The copy is out, nothing is written yet, and the composer has been told to
+  // shut its doors.
+  expect(hops).toEqual([true]);
+  expect(draftCalls(calls)).toEqual([]);
+
+  // THE SEND, in the only terms this record has: its one writer is told it
+  // should not exist. (The composer bumps its episode in the same breath; either
+  // half alone is enough, and the real gesture is both.)
+  await act(async () => {
+    draftSyncer(HOP_KEY).markDeleted();
+  });
+  await act(async () => {
+    open();
+    await settle();
+  });
+
+  // The hop wrote NOTHING. A PUT here is the bug: it would land behind the
+  // send's DELETE and put the spent sentence back as a scheduled follow-up.
+  expect(draftCalls(calls).some((c) => c.method === "PUT")).toBe(false);
+  expect(went).toEqual([]);
+  expect(hops).toEqual([true, false]);
+  expect(getPopupNotification()?.title).toContain("already left the box");
+
+  unwatch();
+  _resetNotificationsForTest();
+  globalThis.fetch = real;
+  forgetDraftVersion(HOP_KEY);
+});
+
+test("a DISCARD during the hop aborts it — the never-sent chat's draft is never minted", async () => {
+  // The other half of the same guard, on the other road: a session-less press
+  // mints `draft:<id>`, and the box emptying under it (`clearComposer` bumps
+  // `episode`) says those words are not this card's any more.
+  _resetNotificationsForTest();
+  const real = globalThis.fetch;
+  let era = 0;
+  const { calls, open } = hopFetch();
+  const { go, went, hops } = mountHop({
+    sessionId: "",
+    tray: [shot(1)],
+    episode: () => era,
+  });
+
+  await act(async () => {
+    go();
+  });
+  era += 1;
+  await act(async () => {
+    open();
+    await settle();
+  });
+
+  expect(draftCalls(calls)).toEqual([]);
+  expect(went).toEqual([]);
+  expect(hops).toEqual([true, false]);
+  expect(getPopupNotification()?.title).toContain("already left the box");
+
+  _resetNotificationsForTest();
+  globalThis.fetch = real;
+  resetDraftSyncers();
+});
+
+test("a file that would not copy stops the whole hop (Bugbot 4034977406)", async () => {
+  // `copyToTaskShots` is `allSettled` and hands back only what landed. The hop
+  // used to mint and navigate with whatever that was — and on a session it
+  // `setText`s that shorter list straight over the record's own attachments.
+  forgetDraftVersion(HOP_KEY);
+  _resetNotificationsForTest();
+  const real = globalThis.fetch;
+  const { calls, open } = hopFetch({ failUpload: 2 });
+  const { go, went, hops } = mountHop({ tray: [shot(1), shot(2)] });
+
+  await act(async () => {
+    go();
+  });
+  await act(async () => {
+    open();
+    await settle();
+  });
+
+  expect(draftCalls(calls)).toEqual([]);
+  expect(went).toEqual([]);
+  expect(hops).toEqual([true, false]);
+  expect(getPopupNotification()?.title).toBe(
+    "Could not attach every file — nothing was scheduled",
+  );
+
+  _resetNotificationsForTest();
+  globalThis.fetch = real;
+  forgetDraftVersion(HOP_KEY);
+});
+
+test("the Schedule button is off while its own hop is out, and live again after", async () => {
+  // `leaving` refused the second press in silence; the button stayed bright. It
+  // is the same flag the composer freezes Send and its box on.
+  forgetDraftVersion(HOP_KEY);
+  const real = globalThis.fetch;
+  const { calls, open } = hopFetch();
+  const { go, went, hops, trigger } = mountHop({ tray: [shot(1)] });
+  expect((trigger().props as { disabled?: boolean }).disabled).toBe(false);
+
+  await act(async () => {
+    go();
+  });
+  expect(hops).toEqual([true]);
+  expect((trigger().props as { disabled?: boolean }).disabled).toBe(true);
+  // And a second Continue in that window uploads nothing twice.
+  await act(async () => {
+    go();
+  });
+  expect(calls.filter((c) => c.url.startsWith("/api/fs/raw")).length).toBe(1);
+
+  await act(async () => {
+    open();
+    await settle();
+  });
+  expect(went.length).toBe(1);
+  expect(hops).toEqual([true, false]);
+  expect((trigger().props as { disabled?: boolean }).disabled).toBe(false);
+
+  globalThis.fetch = real;
+  forgetDraftVersion(HOP_KEY);
 });
 
 // The patch comes off with the file (see the registry note above).

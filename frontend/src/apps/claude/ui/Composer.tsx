@@ -584,6 +584,26 @@ export function ComposerCard({
    */
   const episode = useRef(0);
   /**
+   * A SCHEDULE HOP IS IN FLIGHT, AND THIS BOX IS FROZEN WHILE IT IS
+   * (Bugbot 4034977395).
+   *
+   * Continue closes its confirm, copies the tray into the task-shots dir a round
+   * trip at a time, and only then writes the record — and until this flag
+   * existed the composer stayed fully live for every one of those milliseconds.
+   * Send, the leave dialog's Save and Discard, another Continue: each of them
+   * spends or re-files the very words the hop has latched, and the hop wrote its
+   * own copy afterwards regardless. One set of words, one gesture at a time.
+   *
+   * The ref is what the out-of-render handlers read (`submit`, the leave guard);
+   * the state is what dims the controls.
+   */
+  const [hopping, setHopping] = useState(false);
+  const hoppingRef = useRef(false);
+  hoppingRef.current = hopping;
+  /** What the hop compares against, twice: once when Continue is pressed and
+   *  once at the last moment before it writes. */
+  const readEpisode = useCallback(() => episode.current, []);
+  /**
    * THE RECORD A RESTORED TRAY IS STILL FILLING FROM, or null (Bugbot
    * 4027549715).
    *
@@ -1122,6 +1142,11 @@ export function ComposerCard({
   const askBeforeLeaving = useCallback((): Promise<boolean> => {
     if (!dirtyRef.current) return Promise.resolve(true);
     if (answer.current) return Promise.resolve(false);
+    // …AND A BOX MID-HANDOFF ANSWERS NOTHING. Save and Discard are both about
+    // the words the hop is carrying: one would file them a second time, the
+    // other would throw away what is being scheduled. The navigation that asked
+    // can be made again the moment the hop lands (Bugbot 4034977395).
+    if (hoppingRef.current) return Promise.resolve(false);
     return new Promise<boolean>((resolve) => {
       answer.current = resolve;
       setAsking(true);
@@ -1335,6 +1360,10 @@ export function ComposerCard({
     // KEEPS its words (the `setText("")` below is past this door), so the same
     // Enter a moment later sends the message the user actually wrote.
     if (attaching) return false;
+    // ... nor while a Schedule hop is mid-air. Those words are already on their
+    // way to a card; sending them here spends them twice, and the hop behind it
+    // is left writing a message that has been said (Bugbot 4034977395).
+    if (hoppingRef.current) return false;
     // ONE SEND AT A TIME. Checked BEFORE the box is cleared, so a keystroke
     // this refuses costs the user nothing.
     if (busyRef?.current || sendBusy) return false;
@@ -1491,6 +1520,11 @@ export function ComposerCard({
           data-gramm_editor="false"
           data-enable-grammarly="false"
           disabled={blocked}
+          // READ-ONLY, NOT DISABLED, while a hop is out: the words are still the
+          // reader's to see and to copy, and `disabled` would take the caret out
+          // of the box mid-gesture. `[readonly]` wears the same dim as
+          // `:disabled` (styles/composer.css).
+          readOnly={hopping}
           value={text}
           onChange={(ev) => {
             const value = ev.currentTarget.value;
@@ -1595,6 +1629,13 @@ export function ComposerCard({
             // emptying the box here would be an immediate DELETE of what
             // Continue had written a tick earlier.
             {...(hasSession ? {} : { onHandedOff: clearComposer })}
+            // WHICH WORDS, AND WHEN IT HAS THEM. The hop reads the episode back
+            // right before it writes and abandons a press whose sentence has
+            // since been sent or discarded; `onHopChange` is how this box knows
+            // to stop offering those gestures for that window in the first
+            // place.
+            episode={readEpisode}
+            onHopChange={setHopping}
           />
           <button
             className="c-send"
@@ -1622,7 +1663,11 @@ export function ComposerCard({
               ? "Attaching…"
               : sendBusy
                 ? "Taking the picture…"
-                : "Send"
+                : hopping
+                  ? // The one refusal here that ends by itself, so it names what
+                    // is happening rather than something to go and fix.
+                    "Finishing the handoff to the task card…"
+                  : "Send"
       }
             // T NEVER DISABLES SEND — not for an empty box, not for a pending
             // scheduled message, not for anything. There is no `.send:disabled`
@@ -1662,7 +1707,10 @@ export function ComposerCard({
             // it — `props.disabled === undefined`, which is what T's markup
             // carries and what this app's own suites read (P4 batch, "Send
             // carries no attribute to be false").
-            {...(sendBlocked ? { disabled: true } : {})}
+            // …AND WHILE A SCHEDULE HOP IS OUT, on the same argument: the press
+            // is not transient-and-harmless, it would spend the very words the
+            // hop is carrying (Bugbot 4034977395).
+            {...(sendBlocked || hopping ? { disabled: true } : {})}
           >
             {running ? (
               <svg
