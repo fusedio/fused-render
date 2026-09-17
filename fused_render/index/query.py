@@ -415,18 +415,23 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
 
     `q` is run through `expand_whitespace_query` (SPEC-search-space-
     wildcard.md §3) exactly like `resolve_query`'s `raw` — one shared
-    transform, not two copies of the whitespace rule. A whitespace-free `q`
-    (the common case, and every existing caller before this) is a no-op:
-    the filter stays the plain `ILIKE '%q%'` it always was, `*` included,
-    still a literal character. Whitespace flips the filter to the same
-    glob-to-regex matching `resolve_query`'s glob mode uses (`_glob_to_regex`),
-    confined to any depth under `root` — this function never walks a base
-    off `q` the way `resolve_query` does, so there is no "/"-in-`raw`
-    distinction to make here; the whole expanded pattern always searches any
-    depth, the same as an unadorned glob with no "/" gets `resolve_query`'s
-    own implicit `**/` prefix. This does NOT make `search_under` a general
-    glob engine — an explicit `*` with no whitespace anywhere in `q` is left
-    exactly as it always was, a literal character under ILIKE (see
+    transform, not two copies of the whitespace rule. `q` is a no-op only
+    when it has NEITHER whitespace NOR a `*` anywhere (the common single-
+    word case): the filter stays the plain `ILIKE '%q%'` it always was.
+    Whitespace OR a literal `*` flips the filter to the same glob-to-regex
+    matching `resolve_query`'s glob mode uses (`_glob_to_regex`), confined
+    to any depth under `root` — this function never walks a base off `q`
+    the way `resolve_query` does, so there is no "/"-in-`raw` distinction to
+    make here; the whole expanded pattern always searches any depth, the
+    same as an unadorned glob with no "/" gets `resolve_query`'s own
+    implicit `**/` prefix. This does NOT make `search_under` a general glob
+    engine with base-walking or an implicit-depth distinction — it is still
+    the same `ILIKE`-or-`regexp_matches` binary choice it always was, just
+    keyed on `"*" in expanded` (mirroring `resolve_query`'s own `is_glob`
+    check) rather than "did whitespace fire", now that `expand_whitespace_
+    query` always wraps a whitespace-free `*`-containing `q` too (see
+    `expand_whitespace_query`'s docstring; this is the same accepted
+    precision-glob consequence, not a `search_under`-specific choice — see
     DECISIONS.md).
 
     `token`, when given, follows `search_ranked`'s contract exactly: bound to
@@ -473,11 +478,18 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
         q_trimmed = q.strip() if q else ""
         expanded = expand_whitespace_query(q) if q else ""
         wildcard_regex = None
-        if expanded and expanded != q_trimmed:
-            # Whitespace triggered the transform: match via the same
-            # glob-to-regex translation `resolve_query`'s glob mode uses,
-            # confined to the REL portion of the path (post-`prefix`) so a
-            # `/`-containing expansion lines up with the same relative
+        if "*" in expanded:
+            # Whitespace or a literal `*` put a wildcard in the expanded
+            # query — mirrors `resolve_query`'s own `is_glob = "*" in raw`
+            # check, not "did the transform change anything" (a whitespace-
+            # free `*.pdf` is no longer a no-op either — see
+            # `expand_whitespace_query`'s docstring — so that used-to-work
+            # equality check would now also fire for it, but checking `"*"
+            # in expanded` directly is the same decision `resolve_query`
+            # makes and doesn't depend on that being true). Match via the
+            # same glob-to-regex translation `resolve_query`'s glob mode
+            # uses, confined to the REL portion of the path (post-`prefix`)
+            # so a `/`-containing expansion lines up with the same relative
             # structure `rel` already reflects, not the absolute path on
             # disk. Always any-depth (see docstring) — mirrors the implicit
             # `**/` prefix an unadorned `resolve_query` glob with no "/"
@@ -680,32 +692,60 @@ def expand_whitespace_query(raw: str) -> str:
     run it before doing anything path-shaped with the result, and it is one
     place, not two, that has to agree with the spec's grammar.
 
-    1. Trim leading/trailing whitespace first: a trailing space mid-typing
-       must not produce a stray wildcard.
-    2. A no-op when the trimmed string has no whitespace at all — this is
-       what leaves `*.pdf`, `src/**/*.ts`, and any other whitespace-free
-       query byte-for-byte unchanged, glob or not.
-    3. Otherwise, collapse every run of whitespace to a single `*` — `**`
-       is a DIFFERENT, cross-directory wildcard in this grammar, so
-       `hello  world` (two spaces) must resolve identically to `hello
-       world`, not silently widen. This must never STACK a second `*`
-       directly beside a `*` the user already typed adjacent to that
-       whitespace, either (`report *.pdf` -> `report*.pdf`, never
-       `report**.pdf`, which would cross a folder boundary this query never
-       asked to cross) — when the run already borders a literal `*`, that
-       star already does the whitespace run's job, so the run is dropped
-       rather than replaced.
-    4. Imply a leading/trailing wildcard on the FINAL `/`-separated segment
-       only, and only when that segment has no user-typed `*` of its own —
-       this is what delivers "contains, in order" instead of an anchored
-       full match. Earlier segments get the whitespace collapse but no
-       added wrap of their own (`~/My Documents/report` ->
-       `~/My*Documents/*report*`, not `~/*My*Documents*/...`)."""
-    trimmed = (raw or "").strip()
-    if not trimmed or not _WS_RUN.search(trimmed):
-        return trimmed
-    segments = trimmed.split("/")
-    wrap_last = "*" not in segments[-1]
+    1. **No trimming.** Leading and trailing whitespace are meaningful —
+       `"icon "` (a trailing space the user just typed) is NOT the same
+       query as `"icon"`, and must not collapse back to it. (Reversed from
+       an earlier version of this rule, which trimmed first specifically to
+       avoid a stray wildcard from a trailing space mid-typing; the owner
+       decided a trailing space should count.)
+    2. A no-op ONLY when `raw` has neither whitespace nor a `*` anywhere —
+       this is the one case rule 4 below would have nothing to do (no
+       whitespace to collapse, and both ends of the final segment already
+       "have" no wildcard to add or skip). A bare word like `report` stays
+       byte-for-byte unchanged, still substring mode, still ranked. Once
+       either whitespace or `*` is present — even a single trailing space,
+       even a whitespace-free `*.pdf` — rule 4's wrap always runs.
+    3. Collapse every run of whitespace to a single `*` — `**` is a
+       DIFFERENT, cross-directory wildcard in this grammar, so `hello
+       world` (two spaces) must resolve identically to `hello world` (one),
+       not silently widen. This must never STACK a second `*` directly
+       beside a `*` the user already typed adjacent to that whitespace,
+       either (`report *.pdf` -> `report*.pdf`, never `report**.pdf`,
+       which would cross a folder boundary this query never asked to
+       cross) — when the run already borders a literal `*`, that star
+       already does the whitespace run's job, so the run is dropped rather
+       than replaced.
+    4. On the FINAL `/`-separated segment only: prepend `*` unless it
+       already starts with one, append `*` unless it already ends with
+       one. This is what delivers "contains, in order" instead of an
+       anchored full match, and it is what fixes `icon*copy` (a user-typed
+       `*` in the MIDDLE of the segment) matching the same files
+       `icon copy` does — the old rule keyed off "does this segment
+       contain a `*` anywhere" and skipped the wrap entirely whenever it
+       did, which left a mid-segment `*` both-ends-anchored with no wrap at
+       all. Checking each END independently instead means `*.pdf` only
+       gains a trailing `*` (it already has a leading one), `report*`
+       only gains a leading one, and an already fully-wrapped `*.pdf*` gains
+       neither. Earlier segments get the whitespace collapse (step 3) but
+       no wrap of their own (`~/My Documents/report` ->
+       `~/My*Documents/*report*`, not `~/*My*Documents*/...`).
+
+    Anti-goal, unchanged from the original version of this rule: a literal
+    `" " -> "*"` substitution regresses the motivating case (`hello world`
+    would become the both-ends-anchored `hello*world`, which does not match
+    `hello world.txt` itself). The implied wrap in step 4 is what avoids
+    that; do not drop it.
+
+    Known, accepted consequence (confirmed with the user, not a bug):
+    because step 4 no longer requires whitespace to fire, a whitespace-free
+    glob like `*.pdf` now also gets a trailing `*` (`*.pdf*`), so it matches
+    `report.pdf.bak` and `notes.pdfx` too — precision globs are no longer
+    precise. There is no escape hatch for this; see DECISIONS.md."""
+    raw = raw or ""
+    if not _WS_RUN.search(raw) and "*" not in raw:
+        return raw
+    segments = raw.split("/")
+    last = len(segments) - 1
 
     def _collapse_ws(segment: str) -> str:
         def repl(m: "re.Match[str]") -> str:
@@ -718,8 +758,12 @@ def expand_whitespace_query(raw: str) -> str:
         return _WS_RUN.sub(repl, segment)
 
     segments = [_collapse_ws(s) for s in segments]
-    if wrap_last:
-        segments[-1] = "*" + segments[-1] + "*"
+    final = segments[last]
+    if not final.startswith("*"):
+        final = "*" + final
+    if not final.endswith("*"):
+        final = final + "*"
+    segments[last] = final
     return "/".join(segments)
 
 
@@ -763,7 +807,10 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
     query with whitespace in it (`hello world`) comes out the other side
     with wildcards already inserted (`*hello*world*`), so everything past
     this point treats it exactly like a query the user typed with `*` in it
-    directly. A whitespace-free query is untouched.
+    directly. Only a query with NEITHER whitespace nor a `*` anywhere is
+    untouched (`report` stays `report`); a whitespace-free glob like
+    `*.pdf` is NOT untouched any more — it comes out `*.pdf*` — see
+    `expand_whitespace_query`'s own docstring for why.
 
     `mode` is "glob" the moment `raw` (after that expansion) contains a `*`
     anywhere, else "substring" — `?` and `[`/`]` are left as literal

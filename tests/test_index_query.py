@@ -122,11 +122,31 @@ def test_glob_to_regex_full_match_semantics(pattern, rel, expected):
 # anything else with it. It is pure string manipulation — no filesystem
 # access — so it is testable directly, without a `root`/`_home` fixture.
 
-def test_expand_whitespace_query_is_a_no_op_without_whitespace():
+def test_expand_whitespace_query_is_a_no_op_only_without_whitespace_or_star():
+    """The ONE early return: a bare word with neither whitespace nor `*`
+    anywhere stays byte-for-byte unchanged, substring mode, still ranked."""
     assert expand_whitespace_query("report") == "report"
-    assert expand_whitespace_query("*.pdf") == "*.pdf"
-    assert expand_whitespace_query("src/**/*.ts") == "src/**/*.ts"
     assert expand_whitespace_query("") == ""
+
+
+def test_expand_whitespace_query_wraps_a_whitespace_free_glob_too():
+    """A whitespace-free query that already has a `*` is NOT a no-op any
+    more (reversed from an earlier version of this rule) — rule 4's wrap
+    runs whenever the final segment doesn't already have a `*` at that end,
+    whitespace or not. This is what fixes `icon*copy` (a user-typed `*` in
+    the MIDDLE of the final segment) finding the same files `icon copy`
+    does: the old "skip the wrap if the segment has a `*` anywhere" rule
+    left a mid-segment `*` fully anchored with no wrap at all.
+
+    Accepted consequence, confirmed with the user: `*.pdf` now also matches
+    `report.pdf.bak` and `notes.pdfx` — precision globs are no longer
+    precise. No escape hatch was added (see DECISIONS.md)."""
+    assert expand_whitespace_query("*.pdf") == "*.pdf*"
+    assert expand_whitespace_query("icon*copy") == "*icon*copy*"
+    # The `**` segment itself is untouched (not the final segment, and it
+    # already "starts"/"ends" with `*` either way) — only the FINAL
+    # `/`-separated segment ever gets wrapped.
+    assert expand_whitespace_query("src/**/*.ts") == "src/**/*.ts*"
 
 
 def test_expand_whitespace_query_wraps_the_final_segment():
@@ -142,8 +162,19 @@ def test_expand_whitespace_query_collapses_a_run_of_whitespace_to_one_star():
     assert expand_whitespace_query("hello   world") == "*hello*world*"
 
 
-def test_expand_whitespace_query_trims_before_wildcarding():
-    """A trailing space mid-typing must not produce a stray wildcard."""
+def test_expand_whitespace_query_does_not_trim():
+    """Reversed: leading/trailing whitespace is now MEANINGFUL, not
+    stripped. A trailing space the user just typed (`icon `) must count as
+    its own wildcard, not collapse back to the bare word `icon` (which
+    would still be substring mode, unranked-vs-ranked distinction and
+    all)."""
+    assert expand_whitespace_query("icon ") == "*icon*"
+    assert expand_whitespace_query(" icon") == "*icon*"
+    assert expand_whitespace_query("*.js ") == "*.js*"
+    # Incidental leading/trailing whitespace around an already multi-word
+    # query still lands on the same result as the trimmed form would have —
+    # the leading/trailing run collapses into exactly the wrap edge that
+    # was going to be added anyway.
     assert expand_whitespace_query("hello world ") == "*hello*world*"
     assert expand_whitespace_query(" hello world") == "*hello*world*"
 
@@ -154,28 +185,72 @@ def test_expand_whitespace_query_converts_earlier_segments_without_wrapping():
     assert expand_whitespace_query("~/My Documents/report") == "~/My*Documents/*report*"
 
 
-def test_expand_whitespace_query_does_not_wrap_a_final_segment_with_a_user_star():
-    """When the final segment already has a user-typed `*`, rule 3's implied
-    wrap does not apply to it."""
-    assert expand_whitespace_query("*.pdf") == "*.pdf"
+def test_expand_whitespace_query_wraps_only_the_end_that_needs_it():
+    """Rule 4 checks each END of the final segment independently, not
+    "does this segment contain a `*` anywhere" (the old rule, which is what
+    left `icon*copy` both-ends-anchored with no wrap at all — see
+    `test_expand_whitespace_query_wraps_a_whitespace_free_glob_too`). A
+    segment that already starts with `*` only gains a trailing one; one
+    that already ends with `*` only gains a leading one; one with both
+    already present gains neither."""
+    assert expand_whitespace_query("*.pdf") == "*.pdf*"
+    assert expand_whitespace_query("report*") == "*report*"
+    assert expand_whitespace_query("*.pdf*") == "*.pdf*"
 
 
 def test_expand_whitespace_query_never_stacks_a_star_beside_a_user_star():
-    """Code review finding: a whitespace run directly beside a literal `*`
-    the user already typed must not insert a SECOND `*` next to it —
-    `report *.pdf` collapsing to `report**.pdf` would cross a folder
-    boundary (`**`) this query never asked for (spec: whitespace implies a
-    single-segment `*`, never `**`). The user's own `*` already does the
-    whitespace run's job, so the run is dropped instead of replaced.
+    """Code review finding (pre-existing, still holds): a whitespace run
+    directly beside a literal `*` the user already typed must not insert a
+    SECOND `*` next to it — `report *.pdf` collapsing to `report**.pdf`
+    would cross a folder boundary (`**`) this query never asked for (spec:
+    whitespace implies a single-segment `*`, never `**`). The user's own
+    `*` already does the whitespace run's job, so the run is dropped
+    instead of replaced.
 
-    (Reverses the earlier "accepted edge case" note that used to sit on
-    `test_expand_whitespace_query_does_not_wrap_a_final_segment_with_a_user_star`
-    above — see DECISIONS.md.)"""
-    assert expand_whitespace_query("report *.pdf") == "report*.pdf"
-    # No wrap is added here either — the final segment already has a
-    # user-typed `*`, so rule 4's implied wrap does not apply to it.
-    assert expand_whitespace_query("*.pdf report") == "*.pdf*report"
-    assert expand_whitespace_query("a * b") == "a*b"
+    Unlike before, the final segment's own leading/trailing wrap (rule 4)
+    is NOT suppressed just because the segment contains a `*` — only the
+    END that already has one is skipped. `report *.pdf`'s collapsed form
+    (`report*.pdf`) doesn't start OR end with `*`, so both ends of the
+    wrap fire."""
+    assert expand_whitespace_query("report *.pdf") == "*report*.pdf*"
+    assert expand_whitespace_query("*.pdf report") == "*.pdf*report*"
+    assert expand_whitespace_query("a * b") == "*a*b*"
+
+
+@pytest.mark.parametrize("query,expected", [
+    ("report", "report"),
+    ("icon ", "*icon*"),
+    (" icon", "*icon*"),
+    ("*.js ", "*.js*"),
+    ("icon*copy", "*icon*copy*"),
+    ("*.pdf", "*.pdf*"),
+    ("src/**/*.ts", "src/**/*.ts*"),
+    ("icon copy", "*icon*copy*"),
+    ("hello  world", "*hello*world*"),
+    ("report *.pdf", "*report*.pdf*"),
+    ("~/My Documents/report", "~/My*Documents/*report*"),
+    ("/*.pdf", "/*.pdf*"),
+])
+def test_expand_whitespace_query_required_behavior_table(query, expected):
+    """The trailing-space follow-up's required-behavior table, pinned row
+    by row (see the PR description / build brief)."""
+    assert expand_whitespace_query(query) == expected
+
+
+@pytest.mark.parametrize("query", [
+    "report", "icon ", " icon", "*.js ", "icon*copy", "*.pdf",
+    "src/**/*.ts", "icon copy", "hello  world", "report *.pdf",
+    "~/My Documents/report", "/*.pdf", "a * b", "*.pdf report",
+    "report*", "*.pdf*", " ", "", "*", "**",
+])
+def test_expand_whitespace_query_never_invents_a_double_star(query):
+    """Property: the output never contains `**` unless the input already
+    did — `**` is a different, cross-directory wildcard in this grammar,
+    and nothing about collapsing whitespace or wrapping the final segment
+    is allowed to manufacture one that wasn't typed."""
+    out = expand_whitespace_query(query)
+    if "**" not in query:
+        assert "**" not in out
 
 
 @pytest.mark.parametrize("filename,expected", [
@@ -241,25 +316,32 @@ def test_resolve_bare_substring_query_is_any_depth_at_the_box_root():
 
 
 def test_resolve_star_with_no_slash_gets_the_implicit_any_depth_prefix():
+    """`*.csv`/`draft*` are no longer no-ops through `expand_whitespace_
+    query` (see its own tests) — both ends of the whole pattern's own final
+    segment get wrapped for whichever end doesn't already have a `*`."""
     out = resolve_query("/box", "*.csv")
-    assert out == {"base": "/box", "pattern": "**/*.csv", "mode": "glob"}
+    assert out == {"base": "/box", "pattern": "**/*.csv*", "mode": "glob"}
     out = resolve_query("/box", "draft*")
-    assert out == {"base": "/box", "pattern": "**/draft*", "mode": "glob"}
+    assert out == {"base": "/box", "pattern": "**/*draft*", "mode": "glob"}
 
 
 def test_resolve_leading_slash_anchors_at_depth_one():
     out = resolve_query("/box", "/*.csv")
-    assert out == {"base": "/box", "pattern": "*.csv", "mode": "glob"}
+    assert out == {"base": "/box", "pattern": "*.csv*", "mode": "glob"}
 
 
 def test_resolve_one_slash_inside_reaches_exactly_two():
     out = resolve_query("/box", "*/*.csv")
-    assert out == {"base": "/box", "pattern": "*/*.csv", "mode": "glob"}
+    assert out == {"base": "/box", "pattern": "*/*.csv*", "mode": "glob"}
 
 
 def test_resolve_explicit_any_depth_form_is_unchanged():
+    """"Unchanged" now means "still resolves any-depth", not "the pattern's
+    own final segment is untouched" — `**/*.csv`'s `*.csv` half still gains
+    a trailing `*` from the whitespace-free-glob-wrap rule, same as the bare
+    `*.csv` case above."""
     out = resolve_query("/box", "**/*.csv")
-    assert out == {"base": "/box", "pattern": "**/*.csv", "mode": "glob"}
+    assert out == {"base": "/box", "pattern": "**/*.csv*", "mode": "glob"}
 
 
 def test_resolve_multi_word_query_becomes_an_ordered_glob():
@@ -278,17 +360,17 @@ def test_resolve_single_word_query_is_unaffected_by_the_whitespace_rule():
 
 def test_resolve_tilde_star_escapes_to_home_at_depth_one(_home):
     out = resolve_query("/box", "~/*.csv")
-    assert out == {"base": _home, "pattern": "*.csv", "mode": "glob"}
+    assert out == {"base": _home, "pattern": "*.csv*", "mode": "glob"}
 
 
 def test_resolve_tilde_path_walks_to_the_deepest_real_directory(_home):
     out = resolve_query("/box", "~/a/b/*.c")
-    assert out == {"base": _home + "/a/b", "pattern": "*.c", "mode": "glob"}
+    assert out == {"base": _home + "/a/b", "pattern": "*.c*", "mode": "glob"}
 
 
 def test_resolve_tilde_path_stops_at_the_first_glob_segment(_home):
     out = resolve_query("/box", "~/a/*/b.csv")
-    assert out == {"base": _home + "/a", "pattern": "*/b.csv", "mode": "glob"}
+    assert out == {"base": _home + "/a", "pattern": "*/*b.csv*", "mode": "glob"}
 
 
 def test_resolve_a_space_in_a_folder_segment_stops_the_walk_there(_home):
@@ -324,7 +406,7 @@ def test_resolve_never_stats_a_path_under_a_blocked_mount(_home, monkeypatch, tm
             pytest.fail(f"os.path.isdir on a guarded path: {p}")
             if _home in str(p) else _r(p)))
     out = resolve_query("/box", "~/a/b/*.c", guard=guard)
-    assert out == {"base": _home, "pattern": "a/b/*.c", "mode": "glob"}
+    assert out == {"base": _home, "pattern": "a/b/*.c*", "mode": "glob"}
 
 
 def test_resolve_captures_the_blocked_candidate_even_though_base_stops_short(
@@ -366,7 +448,7 @@ def test_resolve_with_no_guard_behaves_exactly_as_before(_home):
     """The default (`guard=None`) must preserve today's behaviour exactly —
     every existing caller of `resolve_query` omits it."""
     out = resolve_query("/box", "~/a/b/*.c")
-    assert out == {"base": _home + "/a/b", "pattern": "*.c", "mode": "glob"}
+    assert out == {"base": _home + "/a/b", "pattern": "*.c*", "mode": "glob"}
 
 
 def test_resolve_an_uncancelled_token_changes_nothing(_home):
@@ -420,14 +502,14 @@ def test_resolve_with_no_token_behaves_exactly_as_before(_home):
     """The default (`token=None`) must preserve today's behaviour exactly —
     every existing caller of `resolve_query` omits it."""
     out = resolve_query("/box", "~/a/b/*.c")
-    assert out == {"base": _home + "/a/b", "pattern": "*.c", "mode": "glob"}
+    assert out == {"base": _home + "/a/b", "pattern": "*.c*", "mode": "glob"}
 
 
 def test_resolve_absolute_path_walks_the_filesystem(tmp_path):
     etc = tmp_path / "etc"
     etc.mkdir()
     out = resolve_query("/box", f"{etc}/*/x.conf")
-    assert out == {"base": norm(str(etc)), "pattern": "*/x.conf", "mode": "glob"}
+    assert out == {"base": norm(str(etc)), "pattern": "*/*x.conf*", "mode": "glob"}
 
 
 def test_resolve_windows_drive_letter_path_walks_the_filesystem(monkeypatch):
@@ -447,7 +529,7 @@ def test_resolve_windows_drive_letter_path_walks_the_filesystem(monkeypatch):
     # specifically (spec: "a slash is the only thing that limits depth") —
     # an all-backslash Windows path has none, so it widens to any depth under
     # the resolved base exactly like a slash-free POSIX query does.
-    assert out == {"base": "C:/Users/example", "pattern": "**/*.conf",
+    assert out == {"base": "C:/Users/example", "pattern": "**/*.conf*",
                    "mode": "glob"}
 
 
@@ -458,7 +540,7 @@ def test_resolve_windows_drive_letter_path_with_forward_slashes(monkeypatch):
     real_dirs = {"C:/Users", "C:/Users/example"}
     monkeypatch.setattr(os.path, "isdir", lambda p: p in real_dirs)
     out = resolve_query("/box", "C:/Users/example/*.conf")
-    assert out == {"base": "C:/Users/example", "pattern": "*.conf",
+    assert out == {"base": "C:/Users/example", "pattern": "*.conf*",
                    "mode": "glob"}
 
 
@@ -525,13 +607,13 @@ def test_resolve_relative_dotdot_walks_up_the_filesystem(_home):
     that never stores that segment."""
     box = _home + "/a/b"
     out = resolve_query(box, "../*.c")
-    assert out == {"base": _home + "/a", "pattern": "*.c", "mode": "glob"}
+    assert out == {"base": _home + "/a", "pattern": "*.c*", "mode": "glob"}
 
 
 def test_resolve_relative_dotdot_can_walk_back_to_where_it_started(_home):
     box = _home + "/a/b"
     out = resolve_query(box, "../../a/b/*.c")
-    assert out == {"base": box, "pattern": "*.c", "mode": "glob"}
+    assert out == {"base": box, "pattern": "*.c*", "mode": "glob"}
 
 
 def test_resolve_relative_dotdot_to_a_missing_folder_widens_instead_of_failing(_home):
@@ -555,7 +637,7 @@ def test_resolve_relative_dotdot_clamps_at_the_filesystem_root(monkeypatch):
         # "\\etc"-shaped strings on Windows, matching nothing in `real_dirs`.
         lambda p: posixpath.normpath(p) in real_dirs)
     out = resolve_query("/", "../../../etc/*.conf")
-    assert out == {"base": "/etc", "pattern": "*.conf", "mode": "glob"}
+    assert out == {"base": "/etc", "pattern": "*.conf*", "mode": "glob"}
 
 
 def test_resolve_leading_slash_with_no_real_directory_stays_anchored():
@@ -563,7 +645,7 @@ def test_resolve_leading_slash_with_no_real_directory_stays_anchored():
     is not a real directory (here, none of `/nonexistent-xyz` exists) is read
     as the depth-1 anchor, not an absolute path."""
     out = resolve_query("/box", "/nonexistent-xyz/*.csv")
-    assert out == {"base": "/box", "pattern": "nonexistent-xyz/*.csv",
+    assert out == {"base": "/box", "pattern": "nonexistent-xyz/*.csv*",
                    "mode": "glob"}
 
 
