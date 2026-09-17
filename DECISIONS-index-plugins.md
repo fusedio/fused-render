@@ -286,64 +286,152 @@ committed state; none was left mid-edit.
   satisfying "query.py generalizes" without a full rewrite of a
   1427-line file. Needs verification once Part 2 starts.
 
+## Unit 7 — `schemas()`/`Sink` generalization (store.py)
+
+**Design**: `schemas(pa, kind="files")` — `kind == "files"` returns the
+exact literal tuple it always has (never routed through the registry, even
+if something registered a kind literally named "files" — the check is on
+the string, not a lookup). Any other kind asks `kinds.get(kind).pa_schema
+(pa)`. The dirs schema is returned unchanged regardless of kind: directory-
+reuse bookkeeping is the host's own, not plugin data, so every index shares
+one dirs table shape.
+
+`Sink` now takes `kind="files"` and branches its row-append in `add`: for
+"files" it keeps the ORIGINAL fixed six-tuple unpacking
+(`fr[0]`..`fr[5]`) verbatim — byte-identical, not merely
+behaviorally-equivalent code. For any other kind, `frows` are dicts (the
+shape `IndexKind.extract` returns) appended generically by walking
+`self.file_schema.names`. The row-count flush check and the "any rows
+pending" check in `_flush_files` no longer name `"path"` directly (a
+non-files kind may not have that column) — both use
+`self.file_schema.names[0]` instead, which works for every kind since
+every column gets exactly one append per frow.
+
+`Sink.add`'s second positional parameter is renamed from `kind` (the scan
+status, "u"/"s") to `status`, since `self.kind` (the index kind) now
+exists on the same object and the old name was ambiguous. Every caller
+passes it positionally, so this is not a breaking rename.
+
+**Tests**: extended `tests/test_index_store.py` (TDD: written, watched
+fail on `TypeError`/`KeyError`, then made to pass) — `schemas(pa)` and
+`schemas(pa, "files")` produce identical schemas, a registered kind's
+schema matches its declared columns, a kind-aware `Sink` writes dict rows
+by column name, and the default `Sink` stays byte-identical to before
+kinds existed.
+
+## Unit 8 — wiring `IndexKind.extract` into the walker (scan.py)
+
+**Design**: `scan_dir_once` gained a `kind_obj=None` parameter — the
+registered `IndexKind` for the scan's `cfg.kind`, resolved ONCE per run/
+child by the new `_kind_obj(cfg)` helper (`None` for "files"), never
+looked up per file. With `kind_obj=None` the file-row branch is completely
+unchanged: the fixed tuple is still built inline, never routed through
+`extract` — files stays byte-identical. With a `kind_obj`, each file's
+`os.stat` result (already read for the signature) is hand to
+`kind_obj.extract(path, st)`: a returned dict becomes the file's row, and
+`None` means "not one of mine" — but the file still counts toward the
+directory's signature and total size, since that bookkeeping belongs to
+the host, not the plugin. This is "host owns the walk, plugin owns the
+row" made concrete: a plugin is shown exactly the files the host was
+already going to visit and gets no say over which ones those are.
+
+Threaded through every `sink.add()`/`scan_dir_once` call site named in the
+spec: the pool child's `_scan_subtree` and `_scan_dirs_threaded` (via a new
+`_CHILD["kind_obj"]` entry set in `_child_init`), `run_scan`'s top-of-tree
+walk loop and the huge-subtree split loop, and `_run_fsevents` (new trailing
+`kind_obj=None` parameter). Both `Sink(...)` constructions in `scan.py` now
+pass `kind=cfg.kind`.
+
+**What this does NOT yet make possible**: a full end-to-end scan of a
+non-"files" kind still fails at `compact()` — `_compact_locked` (see Unit
+9's open item below) is unmodified and hardcodes the files/dirs column
+list throughout its dedup, ordering and partition-bounds SQL. What IS true
+now: a registered kind's rows are actually extracted and written to shard
+parquet files during a live scan, which was previously impossible (a kind
+was declarable and unit-testable in isolation, but never actually invoked
+by the walker). Verifying a full non-files scan end to end needs Unit 9.
+
+**Tests**: extended `tests/test_index_scan.py` (TDD) — `kind_obj=None`
+byte-identical to before the parameter existed, a registered kind's
+`extract` replaces the row for matching files, a kind that declines every
+file yields zero rows while directory totals stay correct. Two pre-existing
+tests that hand-seed `scan_mod._CHILD` via monkeypatch
+(`test_threaded_scan_never_drops_entries_from_a_slow_worker`) needed a
+`kind_obj` entry added and their `fake_scan_dir_once` stub's signature
+extended to accept the new trailing parameter — not a design change, just
+keeping a hand-built double in sync with the real signature.
+
+**Verified NOT a regression**: `test_index_scan_on_demand.py` has 5
+pre-existing failures (`_ask(...)["started"] is True` assertions) present
+identically before ANY of this session's changes (checked via a
+temporary, dropped `git stash`) — unrelated to this work, most likely an
+environment/router-level issue, not touched by this session.
+
 ## Remaining work (exact resume pointers)
 
-This section was corrected by the following builder session: the version
-above (in the git history) said Part 2 was "not started" and listed
-`config.py`'s `kind` field as pending. Both were stale by the time that
-session ended — `apps_kind.py`, `manifest.py`,
-`examples/notes_indexer/`, and the kind-aware `config.py` were all
-committed and on disk. This is the reconciled list, in priority order.
+This section was corrected by the following builder session (see prior
+paragraph in git history for what it replaced): the version before that
+said Part 2 was "not started" and listed `config.py`'s `kind` field as
+pending, both stale by the time that session ended. Units 7-8 above (this
+session) closed the "declarable but never indexed" gap for the file-write
+half of the pipeline. This is the reconciled list, in priority order.
 
-1. **`scan.py` wiring** (Part 1 — not done): call a registered kind's
-   `extract` from the walker's `sink.add()` call sites (~lines 236,
-   304/311, 500/525, 633) so a registered kind is actually indexed by a
-   live scan, not merely declarable. Highest-value remaining item —
-   nothing built so far is provably wired into a real scan.
-2. **`store.py` schema/compaction generality** (Part 1, HIGH RISK — not
-   done): `schemas(pa)`/`Sink.__init__` need to consult
-   `IndexKind.pa_schema` for a non-"files" `cfg.kind`, and
-   `_compact_locked` (~store.py:521) embeds literal column names
-   (`path, dir, name, ext, size, mtime, depth`) that must become
-   column-list-driven. "files"/"dirs" output must stay byte-identical.
-   Budget this as its own TDD pass against `test_index_store.py`.
-3. **`guarded_query.py` per-kind views** (Part 1 — not done): `_connect`'s
+1. **`store.py` compaction generality** (Part 1, HIGH RISK — not done,
+   the single biggest remaining risk in the whole spec): `_compact_locked`
+   (~store.py:452-600+) hardcodes `path, dir, name, ext, size, mtime,
+   depth` throughout — the `QUALIFY row_number() ... ORDER BY mtime DESC`
+   dedup (assumes a recency column named `mtime`), the per-partition
+   `min(path)/max(path)/min(lower(path))/max(lower(path))` pruning bounds
+   (assumes `path` is both the identity column AND lexically sortable for
+   pruning), and the backfill-missing-`depth`-column fallback. A non-files
+   kind may have no natural "mtime" (recency) column at all, and its
+   identity column may not be named "path". This needs its own dedicated
+   TDD pass against `test_index_store.py`'s compaction tests, thought
+   through as its own design question (what generalizes across a "dedup
+   key" and an "order key" that isn't always literally `path`/`mtime`)
+   rather than attempted inside a unit doing anything else. Until this
+   lands, a non-"files" kind can be scanned (Unit 8) but not compacted —
+   `run_scan` for such a kind will fail at the `compact()` call.
+2. **`guarded_query.py` per-kind views** (Part 1 — not done): `_connect`'s
    `CREATE VIEW files/dirs AS...` and `_EMPTY_FILES`/`_EMPTY_DIRS` need a
    kind-driven equivalent. The DuckDB lockdown order
    (`allowed_directories` → `enable_external_access=false` →
    `lock_configuration=true`) MUST NOT change relative order.
-4. **Apps-kind search** (Part 2 tail — not done): the working hypothesis
+3. **Apps-kind search** (Part 2 tail — not done): the working hypothesis
    under "Open questions carried forward" below — `resolve_query`/
    `search_ranked` stay byte-identical for "files"; a new function shapes
    an apps-kind `inner` subquery and calls the same `_rank_sql`/
    `_glob_sql` primitives — needs verifying before relying on it.
-5. **Confirm/refuse HTTP route + frontend UI** (Part 2 tail — not done):
+4. **Confirm/refuse HTTP route + frontend UI** (Part 2 tail — not done):
    `manifest.propose_index`/`confirm_index`/`refuse_index` have no
    caller yet. Decision #8 ("never silent") needs a route plus a
    confirmation surface in the frontend.
-6. **Router generalization** (Part 1/2 tail — not done):
+5. **Router generalization** (Part 1/2 tail — not done):
    `routers/index.py`'s per-route bare `load_config()` calls need to
    accept an index identifier rather than assuming the single "files"
    store. The spec lists every call site with line numbers; change them
    in lockstep, and keep `fused.fileIndex.search`/`.query` in
    `static/runtime.js` working.
-7. **Management page** (not started): `apps/ai_models` is the precedent
+6. **Management page** (not started): `apps/ai_models` is the precedent
    for a prefix-routed built-in page (sidebar entry + lazy import in
    `App.tsx`) — build this feature's equivalent, and decide whether
    `frontend/src/shell/Indexing.tsx` folds into it or stays as a second,
    non-disagreeing source of truth.
-8. **Part 3 in its entirety** (not started): delete the shortcuts overlay
+7. **Part 3 in its entirety** (not started): delete the shortcuts overlay
    (surface + `frontend/src/platform/lib/shortcuts.ts:116`'s listing
    entry — delete, do not relocate to `?`), build the in-app ⌘K overlay,
    grouped by source with no cross-source score calibration, file search
    reusing `resolve_query`/`search_ranked` verbatim, app search reusing
-   whatever item 4 above produces, per-keystroke cancellation via the
+   whatever item 3 above produces, per-keystroke cancellation via the
    existing `CancelToken`/HTTP 499 machinery.
 
 **Already built and committed, for the avoidance of doubt**: the full
 plugin contract (`kinds.py`), kind-aware `IndexConfig`/`index_dir()`/
 `load_config()` (`config.py`), the built-in "apps" kind (`apps_kind.py`),
 the third-party manifest + propose/confirm registry (`manifest.py`), one
-fully worked reference example indexer (`examples/notes_indexer/`), and
-the house-style spec doc (`specs/index-plugins.md`, linked from
-`overview.md`).
+fully worked reference example indexer (`examples/notes_indexer/`), the
+house-style spec doc (`specs/index-plugins.md`, linked from
+`overview.md`), kind-aware `schemas()`/`Sink` (store.py), and
+`IndexKind.extract` wired into every walker call site (scan.py) — a
+registered kind's rows are extracted and shard-written by a live scan,
+though not yet compactable (item 1 above).
