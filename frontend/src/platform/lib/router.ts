@@ -515,6 +515,36 @@ export function replaceSearch(url: string): void {
   history.replaceState(history.state, "", url);
 }
 
+// The shared "this is a real anchor, but a plain left-click is client-side
+// navigation" props — spread onto an <a>. It exists because that gesture
+// grew past a third hand-rolled copy (BookmarkCards' folder card, FilesHome's
+// search result row, the AI Models page's cache-dir link, …), and a fourth
+// place getting the guard right by hand was only ever a matter of time —
+// AppPage/AppFiles/AppApi's "Open the folder" links had NO guard at all (a
+// raw `<a href>`, a full document reload), which is the bug this was written
+// to fix. A hard navigation tears down the JS context, which is fatal for
+// anything held in a module-level store — the explorer clipboard's pending
+// cut, most of all (fs-clipboard.ts).
+//
+// `href` stays the true destination (not "#" or "javascript:void(0)"), so
+// every browser affordance an anchor gets for free — Cmd/Ctrl-click,
+// middle-click, "Open Link in New Tab" from the context menu, drag-to-bookmark
+// — keeps working; only the plain left-click a normal <a> would turn into a
+// full page load is caught and redirected through `navigate` instead.
+export function spaLinkProps(
+  fsPath: string,
+  opts?: { isDir?: boolean; mode?: string; sel?: string | null; q?: string; search?: string },
+): { href: string; onClick: (e: { defaultPrevented: boolean; button: number; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; preventDefault: () => void }) => void } {
+  return {
+    href: urlForFsPath(fsPath, opts?.search),
+    onClick: (e) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      e.preventDefault();
+      navigate(fsPath, { isDir: opts?.isDir, mode: opts?.mode, sel: opts?.sel, q: opts?.q });
+    },
+  };
+}
+
 export function navigateUrl(url: string, opts?: { isDir?: boolean }): void {
   // Like navigate(), but preserves the full url (incl. query string) — used
   // when opening a bookmark, whose url carries saved view params. Callers

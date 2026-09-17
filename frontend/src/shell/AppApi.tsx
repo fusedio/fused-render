@@ -34,7 +34,7 @@ import {
   type RunResult,
 } from "@platform/lib/api";
 import { useUrlVersion } from "@platform/lib/hooks";
-import { replaceSearch } from "@platform/lib/router";
+import { replaceSearch, spaLinkProps } from "@platform/lib/router";
 import { rewritePathAgainst } from "@platform/lib/snapshot-param";
 import type { AppPageSnapshotState } from "./useAppPageSnapshot";
 import SnapshotError from "./SnapshotError";
@@ -127,12 +127,10 @@ const MONO = "font-mono text-[12.5px]";
 
 export default function AppApi({
   dir,
-  folderHref,
   snapshot,
 }: {
   /** The app folder, absolute forward-slash. */
   dir: string;
-  folderHref: string;
   /** AppPage's own snapshot resolution — rewritten against directly, never a
    *  shared singleton. Under a selected commit the endpoint list (and so
    *  every Execute call, which runs whatever `.py` that listing names) comes
@@ -346,7 +344,7 @@ export default function AppApi({
               {data.truncated && (
                 <p className="m-0 px-4 py-3 text-[12px] text-muted-foreground">
                   Showing the first {endpoints.length} files.{" "}
-                  <a href={folderHref} className="text-inherit underline">
+                  <a className="text-inherit underline" {...spaLinkProps(dir, { isDir: true })}>
                     Open the folder
                   </a>{" "}
                   for the rest.
