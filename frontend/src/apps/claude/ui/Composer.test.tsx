@@ -8,6 +8,8 @@ const { ComposerCard, BLOCKED_SEND_TITLE, CHAT_PLACEHOLDER, HOME_PLACEHOLDER } =
 const { DEFAULT_EFFORT, DEFAULT_MODEL, DEFAULT_PERMISSION } =
   await import("./composer-defaults");
 const { forgetDraftVersion, resetDraftSyncers } = await import("@platform/lib/drafts");
+const { SchedButton } = await import("./SchedButton");
+import type { Attachment } from "../shots/types";
 
 const realFetch = globalThis.fetch;
 beforeEach(() => {
@@ -267,6 +269,43 @@ test("send is disabled ONLY by the schedule block — never for empty, attaching
     expect(c.sent).toEqual([]);
     expect(c.followups).toEqual([]);
   }
+});
+
+test("the hop freeze shuts Send — but NEVER the Stop (Bugbot 4035295068)", () => {
+  // The freeze exists so a press cannot spend the words the hop is carrying.
+  // Mid-turn that same control is the Stop, and the hop's round trips run for a
+  // second per picture: shutting it there left a reader watching a reply they
+  // could not end. Same `!running` the schedule block has always carried.
+  const send = (c: ReturnType<typeof mount>) =>
+    c.root.findAllByType("button").find((b) => b.props.className === "c-send")!;
+  const hop = (c: ReturnType<typeof mount>, on: boolean) =>
+    act(() => {
+      (c.root.findByType(SchedButton).props as {
+        onHopChange(on: boolean): void;
+      }).onHopChange(on);
+    });
+
+  // Idle: the freeze is about SEND, and it shuts it, with the transient reason
+  // on the tooltip.
+  const idle = mount();
+  hop(idle, true);
+  expect(send(idle).props.disabled).toBe(true);
+  expect(send(idle).props.title).toBe("Finishing the handoff to the task card…");
+  // …and the hop ending gives the door back.
+  hop(idle, false);
+  expect(send(idle).props.disabled).toBeUndefined();
+
+  // Mid-run: the control is the Stop, and the freeze may not touch it.
+  const live = mount({ status: "running" });
+  hop(live, true);
+  expect(send(live).props["aria-label"]).toBe("Stop");
+  expect(send(live).props.disabled).toBeUndefined();
+  expect(send(live).props.title).toBe("Stop this turn");
+  // And it still stops: the form's submit reaches `onStop` before any send
+  // guard, so the press ends the turn while the hop is out.
+  live.submitForm();
+  expect(live.stops()).toBe(1);
+  expect(live.sent).toEqual([]);
 });
 
 test("send is NEVER disabled for having nothing to send (T:2956-2981)", () => {
@@ -701,9 +740,30 @@ function watchFetch(): Req[] {
     seen.push({
       url: String(url),
       method: init?.method ?? "GET",
-      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      // A TASK-SHOTS UPLOAD SENDS `FormData`, which is not JSON: parsing it
+      // threw inside the stub, the copy came back rejected, and every Save with
+      // a chip in the tray silently took the "could not attach every file" road.
+      body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
       keepalive: !!init?.keepalive,
     });
+    // THE BYTES BEHIND A TRAY CHIP, answered without a body stream: a real
+    // `Response.blob()` resolves off a MACROTASK, and the lane tests below have
+    // to wait in microtasks alone — a timer turn would flush the very render
+    // they are staging.
+    if (String(url).startsWith("/api/fs/raw")) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        blob: () => Promise.resolve(new Blob(["bytes"])),
+      } as unknown as Response);
+    }
+    if (String(url) === "/api/schedule/shot") {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ path: "/task-shots/copy.png", kind: "image" }),
+      } as unknown as Response);
+    }
     return Promise.resolve(
       new Response(
         JSON.stringify({
@@ -2244,6 +2304,159 @@ test("the same sentence typed straight back into the box is not the stale render
     expect(puts).toHaveLength(2);
     expect(new Set(puts.map((r) => r.url)).size).toBe(2);
     expect(puts[1]!.body?.title).toBe("ship it");
+  } finally {
+    pushes.restore();
+    delete doc.body;
+  }
+});
+
+
+// ---- A RENDER STALE IN ONE HALF AND FRESH IN THE OTHER ---------------------
+//
+// Bugbot 4036328238 (MED), PR #1180. The latch above compared the whole box —
+// words AND tray — as one value, and the two halves do not arrive together: the
+// words are this component's state and the tray is the host's. So the FIRST
+// half to catch up made the shape differ, the latch came off, and the mirrors
+// took the other half exactly as it stood: spent. Both directions are staged
+// here, and the assertion is the same in both — the answered Save wrote one
+// record, and the unmount behind it writes nothing more.
+
+/** THE HOST WITH A TRAY. `defer` is the whole variable: a host that empties its
+ *  tray in the same tick as the clear leaves the WORDS to lag, and a host that
+ *  has not re-rendered yet leaves the FILES to. */
+function trayHost(file: string, opts: { defer?: boolean } = {}) {
+  const rig = laneRig();
+  const chip: Attachment = {
+    id: "a1",
+    kind: "image",
+    view: "/w/app/shot.png",
+    name: "shot.png",
+  };
+  let items: readonly Attachment[] = [chip];
+  const Host = () => {
+    ReactForTray.useSyncExternalStore(rig.subscribe, rig.snap, rig.snap);
+    return (
+      <ComposerCard
+        variant="chat"
+        file={file}
+        sessionId=""
+        controls={controls}
+        status="idle"
+        back="/explorer/view/p"
+        hasAttachments={items.length > 0}
+        attachments={() => items}
+        onDiscardAttachments={() => {
+          // The deferred host is the one still painting the spent files.
+          if (!opts.defer) items = [];
+        }}
+        onSend={() => {}}
+        onFollowUp={() => {}}
+        onStop={() => {}}
+      />
+    );
+  };
+  return { Host, rig, drop: () => { items = []; } };
+}
+
+const ReactForTray = await import("react");
+
+test("a stale render that has only emptied the TEXT files nothing twice (Bugbot 4036328238)", async () => {
+  // The ordinary road: `clearComposer` calls the host's discard in its own tick,
+  // so the tray is empty on the very next render while `setText("")` is still
+  // queued. Old latch: "1 file + these words" no longer matches "0 files + these
+  // words", so it stood down and mirrored the spent SENTENCE — and the unmount
+  // filed it again, under a second id.
+  installBody();
+  const seen = watchFetch();
+  const pushes = watchPushes();
+  const { navigateUrl } = await import("@platform/lib/router");
+  const { Host, rig } = trayHost("/p/half-text.py");
+
+  let renderer: ReactTestRenderer | undefined;
+  act(() => {
+    renderer = create(<Host />, CONCURRENT);
+  });
+  mounted.push(renderer!);
+  const root = renderer!.root;
+  try {
+    act(() => {
+      root.findByType("textarea").props.onChange({
+        currentTarget: { value: "words and a picture" },
+      });
+    });
+    await act(async () => {
+      navigateUrl("/tasks");
+      await tick();
+    });
+    // Outside `act`, so React is left with the cleared box still queued.
+    dialogButton(root, "Save as draft").props.onClick();
+    await tick(40);
+    const first = seen.filter((r) => r.method === "PUT");
+    expect(first).toHaveLength(1);
+    expect(first[0]!.body?.title).toBe("words and a picture");
+    // The host speaks: an empty tray, and the spent sentence still in the box.
+    rig.emit();
+    await tick(40);
+    act(() => renderer!.unmount());
+    await act(async () => {
+      await tick(40);
+    });
+    const puts = seen.filter((r) => r.method === "PUT");
+    expect(puts).toHaveLength(1);
+    expect(new Set(puts.map((r) => r.url)).size).toBe(1);
+  } finally {
+    pushes.restore();
+    delete doc.body;
+  }
+});
+
+test("…and one that has only emptied the TRAY files nothing twice either", async () => {
+  // The mirror image, and the half the old latch could not even see: the words
+  // have painted empty and the host has not caught up, so the render shows no
+  // text and the spent FILES. "0 files + no words" did not match "1 file + those
+  // words" either, so the latch stood down again — and `dirtyRef` went true on
+  // the tray alone (a bare picture is a message), which is all `unloadSave`
+  // needs to file a second, wordless record.
+  installBody();
+  const seen = watchFetch();
+  const pushes = watchPushes();
+  const { navigateUrl } = await import("@platform/lib/router");
+  const { Host, rig } = trayHost("/p/half-tray.py", { defer: true });
+
+  let renderer: ReactTestRenderer | undefined;
+  act(() => {
+    renderer = create(<Host />, CONCURRENT);
+  });
+  mounted.push(renderer!);
+  const root = renderer!.root;
+  try {
+    act(() => {
+      root.findByType("textarea").props.onChange({
+        currentTarget: { value: "a line and a shot" },
+      });
+    });
+    await act(async () => {
+      navigateUrl("/tasks");
+      await tick();
+    });
+    dialogButton(root, "Save as draft").props.onClick();
+    await act(async () => {
+      await tick(40);
+    });
+    // The words have painted away; the tray has not.
+    expect(root.findByType("textarea").props.value).toBe("");
+    rig.emit();
+    await act(async () => {
+      await tick(40);
+    });
+    act(() => renderer!.unmount());
+    await act(async () => {
+      await tick(40);
+    });
+    const puts = seen.filter((r) => r.method === "PUT");
+    expect(puts).toHaveLength(1);
+    expect(puts[0]!.body?.title).toBe("a line and a shot");
+    expect(new Set(puts.map((r) => r.url)).size).toBe(1);
   } finally {
     pushes.restore();
     delete doc.body;

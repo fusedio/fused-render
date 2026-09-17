@@ -715,6 +715,9 @@ function mountHop(o: {
 }) {
   const went: string[] = [];
   const hops: boolean[] = [];
+  // Every `onHandedOff` — the call that EMPTIES the composer. An abort must
+  // never make it: the words and chips are still this box's to hold.
+  const cleared: true[] = [];
   let renderer!: ReactTestRenderer;
   act(() => {
     renderer = create(
@@ -726,6 +729,7 @@ function mountHop(o: {
         back: "/w/app/page.html",
         ...(o.episode ? { episode: o.episode } : {}),
         onHopChange: (on: boolean) => hops.push(on),
+        onHandedOff: () => cleared.push(true),
         onNavigate: (url: string) => went.push(url),
       }),
       { createNodeMock: () => ({ focus: () => {} }) },
@@ -735,7 +739,7 @@ function mountHop(o: {
   const go = (renderer.root.findByType(SchedConfirm).props as { onGo(): void }).onGo;
   const trigger = () =>
     renderer.root.findAll((n) => typeof n.type === "string" && n.type === "button")[0]!;
-  return { renderer, go, went, hops, trigger };
+  return { renderer, go, went, hops, cleared, trigger };
 }
 
 const settle = async (): Promise<void> => {
@@ -853,6 +857,45 @@ test("a file that would not copy stops the whole hop (Bugbot 4034977406)", async
 
   _resetNotificationsForTest();
   globalThis.fetch = real;
+  forgetDraftVersion(HOP_KEY);
+});
+
+test("…and on a NEVER-SENT chat too — the mint is refused and the box keeps its files (Bugbot 4035104825)", async () => {
+  // The session road and the session-less road spend the same round trips and
+  // must fail the same way. This one is the harsher of the two: the mint is
+  // followed by `onHandedOff`, which EMPTIES the composer — so a hop that
+  // navigated with a short list took the missing chips off the card AND out of
+  // the box, and there was nowhere left to read them. Nothing written, nothing
+  // cleared, nowhere gone, and the trigger live again.
+  forgetDraftVersion(HOP_KEY);
+  _resetNotificationsForTest();
+  const real = globalThis.fetch;
+  const { calls, open } = hopFetch({ failUpload: 2 });
+  const { go, went, hops, cleared, trigger } = mountHop({
+    sessionId: "",
+    tray: [shot(1), shot(2)],
+  });
+
+  await act(async () => {
+    go();
+  });
+  await act(async () => {
+    open();
+    await settle();
+  });
+
+  expect(draftCalls(calls)).toEqual([]);
+  expect(went).toEqual([]);
+  expect(cleared).toEqual([]);
+  expect(hops).toEqual([true, false]);
+  expect((trigger().props as { disabled?: boolean }).disabled).toBe(false);
+  expect(getPopupNotification()?.title).toBe(
+    "Could not attach every file — nothing was scheduled",
+  );
+
+  _resetNotificationsForTest();
+  globalThis.fetch = real;
+  resetDraftSyncers();
   forgetDraftVersion(HOP_KEY);
 });
 

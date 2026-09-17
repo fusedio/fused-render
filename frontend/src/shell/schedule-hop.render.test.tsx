@@ -109,7 +109,24 @@ function installMeasuring() {
   const stubs: Record<string, unknown> = {
     ResizeObserver: inert,
     MutationObserver: inert,
-    getComputedStyle: () => new Proxy({}, { get: () => "" }),
+    // A CSSStyleDeclaration is not only a bag of string properties: `row-fit`
+    // asks it for `getPropertyValue("--tasks-row-gap")`. A Proxy that answers
+    // every lookup with "" hands back a string where a method was wanted, and
+    // calling it throws out of the same layout effect this fixture exists to
+    // keep alive. So the methods are real functions and only the properties
+    // fall through to "".
+    getComputedStyle: () =>
+      new Proxy(
+        {
+          getPropertyValue: () => "",
+          getPropertyPriority: () => "",
+          item: () => "",
+          length: 0,
+        } as Record<string, unknown>,
+        {
+          get: (target, key) => (key in target ? target[key as string] : ""),
+        },
+      ),
   };
   for (const [name, stub] of Object.entries(stubs)) {
     if (!measuringWas.has(name)) measuringWas.set(name, name in g ? g[name] : MISSING);

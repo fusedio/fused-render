@@ -374,12 +374,25 @@ export interface ComposerCardProps {
   onNavigate?(url: string): void;
 }
 
-/** EVERYTHING THERE IS TO LOSE IN A COMPOSER, as one comparable string: the
- *  words and how many files are in the tray. It is the pair `dirty` is made of,
- *  and the latch a deliberate clear leaves behind reads it — see `spent`. The
- *  colon keeps the two halves apart: a tray size is only ever digits, so no
- *  count can run into the start of a sentence. */
-const boxShape = (words: string, files: number): string => `${files}:${words}`;
+/** EVERYTHING THERE IS TO LOSE IN A COMPOSER: the words, and how many files are
+ *  in the tray. It is the pair `dirty` is made of, and the latch a deliberate
+ *  clear leaves behind reads it — see `spent`.
+ *
+ *  TWO FIELDS RATHER THAN ONE STRING (Bugbot 4036328238). The halves come from
+ *  two different pieces of state — `text` is this component's, the tray is the
+ *  host's — and they land in separate renders, so a render is routinely stale in
+ *  one and fresh in the other. A single comparable value can only answer "is all
+ *  of this the spent box", and answered "no" to a render that had emptied one
+ *  half and was still showing the other: the latch came off, and the still-stale
+ *  half went straight into the mirrors the unmount save reads. */
+interface BoxShape {
+  text: string;
+  files: number;
+}
+const boxShape = (words: string, files: number): BoxShape => ({
+  text: words,
+  files,
+});
 
 export function ComposerCard({
   variant,
@@ -572,8 +585,15 @@ export function ComposerCard({
    * is the host's own state and lags a clear the same way. Everything that puts
    * something into the box un-latches first, so a sentence typed twice is never
    * mistaken for the one already filed.
+   *
+   * HALF BY HALF, AND THE LATCH COMES OFF LAST (Bugbot 4036328238). The two
+   * halves arrive in different renders, so each is believed on its own: a half
+   * that still reads exactly what was spent is refused, a half that has moved on
+   * is mirrored, and only a render whose BOTH halves have moved on puts the box
+   * back in charge. Judging the pair as one value let the first half to empty
+   * release the latch and wave the other, still-stale, half through.
    */
-  const spent = useRef<string | null>(null);
+  const spent = useRef<BoxShape | null>(null);
   const draftKeyRef = useRef(draftKey);
   draftKeyRef.current = draftKey;
   const discardAttachments = useRef(onDiscardAttachments);
@@ -803,7 +823,30 @@ export function ComposerCard({
         }))
     : [];
   const trayDraftRef = useRef(trayDraft);
-  trayDraftRef.current = trayDraft;
+  /**
+   * THE MIRRORS, WRITTEN HALF BY HALF PAST THE LATCH (`spent`, Bugbot
+   * 4036328238) — and ALL of them, which is the other half of that bug: the
+   * tray mirror used to be written here unconditionally, so a stale render
+   * handed the spent files to the unmount save and to the session-flip effect
+   * however carefully the words were guarded.
+   *
+   * `dirtyRef` is then DERIVED from the two mirrors rather than from this
+   * render, so there is exactly one answer to "is there anything here to lose"
+   * and it is made of the same words and files every save will write.
+   */
+  const dirtyRef = useRef(false);
+  {
+    const latched = spent.current;
+    const freshText = !latched || latched.text !== text;
+    const freshTray = !latched || latched.files !== trayDraft.length;
+    if (freshText) textRef.current = text;
+    if (freshTray) trayDraftRef.current = trayDraft;
+    // Only a box that has moved on in BOTH halves is the reader's again.
+    if (freshText && freshTray) spent.current = null;
+    dirtyRef.current =
+      !hasSession
+      && (!!textRef.current.trim() || trayDraftRef.current.length > 0);
+  }
 
   // ---- THE SESSION COMPOSER'S AUTOSAVE ------------------------------------
   //
@@ -918,9 +961,38 @@ export function ComposerCard({
   const adoptRecord = useCallback((record: ChatDraft | null) => {
     const next = record?.text ?? "";
     const files = record?.attachments ?? [];
-    // …and it is a NEW set of words for the stale-render latch too (`spent`):
-    // whatever was last spent here, this is not it.
-    spent.current = null;
+    /**
+     * AND THE LATCH IS TOLD WHICH OF THE TWO THINGS THIS IS (`spent`, Bugbot
+     * 4036328238).
+     *
+     * A record with content is a WRITE: these words did not come from the box,
+     * so nothing here is the spent box and the mirrors take them at once rather
+     * than waiting for a render that may be overtaken.
+     *
+     * `null` is the record DELETED, which empties the box exactly the way
+     * `clearComposer` does — and it used to un-latch, which is the opposite of
+     * what an emptying needs. The tray empties a render later (the host owns
+     * it), so the very next render still showed the deleted draft's files and,
+     * un-latched, mirrored them into the unmount save: the record the reader had
+     * just seen deleted came back as a fresh Upcoming row.
+     */
+    if (record) {
+      spent.current = null;
+      textRef.current = next;
+      trayDraftRef.current = files;
+      dirtyRef.current =
+        !hasSessionRef.current && (!!next.trim() || files.length > 0);
+    } else {
+      spent.current = boxShape(textRef.current, trayDraftRef.current.length);
+      textRef.current = "";
+      // BOTH MIRRORS, not just the words (Bugbot 4036328238). The tray mirror used
+      // to be left holding the spent chips until a render replaced it — and the
+      // latch, doing its job, is exactly what stops a stale render replacing it.
+      // `dirtyRef` is made of the two, so a bare picture left in the mirror was an
+      // "unsaved message" the unmount filed all over again.
+      trayDraftRef.current = [];
+      dirtyRef.current = false;
+    }
     // A BOX REPAINTED FROM ELSEWHERE IS A NEW SET OF WORDS (Bugbot 4027549698):
     // a seed's answer still in the air was asked about the ones this replaces,
     // and `null` here — the record deleted — is the case it must never undo.
@@ -1032,18 +1104,12 @@ export function ComposerCard({
    * as the clear must already see a clean box, or the guard it just satisfied
    * asks the same question again.
    */
-  const dirty = !hasSession && (!!text.trim() || trayDraft.length > 0);
-  const dirtyRef = useRef(dirty);
-  // …AND THIS RENDER MAY BE OLDER THAN THE LAST CLEAR (`spent`). One render
-  // still showing exactly what was spent says nothing about the box that
-  // nobody has since touched, so it says nothing to the handlers either; the
-  // first render that shows anything else — the emptied box, or the next thing
-  // typed into it — puts the mirrors back in charge.
-  if (spent.current !== boxShape(text, trayDraft.length)) {
-    spent.current = null;
-    textRef.current = text;
-    dirtyRef.current = dirty;
-  }
+  // …AND IT IS THE MIRRORS' ANSWER, not this render's (`spent`, above). A render
+  // older than the last clear still shows the spent words; reading `text` here
+  // would re-register the leave guard and the native `beforeunload` prompt for a
+  // box the reader has already answered for, and then contradict the `dirtyRef`
+  // the handlers behind them read.
+  const dirty = dirtyRef.current;
 
   /** What an answered question leaves behind: an empty box and an empty tray
    *  (Akshil, 2026-09-16: "after that, the composer is cleared"). Also the
@@ -1055,6 +1121,12 @@ export function ComposerCard({
     // this and must not be believed (`spent`).
     spent.current = boxShape(textRef.current, trayDraftRef.current.length);
     textRef.current = "";
+    // BOTH MIRRORS, not just the words (Bugbot 4036328238). The tray mirror used
+    // to be left holding the spent chips until a render replaced it — and the
+    // latch, doing its job, is exactly what stops a stale render replacing it.
+    // `dirtyRef` is made of the two, so a bare picture left in the mirror was an
+    // "unsaved message" the unmount filed all over again.
+    trayDraftRef.current = [];
     dirtyRef.current = false;
     // …AND A SEED STILL IN THE AIR IS NOT AN ANSWER ABOUT THESE WORDS ANY MORE
     // (`episode`, Bugbot 4027549698). An emptied box is exactly what that read
@@ -1414,6 +1486,17 @@ export function ComposerCard({
    * running turn is a worse state than the pollution the block prevents.
    */
   const sendBlocked = variant === "chat" && !!blocked && !running;
+  /**
+   * …AND THE HOP'S FREEZE IS UNDER THE SAME ROOF (Bugbot 4035295068).
+   *
+   * The freeze shut this button so a press could not spend the very words the
+   * hop is carrying — a good rule about SEND, and a dead door on STOP. Mid-turn
+   * this control is the Stop, the hop's own round trips can run for seconds on a
+   * tray of pictures, and a reader who hits Schedule during a live reply would
+   * have had no way to end it. `!running` for exactly the reason `sendBlocked`
+   * carries it: nothing may take the exit away from a streaming turn.
+   */
+  const hopFrozen = hopping && !running;
 
   const submit = useCallback((seed?: string): boolean => {
     // Nothing leaves this composer while a scheduled message is pending — not a
@@ -1448,6 +1531,12 @@ export function ComposerCard({
     // save as an unfinished task (`spent`).
     spent.current = boxShape(textRef.current, trayDraftRef.current.length);
     textRef.current = "";
+    // BOTH MIRRORS, not just the words (Bugbot 4036328238). The tray mirror used
+    // to be left holding the spent chips until a render replaced it — and the
+    // latch, doing its job, is exactly what stops a stale render replacing it.
+    // `dirtyRef` is made of the two, so a bare picture left in the mirror was an
+    // "unsaved message" the unmount filed all over again.
+    trayDraftRef.current = [];
     dirtyRef.current = false;
     // THE SEED'S ANSWER IS ABOUT A SENTENCE THAT HAS NOW BEEN SENT (`episode`,
     // Bugbot 4027549698). A GET dispatched on mount and landing after this line
@@ -1783,7 +1872,7 @@ export function ComposerCard({
             // …AND WHILE A SCHEDULE HOP IS OUT, on the same argument: the press
             // is not transient-and-harmless, it would spend the very words the
             // hop is carrying (Bugbot 4034977395).
-            {...(sendBlocked || hopping ? { disabled: true } : {})}
+            {...(sendBlocked || hopFrozen ? { disabled: true } : {})}
           >
             {running ? (
               <svg
