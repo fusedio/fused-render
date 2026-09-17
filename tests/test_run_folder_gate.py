@@ -211,26 +211,30 @@ def test_filing_the_owner_never_breaks_a_run_that_already_started(monkeypatch,
 # gap was answered "the tree is free".
 
 
-def test_the_gate_claims_the_folder_it_opens(gate):
-    """A named send does not just pass the door — it takes the tree on the way
-    through, in the one call. Nothing can slip between the two halves because
-    there are no two halves."""
+def test_the_gate_only_looks_and_never_claims(gate):
+    """Bugbot, PR #1194: the gate used to claim the folder it opened — one of
+    three claims a single send made (admit, this gate, `_file_owner` after the
+    spawn), each counting a turn, and `turn_ended`'s one decrement never
+    brought the count back to zero. Admit already claimed the folder before
+    `/api/run` is ever called; this door only reads that claim."""
     manager = gate["manager"]
     assert run_router._folder_busy(
         AGENT, _params(session_id="sess-1", run_id="r-1")) == ""
-    assert manager.claims == [("/w/alpha", "sess-1", "r-1", "sess-1")]
-    assert manager.owner("/w/alpha")["task"] == "sess-1"
-    # …and the next task really is behind it now
+    assert manager.claims == []
+    assert manager.owner("/w/alpha") is None
+    # …and once something really does own it, a different name is refused
+    manager.own("/w/alpha", "sess-1", session_id="sess-1", run_id="r-1")
     assert run_router._folder_busy(AGENT, _params(session_id="sess-2",
                                                   run_id="r-2"))
 
 
-def test_a_refused_claim_files_nobody_and_keeps_the_owner(gate):
+def test_a_look_that_finds_another_owner_leaves_it_untouched(gate):
     manager = gate["manager"]
     manager.own("/w/alpha", "TASK-007", session_id="sess-a", run_id="r-a")
     assert run_router._folder_busy(AGENT, _params(session_id="sess-b",
                                                   run_id="r-b"))
     assert manager.owner("/w/alpha")["task"] == "TASK-007"
+    assert manager.claims == []
 
 
 def test_an_anonymous_first_send_claims_nothing(gate):
@@ -254,15 +258,20 @@ def test_a_send_files_the_owner_when_it_lands(real_gate):
         "sess-1", "r-2", "sess-1")
 
 
-def test_a_send_never_steals_a_folder_another_task_holds(gate):
-    """The gate refused that case already; this is the receipt, and a receipt
-    must not overwrite a live turn's owner."""
+def test_a_send_also_refiles_over_a_different_owner_now(gate):
+    """Bugbot, PR #1194: `_file_owner` no longer re-checks ownership for a
+    `send` — that used to call `claim`, a second increment of `owner.turns`
+    for the one send `_folder_busy`'s gate had already looked at and admit had
+    already claimed once. Protection against stealing a folder now lives
+    entirely in the gate, which runs BEFORE the turn spawns; by the time a
+    `send` reaches here the turn already happened; this only writes its name
+    down — the same trust `start` has always been given."""
     manager = gate["manager"]
     manager.own("/w/alpha", "TASK-007", session_id="sess-a", run_id="r-a")
     run_router._file_owner(AGENT, _params(action="send", session_id="sess-b",
                                           run_id="r-b"),
                            _started("r-b", "sess-b"))
-    assert manager.owner("/w/alpha")["task"] == "TASK-007"
+    assert manager.owner("/w/alpha")["task"] == "sess-b"
 
 
 def test_a_spawn_always_leaves_an_owner_behind(gate):
@@ -280,15 +289,19 @@ def test_a_spawn_always_leaves_an_owner_behind(gate):
 
 def test_the_folder_is_owned_before_the_run_starts(tmp_path, monkeypatch,
                                                    real_gate):
-    """M8, 2026-09-17: the session host could post `turn_ended` for a turn the
-    index had never been told about, because the owner was filed only once
-    `/api/run` came back — and a turn can end (a refusal, a rate limit) before
-    that. A send that names itself is filed by the GATE, which runs before the
-    work is awaited."""
+    """M8, 2026-09-17, updated for Bugbot PR #1194: the guarantee that a turn's
+    owner is on record before it can end now comes from admit's `claim` — the
+    door the native chat calls before `/api/run`, simulated here the way it
+    would be for an ordinary send — not from `_folder_busy`, which only looks.
+    A send that already claimed the folder at admission still finds it owned
+    the moment `run_python` runs, and the refile after the spawn must not add
+    a second turn on top of admit's one."""
     from fastapi.testclient import TestClient
 
     from fused_render.server import create_app
     from fused_render.shell import prefs as shell_prefs
+
+    real_gate.claim("/w/alpha", "sess-1", "r-1", "sess-1")  # what admit did
 
     seen = {}
 
@@ -310,3 +323,38 @@ def test_the_folder_is_owned_before_the_run_starts(tmp_path, monkeypatch,
     assert seen["owner"] is not None, \
         "the turn ran in a folder the index still read as free"
     assert seen["owner"]["task"] == "sess-1"
+    assert real_gate.owner("/w/alpha")["turns"] == 1, \
+        "the gate's look and the refile after the spawn must not add a turn"
+
+
+def test_a_named_send_through_api_run_keeps_one_turn(tmp_path, monkeypatch,
+                                                      real_gate):
+    """Bugbot, PR #1194: one send crossing admit, `_folder_busy` and
+    `_file_owner` used to increment `owner.turns` three times — admit's
+    `claim`, the gate's own (now removed) claim, and `_file_owner`'s (now a
+    refile). A single `turn_ended` must free the folder after one send."""
+    from fastapi.testclient import TestClient
+
+    from fused_render.server import create_app
+    from fused_render.shell import prefs as shell_prefs
+
+    real_gate.claim("/w/alpha", "sess-1", "r-1", "sess-1")  # what admit did
+
+    monkeypatch.setattr(run_router, "resolve_py", lambda py, html: (AGENT, None))
+    monkeypatch.setattr(
+        run_router, "run_python",
+        lambda resolved, params: {
+            "ok": True, "result": {"run_id": "r-1", "session_id": "sess-1"}})
+    monkeypatch.setattr(shell_prefs, "effective_engine", lambda: "builtin")
+
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    r = client.post("/api/run", headers={"X-Fused": "1"},
+                    json={"py": "agent.py",
+                          "params": _params(action="send", session_id="sess-1",
+                                            run_id="r-1")})
+
+    assert r.status_code == 200
+    assert real_gate.owner("/w/alpha")["turns"] == 1
+
+    real_gate.turn_ended("sess-1", "r-1")
+    assert real_gate.owner("/w/alpha") is None

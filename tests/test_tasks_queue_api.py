@@ -1066,6 +1066,22 @@ def test_an_admitted_send_changes_no_row_by_itself(
     assert _rows(client)["sess-a"]["status"] == "in_progress"
 
 
+def test_running_now_is_false_for_an_ended_session_even_when_live():
+    """The queue manager's word off a `turn_ended`/`exited` event
+    (`tasks_watch.mark_turn_ended`) outranks `live` — the registry row and the
+    transcript tail can both still look running for a beat after a folder
+    handoff, and this is the one path that must not believe them (see
+    `_running_now`'s docstring for why `busy` alone is left alone)."""
+    tasks_watch.reset()
+    tasks_watch.mark_turn_ended("sess-ended")
+    assert tasks_mod._running_now("sess-ended", True, set()) is False
+    # An independent scheduler claim is unaffected either way.
+    assert tasks_mod._running_now("sess-ended", True, {"sess-ended"}) is True
+    # A session nothing said ended reads exactly as `live` says.
+    assert tasks_mod._running_now("sess-untouched", True, set()) is True
+    assert tasks_mod._running_now("sess-untouched", False, set()) is False
+
+
 def test_with_the_flag_off_an_admitted_send_changes_no_row(
         client, projects_dir, folders, flag, rings):
     """The control. With the queue off nothing is reserved, so nothing reads as

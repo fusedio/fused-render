@@ -22,12 +22,23 @@ Those two modules are TEMPLATES: stdlib only, no `fused_render` import (SPEC
 PY-15), spawned as separate processes. HTTP is the only wire they have back
 here, hence this endpoint rather than a function call.
 
-The posts are unconditional and this endpoint is the flag gate: with
-`project_queue_enabled` off it answers `{"ok": true, "ignored": true}` and
-touches nothing, so the flag-off behaviour is byte-for-byte what shipped in
-main plus one ignored request. It also never 500s on a manager error — the
-caller is a fire-and-forget daemon thread that cannot act on a failure, and a
-traceback in the log is worth more than a status code nobody reads.
+The posts are unconditional and this endpoint is the flag gate for the QUEUE:
+with `project_queue_enabled` off it answers `{"ok": true, "ignored": true}` and
+the manager is never even built, so the flag-off queue behaviour is
+byte-for-byte what shipped in main plus one ignored request. It also never
+500s on a manager error — the caller is a fire-and-forget daemon thread that
+cannot act on a failure, and a traceback in the log is worth more than a
+status code nobody reads.
+
+ONE THING IS NOT GATED (Akshil, 2026-09-17): `turn_ended`/`exited` also tell
+`tasks_watch.mark_turn_ended` a turn just ended, and that call happens BEFORE
+the flag check above. It is a SYNC fix for the Tasks listing, not a queue
+feature — the same handoff lag (a finished task's row still reading
+`in_progress` for up to a couple of seconds after its folder changed hands)
+exists whether or not one-task-per-folder is switched on, because it comes
+from the registry row and the transcript tail lagging the session host's own
+event, not from the queue. The manager dispatch below stays exactly as
+flag-gated as ever.
 """
 from __future__ import annotations
 
@@ -38,7 +49,7 @@ import os
 from fastapi import APIRouter, Body, Header
 from fastapi.concurrency import run_in_threadpool
 
-from fused_render import project_queue, queue_manager
+from fused_render import project_queue, queue_manager, tasks_watch
 from fused_render.server.common import _error, _require_fused
 
 logger = logging.getLogger(__name__)
@@ -49,6 +60,10 @@ router = APIRouter()
 # means a template and this file have drifted apart, which is a bug worth
 # seeing rather than an event worth dropping.
 KINDS = ("turn_ended", "exited", "card_raised", "card_cleared")
+
+# The two that say a TURN is over. `tasks_watch.mark_turn_ended` is resolved
+# and called for these before the flag gate below — see the endpoint.
+_TURN_OVER_KINDS = ("turn_ended", "exited")
 
 
 def _task_key(run_id: str) -> str:
@@ -130,11 +145,22 @@ async def api_tasks_queue_event(payload: dict | None = Body(default=None),
     if kind not in KINDS:
         return _error("unknown queue event kind: %r" % (kind,), status=400)
 
+    run_id = str(body.get("run_id") or "")
+    task_key = str(body.get("session_id") or "")
+
+    # THE ONE CALL THAT IS NOT FLAG-GATED — see the module docstring. Resolved
+    # off the run dir here too when the body did not carry a session id, same
+    # fallback the manager dispatch uses below, so a host that could not read
+    # `meta.json` when it looked still gets the listing fix.
+    if kind in _TURN_OVER_KINDS:
+        if not task_key:
+            task_key = await run_in_threadpool(_task_key, run_id)
+        if task_key:
+            await run_in_threadpool(tasks_watch.mark_turn_ended, task_key, run_id)
+
     if not await run_in_threadpool(project_queue.enabled):
         return {"ok": True, "ignored": True}
 
-    run_id = str(body.get("run_id") or "")
-    task_key = str(body.get("session_id") or "")
     if not task_key:
         task_key = await run_in_threadpool(_task_key, run_id)
     if not task_key:

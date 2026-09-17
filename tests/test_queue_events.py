@@ -31,7 +31,7 @@ import urllib.request
 import pytest
 from fastapi.testclient import TestClient
 
-from fused_render import project_queue, queue_manager, tasks_store
+from fused_render import project_queue, queue_manager, tasks_store, tasks_watch
 from fused_render.server import create_app
 
 TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude")
@@ -711,6 +711,78 @@ def test_a_manager_that_throws_is_never_a_500(client, flag, manager,
                           "session_id": "sess-1"})
     assert r.status_code == 200
     assert r.json() == {"ok": False}
+
+
+# --------------------------------- tasks_watch is told even with the flag off
+
+
+def test_turn_ended_marks_tasks_watch_even_with_the_flag_off(client, flag, manager):
+    """The one call this endpoint makes before its own flag gate (module
+    docstring): the Tasks listing's handoff-lag fix is a sync improvement, not
+    a queue feature, and applies whether or not the queue is switched on."""
+    flag(False)
+    tasks_watch.reset()
+    r = client.post("/api/tasks/queue/event", headers=HEADERS,
+                    json={"kind": "turn_ended", "run_id": "r1",
+                          "session_id": "sess-real"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "ignored": True}
+    assert tasks_watch.is_turn_ended("sess-real")
+    assert manager.calls == [], "the manager dispatch stays flag-gated"
+
+
+def test_exited_also_marks_tasks_watch_even_with_the_flag_off(client, flag,
+                                                               manager):
+    flag(False)
+    tasks_watch.reset()
+    client.post("/api/tasks/queue/event", headers=HEADERS,
+                json={"kind": "exited", "run_id": "r2", "session_id": "sess-2",
+                      "code": 0})
+    assert tasks_watch.is_turn_ended("sess-2")
+    assert manager.calls == []
+
+
+def test_card_events_do_not_mark_tasks_watch(client, flag, manager):
+    """Only the two TURN-OVER kinds carry a fact `tasks_watch` wants; a card
+    going up or getting answered says nothing about the turn itself."""
+    flag(False)
+    tasks_watch.reset()
+    client.post("/api/tasks/queue/event", headers=HEADERS,
+                json={"kind": "card_raised", "run_id": "r3",
+                      "session_id": "sess-3"})
+    assert not tasks_watch.is_turn_ended("sess-3")
+
+
+def test_turn_ended_resolves_the_task_key_from_the_run_dir_even_flag_off(
+        client, flag, manager, runs):
+    """No `session_id` in the body: the endpoint still reads the run dir to
+    find who to tell `tasks_watch` about, flag off or not — the same fallback
+    the manager dispatch uses below it."""
+    flag(False)
+    tasks_watch.reset()
+    run = runs / "r1"
+    run.mkdir()
+    (run / "meta.json").write_text(json.dumps({"session_id": "sess-from-disk"}))
+
+    r = client.post("/api/tasks/queue/event", headers=HEADERS,
+                    json={"kind": "turn_ended", "run_id": "r1"})
+    assert r.status_code == 200
+    assert tasks_watch.is_turn_ended("sess-from-disk")
+    assert manager.calls == []
+
+
+def test_an_unresolvable_run_still_shrugs_with_the_flag_off(client, flag,
+                                                             manager, runs):
+    """No session id anywhere — not the body, not a readable run dir — so
+    there is nobody to tell `tasks_watch` about either. Flag off never surfaces
+    the 400 a resolvable-but-flag-on request would get."""
+    flag(False)
+    tasks_watch.reset()
+    r = client.post("/api/tasks/queue/event", headers=HEADERS,
+                    json={"kind": "turn_ended", "run_id": "nothing-here"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "ignored": True}
+    assert manager.calls == []
 
 
 # ------------------------------------------------------- the startup wiring

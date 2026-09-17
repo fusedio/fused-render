@@ -80,6 +80,22 @@ _registry: dict[str, dict] = {}   # session_id -> parsed sessions/<pid>.json
 # A departed session is KNOWN idle: without this, a `claude -p` that ran for
 # four seconds paints a running badge for the 45s tail window after it exits.
 _departed: dict[str, float] = {}
+# session_id -> the sessions/<pid>.json file's own mtime (epoch seconds) as of
+# the last time `_read_registry` actually re-read it (not on an unchanged
+# tick — see there). What `is_turn_ended` compares an `_ended` stamp against:
+# a registry row that is stale AS OF THE ENDED STAMP has nothing to say about
+# the turn that just ended, and only a REWRITE after it — a strictly newer
+# mtime — is a fresh sighting entitled to overrule it.
+_registry_mtime: dict[str, float] = {}
+# session_id -> epoch when the project queue manager last said this session's
+# TURN ended (`mark_turn_ended`, off the session host's `turn_ended`/`exited`
+# events — see the router). Distinct from `_departed`: a process can still be
+# alive (idle, about to be handed the next queued task) when its turn is over,
+# and distinct from `mark_idle`: that is the SENDING page's own account of a
+# turn it started, racing its own `mark_running` on a client `turn` token; this
+# is the manager's, off a `result` row it tailed, and has no `turn` of its own
+# to race — see `mark_turn_ended`.
+_ended: dict[str, float] = {}
 _primed = False
 _sess_mtimes: dict[str, tuple] = {}   # sessions/<pid>.json -> (mtime_ns, size)
 _sess_sids: dict[str, str] = {}       # sessions/<pid>.json -> session_id
@@ -236,7 +252,14 @@ def live_from_registry(session_id: str,
     A session whose process has GONE is an opinion too: not running, whatever
     the tail's timestamps say — unless the transcript was written after the
     departure, which means something unregistered is appending and the tail
-    rule should decide."""
+    rule should decide.
+
+    A session whose TURN has ended (`mark_turn_ended`, the queue manager's
+    word off a `result` row) is a third opinion the row itself may be too
+    slow to carry: `busy` stays written until Claude Code next rewrites the
+    file, which can trail the manager's own event by the width of this
+    module's tick. `is_turn_ended` is where that override actually lives —
+    see it for what "nothing newer says busy" means."""
     row = registry_row(session_id)
     if not row:
         with _cond:
@@ -251,7 +274,52 @@ def live_from_registry(session_id: str,
         return None
     updated = row.get("updatedAt")
     active = float(updated) / 1000.0 if isinstance(updated, (int, float)) else 0.0
-    return status in RUNNING_STATUSES, active
+    running = status in RUNNING_STATUSES and not is_turn_ended(session_id)
+    return running, active
+
+
+def is_turn_ended(session_id: str) -> bool:
+    """Did the queue manager already say this session's TURN is over
+    (`mark_turn_ended`), with nothing newer entitled to disagree?
+
+    Read by `live_from_registry` above (so a `busy` row this stale cannot
+    outvote the manager on its own) and by `_running_now`
+    (`server/routers/tasks.py`) directly, for the one shape `live_from_registry`
+    cannot reach: a session with no CURRENT registry opinion at all — never
+    registered, or departed — whose transcript tail still falls inside
+    `session_liveness`'s window because the CLI's own closing records land a
+    beat after the manager's event. That path never calls this module's
+    registry read, so it has to ask the question itself.
+
+    "Nothing newer" is two independent checks, either of which clears the
+    ended stamp:
+
+    * a LIVE mark whose `at` is newer than the ended stamp — a fresh
+      `mark_running` for a later turn, same as the send-floor `is_marked_running`
+      answers for the ordinary case;
+    * a registry row currently `busy`/`shell` whose file was last actually
+      REWRITTEN (`_registry_mtime`) strictly after the ended stamp. The SAME
+      turn's row, re-read unchanged or re-asserting the same status without a
+      fresh write, keeps an mtime from before the stamp and does not clear it
+      — see `mark_turn_ended`.
+    """
+    if not session_id:
+        return False
+    with _cond:
+        ended_at = _ended.get(session_id)
+        if ended_at is None:
+            return False
+        mark = _marks.get(session_id)
+        if mark is not None and mark["until"] > time.time() and mark["at"] > ended_at:
+            return False
+        row = _registry.get(session_id)
+        reg_mtime = _registry_mtime.get(session_id)
+    if row is not None:
+        status = row.get("status")
+        if (isinstance(status, str) and status in RUNNING_STATUSES
+                and reg_mtime is not None and reg_mtime > ended_at):
+            return False
+    return True
 
 
 def is_marked_running(session_id: str) -> bool:
@@ -478,6 +546,45 @@ def mark_idle(session_id: str, turn: float | None = None) -> None:
     _bump({session_id})
 
 
+def mark_turn_ended(session_id: str, run_id: str = "") -> None:
+    """The queue manager's own word that this session's TURN just ended —
+    `POST /api/tasks/queue/event` (`turn_ended`/`exited`), the session host
+    reporting a `result` row it tailed off `out.jsonl`. Sooner and more certain
+    than anything this module infers on its own: the registry row can go on
+    saying `busy` until Claude Code next rewrites it, and a bare transcript
+    tail is still inside `session_liveness`'s window for the closing records
+    the CLI has not finished writing.
+
+    Unlike `mark_idle` — the SENDING page's own account of a turn it started,
+    racing its own `mark_running` on a client `turn` token — this caller has no
+    turn of its own to race: it is reporting a fact about a turn from OUTSIDE
+    the send/idle pair entirely, so retiring the mark is unconditional, the
+    same as `mark_idle(session_id, turn=None)`.
+
+    Records `_ended[session_id] = now`. `is_turn_ended` (and, through it,
+    `live_from_registry`) answers "not running" for this session from this
+    moment until either a registry row is REWRITTEN (`_registry_mtime`
+    strictly newer than this stamp) still saying `busy`/`shell`, or a fresh
+    `mark_running` lands for a later turn — seeing the SAME turn's row again,
+    unchanged, does not count; see `_read_registry`, which is also where a
+    later busy sighting drops the stamp once it has done its job.
+
+    `run_id` is accepted because the endpoint has it on hand and nothing else
+    needs it yet; not stored.
+
+    Bumps and notifies at once, like `mark_running`/`mark_idle`: a page
+    watching this session's key must repaint the instant the manager hands the
+    folder to the next task, not on the watcher's next tick."""
+    if not session_id:
+        return
+    with _cond:
+        _marks.pop(session_id, None)
+        _mark_turns.pop(session_id, None)
+        _mark_busy_seen.discard(session_id)
+        _ended[session_id] = time.time()
+    _bump({session_id})
+
+
 def _expire_marks(now: float) -> set[str]:
     """Session ids whose mark has just run out — CHANGED KEYS, because they are.
 
@@ -690,6 +797,22 @@ def _read_registry() -> set[str]:
         with _cond:
             _registry[sid] = row
             _departed.pop(sid, None)
+            # THE FILE'S OWN mtime, not `time.time()`: `is_turn_ended` compares
+            # this against a `mark_turn_ended` stamp to tell a genuine REWRITE
+            # from the same stale row being re-parsed after an unrelated file
+            # elsewhere changed — this branch only runs when `_sess_mtimes`
+            # above already proved the file moved, so recording it here (and
+            # nowhere on the unchanged-file path) is exactly "seen freshly
+            # busy since the stamp."
+            _registry_mtime[sid] = st.st_mtime
+            # A row busy strictly after `_ended[sid]` is the resurrection
+            # `is_turn_ended` watches for — a genuinely later turn on the same
+            # session. Its job is done; drop it here rather than leave it for
+            # `is_turn_ended` to keep discounting on every future read.
+            ended_at = _ended.get(sid)
+            if (ended_at is not None and st.st_mtime > ended_at
+                    and row.get("status") in RUNNING_STATUSES):
+                del _ended[sid]
         _note_registry_status(sid, row.get("status"))
         keys.add(sid)
         # busy/shell -> anything else: the turn ended, and whatever was queued
@@ -920,6 +1043,8 @@ def reset() -> None:
         _changed.clear()
         _registry.clear()
         _departed.clear()
+        _registry_mtime.clear()
+        _ended.clear()
         _marks.clear()
         _mark_turns.clear()
         _mark_busy_seen.clear()

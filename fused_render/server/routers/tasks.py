@@ -1280,10 +1280,32 @@ def _running_now(session_id: str, live: bool, busy: set[str]) -> bool:
     cannot drift apart about what "running" means. The third way — a message of
     this task's own that is in flight — is `_message_running`, and `_status`
     asks both.
+
+    A FOURTH half, checked first and only to say no: the queue manager's own
+    word that this session's turn already ended (`tasks_watch.mark_turn_ended`,
+    off the session host's `turn_ended`/`exited` event), for the one gap
+    neither `live` nor `busy` can see through. On a folder handoff the manager
+    knows the turn is over before anything on disk agrees — the registry row
+    can still read `busy` until Claude Code next rewrites it, and the
+    transcript's own tail is inside `session_liveness`'s window for the CLI's
+    closing records, which land a beat later still. Both of those feed `live`
+    (`_live`, `tasks_watch.live_from_registry`), so without this a finished
+    task and the one the manager just handed the folder to could both read
+    `in_progress` for as long as that gap lasts — never two OWNERS, but two
+    rows saying so. `tasks_watch.is_turn_ended` is itself "ended, and nothing
+    NEWER disagrees" (a fresher mark, or a registry row truly rewritten busy
+    since), so this does not discount a genuinely new turn on the same
+    session — only the stale echo of the one that just closed. `busy` is left
+    alone: the scheduler holding a send in flight is an independent claim this
+    function has never adjudicated, on this session or any other.
     """
     if not session_id:
         return live
-    return live or session_id in busy
+    if session_id in busy:
+        return True
+    if live and tasks_watch.is_turn_ended(session_id):
+        return False
+    return live
 
 
 # How much newer than its verdict the transcript's tail must be before the tail

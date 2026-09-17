@@ -1010,46 +1010,61 @@ class QueueManager:
 
     def started(self, folder: str, task_key: str, run_id: str = "",
                 session_id: str = "") -> None:
-        """An external spawn (chat admit with `run: true`, run-now) declaring
+        """The send that was already claimed has spawned; here are its names.
+
+        **NEVER increments `turns`.** Counting a send is `claim`/`claim_took`'s
+        job, for a NEW send entering the folder — admit, run-now's
+        `_claim_folder`, the pump. One send crosses several doors on its way
+        to a spawn (admit's `claim`, then this refile once the spawn returns),
+        and a `started` that counted too turned one send into more than one
+        turn, so `turn_ended`'s single decrement never brought the count back
+        to zero and the folder never freed (Bugbot, PR #1194).
+
+        This only replaces an `admit:<token>` placeholder, fills in
+        `run_id`/`session_id` on a matching owner, or — ONLY when the folder
+        has no owner at all, a spawn `claim` never saw (the legacy/anonymous
+        path) — files a fresh owner with `turns = 1`, same as any other first
         ownership.
 
-        The caller claimed the folder at admission, so this trusts it and
-        overwrites. A manager that argued here would leave a live turn with no
-        owner, which is the one state the index exists to prevent — and it is
-        what makes this the event that RETIRES a placeholder: the admission filed
-        `admit:<token>` because there was no process yet, and this is that
-        process, arriving with both names.
-
-        **A NAMELESS SEND IS FILED UNDER ITS RUN.** A brand-new chat's first send
-        has no session — Claude Code mints one somewhere inside the spawn — so
-        there was nothing to call the task and `started` filed nobody, which left
-        the folder reading free and let a second nameless send into it while the
-        first was still starting. The run id is a name: it exists the moment
-        `_start` returns, the page carries it on every message afterwards, and
-        `is_free` answers to it. When the session does arrive it simply re-files
-        under the better name."""
+        **A NAMELESS SEND IS FILED UNDER ITS RUN.** A brand-new chat's first
+        send has no session — Claude Code mints one somewhere inside the spawn
+        — so there was nothing to call the task and `started` filed nobody,
+        which left the folder reading free and let a second nameless send into
+        it while the first was still starting. The run id is a name: it exists
+        the moment `_start` returns, the page carries it on every message
+        afterwards, and `is_free` answers to it."""
         task_key = task_key or _text(run_id)
         if not folder or not task_key:
             return
         with self._txn() as keys:
+            rec = self._folder(folder)
+            previous = rec["owner"]
+            if previous is not None and self._owner_matches(
+                    previous, task_key, run_id, session_id):
+                # THE SEND THIS OWNER WAS ALREADY CLAIMED FOR, naming itself
+                # (or naming itself better than it had). `claim`/`claim_took`
+                # already counted it — this is a refile, not a new send, so
+                # `turns` is left exactly as it is.
+                previous["task"] = task_key
+                if run_id:
+                    previous["run_id"] = _text(run_id)
+                if session_id:
+                    previous["session_id"] = _text(session_id)
+                keys.add(task_key)
+                return
             self._take_everywhere(task_key, keys, except_folder=folder)
             rec = self._folder(folder)
             previous = rec["owner"]
-            if previous is not None and previous["task"] != task_key:
+            if previous is not None:
                 keys.add(previous["task"])
-            if previous is not None and previous["task"] == task_key:
-                # THE OWNER ITSELF, DECLARING AGAIN: another send dispatched
-                # into this same conversation while its last one was still
-                # going. Overwriting via `_own` would reset `turns` to one and
-                # let an EARLIER send's `turn_ended` release the folder out
-                # from under this one — the same case `claim_took` handles
-                # for its own door (Bugbot, PR #1194).
-                previous["run_id"] = _text(run_id) or previous["run_id"]
-                previous["session_id"] = _text(session_id) or previous["session_id"]
-                previous["turns"] = int(previous.get("turns") or 0) + 1
-            else:
-                self._own(rec, {"task": task_key, "entry_id": ""},
-                          _text(run_id), _text(session_id))
+            # A FRESH OWNER either way: no owner at all (the legacy/anonymous
+            # path `claim` never saw), or a placeholder/stranger this send's
+            # own name trumps because the caller (admit, run-now) already
+            # claimed the folder and this is trusted to say so. `_own`
+            # defaults `turns` to 1, which is right for both — a placeholder's
+            # `turns` was already 1 from the `claim` that filed it.
+            self._own(rec, {"task": task_key, "entry_id": ""},
+                      _text(run_id), _text(session_id))
             keys.add(task_key)
 
     def card_raised(self, task_key: str, run_id: str = "") -> None:

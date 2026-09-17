@@ -544,6 +544,75 @@ def test_stale_idle_does_not_retire_a_newer_turns_mark(claude_home):
         assert (row["live"], row["status"]) == (False, "done")
 
 
+# --------------------------------- the manager's own word: the TURN has ended
+
+def test_mark_turn_ended_retires_the_mark_and_outranks_a_stale_busy_row(claude_home):
+    """The queue manager's word off `turn_ended`/`exited` (a `result` row it
+    tailed) is sooner and more certain than anything this module infers on its
+    own: a registry row already sitting at `busy` from BEFORE this call has
+    nothing to say about a turn that has already ended."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    tasks_watch.mark_running(SID, ttl_sec=60)
+    _registry(claude_home, SID, status="busy")
+    tasks_watch.tick()
+    assert tasks_watch.is_marked_running(SID)
+    assert tasks_watch.live_from_registry(SID) == (True, 1787824059.664)
+
+    gen = tasks_watch.generation()
+    tasks_watch.mark_turn_ended(SID, "run-1")
+    assert not tasks_watch.is_marked_running(SID)
+    # Announced at once, like every other write here — no tick in between.
+    assert tasks_watch.wait(gen, 0) == (gen + 1, frozenset({SID}))
+
+    # `_registry()` above deliberately stamps its files ahead of real time (see
+    # its own comment — it is dodging the clock's granularity across rapid
+    # successive writes, not modelling a real clock), so the real
+    # `mark_turn_ended` call just above almost certainly landed at a `time.time()`
+    # BEFORE that stamp. Pin the ended stamp to what it would be on a real
+    # machine — strictly after the row it must outrank — so this test is about
+    # the ordering rule and not a race against that fixture's own trick.
+    tasks_watch._ended[SID] = tasks_watch._registry_mtime[SID] + 1.0
+    assert tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID) == (False, 1787824059.664)
+
+
+def test_a_registry_row_rewritten_busy_after_the_end_stamp_re_enables(claude_home):
+    """Only a REWRITE after the manager's word counts as new information — a
+    genuinely later turn started on the same session."""
+    tasks_watch.reset()
+    tasks_watch._registry[SID] = {"pid": 1, "sessionId": SID, "status": "busy",
+                                  "updatedAt": 1787824059664}
+    tasks_watch._registry_mtime[SID] = 1000.0
+    tasks_watch.mark_turn_ended(SID)
+    assert tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is False
+
+    ended_at = tasks_watch._ended[SID]
+    tasks_watch._registry_mtime[SID] = ended_at + 5.0
+    assert not tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID) == (True, 1787824059.664)
+
+
+def test_an_older_or_equal_registry_mtime_does_not_re_enable(claude_home):
+    """The SAME turn's row, re-read unchanged or re-asserting the same status
+    with no fresh write behind it, must not resurrect the ended stamp."""
+    tasks_watch.reset()
+    tasks_watch._registry[SID] = {"pid": 1, "sessionId": SID, "status": "busy",
+                                  "updatedAt": 1787824059664}
+    tasks_watch._registry_mtime[SID] = 1000.0
+    tasks_watch.mark_turn_ended(SID)
+    ended_at = tasks_watch._ended[SID]
+
+    tasks_watch._registry_mtime[SID] = ended_at  # equal: not a rewrite
+    assert tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is False
+
+    tasks_watch._registry_mtime[SID] = ended_at - 1.0  # older still
+    assert tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is False
+
+
 # --------------------------------------------- the card rings the queue
 
 

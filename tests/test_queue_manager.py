@@ -1306,16 +1306,43 @@ def test_a_follow_up_claim_absorbed_survives_one_turn_ended():
     assert owner_key(m) is None
 
 
-def test_started_by_the_owner_itself_also_counts_a_turn():
-    """`started` overwriting the owner unconditionally used to reset `turns`
-    to one every time — the same bug `claim_took` had, from the spawn-site
-    door instead of the ordinary one."""
+def test_started_never_counts_a_turn_even_declared_twice():
+    """`started` is a REFILE, never a claim (Bugbot, PR #1194 second pass): the
+    caller — admit, run-now — already counted this send with `claim`/
+    `claim_took` before it ever reaches `started`, so `started` overwriting the
+    owner unconditionally used to also increment `turns`, and one send crossing
+    both doors (admit, then the spawn site's refile) turned into two turns that
+    needed two `turn_ended`s to free — which never happened, because only one
+    send was ever in flight."""
     m = idle_world().manager()
     m.started(F1, "a", "run-a", "sess-a")
     m.started(F1, "a", "run-a", "sess-a")
-    assert m.owner(F1)["turns"] == 2
+    assert m.owner(F1)["turns"] == 1
     m.turn_ended("a", "run-a")
-    assert owner_key(m) == "a"
+    assert owner_key(m) is None
+
+
+def test_claim_then_started_for_the_same_send_counts_one_turn():
+    """The real sequence one send takes through `/api/run`: admit's `claim`
+    takes the folder, then the spawn site's `started` refiles the run/session
+    it returned. Bugbot, PR #1194: `started` used to count a second turn here
+    on top of `claim`'s, and `_folder_busy`'s own now-removed claim counted a
+    third — one send, three increments, and `turn_ended`'s single decrement
+    never brought `turns` back to zero."""
+    m = idle_world().manager()
+    assert m.claim(F1, "a", "run-a", "sess-a") is True
+    m.started(F1, "a", "run-a", "sess-a")
+    assert m.owner(F1)["turns"] == 1
+    m.turn_ended("a", "run-a")
+    assert owner_key(m) is None
+
+
+def test_started_on_a_folder_with_no_owner_files_one_turn():
+    """The legacy/anonymous path: a spawn `claim` never saw. `started` files a
+    fresh owner with `turns = 1`, exactly like any other first ownership."""
+    m = idle_world().manager()
+    m.started(F1, "a", "run-a", "sess-a")
+    assert m.owner(F1)["turns"] == 1
     m.turn_ended("a", "run-a")
     assert owner_key(m) is None
 

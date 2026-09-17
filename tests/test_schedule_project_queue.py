@@ -363,6 +363,25 @@ def test_run_now_into_its_own_folder_still_runs(folders, spawned, home,
     assert schedule.run_now(entry["id"])["ok"] is True
 
 
+def test_run_now_leaves_exactly_one_turn(folders, spawned, home, monkeypatch):
+    """Bugbot, PR #1194: `_claim_folder` claims the folder once, and the
+    post-send call in `run_now` must be `started` (a refile) — not a second
+    claim — or `turn_ended`'s one decrement never brings `turns` back to zero
+    and the folder never frees."""
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+
+    assert schedule.run_now(entry["id"])["ok"] is True
+
+    manager = schedule._qm()
+    owner = manager.owner(_key(folders["alpha"]))
+    assert owner is not None
+    assert owner["turns"] == 1
+
+    manager.turn_ended(owner["task"], owner["run_id"])
+    assert manager.owner(_key(folders["alpha"])) is None
+
+
 # ================================================== priority is never inherited
 
 
