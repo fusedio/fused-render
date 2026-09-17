@@ -31,7 +31,16 @@ import { useSyncExternalStore } from "react";
 import { JOB_POPUP_VISIBLE_MS } from "@platform/lib/jobs";
 import type { JobTier } from "@platform/lib/jobs";
 import { IS_EMBED, IS_TOP_EMBED } from "@platform/lib/router";
+import { isFocusedHere } from "@platform/lib/presence";
+import { labelForSource } from "@platform/lib/format";
 import type { NotificationCardAction } from "@platform/ui/NotificationCard";
+
+// `labelForSource` LIVES IN format.ts, not here — see that file's own header
+// comment for why (this module imports router.ts, which reads `location` at
+// module scope; format.ts has zero imports/side effects so `tasks-lib.ts`
+// can reach it without dragging that chain in). Re-exported so existing
+// `notify()` callers/tests that reach it via this module keep working.
+export { labelForSource } from "@platform/lib/format";
 
 // "trail" is deliberately UNREPRESENTABLE on client input — see
 // DECISIONS-toasts-become-notifications.md's "Retention narrows to error-or-
@@ -69,6 +78,40 @@ export interface NotificationInput {
    *  actionable-notifications' "every row goes somewhere"). Unused by the
    *  popup card. */
   page?: string;
+  /** OPT-IN ONLY (SPEC-quiet-notifications.md §2a) — the page/route this
+   *  message is ABOUT, for the "you're already looking at this" suppression
+   *  check ONLY (`isSuppressed` below). Deliberately never defaulted to the
+   *  raising document's own current page: that would suppress "Path copied"
+   *  and every other gesture confirmation whose only feedback IS the card.
+   *  Set this only where the page already shows the same result on screen
+   *  (the app install/run lifecycle messages this branch wires it for) —
+   *  and where a caller genuinely wants a finished/still-visible source to
+   *  go quiet. A caller that wants the "who raised this" caption WITHOUT
+   *  that suppression meaning (a task that already ended, so "the chat is
+   *  open" no longer means "already knows") sets `origin` instead — see its
+   *  own comment for why the two are not the same field. `toStored` still
+   *  falls back to `labelForSource(source)` when no explicit `origin` is
+   *  given, so every existing `source`-only caller keeps its caption exactly
+   *  as before. */
+  source?: string;
+  /** THE CAPTION, INDEPENDENT OF SUPPRESSION (2026-09-17 fix). Pre-computed
+   *  by the caller (typically `labelForSource(...)` — see `format.ts`) and
+   *  drawn verbatim as `.dl-origin`'s eyebrow text via `toStored`. This
+   *  field exists because `source` used to do BOTH jobs at once — "caption
+   *  this row" AND "suppress it when its page is open" — and the two are
+   *  not the same question. Removing `source` from a call site (as
+   *  `task-status-notify.ts`'s `in_progress -> done` branch did, correctly,
+   *  to stop presence-suppressing a FINISHED task) silently deleted the
+   *  caption too, because nothing else fed `toStored`'s caption computation.
+   *  A caller sets `origin` whenever it wants the "who made this" label
+   *  without opting into suppression; it sets `source` (with no `origin`)
+   *  when the old "caption AND suppress" pairing is what it actually wants;
+   *  it can set both if a future case genuinely needs a caption computed
+   *  differently from the suppression key. Never string-empty on purpose —
+   *  pass `undefined`, not `""`, when there is nothing to show (`toStored`
+   *  treats `""` the same as absent either way, but an explicit `undefined`
+   *  reads honestly at the call site). */
+  origin?: string;
 }
 
 export interface StoredNotification {
@@ -80,6 +123,34 @@ export interface StoredNotification {
   action?: NotificationCardAction;
   extraAction?: NotificationCardAction;
   page?: string;
+  /** GROUPING/UPDATION (user: "better notification grouping/updation for
+   *  same source") — the family this row belongs to: `page:<page>::<title>`
+   *  when it has a page, else `title:<title>`. Title is part of the key even
+   *  on the page branch (2026-09-17 fix) — `page` alone collided whenever two
+   *  DIFFERENT tasks fell back to the same per-folder/global destination
+   *  (`taskDestination`'s `taskHref ?? folderHref ?? "/tasks"`), silently
+   *  overwriting one task's completion with another's. A fresh `notify()`
+   *  call that lands in the SAME family as an already-retained row UPDATES
+   *  that row in place (same id, `count` incremented) instead of stacking a
+   *  second, byte-identical one, for as long as that row is still sitting in
+   *  the retained list undismissed — see `notify()`'s own comment on this. */
+  family: string;
+  /** How many times this family has fired while its row has sat retained —
+   *  1 the first time, incremented on each collapse. `MessageRowView`
+   *  (RepoUpdatesDock.tsx) reads this to show a repeat count once it exceeds
+   *  1. */
+  count: number;
+  /** When this row's content was last set (fresh `notify()` or a collapsed
+   *  repeat). Informational only — no longer gates the collapse window (see
+   *  `notify()`'s own comment: collapse now lasts as long as the row is
+   *  retained, not a fixed burst window). */
+  updatedAt: number;
+  /** A dimmed caption naming who raised this row — the message-side
+   *  counterpart to `Job.origin` (jobs.ts, `.dl-origin`/`caption` on
+   *  `NotificationCard`). Computed once at `notify()` time from `source` via
+   *  `labelForSource` below; "" (never stored — see `toStored`) draws no
+   *  element at all, same rule `Job.origin` follows. */
+  origin?: string;
   // Dismissed, but still rendered while its exit animation plays (see
   // TOAST_EXIT_MS). Only ever true on the POPUP — a retained row is simply
   // removed outright, it has no exit animation of its own to play.
@@ -203,6 +274,58 @@ function isRetained(input: NotificationInput, tier: JobTier): boolean {
   return Boolean(input.action || input.page);
 }
 
+// SUPPRESSION (SPEC-quiet-notifications.md §2a, D-A's "as far as each store
+// honestly can" for a client-raised message: it lives only in the document
+// that raised it, so it is suppressed only when THAT document is focused and
+// its source is on screen). Deliberately mirrors `isRetained`'s own
+// "attention, or carries a destination" shape rather than inventing a second,
+// subtly different actionability test — an error or an actionable message is
+// never suppressed, exactly as it is never left un-retained.
+function isSuppressed(input: NotificationInput, tier: JobTier): boolean {
+  if (!input.source) return false;
+  if (tier === "attention") return false;
+  if (input.action || input.page) return false;
+  return isFocusedHere(input.source);
+}
+
+/** See `StoredNotification.family`'s own doc comment.
+ *
+ * DEFECT (2026-09-17, live repro): `page` was ALSO tried as the row
+ * identity's other half, and that is wrong in the opposite direction from
+ * the one the DEFECT-3 comment above used to warn about. `page` here is
+ * `taskDestination(task)` -> `taskHref` (tasks-lib.ts), which for a task with
+ * a live session embeds that run's own PER-RUN `session_id`
+ * (`explorerUrl(task.target || task.project, task.session_id)`). Two
+ * separate runs of the identical task — the user's own "i ran it twice, I
+ * just want them grouped" case — therefore get two DIFFERENT `page` values
+ * and never collapse, no matter how identical their title and caption are.
+ * `page` is the wrong axis on both ends: too coarse when it falls back to a
+ * shared folder/global route (DEFECT 3), too fine when it carries a
+ * per-run session id (this fix).
+ *
+ * The axis that is actually stable across repeats of "the same work" is the
+ * CAPTION — "who/what made this" (`input.origin || labelForSource(input.source)`,
+ * exactly `toStored`'s own caption computation, kept in lockstep with it on
+ * purpose) — plus the title. A caption is set for every call site this
+ * collapse exists for (the finished-task notice sets `origin` to the task's
+ * project caption; other retained callers set `source`), so this is tried
+ * FIRST and, when it resolves to something non-empty, wins outright — page
+ * is not consulted at all in that case, which is exactly what fixes the
+ * repro (same caption, same title, different page -> same family).
+ *
+ * Only when there is no caption at all (a caller with neither `origin` nor
+ * `source`) does this fall back to the pre-existing `page`-then-`title`
+ * chain, so no existing call site's behavior changes: `page` alone is still
+ * not a row identity for that fallback (DEFECT 3's reasoning stands — two
+ * different captionless tasks sharing a folder-fallback page must not
+ * collapse), and `title` alone remains the last resort for messages with no
+ * destination and no caption at all. */
+function messageFamily(input: NotificationInput): string {
+  const caption = input.origin || labelForSource(input.source);
+  if (caption) return `caption:${caption}::${input.title}`;
+  return input.page ? `page:${input.page}::${input.title}` : `title:${input.title}`;
+}
+
 function toStored(input: NotificationInput, id: number): StoredNotification {
   return {
     id,
@@ -213,6 +336,15 @@ function toStored(input: NotificationInput, id: number): StoredNotification {
     action: input.action,
     extraAction: input.extraAction,
     page: input.page,
+    family: messageFamily(input),
+    count: 1,
+    updatedAt: Date.now(),
+    // `input.origin` wins when the caller gave one explicitly — see its own
+    // doc comment on `NotificationInput` for why this is a SEPARATE field
+    // from `source` rather than the same one doing double duty. Falling back
+    // to `labelForSource(input.source)` keeps every existing `source`-only
+    // caller's caption unchanged.
+    origin: input.origin || (labelForSource(input.source) || undefined),
     leaving: false,
   };
 }
@@ -296,6 +428,13 @@ function forwardToShell(n: StoredNotification): number | undefined {
       action: n.action,
       extraAction: n.extraAction,
       page: n.page,
+      // Forward the ALREADY-RESOLVED caption as `origin`, not `source` — the
+      // pane's own `n.origin` is `toStored`'s output (a label, not a
+      // suppression key), and the shell has no way to re-derive a
+      // `labelForSource` input from it. Forwarding it as `origin` reproduces
+      // the same caption on the shell's own copy without accidentally
+      // opting that copy into suppression it never asked for.
+      origin: n.origin,
     };
     return top?._fusedIngestNotification?.(input);
   } catch {
@@ -341,6 +480,20 @@ function refreshSnapshot(): void {
  *  updated in place and the same id comes back; otherwise a fresh id is
  *  minted exactly as if no id had been given. */
 export function notify(input: NotificationInput, replaceId?: number): number {
+  // Checked before anything pops or is retained, and before the replaceId
+  // branch: a suppressed repeat must not resurrect (or keep alive) whatever
+  // its earlier, unsuppressed call already popped.
+  if (isSuppressed(input, resolveTier(input))) {
+    if (replaceId !== undefined) {
+      // The thing being "still going" is now suppressed too (its source came
+      // into focus) — the same clear-not-leave-stale rule the popup's own
+      // exit path follows elsewhere in this function.
+      if (popup && popup.id === replaceId) dismissPopup(replaceId);
+      retained = retained.filter((n) => n.id !== replaceId);
+      refreshSnapshot();
+    }
+    return replaceId ?? -1;
+  }
   if (replaceId !== undefined) {
     if (popup && popup.id === replaceId && !popup.leaving) {
       const updated = toStored(input, replaceId);
@@ -394,13 +547,50 @@ export function notify(input: NotificationInput, replaceId?: number): number {
     }
   }
 
-  const id = nextId++;
-  const item = toStored(input, id);
+  // GROUPING/UPDATION (user: "better notification grouping/updation for
+  // same source") — a fresh, retained-worthy message that shares its family
+  // (see `messageFamily`) with an ALREADY-RETAINED row updates that row IN
+  // PLACE (same id, `count` incremented) rather than stacking a second,
+  // byte-identical one. NO TIME WINDOW (2026-09-17 fix, replacing an earlier
+  // `GROUP_GAP_MS`-gated version): the user's own motivating case — two runs
+  // of the same Claude task, finished far more than two minutes apart — is
+  // the plain reading of "better notification grouping/updation for same
+  // source": a row the user has not dealt with yet gets updated, not
+  // duplicated, no matter how long it has been sitting there. As long as the
+  // earlier row is still in `retained` (i.e. undismissed), a repeat lands on
+  // it; once it is dismissed, the family is gone and the next repeat starts
+  // a fresh row. Checked here, not folded into `isRetained`/`resolveTier`,
+  // because it is purely about WHERE an already-decided retained item lands,
+  // exactly the same layering `isSuppressed` above keeps relative to
+  // `isRetained`. A `silent`/non-retained message is never a collapse
+  // candidate (nothing to collapse INTO — it never reaches the retained list
+  // either way), so this only runs once `isRetained` already said yes.
+  //
+  // `GROUP_GAP_MS`/jobs.ts is untouched — server-side job grouping still uses
+  // its own burst window, unaffected by this change.
+  const tier = resolveTier(input);
+  const now = Date.now();
+  const collapseIdx = isRetained(input, tier)
+    ? retained.findIndex((n) => n.family === messageFamily(input))
+    : -1;
+
+  const id = collapseIdx !== -1 ? retained[collapseIdx].id : nextId++;
+  const base = toStored(input, id);
+  const item: StoredNotification =
+    collapseIdx !== -1 ? { ...base, count: retained[collapseIdx].count + 1, updatedAt: now } : base;
 
   if (isRetained(input, item.tier)) {
-    retained = capRetained([...retained, item]);
-    const shellId = forwardToShell(item);
-    if (shellId !== undefined) forwardedIds.set(id, shellId);
+    if (collapseIdx !== -1) {
+      retained = retained.map((n, i) => (i === collapseIdx ? item : n));
+      // Not re-forwarded (§4 pane->shell): the shell-side copy already
+      // exists under this same id (`forwardedIds` already maps it) — a
+      // collapse only changes this document's own content/count, not
+      // whether a shell copy needs minting.
+    } else {
+      retained = capRetained([...retained, item]);
+      const shellId = forwardToShell(item);
+      if (shellId !== undefined) forwardedIds.set(id, shellId);
+    }
   }
 
   // LATEST WINS: a fresh popup always replaces whatever is currently

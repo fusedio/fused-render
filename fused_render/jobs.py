@@ -34,6 +34,8 @@ module; keep it acyclic.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import math
 import os
 import re
@@ -227,6 +229,10 @@ PAGE_MAX = 1024
 # same room as `title`/`model` since it renders in the same kind of small
 # caption.
 ORIGIN_MAX = TITLE_MAX
+# §3 (SPEC-quiet-notifications.md): the client-side grouping key's own field
+# cap. A group id is either a job id (same shape/length as `id` itself) or a
+# short `sys:<name>` prefix, so `TITLE_MAX` is generous room for either.
+GROUP_MAX = TITLE_MAX
 # The model name is a dimmed SUFFIX on the title row, never the detail line —
 # detail is the one thing a running worker's progress ticks own, and a model
 # name concatenated in there would get overwritten by the next "step 2/4" and
@@ -240,9 +246,16 @@ MODEL_MAX = TITLE_MAX
 # always an fs path, which `origin_for_page` below names after the PROJECT
 # it belongs to instead of guessing from this table). This is the SAME
 # closed set of routes as `JOB_PAGE_ROUTES` in
-# `frontend/src/platform/lib/router.ts` — kept here, in one place, rather
-# than as a second competing table; if the two drift, the fix is a one-line
-# addition on whichever side is behind.
+# `frontend/src/platform/lib/router.ts`, which now derives its membership
+# from `ORIGIN_BY_ROUTE` in `frontend/src/platform/lib/originRoutes.ts` — the
+# client-side mirror of this exact dict, also consulted by
+# `labelForSource` (`format.ts`) so a client-raised notification's caption
+# names the same page the same way a server-raised job's does. Kept here, on
+# the Python side, as its own literal (Python can't import TS) rather than a
+# second competing table with independent content; `tests/test_jobs_api.py`'s
+# `test_origin_by_route_matches_the_client_table` parses `originRoutes.ts`
+# and diffs it against this dict so the two cannot silently drift — a route
+# added on one side without the matching entry on the other fails that test.
 _ORIGIN_BY_ROUTE: dict[str, str] = {
     "/ai-models/local": "Local models",
     "/ai-models/benchmark": "Benchmark",
@@ -386,6 +399,28 @@ class Job:
     # own repo root/output folder) or one of a handful of shell routes a few
     # server producers name directly. "" when no destination applies.
     page: str = ""
+    # WHO RAISED this job, for presence suppression only — never a click
+    # destination (that's `page`, above). For an ordinary report, `source`
+    # and `page` carry the SAME value (both come off the report's own
+    # `X-Fused-Page`), so nothing here changes for the common case. The two
+    # are DELIBERATELY DISTINCT for a render (`ai/supervisor.py`'s
+    # `_start_render`): `page` there ends up pointing at the render's own
+    # OUTPUT PATH once the caller supplied none (so a click opens the
+    # finished file — a pre-existing, deliberate fallback, see `page`'s own
+    # comment and `_start_render`'s docstring), which makes `page` useless
+    # as "was the user already looking at the page that asked for this" —
+    # comparing an absolute `.png` path against the shell's open routes can
+    # never match, so a suppression check reading `page` for a render is
+    # suppressing nothing, ever (SPEC-quiet-notifications.md bug 1). `source`
+    # is the fix: it NEVER inherits `page`'s output-path fallback (see
+    # `_start_render`, which always reports it as the caller's raw page, or
+    # ""), so a suppression check that reads `source` instead of `page` can
+    # actually match a render against the route that raised it. "" means
+    # "no known raiser" and must always be read as "cannot suppress, so
+    # notify" — never as "matches everything" or "matches nothing forever
+    # silently"; see `jobs.ts`'s `isRecentOnly`, which relies on
+    # `matchesSource("", "")` reading false for exactly this reason.
+    source: str = ""
     # A short, human-readable label naming WHAT RAISED this job — "Playground",
     # "Local models", "Benchmark", "Explorer", "Claude setup", "GitHub",
     # "Scheduler", "App install", or a user app's own name. Not stored as a
@@ -440,6 +475,22 @@ class Job:
     # through the SAME id, so each must restate its own tier explicitly
     # rather than relying on what an earlier report on that id left behind.
     tier: str = TRAIL
+    # §3 (SPEC-quiet-notifications.md): the client-side grouping key —
+    # `frontend/src/shell` groups running/terminal rows by `(page, group)`
+    # into one row once a group has more than one live member (D-C's pop
+    # rule, the attention-stripe/"N of M done" rendering). Defaulted
+    # CENTRALLY, once, at creation (`upsert`'s `_default_group`) from the
+    # id's own `sys:<name>:` prefix when it has one, else the job id itself
+    # — the latter is a group of exactly one member, which is what makes "a
+    # lone-member group renders and behaves exactly as today" true by
+    # construction rather than by a client-side special case: a group query
+    # that never finds a second member is indistinguishable from no
+    # grouping at all. Producers may set it explicitly in a report body (no
+    # `server=True` gate — unlike `tier`/`waiting_for`, a forged `group`
+    # can only misfile a row's own row among other rows, never hide a
+    # failure or fake being finished, so the page-forgery risk those two
+    # guard against does not apply here).
+    group: str = ""
 
 
 _lock = threading.Lock()
@@ -519,12 +570,72 @@ def clean_id(value: object) -> str:
     return text
 
 
+# The `sys:<name>:` shape a handful of server-owned id families already
+# share (`sys:ai-image:<id>`, `sys:ai-model:<repo>`, `sys:schedule:<id>`) —
+# everything up to and including the SECOND colon names the family, and
+# everything after it is per-run. A page-owned id (no `sys:` prefix at all,
+# or a `sys:` id with no second colon) has no such family, and `_default_
+# group` falls back to the whole id, i.e. a group of one.
+_GROUP_PREFIX_RE = re.compile(r"^(sys:[^:]+):")
+
+
+def _default_group(job_id: str) -> str:
+    """§3: the default `Job.group` for an id with no explicit one — see the
+    field's own comment on `Job` for why "a group of one" (the `else`
+    branch here) is what makes an ungrouped row's behaviour identical to
+    today's."""
+    m = _GROUP_PREFIX_RE.match(job_id)
+    return m.group(1) if m else job_id
+
+
 # -------------------------------------------------------------------- mutation
 
+# The request-scoped default for `upsert`'s `source=` (SPEC-quiet-
+# notifications.md bug 2). Set for the duration of one request by
+# `server/common.py`'s `no_cache_and_log` middleware, from that request's own
+# `X-Fused-Source` header — never from anything in a request body, the same
+# spoof-proofing rule `X-Fused-Page` already gets (`server/routers/jobs.py`).
+#
+# A `ContextVar` is naturally scoped to the current asyncio Task, i.e. to the
+# request handling it, which is exactly the lifetime this needs — and, just as
+# usefully, it does NOT propagate into a `threading.Thread` a handler spawns
+# (each new thread starts with a fresh/default context). That is not a
+# limitation to work around: a render's LATER ticks run inside such a spawned
+# thread, with no request to inherit from, and correctly see "" here — which
+# is fine, because `job.source` is sticky (only a truthy value overwrites) and
+# the OPENING tick, which runs synchronously inside the request handler before
+# any thread is spawned, already set it. Background/scheduled work with no
+# originating request (envinstall, schedule.py, the update manager, ...) never
+# has this set either, and an empty ambient source degrades to "keep
+# notifying" (the default in `Job.source`'s own comment), never to silence.
+_ambient_source: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "_ambient_source", default=""
+)
 
-def upsert(body: dict, *, page: str = "", origin: str | None = None,
+
+@contextlib.contextmanager
+def ambient_source(value: str):
+    """Make `value` the request-scoped default for `upsert`'s `source=` for
+    the duration of the `with` block. See `_ambient_source`'s own comment for
+    why a `ContextVar` is the right shape here, and `upsert`'s docstring for
+    why an explicit `source=` argument still always wins over this default."""
+    token = _ambient_source.set(value)
+    try:
+        yield
+    finally:
+        _ambient_source.reset(token)
+
+
+def upsert(body: dict, *, page: str = "", source: str = "", origin: str | None = None,
            now: float | None = None, server: bool = False) -> dict:
     """Create or update one record from a reporter's POST body.
+
+    `source=`, like `page=` and `origin=`, is threaded in as its own argument
+    and is NEVER settable from the body — see `Job.source`'s own comment for
+    what it means and why it exists. A truthy value always wins, on every
+    tick, the same way a truthy `page=` always overwrites; unlike `page=`, no
+    caller should ever pass an output-path fallback here — an empty `source`
+    on a given tick simply leaves whatever `source` an earlier tick set.
 
     Upsert rather than create+update: a reporter's every progress tick is the
     same call with the same id, so there is one code path whether this is the
@@ -573,8 +684,22 @@ def upsert(body: dict, *, page: str = "", origin: str | None = None,
                 # A late tick from the run the user already closed. Answered as
                 # if it had been stored, so a reporter mid-loop does not start
                 # erroring — it simply has no row any more.
+                # Finding 5: this synthetic stand-in never went through
+                # `upsert`'s own default-at-creation path, so it defaulted
+                # `group` to `Job`'s own bare `""` — the same "blank group
+                # collides with every other blank-group job on the page"
+                # hazard the real creation path just closed. It is never
+                # stored in `_jobs`, but it is still serialized back to the
+                # reporter, so it gets the same id-derived default.
                 return _public(
-                    Job(id=job_id, title="", state=RUNNING, started_at=now, updated_at=now),
+                    Job(
+                        id=job_id,
+                        title="",
+                        state=RUNNING,
+                        started_at=now,
+                        updated_at=now,
+                        group=_default_group(job_id),
+                    ),
                     now,
                 )
 
@@ -592,6 +717,7 @@ def upsert(body: dict, *, page: str = "", origin: str | None = None,
                 started_at=now,
                 updated_at=now,
                 owner=OWNER_SERVER if job_id.startswith(SERVER_ID_PREFIX) else OWNER_PAGE,
+                group=_default_group(job_id),
             )
             _jobs[job_id] = job
         elif "title" in body:
@@ -609,6 +735,43 @@ def upsert(body: dict, *, page: str = "", origin: str | None = None,
             job.kind = _one_of(body.get("kind"), KINDS, "kind", job.kind)
         if "unit" in body:
             job.unit = _text(body.get("unit"), 16)
+        if "group" in body:
+            # No `server=True` gate — see `Job.group`'s own comment on why a
+            # page setting this carries none of the forgery risk `tier`/
+            # `waiting_for` guard against.
+            #
+            # Finding 5 (code review 2026-09-16): this used to store an
+            # empty/blank `group` LITERALLY, on the reasoning that "only the
+            # keys present are applied" — a tick that explicitly sent
+            # `"group": ""` was read as "clear it to empty" rather than
+            # "reinstate the id-derived default". That reasoning held for
+            # every other field in this function because an empty value for
+            # THOSE fields just means "nothing to show" — but `group` is a
+            # CLUSTERING KEY: two otherwise-unrelated jobs on the same page
+            # that both end up with `group == ""` are, from the client's
+            # `familyKey` (`page + group`) onward, THE SAME FAMILY, and can
+            # be folded together into one nonsense row the moment they also
+            # land in the same activity burst. An empty/blank `group` is
+            # never a meaningful clustering key on its own — it falls back to
+            # `_default_group(job_id)` instead, the same id-derived default
+            # creation already applies, so "explicitly blank" always means
+            # "back to this job's own default", never "join whatever else on
+            # this page is also blank". (`test_the_default_group_is_set_once
+            # _at_creation_not_reapplied_each_tick` used to pin the old,
+            # literal-empty-string behavior; it now pins this fallback
+            # instead — see tests/test_jobs_api.py.)
+            #
+            # One exception: a `sys:`-prefixed value is off limits for a
+            # non-server report, the same spoof-proofing `page` already gets
+            # from `X-Fused-Page` rather than the request body — otherwise an
+            # ordinary page could file its own row under a system group's row
+            # and borrow its title. Silently dropped (the value is simply not
+            # applied), same shape as the `tier`/`waiting_for` gate above,
+            # rather than raising: the worst case here is a misfiled row, not
+            # a hidden failure, so a hard error would be disproportionate.
+            group = _text(body.get("group"), GROUP_MAX)
+            if server or not group.startswith(SERVER_ID_PREFIX):
+                job.group = group if group else _default_group(job_id)
         if "done" in body:
             job.done = _number(body.get("done"), "done")
         if "total" in body:
@@ -658,6 +821,23 @@ def upsert(body: dict, *, page: str = "", origin: str | None = None,
             job.origin = _text(origin, ORIGIN_MAX)
         if page:
             job.page = _page_text(page)
+        if not source:
+            # Ambient fallback (SPEC-quiet-notifications.md bug 2): a producer
+            # that has no real `page` of its own (the AI Models Playground,
+            # which is shell-level, not a page iframe) and never threads an
+            # explicit `source=` either (text generation, transcribe, capture
+            # — every one of these forgot, twice, in live testing) used to
+            # resolve `source` to "" here, which is indistinguishable from "no
+            # attribution" and suppresses nothing. `_ambient_source` is the
+            # request-scoped default `no_cache_and_log` (server/common.py)
+            # stamps from `X-Fused-Source` for the DURATION of the request
+            # that is minting this tick — so a producer gets a correct source
+            # by doing nothing, and has to go out of its way (spawn a thread,
+            # as the renders already do) to lose it. An explicit truthy
+            # `source=` above always still wins; this only fills the gap.
+            source = _ambient_source.get()
+        if source:
+            job.source = _page_text(source)
 
         if "state" in body:
             state = _one_of(body.get("state"), STATES, "state", job.state)

@@ -77,6 +77,11 @@ export function installDomShim(): void {
     removeEventListener() {},
     setTimeout: globalThis.setTimeout.bind(globalThis),
     clearTimeout: globalThis.clearTimeout.bind(globalThis),
+    // `presence.ts`'s heartbeat (installed as an import side effect, exactly
+    // like `notifications.ts`'s own `installIngest()`) reaches for these on
+    // EVERY suite that transitively imports it, not just the ones actually
+    // testing presence — missing here throws between tests rather than in
+    // one, the same class of bug this shim's own header warns about.
     setInterval: globalThis.setInterval.bind(globalThis),
     clearInterval: globalThis.clearInterval.bind(globalThis),
     // The same class as the global, and it has to be the SAME one: Base UI's

@@ -19,19 +19,29 @@ function ev(over: Partial<ScheduleEvent> = {}): ScheduleEvent {
 }
 
 describe("toastForEvent", () => {
-  it("says nothing for a run that finished successfully", () => {
-    // A task or scheduled message that just worked is not news — it is the
-    // Tasks page's job to carry the result, not a toast's. Nothing else
-    // narrates `done`: tasks are gone from Activity (D661) and excluded from
-    // Notifications routing, but that is fine, because a toast for a plain
-    // success was never anyone asking to be told something went wrong.
-    expect(toastForEvent(ev({ kind: "done" }))).toBeNull();
+  it("reports a run that finished successfully as a suppressible info toast", () => {
+    // SPEC-quiet-notifications.md §5 reverses the old "done is not news"
+    // rule: it IS news when nobody was looking, so it now produces a toast —
+    // but one that suppresses itself (via `source`) when the run's own
+    // chat/project is already on screen, and is never retained.
+    const t = toastForEvent(ev({ kind: "done", target: "/Users/x/proj" }));
+    expect(t.tone).toBe("info");
+    expect(t.source).toBe("/Users/x/proj");
+    expect(t.msg).toContain("finished");
   });
 
-  it("treats a failure as needing a person", () => {
+  it("reports a scheduled run starting the same suppressible way", () => {
+    const t = toastForEvent(ev({ kind: "started", target: "/Users/x/proj" }));
+    expect(t.tone).toBe("info");
+    expect(t.source).toBe("/Users/x/proj");
+    expect(t.msg).toContain("started");
+  });
+
+  it("treats a failure as needing a person, never suppressed", () => {
     const t = toastForEvent(ev({ kind: "failed" }));
-    expect(t).not.toBeNull();
-    expect(t!.msg).toContain("failed");
+    expect(t.tone).toBe("error");
+    expect(t.source).toBeUndefined();
+    expect(t.msg).toContain("failed");
   });
 
   it("distinguishes missed from failed in the wording", () => {
@@ -39,14 +49,14 @@ describe("toastForEvent", () => {
     // window — so calling it "failed" would misdescribe it. It still needs a
     // person: the user asked for something that did not happen.
     const t = toastForEvent(ev({ kind: "missed" }));
-    expect(t).not.toBeNull();
-    expect(t!.msg).toContain("was missed");
-    expect(t!.msg).not.toContain("failed");
+    expect(t.tone).toBe("error");
+    expect(t.msg).toContain("was missed");
+    expect(t.msg).not.toContain("failed");
   });
 
   it("identifies the message by what the user typed", () => {
     // A toast saying only "a scheduled message failed" sends the user hunting.
-    expect(toastForEvent(ev({ kind: "failed", message: "deploy the docs" }))!.msg)
+    expect(toastForEvent(ev({ kind: "failed", message: "deploy the docs" })).msg)
       .toContain("deploy the docs");
   });
 });

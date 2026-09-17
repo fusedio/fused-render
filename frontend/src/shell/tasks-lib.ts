@@ -36,6 +36,7 @@
 // status is re-derived, no lane membership is re-decided (taskColumn still asks
 // the server), and every key is a time the server itself sent.
 import type { Task, TaskMessage, TaskPulseTask } from "@platform/lib/api";
+import { labelForSource } from "@platform/lib/format";
 // Imported as well as re-exported below: `sortLane` reads it, and a bare
 // `export ... from` binds nothing in this module's own scope.
 import {
@@ -4823,6 +4824,12 @@ export interface AttentionRow {
   title: string;
   /** Where clicking the row lands — always a real destination (see below). */
   href: string;
+  /** Who raised this row — the row-level counterpart to `Job.origin`/a
+   *  message's `origin` (notifications.ts), reusing that same
+   *  `labelForSource` helper rather than a third labeller: a waiting task's
+   *  own `source` for this purpose is its target/project folder. "" (no
+   *  project/target at all) draws no caption. */
+  origin: string;
 }
 
 /**
@@ -4854,6 +4861,15 @@ export function attentionRows(tasks: TaskPulseTask[]): AttentionRow[] {
       taskId: task.task_id,
       title: task.title,
       href: taskHref(task) ?? folderHref(task) ?? "/tasks",
+      // ADDITION 1 (live testing, 2026-09-17): `project` FIRST, matching
+      // `folderHref`'s (schedule-lib.ts) own established order — do NOT swap
+      // this back to `target || project`. A task made from inside an app
+      // targets the app's ENTRY PAGE (".../index.html" — see folderHref's own
+      // comment), so target-first here produced the caption "index" for a
+      // Transcripto task ("Transcripto YouTube transcriber finished" / "index").
+      // `project` names the containing app/folder, which is what a caption is
+      // for; `target` is only a fallback for a task with no project at all.
+      origin: labelForSource(task.project || task.target),
     });
   }
   return rows;

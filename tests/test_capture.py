@@ -319,6 +319,23 @@ def test_no_page_header_leaves_the_row_with_no_destination(backend, client, home
     assert row["page"] == ""
 
 
+def test_the_rows_source_comes_from_the_ambient_X_Fused_Source(backend, client, home):
+    """SPEC-quiet-notifications.md bug 2: `capture/__init__.py`'s `_report`
+    calls `jobs.upsert(..., page=session.page, server=True)` with no
+    `source=` of its own — the ambient default in `jobs.upsert` is the only
+    thing that can put anything in `row["source"]` here. Sent with no
+    `X-Fused-Page` (so `page` stays empty and cannot be mistaken for the
+    source), the header must still land."""
+    started = client.post(
+        "/api/capture/start", json={"mode": "screen"},
+        headers={**H, "X-Fused-Source": "/ai-models/playground"},
+    ).json()
+    row = next(j for j in client.get("/api/jobs").json()["jobs"]
+              if j["id"] == started["jobId"])
+    assert row["page"] == ""
+    assert row["source"] == "/ai-models/playground"
+
+
 def test_stop_keeps_the_file_and_finishes_the_row(backend, client, home):
     started = client.post("/api/capture/start", json={"mode": "audio"},
                           headers=H).json()

@@ -345,6 +345,13 @@ export default function AppPage({
       notify({
         title: "Could not change the icon: " + (e as Error).message,
         tone: "error",
+        // Opt-in only (SPEC-quiet-notifications.md §2a) — this app's own
+        // page already shows the icon that didn't change, so a suppression
+        // check is meaningful here. A no-op today (this is always
+        // tone:"error", which `isSuppressed` never suppresses), but it keeps
+        // the two "raised on this app's own page" call sites the spec
+        // named consistent with each other.
+        source: dir,
       });
     }
     loadIcon();
@@ -509,6 +516,9 @@ export default function AppPage({
       notify({
         title: "Could not export " + slug + ": " + (e as Error).message,
         tone: "error",
+        // See the icon-pick notify() above — same reasoning, same no-op
+        // today (an error is never suppressed).
+        source: dir,
       });
     } finally {
       setExporting(false);
