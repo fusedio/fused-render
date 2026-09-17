@@ -8,7 +8,7 @@ import json
 import os
 
 from fused_render.index import config as index_config
-from fused_render.index.config import IndexConfig, load_config, save_config
+from fused_render.index.config import IndexConfig, index_dir, load_config, save_config
 
 
 def test_index_dir_follows_the_current_home(monkeypatch, tmp_path):
@@ -18,6 +18,42 @@ def test_index_dir_follows_the_current_home(monkeypatch, tmp_path):
     second = load_config().dir
     assert first == str(tmp_path / "one" / "index")
     assert second == str(tmp_path / "two" / "index")
+
+
+def test_index_dir_files_kind_is_the_unchanged_default_location(monkeypatch, tmp_path):
+    """"files" is not a new kind carved out of the old layout — it IS the old
+    layout, byte for byte, so a store built before kinds existed is still
+    found without a migration step."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    assert index_dir() == str(tmp_path / "home" / "index")
+    assert index_dir("files") == str(tmp_path / "home" / "index")
+
+
+def test_index_dir_nests_other_kinds_under_the_store(monkeypatch, tmp_path):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    assert index_dir("apps") == str(tmp_path / "home" / "index" / "apps")
+
+
+def test_load_config_defaults_to_the_files_kind_location(monkeypatch, tmp_path):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    assert load_config().dir == index_dir("files")
+
+
+def test_load_config_honors_an_explicit_kind(monkeypatch, tmp_path):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    cfg = load_config(kind="apps")
+    assert cfg.dir == str(tmp_path / "home" / "index" / "apps")
+    assert cfg.kind == "apps"
+
+
+def test_config_kind_defaults_to_files():
+    assert IndexConfig().kind == "files"
+
+
+def test_save_config_preserves_a_non_files_kind(tmp_path):
+    cfg = IndexConfig(dir=str(tmp_path / "ix"), kind="apps")
+    saved = save_config(cfg)
+    assert saved.kind == "apps"
 
 
 def test_index_dir_nests_under_a_branch(monkeypatch, tmp_path):
@@ -75,6 +111,12 @@ def test_to_dict_from_dict_round_trip_carries_the_store_location(tmp_path):
     assert clone.ignore == ["a"]
     assert clone.nproc == 3
     assert clone.rules.is_ignored("/x/a")
+
+
+def test_to_dict_from_dict_round_trip_carries_the_kind(tmp_path):
+    cfg = IndexConfig(dir=str(tmp_path / "ix"), kind="apps")
+    clone = IndexConfig.from_dict(json.loads(json.dumps(cfg.to_dict())))
+    assert clone.kind == "apps"
 
 
 def test_rules_recompile_when_the_ignore_list_changes(tmp_path):

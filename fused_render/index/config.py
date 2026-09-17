@@ -31,9 +31,20 @@ def default_nproc() -> int:
     return max(2, min(10, os.cpu_count() or 4))
 
 
-def index_dir() -> str:
-    """The index store for this home (FUSED_RENDER_HOME / branch aware)."""
-    return os.path.join(storage.home_dir(), "index")
+def index_dir(kind: str = "files") -> str:
+    """The store for one index (FUSED_RENDER_HOME / branch aware).
+
+    "files" is not a kind carved out of the original single-index layout —
+    it IS that layout, unchanged: `home_dir()/index`, with nothing appended.
+    That is a deliberate zero-migration guarantee, not an accident of
+    argument defaults — a store built before kinds existed must still be
+    found at exactly this path, or every existing install would need a
+    rebuild the moment this shipped. Every other kind nests under it
+    (`home_dir()/index/<kind>`), keyed by name so a third-party kind and a
+    built-in one can never collide on disk as long as their names differ.
+    """
+    base = os.path.join(storage.home_dir(), "index")
+    return base if kind == "files" else os.path.join(base, kind)
 
 
 @dataclass
@@ -42,6 +53,12 @@ class IndexConfig:
     `load_config()`; pass it explicitly to everything downstream."""
 
     dir: str = field(default_factory=index_dir)
+    # Which registered IndexKind (fused_render.index.kinds) this store holds
+    # rows for. "files" is the original, single hardcoded schema — every
+    # other value names a plugin's kind and is carried through to_dict/
+    # from_dict so a worker process rebuilding this config from spec.json
+    # extracts against the right kind rather than defaulting back to files.
+    kind: str = "files"
     # RAW lines, exactly as the user typed them — comments and blanks
     # included. This is an authored document (the Preferences panel documents
     # `#` comments), so it is stored verbatim and parsed at use time by
@@ -116,28 +133,32 @@ class IndexConfig:
         run under a different cwd, and two derivations of the store location
         is exactly how a scan ends up compacting into a directory nobody
         reads."""
-        return {"dir": self.dir, "ignore": list(self.ignore), "nproc": self.nproc,
-                "shard_rows": self.shard_rows, "part_rows": self.part_rows,
-                "split_dirs": self.split_dirs}
+        return {"dir": self.dir, "kind": self.kind, "ignore": list(self.ignore),
+                "nproc": self.nproc, "shard_rows": self.shard_rows,
+                "part_rows": self.part_rows, "split_dirs": self.split_dirs}
 
     @classmethod
     def from_dict(cls, d: dict) -> "IndexConfig":
-        known = {"dir", "ignore", "nproc", "shard_rows", "part_rows",
+        known = {"dir", "kind", "ignore", "nproc", "shard_rows", "part_rows",
                  "split_dirs", "roots"}
         return cls(**{k: v for k, v in (d or {}).items() if k in known})
 
 
-def load_config(dir: str | None = None) -> IndexConfig:
+def load_config(dir: str | None = None, kind: str = "files") -> IndexConfig:
     """The persisted config (`<index>/config.json`), falling back to defaults
     for anything absent or unparseable. A missing/corrupt file is not an
     error: the engine's whole configuration has usable defaults, and refusing
     to index because a JSON file got truncated would be worse than indexing
-    with them."""
-    cfg_dir = dir or index_dir()
+    with them.
+
+    `dir` picks the store directly (as every existing caller already does);
+    `kind` only matters when `dir` is omitted, to resolve the default
+    location for a kind other than "files" (see `index_dir`)."""
+    cfg_dir = dir or index_dir(kind)
     raw = storage.read_json(os.path.join(cfg_dir, "config.json"))
     if not isinstance(raw, dict):
         raw = {}
-    cfg = IndexConfig(dir=cfg_dir)
+    cfg = IndexConfig(dir=cfg_dir, kind=kind)
     ignore = raw.get("ignore")
     if isinstance(ignore, list):
         # Verbatim: only the shape is enforced here, never the content.
@@ -153,4 +174,4 @@ def save_config(cfg: IndexConfig) -> IndexConfig:
     the config as it now reads from disk."""
     storage.write_json(cfg.config_json,
                        {"ignore": list(cfg.ignore), "roots": list(cfg.roots)})
-    return load_config(cfg.dir)
+    return load_config(cfg.dir, kind=cfg.kind)
