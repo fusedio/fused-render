@@ -92,10 +92,15 @@ export function FusedAccountSection() {
   useEffect(() => {
     if (!loggingIn) return;
     let cancelled = false;
+    // Set once the completed login is seen, so the ticks that land while
+    // `refresh` is still asking whoami neither re-run it nor fall into the
+    // "child gone" branch (the child exits right after writing the file).
+    let completing = false;
     const id = window.setInterval(() => {
+      if (completing) return;
       void getCanvasesStatus()
         .then((s) => {
-          if (cancelled) return;
+          if (cancelled || completing) return;
           // The raw tick is NOT stored or published: `logged_in` here is only
           // the credentials file existing, and after a whoami 401 downgraded
           // this page to signed-out, a cancelled or failed re-login must not
@@ -103,9 +108,17 @@ export function FusedAccountSection() {
           // is read for its two verdicts only; `refresh` (whoami-vouched) is
           // the one writer of `status` once the login completes.
           if (s.logged_in && s.creds_stamp !== loginStampRef.current) {
-            setLoggingIn(false);
+            // `loggingIn` drops only AFTER `refresh` has written the vouched
+            // status: dropping it first showed the stale signed-out row — an
+            // enabled Sign in button — for the whoami round trip, and a press
+            // in that gap started a second login.
+            completing = true;
             setError(null);
-            void refresh();
+            refresh()
+              .catch((e) => !cancelled && setError((e as Error).message))
+              .finally(() => {
+                if (!cancelled) setLoggingIn(false);
+              });
           } else if (!s.login_in_flight) {
             setLoggingIn(false);
             setError("Sign-in was not completed — try again.");
