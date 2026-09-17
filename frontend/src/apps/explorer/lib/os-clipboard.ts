@@ -14,6 +14,7 @@ import { readOsClipboard } from "@platform/lib/api";
 import {
   beginOsObservation,
   commitOsToken,
+  getClipboard,
   getClipboardEpoch,
   getLastSeenOsToken,
   setClipboard,
@@ -39,7 +40,7 @@ export async function reconcileOsClipboard(): Promise<void> {
     return;
   }
 
-  if (!os.supported || os.paths.length === 0) return;
+  if (!os.supported) return;
   // Superseded mid-read (see above). Neither the paths nor the token are
   // adopted: recording the token would make the NEXT reconcile treat this
   // clipboard as already seen and skip it for good.
@@ -53,6 +54,19 @@ export async function reconcileOsClipboard(): Promise<void> {
   if (os.token === getLastSeenOsToken()) return;
 
   commitOsToken(seq, os.token);
+
+  if (os.paths.length === 0) {
+    // An empty read is either "no bridge" (already returned above) or a real
+    // OS clipboard holding no files — cleared, or overwritten with text/an
+    // image. That IS evidence a pending COPY has expired, since a copy is
+    // only ever a view of what's on the OS clipboard and there's nothing
+    // there for it to be a view of any more. It is never evidence about a
+    // CUT: a cut is app-local state that was never published, so nothing the
+    // OS clipboard says — full, empty, or changed — can confirm or refute it.
+    if (getClipboard()?.op === "copy") setClipboard(null, false);
+    return;
+  }
+
   // Always a copy. No platform exposes a reliable cut-vs-copy flag on read,
   // and honouring one would mean deleting the user's source files on a guess.
   setClipboard({ paths: os.paths, op: "copy" }, false);
