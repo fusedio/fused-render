@@ -340,3 +340,146 @@ dependent skip), plus a combined run with `tests/test_index_freshness.py`,
 `tests/test_index_api.py`, `tests/test_index_runner.py`,
 `tests/test_index_store.py` and `tests/test_search_index.py` (269 passed, 1
 skipped) to check for cross-file regressions from the import/refactor.
+
+## Review findings
+
+A code review of the branch above found six issues. Each is fixed as its own
+commit; this section records what changed and, for the two MEDIUM findings,
+which of the reviewer's offered remedies was chosen and why.
+
+**[HIGH] The export's display name never reached the disk write.**
+`exportAppFile` (`frontend/src/platform/lib/appShot.ts`) called
+`saveAppFileToDisk(app.path, preview)`, which only ever wrote to the app
+folder's own basename — `AppPage.tsx` and `EntryActionsMenu.tsx` both build a
+version-suffixed `exportName` specifically so a v7 snapshot export cannot
+land under the same name as a live export, but that name had nowhere to go
+once it reached this function. Fixed on both ends: `saveAppFileToDisk`
+(`frontend/src/platform/lib/api.ts`) gained a `name` parameter, sent as its
+own form field, and `exportAppFile` now passes `app.name` through to it.
+Server-side, `api_appfile_export_to_disk`
+(`fused_render/server/routers/appfile.py`) gained a `name` form field and a
+`_export_file_name` helper that uses the caller's name when given (sanitized
+through `os.path.basename`, so a request body can never smuggle in a
+directory component) and falls back to the app folder's own basename
+otherwise — the fallback and the existing collision-avoidance both still
+apply to whichever name is chosen.
+
+Bundled with the LOW finding below into one commit: both are edits to the
+same ~15-line `saveAppFileToDisk` function, and splitting them into separate
+commits would mean patching adjacent, overlapping lines twice for no
+independent reason — neither change is useful without the other once both
+are known.
+
+Tests: `frontend/src/platform/lib/appShot.test.ts` (new test asserting
+`exportAppFile` calls `saveAppFileToDisk(app.path, app.name, preview)`),
+`frontend/src/platform/lib/api.test.ts` (new file), `tests/test_appfile.py`
+(new `test_export_to_disk_uses_the_callers_display_name`, covering the
+custom name, its own collision-avoidance, and the no-name fallback).
+
+**[HIGH] `note_index_mutation` was queuing a rescan of the wrong folder.**
+`index_touch._folder_of` always computes the PARENT of whatever path it is
+given — every other caller in `fused_render/server/fs_mutate.py` passes a
+file/entry path for exactly that reason. The export route instead called
+`note_index_mutation(dest_dir)`, so the folder actually queued for rescan was
+Downloads' own parent (the home folder), not Downloads. Fixed by calling
+`note_index_mutation(out_path)` (the file just written) in
+`fused_render/server/routers/appfile.py`. `SPEC-index-freshness-and-export.md`
+(~line 82) described the buggy call as the contract; corrected it to state
+the file-vs-folder rule explicitly.
+
+`tests/test_appfile.py`'s
+`test_export_to_disk_writes_the_real_file_and_notes_the_mutation` asserted
+`noted == [str(dest_dir)]`, locking the bug in — changed to
+`noted == [out_path]`.
+
+**[MEDIUM] The compaction merge statement itself was unheartbeated.**
+The per-partition heartbeat in `fused_render/index/store.py` fires after
+each partition's `COPY`, but the dominant cost on a large merge is the
+single blocking `CREATE TEMP TABLE merged AS SELECT ... QUALIFY
+row_number() ... ORDER BY path` statement that runs before that loop even
+starts — with `ABANDONED_RUN_S` now 90s (down from 300s), a merge exceeding
+90s has no heartbeat at all during the part of it most likely to take that
+long.
+
+Of the three remedies considered: splitting the merge statement was ruled
+out because the `QUALIFY row_number()` dedup needs to see every candidate
+row for a path at once to pick the newest one — there is no boundary to
+split it on without either re-reading all the input twice or risking picking
+the wrong row. Raising `ABANDONED_RUN_S` again was ruled out per the task's
+own framing: it does not fix the gap, it only widens the window the gap can
+hide in, and this branch had just lowered that constant for its own reasons.
+A heartbeat thread alongside the blocking call was judged safe and is what
+was implemented: `_heartbeat_while` runs on its own thread and only calls
+`phase(...)` (which writes to `events.jsonl`) — it never touches the DuckDB
+connection `con`, so there is no concurrent-query hazard, and it is always
+joined (via `finally`) before the main thread's next statement, so nothing
+ever writes to the run directory from two threads at once. The interval
+(`_MERGE_HEARTBEAT_S = 20.0`) is comfortably under `ABANDONED_RUN_S` (90s).
+
+Tests: `tests/test_index_store.py`
+(`test_the_blocking_merge_statement_itself_heartbeats`, which proxies
+`background_connect()` to sleep only during the `CREATE TEMP TABLE merged`
+statement and asserts more than one heartbeat phase lands during that
+sleep).
+
+**[MEDIUM] One export produced two popup notifications.**
+`AppPreviewCard.tsx`'s export flow raises its own `notify()` popup (with the
+"Reveal folder"/"Open file" two-action UX) once `saveAppFileToDisk` resolves,
+while the server's job row for the same export also pops via `popupJobs`
+(defaulting to the `TRAIL` tier, which is not filtered).
+
+Of the two remedies offered — giving the job row `tier: "silent"`, or
+dropping the client-side `notify()` — the tier change was chosen.
+`popupJobs` (`frontend/src/platform/lib/jobs.ts`) already filters out any
+`done` job whose `tier` is `"silent"`, so this required zero frontend
+changes: `fused_render/server/routers/appfile.py`'s `jobs.upsert()` call for
+the export now sets `"tier": "silent"`. Dropping the client notify instead
+would have lost the two-action "Reveal folder"/"Open file" UX that this
+branch's own export-to-disk workstream (B) built deliberately, for no gain
+over the tier change.
+
+Tests: `tests/test_appfile.py` (new
+`test_export_to_disk_job_row_is_silent`, asserting the job row's `tier` is
+`"silent"` and its `state` is `"done"`).
+
+**[LOW] A non-JSON export failure surfaced as a raw `SyntaxError`.**
+`saveAppFileToDisk` (`frontend/src/platform/lib/api.ts`) called `await
+res.json()` before checking `res.ok`, so a plain-text 500 (Starlette's
+default error body) threw a `SyntaxError` from the JSON parse instead of the
+intended `export failed (${res.status})` message.
+`downloadAppFile` in the same file already handled this correctly; the same
+try/catch pattern is now used in `saveAppFileToDisk`: `res.ok` is checked
+first, and parsing the JSON body for a server-supplied `error` message is
+wrapped in a try/catch that falls back to the status-based message. Fixed
+and tested as part of the [HIGH] finding's commit above (same function).
+
+Tests: `frontend/src/platform/lib/api.test.ts` (new tests for a non-JSON
+500 falling back to the status message, and a JSON error body's own message
+winning over that fallback).
+
+**[LOW] The freshness check's stamp could be taken before its own cost was paid.**
+`FRESHNESS_CHECK_S` (62) carries only a 2s margin over `MIN_INTERVAL_S` (60),
+but `_run_freshness_check`
+(`fused_render/server/routers/index.py`) stamped `_freshness_checked[root]`
+immediately BEFORE calling `freshness.note_folder_opened`, which does a
+duckdb lookup and can spawn a scan subprocess before returning. That
+latency landed inside the 2s margin instead of being excluded from it, so a
+lookup slower than the margin could let the next check land sooner than
+`MIN_INTERVAL_S` after the recorded stamp — the exact doubled-cadence bug
+the constant change was meant to fix, undetected by the existing simulation
+test because it drives `_freshness_due`/`note_folder_opened` at the same
+synthetic time with zero offset.
+
+Of the two remedies offered — widening the margin to ~65s, or stamping after
+`note_folder_opened` returns — the latter was chosen, per the finding's own
+framing: widening the margin only reduces the probability of the race,
+while stamping after removes the dependence on unmeasured latency entirely.
+`_run_freshness_check` now peeks (`stamp=False`) both before and after the
+`FRESHNESS_DELAY_S` wait, calls `note_folder_opened`, and only then stamps
+(`_freshness_due(root, time.time())`, its default `stamp=True`) against the
+clock as it is once the lookup has actually finished.
+
+Tests: `tests/test_index_api.py`
+(`test_the_stamp_is_taken_after_the_scan_lookup_not_before_it`, which makes
+`note_folder_opened` sleep and asserts the recorded stamp lands after that
+sleep, not before it).
