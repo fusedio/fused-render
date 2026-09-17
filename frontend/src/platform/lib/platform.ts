@@ -32,6 +32,25 @@ export function isMod(e: ModifierEvent): boolean {
   return isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
 }
 
+/**
+ * ONE CHORD, SPELLED THE WAY THE PLATFORM SPELLS CHORDS — ⌘↩ on macOS, Ctrl+Enter
+ * off it. The rule `shortcuts.ts` documents ("⌘C on macOS vs Ctrl+C on
+ * Windows/Linux"), as a function, because it had been left to each caller and
+ * the first caller to inline it shipped `CtrlEnter` — two words run together,
+ * naming no key anybody has (Bugbot, PR #1198).
+ *
+ * The glyphs SIT TOGETHER where they are symbols and take a `+` where they are
+ * words, which is the whole of the rule: a symbol already reads as a key, a word
+ * needs the join to stop being a different word.
+ *
+ * `mac` is a parameter with the module's own answer as its default, so the rule
+ * is testable on either platform from either platform — the reason the inline
+ * version went unnoticed is that on a Mac both spellings agree.
+ */
+export function chordLabel(parts: readonly string[], mac: boolean = isMac): string {
+  return parts.join(mac ? "" : "+");
+}
+
 // Display glyphs for the cheat sheet and menu accelerators. Mac users read
 // symbols; Windows/Linux users read words.
 export const MOD_LABEL: string = isMac ? "⌘" : "Ctrl";

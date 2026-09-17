@@ -699,6 +699,25 @@ describe("who claims ⌘↩", () => {
       ...over,
     }) as KeyboardEvent;
 
+  test("the chord's LABEL is joined the way the platform joins chords", async () => {
+    // BOTH PLATFORMS, ASSERTED FROM EITHER ONE, which is the whole reason
+    // `chordLabel` takes the flag: the Mac spelling and the broken one AGREE on
+    // a Mac (`⌘` + `↩` reads fine run together), so a test that asked the
+    // module's own `isMac` passed on this machine while `CtrlEnter` shipped to
+    // every other (Bugbot, PR #1198).
+    const { chordLabel } = await import("@platform/lib/platform");
+    expect(chordLabel(["⌘", "↩"], true)).toBe("⌘↩");
+    expect(chordLabel(["Ctrl", "Enter"], false)).toBe("Ctrl+Enter");
+    // Never two WORDS run together — the defect itself, named.
+    expect(chordLabel(["Ctrl", "Enter"], false)).not.toBe("CtrlEnter");
+
+    // …and the constant the four teaching places read is that function's answer
+    // for whichever platform is running the suite.
+    const { ANN_DONE_CHORD } = await import("./types");
+    const { MOD_LABEL, ENTER_LABEL } = await import("@platform/lib/platform");
+    expect(ANN_DONE_CHORD).toBe(chordLabel([MOD_LABEL, ENTER_LABEL]));
+  });
+
   test("the primary modifier and Enter, and nothing else", () => {
     expect(isDoneChord(chord())).toBe(true);
     // A bare Enter is the note composer's SAVE and must stay its own.
