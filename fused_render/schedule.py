@@ -511,6 +511,151 @@ def _pq():
     return project_queue
 
 
+def _qm():
+    """The process-wide queue manager, or None when this process has not built
+    one.
+
+    Imported on use, exactly like `_pq()` and for the same cycle: the manager is
+    built from callables that live in the tasks router, which imports this
+    module (`routers/tasks._wire_manager`, registered as the factory when that
+    router is imported — which the server always does).
+
+    **The wiring is done here if nobody has done it**, once per process. The
+    factory is registered when the tasks router is imported, and the server
+    always imports it — but the scheduler must not DEPEND on the order two
+    modules happened to load in, or which path the queue takes would be an
+    accident of imports rather than a rule. So a first ask that finds no factory
+    imports the router for its own sake and asks again.
+
+    **None is still a real answer.** A build where the router cannot be imported
+    at all has no manager, and every caller below falls back to the path that
+    shipped — which is also the path the flag being off takes."""
+    from fused_render import queue_manager
+
+    try:
+        return queue_manager.get()
+    except (RuntimeError, NotImplementedError):
+        pass
+    global _WIRE_TRIED
+    if _WIRE_TRIED:
+        return None
+    _WIRE_TRIED = True
+    try:
+        from fused_render.server.routers import tasks as tasks_api
+
+        tasks_api._wire_manager()
+        return queue_manager.get()
+    except Exception:  # noqa: BLE001 — no manager is a fall back, not a failure
+        logger.debug("no queue manager in this process", exc_info=True)
+        return None
+
+
+# Latched: the factory is registered once and for ever, and a build where the
+# import fails will fail the same way every tick.
+_WIRE_TRIED = False
+
+
+class SpawnBusy(Exception):
+    """`dispatch_entry` refusing to start a turn that cannot go RIGHT NOW, where
+    the reason is a wait rather than a verdict: the conversation already has a
+    send in flight, it has a live turn the user is typing into, or the message
+    this one follows has not opened its conversation yet.
+
+    Raised rather than answered with None because the two mean opposite things
+    to the manager. None is "there is nothing here to start" and the item leaves
+    the line; this is "not yet" and the item KEEPS ITS PLACE AT THE HEAD with no
+    owner set, to be tried again when the next event rings. Dropping it would
+    lose the user's message; owning the folder for it would park the whole line
+    behind a turn this queue did not start.
+
+    Defined here rather than in `queue_manager` because this module is the one
+    that knows the session rules; the manager imports the name."""
+
+
+def dispatch_entry(entry_id: str, now: datetime | None = None) -> dict | None:
+    """Claim and send ONE pending entry — the queue manager's single spawn site.
+
+    `{"run_id", "session_id"}` for a message that went, None when there is
+    nothing to send (no such entry, or it is no longer pending — cancelled, or
+    another dispatcher got it first), and `SpawnBusy` when the conversation
+    cannot take it yet.
+
+    **The session gates live here, not in the manager.** The manager serialises
+    FOLDERS; the two rules that serialise CONVERSATIONS are older than it and
+    are about a transcript rather than a working tree — one send at a time per
+    session (`_busy_sessions`, this module's own store) and no send into a turn
+    that is already open (`_session_live`, the user typing in the chat, less the
+    closing rows of a turn we have already filed a verdict for,
+    `_verdict_echo`). A manager that knew about them would be a second place
+    where a `claude --resume` race is prevented, and the transcript is not its
+    business.
+
+    **`_claim` is reused, not reimplemented**, so this races the tick and
+    run-now exactly the way two ticks race each other: one wins the
+    `pending -> sending` transition under the lock and the others are told the
+    entry is no longer pending. There is no second spawn path.
+
+    The answer is read back from the STORE after the send rather than taken from
+    `_send`, which records on the entry: `run_id` is written by `_update`, and
+    `session_id` may have been LEARNED by the claim (a follower resolving its
+    leader's conversation). The manager files its owner under those two."""
+    now = now or _now()
+    with _lock:
+        entries = _read()
+    by_id = {str(e.get("id") or ""): e for e in entries}
+    entry = by_id.get(entry_id)
+    if entry is None or entry.get("state") != PENDING:
+        return None
+    session = str(entry.get("session_id") or "")
+    # The conversation to WRITE onto a follower as it is claimed, "" for
+    # everything else — `tick`'s own resolution, moved here with the gates.
+    resolved = ""
+    if not session:
+        resolved, ready = _follow_session(entry, by_id)
+        if not ready:
+            raise SpawnBusy(
+                f"{entry_id}: the message it follows has not run yet")
+        session = resolved
+    if session and session in _busy_sessions(entries):
+        raise SpawnBusy(f"{entry_id}: session {session} has a send in flight")
+    if (session and _session_live(session, now)
+            and not _verdict_echo(session, entries, now)):
+        raise SpawnBusy(f"{entry_id}: session {session} has a live turn")
+    claimed = _claim(entry_id, now, resolved)
+    if claimed is None:
+        return None  # cancelled or claimed in the window since the read above
+    _record_dispatch(claimed)
+    # In progress from the claim, as in `tick`: the store says `sending` and the
+    # page drawing this row has been long-polling for exactly that news.
+    _notify(_entry_keys(claimed))
+    _send(claimed)
+    with _lock:
+        stored = next((e for e in _read()
+                       if str(e.get("id") or "") == entry_id), None)
+    stored = stored or claimed
+    return {"run_id": str(stored.get("run_id") or ""),
+            "session_id": str(stored.get("session_id")
+                              or stored.get("claude_session_id") or "")}
+
+
+# What a pass dispatched, for the ONE caller that has to report it. `tick`
+# returns the entries it claimed and attempted and the tests drive that seam
+# directly — but with the manager on the claim happens several frames down
+# (`enqueue` -> `pump` -> `spawn` -> `dispatch_entry`) and the return value
+# belongs to the manager, not to us.
+#
+# THREAD-LOCAL, and that is the whole point: a chat admission or a card answer
+# on a request thread can spawn through the same door in the same second, and a
+# module-level list would report that send as something this tick did.
+_dispatch_sink = threading.local()
+
+
+def _record_dispatch(entry: dict) -> None:
+    bucket = getattr(_dispatch_sink, "entries", None)
+    if bucket is not None:
+        bucket.append(dict(entry))
+
+
 # How far a `follow_of` chain is walked before the walk simply stops. The shape
 # the client makes is two deep — a message typed into a chat whose first message
 # is still queued, and a second typed behind that — and the bound is a little
@@ -1621,7 +1766,26 @@ def cancel(entry_id: str) -> dict | None:
     if cancelled is None:
         return None
     _sync_wake()
+    # OUT OF THE LINE AS WELL AS OUT OF THE STORE. The manager's index is a
+    # pointer table, and a key that no longer names a pending entry is exactly
+    # what `reconcile` would drop on its next sweep — telling it now is what
+    # stops the folder in front of it being held for a message the user has
+    # just cancelled (design.md, the `remove` event).
+    _queue_forget(cancelled)
     return cancelled
+
+
+def _queue_forget(entry: dict) -> None:
+    """Tell the manager one entry's task has left its line. Best-effort: the
+    write above has happened either way, and `reconcile` is the backstop."""
+    manager = _qm() if _pq().enabled() else None
+    if manager is None:
+        return
+    try:
+        manager.remove(_task_key(entry))
+    except Exception:  # noqa: BLE001 — a stale line is a pump, not a loss
+        logger.debug("could not drop %s from its queue line",
+                     entry.get("id"), exc_info=True)
 
 
 def restore(entry_id: str) -> dict | None:
@@ -1668,7 +1832,34 @@ def restore(entry_id: str) -> dict | None:
     if restored is None:
         return None
     _sync_wake()
+    # BACK IN THE LINE, but only if it is waiting on a folder rather than on the
+    # clock: `restore` refuses an occurrence whose time has passed, so a
+    # restored run is due in the FUTURE and is not standing in any line yet —
+    # the tick that finds it due is what enqueues it. The call is here for the
+    # one case the rule above leaves open (a `run_now_at` stamp surviving on a
+    # hand-edited store) and because a manager that is told twice is told once:
+    # `enqueue` is idempotent (design.md).
+    _queue_readmit(restored)
     return restored
+
+
+def _queue_readmit(entry: dict) -> None:
+    """Put one entry's task back in its folder's line, if it is due. Best-effort
+    — the tick is the backstop, and it re-enqueues every due entry it finds."""
+    manager = _qm() if _pq().enabled() else None
+    if manager is None:
+        return
+    pq = _pq()
+    folder = pq.queue_key(str(entry.get("target") or ""))
+    if not folder:
+        return
+    try:
+        if _queue_due(entry, parse_due(entry.get("due"))) > _now():
+            return
+        manager.enqueue(folder, _task_key(entry), str(entry.get("id") or ""))
+    except Exception:  # noqa: BLE001 — the next tick enqueues it anyway
+        logger.debug("could not put %s back in its queue line",
+                     entry.get("id"), exc_info=True)
 
 
 # ---------------------------------------------------------------- the queue
@@ -3848,6 +4039,78 @@ def _deliver_held_answers(holders: dict, outranked: dict | None = None) -> None:
         _notify({session})
 
 
+def _tick_queued(manager, due: list[str], now: datetime) -> list[dict]:
+    """`tick`'s whole body with the queue manager on: hand every due entry to
+    the manager and let it decide what runs.
+
+    Four lines of work where the old pass had a hundred, and the reason is the
+    one sentence design.md leads with — the manager is the only record of who
+    owns a folder, so a pass that re-derived it would be a second answer to the
+    same question. `enqueue` is idempotent (a message that came due three
+    passes ago is already in its line and appending it again is a no-op) and it
+    pumps, so a folder that is free starts the head of its line inside this
+    call.
+
+    **A message with NO folder is dispatched straight.** `queue_key` answers ""
+    for a target this app will not gate — no path, `$HOME`, the filesystem root
+    — and "" is "no folder" everywhere: never held, always free. Handing those
+    to the manager would put every ungated message on the machine in ONE line
+    behind one another, which is the exact thing `queue_key` refuses `$HOME`
+    for. They go through the same door (`dispatch_entry`, session gates and
+    all), just with nobody in front of them.
+
+    **`SpawnBusy` is a wait.** Straight dispatch raises it for a conversation
+    that is mid-turn; the entry is left `pending` and untouched, exactly as the
+    old loop's `continue` left it, and the next tick sends it. Inside the
+    manager the same exception leaves the item at the head of its line.
+
+    Returns what was actually claimed and attempted — the seam the tests drive
+    — collected from `dispatch_entry` itself through the sink `tick` opened,
+    since with the manager on the claim happens well below this frame."""
+    pq = _pq()
+    # SETTLE THE INDEX FIRST. `reconcile` is the manager's only sweep — it
+    # rebuilds a line from the store, drops keys that name nothing any more and
+    # frees a folder whose owner is neither running nor blocked — and it is
+    # called from here and nowhere else. Building the manager does NOT do it
+    # (`QueueManager.__init__`): reconciling pumps, pumping spawns, and a spawn
+    # must never be the side effect of a read, a cancel or a gate check. A pass
+    # is the one place in the app where starting work is the point.
+    try:
+        manager.reconcile()
+    except Exception:  # noqa: BLE001 — a sweep that failed costs this pass
+        logger.debug("could not reconcile the queue index", exc_info=True)
+    with _lock:
+        entries = _read()
+    by_id = {str(e.get("id") or ""): e for e in entries}
+    for entry_id in due:
+        entry = by_id.get(entry_id)
+        if entry is None:
+            continue
+        folder = pq.queue_key(str(entry.get("target") or ""))
+        if not folder:
+            try:
+                dispatch_entry(entry_id, now)
+            except SpawnBusy as exc:
+                logger.debug("holding %s: %s", entry_id, exc)
+            continue
+        manager.enqueue(folder, _task_key(entry, by_id), entry_id)
+    # Everything `dispatch_entry` claimed since `tick` opened the sink — which
+    # includes anything the manager's first build dispatched on its way here.
+    sent = list(_dispatch_sink.entries or ())
+    # `_rearm` owns one timer for the whole module and this is the last word for
+    # this pass. The clock-bound holds the old loop collected are gone with the
+    # holder map — a folder is now freed by an EVENT (`turn_ended`, `exited`,
+    # an answered card) and the manager pumps on it — so what is left is the one
+    # reason that was never about a folder: a pending entry whose time has not
+    # come yet.
+    _rearm(_soon_pending(entries, now))
+    if sent:
+        # The runs tree has just gained a process this pass authorised, and the
+        # walk behind the listing's parked-run scan is memoized for a second.
+        pq.invalidate_holders()
+    return sent
+
+
 def tick(now: datetime | None = None) -> list[dict]:
     """One pass: sweep, then claim-and-send each due message ONE AT A TIME.
 
@@ -3925,6 +4188,29 @@ def tick(now: datetime | None = None) -> list[dict]:
     _coalesce(now)
     _materialize(now)
     due = _claim_due(now)
+    # THE MANAGER'S PASS, and it is a different shape rather than a smaller one.
+    # With the flag on and a manager built, this loop is not the dispatcher any
+    # more: there are no folder gates here, no holder map to move forward by
+    # hand, no held answers to deliver and no last look, because all four were
+    # one derivation of who owns a folder, re-run per pass, and the manager is
+    # now the single record of that. A pass HANDS IT WHAT CAME DUE and the
+    # manager starts what it can, through `dispatch_entry` — which still carries
+    # the session gates, so nothing about two processes on one transcript
+    # changes. See design.md, "Scheduler with the flag on".
+    #
+    # THE SINK IS OPENED BEFORE THE MANAGER IS ASKED FOR, and that order is not
+    # cosmetic: asking may BUILD it, and the first build reconciles — which
+    # pumps, which dispatches, from inside this very call. A sink opened
+    # afterwards would miss those sends and this pass would report an empty
+    # hand for messages it had just put on the wire.
+    if _pq().enabled():
+        _dispatch_sink.entries = []
+        try:
+            manager = _qm()
+            if manager is not None:
+                return _tick_queued(manager, due, now)
+        finally:
+            _dispatch_sink.entries = None
     # ONE derivation for the whole pass. `holders` scans the runs tree, the live
     # registry and this store; asking it per due entry would pay that per
     # message, and both the answers and this pass's own claims then move it
@@ -4239,6 +4525,45 @@ def _run_now_queued(entry: dict, session: str, now: datetime) -> dict | None:
             "ahead_run": str(holder.get("run_id") or "")}
 
 
+def _run_now_managed(manager, entry: dict, now: datetime) -> dict | None:
+    """`_run_now_queued` with the queue manager on — run-now's answer when
+    another task owns this entry's folder, or None when the folder is this
+    entry's to run in.
+
+    The same sentence as its twin next door and the same response shape, with
+    one derivation instead of two: who owns the folder is `manager.owner`, and
+    where this message lands is `manager.place` after the skip rather than a
+    count over the store.
+
+    **Skip is the whole gesture.** Run now on a queued task means "this one,
+    next" (design.md: `skip` moves the task to index 0 of its folder's line),
+    and it never interrupts the run in flight — there is no gesture in this app
+    that takes a folder off a live process. `enqueue` first, because a message
+    due next Tuesday is in no line at all until `_asked_now` stamps it into one,
+    and `enqueue` is idempotent for the ordinary case where it is already there.
+
+    `set_priority` is still written, and only for the Tasks page: the store's
+    flag is what the calendar's existing queued display reads. The LINE does not
+    read it any more — the manager's index is the order."""
+    pq = _pq()
+    folder = pq.queue_key(str(entry.get("target") or ""))
+    entry_id = str(entry.get("id") or "")
+    key = _task_key(entry, _by_id())
+    if not folder or manager.is_free(folder, key):
+        return None
+    set_priority([entry_id], True)
+    stored = _asked_now(dict(entry, priority=True), now)
+    manager.enqueue(folder, key, entry_id)
+    place = manager.skip(key) or {}
+    manager.pump(folder)
+    owner = manager.owner(folder) or {}
+    return {"ok": False, "found": True, "entry": stored, "reason": "queued",
+            "queued": True, "position": int(place.get("position") or 1),
+            "ahead_task_key": str(owner.get("task") or ""),
+            "ahead_session": str(owner.get("session_id") or ""),
+            "ahead_run": str(owner.get("run_id") or "")}
+
+
 def run_now(entry_id: str, now: datetime | None = None) -> dict:
     """Send one PENDING message immediately: `{"ok", "entry", "reason", "found"}`.
 
@@ -4313,7 +4638,13 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
                     "reason": _run_now_refusal(entry)}
         session = str(entry.get("session_id") or "")
         busy = _busy_sessions(entries)
-    queued = _run_now_queued(entry, session, now)
+    # ONE OF TWO DERIVATIONS OF THE SAME SENTENCE — "another task owns this
+    # working tree, so this is a Skip". With the manager built it is the
+    # manager's index; without one (flag off, or the stub) it is the holder
+    # scan that shipped. Same answer, same shape (see `_run_now_managed`).
+    manager = _qm() if _pq().enabled() else None
+    queued = (_run_now_managed(manager, entry, now) if manager is not None
+              else _run_now_queued(entry, session, now))
     if queued is not None:
         return queued
     # The echo rule joins run-now's refusal only under the flag: main's run-now
@@ -4343,7 +4674,24 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
     with _lock:
         stored = next((e for e in _read()
                        if str(e.get("id") or "") == entry_id), None)
-    return {"ok": True, "found": True, "entry": stored or claimed, "reason": ""}
+    stored = stored or claimed
+    if manager is not None:
+        # THE FOLDER IS TAKEN, and the manager has to hear it from here: this
+        # send went out through run-now's own gates rather than through a pump,
+        # so nothing else set an owner and the next message due in this tree
+        # would be started straight into it. `started` is the one event for
+        # "a turn is running in this folder now", whoever spawned it
+        # (design.md, the events table).
+        folder = _pq().queue_key(str(stored.get("target") or ""))
+        if folder:
+            try:
+                manager.started(folder, _task_key(stored),
+                                str(stored.get("run_id") or ""),
+                                str(stored.get("session_id") or ""))
+            except Exception:  # noqa: BLE001 — the send happened either way
+                logger.debug("could not record the run-now owner of %s",
+                             folder, exc_info=True)
+    return {"ok": True, "found": True, "entry": stored, "reason": ""}
 
 
 # ------------------------------------------------------------------ re-sending

@@ -77,6 +77,7 @@ import os
 import sys
 import threading
 import time
+import urllib.request
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "fused_approvals"
@@ -196,6 +197,59 @@ def _write_atomic(path: str, data: dict) -> None:
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(data, fh)
     os.replace(tmp, path)  # a poll must never read a half-written request
+
+
+# ------------------------------------------------------- telling the queue
+#
+# A card on screen is the moment a task STOPS being the one running in its
+# folder: it is waiting on a human, and the project queue wants to hand the
+# folder to whoever is next in line rather than leave it parked behind a
+# question nobody is looking at (design.md, `card_raised`). Nothing else in
+# the system sees that moment as early as this process does — the card exists
+# the instant the file below is written, and the page only learns about it on
+# its next poll.
+#
+# Same posture as session_host.py's own posts, for the same reasons: stdlib
+# `urllib.request` (this file may not import `fused_render`), its own daemon
+# thread so the approval round trip is never slowed by a server hiccup, a 2 s
+# timeout, every exception swallowed, and silence when no origin is exported.
+# The endpoint is a no-op while the flag is off, so a post that never lands
+# costs nothing.
+
+_EVENT_PATH = "/api/tasks/queue/event"
+_EVENT_TIMEOUT = 2.0
+
+
+def _post_card_raised(req_id: str) -> None:
+    """Announce the card `req_id` just parked in PERM_DIR.
+
+    The run id is PERM_DIR's parent directory name: `agent._perm_dir` is
+    `<run_dir>/perm` and the run dir's own basename IS the run id everywhere
+    else (`agent.RUNS/<run_id>`). Read off the global at call time, not at
+    import, because that is what a test redirects."""
+    try:
+        origin = (os.environ.get("FUSED_RENDER_ORIGIN") or "").rstrip("/")
+        if not origin or not PERM_DIR:
+            return
+        body = {"kind": "card_raised",
+                "run_id": os.path.basename(os.path.dirname(PERM_DIR)),
+                "request_id": req_id}
+        threading.Thread(target=_send_event, args=(origin + _EVENT_PATH, body),
+                         daemon=True).start()
+    except Exception:
+        pass  # a queue that never hears about this still shows the card
+
+
+def _send_event(url: str, body: dict) -> None:
+    try:
+        req = urllib.request.Request(
+            url, data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-Fused": "1"},
+            method="POST")
+        with urllib.request.urlopen(req, timeout=_EVENT_TIMEOUT) as resp:
+            resp.read()
+    except Exception:
+        pass
 
 
 def _read_decision(res_path: str) -> dict:
@@ -519,6 +573,10 @@ def _handle_approve(args: dict) -> dict:
         "tool_use_id": args.get("tool_use_id") or "",
         "created_at": time.time(),
     })
+    # The card exists now; the wait below can last an hour. Announce it BEFORE
+    # blocking, or the queue hears "this task is waiting on a human" only once
+    # the human has already answered.
+    _post_card_raised(req_id)
     return _text(_permission_result(tool_name, tool_input,
                                     _await_decision(req_id)))
 

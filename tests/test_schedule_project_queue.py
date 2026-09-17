@@ -364,7 +364,7 @@ def _holder(session_id, kind="run", run_id="run-1", task_key=None):
 
 @pytest.mark.parametrize("flag", [False, True], indirect=True)
 def test_a_busy_folder_holds_only_with_the_flag_on(folders, spawned, flag,
-                                                   monkeypatch):
+                                                   monkeypatch, request):
     """Another conversation is editing this tree. Flag on: left pending,
     untouched — a wait, never a verdict. Flag off: today's behaviour, which
     knows nothing about folders."""
@@ -375,6 +375,11 @@ def test_a_busy_folder_holds_only_with_the_flag_on(folders, spawned, flag,
     sent = schedule.tick()
 
     if flag:
+        # Flag ON stages a holder map nothing reads any more — see the block
+        # marker above. The flag-OFF half is the control and still stands.
+        request.applymarker(pytest.mark.xfail(strict=True, reason=(
+            "PR2: the derived-holder dispatch this stages is gone — the "
+            "manager owns the folder and the line (design.md, \"Deleted\").")))
         assert sent == []
         stored = schedule.list_entries()[0]
         assert stored["state"] == schedule.PENDING
@@ -384,6 +389,10 @@ def test_a_busy_folder_holds_only_with_the_flag_on(folders, spawned, flag,
         assert [e["id"] for e in sent] == [entry["id"]]
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "PR2: the derived-holder dispatch this stages is gone — the manager owns the folder, the line and the held answers "
+    "(design.md, \"Deleted\"). The behaviour lives on in tests/test_queue_manager.py and in "
+    "\"the scheduler's doors\" below; T5 rewrites or removes these."))
 def test_a_folder_frees_and_the_held_entry_goes_next_pass(folders, spawned,
                                                           home, monkeypatch):
     _on(home)
@@ -444,6 +453,10 @@ def test_an_entry_into_its_own_holder_follows_the_session_rules(folders, spawned
     assert [e["id"] for e in schedule.tick()] == [entry["id"]]
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "PR2: the derived-holder dispatch this stages is gone — the manager owns the folder, the line and the held answers "
+    "(design.md, \"Deleted\"). The behaviour lives on in tests/test_queue_manager.py and in "
+    "\"the scheduler's doors\" below; T5 rewrites or removes these."))
 def test_a_claimed_but_unspawned_entry_holds_its_folder(folders, spawned, home):
     """A `sending` entry is a folder about to be busy, and `holders` is NOT
     stubbed here: this is the one case where the derivation and the scheduler
@@ -497,6 +510,10 @@ def test_an_entry_held_by_its_own_session_still_takes_the_folder(
     assert spawned == []
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "PR2: the derived-holder dispatch this stages is gone — the manager owns the folder, the line and the held answers "
+    "(design.md, \"Deleted\"). The behaviour lives on in tests/test_queue_manager.py and in "
+    "\"the scheduler's doors\" below; T5 rewrites or removes these."))
 def test_a_folder_taken_between_the_sweep_and_the_claim_is_not_claimed(
         folders, spawned, home, monkeypatch):
     """The snapshot said free; disk says otherwise by the time we claim. A chat
@@ -517,6 +534,10 @@ def test_a_folder_taken_between_the_sweep_and_the_claim_is_not_claimed(
     assert spawned == []
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "PR2: the derived-holder dispatch this stages is gone — the manager owns the folder, the line and the held answers "
+    "(design.md, \"Deleted\"). The behaviour lives on in tests/test_queue_manager.py and in "
+    "\"the scheduler's doors\" below; T5 rewrites or removes these."))
 def test_the_last_look_arms_the_timer_for_a_clock_bound_holder(
         folders, spawned, home, monkeypatch):
     """A `reserved` or `starting` holder found at the last look lapses on a
@@ -648,6 +669,10 @@ def agent(tmp_path, monkeypatch):
     return fake
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "PR2: the derived-holder dispatch this stages is gone — the manager owns the folder, the line and the held answers "
+    "(design.md, \"Deleted\"). The behaviour lives on in tests/test_queue_manager.py and in "
+    "\"the scheduler's doors\" below; T5 rewrites or removes these."))
 def test_a_held_answer_is_delivered_and_holds_the_folder(folders, spawned,
                                                          home, agent, rung,
                                                          monkeypatch):
@@ -702,10 +727,16 @@ def _stamp_priority(entry_id: str, at: float) -> None:
                                                       (50.0, True)])
 def test_a_newer_run_next_outranks_a_held_answer(folders, spawned, home, agent,
                                                  monkeypatch, promoted_at,
-                                                 answer_first):
+                                                 answer_first, request):
     """Akshil, 2026-09-16: an answered blocked task is next in line by default,
     but a Run next clicked AFTER the answer is a later instruction and wins.
     The loser only waits a pass — the answer stays held, nothing is dropped."""
+    if answer_first:
+        # The answer-wins half is the held-answer store's ordering, which the
+        # manager's index replaces (design.md, "Deleted"). The Run-next-wins
+        # half still holds, because it is about the entry's own stamp.
+        request.applymarker(pytest.mark.xfail(strict=True, reason=(
+            "PR2: held answers are ranked by the manager's index now.")))
     _on(home)
     key = _key(folders["alpha"])
     monkeypatch.setattr(pq, "holders", lambda now=None: {})
@@ -731,6 +762,10 @@ def test_a_newer_run_next_outranks_a_held_answer(folders, spawned, home, agent,
         assert sent == [entry["id"]]
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "PR2: the derived-holder dispatch this stages is gone — the manager owns the folder, the line and the held answers "
+    "(design.md, \"Deleted\"). The behaviour lives on in tests/test_queue_manager.py and in "
+    "\"the scheduler's doors\" below; T5 rewrites or removes these."))
 def test_every_answer_for_one_run_goes_but_never_two_sessions(folders, home,
                                                               agent, monkeypatch):
     """A run can have several cards open at once, so they all go. A DIFFERENT
@@ -750,6 +785,10 @@ def test_every_answer_for_one_run_goes_but_never_two_sessions(folders, home,
         (SID2, "p3")]
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "PR2: the derived-holder dispatch this stages is gone — the manager owns the folder, the line and the held answers "
+    "(design.md, \"Deleted\"). The behaviour lives on in tests/test_queue_manager.py and in "
+    "\"the scheduler's doors\" below; T5 rewrites or removes these."))
 def test_a_re_held_answer_keeps_the_place_it_had_in_the_line(
         folders, spawned, home, agent, monkeypatch):
     """Every answer for a folder comes out at once and the ones for other
@@ -775,6 +814,10 @@ def test_a_re_held_answer_keeps_the_place_it_had_in_the_line(
     assert [a["request_id"] for a in pq.held_answers()] == ["p3"]
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "PR2: the derived-holder dispatch this stages is gone — the manager owns the folder, the line and the held answers "
+    "(design.md, \"Deleted\"). The behaviour lives on in tests/test_queue_manager.py and in "
+    "\"the scheduler's doors\" below; T5 rewrites or removes these."))
 def test_an_answer_whose_delivery_raises_is_held_again_and_goes_next_pass(
         folders, spawned, home, agent, monkeypatch):
     """The pop is the latch that stops two ticks delivering one answer, so it
@@ -807,6 +850,10 @@ def test_an_answer_whose_delivery_raises_is_held_again_and_goes_next_pass(
     assert [call["request_id"] for call in agent.decided] == ["p1"]
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "PR2: the derived-holder dispatch this stages is gone — the manager owns the folder, the line and the held answers "
+    "(design.md, \"Deleted\"). The behaviour lives on in tests/test_queue_manager.py and in "
+    "\"the scheduler's doors\" below; T5 rewrites or removes these."))
 def test_a_held_answer_for_a_dead_run_expires_and_frees_the_folder(
         folders, spawned, home, agent, monkeypatch):
     """`validate_held_answers` writes the decision out as `expired` — the same
@@ -839,6 +886,10 @@ def test_one_bad_answer_does_not_cost_the_tick_its_messages(folders, spawned,
     assert [e["id"] for e in schedule.tick()] == [other["id"]]
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "PR2: the derived-holder dispatch this stages is gone — the manager owns the folder, the line and the held answers "
+    "(design.md, \"Deleted\"). The behaviour lives on in tests/test_queue_manager.py and in "
+    "\"the scheduler's doors\" below; T5 rewrites or removes these."))
 def test_held_answers_are_delivered_with_nothing_due(folders, home, agent,
                                                      monkeypatch):
     """The delivery is not a side effect of having messages to send: a user who
@@ -865,6 +916,10 @@ def test_the_flag_off_never_touches_a_held_answer(folders, spawned, agent,
 # ==================================================================== run-now
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "PR2: the derived-holder dispatch this stages is gone — the manager owns the folder, the line and the held answers "
+    "(design.md, \"Deleted\"). The behaviour lives on in tests/test_queue_manager.py and in "
+    "\"the scheduler's doors\" below; T5 rewrites or removes these."))
 def test_run_now_on_a_busy_folder_is_a_skip(folders, spawned, home, monkeypatch):
     """The gesture still means something exact — it is the Skip verb — so the
     row can read `#1 in line · behind …` instead of an error."""
@@ -899,6 +954,10 @@ def test_run_now_on_a_busy_folder_is_a_skip(folders, spawned, home, monkeypatch)
     assert schedule.run_now(entry["id"])["position"] == 1
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "PR2: the derived-holder dispatch this stages is gone — the manager owns the folder, the line and the held answers "
+    "(design.md, \"Deleted\"). The behaviour lives on in tests/test_queue_manager.py and in "
+    "\"the scheduler's doors\" below; T5 rewrites or removes these."))
 def test_run_now_names_the_holder_by_its_task_and_not_by_its_session(
         folders, home, monkeypatch):
     """A `sending` holder — claimed, not yet spawned — has no conversation to
@@ -917,6 +976,10 @@ def test_run_now_names_the_holder_by_its_task_and_not_by_its_session(
     assert out["ahead_session"] == ""
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "PR2: the derived-holder dispatch this stages is gone — the manager owns the folder, the line and the held answers "
+    "(design.md, \"Deleted\"). The behaviour lives on in tests/test_queue_manager.py and in "
+    "\"the scheduler's doors\" below; T5 rewrites or removes these."))
 def test_a_queued_position_counts_held_answers_first(folders, home, monkeypatch):
     """A held answer outranks every message in its folder, so it is counted
     ahead even of a skip."""
@@ -1510,6 +1573,10 @@ def test_a_verdict_with_no_stamp_keeps_the_old_rule(
     assert schedule.tick() == []
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "PR2: the derived-holder dispatch this stages is gone — the manager owns the folder, the line and the held answers "
+    "(design.md, \"Deleted\"). The behaviour lives on in tests/test_queue_manager.py and in "
+    "\"the scheduler's doors\" below; T5 rewrites or removes these."))
 def test_a_hold_on_a_reservation_is_woken_when_the_reservation_ends(
         folders, spawned, home):
     """`_turn_ended` rings when a verdict lands, which covers every hold that
@@ -1529,6 +1596,10 @@ def test_a_hold_on_a_reservation_is_woken_when_the_reservation_ends(
     assert pq.RESERVATION_TTL - 5 < timer.interval <= pq.RESERVATION_TTL
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "PR2: the derived-holder dispatch this stages is gone — the manager owns the folder, the line and the held answers "
+    "(design.md, \"Deleted\"). The behaviour lives on in tests/test_queue_manager.py and in "
+    "\"the scheduler's doors\" below; T5 rewrites or removes these."))
 def test_a_clock_longer_than_the_poll_is_capped_to_it(
         folders, spawned, home, monkeypatch, live_reads_the_transcript):
     """The 45-second transcript window outlasts the poll that is the floor under
@@ -1543,6 +1614,10 @@ def test_a_clock_longer_than_the_poll_is_capped_to_it(
     assert schedule._rearm_timer.interval == float(schedule.POLL_INTERVAL_S)
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "PR2: the derived-holder dispatch this stages is gone — the manager owns the folder, the line and the held answers "
+    "(design.md, \"Deleted\"). The behaviour lives on in tests/test_queue_manager.py and in "
+    "\"the scheduler's doors\" below; T5 rewrites or removes these."))
 def test_a_second_pass_re_arms_the_same_hold(folders, spawned, home):
     """One timer at a time, re-armed as the clock runs down — not one per tick
     piling up, and not one for the whole episode fired far too early."""
@@ -1580,6 +1655,10 @@ def test_a_hold_whose_clock_has_already_run_out_does_not_spin(home):
 # ================================ run now on a message whose time is not yet
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "PR2: the derived-holder dispatch this stages is gone — the manager owns the folder, the line and the held answers "
+    "(design.md, \"Deleted\"). The behaviour lives on in tests/test_queue_manager.py and in "
+    "\"the scheduler's doors\" below; T5 rewrites or removes these."))
 def test_run_now_on_a_far_future_message_really_joins_the_line(
         folders, spawned, home, monkeypatch):
     """`due` is the ask and never moves — so a message due TOMORROW, skipped to
@@ -2171,6 +2250,10 @@ def test_a_resend_of_a_chats_message_is_still_the_chats_message(folders,
     assert "origin" not in schedule.resend(plain["id"])["entry"]
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "PR2: the derived-holder dispatch this stages is gone — the manager owns the folder, the line and the held answers "
+    "(design.md, \"Deleted\"). The behaviour lives on in tests/test_queue_manager.py and in "
+    "\"the scheduler's doors\" below; T5 rewrites or removes these."))
 def test_a_run_now_stamp_is_not_read_once_the_flag_is_off(folders, home, spawned,
                                                           monkeypatch):
     """Flag-off audit (2026-09-12): a message asked for now while its folder was
@@ -2192,3 +2275,179 @@ def test_a_run_now_stamp_is_not_read_once_the_flag_is_off(folders, home, spawned
     assert schedule.queue()["queued"] == []          # not in the line any more
     assert schedule.tick() == []                     # and not sent
     assert _stored(entry["id"])["state"] == schedule.PENDING
+
+
+# ====================================================== the scheduler's doors
+#
+# WHAT THE SCHEDULER SAYS TO THE MANAGER, as opposed to what it does with the
+# answer (which every case above pins, through the real manager). The tick is
+# not the dispatcher any more: it hands the manager what came due and the
+# manager decides what runs, through `dispatch_entry` — the one spawn site,
+# which still carries the session gates.
+
+
+class RecordingManager:
+    """Every event, in order, and nothing started. The manager's own behaviour
+    is tests/test_queue_manager.py's subject; what is under test here is that
+    the scheduler reaches it, with the folder and the task key the rest of the
+    app files this message under."""
+
+    def __init__(self, owner=None):
+        self.events: list[tuple] = []
+        self.owners: dict[str, dict] = dict(owner or {})
+
+    def reconcile(self):
+        self.events.append(("reconcile",))
+
+    def enqueue(self, folder, task_key, entry_id=""):
+        self.events.append(("enqueue", folder, task_key, entry_id))
+        return {"position": 1, "ahead_key": ""}
+
+    def skip(self, task_key):
+        self.events.append(("skip", task_key))
+        return {"position": 1, "ahead_key": ""}
+
+    def remove(self, task_key):
+        self.events.append(("remove", task_key))
+
+    def pump(self, folder):
+        self.events.append(("pump", folder))
+
+    def started(self, folder, task_key, run_id="", session_id=""):
+        self.events.append(("started", folder, task_key, run_id, session_id))
+
+    def owner(self, folder):
+        return self.owners.get(folder)
+
+    def is_free(self, folder, task_key=""):
+        owner = self.owners.get(folder)
+        return owner is None or str(owner.get("task") or "") == task_key
+
+
+@pytest.fixture()
+def recorder():
+    from fused_render import queue_manager
+
+    fake = RecordingManager()
+    queue_manager.reset_for_tests(fake)
+    yield fake
+    queue_manager.reset_for_tests(None)
+
+
+def _events(recorder, *names):
+    return [event for event in recorder.events if event[0] in names]
+
+
+def test_the_tick_hands_a_due_message_to_the_manager(folders, spawned, home,
+                                                     recorder):
+    """No folder gate, no holder map, no held-answer delivery: the pass
+    reconciles the index and enqueues what came due. Nothing spawned here —
+    the manager is what pumps."""
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+
+    assert schedule.tick() == []
+    assert _events(recorder, "reconcile") == [("reconcile",)]
+    assert _events(recorder, "enqueue") == [
+        ("enqueue", _key(folders["alpha"]), SID, entry["id"])]
+    assert spawned == []
+
+
+def test_a_message_with_no_folder_goes_straight_and_never_into_a_line(
+        folders, spawned, home, recorder, monkeypatch):
+    """`queue_key` answers "" for a target this app will not gate, and "" is
+    "no folder" everywhere. Putting those in a line would queue every ungated
+    message on the machine behind one another."""
+    _on(home)
+    monkeypatch.setattr(pq, "queue_key", lambda target: "")
+    schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+
+    assert [e["message"] for e in schedule.tick()] == ["go"]
+    assert _events(recorder, "enqueue") == []
+    assert len(spawned) == 1
+
+
+def test_a_cancel_drops_the_task_from_its_line(folders, home, recorder):
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+    schedule.cancel(entry["id"])
+    assert _events(recorder, "remove") == [("remove", SID)]
+
+
+def test_run_now_on_an_owned_folder_is_a_skip_and_a_pump(folders, home,
+                                                         recorder):
+    """Run now on a queued task IS the Skip verb — it never interrupts the run
+    in flight, and the answer is the place the manager gives back."""
+    _on(home)
+    key = _key(folders["alpha"])
+    recorder.owners[key] = {"task": SID2, "session_id": SID2, "run_id": "r-x"}
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+
+    out = schedule.run_now(entry["id"])
+    assert out["ok"] is False and out["reason"] == "queued"
+    assert out["position"] == 1
+    assert out["ahead_task_key"] == SID2 and out["ahead_session"] == SID2
+    assert _events(recorder, "enqueue", "skip", "pump") == [
+        ("enqueue", key, SID, entry["id"]), ("skip", SID), ("pump", key)]
+
+
+def test_run_now_into_a_free_folder_tells_the_manager_who_owns_it(
+        folders, spawned, home, recorder):
+    """The send went out through run-now's own gates rather than through a
+    pump, so nothing else would have set an owner and the next message due in
+    this tree would have been started straight into it."""
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+
+    assert schedule.run_now(entry["id"])["ok"] is True
+    assert len(spawned) == 1
+    assert _events(recorder, "started") == [
+        ("started", _key(folders["alpha"]), SID, "r-1", SID)]
+
+
+def test_dispatch_entry_refuses_a_session_that_is_mid_turn(folders, spawned,
+                                                           home, monkeypatch):
+    """`SpawnBusy`, not None: the two mean opposite things to the manager. None
+    is "there is nothing here to start" and the item leaves the line; this is
+    "not yet" and it keeps the head of the line."""
+    _on(home)
+    monkeypatch.setattr(schedule, "_session_live",
+                        lambda session, now, seen=None: True)
+    monkeypatch.setattr(schedule, "_verdict_echo",
+                        lambda session, entries, now, seen=None: False)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+
+    with pytest.raises(schedule.SpawnBusy):
+        schedule.dispatch_entry(entry["id"])
+    assert spawned == []
+    stored = {e["id"]: e for e in schedule.list_entries()}
+    assert stored[entry["id"]]["state"] == schedule.PENDING
+
+
+def test_dispatch_entry_answers_none_for_an_entry_that_is_gone(folders, home):
+    """Nothing to start: the manager drops the item rather than holding the
+    folder for a ghost."""
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+    schedule.cancel(entry["id"])
+    assert schedule.dispatch_entry(entry["id"]) is None
+    assert schedule.dispatch_entry("no-such-entry") is None
+
+
+def test_dispatch_entry_reports_the_run_and_the_session_it_landed_in(
+        folders, spawned, home):
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+    assert schedule.dispatch_entry(entry["id"]) == {"run_id": "r-1",
+                                                    "session_id": SID}
+    assert len(spawned) == 1
+
+
+def test_with_the_flag_off_the_tick_says_nothing_to_the_manager(
+        folders, spawned, home, recorder):
+    """The control. Off, the pass is the one that shipped and the manager is
+    not consulted at all."""
+    _on(home, False)
+    schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+    assert [e["message"] for e in schedule.tick()] == ["go"]
+    assert recorder.events == []

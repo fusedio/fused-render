@@ -75,6 +75,7 @@ from fused_render.server.routers.search import router as search_router
 from fused_render.server.routers.shell import router as shell_router
 from fused_render.server.routers.current_apps import router as current_apps_router
 from fused_render.server.routers.drafts import router as drafts_router
+from fused_render.server.routers.queue_events import router as queue_events_router
 from fused_render.server.routers.tasks import router as tasks_router
 from fused_render.server.routers.update import router as update_router
 # The MODULE, not `from … import TEMPLATES_DIR`: that constant is a live seam
@@ -741,6 +742,12 @@ def create_app(start_dir: str) -> FastAPI:
     # message that entered it, typed or scheduled. Reads are unguarded; the one
     # POST marks a message read, the same weight of change as the triage POST.
     app.include_router(tasks_router)
+    # The queue's event transport (routers/queue_events.py): one POST that the
+    # session host and the permission server call when a turn ends, a session
+    # exits or a card goes up. Its own router because the callers are TEMPLATE
+    # processes on the far side of an HTTP hop, and because it is a no-op
+    # whenever `project_queue_enabled` is off.
+    app.include_router(queue_events_router)
     # Drafts (routers/drafts.py): the composer's unsent text and the New task
     # modal's half-filled form, kept server-side so the `✎ Draft` chip the
     # listing above paints can be a JOIN rather than a second store the client

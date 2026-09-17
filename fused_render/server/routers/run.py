@@ -18,8 +18,10 @@ router = APIRouter()
 
 def _folder_busy(resolved: str, params: dict) -> str:
     """The refusal for a claude-agent `start`/`send` into a folder another task
-    holds with a LIVE run, or "" when the send may go. Flag off: always "".
-    Best-effort — any failure to decide is a "go", which is what shipped."""
+    owns, or "" when the send may go. Flag off: always "". Best-effort — any
+    failure to decide is a "go", which is what shipped, and it is why this whole
+    body sits under one `try`: an unreadable index must cost a gate, never a
+    send."""
     try:
         if not str(resolved).replace("\\", "/").endswith("/templates/claude/agent.py"):
             return ""
@@ -35,22 +37,36 @@ def _folder_busy(resolved: str, params: dict) -> str:
         key = project_queue.queue_key(target)
         if not key:
             return ""
-        holder = project_queue.holder_for(key)
+        from fused_render import queue_manager
+
         session_id = str(params.get("session_id") or "")
         run_id = str(params.get("run_id") or "")
-        logger.debug("queue gate: %s %s key=%s session=%r run=%r holder=%r",
-                    action, target, key, session_id, run_id, holder)
-        # A live process refuses, and so does a send THIS PAGE-OR-ANOTHER has
-        # announced in the last seconds (a `sending` holder off the sent mark or
-        # a scheduler claim): the process is about to be there. What does not
-        # refuse is a bare reservation — the chat's own admission a moment ago.
-        if not holder or holder.get("kind") not in ("run", "starting", "sending"):
+        # ONE RECORD OF WHO OWNS THE FOLDER (PR 2, 2026-09-17), the same one the
+        # composer's own door asked a moment ago (`/api/tasks/queue/admit`).
+        # This used to re-derive it from the runs tree, the registry and the
+        # scheduler's store — a second answer to a question the manager now
+        # keeps, and one that could differ from the admission in the same
+        # second.
+        manager = queue_manager.get()
+        # The task this send belongs to: its session, else the run it already
+        # started. `is_free` answers True for a folder this very task owns,
+        # which is the inbox-absorb case (a second message into a conversation
+        # that is running) and must not be refused.
+        mine = session_id or run_id
+        owner = manager.owner(key)
+        logger.debug("queue gate: %s %s key=%s session=%r run=%r owner=%r",
+                     action, target, key, session_id, run_id, owner)
+        if manager.is_free(key, mine):
             return ""
-        if session_id and holder.get("session_id") == session_id:
+        owner = owner or {}
+        # A chat that has no session yet is named by the run it started, and the
+        # owner carries both — equal run ids are one conversation whatever the
+        # session says.
+        if run_id and str(owner.get("run_id") or "") == run_id:
             return ""
-        if run_id and holder.get("run_id") == run_id:
+        if session_id and str(owner.get("session_id") or "") == session_id:
             return ""
-        ahead = str(holder.get("task_key") or holder.get("session_id") or "another task")
+        ahead = str(owner.get("task") or owner.get("session_id") or "another task")
         return ("This folder has another task in progress (%s) — the message was "
                 "not sent. Reload the page and send it again to put it in the "
                 "folder's line." % ahead)
