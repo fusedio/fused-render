@@ -375,7 +375,10 @@ def test_glob_ranked_hits_carry_a_real_score(tmp_path):
     `0` every glob hit used to carry) — pinned by checking two hits with
     different wildcard-swallow amounts do NOT share a score, and every hit
     still carries the same key set (`rel`, `is_dir`, `size`, `mtime`,
-    `score`, `longest_run`, `tier`, `depth`) the other two modes' hits do."""
+    `score`, `longest_run`, `tier`, `depth`) the other two modes' hits do.
+    `tier` is no longer a fixed `0` placeholder either — both basenames here
+    contain both literal runs (`icon`, `copy`), so both are tier 1, same rule
+    `_rank_sql` uses (query is a substring of the basename)."""
     cfg = _index(tmp_path, "/r", ["/r/icon copy.png",
                                   "/r/icon-a-very-long-thing-copy.png"])
     hits = search_ranked(cfg, "/r", "**/**icon**copy**", glob=True)["hits"]
@@ -384,7 +387,72 @@ def test_glob_ranked_hits_carry_a_real_score(tmp_path):
     for h in hits:
         assert set(h) == {"rel", "is_dir", "size", "mtime",
                           "score", "longest_run", "tier", "depth"}
-        assert h["tier"] == 0
+        assert h["tier"] == 1
+
+
+def test_glob_single_literal_run_score_matches_rank_sql_substring_score(tmp_path):
+    """The whole point of confining the swallow penalty to INTERIOR gaps: a
+    pattern with exactly ONE literal run has no interior gap at all (the
+    leading/trailing `**` cross no other literal), so its glob score must be
+    IDENTICAL to `_rank_sql`'s score for the equivalent substring query on
+    the very same rows — not merely close. Includes a folder-name collision
+    (`icons/` itself is a candidate row since every folder holding files gets
+    its own dirs-table row — the fixture gotcha) which is excluded, since its
+    own exact-name +100 bonus would dominate both real rows if left in."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/icon.png",
+        "/r/src/icon.png",
+        "/r/icons/scratch/tmpfile-zzzz.txt",
+        "/r/Projects/website/assets/images/branding/icon.png",
+    ])
+    substring_hits = {h["rel"]: h["score"]
+                      for h in search_ranked(cfg, "/r", "icon")["hits"]}
+    glob_hits = {h["rel"]: h["score"]
+                 for h in search_ranked(cfg, "/r", "**icon**", glob=True)["hits"]
+                 if h["rel"] != "icons"}
+    assert glob_hits  # sanity: rows actually matched
+    assert glob_hits.keys() == substring_hits.keys()
+    for rel, score in glob_hits.items():
+        assert score == substring_hits[rel], rel
+
+
+def test_glob_tier_restores_correct_order_over_the_swallow_penalty(tmp_path):
+    """Before the interior-only fix, the swallow penalty was charged over the
+    WHOLE root-relative path, so a shallow, non-exact match
+    (`xreport.txt`) could outrank a deep, EXACT basename match
+    (`deeply/nested/path/report`) purely because the deep one's path is
+    longer. With the penalty confined to interior gaps (zero here — one
+    literal run), the exact-basename `name_bonus` decides it correctly."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/xreport.txt",
+        "/r/deeply/nested/path/report",
+    ])
+    hits = search_ranked(cfg, "/r", "**report**", glob=True)["hits"]
+    assert [h["rel"] for h in hits] == [
+        "deeply/nested/path/report", "xreport.txt"]
+
+
+def test_glob_tier_generalization_ancestor_only_ranks_below_a_name_match(tmp_path):
+    """`tier` is restored as the PRIMARY sort key for glob hits too, computed
+    by running the resolved pattern's regex against `nm` (the basename)
+    instead of `lrel`: a match there is tier 1, else tier 3 — same two
+    values `_rank_sql` uses for "in the name" vs "ancestor only". A tier-3
+    ancestor-only hit must never outrank a tier-1 name match, however the raw
+    score compares. `alpha/` itself is excluded from the result: it holds a
+    file, so it gets its own row in the dirs table (`Sink.add`), and its own
+    exact-name +100 bonus (tier 1 too) would otherwise sit in the results
+    without being the pair this test means to compare."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/name-has-alpha.txt",   # tier 1: "alpha" is in the basename
+        "/r/alpha/unrelated.txt",  # tier 3: match is ancestor-only
+    ])
+    all_hits = search_ranked(cfg, "/r", "**alpha**", glob=True)["hits"]
+    hits = [h for h in all_hits if h["rel"] != "alpha"]
+    by_rel = {h["rel"]: h for h in hits}
+    assert by_rel["name-has-alpha.txt"]["tier"] == 1
+    assert by_rel["alpha/unrelated.txt"]["tier"] == 3
+    assert [h["rel"] for h in hits] == [
+        "name-has-alpha.txt", "alpha/unrelated.txt"]
 
 
 def test_glob_unranked_reproduces_the_old_depth_then_alpha_order(tmp_path):
@@ -425,7 +493,7 @@ def test_glob_unranked_sql_has_no_scoring_apparatus(tmp_path):
                     "1 AS depth, 'x' AS nm, 'x' AS lrel", "^.*$", "", 10,
                     literals=[])
     lowered = sql.lower()
-    for banned in ("score", "segment_starts", "p0", "strpos", "name_bonus"):
+    for banned in ("score", "segment_starts", "p0", "strpos", "name_bonus", "tier"):
         assert banned not in lowered, f"{banned!r} leaked into the unscored glob SQL"
     assert "order by depth asc, lower(rel) asc, rel asc" in lowered
 
