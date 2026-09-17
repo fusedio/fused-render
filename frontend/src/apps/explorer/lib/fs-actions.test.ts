@@ -185,3 +185,22 @@ test("no clipboard API at all is the same no-op as any other failure", async () 
   expect(ok).toBe(false);
   expect(getClipboard()).toEqual({ paths: ["/a/b.csv"], op: "copy" });
 });
+
+test("a slow write does not clobber a newer copy the user made while it was in flight", async () => {
+  setClipboard({ paths: ["/a/b.csv"], op: "copy" }, false);
+  let resolveWrite!: () => void;
+  stubNavigatorClipboard(
+    () =>
+      new Promise((resolve) => {
+        resolveWrite = resolve;
+      }),
+  );
+  const pending = copyToClipboard("/a/b.csv");
+  // The user selects other files and presses Cmd+C while the write above is
+  // still in flight — a new pending copy, mirrored onto the OS clipboard.
+  setClipboard({ paths: ["/c/d.csv"], op: "copy" }, false);
+  resolveWrite();
+  const ok = await pending;
+  expect(ok).toBe(true);
+  expect(getClipboard()).toEqual({ paths: ["/c/d.csv"], op: "copy" });
+});

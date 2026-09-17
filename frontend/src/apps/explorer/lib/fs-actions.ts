@@ -10,7 +10,7 @@ import { listDir, deleteEntry, statPath, resolveConditions } from "@platform/lib
 import { visibleModes } from "@platform/lib/mode-visibility";
 import type { ArchiveFormat, TemplateEntry } from "@platform/lib/api";
 import { copyToClipboard as writeSystemClipboard } from "@platform/lib/clipboard";
-import { getClipboard, setClipboard } from "@apps/explorer/lib/fs-clipboard";
+import { getClipboard, getClipboardEpoch, setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { dropRecentsFor } from "@apps/explorer/lib/recents";
 import type { MenuEntry, MenuItem } from "@platform/ui/ContextMenu";
 import { KNOWN_SENTINEL_MODES, modeTitle, templateModeIcon } from "@apps/explorer/ModeSwitcher";
@@ -168,8 +168,16 @@ export function claudeTerminalCommand(path: string, isDir: boolean, parentDir: s
 // trouble report) imports copyToClipboard from here rather than from the
 // platform module directly, so this is the one place the rule has to live.
 export async function copyToClipboard(text: string): Promise<boolean> {
+  // Captured before the write, checked after it: the write is a round-trip
+  // (a permission prompt can gate it for seconds in Firefox/Safari), and the
+  // user can select new files and copy again while it's in flight. If they
+  // did, the epoch has moved and the pending copy this write would clear is
+  // not the one it observed — clearing it anyway would wipe the newer copy
+  // while the OS clipboard still holds its files. Same guard os-clipboard.ts
+  // uses across its own read.
+  const epoch = getClipboardEpoch();
   const ok = await writeSystemClipboard(text);
-  if (ok && getClipboard()?.op === "copy") setClipboard(null, false);
+  if (ok && getClipboardEpoch() === epoch && getClipboard()?.op === "copy") setClipboard(null, false);
   return ok;
 }
 
