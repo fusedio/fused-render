@@ -1343,11 +1343,19 @@ def _run_freshness_check(path: str, now: float | None = None) -> None:
         if not _freshness_due(root, time.time(), stamp=False):
             return
         _freshness_wait(FRESHNESS_DELAY_S)
-        # ...and the stamp is taken on the far side, against the clock as it is
-        # now, so the recorded check time is when the check actually ran.
-        if not _freshness_due(root, time.time()):
+        # Still just a peek: note_folder_opened below does a duckdb lookup and
+        # can spawn a scan subprocess before it returns, and that latency must
+        # not be spent out of the FRESHNESS_CHECK_S margin. Stamping here,
+        # before paying that cost, would record a check time earlier than when
+        # the check actually finished, letting the next one land sooner than
+        # the margin intends.
+        if not _freshness_due(root, time.time(), stamp=False):
             return
         result = freshness.note_folder_opened(cfg, path, roots, now=now)
+        # The stamp is taken on the far side of the lookup, against the clock
+        # as it is now — so the recorded check time is when the check actually
+        # finished, not when it started.
+        _freshness_due(root, time.time())
         if result.started:
             _wake_index_job_bridge()
             logger.info("index: %s changed since the last scan; rescanning %s",
