@@ -763,3 +763,66 @@ passed, 5 failed — unchanged). `ast.parse`/`node --check` both clean.
 **Resume pointer**: item 1 above is done. Next: item 2 (the management
 page) and item 3 (Part 3 — the ⌘K overlay and the shortcuts-overlay
 deletion), in that order, per the top-level task ordering.
+
+## Unit 14 — /api/index/search degraded to zero rows; management page built
+
+**`/api/index/search` closed, not left an accepted gap**: `search_under`
+(query.py) reaches for `dir`/`depth`/`size` columns a flat kind's schema
+does not have, so `kind=apps` raised a `duckdb.BinderException` as a 500.
+Since this route is on the global search overlay's path (unit 15's job),
+the mismatch is degraded rather than left to raise: `_index_search_safe`
+(routers/index.py) catches, logs at debug, and answers with the same
+zero-row "not covered" shape a never-scanned index already returns —
+`Cancelled` still passes straight through to a 499. `/api/index/stats` and
+`/api/index/ask` are left exactly as unit 13 documented them: real,
+accepted gaps, neither one on the overlay's path, not widened
+speculatively.
+
+**New `GET /api/index/kinds`**: read-only, gate-free, lists `["files",
+*kinds.registered()]` — the one place a client (the management page, the
+future overlay) can enumerate what indexes exist without probing `/config`
+kind by kind.
+
+**The management page** (`shell/IndexManager.tsx`, `/index`, wired into
+`App.tsx`'s route dispatch and `GlobalSidebar.tsx`'s settings menu the same
+chrome-free way `Mounts.tsx` is): lists every kind from `/api/index/kinds`,
+each with live status (`GET /api/index/status?kind=`), Scan/Full
+scan/Delete. This is the ONE place a non-"files" kind is visible or
+manageable at all — nothing in Preferences ever names a kind.
+
+**Decision — `IndexProposalsDock.tsx` (status-bar chip) stays in the
+status bar, AND is mirrored on the new page**: not a fork. Its
+`useIndexProposals` poll hook is now exported and is the only thing either
+surface asks "what is pending" from — the dock and the page's own
+`ProposalsSection` are two renderers of one piece of server state, so
+there is no second, potentially-disagreeing copy of "what is pending."
+Decision #8's confirm/refuse controls now exist in both places; confirming
+from either fires the same `confirmIndexProposal`/`refuseIndexProposal`
+calls the dock already used.
+
+**Decision — `Indexing.tsx` (Preferences > Indexing) stays in
+Preferences, not folded into the new page**: its roots/ignore editors, FDA
+prompt, and read-only SQL/AI-ask console are file-index-specific, deeply
+tested, and reachable by a bookmarked URL (`?tab=indexing`) nothing here
+may break. Duplicating that surface on the new page would risk two
+controls disagreeing about the same ignore list; the new page's Files card
+links out to it instead ("Roots, skipped folders, and the ... console for
+this store are in Preferences > Indexing") rather than restating it. The
+new page is deliberately narrower: proposals + per-kind status/scan/delete,
+nothing more.
+
+**Verified**: `tests/test_index_kind_routes.py` (14 passed, two new:
+zero-row search for `kind=apps`, and `/api/index/kinds` lists "files" first
+then every registered kind). Frontend: `bunx tsc --noEmit` clean,
+`node scripts/check-boundaries.mjs` clean (827 files), `bun run build`
+succeeds and regenerates `fused_render/static/shell-dist/`,
+`bun test src/shell/index-proposals-lib.test.ts
+src/shell/IndexProposalsDock.test.tsx` (13 passed) — the two suites that
+exercise the exported `useIndexProposals` hook and the row-shaping helpers
+`IndexManager.tsx` also consumes.
+
+**Resume pointer**: items 1 and 2 are done. Next: item 3 (Part 3 — the ⌘K
+global search overlay, and deleting the shortcuts overlay entirely —
+surface, listing, and the Mod+K entry at
+`frontend/src/platform/lib/shortcuts.ts:116` — per the standing rule to
+delete stranded code rather than leave it inert).
