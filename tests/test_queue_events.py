@@ -191,6 +191,10 @@ def test_the_host_posts_turn_ended_once_when_a_result_row_lands(
     assert ended[0]["method"] == "POST"
     assert ended[0]["fused"] == "1", "the endpoint's D3 guard would 403 this"
     assert ended[0]["timeout"] == host._EVENT_TIMEOUT
+    # `at` is WHEN THE HOST SAW THE EDGE, not decoration (bugbot, 2026-09-17):
+    # `mark_turn_ended`'s ordering runs off it.
+    assert isinstance(body["at"], float)
+    assert abs(body["at"] - time.time()) < 5.0
 
 
 def test_the_host_announces_a_second_turn_on_the_same_session(
@@ -213,6 +217,8 @@ def test_the_host_posts_exited_with_the_childs_return_code(
     assert len(exited) == 1
     assert exited[0]["body"]["code"] == 7
     assert exited[0]["body"]["run_id"] == "20260917-120000-abcd"
+    assert isinstance(exited[0]["body"]["at"], float)
+    assert abs(exited[0]["body"]["at"] - time.time()) < 5.0
 
 
 def test_the_host_posts_exited_on_the_idle_reap_too(monkeypatch, posts, host_run):
@@ -769,6 +775,46 @@ def test_turn_ended_resolves_the_task_key_from_the_run_dir_even_flag_off(
     assert r.status_code == 200
     assert tasks_watch.is_turn_ended("sess-from-disk")
     assert manager.calls == []
+
+
+def test_the_endpoint_forwards_at_to_tasks_watch(client, flag, manager):
+    """`at` is the event's own moment (bugbot, 2026-09-17), and the endpoint is
+    just the wire — it must not substitute server-now for a value the body
+    actually carried."""
+    flag(False)
+    tasks_watch.reset()
+    at = time.time() - 30.0
+    r = client.post("/api/tasks/queue/event", headers=HEADERS,
+                    json={"kind": "turn_ended", "run_id": "r1",
+                          "session_id": "sess-real", "at": at})
+    assert r.status_code == 200
+    assert tasks_watch._ended["sess-real"] == pytest.approx(at)
+
+
+def test_a_missing_at_falls_back_to_server_now(client, flag, manager):
+    """An old host that predates `at`, or a caller with nothing better, must
+    not crash the endpoint or silently drop the turn-ended fact."""
+    flag(False)
+    tasks_watch.reset()
+    before = time.time()
+    r = client.post("/api/tasks/queue/event", headers=HEADERS,
+                    json={"kind": "turn_ended", "run_id": "r1",
+                          "session_id": "sess-real"})
+    after = time.time()
+    assert r.status_code == 200
+    assert before <= tasks_watch._ended["sess-real"] <= after
+
+
+def test_an_unparseable_at_falls_back_to_server_now(client, flag, manager):
+    flag(False)
+    tasks_watch.reset()
+    before = time.time()
+    r = client.post("/api/tasks/queue/event", headers=HEADERS,
+                    json={"kind": "exited", "run_id": "r2",
+                          "session_id": "sess-2", "at": "not-a-number"})
+    after = time.time()
+    assert r.status_code == 200
+    assert before <= tasks_watch._ended["sess-2"] <= after
 
 
 def test_an_unresolvable_run_still_shrugs_with_the_flag_off(client, flag,

@@ -231,6 +231,30 @@ class FakeManager:
                                "run_id": run_id, "since": time.time()}
         return True
 
+    def claim_for_send(self, folder, task_key, run_id="", session_id=""):
+        """`claim`, plus the fresh per-send claim token that call recorded on
+        the owner (Bugbot, PR #1194) — mirrors
+        `queue_manager.QueueManager.claim_for_send`. "" when `claim` refused.
+        `took` is not something admit reads (the door only checks `ok` and the
+        token), so this answers `ok` again there rather than re-deriving it."""
+        ok = self.claim(folder, task_key, run_id, session_id)
+        if not ok:
+            return False, False, ""
+        owner = self.owners.get(folder) or {}
+        token = f"claim-{len(self.events)}"
+        owner.setdefault("claims", []).append(token)
+        return True, True, token
+
+    def consume_claim(self, folder, token):
+        """Remove `token` from `folder`'s owner, once — what the run gate
+        calls to tell an admitted send from one that skipped admission."""
+        owner = self.owners.get(folder)
+        claims = owner.get("claims") if owner else None
+        if not claims or token not in claims:
+            return False
+        claims.remove(token)
+        return True
+
     # -- the events a door fires -----------------------------------------
     def enqueue(self, folder, task_key, entry_id=""):
         self.events.append(("enqueue", folder, task_key, entry_id))
@@ -596,6 +620,17 @@ def _post(client, path, body):
     return client.post(path, json=body, headers=HEADERS)
 
 
+def _admitted(body):
+    """An admission's `run: true` body, with the per-send CLAIM TOKEN peeled
+    off (Bugbot, PR #1194) — minted on every admitted send with the flag on,
+    it is a fresh value every call (`FakeManager.claim_for_send`) and no case
+    below asserts what it IS, only that the send ran. `routers/run.py` and its
+    own suite are what exercise the token travelling onto the run request."""
+    body = dict(body)
+    body.pop("claim", None)
+    return body
+
+
 # ======================================================== the queued status
 
 
@@ -917,7 +952,7 @@ def test_admit_into_a_free_folder_runs_and_takes_the_folder(
     alpha, _beta = folders
     r = _post(client, "/api/tasks/queue/admit",
               {"project": alpha, "session_id": "sess-a", "message": "go"})
-    assert r.json() == {"run": True}
+    assert _admitted(r.json()) == {"run": True}
     assert (manager.owner(alpha) or {})["task"] == "sess-a"
     assert schedule.list_entries() == []
 
@@ -932,9 +967,9 @@ def test_a_second_session_queues_behind_the_first_ones_reservation(
     _transcript(projects_dir, "sess-a", alpha, "holding the folder")
     ahead = _rows(client)["sess-a"]["task_id"]
 
-    assert _post(client, "/api/tasks/queue/admit",
-                 {"project": alpha, "session_id": "sess-a",
-                  "message": "go"}).json() == {"run": True}
+    assert _admitted(_post(client, "/api/tasks/queue/admit",
+                          {"project": alpha, "session_id": "sess-a",
+                           "message": "go"}).json()) == {"run": True}
     # …and where the stored send then stands is the manager's answer, which the
     # reply reads back through `_queue_place`.
     manager.line(alpha, "sess-b", holder="sess-a")
@@ -990,7 +1025,7 @@ def test_a_new_chats_second_message_is_not_queued_behind_its_own_run(
               {"project": alpha, "session_id": "sess-new", "run_id": "run-1",
                "message": "second"})
     assert r.status_code == 200, r.text
-    assert r.json() == {"run": True}
+    assert _admitted(r.json()) == {"run": True}
     assert schedule.list_entries() == []          # nothing was queued
     # …and the folder now carries the name the chat finally has.
     owner = manager.owner(alpha) or {}
@@ -1017,7 +1052,7 @@ def test_the_registry_names_the_new_chats_run_by_its_pid(
     # …so no run_id is needed: the conversation is named now.
     r = _post(client, "/api/tasks/queue/admit",
               {"project": alpha, "session_id": "sess-new", "message": "second"})
-    assert r.json() == {"run": True}
+    assert _admitted(r.json()) == {"run": True}
     assert schedule.list_entries() == []
 
 
@@ -1054,9 +1089,9 @@ def test_an_admitted_send_changes_no_row_by_itself(
     before = _rows(client)["sess-a"]["status"]
     assert before != "in_progress"
 
-    assert _post(client, "/api/tasks/queue/admit",
-                 {"project": alpha, "session_id": "sess-a", "message": "go"}
-                 ).json() == {"run": True}
+    assert _admitted(_post(client, "/api/tasks/queue/admit",
+                          {"project": alpha, "session_id": "sess-a",
+                           "message": "go"}).json()) == {"run": True}
     assert rings == []
     # the gate's record stands, and it is the manager's now
     assert (manager.owner(alpha) or {})["task"] == "sess-a"
@@ -1163,9 +1198,10 @@ def test_a_wordless_send_runs_on_a_free_folder_and_is_refused_on_a_busy_one(
     flag()
     alpha, _beta = folders
     _holders(monkeypatch, {})
-    assert _post(client, "/api/tasks/queue/admit",
-                 {"project": alpha, "session_id": "sess-a", "message": "",
-                  "images": ["/tmp/shot.png"]}).json() == {"run": True}
+    assert _admitted(_post(client, "/api/tasks/queue/admit",
+                          {"project": alpha, "session_id": "sess-a",
+                           "message": "",
+                           "images": ["/tmp/shot.png"]}).json()) == {"run": True}
 
     _transcript(projects_dir, "sess-holder", alpha)
     _holders(monkeypatch, {alpha: "sess-holder"})
@@ -1932,9 +1968,9 @@ def test_admit_runs_when_this_chats_own_work_is_not_due_yet(
     schedule._write([_entry("e1", "next week", alpha, due=_iso(86_400),
                             session_id="sess-a")])
 
-    assert _post(client, "/api/tasks/queue/admit",
-                 {"project": alpha, "session_id": "sess-a",
-                  "message": "now"}).json() == {"run": True}
+    assert _admitted(_post(client, "/api/tasks/queue/admit",
+                          {"project": alpha, "session_id": "sess-a",
+                           "message": "now"}).json()) == {"run": True}
 
 
 def test_the_flag_off_never_looks_at_this_chats_own_work(
@@ -2327,9 +2363,9 @@ def test_an_admitted_queued_message_never_blocks_the_chat_that_typed_it(
     alpha, _beta = folders
     _transcript(projects_dir, "sess-a", alpha, "holding the folder")
     _transcript(projects_dir, "sess-b", alpha, "me too")
-    assert _post(client, "/api/tasks/queue/admit",
-                 {"project": alpha, "session_id": "sess-a",
-                  "message": "go"}).json() == {"run": True}
+    assert _admitted(_post(client, "/api/tasks/queue/admit",
+                          {"project": alpha, "session_id": "sess-a",
+                           "message": "go"}).json()) == {"run": True}
 
     body = _post(client, "/api/tasks/queue/admit",
                  {"project": alpha, "session_id": "sess-b",
@@ -2513,10 +2549,10 @@ def test_an_admitted_send_leaves_its_chat_draft_alone(
     drafts.put_chat(key, "half a thought")
     # The draft key is the name a session-less composer already has, so the
     # placeholder is filed under it rather than under a fresh uuid.
-    assert _post(client, "/api/tasks/queue/admit",
-                 {"project": alpha, "message": "half a thought",
-                  "draft_key": key}).json() == {"run": True,
-                                                "owner_token": PLACEHOLDER + key}
+    assert _admitted(_post(client, "/api/tasks/queue/admit",
+                          {"project": alpha, "message": "half a thought",
+                           "draft_key": key}).json()) == {
+        "run": True, "owner_token": PLACEHOLDER + key}
     assert drafts.get_chat(key) is not None
 
 
@@ -2591,9 +2627,9 @@ def test_an_admitted_send_that_runs_answers_no_number_and_mints_none(
     pass, which is the behaviour with the flag off too."""
     flag()
     alpha, _beta = folders
-    assert _post(client, "/api/tasks/queue/admit",
-                 {"project": alpha, "session_id": "sess-a",
-                  "message": "go"}).json() == {"run": True}
+    assert _admitted(_post(client, "/api/tasks/queue/admit",
+                          {"project": alpha, "session_id": "sess-a",
+                           "message": "go"}).json()) == {"run": True}
     assert tasks_store.task_ids() == {}
 
 
@@ -2802,9 +2838,9 @@ def test_admit_takes_the_folder_through_the_manager(
     threads both heard "free" and both spawned."""
     flag()
     alpha, _beta = folders
-    assert _post(client, "/api/tasks/queue/admit",
-                 {"project": alpha, "session_id": "sess-a", "message": "go"}
-                 ).json() == {"run": True}
+    assert _admitted(_post(client, "/api/tasks/queue/admit",
+                          {"project": alpha, "session_id": "sess-a",
+                           "message": "go"}).json()) == {"run": True}
     assert _kinds(manager, "claim") == [("claim", alpha, "sess-a", "", "sess-a")]
     assert _kinds(manager, "started", "enqueue") == []
     assert (manager.owner(alpha) or {})["task"] == "sess-a"

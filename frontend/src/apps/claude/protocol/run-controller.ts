@@ -1865,6 +1865,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
                 model: curModel(),
                 effort: curEffort(),
                 permission_mode: opts.permission || curPermission(),
+                // THE ADMITTED CLAIM, if admission minted one (Bugbot, PR
+                // #1194): proof this send is the one already counted, so the
+                // server gate only looks rather than claiming a second time.
+                ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
               },
               { key: null },
             )) as SendResponse;
@@ -1915,6 +1919,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // settles one of those is the only thing that can hand its number
             // on. It costs one short string on a send that has nothing to spend.
             ...(sessionId ? {} : { draft_key: chatDraftKey(null, FILE) }),
+            // THE ADMITTED CLAIM, if admission minted one (Bugbot, PR #1194):
+            // proof this send is the one already counted, so the server gate
+            // only looks rather than claiming a second time.
+            ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
           },
           { key: null },
         )) as StartResponse;
@@ -2094,6 +2102,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
           model: curModel(),
           effort: curEffort(),
           permission_mode: opts.permission || curPermission(),
+          // THE ADMITTED CLAIM, if admission minted one (Bugbot, PR #1194):
+          // proof this send is the one already counted, so the server gate
+          // only looks rather than claiming a second time.
+          ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
         },
         { key: null },
       )) as SendResponse;
@@ -2116,6 +2128,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
             permission_mode: opts.permission || curPermission(),
             has_pane: hasPane(),
             read_dirs: JSON.stringify(opts.readDirs || []),
+            // THE ADMITTED CLAIM, if admission minted one (Bugbot, PR #1194):
+            // proof this send is the one already counted, so the server gate
+            // only looks rather than claiming a second time.
+            ...(opts.queueClaim ? { queue_claim: opts.queueClaim } : {}),
           },
           { key: null },
         )) as StartResponse;

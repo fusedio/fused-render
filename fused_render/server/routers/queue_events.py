@@ -39,12 +39,20 @@ exists whether or not one-task-per-folder is switched on, because it comes
 from the registry row and the transcript tail lagging the session host's own
 event, not from the queue. The manager dispatch below stays exactly as
 flag-gated as ever.
+
+The body's `at` (bugbot, 2026-09-17) is WHEN THE HOST SAW THE TURN END, not
+when this HTTP request happened to be handled — a slow request must not read
+as a LATE turn to `mark_turn_ended`'s ordering, or an overlapping follow-up's
+own, earlier-arriving mark gets clobbered by an event that is actually older
+than it. Forwarded through unchanged; a missing or unparseable one falls back
+to server-now, same as before this existed.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import time
 
 from fastapi import APIRouter, Body, Header
 from fastapi.concurrency import run_in_threadpool
@@ -156,7 +164,19 @@ async def api_tasks_queue_event(payload: dict | None = Body(default=None),
         if not task_key:
             task_key = await run_in_threadpool(_task_key, run_id)
         if task_key:
-            await run_in_threadpool(tasks_watch.mark_turn_ended, task_key, run_id)
+            # `at` is WHEN THE HOST SAW THE TURN END, not when this request
+            # happened to arrive — the host stamps it off the `result` row's
+            # own edge (or the child's own death, for `exited`) and this is
+            # just the wire. Falls back to server-now for a body that carries
+            # none — an old host that predates this, or a test — which is
+            # exactly `mark_turn_ended`'s own pre-`at` behaviour.
+            at = body.get("at")
+            try:
+                at = float(at)
+            except (TypeError, ValueError):
+                at = time.time()
+            await run_in_threadpool(tasks_watch.mark_turn_ended, task_key,
+                                    run_id, at)
 
     if not await run_in_threadpool(project_queue.enabled):
         return {"ok": True, "ignored": True}

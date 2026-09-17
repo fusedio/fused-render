@@ -25,6 +25,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 from typing import Callable
 
 from fused_render import tasks_store
@@ -63,6 +64,20 @@ PLACEHOLDER_TTL = 30.0
 # has a run id is asked about properly (its run dir has a pid in it) and needs no
 # grace at all.
 SPAWN_GRACE = 10.0
+
+# A PER-SEND CLAIM, MINTED ON EVERY SUCCESSFUL `claim_took` (2026-09-17, Bugbot
+# PR #1194). Admit and the run gate used to answer the same question twice —
+# "is this send allowed to take/hold the folder?" — with no way to tell a send
+# the gate had already counted (admit's own claim) from one it had not (a tab
+# whose flag read was stale, and skipped admit outright). Counting both meant
+# `turn_ended`'s single decrement never brought a normal send's count back to
+# zero; counting neither let two ungated sends into one free folder. A token
+# is the receipt: admit hands it to the client, the client hands it back on
+# the run request, and `consume_claim` removing it is what tells the gate
+# "look, don't claim" — see `routers/run.py::_folder_busy`. Capped, because an
+# admission a page never sent (a stale card, a reload) leaves an unconsumed
+# token behind for ever otherwise.
+CLAIM_CAP = 16
 
 
 def _is_placeholder(task_key) -> bool:
@@ -136,7 +151,13 @@ def _owner_rec(raw) -> dict | None:
             # field to load (every one before today) had exactly one send in
             # flight — the default is 1, never 0, because a stored 0 would
             # already have been released rather than persisted.
-            "turns": int(_number(raw.get("turns"))) or 1}
+            "turns": int(_number(raw.get("turns"))) or 1,
+            # UNCONSUMED PER-SEND CLAIMS (2026-09-17, Bugbot PR #1194) — see
+            # `CLAIM_CAP`. An index written before today loads an empty list,
+            # which is right: nothing claimed against a build that minted none
+            # can ever present one back.
+            "claims": [t for t in (raw.get("claims") or [])
+                      if isinstance(t, str) and t][-CLAIM_CAP:]}
 
 
 def _answer_rec(raw) -> dict | None:
@@ -514,6 +535,18 @@ class QueueManager:
                         "since": float(self._clock()), "starting": False,
                         "turns": turns}
         return rec["owner"]
+
+    @staticmethod
+    def _mint_claim(owner: dict) -> str:
+        """A fresh one-time token for THIS send, appended to the owner's list
+        (`CLAIM_CAP`, Bugbot PR #1194). `consume_claim` removing it is the run
+        gate's proof that a send is the one `claim_took` already counted —
+        see `claim_for_send`, the only caller that hands the token onward."""
+        token = uuid.uuid4().hex
+        claims = owner.setdefault("claims", [])
+        claims.append(token)
+        del claims[:-CLAIM_CAP]
+        return token
 
     def _release(self, rec: dict, folder: str, keys: set) -> None:
         owner = rec["owner"]
@@ -975,9 +1008,40 @@ class QueueManager:
         `took` is True only where the owner before this call was nobody — an
         empty folder, an expired placeholder, or a placeholder giving way to a
         real name. False with `ok` True means this conversation already owned
-        it; False with `ok` False means somebody else does."""
+        it; False with `ok` False means somebody else does.
+
+        THE 2-TUPLE IS THE CONTRACT: `schedule.py::_claim_folder` unpacks it
+        positionally, so a caller after the fresh per-send token this same
+        call mints (Bugbot, PR #1194) wants `claim_for_send`, not this."""
+        ok, took, _token = self._claim_took(folder, task_key, run_id, session_id)
+        return ok, took
+
+    def claim_for_send(self, folder: str, task_key: str, run_id: str = "",
+                       session_id: str = "") -> tuple[bool, bool, str]:
+        """`claim_took`, plus the fresh per-send CLAIM TOKEN this very call
+        recorded on the owner (2026-09-17, Bugbot PR #1194) — "" when `ok` is
+        False, since nothing was claimed for anybody to redeem.
+
+        Admit is the one caller: the token travels in its answer, the client
+        echoes it back on the run request as `queue_claim`, and
+        `consume_claim` removing it there is what tells
+        `routers/run.py::_folder_busy` this send is the one already counted,
+        not a second claim to make. A SEPARATE METHOD rather than widening
+        `claim_took`'s return, because that tuple's shape is `schedule.py`'s
+        contract (see its docstring) and a second element on every call site
+        for a token only one of them uses would be dead weight everywhere
+        else."""
+        return self._claim_took(folder, task_key, run_id, session_id)
+
+    def _claim_took(self, folder: str, task_key: str, run_id: str = "",
+                    session_id: str = "") -> tuple[bool, bool, str]:
+        """The one real implementation behind `claim`, `claim_took` and
+        `claim_for_send` — see their docstrings. `token` is "" on either
+        False; otherwise the fresh claim `_mint_claim` just appended to the
+        owner, whether this call took the folder fresh or absorbed a
+        follow-up into a turn already running."""
         if not folder or not task_key:
-            return False, False
+            return False, False, ""
         with self._txn() as keys:
             rec = self._folder(folder)
             owner = rec["owner"]
@@ -997,16 +1061,41 @@ class QueueManager:
                     if session_id and not owner["session_id"]:
                         owner["session_id"] = _text(session_id)
                     owner["turns"] = int(owner.get("turns") or 0) + 1
-                    return True, False
+                    return True, False, self._mint_claim(owner)
                 if not (_is_placeholder(owner["task"])
                         and not _is_placeholder(task_key)):
-                    return False, False
+                    return False, False, ""
                 keys.add(owner["task"])
             self._take_everywhere(task_key, keys, except_folder=folder)
             self._own(rec, {"task": task_key, "entry_id": ""}, _text(run_id),
                       _text(session_id))
             keys.add(task_key)
-            return True, True
+            return True, True, self._mint_claim(rec["owner"])
+
+    def consume_claim(self, folder: str, token: str) -> bool:
+        """Remove `token` from `folder`'s owner, ONCE — the run gate's proof
+        that a `start`/`send` is the very one `claim_took` already counted at
+        admission time (2026-09-17, Bugbot PR #1194).
+
+        True the first time a valid token is presented; False for an empty
+        token, an unknown folder, or one already spent — a double-submit, a
+        retry, or a token minted for an owner that has since changed. The
+        caller then treats the send exactly as one that skipped admission
+        altogether (`claim_took`, refusing another owner) rather than trusting
+        a claim that no longer proves anything."""
+        text_token = _text(token)
+        if not folder or not text_token:
+            return False
+        # No `as keys`: consuming a claim changes nothing a page draws, so
+        # there is nothing here for `_flush` to notify anyone about.
+        with self._txn():
+            rec = self._state["folders"].get(folder)
+            owner = rec["owner"] if rec else None
+            claims = owner.get("claims") if owner else None
+            if not isinstance(claims, list) or text_token not in claims:
+                return False
+            claims.remove(text_token)
+            return True
 
     def started(self, folder: str, task_key: str, run_id: str = "",
                 session_id: str = "") -> None:

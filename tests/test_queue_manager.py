@@ -1395,6 +1395,92 @@ def test_claim_took_calls_a_placeholder_a_take():
     assert m2.claim_took(F1, qm.PLACEHOLDER_PREFIX + "two") == (False, False)
 
 
+# ----------------------------------------------------- the per-send claim token
+#
+# Bugbot, PR #1194, second round: a gate that only LOOKS (never claims) let a
+# send that skipped admission through unchecked into a free folder — the
+# older bug this whole feature exists to close. A gate that always CLAIMS
+# double-counts the ordinary admit→run send. The token is what tells the two
+# apart: admit mints one on every successful `claim_for_send`, the client
+# echoes it back on the run request, and `consume_claim` finding it there is
+# proof this send was already counted.
+
+
+def test_claim_for_send_yields_a_token_and_consume_claim_spends_it_once():
+    m = idle_world().manager()
+    ok, took, token = m.claim_for_send(F1, "a", "run-a", "sess-a")
+    assert (ok, took) == (True, True)
+    assert token and isinstance(token, str)
+    assert m.consume_claim(F1, token) is True
+    assert m.consume_claim(F1, token) is False, "a token is spent once"
+
+
+def test_claim_for_send_mints_no_token_on_a_refusal():
+    """False `ok` means nothing was claimed, so there is nothing for admit to
+    hand the client — a caller that redeemed a "" token would find nothing
+    (`consume_claim` refuses an empty one outright)."""
+    m = idle_world().manager()
+    m.claim_took(F1, "a", "run-a", "sess-a")
+    assert m.claim_for_send(F1, "b", "run-b", "sess-b") == (False, False, "")
+
+
+def test_claim_for_send_absorbed_still_mints_its_own_token():
+    """A follow-up absorbed into a turn already running is counted (`turns`)
+    exactly as `claim_took` counts it, and it earns its OWN token — two sends
+    in flight are two different claims to redeem, not one shared between
+    them."""
+    m = idle_world().manager()
+    _ok, _took, first = m.claim_for_send(F1, "a", "run-a", "sess-a")
+    ok, took, second = m.claim_for_send(F1, "a", "run-a", "sess-a")
+    assert (ok, took) == (True, False)
+    assert second and second != first
+    assert m.owner(F1)["turns"] == 2
+    assert m.consume_claim(F1, first) is True
+    assert m.consume_claim(F1, second) is True
+
+
+def test_claim_took_and_claim_still_answer_their_own_shape():
+    """`schedule.py::_claim_folder` unpacks `claim_took` positionally and
+    every door reads `claim` as a bool — a token is not added to either."""
+    m = idle_world().manager()
+    assert m.claim_took(F1, "a", "run-a", "sess-a") == (True, True)
+    assert m.claim(F2, "b", "run-b", "sess-b") is True
+
+
+def test_consume_claim_is_false_for_an_empty_token_or_unknown_folder():
+    m = idle_world().manager()
+    m.claim_for_send(F1, "a", "run-a", "sess-a")
+    assert m.consume_claim(F1, "") is False
+    assert m.consume_claim("", "whatever") is False
+    assert m.consume_claim("/nowhere", "whatever") is False
+
+
+def test_consume_claim_fails_once_a_different_owner_takes_the_folder():
+    """A token only proves a send was admitted once — not that the owner it
+    was minted for still holds the folder. Once the turn ends and somebody
+    else takes it fresh, the old owner's unconsumed claims are gone with it."""
+    m = idle_world().manager()
+    _ok, _took, token = m.claim_for_send(F1, "a", "run-a", "sess-a")
+    m.exited("a", "run-a")
+    m.claim_took(F1, "b", "run-b", "sess-b")
+    assert m.consume_claim(F1, token) is False
+
+
+def test_claims_are_capped():
+    """An admission a page never sent — a stale card, a reload — leaves an
+    unconsumed token behind; `CLAIM_CAP` keeps a long-lived owner's list from
+    growing without bound."""
+    m = idle_world().manager()
+    tokens = [m.claim_for_send(F1, "a", "run-a", "sess-a")[2]
+              for _ in range(qm.CLAIM_CAP + 5)]
+    assert len(m.snapshot()["folders"][F1]["owner"]["claims"]) == qm.CLAIM_CAP
+    # The newest tokens survive; the oldest were pushed out.
+    for token in tokens[-qm.CLAIM_CAP:]:
+        assert m.consume_claim(F1, token) is True
+    for token in tokens[:5]:
+        assert m.consume_claim(F1, token) is False
+
+
 # ------------------------------------------------------- the admit placeholder
 
 

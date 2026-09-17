@@ -383,7 +383,13 @@ def _reap_loop(agent, run_dir: str, cli, host_json: str) -> None:
             turn_open, tasks_pending = _turn_state_if_grown(
                 agent, run_dir, turn_state_cache)
             if was_open and not turn_open:
-                _post_event(run_dir, "turn_ended")
+                # `at` is THIS INSTANT — the moment this loop saw the `result`
+                # row's edge — not whenever the HTTP POST actually lands on
+                # the server. `mark_turn_ended`'s ordering runs off this, not
+                # request-arrival order, which is what lets an overlapping
+                # follow-up's own (earlier-arriving) mark survive a slow
+                # delivery of this event (bugbot, 2026-09-17).
+                _post_event(run_dir, "turn_ended", at=time.time())
             was_open = turn_open
             if turn_open or tasks_pending:
                 idle_since = None
@@ -424,6 +430,14 @@ def _reap_loop(agent, run_dir: str, cli, host_json: str) -> None:
                 cli.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
+        # THE MOMENT THIS LOOP SAW THE CHILD GONE — cli.poll() is now
+        # guaranteed final (the wait above only returns once it is, or gives
+        # up after 5s with the process still refusing to reap, its own
+        # separate problem). Not `time.time()` taken later, after the event
+        # is built and threaded off: `mark_turn_ended`'s ordering is by this
+        # stamp, and the whole point is that it must not drift with how long
+        # the HTTP POST itself takes to land (bugbot, 2026-09-17).
+        exited_at = time.time()
         # The session is over — the CLI exited on its own, the idle timer
         # reaped it, or a read in the loop above threw. All three are the same
         # news to the queue (this folder's owner is gone), so it is announced
@@ -431,7 +445,7 @@ def _reap_loop(agent, run_dir: str, cli, host_json: str) -> None:
         # turn_ended posts: this process is about to return out of `main` and
         # a daemon thread dies with it, so the last word has to be waited for
         # — briefly, and never longer than the post's own timeout.
-        last = _post_event(run_dir, "exited", code=cli.poll())
+        last = _post_event(run_dir, "exited", code=cli.poll(), at=exited_at)
         if last is not None:
             try:
                 last.join(_EVENT_TIMEOUT + 1.0)

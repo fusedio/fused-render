@@ -25,6 +25,10 @@ class _Manager:
     def __init__(self):
         self.owners: dict[str, dict] = {}
         self.claims: list[tuple] = []
+        # PER-SEND CLAIM TOKENS (Bugbot, PR #1194, second round): what admit
+        # would have handed back on `run: true`, mirrored here so a case can
+        # present one as `queue_claim` — see `mint_claim`/`consume_claim`.
+        self.tokens: dict[str, list[str]] = {}
 
     def own(self, folder, task, session_id="", run_id=""):
         self.owners[folder] = {"task": task, "session_id": session_id,
@@ -44,19 +48,44 @@ class _Manager:
                             str(owner.get("run_id") or ""),
                             str(owner.get("session_id") or ""))
 
-    def claim(self, folder, task_key, run_id="", session_id=""):
+    def claim_took(self, folder, task_key, run_id="", session_id=""):
         """Atomic check-and-own, and — like the real one — an owner that is
-        already this conversation keeps the names it was filed with."""
+        already this conversation keeps the names it was filed with. `(ok,
+        took)`, mirroring `QueueManager.claim_took` — what the gate calls for
+        a send with no (or no longer good) `queue_claim`."""
         self.claims.append((folder, task_key, run_id, session_id))
         owner = self.owners.get(folder)
         if owner is None:
             self.own(folder, task_key, session_id=session_id, run_id=run_id)
-            return True
+            return True, True
         if not any(self.is_free(folder, name)
                    for name in (task_key, run_id, session_id) if name):
-            return False
+            return False, False
         owner["run_id"] = owner.get("run_id") or run_id
         owner["session_id"] = owner.get("session_id") or session_id
+        return True, False
+
+    def claim(self, folder, task_key, run_id="", session_id=""):
+        return self.claim_took(folder, task_key, run_id, session_id)[0]
+
+    def mint_claim(self, folder, task_key, run_id="", session_id=""):
+        """Test helper standing in for admit's `claim_for_send`: claims the
+        folder exactly as `claim_took` does and hands back a token a case can
+        present as `queue_claim`. "" when the claim failed."""
+        ok, _took = self.claim_took(folder, task_key, run_id, session_id)
+        if not ok:
+            return ""
+        token = f"tok-{len(self.claims)}"
+        self.tokens.setdefault(folder, []).append(token)
+        return token
+
+    def consume_claim(self, folder, token):
+        """`QueueManager.consume_claim`, mirrored: remove `token` once, False
+        if it names nothing (already spent, or never minted)."""
+        toks = self.tokens.get(folder)
+        if not toks or token not in toks:
+            return False
+        toks.remove(token)
         return True
 
     def started(self, folder, task_key, run_id="", session_id=""):
@@ -209,32 +238,74 @@ def test_filing_the_owner_never_breaks_a_run_that_already_started(monkeypatch,
 # asked `is_free` and filed nobody, `_file_owner` filed only after a `start` had
 # spawned, and a `send` filed nothing at all, ever. Every question asked in the
 # gap was answered "the tree is free".
+#
+# A PER-SEND CLAIM TOKEN DECIDES WHICH OF THE TWO THIS SEND GETS (Bugbot, PR
+# #1194, second round). Claiming unconditionally double-counted every ordinary
+# admit→run send (admit's own claim, this gate's, `_file_owner`'s refile on
+# top); looking only reopened the window for a send that skipped admission
+# outright (a stale flag read) to slip into a folder nobody had claimed for it.
+# So: a `queue_claim` admit minted, and `consume_claim` still finds — this send
+# was already counted, and the gate only LOOKS. No token, or one that no longer
+# proves anything — this send never went through admit, and the gate CLAIMS the
+# folder itself, exactly as it always had to before admission existed.
 
 
-def test_the_gate_only_looks_and_never_claims(gate):
-    """Bugbot, PR #1194: the gate used to claim the folder it opened — one of
-    three claims a single send made (admit, this gate, `_file_owner` after the
-    spawn), each counting a turn, and `turn_ended`'s one decrement never
-    brought the count back to zero. Admit already claimed the folder before
-    `/api/run` is ever called; this door only reads that claim."""
+def test_an_admitted_send_only_looks(gate):
+    """WITH a valid `queue_claim`, the gate never claims — admit already did,
+    and `consume_claim` finding the token is proof enough. Only a LOOK,
+    refusing if the owner has somehow changed since."""
+    manager = gate["manager"]
+    manager.own("/w/alpha", "sess-1", session_id="sess-1", run_id="r-1")
+    token = manager.mint_claim("/w/alpha", "sess-1", "r-1", "sess-1")
+    manager.claims.clear()  # admission's own claim attempt, not this gate's
+    assert run_router._folder_busy(
+        AGENT, _params(session_id="sess-1", run_id="r-1",
+                      queue_claim=token)) == ""
+    assert manager.claims == []
+    # The token is spent: presenting it again finds nothing to consume, and
+    # falls back to an ordinary tokenless claim attempt.
+    assert manager.consume_claim("/w/alpha", token) is False
+
+
+def test_a_tokenless_send_claims_the_folder(gate):
+    """WITHOUT a `queue_claim` (a send that skipped admission), the gate
+    claims the folder itself — exactly as a tokenless send always had to
+    before admission existed. A different name than the one that took it is
+    then refused."""
     manager = gate["manager"]
     assert run_router._folder_busy(
         AGENT, _params(session_id="sess-1", run_id="r-1")) == ""
-    assert manager.claims == []
-    assert manager.owner("/w/alpha") is None
-    # …and once something really does own it, a different name is refused
-    manager.own("/w/alpha", "sess-1", session_id="sess-1", run_id="r-1")
+    assert manager.claims == [("/w/alpha", "sess-1", "r-1", "sess-1")]
+    assert manager.owner("/w/alpha")["task"] == "sess-1"
+    # …and once something owns it, a different name is refused
     assert run_router._folder_busy(AGENT, _params(session_id="sess-2",
                                                   run_id="r-2"))
 
 
-def test_a_look_that_finds_another_owner_leaves_it_untouched(gate):
+def test_a_tokenless_claim_that_finds_another_owner_is_refused(gate):
+    """A tokenless send still cannot steal a folder another task holds —
+    `claim_took` refuses it, and the owner is left exactly as it was."""
     manager = gate["manager"]
     manager.own("/w/alpha", "TASK-007", session_id="sess-a", run_id="r-a")
     assert run_router._folder_busy(AGENT, _params(session_id="sess-b",
                                                   run_id="r-b"))
     assert manager.owner("/w/alpha")["task"] == "TASK-007"
-    assert manager.claims == []
+    assert manager.claims == [("/w/alpha", "sess-b", "r-b", "sess-b")]
+
+
+def test_an_admitted_claim_that_finds_another_owner_is_refused(gate):
+    """A `queue_claim` only proves the send was admitted once — not that it
+    still holds. A folder somebody else has since taken still refuses it, and
+    the gate never claims on the strength of a spent token."""
+    manager = gate["manager"]
+    manager.own("/w/alpha", "sess-1", session_id="sess-1", run_id="r-1")
+    token = manager.mint_claim("/w/alpha", "sess-1", "r-1", "sess-1")
+    manager.own("/w/alpha", "TASK-007", session_id="sess-a", run_id="r-a")
+    assert run_router._folder_busy(
+        AGENT, _params(session_id="sess-1", run_id="r-1", queue_claim=token))
+    # The token is consumed on the way — it proved nothing more than that this
+    # send once passed admission, and the gate never claims on its strength.
+    assert manager.consume_claim("/w/alpha", token) is False
 
 
 def test_an_anonymous_first_send_claims_nothing(gate):
@@ -289,19 +360,21 @@ def test_a_spawn_always_leaves_an_owner_behind(gate):
 
 def test_the_folder_is_owned_before_the_run_starts(tmp_path, monkeypatch,
                                                    real_gate):
-    """M8, 2026-09-17, updated for Bugbot PR #1194: the guarantee that a turn's
-    owner is on record before it can end now comes from admit's `claim` — the
-    door the native chat calls before `/api/run`, simulated here the way it
-    would be for an ordinary send — not from `_folder_busy`, which only looks.
-    A send that already claimed the folder at admission still finds it owned
-    the moment `run_python` runs, and the refile after the spawn must not add
-    a second turn on top of admit's one."""
+    """M8, 2026-09-17, updated for Bugbot PR #1194 (second round): the
+    guarantee that a turn's owner is on record before it can end now comes
+    from admit's `claim_for_send` — the door the native chat calls before
+    `/api/run`, simulated here the way it would be for an ordinary send — and
+    the TOKEN it hands back, echoed on the run request as `queue_claim`. A
+    send that already claimed the folder at admission still finds it owned
+    the moment `run_python` runs, and the gate consuming that claim (a LOOK,
+    not another claim) must not add a second turn on top of admit's one."""
     from fastapi.testclient import TestClient
 
     from fused_render.server import create_app
     from fused_render.shell import prefs as shell_prefs
 
-    real_gate.claim("/w/alpha", "sess-1", "r-1", "sess-1")  # what admit did
+    _ok, _took, token = real_gate.claim_for_send(
+        "/w/alpha", "sess-1", "r-1", "sess-1")  # what admit did
 
     seen = {}
 
@@ -317,14 +390,15 @@ def test_the_folder_is_owned_before_the_run_starts(tmp_path, monkeypatch,
     r = client.post("/api/run", headers={"X-Fused": "1"},
                     json={"py": "agent.py",
                           "params": _params(action="send", session_id="sess-1",
-                                            run_id="r-1")})
+                                            run_id="r-1", queue_claim=token)})
 
     assert r.status_code == 200
     assert seen["owner"] is not None, \
         "the turn ran in a folder the index still read as free"
     assert seen["owner"]["task"] == "sess-1"
     assert real_gate.owner("/w/alpha")["turns"] == 1, \
-        "the gate's look and the refile after the spawn must not add a turn"
+        "the gate consuming admit's claim and the refile after the spawn " \
+        "must not add a turn"
 
 
 def test_a_named_send_through_api_run_keeps_one_turn(tmp_path, monkeypatch,
@@ -332,13 +406,48 @@ def test_a_named_send_through_api_run_keeps_one_turn(tmp_path, monkeypatch,
     """Bugbot, PR #1194: one send crossing admit, `_folder_busy` and
     `_file_owner` used to increment `owner.turns` three times — admit's
     `claim`, the gate's own (now removed) claim, and `_file_owner`'s (now a
-    refile). A single `turn_ended` must free the folder after one send."""
+    refile). The SECOND round found the same bug's mirror image: a gate that
+    never claims lets a send that skipped admission through unchecked. A
+    `queue_claim` token tells the two apart — WITH one, the gate only looks,
+    and a single `turn_ended` still frees the folder after one send."""
     from fastapi.testclient import TestClient
 
     from fused_render.server import create_app
     from fused_render.shell import prefs as shell_prefs
 
-    real_gate.claim("/w/alpha", "sess-1", "r-1", "sess-1")  # what admit did
+    _ok, _took, token = real_gate.claim_for_send(
+        "/w/alpha", "sess-1", "r-1", "sess-1")  # what admit did
+
+    monkeypatch.setattr(run_router, "resolve_py", lambda py, html: (AGENT, None))
+    monkeypatch.setattr(
+        run_router, "run_python",
+        lambda resolved, params: {
+            "ok": True, "result": {"run_id": "r-1", "session_id": "sess-1"}})
+    monkeypatch.setattr(shell_prefs, "effective_engine", lambda: "builtin")
+
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    r = client.post("/api/run", headers={"X-Fused": "1"},
+                    json={"py": "agent.py",
+                          "params": _params(action="send", session_id="sess-1",
+                                            run_id="r-1", queue_claim=token)})
+
+    assert r.status_code == 200
+    assert real_gate.owner("/w/alpha")["turns"] == 1
+
+    real_gate.turn_ended("sess-1", "r-1")
+    assert real_gate.owner("/w/alpha") is None
+
+
+def test_a_tokenless_named_send_claims_a_free_folder_and_blocks_a_second(
+        tmp_path, monkeypatch, real_gate):
+    """WITHOUT a `queue_claim` — this send skipped admission outright, a
+    stale flag read — the gate claims the folder itself: one turn for the
+    first send, and a second tokenless send naming a different conversation
+    into the same folder is refused rather than spawning beside it."""
+    from fastapi.testclient import TestClient
+
+    from fused_render.server import create_app
+    from fused_render.shell import prefs as shell_prefs
 
     monkeypatch.setattr(run_router, "resolve_py", lambda py, html: (AGENT, None))
     monkeypatch.setattr(
@@ -352,9 +461,13 @@ def test_a_named_send_through_api_run_keeps_one_turn(tmp_path, monkeypatch,
                     json={"py": "agent.py",
                           "params": _params(action="send", session_id="sess-1",
                                             run_id="r-1")})
-
     assert r.status_code == 200
     assert real_gate.owner("/w/alpha")["turns"] == 1
 
-    real_gate.turn_ended("sess-1", "r-1")
-    assert real_gate.owner("/w/alpha") is None
+    r2 = client.post("/api/run", headers={"X-Fused": "1"},
+                     json={"py": "agent.py",
+                           "params": _params(action="start", session_id="sess-2",
+                                             run_id="r-2")})
+    assert r2.status_code == 200
+    assert r2.json()["result"].get("error"), \
+        "a second tokenless send naming somebody else was not refused"

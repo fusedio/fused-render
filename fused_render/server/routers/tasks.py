@@ -5680,9 +5680,9 @@ def api_queue_admit(body: dict = Body(...),
     # ONE DECISION, NOT A LOOK AND THEN A WRITE. `is_free` then `started` is two
     # acquisitions of the manager's lock with a gap in between, and two sends
     # into one free folder arriving on two request threads both heard "free" and
-    # both spawned. `claim` is the check and the filing under one lock: True
-    # means the folder is this task's from here, False that somebody else got it
-    # and this message queues.
+    # both spawned. `claim_for_send` is the check and the filing under one lock:
+    # `ok` True means the folder is this task's from here, False that somebody
+    # else got it and this message queues.
     #
     # Asked at all only once this chat has nothing of its own in the line: an
     # owner filed here would be a folder held for a send that is about to be
@@ -5693,21 +5693,37 @@ def api_queue_admit(body: dict = Body(...),
     # chat has always had, and the answer is `run: true` so the send goes down
     # the client's ordinary path (`agent._send`) rather than starting a second
     # process.
-    if not behind_own and manager.claim(key, owner_token, run_id, session_id):
+    claim_token = ""
+    if behind_own:
+        ok = False
+    else:
+        ok, _took, claim_token = manager.claim_for_send(key, owner_token, run_id,
+                                                         session_id)
+    if ok:
         # THE FOLDER IS THIS TASK'S FROM HERE, and that record is the gate's —
         # nothing on the listing reads it. The row turns `in_progress` the way
         # every send's does, flag or no flag: the page marks the session as it
         # sends (`POST /api/tasks/running`, #1163) and that mark rings the poll.
         # Ringing here as well was the same bell twice about a row that had not
         # changed yet.
-        if chat_key:
-            return {"run": True}
-        # A NAMELESS SEND GETS ITS NAME BACK. The client is untouched in this PR
-        # and ignores the field; the run it is about to start replaces the
-        # placeholder through the spawn site (`routers/run._file_owner` →
-        # `queue_manager.started`), and the token is here so the composer can
-        # eventually say "that owner is me" without waiting for a run id.
-        return {"run": True, "owner_token": owner_token}
+        resp: dict = {"run": True}
+        # THE CLAIM TOKEN RIDES ALONG (2026-09-17, Bugbot PR #1194): the client
+        # echoes it back on the run request as `queue_claim`, and
+        # `routers/run.py::_folder_busy` consuming it there is the proof this
+        # send is the one `claim_for_send` just counted, so the gate looks
+        # rather than claiming a second time. `claim_for_send` only fails to
+        # mint one when `ok` is False, which never reaches here.
+        if claim_token:
+            resp["claim"] = claim_token
+        if not chat_key:
+            # A NAMELESS SEND GETS ITS NAME BACK. The client is untouched in
+            # this PR and ignores the field; the run it is about to start
+            # replaces the placeholder through the spawn site
+            # (`routers/run._file_owner` → `queue_manager.started`), and the
+            # token is here so the composer can eventually say "that owner is
+            # me" without waiting for a run id.
+            resp["owner_token"] = owner_token
+        return resp
 
     if not message.strip():
         return _error("message: cannot be empty — this folder is busy, and a "

@@ -71,6 +71,14 @@ export interface StartRequest {
    * scheduler's first fire on the same folder from claiming the draft.
    */
   draft_key?: string;
+  /**
+   * THE PER-SEND CLAIM `/api/tasks/queue/admit` MINTED, when it admitted this
+   * send (Bugbot, PR #1194). Proof this send is the one the project queue
+   * already counted, so `routers/run.py::_folder_busy` only looks — a claim
+   * it consumes rather than makes a second time. Absent for a flag-off
+   * admission, or a start that never asked admission at all.
+   */
+  queue_claim?: string;
 }
 
 export interface PollRequest {
@@ -136,6 +144,9 @@ export interface SendRequest {
   model: string;
   effort: string;
   permission_mode: string;
+  /** See `StartRequest.queue_claim` — the same per-send proof, forwarded on a
+   *  send into a folder's own live host rather than a fresh start. */
+  queue_claim?: string;
 }
 
 export interface FileRequest {

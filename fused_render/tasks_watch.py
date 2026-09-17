@@ -546,7 +546,8 @@ def mark_idle(session_id: str, turn: float | None = None) -> None:
     _bump({session_id})
 
 
-def mark_turn_ended(session_id: str, run_id: str = "") -> None:
+def mark_turn_ended(session_id: str, run_id: str = "",
+                    at: float | None = None) -> None:
     """The queue manager's own word that this session's TURN just ended —
     `POST /api/tasks/queue/event` (`turn_ended`/`exited`), the session host
     reporting a `result` row it tailed off `out.jsonl`. Sooner and more certain
@@ -558,30 +559,65 @@ def mark_turn_ended(session_id: str, run_id: str = "") -> None:
     Unlike `mark_idle` — the SENDING page's own account of a turn it started,
     racing its own `mark_running` on a client `turn` token — this caller has no
     turn of its own to race: it is reporting a fact about a turn from OUTSIDE
-    the send/idle pair entirely, so retiring the mark is unconditional, the
-    same as `mark_idle(session_id, turn=None)`.
+    the send/idle pair entirely.
 
-    Records `_ended[session_id] = now`. `is_turn_ended` (and, through it,
-    `live_from_registry`) answers "not running" for this session from this
-    moment until either a registry row is REWRITTEN (`_registry_mtime`
-    strictly newer than this stamp) still saying `busy`/`shell`, or a fresh
-    `mark_running` lands for a later turn — seeing the SAME turn's row again,
-    unchanged, does not count; see `_read_registry`, which is also where a
-    later busy sighting drops the stamp once it has done its job.
+    `at` is WHEN THE TURN ENDED, not when this HTTP call happened to arrive:
+    the session host stamps it the instant it saw the `result` row's edge (or,
+    for `exited`, the instant it saw the child gone), and the endpoint
+    (`queue_events.py`) forwards it through unchanged. A caller with nothing
+    better — a test, or a host old enough to predate this — leaves it `None`
+    and gets the arrival time, exactly the old behaviour.
+
+    Bugbot: "ended mark clobbers overlapping turns". A `result` row's own POST
+    can lose the race to events that are, in truth, LATER than it — a
+    follow-up's `mark_running` landing first, or the registry being rewritten
+    `busy` again before this slow HTTP call gets here — because none of them
+    share a clock with the arrival order of requests at this process. `at`
+    fixes that: it is the one thing every caller agrees on independent of
+    delivery order, so ordering by `at` rather than by "whichever call reached
+    this function first" is what stops an older turn's ended event from
+    retiring a newer turn's mark.
+
+    Two effects, both keyed off `at` rather than `time.time()`:
+
+    * `_ended[session_id]` is stamped to `at` — but NEVER BACKWARDS. An event
+      whose `at` is not strictly newer than what is already on file is an
+      older or duplicate delivery (the one retry `session_host._send_event`
+      can produce, or an `exited` arriving after the `turn_ended` for the same
+      edge) and changes nothing at all — no stamp, no mark touched, no bump.
+    * the live SENT MARK (`_marks`), if any, is retired only when it describes
+      THIS turn or an older one: `mark["at"] <= at`. A mark stamped AFTER `at`
+      is a follow-up send that already landed — a fresh `mark_running` for a
+      later turn, or a corroborating `busy` sighting recorded before this slow
+      event arrived — and popping it would be exactly the bug: the listing
+      would read the session idle for the rest of a turn that is still
+      running. Left alone, `is_turn_ended` sees it directly
+      (`mark["at"] > ended_at`) and answers "not ended" for as long as that
+      mark stands, which is the correct outcome without this function having
+      to know anything about WHY the mark is newer.
 
     `run_id` is accepted because the endpoint has it on hand and nothing else
     needs it yet; not stored.
 
-    Bumps and notifies at once, like `mark_running`/`mark_idle`: a page
-    watching this session's key must repaint the instant the manager hands the
-    folder to the next task, not on the watcher's next tick."""
+    Bumps and notifies at once, like `mark_running`/`mark_idle` — but only when
+    something actually changed; an ignored older/duplicate event costs no
+    generation."""
     if not session_id:
         return
+    ended_at = time.time() if at is None else float(at)
     with _cond:
-        _marks.pop(session_id, None)
-        _mark_turns.pop(session_id, None)
-        _mark_busy_seen.discard(session_id)
-        _ended[session_id] = time.time()
+        prev_ended = _ended.get(session_id)
+        if prev_ended is not None and ended_at <= prev_ended:
+            return  # older or duplicate delivery: `_ended` never moves back
+        _ended[session_id] = ended_at
+        mark = _marks.get(session_id)
+        if mark is not None and mark["at"] <= ended_at:
+            # The mark describes this turn (or one before it) — it is over.
+            # A NEWER mark (`mark["at"] > ended_at`) is left standing; see the
+            # docstring above.
+            _marks.pop(session_id, None)
+            _mark_turns.pop(session_id, None)
+            _mark_busy_seen.discard(session_id)
     _bump({session_id})
 
 

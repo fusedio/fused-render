@@ -3478,7 +3478,20 @@ export function getTasksPulse(): Promise<{ tasks: TaskPulseTask[] }> {
  *  has already created the pending entry: the words are safe, nothing spawned,
  *  and the composer shows where in the line they landed. */
 export type QueueAdmission =
-  | { run: true }
+  | {
+      run: true;
+      /**
+       * THE PER-SEND CLAIM TOKEN this admission minted on the folder's owner
+       * (Bugbot, PR #1194) — a one-time proof that THIS send is the one
+       * `queue_manager.claim_took` already counted. Forwarded on the run
+       * request as `queue_claim` so `routers/run.py::_folder_busy` can tell an
+       * admitted send (look only) from one that skipped admission (claim the
+       * folder itself). Absent with the flag off, and on an older server with
+       * nothing to mint one — the gate then falls back to claiming, exactly
+       * as a tokenless send always could.
+       */
+      claim?: string;
+    }
   | {
       run: false;
       entry: ScheduledMessage;

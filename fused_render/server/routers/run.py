@@ -86,12 +86,33 @@ def _file_owner(resolved: str, params: dict, result: dict) -> None:
         logger.debug("queue: could not file the owner of a start", exc_info=True)
 
 
-def _folder_busy(resolved: str, params: dict) -> str:
+def _folder_busy(resolved: str, params: dict, body: dict | None = None) -> str:
     """The refusal for a claude-agent `start`/`send` into a folder another task
     owns, or "" when the send may go. Flag off: always "". Best-effort — any
     failure to decide is a "go", which is what shipped, and it is why this whole
     body sits under one `try`: an unreadable index must cost a gate, never a
-    send."""
+    send.
+
+    A PER-SEND CLAIM TOKEN DECIDES WHETHER THIS DOOR LOOKS OR CLAIMS (Bugbot, PR
+    #1194, second round). The first round made this door LOOK ONLY, because it
+    used to claim unconditionally and that double-counted every ordinary
+    admit→run send (admit's own claim, plus this one, on top of `_file_owner`'s
+    refile) — `turn_ended`'s single decrement never brought a doubled count back
+    to zero, and the folder never freed. But look-only reopened the OLDER bug:
+    a send whose page had a stale flag read skipped `/api/tasks/queue/admit`
+    entirely, so nothing had claimed this folder for it, and a second such send
+    into the same free folder was never refused either — two spawns, one
+    `started` overwriting the other's ownership, the first one's turns never
+    counted.
+
+    So the two sends are told apart by a TOKEN admit hands out on every
+    `run: true` (`queue_manager.claim_for_send`), which the client echoes back
+    here as `queue_claim`. Present and still good — `consume_claim` finds and
+    removes it — this send is the one admit already counted, and the gate only
+    looks (refusing if the owner has somehow changed since). Missing, or no
+    longer good (already spent, or naming an owner that is gone), this send
+    never went through admit at all, and the gate CLAIMS the folder itself,
+    exactly as a tokenless send always had to before admission existed."""
     try:
         if not _claude_agent(resolved):
             return ""
@@ -114,14 +135,6 @@ def _folder_busy(resolved: str, params: dict) -> str:
         manager = queue_manager.get()
         logger.debug("queue gate: %s key=%s session=%r run=%r owner=%r",
                      action, key, session_id, run_id, manager.owner(key))
-        # THE GATE ONLY LOOKS (Bugbot, PR #1194). Admit already claimed this
-        # folder for the send that is about to run — this used to claim it
-        # again (`_own_folder`), which was one of three claims one send made
-        # (admit, this gate, `_file_owner` after the spawn), each counting a
-        # turn `turn_ended`'s single decrement never undid, so the folder
-        # never freed. Refusing is still right when somebody else owns it;
-        # taking it is not this door's job any more.
-        #
         # BOTH NAMES are checked, not the first one that is set: an anonymous
         # first send is filed under its run and re-filed under the session
         # once one exists, so a message carrying both must be matched against
@@ -129,15 +142,25 @@ def _folder_busy(resolved: str, params: dict) -> str:
         # makes the inbox-absorb case pass — a second message into the
         # conversation that is running is not somebody else.
         task_key = session_id or run_id
+        claim_token = str((body or {}).get("queue_claim")
+                         or params.get("queue_claim") or "")
+        admitted = bool(claim_token) and manager.consume_claim(key, claim_token)
         if task_key:
-            if any(manager.is_free(key, name)
-                   for name in (task_key, run_id, session_id) if name):
+            passed = (admitted
+                      and any(manager.is_free(key, name)
+                             for name in (task_key, run_id, session_id) if name)
+                      ) or (not admitted
+                            and manager.claim_took(key, task_key, run_id,
+                                                   session_id)[0])
+            if passed:
                 return ""
         elif manager.is_free(key, ""):
-            # A brand-new chat's first send has NO name to look up yet — it
-            # is behind admit's `admit:<token>` placeholder, which `is_free`
-            # never counts. It passes and `_file_owner` files the real names
-            # the instant the spawn hands them back.
+            # A brand-new chat's first send has NO name to claim or look up
+            # under yet — nothing here can tell it apart from a stranger's, so
+            # this is never actively claimed, admitted or not. It passes a free
+            # folder (or one still sitting behind admit's own `admit:<token>`
+            # reservation, which `is_free` never counts) and `_file_owner`
+            # files the real names the instant the spawn hands them back.
             return ""
         owner = manager.owner(key) or {}
         ahead = str(owner.get("task") or owner.get("session_id") or "another task")
@@ -199,7 +222,7 @@ async def api_run(request: Request, body: dict = Body(...),
     # is RUNNING in is refused with the same words the composer shows for a
     # refused admission. Only a live run refuses — a reservation is the chat's
     # own admission a moment ago, and an anonymous first send must pass it.
-    refused = _folder_busy(resolved, params)
+    refused = _folder_busy(resolved, params, body)
     if refused:
         return Response(content=dumps_result({"ok": True, "result": {"error": refused},
                                               "resolved_py": resolved}),
