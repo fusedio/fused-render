@@ -1206,7 +1206,7 @@ export interface Prefs {
   // the shell's entry points to it (the sidebar row and the Settings menu
   // entry), not the /canvases routes, which keep answering a deep link.
   canvases: { enabled: boolean };
-  // Whether chat embeds render the native React chat (beta) instead of the
+  // Whether chat embeds render the native React chat (default ON) instead of the
   // legacy template iframe. The EFFECTIVE value, and `forced_by` is the env
   // string deciding it when `FUSED_RENDER_NATIVE_CHAT` is in force — the stored
   // switch cannot win then, so the UI disables itself and says so
@@ -1218,10 +1218,10 @@ export interface Prefs {
   // every `Prefs` literal in the suites over-constrained while the runtime read
   // stayed defensive anyway.
   //
-  // `recap` is the native chat's "While you were away" fold — the ONE pref
-  // here that defaults ON (shell/prefs.py `chat_recap_enabled`), so every
-  // reader asks `chat?.recap !== false` rather than `=== true`: an older
-  // server answers without the field and that server's chat still shows it.
+  // `recap` is the native chat's "While you were away" fold, also default ON
+  // (shell/prefs.py `chat_recap_enabled`). Every reader of this object asks
+  // `!== false` rather than `=== true` for the same reason: an older server
+  // answers without the field, and the default is what it would have said.
   chat?: { native: boolean; forced_by?: string | null; recap?: boolean };
   // ONE TASK IN PROGRESS PER FOLDER (`project_queue_enabled`, shell/prefs.py).
   // Everything that wants to run in a folder somebody else's task is already
@@ -1235,9 +1235,9 @@ export interface Prefs {
   // so "not sent" and "off" are honestly the same answer here.
   queue?: { enabled: boolean };
   /** Whether a task on the Tasks page opens in a side panel beside the list
-   *  instead of navigating away (shell/prefs.py `task_peek_enabled`,
-   *  experimental, default off). Optional because a server that predates the
-   *  switch sends nothing — which reads as off, the same as the default. */
+   *  instead of navigating away (shell/prefs.py `task_peek_enabled`, default
+   *  ON). Optional because a server that predates the switch sends nothing —
+   *  which reads as ON, the same as the default. */
   task_peek?: { enabled: boolean };
   /** Whether a card on the Tasks page's Cards wall is titled by the newest
    *  message in its conversation instead of by the task's own title

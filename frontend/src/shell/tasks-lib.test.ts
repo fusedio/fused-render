@@ -9936,7 +9936,24 @@ describe("the folder chip as a filter tag", () => {
     const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row .schedule-tv-id--tag {"));
     const body = rest.slice(0, rest.indexOf("}"));
     expect(body).toContain("background: none");
-    expect(body).toContain("cursor: pointer");
+    // A FUNNEL CURSOR, with `pointer` behind it (Akshil, 2026-09-17). The press
+    // filters the wall in place; a hand said the same thing as the row behind
+    // it. One value for both filter chips on the row — the draft pill wears the
+    // folder tag's skin verbatim, and a different cursor would break that — and
+    // `pointer` rides behind the SVG for engines that will not take one.
+    expect(body).toContain("cursor: var(--cur-filter)");
+    const cur = TASKS_CSS.slice(TASKS_CSS.indexOf("--cur-filter:"));
+    expect(cur.slice(0, cur.indexOf("}"))).toContain("data:image/svg+xml");
+    expect(cur.slice(0, cur.indexOf("}"))).toContain("pointer");
+    // The chip BESIDE it takes the same one…
+    const draft = TASKS_CSS.slice(TASKS_CSS.indexOf("button.tasks-draft-pill {"));
+    expect(draft.slice(0, draft.indexOf("}"))).toContain("cursor: var(--cur-filter)");
+    // …and an ON chip goes back to the hand on both, because its press CLEARS
+    // the filter rather than setting one.
+    for (const on of [".tasks-row .schedule-tv-id--tag.is-on {", "button.tasks-draft-pill.is-on {"]) {
+      const rule = TASKS_CSS.slice(TASKS_CSS.indexOf(on));
+      expect(rule.slice(0, rule.indexOf("}"))).toContain("cursor: pointer");
+    }
     // THE PILL IS ITS OWN SIZE AGAIN (2026-08-24, final pass). Two passes tried
     // to make this box the hit area by growing it to the row's full height, and
     // both failed the same way: `border-radius` draws on the padding box, so the

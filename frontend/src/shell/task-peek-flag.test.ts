@@ -98,15 +98,18 @@ describe("the flag module", () => {
     expect(FLAG).toContain(".catch(() => getPrefs())");
   });
 
-  it("reads the pref strictly: only a stored true is on", () => {
-    // A server that predates the switch sends no `task_peek` at all, and that
-    // must read as off — the pref's own default and today's behaviour.
-    expect(FLAG).toContain("p.task_peek?.enabled === true");
+  it("reads the pref as ON unless a stored false says otherwise", () => {
+    // The panel is default ON (shell/prefs.py `task_peek_enabled`, 2026-09-17),
+    // so a server that predates the switch — which sends no `task_peek` at all —
+    // must read as ON, the same answer the pref itself would give.
+    expect(FLAG).toContain("p.task_peek?.enabled !== false");
+    expect(FLAG).not.toContain("p.task_peek?.enabled === true");
   });
 
-  it("settles a failed read on OFF rather than leaving it unknown", () => {
-    // `null` sticking would be a page that never decides which behaviour it has.
-    expect(FLAG).toContain("if (generation === departed) set(false);");
+  it("settles a failed read on the default rather than leaving it unknown", () => {
+    // `null` sticking would be a page that never decides which behaviour it has,
+    // and the boolean it settles on is the pref's own default (now `true`).
+    expect(FLAG).toContain("if (generation === departed) set(true);");
   });
 });
 

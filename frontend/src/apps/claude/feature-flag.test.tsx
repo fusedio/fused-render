@@ -68,14 +68,16 @@ async function probe() {
   return seen;
 }
 
-test("a read that keeps failing settles on false — never a permanent null", async () => {
+test("a read that keeps failing settles on the default — never a permanent null", async () => {
   answer = async () => {
     throw new Error("offline");
   };
   const seen = await probe();
   expect(seen[0]).toBe(null); // in flight: the mount holds a cover
-  expect(seen[seen.length - 1]).toBe(false); // …and then legacy, not a forever skeleton
-  expect(nativeChatEnabledNow()).toBe(false);
+  // …and then the pref's own default, which is ON (2026-09-17) — a real answer,
+  // not a forever skeleton, and not the iframe for a dropped request.
+  expect(seen[seen.length - 1]).toBe(true);
+  expect(nativeChatEnabledNow()).toBe(true);
   expect(calls).toBe(2); // ONE bounded retry, not a loop
 });
 
@@ -199,8 +201,8 @@ test("A HUNG READ COSTS ONE BUDGET AND IS NOT ASKED AGAIN INSIDE IT", async () =
   // with its second attempt in flight, and would not settle until 60 ms.
   const seen = await probeFor(45);
   expect(seen[0]).toBe(null); // in flight: the mount holds a cover
-  expect(seen[seen.length - 1]).toBe(false); // …and legacy once the budget is out
-  expect(nativeChatEnabledNow()).toBe(false);
+  expect(seen[seen.length - 1]).toBe(true); // …and the default once the budget is out
+  expect(nativeChatEnabledNow()).toBe(true);
   // ONE request. The retry is for a REJECTION, which is fast; a timeout must not
   // buy a second attempt, because that is what doubled the cover.
   expect(calls).toBe(1);

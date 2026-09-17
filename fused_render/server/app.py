@@ -837,6 +837,14 @@ def create_app(start_dir: str) -> FastAPI:
     # `fused login`, list/clone via the CLI, the folder-watch → `canvas push`
     # sync loop, and the access token the workspace iframe is seeded with.
     app.include_router(canvases_router)
+    # Share an app as a public link (share_app.py): the .fused export handed
+    # to the user's Fused account as a one-node canvas, through the same
+    # `fused login` provider canvases.py owns (credentials-file presence,
+    # duplicated there rather than imported). Imported lazily like its
+    # siblings so the feature routers stay mutually acyclic.
+    from fused_render.share_app import router as share_app_router
+
+    app.include_router(share_app_router)
     # Template management (templates_api.py) — the Templates view backend:
     # inventory across sources, registry bindings edit, import/export. It owns
     # GET /api/templates/registry (the extended §2.2 shape). Imported here

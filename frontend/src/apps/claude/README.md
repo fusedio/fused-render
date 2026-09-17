@@ -39,9 +39,10 @@ into `platform/` instead.
 | left pane / split / narrow | `pane/` |
 | screenshots / attachments | `shots/` (PR2) · annotations `ann/` (PR3) · sched/live/lists `sched/`, `live/` (PR4) |
 
-## Running with the flag on
+## Running with the flag off
 
-`FUSED_RENDER_NATIVE_CHAT=1 scripts/dev.sh` (env beats the pref), or Preferences → "Native chat (beta)".
+The native chat is ON by default (2026-09-17). To get back to the legacy template iframe:
+`FUSED_RENDER_NATIVE_CHAT=0 scripts/dev.sh` (env beats the pref), or Preferences → "Native chat".
 Checks: `cd frontend && npm run typecheck && npm run check:boundaries && bun test`.
 
 ## Session recap ("While you were away")
@@ -65,4 +66,4 @@ stays silent for it; the answer is dropped if the anchor moved meanwhile.
 (`.chat-recap`, `styles/transcript.css`); the body sets `?msg=<for_uuid>` so the
 existing anchor scroll + flare does the scrolling.
 
-Turn it off in Preferences → Native chat (beta) → **Session recap**.
+Turn it off in Preferences → Native chat → **Session recap**.
