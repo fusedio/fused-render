@@ -11,9 +11,9 @@ import type { MenuItem } from "@platform/ui/ContextMenu";
 // stub has to precede the (therefore dynamic) import — same trade as
 // fs-clipboard.test.ts: the suite carries no DOM and this is cheaper than one.
 (globalThis as { location?: unknown }).location = new URL("http://x/");
-const { archiveName, buildCompressItems, claudeTerminalCommand, freeArchivePath } = await import(
-  "@apps/explorer/lib/fs-actions"
-);
+const { archiveName, buildCompressItems, claudeTerminalCommand, copyToClipboard, freeArchivePath } =
+  await import("@apps/explorer/lib/fs-actions");
+const { getClipboard, setClipboard } = await import("@apps/explorer/lib/fs-clipboard");
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -133,4 +133,55 @@ test("claudeTerminalCommand cd's a dir into itself and a file into its parent", 
 test("claudeTerminalCommand quotes a path a shell would otherwise split or reinterpret", () => {
   expect(claudeTerminalCommand("/Users/a/my proj", true, "/Users/a")).toBe("cd '/Users/a/my proj' && claude");
   expect(claudeTerminalCommand("/Users/a/it's", true, "/Users/a")).toBe(`cd '/Users/a/it'\\''s' && claude`);
+});
+
+// ---- copyToClipboard --------------------------------------------------------
+// Every explorer surface that writes text to the system clipboard (Copy Path,
+// Copy Paths, the Claude session command, Preview's trouble report) goes
+// through this one wrapper, precisely so the rule below lives in one place
+// rather than being repeated at each call site.
+function stubNavigatorClipboard(writeText: (text: string) => Promise<void>) {
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { clipboard: { writeText } },
+  });
+}
+
+const realNavigator = globalThis.navigator;
+afterEach(() => {
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: realNavigator });
+  setClipboard(null);
+});
+
+test("a successful text write clears a pending COPY — the OS clipboard's file flavor is gone", async () => {
+  setClipboard({ paths: ["/a/b.csv"], op: "copy" }, false);
+  stubNavigatorClipboard(async () => {});
+  const ok = await copyToClipboard("/a/b.csv");
+  expect(ok).toBe(true);
+  expect(getClipboard()).toBeNull();
+});
+
+test("a successful text write never touches a pending CUT", async () => {
+  setClipboard({ paths: ["/a/b.csv"], op: "cut" }, false);
+  stubNavigatorClipboard(async () => {});
+  await copyToClipboard("/a/b.csv");
+  expect(getClipboard()).toEqual({ paths: ["/a/b.csv"], op: "cut" });
+});
+
+test("a failed write leaves a pending copy intact — nothing was overwritten", async () => {
+  setClipboard({ paths: ["/a/b.csv"], op: "copy" }, false);
+  stubNavigatorClipboard(async () => {
+    throw new Error("denied");
+  });
+  const ok = await copyToClipboard("/a/b.csv");
+  expect(ok).toBe(false);
+  expect(getClipboard()).toEqual({ paths: ["/a/b.csv"], op: "copy" });
+});
+
+test("no clipboard API at all is the same no-op as any other failure", async () => {
+  setClipboard({ paths: ["/a/b.csv"], op: "copy" }, false);
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: {} });
+  const ok = await copyToClipboard("/a/b.csv");
+  expect(ok).toBe(false);
+  expect(getClipboard()).toEqual({ paths: ["/a/b.csv"], op: "copy" });
 });

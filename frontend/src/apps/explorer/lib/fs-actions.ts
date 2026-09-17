@@ -9,6 +9,7 @@
 import { listDir, deleteEntry, statPath, resolveConditions } from "@platform/lib/api";
 import { visibleModes } from "@platform/lib/mode-visibility";
 import type { ArchiveFormat, TemplateEntry } from "@platform/lib/api";
+import { copyToClipboard as writeSystemClipboard } from "@platform/lib/clipboard";
 import { getClipboard, setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { dropRecentsFor } from "@apps/explorer/lib/recents";
 import type { MenuEntry, MenuItem } from "@platform/ui/ContextMenu";
@@ -154,11 +155,23 @@ export function claudeTerminalCommand(path: string, isDir: boolean, parentDir: s
   return "cd " + shellQuote(isDir ? path : normDir(parentDir)) + " && claude";
 }
 
-// Re-exported, not defined here: the app-card context menu needs the same
-// clipboard write and lives in another app, which may not import this one, so
-// the implementation moved to @platform/lib/clipboard. Kept exported from here
-// so every existing `from "./fs-actions"` call site is untouched.
-export { copyToClipboard } from "@platform/lib/clipboard";
+// Wraps @platform/lib/clipboard's copyToClipboard (the app-card context menu
+// needs the same system-clipboard write and lives in another app, which may
+// not import this one, so the write itself stays platform-level) with the one
+// rule every in-app text write to the clipboard owes the file explorer's
+// clipboard: writing text there replaces whatever file flavor a pending COPY
+// was published as, invalidating it with no reconcile ever firing to notice —
+// nothing else changes focus, so os-clipboard.ts's mount/focus-time check
+// never runs. A pending CUT is untouched: it was never on the OS clipboard to
+// begin with, so a text write there says nothing about it. Every explorer
+// call site (Copy Path, Copy Paths, the Claude session command, Preview's
+// trouble report) imports copyToClipboard from here rather than from the
+// platform module directly, so this is the one place the rule has to live.
+export async function copyToClipboard(text: string): Promise<boolean> {
+  const ok = await writeSystemClipboard(text);
+  if (ok && getClipboard()?.op === "copy") setClipboard(null, false);
+  return ok;
+}
 
 // Drop every path that lives INSIDE another path of the same set, keeping the
 // outermost ancestors (input order preserved).
