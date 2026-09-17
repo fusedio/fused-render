@@ -394,6 +394,36 @@ const boxShape = (words: string, files: number): BoxShape => ({
   files,
 });
 
+/**
+ * WHICH HALVES OF THIS RENDER ARE THE READER'S AGAIN, given the box that was
+ * spent (`null` = nothing was, so both are).
+ *
+ * A half is fresh when it has MOVED ON from what was spent — and, since
+ * 2026-09-17, also when the spent half was EMPTY (Bugbot 4036599549). The
+ * latch exists to keep a render older than the clear from handing the spent
+ * words or the spent chips back to the mirrors; a half that held nothing when
+ * the box was spent has nothing to hand back, because the stale render and the
+ * cleared box say the same thing about it. Read as "differs only", a
+ * picture-only send (no words) or a clear of a box with no files left that half
+ * latched for good: the pair never both came fresh, `spent` never released, and
+ * attaching the same number of files without typing was dropped in silence by
+ * the unmount save.
+ *
+ * Exported so the rule can be read at the desk rather than inferred from a
+ * render (`Composer.test.tsx`); it is a pure function of the three values.
+ */
+export function freshBox(
+  latched: BoxShape | null,
+  text: string,
+  files: number,
+): { text: boolean; tray: boolean } {
+  if (!latched) return { text: true, tray: true };
+  return {
+    text: !latched.text || latched.text !== text,
+    tray: !latched.files || latched.files !== files,
+  };
+}
+
 export function ComposerCard({
   variant,
   file,
@@ -836,13 +866,11 @@ export function ComposerCard({
    */
   const dirtyRef = useRef(false);
   {
-    const latched = spent.current;
-    const freshText = !latched || latched.text !== text;
-    const freshTray = !latched || latched.files !== trayDraft.length;
-    if (freshText) textRef.current = text;
-    if (freshTray) trayDraftRef.current = trayDraft;
+    const fresh = freshBox(spent.current, text, trayDraft.length);
+    if (fresh.text) textRef.current = text;
+    if (fresh.tray) trayDraftRef.current = trayDraft;
     // Only a box that has moved on in BOTH halves is the reader's again.
-    if (freshText && freshTray) spent.current = null;
+    if (fresh.text && fresh.tray) spent.current = null;
     dirtyRef.current =
       !hasSession
       && (!!textRef.current.trim() || trayDraftRef.current.length > 0);

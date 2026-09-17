@@ -63,7 +63,12 @@ import type {
 } from "@platform/lib/api";
 import { useRefreshOnReturn } from "@platform/lib/hooks";
 import { draftChatUrl } from "@apps/claude";
-import { fetchDrafts, NEW_CHAT_PREFIX, newChatFile } from "@platform/lib/drafts";
+import {
+  chatKeySession,
+  fetchDrafts,
+  NEW_CHAT_PREFIX,
+  newChatFile,
+} from "@platform/lib/drafts";
 import type { ChatDraft } from "@platform/lib/drafts";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -969,7 +974,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     // The hop's key IS the session when the chat has one (`new:<file>` is the
     // shape that has none), and the seed restates it for a card reopened from a
     // stored record.
-    const session = (hop.key.startsWith(NEW_CHAT_PREFIX) ? "" : hop.key)
+    const session = chatKeySession(hop.key)
       || seededDraftForm(draftSeed).sessionId || "";
     if (!session) return null;
     return tasks.find((t) => t.session_id === session) ?? null;

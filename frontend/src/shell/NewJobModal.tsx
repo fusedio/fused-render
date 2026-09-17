@@ -36,6 +36,7 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { navigateUrl } from "@platform/lib/router";
 import { ENTER_LABEL, isMod, MOD_LABEL } from "@platform/lib/platform";
 import {
+  chatKeySession,
   draftSyncer,
   draftVersion,
   forgetDraftVersion,
@@ -2745,7 +2746,11 @@ export default function NewJobModal({
   //
   // Held in consts for the same reason `initialAsk` is: the BASELINE (`initial`)
   // has to be the identical value or an untouched Edit reads as dirty.
-  const nameSession = (editing?.session_id || chatSessionId) ?? "";
+  // …AND THE SAME THREE SOURCES NAME IT (`boundSessionId`, below): a hop's key
+  // IS the session when the chat has run, which is what lets the title field
+  // fill itself from the conversation instead of opening blank.
+  const nameSession =
+    (editing?.session_id || chatKeySession(chatKey ?? "") || chatSessionId) ?? "";
   const { title: derivedTitle, lookupSession: titleLookup } =
     initialTitleStateOf(editing, nameSession, draft.title);
   const [title, setTitle] = useState(saved.title ?? derivedTitle);
@@ -3217,16 +3222,35 @@ export default function NewJobModal({
    * pressing Schedule opened a SECOND session with a SECOND task number and the
    * TASK-nnn the reader had been watching was gone.
    *
-   * Two sources, same answer: the fresh hop is handed the id as a prop, and a
-   * card reopened from a stored record has what that record said. It rides the
-   * autosave body (below) and the Schedule payload (`sessionId`), so the
-   * binding is written down the first time the card saves and read back every
-   * time it opens.
+   * THREE SOURCES, ONE ANSWER, and the FIRST of them is the record's own key
+   * (`chatKeySession`, Akshil, 2026-09-17). A hop out of a chat that has run
+   * opens this card on that conversation's record, and a session's record is
+   * filed under the session id itself — so the key the card is editing IS the
+   * thread, and nothing has to be told it separately. It used to be told:
+   * `?session_id=` rode the hop's URL and arrived here as `chatSessionId`. The
+   * param went when the hop stopped carrying copies of what the server already
+   * holds (design "one record", §1) and this const was left reading a prop
+   * nobody passes any more.
    *
-   * "" for a hop out of a chat with no session yet: there is no thread to
-   * continue, and that draft is keyed `new:<file>` precisely because of it.
+   * WHAT THAT COST, because it is the bug and not a tidiness point: with no
+   * session the Schedule payload named none, so `POST /api/schedule` filed the
+   * message as a task of its OWN — a fresh `pending:<entry>` row with a fresh
+   * TASK number, sitting beside the conversation it was supposed to be the next
+   * message of. One booking, two rows, and the reader's report was exactly that:
+   * "scheduling a task creates double entries". `chatHopSeed` restates the same
+   * id into the stored form, which is why the everyday hop (a composer with
+   * words in it, a record already on the server) still worked — and why the
+   * empty-composer hop, whose record does not exist yet, did not.
+   *
+   * So: the key when the key is a session, else what the stored record said,
+   * else the prop for any caller that still hands one over. "" for a hop out of
+   * a chat with no session yet — there is no thread to continue, and that draft
+   * is keyed `new:<file>` precisely because of it.
    */
-  const boundSessionId = (chatSessionId ?? "") || (saved.sessionId ?? "");
+  const boundSessionId =
+    chatKeySession(chatKey ?? "")
+    || (chatSessionId ?? "")
+    || (saved.sessionId ?? "");
   /**
    * IS THERE ANYTHING IN THIS CARD WORTH KEEPING — words, or files. Nothing
    * else (Akshil, 2026-09-12).

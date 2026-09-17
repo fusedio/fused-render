@@ -230,6 +230,25 @@ export function newChatFile(key: string): string {
   return key.startsWith(NEW_CHAT_PREFIX) ? key.slice(NEW_CHAT_PREFIX.length) : "";
 }
 
+/**
+ * THE CONVERSATION A CHAT KEY NAMES, or `""` when it names none — `newChatFile`
+ * read from the other end, and the whole of "the key IS the session" said once.
+ *
+ * A chat record is filed under the session id once the conversation exists and
+ * under `new:<file>` before it does (`chatDraftKey`), so a key without the
+ * prefix is a session and a key with it is a folder somebody has not talked to
+ * yet. Two readers ask this — the New task card the Schedule hop opens, which
+ * has to say WHICH thread its message is going into, and the Tasks page's
+ * source-task chip — and the answer has to be the same one: a card that reads
+ * the session as "" schedules a standalone task beside the conversation it was
+ * supposed to continue, which is one task listed twice as far as the reader is
+ * concerned (Akshil, 2026-09-17).
+ */
+export function chatKeySession(key: string): string {
+  if (!key || key.startsWith(NEW_CHAT_PREFIX)) return "";
+  return key;
+}
+
 /** The id a task draft is minted under. `crypto.randomUUID` is present in every
  *  engine this shell runs in, but it is absent over plain http on some older
  *  builds — and a form that throws on its first keystroke would be a far worse

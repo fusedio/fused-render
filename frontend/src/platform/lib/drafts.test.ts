@@ -33,6 +33,7 @@ import {
   fetchChatDraft,
   fetchDrafts,
   forgetDraftVersion,
+  chatKeySession,
   isChatDraftKey,
   newChatFile,
   peekDraftSyncer,
@@ -1062,6 +1063,20 @@ describe("the two shapes of a chat key", () => {
     expect(newChatFile("")).toBe("");
     // Nothing is trimmed or normalised — chatDraftKey's rule, held here too.
     expect(newChatFile("new:/Users/me/news/")).toBe("/Users/me/news/");
+  });
+
+  test("and reads the SESSION back out of one, which is the hop's whole handoff", () => {
+    // The Schedule hop stopped carrying `?session_id=` when it stopped carrying
+    // copies of anything the server holds: the key IS the session once the
+    // conversation exists. A reader of that key who answers "" schedules the
+    // message as a task of its own beside the chat it was meant to continue —
+    // one booking, two rows (Akshil, 2026-09-17: "scheduling a task creates
+    // double entries").
+    expect(chatKeySession(chatDraftKey("sess-9", "/Users/me/news"))).toBe("sess-9");
+    expect(chatKeySession("sess-9")).toBe("sess-9");
+    expect(chatKeySession(chatDraftKey(null, "/Users/me/news"))).toBe("");
+    expect(chatKeySession("new:")).toBe("");
+    expect(chatKeySession("")).toBe("");
   });
 
   test("and tells a chat draft's listing key from every other row's", () => {

@@ -2729,3 +2729,24 @@ button.tasks-draft-pill.is-on:focus-visible {
 .tasks-row > .tasks-row-time {
   margin-left: 1px; /* -5px hit-zone margin + 6px */
 }
+
+/* …AND AN ACT IN PLAIN FLOW DOES NOT GET TO GROW THE ROW EITHER (Akshil,
+   2026-09-17: the Recent chats rows "are not vertically aligned properly").
+
+   Nearly every row action lives in the hover strip, which is a zero-width seat
+   whose contents are absolutely positioned — it cannot cost the row a pixel.
+   Two do not: the missing-folder trash, because it prefixes the sentence it is
+   about, and the draft Discard beside it. Those two are ordinary flex children,
+   and a `.tasks-act` is 22px tall against a line the ring sizes to 16px — so
+   every row that grew one went 36px → 42px, and the list lost its rhythm
+   exactly where the drafts are, which in a chat's Recent list is the top of it.
+
+   The negative margin is the trick the id pill already uses (see
+   `.schedule-tv-id--tag`'s own `margin-block`): the button still PAINTS at
+   22px, its CONTRIBUTION to the flex line is the ring's 16px, and the 3px it
+   overhangs at each end lands well inside the row's own 10px of padding.
+   Derived from `--tasks-rail-w` rather than typed, so retuning the ring moves
+   this with it instead of leaving a stale 3px behind. */
+.tasks-row > .tasks-act {
+  margin-block: calc((var(--tasks-rail-w) - 22px) / 2);
+}

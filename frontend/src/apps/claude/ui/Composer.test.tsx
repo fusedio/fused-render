@@ -3,8 +3,9 @@ installDomShim();
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
-const { ComposerCard, BLOCKED_SEND_TITLE, CHAT_PLACEHOLDER, HOME_PLACEHOLDER } =
-  await import("./Composer");
+const {
+  ComposerCard, BLOCKED_SEND_TITLE, CHAT_PLACEHOLDER, HOME_PLACEHOLDER, freshBox,
+} = await import("./Composer");
 const { DEFAULT_EFFORT, DEFAULT_MODEL, DEFAULT_PERMISSION } =
   await import("./composer-defaults");
 const { forgetDraftVersion, resetDraftSyncers } = await import("@platform/lib/drafts");
@@ -2461,4 +2462,38 @@ test("…and one that has only emptied the TRAY files nothing twice either", asy
     pushes.restore();
     delete doc.body;
   }
+});
+
+
+// ---- the spent-box latch (`freshBox`) --------------------------------------
+//
+// The rule a render older than a clear is measured against. Read here rather
+// than through a render because the failure it guards is a TIMING one — the
+// renders arrive in whatever order React commits them — and the question the
+// rule answers is not about timing at all.
+
+test("nothing spent means every half is the reader's", () => {
+  expect(freshBox(null, "", 0)).toEqual({ text: true, tray: true });
+  expect(freshBox(null, "hi", 2)).toEqual({ text: true, tray: true });
+});
+
+test("a half still showing what was spent is stale, and only that half", () => {
+  const spent = { text: "gone", files: 2 };
+  expect(freshBox(spent, "gone", 2)).toEqual({ text: false, tray: false });
+  expect(freshBox(spent, "typed", 2)).toEqual({ text: true, tray: false });
+  expect(freshBox(spent, "gone", 3)).toEqual({ text: false, tray: true });
+});
+
+test("a half that was EMPTY when the box was spent is fresh at once", () => {
+  // Bugbot 4036599549: a picture-only send spends no words, so "differs from
+  // what was spent" could never become true for the text half — the latch stuck
+  // and the unmount save silently dropped whatever was attached next.
+  expect(freshBox({ text: "", files: 2 }, "", 2)).toEqual({ text: true, tray: false });
+  expect(freshBox({ text: "", files: 2 }, "", 3)).toEqual({ text: true, tray: true });
+  // …and the same on the other side: a clear of a box holding no files must not
+  // latch the tray shut against the very next attachment.
+  expect(freshBox({ text: "gone", files: 0 }, "gone", 0)).toEqual({
+    text: false, tray: true,
+  });
+  expect(freshBox({ text: "", files: 0 }, "", 0)).toEqual({ text: true, tray: true });
 });

@@ -2173,12 +2173,20 @@ describe("the card closes when its record is discarded elsewhere", () => {
 describe("a draft remembers the conversation it is a message to", () => {
   const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
 
-  test("both openings answer it, the same way the chat key is answered", () => {
+  test("all three openings answer it, the same way the chat key is answered", () => {
     const s = src();
-    // The FRESH hop is handed the id as a prop; a card REOPENED from its draft
-    // row has only what the server stored on the draft.
+    // THE KEY FIRST (Akshil, 2026-09-17). A hop out of a chat that has run
+    // opens the card on that conversation's own record, which is filed under
+    // the session id — so the key the card is editing IS the thread, and a card
+    // that read it as "" booked the message as a task of its own beside the
+    // chat ("scheduling a task creates double entries"). Then what the stored
+    // record said, for a card reopened long after the hop; then the prop, for
+    // any caller that still hands one over.
     expect(s).toContain(
-      'const boundSessionId = (chatSessionId ?? "") || (saved.sessionId ?? "");',
+      "  const boundSessionId =\n"
+      + '    chatKeySession(chatKey ?? "")\n'
+      + '    || (chatSessionId ?? "")\n'
+      + '    || (saved.sessionId ?? "");',
     );
     expect(s).toContain('sessionId: str("session_id"),');
   });
@@ -2602,9 +2610,11 @@ describe("the source-task chip", () => {
     // that hop saved (which is what survives closing and reopening the card).
     // The hop's KEY is the session when the chat has one (`new:<file>` is the
     // shape that has none), and the seed restates it for a card reopened from a
-    // stored record.
-    expect(src).toContain(
-      'const session = (hop.key.startsWith(NEW_CHAT_PREFIX) ? "" : hop.key)');
+    // stored record. Through `chatKeySession`, which is that rule written down
+    // once: the card asks the same question of the same key, and the two
+    // answering differently is what put a scheduled follow-up beside its own
+    // conversation instead of in it.
+    expect(src).toContain("const session = chatKeySession(hop.key)");
     expect(src).toContain("|| seededDraftForm(draftSeed).sessionId || \"\";");
     expect(src).toContain("return tasks.find((t) => t.session_id === session) ?? null;");
     // No second fetch: `tasks` is the poll this page runs anyway.
