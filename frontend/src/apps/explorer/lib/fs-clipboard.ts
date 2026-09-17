@@ -7,6 +7,18 @@
 // copy-here / paste-there gesture. Lifting it out of the remount boundary
 // keeps a cut/copy alive across navigation (and cut-dimming reappears when you
 // browse back to the source dir). One clipboard for the whole app, like the OS.
+//
+// PERSISTED IN sessionStorage, not localStorage: "one clipboard per window" —
+// a cut made in one tab has no business reappearing in another, but a reload
+// of THIS document (a hard nav the user didn't intend, or a dev refresh) must
+// not silently drop it. `clipboard` and `lastSeenOsToken` are written and
+// restored TOGETHER as one JSON blob under one key, never as two separate
+// entries, because they are one fact: the pair says both "what the user is
+// holding" and "what we've already reconciled against the OS clipboard for
+// it". Restoring `clipboard` alone would leave a fresh document's
+// `lastSeenOsToken` at `""`, and the mount-time reconcile (os-clipboard.ts)
+// would then read any non-empty OS clipboard as unseen and adopt it straight
+// over the cut this module just restored.
 import { useSyncExternalStore } from "react";
 import { writeOsClipboard } from "@platform/lib/api";
 
@@ -20,7 +32,80 @@ export interface Clipboard {
   op: "copy" | "cut";
 }
 
-let clipboard: Clipboard | null = null;
+/** The key the clipboard + last-seen-token pair is stored under, namespaced
+ *  like every other key this app writes (see side-store.ts's SIDE_WIDTH_KEY). */
+export const CLIPBOARD_STORAGE_KEY = "fused-render:explorer-clipboard";
+
+interface StoredClipboardState {
+  clipboard: Clipboard | null;
+  lastSeenOsToken: string;
+}
+
+const EMPTY_STORED_STATE: StoredClipboardState = { clipboard: null, lastSeenOsToken: "" };
+
+/**
+ * A parsed `JSON.parse` result as a state this module will admit, or the
+ * empty state. Exported for the test rather than reached through storage,
+ * because everything that can go wrong here is data (a hand-edited or
+ * corrupted entry), never the browser: a non-array `paths`, an `op` outside
+ * "copy"/"cut", or an empty `paths` array must all fail closed to `null`
+ * rather than produce a `Clipboard` that violates "at least one path".
+ */
+export function parseStoredClipboardState(raw: string | null | undefined): StoredClipboardState {
+  if (raw === null || raw === undefined || raw === "") return EMPTY_STORED_STATE;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return EMPTY_STORED_STATE;
+  }
+  if (parsed === null || typeof parsed !== "object") return EMPTY_STORED_STATE;
+  const { clipboard: storedClip, lastSeenOsToken: storedToken } = parsed as {
+    clipboard?: unknown;
+    lastSeenOsToken?: unknown;
+  };
+  return {
+    clipboard: isValidClipboard(storedClip) ? storedClip : null,
+    lastSeenOsToken: typeof storedToken === "string" ? storedToken : "",
+  };
+}
+
+function isValidClipboard(v: unknown): v is Clipboard {
+  if (v === null || typeof v !== "object") return false;
+  const c = v as { paths?: unknown; op?: unknown };
+  return (
+    Array.isArray(c.paths) &&
+    c.paths.length > 0 &&
+    c.paths.every((p) => typeof p === "string") &&
+    (c.op === "copy" || c.op === "cut")
+  );
+}
+
+function readStoredState(): StoredClipboardState {
+  try {
+    return parseStoredClipboardState(sessionStorage.getItem(CLIPBOARD_STORAGE_KEY));
+  } catch {
+    return EMPTY_STORED_STATE; // blocked storage: start empty, same as today
+  }
+}
+
+function writeStoredState(state: StoredClipboardState): void {
+  try {
+    sessionStorage.setItem(CLIPBOARD_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // A private window, cleared site data, or blocked storage costs the
+    // persistence, never the clipboard itself — the module variables below
+    // are still the live answer for the rest of this document's life.
+  }
+}
+
+// SEEDED FROM STORAGE, once, at module load — a reload has to come back with
+// last session's pending cut/copy already in place, not adopt it on some
+// later effect after the first paint (and the reconcile below) has already
+// run without it.
+const seeded = readStoredState();
+
+let clipboard: Clipboard | null = seeded.clipboard;
 const listeners = new Set<() => void>();
 
 // Synchronous read — the atomic-consume path (doPaste) uses this so a rapid
@@ -33,7 +118,14 @@ export function getClipboard(): Clipboard | null {
 // copy (below) and by the focus-time reconcile (os-clipboard.ts). Tracking
 // "last seen" rather than "last written" is what stops a stale system
 // clipboard from clobbering a pending in-app cut on every focus change.
-let lastSeenOsToken = "";
+let lastSeenOsToken = seeded.lastSeenOsToken;
+
+// Writes the current pair back to storage as one unit — called after every
+// change to either half, so the two are never persisted out of step with
+// each other (see the header comment for why a mismatched pair is unsafe).
+function persist(): void {
+  writeStoredState({ clipboard, lastSeenOsToken });
+}
 
 export function getLastSeenOsToken(): string {
   return lastSeenOsToken;
@@ -63,6 +155,7 @@ export function commitOsToken(seq: number, token: string): void {
   if (seq < osObsCommitted) return;
   osObsCommitted = seq;
   lastSeenOsToken = token;
+  persist();
 }
 
 // Unconditional set, for callers that are not racing anything (tests, and any
@@ -103,6 +196,7 @@ export function getClipboardEpoch(): number {
 export function setClipboard(next: Clipboard | null, mirrorToOs = true): void {
   clipboard = next;
   clipboardEpoch++;
+  persist(); // including next === null: an explicit clear must survive a reload too
   for (const l of listeners) l();
 
   // Mirror a COPY onto the system clipboard so the native file manager can
