@@ -807,6 +807,24 @@ describe("narrowAnswer", () => {
     expect(narrowAnswer(held, "hello")).toEqual([]);
   });
 
+  it("does not blank on the keystroke that types the first space (substring -> glob transition)", () => {
+    // `behind` is true for "report" -> "report " (D-new: a trailing space is
+    // now meaningful, not trimmed), and the HELD answer's mode is still
+    // "substring" (that is what the server answered for "report"). Without
+    // special-casing this transition, `narrowAnswer` ran the substring
+    // branch against a query that now HAS a trailing space, matched
+    // nothing, and blanked the list for a full debounce + round trip —
+    // exactly the failure mode `narrowAnswer`'s own doc comment says it
+    // exists to prevent (code review finding).
+    const held = answer({
+      query: "report",
+      mode: "substring",
+      hits: [homeHit("report.csv"), homeHit("other.txt")],
+    });
+    const narrowed = narrowAnswer(held, "report ");
+    expect(narrowed.map((h) => h.rel)).toEqual(["report.csv"]);
+  });
+
   it("narrows against the trailing segment for a query that walked past the box root", () => {
     const held = answer({
       query: "/tmp/rep",

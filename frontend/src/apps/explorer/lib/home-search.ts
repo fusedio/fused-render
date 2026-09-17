@@ -374,9 +374,30 @@ export function answerFrom(
  * is never used as a stand-in here even in the narrowed case above —
  * `globMatch` against the rebuilt pattern is the only test that agrees with
  * the server for glob mode.
+ *
+ * A SUBSTRING-mode held answer (`answer.mode === "substring"`) whose query,
+ * extended by THIS keystroke, would now resolve to glob mode server-side
+ * (`willResolveToGlobMode(q)`) takes the SAME glob-narrowing path above,
+ * not the plain substring branch below (code review finding). The classic
+ * case is the space that turns "report" into "report ": every held hit
+ * already satisfies "contains 'report' as a substring", and
+ * `expandWhitespaceQuery` wraps that same literal text in a leading/
+ * trailing `**` with nothing else changed, so `globMatch` against the
+ * rebuilt pattern reduces to the exact same "contains 'report'" test —
+ * every held hit that matched still matches, none blank out. Running the
+ * substring branch instead (`substringMatch` against a query that now
+ * literally ends in a space) matched nothing, since no `rel` ends with a
+ * space character, and blanked the whole list for a full debounce + round
+ * trip on the very keystroke `narrowAnswer` exists to smooth over. The
+ * reverse direction (a glob-mode held answer whose query stops being
+ * multi-word) is NOT symmetric and does not get this treatment: that case
+ * stays inside the `answer.mode === "glob"` branch above and bails to `[]`
+ * (a glob answer's hits were matched by a wildcard pattern, not a plain
+ * substring test, so they are not provably a subset of a fresh substring
+ * answer without a round trip).
  */
 export function narrowAnswer(answer: HomeAnswer, q: string): HomeHit[] {
-  if (answer.mode === "glob") {
+  if (answer.mode === "glob" || willResolveToGlobMode(q)) {
     // A path-shaped query walks `resolve_query`'s base off `q` itself — out
     // of scope, same as a literal "*" (see the doc comment above). Both
     // rule this out before the pattern is even built.
