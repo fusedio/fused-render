@@ -3776,9 +3776,21 @@ def _bound_chips(task_drafts: dict) -> dict[str, dict]:
 _NEW_CHAT_SCAN_LIMIT = 60
 
 
-def _settle_new_chats(chat_drafts: dict) -> bool:
-    """Walk a STRANDED `new:<file>` TASK number onto the session the send that
-    SPENT it created. True if anything moved.
+def _settle_new_chats(chat_drafts: dict, task_drafts: dict) -> bool:
+    """Walk a STRANDED draft TASK number onto the session the send that SPENT
+    it created. True if anything moved.
+
+    TWO KEY SHAPES, one rule. A session-less composer used to draft only under
+    `new:<file>`; it can also send out of a TASK DRAFT now, and the key it tags
+    that run with is then the draft's own `draft:<id>` (`drafts.task_key`).
+    Both shapes are rows with a number of their own, both stop being a row when
+    the send spends them, and in both the number has to follow the session the
+    send makes — so both are read here, under the same hands-off rule: a key
+    whose RECORD still exists (a saved chat draft, a task draft still in the
+    drafts store) is not this function's to touch. The composer DELETEs the
+    task draft's record as it sends, so the number moves on the first build
+    after that delete has landed; a build that gets there first just asks
+    again.
 
     A SEND NEVER TOUCHES A SAVED DRAFT (blocker, 2026-09-16). This used to
     `delete_chat` the record too, and that was the truth while the composer
@@ -3835,15 +3847,21 @@ def _settle_new_chats(chat_drafts: dict) -> bool:
     TWO GUARDS BESIDES THE KEY:
 
     * **A record, and this key is not ours.** A `new:<file>` key with a saved
-      draft behind it is a row the reader put there on purpose; its number is
-      that row's, not the send's. Excluded before the tree is read at all, so
-      no tagged run can claim it however old or new the save is.
+      draft behind it — or a `draft:<id>` key whose task draft is still in the
+      store — is a row the reader put there on purpose; its number is that
+      row's, not the send's. Excluded before the tree is read at all, so no
+      tagged run can claim it however old or new the save is.
     * **A session id, or nothing happens.** A run that never got one (`_start`
       failed, the CLI died before its first row) has nothing to carry the
       number to. Asked again on the next build.
     """
-    records = {key: rec for key, rec in chat_drafts.items()
-               if drafts.is_new_chat_key(key)}
+    records = {key for key in chat_drafts if drafts.is_new_chat_key(key)}
+    # …AND THE TASK DRAFTS UNDER THE KEY THE LISTING FILES THEM BY. A record in
+    # the task store means the row is still there to wear its own number, on
+    # exactly the reasoning the chat half is read for. `list_all()` keys the
+    # task section by id, so it is spelled back into a listing key here rather
+    # than each candidate being spelled the other way round.
+    records |= {drafts.task_key(ident) for ident in task_drafts}
     # A RECORD MEANS HANDS OFF, and the records are read here only to say which
     # keys this must not touch. Nothing under a key the reader saved moves: not
     # the words, not the number, not on any later build. What is left is the
@@ -3861,8 +3879,8 @@ def _settle_new_chats(chat_drafts: dict) -> bool:
     # repro, 2026-09-15 — the `gone` key that pinned a composer shut).
     waiting = {
         key for key, rec in tasks_store.task_ids().items()
-        if drafts.is_new_chat_key(key) and not rec.get("spent")
-        and key not in records
+        if (drafts.is_new_chat_key(key) or drafts.task_draft_id(key))
+        and not rec.get("spent") and key not in records
     }
     if not waiting:
         return False  # nothing unsent is numbered: no reason to read the tree
@@ -4186,14 +4204,15 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # `read` and `busy` are read once: it is one small file, the join below
     # asks it per session, and `_draft_rows` asks it again.
     task_drafts, chat_drafts = drafts.list_all()
-    # A STRANDED `new:<file>` NUMBER IS SETTLED HERE, before a number is
+    # A STRANDED DRAFT NUMBER IS SETTLED HERE (`new:<file>` or `draft:<id>`,
+    # whichever key the send tagged its run with), before a number is
     # allocated below: a key with no record left behind it hands its number to
     # the session the send created (`_settle_new_chats` — and see its docstring
     # for why this is the server's job, and why a key that still HAS a record
     # is never touched). A settle rewrites the store this build has already
     # read, so the read is taken again; it is one small file, and it only
     # happens on the build a number is settled in.
-    if _settle_new_chats(chat_drafts):
+    if _settle_new_chats(chat_drafts, task_drafts):
         task_drafts, chat_drafts = drafts.list_all()
     # …and the same read, asked the session's way round: which conversation has
     # a New task form being written into it. Off the STORE and not off the rows

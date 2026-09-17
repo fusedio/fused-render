@@ -534,9 +534,14 @@ def test_one_spend_for_both_doors(client, tmp_path):
     fix applied to one of them — #1124's copy had the stale-text guard the
     create's did not, the create's had the bound form the queue's did not — so
     the create goes through `spend_chat_draft` and this reads that it does.
+
+    RAW, not pre-normalised: `draft_key` also comes in as a task draft's
+    `draft:<id>`, which `drafts.chat_key` refuses, so a create that filtered the
+    key through it first would drop that shape on the floor while the queue door
+    spent it.
     """
     src = inspect.getsource(schedule_mod.api_schedule_create)
-    assert "spend_chat_draft(chat_draft, entry)" in src
+    assert 'spend_chat_draft(body.get("draft_key"), entry)' in src
     assert "drafts.delete_bound(chat_draft)" not in src, (
         "the second copy is back")
 
@@ -571,6 +576,29 @@ def test_a_task_draft_is_still_spent_by_its_id(client, tmp_path):
     assert drafts.get_task("draft-0001") is None
     rows = _by_key(client)
     assert "draft:draft-0001" not in rows
+    booked = [row for row in rows.values() if row["title"] == "Ship it"]
+    assert len(booked) == 1 and booked[0]["task_id"] == before
+
+
+def test_a_task_draft_is_spent_by_its_key_too(client, tmp_path):
+    """The same draft, named the way a COMPOSER names it. A session-less send
+    out of a task draft tags what it is spending with that form's listing key
+    (`draft:<id>`) rather than with a `draft_id`, and both doors have to make
+    the same two moves — carry the number, drop the record — or the reader
+    watches the number they were typing into be replaced on send."""
+    target = tmp_path / "project"
+    target.mkdir()
+    client.put("/api/drafts/task/draft-0002",
+               json={"title": "Ship it", "target": str(target)})
+    before = _by_key(client)["draft:draft-0002"]["task_id"]
+    r = client.post("/api/schedule", headers=WRITE,
+                    json={"target": str(target), "message": "Ship it",
+                          "delay_seconds": 600, "title": "Ship it",
+                          "draft_key": drafts.task_key("draft-0002")})
+    assert r.status_code == 200, r.text
+    assert drafts.get_task("draft-0002") is None
+    rows = _by_key(client)
+    assert "draft:draft-0002" not in rows
     booked = [row for row in rows.values() if row["title"] == "Ship it"]
     assert len(booked) == 1 and booked[0]["task_id"] == before
 

@@ -601,11 +601,17 @@ describe("admission, in the send window", () => {
     // number and the reader watches TASK-057 become TASK-058 on the send (review,
     // PR #1124).
     const send = CHAT.slice(CHAT.indexOf("const dispatchSend = useCallback("));
+    // …AND THE KEY IT NAMES IS THE ONE THE LANDING COMPOSER WAS HOLDING
+    // (2026-09-17): that box is open on a `draft:<id>` picked off the listing,
+    // so the send spends THAT record. `chatDraftKey` is the fallback for a
+    // landing that never held one.
     expect(send).toContain(
-      '...(sid ? {} : { draft_key: chatDraftKey(null, file || "") }),',
+      '...(sid ? {} : { draft_key: heldRef.current?.key ?? chatDraftKey(null, file || "") }),',
     );
     // The same function the composer keys on, so the two spellings cannot drift.
-    expect(CHAT).toContain('import { chatDraftKey } from "@platform/lib/drafts";');
+    expect(CHAT).toMatch(
+      /import \{[^}]*\bchatDraftKey\b[^}]*\} from "@platform\/lib\/drafts";/,
+    );
   });
 
   it("joins a follow-up to the message already in the line, not to a new task", () => {

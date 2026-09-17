@@ -28,10 +28,11 @@ import type { Attachment } from "../shots/types";
 import { SchedConfirm } from "./SchedConfirm";
 import {
   chatDraftKey,
-  composerTaskDraft,
   draftSyncer,
+  heldFormOf,
   newTaskDraftId,
   taskDraftKey,
+  type TaskDraftForm,
 } from "@platform/lib/drafts";
 import type { DraftAttachment, DraftSyncer } from "@platform/lib/drafts";
 import { schedulerUrl, taskDraftUrl } from "../sched/scheduled";
@@ -39,6 +40,14 @@ import { useDismissOnWindow } from "./useDismissOnWindow";
 
 export interface SchedButtonProps {
   file: string | null;
+  /** THE DRAFT THE LANDING COMPOSER ALREADY HOLDS (`draft:<id>`; Akshil,
+   *  2026-09-17). A session-less press writes THAT record and opens the card on
+   *  it — nothing is minted, so one Schedule press is one Upcoming row. */
+  heldKey?: string;
+  /** …and that record's settings (time, repeat, pills), read at press time, so
+   *  Continue carries them forward the way the composer's own save does
+   *  (Bugbot 4039383085). */
+  heldBase?(): TaskDraftForm | null;
   /** "" on the landing page, which is correct rather than missing: there is no
    *  session yet, and the store reads "" as "start a new one" (T:12022). */
   sessionId: string;
@@ -171,6 +180,11 @@ export function basenameOf(path: string): string {
  *  `taskDraftUrl` is its twin for the draft this button MINTS. */
 export { schedulerUrl, taskDraftUrl };
 
+/** `draft:<id>` → `<id>`, or "" for any other key shape. */
+function taskIdOfKey(key: string): string {
+  return key.startsWith("draft:") ? key.slice("draft:".length) : "";
+}
+
 export async function copyToTaskShots(
   items: readonly Attachment[],
 ): Promise<DraftAttachment[]> {
@@ -193,6 +207,8 @@ export async function copyToTaskShots(
 }
 
 export function SchedButton({
+  heldBase,
+  heldKey,
   file,
   sessionId,
   draft,
@@ -313,7 +329,7 @@ export function SchedButton({
      * cannot be overtaken between the write and the hop.
      */
     if (!sessionId) {
-      const id = newTaskDraftId();
+      const id = (heldKey && taskIdOfKey(heldKey)) || newTaskDraftId();
       // AN EMPTY BOX MINTS NOTHING. A draft with no words and no files is a row
       // in Upcoming saying nothing, so the press opens a blank card on this
       // folder instead and the reader fills it in there.
@@ -332,7 +348,7 @@ export function SchedButton({
           stop(SPENT);
           return;
         }
-        sync.setTask(composerTaskDraft(text, file ?? "", carried));
+        sync.setTask(heldFormOf(heldBase?.() ?? null, text, file ?? "", carried));
         void sync.handoff().then((out) => {
           if (!out.ok) {
             stop("Could not save that draft — you are still in the chat");

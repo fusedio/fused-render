@@ -1155,6 +1155,98 @@ def test_settle_does_not_renotify_when_the_session_already_had_a_number(
     assert "sess-a" in rows
 
 
+# ----------------------------- round 3: the same move for a TASK draft
+#
+# The composer can also send out of a task draft — a New task form the reader
+# started and then just sent — and such a chat has no session either. The key it
+# tags its run with is then that draft's own listing key (`draft:<id>`,
+# `drafts.task_key`) rather than `new:<file>`, and everything else about the
+# move is identical: the row had a number, the send spends the row, the number
+# has to follow the session the run makes. The composer DELETEs the record as it
+# sends, so the settle's hands-off rule reads the TASK store the same way it
+# reads the chat one — a record that is still there is a row that still holds
+# its own number.
+
+
+def test_a_stranded_draft_number_reaches_the_session_its_send_made(
+        client, projects_dir, runs, tmp_path):
+    """A `draft:<id>` key holding a number with no record behind it: the send
+    took the form with it, and the number goes to the session that send made."""
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    key = drafts.task_key("draft-0001")
+    client.put("/api/drafts/task/draft-0001",
+               json={"title": "Ship the changelog", "target": str(folder)})
+    # Numbers are allocated by the LISTING, so the row has to be built once.
+    number = _by_key(client)[key]["task_id"]
+    assert client.delete("/api/drafts/task/draft-0001").status_code == 200
+
+    _write_transcript(projects_dir, "sess-a", str(folder),
+                      [_user("ship the changelog", T9)])
+    _stage_run(runs, "20260917-090000-aa", folder, "sess-a", draft_key=key,
+               started=time.time() + 5)
+
+    assert _by_key(client)["sess-a"]["task_id"] == number
+    assert tasks_store.task_number(key) == ""
+
+
+def test_a_task_draft_that_still_exists_keeps_its_number(
+        client, projects_dir, runs, tmp_path):
+    """The hands-off rule, one store over. The record is still in the drafts
+    store — the delete has not landed, or the reader kept the form — so the row
+    is still a row, it keeps its number, and the session the send made is
+    numbered on its own. Asked again on the next build, which is what makes the
+    delete's timing a non-event."""
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    key = drafts.task_key("draft-0001")
+    client.put("/api/drafts/task/draft-0001",
+               json={"title": "Ship the changelog", "target": str(folder)})
+    number = _by_key(client)[key]["task_id"]
+
+    _write_transcript(projects_dir, "sess-a", str(folder),
+                      [_user("ship the changelog", T9)])
+    _stage_run(runs, "20260917-090000-aa", folder, "sess-a", draft_key=key,
+               started=time.time() + 5)
+
+    for _ in range(2):  # twice: a settle that only bites on build two is a bug
+        rows = _by_key(client)
+        assert rows[key]["task_id"] == number, "the form keeps its number"
+        assert rows["sess-a"]["task_id"] != number, "the session gets its own"
+    assert drafts.get_task("draft-0001")["title"] == "Ship the changelog"
+    assert "spent" not in tasks_store.task_ids()[key]
+
+
+def test_a_new_chat_key_still_settles_beside_a_held_task_draft(
+        client, projects_dir, runs, tmp_path):
+    """The `new:<file>` road is untouched by the second shape. One folder, both
+    kinds of draft: the chat key's stranded number reaches the session its
+    tagged run made, and the task draft sitting next to it neither moves nor is
+    renumbered."""
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    chat = "new:" + str(folder)
+    client.put(_chat_url(chat), json={"text": "first message"})
+    chat_number = _by_key(client)[chat]["task_id"]
+    client.delete(_chat_url(chat))  # the stranded number the settle acts on
+
+    key = drafts.task_key("draft-0001")
+    client.put("/api/drafts/task/draft-0001",
+               json={"title": "Ship the changelog", "target": str(folder)})
+    draft_number = _by_key(client)[key]["task_id"]
+    assert draft_number != chat_number
+
+    _write_transcript(projects_dir, "sess-a", str(folder),
+                      [_user("first message", T9)])
+    _stage_run(runs, "20260917-090000-aa", folder, "sess-a", draft_key=chat,
+               started=time.time() + 5)
+
+    rows = _by_key(client)
+    assert rows["sess-a"]["task_id"] == chat_number
+    assert rows[key]["task_id"] == draft_number
+    assert tasks_store.task_number(chat) == ""
+
+
 # ------------------------------- round 2: the template's half of the tag
 #
 # The settle above reads a field somebody else writes. `agent.py` is a TEMPLATE
@@ -1920,8 +2012,8 @@ def test_a_bound_draft_never_reaches_the_new_chat_settle(client, tmp_path,
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     _bound_draft(client, "draft-0001", "sess-a", elsewhere)
-    _task_drafts, chat_drafts = drafts.list_all()
-    assert tasks_mod._settle_new_chats(chat_drafts) is False
+    task_drafts, chat_drafts = drafts.list_all()
+    assert tasks_mod._settle_new_chats(chat_drafts, task_drafts) is False
     assert drafts.get_task("draft-0001")["session_id"] == "sess-a"
 
 
