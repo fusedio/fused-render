@@ -172,45 +172,24 @@ describe("useTaskStatusNotify", () => {
     h.unmount();
   });
 
-  test("a non-narrator window never raises anything", async () => {
+  // 2026-09-17: narrator gating was REMOVED from this hook (see
+  // useTaskStatusNotify.ts's own header) — a live report showed the elected
+  // narrator was routinely a tab nobody was looking at, so the user chose
+  // per-window notices over one-window-only. This is no longer a narrator
+  // gate to begin with; `plantForeignNarrator` is used here only to prove a
+  // foreign top-level entry (which would make `isNarrator()` false) has no
+  // bearing on this hook any more. `useScheduleEvents` keeps its own
+  // narrator gating unchanged — see scheduleEvents.test.ts.
+  test("a non-narrator-eligible window still raises task notifications", async () => {
     plantForeignNarrator();
     const h = mountHook();
     await flush();
     await publish([task({ status: "in_progress" })]);
     await publish([task({ status: "blocked" })]);
 
-    expect(getPopupNotification()).toBeNull();
-    expect(getRetainedNotifications()).toEqual([]);
-    h.unmount();
-  });
-
-  // Finding 9 (code review 2026-09-16): a non-narrator window must keep
-  // tracking each task's column silently so that the moment it BECOMES the
-  // narrator (the old one's tab closed), a transition landing on that very
-  // tick is recognized correctly rather than looking like a first sighting.
-  test("a transition landing on the narrator-handoff tick is still notified, not dropped", async () => {
-    plantForeignNarrator();
-    const h = mountHook();
-    await flush();
-    // While non-narrator: in_progress -> blocked happens silently. The old,
-    // buggy code never touched `prev` here at all.
-    await publish([task({ status: "in_progress" })]);
-    await publish([task({ status: "blocked" })]);
-    expect(getPopupNotification()).toBeNull();
-    expect(getRetainedNotifications()).toEqual([]);
-
-    // The foreign narrator's tab closes — this window is elected narrator.
-    presenceStore.delete(PRESENCE_KEY);
-
-    // The very next tick both hands this window the narrator role AND
-    // carries a real transition (blocked -> needs_attention). Without the
-    // fix, `prev` was never seeded with "blocked" while this window was
-    // non-narrator, so this reads as a first sighting of the task and
-    // notifies nothing.
-    await publish([task({ status: "needs_attention" })]);
-
-    const popup = getPopupNotification();
-    expect(popup?.title).toContain("needs your input");
+    const retained = getRetainedNotifications();
+    expect(retained.length).toBe(1);
+    expect(retained[0].tone).toBe("error");
     h.unmount();
   });
 });

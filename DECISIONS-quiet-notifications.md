@@ -2410,3 +2410,127 @@ stash`), so it is a pre-existing single-file-invocation quirk in this bun
 version, not something this fix introduced. Running the same file together
 with even one other file, or as part of the full `bun test src`, passes
 clean.
+
+## Defect 5: a finished task usually raises no notification at all
+
+**Reported live**: "i am not getting notifications for tasks anymore."
+Measured against the running dev server (port 2215): `GET /api/tasks/pulse`
+returns ONE ROW PER RUN, keyed by `session_id` (204 rows / 102 distinct
+`task_id`s, `key === session_id` always, keys never reused across runs).
+Three real runs (TASK-008/009/010), all reaching `done`, produced exactly ONE
+notification, count 1.
+
+**Root cause**: `notificationForTransition` only fired on `previous ===
+"in_progress" && column === "done"` and returned `null` whenever `previous
+=== undefined` — a task's first sighting. `useTaskStatusNotify`'s poll is
+10s while something is running, 30s while idle (`tasksPulse.ts`'s
+`ACTIVE_MS`/`IDLE_MS`), and a pulse row is per-RUN, not per-task — so a run
+whose entire lifetime fits inside one poll gap is a first sighting of its own
+key that is already `done` (or `blocked`) the first time this document ever
+looks at it. `previous === undefined` unconditionally returning `null` ate
+exactly this case, which — because runs are usually short relative to a
+30s idle poll — is the ORDINARY case, not an edge case.
+
+**Fix**: `notificationForTransition` takes a third argument, `watchStartS`
+(unix seconds, the same unit as a pulse row's `happened_at`). The hook
+(`useTaskStatusNotify.ts`) fixes it once, at its own first tick
+(`Date.now() / 1000`), and never advances it. A never-before-seen key
+already in a TERMINAL column (`done`/`blocked`) counts as that transition
+(as if `previous` were `"in_progress"`) when the row's own `happened_at` —
+tasks.py's "the newest thing that actually happened", never a future due
+time — is AFTER `watchStartS`; when `happened_at` predates `watchStartS` it
+is backfill (a row already finished before this document started watching)
+and stays silent. This is what keeps a freshly loaded tab quiet for its 200
+already-done rows while still catching a run that starts and finishes
+between two polls: the hook's own first tick sets `watchStartS` to "now", so
+nothing already on that very first answer can have a later `happened_at`,
+and every terminal row seen from the SECOND tick onward is judged against
+that fixed moment, not a sliding one.
+
+`needs_attention` is deliberately excluded from this split, matching the
+spec's own transition table (only `in_progress -> blocked` and `in_progress
+-> done` are named, with `needs_attention` reachable "regardless of the
+prior status" but never from `undefined`) — `attentionRows` (tasks-lib.ts)
+already gives a parked task its own permanent, always-current row, so a
+first-sighting "needs your input" popup here would be a duplicate rather
+than news.
+
+**Knock-on, expected and asked for**: because pulse keys are per-run, two
+runs of the same task each mint their own key and now each notify. That is
+what the user separately asked for ("i ran it twice. I just want them
+grouped") — Defect 4's fix (family keyed on caption+title, commit
+`c4a1f9572`) is what collapses the two into one row with a "Happened N
+times" line; this fix does not touch that collapse path, it only makes sure
+BOTH finishes reach `notify()` in the first place, which is what a `family`
+collapse needs to have something to collapse.
+
+**Not changed**: `taskColumn`, the pulse cadence (`ACTIVE_MS`/`IDLE_MS`,
+`tasksPulse.ts`), the server, or presence suppression — the `done` branch
+still sets `origin` and never `source` (never presence-suppressed).
+
+**New tests** (`task-status-notify.test.ts`):
+- `"a task's first sighting is never a transition when its happened_at
+  predates the watch start (backfill)"` — extends the old "first sighting is
+  never a transition" test to needs_attention/blocked/done/in_progress, all
+  with `happened_at` before `watchStartS`.
+- `"a task first sighted already done, with happened_at after the watch
+  start, still notifies"` — the regression test for the live defect.
+- `"a task first sighted already blocked, with happened_at after the watch
+  start, still notifies"`.
+- `"a task first sighted already needing attention never notifies here, even
+  with a fresh happened_at"` — pins the deliberate `needs_attention`
+  exclusion.
+
+**Commands run**: `bun test src/shell/task-status-notify.test.ts
+src/shell/useTaskStatusNotify.test.ts src/platform/lib/notifications.test.ts`
+→ 77 pass, 0 fail. `bunx tsc --noEmit -p frontend` → clean.
+
+## Defect 6: task notifications land in the wrong (wrong-window) browser
+
+**Reported live**: "i do see the notification listed in the cmux browser,
+but not in the browser I was using." Confirmed root cause:
+`useTaskStatusNotify.ts` gated its `notify()` call on `isNarrator()`
+(`platform/lib/presence.ts`), which elects the LOWEST `windowId` among
+non-stale top-level entries — and `windowId` is minted as
+`` w${Date.now().toString(36)}... `` (presence.ts), so the OLDEST open window
+always wins the election, regardless of which window the user is actually
+looking at. Client-raised notifications are per-document, in-memory state
+(`platform/lib/notifications.ts`) with no cross-window transport, so no
+window other than the narrator could ever see a row it alone raised. The
+user's own active browser called `notify()` zero times; some other,
+longer-lived tab (a cmux browser) won the election and narrated instead.
+
+**Decision (user's, explicit, not re-litigated)**: drop narrator gating for
+TASK notifications entirely. Every top-level shell window now pops and
+retains its own copy of every task notice. The user was shown, and accepted,
+the trade-off: two open windows now means two toasts — precisely the
+duplicate-alerting the election was built to prevent — and picked
+per-window notices anyway. No compromise (focused-window election, shared
+cross-window dedupe) was substituted; `useScheduleEvents` and every other
+narrator-gated caller are UNCHANGED — this is scoped to task status notices
+only, since `useTaskStatusNotify` was the specific hook the report was about.
+
+**Fix**: removed the `isNarrator()` import and the `narrator` gate on the
+`notify()` call in `useTaskStatusNotify.ts`. The per-tick `prev` bookkeeping
+already ran unconditionally (Finding 9, 2026-09-16 — back when a narrator
+HANDOFF made an accurate `prev` matter the instant a new window was
+elected); with no narrator concept left in this hook, that specific
+rationale no longer applies, but the bookkeeping itself is unchanged and
+still necessary — it is simply this document's own record of what it last
+saw, which the Defect 5 backfill-vs-news split depends on being right on
+every tick. The header comment was rewritten to explain the current
+no-narrator-gate shape rather than leave the stale handoff rationale in
+place as if it still governed anything.
+
+**Tests**: replaced `"a non-narrator window never raises anything"` and the
+Finding-9 handoff regression test (both meaningless with no narrator gate in
+this hook) with `"a non-narrator-eligible window still raises task
+notifications"`, which plants a foreign, lower-`windowId` top-level presence
+entry (would make `isNarrator()` false) and asserts the hook notifies
+anyway. `scheduleEvents.test.ts`'s own narrator tests were left untouched —
+`useScheduleEvents` still gates on the election.
+
+**Commands run**: `bun test src/shell/task-status-notify.test.ts
+src/shell/useTaskStatusNotify.test.ts src/platform/lib/notifications.test.ts
+src/platform/lib/scheduleEvents.test.ts` → 81 pass, 0 fail. `bunx tsc
+--noEmit -p frontend` → clean.
