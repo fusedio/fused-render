@@ -96,10 +96,12 @@ export function FusedAccountSection() {
       void getCanvasesStatus()
         .then((s) => {
           if (cancelled) return;
-          setStatus(s);
-          // Not published from here: a raw file-presence read would clear the
-          // sidebar's remembered refusal of a dead store. `refresh` publishes
-          // once the login completes, after whoami has vouched for it.
+          // The raw tick is NOT stored or published: `logged_in` here is only
+          // the credentials file existing, and after a whoami 401 downgraded
+          // this page to signed-out, a cancelled or failed re-login must not
+          // bring back a Log out row for a store already refused. The tick
+          // is read for its two verdicts only; `refresh` (whoami-vouched) is
+          // the one writer of `status` once the login completes.
           if (s.logged_in && s.creds_stamp !== loginStampRef.current) {
             setLoggingIn(false);
             setError(null);
