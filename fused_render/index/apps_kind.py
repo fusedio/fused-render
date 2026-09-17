@@ -34,6 +34,7 @@ import os
 
 from fused_render import app_id as app_id_mod
 from fused_render import app_listing
+from fused_render.index.ignore import norm
 from fused_render.index.kinds import Column, IndexKind, register
 
 NAME = "apps"
@@ -87,6 +88,20 @@ def extract(path: str, st) -> dict | None:
     )
     row.pop("tag", None)
     row["id"] = app_id_mod.app_id(entry)
+    # `app_dict`'s path-shaped fields (`path` via `os.path.realpath`, `entry`/
+    # `entry_html` via `app_listing.app_entry`, `preview_image`, `icon`) come
+    # back in the OS's own separator — correct for `app_dict`'s other callers
+    # (GET /api/apps, registered_apps.py), which hand these straight to
+    # native filesystem calls. This kind's row instead becomes index storage:
+    # `path` is `identity_column`, so it IS the `rel` every rank/search hit
+    # carries (query.py), and the whole store is canonical form (forward
+    # slashes — scan.py's `scan_dir_once` docstring, specs/platform.md §1).
+    # A backslashed `path` here would silently break every comparison and
+    # suffix check downstream on Windows, so every path-shaped field is
+    # brought back to canonical form before the row leaves this function.
+    for key in ("path", "entry", "entry_html", "preview_image", "icon"):
+        if row.get(key):
+            row[key] = norm(row[key])
     return row
 
 
