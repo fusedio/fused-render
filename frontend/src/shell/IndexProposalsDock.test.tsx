@@ -122,16 +122,15 @@ test("busy for a folder disables that row's Confirm/Refuse and relabels Confirm"
 
 // -------------------------------------------- useIndexProposals's own poll --
 //
-// Review finding 7: `poll`'s `finally` self-schedules the next tick via
-// `window.setTimeout` unconditionally, and `onConfirm`/`onRefuse` (the
-// default-exported `IndexProposalsDock`) both call `refresh()` (the same
-// `poll`) directly on top of whatever chain the mount effect already started.
-// Before the fix, that left TWO live `setTimeout` chains running forever per
-// confirm/refuse — doubling again on IndexManager's own mount of the same
-// hook — with nothing that ever noticed or cancelled the extra one. The
-// fixed `poll` clears its own previously-scheduled timeout at the top before
-// doing anything else, so a manual `refresh()` collapses back onto the one
-// chain the mount effect owns instead of forking a second.
+// `poll`'s `finally` self-schedules the next tick via `window.setTimeout`
+// unconditionally, and `onConfirm`/`onRefuse` (the default-exported
+// `IndexProposalsDock`) both call `refresh()` (the same `poll`) directly on
+// top of whatever chain the mount effect already started. `poll` clears its
+// own previously-scheduled timeout at the top before doing anything else, so
+// a manual `refresh()` collapses back onto the one chain the mount effect
+// owns instead of forking a second live `setTimeout` chain that would run
+// forever — doubling again on IndexManager's own mount of the same hook —
+// with nothing to ever notice or cancel the extra one.
 
 /** Same technique as ActivityDock.test.tsx's own `captureTimers`, scoped to
  *  `window.setTimeout`/`clearTimeout` (what `useIndexProposals` calls, via

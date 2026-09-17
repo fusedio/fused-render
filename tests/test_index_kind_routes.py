@@ -134,10 +134,10 @@ def test_rank_for_the_apps_kind_ranks_against_search_apps_ranked(home, tmp_path)
 
 def test_rank_for_the_apps_kind_carries_covered_true(home, tmp_path):
     """`GlobalSearchOverlay.tsx` gates its Apps group on `res.covered` —
-    `search_apps_ranked`'s early returns (no manifest, empty query) and its
-    success path all omitted the key entirely, so `/api/index/rank?kind=apps`
-    never carried it and the Apps group of Mod+K search rendered empty no
-    matter what the index held (review finding 3)."""
+    `search_apps_ranked` must carry that key on every path (no manifest,
+    empty query, and its success path alike), or `/api/index/rank?kind=apps`
+    never carries it and the Apps group of Mod+K search renders empty no
+    matter what the index holds."""
     _seed_apps_store(rows=[("solo", "/apps/solo/index.html", 1.0)])
     resp = _client(tmp_path).get("/api/index/rank",
                                  params={"kind": "apps", "q": "solo"})

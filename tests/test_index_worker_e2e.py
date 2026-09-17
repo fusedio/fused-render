@@ -3,17 +3,16 @@
 direct `run_scan` call), an incremental rescan of the same root, and the
 result read back through the HTTP `/api/index/rank` route.
 
-Review findings 1, 2 and 3 all shipped past 240 unit-shaped tests because
-none of them exercised this real path: finding 1 only manifests when
-`_kind_obj` runs in a fresh interpreter that never imported
-`server/routers/index.py` (every unit test imports the router first, so
-"apps" was always already registered by the time `scan.py` ran in-process);
-finding 2 only manifests across two separate `compact()` calls where the
-SAME directory is scanned once and then reused ("u") on the next pass, which
-a real incremental rescan of an unchanged app folder actually produces; and
-finding 3 is only observable by reading `covered` off the wire, not off the
-in-process return value most `search_apps_ranked` tests assert against
-directly. This file is the test the review said would have caught all three.
+This is the shape unit-shaped tests can't exercise on their own: a kind must
+still resolve as registered when `_kind_obj` runs in a FRESH interpreter that
+never imported `server/routers/index.py` (a unit test that imports the
+router first always finds "apps" already registered before `scan.py` runs
+in-process); a row must survive across two separate `compact()` calls where
+the SAME directory is scanned once and then reused ("u") on the next pass,
+which a real incremental rescan of an unchanged app folder actually produces;
+and `covered` must be observable by reading it off the wire, not merely off
+the in-process return value most `search_apps_ranked` tests assert against
+directly.
 """
 import os
 import time
@@ -83,16 +82,16 @@ def test_a_real_worker_scan_survives_an_incremental_rescan_and_is_rankable(
     started = runner.start(cfg, str(workspace), full=True)
     end = _wait_for_run(cfg, started["run_id"])
     assert end.get("error") is None, (
-        f"worker run failed: {end.get('error')!r} — this is exactly how "
-        f"finding 1's KeyError('no IndexKind registered as \\'apps\\'') "
-        f"showed up: a run that ends immediately, with no rows, and no "
-        f"traceback anywhere but the worker's own log")
+        f"worker run failed: {end.get('error')!r} — a run that ends "
+        f"immediately, with no rows and no traceback anywhere but the "
+        f"worker's own log, means the worker process never registered the "
+        f"\"apps\" kind (a `KeyError` out of `_kind_obj`)")
 
     client = TestClient(create_app(start_dir=str(tmp_path)))
     resp = client.get("/api/index/rank", params={"kind": "apps", "q": "solo"})
     assert resp.status_code == 200
     body = resp.json()
-    assert body["covered"] is True, "finding 3: covered must be on the wire"
+    assert body["covered"] is True, "covered must be present in the response body"
     rels = [h["rel"] for h in body["hits"]]
     assert any(r.endswith("/solo") for r in rels), (
         f"expected the scanned app's folder among the hits, got {rels!r}")
@@ -109,5 +108,5 @@ def test_a_real_worker_scan_survives_an_incremental_rescan_and_is_rankable(
     assert body2["covered"] is True
     rels2 = [h["rel"] for h in body2["hits"]]
     assert any(r.endswith("/solo") for r in rels2), (
-        "finding 2: the app's row must survive an incremental rescan that "
-        f"reuses its own folder instead of rewalking it; got {rels2!r}")
+        "the app's row must survive an incremental rescan that reuses its "
+        f"own folder instead of rewalking it; got {rels2!r}")

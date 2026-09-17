@@ -37,9 +37,10 @@ test("a hit whose base IS the home directory is rebased to ~/", () => {
   expect(displayText(hit("proj/a.ts"), HOME, HOME)).toBe("~/proj/a.ts");
 });
 
-// Review finding 8: `displayText` used to label ANY truthy `base` as "~/...",
-// so a hit under a mount (or any other configured root that is not the home
-// directory) was mislabeled as if it lived under the user's home.
+// `displayText` labels a hit "~/..." only when `base` IS the home directory —
+// any truthy `base` is not enough, or a hit under a mount (or any other
+// configured root that is not the home directory) would be mislabeled as if
+// it lived under the user's home.
 test("a hit under a mount-rooted base (not home) is NOT mislabeled ~/", () => {
   expect(displayText(hit("proj/a.ts"), "/Volumes/External", HOME)).toBe("proj/a.ts");
 });

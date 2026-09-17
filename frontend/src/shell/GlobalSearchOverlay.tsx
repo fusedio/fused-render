@@ -42,10 +42,11 @@ const GROUP_LIMIT = 8;
 
 type FileGroup = { base: string; hits: IndexRankHit[] };
 
-// Exported purely so a test can exercise the "~/" rebasing rule directly
-// (review finding 8's own regression: mislabeling a mount-rooted hit as
-// "~/...") — the same reason ActivityDock.tsx exports `retiredEngines`
-// rather than only reaching it through a full render.
+// Exported purely so a test can exercise the "~/" rebasing rule directly —
+// a hit under a mount (or any other configured root that is not the home
+// directory) must never be mislabeled as if it lived under "~/" — the same
+// reason ActivityDock.tsx exports `retiredEngines` rather than only reaching
+// it through a full render.
 export function displayText(hit: IndexRankHit, base: string, home: string): string {
   // Same "~/" rebasing FilesHome's own hit rows use (`hit.path.startsWith(
   // home + "/")`) — but keyed on whether `base` IS the home directory, not
