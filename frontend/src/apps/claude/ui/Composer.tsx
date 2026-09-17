@@ -374,6 +374,13 @@ export interface ComposerCardProps {
   onNavigate?(url: string): void;
 }
 
+/** EVERYTHING THERE IS TO LOSE IN A COMPOSER, as one comparable string: the
+ *  words and how many files are in the tray. It is the pair `dirty` is made of,
+ *  and the latch a deliberate clear leaves behind reads it — see `spent`. The
+ *  colon keeps the two halves apart: a tray size is only ever digits, so no
+ *  count can run into the start of a sentence. */
+const boxShape = (words: string, files: number): string => `${files}:${words}`;
+
 export function ComposerCard({
   variant,
   file,
@@ -539,8 +546,34 @@ export function ComposerCard({
   // What the box holds RIGHT NOW, for everything that runs outside a render:
   // the async seed below, the conflict rule, the leave guard, `pagehide` and the
   // unmount all fire from closures built several keystrokes ago.
+  // …mirrored below, beside `dirtyRef`, rather than here: the two say one
+  // thing between them and a clear has to be able to survive both (`spent`).
   const textRef = useRef(text);
-  textRef.current = text;
+  /**
+   * WHAT THE BOX HELD WHEN IT WAS LAST EMPTIED ON PURPOSE, or null — and the
+   * mirrors are written PAST it (bug report, 2026-09-17: ONE "Save as draft"
+   * press, TWO Upcoming rows holding the same sentence under two ids).
+   *
+   * `clearComposer` and `submit` empty `textRef`/`dirtyRef` SYNCHRONOUSLY and
+   * queue `setText("")` at ordinary priority. Anything that renders this
+   * subtree at a HIGHER priority before React flushes that queue re-runs this
+   * body with `text` still holding the spent words — a lower-priority update is
+   * left in the queue rather than applied early — and `ClaudeChat` keeps the
+   * whole conversation in a `useSyncExternalStore`, whose every emit (a poll
+   * landing, a run tick, a controller notice) is exactly such a render. The
+   * unconditional mirrors then put the words AND the dirty flag back on a box
+   * the reader had already answered for, and the unmount behind the navigation
+   * filed them a second time — under a SECOND id, because the same clear had
+   * blanked `unsentId` (`mintUnsentId`).
+   *
+   * So a clear latches what it spent, and a render still showing exactly that
+   * is read as the stale render it is. The latch is the whole SHAPE `dirty` is
+   * made of — the words and how many files are in the tray — because the tray
+   * is the host's own state and lags a clear the same way. Everything that puts
+   * something into the box un-latches first, so a sentence typed twice is never
+   * mistaken for the one already filed.
+   */
+  const spent = useRef<string | null>(null);
   const draftKeyRef = useRef(draftKey);
   draftKeyRef.current = draftKey;
   const discardAttachments = useRef(onDiscardAttachments);
@@ -739,6 +772,9 @@ export function ComposerCard({
       // These are real paths, so they are registered rather than uploaded.
       restoreTray(files, { text: saved.text ?? "", attachments: files });
       if (saved.text) {
+        // A seed is words going IN, so the stale-render latch stands down for
+        // them the way it does for a keystroke (`spent`).
+        spent.current = null;
         setText(saved.text);
         // Restored words are already the server's words: tell the hook (so the
         // box coming back is not a change) and the syncer (so it is not a write).
@@ -882,6 +918,9 @@ export function ComposerCard({
   const adoptRecord = useCallback((record: ChatDraft | null) => {
     const next = record?.text ?? "";
     const files = record?.attachments ?? [];
+    // …and it is a NEW set of words for the stale-render latch too (`spent`):
+    // whatever was last spent here, this is not it.
+    spent.current = null;
     // A BOX REPAINTED FROM ELSEWHERE IS A NEW SET OF WORDS (Bugbot 4027549698):
     // a seed's answer still in the air was asked about the ones this replaces,
     // and `null` here — the record deleted — is the case it must never undo.
@@ -995,13 +1034,26 @@ export function ComposerCard({
    */
   const dirty = !hasSession && (!!text.trim() || trayDraft.length > 0);
   const dirtyRef = useRef(dirty);
-  dirtyRef.current = dirty;
+  // …AND THIS RENDER MAY BE OLDER THAN THE LAST CLEAR (`spent`). One render
+  // still showing exactly what was spent says nothing about the box that
+  // nobody has since touched, so it says nothing to the handlers either; the
+  // first render that shows anything else — the emptied box, or the next thing
+  // typed into it — puts the mirrors back in charge.
+  if (spent.current !== boxShape(text, trayDraft.length)) {
+    spent.current = null;
+    textRef.current = text;
+    dirtyRef.current = dirty;
+  }
 
   /** What an answered question leaves behind: an empty box and an empty tray
    *  (Akshil, 2026-09-16: "after that, the composer is cleared"). Also the
    *  Schedule hop's last act, for the same reason — those words are on the card
    *  now, and two copies of one half-written thing is the bug this design ends. */
   const clearComposer = useCallback(() => {
+    // WHAT IS BEING SPENT, latched before it is let go: React has not rendered
+    // the empty box yet, and any render that beats it to the commit still shows
+    // this and must not be believed (`spent`).
+    spent.current = boxShape(textRef.current, trayDraftRef.current.length);
     textRef.current = "";
     dirtyRef.current = false;
     // …AND A SEED STILL IN THE AIR IS NOT AN ANSWER ABOUT THESE WORDS ANY MORE
@@ -1340,6 +1392,9 @@ export function ComposerCard({
     // opens the record where it already lives (design §1).
     if (!restore.text) return;
     delivered.current = restore.seq;
+    // Words going back INTO the box, so the stale-render latch stands down for
+    // them exactly as it does for a keystroke (`spent`).
+    spent.current = null;
     const back = restore.text;
     // A single newline, and only when there is something to join to: a press
     // must never eat words the reader is still typing.
@@ -1388,6 +1443,10 @@ export function ComposerCard({
     // changed what the model reads.
     const message = extra ? (typed ? typed.replace(/\s*$/, "") + "\n\n" + extra : extra) : typed;
     if (!message && !hasAttachments) return false;
+    // A SEND SPENDS THE BOX THE SAME WAY AN ANSWERED DIALOG DOES, and a render
+    // older than this line would otherwise hand a sent sentence to the unmount
+    // save as an unfinished task (`spent`).
+    spent.current = boxShape(textRef.current, trayDraftRef.current.length);
     textRef.current = "";
     dirtyRef.current = false;
     // THE SEED'S ANSWER IS ABOUT A SENTENCE THAT HAS NOW BEEN SENT (`episode`,
@@ -1537,6 +1596,11 @@ export function ComposerCard({
           value={text}
           onChange={(ev) => {
             const value = ev.currentTarget.value;
+            // A KEYSTROKE IS NEVER THE STALE RENDER (`spent`). The reader
+            // retyping the very sentence they just saved is a NEW set of words,
+            // and a latch left standing would read the render that paints them
+            // as the one that predates the clear.
+            spent.current = null;
             setText(value);
             grow();
           }}

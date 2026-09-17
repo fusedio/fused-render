@@ -2055,3 +2055,197 @@ test("Continue CREATES the draft, then leaves, and the box is empty behind it", 
   expect(c.box().props.value).toBe("");
   expect(discarded).toHaveLength(1);
 });
+
+
+// ---- A RENDER OLDER THAN THE COMPOSER'S OWN CLEAR --------------------------
+//
+// THE REPORTED BUG, and the one thing no earlier test in this file could stage.
+//
+// `clearComposer` empties `textRef`/`dirtyRef` by hand and queues `setText("")`
+// at ordinary priority. `ClaudeChat` — this composer's real host — keeps the
+// whole conversation in a `useSyncExternalStore`, and every emit off that store
+// (a poll landing, a run tick, a controller notice) renders this subtree at SYNC
+// priority, which React runs WITHOUT applying the lower-priority update still
+// sitting in the box's own queue. The body then ran with the spent sentence
+// still in `text`, mirrored it back into both refs, and the unmount behind the
+// navigation filed it a SECOND time — under a second id, `unsentId` having been
+// blanked by the very clear that render predates. One press, two Upcoming rows,
+// the same words (bug report, 2026-09-17).
+//
+// The rig is that store, a concurrent root, and a Save driven OUTSIDE `act`:
+// `act` drains React's scheduler at every await, so inside one there is no
+// window left to render into at all.
+
+/** THE CONCURRENT ROOT. The option is real — it is how React's own suites test
+ *  lane behaviour — but `@types/react-test-renderer` has never listed it, so the
+ *  cast is a hole in the types and not in the renderer. */
+const CONCURRENT = { unstable_isConcurrent: true } as unknown as Parameters<
+  typeof create
+>[1];
+
+/** The host store, and the press that makes it speak. */
+function laneRig() {
+  let version = 0;
+  const subs = new Set<() => void>();
+  return {
+    subscribe(fn: () => void) {
+      subs.add(fn);
+      return () => {
+        subs.delete(fn);
+      };
+    },
+    snap: () => version,
+    /** A sync-lane render of everything under the store. */
+    emit() {
+      version += 1;
+      for (const fn of [...subs]) fn();
+    },
+  };
+}
+
+test("a sync-lane render between Save and the unmount does not mint a second draft", async () => {
+  installBody();
+  const seen = watchFetch();
+  const pushes = watchPushes();
+  const { navigateUrl } = await import("@platform/lib/router");
+  const React = await import("react");
+  const rig = laneRig();
+
+  function Host() {
+    React.useSyncExternalStore(rig.subscribe, rig.snap, rig.snap);
+    return (
+      <ComposerCard
+        variant="chat"
+        file="/p/lane.py"
+        sessionId=""
+        controls={controls}
+        status="idle"
+        back="/explorer/view/p"
+        onSend={() => {}}
+        onFollowUp={() => {}}
+        onStop={() => {}}
+      />
+    );
+  }
+
+  let renderer: ReactTestRenderer | undefined;
+  act(() => {
+    renderer = create(<Host />, CONCURRENT);
+  });
+  mounted.push(renderer!);
+  const root = renderer!.root;
+  const box = () => root.findByType("textarea");
+  try {
+    act(() => {
+      box().props.onChange({ currentTarget: { value: "a sentence nobody sent" } });
+    });
+    await act(async () => {
+      navigateUrl("/tasks");
+      await tick();
+    });
+    // Outside `act`, deliberately — see the note above.
+    dialogButton(root, "Save as draft").props.onClick();
+    await tick(40);
+    expect(seen.filter((r) => r.method === "PUT")).toHaveLength(1);
+    // …and NOW the host speaks, while `setText("")` is still queued.
+    rig.emit();
+    await tick(40);
+    // The navigation the reader answered for, finally taking the pane away.
+    act(() => renderer!.unmount());
+    await act(async () => {
+      await tick(40);
+    });
+    const puts = seen.filter((r) => r.method === "PUT");
+    // ONE RECORD, and the assertion that fails loudest on a regression is the
+    // count of distinct ids: a second write under the SAME id would be a
+    // harmless re-statement, and two ids is two rows in Upcoming.
+    expect(new Set(puts.map((r) => r.url)).size).toBe(1);
+    expect(puts).toHaveLength(1);
+    expect(puts[0]!.url.startsWith("/api/drafts/task/")).toBe(true);
+    expect(puts[0]!.body?.title).toBe("a sentence nobody sent");
+  } finally {
+    pushes.restore();
+    delete doc.body;
+  }
+});
+
+test("the same sentence typed straight back into the box is not the stale render", async () => {
+  // THE OTHER HALF OF THE LATCH, and the one way a fix for the above could cost
+  // a reader their words. The latch compares the box against what was spent, so
+  // a reader who saves "ship it" and types "ship it" again INSIDE the same
+  // window — before React has painted the cleared box — would, with a latch
+  // nothing stands down, have their second sentence read as the stale render of
+  // the first: no dialog on the way out, and the unmount save standing down too.
+  // A keystroke says these are new words before it paints them.
+  installBody();
+  const seen = watchFetch();
+  const pushes = watchPushes();
+  const { navigateUrl } = await import("@platform/lib/router");
+  const React = await import("react");
+  const rig = laneRig();
+
+  function Host() {
+    React.useSyncExternalStore(rig.subscribe, rig.snap, rig.snap);
+    return (
+      <ComposerCard
+        variant="chat"
+        file="/p/again.py"
+        sessionId=""
+        controls={controls}
+        status="idle"
+        back="/explorer/view/p"
+        onSend={() => {}}
+        onFollowUp={() => {}}
+        onStop={() => {}}
+      />
+    );
+  }
+
+  let renderer: ReactTestRenderer | undefined;
+  act(() => {
+    renderer = create(<Host />, CONCURRENT);
+  });
+  mounted.push(renderer!);
+  const root = renderer!.root;
+  const box = () => root.findByType("textarea");
+  try {
+    act(() => {
+      box().props.onChange({ currentTarget: { value: "ship it" } });
+    });
+    await act(async () => {
+      navigateUrl("/tasks");
+      await tick();
+    });
+    dialogButton(root, "Save as draft").props.onClick();
+    await tick(40);
+    expect(seen.filter((r) => r.method === "PUT")).toHaveLength(1);
+    // The very same words, typed back in before the cleared box has painted.
+    box().props.onChange({ currentTarget: { value: "ship it" } });
+    rig.emit();
+    await act(async () => {
+      await tick(40);
+    });
+    expect(box().props.value).toBe("ship it");
+    // …and leaving asks about them rather than walking off with them.
+    await act(async () => {
+      navigateUrl("/preferences");
+      await tick();
+    });
+    expect(
+      root.findAll((n) => n.type === "button" && n.props.children === "Save as draft"),
+    ).toHaveLength(1);
+    // …and a host that takes the pane away instead still files them, once, under
+    // an id of their own rather than over the sentence already in Upcoming.
+    act(() => renderer!.unmount());
+    await act(async () => {
+      await tick(40);
+    });
+    const puts = seen.filter((r) => r.method === "PUT");
+    expect(puts).toHaveLength(2);
+    expect(new Set(puts.map((r) => r.url)).size).toBe(2);
+    expect(puts[1]!.body?.title).toBe("ship it");
+  } finally {
+    pushes.restore();
+    delete doc.body;
+  }
+});
