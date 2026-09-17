@@ -2369,6 +2369,13 @@ export function cloneAppFile(file: string): Promise<AppFileCloneTarget> {
   return postJson<AppFileCloneTarget>("/api/appfile/clone", { file });
 }
 
+// Re-copy the `.fused` OVER its existing local copy: payload files replace
+// their counterparts; `.venv`, `.fused`, `.git` and anything the export left
+// home stay. Destroys the user's edits to those files — callers confirm first.
+export function overwriteAppFile(file: string): Promise<AppFileCloneTarget & { overwritten: boolean }> {
+  return postJson<AppFileCloneTarget & { overwritten: boolean }>("/api/appfile/overwrite", { file });
+}
+
 // Delete one USER template folder (core templates are read-only, 404 here).
 // With cleanRegistry the USER registry is also swept of bindings referencing
 // the name (a user key whose value is emptied by the sweep is removed — revert

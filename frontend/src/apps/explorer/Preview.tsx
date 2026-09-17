@@ -10,6 +10,7 @@ import {
   setAppPreview,
   getAppFileCloneTarget,
   cloneAppFile,
+  overwriteAppFile,
   rawUrl,
   statPath,
   resolveConditions,
@@ -182,7 +183,10 @@ function usePreviewSideSlot(): HTMLElement | null {
 // the workspace (Fused/local/<slug>) as an ordinary editable app and open it —
 // the way OUT of an artifact whose own files are 0444 by construction (D397).
 // Once a copy is there the same button reads "Go to local version" and only
-// navigates, so the artifact never becomes a way to overwrite your own edits.
+// navigates; a SECOND button to its left, "Clone & overwrite", re-copies the
+// payload over that copy — behind a danger confirm, since it replaces your
+// edits to those files. The server merges: `.venv`, `.fused`, `.git` and
+// anything the export left home are untouched (appfile.overwrite_app_file).
 //
 // Whether a copy exists is the destination folder EXISTING — no records file —
 // which is why this probes on mount and re-probes per file rather than trusting
@@ -197,7 +201,18 @@ function usePreviewSideSlot(): HTMLElement | null {
 // end), so the strip's copy goes to the folder's VIEW URL instead.
 export function CloneAppFileButton({ fsPath, toView }: { fsPath: string; toView?: boolean }) {
   const [target, setTarget] = useState<{ path: string; cloned: boolean } | null>(null);
-  const [busy, setBusy] = useState(false);
+  // Which write is in flight: the label and spinner follow it, and both
+  // buttons disable together so a clone and an overwrite never race.
+  const [busy, setBusy] = useState<"clone" | "overwrite" | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  // Same registration usePreviewFileMenu makes for its dialogs: document-level
+  // shortcuts (an embedded listing's, the sidebar's) back off while the confirm
+  // is up. Layout effect so the very first keydown already sees it.
+  useLayoutEffect(() => {
+    if (!confirming) return;
+    acquireOverlay();
+    return () => releaseOverlay();
+  }, [confirming]);
   useEffect(() => {
     let alive = true;
     setTarget(null);
@@ -235,37 +250,85 @@ export function CloneAppFileButton({ fsPath, toView }: { fsPath: string; toView?
     // Already cloned: this is pure navigation, so it never needs the spinner
     // or the write route.
     if (target.cloned) return land(target.path);
-    setBusy(true);
+    setBusy("clone");
     try {
       const r = await cloneAppFile(fsPath);
       await land(r.path);
     } catch (e) {
       notify({ title: (e as Error).message || "clone failed", tone: "error" });
-      setBusy(false);
+      setBusy(null);
     }
     // Success navigates away and unmounts this button; no busy reset needed.
   };
+  // Confirmed overwrite: re-copy the payload over the existing copy, then land
+  // on it exactly like a fresh clone. The confirm names what is kept so the
+  // user is not guessing whether their environment or data survives.
+  const overwrite = async () => {
+    if (busy) return;
+    setBusy("overwrite");
+    try {
+      const r = await overwriteAppFile(fsPath);
+      await land(r.path);
+    } catch (e) {
+      notify({ title: (e as Error).message || "overwrite failed", tone: "error" });
+      setBusy(null);
+    }
+  };
+  const copyName = basename(target.path);
   return (
-    <button
-      type="button"
-      className="bar-ctl bar-ctl-bordered"
-      title={
-        target.cloned
-          ? "Open your editable copy at " + target.path
-          : "Copy this app into " + target.path + " and open it for editing"
-      }
-      onClick={go}
-      disabled={busy}
-    >
-      {busy ? (
-        <span className="mode-icon-spinner" />
-      ) : target.cloned ? (
-        MenuIcons.open
-      ) : (
-        MenuIcons.duplicate
+    <>
+      {target.cloned && (
+        <button
+          type="button"
+          className="bar-ctl bar-ctl-bordered"
+          title={"Replace the files in " + target.path + " with this app file's"}
+          onClick={() => !busy && setConfirming(true)}
+          disabled={busy !== null}
+        >
+          {busy === "overwrite" ? <span className="mode-icon-spinner" /> : MenuIcons.refresh}
+          {busy === "overwrite" ? "Overwriting…" : "Clone & overwrite"}
+        </button>
       )}
-      {busy ? "Cloning…" : target.cloned ? "Go to local version" : "Clone"}
-    </button>
+      <button
+        type="button"
+        className="bar-ctl bar-ctl-bordered"
+        title={
+          target.cloned
+            ? "Open your editable copy at " + target.path
+            : "Copy this app into " + target.path + " and open it for editing"
+        }
+        onClick={go}
+        disabled={busy !== null}
+      >
+        {busy === "clone" ? (
+          <span className="mode-icon-spinner" />
+        ) : target.cloned ? (
+          MenuIcons.open
+        ) : (
+          MenuIcons.duplicate
+        )}
+        {busy === "clone" ? "Cloning…" : target.cloned ? "Go to local version" : "Clone"}
+      </button>
+      {confirming && (
+        <ConfirmDialog
+          title={"Overwrite " + copyName + "?"}
+          message={
+            <>
+              Files in <code>{target.path}</code> will be replaced with this app file's.
+              Your edits to those files are lost. <code>.venv</code>, <code>.fused</code> and
+              any file the app file does not carry are kept.
+            </>
+          }
+          confirmLabel="Overwrite"
+          danger
+          onConfirm={() => {
+            setConfirming(false);
+            void overwrite();
+          }}
+          onCancel={() => setConfirming(false)}
+        />
+      )}
+    </>
   );
 }
 
