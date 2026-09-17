@@ -12,6 +12,7 @@ import pytest
 
 from fused_render.index import store as store_mod
 from fused_render.index.config import IndexConfig
+from fused_render.index.kinds import Column, IndexKind, register
 from fused_render.index.store import (
     Sink,
     applied_ignore_sig,
@@ -19,6 +20,7 @@ from fused_render.index.store import (
     load_dir_cache,
     read_manifest,
     save_applied_ignore,
+    schemas,
 )
 
 
@@ -76,6 +78,56 @@ def test_sink_counts_reused_files_from_unchanged_dirs(tmp_path):
     sink.add("/a", "s", _scanned("sig", [_row("/a/x.txt")], 10, 1, 0))
     sink.add("/b", "u", 7)
     assert (sink.dirs, sink.files, sink.reused, sink.udirs) == (2, 1, 7, 1)
+
+
+def _register_widgets_kind():
+    kind = IndexKind(
+        name="_test_widgets",
+        columns=(Column("name", "string"), Column("count", "int64")),
+        extract=lambda path, st: None,
+        text_column="name",
+    )
+    register(kind, replace=True)
+    return kind
+
+
+def test_schemas_default_kind_is_byte_identical_to_files():
+    file_schema, dir_schema = schemas(pa)
+    file_schema_explicit, dir_schema_explicit = schemas(pa, "files")
+    assert file_schema == file_schema_explicit
+    assert dir_schema == dir_schema_explicit
+    assert file_schema.names == ["path", "dir", "name", "ext", "size", "mtime", "depth"]
+
+
+def test_schemas_for_a_registered_kind_uses_its_pa_schema():
+    _register_widgets_kind()
+    file_schema, dir_schema = schemas(pa, "_test_widgets")
+    assert file_schema.names == ["name", "count"]
+    assert file_schema.field("count").type == pa.int64()
+    # dirs bookkeeping is kind-agnostic: every kind gets the same dirs table.
+    assert dir_schema.names == schemas(pa)[1].names
+
+
+def test_sink_for_a_registered_kind_writes_dict_rows_by_column_name(tmp_path):
+    _register_widgets_kind()
+    shards = str(tmp_path / "s")
+    os.makedirs(shards, exist_ok=True)
+    sink = Sink(shards, "t", pa, pq, 200_000, kind="_test_widgets")
+    sink.add("/a", "s", ("sig", [{"name": "one", "count": 3}], 0, 1, 0))
+    sink.close()
+    names = os.listdir(shards)
+    shard = pq.read_table(os.path.join(shards, [n for n in names if n.startswith("shard-")][0]))
+    assert shard.column("name").to_pylist() == ["one"]
+    assert shard.column("count").to_pylist() == [3]
+    assert sink.files == 1
+
+
+def test_sink_default_kind_is_byte_identical_to_files(tmp_path):
+    shards = str(tmp_path / "s")
+    os.makedirs(shards, exist_ok=True)
+    sink = Sink(shards, "t", pa, pq, 200_000)
+    assert sink.kind == "files"
+    assert sink.file_schema.names == ["path", "dir", "name", "ext", "size", "mtime", "depth"]
 
 
 # -- the directory reuse cache ------------------------------------------------

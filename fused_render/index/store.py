@@ -154,8 +154,17 @@ def like_literal(s: str) -> str:
              .replace("'", "''"))
 
 
-def schemas(pa):
-    """The single definition of both tables (specs/index-store.md §2).
+def schemas(pa, kind: str = "files"):
+    """The row shape for one index's shards, plus the dirs bookkeeping table
+    every index shares (specs/index-store.md §2, specs/index-plugins.md §2).
+
+    `kind == "files"` is the literal, unchanged tuple below rather than a
+    lookup through the kinds registry — this is the original single-index
+    layout, and it must keep producing the exact schema object it always has
+    even if something ever registered a kind literally named "files". Every
+    other value asks `kinds.get(kind)` for a plugin-declared `pa_schema`. The
+    dirs schema does not vary by kind: it is the host's own directory-reuse
+    bookkeeping, not plugin data, so every index gets the same one.
 
     `name`, `ext`, `dir` and `depth` are all DENORMALISED out of `path`. That is
     correct only because rows are never mutated in place: a scan writes a row
@@ -176,11 +185,15 @@ def schemas(pa):
     Both tables carry it because query.search_under UNIONs them and a UNION
     needs uniform columns. Appended last in both schemas: the compaction's
     `UNION ALL` of old partitions with new shards is positional."""
-    file_schema = pa.schema([
-        ("path", pa.string()), ("dir", pa.string()), ("name", pa.string()),
-        ("ext", pa.string()), ("size", pa.int64()), ("mtime", pa.float64()),
-        ("depth", pa.int32()),
-    ])
+    if kind == "files":
+        file_schema = pa.schema([
+            ("path", pa.string()), ("dir", pa.string()), ("name", pa.string()),
+            ("ext", pa.string()), ("size", pa.int64()), ("mtime", pa.float64()),
+            ("depth", pa.int32()),
+        ])
+    else:
+        from fused_render.index import kinds
+        file_schema = kinds.get(kind).pa_schema(pa)
     dir_schema = pa.schema([
         ("dir", pa.string()), ("sig", pa.string()),
         ("n_files", pa.int32()), ("total_size", pa.int64()),
@@ -200,32 +213,49 @@ def depth_expr(col: str) -> str:
 
 class Sink:
     """Accumulates scan results and writes shard-*/_dirs-*/_keep-* parquets
-    into `shards_dir`. `tag` keeps filenames unique across processes."""
+    into `shards_dir`. `tag` keeps filenames unique across processes.
 
-    def __init__(self, shards_dir, tag, pa, pq, shard_rows):
+    `kind` picks the row shape via `schemas(pa, kind)`. For "files" (the
+    default, and the only kind that existed before plugins did), `add`
+    unpacks each file row as the ORIGINAL fixed six-tuple
+    (path, dir, name, ext, size, mtime) — unchanged from before kinds
+    existed, so the files/dirs output stays byte-identical. Any other kind's
+    rows arrive as dicts keyed by column name (exactly the shape
+    `IndexKind.extract` returns), appended generically by walking the
+    registered schema's column names — the walker never needs to know a
+    plugin kind's columns ahead of time, only that `extract` returned
+    something matching them."""
+
+    def __init__(self, shards_dir, tag, pa, pq, shard_rows, kind="files"):
         self.shards_dir, self.tag, self.pa, self.pq = shards_dir, tag, pa, pq
         self.shard_rows = shard_rows
-        self.file_schema, self.dir_schema = schemas(pa)
+        self.kind = kind
+        self.file_schema, self.dir_schema = schemas(pa, kind)
         self.rows = {k: [] for k in self.file_schema.names}
         self.dir_rows = {k: [] for k in self.dir_schema.names}
         self.keep = []
         self.seq = 0
         self.dirs = self.files = self.reused = self.udirs = 0
 
-    def add(self, d, kind, payload):
+    def add(self, d, status, payload):
         self.dirs += 1
-        if kind == "u":
+        if status == "u":
             self.keep.append(d)
             self.reused += payload
             self.udirs += 1
             return
         sig, frows, dtotal, mtime_ns, n_subdirs = payload
         r = self.rows
-        for fr in frows:
-            r["path"].append(fr[0]); r["dir"].append(fr[1])
-            r["name"].append(fr[2]); r["ext"].append(fr[3])
-            r["size"].append(fr[4]); r["mtime"].append(fr[5])
-            r["depth"].append(fr[0].count("/"))
+        if self.kind == "files":
+            for fr in frows:
+                r["path"].append(fr[0]); r["dir"].append(fr[1])
+                r["name"].append(fr[2]); r["ext"].append(fr[3])
+                r["size"].append(fr[4]); r["mtime"].append(fr[5])
+                r["depth"].append(fr[0].count("/"))
+        else:
+            for fr in frows:
+                for name in self.file_schema.names:
+                    r[name].append(fr[name])
         self.files += len(frows)
         dr = self.dir_rows
         dr["dir"].append(d); dr["sig"].append(sig)
@@ -233,11 +263,13 @@ class Sink:
         dr["mtime_ns"].append(mtime_ns)
         dr["n_subdirs"].append(n_subdirs)
         dr["depth"].append(d.count("/"))
-        if len(r["path"]) >= self.shard_rows:
+        # Any column's length works as the row count check: every column in
+        # `r` gets exactly one append per frow above, files kind or not.
+        if len(r[self.file_schema.names[0]]) >= self.shard_rows:
             self._flush_files()
 
     def _flush_files(self):
-        if self.rows["path"]:
+        if self.rows[self.file_schema.names[0]]:
             t = self.pa.table(self.rows, schema=self.file_schema)
             self.pq.write_table(t, os.path.join(
                 self.shards_dir, f"shard-{self.tag}-{self.seq:05d}.parquet"))
