@@ -9,10 +9,14 @@
 > registered kind's rows are now extracted by the live walker
 > (`scan.py`'s `sink.add()` call sites), compacted into partitions
 > (`store._compact_locked`, §6), queryable through the sandboxed
-> connection (`guarded_query.py`, §7), and rankable through the same
-> scoring "files" gets (`query.search_apps_ranked`, §8). Not yet built: the
-> confirm/refuse HTTP route — see `Open questions` below and
-> `DECISIONS-index-plugins.md`.
+> connection (`guarded_query.py`, §7), rankable through the same
+> scoring "files" gets (`query.search_apps_ranked`, §8), and decision #8's
+> gate has a real end-to-end surface: a route (`routers/index_manifest.py`,
+> §9) plus a status-bar confirmation panel
+> (`shell/IndexProposalsDock.tsx`). Not yet built: a router that accepts an
+> index identifier beyond the single "files" store, a management page, and
+> the ⌘K overlay (Part 3) — see `DECISIONS-index-plugins.md`'s "Remaining
+> work" for the exact resume pointers.
 
 ## 1. The load-bearing rule: host owns the walk, plugin owns the row
 
@@ -70,8 +74,8 @@ today. A kind with two "name-like" columns picks one; the other is still
 indexed and returnable, just not what a fuzzy query matches against.
 
 `IndexKind.pa_schema(pa)` turns the declared columns into a real pyarrow
-Schema, in declared order — what `store.Sink` would write shards against for
-a kind other than "files" once that wiring exists (see Open questions).
+Schema, in declared order — what `store.Sink` writes shards against for a
+kind other than "files" (§6 has the schema-driven compaction that reads it).
 
 `register(kind, *, replace=False)` / `get(name)` / `registered()` form a
 tiny, process-local registry. Registering twice under the same name without
@@ -134,9 +138,9 @@ imported, nothing runs — until a user-driven `confirm_index` call moves it
 to `confirmed_folders()`, the one list a caller is meant to treat as
 "safe to import and register". Confirmation is sticky: re-proposing an
 already-confirmed folder is a silent no-op, never a demotion back to
-pending (which would reprompt for something already settled). The actual
-HTTP route and frontend confirmation UI that DRIVE `confirm_index`/
-`refuse_index` from a user click are not built yet — see Open questions.
+pending (which would reprompt for something already settled). The route
+and UI that DRIVE `confirm_index`/`refuse_index` from a user click are
+§9's `routers/index_manifest.py` and `shell/IndexProposalsDock.tsx`.
 
 ## 5. The reference example (`examples/notes_indexer/`)
 
@@ -239,16 +243,47 @@ unchanged: a bare `*` does not cross `/`, so a pattern matching across the
 identity column's own path segments needs `**`, exactly as it would for a
 deeply nested "files" path.
 
-## Open questions
+## 9. Confirm/refuse HTTP route + frontend UI (decision #8)
 
-- The HTTP route(s) and frontend surface that actually call
-  `manifest.propose_index`/`confirm_index`/`refuse_index` from a running
-  app and a user click do not exist yet.
+`fused_render/server/routers/index_manifest.py`, mounted in `app.py`
+alongside `routers/index.py` (a distinct router, not a replacement — that
+one only ever knows about the built-in "files" index this process already
+scans). Three routes: `POST /api/index/proposals/propose` (a running app
+proposes its OWN folder — takes `html`, the caller's own entry file, and
+derives the folder server-side, realpath'd, the same pattern
+`routers/background_apps.py` uses for a daemon's folder — never a raw
+folder path from the caller); `POST /api/index/proposals/confirm` and
+`POST /api/index/proposals/refuse` (both take `folder` directly, safe
+despite being a raw path because `manifest.confirm_index`/`refuse_index`
+only ever act on a folder already present in the pending/confirmed lists);
+`GET /api/index/proposals` (read-only, no guard, lists both). Every
+mutating route carries the `X-Fused` header guard every other mutation in
+this app carries.
+
+The frontend surface is a fourth, CONDITIONAL status-bar section,
+`shell/IndexProposalsDock.tsx` — unlike Models/Activity/Notifications it
+draws nothing at all, not even an idle state, while there is nothing
+pending: decision #8 is a gate, not a permanent readout. Rows draw through
+the shared `NotificationCard` (the same row shape Models/Engines/Jobs/
+repo-updates/waiting-tasks/LAN-pairings all use): `navAction` = "Confirm"
+(the one act that grants the plugin's declared root), `onDismiss` (✕,
+"Refuse") = decline or revoke. Row shaping is a pure
+`shell/index-proposals-lib.ts`, the same pure-lib/stateful-Dock split
+`repo-updates-lib.ts`/`RepoUpdatesDock.tsx` use — with one simplification
+that split doesn't need: no client-side dismiss store, since refusing is
+authoritative server state and the next poll of `GET /api/index/proposals`
+simply stops reporting a refused folder.
+
+Nothing in either half imports or runs a third party's module — that
+stays the caller's own job, gated on `manifest.confirmed_folders()`,
+exactly as `manifest.py`'s module docstring (§4) requires.
 
 ## See also
 
 - `index-store.md` — the on-disk shape `Sink`/`compact` serve per kind.
 - `query.md` — `search_apps_ranked` (§8), which reuses `_rank_sql`/
   `_glob_sql` rather than duplicating the ranking grammar.
+- `background_apps.md` — `_folder_for`'s html-to-folder derivation
+  pattern, reused unchanged by `routers/index_manifest.py` (§9).
 - `scan.md` — the walker a kind's `extract` plugs into.
 - `server-api.md` — where a confirm/refuse HTTP surface would live.

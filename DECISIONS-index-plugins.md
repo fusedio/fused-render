@@ -534,30 +534,103 @@ test_index_examples_notes test_index_scan test_index_rank_concurrency
 test_index_guarded_query test_index_apps_search`) → 555 passed, 1 skipped,
 nothing regressed.
 
+## Unit 12 — confirm/refuse HTTP route + frontend UI (decision #8)
+
+**Design (backend)**: new router `fused_render/server/routers/index_manifest.py`,
+mounted in `app.py` alongside (not replacing) `routers/index.py`. `propose`
+takes `html` — the calling page's own entry file — and derives the folder
+server-side exactly as `routers/background_apps.py`'s endpoints derive a
+daemon's folder (`_folder_for`, realpath'd): never a raw folder path from
+the caller, so no new path-typed API surface is introduced. `confirm`/
+`refuse` accept `folder` directly, which stays safe despite being a raw
+path because `manifest.confirm_index`/`refuse_index` only ever act on a
+folder already present in the pending/confirmed lists — a caller cannot
+use either to reach a folder that was never legitimately proposed first.
+Every mutating route carries the `X-Fused` guard (`_require_fused`); the
+read (`GET /api/index/proposals`) does not, matching every other GET in
+this router family. `_entry(folder)` degrades to `{"kind": None}` rather
+than erroring when a proposed folder's manifest has since gone missing or
+turned invalid, mirroring `load_manifest`'s own never-raises posture.
+
+**Design (frontend)**: a fourth, CONDITIONAL status-bar section
+(`shell/IndexProposalsDock.tsx`), added to `StatusBar.tsx`'s
+`models`/`activity`/`repoUpdates` slots as `indexProposals` and to
+`exclusiveSection.ts`'s `SECTION_ORDER` as `"index-proposals"` (rightmost —
+see that file's own updated doc comment for why it does not compete with
+the three always-present sections). Unlike those three, it draws NOTHING
+at all — not even an idle state — while there are no pending proposals:
+decision #8 is a gate that should not occupy a permanent slot in the bar
+when it has nothing to gate.
+
+Row shaping lives in a pure `shell/index-proposals-lib.ts`
+(`proposalFolderName`/`proposalRows`), the same pure-lib/stateful-Dock
+split `repo-updates-lib.ts`/`RepoUpdatesDock.tsx` and `jobs.ts`/
+`DownloadManager.tsx` already use. Unlike repo-updates rows, no
+client-side dismiss store is needed: refusing is authoritative SERVER
+state (`manifest.refuse_index` drops the folder from both lists), so the
+next poll of `GET /api/index/proposals` simply stops reporting it.
+
+Rows draw through the shared `NotificationCard` (six panels already share
+this shape): `navAction` = "Confirm" (grants the root — the one act
+decision #8 gates), `onDismiss` (✕, tooltip "Refuse") = "Refuse" (declines
+or revokes). `IndexProposalsDock`'s own poll (`useIndexProposals`) mirrors
+`RepoUpdatesDock.tsx`'s `useRepoUpdates` — a `generation` counter discards
+stale responses, a failed poll leaves the last snapshot standing, a
+`disposed` ref stops the chain on unmount — at the same `POLL_MS = 6000`
+cadence as the other quick-status chips. Split into a pure
+`IndexProposalsCardView` (props-in, testable without polling) and the
+stateful default export, the same split `ModelsCardView`/`ModelsDock` use.
+
+**TDD ordering, flagged explicitly (mirrors Unit 5's precedent)**:
+`index-proposals-lib.test.ts` was written AFTER `index-proposals-lib.ts`'s
+implementation — a deliberate deviation for one small, obviously-pure
+row-shaping module. Everything else this unit touched
+(`test_index_manifest_api.py`, `IndexProposalsDock.test.tsx`, the new
+`StatusBar.test.tsx` case) was written first and confirmed red for the
+right reason before being made to pass.
+
+**Tests**: backend `tests/test_index_manifest_api.py`, 10 tests (confirmed
+red first — 404s, the routes did not exist yet — then green): the
+`X-Fused` guard on every mutating route, missing-body validation, propose
+without a valid manifest reports `{"ok": false}` rather than erroring,
+propose lands a valid manifest in pending, confirm on an unknown folder
+reports not-ok, confirm moves pending → confirmed, refuse removes a
+pending proposal, refuse revokes an already-confirmed one. Frontend
+`index-proposals-lib.test.ts` (8 tests) and `IndexProposalsDock.test.tsx`
+(5 tests: empty renders nothing, a pending row's chip/panel content, the
+Confirm/Refuse buttons fire with the row's own folder, a busy row disables
+both and relabels Confirm), plus one new `StatusBar.test.tsx` case for the
+fourth slot.
+
+**Verified**: `test_index_manifest_api.py` alone (10 passed) plus the
+16-file/649-test backend regression set (nothing regressed; one confirmed
+pre-existing, unrelated flake in `test_apps_api.py` investigated and ruled
+out — passes standalone). Frontend: `bun test` on
+`IndexProposalsDock.test.tsx`, `index-proposals-lib.test.ts`,
+`StatusBar.test.tsx`, `exclusiveSection.test.tsx` (22 passed, 0 failed);
+`node scripts/check-boundaries.mjs` (823 files, OK); `tsc --noEmit` clean.
+
 ## Remaining work (exact resume pointers)
 
-Units 7-11 above have closed every Part 1 gap AND the apps-kind search
-gap: a registered kind's rows are extracted, shard-written, compacted,
-queryable through the sandbox, AND rankable through the same scoring
-"files" gets — the only thing left is the HTTP/frontend surface and the
-⌘K overlay itself. This is the reconciled list, in priority order.
+Units 7-12 above have closed Part 1 in full, the apps-kind search gap, AND
+Part 2's confirm/refuse surface: a registered kind's rows are extracted,
+shard-written, compacted, queryable through the sandbox, rankable through
+the same scoring "files" gets, AND a third-party proposal now has a real
+HTTP route plus a user-facing Confirm/Refuse panel. This is the reconciled
+list, in priority order.
 
-1. **Confirm/refuse HTTP route + frontend UI** (Part 2 tail — not done,
-   now the single biggest remaining risk): `manifest.propose_index`/
-   `confirm_index`/`refuse_index` have no caller yet. Decision #8 ("never
-   silent") needs a route plus a confirmation surface in the frontend.
-2. **Router generalization** (Part 1/2 tail — not done):
+1. **Router generalization** (Part 1/2 tail — not done):
    `routers/index.py`'s per-route bare `load_config()` calls need to
    accept an index identifier rather than assuming the single "files"
    store. The spec lists every call site with line numbers; change them
    in lockstep, and keep `fused.fileIndex.search`/`.query` in
    `static/runtime.js` working.
-3. **Management page** (not started): `apps/ai_models` is the precedent
+2. **Management page** (not started): `apps/ai_models` is the precedent
    for a prefix-routed built-in page (sidebar entry + lazy import in
    `App.tsx`) — build this feature's equivalent, and decide whether
    `frontend/src/shell/Indexing.tsx` folds into it or stays as a second,
    non-disagreeing source of truth.
-4. **Part 3 in its entirety** (not started): delete the shortcuts overlay
+3. **Part 3 in its entirety** (not started): delete the shortcuts overlay
    (surface + `frontend/src/platform/lib/shortcuts.ts:116`'s listing
    entry — delete, do not relocate to `?`), build the in-app ⌘K overlay,
    grouped by source with no cross-source score calibration, file search
@@ -574,12 +647,14 @@ example indexer (`examples/notes_indexer/`), the house-style spec doc
 (`specs/index-plugins.md`, linked from `overview.md`), kind-aware
 `schemas()`/`Sink` (store.py), `IndexKind.extract` wired into every walker
 call site (scan.py), a schema-driven `_compact_locked` (store.py),
-schema-driven views in `guarded_query.py`, and `search_apps_ranked`
-(query.py) — a registered kind's rows are now extracted, shard-written,
+schema-driven views in `guarded_query.py`, `search_apps_ranked`
+(query.py), the `routers/index_manifest.py` HTTP surface over
+propose/confirm/refuse, and `shell/IndexProposalsDock.tsx`'s status-bar
+confirmation panel — a registered kind's rows are extracted, shard-written,
 compacted into queryable partitions, readable through the sandboxed
-connection, AND rankable through the same `_rank_sql`/`_glob_sql` scoring
-"files" has always had. What is NOT yet true: nothing calls
-`propose_index`/`confirm_index`/`refuse_index` from an HTTP route or a
-user click, no router accepts an index identifier beyond the single
-"files" store, there is no management page, and Part 3 (the ⌘K overlay,
-the shortcuts-overlay deletion) has not been started.
+connection, rankable through the same `_rank_sql`/`_glob_sql` scoring
+"files" has always had, AND a third-party proposal now has a real
+grant/decline surface end to end. What is NOT yet true: no router accepts
+an index identifier beyond the single "files" store, there is no
+management page, and Part 3 (the ⌘K overlay, the shortcuts-overlay
+deletion) has not been started.
