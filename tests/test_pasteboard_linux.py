@@ -5,6 +5,7 @@ runs on any platform — including the real behaviours we most need pinned
 (tool preference order, which clipboard target gets written on which desktop,
 URI encoding). Nothing here launches a process or touches a selection.
 """
+import json
 import subprocess
 import sys
 
@@ -629,3 +630,97 @@ def test_write_files_kills_an_owner_that_never_signals_ready(
         "a timed-out owner was left running instead of being killed")
 
 
+# ---------------------------------- owner: the parent<->child wire contract
+
+def test_write_files_sends_exactly_the_paths_dict_to_the_owner(
+        env, tmp_path, monkeypatch):
+    # Pins the one point of coupling between _linux.py and _linux_owner.py:
+    # the parent sends `{"paths": [...]}` on stdin, nothing more and nothing
+    # less. Renaming that key, or sending a bare list, on either side would
+    # otherwise pass the whole suite while every real copy silently
+    # published an empty clipboard.
+    echo_file = tmp_path / "stdin_echo.json"
+    owner = tmp_path / "owner.py"
+    owner.write_text(
+        "import sys\n"
+        f"open({str(echo_file)!r}, 'wb').write(sys.stdin.buffer.read())\n"
+        "print('ready', flush=True)\n"
+        "import time; time.sleep(30)\n"
+    )
+    monkeypatch.setattr(_linux, "_owner_script_path", lambda: str(owner))
+
+    _linux._reset_gi_interpreter_cache()
+    env({"xclip"}, run=_Run(gi_capable={sys.executable}))
+    _linux.write_files(["/home/u/a.txt", "/home/u/b.txt"])
+
+    # write_files() only returns after reading the "ready" line, and the
+    # owner writes the echo file before printing it -- so the file is
+    # guaranteed to exist and be complete by the time we get here.
+    assert json.loads(echo_file.read_text()) == {
+        "paths": ["/home/u/a.txt", "/home/u/b.txt"]}
+
+
+def test_owner_main_extracts_paths_from_the_request_dict(monkeypatch):
+    # Exercises _linux_owner.main() itself, faking out `gi` so it runs with
+    # no GTK bindings and no display. Without this, `request.get("paths")`
+    # is only ever read by build_payloads()'s tests calling it directly --
+    # main()'s own extraction of that key from the parsed JSON was never
+    # covered in either direction.
+    import io
+    import types
+
+    calls = []
+
+    def _fake_build_payloads(paths):
+        calls.append(paths)
+        return {}
+
+    class _FakeContentProvider:
+        @staticmethod
+        def new_for_bytes(mime, data):
+            return (mime, data)
+
+        @staticmethod
+        def new_union(providers):
+            return list(providers)
+
+    class _FakeClipboard:
+        def set_content(self, content):
+            pass
+
+        def connect(self, signal, cb):
+            pass
+
+    class _FakeDisplay:
+        @staticmethod
+        def get_default():
+            return _FakeDisplay()
+
+        def get_clipboard(self):
+            return _FakeClipboard()
+
+    class _FakeMainLoop:
+        def run(self):
+            return  # never actually loop -- this test asserts on the setup, not the lifecycle
+
+    fake_gdk = types.SimpleNamespace(
+        ContentProvider=_FakeContentProvider, Display=_FakeDisplay)
+    fake_glib = types.SimpleNamespace(
+        Bytes=types.SimpleNamespace(new=lambda data: data),
+        MainLoop=_FakeMainLoop)
+    fake_gtk = types.SimpleNamespace(init=lambda: None)
+    fake_gi_repository = types.SimpleNamespace(
+        Gdk=fake_gdk, GLib=fake_glib, Gtk=fake_gtk)
+    fake_gi = types.SimpleNamespace(
+        require_version=lambda *a, **k: None, repository=fake_gi_repository)
+
+    monkeypatch.setitem(sys.modules, "gi", fake_gi)
+    monkeypatch.setitem(sys.modules, "gi.repository", fake_gi_repository)
+    monkeypatch.setattr(_linux_owner, "build_payloads", _fake_build_payloads)
+    monkeypatch.setattr(
+        _linux_owner.sys, "stdin",
+        io.StringIO(json.dumps({"paths": ["/home/u/a.txt", "/home/u/b.txt"]})))
+
+    _linux_owner.main()
+
+    assert calls == [["/home/u/a.txt", "/home/u/b.txt"]]
