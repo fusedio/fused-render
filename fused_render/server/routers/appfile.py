@@ -22,6 +22,7 @@ copy. The pair backs one button in the preview header, which flips between
 from __future__ import annotations
 
 import os
+import secrets
 import shutil
 import tempfile
 from urllib.parse import quote
@@ -30,8 +31,9 @@ from fastapi import APIRouter, Body, File, Form, Header, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.background import BackgroundTask
 
-from fused_render import appfile
-from fused_render._view_url_codec import embed_url_path
+from fused_render import appfile, jobs
+from fused_render._view_url_codec import canonical_fs_path, embed_url_path
+from fused_render.server.index_touch import note_index_mutation
 
 router = APIRouter()
 
@@ -128,6 +130,80 @@ async def api_appfile_export_with_preview(
         },
         background=BackgroundTask(shutil.rmtree, tmp_dir, ignore_errors=True),
     )
+
+
+def _export_destination_dir() -> str:
+    """The platform Downloads folder, created if this is its first use.
+
+    No existing helper in the codebase resolves a per-platform user
+    directory outside the app's own home (`storage.home_dir()` is a
+    different, sandboxed thing) — `~/Downloads` and
+    `%USERPROFILE%\\Downloads` both come out of `os.path.expanduser("~")`,
+    which resolves correctly on both POSIX and Windows.
+    """
+    d = os.path.join(os.path.expanduser("~"), "Downloads")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _unique_export_path(dest_dir: str, file_name: str) -> str:
+    """The first name in `dest_dir` that does not already exist — `App.fused`,
+    then `App (2).fused`, `App (3).fused`, ... `export_app_file` itself
+    refuses to overwrite, so a repeat export must be handed a free name
+    rather than relying on that refusal, which would just fail the second
+    export outright instead of producing a sibling copy."""
+    stem, ext = os.path.splitext(file_name)
+    candidate = os.path.join(dest_dir, file_name)
+    n = 2
+    while os.path.exists(candidate):
+        candidate = os.path.join(dest_dir, f"{stem} ({n}){ext}")
+        n += 1
+    return candidate
+
+
+@router.post("/api/appfile/export/save")
+def api_appfile_export_to_disk(
+    body: dict = Body(...), x_fused: str | None = Header(default=None)
+):
+    """Write ``<app name>.fused`` straight to the platform Downloads folder
+    and report its real path, instead of handing the browser a blob it saves
+    wherever the user's download settings land it.
+
+    This is what makes the export immediately searchable: writing through
+    the browser leaves the real destination unknown to the server, so the
+    exported file sits outside the index until the next scan happens to
+    cover it (SPEC's ~110s-unsearchable bug). Writing here means the path is
+    known the instant the file exists, so `note_index_mutation` can queue
+    Downloads for a rescan synchronously, on the same request — no freshness
+    gate involved at all.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    path = body.get("path") if isinstance(body, dict) else None
+    if not path or not os.path.isabs(path):
+        return _error("path must be an absolute app folder path")
+    dest_dir = _export_destination_dir()
+    file_name = appfile.default_file_name(path)
+    out_path = _unique_export_path(dest_dir, file_name)
+    try:
+        appfile.export_app_file(path, out_path)
+    except appfile.AppFileError as exc:
+        return _error(str(exc))
+    note_index_mutation(dest_dir)
+    real_path = canonical_fs_path(out_path)
+    jobs.upsert(
+        {
+            "id": f"{jobs.SERVER_ID_PREFIX}appfile-export:{secrets.token_hex(4)}",
+            "title": f"Exported {os.path.basename(out_path)}",
+            "state": "done",
+            "kind": "task",
+        },
+        page=real_path,
+        origin="Export",
+        server=True,
+    )
+    return JSONResponse({"path": real_path})
 
 
 @router.get("/api/appfile/preview")

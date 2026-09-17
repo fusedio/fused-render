@@ -343,3 +343,62 @@ def test_routes_export_and_gateless_open(tmp_path, monkeypatch):
         os.path.abspath(e["path"]) == str(fused_path)
         for e in exported_apps.read_recents()
     )
+
+
+def test_export_to_disk_writes_the_real_file_and_notes_the_mutation(tmp_path, monkeypatch):
+    """The server-side export route (workstream B) writes the `.fused` to the
+    resolved destination directory itself — not a temp dir behind a browser
+    download — and reports the real absolute path, so the file is
+    immediately locatable and immediately queued for reindexing."""
+    from fastapi.testclient import TestClient
+
+    from fused_render import appfile
+    from fused_render.server.routers import appfile as appfile_router
+    from fused_render.server.app import create_app
+
+    monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    dest_dir = tmp_path / "downloads"
+    dest_dir.mkdir()
+    monkeypatch.setattr(
+        appfile_router, "_export_destination_dir", lambda: str(dest_dir)
+    )
+    noted: list[str] = []
+    monkeypatch.setattr(
+        appfile_router, "note_index_mutation", lambda *paths: noted.extend(p for p in paths if p)
+    )
+
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    app_dir = make_app(tmp_path)
+
+    r = client.post(
+        "/api/appfile/export/save",
+        json={"path": str(app_dir)},
+        headers={"X-Fused": "1"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    from fused_render import appfile_container
+
+    out_path = body["path"]
+    assert os.path.isfile(out_path)
+    assert os.path.dirname(out_path) == str(dest_dir)
+    assert appfile_container.is_container(out_path)
+    assert noted == [str(dest_dir)]
+
+    # A second export of the same app never clobbers the first — it picks a
+    # sibling filename instead.
+    r2 = client.post(
+        "/api/appfile/export/save",
+        json={"path": str(app_dir)},
+        headers={"X-Fused": "1"},
+    )
+    assert r2.status_code == 200
+    out_path2 = r2.json()["path"]
+    assert out_path2 != out_path
+    assert os.path.isfile(out_path)
+    assert os.path.isfile(out_path2)
+
+    # Missing the X-Fused guard is refused, like every other mutating route.
+    r3 = client.post("/api/appfile/export/save", json={"path": str(app_dir)})
+    assert r3.status_code == 403
