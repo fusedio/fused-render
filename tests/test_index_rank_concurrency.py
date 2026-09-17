@@ -11,16 +11,15 @@ import subprocess
 import sys
 import time
 
-import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
 from fastapi.testclient import TestClient
 
 from fused_render.index import store, worker
-from fused_render.index.config import IndexConfig
-from fused_render.index.runner import canonical_root
-from fused_render.index.store import Sink, compact
 from fused_render.server import create_app
+
+from index_perf_harness import (build_tree as _tree,
+                                 prime_index as _prime_index,
+                                 sample_rank_latencies)
 
 
 @pytest.fixture()
@@ -295,50 +294,13 @@ def test_query_py_and_guarded_query_read_connections_cap_their_threads(home, tmp
 
 
 # -- the regression ----------------------------------------------------------
-
-def _tree(root, n_dirs=400, per_dir=100):
-    """A tree big enough that a full scan of it overlaps a burst of ranks."""
-    os.makedirs(root, exist_ok=True)
-    for d in range(n_dirs):
-        sub = os.path.join(root, f"dir{d:03d}")
-        os.makedirs(sub, exist_ok=True)
-        for i in range(per_dir):
-            with open(os.path.join(sub, f"file{i:03d}_alpha.txt"), "w") as f:
-                f.write("x")
-    return root
-
-
-def _prime_index(tmp_path, root, n=4000):
-    """A real index over `root` so ranking has a full corpus to scan.
-
-    Stored under `canonical_root(root)`, not the caller's raw `root`: the
-    scan/rank routes canonicalize whatever root they are given before
-    querying (platform.md §1), so a row filed under the un-normalized
-    literal — a no-op on POSIX, backslash-native on Windows — would leave
-    `/api/index/rank` answering `covered: false` with no hits before the
-    real scan below ever gets a chance to overlap it."""
-    cfg = IndexConfig()
-    shards = str(tmp_path / "prime-shards")
-    os.makedirs(shards, exist_ok=True)
-    sink = Sink(shards, "t", pa, pq, cfg.shard_rows)
-    root = canonical_root(root)
-    # The root's own dirs row is what `covered` is decided on — without it the
-    # route answers `uncovered` with no hits and the timing means nothing.
-    sink.add(root, "s", ("sig", [], 0, 1_000_000_000, 0))
-    per_dir = 100
-    for d in range(n // per_dir):
-        dirp = canonical_root(os.path.join(root, f"pre{d:04d}"))
-        rows = []
-        for i in range(per_dir):
-            name = f"file{i:03d}_alpha.txt"
-            rows.append((dirp + "/" + name, dirp, name, "txt",
-                         10 + i, 100.0 + i))
-        sink.add(dirp, "s", ("sig", rows, sum(r[4] for r in rows),
-                             1_000_000_000, 0))
-    sink.close()
-    compact(cfg, root, shards, pa, pq)
-    return cfg
-
+#
+# `_tree` and `_prime_index` (the synthetic corpus + real-index builders) and
+# the latency sampling loop now live in `index_perf_harness`, reusable by any
+# test that needs to overlap a real scan with real `/api/index/rank` calls —
+# see that module's docstring. This test is the harness's original case,
+# refactored onto it rather than rewritten: build a tree, prime an index over
+# it, start a real full scan, and sample rank latency while it runs.
 
 def test_rank_route_stays_fast_while_a_real_scan_is_running(home, tmp_path):
     root = _tree(str(tmp_path / "src"))
@@ -355,24 +317,11 @@ def test_rank_route_stays_fast_while_a_real_scan_is_running(home, tmp_path):
         return client.get("/api/index/status",
                           params={"run_id": run_id}).json()["running"]
 
-    latencies = []
     try:
         if not running():
             pytest.skip("the scan finished before the first rank request; "
                         "cannot observe overlap on this machine")
-        for _ in range(15):
-            if not running():
-                break
-            t0 = time.perf_counter()
-            resp = client.get("/api/index/rank",
-                              params={"root": root, "q": "alpha", "limit": 50})
-            latencies.append(time.perf_counter() - t0)
-            assert resp.status_code == 200, resp.text
-            # Timing an answer the route declined to compute would measure
-            # nothing: every request has to have taken the full ranking plan.
-            body = resp.json()
-            assert body["covered"] is True, body
-            assert body["hits"], body
+        report = sample_rank_latencies(client, root, running)
     finally:
         client.post("/api/index/cancel", json={"run_id": run_id},
                     headers={"X-Fused": "1"})
@@ -380,5 +329,4 @@ def test_rank_route_stays_fast_while_a_real_scan_is_running(home, tmp_path):
         while time.time() < deadline and running():
             time.sleep(0.1)
 
-    assert latencies, "no rank request overlapped the scan"
-    assert max(latencies) < 2.0, latencies
+    report.assert_ceiling(2.0)
