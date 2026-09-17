@@ -239,3 +239,94 @@ through an explorer-aware wrapper, and all Python code.
   rather than going through the shared `env` fixture's `f"/usr/bin/{name}"`
   fake, which would have produced the same string as the second candidate
   and proven nothing.
+
+## Fix 7 follow-up — code review findings on the owner handshake and lifecycle
+
+Three confirmed findings from code review on the same branch, all in
+`_linux.py`/`_linux_owner.py`. None of these change what a working machine
+does; all three change what happens when the owner is unavailable, wedged,
+or misbehaving.
+
+- **The readiness check now compares against a literal token, not
+  `bool(stream.readline())`.** The bug: any stdout line the child emitted
+  before its real "ready" line — a distro Python's sitecustomize warning, a
+  `gi` deprecation notice, a half-written crash diagnostic — used to satisfy
+  the handshake, so `_write_via_owner` reported success for a selection that
+  was never set and skipped the fallback that would have worked. The token
+  (`"ready"`) is now defined in both modules — `_linux._OWNER_READY_TOKEN`
+  (bytes) and `_linux_owner.OWNER_READY_TOKEN` (str) — with a comment in each
+  pointing at the other, the same duplication-not-import pattern
+  `path_to_uri` already uses, since the owner script can't import
+  `fused_render`.
+- **Judgment call: a single stray line before the token is tolerated, not
+  instant failure.** A cosmetic warning on a stock distro Python is common
+  enough that failing the whole owner path over it would give up a working
+  multi-target write for nothing. Tolerance is bounded on two independent
+  axes so a chatty or wedged child can't turn "tolerate one stray line" into
+  an unbounded read: `_OWNER_READY_MAX_STRAY_LINES` (5) caps the number of
+  non-token lines regardless of time left, and `_OWNER_READY_TIMEOUT_S`
+  caps the time regardless of how many lines arrived; either one being hit
+  ends the wait as failure.
+- **Real bug found while writing that test, not in the brief:**
+  `_wait_for_owner_ready`'s first version re-selected on the raw stream
+  between `readline()` calls. `stream` is a buffered file object, and a
+  single `readline()` call pulls a whole chunk off the OS pipe, not just the
+  line it returns — so when a stray line and the token both arrive in one
+  write (the common case: two `print(..., flush=True)` calls back to back),
+  the token ends up sitting in the buffered reader's OWN internal buffer
+  after the first `readline()`, invisible to a second `select()` on the raw
+  fd, which then times out despite the token having already arrived well
+  within the deadline. Confirmed by running the exact scenario standalone
+  before touching the implementation, and it reproduced 100% of the time,
+  not just occasionally — this was not a genuine race, it was `select`
+  being asked a question about the wrong buffer. Fixed by putting the fd in
+  non-blocking mode and reading raw bytes via `os.read` into a buffer this
+  function owns itself, splitting lines out of that buffer by hand; `select`
+  now only ever decides whether to wait for the *next* chunk, never competes
+  with a buffered reader's read-ahead. `_write_stdin_bounded` (below) uses
+  the same non-blocking-fd approach for the same reason, on the write side.
+- **A not-ready owner is now killed and reaped**, via `_kill_owner`, on
+  every path that returns False from `_write_via_owner`: no readiness
+  token in time, a failed/incomplete stdin write, or an OSError writing to
+  it. Left running, it's not a neutral "maybe it finishes eventually" — the
+  interpreter probe only confirms `import gi` succeeds, which happens on any
+  box with PyGObject installed regardless of whether `DISPLAY`/
+  `WAYLAND_DISPLAY` points at a reachable compositor, and `Gtk.init()`
+  blocks on that connect rather than failing fast; with
+  `start_new_session=True` such a process outlives the parent entirely and
+  leaks one resident process per Explorer copy for the life of the machine.
+  Or, if it was merely slow rather than wedged, it can finish moments after
+  the parent gives up, and its `set_content()` call then takes the selection
+  back from the `xclip`/`wl-copy` fallback the parent has since fallen
+  through to — displacing a write the caller was already told succeeded.
+  `kill()` is safe here specifically because of `start_new_session=True`:
+  the child is the sole member of its own session, so there is no sibling
+  process for a SIGKILL to orphan.
+- **`proc.stdin.close()` moved into a `finally`**, alongside the existing
+  `proc.stdout.close()`, so a `write()`/`close()` `OSError` no longer leaves
+  the handle open until GC on what's meant to be a long-lived server
+  process.
+- **Judgment call: the stdin write is bounded, not merely documented.** The
+  brief left this as a choice; bounding it was cheap enough (the same
+  non-blocking-fd-plus-`select` pattern the readiness wait already needed,
+  for the read-ahead reason above) that documenting-only would have been
+  the lazier option for no real savings. `_write_stdin_bounded` puts
+  `proc.stdin`'s fd in non-blocking mode and bounds the write loop against
+  its own `_OWNER_READY_TIMEOUT_S` budget, separate from the budget the
+  readiness wait spends afterwards — the two never overlap, since nothing
+  is read until the whole request has been written. Running out of budget
+  is treated exactly like a readiness timeout: kill the child, fall back.
+- Three tests exercise the wire contract end to end: a fake owner that
+  echoes its stdin to a file, asserting the parent sent exactly
+  `{"paths": [...]}`; a direct test of `_linux_owner.main()` with `gi` faked
+  out via `sys.modules`, asserting `request.get("paths")` is what actually
+  reaches `build_payloads`; and a killed-not-leaked test that spawns a real
+  never-ready owner, tracks the real `Popen` object, and asserts
+  `proc.wait(timeout=2)` returns instead of raising `TimeoutExpired` after
+  `write_files()` gives up on it.
+- Scoped tests, 78 passed, run five times back to back with no flakes after
+  the read-ahead fix (three of the new tests failed non-deterministically
+  before it, at roughly a 40-60% rate depending on process/OS scheduling
+  timing — reproducible enough in isolation to debug, not reliable enough to
+  trust in CI):
+  `.venv/bin/python -m pytest tests/test_pasteboard_linux.py tests/test_pasteboard.py tests/test_server_clipboard.py -q`
