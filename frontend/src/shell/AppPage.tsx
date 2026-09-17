@@ -65,17 +65,19 @@ import {
 import { useFavicon, useUrlVersion } from "@platform/lib/hooks";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
-import { navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { navigateUrl, spaLinkProps, urlForFsPath } from "@platform/lib/router";
 import { snapshotFrameSrc } from "@platform/lib/snapshot-param";
 import {
   AppWindow,
   Files,
   Download,
   ListTodo,
+  Share2,
   Webhook,
   type LucideIcon,
 } from "lucide-react";
 import { exportAppFile, notifyExportSaved } from "@platform/lib/appShot";
+import { openShareApp } from "@platform/lib/share-app";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppStar } from "@platform/ui/AppStar";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
@@ -119,7 +121,6 @@ type TabCtx = {
   slug: string;
   dir: string;
   entry: string | null;
-  folderHref: string;
   /** This page's OWN resolution of the URL's `_snapshot` sha, including the
    *  PENDING window a caller must refuse to render live content into (code
    *  review finding 4: the old shape returned null for "live" and "still
@@ -161,7 +162,7 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     // (finding 3) — not `entry` (the LIVE tree's) rewritten by directory
     // prefix alone, which gets the wrong FILENAME whenever the app's entry
     // was renamed since that commit.
-    render: ({ slug, entry, folderHref, snapshot }) => {
+    render: ({ slug, dir, entry, snapshot }) => {
       if (snapshot.pending) {
         // `error` (finding 1, second round): a transient resolve failure
         // stays `pending` forever — nothing re-runs the resolve on its own —
@@ -212,7 +213,7 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
       ) : (
         <p className="app-page-empty">
           This folder has no entry page yet.{" "}
-          <a href={folderHref}>Open the folder</a> to see what is there.
+          <a {...spaLinkProps(dir, { isDir: true })}>Open the folder</a> to see what is there.
         </p>
       );
     },
@@ -231,13 +232,8 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     Icon: Files,
     // Not keepMounted: the selection is in the URL, so a return costs one walk
     // and one stat — cheaper than a hidden frame that keeps running.
-    render: ({ dir, entry, folderHref, snapshot }) => (
-      <AppFiles
-        dir={dir}
-        entry={entry}
-        folderHref={folderHref}
-        snapshot={snapshot}
-      />
+    render: ({ dir, entry, snapshot }) => (
+      <AppFiles dir={dir} entry={entry} snapshot={snapshot} />
     ),
   },
   api: {
@@ -245,9 +241,7 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     Icon: Webhook,
     // Not keepMounted: the open row is in the URL (`?ep=`), and a return costs
     // one folder inspection — form values and responses are session scratch.
-    render: ({ dir, folderHref, snapshot }) => (
-      <AppApi dir={dir} folderHref={folderHref} snapshot={snapshot} />
-    ),
+    render: ({ dir, snapshot }) => <AppApi dir={dir} snapshot={snapshot} />,
   },
 };
 
@@ -433,7 +427,6 @@ export default function AppPage({
     if (next !== tab) navigateUrl(appPageUrl(dir, next, location.search));
   };
 
-  const folderHref = urlForFsPath(dir);
   // Folded ONCE for every tilde below: `home` is raw expanduser (backslashed on
   // Windows) while `dir` and the root are forward-slash, and a prefix test
   // between the two spellings prints the full path instead of "~/…".
@@ -565,7 +558,7 @@ export default function AppPage({
             {/* Reads as the folder and IS the folder: opens its listing in the
                 explorer. The app's entry page is the "Open in explorer"
                 button opposite. */}
-            <a className="app-page-folder" href={folderHref} title={dir}>
+            <a className="app-page-folder" title={dir} {...spaLinkProps(dir, { isDir: true })}>
               {tildePath(dir, home)}
             </a>
           </div>
@@ -623,6 +616,33 @@ export default function AppPage({
               {exporting ? "Exporting…" : "Export"}
               <Download data-icon="inline-end" />
             </Button>
+            {/* Export's sibling: the same .fused, published to the user's
+                Fused account as a public page (share_app.py). LIVE ONLY —
+                the shared canvas is named after the app's id and always
+                carries "the app", so publishing an old commit under it would
+                silently downgrade every link already sent. The Overview
+                frame is the capture source under the same rule as Export. */}
+            {versionLabel === "Live" && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="app-page-share"
+                disabled={snapshot.pending || snapshot.error}
+                title="Share the live app as a public link"
+                onClick={() => {
+                  const frame = document.querySelector<HTMLIFrameElement>(
+                    ".app-page-overview:not(.is-hidden) .app-page-frame",
+                  );
+                  openShareApp(
+                    { path: dir, name: slug, entry_html: entry ?? undefined },
+                    frame?.dataset.loaded === "1" ? frame : null,
+                  );
+                }}
+              >
+                Share
+                <Share2 data-icon="inline-end" />
+              </Button>
+            )}
           </div>
         )}
       </header>
@@ -714,7 +734,7 @@ export default function AppPage({
                 role="tabpanel"
                 aria-hidden={!active}
               >
-                {def.render({ slug, dir, entry, folderHref, snapshot })}
+                {def.render({ slug, dir, entry, snapshot })}
               </section>
             );
           })}
