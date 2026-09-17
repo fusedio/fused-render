@@ -76,12 +76,15 @@
   `extraAction` (a second, separate `.q-all` button below the status line).
   Threaded `extraAction` through `NotificationInput`/`StoredNotification`
   (`notifications.ts`, including `forwardToShell()` for the iframe-forwarding
-  path) and into `RepoUpdatesDock.tsx`'s `MessageRowView`, which now passes
-  both `navAction={notification.action}` and
-  `extraAction={notification.extraAction}`. Deliberately NOT wired into
-  `MessagePopupCard.tsx` (the transient popup) — precedent already set by
-  `NotificationInput.page`'s existing "unused by the popup card" comment: a
-  fleeting toast is not where a two-destination choice belongs.
+  path), into `RepoUpdatesDock.tsx`'s `MessageRowView` (which passes both
+  `navAction={notification.action}` and
+  `extraAction={notification.extraAction}`), and into `MessagePopupCard.tsx`
+  (the transient popup), which now passes `extraAction={notification.extraAction}`
+  alongside its existing `navAction={notification.action}` — `NotificationCard`
+  already renders both slots independently, so a notification carrying only
+  `action` is unchanged and one carrying both now offers both from the
+  popup, which is the only place a two-destination export notification is
+  seen unless the user opens the Notifications panel.
 - The export success notification: `action` = "Reveal folder" (calls the
   existing `revealPath(realPath)`, which already handles being given a file
   path by revealing/selecting it inside its parent folder — no dirname
