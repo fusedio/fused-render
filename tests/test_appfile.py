@@ -11,7 +11,7 @@ import zipfile
 import pytest
 
 from fused_render import appfile
-from fused_render._view_url_codec import embed_url_path, view_url_path
+from fused_render._view_url_codec import canonical_fs_path, embed_url_path, view_url_path
 
 MARKER = '<meta charset="utf-8" />\n<meta name="fused-app" />'
 
@@ -382,7 +382,12 @@ def test_export_to_disk_writes_the_real_file_and_notes_the_mutation(tmp_path, mo
 
     out_path = body["path"]
     assert os.path.isfile(out_path)
-    assert os.path.dirname(out_path) == str(dest_dir)
+    # `out_path` is `canonical_fs_path(...)` (forward-slashed, per
+    # `_view_url_codec.py`'s documented convention: "the form a path has
+    # everywhere above the OS"); `dest_dir` is a raw `pathlib.Path`, which is
+    # backslashed on Windows, so it needs the same canonicalization before
+    # the comparison is separator-correct on every platform.
+    assert os.path.dirname(out_path) == canonical_fs_path(str(dest_dir))
     assert appfile_container.is_container(out_path)
     # The FILE that was written, not the folder it landed in —
     # `note_index_mutation` scans the PARENT of whatever it is handed
