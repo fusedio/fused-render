@@ -76,9 +76,9 @@ const RUNGS: BroadenRung[] = [{ label: "Look in subfolders", widen: widenSubfold
 // last is already "**" (the widened form of itself). Any of these means
 // inserting another "**/" would rerun an equivalent-or-narrower search that
 // would still return zero hits — the finding-3 shapes. This gates the whole
-// ladder, not just rung 2: a pattern already this broad has nothing left to
-// offer on the subfolder dimension, and rung 1 alone is not worth a
-// separate offer once the query is already at its recursive ceiling.
+// ladder — there is currently only the one rung ("Look in subfolders"), and
+// a pattern already this broad has nothing left to offer on the subfolder
+// dimension, its only dimension.
 function alreadyMaximallyBroadOnDepth(query: string): boolean {
   if (!query.includes("/")) return false;
   const segments = query.split("/");
@@ -108,19 +108,22 @@ function looksLikeGlob(query: string): boolean {
 // fused_render/index/query.py) would actually search something different
 // from what `current` already searched and got zero hits for.
 //
-// This is required, not optional, now that `expandWhitespaceQuery` always
-// wraps a glob-mode query's final segment in a trailing `*` (search-
-// trailing-space follow-up): comparing the RAW rung output against the RAW
-// query — this ladder's original check — used to be a safe proxy for "will
-// this search something new" back when only a whitespace-derived query got
-// an implied wildcard. It no longer is. `/home/x/*.js` and `/home/x/*.js*`
-// are different raw strings but now resolve to the IDENTICAL server pattern
-// ("/home/x/*.js*"), because the trailing `*` rung 1 would add was already
-// implied. Comparing raw strings would offer that rerun anyway — a rerun
-// guaranteed to return the same zero hits, exactly the bug a previous round
-// hit for the whitespace-only case (see the `looksLikeGlob` doc comment
-// above and DECISIONS.md) — so every rung's output is checked against the
-// RESOLVED pattern here, not the raw text.
+// This is required, not optional: comparing the RAW rung output against the
+// RAW query — this ladder's original check — is not a safe proxy for "will
+// this search something new", because `expandWhitespaceQuery` (mirroring
+// `expand_whitespace_query`, fused_render/index/query.py) can map two
+// DIFFERENT raw strings onto the SAME resolved pattern, or (just as easily)
+// leave two strings that merely LOOK closer together resolving to genuinely
+// different patterns — the wrap only touches a query's final segment, and
+// only when that segment does not already start or end with `*` (see its
+// own `startsWith`/`endsWith` guards above). A former rung here ("widen the
+// name": append a trailing `*` to the raw query) is exactly the case this
+// check exists to catch — on a query whose final segment was already
+// starred, that rung's raw output differed from the raw query yet resolved
+// to an identical or narrower pattern (see the file header comment for why
+// that rung was deleted rather than reprieved by this check alone) — so
+// every rung's output is checked against the RESOLVED pattern here, not the
+// raw text, even though only one rung remains today.
 function genuinelyWidens(current: string, candidate: string): boolean {
   return expandWhitespaceQuery(candidate) !== expandWhitespaceQuery(current);
 }
