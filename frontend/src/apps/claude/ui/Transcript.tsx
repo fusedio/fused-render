@@ -574,6 +574,16 @@ export const Transcript = memo(function Transcript({
   const blocked = blockedTurnKey(state.turns, state.permissions);
   const blockedTurn = blocked ? state.turns.find((t) => t.key === blocked) : undefined;
   const blockedFold = blockedTurn ? foldKey(blockedTurn) : null;
+  // A LIVE TURN IS RE-KEYED WHEN ITS RUN ENDS, and its fold does not follow it
+  // (known, review): a streaming reply is keyed `a:N` and comes back from
+  // `refreshHistory` keyed by its transcript uuid, so a reply the reader shut
+  // mid-run is a turn this map has never seen and lands OPEN. It is the one
+  // place a fold moves without a click. Left as is deliberately — the old rule
+  // lost the same click, it merely hid the loss by re-folding everything but
+  // the newest, and re-opening shows the reader something rather than taking it
+  // away. Fixing it properly means carrying the uuid onto the live turn in the
+  // controller, which is a change to what a turn IS, not to who folds it.
+  //
   // THE SEED WAITS FOR THE TRANSCRIPT (`historyLoading`). Folding against the
   // turns that happen to be on screen mid-restore would freeze the wrong
   // answer open — the cached prefix's last reply, not the conversation's — and
@@ -582,7 +592,16 @@ export const Transcript = memo(function Transcript({
   // reason (run-controller `restore`), and a brand-new chat has it down with no
   // turns at all, which seeds an empty map: nothing to fold, everything the
   // reader says from there is live and open.
-  const opening = !seeded.current && !state.historyLoading;
+  //
+  // AND IT NEEDS A CONVERSATION TO BE ABOUT (`turns.length`, review). The
+  // controller's INITIAL state is `historyLoading: false` with no turns
+  // (run-controller `emptyState`), which is a frame every mount paints before
+  // any restore starts — so the seed burnt itself on an empty map, and the one
+  // boot road that does not go through `openSession` (a bare `?run=`, which
+  // re-attaches without a session id, and the `sending` bail beside it) then
+  // replayed its whole transcript with no pass left to fold it. An empty log has
+  // nothing to decide anyway.
+  const opening = !seeded.current && !state.historyLoading && state.turns.length > 0;
   // …AND NOTHING IS WRITTEN WHILE IT WAITS. A turn on screen during the restore
   // is not "a turn that arrived live" — treating it as one marked the whole
   // cached wall open before the seed ever ran, and the seed then skipped every
@@ -603,7 +622,21 @@ export const Transcript = memo(function Transcript({
     // WRITTEN ONCE PER TURN, EVER. A turn already in the map is settled
     // business — the seed's or the reader's — and re-deciding it is the exact
     // bug this pass removes.
-    if (folds.current.has(id)) continue;
+    const prev = folds.current.get(id);
+    if (prev !== undefined) {
+      // WITH ONE EXCEPTION, AND IT IS NOT THE RULE TALKING: a turn the run is
+      // BLOCKED in. The cards do not always arrive with the history — with no
+      // `live_run` in the payload they land on a later poll, after the seed has
+      // folded the turn they belong to (review) — and a `default-closed` turn
+      // under an unanswered card is the 2026-09-15 bug back again: `pendingCard`
+      // draws it open while the card stands, so it snaps shut in the same
+      // gesture that presses Allow. Promoting it is a one-way write, it happens
+      // once, and it never touches a fold the reader set.
+      if (prev === "default-closed" && id === blockedFold) {
+        folds.current.set(id, "default-open");
+      }
+      continue;
+    }
     // Outside the seed there is no folding left to do, so a turn first seen
     // here is open: it is the reply being written, or one that arrived while
     // the reader was watching. Inside it, the wall folds behind the newest —

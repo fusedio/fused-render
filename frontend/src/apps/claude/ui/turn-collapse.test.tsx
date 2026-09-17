@@ -434,6 +434,56 @@ describe("which replies land folded", () => {
     expect(folded(r)).toEqual(["reply r1", "reply r2", "reply r4"]);
   });
 
+  test("AN EMPTY FIRST FRAME DOES NOT SPEND THE SEED (review)", () => {
+    // Every mount paints the controller's initial state first — no turns, and
+    // `historyLoading` down (`emptyState`) — and one boot road reaches a
+    // conversation without `openSession`'s generation bump (a bare `?run=`,
+    // re-attaching with no session id). Spent there, the seed had nothing left
+    // for the transcript that followed and the whole wall arrived open.
+    const r = log([]);
+    expect(folded(r)).toEqual([]);
+    act(() => {
+      r.update(
+        <Transcript
+          state={state({ turns: [assistant("a:1"), assistant("a:2"), assistant("a:3")] })}
+          actions={actions}
+        />,
+      );
+    });
+    expect(folded(r)).toEqual(["reply a:1", "reply a:2"]);
+  });
+
+  test("A CARD THAT ARRIVES AFTER THE SEED OPENS THE TURN IT BLOCKS (review)", () => {
+    // The permission rows do not always come with the history: with no
+    // `live_run` in the payload they land on a later poll, by which time the
+    // seed has folded the turn the run is blocked in. Drawn open by
+    // `pendingCard` and folded underneath, that reply snapped shut in the same
+    // gesture that pressed Allow — the 2026-09-15 bug, on the one path that
+    // still reaches it.
+    const turns = [assistant("a:1", { segments: [tool("t9", "Bash")] }), assistant("a:2")];
+    const r = log(turns);
+    expect(folded(r)).toEqual(["reply a:1"]);
+    act(() => {
+      r.update(
+        <Transcript
+          state={state({ turns, permissions: card({ toolUseId: "t9" }) })}
+          actions={actions}
+        />,
+      );
+    });
+    expect(folded(r)).toEqual([]);
+    // …and answering it leaves the reply where it is, rather than shutting it.
+    act(() => {
+      r.update(
+        <Transcript
+          state={state({ turns, permissions: card({ toolUseId: "t9", decision: "allow" }) })}
+          actions={actions}
+        />,
+      );
+    });
+    expect(folded(r)).toEqual([]);
+  });
+
   test("ANOTHER CONVERSATION IS ANOTHER MAP (review #1)", () => {
     // A restored turn's key is POSITIONAL (`protocol/history.ts`, "h:" + i) and
     // this component is not remounted between two sessions — so a 20-turn
