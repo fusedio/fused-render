@@ -28,6 +28,7 @@ import {
   type RowModel,
 } from "./home-search";
 import type { IndexRankHit, IndexRankResult } from "@platform/lib/api";
+import { globMatch } from "@platform/lib/fuzzy";
 
 const HOME = "/Users/me";
 
@@ -85,10 +86,10 @@ describe("expandWhitespaceQuery / willResolveToGlobMode", () => {
     expect(expandWhitespaceQuery(" ")).toBe("");
   });
 
-  it("wraps a whitespace-free glob too (fixes icon*copy)", () => {
-    expect(expandWhitespaceQuery("*.pdf")).toBe("*.pdf*");
-    expect(expandWhitespaceQuery("icon*copy")).toBe("**icon*copy*");
-    expect(expandWhitespaceQuery("src/**/*.ts")).toBe("src/**/*.ts*");
+  it("wraps a whitespace-free glob's LEADING end, but suppresses the trailing wrap once a user '*' is anywhere in the final segment (reversed: icon*copy no longer agrees with icon copy)", () => {
+    expect(expandWhitespaceQuery("*.pdf")).toBe("*.pdf");
+    expect(expandWhitespaceQuery("icon*copy")).toBe("**icon*copy");
+    expect(expandWhitespaceQuery("src/**/*.ts")).toBe("src/**/*.ts");
     expect(willResolveToGlobMode("*.pdf")).toBe(true);
   });
 
@@ -124,27 +125,30 @@ describe("expandWhitespaceQuery / willResolveToGlobMode", () => {
     expect(expandWhitespaceQuery("~/My Documents/report")).toBe("~/My**Documents/**report*");
   });
 
-  it("wraps only the end that needs it", () => {
-    expect(expandWhitespaceQuery("*.pdf")).toBe("*.pdf*");
+  it("wraps only the end that needs it (trailing end now also skipped when a '*' is ANYWHERE in the segment)", () => {
+    expect(expandWhitespaceQuery("*.pdf")).toBe("*.pdf");
     expect(expandWhitespaceQuery("report*")).toBe("**report*");
     expect(expandWhitespaceQuery("*.pdf*")).toBe("*.pdf*");
   });
 
-  it("never stacks a star beside a user star", () => {
-    expect(expandWhitespaceQuery("report *.pdf")).toBe("**report*.pdf*");
-    expect(expandWhitespaceQuery("*.pdf report")).toBe("*.pdf**report*");
-    expect(expandWhitespaceQuery("a * b")).toBe("**a*b*");
+  it("never stacks a star beside a user star, and now suppresses the trailing wrap entirely once a user star is anywhere in the segment", () => {
+    expect(expandWhitespaceQuery("report *.pdf")).toBe("**report*.pdf");
+    expect(expandWhitespaceQuery("*.pdf report")).toBe("*.pdf**report");
+    expect(expandWhitespaceQuery("a * b")).toBe("**a*b");
   });
 
-  it("trailing wrap does not cross a directory (code review finding)", () => {
+  it("trailing wrap does not cross a directory (code review finding) — demonstrated with a whitespace-only wrap, since a user '*' anywhere now suppresses the trailing wrap entirely", () => {
     // An earlier version appended "**" (the same cross-directory token as
-    // the leading wrap), which let a folder-anchored query like "/*.pdf"
-    // also match a file several segments below a differently-named
-    // directory. The trailing wrap's job is only to let an unanchored
-    // fragment also match a longer name in the SAME folder, which a single
-    // "*" already gives in full.
-    const pattern = expandWhitespaceQuery("/*.pdf");
-    expect(pattern).toBe("/*.pdf*");
+    // the leading wrap), which let a folder-anchored query leak into a
+    // differently-named subtree. The trailing wrap's job is only to let an
+    // unanchored fragment also match a longer name in the SAME folder,
+    // which a single "*" already gives in full. `/*.pdf` no longer
+    // exercises this (a user '*' anywhere now suppresses the trailing wrap
+    // outright, see the test above), so this uses a query whose final
+    // segment has neither whitespace nor '*' of its own but still gets
+    // wrapped because an EARLIER segment has whitespace.
+    const pattern = expandWhitespaceQuery("My Documents/report");
+    expect(pattern).toBe("My**Documents/**report*");
   });
 
   // Code review finding: JS's `\s` (and `String.trim()`) treat U+FEFF
@@ -198,14 +202,14 @@ describe("expandWhitespaceQuery / willResolveToGlobMode", () => {
     ["icon ", "**icon**"],
     [" icon", "**icon*"],
     ["*.js ", "*.js**"],
-    ["icon*copy", "**icon*copy*"],
-    ["*.pdf", "*.pdf*"],
-    ["src/**/*.ts", "src/**/*.ts*"],
+    ["icon*copy", "**icon*copy"],
+    ["*.pdf", "*.pdf"],
+    ["src/**/*.ts", "src/**/*.ts"],
     ["icon copy", "**icon**copy*"],
     ["hello  world", "**hello**world*"],
-    ["report *.pdf", "**report*.pdf*"],
+    ["report *.pdf", "**report*.pdf"],
     ["~/My Documents/report", "~/My**Documents/**report*"],
-    ["/*.pdf", "/*.pdf*"],
+    ["/*.pdf", "/*.pdf"],
     ["   ", ""],
     ["src ", "**src**"],
   ])("required behavior: %j -> %j", (query, expected) => {
@@ -227,6 +231,61 @@ describe("expandWhitespaceQuery / willResolveToGlobMode", () => {
     if (maxRun(query) < 3) {
       expect(maxRun(out)).toBeLessThan(3);
     }
+  });
+});
+
+// Mirrors tests/test_index_query.py's concrete-filename regression table for
+// the reversal, using globMatch (fuzzy.ts) as the match/no-match oracle
+// instead of Python's `_glob_to_regex` + `re.fullmatch`.
+describe("the icon*copy reversal, matched against concrete filenames", () => {
+  it.each([
+    ["icon copy.png", true],
+    ["my icon copy.png", true],
+    ["iconcopy.png", true],
+    ["icon.png", false],
+  ])("icon copy vs %j is unchanged by the reversal: %j", (name, expected) => {
+    const pattern = expandWhitespaceQuery("icon copy");
+    expect(globMatch(pattern, name as string) !== null).toBe(expected);
+  });
+
+  it.each([
+    ["icon copy", true],
+    ["iconcopy", true],
+    ["icon copy.png", false],
+    ["icon copy extra", false],
+  ])("icon*copy is now anchored (the reversal itself) vs %j: %j", (name, expected) => {
+    const pattern = expandWhitespaceQuery("icon*copy");
+    expect(pattern).toBe("**icon*copy");
+    expect(globMatch(pattern, name as string) !== null).toBe(expected);
+  });
+
+  it("icon*copy* (user-typed trailing *) reproduces pre-reversal loose matching", () => {
+    const pattern = expandWhitespaceQuery("icon*copy*");
+    expect(pattern).toBe("**icon*copy*");
+    expect(globMatch(pattern, "icon copy.png")).not.toBeNull();
+    expect(globMatch(pattern, "icon copy extra")).not.toBeNull();
+  });
+
+  it.each([
+    ["report.parquet", true],
+    ["report.parquet.bak", false],
+    ["my_report.parquet", true],
+    ["report.parquetx", false],
+  ])("*.parquet means exactly ends-with-.parquet vs %j: %j", (name, expected) => {
+    const pattern = expandWhitespaceQuery("*.parquet");
+    expect(pattern).toBe("*.parquet");
+    expect(globMatch(pattern, name as string) !== null).toBe(expected);
+  });
+
+  it("src/*/index still finds src/app/index.ts (GUARD: final-segment-only scoping)", () => {
+    // The `*` in `src/*/index` sits in the MIDDLE segment — a directory
+    // wildcard, not a statement about the filename — so it must not
+    // suppress `index`'s own trailing wrap. If this ever regresses to a
+    // whole-path "does this query contain a `*` anywhere" check, `index`
+    // would stop trailing-wrapping and this match would break.
+    const pattern = expandWhitespaceQuery("src/*/index");
+    expect(pattern).toBe("src/*/**index*");
+    expect(globMatch(pattern, "src/app/index.ts")).not.toBeNull();
   });
 });
 

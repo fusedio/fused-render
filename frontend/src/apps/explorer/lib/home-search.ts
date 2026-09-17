@@ -181,8 +181,16 @@ export function patternTail(query: string): string {
  *     leading/trailing whitespace is now as meaningful as any other run.
  *  2. `icon copy` (found `icon copy.png`) and `icon*copy` (found nothing —
  *     the typed `*` produced an anchored pattern requiring the name to END
- *     in "copy") used to disagree. They no longer do, because the final
- *     segment is now wrapped on `*` too, not only on whitespace.
+ *     in "copy") used to disagree; a since-reversed fix made them agree
+ *     (DECISIONS.md, worktree-search-trailing-space). They are DELIBERATELY
+ *     back to disagreeing again: a mid-segment user-typed `*` now
+ *     suppresses the trailing wrap (see rule 5), so `icon*copy` stays
+ *     anchored and `icon copy` does not. Reversed because results are
+ *     capped (top ~20 of 200+) — a loose filter does not just rank a
+ *     correct answer lower, it consumes a slot and can push the correct
+ *     answer out of the window entirely, and ranking cannot enlarge the
+ *     window. `icon*copy*` (a user-typed trailing `*`) still opts back into
+ *     the old, loose behavior.
  *  3. A trailing space used to NARROW rather than widen: the wildcard it
  *     inserted was a single-segment `*`, which cannot cross a `/`, so
  *     `"src "` lost `srcdir/file.txt` even though `"src"` (substring mode)
@@ -229,14 +237,21 @@ export function patternTail(query: string): string {
  *     `**` on both ends, which let a folder-anchored query like `/*.pdf`
  *     leak into a differently-named subtree, e.g. matching
  *     `x.pdf/inner/deep.bin`): prepend `**` unless it already starts with
- *     `*` (crosses directories, same as the whitespace collapse); append a
- *     single `*` unless it already ends with `*` (confined to one
- *     segment — its only job is letting an unanchored fragment also match a
- *     longer name in the SAME folder, which one `*` already gives in full).
- *     This fires even when the segment has no whitespace at all — `*.pdf`
- *     becomes `*.pdf*` — which is what makes `icon*copy` -> `**icon*copy*`
- *     agree with `icon copy` -> `**icon**copy*`. Earlier segments get the
- *     whitespace collapse but no wrap.
+ *     `*` (crosses directories, same as the whitespace collapse, and this
+ *     leading half is UNCONDITIONAL otherwise — an earlier segment's `*`
+ *     never suppresses it); append a single `*` unless it already ends with
+ *     `*` OR the final segment contains a user-typed `*` ANYWHERE in it
+ *     (confined to one segment — its only job is letting an unanchored
+ *     fragment also match a longer name in the SAME folder, which one `*`
+ *     already gives in full). REVERSED (DECISIONS.md,
+ *     worktree-search-trailing-space): a mid-segment `*` used to still get
+ *     the trailing wrap (`icon*copy` -> `**icon*copy*`, agreeing with
+ *     `icon copy` -> `**icon**copy*`); it no longer does — a user-typed `*`
+ *     anywhere in the final segment is now read as an opt-in to precision,
+ *     so `icon*copy` -> `**icon*copy` (anchored, does not match `icon
+ *     copy.png`) and `*.parquet` -> `*.parquet` (anchored, does not match
+ *     `report.parquet.bak`). Earlier segments get the whitespace collapse
+ *     but no wrap.
  *
  * The invariant that survives (A4): the function never manufactures a run
  * of THREE OR MORE consecutive `*` unless the input already had one — it is
@@ -245,9 +260,11 @@ export function patternTail(query: string): string {
  * accepted, not invented.
  *
  * Known, accepted consequence (do not special-case around it): a
- * previously-precise glob like `*.pdf` now also matches `report.pdf.bak`
- * and `notes.pdfx` WITHIN THE SAME FOLDER — it deliberately does not also
- * match across a `/`, unlike the leading wrap. See DECISIONS.md.
+ * whitespace-free glob like `*.pdf` still gains the leading `**` (it
+ * already starts with `*`, so that guard is moot, but the rule is
+ * unconditional otherwise) and now ALSO keeps no trailing wrap — it already
+ * carries a `*`, so it means exactly "ends with .pdf" and no longer matches
+ * `notes.pdfx` or `report.pdf.bak`. See DECISIONS.md.
  */
 // "Whitespace, but not a BOM": JS's `\s` (and therefore `String.trim()`)
 // treats U+FEFF (ZERO WIDTH NO-BREAK SPACE, a leading BOM some editors/OSes
@@ -282,6 +299,13 @@ export function expandWhitespaceQuery(raw: string): string {
   if (!NON_BOM_WS.test(value) && !value.includes("*")) return value;
   const segments = value.split("/");
   const last = segments.length - 1;
+  // Captured BEFORE whitespace collapse, same as query.py: the collapse
+  // step below only ever inserts `**`, never a bare `*`, so a `*` found
+  // here is always one the user typed themselves. Scope is the FINAL
+  // segment only — an earlier segment's `*` is a directory wildcard and
+  // says nothing about the filename (`src/*/index` must still trailing-wrap
+  // `index`).
+  const finalHasUserStar = segments[last]!.includes("*");
   const wsRun = new RegExp(NON_BOM_WS.source + "+", "g");
   const collapseWs = (segment: string): string =>
     segment.replace(wsRun, (match, offset: number) => {
@@ -293,7 +317,13 @@ export function expandWhitespaceQuery(raw: string): string {
   const collapsed = segments.map(collapseWs);
   let final = collapsed[last]!;
   if (!final.startsWith("*")) final = `**${final}`;
-  if (!final.endsWith("*")) final = `${final}*`;
+  // Reversal (DECISIONS.md, worktree-search-trailing-space): the trailing
+  // append is now ALSO suppressed when the final segment carries a
+  // user-typed `*` anywhere in it, not only at its very end. `icon*copy` no
+  // longer agrees with `icon copy` — a mid-segment `*` is read as an opt-in
+  // to precision, and `icon*copy*` (a user-typed trailing `*`) still
+  // reproduces the old behavior.
+  if (!(final.endsWith("*") || finalHasUserStar)) final = `${final}*`;
   collapsed[last] = final;
   return collapsed.join("/");
 }

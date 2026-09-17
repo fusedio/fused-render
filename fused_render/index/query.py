@@ -801,35 +801,42 @@ def expand_whitespace_query(raw: str) -> str:
        maximally broad on their own, and letting them merge into one
        cross-directory token changes nothing they can match.
     4. On the FINAL `/`-separated segment only: prepend `**` unless it
-       already starts with `*`, append a single `*` unless it already ends
-       with `*`. The two ends are NOT symmetric, on purpose. The leading
-       `**` is what turns a typed fragment into "contains, anywhere below
-       this point" from the start — it is what fixes the middle case, the
-       same reason step 3 inserts `**` — but the TRAILING wildcard's whole
-       job is narrower: make an unanchored typed fragment also match a
-       longer name/extension in the SAME folder (`report` -> matches
-       `report.pdf.bak` too, `*.pdf` -> matches `notes.pdfx` too). That is
-       a same-segment concern, so a single `*` (which cannot cross a `/`)
-       already satisfies it in full; appending `**` there would let a
-       folder-anchored query like `/*.pdf` also match `x.pdf/inner/deep.bin`
-       — a file that isn't even a PDF sitting three segments below a
-       differently-named directory — which contradicts this same grammar's
-       own "in this folder only" claim for a leading-`/` anchor (code
-       review finding: the trailing `**` used to leak this way). A
-       user-typed `*` is left alone (still single-segment, still exactly
-       what they typed) — only OUR OWN inserted wildcards are affected by
-       this rule, and only the leading one is `**`. Checking each END
-       independently (not "does this segment contain a `*` anywhere") is
-       what fixes `icon*copy` (a user-typed `*` in the MIDDLE of the
-       segment) matching the same files `icon copy` does — the old rule
-       keyed off "does this segment contain a `*` anywhere" and skipped the
-       wrap entirely whenever it did, which left a mid-segment `*`
-       both-ends-anchored with no wrap at all. `*.pdf` only gains a
-       trailing `*` (it already has a leading `*`), `report*` only gains a
-       leading `**`, and an already fully-wrapped `*.pdf*` gains neither.
-       Earlier segments get the whitespace collapse (step 3) but no wrap of
-       their own (`~/My Documents/report` -> `~/My**Documents/**report*`,
-       not `~/**My**Documents**/...`).
+       already starts with `*`; append a single `*` unless it already ends
+       with `*` OR the segment contains a user-typed `*` ANYWHERE in it.
+       The two ends are NOT symmetric, on purpose. The leading `**` is what
+       turns a typed fragment into "contains, anywhere below this point"
+       from the start — it is what fixes the middle case, the same reason
+       step 3 inserts `**` — and it is UNCONDITIONAL apart from its own
+       "already starts with `*`" guard: an earlier segment's `*` (a
+       directory wildcard, `src/*/index`) says nothing about the filename,
+       so it never suppresses this segment's own leading wrap.
+
+       The TRAILING wildcard is different: it is what makes an unanchored
+       fragment ALSO match a longer name/extension in the SAME folder
+       (`report` -> matches `report.pdf.bak` too), and it is now the one
+       place a user-typed `*` gets read as an opt-in signal, not just a
+       literal. REVERSED from an earlier version of this rule (DECISIONS.md
+       worktree-search-trailing-space, "reverse the icon*copy equivalence"):
+       a `*` typed ANYWHERE in the final segment — not only at its very
+       end — now suppresses the trailing append, because a mid-segment `*`
+       is the user asking for precision (`*.parquet` should mean "ends with
+       .parquet", not "ends with .parquet and then anything else"). This
+       means `icon*copy` no longer behaves like `icon copy`: `icon copy`
+       still trailing-wraps (no user `*` anywhere) and matches `icon
+       copy.png`, but `icon*copy` is now anchored at the end and does NOT.
+       `icon*copy*` (a user-typed trailing `*`) still gets no append either
+       way and reproduces the pre-reversal behaviour — the capability is
+       opt-in, not gone. `*.pdf` keeps its leading `*` and now ALSO keeps no
+       trailing wrap (it already carries a `*`), so it means exactly "ends
+       with .pdf" and stops matching `notes.pdfx`/`report.pdf.bak`. This
+       check is scoped to the FINAL segment's PRE-collapse text only — an
+       earlier segment's `*` (a directory-position wildcard) never reads as
+       this signal; `src/*/index` still trailing-wraps `index` into
+       `**index*` because that `*` lives in an earlier segment. `report*`
+       (user's own trailing `*`) already satisfies "ends with `*`" so gains
+       only the leading `**`. Earlier segments get the whitespace collapse
+       (step 3) but no wrap of their own (`~/My Documents/report` ->
+       `~/My**Documents/**report*`, not `~/**My**Documents**/...`).
 
     Anti-goal, unchanged from the original version of this rule: a literal
     `" " -> "*"` substitution regresses the motivating case (`hello world`
@@ -838,23 +845,27 @@ def expand_whitespace_query(raw: str) -> str:
     that; do not drop it — but note the trailing half of that wrap is a
     single `*`, not `**` (see above): `hello world` still matches
     `hello world.txt` because the trailing `*` stays within the same
-    segment as `world`, which is all that example needs.
+    segment as `world`, which is all that example needs. Whitespace never
+    counts as a user-typed `*` for the new step-4 suppression, so this is
+    unaffected by the reversal above.
 
-    Known, accepted consequences (confirmed with the user, not bugs):
-    because step 4 no longer requires whitespace to fire, a whitespace-free
-    glob like `*.pdf` now also gains a trailing `*` (`*.pdf*`), so it
-    matches `report.pdf.bak` and `notes.pdfx` too — precision globs are no
-    longer precise WITHIN a folder. It deliberately does NOT also match
-    across a `/` (`x.pdf/inner/deep.bin`) — the trailing wildcard is
-    same-segment-confined, unlike the leading one. And because step 3
-    inserts `**` for whitespace runs, a multi-word query still widens
-    across directories BETWEEN its words the moment it has whitespace
-    (`src file` reaches `src/nested/file.txt`) — that is the whole point of
-    the trailing-space follow-up (`src ` must match `srcdir/file.txt`,
-    which step 3's `**`-for-a-whitespace-run still gives it: the trailing
-    space itself collapses to `**`, not the step-4 append) — but the tail
-    past the last typed fragment's own end no longer over-widens past the
-    containing folder. There is no escape hatch for either; see
+    Known, accepted consequences (confirmed with the user, not bugs): a
+    whitespace-free glob still gains a leading `**` (`*.pdf` is not the
+    no-op it looks like — see rule 2), but a glob that ALREADY has a `*`
+    anywhere in its final segment no longer gains the trailing wrap that an
+    earlier version of this rule gave it — that is the reversal itself, not
+    a residual gap. The leading wrap deliberately does NOT also match across
+    a `/` on the trailing side (`x.pdf/inner/deep.bin`) — the trailing
+    wildcard is same-segment-confined, unlike the leading one, and this is
+    unchanged by the reversal. Step 3 still inserts `**` for whitespace
+    runs, so a multi-word query still widens across directories BETWEEN its
+    words the moment it has whitespace (`src file` reaches
+    `src/nested/file.txt`) — that is the whole point of the trailing-space
+    follow-up (`src ` must match `srcdir/file.txt`, which step 3's
+    `**`-for-a-whitespace-run still gives it: the trailing space itself
+    collapses to `**`, not the step-4 append) — but the tail past the last
+    typed fragment's own end no longer over-widens past the containing
+    folder. There is no escape hatch for the leading side; see
     DECISIONS.md.
 
     A note on what this function no longer guarantees: an earlier version
@@ -888,6 +899,11 @@ def expand_whitespace_query(raw: str) -> str:
         return raw
     segments = raw.split("/")
     last = len(segments) - 1
+    # Captured BEFORE whitespace collapse: whitespace collapse only ever
+    # inserts `**` (a two-char token), it never introduces a bare `*`, so a
+    # single `*` found here is always one the user typed themselves, never
+    # one this function invented (see rule 4 below).
+    final_has_user_star = "*" in segments[last]
 
     def _collapse_ws(segment: str) -> str:
         def repl(m: "re.Match[str]") -> str:
@@ -903,7 +919,15 @@ def expand_whitespace_query(raw: str) -> str:
     final = segments[last]
     if not final.startswith("*"):
         final = "**" + final
-    if not final.endswith("*"):
+    # Trailing wrap is suppressed the moment the FINAL segment carries a
+    # user-typed `*` anywhere in it (not just at the end) — a mid-segment
+    # `*` is the user opting into precision (see DECISIONS.md, reversal of
+    # the `icon*copy` == `icon copy` equivalence), so this end is no longer
+    # auto-widened just because it doesn't already end with `*`. Scope is
+    # the FINAL segment only: a `*` in an EARLIER segment (`src/*/index`)
+    # is a directory wildcard and says nothing about the filename, so it
+    # must not suppress this segment's own trailing wrap.
+    if not (final.endswith("*") or final_has_user_star):
         final = final + "*"
     segments[last] = final
     return "/".join(segments)

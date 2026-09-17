@@ -48,9 +48,11 @@ becomes `{base, pattern, mode}`. It first runs `raw` through
 `expand_whitespace_query` — a **shared** transform (`search_under`, §6, runs the
 same one on `q`) that turns whitespace into wildcards without regressing the
 motivating "type two words, find the file with both in order" case a naive
-`" " -> "*"` substitution would. Follow-up to the original rule (fixes two
-disagreements: a trailing space used to be silently trimmed away, and
-`icon copy` / `icon*copy` used to disagree on whether they find the same file):
+`" " -> "*"` substitution would. Follow-up to the original rule (fixed a
+trailing space used to be silently trimmed away, and — for one round —
+made `icon copy` / `icon*copy` agree on whether they find the same file;
+rule 4 below has since **reversed** that second fix on purpose, see
+DECISIONS.md):
 
 0. **Whitespace-only has nothing to search for.** A string that is all
    whitespace (`"   "`, including empty after `.strip()`) resolves to `""`,
@@ -79,35 +81,51 @@ disagreements: a trailing space used to be silently trimmed away, and
    finding — an earlier version wrapped both ends with `**`, which is fixed
    here): prepend `**` unless it already starts with `*` (same reasoning as
    point 3 — this is what turns a fragment into "contains, anywhere below
-   this point"); append a single `*` unless it already ends with `*`. The
-   trailing wildcard's job is narrower than the leading one — it only has to
-   let an unanchored fragment also match a longer name/extension in the
-   **same** folder (`*.pdf` -> `*.pdf*`, so it still matches
-   `report.pdf.bak`), which a single segment-confined `*` already gives in
-   full. Appending `**` there instead would let a folder-anchored query like
-   `/*.pdf` also match `x.pdf/inner/deep.bin` (three segments below a
-   differently-named directory) — silently breaking that same anchor's own
-   "in this folder only" guarantee. This fires even when the segment has no
-   whitespace at all — `*.pdf` becomes `*.pdf*`, and `icon*copy` becomes
-   `**icon*copy*`, agreeing with `icon copy` -> `**icon**copy*`. Checking
-   each end independently (not "does this segment contain a `*` anywhere")
-   is what makes a mid-segment user-typed `*` (`icon*copy`) still get
-   wrapped instead of being treated as already-anchored. Earlier segments
-   get the whitespace collapse but no wrap of their own — `~/My
-   Documents/report` becomes `~/My**Documents/**report*`, not
-   `~/**My**Documents**/...`. A `*` the user typed themselves is always
-   single-segment (`*`, never `**`); of the wildcards this function inserts,
-   the step-3 collapse and the step-4 LEADING wrap are the cross-directory
-   `**` token, but the step-4 TRAILING wrap is a single segment-confined
-   `*`.
+   this point"); append a single `*` unless it already ends with `*` **or the
+   final segment contains a user-typed `*` anywhere in it**. The leading half
+   is unconditional apart from its own "already starts with `*`" guard — an
+   earlier segment's `*` (a directory wildcard, `src/*/index`) says nothing
+   about the filename and never suppresses it.
 
-**Known, accepted consequence** (do not special-case around it): a previously
-precise glob like `*.pdf` now also matches `report.pdf.bak` and `notes.pdfx`
-**within the same folder** — every glob query trades some same-folder
-precision for grammar consistency with the whitespace rule. It deliberately
-does **not** also match across a `/` (`x.pdf/inner/deep.bin`) — the trailing
-wrap is same-segment-confined, unlike the leading one. Likewise a single
-space (`"icon "`) now flips a query straight into glob mode.
+   The trailing wildcard's job is narrower than the leading one — it only has
+   to let an unanchored fragment also match a longer name/extension in the
+   **same** folder (`report` -> matches `report.pdf.bak` too), which a single
+   segment-confined `*` already gives in full. **Reversed this round**
+   (DECISIONS.md, worktree-search-trailing-space — "reverse the `icon*copy`
+   equivalence"): a user-typed `*` anywhere in the final segment now
+   suppresses this trailing append entirely, not just at the segment's own
+   end. `icon*copy` no longer agrees with `icon copy`: `icon copy` still
+   trailing-wraps to `**icon**copy*` and matches `icon copy.png`, but
+   `icon*copy` resolves to the anchored `**icon*copy` and does **not**.
+   `icon*copy*` (a user-typed trailing `*`) already satisfied "ends with `*`"
+   before this change and still does, so it is unaffected and reproduces the
+   old, loose behavior — the capability is opt-in, not gone. `*.pdf` keeps
+   its leading `*` (no leading wrap needed) and now ALSO gets no trailing
+   wrap, so it means exactly "ends with .pdf" and no longer matches
+   `notes.pdfx` or `report.pdf.bak`. Earlier segments get the whitespace
+   collapse but no wrap of their own — `~/My Documents/report` becomes
+   `~/My**Documents/**report*`, not `~/**My**Documents**/...`. A `*` the
+   user typed themselves is always single-segment (`*`, never `**`); of the
+   wildcards this function inserts, the step-3 collapse and the step-4
+   LEADING wrap are the cross-directory `**` token, but the step-4 TRAILING
+   wrap (when it fires at all) is a single segment-confined `*`.
+
+**Why the reversal** (DECISIONS.md has the full rationale): responses are
+capped — a caller sees roughly the top 20 of 200+ matches. A loose filter
+does not merely rank a correct answer lower; it consumes one of those 20
+slots and can push the correct answer out of the window entirely, and
+ranking can only reorder a fixed set, never enlarge the window. So a
+precision problem here cannot be fixed by ranking alone. Before this change
+the grammar had no way to say "ends with .parquet" at all — `*.parquet` also
+matched `report.parquet.bak`. The `icon*copy` == `icon copy` equivalence was
+a convenience, not a correctness property, and nothing downstream depended
+on it; preserving it would have meant deleting the precision capability
+entirely, since whitespace itself must stay loose.
+
+**Still true, unaffected by the reversal**: the trailing wrap deliberately
+does **not** also match across a `/` (`x.pdf/inner/deep.bin`) — it is
+same-segment-confined, unlike the leading one — and a single space
+(`"icon "`) still flips a query straight into glob mode.
 
 `mode` is `"glob"` the moment the expanded string contains a `*` anywhere — which
 now includes every whitespace-containing query AND every glob query, whitespace

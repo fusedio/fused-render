@@ -230,20 +230,26 @@ def test_search_under_single_word_query_is_unaffected(tmp_path):
     assert [e["rel"] for e in out["entries"]] == ["beta.md"]
 
 
-def test_search_under_a_star_query_now_globs_instead_of_staying_literal(tmp_path):
+def test_search_under_a_star_query_now_globs_and_stays_precise(tmp_path):
     """Follow-up to SPEC-search-space-wildcard.md: `expand_whitespace_query`
     no longer leaves a whitespace-free `*`-containing query untouched (Rule 4
     wraps the final segment regardless of whitespace), so `search_under`'s
     mode switch — keyed on `"*" in expanded`, mirroring `resolve_query`'s own
-    `is_glob` check — now flips a bare `*.md` into glob-to-regex matching
-    instead of treating the `*` as a literal character under ILIKE. This is
-    the accepted precision-glob consequence from DECISIONS.md, not a bug."""
+    `is_glob` check — flips a bare `*.md` into glob-to-regex matching instead
+    of treating the `*` as a literal character under ILIKE.
+
+    REVERSAL (DECISIONS.md, worktree-search-trailing-space): this used to
+    also swallow `beta.md.bak` — `expand_whitespace_query` appended its own
+    trailing `*` onto `*.md` (since it didn't already END in `*`), so the
+    resolved pattern was `*.md*`, not `*.md`. That was the documented
+    "accepted precision-glob consequence." The reversal suppresses the
+    trailing append whenever the final segment already carries a user-typed
+    `*` anywhere in it, so `*.md` now resolves to exactly `*.md` and means
+    precisely "ends with .md" — `beta.md.bak` no longer matches."""
     cfg = _index(tmp_path, "/r", ["/r/beta.md", "/r/beta.md.bak", "/r/beta.txt"])
     out = search_under(cfg, "/r", q="*.md")
     rels = sorted(e["rel"] for e in out["entries"])
-    # "*.md" -> expand_whitespace_query -> "*.md*" -> matches beta.md AND
-    # beta.md.bak (the precision-glob loss the spec explicitly accepts).
-    assert rels == ["beta.md", "beta.md.bak"]
+    assert rels == ["beta.md"]
 
 
 def test_search_under_a_whitespace_only_query_has_nothing_to_search_for(tmp_path):

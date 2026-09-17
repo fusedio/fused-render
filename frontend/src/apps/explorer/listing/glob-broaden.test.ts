@@ -55,15 +55,14 @@ describe("broadenGlobOffer", () => {
 
   test("a bare, slash-free glob has nothing left to offer", () => {
     // Slash-free is already maximally broad on the SUBFOLDER dimension
-    // (resolve_query's own implicit **/ prefix already covers every depth),
-    // and the NAME dimension's trailing edge is already at its broadest
-    // available form too: `expandWhitespaceQuery("*.js")` already resolves
-    // to "*.js*" (a single, segment-confined star is exactly what an
-    // unstarred trailing edge gets) — there is no rung left that could
-    // widen this any further, and no "/" for the subfolder rung to work
-    // with either. This is the accepted same-folder precision-glob-loss
-    // consequence (DECISIONS.md), not a bug: a bare `*.js` search already
-    // matches ".jsx"/".json" in the same folder.
+    // (resolve_query's own implicit **/ prefix already covers every depth)
+    // — there is no "/" for the only remaining rung ("look in subfolders")
+    // to work with, so this returns null regardless of the NAME dimension.
+    // (`expandWhitespaceQuery("*.js")` itself now resolves to just "*.js" —
+    // a user-typed `*` anywhere in the final segment suppresses the
+    // trailing wrap entirely since the search-trailing-space reversal, so
+    // this is no longer even the accepted-precision-loss case DECISIONS.md
+    // describes for a query with no `*` of its own.)
     expect(broadenGlobOffer("*.js")).toBeNull();
   });
 

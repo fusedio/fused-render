@@ -107,11 +107,10 @@ describe("settledZeroMatchOffer", () => {
   test("offers to broaden a genuinely settled, zero-hit glob search", () => {
     // A slash-free "*.txt" has nothing left to offer at all (search-
     // trailing-space follow-up, A5: the former "widen the name" rung is
-    // deleted — `expandWhitespaceQuery` already resolves "*.txt" to its
-    // broadest available form, "*.txt*" — see glob-broaden.test.ts). A
-    // query with a "/" still has a genuine subfolder widen ("look in
-    // subfolders"), so that is what this test exercises the pass-through
-    // with.
+    // deleted, and there is no "/" for the remaining "look in subfolders"
+    // rung to work with either — see glob-broaden.test.ts). A query with a
+    // "/" still has a genuine subfolder widen ("look in subfolders"), so
+    // that is what this test exercises the pass-through with.
     expect(settledZeroMatchOffer({ ...base(), q: "/home/x/*.txt" })).toEqual({
       pattern: "/home/x/**/*.txt",
       label: "Look in subfolders",
