@@ -8,6 +8,7 @@ tested; never surfaced to end users as something to enable.
 import importlib.util
 import os
 
+from fused_render.index.ignore import norm
 from fused_render.index.manifest import load_manifest
 
 EXAMPLE_DIR = os.path.join(
@@ -54,7 +55,7 @@ def test_extract_uses_the_first_heading_as_title(tmp_path):
     p.write_text("intro line\n# Real Title\nmore words here\n", encoding="utf-8")
     row = mod.extract(str(p), os.stat(str(p)))
     assert row["title"] == "Real Title"
-    assert row["path"] == os.path.abspath(str(p))
+    assert row["path"] == norm(os.path.abspath(str(p)))
     assert row["word_count"] == len("intro line\n# Real Title\nmore words here\n".split())
 
 

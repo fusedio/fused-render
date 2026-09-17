@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 
+from fused_render.index.ignore import norm
 from fused_render.index.kinds import Column, IndexKind, register
 
 NAME = "notes"
@@ -67,7 +68,10 @@ def extract(path: str, st) -> dict | None:
     title = _first_heading(text) or os.path.splitext(os.path.basename(path))[0]
     return {
         "title": title,
-        "path": os.path.abspath(path),
+        # `path` is this kind's identity_column, so it must be canonical
+        # (forward-slash) form — see apps_kind.py's extract() and
+        # specs/index-plugins.md.
+        "path": norm(os.path.abspath(path)),
         "word_count": len(text.split()),
     }
 

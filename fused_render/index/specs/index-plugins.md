@@ -36,6 +36,13 @@ called by the host, once per file the host has ALREADY decided to visit.
 already paid for, so it never needs its own `stat` call for the common case
 of a size/mtime-driven shortcut.
 
+Any path-shaped field a row carries (an identity column like `path`, or any
+other field holding a filesystem path) must come back in canonical form —
+forward slashes, via `fused_render.index.ignore.norm()` — never the OS's
+native separator: the row becomes index storage, and on Windows a
+backslashed path would silently break every comparison and suffix check
+downstream (`apps_kind.py`'s `extract` is the reference for this).
+
 This is not a performance shortcut, it is the whole trust boundary
 (SPEC-index-plugins.md decision #2, "extract only, user approves root — a
 plugin never enumerates paths"): a plugin cannot ask "what exists under this

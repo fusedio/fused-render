@@ -8,6 +8,7 @@ import os
 import pytest
 
 from fused_render.index import apps_kind
+from fused_render.index.ignore import norm
 from fused_render.index.kinds import get, registered
 
 
@@ -43,7 +44,7 @@ def test_extract_ignores_a_non_entry_html_sibling(tmp_path):
     assert apps_kind.extract(sibling, _stat(sibling)) is None
     row = apps_kind.extract(entry, _stat(entry))
     assert row is not None
-    assert row["entry_html"] == os.path.abspath(entry)
+    assert row["entry_html"] == norm(os.path.abspath(entry))
 
 
 def test_extract_returns_a_row_for_the_canonical_entry(tmp_path):
@@ -57,9 +58,9 @@ def test_extract_returns_a_row_for_the_canonical_entry(tmp_path):
     row = apps_kind.extract(entry, _stat(entry))
     assert row is not None
     assert row["name"] == "myapp"
-    assert row["path"] == os.path.realpath(folder)
-    assert row["entry"] == os.path.abspath(entry)
-    assert row["entry_html"] == os.path.abspath(entry)
+    assert row["path"] == norm(os.path.realpath(folder))
+    assert row["entry"] == norm(os.path.abspath(entry))
+    assert row["entry_html"] == norm(os.path.abspath(entry))
     assert row["id"] == "myapp-deadbeef"
     assert row["title"] == "My App"
     assert "tag" not in row
