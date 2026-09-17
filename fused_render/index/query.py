@@ -1187,16 +1187,165 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, n: int, limit: int,
         f"LIMIT {limit}")
 
 
-def _glob_sql(inner: str, regex: str, hidden: str, limit: int) -> str:
-    """Glob mode's whole query: a full-match regex filter, no scoring at all
-    — not `_rank_sql`'s apparatus with the scoring columns dropped, `p0`/
-    `strpos`/`segment_starts`/`name_bonus` are never computed in the first
-    place, because a glob hit has no "substring position" for them to score.
-    Ordered `depth ASC, lower(rel) ASC, rel ASC` — the same total order
-    `_rank_sql`'s own unranked branch uses and for the same reason: `rel`
-    alone (after `lower(rel)`) is what makes a case-only-differing pair
-    (`notes/Alpha.txt` vs `notes/alpha.txt`) resolve the same way on every
-    run instead of however DuckDB's multi-threaded top-N happens to land.
+def _glob_literal_runs(pattern: str) -> list:
+    """`pattern`'s literal pieces, in order — everything `_glob_to_regex`
+    would emit as `re.escape(...)` text rather than a wildcard, split at
+    every wildcard token. Walks `pattern` with the EXACT SAME three-way
+    tokenizer `_glob_to_regex` uses (`**/ ` as one three-character token,
+    then bare `**`, then a lone `*`) rather than a simpler `re.split(r"\\*+",
+    pattern)` — the naive split gets `"**/*"` wrong: it would report a
+    literal `"/"` run between the two star groups, but `**/ ` is a SINGLE
+    wildcard token that can match ZERO segments (`_glob_to_regex`'s
+    `(?:[^/]*/)*`), so `"**/*"` can match `"a.txt"` at the root with no
+    literal `/` anywhere in the matched string at all — a pattern that is
+    ALL wildcard tokens (`"**/*"`, what a bare `*` query resolves to) must
+    come back `[]`, not `["/"]`.
+
+    `"**/**icon**copy**"` -> `["icon", "copy"]`: the leading `"**/"` and
+    `"**"` are both wildcard tokens, contributing nothing.
+
+    This is the ONLY thing a glob hit has to score against: a glob match has
+    no single contiguous "substring position" the way a `_rank_sql` hit does
+    (that hit's own `qs` never contains a wildcard), so scoring it means
+    locating each of THESE literal runs independently and combining their
+    signals — see `_glob_score_sql`. An empty return means there is nothing
+    to score; `_glob_sql` treats that identically to `ranked=False`."""
+    out = []
+    cur = []
+    i, n = 0, len(pattern)
+    while i < n:
+        if pattern.startswith("**/", i):
+            step = 3
+        elif pattern.startswith("**", i):
+            step = 2
+        elif pattern[i] == "*":
+            step = 1
+        else:
+            cur.append(pattern[i])
+            i += 1
+            continue
+        if cur:
+            out.append("".join(cur))
+            cur = []
+        i += step
+    if cur:
+        out.append("".join(cur))
+    return out
+
+
+def _glob_score_sql(literals: list) -> tuple:
+    """Builds the extra `SELECT` columns (positions) and the final `score`
+    expression for ranked glob mode, from `literals` (`_glob_literal_runs`'s
+    output) — every one of them already known, by construction, to occur in
+    order somewhere in `lrel` (the row already passed the `regexp_matches`
+    filter that guarantees it).
+
+    Each literal run `lit_i` (length `n_i`) is located with `strpos`,
+    searching only the tail of `lrel` AFTER the previous run's end (`e_{i-1}`,
+    0 for the first run) — the same "start search from here" chaining
+    `_rank_sql` never needed (it has exactly one run) but a multi-run glob
+    does, so two literal runs that happen to share a substring don't both
+    resolve to the SAME occurrence. DuckDB evaluates a `SELECT` list's
+    aliases in order, so `p1`'s expression can reference `e0` (`p0 + n_0`)
+    defined two items earlier in the very same `SELECT` — confirmed against
+    a live connection before relying on it, not assumed from documentation.
+
+    Per run, `_rank_sql`'s own per-match signals are reused verbatim:
+    `n_i + 3*(n_i - 1)` (the run-length term, algebraically "+1 per matched
+    char, +3 for the whole run being consecutive" — a literal run IS one
+    contiguous run, same as a whole substring match is), `5 * segment_starts`
+    (how many of `lit_i`'s `n_i` matched positions land on a segment start,
+    tested against the ORIGINAL-case `rel` so a camelCase hump still counts
+    after `lrel` was lowercased), and the +100/+25 name bonus (`nm` — already
+    lowercased — exactly equal to `lit_i`, or prefixed by it). Each run's
+    contributions are summed across every literal run in the pattern.
+
+    On top of the summed per-run terms, two things `_rank_sql` has no
+    equivalent for because a plain substring match never needs them:
+
+    - The shared `_DEPTH_PENALTY`/`_SHALLOW_FREE` depth term, subtracted
+      once (not once per run) — identical to `_rank_sql`'s, so a deep glob
+      hit is disfavored the same way a deep substring hit is.
+    - A wildcard-swallow penalty, `length(rel) - sum(n_i)`: the total count
+      of characters in `rel` the pattern's stars had to absorb to reach a
+      match. Deliberately NOT scored on matched length (the brief's own
+      warning, worth repeating here): a glob's stars can swallow arbitrary
+      text, so "the match spans more of the filename" is not "a better
+      match" the way it is for a plain substring hit — it is backwards,
+      rewarding a longer filename for containing the same literal pieces
+      with more junk between them. `icon copy.png` (little to swallow) must
+      outrank `icon-a-very-long-thing-copy.png` (lots to swallow) even
+      though every per-run term above ties between them, which is exactly
+      what a raw byte-count subtraction, not a matched-length bonus, buys.
+
+    Returns `(cols, score)`: `cols` is a list of `"<expr> AS <alias>"`
+    fragments to splice into the `matched` CTE's `SELECT *, ...` (the `p_i`/
+    `e_i` position columns — never exposed past that CTE), `score` is the
+    single SQL expression combining everything above."""
+    cols = []
+    run_terms = []
+    total_len = 0
+    prev_end = "0"
+    for i, lit in enumerate(literals):
+        n_i = len(lit)
+        total_len += n_i
+        lit_q = _q(lit)
+        p_alias, e_alias = f"p{i}", f"e{i}"
+        p_expr = (f"(strpos(substr(lrel, {prev_end} + 1), lower('{lit_q}')) "
+                  f"- 1 + {prev_end})")
+        cols.append(f"{p_expr} AS {p_alias}")
+        e_expr = f"({p_alias} + {n_i})"
+        cols.append(f"{e_expr} AS {e_alias}")
+        segment_starts = (
+            f"len(list_filter(range({p_alias}, {p_alias} + {n_i}), i -> "
+            f"i = 0 OR list_contains({_SEGMENT_SEPARATORS!r}, substr(rel, i, 1)) "
+            f"OR (substr(rel, i + 1, 1) BETWEEN 'A' AND 'Z' "
+            f"AND NOT (substr(rel, i, 1) BETWEEN 'A' AND 'Z'))))"
+        )
+        name_bonus = (
+            f"CASE WHEN nm = lower('{lit_q}') THEN 100 "
+            f"WHEN nm LIKE lower('{like_literal(lit)}') || '%' ESCAPE '\\' "
+            f"THEN 25 ELSE 0 END"
+        )
+        run_terms.append(f"({n_i} + 3 * ({n_i} - 1) + 5 * {segment_starts} "
+                         f"+ {name_bonus})")
+        prev_end = e_alias
+    score = (" + ".join(run_terms) +
+             f" - {_DEPTH_PENALTY} * greatest(0, depth - {_SHALLOW_FREE})"
+             f" - (length(rel) - {total_len})")
+    return cols, score
+
+
+def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
+              literals: list = ()) -> str:
+    """Glob mode's whole query: a full-match regex filter, plus — when
+    `literals` is non-empty — the scoring `_glob_score_sql` builds from those
+    literal runs.
+
+    `literals=()` (the default) is what `search_ranked` passes in TWO
+    distinct situations, and this function treats them identically because
+    they need the identical answer: the caller's own `ranked=False`
+    preference (D720, same contract `_rank_sql`'s unranked branch has: no
+    `p0`/`strpos`/`segment_starts`/`name_bonus`/`score` computed at all, not
+    computed then discarded), and a glob pattern with no literal run to score
+    in the first place (`**/*`, what a bare `*` resolves to) — there is
+    nothing `_glob_score_sql` could locate, so scoring every row identically
+    (or dividing by a would-be-zero `total_len`) would be silently wrong
+    rather than an honest "nothing to rank here." Both land on the SAME
+    order `_rank_sql`'s own unranked branch uses and for the same reason:
+    `depth ASC, lower(rel) ASC, rel ASC` — `rel` alone (after `lower(rel)`)
+    is what makes a case-only-differing pair (`notes/Alpha.txt` vs
+    `notes/alpha.txt`) resolve the same way on every run instead of however
+    DuckDB's multi-threaded top-N happens to land.
+
+    With `literals`, the query becomes a `WITH matched AS (...)` — same shape
+    as `_rank_sql`'s ranked branch — computing each literal run's position
+    columns inside the CTE (never exposed past it) and the final `score` in
+    the outer `SELECT`, ordered `score DESC, depth ASC, lower(rel) ASC,
+    rel ASC`. No `tier`: a glob hit has no tier-1/2/3 basename-vs-ancestor
+    distinction the way a single-substring `_rank_sql` hit does (`tier` is
+    fixed at `0` for every glob hit by `search_ranked`'s own hit-building,
+    same placeholder value it always carried).
 
     `regex` is the already-lowercased, already-SQL-escaped pattern from
     `_glob_to_regex`; it is matched against `lrel`, never `rel` — glob mode
@@ -1212,10 +1361,21 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int) -> str:
     happened to land in. `query_wants_hidden` already reads intent off `qs`
     itself (a dot-leading query, `.env`/`*/.git`, still opts back in), so
     applying it here needs no separate rule — the same one both modes share."""
+    if not literals:
+        return (
+            f"SELECT rel, size, mtime, is_dir, depth FROM ({inner}) "
+            f"WHERE regexp_matches(lrel, '{regex}'){hidden} "
+            f"ORDER BY depth ASC, lower(rel) ASC, rel ASC "
+            f"LIMIT {limit}")
+    cols, score = _glob_score_sql(literals)
+    extra_cols = (", " + ", ".join(cols)) if cols else ""
     return (
-        f"SELECT rel, size, mtime, is_dir, depth FROM ({inner}) "
-        f"WHERE regexp_matches(lrel, '{regex}'){hidden} "
-        f"ORDER BY depth ASC, lower(rel) ASC, rel ASC "
+        f"WITH matched AS ("
+        f"SELECT *{extra_cols} FROM ({inner}) "
+        f"WHERE regexp_matches(lrel, '{regex}'){hidden}) "
+        f"SELECT rel, size, mtime, is_dir, depth, ({score}) AS score "
+        f"FROM matched "
+        f"ORDER BY score DESC, depth ASC, lower(rel) ASC, rel ASC "
         f"LIMIT {limit}")
 
 
@@ -1287,13 +1447,27 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     other piece of this function (coverage, root/prefix resolution, LIMIT,
     truncation, cancellation) is unchanged by it.
 
-    `glob=True` is a different filter altogether, not a variant of `ranked`:
+    `glob=True` is a different FILTER altogether, not a variant of `ranked`:
     `q` is taken as a glob pattern (already resolved to a `(base, pattern)`
     pair by `resolve_query` — this function never re-derives one), translated
-    by `_glob_to_regex` and full-matched against `lrel` in `_glob_sql`. No
-    scoring, no hidden-entry filter (an explicit pattern matches whatever it
-    matches), `depth ASC, lower(rel) ASC, rel ASC` order. `ranked` is ignored
-    when `glob` is set.
+    by `_glob_to_regex` and full-matched against `lrel` in `_glob_sql`. Hidden
+    entries are still dropped by the same `hidden` fragment `_rank_sql` uses
+    (an explicit dot-leading query segment still opts back in — see
+    `_glob_sql`'s docstring on the code-review finding this closed).
+
+    `ranked` is NOT ignored when `glob` is set (an earlier version of this
+    docstring said it was — stale the moment glob mode grew its own scoring):
+    `_glob_literal_runs(qs)` splits the resolved pattern on its `*` runs into
+    literal pieces, and `_glob_score_sql` locates and scores each one the
+    same way `_rank_sql` scores its own single match — run-length,
+    segment-starts, name bonus, the shared depth penalty — plus a wildcard-
+    swallow penalty (`length(rel)` minus the literals' total length) with no
+    equivalent in `_rank_sql`, needed because a glob's stars can absorb
+    arbitrary text and "the match spans more of the filename" is backwards as
+    a signal here (`_glob_score_sql`'s docstring). `ranked=False` — and a
+    pattern with no literal run at all to score, e.g. the bare `**/*` a
+    lone `*` resolves to — both fall back to the SAME unscored `depth ASC,
+    lower(rel) ASC, rel ASC` order `_rank_sql`'s own unranked branch uses.
 
     `token` (index/cancel.CancelToken), when given, is bound to the duckdb
     connection the moment it exists and checked immediately before and after
@@ -1439,7 +1613,12 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
             # side the corpus is lowered on (`lrel`), so the two always fold
             # through the same `lower()`.
             regex = _q(_glob_to_regex(qs.lower()))
-            sql = _glob_sql(inner, regex, hidden, limit + 1)
+            # `ranked=False` gets no literals at all — not computed then
+            # ignored, the same discipline `_rank_sql`'s own unranked branch
+            # follows (`_glob_sql`'s docstring on why an empty `literals`
+            # answers both that case and a literal-free pattern identically).
+            literals = _glob_literal_runs(qs) if ranked else []
+            sql = _glob_sql(inner, regex, hidden, limit + 1, literals=literals)
         else:
             # NOT `.lower()`'d here — `_rank_sql` lowers `ql`/`qq` itself,
             # with the same `lower()` call that produces `lrel`, so the query
@@ -1457,12 +1636,25 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         logger.debug("index rank: %r under %s: %d row(s) in %.1fms",
                     qs, root, len(rows), (time.monotonic() - t0) * 1000)
         truncated = len(rows) > limit
-        if glob:
-            # No score/tier at all — a glob hit has no substring position to
-            # score. Every hit still carries the same keys as the other two
-            # branches (0-valued) so nothing downstream has to special-case
-            # a missing key; the HTTP layer strips all four before the wire
-            # regardless of which branch produced them.
+        if glob and literals:
+            # `_glob_sql` returned a 6th column (`score`) for this branch —
+            # `literals` non-empty is exactly the condition under which it
+            # did (see `_glob_sql`'s docstring). No `tier`: a glob hit has no
+            # basename-vs-ancestor distinction the way a single-substring
+            # `_rank_sql` hit does, so it stays the fixed placeholder `0`
+            # every glob hit always carried — the HTTP layer strips all four
+            # scoring fields before the wire regardless of which branch
+            # produced them.
+            hits = [{"rel": rel, "is_dir": bool(is_dir),
+                     "size": int(size) if size is not None else None,
+                     "mtime": float(mtime) if mtime is not None else None,
+                     "score": int(score), "longest_run": 0, "tier": 0,
+                     "depth": int(depth)}
+                    for rel, size, mtime, is_dir, depth, score in rows[:limit]]
+        elif glob:
+            # `literals` empty: `_glob_sql` took its unscored branch (either
+            # `ranked=False`, or a literal-free pattern like a bare `*` — see
+            # its docstring), so `rows` has no `score` column to unpack.
             hits = [{"rel": rel, "is_dir": bool(is_dir),
                      "size": int(size) if size is not None else None,
                      "mtime": float(mtime) if mtime is not None else None,

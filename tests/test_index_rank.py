@@ -350,6 +350,100 @@ def test_glob_mode_clamps_to_its_own_wider_ceiling(tmp_path):
     assert out["truncated"] is False
 
 
+# -- glob mode is ranked too (Part B) --------------------------------------
+
+def test_glob_ranking_a_tight_match_beats_a_long_wildcard_swallow(tmp_path):
+    """`icon copy.png` (a `**icon**copy**` glob's stars swallowing almost
+    nothing) must outrank `icon-a-very-long-thing-copy.png` (the same two
+    literal runs, `icon` and `copy`, both present, but with the stars
+    swallowing 18 extra characters between them). Every OTHER scoring term
+    (the two runs' own `n + 3*(n-1)`, their segment-start count — both
+    filenames start a run right at position 0 and right after a separator —
+    and the basename-prefix name bonus for `icon`) is IDENTICAL between the
+    two candidates, so this only passes if the wildcard-swallow penalty is
+    actually doing something: without it, this pair would tie and the tie-
+    break (`rel ASC`) would put the LONGER name first, which is backwards."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/icon copy.png", "/r/icon-a-very-long-thing-copy.png"])
+    hits = search_ranked(cfg, "/r", "**/**icon**copy**", glob=True)["hits"]
+    assert [h["rel"] for h in hits] == [
+        "icon copy.png", "icon-a-very-long-thing-copy.png"]
+
+
+def test_glob_ranked_hits_carry_a_real_score(tmp_path):
+    """Ranked glob hits carry a genuine, non-constant `score` (not the fixed
+    `0` every glob hit used to carry) — pinned by checking two hits with
+    different wildcard-swallow amounts do NOT share a score, and every hit
+    still carries the same key set (`rel`, `is_dir`, `size`, `mtime`,
+    `score`, `longest_run`, `tier`, `depth`) the other two modes' hits do."""
+    cfg = _index(tmp_path, "/r", ["/r/icon copy.png",
+                                  "/r/icon-a-very-long-thing-copy.png"])
+    hits = search_ranked(cfg, "/r", "**/**icon**copy**", glob=True)["hits"]
+    assert len(hits) == 2
+    assert hits[0]["score"] != hits[1]["score"]
+    for h in hits:
+        assert set(h) == {"rel", "is_dir", "size", "mtime",
+                          "score", "longest_run", "tier", "depth"}
+        assert h["tier"] == 0
+
+
+def test_glob_unranked_reproduces_the_old_depth_then_alpha_order(tmp_path):
+    """`ranked=False` for a glob query must still answer `depth ASC,
+    lower(rel) ASC, rel ASC` — the exact order glob mode always used before
+    this round, byte-for-byte — even on a pair where the DEFAULT `ranked=True`
+    scored order disagrees with it: `aaa-icon-thing-copy-with-huge-padding.png`
+    sorts alphabetically FIRST (starts with "a") but has a much bigger
+    wildcard-swallow penalty than `icon copy.png`, so the scored order puts
+    the tight match first while the unranked, alphabetical order puts the
+    "a"-leading name first."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/aaa-icon-thing-copy-with-huge-padding.png",
+        "/r/icon copy.png",
+    ])
+    pattern = "**/**icon**copy**"
+    ranked = search_ranked(cfg, "/r", pattern, glob=True)["hits"]
+    unranked = search_ranked(cfg, "/r", pattern, glob=True,
+                             ranked=False)["hits"]
+    assert [h["rel"] for h in ranked] == [
+        "icon copy.png",
+        "aaa-icon-thing-copy-with-huge-padding.png"]
+    assert [h["rel"] for h in unranked] == [
+        "aaa-icon-thing-copy-with-huge-padding.png",
+        "icon copy.png"]
+
+
+def test_glob_unranked_sql_has_no_scoring_apparatus(tmp_path):
+    """Mirrors `test_unranked_sql_has_no_scoring_apparatus` for `_rank_sql`:
+    the unranked glob branch must not compute score/p0/segment_starts and
+    then discard them — the whole scoring apparatus must be ABSENT from the
+    generated SQL text. `literals=[]` is what `search_ranked` passes both
+    when the caller asked for `ranked=False` and when a glob pattern (e.g. a
+    bare `*`) has no literal run at all to score."""
+    from fused_render.index.query import _glob_sql
+
+    sql = _glob_sql("SELECT 1 AS rel, 1 AS size, 1 AS mtime, false AS is_dir, "
+                    "1 AS depth, 'x' AS nm, 'x' AS lrel", "^.*$", "", 10,
+                    literals=[])
+    lowered = sql.lower()
+    for banned in ("score", "segment_starts", "p0", "strpos", "name_bonus"):
+        assert banned not in lowered, f"{banned!r} leaked into the unscored glob SQL"
+    assert "order by depth asc, lower(rel) asc, rel asc" in lowered
+
+
+def test_glob_pattern_with_no_literal_runs_uses_the_unscored_order(tmp_path):
+    """A pattern with nothing but stars (`**/*`, what a bare `*` query
+    resolves to) has no literal run for the scoring apparatus to locate —
+    `search_ranked` must fall back to the same unscored `depth ASC,
+    lower(rel) ASC, rel ASC` order `ranked=False` uses, not divide by zero
+    or score every row identically (which would make the ORDER BY's tie-
+    break do all the work silently instead of failing loudly)."""
+    cfg = _index(tmp_path, "/r", ["/r/b.txt", "/r/a.txt"])
+    hits = search_ranked(cfg, "/r", "**/*", glob=True)["hits"]
+    assert [h["rel"] for h in hits] == ["a.txt", "b.txt"]
+    for h in hits:
+        assert h["score"] == 0
+
+
 def test_like_metacharacters_in_the_query_match_only_the_literal_filename(tmp_path):
     """`_rank_sql`'s `WHERE lrel LIKE '%' || lower(ql) || '%' ESCAPE '\\'` is
     built from `like_literal(qs)` (store.py), which escapes `\\`, `%` and `_`
