@@ -12,13 +12,20 @@ The two file managers disagree on the format:
   GNOME / Nautilus  x-special/gnome-copied-files   "copy\\nfile:///a\\nfile:///b"
   KDE / Dolphin     text/uri-list                  "file:///a\\r\\nfile:///b"
 
-Reading tries both, so a paste *into* fused-render works on either desktop.
-Writing can only publish one target per invocation — `xclip`/`wl-copy` take a
-single `--type`, and a second call replaces the first rather than adding to it
-— so the write picks the family the session actually reports via
-`XDG_CURRENT_DESKTOP`. That's the one real platform limitation of this
-feature; a resident GTK/Qt owner process could offer both targets at once and
-is the documented upgrade path if it proves limiting.
+`xclip`/`wl-copy` can only publish ONE of those per invocation — both take a
+single `--type`, and a second call replaces the first rather than adding to
+it — so on their own neither format can also carry `text/plain`, and a paste
+into a plain text field comes back empty. `write_files` therefore tries a
+richer path first: `_linux_owner.py`, a small script run under a *separate*
+Python interpreter (one with PyGObject, which the app's own venv does not
+have), that uses GTK4 to own the selection directly and can offer all four
+targets — both file-manager formats plus `text/plain` and
+`text/plain;charset=utf-8` — at once. Only when that path is unavailable (no
+interpreter has `gi`, no display, a spawn error, no readiness signal in time)
+does it fall through to the single-target `xclip`/`wl-copy` write below,
+picking the family the session reports via `XDG_CURRENT_DESKTOP`. That guess,
+and never offering `text/plain`, is the one real limitation of the fallback,
+not of this backend as a whole.
 
 Everything here is driven through `shutil.which` and `subprocess.run`, both
 looked up on the module at call time, so the tests fake them and run on any
@@ -26,9 +33,12 @@ platform.
 """
 from __future__ import annotations
 
+import json
 import os
+import select
 import shutil
 import subprocess
+import sys
 from urllib.parse import quote, unquote
 
 GNOME_TARGET = "x-special/gnome-copied-files"
@@ -133,9 +143,141 @@ def _is_kde() -> bool:
     XDG_CURRENT_DESKTOP is a colon-separated list ("ubuntu:GNOME",
     "KDE:plasma"), so this is a substring test on the lowercased value rather
     than an equality check.
+
+    Only the fallback below still consults this. The owner offers both file
+    formats simultaneously, so there's nothing for a desktop guess to decide
+    once it's in play.
     """
     desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
     return "kde" in desktop or "plasma" in desktop
+
+
+# --------------------------------------------------- multi-target GTK4 owner
+
+# Sentinel distinct from None, which is the legitimate "no candidate
+# interpreter has gi" answer we want to cache rather than re-probe on every
+# write — this shells out per candidate, and a write is on the hot path for
+# every Explorer copy.
+_INTERPRETER_UNPROBED = object()
+_gi_interpreter: object = _INTERPRETER_UNPROBED
+
+# A short bound on how long we wait for the owner to print its readiness
+# line. It's a local process reading a JSON blob off stdin and calling into
+# GTK — if it hasn't answered in this long, something (no display, no
+# compositor, a broken install) is wrong, and the fallback below is a better
+# bet than blocking the write any further.
+_OWNER_READY_TIMEOUT_S = 3
+
+
+def _reset_gi_interpreter_cache() -> None:
+    """Undo the caching in `_probe_gi_interpreter`. Exists for tests, which
+    need to re-probe under a different faked environment than whatever
+    settled the cache first."""
+    global _gi_interpreter
+    _gi_interpreter = _INTERPRETER_UNPROBED
+
+
+def _probe_gi_interpreter() -> str | None:
+    """The first of a short fixed list of interpreters that can `import gi`.
+
+    `sys.executable` is tried first only because it's free to check, not
+    because it's expected to work — PyGObject isn't, and shouldn't become, a
+    dependency of the app's own venv. `/usr/bin/python3` is the one that
+    reliably has it: GTK's Python bindings are normally packaged against the
+    distro's system Python, not any particular venv. `shutil.which("python3")`
+    is the last, weakest guess, for a layout where neither of the first two
+    is the right one.
+
+    Cached for the life of the process; `_reset_gi_interpreter_cache` is the
+    escape hatch for tests that need a fresh probe.
+    """
+    global _gi_interpreter
+    if _gi_interpreter is not _INTERPRETER_UNPROBED:
+        return _gi_interpreter  # type: ignore[return-value]
+
+    seen: set[str] = set()
+    candidates = []
+    for c in (sys.executable, "/usr/bin/python3", shutil.which("python3")):
+        if c and c not in seen:
+            seen.add(c)
+            candidates.append(c)
+
+    found = None
+    for c in candidates:
+        try:
+            proc = subprocess.run(
+                [c, "-c", "import gi"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=_TIMEOUT_S)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if proc.returncode == 0:
+            found = c
+            break
+
+    _gi_interpreter = found
+    return found
+
+
+def _owner_script_path() -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "_linux_owner.py")
+
+
+def _wait_for_owner_ready(stream) -> bool:
+    """Block for at most `_OWNER_READY_TIMEOUT_S` for the owner's one
+    readiness line.
+
+    A plain `stream.readline()` isn't enough on its own: on the SUCCESS path
+    the owner never closes its stdout (it dup2's fd 1 onto /dev/null right
+    after printing, deliberately staying resident), so a blocking read would
+    only ever return early on the failure paths and hang for the owner's
+    entire remaining lifetime otherwise. `select` bounds both cases alike,
+    the same discipline `_TIMEOUT_S` already applies to the fallback tools.
+    """
+    ready, _, _ = select.select([stream], [], [], _OWNER_READY_TIMEOUT_S)
+    if not ready:
+        return False
+    return bool(stream.readline())
+
+
+def _write_via_owner(paths: list[str]) -> bool:
+    """Best-effort: hand `paths` to the multi-target GTK4 owner.
+
+    Returns False on ANY failure — no capable interpreter, a spawn error, no
+    readiness signal in time — and never raises. Every one of those is a
+    normal, expected outcome on a machine without PyGObject or without a
+    display, and `write_files` treats False as "try the single-target
+    fallback next", not as an error.
+    """
+    interpreter = _probe_gi_interpreter()
+    if interpreter is None:
+        return False
+
+    try:
+        proc = subprocess.Popen(
+            [interpreter, _owner_script_path()],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        return False
+
+    try:
+        proc.stdin.write(json.dumps({"paths": paths}).encode("utf-8"))
+        proc.stdin.close()
+        return _wait_for_owner_ready(proc.stdout)
+    except OSError:
+        return False
+    finally:
+        # Our own read end of the owner's stdout is only ever needed for the
+        # one readiness line — whether or not it arrived, it must be closed
+        # here. The owner itself has already moved fd 1 onto /dev/null by the
+        # time we could see this fd, so closing our end doesn't touch it; it
+        # just stops this (long-lived server) process from accumulating one
+        # open pipe per copy for the rest of the session.
+        try:
+            proc.stdout.close()
+        except OSError:
+            pass
 
 
 # --------------------------------------------------------------------- read
@@ -177,6 +319,19 @@ def _parse(text: str) -> list[str]:
 # -------------------------------------------------------------------- write
 
 def write_files(paths: list[str]) -> None:
+    """Publish `paths` as file references, multi-target where possible.
+
+    Tries the GTK4 owner first (see the module docstring); `_write_via_owner`
+    never raises, so `False` is the only signal it gives, and that's the cue
+    to fall through to the single-target `xclip`/`wl-copy` write that has
+    always lived here.
+    """
+    if _write_via_owner(paths):
+        return
+    _write_via_fallback(paths)
+
+
+def _write_via_fallback(paths: list[str]) -> None:
     _, write_argv = _tool()
     uris = [path_to_uri(p) for p in paths]
     if _is_kde():
