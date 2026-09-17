@@ -5085,18 +5085,18 @@
   // Run `call` and one status GET together, and hand back the payload with an
   // envelope. The probe failing must neither fail the call it describes nor
   // answer for it — an all-null envelope is exactly "this response cannot say".
-  function fileIndexWithStatus(call) {
+  function fileIndexWithStatus(call, kind) {
     return Promise.all([
       call,
-      fileIndexStatusGet().then(fileIndexReadyFromStatus,
-                                () => fileIndexReady(null, null, null, null)),
+      fileIndexStatusGet(kind ? { kind: kind } : undefined).then(
+        fileIndexReadyFromStatus, () => fileIndexReady(null, null, null, null)),
     ]).then(([data, ready]) => Object.assign({}, data, { ready: ready }));
   }
 
   function fileIndexSearch(opts) {
     opts = opts || {};
     return fileIndexGet("/api/index/search", {
-      root: opts.root, q: opts.q, limit: opts.limit,
+      root: opts.root, q: opts.q, limit: opts.limit, kind: opts.kind,
     }).then((data) => {
       // `covered: false` deliberately collapses "no index", "not covered" and
       // "a scan is running" into one false, because a search box treats all
@@ -5120,7 +5120,8 @@
     opts = opts || {};
     const body = { sql: opts.sql };
     if (opts.limit !== undefined) body.limit = opts.limit;
-    return fileIndexWithStatus(fileIndexPost("/api/index/query", body));
+    if (opts.kind !== undefined) body.kind = opts.kind;
+    return fileIndexWithStatus(fileIndexPost("/api/index/query", body), opts.kind);
   }
 
   const fileIndex = { search: fileIndexSearch, query: fileIndexQuery };

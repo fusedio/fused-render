@@ -377,7 +377,7 @@ def test_api_index_scan_wakes_the_bridge_on_a_started_run(monkeypatch):
     monkeypatch.setattr(
         index_router.index_gate, "indexing_blocked", lambda: "")
     monkeypatch.setattr(
-        index_router, "load_config", lambda: object())
+        index_router, "load_config", lambda kind="files": object())
     monkeypatch.setattr(
         index_router.runner, "start",
         lambda cfg, root, full=False: {"run_id": "r1", "root": root})

@@ -33,7 +33,7 @@ from fastapi import APIRouter, Body, Header, Query, Request
 from fastapi.responses import JSONResponse, Response
 
 from fused_render import jobs
-from fused_render.index import freshness, runner
+from fused_render.index import apps_kind, freshness, kinds, runner
 from fused_render.index.cancel import CancelToken, Cancelled, cancellable
 from fused_render.index.freshness import enclosing_root
 from fused_render.index.config import IndexConfig, load_config, save_config
@@ -45,6 +45,7 @@ from fused_render.index.ignore import (
     norm,
 )
 from fused_render.index.query import MAX_CORPUS, RANK_LIMIT, resolve_query
+from fused_render.index.query import search_apps_ranked
 from fused_render.index.query import search_ranked as index_rank
 from fused_render.index.query import search_under as index_search
 from fused_render.index.query import stats as index_stats
@@ -59,6 +60,16 @@ from fused_render.server import index_touch
 from fused_render.server.common import _error, _require_fused
 from fused_render.shell import index_gate
 from fused_render.shell.prefs import indexing_enabled
+from fused_render.shell.seed import fused_dir
+
+# The built-in "apps" kind (index/apps_kind.py) is only ever a module
+# definition until something registers it — this is that one call, made at
+# import time so it is in effect for both the running server (app.py imports
+# this router module while wiring up routes) and any test that imports the
+# router directly without going through create_app(). `replace=True` because
+# re-importing this module (as pytest's test collection across files can) must
+# not raise "already registered" the second time.
+apps_kind.register_builtin(replace=True)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -300,8 +311,49 @@ SCAN_DEBOUNCE_S = 15 * 60
 KEEP_RUNS = 20
 
 
+def _kind_param(raw) -> tuple[str, JSONResponse | None]:
+    """The index kind a request means: `raw` (the caller's own `kind` query
+    param or body field) if given, else "files" — the default that keeps
+    every existing caller, none of which send a kind, pointed at the
+    original store exactly as before this parameter existed.
+
+    "files" is always valid despite never appearing in `kinds.registered()`
+    — it is the one kind that predates the plugin registry (config.py's
+    `index_dir`/store.py's `schemas` special-case it by name, not through
+    `kinds.get`) — so it is checked for by name here rather than requiring
+    every caller to also register a "files" IndexKind that would just
+    duplicate what those two modules already do natively.
+
+    Returns `(kind, None)` for the caller to proceed with, or `("", error)`
+    — a 400 naming what IS registered — for a kind nothing ever registered,
+    which is a client mistake (an unregistered kind can't answer any of
+    these routes), not a transient condition."""
+    # `raw` is treated as absent unless it is a non-empty string: several
+    # existing tests call these route functions directly, bypassing
+    # FastAPI's request handling, and a Query(default="")/Body(default={})-
+    # declared parameter then arrives as the FieldInfo object itself rather
+    # than the default it describes — exactly the same "not a real value"
+    # case as never sending the parameter at all.
+    kind = raw if isinstance(raw, str) and raw else "files"
+    if kind != "files" and kind not in kinds.registered():
+        return "", _error(
+            f"unknown index kind {kind!r}; registered: "
+            f"{['files'] + kinds.registered()}")
+    return kind, None
+
+
+def _default_root(kind: str) -> str:
+    """The scan root a kind's own config falls back to when the user has
+    never configured one — "~" for the "files" kind (see `scan_roots`), and
+    the app workspace (`fused_dir()`, the same root `GET /api/apps` walks)
+    for any other kind, since a flat-list kind like "apps" has no tree of
+    its own to default to and its rows only ever come from that one place."""
+    return "~" if kind == "files" else fused_dir()
+
+
 def scan_roots(cfg: IndexConfig, start_dir: str | None = None) -> list:
-    """What the scheduler indexes: the configured roots, else the user's home.
+    """What the scheduler indexes: the configured roots, else `cfg.kind`'s
+    own default (see `_default_root`) — the user's home for "files".
 
     Home is the default rather than the project root because a whole-home scan
     with the default ignore rules costs seconds, and an index that only covers
@@ -320,7 +372,7 @@ def scan_roots(cfg: IndexConfig, start_dir: str | None = None) -> list:
     index reads as permanently unreconciled."""
     if cfg.roots:
         return [runner.canonical_root(r) for r in cfg.roots]
-    return [runner.canonical_root("~")]
+    return [runner.canonical_root(_default_root(cfg.kind))]
 
 
 # root -> the run id this process started for it at startup, for the warm
@@ -585,6 +637,37 @@ def _rank_worker(cfg: IndexConfig, root: str, q: str, limit: int,
     out = _rank_body(cfg, root, q, limit, token, ranked)
     out["reason"] = _rank_reason(cfg, out["base"], out, token=token)
     out.pop("blocked_query_path", None)
+    return out
+
+
+def _rank_flat_kind_worker(cfg: IndexConfig, q: str, limit: int,
+                            token: CancelToken | None, ranked: bool) -> dict:
+    """The `/api/index/rank` worker for any registered kind OTHER than
+    "files" — a flat list of rows (apps, or a future third-party kind) with
+    no directory tree of its own to navigate, so none of `_rank_body`'s
+    `resolve_query` base-walk or `_rank_reason`'s mount/package/scanning
+    classification apply: those exist to answer "where in the filesystem is
+    this box looking, and can the index even see there", a question only
+    the "files" tree has. `search_apps_ranked` (index/query.py) is the one
+    reusable primitive this needs — it already reads a kind's
+    identity/text/recency columns off the registry rather than hardcoding
+    "apps", which is what makes this function ten lines instead of a second
+    copy of `_rank_body`.
+
+    The three companion fields `_rank_body` adds for the files tree
+    (`base`/`mode`/`pattern`) are answered with flat stand-ins instead of
+    omitted, so `api_index_rank`'s response shape — and the `_WIRE_DROP`
+    trimming that runs on it afterwards — stays identical for every kind:
+    `base` is "" (there is no box root to caption), `mode` is "substring"
+    (a flat kind's rows are never glob-matched), and `pattern` is `q` itself
+    (nothing peeled a base off it). `reason` is "" — always answered outright,
+    never "mount"/"uncovered"/"scanning", since a flat kind's default root is
+    the one fixed workspace it always scans, not a folder the caller typed."""
+    out = search_apps_ranked(cfg, q, limit=limit, token=token, ranked=ranked)
+    out["base"] = ""
+    out["mode"] = "substring"
+    out["pattern"] = q
+    out["reason"] = ""
     return out
 
 
@@ -1482,7 +1565,10 @@ def api_index_scan(body: dict = Body(default={}),
                              if blocked == "disabled" else index_gate.FDA_MESSAGE,
                              "reason": blocked},
                             status_code=409)
-    cfg = load_config()
+    kind, err = _kind_param(body.get("kind"))
+    if err is not None:
+        return err
+    cfg = load_config(kind=kind)
     full = bool(body.get("full"))
     root = body.get("root") or ""
     if root:
@@ -1546,9 +1632,12 @@ def api_index_scan_folder(body: dict = Body(default={}),
     path = str(body.get("path") or "").strip()
     if not path:
         return _error("'path' is required")
+    kind, err = _kind_param(body.get("kind"))
+    if err is not None:
+        return err
     import time
 
-    cfg = load_config()
+    cfg = load_config(kind=kind)
     root = runner.canonical_root(path)
     blocked = index_gate.indexing_blocked()
     if blocked:
@@ -1642,15 +1731,19 @@ def api_index_cancel(body: dict = Body(default={}),
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    kind, err = _kind_param(body.get("kind"))
+    if err is not None:
+        return err
     try:
-        return {"ok": True, **runner.cancel(load_config(), str(body.get("run_id") or ""))}
+        return {"ok": True, **runner.cancel(load_config(kind=kind), str(body.get("run_id") or ""))}
     except ValueError as e:
         return _error(str(e))
 
 
 @router.get("/api/index/status")
 def api_index_status(run_id: str = Query(default=""),
-                     since: int = Query(default=0)):
+                     since: int = Query(default=0),
+                     kind: str = Query(default="")):
     """The scan's state, flat enough to render directly.
 
     Without a `run_id` this answers for the MOST RECENT run, which is what a
@@ -1658,7 +1751,10 @@ def api_index_status(run_id: str = Query(default=""),
     flight (the startup one) and the UI should be able to say "building
     index… N files" instead of pretending nothing is happening.
     """
-    cfg = load_config()
+    kind, err = _kind_param(kind)
+    if err is not None:
+        return err
+    cfg = load_config(kind=kind)
     manifest = read_manifest(cfg)
     runs = runner.list_runs(cfg, limit=KEEP_RUNS)["runs"]
     # `has_index` and `scanning` are the two bits the explorer's decision table
@@ -1706,8 +1802,19 @@ def api_index_status(run_id: str = Query(default=""),
 
 @router.get("/api/index/stats")
 async def api_index_stats(request: Request, root: str = Query(default=""),
-                          breakdown: bool = Query(default=False)):
-    cfg = load_config()
+                          breakdown: bool = Query(default=False),
+                          kind: str = Query(default="")):
+    """The files-tree corpus's own stats — `index_stats` (query.py's `stats`)
+    stays hardcoded to the "files"/"dirs" shape (see search_apps_ranked's
+    module-level reasoning: a flat kind has no directory tree to report a
+    breakdown of), so `kind` here only ever legitimately means "files"; a
+    non-"files" kind still resolves and loads its own store, but `index_stats`
+    itself will raise against a schema without `dir`/`depth` — an accepted,
+    documented gap (SPEC-index-plugins.md), not a silent one."""
+    kind, err = _kind_param(kind)
+    if err is not None:
+        return err
+    cfg = load_config(kind=kind)
     async with cancellable(request) as token:
         # Acquired INSIDE `cancellable`, not before it, so the disconnect
         # watcher is already running while this request waits its turn —
@@ -1755,6 +1862,7 @@ async def api_index_search(request: Request, root: str = Query(default=""),
                            q: str = Query(default=""),
                            limit: int = Query(default=MAX_CORPUS),
                            fmt: str = Query(default=""),
+                           kind: str = Query(default=""),
                            accept_encoding: str | None = Header(default=None)):
     """The explorer's in-folder corpus, index-backed.
 
@@ -1767,10 +1875,18 @@ async def api_index_search(request: Request, root: str = Query(default=""),
     `fmt=columns` asks for the same corpus as parallel arrays instead of one
     object per entry (§6 of index/specs/server-api.md) — the home page's
     corpus is the whole ranking set, 25.7 MB on a 164k-entry home, and it is
-    fetched in one shot on the user's first keystroke."""
+    fetched in one shot on the user's first keystroke.
+
+    Files-tree-shaped, same as `/api/index/stats` next door: `kind` resolves
+    and loads the right store, but `search_under` itself stays hardcoded to
+    the "files"/"dirs" schema (a flat kind's rows have no folder to be
+    "under"), an accepted gap for the same reason as stats."""
     if not root.strip():
         return _error("'root' is required")
-    cfg = load_config()
+    kind, kind_err = _kind_param(kind)
+    if kind_err is not None:
+        return kind_err
+    cfg = load_config(kind=kind)
     async with cancellable(request) as token:
         # See api_index_stats above for why the semaphore is acquired inside
         # `cancellable` rather than around it.
@@ -1800,7 +1916,8 @@ async def api_index_search(request: Request, root: str = Query(default=""),
 async def api_index_rank(request: Request, root: str = Query(default=""),
                          q: str = Query(default=""),
                          limit: int = Query(default=RANK_LIMIT),
-                         ranked: bool = Query(default=True)):
+                         ranked: bool = Query(default=True),
+                         kind: str = Query(default="")):
     """The home search: filtered AND ranked here, top `limit` hits returned.
 
     The corpus route next door hands the client every entry under `root`
@@ -1882,10 +1999,18 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
     anything louder) — and the response is a body nobody reads, because
     nobody is listening by the time it is sent.
     """
-    if not root.strip():
+    kind, kind_err = _kind_param(kind)
+    if kind_err is not None:
+        return kind_err
+    # "root" only means something for the "files" tree — a flat kind (apps,
+    # or a future third-party one) has exactly one implicit root, its own
+    # default (see `_default_root`), and no navigable folder for a client to
+    # name. Requiring it only when it is actually meaningful keeps every
+    # existing "files" caller's contract unchanged.
+    if kind == "files" and not root.strip():
         return _error("'root' is required")
     t0 = time.monotonic()
-    cfg = load_config()
+    cfg = load_config(kind=kind)
     async with cancellable(request) as token:
         # Review finding G: `lane_wait_t0` is taken HERE, immediately before
         # lane acquisition is attempted — not at `t0` above. `t0` (used only
@@ -1912,9 +2037,14 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
             if _index_pool_exhausted():
                 return _pool_exhausted_response("rank", q, root)
             worker_t0 = time.monotonic()
-            out, err = await _bounded_index_read(
-                "rank", token, q, root, worker_t0,
-                _rank_worker, cfg, root, q, limit, token, ranked)
+            if kind == "files":
+                out, err = await _bounded_index_read(
+                    "rank", token, q, root, worker_t0,
+                    _rank_worker, cfg, root, q, limit, token, ranked)
+            else:
+                out, err = await _bounded_index_read(
+                    "rank", token, q, root, worker_t0,
+                    _rank_flat_kind_worker, cfg, q, limit, token, ranked)
             if err is not None:
                 return err
             worker_ms = (time.monotonic() - worker_t0) * 1000
@@ -2073,6 +2203,9 @@ async def api_index_query(request: Request, body: dict = Body(default={}),
     sql = body.get("sql")
     if not isinstance(sql, str) or not sql.strip():
         return _error("'sql' must be a non-empty string")
+    kind, kind_err = _kind_param(body.get("kind"))
+    if kind_err is not None:
+        return kind_err
     async with cancellable(request) as token:
         # See api_index_stats above for why the semaphore is acquired inside
         # `cancellable` rather than around it.
@@ -2081,7 +2214,7 @@ async def api_index_query(request: Request, body: dict = Body(default={}),
                 return Response(status_code=499)
             try:
                 out = await asyncio.to_thread(
-                    _guarded, load_config(), sql, body.get("limit"), token)
+                    _guarded, load_config(kind=kind), sql, body.get("limit"), token)
             except Cancelled:
                 logger.debug("index query: abandoned by the client")
                 return Response(status_code=499)
@@ -2150,6 +2283,15 @@ async def api_index_ask(request: Request, body: dict = Body(default={}),
     prompt = body.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         return _error("'prompt' must be a non-empty string")
+    # `kind` resolves which store the compiled SQL runs against, same as
+    # `/api/index/query` — but `_ASK_SYSTEM_PROMPT` above stays hardcoded to
+    # the files/dirs schema regardless: a kind other than "files" answers
+    # from a store the model was never told the shape of, an accepted gap
+    # for the same reason stats/search's non-"files" support is partial
+    # (SPEC-index-plugins.md — natural-language ask stays files-only).
+    kind, kind_err = _kind_param(body.get("kind"))
+    if kind_err is not None:
+        return kind_err
     # The relay owns the claude hop, the model preference, the timeout and the
     # typed error envelope; a failure passes straight through it unchanged
     # rather than being re-described here. `request.app.state.ai_session` is
@@ -2188,7 +2330,7 @@ async def api_index_ask(request: Request, body: dict = Body(default={}),
                 return Response(status_code=499)
             try:
                 out = await asyncio.to_thread(
-                    _guarded, load_config(), sql, body.get("limit"), token)
+                    _guarded, load_config(kind=kind), sql, body.get("limit"), token)
             except Cancelled:
                 logger.debug("index ask: abandoned by the client")
                 return Response(status_code=499)
@@ -2202,8 +2344,11 @@ async def api_index_ask(request: Request, body: dict = Body(default={}),
 # --------------------------------------------------------------------- config
 
 @router.get("/api/index/config")
-def api_index_config():
-    cfg = load_config()
+def api_index_config(kind: str = Query(default="")):
+    kind, err = _kind_param(kind)
+    if err is not None:
+        return err
+    cfg = load_config(kind=kind)
     return {"ok": True, "roots": scan_roots(cfg), "configured_roots": cfg.roots,
             "ignore": cfg.ignore, "defaults": default_ignore(),
             "location": cfg.dir}
@@ -2215,7 +2360,10 @@ def api_index_config_write(body: dict = Body(default={}),
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    cfg = load_config()
+    kind, err = _kind_param(body.get("kind"))
+    if err is not None:
+        return err
+    cfg = load_config(kind=kind)
     for key in ("roots", "ignore"):
         if key not in body:
             continue
@@ -2266,18 +2414,26 @@ def api_index_config_write(body: dict = Body(default={}),
 
 
 @router.post("/api/index/delete")
-def api_index_delete(x_fused: str | None = Header(default=None)):
+def api_index_delete(body: dict = Body(default={}),
+                     x_fused: str | None = Header(default=None)):
     """Drop the whole index. Search silently falls back to the live walk until
     the next scan, so this is a reclaim-disk / start-over button, not a
     destructive one — the only thing lost is derived data.
 
     Any scan in flight is cancelled first: a worker that survived the delete
     would compact its shards into the store moments later and quietly undo
-    it."""
+    it.
+
+    `kind` scopes the delete to that kind's OWN store — deleting "apps" must
+    never touch the "files" store sitting in a sibling directory
+    (index/config.py's `index_dir`), and vice versa."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    cfg = load_config()
+    kind, err = _kind_param(body.get("kind"))
+    if err is not None:
+        return err
+    cfg = load_config(kind=kind)
     cancelled = []
     for run in runner.list_runs(cfg, limit=KEEP_RUNS)["runs"]:
         if run["running"]:
