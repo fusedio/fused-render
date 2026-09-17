@@ -2106,3 +2106,92 @@ ordinary row; renamed and rewrote `task-status-notify.test.ts`'s and
 four new tests in `notifications.test.ts` for the family-collapse mechanism
 (same-page collapse, same-title-no-page collapse, `count`/`updatedAt`
 progression across three calls, and a different family staying separate).
+
+## Fix 26 review: three defects in the family collapse itself
+
+A follow-up build brief flagged three problems in Fix 26's own
+family-collapse mechanism (the code review that produced this brief found
+them by grepping `count` in `RepoUpdatesDock.tsx`, re-reading the user's
+verbatim words against `GROUP_GAP_MS`'s own 2-minute doc comment, and tracing
+`messageFamily`'s `page` branch back to `taskDestination`'s fallback chain).
+All three are now fixed, on top of Fix 26, without touching the `jobs.ts`
+grouping layer (`GROUP_GAP_MS`, `groupJobs`, `popupTick`, `groupPopupTick`
+are all untouched — verified by grep after the change, and by
+`jobs.test.ts` staying green with the same test count).
+
+**Defect 1 — the collapse was invisible.** `StoredNotification.count` was
+written by `notify()` but nothing read it; a second run's collapse silently
+overwrote the first row with no visible sign anything happened twice, worse
+than the stacking it replaced. `MessageRowView` (`RepoUpdatesDock.tsx`) now
+passes `status={notification.count > 1 ? \`Happened ${notification.count}
+times\` : undefined}` — the same `NotificationCard` slot `GroupJobRow`
+already uses to spell out its own multiplicity in plain words ("N of M
+done"/"N of M failed"), not a symbolic "×N" badge this panel has never
+otherwise drawn. Nothing renders at `count === 1`. The stale doc comment on
+`StoredNotification.count` (which claimed "×N" — never true, verified false
+before fixing) is corrected to describe the actual rendering.
+
+**Defect 2 — the window was too short for the real case.** The collapse
+only fired within `GROUP_GAP_MS` (2 minutes, `jobs.ts`) of the existing row's
+`updatedAt`. Two runs of a Claude task — the user's own YouTube-transcriber
+example — routinely finish much more than two minutes apart, so the
+user's original bug (two rows for one task run twice) would still reproduce.
+Fixed by dropping the time check entirely for retained MESSAGE rows: a
+repeat now collapses into an existing family's row for as long as that row
+is still sitting in `retained` undismissed, no matter how long ago it was
+raised. Once the row is dismissed, its family is gone from `retained` and
+the next repeat starts a fresh row — this is not "collapse forever", it is
+"collapse until the user has dealt with it", the plain reading of "better
+notification grouping/updation for same source". `GROUP_GAP_MS` is no
+longer imported by `notifications.ts` (unused there now); `jobs.ts`'s own
+constant, and every job-layer consumer of it, is untouched.
+
+**Defect 3 — the family key collided across different tasks.**
+`messageFamily` keyed on `page:<page>` alone. `taskDestination`
+(`task-status-notify.ts`) falls back to `taskHref(task) ?? folderHref(task)
+?? "/tasks"` — the last two are per-folder/global, not per-task — so two
+DIFFERENT tasks that both fall back to the same folder href shared a family.
+Because a collapsed row is rebuilt from the NEW input, the older task's
+title silently disappeared with no trace, mid-collapse, of a real
+completion. Fixed by folding `title` into the family key on the page branch
+too: `page:${page}::${title}` instead of `page:${page}`. The user's own case
+(same task, same title, same page) still collapses; two different tasks
+landing on the same folder href no longer do. A new test,
+`"two different tasks sharing the same folder-fallback page do not collapse
+into each other"` (`notifications.test.ts`), pins this specifically —
+distinct from the pre-existing "different page" test, which never exercised
+the same-page-different-title case at all.
+
+**ALSO VERIFIED, not a defect of this branch:** the build brief asked to
+check `bunx tsc --noEmit -p frontend` for reported errors in
+`sidebar-tasks.test.ts` around `TasksPulse` literals missing `queued`
+(roughly lines 77/88/101). Ran the typecheck fresh: it is clean, no output,
+and reading those exact lines in the file shows every `TasksPulse` object
+literal already includes `queued` (e.g. `{ running: 1, attention: 0, queued:
+0, doneUnread: 1, unseen: 1 }`). Whatever produced that diagnostic earlier is
+not reproducible against this branch's actual source or `tsc` output — no
+code change made for this item.
+
+**Verification** (actual output):
+- `bun --cwd frontend test src/platform/lib/notifications.test.ts
+  src/shell/RepoUpdatesDock.test.tsx src/shell/task-status-notify.test.ts
+  src/platform/lib/jobs.test.ts` → `267 pass, 0 fail, 524 expect() calls,
+  Ran 267 tests across 4 files.` (the bare single-file run of
+  `notifications.test.ts` alone threw `ReferenceError: location is not
+  defined` from `router.ts`'s module-init code — a pre-existing ordering
+  quirk the file's own header comment already documents, not something this
+  fix introduced; it disappears the moment the file runs alongside any
+  other file that already installed the dom shim, confirmed above).
+- `bun --cwd frontend test` (full suite) → `6533 pass, 0 fail, 24174
+  expect() calls, Ran 6533 tests across 305 files. [56.38s]`.
+- `bunx tsc --noEmit -p frontend` → clean, no output.
+- `node frontend/scripts/check-boundaries.mjs` → `boundaries OK (828
+  files)`.
+
+Tests added: `RepoUpdatesDock.test.tsx` — one test asserting a `count: 2`
+message row renders "Happened 2 times" and a `count: 1` row renders nothing
+extra. `notifications.test.ts` — three tests: a repeat collapsing into an
+existing row an hour later (well past the old `GROUP_GAP_MS`), a repeat
+AFTER the earlier row was dismissed starting a fresh row instead of
+resurrecting the old one, and two different tasks sharing a folder-fallback
+page NOT collapsing into each other.
