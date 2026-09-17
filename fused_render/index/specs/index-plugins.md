@@ -5,10 +5,13 @@
 > user's approval gates it. Implementing modules: `kinds.py` (`Column`,
 > `IndexKind`, the registry), `apps_kind.py` (the built-in "apps" kind),
 > `manifest.py` (`IndexManifest`, the propose/confirm store),
-> `examples/notes_indexer/` (a fully worked third-party reference). Wiring a
-> registered kind into the LIVE walker (`scan.py`'s `sink.add()` call sites)
-> and into the query/router layers for a kind other than "files" is not yet
-> built — see `Open questions` below and `DECISIONS-index-plugins.md`.
+> `examples/notes_indexer/` (a fully worked third-party reference). A
+> registered kind's rows are now extracted by the live walker
+> (`scan.py`'s `sink.add()` call sites) and compacted into partitions
+> (`store._compact_locked`, §6). Not yet built: a kind-driven
+> `guarded_query.py` (so a second index is queryable through the sandbox) and
+> the confirm/refuse HTTP route — see `Open questions` below and
+> `DECISIONS-index-plugins.md`.
 
 ## 1. The load-bearing rule: host owns the walk, plugin owns the row
 
@@ -158,17 +161,36 @@ users as something to discover or enable (decision #9).
 - **Mounted directories** — out of scope per SPEC-index-plugins.md; nothing
   here changes `MountGuard`'s behavior for any kind.
 
+## 6. Compaction (`store._compact_locked`) is schema-driven
+
+`_compact_locked` no longer hardcodes `path`/`mtime`/`dir`: it asks
+`IndexKind.identity_column`/`recency_column` (declared in `kinds.py`, see §2)
+for what to dedupe and order by, and derives the containing directory a
+registered kind's row belongs to from its identity column rather than
+assuming a denormalized `dir` column exists (`store._dir_expr`). "files"
+routes through none of this generically — every SQL string it produces for
+`cfg.kind == "files"` is the same literal text the store has always run, so
+the change is additive rather than a rewrite of the one path 377 existing
+tests depend on.
+
+`identity_column` must be a `"string"` column (compaction needs `lower()`
+and lexical min/max for the same partition-pruning bounds `query.py` uses for
+`files`). `recency_column`, if declared, must be numeric and breaks a dedup
+tie in favor of the larger value (`ORDER BY ... DESC`, mirroring `mtime`); a
+kind with no natural recency column (the `notes` example) falls back to
+ordering by its own identity column — arbitrary, but deterministic, and only
+ever exercised by a directory-boundary edge case, not the common path.
+`root_size` sums a kind's `size` column only when the kind has one; a kind
+without one (again, `notes`) reports `0` rather than a query error. A kind
+that declares neither `identity_column` fails `compact()` with a clear
+`ValueError` rather than a confusing DuckDB binder error deep in the SQL.
+
+The built-in `apps` kind declares `identity_column="path"`,
+`recency_column="updated_at"`. The `notes` example declares
+`identity_column="path"` only (no recency column).
+
 ## Open questions
 
-- `scan.py`'s walker does not yet call any registered kind's `extract` at
-  its `sink.add()` sites — a registered kind (built-in or third-party) is
-  fully declarable and independently testable, but nothing yet makes it
-  actually get indexed by a live scan.
-- `store.py`'s `schemas(pa)`/`Sink.__init__` and the ~170-line
-  `_compact_locked` merge SQL (`index-store.md §4`) still hardcode the
-  `files`/`dirs` shape; generalizing them to consult `IndexKind.pa_schema`
-  for a non-"files" `IndexConfig.kind` is the highest-risk remaining piece
-  and is not done.
 - `guarded_query.py`'s `_connect` (`CREATE VIEW files/dirs AS...`) and its
   `_EMPTY_FILES`/`_EMPTY_DIRS` stand-ins are not yet kind-driven, so a
   second index cannot be queried through the sandbox yet. The DuckDB

@@ -367,71 +367,133 @@ identically before ANY of this session's changes (checked via a
 temporary, dropped `git stash`) — unrelated to this work, most likely an
 environment/router-level issue, not touched by this session.
 
+## Unit 9 — `_compact_locked` generalized to a schema-driven merge (store.py)
+
+**Design**: the highest-risk item on the prior list, done as its own
+dedicated TDD unit exactly as flagged. `_compact_locked` no longer hardcodes
+`path`/`mtime`/`dir`. Three new pieces:
+
+- `IndexKind` (`kinds.py`) gains `identity_column: Optional[str] = None` and
+  `recency_column: Optional[str] = None`. `identity_column` must name a
+  declared `"string"` column (compaction's `lower()`/lexical min-max pruning
+  bounds need a string); `recency_column`, if given, must be numeric and
+  requires `identity_column` to also be set (recency only resolves a tie
+  *within* an identity partition — declaring one without the other is a
+  contract error, not silently ignored). Both default to `None`: a test
+  double that only exercises `schemas()`/`Sink` need not declare either.
+- `store._dedup_keys(cfg)` returns `(identity_column, recency_expr)`.
+  `cfg.kind == "files"` is the literal, unchanged `("path", "mtime")` pair —
+  never routed through the kinds registry, mirroring `schemas()`'s existing
+  "files is never looked up" posture. Any other kind asks its registered
+  `IndexKind`; a kind with no `recency_column` falls back to ordering by its
+  own identity column (arbitrary, but deterministic — duplicates are a
+  directory-boundary edge case the dedup QUALIFY guards against, not the
+  ordinary path for any kind). A kind with no `identity_column` at all raises
+  a clear `ValueError` at `compact()` rather than a confusing DuckDB binder
+  error three calls deep.
+- `store._dir_expr(identity_col)` derives "this row's containing directory"
+  as a SQL expression (`regexp_replace(col, '/[^/]*$', '')`) for any kind
+  whose row has no denormalized `dir` column of its own (every non-"files"
+  kind today: the host walker never attaches one at scan time — see
+  scan.py's `kind_obj.extract` call sites). Only meaningful when
+  `identity_column` names an absolute path, true of both `apps` and `notes`.
+  "files" never calls this — it already has a real `dir` column — so
+  `dir_expr == "dir"` for that kind exactly, and every SQL string built from
+  it (`rows_outside`, `rows_kept`) is byte-identical text to what
+  `_compact_locked` has always produced for "files". The DIRS bookkeeping
+  table needed NO changes at all: `schemas()` already documents that table
+  as kind-agnostic, so the pre-existing `outside`/`kept` (used only against
+  it) are untouched; only the FILES-shaped table's filtering needed the new
+  `rows_outside`/`rows_kept` pair.
+
+`root_totals()` sums a kind's `size` column only when the kind's schema
+declares one (`"size" in file_schema.names`) — `apps`/`notes` have none, and
+report `root_size: 0` rather than a DuckDB binder error on a nonexistent
+column. The old-rows backfill-missing-`depth`-column accommodation stays
+"files"-only, spelled out explicitly as such: that backfill exists only
+because pre-`depth` "files" partitions are still on disk today, and decision
+#4 ("no migration, rebuilt from scratch") means no other kind carries that
+history to accommodate.
+
+`apps_kind.py`'s `KIND` now declares `identity_column="path"`,
+`recency_column="updated_at"` (a genuine recency signal — the app entry
+page's own mtime, mirroring `mtime`'s role for "files"). The `notes` example
+declares `identity_column="path"` only — it has no natural recency column,
+so its dedup falls back to path ordering.
+
+**Tests**: extended `tests/test_index_kinds.py` (7 new tests: default-None,
+identity-not-in-columns, non-string identity, recency-not-in-columns,
+non-numeric recency, recency-without-identity, valid pair) and
+`tests/test_index_store.py` (5 new tests: dedup by identity+recency picks
+the higher-recency row, `root_size` is 0 for a sizeless kind, a registered
+kind's rows outside the scan root survive a second root's compaction
+(exercising `_dir_expr` directly), a kind with no `recency_column` still
+dedupes (to exactly one survivor, not asserting which), and a kind with no
+`identity_column` raises at `compact()`) — all TDD (watched fail on
+`BinderException`/`TypeError`/no-raise, then made to pass).
+
+**Verified**: `test_index_query test_index_store test_index_api
+test_apps_api test_index_rank test_search test_index_kinds
+test_index_config test_index_apps_kind test_index_manifest
+test_index_examples_notes test_index_scan` → 484 passed (the 386-strong
+6-file baseline plus the new tests above and every other unit's suite,
+none regressed).
+
 ## Remaining work (exact resume pointers)
 
 This section was corrected by the following builder session (see prior
 paragraph in git history for what it replaced): the version before that
 said Part 2 was "not started" and listed `config.py`'s `kind` field as
-pending, both stale by the time that session ended. Units 7-8 above (this
-session) closed the "declarable but never indexed" gap for the file-write
+pending, both stale by the time that session ended. Units 7-9 above have
+closed the "declarable but never indexed/compacted" gap for the file-write
 half of the pipeline. This is the reconciled list, in priority order.
 
-1. **`store.py` compaction generality** (Part 1, HIGH RISK — not done,
-   the single biggest remaining risk in the whole spec): `_compact_locked`
-   (~store.py:452-600+) hardcodes `path, dir, name, ext, size, mtime,
-   depth` throughout — the `QUALIFY row_number() ... ORDER BY mtime DESC`
-   dedup (assumes a recency column named `mtime`), the per-partition
-   `min(path)/max(path)/min(lower(path))/max(lower(path))` pruning bounds
-   (assumes `path` is both the identity column AND lexically sortable for
-   pruning), and the backfill-missing-`depth`-column fallback. A non-files
-   kind may have no natural "mtime" (recency) column at all, and its
-   identity column may not be named "path". This needs its own dedicated
-   TDD pass against `test_index_store.py`'s compaction tests, thought
-   through as its own design question (what generalizes across a "dedup
-   key" and an "order key" that isn't always literally `path`/`mtime`)
-   rather than attempted inside a unit doing anything else. Until this
-   lands, a non-"files" kind can be scanned (Unit 8) but not compacted —
-   `run_scan` for such a kind will fail at the `compact()` call.
-2. **`guarded_query.py` per-kind views** (Part 1 — not done): `_connect`'s
-   `CREATE VIEW files/dirs AS...` and `_EMPTY_FILES`/`_EMPTY_DIRS` need a
-   kind-driven equivalent. The DuckDB lockdown order
-   (`allowed_directories` → `enable_external_access=false` →
-   `lock_configuration=true`) MUST NOT change relative order.
-3. **Apps-kind search** (Part 2 tail — not done): the working hypothesis
+1. **`guarded_query.py` per-kind views** (Part 1 — not done, now the
+   single biggest remaining risk in Part 1): `_connect`'s `CREATE VIEW
+   files/dirs AS...` and `_EMPTY_FILES`/`_EMPTY_DIRS` need a kind-driven
+   equivalent, so a second index is queryable through the sandbox at all.
+   The DuckDB lockdown order (`allowed_directories` →
+   `enable_external_access=false` → `lock_configuration=true`) MUST NOT
+   change relative order.
+2. **Apps-kind search** (Part 2 tail — not done): the working hypothesis
    under "Open questions carried forward" below — `resolve_query`/
    `search_ranked` stay byte-identical for "files"; a new function shapes
    an apps-kind `inner` subquery and calls the same `_rank_sql`/
    `_glob_sql` primitives — needs verifying before relying on it.
-4. **Confirm/refuse HTTP route + frontend UI** (Part 2 tail — not done):
+3. **Confirm/refuse HTTP route + frontend UI** (Part 2 tail — not done):
    `manifest.propose_index`/`confirm_index`/`refuse_index` have no
    caller yet. Decision #8 ("never silent") needs a route plus a
    confirmation surface in the frontend.
-5. **Router generalization** (Part 1/2 tail — not done):
+4. **Router generalization** (Part 1/2 tail — not done):
    `routers/index.py`'s per-route bare `load_config()` calls need to
    accept an index identifier rather than assuming the single "files"
    store. The spec lists every call site with line numbers; change them
    in lockstep, and keep `fused.fileIndex.search`/`.query` in
    `static/runtime.js` working.
-6. **Management page** (not started): `apps/ai_models` is the precedent
+5. **Management page** (not started): `apps/ai_models` is the precedent
    for a prefix-routed built-in page (sidebar entry + lazy import in
    `App.tsx`) — build this feature's equivalent, and decide whether
    `frontend/src/shell/Indexing.tsx` folds into it or stays as a second,
    non-disagreeing source of truth.
-7. **Part 3 in its entirety** (not started): delete the shortcuts overlay
+6. **Part 3 in its entirety** (not started): delete the shortcuts overlay
    (surface + `frontend/src/platform/lib/shortcuts.ts:116`'s listing
    entry — delete, do not relocate to `?`), build the in-app ⌘K overlay,
    grouped by source with no cross-source score calibration, file search
    reusing `resolve_query`/`search_ranked` verbatim, app search reusing
-   whatever item 3 above produces, per-keystroke cancellation via the
+   whatever item 2 above produces, per-keystroke cancellation via the
    existing `CancelToken`/HTTP 499 machinery.
 
 **Already built and committed, for the avoidance of doubt**: the full
-plugin contract (`kinds.py`), kind-aware `IndexConfig`/`index_dir()`/
-`load_config()` (`config.py`), the built-in "apps" kind (`apps_kind.py`),
-the third-party manifest + propose/confirm registry (`manifest.py`), one
-fully worked reference example indexer (`examples/notes_indexer/`), the
-house-style spec doc (`specs/index-plugins.md`, linked from
-`overview.md`), kind-aware `schemas()`/`Sink` (store.py), and
-`IndexKind.extract` wired into every walker call site (scan.py) — a
-registered kind's rows are extracted and shard-written by a live scan,
-though not yet compactable (item 1 above).
+plugin contract (`kinds.py`, now with `identity_column`/`recency_column`),
+kind-aware `IndexConfig`/`index_dir()`/`load_config()` (`config.py`), the
+built-in "apps" kind (`apps_kind.py`), the third-party manifest +
+propose/confirm registry (`manifest.py`), one fully worked reference
+example indexer (`examples/notes_indexer/`), the house-style spec doc
+(`specs/index-plugins.md`, linked from `overview.md`), kind-aware
+`schemas()`/`Sink` (store.py), `IndexKind.extract` wired into every walker
+call site (scan.py), and a schema-driven `_compact_locked` (store.py) — a
+registered kind's rows are now extracted, shard-written, AND compacted into
+queryable partitions by a live scan, the same guarantee "files" has always
+had. What is NOT yet true: nothing outside `store.py` reads those partitions
+back — `guarded_query.py` (item 1 above) is what makes a second index
+queryable at all.
