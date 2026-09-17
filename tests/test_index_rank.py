@@ -285,6 +285,47 @@ def test_the_prefix_name_bonus(tmp_path):
     assert out["hits"][0]["score"] > 25  # base score plus the prefix bonus
 
 
+def test_the_basename_suffix_bonus_ranks_a_tail_match_above_an_interior_one(
+    tmp_path,
+):
+    """Substring-mode counterpart to the reported `*.js`-vs-`.json` bug
+    (glob mode, see the two glob tests below): a match that reaches the END
+    of the basename is exactly as good a signal as one that reaches its
+    START (the existing +25 `name_bonus` prefix case) and deserves the same
+    kind of credit, but nothing awarded it before this. Every OTHER term is
+    made IDENTICAL between the two candidates on purpose (same run length,
+    same zero segment-start count, same zero depth penalty since both are
+    <= SHALLOW_FREE) so the only thing that can separate them is the new
+    suffix bonus."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/xxxjsxxx.txt",       # "js" interior, not at the basename's end
+        "/r/d1/d2/d3/xxxjs",     # "js" is the LAST two chars of the basename
+    ])
+    files = search_ranked(cfg, "/r", "js")["hits"]
+    rels = [h["rel"] for h in files]
+    assert rels[0] == "d1/d2/d3/xxxjs"
+    by_rel = {h["rel"]: h for h in files}
+    assert by_rel["d1/d2/d3/xxxjs"]["score"] > by_rel["xxxjsxxx.txt"]["score"]
+
+
+def test_the_basename_suffix_bonus_does_not_reorder_an_exact_match_below_a_tail_match(
+    tmp_path,
+):
+    """The new suffix bonus must not be large enough to put a mere tail
+    match ahead of a TRUE exact-basename match (+100) at the same depth —
+    guards against picking a bonus so large it "swamps" the existing name
+    bonuses the way the brief warns against."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/config",           # exact basename match: gets +100 AND the new
+                                # suffix bonus (an exact match also reaches
+                                # the basename's end, by construction)
+        "/r/app-config",       # tail match only: ends with "config" but is
+                                # not equal to it
+    ])
+    out = search_ranked(cfg, "/r", "config")["hits"]
+    assert [h["rel"] for h in out] == ["config", "app-config"]
+
+
 def test_tier_1_2_3_boundaries_including_a_match_straddling_the_basename(
     tmp_path,
 ):
@@ -414,6 +455,46 @@ def test_glob_single_literal_run_score_matches_rank_sql_substring_score(tmp_path
     assert glob_hits.keys() == substring_hits.keys()
     for rel, score in glob_hits.items():
         assert score == substring_hits[rel], rel
+
+
+def test_glob_reported_bug_extension_match_beats_a_json_file_that_merely_contains_js(
+    tmp_path,
+):
+    """The reported bug: typing `*.js` (which resolves to the glob pattern
+    `**/*.js**`, a SINGLE literal run `[".js"]`) used to rank `.json` files
+    above real `.js` files. `.json` starts with the literal ".js", so it is
+    an equally good match for that one literal run as an actual `.js`
+    extension is — same run length, same tier (both are substrings of their
+    own basename) — and with only one literal run the interior-swallow
+    penalty is always 0 (nothing is "between" a single run), so nothing
+    differentiated them except the depth tie-break, which favored the
+    shallower `.json` files. A bonus for the run reaching the actual END of
+    the basename (true only for the real `.js` file, never for `.json`,
+    since `.json` has two more characters after the matched `.js`) fixes
+    it."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/Downloads.json",
+        "/r/Work.json",
+        "/r/Downloads/canvas_39.json",
+        "/r/Downloads/Archive/script.js",
+    ])
+    hits = search_ranked(cfg, "/r", "**/*.js**", glob=True)["hits"]
+    files = [h["rel"] for h in hits if not h["is_dir"]]
+    assert files[0] == "Downloads/Archive/script.js"
+
+
+def test_glob_suffix_bonus_does_not_reorder_an_exact_match_below_a_tail_match(
+    tmp_path,
+):
+    """Glob-mode counterpart of the substring-mode guard test above: the
+    bonus must not swamp a true exact-basename match even when both
+    candidates satisfy the new suffix condition."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/config",       # exact basename match for "config"
+        "/r/app-config",   # tail match only
+    ])
+    hits = search_ranked(cfg, "/r", "**config**", glob=True)["hits"]
+    assert [h["rel"] for h in hits] == ["config", "app-config"]
 
 
 def test_glob_tier_restores_correct_order_over_the_swallow_penalty(tmp_path):

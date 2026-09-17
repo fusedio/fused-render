@@ -595,6 +595,39 @@ _SEGMENT_SEPARATORS = ["/", ".", "-", "_", " "]
 _DEPTH_PENALTY = 4
 _SHALLOW_FREE = 3
 
+# The missing symmetric counterpart to `name_bonus`'s basename-PREFIX case
+# (+25 for a match starting at the basename's first character): +25 for a
+# match ENDING at the basename's last character — equivalently, ending at the
+# end of `rel` itself, since the basename is `rel`'s own tail. Reported bug:
+# `*.js` (a single literal run, `[".js"]`) scored a `.json` file identically
+# to a real `.js` file — `.json` starts with the literal ".js", so it is just
+# as good a match for that one run, and with only one literal run the
+# interior-swallow penalty (`_glob_score_sql`) is always 0, so nothing told
+# them apart except the depth tie-break, which favoured the shallower
+# `.json`. Only the true `.js` file's match reaches the end of the basename;
+# `.json`'s does not (two more characters, "on", follow it).
+#
+# Sized equal to the prefix bonus, not larger: a tail match and a head match
+# are the same STRENGTH of signal (reaching one whole edge of the name), so
+# giving the tail more weight than the head would be arbitrary, and giving it
+# less would keep failing the very asymmetry this fixes. Measured against
+# `_DEPTH_PENALTY`/`_SHALLOW_FREE` on a 2-candidate corpus (one shallow
+# `.json` file competing with a `.js` file at increasing depth, everything
+# else held constant): the score gap a depth-D `.js` file must overcome grows
+# as `4 * (D - 2)` for D > 2 (e.g. 4 at depth 3, 16 at depth 6, 24 at depth 8,
+# 32 at depth 10) — so `+25` fixes every case up to depth 8, comfortably
+# covering the reported bug's own depth (2) and any realistically nested
+# project tree, without being large enough to beat the depth penalty at
+# arbitrary, unbounded depth (which would just trade one "wins by
+# construction" bug for another). A larger value, e.g. 100 (level with the
+# EXACT-basename bonus), was checked to cause exactly the bad ordering the
+# brief warned about: a merely-tail-matching "app-config" would then outscore
+# a true exact-basename match "config" for the query "config" once "config"'s
+# own extra segment-start/tail credit is accounted for — see
+# test_the_basename_suffix_bonus_does_not_reorder_an_exact_match_below_a_tail_match
+# and its glob-mode counterpart, which pin +25 as safe on that front.
+_TAIL_BONUS = 25
+
 
 def _walk_from(start: str, rest: str, guard: "MountGuard | None" = None,
                 token: "CancelToken | None" = None) -> tuple:
@@ -1183,12 +1216,18 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, n: int, limit: int,
     )
     name_bonus = (f"CASE WHEN nm = lower('{qq}') THEN 100 "
                   f"WHEN nm LIKE lower('{ql}') || '%' ESCAPE '\\' THEN 25 ELSE 0 END")
+    # The symmetric counterpart to `name_bonus`'s prefix case: the match
+    # ends at the very end of `rel` — which, since the basename is `rel`'s
+    # own tail, is exactly "ends at the end of the basename". See
+    # `_TAIL_BONUS`'s own comment for the reported bug and the arithmetic
+    # that sizes it.
+    tail_bonus = f"CASE WHEN p0 + {n} = length(rel) THEN {_TAIL_BONUS} ELSE 0 END"
     tier = (f"CASE WHEN strpos(nm, lower('{qq}')) > 0 THEN 1 "
             f"WHEN p0 + {n} - 1 < length(rel) - length(nm) THEN 3 "
             f"ELSE 2 END")
     score = (f"{n} + 3 * ({n} - 1) + 5 * {segment_starts} "
              f"- {_DEPTH_PENALTY} * greatest(0, depth - {_SHALLOW_FREE}) "
-             f"+ {name_bonus}")
+             f"+ {name_bonus} + {tail_bonus}")
     return (
         f"WITH matched AS ("
         f"SELECT *, strpos(lrel, lower('{qq}')) - 1 AS p0 FROM ({inner}) "
@@ -1350,9 +1389,18 @@ def _glob_score_sql(literals: list) -> tuple:
     # whole-path version was wrong). For a single run this is provably 0
     # (`e_0 - p_0 - n_0 == 0`, since `e_0` is defined as `p_0 + n_0`), which
     # is what makes the single-literal-run reduction invariant hold.
+    # The symmetric tail bonus (see `_TAIL_BONUS`'s own comment), applied
+    # ONCE, off the LAST run's end position — only the last run can ever
+    # reach the end of `rel`, by definition of "last". For a single-run
+    # pattern this is the exact same condition `_rank_sql`'s own tail_bonus
+    # tests (`e_0 == p_0 + n_0`, `first_p_alias`/`last_e_alias` both alias
+    # that one run), which is what keeps the single-literal-run reduction
+    # invariant holding with this term included too.
+    tail_bonus = f"CASE WHEN ({last_e_alias}) = length(rel) THEN {_TAIL_BONUS} ELSE 0 END"
     score = (" + ".join(run_terms) +
              f" - {_DEPTH_PENALTY} * greatest(0, depth - {_SHALLOW_FREE})"
-             f" - (({last_e_alias}) - ({first_p_alias}) - {total_len})")
+             f" - (({last_e_alias}) - ({first_p_alias}) - {total_len})"
+             f" + {tail_bonus}")
     return cols, score
 
 

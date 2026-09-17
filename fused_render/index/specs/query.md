@@ -163,6 +163,25 @@ filename is not a better match, it is just a longer filename, so no term rewards
 sheer length. All of this happens in one SQL statement (`_glob_sql`), never a
 Python-side loop, so it stays inside `con.interrupt()`'s reach.
 
+Both `_rank_sql` and `_glob_score_sql` also carry a `_TAIL_BONUS` (+25) — the
+symmetric counterpart to `name_bonus`'s basename-PREFIX case: a match ending
+exactly at the end of the basename (equivalently, at the end of `rel` itself,
+since the basename is `rel`'s own tail) earns the same +25 a match starting at
+the basename's first character does. Reported bug this closed: `*.js` resolves
+to a single literal run (`[".js"]`), which a `.json` file satisfies just as
+well as a real `.js` file does (`.json` starts with the literal `.js`) — with
+only one literal run the interior-swallow penalty above is always 0, so
+nothing told the two apart except the depth tie-break, which favoured the
+shallower `.json` files. Only the real `.js` file's match reaches the actual
+end of the basename; `.json`'s does not (two more characters follow it). In
+glob mode the bonus is computed off the LAST literal run's end position only —
+the only run that can ever reach the end of `rel` — which is why it costs
+nothing for the single-literal-run reduction invariant
+(`test_glob_single_literal_run_score_matches_rank_sql_substring_score`) to
+keep holding. Sized equal to the prefix bonus (not larger) so it cannot swamp
+it, and well under the +100 exact-basename bonus; see `_TAIL_BONUS`'s own
+comment in `query.py` for the depth-penalty arithmetic that sizes it.
+
 When `ranked=False`, or the pattern reduces to zero literal runs, `_glob_sql`
 computes no scoring apparatus at all — not "score then discard", and that
 includes no `tier` either — and results come back in the original `depth ASC,
