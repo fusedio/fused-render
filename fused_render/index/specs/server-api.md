@@ -153,7 +153,7 @@ off.
 
 1. **Reclaim** run directories beyond the newest `KEEP_RUNS` (`scan.md §2`).
 2. For each root: skip it if it does not exist, or if a scan **started** within
-   `SCAN_DEBOUNCE_S` (15 min). The debounce reads the start time, not the finish time,
+   `SCAN_DEBOUNCE_S` (5 min). The debounce reads the start time, not the finish time,
    so a scan still running suppresses the next one just as firmly.
 3. Otherwise start an incremental scan. Later boots are cheap by construction — the
    directory-mtime rule (`scan-incremental.md §2`) turns an unchanged tree into one
@@ -480,7 +480,7 @@ of the folder:
   response carries `created` so the client's "indexing…" caption can follow the
   same rule instead of guessing.
 - **a 20 s floor per folder** (`MUTATION_SCAN_FLOOR_S`), which DEFERS rather
-  than drops — the scheduler's 15-minute `SCAN_DEBOUNCE_S` would be a refusal,
+  than drops — the scheduler's 5-minute `SCAN_DEBOUNCE_S` would be a refusal,
   and a refused rescan leaves a renamed file unfindable, which is the failure
   this mechanism exists to prevent. The 120 s deadline is the escape from both
   the floor and the wait-for-a-live-run, so nothing is held for ever.

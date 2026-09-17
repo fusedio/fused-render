@@ -1556,6 +1556,14 @@ def test_startup_scan_is_debounced(home, tmp_path, monkeypatch):
     assert started == []
 
 
+def test_the_startup_debounce_is_a_few_minutes_not_fifteen(home):
+    """Its stated job is stopping a dev-server reload loop (or three windows
+    opening at once) from queueing scan after scan — a job five minutes does
+    exactly as well as fifteen, at a quarter the cost to a machine that really
+    was left on and reopened."""
+    assert 4 * 60 <= index_router.SCAN_DEBOUNCE_S <= 6 * 60
+
+
 def test_startup_scan_rescans_once_the_debounce_has_elapsed(home, tmp_path, monkeypatch):
     src = _tree(tmp_path)
     started = []
@@ -2292,9 +2300,9 @@ def test_a_folder_that_goes_quiet_after_the_check_refused_it_still_gets_scanned(
     sub = src / "sub"
     _write_dirs_index(load_config(), {str(src): 1, str(sub): 1})
     disk_mtime = os.stat(str(sub)).st_mtime
-    # The watcher's own debounce: the check runs ~3s after the change, well
-    # inside the quiet window (freshness.QUIET_S is 30s).
-    check_now = disk_mtime + 3.0
+    # The watcher's own debounce: the check runs ~1s after the change, still
+    # inside the quiet window (freshness.QUIET_S).
+    check_now = disk_mtime + 1.0
     index_router._run_freshness_check(str(sub), now=check_now)
     assert started == []  # refused, exactly as reported
     assert len(scheduled) == 1

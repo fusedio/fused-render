@@ -245,7 +245,7 @@ def test_query_py_and_guarded_query_read_connections_cap_their_threads(home, tmp
     `indexed_mtime_ns` is deliberately UNCAPPED and excluded from that claim
     entirely — it is a single point lookup (`WHERE dir = '...' LIMIT 1`) on a
     heavily-debounced background housekeeping path (at most once per root
-    every ~110s, see routers/index.py's FRESHNESS_CHECK_S comment), not a
+    every ~60s, see routers/index.py's FRESHNESS_CHECK_S comment), not a
     per-request interactive query, and DuckDB's thread count buys it nothing
     a single-row lookup can use."""
     from fused_render.index import guarded_query

@@ -292,9 +292,10 @@ async def _bounded_index_read(op: str, cancel_token: CancelToken, log_q: str,
 # How recently a root must have been scanned for the startup scheduler to skip
 # it. Short enough that a machine left on for a day rescans when the app is
 # reopened, long enough that a dev-server reload loop (or three windows opening
-# at once) cannot queue scan after scan. An on-demand scan is always available
-# regardless.
-SCAN_DEBOUNCE_S = 15 * 60
+# at once) cannot queue scan after scan — five minutes does that job as well
+# as fifteen, at a quarter the cost to the machine-left-on case. An on-demand
+# scan is always available regardless.
+SCAN_DEBOUNCE_S = 5 * 60
 # Run directories kept around for post-mortems; the rest are reclaimed at
 # startup (index/specs/scan.md §2).
 KEEP_RUNS = 20
@@ -1219,25 +1220,17 @@ _freshness_slot = threading.Lock()
 # start; this one is about the checks, and only about the ones this process
 # makes.
 #
-# KNOWN, PRE-EXISTING, AND DELIBERATELY NOT FIXED HERE: this being 55, i.e.
-# SHORTER than freshness.MIN_INTERVAL_S (60), does NOT produce a ~60s folder-open
-# scan cadence. It produces ~110s. Trace the two clocks: `_freshness_due` stamps
-# this one the moment a check becomes due, WHETHER OR NOT the check then goes on
-# to scan. So the check at t=55 stamps 55 and calls
-# freshness.note_folder_opened, which sees the last scan ~55s ago, refuses on its
-# own 60s floor, and starts nothing; the next check is therefore t=110, and that
-# is the first one that can scan. Every other check is structurally wasted. An
-# equal 60 gives ~120 by the same argument, so "equal is the bad case, shorter is
-# the safe one" — which is what the note here used to say — is backwards.
-#
-# The fix, if the documented cadence is ever actually wanted, is to raise this
-# ABOVE MIN_INTERVAL_S plus the spawn offset (61 would do): the check then
-# arrives with the scan floor already clear and the real cadence is the number
-# written here. It is left alone on purpose. How often every developer machine
-# rescans its home is a behaviour change and the user's call, not a side effect
-# of a comment correction — and certainly not of a commit whose subject is "wait
-# three seconds".
-FRESHNESS_CHECK_S = 55.0
+# `_freshness_due` stamps this clock the moment a check becomes due, WHETHER OR
+# NOT the check then goes on to scan — so this value must sit ABOVE
+# freshness.MIN_INTERVAL_S (60), with margin for the ~1s a scan takes to record
+# itself, or a check can land before the previous scan has cleared its own
+# floor, stamp anyway, and get refused: the effective folder-open rescan
+# cadence would then be a multiple of this number rather than the number
+# itself (see
+# tests/test_index_freshness.py::test_the_effective_folder_open_scan_cadence_tracks_freshness_check_s).
+# With the margin kept, every check that comes due finds the scan floor
+# already clear, so the real cadence IS the value written here.
+FRESHNESS_CHECK_S = 62.0
 
 # ...and a check that is going to act does not act where it was asked. It runs
 # the ordinary incremental scan of the whole enclosing root: min(10, cpu_count)
@@ -1269,12 +1262,12 @@ FRESHNESS_CHECK_S = 55.0
 # It must stay far below FRESHNESS_CHECK_S, which is the only relationship
 # between the two that matters. The wait is absorbed inside the existing check
 # interval — a root's checks land every FRESHNESS_CHECK_S + FRESHNESS_DELAY_S
-# instead of every FRESHNESS_CHECK_S — so at three against fifty-five it shifts
-# the schedule by a rounding error and introduces no refusal that was not
-# already happening (see the note above: the refusals are pre-existing and come
-# from the check interval, not from this). A delay of the same order as the check
-# interval WOULD change the cadence materially, which is what the test on this
-# pair guards.
+# instead of every FRESHNESS_CHECK_S — so at three against sixty-two it shifts
+# the schedule by a rounding error and introduces no refusal of its own (the
+# refusals, if any, come from the check interval interacting with the scan
+# floor above, not from this). A delay of the same order as the check interval
+# WOULD change the cadence materially, which is what the test on this pair
+# guards.
 #
 # _freshness_slot is held across the wait, so listings that arrive during it are
 # dropped rather than queued — the same thing the slot already did for the
