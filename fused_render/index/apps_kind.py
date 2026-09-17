@@ -90,7 +90,15 @@ def extract(path: str, st) -> dict | None:
     return row
 
 
-KIND = IndexKind(name=NAME, columns=COLUMNS, extract=extract, text_column="name")
+KIND = IndexKind(
+    name=NAME, columns=COLUMNS, extract=extract, text_column="name",
+    # `path` (the app's realpath, per `app_listing.app_dict`) is the row's
+    # identity: exactly one row per app. `updated_at` is a genuine recency
+    # signal (the entry page's own mtime) so compaction's dedup tie-break
+    # keeps the most recently touched row, the same role `mtime` plays for
+    # the "files" kind.
+    identity_column="path", recency_column="updated_at",
+)
 
 
 def register_builtin(*, replace: bool = False) -> None:

@@ -211,6 +211,50 @@ def depth_expr(col: str) -> str:
     return f"CAST(length({col}) - length(replace({col}, '/', '')) AS INTEGER)"
 
 
+def _dedup_keys(cfg: IndexConfig):
+    """(identity_column, recency_expr): the columns `_compact_locked`'s merge
+    dedupes and orders by. "files" is the literal, unchanged pair the store
+    predates kinds with — `path` uniquely identifies a row, `mtime` breaks a
+    tie in favor of the most recently written one — returned without going
+    through the kinds registry at all, the same "files is never looked up"
+    posture `schemas()` already documents.
+
+    Any other kind asks its registered `IndexKind` for `identity_column`/
+    `recency_column`. A kind with no `recency_column` declared falls back to
+    ordering by its own identity column: an arbitrary but fully deterministic
+    tie-break, since without a genuine recency signal there is no principled
+    way to prefer one duplicate row over another — and duplicates are a
+    directory-boundary edge case this dedup guards against, not the ordinary
+    case for any kind (see `_compact_locked`'s module-level notes)."""
+    if cfg.kind == "files":
+        return "path", "mtime"
+    from fused_render.index import kinds
+    kind_obj = kinds.get(cfg.kind)
+    if not kind_obj.identity_column:
+        raise ValueError(
+            f"IndexKind {cfg.kind!r} has no identity_column declared; "
+            f"cannot compact (see kinds.IndexKind.identity_column)"
+        )
+    return kind_obj.identity_column, kind_obj.recency_column or kind_obj.identity_column
+
+
+def _dir_expr(identity_col: str) -> str:
+    """The containing directory of `identity_col`'s value, as a SQL
+    expression over the row itself.
+
+    A registered kind's row carries no denormalized `dir` column of its own
+    the way "files" does (the host walker never attaches one — see
+    scan.py's `kind_obj.extract` call sites): asking every plugin author to
+    reconstruct it would just duplicate `os.path.dirname` badly, so
+    compaction derives the same fact here instead, from whichever column the
+    kind declared as its identity. This is only meaningful when
+    `identity_column` names an absolute filesystem path, true of every
+    non-"files" kind this store compacts today (`apps_kind.py`,
+    `examples/notes_indexer/`). "files" never calls this: it already has a
+    real `dir` column, computed once at scan time."""
+    return f"regexp_replace({identity_col}, '/[^/]*$', '')"
+
+
 class Sink:
     """Accumulates scan results and writes shard-*/_dirs-*/_keep-* parquets
     into `shards_dir`. `tag` keeps filenames unique across processes.
@@ -464,8 +508,22 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
     con = background_connect()
     rootp = root.rstrip("/") or "/"
     prefix_like = (like_literal(rootp) + "/") if rootp != "/" else "/"
+
+    identity_col, recency_expr = _dedup_keys(cfg)
+    file_schema, _ = schemas(pa, cfg.kind)
+    # `dir_expr` is what "this row's containing directory" means for the
+    # FILES-shaped table: "files" already has a literal `dir` column, so for
+    # that kind (and ONLY that kind) `dir_expr == "dir"` reproduces the exact
+    # SQL text this store has always run. Any other kind derives it from its
+    # identity column (see `_dir_expr`). The DIRS bookkeeping table is
+    # unaffected either way — it always has a literal `dir` column,
+    # kind-agnostic (`schemas()`), so `outside`/`kept` below (used only
+    # against the dirs table) stay untouched.
+    dir_expr = "dir" if cfg.kind == "files" else _dir_expr(identity_col)
     outside = (f"(dir <> '{_sql(rootp)}' "
                f"AND dir NOT LIKE '{prefix_like}%' ESCAPE '\\')")
+    rows_outside = (f"({dir_expr} <> '{_sql(rootp)}' "
+                    f"AND {dir_expr} NOT LIKE '{prefix_like}%' ESCAPE '\\')")
 
     # Every path below reaches SQL through parquet_src/_sql, never as a raw
     # f-string: the store lives under the user's home, so a quote or a glob
@@ -483,8 +541,15 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
         f"SELECT count(*) FROM {tmp_new_dirs}").fetchone()[0]
         if tmp_new_dirs else 0)
     # A closed Sink always writes a _keep table, but an empty shards dir (no
-    # Sink ran) leaves nothing to match: keep nothing rather than fail.
+    # Sink ran) leaves nothing to match: keep nothing rather than fail. `kept`
+    # is always evaluated against the DIRS table's own literal `dir` column
+    # (used both standalone and via the `o.{kept}` string-concatenation below,
+    # which only reads correctly because `kept` starts with the bare token
+    # "dir"); `rows_kept` is its FILES-shaped-table counterpart, using
+    # `dir_expr` — identical text to `kept` for "files", the derived
+    # containing-directory expression for any other kind.
     kept = (f"dir IN (SELECT dir FROM {tmp_keep})" if tmp_keep else "false")
+    rows_kept = (f"{dir_expr} IN (SELECT dir FROM {tmp_keep})" if tmp_keep else "false")
 
     # dirs diff counts vs the previous index
     changed, added, removed = 0, 0, 0
@@ -516,10 +581,23 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
         """files / folders / bytes under the scan root, from the index.
 
         dirs.parquet is re-resolved per call rather than reused from above:
-        this runs both before and after the file is replaced."""
-        rf, rs = (con.execute(
-            f"SELECT count(*), coalesce(sum(size),0) FROM {src} "
-            f"WHERE NOT {outside}").fetchone() if src else (0, 0))
+        this runs both before and after the file is replaced.
+
+        `root_size` sums the row's `size` column only when the kind
+        declares one — "files" always does; a kind like the "notes"
+        example has no notion of byte size at all, and reports 0 rather
+        than failing the query outright."""
+        if src and "size" in file_schema.names:
+            rf, rs = con.execute(
+                f"SELECT count(*), coalesce(sum(size),0) FROM {src} "
+                f"WHERE NOT {rows_outside}").fetchone()
+        elif src:
+            rf = con.execute(
+                f"SELECT count(*) FROM {src} "
+                f"WHERE NOT {rows_outside}").fetchone()[0]
+            rs = 0
+        else:
+            rf, rs = 0, 0
         dirs_now = parquet_src(
             [dirs_parquet] if os.path.exists(dirs_parquet) else [])
         rd = con.execute(
@@ -544,14 +622,26 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
 
     srcs = []
     if has_old:
-        # Column list spelled out, not `SELECT *`: a partition written before
-        # `depth` existed has one fewer column than the shards it is unioned
-        # with, and a positional UNION ALL would fail outright rather than
-        # merge. Backfill it from the path instead (see depth_expr).
-        fcols = pq.read_schema(old_files[0]).names
-        fdp = "depth" if "depth" in fcols else f"{depth_expr('path')} AS depth"
-        srcs.append(f"SELECT path, dir, name, ext, size, mtime, {fdp} "
-                    f"FROM {old_src} WHERE {outside} OR {kept}")
+        if cfg.kind == "files":
+            # Column list spelled out, not `SELECT *`: a partition written
+            # before `depth` existed has one fewer column than the shards
+            # it is unioned with, and a positional UNION ALL would fail
+            # outright rather than merge. Backfill it from the path instead
+            # (see depth_expr). This backfill is "files"-specific: it
+            # predates kinds and exists only because "files" partitions
+            # from before `depth` existed are still readable today. A
+            # registered kind has no such history — decision #4 is "no
+            # migration, the store is rebuilt from scratch" — so any other
+            # kind's old rows are selected by its current declared columns
+            # below, with no backfill.
+            fcols = pq.read_schema(old_files[0]).names
+            fdp = "depth" if "depth" in fcols else f"{depth_expr('path')} AS depth"
+            srcs.append(f"SELECT path, dir, name, ext, size, mtime, {fdp} "
+                        f"FROM {old_src} WHERE {rows_outside} OR {rows_kept}")
+        else:
+            col_list = ", ".join(file_schema.names)
+            srcs.append(f"SELECT {col_list} FROM {old_src} "
+                        f"WHERE {rows_outside} OR {rows_kept}")
     if has_shards:
         srcs.append(f"SELECT * FROM {shard_src}")
     src = " UNION ALL ".join(srcs) or None
@@ -561,8 +651,9 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
     if src:
         con.execute(
             f"CREATE TEMP TABLE merged AS SELECT * FROM ({src}) "
-            f"QUALIFY row_number() OVER (PARTITION BY path ORDER BY mtime DESC) = 1 "
-            f"ORDER BY path")
+            f"QUALIFY row_number() OVER "
+            f"(PARTITION BY {identity_col} ORDER BY {recency_expr} DESC) = 1 "
+            f"ORDER BY {identity_col}")
         total_rows = con.execute("SELECT count(*) FROM merged").fetchone()[0]
         n_parts = max(1, -(-total_rows // cfg.part_rows))
         for i in range(n_parts):
@@ -576,9 +667,9 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
             # hold a folded-smaller path than its byte-wise minimum. Pruning
             # for the ILIKE match needs the real folded range (query.prune).
             lo, hi, lo_f, hi_f, n = con.execute(
-                f"SELECT min(path), max(path), "
-                f"min(lower(path)), max(lower(path)), count(*) "
-                f"FROM {parquet_src([fp])}").fetchone()
+                f"SELECT min({identity_col}), max({identity_col}), "
+                f"min(lower({identity_col})), max(lower({identity_col})), "
+                f"count(*) FROM {parquet_src([fp])}").fetchone()
             parts.append({"file": os.path.basename(fp), "min": lo, "max": hi,
                           "min_lower": lo_f, "max_lower": hi_f, "rows": n})
 

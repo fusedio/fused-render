@@ -72,7 +72,14 @@ def extract(path: str, st) -> dict | None:
     }
 
 
-KIND = IndexKind(name=NAME, columns=COLUMNS, extract=extract, text_column="title")
+KIND = IndexKind(
+    name=NAME, columns=COLUMNS, extract=extract, text_column="title",
+    # `path` is the row's identity (one row per markdown file). There is no
+    # natural recency column here — a note carries no timestamp of its own
+    # — so compaction falls back to ordering by `path` itself when resolving
+    # a duplicate (see `IndexKind.recency_column`'s docstring in kinds.py).
+    identity_column="path",
+)
 
 
 def register_example(*, replace: bool = False) -> None:

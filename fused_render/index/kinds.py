@@ -65,15 +65,34 @@ class IndexKind:
     ordinary "not mine" answer — only return None — the same degrade-safe
     posture as `exported_apps.py`: an index that cannot answer produces zero
     rows, never a crash that takes the whole scan down.
+
+    `identity_column` and `recency_column` are what `store._compact_locked`
+    needs to merge a kind's rows the same way it always has for "files"
+    (`path` for identity, `mtime` for recency), generalized: `identity_column`
+    is the column that uniquely names a row (so compaction can dedupe two
+    copies of the same thing down to one) and MUST be a "string" column,
+    because compaction also uses it for the `min`/`max`/`lower()` pruning
+    bounds `query.py`'s range search needs — the same role `path` plays for
+    files today. `recency_column`, if given, must be numeric, and is the tie-
+    break compaction orders by when two rows share an identity (mirroring
+    `ORDER BY mtime DESC`); a kind with no natural recency signal leaves it
+    unset and compaction falls back to ordering by the identity column itself
+    — arbitrary but deterministic, since duplicates are a directory-boundary
+    edge case store.py's QUALIFY guards against, not the ordinary case for any
+    kind. Both default to None: a kind that never goes through compaction (a
+    schema/Sink test double, for instance) need not declare either.
     """
 
     name: str
     columns: tuple[Column, ...]
     extract: Callable[[str, object], Optional[dict]]
     text_column: str
+    identity_column: Optional[str] = None
+    recency_column: Optional[str] = None
 
     def __post_init__(self) -> None:
         names = [c.name for c in self.columns]
+        by_name = {c.name: c for c in self.columns}
         if len(names) != len(set(names)):
             raise ValueError(f"IndexKind {self.name!r} has duplicate column names: {names}")
         if self.text_column not in names:
@@ -81,6 +100,35 @@ class IndexKind:
                 f"IndexKind {self.name!r}'s text_column {self.text_column!r} "
                 f"is not among its columns {names}"
             )
+        if self.identity_column is not None:
+            if self.identity_column not in names:
+                raise ValueError(
+                    f"IndexKind {self.name!r}'s identity_column "
+                    f"{self.identity_column!r} is not among its columns {names}"
+                )
+            if by_name[self.identity_column].type != "string":
+                raise ValueError(
+                    f"IndexKind {self.name!r}'s identity_column "
+                    f"{self.identity_column!r} must be a string column "
+                    f"(compaction dedup/pruning needs lower()/lexical order)"
+                )
+        if self.recency_column is not None:
+            if self.identity_column is None:
+                raise ValueError(
+                    f"IndexKind {self.name!r} declares recency_column without "
+                    f"identity_column; recency only resolves ties within an "
+                    f"identity partition"
+                )
+            if self.recency_column not in names:
+                raise ValueError(
+                    f"IndexKind {self.name!r}'s recency_column "
+                    f"{self.recency_column!r} is not among its columns {names}"
+                )
+            if by_name[self.recency_column].type not in ("int64", "int32", "float64"):
+                raise ValueError(
+                    f"IndexKind {self.name!r}'s recency_column "
+                    f"{self.recency_column!r} must be a numeric column"
+                )
 
     def pa_schema(self, pa):
         """This kind's row shape as a pyarrow Schema, in declared column

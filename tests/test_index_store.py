@@ -331,6 +331,106 @@ def test_compact_skips_the_rewrite_when_nothing_changed(tmp_path):
     assert os.stat(part).st_mtime_ns == before
 
 
+# -- compaction for a registered (non-"files") kind --------------------------
+
+def _register_notes_kind(name="_test_notes", recency=True):
+    kind = IndexKind(
+        name=name,
+        columns=(Column("title", "string"), Column("path", "string"),
+                  Column("rank", "int64")),
+        extract=lambda path, st: None,
+        text_column="title",
+        identity_column="path",
+        recency_column="rank" if recency else None,
+    )
+    register(kind, replace=True)
+    return kind
+
+
+def _shard_kind(tmp_path, cfg, kind_name, entries):
+    """Like `_shard`, but for a Sink writing a non-"files" kind's dict rows."""
+    shards = str(tmp_path / "run" / "shards")
+    os.makedirs(shards, exist_ok=True)
+    sink = Sink(shards, "t", pa, pq, cfg.shard_rows, kind=kind_name)
+    for d, payload in entries:
+        sink.add(d, "s", payload)
+    sink.close()
+    return shards
+
+
+def test_compact_dedupes_a_registered_kind_by_identity_and_recency_columns(tmp_path):
+    _register_notes_kind()
+    cfg = _cfg(tmp_path, kind="_test_notes")
+    shards = _shard_kind(tmp_path, cfg, "_test_notes", [
+        ("/r", ("sig", [
+            {"title": "old", "path": "/r/a.md", "rank": 1},
+            {"title": "new", "path": "/r/a.md", "rank": 2},
+        ], 0, 1, 0)),
+    ])
+    summary = compact(cfg, "/r", shards, pa, pq)
+    assert summary["rows"] == 1
+    part = os.path.join(cfg.files_dir, read_manifest(cfg)["partitions"][0]["file"])
+    t = pq.read_table(part)
+    assert t.column("title").to_pylist() == ["new"]
+    assert t.column("rank").to_pylist() == [2]
+
+
+def test_compact_reports_zero_root_size_for_a_kind_without_a_size_column(tmp_path):
+    _register_notes_kind()
+    cfg = _cfg(tmp_path, kind="_test_notes")
+    shards = _shard_kind(tmp_path, cfg, "_test_notes", [
+        ("/r", ("sig", [{"title": "a", "path": "/r/a.md", "rank": 1},
+                        {"title": "b", "path": "/r/b.md", "rank": 1}], 0, 1, 0)),
+    ])
+    summary = compact(cfg, "/r", shards, pa, pq)
+    assert summary["root_files"] == 2
+    assert summary["root_size"] == 0
+    assert summary["root_dirs"] == 1
+
+
+def test_compact_keeps_a_registered_kinds_rows_outside_the_scan_root(tmp_path):
+    """A registered kind has no denormalized `dir` column of its own (unlike
+    "files"): compaction must derive the containing directory from the
+    identity column to decide what "outside this scan's root" means."""
+    _register_notes_kind()
+    cfg = _cfg(tmp_path, kind="_test_notes")
+    compact(cfg, "/one", _shard_kind(tmp_path, cfg, "_test_notes", [
+        ("/one", ("sig", [{"title": "a", "path": "/one/a.md", "rank": 1}],
+                  0, 1, 0))]), pa, pq)
+    compact(cfg, "/two", _shard_kind(tmp_path, cfg, "_test_notes", [
+        ("/two", ("sig", [{"title": "b", "path": "/two/b.md", "rank": 1}],
+                  0, 1, 0))]), pa, pq)
+    part = os.path.join(cfg.files_dir, read_manifest(cfg)["partitions"][0]["file"])
+    t = pq.read_table(part)
+    assert sorted(t.column("path").to_pylist()) == ["/one/a.md", "/two/b.md"]
+
+
+def test_compact_dedupes_a_kind_without_a_recency_column_deterministically(tmp_path):
+    _register_notes_kind(name="_test_notes_no_recency", recency=False)
+    cfg = _cfg(tmp_path, kind="_test_notes_no_recency")
+    shards = _shard_kind(tmp_path, cfg, "_test_notes_no_recency", [
+        ("/r", ("sig", [{"title": "x", "path": "/r/a.md", "rank": 1},
+                        {"title": "y", "path": "/r/a.md", "rank": 2}], 0, 1, 0)),
+    ])
+    summary = compact(cfg, "/r", shards, pa, pq)
+    assert summary["rows"] == 1
+
+
+def test_compact_raises_for_a_kind_without_an_identity_column(tmp_path):
+    kind = IndexKind(
+        name="_test_no_identity_compact",
+        columns=(Column("title", "string"),),
+        extract=lambda path, st: None,
+        text_column="title",
+    )
+    register(kind, replace=True)
+    cfg = _cfg(tmp_path, kind="_test_no_identity_compact")
+    shards = _shard_kind(tmp_path, cfg, "_test_no_identity_compact", [
+        ("/r", ("sig", [{"title": "x"}], 0, 1, 0))])
+    with pytest.raises(ValueError):
+        compact(cfg, "/r", shards, pa, pq)
+
+
 def test_compact_reports_root_totals(tmp_path):
     cfg = _cfg(tmp_path)
     summary = compact(cfg, "/r", _shard(tmp_path, cfg, [

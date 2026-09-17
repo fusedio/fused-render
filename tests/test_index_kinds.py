@@ -116,6 +116,88 @@ def test_get_raises_a_clear_error_for_an_unknown_kind():
         get("_no_such_kind_ever_registered")
 
 
+def test_kind_defaults_to_no_identity_or_recency_column():
+    kind = IndexKind(
+        name="_test_no_identity",
+        columns=(Column("name", "string"),),
+        extract=_noop_extract,
+        text_column="name",
+    )
+    assert kind.identity_column is None
+    assert kind.recency_column is None
+
+
+def test_kind_rejects_an_identity_column_not_among_its_columns():
+    with pytest.raises(ValueError):
+        IndexKind(
+            name="bad-identity-col",
+            columns=(Column("name", "string"),),
+            extract=_noop_extract,
+            text_column="name",
+            identity_column="path",
+        )
+
+
+def test_kind_rejects_a_non_string_identity_column():
+    with pytest.raises(ValueError):
+        IndexKind(
+            name="bad-identity-type",
+            columns=(Column("name", "string"), Column("size", "int64")),
+            extract=_noop_extract,
+            text_column="name",
+            identity_column="size",
+        )
+
+
+def test_kind_rejects_a_recency_column_not_among_its_columns():
+    with pytest.raises(ValueError):
+        IndexKind(
+            name="bad-recency-col",
+            columns=(Column("name", "string"),),
+            extract=_noop_extract,
+            text_column="name",
+            identity_column="name",
+            recency_column="updated_at",
+        )
+
+
+def test_kind_rejects_a_non_numeric_recency_column():
+    with pytest.raises(ValueError):
+        IndexKind(
+            name="bad-recency-type",
+            columns=(Column("name", "string"), Column("tag", "string")),
+            extract=_noop_extract,
+            text_column="name",
+            identity_column="name",
+            recency_column="tag",
+        )
+
+
+def test_kind_rejects_a_recency_column_without_an_identity_column():
+    with pytest.raises(ValueError):
+        IndexKind(
+            name="bad-recency-no-identity",
+            columns=(Column("name", "string"), Column("updated_at", "float64")),
+            extract=_noop_extract,
+            text_column="name",
+            recency_column="updated_at",
+        )
+
+
+def test_kind_accepts_a_valid_identity_and_recency_column():
+    kind = IndexKind(
+        name="_test_identity_recency",
+        columns=(Column("name", "string"), Column("path", "string"),
+                  Column("updated_at", "float64")),
+        extract=_noop_extract,
+        text_column="name",
+        identity_column="path",
+        recency_column="updated_at",
+    )
+    assert kind.identity_column == "path"
+    assert kind.recency_column == "updated_at"
+
+
 def test_registered_lists_known_kinds_sorted():
     kind = IndexKind(
         name="_test_sorted_b",
