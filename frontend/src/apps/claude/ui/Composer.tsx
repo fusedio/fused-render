@@ -1452,18 +1452,31 @@ export function ComposerCard({
     const shown = heldShownRef.current;
     if (shown !== undefined && heldVersion <= shown) return;
     heldShownRef.current = heldVersion;
-    // The row is newer than what is painted. Not over a reader mid-sentence,
-    // and not for this box's own save echoing back with the same words.
-    if (typedRef.current) return;
+    // THE SETTINGS AND THE VERSION FOLLOW THE RECORD, ALWAYS (Bugbot
+    // 4040204501; live repro 2026-09-18): a time picked on the card, a model,
+    // a repeat — this box has no opinion on them and carries the record's
+    // forward, whatever it does with the words. The version is what the next
+    // save names as `If-Match`; a statement already deferred is re-made over
+    // both, so a blur cannot write the old settings back with a stale version.
+    const target = form.target || (fileRef.current ?? "");
+    const files = form.attachments ?? carriedRef.current;
+    const sync = peekDraftSyncer(draftKey);
+    rememberDraftVersion(draftKey, heldVersion);
+    // THE WORDS: theirs when this box is idle, ours while a sentence is being
+    // typed (the reader's claim; a 409 toast settles it if they collide).
+    if (typedRef.current) {
+      baseFormRef.current = heldFormOf(form, textRef.current, target, files);
+      mirrorHeld();
+      return;
+    }
     const words = joinDraft(form.title, form.description);
     if (words === textRef.current) {
-      // SAME WORDS, NEWER RECORD: a settings-only edit on the card (a time, a
-      // model), or this box's own save echoing back. Either way the settings
-      // this box will carry forward are the record's now, and so is the
-      // version its next save must name (Bugbot 4040029424).
-      const files = form.attachments ?? carriedRef.current;
-      baseFormRef.current = heldFormOf(form, words, form.target || (fileRef.current ?? ""), files);
-      rememberDraftVersion(draftKey, heldVersion);
+      // Same words, newer record: a settings-only edit, or this box's own save
+      // echoing back. Take it as stored, then re-state anything still pending.
+      const base = heldFormOf(form, words, target, files);
+      baseFormRef.current = base;
+      sync?.seedTask(base);
+      mirrorHeld();
       return;
     }
     adoptRef.current(form);

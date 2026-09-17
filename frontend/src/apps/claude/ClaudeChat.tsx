@@ -1996,12 +1996,17 @@ function ChatBody(props: ChatBodyProps) {
   // the composer saves the old folder's draft on its way out (key change) and
   // the next listing picks this folder's newest.
   const heldFile = useRef(file);
+  /** A folder switch is in progress: the box still shows the OLD folder's
+   *  draft for a render, so its words are not "typed" (Bugbot 4040204492). */
+  const switching = useRef<string | null>(null);
   useEffect(() => {
     if (heldFile.current === file) return;
     heldFile.current = file;
     if (inChat) return;
     pickedHeld.current = false;
-    setHeld(freshHeld());
+    const fresh = freshHeld();
+    switching.current = fresh.key;
+    setHeld(fresh);
   }, [file, inChat]);
   useEffect(() => {
     if (inChat) {
@@ -2014,14 +2019,26 @@ function ChatBody(props: ChatBodyProps) {
       return;
     }
     if (pickedHeld.current || recent === null) return;
-    pickedHeld.current = true;
-    const typed = !!boxRef.current?.value.trim() || attach.items.length > 0;
-    if (typed) return;
-    // ONLY THIS FOLDER'S DRAFTS — the listing can still be the previous
-    // target's for a beat after a switch, and a draft aimed elsewhere must not
-    // land in this box.
+    // AFTER A FOLDER SWITCH THE PICK WAITS FOR THE FRESH KEY (Bugbot
+    // 4040204492): in the commit that changed `file`, `held` is still the old
+    // folder's and the box still holds its words. Latching here would read
+    // those words as typed and skip the new folder's newest for good.
     const here = (t: Task): boolean =>
       !file || t.target === file || (t.target ?? "").startsWith(file + "/") || t.project === file;
+    if (switching.current) {
+      if (held.key !== switching.current) return; // the old key — the fresh one lands next render
+      // …and the LISTING has to be this folder's too: the previous folder's rows
+      // can still be on hand for a beat. No row of this folder yet = ask again.
+      if (!recent.some(here)) return;
+      switching.current = null;
+      pickedHeld.current = true;
+    } else {
+      pickedHeld.current = true;
+      const typed = !!boxRef.current?.value.trim() || attach.items.length > 0;
+      if (typed) return;
+    }
+    // ONLY THIS FOLDER'S DRAFTS (`here`): a draft aimed elsewhere must not land
+    // in this box.
     const newest = recent
       .filter((t) => isDraftTask(t) && t.draft_kind === "task" && !!t.draft_id && here(t))
       .sort((a, b) => draftUpdatedAt(b) - draftUpdatedAt(a))[0];
