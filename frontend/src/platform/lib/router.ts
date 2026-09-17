@@ -451,6 +451,21 @@ export function viewUrlForFsPath(fsPath: string, search?: string): string {
   return VIEW_PREFIX + encodeFsPathSegments(fsPath) + (search || "");
 }
 
+// The `?_mode=`/`?sel=`/`?q=` triple, serialized the one way navigate() and
+// spaLinkProps both need to agree on: navigate() appends these onto whatever
+// snapshot/`_side` carry-over it already decided, and spaLinkProps's href has
+// no page state to carry, so this is the whole of its query string. One
+// function rather than two independently-written encodings is what makes a
+// caller's href and its own click destination the same URL by construction —
+// see spaLinkProps below for the bug two copies of this produced.
+function destOptsQuery(opts?: { mode?: string; sel?: string | null; q?: string }): string[] {
+  const parts: string[] = [];
+  if (opts?.mode) parts.push("_mode=" + encodeURIComponent(opts.mode));
+  if (opts?.sel) parts.push("sel=" + encodeURIComponent(opts.sel));
+  if (opts?.q) parts.push("q=" + encodeURIComponent(opts.q));
+  return parts;
+}
+
 export function navigate(
   fsPath: string,
   opts?: { isDir?: boolean; mode?: string; sel?: string | null; q?: string },
@@ -539,15 +554,13 @@ export function navigate(
   // default (the preview pane's expand button carries the mode it is showing).
   // Its other producer, the explorer's "Open as app", is gone with the app
   // concept (D264).
-  if (opts?.mode) parts.push("_mode=" + encodeURIComponent(opts.mode));
-  if (opts?.sel) parts.push("sel=" + encodeURIComponent(opts.sel));
   // `opts.q` carries a query straight onto the destination folder's own box —
   // the file view's merged field pushes here once its query is already
   // committed (typed, or gate-open by itself for a non-escaping pattern), and
   // the destination is meant to show results immediately rather than making
   // the user press Enter a second time. See `qCommitted` below for the half
   // of this that rides in history.state instead of the URL.
-  if (opts?.q) parts.push("q=" + encodeURIComponent(opts.q));
+  parts.push(...destOptsQuery(opts));
   const search = parts.length ? "?" + parts.join("&") : "";
   // `opts.isDir` is a nav hint (the clicked listing row / breadcrumb already
   // knows whether the target is a directory): it rides in history.state so the
@@ -613,6 +626,46 @@ export function navHintQCommitted(): boolean {
 // (bookmark buttons, hooks) fires exactly as before.
 export function replaceSearch(url: string): void {
   history.replaceState(history.state, "", url);
+}
+
+// The shared "this is a real anchor, but a plain left-click is client-side
+// navigation" props — spread onto an <a>. It exists because that gesture
+// grew past a third hand-rolled copy (BookmarkCards' folder card, FilesHome's
+// search result row, the AI Models page's cache-dir link, …), and a fourth
+// place getting the guard right by hand was only ever a matter of time —
+// AppPage/AppFiles/AppApi's "Open the folder" links had NO guard at all (a
+// raw `<a href>`, a full document reload), which is the bug this was written
+// to fix. A hard navigation tears down the JS context, which is fatal for
+// anything held in a module-level store — the explorer clipboard's pending
+// cut, most of all (fs-clipboard.ts).
+//
+// `href` stays the true destination (not "#" or "javascript:void(0)"), so
+// every browser affordance an anchor gets for free — Cmd/Ctrl-click,
+// middle-click, "Open Link in New Tab" from the context menu, drag-to-bookmark
+// — keeps working; only the plain left-click a normal <a> would turn into a
+// full page load is caught and redirected through `navigate` instead.
+//
+// `href` and the click destination are built from the SAME `mode`/`sel`/`q`
+// via `destOptsQuery` — one source of truth for one destination, so a caller
+// that passes `mode`/`sel`/`q` cannot end up with an anchor whose href
+// disagrees with what its own left-click does. `opts.search` is an escape
+// hatch for a caller whose destination isn't expressible as `mode`/`sel`/`q`
+// (there is none today) and, when given, wins outright over the derived
+// query rather than merging with it.
+export function spaLinkProps(
+  fsPath: string,
+  opts?: { isDir?: boolean; mode?: string; sel?: string | null; q?: string; search?: string },
+): { href: string; onClick: (e: { defaultPrevented: boolean; button: number; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; preventDefault: () => void }) => void } {
+  const derivedParts = destOptsQuery(opts);
+  const search = opts?.search ?? (derivedParts.length ? "?" + derivedParts.join("&") : undefined);
+  return {
+    href: urlForFsPath(fsPath, search),
+    onClick: (e) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      e.preventDefault();
+      navigate(fsPath, { isDir: opts?.isDir, mode: opts?.mode, sel: opts?.sel, q: opts?.q });
+    },
+  };
 }
 
 export function navigateUrl(url: string, opts?: { isDir?: boolean }): void {

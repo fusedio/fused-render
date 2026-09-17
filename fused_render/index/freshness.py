@@ -40,7 +40,12 @@ from fused_render.index.ignore import MountGuard, norm
 # question: it comes back as `FreshnessCheck.retry_after`, which tells the
 # caller exactly when the folder will have been quiet for this long, so it can
 # ask again itself instead of depending on one to arrive by luck.
-QUIET_S = 30.0
+#
+# Only needs to outlast a single write burst, not tolerate a long one:
+# MIN_INTERVAL_S already stops a churning directory from queueing scan after
+# scan, independently of this gate. A file someone just saved has to be
+# findable within a handful of seconds, not thirty of them.
+QUIET_S = 3.0
 
 # Floor between scans of one root STARTED by this path. Read off `scans.json`
 # via runner.last_scan, which the startup scheduler and the manual buttons also
@@ -48,16 +53,13 @@ QUIET_S = 30.0
 # trigger needs no state file of its own. That is also why it cannot be dropped
 # in favour of routers/index.FRESHNESS_CHECK_S: that one throttles the CHECKS
 # per root, in memory, and sees nothing started by the scheduler or the buttons,
-# so without this floor a folder-open could rescan seconds after either. The two
-# express ONE cadence at two layers, but they do not currently ADD UP to it:
-# FRESHNESS_CHECK_S is 55, under this 60, and a check stamps its own clock
-# whether or not it then scans — so the check at t=55 is refused here and the
-# next one is t=110, making the real folder-open cadence ~110s rather than 60.
-# Known, pre-existing, and written up in full over FRESHNESS_CHECK_S, including
-# why the fix is to raise THAT above this number. Still far below the startup
-# debounce (SCAN_DEBOUNCE_S, 15 min): that
-# one exists to stop a reload loop, this one to stop a browsing session from
-# queueing.
+# so without this floor a folder-open could rescan seconds after either. The
+# two express ONE cadence at two layers, and DO add up to it: FRESHNESS_CHECK_S
+# sits above this number (with margin for the spawn offset), so a check that
+# comes due always finds this floor already clear, and the real folder-open
+# cadence tracks FRESHNESS_CHECK_S directly (written up in full there). Still
+# far below the startup debounce (SCAN_DEBOUNCE_S, ~5 min): that one exists to
+# stop a reload loop, this one to stop a browsing session from queueing.
 #
 # Lowered from 600s, which was itself raised from 120s on the argument that a
 # completed scan invalidates every fetched corpus in the app
