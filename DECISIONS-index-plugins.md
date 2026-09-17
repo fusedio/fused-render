@@ -658,3 +658,108 @@ grant/decline surface end to end. What is NOT yet true: no router accepts
 an index identifier beyond the single "files" store, there is no
 management page, and Part 3 (the ⌘K overlay, the shortcuts-overlay
 deletion) has not been started.
+
+## Unit 13: router generalization (item 1 above) — DONE
+
+`routers/index.py`'s twelve listed call sites (scan, scan-folder, cancel,
+status, stats, search, rank, query, ask, config GET/POST, delete) all now
+resolve a `kind` query/body parameter through a new `_kind_param(raw)`
+helper — `raw` if it is a non-empty string, else `"files"` — and load that
+kind's own `IndexConfig` via `load_config(kind=kind)` instead of a bare
+`load_config()`. An unregistered kind name is a 400 naming what IS
+registered. `"files"` is always accepted despite never being in
+`kinds.registered()` — it predates the plugin registry entirely
+(`config.index_dir`/`store.schemas` special-case it by name) — so
+`_kind_param` checks for it by name rather than requiring a "files"
+`IndexKind` to exist just to satisfy this check.
+
+**`apps_kind.register_builtin()` is now actually called** (at import time
+of `routers/index.py`, `replace=True`). It was defined and tested in
+isolation since unit 10-ish but never invoked anywhere a running server or
+an app.py-driven test would reach — the built-in "apps" kind was
+unreachable from any request path. Import time (not `app.py`'s
+`create_app`) so a test that imports the router module directly, without
+going through `create_app()` (several existing test files do exactly
+this), still sees "apps" registered.
+
+**`/api/index/rank` branches on kind.** For `"files"` it is byte-for-byte
+the previous behavior (`_rank_worker`: `resolve_query` then
+`search_ranked`, `_rank_reason`'s mount/package/uncovered/scanning
+classification, `root` required and non-empty). For any other kind it runs
+a new `_rank_flat_kind_worker`, built on `search_apps_ranked` — the fully
+generic ranker unit 11 built, which already reads a kind's
+identity/text/recency columns off the registry. `root` is NOT required
+for a non-"files" kind (the route only 400s on a missing root when
+`kind == "files"`): a flat kind has no navigable folder for a client to
+name, only its own fixed default root (`_default_root`, below). The three
+fields `_rank_body` computes for the files tree — `base`/`mode`/`pattern`
+— are answered with fixed stand-ins (`""`, `"substring"`, `q` itself) so
+the response shape (and the `_WIRE_DROP` trimming `api_index_rank` already
+does) stays identical across kinds; `reason` is always `""` — a flat
+kind's default root is the one workspace it always scans, never "mount" /
+"uncovered" / "scanning".
+
+**`scan_roots`'s home-directory fallback is now per-kind**, via a new
+`_default_root(kind)`: `"~"` for `"files"` (unchanged), `fused_dir()` (the
+`~/Fused` app workspace, `shell/seed.py`) for anything else — the natural
+default scan root for the "apps" kind, mirroring what `GET /api/apps`
+itself walks.
+
+**Deliberately NOT generalized, and documented in the code as such**:
+- `/api/index/stats` and `/api/index/search` thread `kind` through to load
+  the right store, but `query.stats`/`query.search_under` themselves stay
+  hardcoded to the `files`/`dirs` schema — a flat kind's rows have no
+  directory tree for a breakdown or a "descendants of this folder" query
+  to describe. A non-"files" kind loads correctly; calling stats/search
+  against one will raise inside those functions (an accepted gap, not a
+  silent one).
+- `/api/index/ask` threads `kind` through to the guarded SQL execution,
+  but `_ASK_SYSTEM_PROMPT` stays hardcoded describing the files/dirs
+  schema — asking a natural-language question against a non-"files" kind
+  compiles SQL the model was never told the real column names for. Also
+  an accepted, documented gap.
+- `run_startup_scan`/`run_startup_warm`/`_startup_runs` were NOT widened to
+  auto-scan "apps" (or any other kind) at boot — `tests/test_index_api.py`
+  pins `_startup_runs` with exact dict-equality against the "files"-only
+  shape, and the spec's own scope is "generalize the routes", not "change
+  what scans automatically at startup". An "apps" scan is only ever
+  triggered on demand, via `POST /api/index/scan {"kind": "apps"}`
+  (the eventual management page's job to call).
+
+**Test-authoring note (bit us once, worth writing down)**: several
+existing tests call route functions directly as plain Python calls,
+bypassing FastAPI's request handling entirely — a `Query(default="")`-
+declared parameter then arrives as the `Query(...)` FieldInfo object
+itself, not the string `""` it describes. `_kind_param` treats anything
+that is not a real non-empty string (including that FieldInfo object) as
+"absent", specifically to keep those tests working unchanged. One
+existing test (`test_index_jobs.py`'s
+`test_api_index_scan_wakes_the_bridge_on_a_started_run`) stubbed
+`load_config` with a zero-argument lambda; updated to accept `kind="files"`
+since every route now calls `load_config(kind=...)`.
+
+**New test file**: `tests/test_index_kind_routes.py` — an unregistered
+kind is a 400 (parametrized across config/scan/status/rank/delete); the
+default (no `kind`) config answers for the original unmigrated
+`home/index` directory; `kind=apps` config answers for `home/index/apps`;
+deleting one kind never touches a sibling kind's store; `/api/index/rank`
+for `kind=apps` ranks through `search_apps_ranked` (built against the
+real, fully-shaped built-in "apps" `IndexKind`, not a throwaway test
+double) and does not require `root`; `scan_roots` defaults "apps" to a
+monkeypatched workspace root and still defaults "files" to home.
+
+**Verified**: `tests/test_index_kind_routes.py` (12 passed) plus the
+directly-affected existing suites — `test_index_api.py`,
+`test_index_apps_search.py`, `test_index_apps_kind.py`,
+`test_index_config.py`, `test_index_jobs.py`, `test_git_repos_api.py`,
+`test_index_fda_gate.py`, `test_app_lifespan.py` (240 passed total, one
+existing test updated for the new `load_config(kind=...)` call shape).
+`tests/test_index_runtime.py` (the `fused.fileIndex` JS-bridge node
+harness) still 18/18 after the `runtime.js` `opts.kind` passthrough.
+`tests/test_index_scan_on_demand.py` still shows exactly the same 5
+pre-existing, unrelated failures verified at the top of this branch (7
+passed, 5 failed — unchanged). `ast.parse`/`node --check` both clean.
+
+**Resume pointer**: item 1 above is done. Next: item 2 (the management
+page) and item 3 (Part 3 — the ⌘K overlay and the shortcuts-overlay
+deletion), in that order, per the top-level task ordering.
