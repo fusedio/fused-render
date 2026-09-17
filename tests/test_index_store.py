@@ -80,6 +80,35 @@ def test_sink_counts_reused_files_from_unchanged_dirs(tmp_path):
     assert (sink.dirs, sink.files, sink.reused, sink.udirs) == (2, 1, 7, 1)
 
 
+def test_sink_add_tolerates_a_plugin_row_missing_a_declared_column(tmp_path):
+    """Review finding 6: `extract`'s own contract says "return a dict of
+    declared columns", but it is untrusted plugin code from the writer's
+    point of view — the same "a plugin cannot take the scan down" rule
+    `scan.py`'s own `extract` call site now honors (finding 5). Before the
+    fix, the generic branch did `r[name].append(fr[name])`, so a row
+    missing even one of the kind's declared keys raised `KeyError` and
+    aborted the whole shard, not just that one malformed row."""
+    kind = IndexKind(
+        name="_test_missing_key",
+        columns=(Column("name", "string"), Column("extra", "string")),
+        extract=lambda path, st: None,
+        text_column="name",
+    )
+    register(kind, replace=True)
+    shards = str(tmp_path / "s")
+    os.makedirs(shards, exist_ok=True)
+    sink = Sink(shards, "t", pa, pq, IndexConfig(dir=str(tmp_path / "ix")).shard_rows,
+                kind="_test_missing_key")
+    # "b" is missing the declared "extra" column entirely.
+    sink.add("/r", "s", ("sig", [{"name": "a", "extra": "x"}, {"name": "b"}],
+                         0, 1, 0))
+    sink._flush_files()
+    names = [n for n in os.listdir(shards) if n.startswith("shard-")]
+    t = pq.read_table(os.path.join(shards, names[0]))
+    assert t.column("name").to_pylist() == ["a", "b"]
+    assert t.column("extra").to_pylist() == ["x", None]
+
+
 def _register_widgets_kind():
     kind = IndexKind(
         name="_test_widgets",
@@ -414,6 +443,55 @@ def test_compact_dedupes_a_kind_without_a_recency_column_deterministically(tmp_p
     ])
     summary = compact(cfg, "/r", shards, pa, pq)
     assert summary["rows"] == 1
+
+
+def _register_dir_identity_kind(name="_test_dir_identity"):
+    """Mirrors `apps_kind.py`'s shape: `identity_column`'s value is the
+    FOLDER the row was extracted from (`identity_is_dir=True`), not a file
+    inside it — the distinction review finding 2 says `_dir_expr` got
+    backwards for "apps"."""
+    kind = IndexKind(
+        name=name,
+        columns=(Column("name", "string"), Column("path", "string")),
+        extract=lambda path, st: None,
+        text_column="name",
+        identity_column="path",
+        identity_is_dir=True,
+    )
+    register(kind, replace=True)
+    return kind
+
+
+def test_compact_keeps_a_dir_identity_kinds_row_across_an_incremental_rescan(tmp_path):
+    """Repro from review finding 2: the apps kind's row identity IS the app's
+    own folder (`app_dict`'s `path` is the folder's realpath). Rescanning the
+    workspace root with that folder reused ("u") must not drop its row —
+    `_dir_expr` used to strip a trailing path segment off the identity value
+    unconditionally, answering the folder's PARENT instead of the folder
+    itself, so it never matched the `_keep` table's literal folder path."""
+    _register_dir_identity_kind()
+    cfg = _cfg(tmp_path, kind="_test_dir_identity")
+
+    # Full scan: one app row, identified by its own folder.
+    compact(cfg, "/ws", _shard_kind(tmp_path, cfg, "_test_dir_identity", [
+        ("/ws", ("sig", [{"name": "app", "path": "/ws/app"}], 0, 1, 1)),
+        ("/ws/app", ("sig2", [], 0, 1, 0)),
+    ]), pa, pq)
+    part = os.path.join(cfg.files_dir, read_manifest(cfg)["partitions"][0]["file"])
+    assert pq.read_table(part).column("path").to_pylist() == ["/ws/app"]
+
+    # Incremental rescan: the workspace root is revisited, but the app's own
+    # folder is unchanged and reused ("u") rather than rewalked.
+    shards = str(tmp_path / "run2" / "shards")
+    os.makedirs(shards)
+    sink = Sink(shards, "t2", pa, pq, cfg.shard_rows, kind="_test_dir_identity")
+    sink.add("/ws", "s", ("sig", [], 0, 1, 1))
+    sink.add("/ws/app", "u", 1)
+    sink.close()
+    compact(cfg, "/ws", shards, pa, pq)
+    part = os.path.join(cfg.files_dir, read_manifest(cfg)["partitions"][0]["file"])
+    assert pq.read_table(part).column("path").to_pylist() == ["/ws/app"], (
+        "the app's row must survive an incremental scan that reuses its folder")
 
 
 def test_compact_raises_for_a_kind_without_an_identity_column(tmp_path):

@@ -89,6 +89,20 @@ class IndexKind:
     text_column: str
     identity_column: Optional[str] = None
     recency_column: Optional[str] = None
+    # Whether `identity_column`'s own value names the directory it was
+    # produced from (True), or a file inside that directory (False, the
+    # default — the "notes" example's `path` is the markdown file itself).
+    # `store._dir_expr` needs this to know whether to strip a trailing path
+    # segment off the identity value to reach "the row's containing
+    # directory": for "files" (never routed through here at all — see
+    # `store._dedup_keys`) and "notes", the identity value is a file and
+    # stripping the last segment gives the right answer; for "apps", the
+    # identity value IS the app's folder (`app_listing.app_dict`'s `path` is
+    # the folder's own realpath, not the entry `.html` file's), so stripping
+    # a segment would answer the folder's PARENT instead — exactly the bug
+    # that dropped every app row surviving an incremental rescan (a reused
+    # ("u") folder's `_dir_expr` never matched the folder itself).
+    identity_is_dir: bool = False
 
     def __post_init__(self) -> None:
         names = [c.name for c in self.columns]
@@ -112,6 +126,12 @@ class IndexKind:
                     f"{self.identity_column!r} must be a string column "
                     f"(compaction dedup/pruning needs lower()/lexical order)"
                 )
+        if self.identity_is_dir and self.identity_column is None:
+            raise ValueError(
+                f"IndexKind {self.name!r} declares identity_is_dir without "
+                f"identity_column; there is no identity value to interpret "
+                f"as a directory"
+            )
         if self.recency_column is not None:
             if self.identity_column is None:
                 raise ValueError(

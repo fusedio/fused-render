@@ -98,6 +98,12 @@ KIND = IndexKind(
     # keeps the most recently touched row, the same role `mtime` plays for
     # the "files" kind.
     identity_column="path", recency_column="updated_at",
+    # The row's `path` is the app's own FOLDER (`app_listing.app_dict`'s
+    # `path` is `os.path.realpath(folder)`), not the entry `.html` file
+    # `extract` was called with — so compaction must not strip a trailing
+    # path segment when deriving "this row's containing directory" from it
+    # (see `kinds.IndexKind.identity_is_dir` and `store._dir_expr`).
+    identity_is_dir=True,
 )
 
 

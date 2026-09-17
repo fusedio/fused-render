@@ -227,7 +227,7 @@ def _dedup_keys(cfg: IndexConfig):
     directory-boundary edge case this dedup guards against, not the ordinary
     case for any kind (see `_compact_locked`'s module-level notes)."""
     if cfg.kind == "files":
-        return "path", "mtime"
+        return "path", "mtime", False
     from fused_render.index import kinds
     kind_obj = kinds.get(cfg.kind)
     if not kind_obj.identity_column:
@@ -235,10 +235,12 @@ def _dedup_keys(cfg: IndexConfig):
             f"IndexKind {cfg.kind!r} has no identity_column declared; "
             f"cannot compact (see kinds.IndexKind.identity_column)"
         )
-    return kind_obj.identity_column, kind_obj.recency_column or kind_obj.identity_column
+    return (kind_obj.identity_column,
+            kind_obj.recency_column or kind_obj.identity_column,
+            kind_obj.identity_is_dir)
 
 
-def _dir_expr(identity_col: str) -> str:
+def _dir_expr(identity_col: str, identity_is_dir: bool = False) -> str:
     """The containing directory of `identity_col`'s value, as a SQL
     expression over the row itself.
 
@@ -251,7 +253,19 @@ def _dir_expr(identity_col: str) -> str:
     `identity_column` names an absolute filesystem path, true of every
     non-"files" kind this store compacts today (`apps_kind.py`,
     `examples/notes_indexer/`). "files" never calls this: it already has a
-    real `dir` column, computed once at scan time."""
+    real `dir` column, computed once at scan time.
+
+    `identity_is_dir` (`kinds.IndexKind.identity_is_dir`) says the identity
+    value already NAMES the containing directory rather than a file inside
+    it — true for "apps" (`path` is the app's own folder), false for "notes"
+    (`path` is the markdown file). Stripping a trailing segment off a
+    directory-shaped identity value would answer its PARENT instead of
+    itself, which is exactly what silently dropped every "apps" row under a
+    reused ("u") folder on an incremental rescan: the folder held in the
+    dirs-bookkeeping `_keep` table never matched a wrongly-stripped
+    `dir_expr`."""
+    if identity_is_dir:
+        return identity_col
     return f"regexp_replace({identity_col}, '/[^/]*$', '')"
 
 
@@ -298,8 +312,17 @@ class Sink:
                 r["depth"].append(fr[0].count("/"))
         else:
             for fr in frows:
+                # A third-party `extract` is untrusted content, not host
+                # code: a row missing a declared key (or carrying a typo'd
+                # extra one) must degrade that ONE row, never abort the
+                # shard — the same "a plugin cannot take the scan down"
+                # contract `scan.py`'s own `extract` call site honors.
+                # `.get(name)` (None for a missing key, written as a null
+                # cell) plus dropping any undeclared key keeps a malformed
+                # plugin row contained instead of raising `KeyError` here,
+                # inside the host's own writer.
                 for name in self.file_schema.names:
-                    r[name].append(fr[name])
+                    r[name].append(fr.get(name))
         self.files += len(frows)
         dr = self.dir_rows
         dr["dir"].append(d); dr["sig"].append(sig)
@@ -509,7 +532,7 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
     rootp = root.rstrip("/") or "/"
     prefix_like = (like_literal(rootp) + "/") if rootp != "/" else "/"
 
-    identity_col, recency_expr = _dedup_keys(cfg)
+    identity_col, recency_expr, identity_is_dir = _dedup_keys(cfg)
     file_schema, _ = schemas(pa, cfg.kind)
     # `dir_expr` is what "this row's containing directory" means for the
     # FILES-shaped table: "files" already has a literal `dir` column, so for
@@ -519,7 +542,8 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
     # unaffected either way — it always has a literal `dir` column,
     # kind-agnostic (`schemas()`), so `outside`/`kept` below (used only
     # against the dirs table) stay untouched.
-    dir_expr = "dir" if cfg.kind == "files" else _dir_expr(identity_col)
+    dir_expr = ("dir" if cfg.kind == "files"
+                else _dir_expr(identity_col, identity_is_dir))
     outside = (f"(dir <> '{_sql(rootp)}' "
                f"AND dir NOT LIKE '{prefix_like}%' ESCAPE '\\')")
     rows_outside = (f"({dir_expr} <> '{_sql(rootp)}' "
