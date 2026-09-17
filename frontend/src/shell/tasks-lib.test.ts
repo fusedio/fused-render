@@ -9936,7 +9936,13 @@ describe("the folder chip as a filter tag", () => {
     const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row .schedule-tv-id--tag {"));
     const body = rest.slice(0, rest.indexOf("}"));
     expect(body).toContain("background: none");
-    expect(body).toContain("cursor: pointer");
+    // A FUNNEL CURSOR, with `pointer` behind it (Akshil, 2026-09-17). The press
+    // filters the wall in place; a hand said the same thing as the row behind
+    // it. `pointer` stays as the fallback for engines that will not take an SVG
+    // cursor, so the worst case is the hand this used to be.
+    expect(body).toContain("cursor:");
+    expect(body).toContain("data:image/svg+xml");
+    expect(body).toMatch(/pointer;/);
     // THE PILL IS ITS OWN SIZE AGAIN (2026-08-24, final pass). Two passes tried
     // to make this box the hit area by growing it to the row's full height, and
     // both failed the same way: `border-radius` draws on the padding box, so the

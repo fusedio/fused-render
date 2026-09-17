@@ -234,10 +234,13 @@ test("a landed reply keeps its own bubble when a follow-up's answer arrives (R4-
   // The answer to the follow-up is ONLY the answer to the follow-up: reply A
   // is not typed a second time under it.
   expect(rows[2]).not.toContain("Reply A");
-  // …and the landed reply is the SAME reply, folded — not rebuilt beneath the
-  // newer one. A new response folds whatever the rule had left open (design.md
-  // §B, Akshil 2026-09-15), so the row loses its body and keeps its identity:
-  // same first line, same mark, nothing typed twice.
+  // …and the landed reply is the SAME reply — not rebuilt beneath the newer
+  // one. A new response no longer folds anything (design.md §B, Akshil
+  // 2026-09-17: the fold rule speaks once, at open), so the fold this half of
+  // the test needs is the reader's own click, which is the only thing that
+  // folds a reply mid-conversation now. Folded, the row loses its body and
+  // keeps its identity: same first line, same mark, nothing typed twice.
+  unfold(r, 0);
   let after: Json | null = null;
   walk(r.toJSON() as Json, (n) => {
     if (cls(n).includes("assistant") && !after) after = n;

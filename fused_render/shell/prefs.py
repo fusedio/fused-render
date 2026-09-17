@@ -169,50 +169,53 @@ NATIVE_CHAT_ENV = "FUSED_RENDER_NATIVE_CHAT"
 
 def native_chat_enabled() -> bool:
     """Whether chat embeds render the native React chat instead of the legacy
-    `templates/claude` iframe (default off — opt-in while the port is in beta).
+    `templates/claude` iframe (default ON — Akshil, 2026-09-17: the port is what
+    the app ships, the iframe is the fallback).
 
-    Same idiom as `canvases_enabled`: only a stored `true` is on, any other
-    value (missing/legacy/junk) reads as off. `FUSED_RENDER_NATIVE_CHAT=1|0` is
-    the process-level override that BEATS the pref, so a dev server or a test
-    run can pick a side without touching prefs.json; any other env value is
-    ignored and the pref decides.
+    THE DEFAULT TURNED OVER, so the idiom did too: only a stored `false` is off,
+    and missing/legacy/junk all read as on. An install that has never opened
+    Preferences — which is most of them — gets the native chat, and the switch is
+    now an escape hatch rather than an opt-in. The legacy iframe is still built,
+    still served and still what `ChatChunkBoundary` falls back to; nothing about
+    it was deleted, it just stopped being what a fresh install runs.
 
-    DELIBERATELY STRICTER than `prefetch.py`/`rcd.py`'s any-non-"0" idiom, and
-    pinned by `test_native_chat_env_override_beats_pref`: this switch decides
-    which of two whole implementations a user's chat runs on, so a typo
-    ("FUSED_RENDER_NATIVE_CHAT=ture") has to fall through to the stored pref
-    rather than silently move them onto the beta. An ignored value is ignored
-    all the way through: `_chat_forced_by` reports it as no override at all,
-    because the stored switch really is still what decides.
+    `FUSED_RENDER_NATIVE_CHAT=1|0` is still the process-level override that BEATS
+    the pref, so a dev server or a test run can pick a side without touching
+    prefs.json; any other env value is ignored and the stored switch decides.
+    That strictness is the one thing unchanged here and is pinned by
+    `test_native_chat_env_override_beats_pref`: a typo
+    ("FUSED_RENDER_NATIVE_CHAT=ture") has to fall through to the pref rather than
+    quietly decide which implementation a user's chat runs on, and an ignored
+    value is ignored all the way through — `_chat_forced_by` reports it as no
+    override at all, because the stored switch really is still what decides.
     """
     raw = os.environ.get(NATIVE_CHAT_ENV)
     if raw == "1":
         return True
     if raw == "0":
         return False
-    return read_prefs().get("native_chat_enabled") is True
+    return read_prefs().get("native_chat_enabled") is not False
 
 
 def task_peek_enabled() -> bool:
     """Whether the Tasks page opens a task in a SIDE PANEL beside the list
-    instead of navigating to the Explorer (default off — opt-in while it is
-    experimental).
+    instead of navigating to the Explorer (default ON — Akshil, 2026-09-17: out
+    of experiment, it is how the page opens a task).
 
-    Same idiom as `native_chat_enabled` above, and for the same reason: this
-    switch decides which of two whole behaviours a click on a task row has, so
-    only a stored `true` is on and any other value (missing, legacy, junk) reads
-    as off. An install that has never opened Preferences keeps exactly the
-    behaviour it has always had.
+    Same idiom as `native_chat_enabled` above and turned over for the same
+    reason: only a stored `false` is off, and missing/legacy/junk read as on, so
+    an install that has never opened Preferences gets the panel. The navigate-
+    away path is untouched and is still what the switch turns back on.
 
     NO ENV OVERRIDE, deliberately, and that is the one place it differs from
     `native_chat_enabled`. That switch has one because a dev server or a test
     run has to be able to pick a chat implementation without touching
     prefs.json — the two implementations are both shipped and both supported.
-    This is one page's interaction model in beta; there is nothing to pin a
-    process to, and an env var nobody sets is a second way for the answer to
-    come out that has to be kept in step with the first.
+    This is one page's interaction model; there is nothing to pin a process to,
+    and an env var nobody sets is a second way for the answer to come out that
+    has to be kept in step with the first.
     """
-    return read_prefs().get("task_peek_enabled") is True
+    return read_prefs().get("task_peek_enabled") is not False
 
 
 def task_card_last_message() -> bool:
@@ -263,12 +266,11 @@ def project_queue_enabled() -> bool:
 
 def chat_recap_enabled() -> bool:
     """Whether the native chat offers the "While you were away" session recap
-    (default ON — unlike `native_chat_enabled`, which is an opt-in beta).
+    (default ON, as it has always been — and as `native_chat_enabled` and
+    `task_peek_enabled` now are too).
 
-    THE DEFAULT IS THE OPPOSITE WAY ROUND on purpose, so the idiom is too: a
-    feature that is on unless asked otherwise cannot read "only a stored true is
-    on", or every install that has never opened Preferences would have it off.
-    Only a stored `false` turns it off; missing, legacy and junk all read as on.
+    Only a stored `false` turns it off; missing, legacy and junk all read as on,
+    so every install that has never opened Preferences has the fold.
 
     No env override. `FUSED_RENDER_NATIVE_CHAT` exists because it decides which
     of two whole implementations a chat runs on; this is one row at the bottom of

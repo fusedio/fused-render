@@ -161,10 +161,11 @@ describe("which replies land folded", () => {
     expect((marks(r)[1]!.props as { disabled?: boolean }).disabled).toBe(true);
   });
 
-  test("A NEW RESPONSE FOLDS THE ONE THE RULE LEFT OPEN (Akshil 2026-09-15)", () => {
-    // The landing's last reply is open because the RULE opened it. A new
-    // response starting is the rule closing its own door: one reply on screen,
-    // the one being written.
+  test("A NEW RESPONSE FOLDS NOTHING (Akshil 2026-09-17)", () => {
+    // THE RULE SPEAKS ONCE, ON OPEN. A reader who is here, asking and reading,
+    // is having a conversation — and the page used to close the answer from a
+    // minute ago underneath them as soon as the next one started. Everything
+    // that arrives after the seed arrives open and stays open.
     const r = log([assistant("a:1")]);
     expect(folded(r)).toEqual([]);
     act(() => {
@@ -175,20 +176,26 @@ describe("which replies land folded", () => {
         />,
       );
     });
-    expect(folded(r)).toEqual(["reply a:1"]);
-    // …and the new one is open, with a mark that cannot be pressed while it
+    expect(folded(r)).toEqual([]);
+    // …and the new one is open too, with a mark that cannot be pressed while it
     // streams.
     expect((marks(r)[1]!.props as { disabled?: boolean }).disabled).toBe(true);
+    // Ten replies later, still nothing folded by anything but a click.
+    const turns = [assistant("a:1"), assistant("a:2")];
+    for (const next of ["a:3", "a:4", "a:5"]) {
+      turns.push(assistant(next));
+      act(() => {
+        r.update(<Transcript state={state({ turns: [...turns] })} actions={actions} />);
+      });
+    }
+    expect(folded(r)).toEqual([]);
   });
 
-  test("A REPLY THAT GOES AWAY HANDS THE FOLD BACK (bugbot)", () => {
-    // The new response folded the one before it — then the new row itself
-    // disappeared: a failed poll dropped its chunk, or `runEnding` discarded
-    // it. The previous reply is the newest again, so it is open again. A
-    // one-way sweep left it folded and made the reader click to get back the
-    // answer they were part-way through.
+  test("A REPLY THAT GOES AWAY CHANGES NOTHING EITHER", () => {
+    // A failed poll drops a chunk and `runEnding` discards a turn, so rows DO
+    // go away. Under the old derived rule that had to hand a fold back; under
+    // the seed there is nothing to hand back, because nothing was taken.
     const r = log([assistant("a:1")]);
-    expect(folded(r)).toEqual([]);
     act(() => {
       r.update(
         <Transcript
@@ -197,11 +204,42 @@ describe("which replies land folded", () => {
         />,
       );
     });
-    expect(folded(r)).toEqual(["reply a:1"]);
+    expect(folded(r)).toEqual([]);
     act(() => {
       r.update(<Transcript state={state({ turns: [assistant("a:1")] })} actions={actions} />);
     });
     expect(folded(r)).toEqual([]);
+  });
+
+  test("THE SEED WAITS FOR THE TRANSCRIPT, then never fires again", () => {
+    // Folding against whatever is on screen mid-restore would freeze the wrong
+    // answer open — `historyLoading` is up through a `fromCache` paint for
+    // exactly this reason (run-controller `restore`).
+    const r = log([assistant("h:0"), assistant("h:1")], { historyLoading: true });
+    // Nothing is drawn while history loads (the skeleton stands), and nothing
+    // is decided either.
+    expect(folded(r)).toEqual([]);
+    act(() => {
+      r.update(
+        <Transcript
+          state={state({ turns: [assistant("h:0"), assistant("h:1"), assistant("h:2")] })}
+          actions={actions}
+        />,
+      );
+    });
+    // The whole restored wall folds behind its newest reply — once.
+    expect(folded(r)).toEqual(["reply h:0", "reply h:1"]);
+    act(() => {
+      r.update(
+        <Transcript
+          state={state({
+            turns: [assistant("h:0"), assistant("h:1"), assistant("h:2"), assistant("h:3")],
+          })}
+          actions={actions}
+        />,
+      );
+    });
+    expect(folded(r)).toEqual(["reply h:0", "reply h:1"]);
   });
 
   test("A REPLY THE READER OPENED SURVIVES EVERY LATER RESPONSE", () => {
@@ -217,11 +255,12 @@ describe("which replies land folded", () => {
       act(() => {
         r.update(<Transcript state={state({ turns: [...turns] })} actions={actions} />);
       });
-      // The rule's own open reply folded; the reader's did not.
       expect(folded(r)).not.toContain("reply a:1");
       turns[turns.length - 1] = assistant(next);
     }
-    expect(folded(r)).toEqual(["reply a:2", "reply a:3"]);
+    // Nothing folded: the one turn the seed shut was opened by hand, and the
+    // replies that arrived since arrived open.
+    expect(folded(r)).toEqual([]);
   });
 
   test("A REPLY THE READER SHUT STAYS SHUT", () => {
@@ -259,7 +298,9 @@ describe("which replies land folded", () => {
         />,
       );
     });
-    expect(folded(r)).toEqual(["reply a:1", "reply a:2"]);
+    // Still just the one they shut — `a:2` was open when the reply arrived and
+    // the reply is not allowed to close it.
+    expect(folded(r)).toEqual(["reply a:1"]);
   });
 
   test("a turn holding an unanswered card stays open, and its mark is dead", () => {
@@ -315,13 +356,10 @@ describe("which replies land folded", () => {
     expect(folded(r)).toHaveLength(2);
   });
 
-  test("AN UNANSWERED CARD HOLDS ITS TURN OPEN PAST THE NEXT REPLY (Akshil 2026-09-15)", () => {
-    // The card is the one thing on screen to do, and it is answered against a
-    // chip in `a:1`. A new reply starting made `a:1` "not the newest", so the
-    // rule derived it CLOSED underneath — invisible only because `pendingCard`
-    // kept it drawn open. The reply therefore snapped shut in the same gesture
-    // that pressed Allow, which is the reader's own click taking the thing they
-    // were reading away from them.
+  test("AN UNANSWERED CARD IS OPEN AT THE SEED, whichever turn it is in", () => {
+    // The card is the one thing on screen to do. A conversation restored while a
+    // run is blocked five turns back must show that turn, not fold it with the
+    // rest of the wall — and once the seed has run nothing closes it either.
     const turns = [assistant("a:1", { segments: [tool("t9", "Bash") ] }), assistant("a:2")];
     const blocked = card({ toolUseId: "t9" });
     const r = log(turns, { permissions: blocked });
@@ -337,10 +375,9 @@ describe("which replies land folded", () => {
         />,
       );
     });
-    // `a:2` folds as any settled reply does; the blocked one is untouched.
-    expect(folded(r)).toEqual(["reply a:2"]);
-    // …and it is only exempt while the card stands: answered, it is an ordinary
-    // reply again and the newest one is the only one open.
+    expect(folded(r)).toEqual([]);
+    // …and answering it takes nothing away: the reply the reader pressed Allow
+    // from is still the reply they were reading.
     act(() => {
       r.update(
         <Transcript
@@ -352,7 +389,7 @@ describe("which replies land folded", () => {
         />,
       );
     });
-    expect(folded(r)).toEqual(["reply a:1", "reply a:2"]);
+    expect(folded(r)).toEqual([]);
   });
 
   test("THE FOLDS SURVIVE A HISTORY RE-READ (Akshil 2026-09-15)", () => {
@@ -391,7 +428,10 @@ describe("which replies land folded", () => {
         />,
       );
     });
-    expect(folded(r)).toEqual(["reply r0", "reply r1", "reply r2", "reply r4"]);
+    // Every fold the reader had is exactly where they left it. The row that
+    // arrived with the re-read lands OPEN, because the seed is long spent —
+    // a turn this page has never folded is not one it gets to fold now.
+    expect(folded(r)).toEqual(["reply r1", "reply r2", "reply r4"]);
   });
 
   test("ANOTHER CONVERSATION IS ANOTHER MAP (review #1)", () => {
@@ -594,21 +634,29 @@ describe("A ONE-LINE REPLY NEVER FOLDS (Akshil 2026-09-15)", () => {
     expect(folded(shut)).toEqual([]);
   });
 
-  test("IT STAYS OPEN WHEN THE NEXT RESPONSE STREAMS IN", () => {
-    const r = log([oneLiner("a:1"), assistant("a:2")]);
-    // `a:2` is the newest and open; `a:1` is older and would ordinarily fold.
-    expect(folded(r)).toEqual([]);
+  test("IT IS STILL OPEN WHEN THE CONVERSATION IS RE-OPENED AROUND IT", () => {
+    // The seed folds the wall behind its newest reply — and passes over the
+    // one-liner, which can never be folded (`isOneLiner`). Nothing is written
+    // for it, and `isFolded(undefined)` is open.
+    const r = log([oneLiner("a:1"), assistant("a:2"), assistant("a:3")]);
+    expect(folded(r)).toEqual(["reply a:2"]);
+    // And a reply that streams in afterwards folds nothing at all, one-liner or
+    // not (2026-09-17: the rule speaks once, on open).
     act(() => {
       r.update(
         <Transcript
           state={state({
-            turns: [oneLiner("a:1"), assistant("a:2"), assistant("a:3", { streaming: true })],
+            turns: [
+              oneLiner("a:1"),
+              assistant("a:2"),
+              assistant("a:3"),
+              assistant("a:4", { streaming: true }),
+            ],
           })}
           actions={actions}
         />,
       );
     });
-    // The two-paragraph reply folds. The one-liner does not.
     expect(folded(r)).toEqual(["reply a:2"]);
   });
 });

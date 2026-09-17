@@ -795,7 +795,20 @@ button.tasks-caret,
   border: 0;
   background: none;
   font: inherit;
-  cursor: pointer;
+  /* A FUNNEL, NOT A HAND (Akshil, 2026-09-17). Every other pointer in a task
+     row opens something; this one filters the wall in place, and a hand said
+     the same thing as the row behind it. The glyph IS the answer to "what does
+     pressing this do" before the press — the tooltip says it a second later.
+
+     Two-tone by construction: a black-outlined white funnel reads on the light
+     surface and on the dark one, which a single-colour cursor cannot (a cursor
+     has no `currentColor` — it is an image, resolved once, theme-blind).
+     `pointer` stays as the fallback for anything that will not take an SVG
+     cursor (WebKit), so the worst case is today's hand. */
+  cursor:
+    url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M4.5 5h15l-5.9 7v5.5l-3.2 1.7V12z' fill='%23fff' stroke='%23000' stroke-width='2.8' stroke-linejoin='round' stroke-linecap='round'/%3E%3Cpath d='M4.5 5h15l-5.9 7v5.5l-3.2 1.7V12z' fill='%23fff'/%3E%3C/svg%3E")
+      5 5,
+    pointer;
   /* ITS OWN SIZE — the pill is the pill again (Akshil, 2026-08-24, final pass:
      "keep the tag/button size same", "remove the padding part and the whole
      hovering part"). Two passes tried to make this box the hit area by growing

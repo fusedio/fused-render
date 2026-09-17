@@ -166,11 +166,11 @@ export const Transcript = memo(function Transcript({
     // moving UP apart from the browser CLAMPING scrollTop because the content
     // got shorter; a clamp is not a gesture.
     //
-    // …AND A SHRINK RE-ARMS NOTHING EITHER (Akshil 2026-09-15). The auto-fold
-    // makes `.chat-log` SHORTER — a new reply folds the previous one, and a
-    // wall of replies loses several screenfuls at once — and a reader parked
-    // 200px up was suddenly within `NEAR_BOTTOM_PX` of a tail that had moved
-    // up to meet them. Geometry read that as "they are at the bottom", re-armed
+    // …AND A SHRINK RE-ARMS NOTHING EITHER (Akshil 2026-09-15). A fold makes
+    // `.chat-log` SHORTER — the wall that folds behind the newest reply when a
+    // conversation is opened loses several screenfuls at once, and one click on
+    // a mark can lose a screenful — and a reader parked 200px up was suddenly
+    // within `NEAR_BOTTOM_PX` of a tail that had moved up to meet them. Geometry read that as "they are at the bottom", re-armed
     // the follow, and the very next write yanked them to the tail of a
     // conversation they were reading the middle of. Both halves of this branch
     // are therefore gated on `h >= lastHeight`: a shrink is not a gesture in
@@ -499,21 +499,28 @@ export const Transcript = memo(function Transcript({
   // and the one they came back for is the last one. So every SETTLED assistant
   // turn lands folded except the newest, and the live turn is never folded.
   //
-  // AND A NEW RESPONSE CLOSES THE OLD ONE (Akshil 2026-09-15) — but only the
-  // one nobody asked to have open. That is the whole reason the fold is FOUR
-  // states rather than a boolean: a turn is open (or shut) either because the
-  // rule put it that way or because the reader clicked it, and only the rule's
-  // own doing is the rule's to undo. So when a new reply starts streaming the
-  // previous newest folds, while a `manual-open` turn the reader deliberately
-  // opened stays open through any number of later responses, until they click
-  // it shut. A `manual-closed` turn is never re-opened by anything.
+  // AND THAT IS THE ONLY MOMENT THE RULE SPEAKS (Akshil 2026-09-17). The fold
+  // used to RE-DERIVE every render, so each new reply shut the one before it —
+  // and that is wrong for the case the log is actually used in: a reader who is
+  // present, asking and answering, is having a CONVERSATION. Looking back at
+  // what was said a minute ago is part of it, and the page kept closing the
+  // minute-old answer under them ("I just asked a simple question and my
+  // previous question got disappear").
   //
-  // THE RULE'S HALF IS DERIVED, the reader's half is remembered. "Newest reply
-  // open, older ones folded" is read off `state.turns` every render, so a row
-  // arrives already folded rather than folding itself in an effect after a
-  // frame at full height, and a turn list that SHRINKS — a dropped chunk, a
-  // discarded `runEnding` turn — lands the right way up on its own. Only the
-  // two `manual-` states are sticky, and nothing but a click writes them.
+  // So the rule fires ONCE, on open, and then never again: every settled reply
+  // lands folded except the newest, and from that frame on NOTHING in this
+  // component changes a fold. A reply that arrives live arrives OPEN and stays
+  // open; an older one stays exactly as it was. The only thing that moves a
+  // fold after the seed is a click, and the only thing that folds the wall
+  // again is opening the conversation again — a reload, a new tab, or picking
+  // it out of the history (`transcriptGen`, below).
+  //
+  // WHICH MAKES EVERY STATE STICKY, so the four are really "who put it there":
+  // `default-*` is the seed's doing, `manual-*` the reader's. Nothing reads the
+  // difference any more except this comment and the tests — kept because the
+  // seed is the one write that must not land on a turn the reader has already
+  // touched, and because "the rule's, or mine?" is the question any future
+  // change to the fold has to answer first.
   //
   // A REF PLUS A BUMP, not `useState`: the map is seeded during render, and
   // every other turn's props have to stay identical across the click, or
@@ -525,6 +532,10 @@ export const Transcript = memo(function Transcript({
    *  stable callback for the whole log — a fresh closure per row would defeat
    *  `Turn`'s memo — so it is handed the turn's own key and resolves it here. */
   const foldIds = useRef(new Map<string, string>());
+  /** Has the one-and-only pass run for this conversation? Until it has, the log
+   *  on screen is still arriving; after it, the fold map is the reader's alone.
+   *  Cleared with the maps when another session is opened. */
+  const seeded = useRef(false);
   const [, bumpFold] = useState(0);
   // A DIFFERENT CONVERSATION IS A DIFFERENT MAP (review #1). This component is
   // not remounted when the host opens another session, and a restored turn's
@@ -543,6 +554,7 @@ export const Transcript = memo(function Transcript({
     foldsGen.current = state.transcriptGen;
     folds.current.clear();
     foldIds.current.clear();
+    seeded.current = false;
   }
   const lastAssistant = lastAssistantKey(state.turns);
   // The open card is drawn in the tail pin, but the turn it belongs to is the
@@ -562,36 +574,45 @@ export const Transcript = memo(function Transcript({
   const blocked = blockedTurnKey(state.turns, state.permissions);
   const blockedTurn = blocked ? state.turns.find((t) => t.key === blocked) : undefined;
   const blockedFold = blockedTurn ? foldKey(blockedTurn) : null;
+  // THE SEED WAITS FOR THE TRANSCRIPT (`historyLoading`). Folding against the
+  // turns that happen to be on screen mid-restore would freeze the wrong
+  // answer open — the cached prefix's last reply, not the conversation's — and
+  // every row the fetch then added would count as "arrived live" and land open.
+  // `historyLoading` stays up through a `fromCache` paint for exactly this
+  // reason (run-controller `restore`), and a brand-new chat has it down with no
+  // turns at all, which seeds an empty map: nothing to fold, everything the
+  // reader says from there is live and open.
+  const opening = !seeded.current && !state.historyLoading;
+  // …AND NOTHING IS WRITTEN WHILE IT WAITS. A turn on screen during the restore
+  // is not "a turn that arrived live" — treating it as one marked the whole
+  // cached wall open before the seed ever ran, and the seed then skipped every
+  // row it found already in the map. So the map stays empty until the frame the
+  // transcript lands on, which is the frame the fold is decided in.
+  const waiting = !seeded.current && !opening;
   for (const t of state.turns) {
     if (t.role !== "assistant") continue;
     // A ONE-LINE REPLY IS NOT THE RULE'S BUSINESS (Akshil 2026-09-15). It can
     // never be folded (`Turn`'s `isOneLiner`), so seeding a state for it would
-    // be the log remembering a fold that is not drawn — and the `default-closed`
-    // the next response writes underneath it would come back the moment the
-    // turn grew a second segment. Nothing is written, and `isFolded(undefined)`
-    // is open.
+    // be the log remembering a fold that is not drawn. Nothing is written, and
+    // `isFolded(undefined)` is open — and once it grows a second segment it is
+    // a turn that arrived after the seed, which is open too.
     if (isOneLiner(t)) continue;
     const id = foldKey(t);
     foldIds.current.set(t.key, id);
-    // ONCE A TURN IS THE READER'S, IT IS THEIRS FOR GOOD: a reply clicked open
-    // survives any number of later responses, one clicked shut is never handed
-    // back. Everything else is the rule's, and the rule RE-DERIVES rather than
-    // latches (bugbot): the newest settled reply is open, every older one is
-    // folded, recomputed from `state.turns` on each render.
-    //
-    // A sweep that flipped `default-open` to `default-closed` when a new row
-    // appeared said the same thing for as long as rows only ever arrive — but
-    // that write had nothing to undo it, and rows DO go away (a failed poll
-    // drops a chunk, `runEnding` discards a turn). The previous reply then
-    // stayed folded while being the newest again, and the reader had to click
-    // the mark to get back the answer they were mid-way through reading.
-    // Derived, that case fixes itself: the row is last once more, so it is open
-    // once more.
-    const prev = folds.current.get(id);
-    if (prev === "manual-open" || prev === "manual-closed") continue;
-    const open = !!t.streaming || t.key === lastAssistant || id === blockedFold;
+    if (waiting) continue;
+    // WRITTEN ONCE PER TURN, EVER. A turn already in the map is settled
+    // business — the seed's or the reader's — and re-deciding it is the exact
+    // bug this pass removes.
+    if (folds.current.has(id)) continue;
+    // Outside the seed there is no folding left to do, so a turn first seen
+    // here is open: it is the reply being written, or one that arrived while
+    // the reader was watching. Inside it, the wall folds behind the newest —
+    // and a turn blocked on a permission card is open too, because an
+    // unanswered card is the one thing on screen to do.
+    const open = !opening || !!t.streaming || t.key === lastAssistant || id === blockedFold;
     folds.current.set(id, open ? "default-open" : "default-closed");
   }
+  if (opening) seeded.current = true;
   const onToggleCollapse = useCallback((key: string) => {
     const id = foldIds.current.get(key) ?? key;
     // EVERY CLICK IS MANUAL, both ways: opening one pins it open past the next
