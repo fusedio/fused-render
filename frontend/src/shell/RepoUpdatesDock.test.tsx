@@ -1300,6 +1300,27 @@ test("a message row draws with its detail, like a terminal job's failure message
   expect(text(row)).toContain("Disk full");
 });
 
+// DEFECT 1 (2026-09-17 fix): `notify()`'s family-based collapse
+// (notifications.ts) writes `StoredNotification.count`, but nothing used to
+// read it — the second (and later) run of the same task silently vanished
+// with no on-screen trace it ever fired again. `MessageRowView` now surfaces
+// it via the same slot `GroupJobRow` uses to spell out its own multiplicity
+// in plain words, rather than a symbolic "×N" badge this panel has never
+// otherwise drawn.
+test("a collapsed repeat message shows how many times it fired; a first-time message shows nothing extra", () => {
+  const repeated = renderView({
+    rows: [],
+    messages: [message({ title: "Transcripto YouTube transcriber finished", count: 2 })],
+  });
+  expect(text(findAll(repeated, "dl-row")[0])).toContain("Happened 2 times");
+
+  const once = renderView({
+    rows: [],
+    messages: [message({ title: "Transcripto YouTube transcriber finished", count: 1 })],
+  });
+  expect(text(findAll(once, "dl-row")[0])).not.toContain("Happened");
+});
+
 // Code review finding on PR #1104: `terminal` was passed off `tone` with no
 // `status`, which (pre-fix) never rendered the glyph, and this row also
 // carried no `role`, losing the deleted `Toast.tsx`'s own

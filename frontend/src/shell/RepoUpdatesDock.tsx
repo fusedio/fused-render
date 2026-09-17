@@ -274,6 +274,16 @@ function MessageRowView({ notification }: { notification: StoredNotification }) 
       // no element at all, same rule `caption` always follows.
       caption={notification.origin || undefined}
       terminal={notification.tone === "error" ? "error" : undefined}
+      // A collapsed repeat (notifications.ts's `family`/`count` grouping) has
+      // to say so, or the second (and later) run of the same task vanishes
+      // with no trace — the exact defect this line fixes. Same slot
+      // `GroupJobRow` (this file, below) already uses to say more than a bare
+      // title/detail can: that row spells its own multiplicity out in plain
+      // words ("N of M done"/"N of M failed") rather than a symbolic badge,
+      // so a repeated message does the same rather than inventing a "×N"
+      // idiom this panel has never otherwise drawn. Nothing renders at
+      // count === 1 — the ordinary, non-repeated case.
+      status={notification.count > 1 ? `Happened ${notification.count} times` : undefined}
       role={notification.tone === "error" ? "alert" : "status"}
       navAction={notification.action}
       onDismiss={{ onClick: dismiss, ariaLabel: `Dismiss ${notification.title}` }}
