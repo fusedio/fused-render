@@ -13,6 +13,7 @@ module top: this module is imported by the server (routers/index.py), and a
 import contextlib
 import json
 import os
+import threading
 import time
 
 from fused_render.index.config import IndexConfig
@@ -517,6 +518,26 @@ def compact(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None,
         return _compact_locked(cfg, root, shards_dir, pa, pq, emit)
 
 
+# Heartbeat cadence for the blocking merge statement below — comfortably
+# under runner.ABANDONED_RUN_S (90s), the liveness watchdog's threshold, so a
+# merge running many times longer than this interval still keeps the run
+# directory looking touched throughout.
+_MERGE_HEARTBEAT_S = 20.0
+
+
+def _heartbeat_while(phase, msg, interval_s, stop):
+    """Call `phase(msg)` every `interval_s` until `stop` is set.
+
+    Runs on its own thread alongside a single blocking DuckDB call so the
+    liveness watchdog sees the run directory touched throughout — DuckDB
+    connections are not thread-safe for concurrent QUERIES, but this thread
+    never touches `con` itself, only the `emit`/`phase` event-file write, so
+    it is safe to run alongside the blocking statement and is always joined
+    (via `finally`) before the main thread issues its next statement."""
+    while not stop.wait(interval_s):
+        phase(msg)
+
+
 def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
     import shutil
 
@@ -673,11 +694,26 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
     parts = []
     total_rows = 0
     if src:
-        con.execute(
-            f"CREATE TEMP TABLE merged AS SELECT * FROM ({src}) "
-            f"QUALIFY row_number() OVER "
-            f"(PARTITION BY {identity_col} ORDER BY {recency_expr} DESC) = 1 "
-            f"ORDER BY {identity_col}")
+        # The dominant, unheartbeated cost on a large merge: this single
+        # blocking statement dedups and sorts every row before the
+        # partition-write loop below ever starts. A background thread ticks
+        # the run directory while it runs, joined before the main thread's
+        # next statement so nothing concurrent ever touches `con`.
+        stop = threading.Event()
+        heartbeat = threading.Thread(
+            target=_heartbeat_while,
+            args=(phase, "writing index (merging)", _MERGE_HEARTBEAT_S, stop),
+            daemon=True)
+        heartbeat.start()
+        try:
+            con.execute(
+                f"CREATE TEMP TABLE merged AS SELECT * FROM ({src}) "
+                f"QUALIFY row_number() OVER "
+                f"(PARTITION BY {identity_col} ORDER BY {recency_expr} DESC) = 1 "
+                f"ORDER BY {identity_col}")
+        finally:
+            stop.set()
+            heartbeat.join()
         total_rows = con.execute("SELECT count(*) FROM merged").fetchone()[0]
         n_parts = max(1, -(-total_rows // cfg.part_rows))
         for i in range(n_parts):
@@ -686,6 +722,12 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
                 f"COPY (SELECT * FROM merged LIMIT {cfg.part_rows} "
                 f"OFFSET {i * cfg.part_rows}) "
                 f"TO '{_sql(fp)}' (FORMAT PARQUET, ROW_GROUP_SIZE 65536)")
+            # One partition's COPY can itself run long on a big merge; a
+            # heartbeat per partition (rather than once for the whole loop)
+            # is what keeps the liveness watchdog (`runner._looks_abandoned`)
+            # from calling a live compaction dead — nothing else touches the
+            # run directory for the length of this loop.
+            phase(f"writing index (partition {i + 1}/{n_parts})")
             # The folded bounds are their own aggregate, not lower() of the
             # byte-wise ones: the two orders disagree, so a partition can
             # hold a folded-smaller path than its byte-wise minimum. Pruning

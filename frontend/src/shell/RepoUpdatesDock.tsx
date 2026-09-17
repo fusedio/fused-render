@@ -263,6 +263,7 @@ function MessageRowView({ notification }: { notification: StoredNotification }) 
       terminal={notification.tone === "error" ? "error" : undefined}
       role={notification.tone === "error" ? "alert" : "status"}
       navAction={notification.action}
+      extraAction={notification.extraAction}
       onDismiss={{ onClick: dismiss, ariaLabel: `Dismiss ${notification.title}` }}
       rowClick={
         notification.page

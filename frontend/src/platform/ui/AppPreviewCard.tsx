@@ -36,7 +36,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
 import { appIconUrl, appfilePreviewUrl, rawUrl } from "@platform/lib/api";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
-import { exportAppFile } from "@platform/lib/appShot";
+import { exportAppFile, notifyExportSaved } from "@platform/lib/appShot";
 import { openShareApp } from "@platform/lib/share-app";
 import { notify } from "@platform/lib/notifications";
 import { AppStar } from "@platform/ui/AppStar";
@@ -451,11 +451,16 @@ export function AppPreviewCard({
           // empty box, and cropping it would bake the empty box in as the
           // artifact's permanent thumbnail. Offer nothing instead and
           // appShot stages the app full-screen for the shot.
-          exportAppFile(app, bodyLive ? thumbRef.current : null).catch((err: Error) =>
-            notify({
-              title: "Could not export " + app.name + ": " + err.message,
-              tone: "error",
-            }),
+          exportAppFile(app, bodyLive ? thumbRef.current : null).then(
+            (realPath) => {
+              notifyExportSaved(app.name, realPath);
+            },
+            (err: Error) => {
+              notify({
+                title: "Could not export " + app.name + ": " + err.message,
+                tone: "error",
+              });
+            },
           );
         }}
       >

@@ -1257,6 +1257,37 @@ test("a message with a page is a click target that navigates", () => {
   });
 });
 
+// A row with two independent destinations (an export's "Reveal folder" and
+// "Open file") needs both its own buttons drawn, not just one — `action`
+// and `extraAction` are separate NotificationCard slots (`navAction` and
+// `extraAction`), both styled `.q-all`, so both must show up in the row.
+test("a message with both an action and an extraAction renders both buttons", () => {
+  let revealed = false;
+  let opened = false;
+  const m = message({
+    title: "Exported App to /tmp/App.fused",
+    action: { label: "Reveal folder", onClick: () => (revealed = true) },
+    extraAction: { label: "Open file", onClick: () => (opened = true) },
+  });
+  const tree = renderView({ rows: [], messages: [m] });
+  const buttons = findAll(tree, "q-all");
+  const labels = buttons.map((n) => text(n));
+  expect(labels).toContain("Reveal folder");
+  expect(labels).toContain("Open file");
+
+  const revealBtn = buttons.find((n) => text(n) === "Reveal folder")!;
+  act(() => {
+    (revealBtn.props as { onClick: () => void }).onClick();
+  });
+  expect(revealed).toBe(true);
+
+  const openBtn = buttons.find((n) => text(n) === "Open file")!;
+  act(() => {
+    (openBtn.props as { onClick: () => void }).onClick();
+  });
+  expect(opened).toBe(true);
+});
+
 test("a message with no page draws no row-open marker — nothing to click through to", () => {
   const tree = renderView({ rows: [], messages: [message({ title: "Could not save" })] });
   expect(findAll(tree, "dl-row-open")).toHaveLength(0);
