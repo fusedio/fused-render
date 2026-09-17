@@ -61,6 +61,7 @@ from fused_render.server.routers.git_repos import router as git_repos_router
 from fused_render.server.routers.git_snapshot import router as git_snapshot_router
 from fused_render.server.routers.git_upstream import router as git_upstream_router
 from fused_render.server.routers import index as index_routes
+from fused_render.server.routers.index_manifest import router as index_manifest_router
 from fused_render.server.routers.jobs import router as jobs_router
 from fused_render.server.routers.engines import router as engines_router
 from fused_render.server.routers.ai_models import router as ai_models_router
@@ -874,6 +875,11 @@ def create_app(start_dir: str) -> FastAPI:
     # status polling, stats/lookup, and the in-folder corpus the explorer's
     # search reads. Engine-side there is no HTTP; this router is the adapter.
     app.include_router(index_routes.router)
+    # The third-party index-plugin propose/confirm surface (decision #8,
+    # "the app proposes, the user confirms — never silent"): distinct from
+    # the router above, which only ever knows about the built-in "files"
+    # index this process already scans.
+    app.include_router(index_manifest_router)
 
     # Keep the index warm. The scan is a detached worker, so this hook only
     # spawns it — it cannot delay serving — and it debounces on the last scan
