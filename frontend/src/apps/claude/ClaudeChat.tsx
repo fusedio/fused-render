@@ -2017,9 +2017,16 @@ function ChatBody(props: ChatBodyProps) {
     () => (held && recent ? recent.find((t) => t.key === held.key) ?? null : null),
     [held, recent],
   );
-  const heldForm = (heldRow?.form ?? held?.form ?? null) as
-    | (TaskDraftForm & { version?: number })
-    | null;
+  // THE SNAPSHOT TAKEN AT THE PRESS IS SPENT ONCE THE FEED HAS SHOWN THE ROW
+  // (bug report, 2026-09-17: an emptied draft came back into the box). The
+  // row is the record's current state; when it goes — the reader emptied the
+  // box and blurred — falling back to the older snapshot re-seeded the words
+  // that had just been deleted. Past that point there is no form to seed from.
+  const heldRowSeen = useRef<string | null>(null);
+  if (heldRow && held) heldRowSeen.current = held.key;
+  const heldForm = (heldRow?.form
+    ?? (held && heldRowSeen.current !== held.key ? held.form : null)
+    ?? null) as (TaskDraftForm & { version?: number }) | null;
   const onHeldGone = useCallback(() => {
     setHeld({ key: taskDraftKey(newTaskDraftId()), form: null });
   }, []);
