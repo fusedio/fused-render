@@ -384,7 +384,12 @@ def test_export_to_disk_writes_the_real_file_and_notes_the_mutation(tmp_path, mo
     assert os.path.isfile(out_path)
     assert os.path.dirname(out_path) == str(dest_dir)
     assert appfile_container.is_container(out_path)
-    assert noted == [str(dest_dir)]
+    # The FILE that was written, not the folder it landed in —
+    # `note_index_mutation` scans the PARENT of whatever it is handed
+    # (`index_touch._folder_of`), so passing the folder itself would queue a
+    # scan of the folder's own parent (the user's home directory) instead of
+    # Downloads.
+    assert noted == [out_path]
 
     # A second export of the same app never clobbers the first — it picks a
     # sibling filename instead.

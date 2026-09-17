@@ -175,9 +175,12 @@ async def api_appfile_export_to_disk(
     the browser leaves the real destination unknown to the server, so the
     exported file sits outside the index until the next scan happens to
     cover it (SPEC's ~110s-unsearchable bug). Writing here means the path is
-    known the instant the file exists, so `note_index_mutation` can queue
-    Downloads for a rescan synchronously, on the same request — no freshness
-    gate involved at all.
+    known the instant the file exists, so `note_index_mutation` can queue the
+    exported file itself for a rescan synchronously, on the same request — no
+    freshness gate involved at all. It is handed the FILE, not `dest_dir`:
+    `note_index_mutation` scans the PARENT of whatever path it is given
+    (`index_touch._folder_of`), so passing the folder itself would queue a
+    scan of the folder's own parent instead of Downloads.
 
     Same optional-preview shape as `api_appfile_export_with_preview`: an
     over-cap or non-PNG capture is dropped rather than raised, since it comes
@@ -201,7 +204,7 @@ async def api_appfile_export_to_disk(
         appfile.export_app_file(path, out_path, preview_bytes=preview_bytes)
     except appfile.AppFileError as exc:
         return _error(str(exc))
-    note_index_mutation(dest_dir)
+    note_index_mutation(out_path)
     real_path = canonical_fs_path(out_path)
     jobs.upsert(
         {

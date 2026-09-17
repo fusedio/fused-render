@@ -78,10 +78,15 @@ Add a sibling route that instead:
 2. Writes via the existing `export_app_file()` (`fused_render/appfile.py:289`),
    resolving filename collisions rather than clobbering (`App.fused`,
    `App (2).fused`, …). **Never overwrite an existing file.**
-3. Calls `note_index_mutation(dest_dir)` (`fused_render/server/index_touch.py:309`)
-   synchronously after the write. This is the whole point — it reuses the
-   coalesced, floor-protected queue that every `fs_mutate.py` route already uses,
-   and bypasses the freshness gates entirely.
+3. Calls `note_index_mutation(out_path)` (`fused_render/server/index_touch.py:309`)
+   synchronously after the write, passing the file that was just written, not
+   the destination folder — `note_index_mutation` scans the PARENT of every
+   path it is given (`index_touch._folder_of`), the same contract every
+   `fs_mutate.py` caller already relies on, so handing it the folder itself
+   would queue a scan of the folder's parent instead. This is the whole
+   point — it reuses the coalesced, floor-protected queue that every
+   `fs_mutate.py` route already uses, and bypasses the freshness gates
+   entirely.
 4. Raises a notification job row via `jobs.upsert(..., page=<real file path>,
    origin=..., server=True)` (`fused_render/jobs.py:525`), matching how AI
    image/video renders point at their output file.
