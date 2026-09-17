@@ -158,8 +158,24 @@ export function useIndexProposals() {
   const [pending, setPending] = useState<IndexProposal[]>([]);
   const generation = useRef(0);
   const disposed = useRef(false);
+  // The one outstanding `setTimeout` id, if any. `refresh` (the returned
+  // `poll`) is called directly after every confirm/refuse, on top of the
+  // effect's own recurring chain — without tracking and clearing this,
+  // each manual call started a SECOND permanent polling chain the first
+  // one never knew about (neither self-cancels; there is nothing else
+  // that distinguishes "the effect's own tick" from "a caller invoking
+  // refresh"), and every mount of this hook (the status-bar dock AND
+  // IndexManager's ProposalsSection both mount it independently) doubled
+  // that again. Clearing whatever is pending at the TOP of `poll`, before
+  // scheduling a new one, collapses any number of calls back down to one
+  // live chain per mounted hook.
+  const timeoutRef = useRef<number | null>(null);
 
   const poll = useCallback(async () => {
+    if (timeoutRef.current !== null) {
+      window.clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
     const mine = ++generation.current;
     try {
       const data = await getIndexProposals();
@@ -170,7 +186,7 @@ export function useIndexProposals() {
       // "no proposals", it is "no news".
     } finally {
       if (!disposed.current && mine === generation.current) {
-        window.setTimeout(poll, POLL_MS);
+        timeoutRef.current = window.setTimeout(poll, POLL_MS);
       }
     }
   }, []);
@@ -180,6 +196,10 @@ export function useIndexProposals() {
     poll();
     return () => {
       disposed.current = true;
+      if (timeoutRef.current !== null) {
+        window.clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
     };
   }, [poll]);
 
