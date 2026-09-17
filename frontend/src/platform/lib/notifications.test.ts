@@ -501,16 +501,47 @@ test("a message with no source carries no origin at all", () => {
   expect(getRetainedNotifications()[0]?.origin).toBeUndefined();
 });
 
-// ---- CHANGE 2: `recent` opts a retained message into the folded Recent
-// section (RepoUpdatesDock.tsx), the message-side counterpart to a job's
-// own presence-based Recent split ----------------------------------------
+// ---- family grouping/collapse (user: "better notification grouping/
+// updation for same source") — two genuine repeat finishes of the same
+// client-raised task collapse into ONE retained row that updates in place,
+// mirroring the "N of M done" shape `jobs.ts`'s own `groupJobs` already gives
+// server-side job families, rather than stacking N byte-identical rows. ----
 
-test("`recent: true` is carried onto the stored row, defaulting to false", () => {
-  notify({ title: "Finished", tone: "info", page: "/tasks", recent: true });
-  expect(getRetainedNotifications()[0]?.recent).toBe(true);
+test("two notify() calls with the same page collapse into one retained row with count 2", () => {
+  notify({ title: "Transcripto YouTube transcriber finished", tone: "info", page: "/tasks/1" });
+  notify({ title: "Transcripto YouTube transcriber finished", tone: "info", page: "/tasks/1" });
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(1);
+  expect(retained[0]?.count).toBe(2);
+});
 
-  notify({ title: "Failed", tone: "error", page: "/tasks" });
-  expect(getRetainedNotifications()[1]?.recent).toBe(false);
+test("a third repeat within the burst window updates the SAME row again, not a third one", () => {
+  const id1 = notify({ title: "Transcripto YouTube transcriber finished", tone: "info", page: "/tasks/1" });
+  notify({ title: "Transcripto YouTube transcriber finished", tone: "info", page: "/tasks/1" });
+  const id3 = notify({ title: "Transcripto YouTube transcriber finished", tone: "info", page: "/tasks/1" });
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(1);
+  expect(retained[0]?.count).toBe(3);
+  expect(id3).toBe(id1);
+});
+
+test("two notify() calls sharing a title but no page collapse by title family", () => {
+  // `tone: "error"` (attention-tier) is always retained regardless of
+  // action/page (`isRetained`) — the simplest way to get a retained, no-page
+  // row to exercise the title-only branch of `messageFamily`.
+  notify({ title: "Backup failed", tone: "error" });
+  notify({ title: "Backup failed", tone: "error" });
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(1);
+  expect(retained[0]?.count).toBe(2);
+});
+
+test("different families (different page) never collapse into each other", () => {
+  notify({ title: "Transcripto YouTube transcriber finished", tone: "info", page: "/tasks/1" });
+  notify({ title: "Other task finished", tone: "info", page: "/tasks/2" });
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(2);
+  expect(retained.every((n) => n.count === 1)).toBe(true);
 });
 
 test("a suppressed replaceId call clears whatever that id was still showing", () => {

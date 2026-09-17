@@ -46,17 +46,18 @@
 // `in_progress -> blocked` already carries, which alone makes
 // `isRetained` keep it (`Boolean(input.action || input.page)`).
 //
-// STILL SUPPRESSIBLE via `source` (the run's own chat/project) when that's
-// already on screen — being retained once shown is not the same as always
-// showing it; D-A's "as far as each store honestly can" is untouched.
-//
-// `recent: true` is the other half of this reversal: a bare "done" carries
-// no failure to act on, so it goes straight into the Notifications panel's
-// folded §4 "Recent" section rather than sitting, unfolded, at the top of
-// "Worth keeping" — a settled call (a success persisting is fine, a success
-// shouting is not). Without this flag `RepoUpdatesDock.tsx`'s `messagesTrail`
-// would draw it in full every time, which is the "shouting" this flag
-// exists to avoid.
+// NEVER PRESENCE-SUPPRESSED (2026-09-17, second reversal): this branch used
+// to also carry `source: taskSource(task)`, which let a finished task's
+// POPUP get swallowed by `isPopupSuppressed` (jobs.ts) whenever the run's own
+// chat/project was already on screen — "you're already looking at it" for a
+// job that is still running. A finished Claude task is different: the run
+// has ENDED, so "already looking at the chat" no longer means "already knows
+// it's done" the way it does for an in-progress job's own page. Dropping
+// `source` here means a finished task always pops, same as `in_progress ->
+// blocked` already does. This also drops the `recent: true` flag from the
+// now-removed "Recent" section (SPEC-quiet-notifications.md §4, reversed the
+// same day — see DECISIONS-quiet-notifications.md): the row simply lands as
+// an ordinary retained row in the one unified list.
 import type { TaskPulseTask } from "@platform/lib/api";
 import type { NotificationInput } from "@platform/lib/notifications";
 import { taskColumn } from "@shell/tasks-lib";
@@ -68,12 +69,6 @@ import { folderHref } from "@shell/schedule-lib";
  *  the folder, else the Tasks page itself). */
 export function taskDestination(task: TaskPulseTask): string {
   return taskHref(task) ?? folderHref(task) ?? "/tasks";
-}
-
-/** The task's own chat/project — the presence-suppression key for "you're
- *  already looking at this" (SPEC-quiet-notifications.md §2a's `source`). */
-function taskSource(task: TaskPulseTask): string | undefined {
-  return task.target || task.project || undefined;
 }
 
 /**
@@ -109,9 +104,7 @@ export function notificationForTransition(
     return {
       title: `${task.title || "A task"} finished`,
       tone: "info",
-      source: taskSource(task),
       page: taskDestination(task),
-      recent: true,
     };
   }
   return null;

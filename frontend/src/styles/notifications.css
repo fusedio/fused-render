@@ -724,64 +724,6 @@
   color: var(--fg-muted);
 }
 
-/* DEFECT 3(b) (live testing, 2026-09-17, user: "the recents thing is very
-   ugly" — the user's own priority call, not a nice-to-have). `.dl-recent-
-   toggle` (`RepoUpdatesDock.tsx`'s "Recent (N)" disclosure) is a real
-   `<button>`, since it needs a click target and `aria-expanded`, but had NO
-   rule of its own here at all — it rendered with the browser's default
-   button chrome (its own border, background, padding), which is exactly why
-   it read as "a bordered box floating mid-panel" rather than a section
-   heading. `.dl-section-head` right above is what every OTHER section
-   heading in this panel looks like; this resets the button down to that same
-   look (same font metrics, same padding, same muted color) rather than
-   inventing a second heading style, and keeps only what a heading style
-   can't give it for free: `display: block` + `width: 100%` so the whole
-   label is clickable edge-to-edge like the rest of the panel, `text-align:
-   left` so button centering doesn't kick in, and a chevron that flips with
-   `aria-expanded` so the row still reads as a disclosure and not a plain
-   label once the button chrome is gone. */
-.dl-recent-toggle {
-  display: block;
-  width: 100%;
-  padding: 6px 10px 0;
-  margin: 0;
-  border: none;
-  background: none;
-  font: inherit;
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  text-align: left;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.dl-recent-toggle:hover {
-  color: var(--fg);
-}
-
-.dl-recent-toggle::after {
-  content: "▸";
-  display: inline-block;
-  margin-left: 5px;
-  font-size: 9px;
-  transition: transform 0.15s ease;
-}
-
-.dl-recent-toggle[aria-expanded="true"]::after {
-  transform: rotate(90deg);
-}
-
-/* The section wrapper itself carries no border/background of its own —
-   `.dl-section + .dl-section` above already draws the same hairline between
-   Recent and whatever section sits above it that separates every other pair
-   of sections in this panel, so Recent's boundary reads exactly like theirs
-   rather than as a distinct boxed widget. */
-.dl-section-recent {
-  padding-bottom: 6px;
-}
-
 /* Scrolls rather than growing without bound: the registry caps live records
    well above what fits a 360px column, and a card taller than the viewport
    would push its own header off-screen. Never rendered at all while

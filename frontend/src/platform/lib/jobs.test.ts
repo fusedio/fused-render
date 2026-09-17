@@ -15,12 +15,11 @@ import {
   groupEffectiveTier,
   groupJobs,
   groupPopupTick,
-  isGroupRecentOnly,
   isGroupTerminal,
   jobAmount,
   jobDetail,
   jobFraction,
-  isRecentOnly,
+  isPopupSuppressed,
   jobRows,
   jobsAfterClear,
   jobStatusLine,
@@ -30,8 +29,6 @@ import {
   POLL_IDLE_MS,
   popupJobs,
   popupTick,
-  recentJobs,
-  recentNotifications,
   terminalNotifications,
   trackSeenIds,
   type Job,
@@ -41,7 +38,7 @@ function job(over: Partial<Job> = {}): Job {
   // `source` defaults to whatever `page` resolved to (ordinary-producer
   // parity, same as the server's own default) unless a test explicitly
   // overrides it — this is what lets every pre-existing fixture in this file
-  // keep passing unchanged once `isRecentOnly`/`familyKey` read `source`
+  // keep passing unchanged once `isPopupSuppressed`/`familyKey` read `source`
   // instead of `page`.
   const page = over.page ?? "/tmp/index.html";
   return {
@@ -449,29 +446,6 @@ test("terminalNotifications leaves an ordinary terminal job alone", () => {
   expect(terminalNotifications(jobs).map((j) => j.id)).toEqual(["dl"]);
 });
 
-// `recentNotifications` is `terminalNotifications`'s own complement — same
-// `mergedRows`-first composition (ActivityDock.tsx feeds both from the same
-// full snapshot), but selecting exactly what `terminalNotifications`
-// excludes for presence reasons rather than what it keeps.
-
-test("recentNotifications withholds a load's completion while its merged waiter is still running, same as terminalNotifications", () => {
-  const jobs = [
-    job({ id: "waiter", state: "running", waiting_for: "load" }),
-    job({ id: "load", state: "done", page: "/ai-models/local" }),
-  ];
-  expect(recentNotifications(jobs, openHere("/ai-models/local"))).toEqual([]);
-});
-
-test("recentNotifications surfaces a merged pair as Recent once both are terminal and the page is open", () => {
-  const jobs = [
-    job({ id: "waiter", state: "done", waiting_for: "load", page: "/ai-models/local" }),
-    job({ id: "load", state: "done", page: "/ai-models/local" }),
-  ];
-  expect(
-    recentNotifications(jobs, openHere("/ai-models/local")).map((j) => j.id).sort(),
-  ).toEqual(["load", "waiter"]);
-});
-
 // An index scan's own job (fused_render/server/routers/index.py's
 // mirror_index_jobs_once, "sys:index:<run_id>") stays a live Activity row
 // while running (default "trail" tier) — unlike a scheduled run's job
@@ -796,128 +770,76 @@ test("aggregate progress: nothing running draws no line, no totals sweep, else t
 });
 
 // ------------------------------------------------------- presence suppression
-// SPEC-quiet-notifications.md §2b / D-A: a successful terminal job whose own
-// page the user is already looking at does not pop and does not hold a seat
-// in Notifications — it is routed to Recent (§4) instead.
+// SPEC-quiet-notifications.md §2b / D-A, reversed 2026-09-17 for the ROW (the
+// "Recent" section is gone — see DECISIONS-quiet-notifications.md): a
+// successful terminal job whose own page the user is already looking at no
+// longer loses its seat in Notifications. What survives is only the POPUP
+// suppression `isPopupSuppressed` was originally built for.
 
 const openHere = (page: string) => (source: string) => source === page;
 const openNowhere = () => false;
 
-test("isRecentOnly: a done, non-attention job whose page is open anywhere is recent-only", () => {
+test("isPopupSuppressed: a done, non-attention job whose page is open anywhere is popup-suppressed", () => {
   const j = job({ state: "done", tier: "trail", page: "/ai-models/local" });
-  expect(isRecentOnly(j, openHere("/ai-models/local"))).toBe(true);
+  expect(isPopupSuppressed(j, openHere("/ai-models/local"))).toBe(true);
 });
 
-test("isRecentOnly: false when nothing has that page open", () => {
+test("isPopupSuppressed: false when nothing has that page open", () => {
   const j = job({ state: "done", tier: "trail", page: "/ai-models/local" });
-  expect(isRecentOnly(j, openNowhere)).toBe(false);
+  expect(isPopupSuppressed(j, openNowhere)).toBe(false);
 });
 
-test("isRecentOnly: an error is never recent-only even if its page is open (effectiveTier promotes to attention)", () => {
+test("isPopupSuppressed: an error is never popup-suppressed even if its page is open (effectiveTier promotes to attention)", () => {
   const j = job({ state: "error", tier: "trail", page: "/ai-models/local" });
-  expect(isRecentOnly(j, openHere("/ai-models/local"))).toBe(false);
+  expect(isPopupSuppressed(j, openHere("/ai-models/local"))).toBe(false);
 });
 
-test("isRecentOnly: a cancelled job is never recent-only for the same reason", () => {
+test("isPopupSuppressed: a cancelled job is never popup-suppressed for the same reason", () => {
   const j = job({ state: "cancelled", tier: "trail", page: "/ai-models/local" });
-  expect(isRecentOnly(j, openHere("/ai-models/local"))).toBe(false);
+  expect(isPopupSuppressed(j, openHere("/ai-models/local"))).toBe(false);
 });
 
-test("isRecentOnly: an explicit tier: attention job is never recent-only", () => {
+test("isPopupSuppressed: an explicit tier: attention job is never popup-suppressed", () => {
   const j = job({ state: "done", tier: "attention", page: "/ai-models/local" });
-  expect(isRecentOnly(j, openHere("/ai-models/local"))).toBe(false);
+  expect(isPopupSuppressed(j, openHere("/ai-models/local"))).toBe(false);
 });
 
-test("isRecentOnly: a running job is never recent-only regardless of presence", () => {
+test("isPopupSuppressed: a running job is never popup-suppressed regardless of presence", () => {
   const j = job({ state: "running", tier: "trail", page: "/ai-models/local" });
-  expect(isRecentOnly(j, openHere("/ai-models/local"))).toBe(false);
+  expect(isPopupSuppressed(j, openHere("/ai-models/local"))).toBe(false);
 });
 
 // Bug 1 (SPEC-quiet-notifications.md): a server-backed render's `page` is
 // overloaded to the OUTPUT IMAGE PATH once no caller page survives — a
 // pre-existing, deliberate fallback in `_start_render` that must keep
 // working so a click still opens the file. `source` is the separate field
-// that carries the RAISING route instead, and `isRecentOnly` must read it,
-// not `page`, or a server-backed render can never be suppressed at all.
-test("isRecentOnly: a render whose page is an output path IS suppressed via its distinct source", () => {
+// that carries the RAISING route instead, and `isPopupSuppressed` must read
+// it, not `page`, or a server-backed render's popup can never be suppressed
+// at all.
+test("isPopupSuppressed: a render whose page is an output path IS suppressed via its distinct source", () => {
   const j = job({
     state: "done",
     tier: "trail",
     page: "/tmp/outputs/render.png",
     source: "/ai-models/playground",
   });
-  expect(isRecentOnly(j, openHere("/ai-models/playground"))).toBe(true);
+  expect(isPopupSuppressed(j, openHere("/ai-models/playground"))).toBe(true);
 });
 
-test("isRecentOnly: the same render job is NOT suppressed when source is empty (unknown source degrades to notify)", () => {
+test("isPopupSuppressed: the same render job is NOT suppressed when source is empty (unknown source degrades to notify)", () => {
   const j = job({
     state: "done",
     tier: "trail",
     page: "/tmp/outputs/render.png",
     source: "",
   });
-  expect(isRecentOnly(j, openHere("/ai-models/playground"))).toBe(false);
-  expect(isRecentOnly(j, openNowhere)).toBe(false);
+  expect(isPopupSuppressed(j, openHere("/ai-models/playground"))).toBe(false);
+  expect(isPopupSuppressed(j, openNowhere)).toBe(false);
 });
 
-test("jobRows: a suppressed success drops out when isOpenAnywhere is supplied", () => {
+test("jobRows: a popup-suppressed success still shows as an ordinary row (no more Recent section to drop into)", () => {
   const jobs = [job({ state: "done", tier: "trail", page: "/ai-models/local" })];
-  expect(jobRows(jobs, openHere("/ai-models/local"))).toEqual([]);
-});
-
-// ------------------------------------------------------------- recentJobs
-// SPEC-quiet-notifications.md §4: a job `jobRows` drops for being
-// recent-only does not vanish — it goes to the folded "Recent" section
-// instead. `recentJobs` is the complement of `jobRows`'s own suppression
-// check: exactly the rows `jobRows` excludes BECAUSE `isRecentOnly` said so,
-// nothing more (a schedule job, or a transient/silent terminal job, is still
-// never shown anywhere — those are unrelated exclusions, not presence-based).
-
-test("recentJobs: a suppressed success is exactly what Recent holds", () => {
-  const jobs = [job({ id: "dl", state: "done", tier: "trail", page: "/ai-models/local" })];
-  expect(recentJobs(jobs, openHere("/ai-models/local")).map((j) => j.id)).toEqual(["dl"]);
-});
-
-test("recentJobs: empty when nothing has the job's page open", () => {
-  const jobs = [job({ id: "dl", state: "done", tier: "trail", page: "/ai-models/local" })];
-  expect(recentJobs(jobs, openNowhere)).toEqual([]);
-});
-
-test("recentJobs: an error is never recent, even with its page open (goes to Needs you, not Recent)", () => {
-  const jobs = [job({ id: "dl", state: "error", tier: "trail", page: "/ai-models/local" })];
-  expect(recentJobs(jobs, openHere("/ai-models/local"))).toEqual([]);
-});
-
-test("recentJobs: a running job never appears in Recent regardless of presence", () => {
-  const jobs = [job({ id: "dl", state: "running", tier: "trail", page: "/ai-models/local" })];
-  expect(recentJobs(jobs, openHere("/ai-models/local"))).toEqual([]);
-});
-
-test("recentJobs: a scheduled run's own job never appears in Recent (D661 still applies)", () => {
-  const jobs = [
-    job({ id: "sys:schedule:e1", state: "done", tier: "transient", page: "/tasks" }),
-  ];
-  expect(recentJobs(jobs, openHere("/tasks"))).toEqual([]);
-});
-
-test("recentJobs: an ordinary job whose page is NOT open stays out of Recent (it's in Worth keeping instead)", () => {
-  const jobs = [job({ id: "dl", state: "done", tier: "trail", page: "/ai-models/local" })];
-  expect(jobRows(jobs, openNowhere).map((j) => j.id)).toEqual(["dl"]);
-  expect(recentJobs(jobs, openNowhere)).toEqual([]);
-});
-
-test("recentJobs: jobRows and recentJobs partition a mixed snapshot with no overlap and no loss", () => {
-  const jobs = [
-    job({ id: "seen", state: "done", tier: "trail", page: "/ai-models/local" }),
-    job({ id: "unseen", state: "done", tier: "trail", page: "/claude-config" }),
-    job({ id: "failed", state: "error", tier: "trail", page: "/ai-models/local" }),
-    job({ id: "running", state: "running", tier: "trail", page: "/ai-models/local" }),
-  ];
-  const open = openHere("/ai-models/local");
-  const rows = jobRows(jobs, open);
-  const recent = recentJobs(jobs, open);
-  expect(rows.map((j) => j.id).sort()).toEqual(["failed", "running", "unseen"]);
-  expect(recent.map((j) => j.id)).toEqual(["seen"]);
+  expect(jobRows(jobs, openHere("/ai-models/local")).map((j) => j.id)).toEqual(jobs.map((j) => j.id));
 });
 
 test("jobRows: the same job still shows when nothing has its page open", () => {
@@ -986,7 +908,7 @@ test("popupTick: an error on the same open page still pops — an error is never
 // id. Every job's `group` defaults, server-side, to its own id when it has
 // no `sys:<name>:` family prefix — so an ungrouped job is a group of one BY
 // CONSTRUCTION, which is what makes "a lone job behaves exactly as today"
-// true without any of `jobRows`/`recentJobs`/`groupJobs` special-casing
+// true without any of `jobRows`/`groupJobs` special-casing
 // group size 1. `job()`'s own default (`group: over.id ?? "j1"`) mirrors
 // that server default, so every pre-existing test above — none of which set
 // `group` explicitly — already IS the single-member regression suite: if
@@ -1128,39 +1050,6 @@ test("isGroupTerminal: true once every member is terminal", () => {
   expect(isGroupTerminal(members)).toBe(true);
 });
 
-test("isGroupRecentOnly: true only when the group is fully terminal AND every member is individually recent-only", () => {
-  const members = [
-    job({ id: "a", state: "done", tier: "trail", page: "/p" }),
-    job({ id: "b", state: "done", tier: "trail", page: "/p" }),
-  ];
-  expect(isGroupRecentOnly(members, openHere("/p"))).toBe(true);
-});
-
-test("isGroupRecentOnly: one failing member keeps the whole group visible, per spec's own words", () => {
-  const members = [
-    job({ id: "a", state: "done", tier: "trail", page: "/p" }),
-    job({ id: "b", state: "error", tier: "trail", page: "/p" }),
-  ];
-  expect(isGroupRecentOnly(members, openHere("/p"))).toBe(false);
-});
-
-test("isGroupRecentOnly: one still-running member keeps the whole group visible (not fully terminal)", () => {
-  const members = [
-    job({ id: "a", state: "done", tier: "trail", page: "/p" }),
-    job({ id: "b", state: "running", tier: "trail", page: "/p" }),
-  ];
-  expect(isGroupRecentOnly(members, openHere("/p"))).toBe(false);
-});
-
-test("isGroupRecentOnly: false when only some members' page is open (one member not recent-only)", () => {
-  const members = [
-    job({ id: "a", state: "done", tier: "trail", page: "/p" }),
-    job({ id: "b", state: "done", tier: "trail", page: "/p" }),
-  ];
-  // nothing has "/p" open in this variant
-  expect(isGroupRecentOnly(members, openNowhere)).toBe(false);
-});
-
 test("groupEffectiveTier: one attention member promotes the whole group, regardless of the rest", () => {
   const members = [job({ id: "a", state: "error" }), job({ id: "b", tier: "silent", state: "done" })];
   expect(groupEffectiveTier(members)).toBe("attention");
@@ -1180,58 +1069,49 @@ test("groupEffectiveTier: all silent stays silent", () => {
   expect(groupEffectiveTier(members)).toBe("silent");
 });
 
-// The trap named explicitly in this build's brief: a two-member group where
-// one member is individually suppressible (done, its page open) and the
-// other is failing must appear EXACTLY ONCE, in the attention/trail path —
-// never split across jobRows and recentJobs, never dropped from both.
-test("jobRows/recentJobs: a two-member group with one suppressed success and one failure appears exactly once, in jobRows", () => {
+// The Recent section is gone (2026-09-17): a two-member group where one
+// member is individually popup-suppressible (done, its page open) and the
+// other is failing must appear EXACTLY ONCE, in `jobRows` — there is nowhere
+// else for it to go.
+test("jobRows: a two-member group with one popup-suppressed success and one failure appears exactly once", () => {
   const jobs = [
     job({ id: "sys:ai-image:ok", state: "done", tier: "trail", page: "/p", group: "sys:ai-image" }),
     job({ id: "sys:ai-image:boom", state: "error", tier: "trail", page: "/p", group: "sys:ai-image" }),
   ];
   const open = openHere("/p");
   const rows = jobRows(jobs, open).map((j) => j.id).sort();
-  const recent = recentJobs(jobs, open).map((j) => j.id).sort();
   expect(rows).toEqual(["sys:ai-image:boom", "sys:ai-image:ok"]);
-  expect(recent).toEqual([]);
 });
 
-test("jobRows/recentJobs: a two-member group where every member is individually recent-only is suppressed as a whole, into Recent", () => {
+test("jobRows: a two-member group where every member's popup would be individually suppressed still shows both rows", () => {
   const jobs = [
     job({ id: "sys:ai-image:a", state: "done", tier: "trail", page: "/p", group: "sys:ai-image" }),
     job({ id: "sys:ai-image:b", state: "done", tier: "trail", page: "/p", group: "sys:ai-image" }),
   ];
   const open = openHere("/p");
-  expect(jobRows(jobs, open)).toEqual([]);
-  expect(recentJobs(jobs, open).map((j) => j.id).sort()).toEqual(["sys:ai-image:a", "sys:ai-image:b"]);
+  expect(jobRows(jobs, open).map((j) => j.id).sort()).toEqual(["sys:ai-image:a", "sys:ai-image:b"]);
 });
 
-test("jobRows: a two-member group with one member still running is never suppressed, even if its sibling's page is open and done", () => {
+test("jobRows: a two-member group with one member still running shows both rows, even if its sibling's page is open and done", () => {
   const jobs = [
     job({ id: "sys:ai-image:a", state: "done", tier: "trail", page: "/p", group: "sys:ai-image" }),
     job({ id: "sys:ai-image:b", state: "running", tier: "trail", page: "/p", group: "sys:ai-image" }),
   ];
   const open = openHere("/p");
   expect(jobRows(jobs, open).map((j) => j.id).sort()).toEqual(["sys:ai-image:a", "sys:ai-image:b"]);
-  expect(recentJobs(jobs, open)).toEqual([]);
 });
 
 // The single-member regression this build was told to pin explicitly: a
 // job whose group is itself (the id-derived default) behaves byte-for-byte
-// like today's ungrouped path — one running + one about-to-be-suppressed
-// job that do NOT share a group must never be folded together, and the
-// suppressed one is judged purely on its own.
+// like today's ungrouped path — one running + one done job that do NOT
+// share a group must never be folded together.
 test("jobRows: two UNRELATED single-member jobs are never folded into each other's group just because they share a page", () => {
   const jobs = [
     job({ id: "a", state: "done", tier: "trail", page: "/p" }),
     job({ id: "b", state: "running", tier: "trail", page: "/p" }),
   ];
   const open = openHere("/p");
-  // "a" is its own group of one and is fully suppressible on its own;
-  // "b" is a separate group of one, still running, so it should NOT keep
-  // "a" visible the way a genuine shared-group sibling would.
-  expect(jobRows(jobs, open).map((j) => j.id)).toEqual(["b"]);
-  expect(recentJobs(jobs, open).map((j) => j.id)).toEqual(["a"]);
+  expect(jobRows(jobs, open).map((j) => j.id).sort()).toEqual(["a", "b"]);
 });
 
 // --------------------------------------------------------- D-C pop rule

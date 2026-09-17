@@ -102,7 +102,7 @@ export interface Job {
   // diverges for a render, where it stays the raising route (or "") through
   // every tick, including the terminal one, never inheriting `page`'s
   // output-path fallback. "" means "no known raiser" and must always read as
-  // "cannot suppress, so notify" — see `isRecentOnly`, and `matchesSource`
+  // "cannot suppress, so notify" — see `isPopupSuppressed`, and `matchesSource`
   // (presence.ts), which already returns false for an empty `source`.
   source: string;
   // A short, human-readable label naming WHAT RAISED this job — "Playground",
@@ -286,12 +286,17 @@ export function effectiveTier(job: Job): JobTier {
  *  that declared itself transient/silent but ended in `error`/`cancelled`
  *  still gets a row, because the override already turned it into
  *  `attention`. */
-/** D-A / §2b (SPEC-quiet-notifications.md): a successful job whose own page
- *  the user is already looking at is not news — it goes to the folded
- *  "Recent" section (§4) instead of popping or holding a seat in "Needs
- *  you"/"Worth keeping". Suppression is client-side, at DISPLAY time only —
- *  the server learns nothing about presence and stays authoritative about
- *  the row's existence (a dismiss, a real re-check, still works normally).
+/** D-A / §2b (SPEC-quiet-notifications.md), reversed 2026-09-17 (user: "I
+ *  also don't like this recent stuff. notification is notification. remove
+ *  this recent."): a successful job whose own page the user is already
+ *  looking at no longer earns a place in a folded "Recent" section — that
+ *  section is gone (see DECISIONS-quiet-notifications.md). What survives is
+ *  ONLY the popup suppression itself, the original ask this predicate was
+ *  built for ("the success notification should only come if the user
+ *  doesn't have the app open"): a suppressed row still pops nothing and still
+ *  never grabs the popup slot, it now simply lands as an ordinary row in the
+ *  panel's one unified list instead of a second, folded one. See
+ *  `popupJobs`/`popupTick` for the only remaining callers.
  *
  *  Gated on `state === "done"` specifically, not `isTerminal`: `error` and
  *  `cancelled` are promoted to "attention" by `effectiveTier` before this
@@ -300,7 +305,7 @@ export function effectiveTier(job: Job): JobTier {
  *  suppressed — this condition is written the long way on purpose so that
  *  stays visibly true rather than relying on it as an accident of `done`-only
  *  gating. */
-export function isRecentOnly(job: Job, isOpenAnywhere: (source: string) => boolean): boolean {
+export function isPopupSuppressed(job: Job, isOpenAnywhere: (source: string) => boolean): boolean {
   if (job.state !== "done") return false;
   if (effectiveTier(job) === "attention") return false;
   // `job.source`, NOT `job.page` (SPEC-quiet-notifications.md bug 1): `page`
@@ -431,15 +436,13 @@ function clusterFamily(members: readonly Job[]): Map<string, string> {
  *  not the unit.
  *
  *  THIS RUNS BEFORE CLASSIFICATION, ON PURPOSE - the resolved design
- *  question this branch inherited from an earlier handoff. `jobRows`/
- *  `recentJobs` judge a GROUP's fate as a whole (every member must satisfy
- *  the suppression condition, or the whole group stays visible), not each
- *  member independently and then folded after the fact: classifying members
- *  first and grouping after can double-count a group across "Worth keeping"
- *  and "Recent" (a group split by presence lands partly in each), or drop it
- *  from both (neither half's own filter recognizes the other half kept it
- *  alive). Grouping first and then asking "does this whole group satisfy the
- *  condition" is the only order that keeps a group in exactly one place. */
+ *  question this branch inherited from an earlier handoff: the popup
+ *  pipeline (`popupJobs`/`popupTick`) judges a GROUP's popup-suppression
+ *  fate as a whole (every member must satisfy the suppression condition, or
+ *  the whole group still pops), not each member independently and then
+ *  folded after the fact. Grouping first and then asking "does this whole
+ *  group satisfy the condition" is the only order that keeps a group's
+ *  popup verdict consistent across its own members. */
 export function groupJobs(jobs: readonly Job[]): JobGroup[] {
   const families = new Map<string, Job[]>();
   for (const j of jobs) {
@@ -482,20 +485,6 @@ export function isGroupTerminal(members: readonly Job[]): boolean {
   return members.every(isTerminal);
 }
 
-/** §2b composed with §3: a group is suppressed only when it is fully
- *  terminal AND every member individually satisfies `isRecentOnly` — spec's
- *  own words, "a group row is suppressed under §2b when every member
- *  satisfies the suppression condition. One failing member keeps the whole
- *  group visible." A member still running fails `isRecentOnly` on its own
- *  (it isn't `state === "done"`), so a group with any in-flight member is
- *  never suppressed by this — consistent with "in flight" never being quiet. */
-export function isGroupRecentOnly(
-  members: readonly Job[],
-  isOpenAnywhere: (source: string) => boolean,
-): boolean {
-  return isGroupTerminal(members) && members.every((j) => isRecentOnly(j, isOpenAnywhere));
-}
-
 /** The tier a GROUP reads as, extending `effectiveTier`'s per-job rule: one
  *  member in `error`/`cancelled` (i.e. `effectiveTier(j) === "attention"`)
  *  promotes the whole row, the same way a single failing job is always news
@@ -512,8 +501,8 @@ export function groupEffectiveTier(members: readonly Job[]): JobTier {
 }
 
 /** Index every job in a snapshot by the `JobGroup` it belongs to — the one
- *  lookup `jobRows`/`recentJobs`/the popup pipeline all need to judge a
- *  member's fate by its GROUP's verdict rather than its own. */
+ *  lookup the popup pipeline needs to judge a member's fate by its GROUP's
+ *  verdict rather than its own. */
 function indexGroups(jobs: readonly Job[]): Map<string, JobGroup> {
   const byId = new Map<string, JobGroup>();
   for (const g of groupJobs(jobs)) {
@@ -522,45 +511,22 @@ function indexGroups(jobs: readonly Job[]): Map<string, JobGroup> {
   return byId;
 }
 
+// `isOpenAnywhere`, still accepted here, is now UNUSED by this function
+// itself (removed 2026-09-17 alongside the "Recent" section — see
+// `isPopupSuppressed`'s own header comment) — kept only so every existing
+// caller (`terminalNotifications`, `ActivityDock.tsx`, every test in
+// `jobs.test.ts` that passes `openHere(...)`/`openNowhere`) keeps compiling
+// unchanged. A presence-suppressed success is no longer excluded from this
+// list at all: it lands here as an ordinary row, exactly like everything
+// else — only the POPUP (`popupJobs`/`popupTick`, below) still reads
+// presence to decide whether to pop.
 export function jobRows(jobs: Job[], isOpenAnywhere?: (source: string) => boolean): Job[] {
-  const groupById = indexGroups(jobs);
+  void isOpenAnywhere;
   return jobs.filter((j) => {
     if (j.id.startsWith(SCHEDULE_JOB_PREFIX)) return false;
     if (!isTerminal(j)) return true;
     if (effectiveTier(j) === "transient" || effectiveTier(j) === "silent") return false;
-    if (isOpenAnywhere) {
-      const g = groupById.get(j.id);
-      if (g && isGroupRecentOnly(g.jobs, isOpenAnywhere)) return false;
-    }
     return true;
-  });
-}
-
-/** §4 (SPEC-quiet-notifications.md): the exact complement of `jobRows`'s own
- *  presence-based exclusion — every job `jobRows` drops BECAUSE
- *  `isRecentOnly` said so, and nothing else. A schedule job (D661) or a
- *  transient/silent terminal job is excluded from `jobRows` for reasons that
- *  have nothing to do with presence, so this function excludes them too,
- *  rather than letting them leak into Recent the moment their page happens
- *  to be open. Together, `jobRows(jobs, isOpenAnywhere)` and
- *  `recentJobs(jobs, isOpenAnywhere)` partition every terminal job that
- *  isn't schedule/transient/silent into exactly one of "still shown" or
- *  "folded into Recent" — never both, never neither (pinned by
- *  `jobs.test.ts`'s partition test).
- *
- *  A row landing here is not gone: `isRecentOnly` fires client-side, at read
- *  time, from a live fact about where the user currently is — the very next
- *  read (a page navigation away, the presence entry going stale) moves the
- *  SAME job straight into `jobRows`'s output instead, with nothing
- *  server-side to reconcile. */
-export function recentJobs(jobs: Job[], isOpenAnywhere: (source: string) => boolean): Job[] {
-  const groupById = indexGroups(jobs);
-  return jobs.filter((j) => {
-    if (j.id.startsWith(SCHEDULE_JOB_PREFIX)) return false;
-    if (!isTerminal(j)) return false;
-    if (effectiveTier(j) === "transient" || effectiveTier(j) === "silent") return false;
-    const g = groupById.get(j.id);
-    return g ? isGroupRecentOnly(g.jobs, isOpenAnywhere) : isRecentOnly(j, isOpenAnywhere);
   });
 }
 
@@ -590,19 +556,6 @@ export function terminalNotifications(
   isOpenAnywhere?: (source: string) => boolean,
 ): Job[] {
   return terminalJobs(jobRows(mergedRows(jobs), isOpenAnywhere));
-}
-
-/** §4's own `terminalNotifications` — same `mergedRows`-first composition,
- *  for the same reason (a load/waiter pair must agree on terminal-ness
- *  before either is judged), but feeding `recentJobs` instead of `jobRows`:
- *  this is what `ActivityDock.tsx` hands `RepoUpdatesDock` as its Recent
- *  section, the complement of what `terminalNotifications` hands it as
- *  "Needs you"/"Worth keeping". */
-export function recentNotifications(
-  jobs: Job[],
-  isOpenAnywhere: (source: string) => boolean,
-): Job[] {
-  return recentJobs(mergedRows(jobs), isOpenAnywhere);
 }
 
 // ------------------------------------------------------------------ popups
@@ -653,7 +606,7 @@ export function popupJobs(jobs: Job[], isOpenAnywhere?: (source: string) => bool
   return terminalJobs(mergedRows(jobs))
     .filter((j) => !j.id.startsWith(SCHEDULE_JOB_PREFIX))
     .filter((j) => !(j.tier === "silent" && j.state === "done"))
-    .filter((j) => !(isOpenAnywhere && isRecentOnly(j, isOpenAnywhere)))
+    .filter((j) => !(isOpenAnywhere && isPopupSuppressed(j, isOpenAnywhere)))
     .filter((j) => {
       const g = groupById.get(j.id);
       return !g || g.jobs.length === 1;
@@ -743,7 +696,7 @@ export function popupTick(
     const key = popupKey(j);
     next.add(key);
     if (alreadyPoppedByGroup && alreadyPoppedByGroup.has(key)) continue;
-    if (isOpenAnywhere && isRecentOnly(j, isOpenAnywhere)) continue;
+    if (isOpenAnywhere && isPopupSuppressed(j, isOpenAnywhere)) continue;
     if (isFirstTick || seen.has(key)) continue;
     if (popped === null || (j.finished_at ?? 0) > (popped.finished_at ?? 0)) popped = j;
   }
@@ -837,9 +790,9 @@ export const EMPTY_GROUP_POPUP_STATE: GroupPopupState = {
  *  does, until something needs the user's attention.
  *
  *  Not gated by presence/`isOpenAnywhere` on purpose: a START is never
- *  terminal, so `isGroupRecentOnly` (which requires full-terminal) is always
- *  false for it regardless of where the user is — "in flight" is never
- *  quiet. A FAILURE is `effectiveTier === "attention"`, which `isRecentOnly`
+ *  terminal, so any full-terminal-only suppression check is always false for
+ *  it regardless of where the user is — "in flight" is never quiet. A
+ *  FAILURE is `effectiveTier === "attention"`, which `isPopupSuppressed`
  *  itself already always excludes from suppression — so there is no
  *  presence check this function could apply that would ever change either
  *  outcome.

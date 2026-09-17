@@ -531,15 +531,6 @@ export default function App({ config }: { config: Config }) {
   // changes, so this does not re-render the shell on every poll.
   const [terminalJobs, setTerminalJobs] = useState<Job[]>([]);
 
-  // §4 (SPEC-quiet-notifications.md, D-B): the complementary set —
-  // `ActivityDock`'s `onRecentJobs`, the presence-suppressed jobs
-  // `terminalNotifications` itself excludes, drawn in `RepoUpdatesDock`'s own
-  // folded "Recent" section instead of vanishing outright. Same reasoning as
-  // `terminalJobs` above for living in `App`: this is the one place both
-  // `ActivityDock` (the source) and `RepoUpdatesDock` (the sink) are in
-  // scope.
-  const [recentJobs, setRecentJobs] = useState<Job[]>([]);
-
   // A real, server-side dismissal `platform/ui/JobPopupCard.tsx` cannot patch
   // `terminalJobs` for itself (it is several components below here, with no
   // other reach into this state) reports through `jobs.ts`'s
@@ -551,11 +542,6 @@ export default function App({ config }: { config: Config }) {
     () =>
       subscribeJobDismissed((id) => {
         setTerminalJobs((jobs) => jobs.filter((j) => j.id !== id));
-        // A dismissed id could just as well be sitting in Recent (§4) rather
-        // than in `terminalJobs` — the two lists are disjoint but this
-        // subscriber has no way to know which one holds it, so it filters
-        // both; the one that never had the id is an inexpensive no-op.
-        setRecentJobs((jobs) => jobs.filter((j) => j.id !== id));
       }),
     [],
   );
@@ -1122,7 +1108,6 @@ export default function App({ config }: { config: Config }) {
             activity={
               <ActivityDock
                 onTerminalJobs={setTerminalJobs}
-                onRecentJobs={setRecentJobs}
                 onJobPopup={setPopupJob}
               />
             }
@@ -1130,8 +1115,6 @@ export default function App({ config }: { config: Config }) {
               <RepoUpdatesDock
                 terminal={terminalJobs}
                 onTerminalPatch={setTerminalJobs}
-                recent={recentJobs}
-                onRecentPatch={setRecentJobs}
               />
             }
           />

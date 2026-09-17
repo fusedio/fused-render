@@ -28,7 +28,7 @@
 // (see `isRetained` below and DECISIONS-toasts-become-notifications.md) —
 // everything else is never added to it; its popup is its only trace.
 import { useSyncExternalStore } from "react";
-import { JOB_POPUP_VISIBLE_MS } from "@platform/lib/jobs";
+import { GROUP_GAP_MS, JOB_POPUP_VISIBLE_MS } from "@platform/lib/jobs";
 import type { JobTier } from "@platform/lib/jobs";
 import { IS_EMBED, IS_TOP_EMBED } from "@platform/lib/router";
 import { isFocusedHere } from "@platform/lib/presence";
@@ -80,15 +80,6 @@ export interface NotificationInput {
    *  where the page already shows the same result on screen (the app
    *  install/run lifecycle messages this branch wires it for). */
   source?: string;
-  /** OPT-IN ONLY, mirrors `source`'s own opt-in shape — when this message is
-   *  retained at all (see `isRetained`), draw it in the Notifications panel's
-   *  folded §4 "Recent" section (RepoUpdatesDock.tsx) instead of the
-   *  unfolded "Worth keeping" one. For a bare success with nothing to act on
-   *  besides "go back to it" (task-status-notify.ts's `in_progress -> done`,
-   *  the first caller) persisting is fine, shouting is not — undefined/false
-   *  keeps today's behaviour (an actionable, non-error message in "Worth
-   *  keeping", unfolded) for every other call site. */
-  recent?: boolean;
 }
 
 export interface StoredNotification {
@@ -99,8 +90,27 @@ export interface StoredNotification {
   tone?: "error" | "info";
   action?: NotificationCardAction;
   page?: string;
-  /** See `NotificationInput.recent`. */
-  recent: boolean;
+  /** GROUPING/UPDATION (user: "better notification grouping/updation for
+   *  same source") — the family this row belongs to, `page:<page>` if it has
+   *  one, else `title:<title>`. A fresh `notify()` call that lands in the
+   *  SAME family as an already-retained row, within `GROUP_GAP_MS` of that
+   *  row's own `updatedAt`, UPDATES that row in place (same id, `count`
+   *  incremented) instead of stacking a second, byte-identical one — see
+   *  `notify()`'s own comment on this. Mirrors `jobs.ts`'s own family/burst
+   *  concept (`familyKey`/`clusterFamily`/`GROUP_GAP_MS`) rather than
+   *  inventing a second, divergent one — this module already sits in
+   *  `platform/lib` alongside `jobs.ts`, so importing `GROUP_GAP_MS` from
+   *  there is a plain in-layer reuse, not a `shell/` reach. */
+  family: string;
+  /** How many times this family has fired within the current burst — 1 the
+   *  first time, incremented on each collapse. `MessageRowView`
+   *  (RepoUpdatesDock.tsx) reads this to show "×N" once it exceeds 1. */
+  count: number;
+  /** When this row's content was last set (fresh `notify()` or a collapsed
+   *  repeat) — `notify()`'s own clock for the `GROUP_GAP_MS` burst window
+   *  above. Not meant to be read for anything else (it is not a "raised at"
+   *  timestamp — a collapsed repeat overwrites it). */
+  updatedAt: number;
   /** A dimmed caption naming who raised this row — the message-side
    *  counterpart to `Job.origin` (jobs.ts, `.dl-origin`/`caption` on
    *  `NotificationCard`). Computed once at `notify()` time from `source` via
@@ -244,6 +254,15 @@ function isSuppressed(input: NotificationInput, tier: JobTier): boolean {
   return isFocusedHere(input.source);
 }
 
+/** See `StoredNotification.family`'s own doc comment. `page` wins when
+ *  present (a task's own destination is a stabler identity than its title
+ *  text, which callers are free to phrase differently run to run); `title`
+ *  is the fallback for messages with no destination at all — still useful
+ *  for e.g. repeated identical toasts, not just task completions. */
+function messageFamily(input: NotificationInput): string {
+  return input.page ? `page:${input.page}` : `title:${input.title}`;
+}
+
 function toStored(input: NotificationInput, id: number): StoredNotification {
   return {
     id,
@@ -253,7 +272,9 @@ function toStored(input: NotificationInput, id: number): StoredNotification {
     tone: input.tone,
     action: input.action,
     page: input.page,
-    recent: Boolean(input.recent),
+    family: messageFamily(input),
+    count: 1,
+    updatedAt: Date.now(),
     origin: labelForSource(input.source) || undefined,
     leaving: false,
   };
@@ -337,7 +358,6 @@ function forwardToShell(n: StoredNotification): number | undefined {
       tone: n.tone,
       action: n.action,
       page: n.page,
-      recent: n.recent,
     };
     return top?._fusedIngestNotification?.(input);
   } catch {
@@ -450,13 +470,43 @@ export function notify(input: NotificationInput, replaceId?: number): number {
     }
   }
 
-  const id = nextId++;
-  const item = toStored(input, id);
+  // GROUPING/UPDATION (user: "better notification grouping/updation for
+  // same source") — a fresh, retained-worthy message that shares its family
+  // (see `messageFamily`) with an ALREADY-RETAINED row, raised within
+  // `GROUP_GAP_MS` of that row's own `updatedAt`, updates that row IN PLACE
+  // (same id, `count` incremented) rather than stacking a second,
+  // byte-identical one. Checked here, not folded into `isRetained`/
+  // `resolveTier`, because it is purely about WHERE an already-decided
+  // retained item lands, exactly the same layering `isSuppressed` above
+  // keeps relative to `isRetained`. A `silent`/non-retained message is never
+  // a collapse candidate (nothing to collapse INTO — it never reaches the
+  // retained list either way), so this only runs once `isRetained` already
+  // said yes.
+  const tier = resolveTier(input);
+  const now = Date.now();
+  const collapseIdx = isRetained(input, tier)
+    ? retained.findIndex(
+        (n) => n.family === messageFamily(input) && now - n.updatedAt <= GROUP_GAP_MS,
+      )
+    : -1;
+
+  const id = collapseIdx !== -1 ? retained[collapseIdx].id : nextId++;
+  const base = toStored(input, id);
+  const item: StoredNotification =
+    collapseIdx !== -1 ? { ...base, count: retained[collapseIdx].count + 1, updatedAt: now } : base;
 
   if (isRetained(input, item.tier)) {
-    retained = capRetained([...retained, item]);
-    const shellId = forwardToShell(item);
-    if (shellId !== undefined) forwardedIds.set(id, shellId);
+    if (collapseIdx !== -1) {
+      retained = retained.map((n, i) => (i === collapseIdx ? item : n));
+      // Not re-forwarded (§4 pane->shell): the shell-side copy already
+      // exists under this same id (`forwardedIds` already maps it) — a
+      // collapse only changes this document's own content/count, not
+      // whether a shell copy needs minting.
+    } else {
+      retained = capRetained([...retained, item]);
+      const shellId = forwardToShell(item);
+      if (shellId !== undefined) forwardedIds.set(id, shellId);
+    }
   }
 
   // LATEST WINS: a fresh popup always replaces whatever is currently

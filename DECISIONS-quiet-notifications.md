@@ -1991,3 +1991,118 @@ yet committed at time of these runs):
   tests/test_tasks_store.py tests/test_tasks_queue_api.py` → 844 passed
   (repo's own `pyproject.toml` runs xdist automatically; no `-n` flag was
   passed).
+
+## Fix 26: the "Recent" section is removed entirely (reversal); a finished task is never presence-suppressed; client-raised messages now group like job rows
+
+**User's verbatim words** (relayed by the dispatching coordinator): "I also
+don't like this recent stuff. notification is notification. remove this
+recent."
+
+This reverses Fix 23 / the §4 build (`## §4 built: "Recent" section closes
+the fold-vs-vanish gap (D-B)`, line 118 above) outright. There is now **one**
+notification list, no fold. Everything that used to be routed into the
+"Recent" bucket is an ordinary row in the main list, in normal order.
+
+**The distinction that made this safe to do without touching the original
+feature**: `isRecentOnly` (jobs.ts) was never the Recent-*section* predicate —
+it was always the **popup-suppression** predicate ("the success notification
+should only come if the user doesn't have the app open", the original ask
+from SPEC-quiet-notifications.md §2b). Popup suppression is untouched by this
+fix. What changed is only *where a suppressed row's retained row lands* —
+previously the folded Recent section, now the ordinary list, same as every
+other retained row. To make that distinction impossible to re-confuse later,
+`isRecentOnly` is renamed to `isPopupSuppressed` and is now used **only** by
+`popupJobs`/`popupTick` — never by `jobRows`, which decides what the panel
+*shows* rather than what *pops*.
+
+Removed, in full:
+- `RepoUpdatesDock.tsx`: the `.dl-recent-toggle` disclosure button, the
+  `recentShown` state, the entire `<div className="dl-section
+  dl-section-recent">` JSX block, `messagesRecent`, `boundedRecent`,
+  `boundedMessagesRecent`, `boundedRecentGroups`, the `recent`/`onRecentPatch`
+  props on both `RepoUpdatesDockView` and the default-exported
+  `RepoUpdatesDock`, and every doc comment that referenced any of them.
+- `notifications.css`: the `.dl-recent-toggle` rule (including its
+  `:hover`/`::after` chevron/`[aria-expanded="true"]` variants) and
+  `.dl-section-recent`, plus their "DEFECT 3(b)" comment. `.dl-section-head`,
+  `.dl-section + .dl-section`, and `.dl-rows` are untouched and still
+  adjacent — the plurality-not-presence heading rule and the section hairline
+  rule both survive.
+- `jobs.ts`/`notifications.ts`: `recentJobs`, `recentNotifications`,
+  `isGroupRecentOnly`, `boundedRecent`-family helpers, `RECENT_VISIBLE_CAP`,
+  the `recent: true` flag on `NotificationInput`/`StoredNotification`,
+  `onRecentPatch`. `isRecentOnly` survives, renamed to `isPopupSuppressed`,
+  restricted to `popupJobs`/`popupTick` call sites only.
+- `App.tsx`: the `recentJobs` `useState` and its JSX wiring had already been
+  removed by an earlier pass on this branch, but a leftover call site was
+  found and fixed this round — `subscribeJobDismissed`'s effect still called
+  the now-nonexistent `setRecentJobs`, which would have been a `tsc` error.
+  This is exactly the kind of orphan the brief's Task 3 asked to check for;
+  it was caught by a broad `grep -r "recent" frontend/src` sweep, not by any
+  single file's own review.
+
+**A finished Claude task is never presence-suppressed** (`task-status-notify.ts`).
+The `in_progress -> done` branch used to return `source: taskSource(task)`
+(making its popup presence-suppressible) and `recent: true` (routing its
+retained row into the now-removed Recent section). Both are dropped: the
+branch now returns only `title`/`tone: "info"`/`page: taskDestination(task)`.
+A finished task's popup always pops, and its retained row is an ordinary row,
+clickable via `page` exactly as it already was. The now-unused `taskSource`
+function was deleted along with its one stale doc-comment reference in
+`tasks-lib.ts`. The other three task-status transitions (first sighting,
+`in_progress -> needs_attention`, `in_progress -> blocked`) are untouched.
+
+**Task 4 — client-raised messages now group, reusing the jobs-layer
+mechanism rather than inventing a second one.** A separate coordinator
+message mid-build settled a "double-fire" question that had been raised
+against this same branch: **not a bug**. The user confirmed they ran the
+same task twice; two identical "finished" notifications were two genuine
+runs, not a duplicate-notify defect. That left the actual ask — the user's
+original words for this whole strand were "better notification
+grouping/updation for same source" — as pure grouping work: two genuine
+finishes of the same task (or any two `notify()` calls for "the same thing")
+should collapse into one row that updates in place, the same shape
+`groupJobs` already gives job rows, rather than stacking as separate rows.
+Implemented entirely inside `notify()` in `notifications.ts` (no `shell/`
+import, boundary-clean): a `StoredNotification` gained `family: string`
+(`messageFamily(input)` — `page:<page>` when a page is present, else
+`title:<title>`), `count: number` (starts at 1, increments on collapse), and
+`updatedAt: number` (`Date.now()`, refreshed on collapse). A new `notify()`
+call for a family already present within `GROUP_GAP_MS` (imported from
+`jobs.ts` — the same "same burst" window `groupJobs` uses, not a second
+constant that could drift from it) updates that row's `count`/`updatedAt` in
+place instead of unshifting a new one; a third call updates the same row
+again rather than adding a third. Outside that window, or for a different
+family, a new row is created as before.
+
+**Verification** (actual output, not summaries):
+- `bunx tsc --noEmit -p frontend` → no output (clean).
+- `bun --cwd frontend test` → `6529 pass, 0 fail, 24162 expect() calls, Ran
+  6529 tests across 305 files. [57.11s]` (one self-authored test needed a
+  fix along the way: a new grouping test used a `tone: "info"`, no-page
+  fixture, which `isRetained` never retains without an `action`/`page` —
+  switched the fixture to `tone: "error"`, which `isRetained` always retains
+  regardless of action/page).
+- `node frontend/scripts/check-boundaries.mjs` → `boundaries OK (828
+  files)`.
+- Python `tests/`: `grep -rln
+  "isRecentOnly\|recentJobs\|recentNotifications\|isGroupRecentOnly\|RECENT_VISIBLE_CAP\|onRecentPatch\|recentShown"
+  tests/` → no matches. `tests/test_apps_api.py` does contain many "recent"
+  hits, but all of them are the unrelated Home recently-opened-apps feature
+  (`/api/apps/recents/open`, `app_recents.json`) — confirmed by reading the
+  matched lines, not just the grep count. No Python test changes or pytest
+  run were needed.
+
+Tests updated: deleted the Recent-fold-only test blocks in `jobs.test.ts`
+(`recentNotifications`, `recentJobs`, `isGroupRecentOnly`) and
+`RepoUpdatesDock.test.tsx` (the §4 disclosure-button block, the CHANGE-2
+folded-landing block); renamed the surviving popup-suppression tests
+(`isRecentOnly` → `isPopupSuppressed`) and re-asserted their unchanged
+behavior; rewrote the one `jobRows`/`recentJobs`-partition test into a
+`jobRows`-only assertion that a popup-suppressed success now shows as an
+ordinary row; renamed and rewrote `task-status-notify.test.ts`'s and
+`useTaskStatusNotify.test.ts`'s `in_progress -> done` tests to assert
+`source`/`recent` are gone and the row is never presence-suppressed; added
+four new tests in `notifications.test.ts` for the family-collapse mechanism
+(same-page collapse, same-title-no-page collapse, `count`/`updatedAt`
+progression across three calls, and a different family staying separate).

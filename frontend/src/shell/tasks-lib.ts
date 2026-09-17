@@ -4827,8 +4827,7 @@ export interface AttentionRow {
   /** Who raised this row — the row-level counterpart to `Job.origin`/a
    *  message's `origin` (notifications.ts), reusing that same
    *  `labelForSource` helper rather than a third labeller: a waiting task's
-   *  own `source` for this purpose is its target/project folder, the exact
-   *  pair `task-status-notify.ts`'s own `taskSource` reads. "" (no
+   *  own `source` for this purpose is its target/project folder. "" (no
    *  project/target at all) draws no caption. */
   origin: string;
 }

@@ -104,13 +104,6 @@ const NOOP_PATCH = () => {};
 // full list is still there, one click away — it only bounds how tall the
 // panel gets on a machine that has finished a great many jobs.
 const TERMINAL_VISIBLE_CAP = 5;
-// §4 (SPEC-quiet-notifications.md): Recent's own bound, "following
-// MAX_RETAINED's shape" per spec — client-side, session-only, oldest
-// dropped. Distinct constant from `TERMINAL_VISIBLE_CAP` on purpose: that
-// one bounds how many rows draw before a fold button, this one bounds how
-// many the section holds in memory at all (there is no fold-within-Recent —
-// once open, it shows everything it kept).
-const RECENT_VISIBLE_CAP = 20;
 const POLL_MS = 6000;
 // NOTHING ABOUT THE FOLD IS PERSISTED (D603, user: "on page reload the models
 // popover auto opens for some reason"). There used to be a `COLLAPSED_KEY` here
@@ -480,9 +473,9 @@ function RepoRowView({
  *  `(page, group)` group draws instead of one `JobRow` per member — "a
  *  group title, a `N of M done` sub-line, and an attention stripe if any
  *  member errored". Every group reaching `RepoUpdatesDock` is already fully
- *  terminal (its members arrive via `terminal`/`recent`, both of which
- *  `jobs.ts` narrows to `terminalJobs` before this component ever sees
- *  them) — there is no running-member case to render here, only "how many
+ *  terminal (its members arrive via `terminal`, which `jobs.ts` narrows to
+ *  `terminalJobs` before this component ever sees them) — there is no
+ *  running-member case to render here, only "how many
  *  of these finished cleanly".
  *
  *  TITLE: the group's OLDEST member's own title (`group.jobs[0]`, arrival
@@ -576,8 +569,8 @@ function GroupJobRow({
 }
 
 /** §3: one `<JobRow>`/`<GroupJobRow>` per `(page, group)` group found in
- *  `jobs` — the single place all three sections (terminal-attention,
- *  terminal-trail, Recent) turn a flat `Job[]` into rows, so the "fold a
+ *  `jobs` — the single place both sections (terminal-attention,
+ *  terminal-trail) turn a flat `Job[]` into rows, so the "fold a
  *  multi-member group into one row" rule lives in exactly one function
  *  rather than three copies that could drift. A lone member renders exactly
  *  as it always has (`JobRow`, unchanged props) — the single-member
@@ -642,21 +635,19 @@ export function RepoUpdatesCardView({
   onAttentionDismiss,
   onPairingGone,
   messages = [],
-  recent = [],
   onJobsChanged,
   onTerminalPatch,
-  onRecentPatch,
 }: {
   rows: RepoRow[];
   dismissed: Record<string, string>;
-  /** Terminal jobs re-routed here from the Jobs section (D586). */
+  /** Terminal jobs re-routed here from the Jobs section (D586). A
+   *  presence-suppressed success (SPEC-quiet-notifications.md §2b) is no
+   *  longer split into a separate "Recent" section (removed 2026-09-17,
+   *  user: "I also don't like this recent stuff. notification is
+   *  notification. remove this recent.") — it is an ordinary row here like
+   *  everything else; only the POPUP for it is ever suppressed
+   *  (`jobs.ts`'s `isPopupSuppressed`). */
   terminal?: Job[];
-  /** §4 (SPEC-quiet-notifications.md): terminal jobs `terminal` itself
-   *  excludes for presence reasons (`jobs.ts` `isRecentOnly`, via
-   *  `recentNotifications`) — folded into their own "Recent" section rather
-   *  than dropped (D-B). Never overlaps `terminal`: a job is in exactly one
-   *  of the two arrays, never both (the partition `jobs.test.ts` pins). */
-  recent?: Job[];
   /** Devices that paired over the LAN — the third row kind. */
   pairings?: LanPairingEvent[];
   /** Tasks parked on a question — the fourth row kind (2026-09-03). */
@@ -677,11 +668,6 @@ export function RepoUpdatesCardView({
   onJobsChanged?: () => void;
   /** Remove a dismissed failure from the shell's own list, immediately. */
   onTerminalPatch?: (fn: (jobs: Job[]) => Job[]) => void;
-  /** Same seam as `onTerminalPatch`, for the shell's own `recent` list — a
-   *  Recent row's own ✕ (via `JobRow`, reused verbatim) calls the real
-   *  `dismissJob` and then this, never `onTerminalPatch` (the two lists are
-   *  disjoint, so patching the wrong one would silently do nothing). */
-  onRecentPatch?: (fn: (jobs: Job[]) => Job[]) => void;
   collapsed: boolean;
   onToggle: () => void;
   /** Held open by a click (D673) — styles the chip as engaged. */
@@ -705,8 +691,8 @@ export function RepoUpdatesCardView({
   // has actually failed.
   // §3 (SPEC-quiet-notifications.md): a multi-member group is classified as
   // ONE UNIT, never split across "Needs you"/"Worth keeping" — the same
-  // "group first, then classify" rule `jobs.ts`'s own `jobRows`/`recentJobs`
-  // already apply for presence suppression (`isGroupRecentOnly`). Filtering
+  // "group first, then classify" rule `jobs.ts`'s own `groupJobs`-before-
+  // `popupJobs` composition already applies for popup suppression. Filtering
   // `terminal` by each job's OWN `effectiveTier` (the pre-§3 code this
   // replaced) would tear a mixed group in half — one member's row in each
   // section — which is exactly the outcome D-C's "one failing member keeps
@@ -731,17 +717,14 @@ export function RepoUpdatesCardView({
   // here is simply "attention" vs. "everything else that made it into this
   // already-retained list" — not a re-check of a specific tier value.
   const messagesAttention = messages.filter((m) => m.tier === "attention");
-  // CHANGE 2 (task-status-notify.ts's `in_progress -> done`): a retained,
-  // non-error message can now opt into `recent` (`NotificationInput.recent`)
-  // to land in the folded §4 "Recent" section below instead of the unfolded
-  // "Worth keeping" one — the message-side counterpart to `Job`'s own
-  // presence-based `isRecentOnly`/`recentJobs` split, which is exactly the
-  // gap DECISIONS-quiet-notifications.md's §4 entry flagged as deliberately
-  // unbuilt until a real call site needed it. `messagesTrail` excludes it so
-  // a folded success no longer draws, unfolded, at the very top of "Worth
-  // keeping" the moment it's retained.
-  const messagesRecent = messages.filter((m) => m.tier !== "attention" && m.recent);
-  const messagesTrail = messages.filter((m) => m.tier !== "attention" && !m.recent);
+  // Removed 2026-09-17 (user: "I also don't like this recent stuff.
+  // notification is notification. remove this recent."): a retained, non-error
+  // message no longer has anywhere else to land — every non-attention
+  // message is "Worth keeping" now, full stop. Presence suppression
+  // (`jobs.ts`'s `isPopupSuppressed`) still governs whether the POPUP for a
+  // finished task ever pops; it no longer decides where the retained row
+  // lands.
+  const messagesTrail = messages.filter((m) => m.tier !== "attention");
   // ONLY TERMINAL-TRAIL JOBS FOLD — a waiting task, a repo row, a pairing and
   // an attention-tier terminal job are always shown in full, never counted
   // toward this cap: the cap exists to bound how tall "Worth keeping" gets
@@ -775,25 +758,6 @@ export function RepoUpdatesCardView({
     : terminalTrailGroups.slice(Math.max(0, terminalTrailGroups.length - TERMINAL_VISIBLE_CAP));
   const shownTerminal = shownTerminalGroups.flatMap((g) => g.jobs);
   const olderTerminalCount = terminalTrailGroups.length - shownTerminalGroups.length;
-  // §4: Recent's own fold — collapsed by default (D603: nothing persisted,
-  // a fresh `false` on every mount, exactly like `olderShown` above), no
-  // arrival-driven auto-open (this section holds only successes nobody
-  // needed to see right now — the opposite of something that should throw
-  // itself open). Capped to the newest `RECENT_VISIBLE_CAP`, oldest dropped,
-  // the same "arrives oldest-first" slice `shownTerminal` already uses.
-  const [recentShown, setRecentShown] = useState(false);
-  const boundedRecent = recent.slice(Math.max(0, recent.length - RECENT_VISIBLE_CAP));
-  // Same cap, same "oldest dropped" slice, for `messagesRecent` — its own
-  // independent bound, exactly the way `MAX_RETAINED` already bounds
-  // `messages` as a whole regardless of `recent`.
-  const boundedMessagesRecent = messagesRecent.slice(
-    Math.max(0, messagesRecent.length - RECENT_VISIBLE_CAP),
-  );
-  // Row count for the "Recent (N)" heading — the same "count rows, not raw
-  // jobs" decision as `total`/`attentionCount` above, read off the exact
-  // collection `renderJobRows` groups and renders below, rather than a
-  // second `groupJobs` call that could drift from what's on screen.
-  const boundedRecentGroups = groupJobs(boundedRecent);
   // EVERY SOURCE DECIDES EVERY DERIVED NUMBER (D586; pairings joined later).
   // The count on the chip, the idle predicate and the empty state all read
   // this one total, so none of them can disagree about what this section
@@ -807,12 +771,9 @@ export function RepoUpdatesCardView({
   // attention/trail split above already computed, so this reads the SAME
   // row-level collection the terminal sections render rather than
   // introducing a second, parallel count that could disagree with it.
-  // `messagesRecent` is EXCLUDED here (D-B: "Recent is never counted toward
-  // idle/total — a suppressed success is not news"), the same rule
-  // `boundedRecent`'s job rows already follow. `messagesAttention.length +
-  // messagesTrail.length` reads as `messages.length` minus that bucket,
-  // rather than a raw `messages.length` that would double back into
-  // Recent's own rows.
+  // `messagesAttention.length + messagesTrail.length` is exactly
+  // `messages.length` — every retained message counts toward this total now
+  // that there is no separate Recent bucket to exclude.
   const total =
     visible.length +
     terminalGroups.length +
@@ -882,12 +843,7 @@ export function RepoUpdatesCardView({
           there instead of in the chip, which no longer has room for it. */}
       {!collapsed && (
         <div className="dl-panel">
-          {/* §4: Recent is never counted toward `idle`/`total` (a suppressed
-              success is not news), but it is still a REAL section — a panel
-              holding only Recent rows must draw them, not the "No
-              notifications" sentence that means "there is nothing here at
-              all". */}
-          {idle && boundedRecent.length === 0 && boundedMessagesRecent.length === 0 ? (
+          {idle ? (
             <div className="dl-panel-empty">No notifications</div>
           ) : (
             <>
@@ -1005,43 +961,6 @@ export function RepoUpdatesCardView({
                   </div>
                 </div>
               )}
-              {/* §4 (SPEC-quiet-notifications.md, D-B): "Recent" — a third
-                  section, always below "Needs you"/"Worth keeping", holding
-                  every terminal job those two sections excluded purely for
-                  presence reasons (`recent`, already the exact complement of
-                  `terminal` by construction — see `jobs.ts`'s
-                  `recentJobs`/`terminalNotifications`). Collapsed by default,
-                  own local toggle (`recentShown`), with the count IN the
-                  heading rather than deferred to a separate numeral — the
-                  section is its own disclosure control, not a passive label
-                  the way "Needs you"/"Worth keeping" are. No fold-within-fold:
-                  once opened it shows every kept row, capped only by
-                  `RECENT_VISIBLE_CAP` at the data layer above. */}
-              {(boundedRecent.length > 0 || boundedMessagesRecent.length > 0) && (
-                <div className="dl-section dl-section-recent">
-                  <button
-                    type="button"
-                    className="dl-recent-toggle"
-                    onClick={() => setRecentShown((v) => !v)}
-                    aria-expanded={recentShown}
-                  >
-                    Recent ({boundedRecentGroups.length + boundedMessagesRecent.length})
-                  </button>
-                  {recentShown && (
-                    <div className="dl-rows">
-                      {renderJobRows(boundedRecent, onJobsChanged ?? NOOP, onRecentPatch ?? NOOP_PATCH)}
-                      {/* CHANGE 2: a folded "done" task notice — the
-                          message-side counterpart to a presence-suppressed
-                          job row above, drawn through the same
-                          `MessageRowView` "Worth keeping" already uses so it
-                          stays clickable (its own `page`) and dismissible. */}
-                      {boundedMessagesRecent.map((m) => (
-                        <MessageRowView key={m.id} notification={m} />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
               {/* A FOOTER, NOT A HEADER (D602, user: "notification UI is messed
                   up"). These bulk actions used to render ABOVE the rows, where
                   a full-width padded band holding one small right-aligned
@@ -1075,29 +994,17 @@ export function RepoUpdatesCardView({
                   a retained message is dismissed the same client-side,
                   in-memory way a repo row's dismissal already is, so it costs
                   this button nothing extra to fold in — see
-                  DECISIONS-toasts-become-notifications.md for this call.
-                  RECENT JOINS THE SAME CLICK AND THE SAME THRESHOLD (§4 spec:
-                  "'Clear all' clears Recent too") — a recent row is already a
-                  terminal job on the server, so the identical
-                  `clearFinishedJobs()` call already dismisses it there; this
-                  adds the matching LOCAL patch (`onRecentPatch`) so the
-                  section empties the instant the server confirms, the same
-                  reasoning `onTerminalPatch` already gets, and folds
-                  `boundedRecent.length` into the same combined count that
-                  decides whether the button exists at all — two folded
-                  successes are as much a "batch of dismissable rows" as two
-                  visible ones. */}
-              {visible.length + terminal.length + messages.length + boundedRecent.length > 1 && (
+                  DECISIONS-toasts-become-notifications.md for this call. */}
+              {visible.length + terminal.length + messages.length > 1 && (
                 <div className="dl-head">
                   <button
                     className="dl-clear"
                     onClick={() => {
                       if (visible.length > 0) onDismissAll(visible);
-                      if (terminal.length > 0 || boundedRecent.length > 0) {
+                      if (terminal.length > 0) {
                         clearFinishedJobs()
                           .then(() => {
                             onTerminalPatch?.(jobsAfterClear);
-                            onRecentPatch?.(jobsAfterClear);
                           })
                           .catch(() => {});
                       }
@@ -1155,13 +1062,11 @@ export function RepoUpdatesDockView({
   onAttentionDismiss,
   onPairingGone,
   messages = [],
-  recent = [],
   onDismiss,
   onDismissAll,
   onDone,
   onJobsChanged,
   onTerminalPatch,
-  onRecentPatch,
   initialCollapsed,
 }: {
   rows: RepoRow[];
@@ -1171,10 +1076,6 @@ export function RepoUpdatesDockView({
    *  repo rows. Optional and defaulted so every existing caller and test
    *  keeps working unchanged. */
   terminal?: Job[];
-  /** §4: the complementary list — terminal jobs `terminal` itself excludes
-   *  for presence reasons, folded into "Recent" instead (see
-   *  `RepoUpdatesCardView`'s own doc comment on this prop). */
-  recent?: Job[];
   /** LAN pairings — the panel opens only on hover or click (`useStatusChip`'s
    *  `open = pinned || hovered`); a pairing arriving never opens it by
    *  itself. The chip's own numeral is what announces one. */
@@ -1201,8 +1102,6 @@ export function RepoUpdatesDockView({
   onJobsChanged?: () => void;
   /** Remove a dismissed failure from the shell's own list, immediately. */
   onTerminalPatch?: (fn: (jobs: Job[]) => Job[]) => void;
-  /** Same seam, for the shell's own `recent` list (§4). */
-  onRecentPatch?: (fn: (jobs: Job[]) => Job[]) => void;
   /** TEST SEAM ONLY — the fold's initial value. Every real caller omits it and
    *  gets `true`: sections ALWAYS start collapsed now (D603), unconditionally,
    *  with no stored preference to consult. KEPT rather than deleted with the
@@ -1230,14 +1129,12 @@ export function RepoUpdatesDockView({
       onAttentionDismiss={onAttentionDismiss}
       onPairingGone={onPairingGone}
       messages={messages}
-      recent={recent}
       collapsed={!chip.open}
       onToggle={chip.toggle}
       pinned={chip.pinned}
       hostProps={chip.hostProps}
       onJobsChanged={onJobsChanged}
       onTerminalPatch={onTerminalPatch}
-      onRecentPatch={onRecentPatch}
       onDismiss={onDismiss}
       onDismissAll={onDismissAll}
       onDone={onDone}
@@ -1248,16 +1145,9 @@ export function RepoUpdatesDockView({
 export default function RepoUpdatesDock({
   terminal = [],
   onTerminalPatch,
-  recent = [],
-  onRecentPatch,
 }: {
   terminal?: Job[];
   onTerminalPatch?: (fn: (jobs: Job[]) => Job[]) => void;
-  /** §4 (SPEC-quiet-notifications.md): the complementary list App.tsx feeds
-   *  this component alongside `terminal` — see `jobs.ts`'s
-   *  `recentNotifications` for how it is computed. */
-  recent?: Job[];
-  onRecentPatch?: (fn: (jobs: Job[]) => Job[]) => void;
 } = {}) {
   const { repos, pairings, setPairings, refresh } = useRepoUpdates();
   const rows = repoRows(repos);
@@ -1292,9 +1182,7 @@ export default function RepoUpdatesDock({
       onAttentionDismiss={attentionDismissOne}
       onPairingGone={pairingGone}
       messages={messages}
-      recent={recent}
       onTerminalPatch={onTerminalPatch}
-      onRecentPatch={onRecentPatch}
       onDismiss={dismissOne}
       onDismissAll={dismissAll}
       onDone={() => refresh()}

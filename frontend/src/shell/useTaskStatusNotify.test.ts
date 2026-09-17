@@ -144,10 +144,12 @@ describe("useTaskStatusNotify", () => {
 
   // REVERSED 2026-09-16 (user: "the user does want to open the app along
   // with claude template to go back") — see task-status-notify.ts's own
-  // header comment. `page` now retains the row, and `recent: true` lands it
-  // in the Notifications panel's folded §4 "Recent" section rather than the
-  // unfolded "Worth keeping" one (RepoUpdatesDock.tsx).
-  test("in_progress -> done pops a suppressible notice that is retained, clickable, and recent", async () => {
+  // header comment. `page` retains the row.
+  //
+  // SECOND REVERSAL, 2026-09-17: no `source` any more, so this popup is never
+  // presence-suppressed, and there is no "Recent" section left to land in —
+  // the row is an ordinary retained row like any other.
+  test("in_progress -> done pops a never-suppressed notice that is retained and clickable", async () => {
     const h = mountHook();
     await flush();
     await publish([task({ status: "in_progress" })]);
@@ -160,7 +162,6 @@ describe("useTaskStatusNotify", () => {
     const retained = getRetainedNotifications();
     expect(retained.length).toBe(1);
     expect(retained[0].page).toBeDefined();
-    expect(retained[0].recent).toBe(true);
     h.unmount();
   });
 

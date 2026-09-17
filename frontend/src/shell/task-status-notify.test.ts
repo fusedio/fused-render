@@ -36,13 +36,19 @@ describe("notificationForTransition", () => {
   // (notifications.ts) keys retention on `Boolean(action || page)`, so `page`
   // being set is what actually keeps it — this is asserted directly rather
   // than assumed.
-  test("in_progress -> done is suppressible, retained, clickable, and lands in Recent", () => {
+  //
+  // SECOND REVERSAL, 2026-09-17: this branch used to also carry `source`,
+  // which let a finished task's POPUP be presence-suppressed. A finished
+  // Claude task is never presence-suppressed any more — dropping `source`
+  // means `isPopupSuppressed`/`jobRows` (jobs.ts) has nothing to key off, so
+  // the popup always pops. The `recent: true` flag from the now-removed
+  // "Recent" section is gone too — the row just lands as an ordinary row.
+  test("in_progress -> done is retained, clickable, and never presence-suppressed", () => {
     const t = task({ status: "done", target: "/somewhere" });
     const n = notificationForTransition("in_progress", t);
     expect(n?.tone).toBe("info");
-    expect(n?.source).toBe("/somewhere");
+    expect(n?.source).toBeUndefined();
     expect(n?.page).toBe(taskDestination(t));
-    expect(n?.recent).toBe(true);
     expect(n?.title).toContain("finished");
   });
 
