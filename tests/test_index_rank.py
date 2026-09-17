@@ -91,8 +91,9 @@ def _index(tmp_path, root, files, dirs=()):
 # The golden queries below replace it: HAND-REASONED (not captured from
 # whatever the implementation happens to emit) expected top orders, derived
 # directly from `_lex_order_and_score`'s documented column vector
-# (`nm_exact`, `prefix`, `suffix`, `contains`, `depth`, `length(nm)`,
-# `lower(rel)`, `rel`) rather than from any other ranker's output. Each
+# (`nm_exact`, `prefix`, `suffix`, `contains`, `boundary`, `depth`,
+# `length(nm)`, `lower(rel)`, `rel`) rather than from any other ranker's
+# output. Each
 # query's assertion is filtered to an explicit ALLOWLIST of the paths that
 # query is about (the same technique the deleted fixture test used via its
 # own `fixture_rels` filter) rather than asserting on the full result set,
@@ -326,6 +327,38 @@ def test_depth_breaks_a_same_predicate_tie_by_shallowness(tmp_path):
     assert by_rel[deep]["score"] == -6
 
 
+def test_score_never_inverts_the_real_order_at_depth(tmp_path):
+    """Finding 4: `score` (the debug/display weighted sum) used to subtract
+    `depth` UNBOUNDED, so at a large enough depth it could invert the real
+    order — a `contains`-only basename match at depth 601 scored
+    `100 - 601 = -501`, BELOW a same-tier ancestor-only match at depth 2
+    scoring `0 - 2 = -2`, even though the real `ORDER BY` vector (`tier`/
+    `contains` alone) ranks the basename match first. `_lex_order_and_score`
+    now caps the subtracted term at `_SCORE_DEPTH_CAP` (99, strictly less
+    than the smallest gap between adjacent predicate weights), so `score`
+    can no longer invert the true order this way, though it remains a
+    coarse display value, not a second ranking mechanism (see its
+    docstring)."""
+    deep_name = "/".join(["d"] * 601) + "/xxxconfigxxx.txt"  # depth 601,
+                                                              # "config" mid-word
+    shallow_ancestor = "config/unrelated.txt"                # depth 2,
+                                                              # ancestor-only
+    cfg = _index(tmp_path, "/r", [f"/r/{deep_name}", f"/r/{shallow_ancestor}"])
+    hits = search_ranked(cfg, "/r", "config")["hits"]
+    files = [h for h in hits if not h["is_dir"] and h["rel"] in
+             (deep_name, shallow_ancestor)]
+    by_rel = {h["rel"]: h for h in files}
+    # Real order: the basename match (tier 1) outranks the ancestor-only
+    # match (tier 3) regardless of depth.
+    assert by_rel[deep_name]["tier"] == 1
+    assert by_rel[shallow_ancestor]["tier"] == 3
+    rels_in_order = [h["rel"] for h in hits if h["rel"] in
+                     (deep_name, shallow_ancestor)]
+    assert rels_in_order == [deep_name, shallow_ancestor]
+    # The display `score` must agree with that real order, not invert it.
+    assert by_rel[deep_name]["score"] > by_rel[shallow_ancestor]["score"]
+
+
 def test_the_exact_name_bonus_survives_the_depth_penalty(tmp_path):
     """+100 for an exact basename match must still beat a shallow fuzzy
     (here: substring) match after DEPTH_PENALTY is subtracted."""
@@ -414,6 +447,83 @@ def test_tier_1_and_3_boundaries_including_a_match_straddling_the_basename(
     straddle = search_ranked(cfg, "/r", "oo/ba")["hits"]
     assert [h["rel"] for h in straddle] == ["foo/bar.txt"]
     assert straddle[0]["tier"] == 3
+
+
+def test_boundary_bonus_ranks_a_word_boundary_match_above_a_mid_word_one(
+    tmp_path,
+):
+    """Finding 3: the old word-boundary/segment-start bonus was dropped
+    without replacement, so two ties (same `contains`, same depth, same
+    `length(nm)`) fell through to `lower(rel) ASC` — pure alphabetical
+    order, not match quality. Reproduced exactly: `aaaconfig.py` (12 chars,
+    "config" mid-word, right after another letter) sorted ahead of
+    `zz_config.py` (12 chars, "config" right after a `_` separator) purely
+    because `'a' < 'z'`. The new `boundary` predicate (a word/segment-start
+    existence test, position-free) fixes this without reintroducing a
+    position read."""
+    cfg = _index(tmp_path, "/r", ["/r/aaaconfig.py", "/r/zz_config.py"])
+    hits = search_ranked(cfg, "/r", "config")["hits"]
+    assert [h["rel"] for h in hits] == ["zz_config.py", "aaaconfig.py"]
+
+
+def test_boundary_predicate_escapes_regex_metacharacters(tmp_path):
+    """The `boundary` predicate is regex-escaped (`re.escape`), not
+    LIKE-escaped, because it is embedded in a `regexp_matches` pattern. A
+    query containing a regex metacharacter (here `.`) must not have that
+    character read back as "any character" — if it were, a DECOY substring
+    elsewhere in a basename (one that only coincidentally resembles the
+    boundary pattern once `.` is treated as a wildcard) could make an
+    otherwise mid-word match look boundary-true.
+
+    `xa.b_azb.txt` (basename, query "a.b"): the real, literal "a.b" occurs
+    at "x[a.b]_azb.txt" — mid-word, preceded by "x", correctly
+    boundary-false. But it also contains a decoy "_azb" — preceded by a
+    real separator "_", then "a", then "z", then "b" — which an UNESCAPED
+    "." (matching "any character") would misread as a boundary-true
+    occurrence of "a.b". Compared against `_a.b_extra_padding_here.txt`
+    (a genuine boundary-true match, deliberately made LONGER so that
+    `length(nm) ASC` — the next tie-break after `boundary` — would favor
+    the WRONG (decoy) candidate if `boundary` failed to separate them; only
+    a correctly-escaped `boundary` predicate produces the right order here)."""
+    decoy = "xa.b_azb.txt"                        # boundary-false (12 chars)
+    genuine = "_a.b_extra_padding_here.txt"        # boundary-true (27 chars)
+    cfg = _index(tmp_path, "/r", [f"/r/{decoy}", f"/r/{genuine}"])
+    hits = search_ranked(cfg, "/r", "a.b")["hits"]
+    rels = [h["rel"] for h in hits if h["rel"] in (decoy, genuine)]
+    assert rels == [genuine, decoy]
+
+
+def test_glob_final_segment_tier_fix_for_path_shaped_patterns(tmp_path):
+    """Finding 2: `**/src/*.ts` used to be tier 3 for EVERY hit, no matter
+    how good the basename match, because `_glob_literal_runs` ran on the
+    WHOLE pattern produced `["src/", ".ts"]` — `"src/"` is a directory-
+    segment literal that can never appear in `nm`, a slash-free basename,
+    so `contains` (built by chaining every literal run) was false for every
+    row (search-architecture-review.md §10.3). `_final_segment_pattern`
+    fixes this by scoring only the pattern's FINAL segment (`.ts` here, from
+    `*.ts`) against `nm`. Both a directly-matching file (`src/main.ts`) and
+    one where "src" is merely an ANCESTOR directory several levels up
+    (`a/b/src/deep.ts`) must come back tier 1: the fix is about what's
+    tested against `nm`, not about requiring "src" to be the immediate
+    parent."""
+    cfg = _index(tmp_path, "/r", ["/r/src/main.ts", "/r/a/b/src/deep.ts"])
+    hits = search_ranked(cfg, "/r", "**/src/*.ts**", glob=True)["hits"]
+    by_rel = {h["rel"]: h for h in hits}
+    assert by_rel["src/main.ts"]["tier"] == 1
+    assert by_rel["a/b/src/deep.ts"]["tier"] == 1
+
+
+def test_glob_final_segment_tier_ancestor_only_stays_tier_3(tmp_path):
+    """Regression guard for the fix above: an ancestor-only glob whose FINAL
+    segment is a bare `*` (`**/alpha/*`, matching "everything directly
+    inside an `alpha` directory") has zero literal runs once confined to its
+    final segment — there is nothing left to test against `nm` at all, so
+    it must stay tier 3 (the unscored/no-literal-runs branch), not be
+    accidentally promoted to tier 1 by the final-segment fix."""
+    cfg = _index(tmp_path, "/r", ["/r/alpha/unrelated.txt"])
+    hits = search_ranked(cfg, "/r", "**/alpha/*", glob=True)["hits"]
+    by_rel = {h["rel"]: h for h in hits}
+    assert by_rel["alpha/unrelated.txt"]["tier"] == 3
 
 
 # The old camelCase-hump segment-start bonus (`_is_segment_start`, ported

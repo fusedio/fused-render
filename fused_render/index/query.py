@@ -1114,27 +1114,66 @@ def _name_predicate_sql(nm_col: str, literals: list) -> dict:
       anything-between reading of them — so it comes back true exactly when
       the pattern's literal content is fully explainable by the basename,
       independent of how much of the pattern was directory-crossing syntax.
+      **`_glob_sql` no longer passes every literal run in the WHOLE pattern
+      here** — see `_final_segment_pattern`'s docstring for why only the
+      literals that can legally live in the final path segment are passed,
+      which is what actually fixes the `**/src/*.ts` defect the paragraph
+      above describes (a `contains` test built from `["src/", ".ts"]` could
+      never be true against a slash-free `nm` either; one built from `[".ts"]`
+      alone can).
+    - `boundary`: `nm` contains the FIRST literal run immediately preceded by
+      either the start of the string or a non-alphanumeric character —
+      `regexp_matches(nm, '(^|[^a-z0-9])' || <literal, regex-escaped>)`. A
+      match sitting right after a separator (`zz_config.py`'s "config",
+      right after `_`) is a stronger signal than the identical literal
+      buried mid-word (`aaaconfig.py`'s "config", right after another
+      letter) — the two otherwise tie on every column above AND on
+      `depth`/`length(nm)` whenever the candidates happen to share both, and
+      fall through to `lower(rel) ASC`, which orders by SPELLING, not
+      quality (reproduced: `aaaconfig.py` beat `zz_config.py` for query
+      "config" purely because `'a' < 'z'`). This is position-free (a boolean
+      existence test, like every other column here) and reads no case
+      information — `nm` is already lowercased, so this is NOT the dropped
+      camelCase hump bonus (that needed ORIGINAL case to detect a hump;
+      finding a separator needs none). The literal is regex-escaped
+      (`re.escape`, not `like_literal`'s LIKE-metachar escaping) because it
+      is embedded in a `regexp_matches` pattern, not a `LIKE` one — an
+      unescaped `.` or `(` in the query would otherwise be read as "any
+      character" or "start a group" instead of the literal character a user
+      typed.
 
-    None of these read a position (no `strpos`, no `p0`): `LIKE` answers
-    "does this pattern exist anywhere" without exposing WHERE, which is
-    exactly the occurrence-independence the position-free redesign needs.
+    None of these read a position (no `strpos`, no `p0`): `LIKE`/
+    `regexp_matches` answer "does this pattern exist anywhere" without
+    exposing WHERE, which is exactly the occurrence-independence the
+    position-free redesign needs.
 
-    `literals=[]` (a literal-free glob, e.g. `**/*`) returns three `"false"`
+    `literals=[]` (a literal-free glob, e.g. `**/*`) returns four `"false"`
     literals rather than raising or dividing by anything — `_glob_sql`
     never calls this for that case (it takes the fully-unscored branch
     instead), but the function stays total rather than assuming its own
     caller's discipline."""
     if not literals:
-        return {"prefix": "false", "suffix": "false", "contains": "false"}
+        return {"prefix": "false", "suffix": "false", "contains": "false",
+                "boundary": "false"}
     first_like = like_literal(literals[0])
     last_like = like_literal(literals[-1])
     chain_like = "%".join(like_literal(lit) for lit in literals)
+    first_re = _q(re.escape(literals[0]))
     return {
         "prefix": f"{nm_col} LIKE lower('{first_like}') || '%' ESCAPE '\\'",
         "suffix": f"{nm_col} LIKE '%' || lower('{last_like}') ESCAPE '\\'",
         "contains": (f"{nm_col} LIKE '%' || lower('{chain_like}') || '%' "
                      f"ESCAPE '\\'"),
+        "boundary": (f"regexp_matches({nm_col}, "
+                     f"'(^|[^a-z0-9])' || lower('{first_re}'))"),
     }
+
+
+# Strictly less than the smallest gap between adjacent `score` weights
+# (100/250/500/1000 -> smallest gap 150) so `- LEAST(depth, _SCORE_DEPTH_CAP)`
+# can never push a row with SOME predicate true below a row with NONE true,
+# at any depth — see `_lex_order_and_score`'s docstring (Finding 4).
+_SCORE_DEPTH_CAP = 99
 
 
 def _lex_order_and_score(nm_exact: str, preds: dict) -> tuple:
@@ -1148,23 +1187,46 @@ def _lex_order_and_score(nm_exact: str, preds: dict) -> tuple:
     `order_by` is the position-free, basename-first lexicographic vector
     search-architecture-review.md §6 recommends: exact name, then basename
     prefix, then basename suffix, then "the query is satisfiable within the
-    basename alone", THEN `depth`/`length(nm)`/`rel` as pure tie-breaks. This
-    is what actually decides the row order — `ORDER BY` reads it as a vector
-    comparison, column by column, which is exactly the field-separated
-    ranking VS Code/Zed do structurally (their power-of-two score bands ARE
-    this same lexicographic order, just encoded as one integer instead of
-    left as a column list).
+    basename alone", then a word/segment-BOUNDARY test (`preds['boundary']`
+    — a match right after a separator outranks the identical literal buried
+    mid-word; see `_name_predicate_sql`'s docstring on why this is still
+    position-free and does not resurrect the dropped camelCase hump), THEN
+    `depth`/`length(nm)`/`rel` as pure tie-breaks. This is what actually
+    decides the row order — `ORDER BY` reads it as a vector comparison,
+    column by column, which is exactly the field-separated ranking VS
+    Code/Zed do structurally (their power-of-two score bands ARE this same
+    lexicographic order, just encoded as one integer instead of left as a
+    column list).
 
-    `score` is a WEIGHTED SUM of the same four leading predicates, returned
-    for compatibility (`search_ranked` still emits it on every hit — existing
-    tests and probes read it) and for human debugging, but it is NOT what
-    decides the order: two hits can tie on `score` while the vector still
-    orders them (a `depth`/`length(nm)`/`rel` tie-break the scalar sum cannot
+    `score` is a WEIGHTED SUM of the same four leading predicates (NOT
+    `boundary` — it stays a coarse four-term summary, and `boundary` only
+    ever breaks a tie the sum already reports as equal, so adding a fifth,
+    smaller-weighted term would buy the display value nothing a reader
+    couldn't already get from `tier` alone), returned for compatibility
+    (`search_ranked` still emits it on every hit — existing tests and probes
+    read it) and for human debugging, but it is NOT what decides the order:
+    two hits can tie on `score` while the vector still orders them (a
+    `boundary`/`depth`/`length(nm)`/`rel` tie-break the scalar sum cannot
     see), so nothing downstream may assume `ORDER BY score DESC` reproduces
     this function's actual order. The weights (1000/500/250/100) are spaced
-    so each level dominates every combination of the levels below it and
-    `- depth` never crosses one (a basename match at any depth this index
-    could plausibly hold outranks a mere ancestor-only hit).
+    so each level dominates every combination of the levels below it.
+
+    `- depth` is CAPPED at `_SCORE_DEPTH_CAP` (99), not subtracted
+    unbounded, so `score` cannot invert the real order at depth the way an
+    unbounded subtraction did (reproduced: a `contains`-only match at depth
+    601 scored `100 - 601 = -501`, BELOW a same-tier-0 ancestor-only match
+    at depth 2 scoring `0 - 2 = -2`, even though the real `ORDER BY` vector
+    — which `tier`/`contains` alone already separates — ranks the basename
+    match first; a debug field that inverts the true order at depth is worse
+    than no debug field). 99 is smaller than every gap between adjacent
+    weights (100/250/500/1000, smallest gap 150), so a row with SOME
+    predicate true (worst case: `contains` only, weight 100, any depth)
+    always outscores a row with NONE true (best case: depth 0, score 0) —
+    `100 - 99 = 1 > 0`. This bounds `score`'s depth-driven error, it does not
+    make `score` monotonic with the full vector in general (`boundary` and
+    `length(nm)` still are not reflected in it at all) — `score` remains a
+    coarse display value, documented as such, not a second ranking
+    mechanism.
 
     `tier` collapses to two values, not the old three: 1 when `contains`
     holds (the match is fully explainable within the basename — subsumes the
@@ -1185,9 +1247,10 @@ def _lex_order_and_score(nm_exact: str, preds: dict) -> tuple:
              f"+ 500 * CAST({preds['prefix']} AS INTEGER) "
              f"+ 250 * CAST({preds['suffix']} AS INTEGER) "
              f"+ 100 * CAST({preds['contains']} AS INTEGER) "
-             f"- depth")
+             f"- LEAST(depth, {_SCORE_DEPTH_CAP})")
     order_by = (f"({nm_exact}) DESC, ({preds['prefix']}) DESC, "
                 f"({preds['suffix']}) DESC, ({preds['contains']}) DESC, "
+                f"({preds['boundary']}) DESC, "
                 f"depth ASC, length(nm) ASC, lower(rel) ASC, rel ASC")
     return order_by, score, tier
 
@@ -1327,7 +1390,15 @@ def _glob_literal_runs(pattern: str) -> list:
     this list straight to `_name_predicate_sql` (the same basename predicate
     builder `_rank_sql` uses) rather than locating each run's position
     separately. An empty return means there is nothing to test against `nm`
-    at all; `_glob_sql` treats that identically to `ranked=False`."""
+    at all; `_glob_sql` treats that identically to `ranked=False`.
+
+    `search_ranked` calls this on `_final_segment_pattern(qs)`, NOT on `qs`
+    itself — see that function's docstring for why: the whole pattern's
+    literal runs can include directory-segment text (`"src/"` from
+    `**/src/*.ts`) that can never appear in `nm`, a slash-free basename, so
+    scoring off them left every path-shaped glob stuck at tier 3 regardless
+    of match quality (search-architecture-review.md §10.3, fixed this
+    round)."""
     out = []
     cur = []
     i, n = 0, len(pattern)
@@ -1351,8 +1422,72 @@ def _glob_literal_runs(pattern: str) -> list:
     return out
 
 
+def _final_segment_pattern(pattern: str) -> str:
+    """The sub-pattern of `pattern` after its LAST directory-crossing
+    boundary — what `_glob_sql` tests against `nm` (a slash-free basename)
+    instead of the whole pattern (search-architecture-review.md §10.3, the
+    tier defect this closes).
+
+    `_glob_literal_runs(pattern)` used to be called on the WHOLE pattern and
+    handed straight to `_name_predicate_sql`, which builds `contains` etc.
+    against `nm`. For a path-shaped pattern like `**/src/*.ts`, that walks
+    away with literal runs `["src/", ".ts"]` — `"src/"` is a directory-
+    segment literal, and `nm LIKE '%src/%.ts%'` can never be true against a
+    basename that by definition has no `/` in it, so `contains` (and every
+    predicate built on it) was false for EVERY hit of a path-shaped glob no
+    matter how good the basename match was, and tier was stuck at 3
+    uniformly. This function's return value is what `search_ranked` now
+    feeds `_glob_literal_runs` (and a matching `_glob_to_regex` call for
+    `nm_exact`) instead of the raw pattern, so only the final segment's own
+    literal content — the part that could ever appear in `nm` — is tested.
+
+    Only two things count as a hard directory-crossing boundary: a literal
+    `/` character, and the three-character `**/ ` wildcard token (it
+    resolves to `(?:[^/]*/)*`, an entire zero-or-more chain of `dir/`
+    segments — crossing it, min zero times, still lands past the last `/` a
+    matched string could have). A BARE `**` token (two characters, no
+    trailing slash) is NOT a boundary: it resolves to `.*`, which can span
+    a `/` OR match nothing WITHIN a single segment, and treating it as a
+    hard cut would wrongly truncate already-correct single-segment patterns
+    like `**icon**copy**` (no directory literal anywhere in it) down to
+    `"copy**"`, losing the `icon` literal `_glob_literal_runs` correctly
+    extracts from it today. Walking with the SAME three-way tokenizer
+    `_glob_to_regex`/`_glob_literal_runs` use (rather than `pattern.rsplit
+    ("/", 1)`, which cannot tell a literal `/` from a `**/ ` token's own
+    `/`) keeps all three functions agreeing on where the wildcard tokens
+    are.
+
+    `"**/src/*.ts"` -> `"*.ts"` (the leading `**/ ` is the last boundary).
+    `"**/src/*.ts**"` -> `"*.ts**"` (trailing `**` is not a boundary itself,
+    but nothing after the `**/ ` crosses one either, so it stays attached).
+    `"**/**icon**copy**"` -> `"**icon**copy**"` (identical to today's
+    behavior on this pattern — no directory literal, no regression: the
+    leading `**/ ` is the only boundary, everything after it is one
+    segment, and `_glob_literal_runs` extracts the same `["icon", "copy"]`
+    either way).
+    `"**/alpha/*"` -> `"*"` (zero literal runs post-split: an ancestor-only
+    glob has nothing to test against `nm` and correctly stays tier 3 —
+    `test_glob_final_segment_tier_ancestor_only_stays_tier_3`)."""
+    i, n = 0, len(pattern)
+    boundary = 0
+    while i < n:
+        if pattern.startswith("**/", i):
+            i += 3
+            boundary = i
+        elif pattern.startswith("**", i):
+            i += 2
+        elif pattern[i] == "*":
+            i += 1
+        else:
+            if pattern[i] == "/":
+                boundary = i + 1
+            i += 1
+    return pattern[boundary:]
+
+
 def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
-              literals: list = ()) -> str:
+              literals: list = (), nm_regex: str = None,
+              score: bool = None) -> str:
     """Glob mode's whole query: a full-match regex filter, plus — when
     `literals` is non-empty — the scoring `_name_predicate_sql`/
     `_lex_order_and_score` build from those literal runs, the SAME two
@@ -1363,20 +1498,46 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
     by hand, which is exactly the drift risk sharing the helpers removes).
 
     `literals=()` (the default) is what `search_ranked` passes in TWO
-    distinct situations, and this function treats them identically because
-    they need the identical answer: the caller's own `ranked=False`
-    preference (D720, same contract `_rank_sql`'s unranked branch has: no
-    predicate columns, no `score`, no `tier` computed at all, not computed
-    then discarded), and a glob pattern with no literal run to score in the
-    first place (`**/*`, what a bare `*` resolves to) — there is nothing
-    `_name_predicate_sql` could test (`literals=[]` degenerates to
-    "false" for all three predicates, which would rank every row identically
-    rather than being an honest "nothing to rank here"). Both land on the
-    SAME order `_rank_sql`'s own unranked branch uses and for the same
-    reason: `depth ASC, lower(rel) ASC, rel ASC` — `rel` alone (after
-    `lower(rel)`) is what makes a case-only-differing pair (`notes/Alpha.txt`
-    vs `notes/alpha.txt`) resolve the same way on every run instead of
-    however DuckDB's multi-threaded top-N happens to land.
+    distinct situations, and — absent an explicit `score` override — this
+    function treats them identically because they need the identical
+    answer: the caller's own `ranked=False` preference (D720, same contract
+    `_rank_sql`'s unranked branch has: no predicate columns, no `score`, no
+    `tier` computed at all, not computed then discarded), and a glob
+    pattern whose FINAL SEGMENT has no literal run to score
+    (`_final_segment_pattern`'s docstring — `**/*`, what a bare `*`
+    resolves to) — there is nothing `_name_predicate_sql` could test
+    (`literals=[]` degenerates to "false" for all four predicates, which
+    would rank every row identically rather than being an honest "nothing
+    to rank here"). Both land on the SAME order `_rank_sql`'s own unranked
+    branch uses and for the same reason: `depth ASC, lower(rel) ASC, rel
+    ASC` — `rel` alone (after `lower(rel)`) is what makes a case-only-
+    differing pair (`notes/Alpha.txt` vs `notes/alpha.txt`) resolve the
+    same way on every run instead of however DuckDB's multi-threaded top-N
+    happens to land.
+
+    `score` (default `None`, meaning "follow `literals`": score iff
+    `literals` is non-empty) exists for exactly ONE case where those two
+    situations above are NOT the same: a pattern whose WHOLE literal
+    content is non-empty but whose FINAL segment's is empty, e.g.
+    `**/alpha/*` (final segment: a bare `*`, no literal at all — "alpha" is
+    purely a directory-ancestor requirement, never tested against `nm`).
+    Before `_final_segment_pattern` existed, `_glob_literal_runs` ran on the
+    WHOLE pattern for such cases too and returned `["alpha/"]` — non-empty
+    — so this went through the SCORED branch with `contains` forced false
+    (a directory literal can never match a slash-free `nm`), landing on a
+    real, computed tier 3, not the placeholder `0` the unscored branch
+    reports. `search_ranked` preserves that by passing `literals=[]` (the
+    correct, final-segment-only content — there is genuinely nothing to
+    test against `nm`) together with `score=True` (there WAS literal
+    content somewhere in the whole pattern, so this is an honest "ancestor-
+    only, computed tier 3", not "nothing to rank at all") —
+    `test_glob_final_segment_tier_ancestor_only_stays_tier_3`
+    (`tests/test_index_rank.py`) pins this. `nm_exact` is `"false"` in this
+    state (there is no `nm_regex` to test — `literals` being empty means
+    `_name_predicate_sql` already returns `"false"` for every OTHER
+    predicate too, so forcing `nm_exact` false alongside them keeps the row
+    an honest, uniform "nothing matched in the name" rather than raising on
+    a missing `nm_regex`).
 
     With `literals`, `_name_predicate_sql("nm", literals)` builds the same
     three position-free predicates `_rank_sql` uses — for glob mode,
@@ -1400,9 +1561,9 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
     +1000 exact-match weight too (caught empirically: `icon.png` scored 1599
     against substring mode's 599 for the equivalent `icon` query, before this
     was corrected). The fix adds a length constraint: `regexp_matches(nm,
-    regex) AND length(nm) = sum(len(lit) for lit in literals)` — a glob match
-    is "exact" only when EVERY character of `nm` is accounted for by the
-    pattern's literal content, i.e. every wildcard in the pattern matched
+    nm_regex) AND length(nm) = sum(len(lit) for lit in literals)` — a glob
+    match is "exact" only when EVERY character of `nm` is accounted for by
+    the pattern's literal content, i.e. every wildcard in the pattern matched
     ZERO characters, which is the only way a wildcard pattern can mean the
     same thing `_rank_sql`'s `nm = lower(qq)` means for a plain string.
     `test_glob_single_literal_run_score_matches_rank_sql_substring_score`
@@ -1410,6 +1571,22 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
     and `_rank_sql`'s agree on the boolean VALUE (not text) for a
     single-literal-run pattern, which is the only case the two modes'
     `nm_exact` expressions are asked to agree on at all.
+
+    `nm_regex` is `regex`'s counterpart for the FINAL SEGMENT only —
+    `_glob_to_regex(_final_segment_pattern(pattern))`, compiled and passed
+    in by `search_ranked` alongside `literals` (which is likewise
+    `_glob_literal_runs` run on the final segment, not the whole pattern —
+    see `_final_segment_pattern`'s docstring for why: `regex`/`literals`
+    built from the WHOLE pattern can never match `nm`, a slash-free
+    basename, whenever the pattern crosses a directory boundary). `nm_regex`
+    defaults to `None` and is only read when `literals` is non-empty (the
+    caller's own contract: an empty `literals` list means there is nothing
+    to test against `nm` at all, so `nm_regex` is never even reached).
+    `regex` itself remains the WHOLE, unmodified pattern's regex — it is
+    still what `lrel` is filtered against in `WHERE`, since the file has to
+    match the pattern in full, directory parts included; only the SCORING
+    predicates (`contains`, `nm_exact`, `boundary`, ...) narrow to the final
+    segment, because those are the only things ever tested against `nm`.
 
     `regex` is the already-lowercased, already-SQL-escaped pattern from
     `_glob_to_regex`; it is matched against `lrel`, never `rel` — glob mode
@@ -1425,19 +1602,30 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
     happened to land in. `query_wants_hidden` already reads intent off `qs`
     itself (a dot-leading query, `.env`/`*/.git`, still opts back in), so
     applying it here needs no separate rule — the same one both modes share."""
-    if not literals:
+    if score is None:
+        score = bool(literals)
+    if not score:
         return (
             f"SELECT rel, size, mtime, is_dir, depth FROM ({inner}) "
             f"WHERE regexp_matches(lrel, '{regex}'){hidden} "
             f"ORDER BY depth ASC, lower(rel) ASC, rel ASC "
             f"LIMIT {limit}")
     preds = _name_predicate_sql("nm", literals)
-    total_len = sum(len(lit) for lit in literals)
-    nm_exact = (f"(regexp_matches(nm, '{regex}') "
-                f"AND length(nm) = {total_len})")
-    order_by, score, tier = _lex_order_and_score(nm_exact, preds)
+    if literals:
+        total_len = sum(len(lit) for lit in literals)
+        nm_exact = (f"(regexp_matches(nm, '{nm_regex}') "
+                    f"AND length(nm) = {total_len})")
+    else:
+        # `score=True` with empty `literals`: the whole pattern had literal
+        # content somewhere (else `search_ranked` would not have set
+        # `score=True` at all), but none of it survived confining to the
+        # final segment — an ancestor-only glob like `**/alpha/*`. There is
+        # no `nm_regex` to test; `nm_exact` stays false alongside every
+        # other predicate (`_name_predicate_sql([])`'s own "false" answer).
+        nm_exact = "false"
+    order_by, score_expr, tier = _lex_order_and_score(nm_exact, preds)
     return (
-        f"SELECT rel, size, mtime, is_dir, depth, ({score}) AS score, "
+        f"SELECT rel, size, mtime, is_dir, depth, ({score_expr}) AS score, "
         f"({tier}) AS tier FROM ({inner}) "
         f"WHERE regexp_matches(lrel, '{regex}'){hidden} "
         f"ORDER BY {order_by} "
@@ -1522,23 +1710,35 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
 
     `ranked` is NOT ignored when `glob` is set (an earlier version of this
     docstring said it was — stale the moment glob mode grew its own scoring):
-    `_glob_literal_runs(qs)` splits the resolved pattern on its `*` runs into
-    literal pieces, and `_glob_sql` scores them with the SAME shared
-    `_name_predicate_sql`/`_lex_order_and_score` helpers `_rank_sql` uses —
-    no separate glob-scoring formula survives this round (the deleted
-    `_glob_score_sql` — a `strpos`-chained per-run position walk, plus an
-    interior-only wildcard-swallow penalty — was itself half the
-    first-occurrence bug class this round's redesign eliminates; see
-    `_glob_sql`'s docstring). `tier` is likewise built from the shared
-    `contains` predicate (`_lex_order_and_score`'s docstring on the 3-value
-    to 2-value collapse) rather than the fixed `0` placeholder every glob hit
-    used to carry, and — as with `_rank_sql` — is no longer a primary sort
-    key on its own; the lexicographic predicate vector is. `ranked=False` —
-    and a pattern with no literal run at all to score, e.g. the bare `**/*`
-    a lone `*` resolves to — both fall back to the SAME unscored `depth ASC,
-    lower(rel) ASC, rel ASC` order `_rank_sql`'s own unranked branch uses (no
-    tier there either, same discipline as the rest of the scoring apparatus:
-    not computed, not computed-then-discarded).
+    `_glob_literal_runs(_final_segment_pattern(qs))` splits the FINAL
+    SEGMENT of the resolved pattern (`_final_segment_pattern`'s docstring on
+    why — not the whole pattern, whose directory-segment literals can never
+    match `nm`) on its `*` runs into literal pieces, and `_glob_sql` scores
+    them with the SAME shared `_name_predicate_sql`/`_lex_order_and_score`
+    helpers `_rank_sql` uses — no separate glob-scoring formula survives this
+    round (the deleted `_glob_score_sql` — a `strpos`-chained per-run
+    position walk, plus an interior-only wildcard-swallow penalty — was
+    itself half the first-occurrence bug class this round's redesign
+    eliminates; see `_glob_sql`'s docstring). `tier` is likewise built from
+    the shared `contains` predicate (`_lex_order_and_score`'s docstring on
+    the 3-value to 2-value collapse) rather than the fixed `0` placeholder
+    every glob hit used to carry, and — as with `_rank_sql` — is no longer a
+    primary sort key on its own; the lexicographic predicate vector is
+    (which now also includes `boundary`, a word/segment-start bonus — see
+    `_name_predicate_sql`'s and `_lex_order_and_score`'s docstrings).
+    `ranked=False`, and a pattern with NO literal content anywhere at all
+    (not merely in its final segment), e.g. the bare `**/*` a lone `*`
+    resolves to, both fall back to the SAME unscored `depth ASC, lower(rel)
+    ASC, rel ASC` order `_rank_sql`'s own unranked branch uses (no tier
+    there either, same discipline as the rest of the scoring apparatus: not
+    computed, not computed-then-discarded). An ANCESTOR-ONLY pattern like
+    `**/alpha/*` is different from that: "alpha" IS literal content, just
+    not any that survives confining to the final segment (a bare `*`) —
+    `_glob_sql`'s `score` parameter keeps this case on the SCORED path with
+    `contains` forced false, so it gets a real, computed tier 3 (not the
+    placeholder `0` a truly literal-free pattern gets) — the same answer
+    this case got before `_final_segment_pattern` existed, when
+    `_glob_literal_runs` ran on the whole pattern and returned `["alpha/"]`.
 
     `token` (index/cancel.CancelToken), when given, is bound to the duckdb
     connection the moment it exists and checked immediately before and after
@@ -1688,8 +1888,24 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
             # ignored, the same discipline `_rank_sql`'s own unranked branch
             # follows (`_glob_sql`'s docstring on why an empty `literals`
             # answers both that case and a literal-free pattern identically).
-            literals = _glob_literal_runs(qs) if ranked else []
-            sql = _glob_sql(inner, regex, hidden, limit + 1, literals=literals)
+            # Literals (and the regex `nm_exact` reads) come from the FINAL
+            # SEGMENT only, not the whole pattern — `_final_segment_pattern`'s
+            # docstring on why the whole pattern's literal runs can include
+            # directory-segment text that can never match `nm`, a slash-free
+            # basename (search-architecture-review.md §10.3).
+            final_pattern = _final_segment_pattern(qs)
+            literals = _glob_literal_runs(final_pattern) if ranked else []
+            nm_regex = (_q(_glob_to_regex(final_pattern.lower()))
+                        if literals else None)
+            # An ancestor-only pattern (`**/alpha/*`: literal content
+            # ("alpha") exists in the WHOLE pattern but not in its final
+            # segment, a bare `*`) still gets a real, computed tier 3, not
+            # the unscored placeholder `0` — `_glob_sql`'s docstring on why
+            # `score` is passed explicitly rather than left to follow
+            # `literals` (which is correctly `[]` here either way).
+            score = bool(_glob_literal_runs(qs)) if ranked else False
+            sql = _glob_sql(inner, regex, hidden, limit + 1,
+                             literals=literals, nm_regex=nm_regex, score=score)
         else:
             # NOT `.lower()`'d here — `_rank_sql` lowers `ql`/`qq` itself,
             # with the same `lower()` call that produces `lrel`, so the query
@@ -1707,11 +1923,15 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         logger.debug("index rank: %r under %s: %d row(s) in %.1fms",
                     qs, root, len(rows), (time.monotonic() - t0) * 1000)
         truncated = len(rows) > limit
-        if glob and literals:
+        if glob and score:
             # `_glob_sql` returned 6th and 7th columns (`score`, `tier`) for
-            # this branch — `literals` non-empty is exactly the condition
-            # under which it did (see `_glob_sql`'s docstring). `tier` is a
-            # real, generalized value now (1 = pattern satisfiable within the
+            # this branch — the `score` BOOLEAN passed into `_glob_sql`
+            # (not `literals`'s own emptiness any more: an ancestor-only
+            # pattern like `**/alpha/*` has empty final-segment `literals`
+            # but still gets a real, computed tier via `score=True` — see
+            # `_glob_sql`'s docstring on why the two are no longer the same
+            # condition) is exactly when it did. `tier` is a real,
+            # generalized value now (1 = pattern satisfiable within the
             # basename, 3 = ancestor-only), not the fixed `0` placeholder
             # every glob hit used to carry — the HTTP layer still strips all
             # four scoring fields before the wire regardless of which branch
@@ -1719,14 +1939,16 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
             hits = [{"rel": rel, "is_dir": bool(is_dir),
                      "size": int(size) if size is not None else None,
                      "mtime": float(mtime) if mtime is not None else None,
-                     "score": int(score), "longest_run": 0, "tier": int(tier),
+                     "score": int(score_val), "longest_run": 0,
+                     "tier": int(tier),
                      "depth": int(depth)}
-                    for rel, size, mtime, is_dir, depth, score, tier
+                    for rel, size, mtime, is_dir, depth, score_val, tier
                     in rows[:limit]]
         elif glob:
-            # `literals` empty: `_glob_sql` took its unscored branch (either
-            # `ranked=False`, or a literal-free pattern like a bare `*` — see
-            # its docstring), so `rows` has no `score` column to unpack.
+            # `score` false: `_glob_sql` took its unscored branch (either
+            # `ranked=False`, or a pattern with no literal content anywhere,
+            # not merely in its final segment — see its docstring), so
+            # `rows` has no `score` column to unpack.
             hits = [{"rel": rel, "is_dir": bool(is_dir),
                      "size": int(size) if size is not None else None,
                      "mtime": float(mtime) if mtime is not None else None,
