@@ -43,11 +43,12 @@
 // STAGED-PROMPT store this row writes into is explorer/lib territory, which
 // only shell-side code reaches.
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { shortTaskId } from "@platform/lib/task-id";
 import { stageClaudeAsk } from "@apps/explorer/lib/pending-claude-ask";
 import { dismissLanPairing, getJson, getLanPairings, postJson } from "@platform/lib/api";
 import type { LanPairingEvent } from "@platform/lib/api";
-import { navigate, navigateUrl } from "@platform/lib/router";
+import { navigate, navigateToJobPage, navigateUrl } from "@platform/lib/router";
 import { useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
 import StatusChip from "@platform/ui/StatusChip";
 import NotificationCard from "@platform/ui/NotificationCard";
@@ -57,8 +58,15 @@ import type { NotificationCardDismiss } from "@platform/ui/NotificationCard";
 // forbidden, which is also why the failures reach this section as a PROP
 // from the shell rather than by this file reaching into the jobs poll.
 import { JobRow } from "@platform/ui/DownloadManager";
-import { clearFinishedJobs, effectiveTier, jobsAfterClear } from "@platform/lib/jobs";
-import type { Job } from "@platform/lib/jobs";
+import {
+  clearFinishedJobs,
+  dismissJob,
+  effectiveTier,
+  groupEffectiveTier,
+  groupJobs,
+  jobsAfterClear,
+} from "@platform/lib/jobs";
+import type { Job, JobGroup } from "@platform/lib/jobs";
 import { dismissNotification, useRetainedNotifications } from "@platform/lib/notifications";
 import type { StoredNotification } from "@platform/lib/notifications";
 import {
@@ -260,9 +268,25 @@ function MessageRowView({ notification }: { notification: StoredNotification }) 
     <NotificationCard
       title={notification.title}
       secondary={notification.detail}
+      // `.dl-origin` — who raised this row (`labelForSource(source)`,
+      // notifications.ts), the exact caption `JobRow` already draws from
+      // `job.origin`. "" (no source, or one that resolves to nothing) draws
+      // no element at all, same rule `caption` always follows.
+      caption={notification.origin || undefined}
       terminal={notification.tone === "error" ? "error" : undefined}
+      // A collapsed repeat (notifications.ts's `family`/`count` grouping) has
+      // to say so, or the second (and later) run of the same task vanishes
+      // with no trace — the exact defect this line fixes. Same slot
+      // `GroupJobRow` (this file, below) already uses to say more than a bare
+      // title/detail can: that row spells its own multiplicity out in plain
+      // words ("N of M done"/"N of M failed") rather than a symbolic badge,
+      // so a repeated message does the same rather than inventing a "×N"
+      // idiom this panel has never otherwise drawn. Nothing renders at
+      // count === 1 — the ordinary, non-repeated case.
+      status={notification.count > 1 ? `Happened ${notification.count} times` : undefined}
       role={notification.tone === "error" ? "alert" : "status"}
       navAction={notification.action}
+      extraAction={notification.extraAction}
       onDismiss={{ onClick: dismiss, ariaLabel: `Dismiss ${notification.title}` }}
       rowClick={
         notification.page
@@ -295,6 +319,7 @@ function AttentionRowView({
   return (
     <NotificationCard
       title={title}
+      caption={row.origin || undefined}
       status={row.title}
       statusOneLine
       statusTooltip={row.title}
@@ -455,6 +480,129 @@ function RepoRowView({
   );
 }
 
+/** §3 (SPEC-quiet-notifications.md): the single-row summary a multi-member
+ *  `(page, group)` group draws instead of one `JobRow` per member — "a
+ *  group title, a `N of M done` sub-line, and an attention stripe if any
+ *  member errored". Every group reaching `RepoUpdatesDock` is already fully
+ *  terminal (its members arrive via `terminal`, which `jobs.ts` narrows to
+ *  `terminalJobs` before this component ever sees them) — there is no
+ *  running-member case to render here, only "how many
+ *  of these finished cleanly".
+ *
+ *  TITLE: the group's OLDEST member's own title (`group.jobs[0]`, arrival
+ *  order — `groupJobs` preserves the snapshot's own order, which `list_jobs`
+ *  returns oldest-first) — a judgment call, not spec text: nothing in §3
+ *  names which member's title should represent the row, and the oldest
+ *  member is the one least likely to still be mid-rename/mid-retry the way
+ *  a just-finished sibling's title occasionally still is (see `jobs.py`'s
+ *  own notes on a title changing right up to a job's last write).
+ *
+ *  DISMISS dismisses every member at once (`Promise.all`, same
+ *  rejected-request handling `JobRow`'s own `dismiss` uses) — a group is one
+ *  row on screen, so its ✕ has to mean "this row is gone", not "one
+ *  arbitrary member of it is". */
+function GroupJobRow({
+  group,
+  onChanged,
+  onPatch,
+  dismissFn = dismissJob,
+}: {
+  group: JobGroup;
+  onChanged: () => void;
+  onPatch: (fn: (jobs: Job[]) => Job[]) => void;
+  dismissFn?: (id: string) => Promise<{ dismissed: string }>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const members = group.jobs;
+  // The OLDEST member represents the row (arrival order — same judgment call
+  // as `title` just below), for the same reason: nothing in §3 names which
+  // member's destination a folded row should open, and the oldest member is
+  // the one least likely to still be mid-rename/mid-retry.
+  const openPage = members[0]?.page ?? "";
+  const title = members[0]?.title ?? group.group;
+  const failedCount = members.filter((m) => effectiveTier(m) === "attention").length;
+  const doneCount = members.length - failedCount;
+  const anyFailed = failedCount > 0;
+
+  const dismissAll = async () => {
+    setBusy(true);
+    setFailure(null);
+    try {
+      await Promise.all(members.map((m) => dismissFn(m.id)));
+      const ids = new Set(members.map((m) => m.id));
+      onPatch((js) => js.filter((j) => !ids.has(j.id)));
+    } catch {
+      // Same class of problem `JobRow`'s own `dismiss` documents: a rejected
+      // request must say so, not vanish — some members may have actually
+      // dismissed before one of them failed, but `onPatch` above only runs
+      // on FULL success, so a partial failure leaves every member's row
+      // exactly where it was rather than silently dropping some of them.
+      setFailure("Could not dismiss — check your connection and retry.");
+    } finally {
+      setBusy(false);
+      onChanged();
+    }
+  };
+
+  return (
+    <NotificationCard
+      className={anyFailed ? "dl-row-group-attention" : undefined}
+      title={title}
+      titleMode="id"
+      // Same "oldest member represents the row" call `title`/`openPage`
+      // already make above — a folded group is one row, so it draws one
+      // origin, not one per member.
+      caption={members[0]?.origin || undefined}
+      secondary={`${doneCount} of ${members.length} done`}
+      onDismiss={{
+        onClick: dismissAll,
+        disabled: busy,
+        title: "Dismiss",
+        ariaLabel: `Dismiss ${title}`,
+      }}
+      terminal={anyFailed ? "error" : "done"}
+      status={
+        failure ?? (anyFailed ? `${failedCount} of ${members.length} failed` : undefined)
+      }
+      // Finding 7 (code review 2026-09-16): a lone job's row has always had a
+      // `rowClick` (`JobRow`, `DownloadManager.tsx`) — a folded group row had
+      // none at all, so a family with 2+ members lost its destination
+      // outright the moment §3 started folding it into one row. Deliberately
+      // NOT reusing `JobRow`'s "opening dismisses" convention here: dismissing
+      // an entire multi-member group just because the user looked at it would
+      // throw away every sibling's own state, not just the one they clicked
+      // to see — a group's ✕ already dismisses everything explicitly, and a
+      // click's only job here is to go look.
+      rowClick={openPage ? { onClick: () => navigateToJobPage(openPage), title: `Open ${title}` } : undefined}
+    />
+  );
+}
+
+/** §3: one `<JobRow>`/`<GroupJobRow>` per `(page, group)` group found in
+ *  `jobs` — the single place both sections (terminal-attention,
+ *  terminal-trail) turn a flat `Job[]` into rows, so the "fold a
+ *  multi-member group into one row" rule lives in exactly one function
+ *  rather than three copies that could drift. A lone member renders exactly
+ *  as it always has (`JobRow`, unchanged props) — the single-member
+ *  regression trap the task brief names by number. */
+function renderJobRows(
+  jobs: Job[],
+  onChanged: () => void,
+  onPatch: (fn: (jobs: Job[]) => Job[]) => void,
+): ReactNode[] {
+  return groupJobs(jobs).map((g) => {
+    // The cluster-scoped identity (finding 3), not the bare family -- two
+    // different bursts of the same family must not collide as React keys.
+    const key = g.key;
+    return g.jobs.length > 1 ? (
+      <GroupJobRow key={key} group={g} onChanged={onChanged} onPatch={onPatch} />
+    ) : (
+      <JobRow key={g.jobs[0].id} job={g.jobs[0]} onChanged={onChanged} onPatch={onPatch} />
+    );
+  });
+}
+
 /**
  * The card's pure, props-in half — everything DownloadManagerView is for the
  * jobs card, for the same reason: no polling, no network, no
@@ -503,7 +651,13 @@ export function RepoUpdatesCardView({
 }: {
   rows: RepoRow[];
   dismissed: Record<string, string>;
-  /** Terminal jobs re-routed here from the Jobs section (D586). */
+  /** Terminal jobs re-routed here from the Jobs section (D586). A
+   *  presence-suppressed success (SPEC-quiet-notifications.md §2b) is no
+   *  longer split into a separate "Recent" section (removed 2026-09-17,
+   *  user: "I also don't like this recent stuff. notification is
+   *  notification. remove this recent.") — it is an ordinary row here like
+   *  everything else; only the POPUP for it is ever suppressed
+   *  (`jobs.ts`'s `isPopupSuppressed`). */
   terminal?: Job[];
   /** Devices that paired over the LAN — the third row kind. */
   pairings?: LanPairingEvent[];
@@ -546,8 +700,25 @@ export function RepoUpdatesCardView({
   // SAME override `jobs.ts`'s `jobRows` already reads for the Jobs section —
   // a producer's declared tier is a default, not the last word, once a run
   // has actually failed.
-  const terminalAttention = terminal.filter((job) => effectiveTier(job) === "attention");
-  const terminalTrail = terminal.filter((job) => effectiveTier(job) !== "attention");
+  // §3 (SPEC-quiet-notifications.md): a multi-member group is classified as
+  // ONE UNIT, never split across "Needs you"/"Worth keeping" — the same
+  // "group first, then classify" rule `jobs.ts`'s own `groupJobs`-before-
+  // `popupJobs` composition already applies for popup suppression. Filtering
+  // `terminal` by each job's OWN `effectiveTier` (the pre-§3 code this
+  // replaced) would tear a mixed group in half — one member's row in each
+  // section — which is exactly the outcome D-C's "one failing member keeps
+  // the whole group visible" rule exists to prevent. `groupEffectiveTier`
+  // is the group-level version of the same promotion `effectiveTier` does
+  // per job: one attention-effective member promotes the WHOLE group.
+  const terminalGroups = groupJobs(terminal);
+  const terminalAttentionGroups = terminalGroups.filter(
+    (g) => groupEffectiveTier(g.jobs) === "attention",
+  );
+  const terminalTrailGroups = terminalGroups.filter(
+    (g) => groupEffectiveTier(g.jobs) !== "attention",
+  );
+  const terminalAttention = terminalAttentionGroups.flatMap((g) => g.jobs);
+  const terminalTrail = terminalTrailGroups.flatMap((g) => g.jobs);
   // MESSAGES SPLIT THE SAME WAY — but NOT by `tier === "trail"` any more.
   // `lib/notifications.ts`'s `isRetained` already decided every entry in
   // `messages` belongs here — an error (always "attention"), or a message
@@ -557,6 +728,13 @@ export function RepoUpdatesCardView({
   // here is simply "attention" vs. "everything else that made it into this
   // already-retained list" — not a re-check of a specific tier value.
   const messagesAttention = messages.filter((m) => m.tier === "attention");
+  // Removed 2026-09-17 (user: "I also don't like this recent stuff.
+  // notification is notification. remove this recent."): a retained, non-error
+  // message no longer has anywhere else to land — every non-attention
+  // message is "Worth keeping" now, full stop. Presence suppression
+  // (`jobs.ts`'s `isPopupSuppressed`) still governs whether the POPUP for a
+  // finished task ever pops; it no longer decides where the retained row
+  // lands.
   const messagesTrail = messages.filter((m) => m.tier !== "attention");
   // ONLY TERMINAL-TRAIL JOBS FOLD — a waiting task, a repo row, a pairing and
   // an attention-tier terminal job are always shown in full, never counted
@@ -572,30 +750,59 @@ export function RepoUpdatesCardView({
   // is backwards from what the cap is for. Slicing off the tail keeps the
   // newest `TERMINAL_VISIBLE_CAP` visible, still oldest-first among
   // themselves, so the panel's reading order never changes.
-  const shownTerminal = olderShown
-    ? terminalTrail
-    : terminalTrail.slice(Math.max(0, terminalTrail.length - TERMINAL_VISIBLE_CAP));
-  const olderTerminalCount = terminalTrail.length - shownTerminal.length;
+  //
+  // Finding 4 (code review 2026-09-16): this used to slice `terminalTrail`
+  // itself — a flat JOB list — which cuts a multi-member group's members in
+  // half whenever the cap boundary lands inside it. `renderJobRows` below
+  // re-derives groups from whatever job list it's given, so a group missing
+  // some members re-grouped into a row with the WRONG "N of M done" count,
+  // and that row's dismiss-all only touched the members that made it past
+  // the slice, orphaning the rest with no row left to dismiss them from.
+  // `TERMINAL_VISIBLE_CAP` bounds how many ROWS show, and a group is always
+  // exactly one row regardless of member count — so the cap has to slice
+  // `terminalTrailGroups` (one entry per row), never the flattened jobs.
+  // Slicing complete groups out, rather than jobs, means the jobs handed to
+  // `renderJobRows` are always a union of WHOLE groups, so re-grouping them
+  // reproduces the exact same groups with nothing missing.
+  const shownTerminalGroups = olderShown
+    ? terminalTrailGroups
+    : terminalTrailGroups.slice(Math.max(0, terminalTrailGroups.length - TERMINAL_VISIBLE_CAP));
+  const shownTerminal = shownTerminalGroups.flatMap((g) => g.jobs);
+  const olderTerminalCount = terminalTrailGroups.length - shownTerminalGroups.length;
   // EVERY SOURCE DECIDES EVERY DERIVED NUMBER (D586; pairings joined later).
   // The count on the chip, the idle predicate and the empty state all read
   // this one total, so none of them can disagree about what this section
   // holds — a count that still counted only repo rows was the likeliest bug
   // in this change. Unaffected by the attention/trail split above: `terminal`
   // is still every terminal job, whichever section it lands in.
+  //
+  // COUNTS ROWS, NOT RAW JOBS (user decision, verbatim: "yes we should count
+  // rows") — eight downloads folded into one grouped row must read as one,
+  // not eight. `terminalGroups` is the exact `groupJobs(terminal)` call the
+  // attention/trail split above already computed, so this reads the SAME
+  // row-level collection the terminal sections render rather than
+  // introducing a second, parallel count that could disagree with it.
+  // `messagesAttention.length + messagesTrail.length` is exactly
+  // `messages.length` — every retained message counts toward this total now
+  // that there is no separate Recent bucket to exclude.
   const total =
     visible.length +
-    terminal.length +
+    terminalGroups.length +
     pairings.length +
     visibleAttention.length +
-    messages.length;
+    messagesAttention.length +
+    messagesTrail.length;
   const idle = total === 0;
   // HOW MANY ROWS NEED A LOOK, ACROSS BOTH ATTENTION SOURCES (SPEC
   // actionable-notifications item 3) — a waiting task and a failed/cancelled
   // job are the same kind of fact from the chip's point of view: something
   // the person asked for, or something that happened to them, that nobody
-  // has looked at yet.
+  // has looked at yet. Counts ROWS here too, for the same reason as `total`
+  // above: `terminalAttentionGroups` is the exact collection "Needs you"
+  // renders a `GroupJobRow`/`JobRow` per entry of, so a two-member failing
+  // group counts once, matching the single row the reader actually sees.
   const attentionCount =
-    visibleAttention.length + terminalAttention.length + messagesAttention.length;
+    visibleAttention.length + terminalAttentionGroups.length + messagesAttention.length;
   const hasAttentionSection = attentionCount > 0;
   const hasTrailSection =
     pairings.length > 0 ||
@@ -694,14 +901,7 @@ export function RepoUpdatesCardView({
                         it declared (`effectiveTier`). Never capped: this
                         section is exactly the rows worth a look, so there is
                         nothing here for `TERMINAL_VISIBLE_CAP` to fold. */}
-                    {terminalAttention.map((job) => (
-                      <JobRow
-                        key={job.id}
-                        job={job}
-                        onChanged={onJobsChanged ?? NOOP}
-                        onPatch={onTerminalPatch ?? NOOP_PATCH}
-                      />
-                    ))}
+                    {renderJobRows(terminalAttention, onJobsChanged ?? NOOP, onTerminalPatch ?? NOOP_PATCH)}
                     {/* Client-raised messages last — the newest row kind,
                         appended rather than interleaved so the existing
                         reading order (waiting task, then a failed run) never
@@ -757,21 +957,15 @@ export function RepoUpdatesCardView({
                         onDismiss={() => onDismiss(row.repo.root, repoDismissSignature(row.repo))}
                       />
                     ))}
-                    {shownTerminal.map((job) => (
-                      <JobRow
-                        key={job.id}
-                        job={job}
-                        onChanged={onJobsChanged ?? NOOP}
-                        // A REAL patcher (D586): `JobRow`'s dismiss calls
-                        // `onPatch(js => js.filter(...))` on success, and the
-                        // shell's own `terminal` state is exactly that list — so the
-                        // row goes the instant the server confirms, instead of
-                        // lingering until the next poll. D572's rejected-request
-                        // sentence still shows on failure, because the patch only
-                        // runs when the request landed.
-                        onPatch={onTerminalPatch ?? NOOP_PATCH}
-                      />
-                    ))}
+                    {/* A REAL patcher (D586): `JobRow`'s dismiss (and
+                        `GroupJobRow`'s dismiss-all) calls
+                        `onPatch(js => js.filter(...))` on success, and the
+                        shell's own `terminal` state is exactly that list — so
+                        the row goes the instant the server confirms, instead
+                        of lingering until the next poll. D572's
+                        rejected-request sentence still shows on failure,
+                        because the patch only runs when the request landed. */}
+                    {renderJobRows(shownTerminal, onJobsChanged ?? NOOP, onTerminalPatch ?? NOOP_PATCH)}
                     {messagesTrail.map((m) => (
                       <MessageRowView key={m.id} notification={m} />
                     ))}
@@ -820,7 +1014,9 @@ export function RepoUpdatesCardView({
                       if (visible.length > 0) onDismissAll(visible);
                       if (terminal.length > 0) {
                         clearFinishedJobs()
-                          .then(() => onTerminalPatch?.(jobsAfterClear))
+                          .then(() => {
+                            onTerminalPatch?.(jobsAfterClear);
+                          })
                           .catch(() => {});
                       }
                       for (const m of messages) dismissNotification(m.id);

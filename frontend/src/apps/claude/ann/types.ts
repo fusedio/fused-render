@@ -9,6 +9,8 @@
 // `iu`/`iv`, `anchorPath`, `nearPath`, `createdAt` and `sent: 0 | 1` are the
 // names on the wire (protocol/wire.ts `AnnotationWire`) and in the param.
 
+import { chordLabel, MOD_LABEL, ENTER_LABEL } from "@platform/lib/platform";
+
 /** T:8630 — a note points at an ELEMENT (the default, and the reason `kind` is
  *  absent for one: T never writes `kind: "element"`) or at an exact SPOT. */
 export type AnnKind = "point";
@@ -149,11 +151,29 @@ export const ANN_BAR: Record<"comment" | "rec", readonly [string, string]> = {
   rec: ["Voice annotation", "Click on a spot and say what to change."],
 };
 
-/** T:7490 — the armed Comment seat's tooltip, verbatim. */
+/**
+ * ⌘↩ / Ctrl+↩, spelled for the reader's platform — ✓ Done's chord as it appears
+ * on the bar, on the strip's seat and in the note composer's hint line.
+ *
+ * ONE constant for the four places that say it, because the key is claimed in
+ * three (`isDoneChord`'s callers) and a chord spelled one way in the tooltip
+ * and another in the hint reads as two different shortcuts.
+ *
+ * JOINED BY `chordLabel`, not by this file: the repo already had the rule
+ * ("⌘C on macOS vs Ctrl+C on Windows/Linux", `platform/lib/shortcuts.ts`) and
+ * left it to each caller, and the first caller to inline it — this one — shipped
+ * `CtrlEnter` off a Mac, which names no key anybody has (Bugbot, PR #1198). The
+ * rule now lives in one function where it can be tested from either platform.
+ */
+export const ANN_DONE_CHORD = chordLabel([MOD_LABEL, ENTER_LABEL]);
+
+/** T:7490 — the armed Comment seat's tooltip, verbatim but for the chord, which
+ *  the sentence names beside the click it is the keyboard's twin of. */
 export const ANN_ARMED_TITLE =
   "Comment mode on — clicks pin what the Element/Point" +
   " tool says (Alt overrides for one click, empty space is always a spot)" +
-  " · click this button to send the notes and finish, Esc cancels";
+  ` · click this button or press ${ANN_DONE_CHORD} to send the notes and finish,` +
+  " Esc cancels";
 
 /** T:6896 — WHY a locked way-out refuses, verbatim: `annNavLock` writes this
  *  onto `#back`'s `title` while the lock holds and clears it on unlock.

@@ -11,7 +11,7 @@ import zipfile
 import pytest
 
 from fused_render import appfile
-from fused_render._view_url_codec import embed_url_path, view_url_path
+from fused_render._view_url_codec import canonical_fs_path, embed_url_path, view_url_path
 
 MARKER = '<meta charset="utf-8" />\n<meta name="fused-app" />'
 
@@ -343,3 +343,198 @@ def test_routes_export_and_gateless_open(tmp_path, monkeypatch):
         os.path.abspath(e["path"]) == str(fused_path)
         for e in exported_apps.read_recents()
     )
+
+
+def test_export_to_disk_writes_the_real_file_and_notes_the_mutation(tmp_path, monkeypatch):
+    """The server-side export route (workstream B) writes the `.fused` to the
+    resolved destination directory itself — not a temp dir behind a browser
+    download — and reports the real absolute path, so the file is
+    immediately locatable and immediately queued for reindexing."""
+    from fastapi.testclient import TestClient
+
+    from fused_render import appfile
+    from fused_render.server.routers import appfile as appfile_router
+    from fused_render.server.app import create_app
+
+    monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    dest_dir = tmp_path / "downloads"
+    dest_dir.mkdir()
+    monkeypatch.setattr(
+        appfile_router, "_export_destination_dir", lambda: str(dest_dir)
+    )
+    noted: list[str] = []
+    monkeypatch.setattr(
+        appfile_router, "note_index_mutation", lambda *paths: noted.extend(p for p in paths if p)
+    )
+
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    app_dir = make_app(tmp_path)
+
+    r = client.post(
+        "/api/appfile/export/save",
+        data={"path": str(app_dir)},
+        headers={"X-Fused": "1"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    from fused_render import appfile_container
+
+    out_path = body["path"]
+    assert os.path.isfile(out_path)
+    # `out_path` is `canonical_fs_path(...)` (forward-slashed, per
+    # `_view_url_codec.py`'s documented convention: "the form a path has
+    # everywhere above the OS"); `dest_dir` is a raw `pathlib.Path`, which is
+    # backslashed on Windows, so it needs the same canonicalization before
+    # the comparison is separator-correct on every platform.
+    assert os.path.dirname(out_path) == canonical_fs_path(str(dest_dir))
+    assert appfile_container.is_container(out_path)
+    # The FILE that was written, not the folder it landed in —
+    # `note_index_mutation` scans the PARENT of whatever it is handed
+    # (`index_touch._folder_of`), so passing the folder itself would queue a
+    # scan of the folder's own parent (the user's home directory) instead of
+    # Downloads.
+    assert noted == [out_path]
+
+    # A second export of the same app never clobbers the first — it picks a
+    # sibling filename instead.
+    r2 = client.post(
+        "/api/appfile/export/save",
+        data={"path": str(app_dir)},
+        headers={"X-Fused": "1"},
+    )
+    assert r2.status_code == 200
+    out_path2 = r2.json()["path"]
+    assert out_path2 != out_path
+    assert os.path.isfile(out_path)
+    assert os.path.isfile(out_path2)
+
+    # Missing the X-Fused guard is refused, like every other mutating route.
+    r3 = client.post("/api/appfile/export/save", data={"path": str(app_dir)})
+    assert r3.status_code == 403
+
+
+def test_export_to_disk_uses_the_callers_display_name(tmp_path, monkeypatch):
+    """AppPage.tsx and EntryActionsMenu.tsx compute a version-suffixed name
+    (`${name}-${versionLabel}`) specifically so a snapshot export never
+    collides with a live export of the same app in Downloads. That name must
+    become the written file's actual name, not just something the caller
+    discards after computing it."""
+    from fastapi.testclient import TestClient
+
+    from fused_render import appfile, appfile_container
+    from fused_render.server.routers import appfile as appfile_router
+    from fused_render.server.app import create_app
+
+    monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    dest_dir = tmp_path / "downloads"
+    dest_dir.mkdir()
+    monkeypatch.setattr(
+        appfile_router, "_export_destination_dir", lambda: str(dest_dir)
+    )
+    monkeypatch.setattr(appfile_router, "note_index_mutation", lambda *paths: None)
+
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    app_dir = make_app(tmp_path)
+
+    r = client.post(
+        "/api/appfile/export/save",
+        data={"path": str(app_dir), "name": "myapp-v7"},
+        headers={"X-Fused": "1"},
+    )
+    assert r.status_code == 200
+    out_path = r.json()["path"]
+    assert os.path.basename(out_path) == "myapp-v7.fused"
+    assert appfile_container.is_container(out_path)
+
+    # A second export under the SAME sha/name never collides into the plain
+    # app-folder basename either — it gets a free sibling of the requested
+    # name, not of the fallback.
+    r2 = client.post(
+        "/api/appfile/export/save",
+        data={"path": str(app_dir), "name": "myapp-v7"},
+        headers={"X-Fused": "1"},
+    )
+    out_path2 = r2.json()["path"]
+    assert os.path.basename(out_path2) == "myapp-v7 (2).fused"
+
+    # No name at all still falls back to the app folder's own basename.
+    r3 = client.post(
+        "/api/appfile/export/save",
+        data={"path": str(app_dir)},
+        headers={"X-Fused": "1"},
+    )
+    out_path3 = r3.json()["path"]
+    assert os.path.basename(out_path3) == f"{os.path.basename(str(app_dir))}.fused"
+
+
+def test_export_to_disk_job_row_is_silent(tmp_path, monkeypatch):
+    """The route's own success job must not ALSO pop a card: the client
+    already raises its own two-action notification ("Reveal folder" /
+    "Open file") on the same export, so a non-silent job row here would show
+    both at once. `popupJobs` (frontend/src/platform/lib/jobs.ts) already
+    drops a `done` job whose stored tier is `silent`, so the job just needs
+    to declare that tier."""
+    from fastapi.testclient import TestClient
+
+    from fused_render import appfile, jobs
+    from fused_render.server.routers import appfile as appfile_router
+    from fused_render.server.app import create_app
+
+    monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    dest_dir = tmp_path / "downloads"
+    dest_dir.mkdir()
+    monkeypatch.setattr(
+        appfile_router, "_export_destination_dir", lambda: str(dest_dir)
+    )
+    monkeypatch.setattr(appfile_router, "note_index_mutation", lambda *paths: None)
+
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    app_dir = make_app(tmp_path)
+
+    r = client.post(
+        "/api/appfile/export/save",
+        data={"path": str(app_dir)},
+        headers={"X-Fused": "1"},
+    )
+    assert r.status_code == 200
+    out_path = r.json()["path"]
+
+    rows = [j for j in jobs.list_jobs() if j.get("page") == out_path]
+    assert len(rows) == 1
+    assert rows[0]["state"] == "done"
+    assert rows[0]["tier"] == "silent"
+
+
+def test_export_to_disk_bakes_a_caller_captured_preview(tmp_path, monkeypatch):
+    """The disk-write export takes the same optional capture the browser
+    download route does — a folder with no authored preview.png ships with
+    whatever the caller photographed, not a blank thumbnail."""
+    from fastapi.testclient import TestClient
+
+    from fused_render import appfile
+    from fused_render.server.app import create_app
+
+    monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    dest_dir = tmp_path / "downloads"
+    dest_dir.mkdir()
+    monkeypatch.setattr(
+        "fused_render.server.routers.appfile._export_destination_dir",
+        lambda: str(dest_dir),
+    )
+
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    app_dir = make_app(tmp_path)
+    png = b"\x89PNG\r\n\x1a\n" + b"x" * 16
+
+    r = client.post(
+        "/api/appfile/export/save",
+        data={"path": str(app_dir)},
+        files={"preview": ("preview.png", png, "image/png")},
+        headers={"X-Fused": "1"},
+    )
+    assert r.status_code == 200
+    assert appfile.read_preview(r.json()["path"]) == png

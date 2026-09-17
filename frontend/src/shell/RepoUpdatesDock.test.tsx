@@ -116,39 +116,51 @@ function text(node: ReactTestRendererJSON | null): string {
 
 // A FAILED job, for the D586 rows this section now also draws. Only
 // `state: "error"` is re-routed here; running/done/cancelled stay in Jobs.
-const failedJob = (over: Partial<Job> = {}): Job => ({
-  id: "sys:ai-image:boom",
-  title: "Pyramid build",
-  detail: "",
-  model: "",
-  kind: "task",
-  state: "error",
-  done: null,
-  total: null,
-  total_scope: "phase",
-  total_estimated: false,
-  unit: "",
-  message: "GDAL ran out of memory",
-  page: "",
-  origin: "",
-  owner: "server",
-  cancellable: false,
-  cancel_requested: false,
-  started_at: 0,
-  updated_at: 0,
-  finished_at: 0,
-  stalled: false,
-  waiting_for: "",
-  tier: "trail",
-  ...over,
-});
+//
+// `group` defaults to THIS job's own id (via the local `id`, not
+// `over.id` alone) so two bare calls to `failedJob()`/`doneJob()` — which
+// have DIFFERENT default ids — never accidentally land in the same
+// `(page, group)` group and get folded into one `GroupJobRow` by §3's
+// grouping. `doneJob` below takes care to thread its OWN default id into
+// this function for the same reason, rather than letting this function's
+// own default id leak through.
+const failedJob = (over: Partial<Job> = {}): Job => {
+  const id = over.id ?? "sys:ai-image:boom";
+  return {
+    id,
+    title: "Pyramid build",
+    detail: "",
+    model: "",
+    kind: "task",
+    state: "error",
+    done: null,
+    total: null,
+    total_scope: "phase",
+    total_estimated: false,
+    unit: "",
+    message: "GDAL ran out of memory",
+    page: "",
+    source: "",
+    origin: "",
+    owner: "server",
+    cancellable: false,
+    cancel_requested: false,
+    started_at: 0,
+    updated_at: 0,
+    finished_at: 0,
+    stalled: false,
+    waiting_for: "",
+    tier: "trail",
+    group: id,
+    ...over,
+  };
+};
 
 // A DONE job — the routing D662 broadened past `error` alone. Every terminal
 // state reaches this section now (jobs.ts `isTerminal`/`terminalJobs`), not
 // only a failure.
 const doneJob = (over: Partial<Job> = {}): Job => ({
-  ...failedJob(over),
-  id: "sys:ai-image:done",
+  ...failedJob({ ...over, id: over.id ?? "sys:ai-image:done" }),
   state: "done",
   message: "",
   detail: "Saved to Downloads/pyramid.png",
@@ -538,6 +550,68 @@ test("repo rows, pairings and a waiting task are never folded, however many term
   expect(text(findAll(tree, "dl-panel-more")[0])).toBe("3 older notifications");
 });
 
+// Finding 4 (code review 2026-09-16): TERMINAL_VISIBLE_CAP used to slice the
+// flat `terminalTrail` job list. A multi-member group's members are still
+// contiguous in that flat list (groupJobs' own ordering keeps them
+// together), but a cap boundary landing INSIDE that run split the group in
+// half — the folded-away members were simply gone from the row `groupJobs`
+// re-derives from the sliced list, so the row's own "N of M done" undercounted
+// and its dismiss-all only ever reached the members that survived the slice.
+// The cap must bound ROWS (one per group, however many members), not jobs.
+// Finding 7 (code review 2026-09-16): `GroupJobRow` drew no `rowClick` at
+// all, so once a family had 2+ members and folded into one row (§3), that
+// row lost its destination outright — every other row kind (`JobRow`,
+// pairings, waiting tasks) is clickable, this one silently was not.
+test("finding 7: a folded group row is clickable and opens the oldest member's page", () => {
+  withNav((pushed) => {
+    const older = doneJob({
+      id: "g-a",
+      group: "burst",
+      page: "/ai-models/local",
+      started_at: 0,
+      finished_at: 100,
+    });
+    const newer = doneJob({
+      id: "g-b",
+      group: "burst",
+      page: "/ai-models/local",
+      started_at: 200,
+      finished_at: 300,
+    });
+    const tree = renderView({ rows: [], terminal: [older, newer] });
+    const rows = findAll(tree, "dl-row");
+    expect(rows).toHaveLength(1);
+    expect(findAll(tree, "dl-row-open")).toHaveLength(1);
+    act(() => {
+      (rows[0].props as { onClick: () => void }).onClick();
+    });
+    expect(pushed).toContain("/ai-models/local");
+  });
+});
+
+test("finding 4: a group straddling the cap boundary renders as one complete row, never a partial one", () => {
+  const single = doneJob({ id: "solo", group: "solo", started_at: 0, finished_at: 100 });
+  const burst = Array.from({ length: 6 }, (_, i) =>
+    doneJob({
+      id: `burst${i}`,
+      group: "burst",
+      page: "/x",
+      started_at: 1000 + i * 1000,
+      finished_at: 1000 + i * 1000 + 100,
+    }),
+  );
+  const terminal = [single, ...burst];
+  const tree = renderView({ rows: [], terminal });
+  // Only 2 ROWS exist (the solo job, and the one burst group) — well under
+  // the cap of 5 rows — so nothing should fold at all, and the burst group's
+  // row must report every one of its 6 members, not 5.
+  expect(findAll(tree, "dl-panel-more")).toHaveLength(0);
+  const rows = findAll(tree, "dl-row");
+  expect(rows).toHaveLength(2);
+  const secondary = findAll(tree, "dl-model").map((n) => text(n));
+  expect(secondary).toContain("6 of 6 done");
+});
+
 // -------------------------------- nothing opens or closes on its own (D673)
 //
 // "we can make the notifications 'un collapse' when a new one comes" (D562
@@ -917,6 +991,7 @@ const asking = (over: Partial<AttentionRow> = {}): AttentionRow => ({
   taskId: "TASK-097",
   title: "Pull today's news",
   href: "/explorer/view/Users/me/proj?_side=claude&session_id=sess-7",
+  origin: "",
   ...over,
 });
 
@@ -1159,6 +1234,9 @@ const message = (over: Partial<StoredNotification> = {}): StoredNotification => 
   id: ++messageId,
   title: "Could not save",
   tier: "attention",
+  family: `title:${over.title ?? "Could not save"}`,
+  count: 1,
+  updatedAt: 0,
   leaving: false,
   ...over,
 });
@@ -1222,6 +1300,27 @@ test("a message row draws with its detail, like a terminal job's failure message
   expect(text(row)).toContain("Disk full");
 });
 
+// DEFECT 1 (2026-09-17 fix): `notify()`'s family-based collapse
+// (notifications.ts) writes `StoredNotification.count`, but nothing used to
+// read it — the second (and later) run of the same task silently vanished
+// with no on-screen trace it ever fired again. `MessageRowView` now surfaces
+// it via the same slot `GroupJobRow` uses to spell out its own multiplicity
+// in plain words, rather than a symbolic "×N" badge this panel has never
+// otherwise drawn.
+test("a collapsed repeat message shows how many times it fired; a first-time message shows nothing extra", () => {
+  const repeated = renderView({
+    rows: [],
+    messages: [message({ title: "Transcripto YouTube transcriber finished", count: 2 })],
+  });
+  expect(text(findAll(repeated, "dl-row")[0])).toContain("Happened 2 times");
+
+  const once = renderView({
+    rows: [],
+    messages: [message({ title: "Transcripto YouTube transcriber finished", count: 1 })],
+  });
+  expect(text(findAll(once, "dl-row")[0])).not.toContain("Happened");
+});
+
 // Code review finding on PR #1104: `terminal` was passed off `tone` with no
 // `status`, which (pre-fix) never rendered the glyph, and this row also
 // carried no `role`, losing the deleted `Toast.tsx`'s own
@@ -1255,6 +1354,37 @@ test("a message with a page is a click target that navigates", () => {
     });
     expect(pushed).toContain("/tasks/42");
   });
+});
+
+// A row with two independent destinations (an export's "Reveal folder" and
+// "Open file") needs both its own buttons drawn, not just one — `action`
+// and `extraAction` are separate NotificationCard slots (`navAction` and
+// `extraAction`), both styled `.q-all`, so both must show up in the row.
+test("a message with both an action and an extraAction renders both buttons", () => {
+  let revealed = false;
+  let opened = false;
+  const m = message({
+    title: "Exported App to /tmp/App.fused",
+    action: { label: "Reveal folder", onClick: () => (revealed = true) },
+    extraAction: { label: "Open file", onClick: () => (opened = true) },
+  });
+  const tree = renderView({ rows: [], messages: [m] });
+  const buttons = findAll(tree, "q-all");
+  const labels = buttons.map((n) => text(n));
+  expect(labels).toContain("Reveal folder");
+  expect(labels).toContain("Open file");
+
+  const revealBtn = buttons.find((n) => text(n) === "Reveal folder")!;
+  act(() => {
+    (revealBtn.props as { onClick: () => void }).onClick();
+  });
+  expect(revealed).toBe(true);
+
+  const openBtn = buttons.find((n) => text(n) === "Open file")!;
+  act(() => {
+    (openBtn.props as { onClick: () => void }).onClick();
+  });
+  expect(opened).toBe(true);
 });
 
 test("a message with no page draws no row-open marker — nothing to click through to", () => {
@@ -1295,4 +1425,203 @@ test("Clear all's threshold and count include messages alongside repo rows and t
     messages: [message({ tier: "trail" })],
   });
   expect(findAll(two, "dl-clear")).toHaveLength(1);
+});
+
+// §3 (SPEC-quiet-notifications.md): the multi-member group row UI.
+
+test("a two-member group renders as ONE row, with an 'N of M done' subline", () => {
+  const g1 = doneJob({ id: "sys:g:a", group: "g" });
+  const g2 = doneJob({ id: "sys:g:b", group: "g" });
+  const tree = renderView({ rows: [], terminal: [g1, g2] });
+  // One row for the whole group, not two.
+  const rows = findAll(tree, "dl-row");
+  expect(rows).toHaveLength(1);
+  // The oldest (first-arrival) member's own title represents the group.
+  expect(text(findAll(tree, "dl-title")[0])).toBe(g1.title);
+  expect(text(findAll(tree, "dl-model")[0])).toBe("2 of 2 done");
+  expect(findAll(tree, "dl-row-group-attention")).toHaveLength(0);
+});
+
+test("a two-member group with one failing member gets the attention stripe and counts as ONE row toward 'needs you'", () => {
+  const ok = doneJob({ id: "sys:g:a", group: "g" });
+  const bad = failedJob({ id: "sys:g:b", group: "g" });
+  const tree = renderView({ rows: [], terminal: [ok, bad] });
+  // One row, not split across "Needs you"/"Worth keeping" — D-C's "one
+  // failing member keeps the whole group visible" rule, at the row level.
+  expect(findAll(tree, "dl-row")).toHaveLength(1);
+  expect(findAll(tree, "dl-row-group-attention")).toHaveLength(1);
+  expect(text(findAll(tree, "dl-model")[0])).toBe("1 of 2 done");
+  // Row counts, not raw job counts (user decision, verbatim: "yes we should
+  // count rows") — the whole two-member group is ONE row on screen, so it
+  // counts once toward the badge, the same as any other single row.
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("1 needs you");
+});
+
+// DEFECT 2 (live testing, 2026-09-17): the user's screenshot showed two
+// same-source ERROR rows ("Transcripto" text-gen, `mlx-lm`'s
+// `ArraysCache.trim` AttributeError, unrelated to this branch) rendered as
+// two separate rows instead of one group. Root cause was Defect 1 —
+// `job.source` carried the Playground's dirty, ever-changing query string,
+// so `familyKey` (`job.source || job.page`) never matched between the two
+// requests. This test pins the fix at THIS layer: once two ERROR jobs share
+// the exact same (now-canonical, post-Defect-1) `source` and `group` — the
+// live shape a real `sys:ai-text:` pair actually has — they cluster into
+// ONE row here, exactly like the "Needs you" grouping test above.
+test("DEFECT 2: two same-source, same-group ERROR jobs cluster into one attention row, not two", () => {
+  const e1 = failedJob({
+    id: "sys:ai-text:e1",
+    group: "sys:ai-text",
+    source: "/ai-models/playground",
+  });
+  const e2 = failedJob({
+    id: "sys:ai-text:e2",
+    group: "sys:ai-text",
+    source: "/ai-models/playground",
+  });
+  const tree = renderView({ rows: [], terminal: [e1, e2] });
+  // One row for the pair, not two — grouping, not suppression: both members
+  // are errors, so the group is never dropped or folded, only combined.
+  expect(findAll(tree, "dl-row")).toHaveLength(1);
+  expect(findAll(tree, "dl-row-group-attention")).toHaveLength(1);
+  expect(text(findAll(tree, "dl-model")[0])).toBe("0 of 2 done");
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("1 needs you");
+});
+
+test("a two-member group counts as ONE row toward the chip's total, not two", () => {
+  // Counts rows, not raw jobs (user decision, verbatim: "yes we should count
+  // rows") — the chip's numeral must read "1", the number of rows on screen,
+  // even though two jobs are folded into it.
+  const g1 = doneJob({ id: "sys:g:a", group: "g" });
+  const g2 = doneJob({ id: "sys:g:b", group: "g" });
+  const tree = renderView({ rows: [], terminal: [g1, g2] });
+  expect(numeral(tree)).toBe("1");
+});
+
+test("a single-member group renders unchanged via JobRow — the regression trap this task named by number", () => {
+  const tree = renderView({ rows: [], terminal: [failedJob()] });
+  expect(findAll(tree, "dl-row")).toHaveLength(1);
+  expect(findAll(tree, "dl-row-group-attention")).toHaveLength(0);
+  // No group subline — JobRow's own status line, not `GroupJobRow`'s
+  // "N of M done" one.
+  expect(text(findAll(tree, "dl-model")[0] ?? "")).not.toContain("of");
+  expect(findAll(tree, "dl-x")).toHaveLength(1);
+});
+
+test("dismissing a group's row dismisses every member at once, and removes all of them from state", async () => {
+  const dismissed: string[] = [];
+  const realFetch = globalThis.fetch;
+  (globalThis as { fetch?: unknown }).fetch = mock((url: string) => {
+    const match = /\/api\/jobs\/([^/]+)\/dismiss/.exec(url);
+    const id = match ? decodeURIComponent(match[1]) : "";
+    dismissed.push(id);
+    return Promise.resolve(new Response(JSON.stringify({ dismissed: id })));
+  });
+  const patchedTerminal: Array<(jobs: Job[]) => Job[]> = [];
+  const g1 = doneJob({ id: "sys:g:a", group: "g" });
+  const g2 = doneJob({ id: "sys:g:b", group: "g" });
+  const instance = renderInstance({
+    rows: [],
+    terminal: [g1, g2],
+    onTerminalPatch: (fn) => patchedTerminal.push(fn),
+  });
+  const dismissBtn = findAll(instance.toJSON() as ReactTestRendererJSON, "dl-x")[0];
+  await act(async () => {
+    (dismissBtn.props as { onClick: () => void }).onClick();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(patchedTerminal.length).toBeGreaterThan(0);
+  const remaining = patchedTerminal.reduce((jobs, fn) => fn(jobs), [g1, g2] as Job[]);
+  expect(remaining).toHaveLength(0);
+  globalThis.fetch = realFetch;
+});
+
+// ---- CHANGE 1: every notification names who raised it (`.dl-origin`) -------
+//
+// User, from a screenshot: "every notification imo should have a top
+// row/section for the 'emitting page' context" — a toast reading only
+// "Public link token flash finished" gave no clue which project it came
+// from. `Job.origin`/a message's `origin` (notifications.ts's
+// `labelForSource`) already carry that fact; this section pins that every
+// row TYPE actually draws it, not just jobs.
+
+test("a job row draws its origin caption; a job with no origin draws no line at all", () => {
+  const withOrigin = renderView({ rows: [], terminal: [failedJob({ origin: "Playground" })] });
+  const caption = findAll(withOrigin, "dl-origin");
+  expect(caption).toHaveLength(1);
+  expect(text(caption[0])).toBe("Playground");
+
+  const without = renderView({ rows: [], terminal: [failedJob({ origin: "" })] });
+  expect(findAll(without, "dl-origin")).toHaveLength(0);
+});
+
+test("a folded group row draws the oldest member's origin, not one per member", () => {
+  const g1 = doneJob({ id: "sys:g:a", group: "g", origin: "Local models" });
+  const g2 = doneJob({ id: "sys:g:b", group: "g", origin: "Benchmark" });
+  const tree = renderView({ rows: [], terminal: [g1, g2] });
+  const caption = findAll(tree, "dl-origin");
+  expect(caption).toHaveLength(1);
+  expect(text(caption[0])).toBe("Local models");
+});
+
+test("a message row draws its origin caption when the notify() call carried a source", () => {
+  const withSource = renderView({
+    rows: [],
+    messages: [message({ tier: "attention", title: "Could not save", origin: "my-app" })],
+  });
+  const caption = findAll(withSource, "dl-origin");
+  expect(caption).toHaveLength(1);
+  expect(text(caption[0])).toBe("my-app");
+
+  const noSource = renderView({
+    rows: [],
+    messages: [message({ tier: "attention", title: "Could not save" })],
+  });
+  expect(findAll(noSource, "dl-origin")).toHaveLength(0);
+});
+
+test("a waiting-task row draws its origin caption from the task's own target/project", () => {
+  const withOrigin = renderView({ rows: [], attention: [asking({ origin: "my-project" })] });
+  const caption = findAll(withOrigin, "dl-origin");
+  expect(caption).toHaveLength(1);
+  expect(text(caption[0])).toBe("my-project");
+
+  const without = renderView({ rows: [], attention: [asking({ origin: "" })] });
+  expect(findAll(without, "dl-origin")).toHaveLength(0);
+});
+
+// ---- CHANGE 2 (reversed 2026-09-17, Recent section removed): a finished
+// task is retained and clickable, and lands as an ORDINARY row -------------
+//
+// task-status-notify.ts's `in_progress -> done` sets `page` (retained,
+// clickable) but no longer opts into a folded "Recent" section — that
+// section is gone (user: "I also don't like this recent stuff. notification
+// is notification. remove this recent."). A finished task's row now behaves
+// exactly like any other non-attention message: unfolded, in "Worth keeping".
+
+test("a finished-task message lands in 'Worth keeping', unfolded, clickable via its own page", () => {
+  const instance = renderInstance({
+    rows: [],
+    messages: [message({ tier: "transient", title: "Task finished", page: "/tasks" })],
+  });
+  const rows = findAll(instance.toJSON() as ReactTestRendererJSON, "dl-row");
+  expect(rows).toHaveLength(1);
+  // `MessageRowView` sets an explicit `role` ("status"/"alert") for its
+  // content, which wins over `rowClick`'s own implicit `role="button"`
+  // (NotificationCard.tsx) — clickability is `dl-row-open` + a real
+  // `onClick`, not the ARIA role.
+  expect(rows[0].props.className).toContain("dl-row-open");
+  expect(typeof (rows[0].props as { onClick?: () => void }).onClick).toBe("function");
+});
+
+test("a non-attention, retained message lands in 'Worth keeping', unfolded (unchanged behaviour)", () => {
+  const tree = renderView({
+    rows: [],
+    messages: [message({ tier: "transient", title: "Moved 3 items", page: "/tasks" })],
+  });
+  expect(findAll(tree, "dl-recent-toggle")).toHaveLength(0);
+  expect(findAll(tree, "dl-row").map((n) => text(n))).toEqual(
+    expect.arrayContaining([expect.stringContaining("Moved 3 items")]),
+  );
 });

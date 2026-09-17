@@ -5418,6 +5418,54 @@ def test_a_caller_supplied_page_still_wins_once_the_image_is_done(
     assert finished["page"] == "/tasks"
 
 
+def test_an_image_rows_source_defaults_to_the_caller_supplied_page(
+        client, fake_image_runner):
+    """No `X-Fused-Source` sent: `source` defaults to `page`, same as the
+    generic `/api/jobs` route — the ordinary case for a user app's own page
+    calling `fused.ai.image()`."""
+    started = client.post(
+        "/api/ai/image", json={"prompt": "a red square"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/tasks"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["source"] == "/tasks"
+    _wait_job(started["jobId"])
+
+
+def test_an_image_rows_source_diverges_from_page_when_the_playground_sends_one(
+        client, fake_image_runner):
+    """The AI Models Playground sends no `X-Fused-Page` (so `page` still
+    falls back to the output file once the render is done — see
+    `test_an_image_row_with_no_X_Fused_Page_opens_its_own_output_file_once_done`)
+    but DOES send its own `X-Fused-Source`, so a suppression check can tell
+    the render was raised from the page the user is looking at
+    (SPEC-quiet-notifications.md bug 1). `source` must stay the Playground's
+    route through every tick — the done report's output-path fallback is
+    `page`-only and must never leak onto `source`."""
+    started = client.post(
+        "/api/ai/image", json={"prompt": "a red square"},
+        headers={"X-Fused": "1", "X-Fused-Source": "/ai-models/playground"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["page"] == ""
+    assert row["source"] == "/ai-models/playground"
+    finished = _wait_job(started["jobId"])
+    assert finished["page"] == started["path"]
+    assert finished["source"] == "/ai-models/playground"
+
+
+def test_an_image_rows_source_stays_empty_with_neither_header_even_once_done(
+        client, fake_image_runner):
+    """Unlike `page`, `source` never inherits the output-path fallback: with
+    no raiser known at all, it stays "" through the terminal report too —
+    "" must always read as "cannot suppress, notify", never as a match."""
+    started = client.post("/api/ai/image", json={"prompt": "a red square"},
+                          headers={"X-Fused": "1"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["source"] == ""
+    finished = _wait_job(started["jobId"])
+    assert finished["source"] == ""
+    assert finished["page"] == started["path"]
+
+
 def test_a_failed_image_render_with_no_caller_page_points_at_its_output_folder(
         fake_image_runner, monkeypatch, tmp_path):
     """A render that fails or is cancelled never wrote its file — pointing the
@@ -5491,9 +5539,9 @@ def test_the_worker_is_told_where_to_write_the_preview(client, fake_image_runner
     captured = {}
     real_start = supervisor.start_image
 
-    def spy(model, request, job, page=""):
+    def spy(model, request, job, page="", source=""):
         captured.update(request)
-        return real_start(model, request, job, page=page)
+        return real_start(model, request, job, page=page, source=source)
 
     monkeypatch.setattr(supervisor, "start_image", spy)
     started = client.post("/api/ai/image", json={"prompt": "x"},
@@ -6170,9 +6218,9 @@ def test_the_request_the_WORKER_gets_carries_image_ONLY_when_asked(
     captured = []
     real_start = supervisor.start_image
 
-    def spy(model, request, job, page=""):
+    def spy(model, request, job, page="", source=""):
         captured.append(dict(request))
-        return real_start(model, request, job, page=page)
+        return real_start(model, request, job, page=page, source=source)
 
     monkeypatch.setattr(supervisor, "start_image", spy)
 
@@ -6199,8 +6247,8 @@ def test_an_edits_DEFAULTS_are_the_PROTOTYPES_not_the_generate_defaults(
     captured = []
     real_start = supervisor.start_image
     monkeypatch.setattr(supervisor, "start_image",
-                        lambda model, request, job, page="": (captured.append(dict(request)),
-                                                      real_start(model, request, job, page=page))[1])
+                        lambda model, request, job, page="", source="": (captured.append(dict(request)),
+                                                      real_start(model, request, job, page=page, source=source))[1])
 
     edit = client.post(
         "/api/ai/image", json={"prompt": "a fox", "image": "photo.png", "base": page},
@@ -7334,6 +7382,21 @@ def test_a_failing_video_render_reports_the_reason_on_the_row(client, fake_video
     assert "the renderer exited" in row["message"]
 
 
+def test_a_video_rows_source_diverges_from_page_when_the_playground_sends_one(
+        client, fake_video_runner):
+    """`/api/ai/video`'s twin of the image route's own version of this test
+    — see that one for the full reasoning (SPEC-quiet-notifications.md
+    bug 1)."""
+    started = client.post(
+        "/api/ai/video", json={"prompt": "x"},
+        headers={"X-Fused": "1", "X-Fused-Source": "/ai-models/playground"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["page"] == ""
+    assert row["source"] == "/ai-models/playground"
+    finished = _wait_job(started["jobId"])
+    assert finished["source"] == "/ai-models/playground"
+
+
 def test_a_video_on_a_machine_with_no_video_runner_says_why(client, monkeypatch):
     """The ordinary case, not the edge one — video generation is the first
     capability with no "everywhere" row, so a machine that is not Apple
@@ -7610,6 +7673,23 @@ def test_a_transcript_rows_origin_names_the_calling_page(
         headers={"X-Fused": "1", "X-Fused-Page": "/tasks"}).json()
     row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
     assert row["origin"] == "Scheduler"
+    _wait_job(started["jobId"])
+
+
+def test_a_transcript_rows_source_comes_from_the_ambient_X_Fused_Source(
+        client, fake_transcribe_runner, recording):
+    """SPEC-quiet-notifications.md bug 2: transcribe mints its row through
+    `supervisor._report`/`jobs.upsert` with no `source=` of its own — the
+    same shape text generation had, before the ambient default. Sending
+    `X-Fused-Source` with NO `X-Fused-Page` (the Playground's own shape) must
+    still land in `row["source"]`, picked up by `jobs.upsert`'s ambient
+    fallback rather than by anything `ai_runtime.py` does."""
+    started = client.post(
+        "/api/ai/transcribe", json={"path": recording},
+        headers={"X-Fused": "1", "X-Fused-Source": "/ai-models/playground"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["page"] == ""
+    assert row["source"] == "/ai-models/playground"
     _wait_job(started["jobId"])
 
 

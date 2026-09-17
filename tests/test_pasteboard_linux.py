@@ -5,24 +5,32 @@ runs on any platform — including the real behaviours we most need pinned
 (tool preference order, which clipboard target gets written on which desktop,
 URI encoding). Nothing here launches a process or touches a selection.
 """
+import json
 import subprocess
 import sys
 
 import pytest
 
-from fused_render.shell.pasteboard import _linux
+from fused_render.shell.pasteboard import _linux, _linux_owner
 
 
 class _Run:
     """Records subprocess.run calls and replays canned stdout per command."""
 
-    def __init__(self, outputs=None, fail=()):
+    def __init__(self, outputs=None, fail=(), gi_capable=()):
         self.outputs = outputs or {}   # argv[0] + first format arg -> stdout bytes
         self.fail = set(fail)          # keys that should exit non-zero
+        self.gi_capable = set(gi_capable)  # interpreters where "import gi" succeeds
         self.calls = []
 
     def __call__(self, argv, **kw):
         self.calls.append((argv, kw.get("input")))
+        if "import gi" in argv:
+            # The interpreter probe, not a clipboard tool call: kept out of
+            # the normal keying below, which assumes a clipboard mime type
+            # argument that a probe command doesn't have.
+            ok = argv[0] in self.gi_capable
+            return subprocess.CompletedProcess(argv, 0 if ok else 1, b"", b"")
         key = self._key(argv)
         if key in self.fail:
             return subprocess.CompletedProcess(argv, 1, b"", b"nope")
@@ -32,6 +40,24 @@ class _Run:
     def _key(argv):
         fmt = next((a for a in argv if "/" in a and not a.startswith("-")), "")
         return (argv[0], fmt)
+
+
+@pytest.fixture(autouse=True)
+def _no_owner_by_default():
+    """Every test above (and most below) fakes subprocess.run to answer the
+    wl-copy/xclip calls only, and several assert on the position of those
+    calls in `run.calls`. write_files() now tries the multi-target GTK4
+    owner before falling back to them, and that probe/spawn would otherwise
+    land in the very same recorder, shifting those positional assertions by
+    one call. Forcing the cache to "no capable interpreter" before AND after
+    every test keeps the owner path out of everything that doesn't
+    deliberately opt back in via `_linux._reset_gi_interpreter_cache()`,
+    regardless of what order tests run in or what an owner-path test left
+    the cache holding.
+    """
+    _linux._gi_interpreter = None
+    yield
+    _linux._gi_interpreter = None
 
 
 @pytest.fixture
@@ -338,3 +364,363 @@ def test_write_does_not_wait_on_a_daemonizing_tool(tmp_path, monkeypatch):
         f"the write waited {elapsed:.2f}s on a forking tool — stdout/stderr "
         "are being captured, so subprocess.run is blocking on pipes the "
         "clipboard daemon holds open")
+
+
+# ------------------------------------------------------- owner: payload shape
+
+def test_owner_builds_all_four_targets():
+    payloads = _linux_owner.build_payloads(["/home/u/a.txt"])
+    assert set(payloads) == {
+        "x-special/gnome-copied-files", "text/uri-list",
+        "text/plain", "text/plain;charset=utf-8",
+    }
+
+
+def test_owner_gnome_payload_carries_the_copy_verb_and_multiple_uris():
+    payloads = _linux_owner.build_payloads(["/home/u/a.txt", "/home/u/b.txt"])
+    assert payloads["x-special/gnome-copied-files"] == (
+        b"copy\nfile:///home/u/a.txt\nfile:///home/u/b.txt")
+
+
+def test_owner_uri_list_is_crlf_terminated():
+    # RFC 2483, same rule the fallback's write already follows.
+    payloads = _linux_owner.build_payloads(["/home/u/a.txt", "/home/u/b.txt"])
+    assert payloads["text/uri-list"] == (
+        b"file:///home/u/a.txt\r\nfile:///home/u/b.txt\r\n")
+
+
+def test_owner_text_plain_targets_are_bare_paths_not_uris():
+    # Unlike the two file-manager formats, text/plain must paste as a path a
+    # human or a shell can use directly — no file:// scheme, no encoding.
+    payloads = _linux_owner.build_payloads(["/home/u/a file.txt", "/home/u/b.txt"])
+    assert payloads["text/plain"] == b"/home/u/a file.txt\n/home/u/b.txt"
+    assert payloads["text/plain;charset=utf-8"] == payloads["text/plain"]
+
+
+def test_owner_percent_encodes_spaces_and_non_ascii_in_the_uri_targets():
+    payloads = _linux_owner.build_payloads(["/home/u/ø/a file.csv"])
+    assert payloads["x-special/gnome-copied-files"] == (
+        b"copy\nfile:///home/u/%C3%B8/a%20file.csv")
+    assert payloads["text/uri-list"] == b"file:///home/u/%C3%B8/a%20file.csv\r\n"
+    # The plain-text targets are untouched by the URI encoding rule.
+    assert payloads["text/plain"] == "/home/u/ø/a file.csv".encode("utf-8")
+
+
+def test_owner_module_is_importable_with_no_gtk_present():
+    # `gi` is imported inside main(), never at module scope, so importing —
+    # or re-importing — this module must succeed with no GTK bindings and no
+    # display, exactly the CI environment these tests run in.
+    import importlib
+    importlib.reload(_linux_owner)
+    assert "gi" not in dir(_linux_owner)
+
+
+# ------------------------------------------------------- interpreter probe
+
+def test_probe_prefers_sys_executable_when_it_has_gi(env):
+    _linux._reset_gi_interpreter_cache()
+    env({"xclip"}, run=_Run(gi_capable={sys.executable}))
+    assert _linux._probe_gi_interpreter() == sys.executable
+
+
+def test_probe_falls_through_to_usr_bin_python3(env):
+    _linux._reset_gi_interpreter_cache()
+    env({"xclip"}, run=_Run(gi_capable={"/usr/bin/python3"}))
+    assert _linux._probe_gi_interpreter() == "/usr/bin/python3"
+
+
+def test_probe_falls_through_to_which_python3(monkeypatch):
+    # The weakest of the three candidates: neither sys.executable nor the
+    # hardcoded /usr/bin/python3 has gi, but whatever `shutil.which("python3")`
+    # turns up does.
+    _linux._reset_gi_interpreter_cache()
+    fake = "/opt/weird-distro/bin/python3"
+    monkeypatch.setattr(_linux.shutil, "which", lambda name: fake if name == "python3" else None)
+    monkeypatch.setattr(_linux.subprocess, "run", _Run(gi_capable={fake}))
+    assert _linux._probe_gi_interpreter() == fake
+
+
+def test_probe_reports_none_when_no_candidate_has_gi(env):
+    _linux._reset_gi_interpreter_cache()
+    env({"xclip"}, run=_Run())
+    assert _linux._probe_gi_interpreter() is None
+
+
+def test_probe_result_is_cached(env):
+    _linux._reset_gi_interpreter_cache()
+    run = env({"xclip"}, run=_Run(gi_capable={sys.executable}))
+    assert _linux._probe_gi_interpreter() == sys.executable
+    calls_after_first = len(run.calls)
+    assert _linux._probe_gi_interpreter() == sys.executable
+    assert len(run.calls) == calls_after_first, (
+        "a second probe call should hit the cache, not shell out again")
+
+
+# ------------------------------------------------------- owner: write_files
+
+_READY_OWNER = (
+    "import sys\n"
+    "sys.stdin.buffer.read()\n"
+    "print('ready', flush=True)\n"
+    "import time; time.sleep(30)\n"
+)
+
+_SILENT_OWNER = (
+    "import sys, time\n"
+    "sys.stdin.buffer.read()\n"
+    "time.sleep(30)\n"
+)
+
+
+def test_write_files_uses_the_owner_when_a_capable_interpreter_exists(
+        env, tmp_path, monkeypatch):
+    owner = tmp_path / "owner.py"
+    owner.write_text(_READY_OWNER)
+    monkeypatch.setattr(_linux, "_owner_script_path", lambda: str(owner))
+
+    _linux._reset_gi_interpreter_cache()
+    run = env({"xclip"}, run=_Run(gi_capable={sys.executable}))
+    _linux.write_files(["/home/u/a.txt"])
+
+    # Only the interpreter probe touched subprocess.run — the write itself
+    # went through the owner, which subprocess.run never sees.
+    assert not any(argv[0] in ("xclip", "wl-copy") for argv, _ in run.calls)
+
+
+def test_write_files_falls_back_when_no_interpreter_has_gi(env):
+    _linux._reset_gi_interpreter_cache()
+    run = env({"xclip"}, run=_Run())
+    _linux.write_files(["/home/u/a.txt"])
+    assert run.calls[-1][0][0] == "xclip"
+
+
+def test_write_files_falls_back_when_the_owner_fails_to_spawn(env, monkeypatch):
+    _linux._reset_gi_interpreter_cache()
+    run = env({"xclip"}, run=_Run(gi_capable={sys.executable}))
+
+    def _raise(*a, **k):
+        raise OSError("no such file or directory")
+    monkeypatch.setattr(_linux.subprocess, "Popen", _raise)
+
+    _linux.write_files(["/home/u/a.txt"])
+    assert run.calls[-1][0][0] == "xclip"
+
+
+def test_write_files_falls_back_when_the_owner_never_signals_ready(
+        env, tmp_path, monkeypatch):
+    owner = tmp_path / "owner.py"
+    owner.write_text(_SILENT_OWNER)
+    monkeypatch.setattr(_linux, "_owner_script_path", lambda: str(owner))
+    monkeypatch.setattr(_linux, "_OWNER_READY_TIMEOUT_S", 0.2)
+
+    _linux._reset_gi_interpreter_cache()
+    run = env({"xclip"}, run=_Run(gi_capable={sys.executable}))
+    _linux.write_files(["/home/u/a.txt"])
+    assert run.calls[-1][0][0] == "xclip"
+
+
+# ------------------------------------------ owner: readiness token, not "a line"
+
+# Regression for the finding that `_wait_for_owner_ready` used to be
+# `bool(stream.readline())` -- ANY line on the owner's stdout, not just its
+# readiness token, satisfied the handshake. A stray line before the token (a
+# distro Python's sitecustomize warning, a `gi` deprecation notice, a
+# half-written diagnostic before a crash) made `_write_via_owner` report
+# success for a selection that was never set, and skipped the very fallback
+# that would have worked.
+
+_WRONG_TOKEN_OWNER = (
+    "import sys\n"
+    "sys.stdin.buffer.read()\n"
+    "print('not-ready', flush=True)\n"
+    "import time; time.sleep(30)\n"
+)
+
+_STRAY_LINE_THEN_READY_OWNER = (
+    "import sys\n"
+    "sys.stdin.buffer.read()\n"
+    "print('a gi deprecation warning', flush=True)\n"
+    "print('ready', flush=True)\n"
+    "import time; time.sleep(30)\n"
+)
+
+_STRAY_LINE_NEVER_READY_OWNER = (
+    "import sys\n"
+    "sys.stdin.buffer.read()\n"
+    "print('a gi deprecation warning', flush=True)\n"
+    "import time; time.sleep(30)\n"
+)
+
+
+def test_write_files_falls_back_when_the_owner_prints_the_wrong_token(
+        env, tmp_path, monkeypatch):
+    owner = tmp_path / "owner.py"
+    owner.write_text(_WRONG_TOKEN_OWNER)
+    monkeypatch.setattr(_linux, "_owner_script_path", lambda: str(owner))
+    monkeypatch.setattr(_linux, "_OWNER_READY_TIMEOUT_S", 0.3)
+
+    _linux._reset_gi_interpreter_cache()
+    run = env({"xclip"}, run=_Run(gi_capable={sys.executable}))
+    _linux.write_files(["/home/u/a.txt"])
+    assert run.calls[-1][0][0] == "xclip"
+
+
+def test_write_files_tolerates_a_stray_line_before_the_ready_token(
+        env, tmp_path, monkeypatch):
+    # The deliberate design choice: a single stray line before the token is
+    # tolerated rather than instant failure, since it's common enough on a
+    # stock distro Python that failing the whole owner path over a cosmetic
+    # warning would give up a working machine for nothing.
+    owner = tmp_path / "owner.py"
+    owner.write_text(_STRAY_LINE_THEN_READY_OWNER)
+    monkeypatch.setattr(_linux, "_owner_script_path", lambda: str(owner))
+
+    _linux._reset_gi_interpreter_cache()
+    run = env({"xclip"}, run=_Run(gi_capable={sys.executable}))
+    _linux.write_files(["/home/u/a.txt"])
+    assert not any(argv[0] in ("xclip", "wl-copy") for argv, _ in run.calls)
+
+
+def test_write_files_falls_back_when_the_owner_only_ever_prints_stray_lines(
+        env, tmp_path, monkeypatch):
+    # Tolerance is bounded on both axes: a child that never stops writing
+    # junk (as opposed to one that's merely slow) must not turn the wait
+    # into an unbounded read.
+    owner = tmp_path / "owner.py"
+    owner.write_text(_STRAY_LINE_NEVER_READY_OWNER)
+    monkeypatch.setattr(_linux, "_owner_script_path", lambda: str(owner))
+    monkeypatch.setattr(_linux, "_OWNER_READY_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(_linux, "_OWNER_READY_MAX_STRAY_LINES", 2)
+
+    _linux._reset_gi_interpreter_cache()
+    run = env({"xclip"}, run=_Run(gi_capable={sys.executable}))
+    _linux.write_files(["/home/u/a.txt"])
+    assert run.calls[-1][0][0] == "xclip"
+
+
+# --------------------------------------- owner: a not-ready owner is killed
+
+def test_write_files_kills_an_owner_that_never_signals_ready(
+        env, tmp_path, monkeypatch):
+    owner = tmp_path / "owner.py"
+    owner.write_text(_SILENT_OWNER)
+    monkeypatch.setattr(_linux, "_owner_script_path", lambda: str(owner))
+    monkeypatch.setattr(_linux, "_OWNER_READY_TIMEOUT_S", 0.2)
+
+    _linux._reset_gi_interpreter_cache()
+    env({"xclip"}, run=_Run(gi_capable={sys.executable}))
+
+    spawned = []
+    real_popen = _linux.subprocess.Popen
+
+    def _tracking_popen(*a, **k):
+        proc = real_popen(*a, **k)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(_linux.subprocess, "Popen", _tracking_popen)
+
+    _linux.write_files(["/home/u/a.txt"])
+
+    assert len(spawned) == 1
+    # If write_files() didn't kill it, this sleep(30) owner is still alive
+    # and wait() would time out here instead of reaping it instantly.
+    spawned[0].wait(timeout=2)
+    assert spawned[0].returncode is not None, (
+        "a timed-out owner was left running instead of being killed")
+
+
+# ---------------------------------- owner: the parent<->child wire contract
+
+def test_write_files_sends_exactly_the_paths_dict_to_the_owner(
+        env, tmp_path, monkeypatch):
+    # Pins the one point of coupling between _linux.py and _linux_owner.py:
+    # the parent sends `{"paths": [...]}` on stdin, nothing more and nothing
+    # less. Renaming that key, or sending a bare list, on either side would
+    # otherwise pass the whole suite while every real copy silently
+    # published an empty clipboard.
+    echo_file = tmp_path / "stdin_echo.json"
+    owner = tmp_path / "owner.py"
+    owner.write_text(
+        "import sys\n"
+        f"open({str(echo_file)!r}, 'wb').write(sys.stdin.buffer.read())\n"
+        "print('ready', flush=True)\n"
+        "import time; time.sleep(30)\n"
+    )
+    monkeypatch.setattr(_linux, "_owner_script_path", lambda: str(owner))
+
+    _linux._reset_gi_interpreter_cache()
+    env({"xclip"}, run=_Run(gi_capable={sys.executable}))
+    _linux.write_files(["/home/u/a.txt", "/home/u/b.txt"])
+
+    # write_files() only returns after reading the "ready" line, and the
+    # owner writes the echo file before printing it -- so the file is
+    # guaranteed to exist and be complete by the time we get here.
+    assert json.loads(echo_file.read_text()) == {
+        "paths": ["/home/u/a.txt", "/home/u/b.txt"]}
+
+
+def test_owner_main_extracts_paths_from_the_request_dict(monkeypatch):
+    # Exercises _linux_owner.main() itself, faking out `gi` so it runs with
+    # no GTK bindings and no display. Without this, `request.get("paths")`
+    # is only ever read by build_payloads()'s tests calling it directly --
+    # main()'s own extraction of that key from the parsed JSON was never
+    # covered in either direction.
+    import io
+    import types
+
+    calls = []
+
+    def _fake_build_payloads(paths):
+        calls.append(paths)
+        return {}
+
+    class _FakeContentProvider:
+        @staticmethod
+        def new_for_bytes(mime, data):
+            return (mime, data)
+
+        @staticmethod
+        def new_union(providers):
+            return list(providers)
+
+    class _FakeClipboard:
+        def set_content(self, content):
+            pass
+
+        def connect(self, signal, cb):
+            pass
+
+    class _FakeDisplay:
+        @staticmethod
+        def get_default():
+            return _FakeDisplay()
+
+        def get_clipboard(self):
+            return _FakeClipboard()
+
+    class _FakeMainLoop:
+        def run(self):
+            return  # never actually loop -- this test asserts on the setup, not the lifecycle
+
+    fake_gdk = types.SimpleNamespace(
+        ContentProvider=_FakeContentProvider, Display=_FakeDisplay)
+    fake_glib = types.SimpleNamespace(
+        Bytes=types.SimpleNamespace(new=lambda data: data),
+        MainLoop=_FakeMainLoop)
+    fake_gtk = types.SimpleNamespace(init=lambda: None)
+    fake_gi_repository = types.SimpleNamespace(
+        Gdk=fake_gdk, GLib=fake_glib, Gtk=fake_gtk)
+    fake_gi = types.SimpleNamespace(
+        require_version=lambda *a, **k: None, repository=fake_gi_repository)
+
+    monkeypatch.setitem(sys.modules, "gi", fake_gi)
+    monkeypatch.setitem(sys.modules, "gi.repository", fake_gi_repository)
+    monkeypatch.setattr(_linux_owner, "build_payloads", _fake_build_payloads)
+    monkeypatch.setattr(
+        _linux_owner.sys, "stdin",
+        io.StringIO(json.dumps({"paths": ["/home/u/a.txt", "/home/u/b.txt"]})))
+
+    _linux_owner.main()
+
+    assert calls == [["/home/u/a.txt", "/home/u/b.txt"]]

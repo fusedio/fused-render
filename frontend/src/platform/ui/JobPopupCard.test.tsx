@@ -39,6 +39,7 @@ const JOB: Job = {
   unit: "",
   message: "",
   page: "",
+  source: "",
   origin: "",
   owner: "page",
   cancellable: true,
@@ -49,6 +50,7 @@ const JOB: Job = {
   stalled: false,
   waiting_for: "",
   tier: "transient",
+  group: "j1",
 };
 
 test("the card stays mounted for JOB_POPUP_VISIBLE_MS, then leaves, then calls onGone", async () => {

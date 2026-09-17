@@ -6,7 +6,8 @@
 import { splitShellSearch } from "@platform/lib/layout-codec";
 import { replaceSearch } from "@platform/lib/router";
 
-/** The 11 keys the template reads/writes (T params.set list; design.md §2).
+/** The 11 keys the template reads/writes (T params.set list; design.md §2),
+ *  plus `queued` — the project queue's own (2026-09-12, see below).
  *
  *  `_file` is deliberately NOT here. runtime.js THROWS for any key starting
  *  with `_` (R:885-889) — the underscore namespace is the runtime's own — so
@@ -14,6 +15,22 @@ import { replaceSearch } from "@platform/lib/router";
  *  never sets it either. */
 export const CHAT_PARAM_KEYS = [
   "session_id",
+  /**
+   * A CHAT THAT HAS NEVER RUN, NAMED BY THE ENTRY IT IS WAITING AS —
+   * `queued=<entry id>` (`platform/lib/queue.QUEUED_PARAM`).
+   *
+   * `session_id` cannot open one: there is no session, because nothing has run.
+   * The conversation exists all the same — it is a leader entry plus every
+   * message typed behind it, grouped server-side under `pending:<leader id>` —
+   * and the leader's id is the only name it has until the scheduler gives it a
+   * real one. A pane mounting with this remembers it as its queue leader, which
+   * is what draws the waiting rows, reads the right `/api/tasks` row for the
+   * header, and adopts the session the moment the leader runs.
+   *
+   * Never written beside a `session_id`: the moment there is a session, that is
+   * the name, and this one is cleared.
+   */
+  "queued",
   "run",
   "permission",
   "split",

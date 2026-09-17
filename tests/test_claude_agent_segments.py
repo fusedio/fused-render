@@ -897,7 +897,7 @@ def test_the_watermark_is_stat_ed_before_the_rows_are_read(agent):
     the payload does not contain — a turn silently swallowed for good. Taken
     first, a write that lands mid-read costs one redundant re-render."""
     src = open(os.path.join(TEMPLATE_DIR, "agent.py"), encoding="utf-8").read()
-    body = src[src.index("def _history(file: str, session_id: str, app_reads: bool = False)"):]
+    body = src[src.index("def _history(file: str, session_id: str, app_reads: bool = False,"):]
     body = body[:body.index("\ndef ")]
     assert body.index("_transcript_stat(path)") < body.index("for line in open(path")
 

@@ -176,6 +176,24 @@ export interface ComposerCardProps {
   status: RunStatus;
   /** Follow-ups typed while a run is live that have not been acknowledged. */
   queued?: string[];
+  /**
+   * THE PROJECT QUEUE IS ON (prefs `queue.enabled`), which TAKES THE NOTE BELOW
+   * AWAY.
+   *
+   * A follow-up typed into this chat's own running turn is held by the live host
+   * for the seconds the turn has left. Under the queue that is the ONE waiting
+   * state with nothing to say about it: there is no scheduler entry, so nothing
+   * to be behind, nothing to run next and nothing to delete — and the bubbles are
+   * already in the transcript above, in order, exactly where the reader put them.
+   * A footnote counting them is a third piece of chrome for a state that resolves
+   * itself, in a pane that now says "waiting" about messages that genuinely are
+   * (Akshil, 2026-09-12).
+   *
+   * FLAG OFF THE NOTE STAYS, untouched: there is no other ink in that build
+   * saying a follow-up went somewhere, and a line that has gone invisible is
+   * worse than 24px of composer card (the note's own original argument).
+   */
+  queueOn?: boolean;
   /** A fresh turn. */
   onSend(text: string, opts: SendOptions): void;
   /** Into the live run's inbox (T:16024). Falls back to `onSend` when absent. */
@@ -183,6 +201,22 @@ export interface ComposerCardProps {
   onStop(): void;
   /** Notes or pictures alone are sendable, with no words at all (T:17903). */
   hasAttachments?: boolean;
+  /**
+   * THE SAME QUESTION, ASKED IN THE TICK THE SEND HAPPENS — and the reason it
+   * needs a second spelling is that `hasAttachments` is a RENDER-TIME snapshot.
+   *
+   * ✓ Done (the bar's button and its ⌘↩ chord) commits the open note card and
+   * presses `submitRef` inside ONE microtask: the store has the new note, React
+   * has not painted, and the `submit` this ref still points at was built by the
+   * last paint — when the round carried nothing. So the gate below refused a
+   * send the reader had just asked for, and the mode machine disarmed anyway,
+   * leaving the notes as chips with nothing sent (Akshil, 2026-09-17).
+   *
+   * A GETTER and not a value, because that is the whole point: it is called
+   * here, not captured up there. Only the notes' side needs it — the tray's own
+   * chips cannot appear inside a programmatic send the way a note can.
+   */
+  hasAttachmentsNow?(): boolean;
   /**
    * A CHIP IS STILL ATTACHING, so nothing leaves this box yet — the camera's
    * own `shotBusy` gate (T:11203), one level up.
@@ -327,10 +361,12 @@ export function ComposerCard({
   controls,
   status,
   queued,
+  queueOn,
   onSend,
   onFollowUp,
   onStop,
   hasAttachments,
+  hasAttachmentsNow,
   attachPending,
   blocked,
   blockedPlaceholder,
@@ -790,7 +826,9 @@ export function ComposerCard({
     // single newline ran the reader's draft into the walkthrough's intro and
     // changed what the model reads.
     const message = extra ? (typed ? typed.replace(/\s*$/, "") + "\n\n" + extra : extra) : typed;
-    if (!message && !hasAttachments) return false;
+    // THE LIVE HALF FIRST-CLASS, not a fallback: a round of notes committed a
+    // microtask ago is exactly as real as one the last paint drew a chip for.
+    if (!message && !hasAttachments && !hasAttachmentsNow?.()) return false;
     setText("");
     // THE DRAFT IS SPENT. `reset` first and with the value the box is ABOUT to
     // have: a write debounced a keystroke ago would otherwise land after the
@@ -821,7 +859,20 @@ export function ComposerCard({
     // that also scrolls fights it.
     boxRef.current?.focus({ preventScroll: true });
     return true;
-  }, [blocked, attaching, busyRef, sendBusy, text, hasAttachments, running, onFollowUp, onSend, controls, boxRef]);
+  }, [
+    blocked,
+    attaching,
+    busyRef,
+    sendBusy,
+    text,
+    hasAttachments,
+    hasAttachmentsNow,
+    running,
+    onFollowUp,
+    onSend,
+    controls,
+    boxRef,
+  ]);
 
   // The seat for the programmatic send. In an EFFECT so a render React throws
   // away (StrictMode's double invoke, a concurrent attempt that loses) cannot
@@ -933,7 +984,7 @@ export function ComposerCard({
             it is the one thing in this file that adds a box T does not draw
             (91 → 115 while a follow-up is pending), so it is written down here
             rather than left for a fourth visual pass to find again. */}
-        {count > 0 ? (
+        {count > 0 && !queueOn ? (
           <div className="c-queued">
             {count === 1
               ? "1 follow-up is queued for this turn."

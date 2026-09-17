@@ -10,9 +10,66 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Task } from "@platform/lib/api";
 import { useNow } from "@platform/lib/clock";
-import { sortForList } from "@shell/tasks-lib";
+import {
+  applyQueueOverrides,
+  expireQueueOverrides,
+  NO_QUEUE_OVERRIDES,
+  sortForList,
+  withQueueOverride,
+} from "@shell/tasks-lib";
+import type { QueueOverride, QueueOverrides } from "@shell/tasks-lib";
+import { refreshListing } from "@shell/tasksPulse";
 import { subscribeTasks } from "../protocol/sessions";
 import { taskInPane } from "./list-rows";
+
+/**
+ * THE CLAIMS A QUEUE VERB MAKES ON A RECENT ROW, until the server speaks about
+ * the same key — the Tasks page's `queueOverrides` (shell/Scheduled.tsx:342),
+ * borrowed rather than reinvented, down to the same three helpers.
+ *
+ * A Recent row IS a Tasks row (`TaskRowItem`), so its Run next is the Tasks
+ * page's Run next: `performSkip` puts the task at the head of its folder's line
+ * and hands back the claim the row should paint until `/api/tasks` agrees. With
+ * nowhere to put that claim the press was invisible — the row could only move
+ * on the next full listing, which reads as a button that does nothing.
+ *
+ * MODULE STATE, for the reason the Tasks page keeps its copy on the PAGE and not
+ * in the view that raised it: a claim exists to OUTRUN the read that will
+ * confirm it, and the list that made it is remounted by every trip into a chat
+ * and back — a store inside the hook would be thrown away by the very answer it
+ * was written to beat. (`seeds` below is module state for the same shape of
+ * reason.) The keys are task keys, which are the whole machine's, so two mounted
+ * lists sharing one store is correct and not a compromise.
+ */
+let claims: QueueOverrides = NO_QUEUE_OVERRIDES;
+const claimWatchers = new Set<() => void>();
+
+function publishClaims(next: QueueOverrides): void {
+  if (next === claims) return;
+  claims = next;
+  // A copy, because a watcher's `setState` may unmount a sibling list and take
+  // its watcher out of the set mid-walk.
+  for (const fn of [...claimWatchers]) fn();
+}
+
+/** Record what a skip on a Recent row claimed. Handed straight to
+ *  `TaskRowItem`'s `onQueued`, which is `TaskNode.skip`'s own answer. */
+export function noteQueueClaim(override: QueueOverride): void {
+  publishClaims(withQueueOverride(claims, override));
+}
+
+/** "Re-read the listing NOW" — `TaskRowItem`'s `onReload`. The feed collapses
+ *  it to one `GET /api/tasks` for the document, so every open list gets the
+ *  answer and none of them pays twice for it. */
+export function reloadRecentTasks(): void {
+  refreshListing();
+}
+
+/** Tests only — module state outlives every renderer in a `bun test` process,
+ *  exactly as `resetSessionSeeds` below does. */
+export function resetQueueClaims(): void {
+  claims = NO_QUEUE_OVERRIDES;
+}
 
 /**
  * The subscription, injectable — and injectable rather than module-mocked for
@@ -79,6 +136,13 @@ export function useRecentTasks(
         }
         painted.current = true;
         setRows(next);
+        // THE SERVER HAS SPOKEN about every key this listing holds, so every
+        // claim about one of them is over — right or wrong
+        // (tasks-lib.expireQueueOverrides, and the Tasks page's own note at
+        // Scheduled.tsx:860). `subscribeTasks` only ever hands a WHOLE listing
+        // (the feed folds its deltas into one before it paints), so the keys in
+        // hand are exactly the set the server just answered for.
+        publishClaims(expireQueueOverrides(claims, next.map((t) => t.key)));
       },
       undefined,
       coverWriteRef.current,
@@ -111,13 +175,30 @@ export function useRecentTasks(
   // nothing else, so a list left open sat in yesterday's lanes. One shared tick a
   // MINUTE, which is the resolution these rows print.
   const now = useNow();
-  return useMemo(
-    () =>
-      rows === null
-        ? null
-        : sortForList(rows.filter((t) => taskInPane(t, file)), now),
-    [rows, file, now],
-  );
+  /** The standing claims, mirrored into this render. The store is the answer;
+   *  this state only exists to repaint when it changes. */
+  const [claimed, setClaimed] = useState<QueueOverrides>(claims);
+  useEffect(() => {
+    const onClaims = () => setClaimed(claims);
+    claimWatchers.add(onClaims);
+    // A claim raised between this render and this effect (a press on another
+    // list, a store already holding one) would otherwise be missed until the
+    // next one.
+    onClaims();
+    return () => {
+      claimWatchers.delete(onClaims);
+    };
+  }, []);
+  return useMemo(() => {
+    if (rows === null) return null;
+    // PAINTED FIRST, ahead of the pane narrowing and the sort — the Tasks page's
+    // order (Scheduled.tsx:939, "FIRST, ahead of the scope and the filters"). A
+    // skip changes the row's `status` and its queue facts, and both are inputs
+    // to `sortForList`: applying the claim after the sort would print the new
+    // caption on a row still sitting in its old place.
+    const painted = applyQueueOverrides(rows, claimed);
+    return sortForList(painted.filter((t) => taskInPane(t, file)), now);
+  }, [rows, claimed, file, now]);
 }
 
 /**

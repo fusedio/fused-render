@@ -26,9 +26,9 @@ import type { TaskView } from "./tasks-lib";
 const TITLE_WIDTHS = [34, 52, 41, 60, 38, 47, 55, 30];
 const LIST_ROWS = 8;
 /** Cards per board lane, in `BOARD_LANES` order — the five the board DRAWS
- *  (Needs attention shares Blocked's lane, schedule-lib.laneOf), not the six
- *  statuses; a sixth ghost column was a layout shift on the swap (Bugbot,
- *  #1079). Never evenly full, like a real board. A count of 0 draws the lane
+ *  (Needs attention shares Blocked's lane and Queued shares In Progress's,
+ *  schedule-lib.laneOf), not the seven statuses; a ghost column the real board
+ *  does not draw is a layout shift on the swap (Bugbot, #1079). Never evenly full, like a real board. A count of 0 draws the lane
  *  ROLLED UP into its 52px rail, which is what the real board does with an
  *  empty column (TaskBoard `laneRolledUp`): Blocked is empty on most days. */
 const LANE_CARDS = [2, 3, 0, 3, 2];

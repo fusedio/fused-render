@@ -26,6 +26,7 @@ const {
   dismissPopup,
   getPopupNotification,
   getRetainedNotifications,
+  labelForSource,
   notify,
   useRetainedNotifications,
 } = await import("@platform/lib/notifications");
@@ -423,4 +424,280 @@ test("dismissNotification in a pane forwards to the shell's own (independently-m
   // under the id the shell minted for it (999) — not the pane's own local
   // id, which names only the pane's own invisible copy.
   expect(dismissCalls).toEqual([999]);
+});
+
+// ---- source suppression (SPEC-quiet-notifications.md §2a) -----------------
+//
+// `presence.ts`'s `currentPresencePage()` reads off the shared, module-cached
+// `location` global — shared with every OTHER `bun test` file in this run
+// (`testDomShim.ts`'s own header comment) — so this suite pins `pathname`
+// explicitly rather than trusting whatever the shim's default or another
+// file's own navigation left it at.
+const savedLocation = { pathname: location.pathname, search: location.search };
+beforeEach(() => {
+  (location as unknown as { pathname: string }).pathname = "/";
+  (location as unknown as { search: string }).search = "";
+});
+afterEach(() => {
+  (location as unknown as { pathname: string }).pathname = savedLocation.pathname;
+  (location as unknown as { search: string }).search = savedLocation.search;
+});
+
+test("a plain success with source matching the current page is suppressed entirely", () => {
+  const id = notify({ title: "Installed", tone: "info", source: "/" });
+  expect(getPopupNotification()).toBeNull();
+  expect(getRetainedNotifications()).toEqual([]);
+  expect(id).toBe(-1);
+});
+
+test("the same message with a source that does NOT match the current page still pops", () => {
+  notify({ title: "Installed", tone: "info", source: "/claude-config" });
+  expect(popupSnapshot()?.title).toBe("Installed");
+});
+
+test("an error with a matching source is never suppressed", () => {
+  notify({ title: "Install failed", tone: "error", source: "/" });
+  expect(popupSnapshot()?.title).toBe("Install failed");
+  expect(getRetainedNotifications().map((n) => n.title)).toEqual(["Install failed"]);
+});
+
+test("an actionable message (carries a page) with a matching source is never suppressed", () => {
+  notify({ title: "Ready", tone: "info", source: "/", page: "/claude-config" });
+  expect(popupSnapshot()?.title).toBe("Ready");
+  expect(getRetainedNotifications().map((n) => n.title)).toEqual(["Ready"]);
+});
+
+test("no source at all is never suppressed (opt-in only, never defaulted)", () => {
+  notify({ title: "Path copied", tone: "info" });
+  expect(popupSnapshot()?.title).toBe("Path copied");
+});
+
+// ---- CHANGE 1 (SPEC-quiet-notifications.md follow-up): every notification
+// names who raised it ---------------------------------------------------
+
+test("labelForSource: an fs path labels as its own basename, extension stripped", () => {
+  expect(labelForSource("/Users/me/Projects/my-app")).toBe("my-app");
+  expect(labelForSource("/Users/me/Projects/my-app/")).toBe("my-app");
+  expect(labelForSource("/Users/me/Projects/report.pdf")).toBe("report");
+});
+
+test("labelForSource: a non-path string passes through verbatim", () => {
+  expect(labelForSource("Playground")).toBe("Playground");
+});
+
+test("labelForSource: no source, or one resolving to nothing, is the empty string — never a placeholder", () => {
+  expect(labelForSource(undefined)).toBe("");
+  expect(labelForSource("")).toBe("");
+  expect(labelForSource("   ")).toBe("");
+});
+
+test("a message with a source carries the label on the stored row", () => {
+  notify({ title: "Could not save", tone: "error", source: "/Users/me/Projects/my-app" });
+  expect(getRetainedNotifications()[0]?.origin).toBe("my-app");
+});
+
+test("a message with no source carries no origin at all", () => {
+  notify({ title: "Could not save", tone: "error" });
+  expect(getRetainedNotifications()[0]?.origin).toBeUndefined();
+});
+
+// `origin` (2026-09-17 fix): a caption INDEPENDENT of suppression — a caller
+// wants "who made this" without also opting into "suppress when its page is
+// open" (a task-status-notify.ts caller says exactly why: a FINISHED task's
+// chat being open no longer means "already knows"). See notifications.ts's
+// own `NotificationInput.origin` doc comment for the full regression story
+// this closes.
+test("an explicit `origin` sets the caption without opting into suppression", () => {
+  notify({ title: "Transcripto YouTube transcriber", tone: "info", page: "/tasks", origin: "Transcripto" });
+  expect(getRetainedNotifications()[0]?.origin).toBe("Transcripto");
+  expect(getRetainedNotifications()[0]?.page).toBe("/tasks");
+});
+
+test("`origin` wins over a `source`-derived label when both are given", () => {
+  notify({ title: "x", tone: "error", source: "/Users/me/Projects/my-app", origin: "Custom Label" });
+  expect(getRetainedNotifications()[0]?.origin).toBe("Custom Label");
+});
+
+test("`origin` alone (no `source`) never suppresses, even when its own text names a focused page", () => {
+  // isFocusedHere is keyed on `source`, not `origin` — an `origin`-only
+  // caller has nothing `isSuppressed` can match against, so this must always
+  // pop regardless of what document/page is focused.
+  const id = notify({ title: "Finished", tone: "info", page: "/somewhere", origin: "Somewhere" });
+  expect(id).not.toBe(-1);
+  expect(getPopupNotification()?.title).toBe("Finished");
+});
+
+// ---- family grouping/collapse (user: "better notification grouping/
+// updation for same source") — two genuine repeat finishes of the same
+// client-raised task collapse into ONE retained row that updates in place,
+// mirroring the "N of M done" shape `jobs.ts`'s own `groupJobs` already gives
+// server-side job families, rather than stacking N byte-identical rows. ----
+
+test("two notify() calls with the same page collapse into one retained row with count 2", () => {
+  notify({ title: "Transcripto YouTube transcriber finished", tone: "info", page: "/tasks/1" });
+  notify({ title: "Transcripto YouTube transcriber finished", tone: "info", page: "/tasks/1" });
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(1);
+  expect(retained[0]?.count).toBe(2);
+});
+
+test("a third repeat within the burst window updates the SAME row again, not a third one", () => {
+  const id1 = notify({ title: "Transcripto YouTube transcriber finished", tone: "info", page: "/tasks/1" });
+  notify({ title: "Transcripto YouTube transcriber finished", tone: "info", page: "/tasks/1" });
+  const id3 = notify({ title: "Transcripto YouTube transcriber finished", tone: "info", page: "/tasks/1" });
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(1);
+  expect(retained[0]?.count).toBe(3);
+  expect(id3).toBe(id1);
+});
+
+test("two notify() calls sharing a title but no page collapse by title family", () => {
+  // `tone: "error"` (attention-tier) is always retained regardless of
+  // action/page (`isRetained`) — the simplest way to get a retained, no-page
+  // row to exercise the title-only branch of `messageFamily`.
+  notify({ title: "Backup failed", tone: "error" });
+  notify({ title: "Backup failed", tone: "error" });
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(1);
+  expect(retained[0]?.count).toBe(2);
+});
+
+test("different families (different page) never collapse into each other", () => {
+  notify({ title: "Transcripto YouTube transcriber finished", tone: "info", page: "/tasks/1" });
+  notify({ title: "Other task finished", tone: "info", page: "/tasks/2" });
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(2);
+  expect(retained.every((n) => n.count === 1)).toBe(true);
+});
+
+// DEFECT 2 (2026-09-17 fix): the collapse used to only fire within
+// `GROUP_GAP_MS` (2 minutes) of the existing row's own `updatedAt` — too
+// short for the user's actual case (two runs of a Claude task, routinely
+// finishing far more than two minutes apart). A repeat must collapse into an
+// already-retained, still-undismissed row no matter how long ago it was
+// raised.
+test("a repeat collapses into an existing retained row even long after the old 2-minute burst window", () => {
+  const realNow = Date.now;
+  try {
+    let now = 1_000_000;
+    Date.now = () => now;
+    const id1 = notify({
+      title: "Transcripto YouTube transcriber finished",
+      tone: "info",
+      page: "/tasks/1",
+    });
+    now += 60 * 60 * 1000; // an hour later — routine for two separate task runs
+    const id2 = notify({
+      title: "Transcripto YouTube transcriber finished",
+      tone: "info",
+      page: "/tasks/1",
+    });
+    const retained = getRetainedNotifications();
+    expect(retained).toHaveLength(1);
+    expect(retained[0]?.count).toBe(2);
+    expect(id2).toBe(id1);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+// DEFECT 2, continued: once the earlier row has been DISMISSED, the family
+// no longer names anything to collapse into — the next repeat starts a fresh
+// row, exactly as it did before this fix (this branch was never asked to
+// make a dismissed row un-dismissable).
+test("a repeat after the earlier row was dismissed starts a fresh row, not a collapse", () => {
+  notify({ title: "Transcripto YouTube transcriber finished", tone: "info", page: "/tasks/1" });
+  const before = getRetainedNotifications();
+  expect(before).toHaveLength(1);
+  dismissNotification(before[0]!.id);
+  expect(getRetainedNotifications()).toHaveLength(0);
+
+  notify({ title: "Transcripto YouTube transcriber finished", tone: "info", page: "/tasks/1" });
+  const after = getRetainedNotifications();
+  expect(after).toHaveLength(1);
+  expect(after[0]?.count).toBe(1);
+});
+
+// DEFECT 3 (2026-09-17 fix): `messageFamily` used to key ONLY on `page`,
+// which collides whenever two DIFFERENT tasks fall back to the same
+// per-folder/global destination (`taskDestination`'s
+// `taskHref ?? folderHref ?? "/tasks"`) — the collapsed row is rebuilt from
+// the NEW input, so the older task's title silently vanished with no trace.
+// Title is now folded into the family key alongside `page`, so two different
+// tasks sharing a folder href must NOT collapse into one row, even though the
+// user's own case (same task, same title, same page) still does (covered by
+// the "same page" test above).
+test("two different tasks sharing the same folder-fallback page do not collapse into each other", () => {
+  notify({ title: "Transcript task finished", tone: "info", page: "/explorer/proj" });
+  notify({ title: "Cleanup task finished", tone: "info", page: "/explorer/proj" });
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(2);
+  expect(retained.every((n) => n.count === 1)).toBe(true);
+  expect(retained.map((n) => n.title)).toEqual([
+    "Transcript task finished",
+    "Cleanup task finished",
+  ]);
+});
+
+// DEFECT (2026-09-17 fix, live repro): the finished-task family used to key
+// on `page`, which is `taskDestination(task)` -> `taskHref` and embeds that
+// run's own PER-RUN `session_id` — two separate runs of the identical task
+// therefore got two different `page` values and never collapsed. This is
+// the user's own "i ran it twice, I just want them grouped" case: same
+// caption (`origin`), same title, genuinely different `page` (a different
+// run's session url). They must collapse into one row, and that row must
+// point at the NEWER run's page — the collapse rebuilds from the latest
+// input, and a click on the grouped row should land on the run the user
+// just finished, not the stale earlier one.
+test("two finished-task notices with the same caption and title but different (per-run) pages collapse into one row pointing at the newer page", () => {
+  notify({
+    title: "Reply with exactly one word: APPLE",
+    detail: "Finished",
+    tone: "info",
+    origin: "Transcripto",
+    page: "/explorer/view/Transcripto?session=run-1",
+  });
+  notify({
+    title: "Reply with exactly one word: APPLE",
+    detail: "Finished",
+    tone: "info",
+    origin: "Transcripto",
+    page: "/explorer/view/Transcripto?session=run-2",
+  });
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(1);
+  expect(retained[0]?.count).toBe(2);
+  expect(retained[0]?.page).toBe("/explorer/view/Transcripto?session=run-2");
+});
+
+// Same caption, different titles — must NOT collapse just because they share
+// a source. The title stays part of the family identity.
+test("same caption but different titles stay as two separate rows", () => {
+  notify({ title: "Task A finished", tone: "info", origin: "Transcripto", page: "/explorer/view/a" });
+  notify({ title: "Task B finished", tone: "info", origin: "Transcripto", page: "/explorer/view/b" });
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(2);
+  expect(retained.every((n) => n.count === 1)).toBe(true);
+});
+
+// Same title, different captions — two different sources doing the same
+// kind of work must not be conflated into one row.
+test("same title but different captions stay as two separate rows", () => {
+  notify({ title: "Reply with exactly one word: APPLE", tone: "info", origin: "Transcripto", page: "/a" });
+  notify({ title: "Reply with exactly one word: APPLE", tone: "info", origin: "OtherApp", page: "/b" });
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(2);
+  expect(retained.every((n) => n.count === 1)).toBe(true);
+});
+
+test("a suppressed replaceId call clears whatever that id was still showing", () => {
+  const id = notify({ title: "Installing…", tone: "info", source: "/claude-config" });
+  expect(popupSnapshot()?.title).toBe("Installing…");
+  // The source comes into focus mid-flight (a repeat call updating the same
+  // popup) — the still-showing card must not be left stale.
+  const result = notify({ title: "Installing…", tone: "info", source: "/" }, id);
+  expect(result).toBe(id);
+  // Started its exit animation (same "leaving", not an instant vanish, every
+  // other dismiss in this store uses) rather than being left to sit forever.
+  expect(getPopupNotification()?.leaving).toBe(true);
 });

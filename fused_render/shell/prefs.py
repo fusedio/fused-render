@@ -169,50 +169,53 @@ NATIVE_CHAT_ENV = "FUSED_RENDER_NATIVE_CHAT"
 
 def native_chat_enabled() -> bool:
     """Whether chat embeds render the native React chat instead of the legacy
-    `templates/claude` iframe (default off — opt-in while the port is in beta).
+    `templates/claude` iframe (default ON — Akshil, 2026-09-17: the port is what
+    the app ships, the iframe is the fallback).
 
-    Same idiom as `canvases_enabled`: only a stored `true` is on, any other
-    value (missing/legacy/junk) reads as off. `FUSED_RENDER_NATIVE_CHAT=1|0` is
-    the process-level override that BEATS the pref, so a dev server or a test
-    run can pick a side without touching prefs.json; any other env value is
-    ignored and the pref decides.
+    THE DEFAULT TURNED OVER, so the idiom did too: only a stored `false` is off,
+    and missing/legacy/junk all read as on. An install that has never opened
+    Preferences — which is most of them — gets the native chat, and the switch is
+    now an escape hatch rather than an opt-in. The legacy iframe is still built,
+    still served and still what `ChatChunkBoundary` falls back to; nothing about
+    it was deleted, it just stopped being what a fresh install runs.
 
-    DELIBERATELY STRICTER than `prefetch.py`/`rcd.py`'s any-non-"0" idiom, and
-    pinned by `test_native_chat_env_override_beats_pref`: this switch decides
-    which of two whole implementations a user's chat runs on, so a typo
-    ("FUSED_RENDER_NATIVE_CHAT=ture") has to fall through to the stored pref
-    rather than silently move them onto the beta. An ignored value is ignored
-    all the way through: `_chat_forced_by` reports it as no override at all,
-    because the stored switch really is still what decides.
+    `FUSED_RENDER_NATIVE_CHAT=1|0` is still the process-level override that BEATS
+    the pref, so a dev server or a test run can pick a side without touching
+    prefs.json; any other env value is ignored and the stored switch decides.
+    That strictness is the one thing unchanged here and is pinned by
+    `test_native_chat_env_override_beats_pref`: a typo
+    ("FUSED_RENDER_NATIVE_CHAT=ture") has to fall through to the pref rather than
+    quietly decide which implementation a user's chat runs on, and an ignored
+    value is ignored all the way through — `_chat_forced_by` reports it as no
+    override at all, because the stored switch really is still what decides.
     """
     raw = os.environ.get(NATIVE_CHAT_ENV)
     if raw == "1":
         return True
     if raw == "0":
         return False
-    return read_prefs().get("native_chat_enabled") is True
+    return read_prefs().get("native_chat_enabled") is not False
 
 
 def task_peek_enabled() -> bool:
     """Whether the Tasks page opens a task in a SIDE PANEL beside the list
-    instead of navigating to the Explorer (default off — opt-in while it is
-    experimental).
+    instead of navigating to the Explorer (default ON — Akshil, 2026-09-17: out
+    of experiment, it is how the page opens a task).
 
-    Same idiom as `native_chat_enabled` above, and for the same reason: this
-    switch decides which of two whole behaviours a click on a task row has, so
-    only a stored `true` is on and any other value (missing, legacy, junk) reads
-    as off. An install that has never opened Preferences keeps exactly the
-    behaviour it has always had.
+    Same idiom as `native_chat_enabled` above and turned over for the same
+    reason: only a stored `false` is off, and missing/legacy/junk read as on, so
+    an install that has never opened Preferences gets the panel. The navigate-
+    away path is untouched and is still what the switch turns back on.
 
     NO ENV OVERRIDE, deliberately, and that is the one place it differs from
     `native_chat_enabled`. That switch has one because a dev server or a test
     run has to be able to pick a chat implementation without touching
     prefs.json — the two implementations are both shipped and both supported.
-    This is one page's interaction model in beta; there is nothing to pin a
-    process to, and an env var nobody sets is a second way for the answer to
-    come out that has to be kept in step with the first.
+    This is one page's interaction model; there is nothing to pin a process to,
+    and an env var nobody sets is a second way for the answer to come out that
+    has to be kept in step with the first.
     """
-    return read_prefs().get("task_peek_enabled") is True
+    return read_prefs().get("task_peek_enabled") is not False
 
 
 def task_card_last_message() -> bool:
@@ -240,14 +243,34 @@ def _chat_forced_by() -> str | None:
     return raw if raw in ("0", "1") else None
 
 
+def project_queue_enabled() -> bool:
+    """Whether one folder runs one task at a time — everything else queues
+    (default off — opt-in while the queue is in beta).
+
+    Same idiom as `canvases_enabled` and `native_chat_enabled`: only a stored
+    `true` is on, any other value (missing/legacy/junk) reads as off. Off, every
+    path behaves exactly as it did before the queue existed — chat sends spawn,
+    run-now runs, the scheduler holds per SESSION and not per folder, and the
+    `queued` status never appears on a row.
+
+    NO ENV OVERRIDE, deliberately, and the difference from `native_chat_enabled`
+    is the one `chat_recap_enabled` states below: `FUSED_RENDER_NATIVE_CHAT`
+    exists because it decides which of two whole implementations a chat runs on,
+    and a dev server has to be able to pick a side without touching prefs.json.
+    This is a gate in front of work that already runs; a second env var nobody
+    remembers setting is how a machine ends up serialising its tasks for a
+    reason its owner cannot find.
+    """
+    return read_prefs().get("project_queue_enabled") is True
+
+
 def chat_recap_enabled() -> bool:
     """Whether the native chat offers the "While you were away" session recap
-    (default ON — unlike `native_chat_enabled`, which is an opt-in beta).
+    (default ON, as it has always been — and as `native_chat_enabled` and
+    `task_peek_enabled` now are too).
 
-    THE DEFAULT IS THE OPPOSITE WAY ROUND on purpose, so the idiom is too: a
-    feature that is on unless asked otherwise cannot read "only a stored true is
-    on", or every install that has never opened Preferences would have it off.
-    Only a stored `false` turns it off; missing, legacy and junk all read as on.
+    Only a stored `false` turns it off; missing, legacy and junk all read as on,
+    so every install that has never opened Preferences has the fold.
 
     No env override. `FUSED_RENDER_NATIVE_CHAT` exists because it decides which
     of two whole implementations a chat runs on; this is one row at the bottom of
@@ -566,6 +589,13 @@ def _prefs_response() -> dict:
         # the card is one surface with more than one thing an experiment can
         # move, and `last_message` names which one this is.
         "task_cards": {"last_message": task_card_last_message()},
+        # Whether one folder runs one task at a time (opt-in beta). Its own key
+        # rather than a third field under `chat`: the gate governs the
+        # scheduler and the Tasks board as much as it does a chat send, and
+        # filing it under the chat would say it was the composer's setting.
+        # No `forced_by` twin — there is no env override to report; see
+        # `project_queue_enabled`.
+        "queue": {"enabled": project_queue_enabled()},
         # Local-network sharing of ~/Fused/local (lan.py): the STORED switch plus
         # the live listener state (url once it is up, error when it is not), so
         # the Preferences section can show the address a phone types.
@@ -750,6 +780,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'chat_recap_enabled' must be a boolean"}, status_code=400)
         prefs["chat_recap_enabled"] = value
         changed = True
+    if "project_queue_enabled" in body:
+        value = body.get("project_queue_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'project_queue_enabled' must be a boolean"},
+                                status_code=400)
+        prefs["project_queue_enabled"] = value
+        changed = True
     if "lan_enabled" in body:
         value = body.get("lan_enabled")
         if not isinstance(value, bool):
@@ -853,7 +890,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             {"error": "no known preference in request (expected 'engine', "
                       "'engines', 'reader_enabled', 'canvases_enabled', 'native_chat_enabled', "
                       "'chat_recap_enabled', 'task_peek_enabled', "
-                      "'task_card_last_message', "
+                      "'task_card_last_message', 'project_queue_enabled', "
                       "'lan_enabled', "
                       "'default_model', 'indexing_enabled', 'ranked_search_enabled', "
                       "'calls_enabled', "

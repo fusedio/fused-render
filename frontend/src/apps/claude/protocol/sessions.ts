@@ -25,8 +25,9 @@
 // Semantics the UI depends on (05-sched-live-lists-boot.md §B):
 //   * `null` is NOT `0`. `null` means "we do not have rows yet" and draws the
 //     skeleton; `[]` means "this folder has no chats" and hides the section
-//     entirely (T:18458-18463). A FAILED read is also `[]` — count 0, no error
-//     UI (T:18469-18477).
+//     entirely (T:18458-18463). A FAILED read is NEITHER and emits nothing at
+//     all (Akshil QA, 2026-09-16) — it used to be `[]`, which emptied a drawn
+//     list on one dropped read; see the `ev.failed` guard below.
 //   * the rows are the WHOLE listing, unfiltered. Which of them this pane shows
 //     is a question about paths, and paths are the row layer's vocabulary
 //     (`ui/list-rows.taskInPane`); this module's only use for the pane is
@@ -162,6 +163,25 @@ export function subscribeTasks(
   // `gone` keys is a row this list was showing.
   const off = subscribeListing((ev) => {
     if (stopped) return;
+    // A FAILED READ IS NOT NEWS, AND IT IS NOT "NO CHATS" (Akshil QA,
+    // 2026-09-16: "the list goes blank").
+    //
+    // The feed answers a failed `GET /api/tasks` with `{rows: [], failed: true}`
+    // — it has forgotten its listing, so `[]` is all it HAS to say. Painting
+    // that through emptied the list: `[]` is the count the section's own
+    // visibility is decided on (`ui/lists-visibility.isFilled`), so the whole
+    // Recent block — heading, tab and rows — vanished on one dropped read and
+    // came back on the next. The rows were never wrong; the read was.
+    //
+    // So the failure is dropped on the floor, which leaves the two honest
+    // states standing: rows already up stay up (a listing a poll behind is
+    // quieter than a section that blinks out — the same rule the `null`
+    // skeleton is swallowed under in `ui/useRecentTasks`), and a list that has
+    // never had rows keeps its SKELETON rather than claiming this folder has no
+    // chats. The Tasks page keeps its rows over the same event and prints a
+    // quiet note instead (shell/Scheduled.tsx `tasksFailed`); this list has no
+    // note to print, so keeping the rows is the whole of its share.
+    if (ev.failed) return;
     if (ev.delta) {
       const mine =
         ev.delta.rows.some(

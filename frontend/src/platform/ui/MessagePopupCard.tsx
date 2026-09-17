@@ -66,9 +66,15 @@ export default function MessagePopupCard() {
       <NotificationCard
         title={notification.title}
         secondary={notification.detail}
+        // CHANGE 1 — the popup half needs the same "who raised this" caption
+        // the retained row draws (`MessageRowView`, RepoUpdatesDock.tsx):
+        // "Public link token flash finished" with nothing saying which
+        // project it came from was the exact bug report this closes.
+        caption={notification.origin || undefined}
         terminal={notification.tone === "error" ? "error" : undefined}
         role={notification.tone === "error" ? "alert" : "status"}
         navAction={notification.action}
+        extraAction={notification.extraAction}
         onDismiss={{ onClick: () => dismissPopup() }}
       />
     </div>

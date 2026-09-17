@@ -52,6 +52,7 @@ import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
+import { ShareAppHost } from "@platform/ui/ShareAppModal";
 import OnboardingWizard from "@shell/onboarding/OnboardingWizard";
 import { ONBOARDING_PATH, shouldAutoShow } from "@shell/onboarding/state";
 import { onboardingUrl } from "@shell/onboarding/progress";
@@ -63,6 +64,7 @@ import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
 import { PEEK_PARAM } from "@shell/task-peek-store";
 import { useTaskPeekEnabled } from "@shell/task-peek-flag";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
+import { useTaskStatusNotify } from "@shell/useTaskStatusNotify";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
 import { isMod } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
@@ -538,7 +540,10 @@ export default function App({ config }: { config: Config }) {
   // leaving the panel showing a row until the next Activity poll notices it
   // gone.
   useEffect(
-    () => subscribeJobDismissed((id) => setTerminalJobs((jobs) => jobs.filter((j) => j.id !== id))),
+    () =>
+      subscribeJobDismissed((id) => {
+        setTerminalJobs((jobs) => jobs.filter((j) => j.id !== id));
+      }),
     [],
   );
 
@@ -563,6 +568,14 @@ export default function App({ config }: { config: Config }) {
   // tick — handed in from here because that store is shell's and platform may
   // not import up.
   useScheduleEvents(pokeTasks);
+
+  // §5's OTHER half: interactive turns and needs-input, diffed off the same
+  // task-status poll rather than a second server channel (SPEC-quiet-
+  // notifications.md §5's "Sources" — /api/tasks already computes
+  // needs_attention/in_progress/blocked/done, this only watches the poll for
+  // the transitions between them). Narrator-gated internally, same as
+  // useScheduleEvents above.
+  useTaskStatusNotify();
 
   // The INTERACTIVE half of the same promise. A follow-up typed into a chat
   // creates no sys:schedule job and no schedule event, so neither wiring above
@@ -1094,15 +1107,25 @@ export default function App({ config }: { config: Config }) {
                shared store, which would be a new subsystem for a list that
                one section already polls and the other only reads. */
             activity={
-              <ActivityDock onTerminalJobs={setTerminalJobs} onJobPopup={setPopupJob} />
+              <ActivityDock
+                onTerminalJobs={setTerminalJobs}
+                onJobPopup={setPopupJob}
+              />
             }
             repoUpdates={
-              <RepoUpdatesDock terminal={terminalJobs} onTerminalPatch={setTerminalJobs} />
+              <RepoUpdatesDock
+                terminal={terminalJobs}
+                onTerminalPatch={setTerminalJobs}
+              />
             }
           />
         )}
       </div>
       <NotificationHost jobPopup={popupJob} onJobPopupGone={() => setPopupJob(null)} />
+      {/* One dialog for every "Share" entry (card chip, card menu, app page,
+          explorer kebab): the menu entries cannot own a dialog, so they post
+          a request to platform/lib/share-app and this host renders it. */}
+      <ShareAppHost />
       {shortcutsOpen && (
         <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
       )}

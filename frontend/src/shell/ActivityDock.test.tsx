@@ -125,6 +125,7 @@ function job(over: Partial<Job> = {}): Job {
     unit: "",
     message: "",
     page: "",
+    source: "",
     origin: "",
     owner: "server",
     cancellable: false,
@@ -135,6 +136,7 @@ function job(over: Partial<Job> = {}): Job {
     stalled: false,
     waiting_for: "",
     tier: "trail",
+    group: over.id ?? "sys:ai-image:x",
     ...over,
   };
 }
@@ -258,6 +260,89 @@ test("a job crossing into terminal AFTER the first real read still pops", async 
     timers.fireAll();
     await flush();
     expect(popped.map((j) => j.id)).toEqual(["a"]);
+  } finally {
+    globalThis.fetch = realFetch;
+    timers.restore();
+  }
+});
+
+// D-C's own end-to-end wiring (SPEC-quiet-notifications.md §3): a
+// MULTI-member group pops on START and on FAILURE, routed through
+// `groupPopupTick` rather than `popupTick`, but landing on the same
+// `onJobPopup` callback — this proves the two pop sources this file now
+// combines actually reach the caller, not just the pure function in
+// isolation (already covered in `jobs.test.ts`).
+test("a multi-member group pops once on START, through the real ActivityDock wiring", async () => {
+  const timers = captureTimers();
+  const jobsResponses = [
+    snapshot([job({ id: "sys:g:a", state: "done", group: "sys:g", finished_at: 100 })]),
+    snapshot([
+      job({ id: "sys:g:a", state: "done", group: "sys:g", finished_at: 100 }),
+      job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 700 }),
+    ]),
+  ];
+  let jobsCalls = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string) => {
+    if (url === "/api/jobs") {
+      return okResponse(jobsResponses[Math.min(jobsCalls++, jobsResponses.length - 1)]);
+    }
+    if (url === "/api/engines/running") return okResponse({ engines: [] });
+    throw new Error(`unstubbed fetch: ${url}`);
+  }) as typeof fetch;
+
+  const popped: Job[] = [];
+  try {
+    await act(async () => {
+      create(<ActivityDock onJobPopup={(j) => popped.push(j)} />);
+    });
+    await flush();
+    expect(popped).toEqual([]); // first read seeds silently, group already idle
+
+    timers.fireAll();
+    await flush();
+    // "sys:g:b" just started — the group as a whole goes from 0 running to
+    // some. "sys:g:a" is unrelated: it was already done on the first read,
+    // so it is not itself a candidate on this tick (single-member pop-on-
+    // terminal already fired, or never fired, on the seeding tick).
+    expect(popped.map((j) => j.id)).toEqual(["sys:g:b"]);
+  } finally {
+    globalThis.fetch = realFetch;
+    timers.restore();
+  }
+});
+
+test("a multi-member group does NOT pop on an ordinary member completion, through the real wiring", async () => {
+  const timers = captureTimers();
+  const jobsResponses = [
+    snapshot([
+      job({ id: "sys:g:a", state: "running", group: "sys:g", started_at: 100 }),
+      job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+    ]),
+    snapshot([
+      job({ id: "sys:g:a", state: "done", group: "sys:g", started_at: 100, finished_at: 900 }),
+      job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 100 }),
+    ]),
+  ];
+  let jobsCalls = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string) => {
+    if (url === "/api/jobs") {
+      return okResponse(jobsResponses[Math.min(jobsCalls++, jobsResponses.length - 1)]);
+    }
+    if (url === "/api/engines/running") return okResponse({ engines: [] });
+    throw new Error(`unstubbed fetch: ${url}`);
+  }) as typeof fetch;
+
+  const popped: Job[] = [];
+  try {
+    await act(async () => {
+      create(<ActivityDock onJobPopup={(j) => popped.push(j)} />);
+    });
+    await flush();
+    timers.fireAll();
+    await flush();
+    expect(popped).toEqual([]);
   } finally {
     globalThis.fetch = realFetch;
     timers.restore();

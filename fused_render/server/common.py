@@ -4,6 +4,7 @@ import os
 import time
 import traceback
 import uuid
+from urllib.parse import unquote
 import httpx
 from fastapi import Request
 from fastapi.responses import (
@@ -16,6 +17,7 @@ from fastapi.responses import (
 )
 
 from fused_render import calls as shell_calls
+from fused_render import jobs as shell_jobs
 
 
 
@@ -319,6 +321,19 @@ async def no_cache_and_log(request, call_next):
     path = request.url.path
     logged = not path.startswith(_LOG_SKIP_PREFIXES)
     start = time.monotonic()
+    # SPEC-quiet-notifications.md bug 2: every request gets a chance to name
+    # who raised it, regardless of route — unlike `shell_calls.begin` above,
+    # which only fires for a page's own `X-Fused-Page`. Read from the header
+    # only, never the body (same spoof-proofing `X-Fused-Page` gets in
+    # `server/routers/jobs.py`), and `jobs.upsert` only consults this when a
+    # producer's own explicit `source=` resolves empty.
+    raw_source = request.headers.get("x-fused-source")
+    ambient_source = unquote(raw_source) if raw_source else ""
+    with shell_jobs.ambient_source(ambient_source):
+        return await _no_cache_and_log_inner(request, call_next, call, path, logged, start)
+
+
+async def _no_cache_and_log_inner(request, call_next, call, path, logged, start):
     try:
         response = await call_next(request)
     except asyncio.CancelledError:

@@ -1,5 +1,92 @@
 // Pure formatting helpers. No DOM, no fetch. (The vanilla module also carried
 // escapeHtml — dropped: JSX escapes text content itself.)
+import { ORIGIN_BY_ROUTE } from "@platform/lib/originRoutes";
+
+// THE CLIENT-SIDE COUNTERPART TO `origin_for_page` (fused_render/jobs.py) —
+// found and reused for the SAME reason that function exists (a `.dl-origin`
+// caption naming who raised a notification row), not a second,
+// independently-invented labeller. `Job.origin` is computed server-side, at
+// report time, with a closed shell-route table and a `projectenv`
+// project-root lookup neither of which a client-raised message's `notify()`
+// call (`platform/lib/notifications.ts`) or a waiting task's own row
+// (`shell/tasks-lib.ts`'s `attentionRows`) can reach synchronously — no
+// request round trip happens at either call site.
+//
+// Until this fix this function was basename-only and disagreed, visibly,
+// with `origin_for_page` on the very sources it CAN name without a round
+// trip: a source of `/tasks` labelled "tasks" here and "Scheduler" there. It
+// now consults the SAME shared route table (`ORIGIN_BY_ROUTE`,
+// `platform/lib/originRoutes.ts`, which `router.ts` and `jobs.py`'s
+// `_ORIGIN_BY_ROUTE` also read/mirror) before falling back to the bare-path
+// rule. The one thing this function still cannot replicate is
+// `origin_for_page`'s PROJECT-name resolution for an ordinary fs path
+// (`projectenv.project_root_for` + `projectenv.display_name`), which needs
+// server-side filesystem access no client call site has — that remaining
+// divergence (an fs path outside the closed route table labels by basename
+// here, by project name there) is deliberate and bounded: every route this
+// function CAN name authoritatively, it now names identically to the server.
+//
+// LIVES HERE, NOT in notifications.ts: `tasks-lib.ts` (shell/) needs it too,
+// and notifications.ts imports router.ts, which reads `location` at module
+// scope — importing notifications.ts from tasks-lib.ts broke every one of
+// its tests that don't install a DOM shim before their own static imports
+// evaluate (tasks-lib.test.ts had never needed one). format.ts has no
+// imports and no side effects of its own, so both callers can reach this
+// without dragging that module-init chain in. `originRoutes.ts` has the same
+// property, so importing it here does not change that.
+export function labelForSource(source: string | undefined): string {
+  const trimmed = (source || "").trim();
+  if (!trimmed) return "";
+  // The full string is tried FIRST: a query-bearing route can itself be a
+  // table key (`"/preferences?tab=indexing"` alongside the bare
+  // `"/preferences"`) that is MORE specific than what stripping its query
+  // string would leave — strip first and the indexing page mislabels as
+  // "Preferences". Only once the full string misses is the query string (and
+  // any hash) stripped and tried again, which is what turns a task
+  // destination like `/explorer/view/Users/x/app?_side=claude&session_id=…`
+  // into a clean route/basename lookup instead of carrying that junk tail
+  // into either lookup or the basename fallback below.
+  const routed = ORIGIN_BY_ROUTE[trimmed];
+  if (routed) return routed;
+  const withoutQuery = trimmed.split(/[?#]/)[0];
+  const routedStripped = ORIGIN_BY_ROUTE[withoutQuery];
+  if (routedStripped) return routedStripped;
+  // fs-path fallback: basename, extension stripped. `origin_for_page`'s own
+  // documented fallback for the same "not a known route" case — see the file
+  // header comment above for why this function stops here rather than also
+  // resolving a project name.
+  const stripped = withoutQuery.replace(/[/\\]+$/, "");
+  const segments = stripped.split(/[/\\]/).filter(Boolean);
+  const base = segments[segments.length - 1] || stripped;
+  const dot = base.lastIndexOf(".");
+  const name = dot > 0 ? base.slice(0, dot) : base;
+  // ADDITION 1's general case (live testing, 2026-09-17): the symptom was one
+  // task ("Transcripto YouTube transcriber finished") captioned "index",
+  // because its source was an app's ENTRY PAGE (".../Transcripto/index.html"
+  // — see `folderHref`'s comment in schedule-lib.ts: every task made from
+  // inside an app targets that entry page). Fixing the one call site that fed
+  // this an entry page (`tasks-lib.ts`'s `attentionRows`, now project-first)
+  // removes THAT symptom, but this fallback is shared by every caller
+  // (notifications.ts too), any of which can still hand it a bare entry-page
+  // path with no project name to prefer. "index" alone never identifies what
+  // ran — it is the same basename for every app in the system — so when the
+  // extension-stripped basename is exactly "index" (case-insensitive; the
+  // only entry-file spelling this codebase uses, per folderHref), walk up one
+  // segment to the containing folder name instead, which is what actually
+  // varies between apps. Deliberately narrow: this does NOT generalize to
+  // "any uninformative-looking basename" (e.g. "main", "app") — those are
+  // guesses with no evidence behind them, whereas "index" is a documented,
+  // closed convention. A path with nothing above the entry file (no parent
+  // segment) falls through to "index" unchanged; there is nothing truer to
+  // say without a project name, which this function cannot resolve (see the
+  // file header comment).
+  if (/^index$/i.test(name) && segments.length > 1) {
+    const parent = segments[segments.length - 2];
+    if (parent) return parent;
+  }
+  return name;
+}
+
 export function formatSize(bytes: number | null | undefined): string {
   if (bytes === null || bytes === undefined) return "";
   if (bytes < 1024) return `${bytes} B`;

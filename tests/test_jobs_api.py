@@ -13,6 +13,7 @@ outcome's retention entirely.
 """
 import json
 import os
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -264,6 +265,76 @@ def test_the_page_header_keeps_internal_whitespace_verbatim(client):
     assert listing(client)[0]["page"] == "/tmp/My  App/index.html"
 
 
+def test_a_page_attributes_its_own_source_through_the_header(client):
+    """`source` (SPEC-quiet-notifications.md bug 1) is who RAISED the row,
+    for presence suppression — for an ordinary page-owned report with no
+    distinct `X-Fused-Source`, it defaults to the same value as `page`."""
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/tmp/my%20app/index.html"},
+    )
+    row = listing(client)[0]
+    assert row["source"] == "/tmp/my app/index.html"
+    assert row["source"] == row["page"]
+
+
+def test_a_distinct_x_fused_source_header_diverges_from_page(client):
+    """A caller that sends BOTH headers gets a row whose `page` (click
+    destination) and `source` (raiser, for suppression) genuinely differ —
+    this is the mechanism a render uses to keep `page` pointing at its
+    output file while `source` still names the page that asked for it."""
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t"},
+        headers={
+            "X-Fused": "1",
+            "X-Fused-Page": "/tmp/outputs/render.png",
+            "X-Fused-Source": "/ai-models/playground",
+        },
+    )
+    row = listing(client)[0]
+    assert row["page"] == "/tmp/outputs/render.png"
+    assert row["source"] == "/ai-models/playground"
+
+
+def test_source_defaults_to_empty_when_no_page_or_source_header_is_sent(client):
+    """No header at all means no known raiser — `source` must stay "",
+    never inherit the request body's `page` fallback a worker gets (that
+    channel is for `page`'s click-destination contract only, see
+    `test_a_worker_reports_its_own_page` and neighbours)."""
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t"},
+        headers={"X-Fused": "1"},
+    )
+    assert listing(client)[0]["source"] == ""
+
+
+def test_source_is_never_settable_from_the_body(client):
+    """Same forgeability argument as `origin`'s own body-gate test: a page
+    cannot claim a different raiser by typing one into the report body."""
+    report(client, id="a", title="t", source="/some/other/page")
+    assert listing(client)[0]["source"] == ""
+
+
+def test_source_is_sticky_across_a_later_report_that_omits_it(client):
+    """Same stickiness rule `page`/`origin`/`tier` already follow: a later
+    tick with no `X-Fused-Source` (and no `X-Fused-Page`, so nothing to
+    default from) must not blank what an earlier tick already set."""
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t"},
+        headers={"X-Fused": "1", "X-Fused-Source": "/ai-models/playground"},
+    )
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "done": 5},
+        headers={"X-Fused": "1"},
+    )
+    assert listing(client)[0]["source"] == "/ai-models/playground"
+
+
 def test_origin_round_trips_on_a_server_upsert():
     """`origin` names WHAT RAISED a job — "Playground", "Local models" — a
     short caption distinct from `page` (where clicking the row goes). A
@@ -327,6 +398,37 @@ def test_the_page_header_defaults_origin_for_a_known_shell_route(client):
         headers={"X-Fused": "1", "X-Fused-Page": "/ai-models/local"},
     )
     assert listing(client)[0]["origin"] == "Local models"
+
+
+def test_origin_by_route_matches_the_client_table():
+    """`_ORIGIN_BY_ROUTE` above and `ORIGIN_BY_ROUTE` in
+    `frontend/src/platform/lib/originRoutes.ts` are meant to be the ONE
+    closed set/label mapping (see that dict's own header comment) — three
+    copies of this knowledge (this dict, that TS table, and `router.ts`'s
+    OWN now-derived `JOB_PAGE_ROUTES`) used to exist, and disagreed
+    (`/tasks` was "Scheduler" here and "tasks" — a plain basename guess —
+    in the client's OLD `labelForSource`). This test can't import or
+    execute the TS module from pytest, so it parses the object literal's
+    source text directly and diffs it key-for-key against this dict; a
+    route added to one side without the matching entry on the other fails
+    here rather than only surfacing as a visibly wrong caption in the app.
+    """
+    ts_path = os.path.join(
+        REPO_ROOT, "frontend", "src", "platform", "lib", "originRoutes.ts"
+    )
+    with open(ts_path, encoding="utf-8") as f:
+        src = f.read()
+
+    match = re.search(
+        r"export const ORIGIN_BY_ROUTE:.*?=\s*\{(.*?)\n\};", src, re.DOTALL
+    )
+    assert match, "ORIGIN_BY_ROUTE object literal not found in originRoutes.ts"
+    body = match.group(1)
+    entries = re.findall(r'"((?:[^"\\]|\\.)*)":\s*"((?:[^"\\]|\\.)*)"', body)
+    assert entries, "no route/label pairs parsed out of ORIGIN_BY_ROUTE"
+    client_table = dict(entries)
+
+    assert client_table == jobs._ORIGIN_BY_ROUTE
 
 
 def test_the_page_header_names_the_project_for_an_fs_path(client, monkeypatch):
@@ -1109,4 +1211,119 @@ def test_the_bridge_exposes_track_job_on_window_fused():
     api = runtime.split("window.fused = {", 1)[1].split("};", 1)[0]
     assert "\n    trackJob,\n" in api
     assert "\n    watchJob,\n" in api
-    assert "\n    job,\n" not in api
+
+
+# ---- §3 grouping (SPEC-quiet-notifications.md) ------------------------------
+#
+# `Job.group`, defaulted centrally in `upsert()` from the id's own
+# `sys:<name>:` prefix when it has one, else the whole id — the latter case
+# is a group of exactly one member, which is the mechanism behind "a
+# lone-member group renders and behaves exactly as today" on the client side
+# (the frontend never has to special-case "no group" at all).
+
+
+def test_an_ordinary_page_owned_id_groups_with_itself_alone(client):
+    """No `sys:` prefix at all — the id IS the group, so this job can never
+    share a group with anything else (a group of one, today's behaviour)."""
+    res = report(client, id="my-download", title="a")
+    assert res.json()["group"] == "my-download"
+
+
+def test_a_sys_id_with_no_second_colon_also_groups_with_itself_alone():
+    """`sys:` alone is not enough to name a FAMILY — `_default_group` needs a
+    second colon to find where the family name ends, so an id like
+    `sys:oneoff` (no second segment) falls back to the whole id, same as an
+    ordinary page-owned one. `server=True` here only because `sys:` ids are
+    server-only to WRITE at all (`SERVER_ID_PREFIX`) — unrelated to `group`
+    itself, which carries no such gate (see the next test)."""
+    res = jobs.upsert({"id": "sys:oneoff", "title": "a"}, server=True)
+    assert res["group"] == "sys:oneoff"
+
+
+def test_two_ids_sharing_a_sys_prefix_share_a_group():
+    """The whole point: `sys:ai-image:boom` and `sys:ai-image:done` are two
+    different runs of the SAME family, and grouping by `(page, group)` is
+    what lets the client fold them into one row once there are 2+."""
+    boom = jobs.upsert({"id": "sys:ai-image:boom", "title": "a"}, server=True)
+    done = jobs.upsert({"id": "sys:ai-image:done", "title": "b"}, server=True)
+    assert boom["group"] == "sys:ai-image"
+    assert done["group"] == "sys:ai-image"
+
+
+def test_a_report_may_declare_its_own_group_explicitly(client):
+    """"Producers may set it explicitly" (spec) — no server gate: unlike
+    `tier`/`waiting_for`, a forged `group` can only misfile a row among
+    other rows, never hide a failure or fake a finish, so an ordinary page
+    report (through the real HTTP endpoint, no worker token) is allowed to
+    set it directly."""
+    res = report(client, id="my-download", title="a", group="downloads-page")
+    assert res.json()["group"] == "downloads-page"
+
+
+def test_a_page_report_cannot_claim_a_sys_prefixed_group(client):
+    """`group` carries no `server=True` gate (the previous test), but a
+    `sys:`-prefixed value is still off limits for a plain page report — the
+    same spoof-proofing `page` already gets from `X-Fused-Page` rather than
+    the request body. Without this, an ordinary page could file its own row
+    under a system group's row and borrow its title. Silently dropped, same
+    shape as `test_a_page_owned_report_cannot_set_tier` above — the id-derived
+    default (its own id, a group of one) stands instead."""
+    res = report(client, id="my-download", title="a", group="sys:ai-image")
+    assert res.json()["group"] == "my-download"
+
+
+def test_a_worker_token_report_may_still_set_a_sys_prefixed_group():
+    """The gate is about an untrusted page, not about the value itself — a
+    `server=True` caller (already trusted to write `sys:` ids at all) may
+    set a `sys:`-prefixed group explicitly."""
+    res = jobs.upsert(
+        {"id": "sys:ai-image:boom", "title": "a", "group": "sys:ai-image"},
+        server=True,
+    )
+    assert res["group"] == "sys:ai-image"
+
+
+def test_the_default_group_is_set_once_at_creation_not_reapplied_each_tick():
+    """DELIBERATELY CHANGED (finding 5, code review 2026-09-16): this test
+    used to pin a later tick's `"group": ""` as clearing `group` to a
+    literal empty string, on the "only the keys present are applied" rule
+    every other field in `upsert` follows. That rule is wrong for `group`
+    specifically, because `group` is a CLUSTERING KEY (client `familyKey` =
+    `page + group`) — a literal `""` is not "nothing to show" the way it is
+    for `detail`/`message`, it is "join every other job on this page that
+    also happens to be blank", which silently merges unrelated jobs into
+    one nonsense group. `upsert` now falls back to `_default_group(job_id)`
+    whenever the posted `group` is empty/blank, exactly like creation does —
+    an explicit blank always means "back to my own default", never "share
+    a group with something else"."""
+    jobs.upsert({"id": "sys:ai-image:boom", "title": "a"}, server=True)
+    res = jobs.upsert({"id": "sys:ai-image:boom", "group": ""}, server=True)
+    assert res["group"] == "sys:ai-image"
+    # A further tick that says nothing about `group` leaves the id-derived
+    # default standing (unaffected either way — `group` isn't in this body).
+    res2 = jobs.upsert({"id": "sys:ai-image:boom", "done": 1}, server=True)
+    assert res2["group"] == "sys:ai-image"
+
+
+def test_an_explicit_blank_group_never_lets_two_unrelated_jobs_collide():
+    """The actual regression finding 5 describes: two page-owned jobs with
+    no `sys:` family, both explicitly posting `group: ""` on the same page,
+    must NOT end up sharing a group — each falls back to its OWN id-derived
+    default (a group of one), the same collision-proofing creation already
+    gives an ungrouped id."""
+    a = jobs.upsert({"id": "render-a", "title": "a", "group": ""})
+    b = jobs.upsert({"id": "render-b", "title": "b", "group": ""})
+    assert a["group"] == "render-a"
+    assert b["group"] == "render-b"
+    assert a["group"] != b["group"]
+
+
+def test_a_late_tick_on_a_dismissed_job_never_returns_a_blank_group():
+    """The synthetic stand-in `upsert` returns for a late tick on a
+    dismissed id never went through the creation path's own default —
+    finding 5 flags it as carrying the same blank-group collision hazard.
+    It must report the same id-derived default a fresh creation would."""
+    jobs.upsert({"id": "sys:ai-image:late", "title": "a"}, server=True)
+    jobs.dismiss("sys:ai-image:late")
+    res = jobs.upsert({"id": "sys:ai-image:late", "done": 1}, server=True)
+    assert res["group"] == "sys:ai-image"

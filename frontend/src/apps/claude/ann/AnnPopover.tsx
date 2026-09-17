@@ -14,6 +14,8 @@
 import { useEffect, useRef } from "react";
 
 import { popAt, type StageBox } from "./geometry";
+import { isDoneChord } from "./mode";
+import { ANN_DONE_CHORD } from "./types";
 import type { AnnAnchor, AnnTool } from "./types";
 
 export interface AnnPopoverHandlers {
@@ -26,6 +28,13 @@ export interface AnnPopoverHandlers {
   close(): void;
   /** T:7409 — the editor's Delete button. */
   del(): void;
+  /**
+   * ⌘↩ — ✓ Done from inside the card: commit this note, send the round, leave
+   * the mode. Handled HERE and not only on the two documents' listeners because
+   * the card stops every keystroke's bubble while it is portaled into the app
+   * (the block below), so a chord typed in the textarea reaches nothing else.
+   */
+  doneRound(): void;
 }
 
 /** T:3918 — the card, built for whichever document it will first stand in
@@ -47,7 +56,10 @@ export function buildPopNode(doc: Document, h: AnnPopoverHandlers): HTMLElement 
 
   const hint = doc.createElement("div");
   hint.className = "hint";
-  hint.textContent = "Enter to save · Esc to cancel";
+  // The chord is spelled for the platform the reader is on (`ANN_DONE_CHORD`),
+  // in the one line that already teaches this card's keys — a shortcut nobody is
+  // told about is a shortcut nobody presses.
+  hint.textContent = `Enter to save · ${ANN_DONE_CHORD} to finish · Esc to cancel`;
   const del = doc.createElement("button");
   del.id = "anndel";
   del.type = "button";
@@ -66,6 +78,16 @@ export function buildPopNode(doc: Document, h: AnnPopoverHandlers): HTMLElement 
     if (ke.key === "Escape") {
       ke.stopPropagation();
       h.close();
+    }
+    // ⌘↩ BEFORE PLAIN ENTER, and it returns: the save branch below matches
+    // every Enter without Shift, this one included, so a fallthrough would
+    // commit the note twice — once here and once inside `done()`'s own draft
+    // commit.
+    if (isDoneChord(ke)) {
+      ke.preventDefault();
+      ke.stopPropagation();
+      h.doneRound();
+      return;
     }
     if (ke.key === "Enter" && !ke.shiftKey) {
       ke.preventDefault();
@@ -354,6 +376,7 @@ export function AnnPopover({ handlers, popRef }: AnnPopoverProps) {
       commit: (text) => live.current.handlers.commit(text),
       close: () => live.current.handlers.close(),
       del: () => live.current.handlers.del(),
+      doneRound: () => live.current.handlers.doneRound(),
     });
     h.appendChild(node);
     live.current.popRef?.(node);

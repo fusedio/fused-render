@@ -37,7 +37,8 @@
 import { useEffect, useState } from "react";
 import { Plug, Stethoscope } from "lucide-react";
 import { addCurrentApp, getAppEntry, statPath } from "@platform/lib/api";
-import { exportAppFile } from "@platform/lib/appShot";
+import { exportAppFile, notifyExportSaved } from "@platform/lib/appShot";
+import { openShareApp } from "@platform/lib/share-app";
 import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
 import { AppDoctorStatusDot } from "@platform/ui/AppDoctorStatusDot";
 import { useAppDoctorChecks } from "@platform/ui/useAppDoctorChecks";
@@ -49,6 +50,15 @@ import { useAppVersionLabel } from "@platform/lib/appVersionLabel";
 import type { ResolvedSnapshot } from "@platform/lib/snapshot-param";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { OverflowMenu, type OverflowEntry } from "@apps/explorer/BarMenu";
+
+// Whether the app folder ships an authored preview.png (a stat failure reads
+// as "no" — worst case is one redundant capture, never a lost action).
+function statePathAuthoredPreview(dir: string): Promise<boolean> {
+  return statPath(dir + "/preview.png").then(
+    (s) => !s.is_dir,
+    () => false,
+  );
+}
 
 // lucide at MenuIcons' own weight (1.5 on a 24 grid, 16px) so the two rows that
 // have no MenuIcons glyph sit in the list at the same stroke as the rest.
@@ -182,7 +192,7 @@ export function EntryActionsMenu({
             () => false,
           )
         : false;
-      await exportAppFile(
+      const realPath = await exportAppFile(
         {
           path: exportPath,
           name: exportName,
@@ -195,6 +205,7 @@ export function EntryActionsMenu({
         },
         isLive ? document.querySelector(".preview-frame.is-shown") : null,
       );
+      notifyExportSaved(exportName, realPath);
     } catch (e) {
       notify({ title: "Could not export " + name + ": " + (e as Error).message, tone: "error" });
     } finally {
@@ -234,6 +245,38 @@ export function EntryActionsMenu({
           disabled: exportDisabled,
           onClick: () => void doExport(),
         },
+        // Download's sibling: the same .fused, published to the user's Fused
+        // account as a public page (share_app.py). Live only — the shared
+        // canvas is named after the app's id and always carries "the app", so
+        // a snapshot published under it would downgrade every link out there.
+        // The shown preview frame is the capture source under Download's rule.
+        ...(snapshotSha === null
+          ? [
+              {
+                label: "Share…",
+                icon: MenuIcons.share,
+                title: "Share " + name + " as a public link",
+                onClick: () => {
+                  // Same authored-still probe as Download (above): a folder
+                  // that ships its own preview.png must not cost a redundant
+                  // native shot — or, on a Mac without Screen Recording
+                  // granted, its permission dialog — for a capture the server
+                  // would discard anyway.
+                  void statePathAuthoredPreview(dir).then((authored) =>
+                    openShareApp(
+                      {
+                        path: dir,
+                        name,
+                        entry_html: fsPath,
+                        preview_image: authored ? dir + "/preview.png" : null,
+                      },
+                      document.querySelector(".preview-frame.is-shown"),
+                    ),
+                  );
+                },
+              } satisfies OverflowEntry,
+            ]
+          : []),
         {
           label: "Open as project",
           icon: MenuIcons.open,

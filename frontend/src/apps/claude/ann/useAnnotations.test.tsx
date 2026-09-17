@@ -21,6 +21,7 @@ import { act, create } from "react-test-renderer";
 
 const { useAnnotations, seatsAria } = await import("./useAnnotations");
 const { createMemoryParamsStore } = await import("../params/store");
+const { isMac } = await import("@platform/lib/platform");
 import type { AnnotationsApi } from "./useAnnotations";
 
 /** ONE body object shared by the fake document and its elements: `pathOf` walks
@@ -196,7 +197,9 @@ function Probe(props: {
   frame: HTMLIFrameElement;
   ownDoc: Document;
   pop: HTMLElement;
-  autoSubmits: { n: number };
+  /** `ok: false` is a composer that REFUSED the send — the round must then stay
+   *  armed rather than disarming over notes nobody was handed. */
+  autoSubmits: { n: number; ok?: boolean };
 }) {
   const [params] = [PARAMS];
   const ann = useAnnotations({
@@ -207,6 +210,7 @@ function Probe(props: {
     canSend: () => true,
     autoSubmit: () => {
       props.autoSubmits.n += 1;
+      return props.autoSubmits.ok !== false;
     },
     document: props.ownDoc,
     raf: (cb) => cb(),
@@ -256,6 +260,21 @@ function pressEscapeInApp(w: ReturnType<typeof mount>): void {
   act(() => {
     w.docs.fire("keydown", { key: "Escape", preventDefault() {} });
   });
+}
+
+/** The ✓ Done chord, spelled for whichever platform the suite is running on —
+ *  `isMod` is EXCLUSIVE, so a hard-coded `metaKey` would pass on a Mac and
+ *  quietly test nothing in CI. */
+function doneChord(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    key: "Enter",
+    metaKey: isMac,
+    ctrlKey: !isMac,
+    shiftKey: false,
+    altKey: false,
+    preventDefault() {},
+    ...over,
+  };
 }
 
 function arm(): void {
@@ -400,7 +419,7 @@ test("a click while a walkthrough RECORDS is a stamped mark, with no composer", 
       noPane: false,
       annotateTarget: () => f.frame,
       canSend: () => true,
-      autoSubmit: () => {},
+      autoSubmit: () => true,
       recorder: () => ({
         recording: () => true,
         settling: () => false,
@@ -454,7 +473,7 @@ test("a click inside the START window mints nothing at all", () => {
       noPane: false,
       annotateTarget: () => f.frame,
       canSend: () => true,
-      autoSubmit: () => {},
+      autoSubmit: () => true,
       recorder: () => ({
         recording: () => true, // "starting" counts as recording
         settling: () => false,
@@ -528,6 +547,89 @@ test("Done commits the open draft and sends the round", async () => {
   expect(api!.mode).toBe("off");
 });
 
+test("⌘↩ inside the FRAMED document is ✓ Done — commit, send, disarm", async () => {
+  const w = mount();
+  arm();
+  clickApp(w);
+  w.ta.value = "rename this";
+  // IN THE APP'S DOCUMENT, which is the case the chord exists for: the round is
+  // placed with the pointer in the frame and keydowns do not cross the boundary,
+  // so a chord bound only on the chat's document would never fire for the reader
+  // who has just typed the last note.
+  await act(async () => {
+    w.docs.fire("keydown", doneChord());
+    await Promise.resolve();
+  });
+  expect(api!.annotations).toHaveLength(1);
+  expect(api!.annotations[0]!.content).toBe("rename this");
+  expect(w.autoSubmits.n).toBe(1);
+  expect(api!.mode).toBe("off");
+});
+
+test("`hasSendable` answers off the STORE, a commit ahead of any render", () => {
+  // THE COMPOSER'S SEND GATE ASKS THIS (`hasAttachmentsNow`), and it is asked in
+  // the tick ✓ Done presses the seat — one microtask after the note was
+  // committed and long before React has painted a chip for it. Read off `chips`
+  // (React state) the answer is one commit late under `createRoot` — the passive
+  // effect that reinstalls the composer's `submit` is a scheduler task, not a
+  // microtask — which is how a round could be disarmed with nothing sent
+  // (Akshil, 2026-09-17). This renderer flushes synchronously and so cannot
+  // stage that window; what it CAN hold this seam to is the rule that makes the
+  // window survivable — the answer comes off the store, not off a render.
+  const w = mount();
+  arm();
+  expect(api!.hasSendable()).toBe(false);
+
+  // The commit, WITHOUT an `act` around it: no render has happened, and that is
+  // the whole point of the assertion below.
+  clickApp(w);
+  w.ta.value = "this button is too small";
+  api!.popHandlers.commit("this button is too small");
+
+  expect(api!.hasSendable()).toBe(true);
+});
+
+test("a round already SENT is not something `hasSendable` offers again", () => {
+  const w = mount();
+  arm();
+  clickApp(w);
+  w.ta.value = "rename this";
+  api!.popHandlers.commit("rename this");
+  expect(api!.hasSendable()).toBe(true);
+  api!.markSent(api!.annotations);
+  expect(api!.hasSendable()).toBe(false);
+});
+
+test("⌘↩ with no round armed is nobody's key", async () => {
+  const w = mount();
+  // Not armed: the press must leave the mode alone AND go unclaimed, so
+  // whatever owns ⌘↩ outside annotate mode still gets it.
+  let prevented = 0;
+  await act(async () => {
+    w.docs.fire("keydown", doneChord({ preventDefault: () => void prevented++ }));
+    await Promise.resolve();
+  });
+  expect(prevented).toBe(0);
+  expect(api!.mode).toBe("off");
+  expect(w.autoSubmits.n).toBe(0);
+});
+
+test("a chord with Shift or the WRONG modifier is not ✓ Done", async () => {
+  const w = mount();
+  arm();
+  clickApp(w);
+  w.ta.value = "rename this";
+  await act(async () => {
+    // Shift+Enter is the composer's newline; the other is Ctrl on a Mac (or
+    // Cmd off one), which `isMod` rejects by design.
+    w.docs.fire("keydown", doneChord({ shiftKey: true }));
+    w.docs.fire("keydown", doneChord({ metaKey: !isMac, ctrlKey: isMac }));
+    await Promise.resolve();
+  });
+  expect(api!.mode).toBe("comment");
+  expect(w.autoSubmits.n).toBe(0);
+});
+
 test("the UNMOUNT leaves the framed document as it found it", () => {
   const w = mount();
   arm();
@@ -561,7 +663,7 @@ test("the nav lock is HANDED BACK when the target goes away while armed", () => 
       noPane,
       annotateTarget: () => f.frame,
       canSend: () => true,
-      autoSubmit: () => {},
+      autoSubmit: () => true,
       onLock: (l) => locks.push(l),
       document: o.doc,
       raf: (cb) => cb(),
@@ -872,6 +974,7 @@ function hostedMount() {
       canSend: () => true,
       autoSubmit: () => {
         autoSubmits.n += 1;
+        return true;
       },
       recorder: () => ({
         recording: () => rec.live,

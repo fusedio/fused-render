@@ -4,7 +4,7 @@
 // bookmarks and recent files. Entering any target navigates into
 // /explorer/view/... (the explorer proper).
 import { useEffect, useRef, useState } from "react";
-import { navigate, navigateUrl, replaceSearch, urlForFsPath } from "@platform/lib/router";
+import { navigate, navigateUrl, replaceSearch, spaLinkProps } from "@platform/lib/router";
 import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import type {
@@ -242,15 +242,9 @@ function FileRow({
     <li role="option" id={id} aria-selected={active}>
       <a
         className={"fh-result" + (active ? " is-active" : "")}
-        href={urlForFsPath(hit.path)}
         title={hit.path}
         onMouseMove={onHover}
-        onClick={(e) => {
-          if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
-            return;
-          e.preventDefault();
-          navigate(hit.path, { isDir: hit.is_dir });
-        }}
+        {...spaLinkProps(hit.path, { isDir: hit.is_dir })}
       >
         <span className="fh-result-icon" aria-hidden="true">
           {iconForEntry(name, hit.is_dir)}
