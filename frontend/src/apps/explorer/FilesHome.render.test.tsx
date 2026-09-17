@@ -60,6 +60,10 @@ const statCalls: StatCall[] = [];
 /** Every POST /api/index/scan, by URL — the observable trace of the note's
  * "index them now" button actually asking for a scan. */
 const scanCalls: string[] = [];
+/** Every POST /api/ai and /api/search/files, by URL — the observable trace of
+ * a committed AI search actually running (see the reload test below). */
+const aiCalls: string[] = [];
+const searchFilesCalls: string[] = [];
 /** How many times the box told its parent to re-poll the index status — the
  * one thing that turns the parent's idle ten-second beat into a look NOW, so
  * that a scan this box started is not invisible until then. */
@@ -114,6 +118,47 @@ function fakeFetch(url: string | URL): Promise<Response> {
       }),
     );
   }
+  // The AI search pipeline's two calls (apps/explorer/lib/ai-search.ts):
+  // /api/ai (the model's spec reply) and /api/search/files (the engine
+  // query it drives). Answered immediately, unlike the deferred rank/stat
+  // calls above — the one test that exercises this (the reload-AI-search
+  // path, below) cares that the pipeline COMPLETES and RENDERS, not about
+  // controlling its leading edge.
+  if (u.startsWith("/api/ai")) {
+    aiCalls.push(u);
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          result: {
+            text: JSON.stringify({
+              name_terms: ["report"],
+              extensions: [],
+              kind: "any",
+              modified_after: null,
+              modified_before: null,
+              min_size_bytes: null,
+              max_size_bytes: null,
+              path_hints: [],
+            }),
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+  }
+  if (u.startsWith("/api/search/files")) {
+    searchFilesCalls.push(u);
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          entries: [{ path: HOME + "/report.csv", is_dir: false, size: 100, mtime: 1 }],
+          truncated: false,
+        }),
+        { status: 200 },
+      ),
+    );
+  }
   throw new Error("FilesHome.render.test.tsx: unexpected fetch " + u);
 }
 
@@ -147,6 +192,8 @@ beforeEach(() => {
   rankCalls.length = 0;
   statCalls.length = 0;
   scanCalls.length = 0;
+  aiCalls.length = 0;
+  searchFilesCalls.length = 0;
   scanRequested = 0;
   navPushes.length = 0;
   globalThis.fetch = fakeFetch as typeof fetch;
@@ -239,6 +286,7 @@ function scanStatus(over: Partial<IndexStatus> = {}): IndexStatus {
 
 function mount(
   indexScan: IndexStatus | null = null,
+  initialQuery = "",
 ): {
   renderer: ReactTestRenderer;
   input: () => any;
@@ -250,7 +298,7 @@ function mount(
   const element = (scan: IndexStatus | null) =>
     createElement(FilesSearch, {
       home: HOME,
-      initialQuery: "",
+      initialQuery,
       indexScan: scan,
       onActiveChange: () => {},
       onScanRequested: () => {
@@ -1242,5 +1290,35 @@ describe("A1: the query reaches indexRank verbatim, whitespace and all", () => {
     await flush(() => input().props.onChange({ target: { value: "   " } }));
     expect(active).toBe(false);
     renderer.unmount();
+  });
+});
+
+describe("reload with a ?q= that carries a committed AI search (code review finding)", () => {
+  test("a trailing space in the restored query does not blank the re-run AI result", async () => {
+    // `?q=report+` round-trips to `initialQuery === "report "` (a real,
+    // meaningful trailing space — see A1/D-new). Before the fix, the reload
+    // effect ran `runAi(initialQuery.trim())`, so `ai.query` ended up
+    // "report" while `q` (this box's live query state, seeded from the same
+    // untrimmed `initialQuery`) stayed "report ". `showingAi` requires
+    // `ai.query === q`, so it was permanently false: the model call still
+    // fired and got billed, but its result never rendered. `runAi` must get
+    // the SAME untrimmed string as `q` for the two to ever agree again.
+    const box = mount(null, "report ");
+    // The reload effect's AI call, then its two-step pipeline
+    // (/api/ai -> /api/search/files), all resolve on this file's fake fetch
+    // without needing to be driven by hand — see `fakeFetch` above.
+    await flush();
+    await flush();
+    await flush();
+    expect(aiCalls).toHaveLength(1);
+    expect(searchFilesCalls).toHaveLength(1);
+    // showingAi === true renders AiResults (fh-ai-badge), not the ordinary
+    // fh-panel note — this is the one observable proof the result actually
+    // reached the screen instead of being silently discarded.
+    expect(findByClass(box, "fh-ai-badge")).toHaveLength(1);
+    expect(
+      box.renderer.root.findAllByProps({ id: "fh-ai-hit-" + HOME + "/report.csv" }).length,
+    ).toBeGreaterThan(0);
+    box.unmount();
   });
 });

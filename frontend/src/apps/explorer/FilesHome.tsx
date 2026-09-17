@@ -860,11 +860,21 @@ export function FilesSearch({
   };
 
   // A ?q= restored from the URL was a committed AI search, so it re-runs one.
+  //
+  // `runAi` gets `initialQuery` UNTRIMMED, matching `q` (initialized from the
+  // same `initialQuery`, verbatim — see `query`'s `useState` above): a
+  // trailing space is meaningful and not trimmed away anywhere else on this
+  // page (`?q=report+` round-trips to `q = "report "`), so `ai.query` must
+  // agree with `q` byte-for-byte or `showingAi` (`ai.status === "done" &&
+  // ai.query === q`) is permanently false — the AI call still runs and gets
+  // billed, but its result never renders (code review finding). The `.trim()`
+  // stays on the GUARD only: a `?q=` that is pure whitespace has nothing to
+  // search for and must not re-bill a model call for it.
   const ranInitial = useRef(false);
   useEffect(() => {
     if (ranInitial.current) return;
     ranInitial.current = true;
-    if (initialQuery.trim()) runAi(initialQuery.trim());
+    if (initialQuery.trim()) runAi(initialQuery);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
