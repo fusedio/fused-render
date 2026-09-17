@@ -227,14 +227,19 @@ function CanvasesSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pref
   );
 }
 
-// Native chat (beta): the React port of the Claude chat, behind a flag while
-// the migration lands PR by PR. Same one-checkbox section shape as Canvases.
+// Native chat: the React port of the Claude chat, ON by default since
+// 2026-09-17 — the switch is the way back to the legacy iframe, not the way in.
+// Same one-checkbox section shape as Canvases.
 // `FUSED_RENDER_NATIVE_CHAT` beats this switch; the server reports the
 // effective value, so the box shows what the app is actually doing.
 function NativeChatSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const enabled = prefs.chat?.native ?? false;
+  // DEFAULT ON, so the fallback is `true` and the read is `!== false` — the
+  // same shape the recap below has always had, and the same the pref itself has
+  // (shell/prefs.py `native_chat_enabled`). A server that predates the field is
+  // a server whose chats are native.
+  const enabled = prefs.chat?.native !== false;
   // DEFAULT ON, so the fallback is `true` and the read is `!== false`: a server
   // that predates the field is a server whose chat shows the fold.
   const recap = prefs.chat?.recap !== false;
@@ -253,7 +258,7 @@ function NativeChatSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pr
     try {
       const next = await putNativeChatEnabled(!enabled);
       onChange(next);
-      publishNativeChatEnabled(next.chat?.native === true);
+      publishNativeChatEnabled(next.chat?.native !== false);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -278,10 +283,11 @@ function NativeChatSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pr
 
   return (
     <section className="prefs-section">
-      <h2>Native chat (beta)</h2>
+      <h2>Native chat</h2>
       <p className="deploy-muted">
-        Render the Claude chat as part of the app instead of an embedded page. Off by default
-        while the port is in beta; every chat embed switches on the next paint.
+        Render the Claude chat as part of the app instead of an embedded page. On by default;
+        turn it off to go back to the embedded page. Every chat embed switches on the next
+        paint.
       </p>
       <label className="prefs-radio">
         <input
@@ -385,16 +391,17 @@ function ProjectQueueSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: 
   );
 }
 
-// The task side peek (experimental): a click on a task opens it in a panel
-// beside the list instead of navigating to the Explorer. Same one-checkbox
+// The task side peek: a click on a task opens it in a panel beside the list
+// instead of navigating to the Explorer — ON by default since 2026-09-17, so
+// the switch is the way back to the old navigate. Same one-checkbox
 // section shape as Native chat above — and no `forced_by`, because this switch
 // has no env override to be beaten by (prefs.py `task_peek_enabled` says why).
 function TaskPeekSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // `?? false`: a server that predates the switch sends nothing, which is off —
-  // both the pref's own default and the behaviour the page has always had.
-  const enabled = prefs.task_peek?.enabled ?? false;
+  // `!== false`: a server that predates the switch sends nothing, and the pref's
+  // own default is ON (shell/prefs.py `task_peek_enabled`), so nothing is on.
+  const enabled = prefs.task_peek?.enabled !== false;
 
   const toggle = async () => {
     if (busy) return;
@@ -405,7 +412,7 @@ function TaskPeekSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pref
       onChange(next);
       // Published so the Tasks page picks it up on its next paint rather than
       // on a reload — the same hand-over the native chat's switch makes.
-      publishTaskPeekEnabled(next.task_peek?.enabled === true);
+      publishTaskPeekEnabled(next.task_peek?.enabled !== false);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -415,9 +422,10 @@ function TaskPeekSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pref
 
   return (
     <section className="prefs-section">
-      <h2>Task side panel (experimental)</h2>
+      <h2>Task side panel</h2>
       <p className="deploy-muted">
-        Open tasks in a side panel instead of leaving the page. Experimental.
+        Open tasks in a side panel instead of leaving the page. On by default; turn it off to
+        open a task in the Explorer as before.
       </p>
       <label className="prefs-radio">
         <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />

@@ -1256,48 +1256,49 @@ def test_a_resident_model_the_switch_does_not_affect_is_LEFT_ALONE(
         supervisor.reset()
 
 
-# -- native chat (beta) flag ---------------------------------------------------
+# -- native chat flag (default ON since 2026-09-17) ----------------------------
 
 
-def test_native_chat_defaults_off_and_toggles(tmp_path, monkeypatch):
+def test_native_chat_defaults_on_and_toggles(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     monkeypatch.delenv("FUSED_RENDER_NATIVE_CHAT", raising=False)
-    # Default off: the legacy template iframe stays until someone opts in.
-    assert client.get("/api/prefs").json()["chat"]["native"] is False
-    body = client.put("/api/prefs", json={"native_chat_enabled": True}, headers=FUSED).json()
-    assert body["chat"]["native"] is True
+    # Default ON: an install that has never opened Preferences gets the native
+    # chat, and the switch is the way back to the legacy template iframe.
+    assert client.get("/api/prefs").json()["chat"]["native"] is True
+    body = client.put("/api/prefs", json={"native_chat_enabled": False}, headers=FUSED).json()
+    assert body["chat"]["native"] is False
     stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["native_chat_enabled"] is True
-    assert client.put("/api/prefs", json={"native_chat_enabled": False}, headers=FUSED).json()[
+    assert stored["native_chat_enabled"] is False
+    assert client.put("/api/prefs", json={"native_chat_enabled": True}, headers=FUSED).json()[
         "chat"
-    ]["native"] is False
+    ]["native"] is True
 
 
-# -- task side peek (experimental) flag ----------------------------------------
+# -- task side peek flag (default ON since 2026-09-17) -------------------------
 
 
-def test_task_peek_defaults_off_and_toggles(tmp_path, monkeypatch):
+def test_task_peek_defaults_on_and_toggles(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
-    # Default off: a click on a task row goes to the Explorer exactly as it
-    # always has until someone opts in.
-    assert client.get("/api/prefs").json()["task_peek"]["enabled"] is False
-    body = client.put("/api/prefs", json={"task_peek_enabled": True}, headers=FUSED).json()
-    assert body["task_peek"]["enabled"] is True
+    # Default ON: a click on a task row opens the side panel, and the switch is
+    # the way back to navigating to the Explorer.
+    assert client.get("/api/prefs").json()["task_peek"]["enabled"] is True
+    body = client.put("/api/prefs", json={"task_peek_enabled": False}, headers=FUSED).json()
+    assert body["task_peek"]["enabled"] is False
     stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["task_peek_enabled"] is True
-    assert client.put("/api/prefs", json={"task_peek_enabled": False}, headers=FUSED).json()[
+    assert stored["task_peek_enabled"] is False
+    assert client.put("/api/prefs", json={"task_peek_enabled": True}, headers=FUSED).json()[
         "task_peek"
-    ]["enabled"] is False
+    ]["enabled"] is True
 
 
-def test_task_peek_junk_value_reads_as_off(tmp_path, monkeypatch):
-    # Only a stored `true` is on — missing, legacy and junk all read as off, so
-    # an install that has never opened Preferences keeps today's behaviour.
+def test_task_peek_junk_value_reads_as_on(tmp_path, monkeypatch):
+    # Only a stored `false` is off — missing, legacy and junk all read as ON,
+    # which is the answer the pref's own default gives.
     client, home = _client(tmp_path, monkeypatch)
     home.mkdir(parents=True, exist_ok=True)
     (home / "prefs.json").write_text(json.dumps({"task_peek_enabled": "yes"}), encoding="utf-8")
-    assert client.get("/api/prefs").json()["task_peek"]["enabled"] is False
-    assert prefs_mod.task_peek_enabled() is False
+    assert client.get("/api/prefs").json()["task_peek"]["enabled"] is True
+    assert prefs_mod.task_peek_enabled() is True
 
 
 def test_put_rejects_bad_task_peek_enabled(tmp_path, monkeypatch):
@@ -1368,13 +1369,14 @@ def test_the_two_task_page_switches_are_independent(tmp_path, monkeypatch):
     assert stored["task_peek_enabled"] is True
 
 
-def test_native_chat_junk_value_reads_as_off(tmp_path, monkeypatch):
+def test_native_chat_junk_value_reads_as_on(tmp_path, monkeypatch):
+    # Junk is not `false`, so it reads as ON — the default, not the opt-out.
     client, home = _client(tmp_path, monkeypatch)
     monkeypatch.delenv("FUSED_RENDER_NATIVE_CHAT", raising=False)
     home.mkdir(parents=True, exist_ok=True)
     (home / "prefs.json").write_text(json.dumps({"native_chat_enabled": "yes"}), encoding="utf-8")
-    assert client.get("/api/prefs").json()["chat"]["native"] is False
-    assert prefs_mod.native_chat_enabled() is False
+    assert client.get("/api/prefs").json()["chat"]["native"] is True
+    assert prefs_mod.native_chat_enabled() is True
 
 
 def test_native_chat_env_override_beats_pref(tmp_path, monkeypatch):

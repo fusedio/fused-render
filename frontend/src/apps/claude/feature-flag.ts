@@ -1,6 +1,8 @@
 // Whether chat embeds render the native React chat (`apps/claude`) instead of
 // the legacy `templates/claude` iframe — the `native_chat_enabled` pref
 // (shell/prefs.py), env override `FUSED_RENDER_NATIVE_CHAT` applied server-side.
+// DEFAULT ON since 2026-09-17: the pref reads `!== false` on both sides, so the
+// switch is an escape hatch back to the iframe rather than an opt-in beta.
 // Clone of apps/canvases/feature-flag.ts: one shared GET, a generation guard so
 // a publish beats a slower in-flight read, and `null` meaning "not asked yet".
 //
@@ -172,7 +174,10 @@ function read(): Promise<void> {
   )
     .then((p) => {
       if (generation !== departed) return;
-      set(p.chat?.native === true);
+      // `!== false`, matching the pref's own default (shell/prefs.py
+      // `native_chat_enabled`): the native chat is what a server that has never
+      // been told otherwise runs, so an absent field is ON, not off.
+      set(p.chat?.native !== false);
       // `!== false`, never `=== true`: the recap is ON by default, so a server
       // that predates the field (or one whose prefs.json has never been
       // written) must read as on rather than silently losing the feature.
@@ -183,21 +188,23 @@ function read(): Promise<void> {
       setQueue(p.queue?.enabled === true);
     })
     .catch(() => {
-      // STILL NO ANSWER — so `false`, not `null`. `null` is "not asked yet" and
-      // every MOUNT holds a placeholder over it (ChatMount), so leaving it
-      // there after a failed read turns every chat embed on the page into a
-      // permanent skeleton: no iframe, no chat, no error. Legacy is what a
-      // server we cannot ask about `chat.native` is running today, it is the
-      // default the pref itself has, and it is what these sites rendered before
-      // the flag existed — never-broken outranks the tri-state. `reading` is
-      // cleared so a later mount (or a publish) can still ask again.
+      // STILL NO ANSWER — so a real boolean, not `null`. `null` is "not asked
+      // yet" and every MOUNT holds a placeholder over it (ChatMount), so
+      // leaving it there after a failed read turns every chat embed on the page
+      // into a permanent skeleton: no iframe, no chat, no error.
+      //
+      // AND THE BOOLEAN IS THE PREF'S OWN DEFAULT, which is now `true`
+      // (2026-09-17). It used to be `false` because legacy was what an un-asked
+      // server ran; the native chat is what it runs now, so guessing `false`
+      // here would put a reader on the iframe for a dropped request — the same
+      // mismatch, pointing the other way.
       if (generation !== departed) return;
-      // ONLY A FIRST READ SETTLES ON `false` (review, 2026-09-16). A re-read —
-      // a tab coming back into view — that fails keeps the answer the page
-      // already has: `set(false)` here remounted every live native chat as the
-      // legacy iframe on one refused GET after a laptop wake. And `reading` is
-      // cleared only by the read that owns it, never by a superseded one.
-      if (!settledOnce) set(false);
+      // ONLY A FIRST READ SETTLES ON THE DEFAULT (review, 2026-09-16). A re-read
+      // — a tab coming back into view — that fails keeps the answer the page
+      // already has: a blind write here remounted every live chat on one refused
+      // GET after a laptop wake. And `reading` is cleared only by the read that
+      // owns it, never by a superseded one.
+      if (!settledOnce) set(true);
       reading = null;
     })
     .then(() => {

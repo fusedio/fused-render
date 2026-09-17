@@ -784,6 +784,26 @@ button.tasks-caret,
    focus. `-4px/-6px` negative margins with matching padding, so growing the box
    costs no layout — the chip occupies the same space it did as a bare label and
    nothing beside it moves when the pointer arrives. */
+/* ONE FUNNEL FOR EVERY FILTER CHIP ON A ROW (Akshil, 2026-09-17). The folder
+   tag and the draft pill sit side by side at the row's right end and read as one
+   group of controls — the draft pill's own skin is the folder tag's "verbatim …
+   two nearly-identical pills with two different pressed states would be the one
+   thing this seat was chosen to avoid" (see `.tasks-draft-pill`, below). Two
+   different CURSORS would say the same wrong thing, so the value is named once
+   here and both chips take it.
+
+   Two-tone by construction: a black-outlined white funnel reads on the light
+   surface and on the dark one, which a single-colour cursor cannot — a cursor is
+   an image, resolved once, with no `currentColor` to follow. `pointer` rides
+   behind it as the fallback for anything that will not take an SVG cursor
+   (WebKit), so the worst case is the hand these chips used to wear. */
+:root {
+  --cur-filter:
+    url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M4.5 5h15l-5.9 7v5.5l-3.2 1.7V12z' fill='%23fff' stroke='%23000' stroke-width='2.8' stroke-linejoin='round' stroke-linecap='round'/%3E%3Cpath d='M4.5 5h15l-5.9 7v5.5l-3.2 1.7V12z' fill='%23fff'/%3E%3C/svg%3E")
+      5 5,
+    pointer;
+}
+
 /* AND THE CARDS WALL'S HEAD ROW, on every rule of this tag from here down: the
    folder chip in a card's head is this same tag (Akshil, 2026-09-05: "project
    name ui as is from list view"), and a skin scoped to `.tasks-row` alone left
@@ -795,7 +815,11 @@ button.tasks-caret,
   border: 0;
   background: none;
   font: inherit;
-  cursor: pointer;
+  /* A FUNNEL, NOT A HAND (Akshil, 2026-09-17). Every other pointer in a task
+     row opens something; this one filters the wall in place, and a hand said
+     the same thing as the row behind it. The glyph IS the answer to "what does
+     pressing this do" before the press — the tooltip says it a second later. */
+  cursor: var(--cur-filter);
   /* ITS OWN SIZE — the pill is the pill again (Akshil, 2026-08-24, final pass:
      "keep the tag/button size same", "remove the padding part and the whole
      hovering part"). Two passes tried to make this box the hit area by growing
@@ -938,6 +962,10 @@ button.tasks-caret,
    (2026-08-24): the state and the thing it is a state OF are one box. */
 .task-card-head-row .schedule-tv-id--tag.is-on,
 .tasks-row .schedule-tv-id--tag.is-on {
+  /* AND THE HAND COMES BACK WHEN THE FILTER IS ALREADY ON (review): the press
+     CLEARS it, so a funnel over an ON chip would be a glyph saying the opposite
+     of what the click does. */
+  cursor: pointer;
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
 }
@@ -2201,7 +2229,9 @@ button.tasks-draft-pill {
   margin-block: -3px;
   align-self: center;
   background: none;
-  cursor: pointer;
+  /* The same funnel the folder tag wears, for the same reason and out of the
+     same custom property: this press narrows the page too. */
+  cursor: var(--cur-filter);
   transition: background-color 120ms ease;
 }
 
@@ -2280,6 +2310,9 @@ button.tasks-draft-pill:focus-visible {
    gives the wash an edge on the dark theme, where 14% of a light red over a
    dark ground is nearly nothing on its own. */
 button.tasks-draft-pill.is-on {
+  /* The hand again on an ON chip, exactly as on the folder tag: the press
+     clears the filter rather than setting one. */
+  cursor: pointer;
   background: color-mix(in srgb, var(--error) 14%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--error) 28%, transparent);
 }

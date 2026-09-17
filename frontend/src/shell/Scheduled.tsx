@@ -963,8 +963,9 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // there navigates exactly as it did — the same rule that leaves the sidebar's
   // task list and the notifications alone
   // (.claude-design/task-side-peek/design.md).
-  // THE FLAG (task-peek-flag.ts, `task_peek_enabled`): experimental, default
-  // off, and off means this page is the page it has always been — no panel, no
+  // THE FLAG (task-peek-flag.ts, `task_peek_enabled`): default ON since
+  // 2026-09-17, and OFF — the switch, or the first frames before the prefs read
+  // lands — means this page is the page it has always been: no panel, no
   // `?peek=`, no measured fit, no walk attributes. Read here and handed down,
   // so there is one answer for the whole page.
   const peekOn = useTaskPeekEnabled();
