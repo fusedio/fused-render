@@ -52,6 +52,7 @@ import {
   AnnPins,
   AnnPopover,
   createRecorder,
+  isDoneChord,
   isSendableNow,
   NAV_LOCKED_REASON,
   pathOf,
@@ -1313,7 +1314,26 @@ function ChatBody(props: ChatBodyProps) {
     // and only the width of a start request is a moment with nowhere to put
     // them.
     canSend: () => statusRef.current !== "starting",
-    autoSubmit: () => void submitBox.current?.(),
+    // AND IT ANSWERS. `submit` returns false for every road the composer
+    // refuses on — a pending scheduled message, an upload still in flight, a
+    // send already out — and `?? false` makes "no composer is mounted at all"
+    // the same honest answer. ✓ Done keeps its round armed on a `false` rather
+    // than disarming over notes nobody was handed (Akshil, 2026-09-17).
+    autoSubmit: () => submitBox.current?.() ?? false,
+    // …and the reader is told, in the chat's own "this did not go" slot — the
+    // same card `refuseQueuedSend` writes, because from their side this is the
+    // same event. The mode staying armed is the fix; this is the sentence that
+    // stops it reading as a stuck button.
+    onSendRefused: (why) =>
+      controller.reportTrouble({
+        kind: "generic",
+        message:
+          why === "starting"
+            ? "Your notes were not sent: the last message is still going out." +
+              " They are still here — press ✓ Done again in a moment."
+            : "Your notes were not sent: this chat cannot take a message right now." +
+              " They are still here, and comment mode is still on.",
+      }),
     // T:7670 — arming over a cross-origin target is the natural moment for the
     // ONE tab-share prompt, and only where the native screen shot is off: with
     // it there is no prompt at all, and raising one here would be the prompt
@@ -1851,7 +1871,13 @@ function ChatBody(props: ChatBodyProps) {
   useEffect(() => {
     if (typeof document === "undefined") return;
     const onKey = (ev: KeyboardEvent) => {
-      if (ev.key !== "Escape" || ev.defaultPrevented) return;
+      if (ev.defaultPrevented) return;
+      // TWO KEYS ON ONE LISTENER, and they share everything but the last step:
+      // the viewer's claim, and the "is this chat's keystroke" test below.
+      // ⌘↩ is ✓ Done (`isDoneChord`), which is the round's other way out — the
+      // one that SENDS, where Escape is the one that keeps the notes.
+      const done = isDoneChord(ev);
+      if (ev.key !== "Escape" && !done) return;
       // 1. THE SHOT VIEWER CLAIMS IT FIRST (T:15959), and it is a portalled
       //    dialog that closes itself — so this listener stands down entirely
       //    rather than claiming on its behalf: neither the annotation mode nor
@@ -1869,6 +1895,14 @@ function ChatBody(props: ChatBodyProps) {
       //      preventDefaults exactly when it claimed, which is what makes the
       //      host's own hop below the LEFTOVER case rather than a second
       //      claimant (T:15968-15976, `escapeAction`).
+      // ⌘↩ STOPS HERE. Its only claimant is the armed round (the hook refuses
+      // when there is none, leaving the press untouched), so there is no
+      // leftover case to hand the host: `onEscape`'s fallthrough below is
+      // Escape's alone.
+      if (done) {
+        annRef.current?.onDoneChord(ev);
+        return;
+      }
       annRef.current?.onEscape(ev);
       if (ev.defaultPrevented) return;
       // 4. nothing of the chat's own was open, so the press reaches the host —
@@ -3536,6 +3570,11 @@ function ChatBody(props: ChatBodyProps) {
       hasAttachments:
         attach.items.length > 0 ||
         ann.chips.some((c) => isSendableNow(c.note, walkthroughOwns(ann.mode))),
+      // THE SAME FACT, LIVE, for the send ✓ Done fires one microtask after
+      // committing a note: the line above is a render-time snapshot and is a
+      // paint behind that write, which is how a round could be disarmed with
+      // nothing sent (`ann/useAnnotations.hasSendable`, Akshil 2026-09-17).
+      hasAttachmentsNow: ann.hasSendable,
       // ... but not while one of them is still on its way: `take()` leaves a
       // `pending` chip in the tray, so a send fired now would go out WITHOUT
       // the files whose chips made it sendable (Bugbot, PR #1064).
@@ -3623,6 +3662,7 @@ function ChatBody(props: ChatBodyProps) {
       onPaste,
       pane.paneNoun,
       ann.chips,
+      ann.hasSendable,
       // THE MOMENT `hasAttachments` IS ASKED AT: while a walkthrough records or
       // settles its wordless marks are not sendable, so the Send affordance has
       // to be recomputed when the mode moves and not only when the chips do.

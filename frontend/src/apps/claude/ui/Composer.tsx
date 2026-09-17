@@ -211,6 +211,22 @@ export interface ComposerCardProps {
   /** Notes or pictures alone are sendable, with no words at all (T:17903). */
   hasAttachments?: boolean;
   /**
+   * THE SAME QUESTION, ASKED IN THE TICK THE SEND HAPPENS — and the reason it
+   * needs a second spelling is that `hasAttachments` is a RENDER-TIME snapshot.
+   *
+   * ✓ Done (the bar's button and its ⌘↩ chord) commits the open note card and
+   * presses `submitRef` inside ONE microtask: the store has the new note, React
+   * has not painted, and the `submit` this ref still points at was built by the
+   * last paint — when the round carried nothing. So the gate below refused a
+   * send the reader had just asked for, and the mode machine disarmed anyway,
+   * leaving the notes as chips with nothing sent (Akshil, 2026-09-17).
+   *
+   * A GETTER and not a value, because that is the whole point: it is called
+   * here, not captured up there. Only the notes' side needs it — the tray's own
+   * chips cannot appear inside a programmatic send the way a note can.
+   */
+  hasAttachmentsNow?(): boolean;
+  /**
    * A CHIP IS STILL ATTACHING, so nothing leaves this box yet — the camera's
    * own `shotBusy` gate (T:11203), one level up.
    *
@@ -436,6 +452,7 @@ export function ComposerCard({
   onFollowUp,
   onStop,
   hasAttachments,
+  hasAttachmentsNow,
   attachPending,
   blocked,
   blockedPlaceholder,
@@ -1553,7 +1570,9 @@ export function ComposerCard({
     // single newline ran the reader's draft into the walkthrough's intro and
     // changed what the model reads.
     const message = extra ? (typed ? typed.replace(/\s*$/, "") + "\n\n" + extra : extra) : typed;
-    if (!message && !hasAttachments) return false;
+    // THE LIVE HALF FIRST-CLASS, not a fallback: a round of notes committed a
+    // microtask ago is exactly as real as one the last paint drew a chip for.
+    if (!message && !hasAttachments && !hasAttachmentsNow?.()) return false;
     // A SEND SPENDS THE BOX THE SAME WAY AN ANSWERED DIALOG DOES, and a render
     // older than this line would otherwise hand a sent sentence to the unmount
     // save as an unfinished task (`spent`).
@@ -1612,7 +1631,21 @@ export function ComposerCard({
     // that also scrolls fights it.
     boxRef.current?.focus({ preventScroll: true });
     return true;
-  }, [blocked, attaching, busyRef, sendBusy, text, hasAttachments, hasSession, running, onFollowUp, onSend, controls, boxRef]);
+  }, [
+    blocked,
+    attaching,
+    busyRef,
+    sendBusy,
+    text,
+    hasAttachments,
+    hasAttachmentsNow,
+    hasSession,
+    running,
+    onFollowUp,
+    onSend,
+    controls,
+    boxRef,
+  ]);
 
   // The seat for the programmatic send. In an EFFECT so a render React throws
   // away (StrictMode's double invoke, a concurrent attempt that loses) cannot

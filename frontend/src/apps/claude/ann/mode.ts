@@ -10,8 +10,22 @@
 // default, the `annmode` param, the hosted re-arm when a target appears, and
 // the app menu's exit action), which is why `capable()` is enforced HERE rather
 // than at each of them: a check at each is a check the seventh one forgets.
-import { isSendable, type AnnStore } from "./store";
+import { isMod } from "@platform/lib/platform";
+
+import { hasSendable, type AnnStore } from "./store";
 import type { AnnMode, AnnRecorder } from "./types";
+
+/**
+ * WHY A ROUND DID NOT GO — the two ways `done()` can be refused, and they are
+ * two because the reader can act on them differently.
+ *
+ *   * `starting` — the width of a `start` request, `canSend()`'s own window
+ *     (T:7720 `activeRun || !sending`). A second later the same press works.
+ *   * `refused` — the composer itself said no: a pending scheduled message
+ *     holds the box, an attachment is still uploading, a send is already out,
+ *     or no composer is mounted at all. Something has to be undone first.
+ */
+export type AnnSendRefusal = "starting" | "refused";
 
 export interface AnnModeDeps {
   store: AnnStore;
@@ -43,8 +57,22 @@ export interface AnnModeDeps {
   closeComposer(): void;
   /** Nothing to hide is the same outcome as hidden (T:7688). */
   hideHl(): void;
-  /** T:8487 `annAutoSubmit` — the notes' ONE door to Claude. */
-  autoSubmit(): void;
+  /**
+   * T:8487 `annAutoSubmit` — the notes' ONE door to Claude, AND IT ANSWERS.
+   *
+   * It used to return nothing, so `done()` could only assume the message went;
+   * every road on which the composer refuses (`ui/Composer.tsx`'s `submit`
+   * returns false for a blocked box, an in-flight upload, a send already out,
+   * and for an EMPTY box whose `hasAttachments` snapshot predates the note this
+   * very call just committed) ended with the mode disarmed and the round left
+   * sitting as chips with nothing sent (Akshil, 2026-09-17). `false` is what
+   * lets this file keep the mode instead.
+   */
+  autoSubmit(): boolean;
+  /** The round could not go — say so where the reader is looking. Optional: a
+   *  caller with nowhere to say it still gets the mode held open, which is the
+   *  half that cannot be skipped. */
+  onSendRefused?(why: AnnSendRefusal): void;
   /**
    * T:7720 — a live run is NOT a reason to hold the notes back (Akshil,
    * 2026-09-04): an annotation-only send goes to the running claude as a
@@ -368,8 +396,33 @@ export function createAnnMode(deps: AnnModeDeps): AnnModeMachine {
         // asking only for `content` here made ✓ Done disarm a round of them
         // and leave them sitting unsent — while the Send affordance beside it
         // said they were sendable (Bugbot, PR #1074).
-        const pending = deps.store.list().some((a) => isSendable(a) && !a.sent);
-        if (pending && deps.canSend()) deps.autoSubmit();
+        //
+        // `hasSendable` and not a fourth spelling of the rule: the composer's
+        // own send gate asks the same function, so "there is a round" and "the
+        // send will take it" can no longer disagree.
+        const pending = hasSendable(deps.store.list(), walkthroughOwns(mode()));
+        if (pending) {
+          // A DISARM WITH THE NOTES STILL UNSENT IS THE ONE OUTCOME THIS DOOR
+          // MAY NOT HAVE (Akshil, 2026-09-17: "it exited annotation mode and my
+          // comment saved but it didn't push it in the chat").
+          //
+          // `set(false)` used to run on every road out of here — including the
+          // one where `canSend()` said no and the one where `autoSubmit()` was
+          // a no-op — so a refusal cost the reader the mode, the pins and the
+          // bar, and left them a row of chips with no way to tell that nothing
+          // had been sent. The mode is what the round is worked in, so a
+          // refused send KEEPS it: the same ⌘↩ a second later is the retry, and
+          // Esc is still the way out that throws them away on purpose.
+          const why: AnnSendRefusal | null = !deps.canSend()
+            ? "starting"
+            : deps.autoSubmit()
+              ? null
+              : "refused";
+          if (why) {
+            deps.onSendRefused?.(why);
+            return;
+          }
+        }
         set(false);
       } finally {
         doneBusy = false;
@@ -419,4 +472,31 @@ export function escapeAction(
   if (composerOpen) return "close-composer";
   if (annotating) return "exit-annotate";
   return "";
+}
+
+/**
+ * ⌘↩ / Ctrl+↩ — ✓ DONE'S CHORD, the twin of Escape's table above.
+ *
+ * Escape has been the only key in the mode since it shipped, and it is the way
+ * OUT that throws nothing away; the way out that SENDS was a click and only a
+ * click. A reader who has just typed the last note is already at the keyboard
+ * with the composer focused, and the round's own Enter saves that note without
+ * finishing the round — so finishing meant leaving the keyboard for a button in
+ * a corner. This is that button's chord (Akshil, 2026-09-17).
+ *
+ * `isMod` and not `metaKey || ctrlKey`: the app's one canonical primary-modifier
+ * test, exclusive by design, so Ctrl+↩ on a Mac is not this chord.
+ *
+ * Shift and Alt are rejected rather than ignored. Shift+Enter is the composer's
+ * newline and Alt already means "override the tool for one click" in this very
+ * mode; a chord that fires with either held would answer a press the reader
+ * meant for one of those.
+ *
+ * Exported for the three places a keydown can land while a round is armed — the
+ * chat's own document listener, the one wired into the FRAMED document
+ * (`wire-target`, keys do not cross the boundary), and the portaled note
+ * composer, whose card stops the bubble before either of them sees it.
+ */
+export function isDoneChord(e: KeyboardEvent): boolean {
+  return e.key === "Enter" && isMod(e) && !e.shiftKey && !e.altKey;
 }

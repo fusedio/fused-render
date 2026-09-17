@@ -12,8 +12,29 @@
 // The wire names are the PAGE's, camelCase (`systemPrompt`, `topP`,
 // `maxTokens`) since D633 — the same names `runtime.js` exposes, so nothing
 // is its business, not a second contract to copy here.
-import { postJson, rawUrl } from "@platform/lib/api";
+import { postJson, rawUrl, sourceHeader } from "@platform/lib/api";
 import { fetchJobs, type Job } from "@platform/lib/jobs";
+
+// SPEC-quiet-notifications.md bug 1/bug 2: `X-Fused-Source` is who RAISED the
+// job, deliberately separate from `X-Fused-Page` (never sent by this module
+// for image/video — see `startImage`/`startVideo` below). A render's own
+// `page` is left to fall back to its output path server-side (`_start_render`'s
+// `page or done_page or out_dir`, `fused_render/ai/supervisor.py`) so a click
+// still opens the file; sending `X-Fused-Page` here would defeat that by
+// making the caller's route win permanently. `source` never inherits that
+// fallback (`Job.source`, `fused_render/jobs.py`), so it is the only field a
+// presence check can read to suppress a Playground-raised render while the
+// Playground itself is still open.
+//
+// `postJson` (used by `startImage`/`startVideo`/`startTranscribe`/the capture
+// starters below) now attaches this automatically (`platform/lib/api.ts`'s
+// `ambientSourceHeaders`) — the explicit `{ headers: sourceHeader() }` on
+// `startImage`/`startVideo` is redundant with it (same value, and an explicit
+// header always wins over the ambient one anyway) but kept for clarity at the
+// two call sites the bug report named by hand. `streamChat`/`embedTexts`/
+// `embedPaths` below use a raw `fetch` (a streamed response `postJson` cannot
+// carry) and so do NOT get the ambient default — this is the one place a
+// producer still has to opt in, and it does, via the same shared helper.
 
 export interface ChatTurn {
   role: "user" | "assistant";
@@ -98,7 +119,7 @@ export async function streamChat(opts: {
   }
   const res = await fetch("/api/ai", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Fused": "1" },
+    headers: { ...sourceHeader(), "Content-Type": "application/json", "X-Fused": "1" },
     body: JSON.stringify(body),
     signal: opts.signal,
   });
@@ -357,7 +378,7 @@ export interface ImageStarted {
 }
 
 export function startImage(request: ImageRequest): Promise<ImageStarted> {
-  return postJson<ImageStarted>("/api/ai/image", request);
+  return postJson<ImageStarted>("/api/ai/image", request, { headers: sourceHeader() });
 }
 
 // -- Video (POST /api/ai/video, SPEC §40) --------------------------------------
@@ -405,7 +426,7 @@ export interface VideoStarted {
 }
 
 export function startVideo(request: VideoRequest): Promise<VideoStarted> {
-  return postJson<VideoStarted>("/api/ai/video", request);
+  return postJson<VideoStarted>("/api/ai/video", request, { headers: sourceHeader() });
 }
 
 // -- Embeddings (POST /api/ai/embed, SPEC §40) ---------------------------------
@@ -445,7 +466,7 @@ export async function embedTexts(
 ): Promise<EmbedResult> {
   const res = await fetch("/api/ai/embed", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Fused": "1" },
+    headers: { ...sourceHeader(), "Content-Type": "application/json", "X-Fused": "1" },
     body: JSON.stringify(kind ? { model, texts, kind } : { model, texts }),
   });
   return readEmbedReply(res);
@@ -490,7 +511,7 @@ async function readEmbedReply(res: Response): Promise<EmbedResult> {
 export async function embedPaths(model: string, paths: string[]): Promise<EmbedResult> {
   const res = await fetch("/api/ai/embed", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Fused": "1" },
+    headers: { ...sourceHeader(), "Content-Type": "application/json", "X-Fused": "1" },
     body: JSON.stringify({ model, paths }),
   });
   return readEmbedReply(res);

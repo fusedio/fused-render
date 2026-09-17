@@ -4,6 +4,7 @@
 // navigateUrl dispatch it after pushState, popstate is subscribed alongside it.
 import { carries as snapshotCarries, getSnapshotAppDir } from
   "@platform/lib/snapshot-param";
+import { ORIGIN_BY_ROUTE } from "@platform/lib/originRoutes";
 
 export const VIEW_PREFIX = "/explorer/view/";
 
@@ -707,17 +708,13 @@ export function currentUrl(): string {
 // and an ordinary page both pass.
 // This same closed set keys `_ORIGIN_BY_ROUTE` in `fused_render/jobs.py`,
 // which `origin_for_page` reads to name a page-owned job's `origin` caption
-// from its own X-Fused-Page header — kept there rather than duplicated as a
-// second table; a route added here needs a matching entry there to get a
-// label.
-const JOB_PAGE_ROUTES: ReadonlySet<string> = new Set([
-  "/ai-models/local",
-  "/ai-models/benchmark",
-  "/claude-config",
-  "/preferences",
-  "/preferences?tab=indexing",
-  "/tasks",
-]);
+// from its own X-Fused-Page header — and `ORIGIN_BY_ROUTE`
+// (`platform/lib/originRoutes.ts`), the shared leaf table both this set and
+// that Python dict now derive from/mirror. DERIVED from that table's keys
+// rather than a second literal list: a route without a label makes no sense
+// to navigate to as a "job page" either, so the membership set and the
+// label table can never drift from each other on this side.
+const JOB_PAGE_ROUTES: ReadonlySet<string> = new Set(Object.keys(ORIGIN_BY_ROUTE));
 
 export function navigateToJobPage(page: string): void {
   if (JOB_PAGE_ROUTES.has(page)) {

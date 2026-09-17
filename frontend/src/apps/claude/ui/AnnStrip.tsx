@@ -37,6 +37,7 @@ import "../styles/chat.css";
 
 import {
   ANN_ARMED_TITLE,
+  ANN_DONE_CHORD,
   COMMENT_SEAT_WHILE_RECORDING,
   COMMENT_SEAT_WHILE_SETTLING,
   seatsAria,
@@ -171,7 +172,13 @@ export function AnnStrip({
       : armed && (mode === "settling" || mode === "transcribing")
         ? COMMENT_SEAT_WHILE_SETTLING
         : armed && mode === "comment"
-          ? { label: "Done — send the notes and finish commenting", title: ANN_ARMED_TITLE }
+          ? {
+              // The chord rides in the SPOKEN name, where the seat's changing
+              // word already lives — the visible "Comment" never moves (T:7689),
+              // and the title below is the sentence that teaches it in full.
+              label: `Done — send the notes and finish commenting (${ANN_DONE_CHORD})`,
+              title: ANN_ARMED_TITLE,
+            }
           : {
               label: annotateLabelFor(paneNoun),
               // The shared helper, not a literal: T extracted `annIdleTitle`
