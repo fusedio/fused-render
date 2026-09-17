@@ -288,31 +288,62 @@ committed state; none was left mid-edit.
 
 ## Remaining work (exact resume pointers)
 
-- `config.py`: add `kind: str = "files"` field; generalize
-  `index_dir()` to accept a `kind` parameter, `kind == "files"` must
-  produce the CURRENT unchanged path (zero migration risk); extend
-  `tests/test_index_config.py` via TDD.
-- `store.py`: generalize `schemas(pa)` and `Sink.__init__` to consult
-  `kinds.get(kind).pa_schema(pa)` instead of the hardcoded files/dirs
-  tuple, keeping "files"/"dirs" byte-identical. `_compact_locked`'s SQL
-  (~store.py:521) embeds literal column names and needs to become
-  schema-driven — this is the highest-risk remaining piece, budget
-  accordingly.
-- `guarded_query.py`: `_connect`'s `CREATE VIEW files AS...`/`CREATE VIEW
-  dirs AS...` and the `_EMPTY_FILES`/`_EMPTY_DIRS` stand-ins need a
-  kind-driven equivalent for a second index to be queryable through the
-  same sandbox. The DuckDB lockdown order (`allowed_directories` →
-  `enable_external_access=false` → `lock_configuration=true`) MUST NOT
-  change relative order when this is touched.
-- `scan.py`: the actual wiring of `IndexKind.extract` into the live
-  walker's `sink.add()` call sites (lines ~236, ~304/311, ~500/525, ~633)
-  is not done. This is what makes a registered kind actually get indexed,
-  as opposed to merely declarable.
-- Part 2 (`apps_kind.py`, `manifest.py`, example indexer under
-  `index/examples/`) not started.
-- Part 3 (⌘K overlay, shortcuts-overlay deletion at
-  `frontend/src/platform/lib/shortcuts.ts:116`) not started.
-- Router-level generalization of `routers/index.py`'s per-route
-  `load_config()` calls to accept an index identifier: not started.
-- Management-page frontend work (coexisting with or folding into
-  `frontend/src/shell/Indexing.tsx`): not started.
+This section was corrected by the following builder session: the version
+above (in the git history) said Part 2 was "not started" and listed
+`config.py`'s `kind` field as pending. Both were stale by the time that
+session ended — `apps_kind.py`, `manifest.py`,
+`examples/notes_indexer/`, and the kind-aware `config.py` were all
+committed and on disk. This is the reconciled list, in priority order.
+
+1. **`scan.py` wiring** (Part 1 — not done): call a registered kind's
+   `extract` from the walker's `sink.add()` call sites (~lines 236,
+   304/311, 500/525, 633) so a registered kind is actually indexed by a
+   live scan, not merely declarable. Highest-value remaining item —
+   nothing built so far is provably wired into a real scan.
+2. **`store.py` schema/compaction generality** (Part 1, HIGH RISK — not
+   done): `schemas(pa)`/`Sink.__init__` need to consult
+   `IndexKind.pa_schema` for a non-"files" `cfg.kind`, and
+   `_compact_locked` (~store.py:521) embeds literal column names
+   (`path, dir, name, ext, size, mtime, depth`) that must become
+   column-list-driven. "files"/"dirs" output must stay byte-identical.
+   Budget this as its own TDD pass against `test_index_store.py`.
+3. **`guarded_query.py` per-kind views** (Part 1 — not done): `_connect`'s
+   `CREATE VIEW files/dirs AS...` and `_EMPTY_FILES`/`_EMPTY_DIRS` need a
+   kind-driven equivalent. The DuckDB lockdown order
+   (`allowed_directories` → `enable_external_access=false` →
+   `lock_configuration=true`) MUST NOT change relative order.
+4. **Apps-kind search** (Part 2 tail — not done): the working hypothesis
+   under "Open questions carried forward" below — `resolve_query`/
+   `search_ranked` stay byte-identical for "files"; a new function shapes
+   an apps-kind `inner` subquery and calls the same `_rank_sql`/
+   `_glob_sql` primitives — needs verifying before relying on it.
+5. **Confirm/refuse HTTP route + frontend UI** (Part 2 tail — not done):
+   `manifest.propose_index`/`confirm_index`/`refuse_index` have no
+   caller yet. Decision #8 ("never silent") needs a route plus a
+   confirmation surface in the frontend.
+6. **Router generalization** (Part 1/2 tail — not done):
+   `routers/index.py`'s per-route bare `load_config()` calls need to
+   accept an index identifier rather than assuming the single "files"
+   store. The spec lists every call site with line numbers; change them
+   in lockstep, and keep `fused.fileIndex.search`/`.query` in
+   `static/runtime.js` working.
+7. **Management page** (not started): `apps/ai_models` is the precedent
+   for a prefix-routed built-in page (sidebar entry + lazy import in
+   `App.tsx`) — build this feature's equivalent, and decide whether
+   `frontend/src/shell/Indexing.tsx` folds into it or stays as a second,
+   non-disagreeing source of truth.
+8. **Part 3 in its entirety** (not started): delete the shortcuts overlay
+   (surface + `frontend/src/platform/lib/shortcuts.ts:116`'s listing
+   entry — delete, do not relocate to `?`), build the in-app ⌘K overlay,
+   grouped by source with no cross-source score calibration, file search
+   reusing `resolve_query`/`search_ranked` verbatim, app search reusing
+   whatever item 4 above produces, per-keystroke cancellation via the
+   existing `CancelToken`/HTTP 499 machinery.
+
+**Already built and committed, for the avoidance of doubt**: the full
+plugin contract (`kinds.py`), kind-aware `IndexConfig`/`index_dir()`/
+`load_config()` (`config.py`), the built-in "apps" kind (`apps_kind.py`),
+the third-party manifest + propose/confirm registry (`manifest.py`), one
+fully worked reference example indexer (`examples/notes_indexer/`), and
+the house-style spec doc (`specs/index-plugins.md`, linked from
+`overview.md`).
