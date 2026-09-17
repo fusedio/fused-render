@@ -44,6 +44,12 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 @router.get("/preferences")
 @router.get("/templates")
 @router.get("/mounts")
+# The Index management page (shell/IndexManager.tsx): every registered
+# index kind's status plus decision #8's proposal confirm/refuse controls.
+# Linked from the sidebar and from App.tsx's route dispatch like every other
+# entry on this list — in-app navigation never asks the server, so leaving
+# it off here is invisible until someone refreshes or bookmarks /index.
+@router.get("/index")
 # AI Models (SPEC §37) — a client-side page like the rest, and reachable by URL
 # even where the sidebar hides its entry. The bare prefix is what the sidebar
 # links to; its five TABS are sub-paths (`/ai-models/local`, …) served by the
