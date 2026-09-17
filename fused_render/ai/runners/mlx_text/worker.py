@@ -399,13 +399,24 @@ def release():
 # ------------------------------------------------------------------ generation
 
 
-def _messages_to_prompt(processor, messages, prompt):
+def _messages_to_prompt(processor, messages, prompt, tools=None):
     """The model's own chat template, never a hand-rolled one.
 
     Every instruct model has its own turn markers, and getting them wrong
     produces output that looks almost right — which is worse than an error.
     `apply_chat_template` is the tokenizer's own answer; a model without one
     falls back to the raw prompt.
+
+    `tools`, when given, rides straight through to the tokenizer's own
+    `apply_chat_template` as its standard `tools=` kwarg (`server/ai.py`'s
+    `tool_calls.build_tool_schema` already built it in the JSON-schema shape
+    that kwarg expects). Whether that actually changes anything is entirely
+    the model's own chat template's call: a template that never reads a
+    `tools` variable renders identically with or without it (Jinja ignores
+    an unused context variable, the same fact `enable_thinking`'s own note
+    below leans on), and only a template that DOES — the tool-trained
+    families `tool_calls.py`'s own module docstring names — will actually
+    render the tool list into the prompt.
 
     **Deliberately still the tokenizer's/processor's OWN `apply_chat_template`,
     never `mlx_vlm.prompt_utils.apply_chat_template`** — this is the one place
@@ -430,7 +441,8 @@ def _messages_to_prompt(processor, messages, prompt):
         return prompt
     template = getattr(processor, "apply_chat_template", None)
     if template and getattr(processor, "chat_template", None):
-        return template(messages, tokenize=False, add_generation_prompt=True)
+        kwargs = {"tools": tools} if tools else {}
+        return template(messages, tokenize=False, add_generation_prompt=True, **kwargs)
     return "\n\n".join(m.get("content", "") for m in messages if isinstance(m, dict))
 
 
@@ -488,6 +500,10 @@ def generate(body, write):
 
     model = _loaded.get("model")
     processor = _loaded.get("processor")
+    # A JSON-schema tool list (`tool_calls.build_tool_schema`, server/ai.py) —
+    # or None on the ordinary call that names no tools, which every branch
+    # below already treats as "nothing to add to the template context".
+    tools = body.get("tools") if isinstance(body.get("tools"), list) else None
     if model is None or processor is None:
         write({"type": "done", "ok": False, "error": "no model is loaded"})
         return
@@ -606,10 +622,12 @@ def generate(body, write):
         # template that never asks for it, so this is a no-op there).
         from mlx_vlm.prompt_utils import apply_chat_template
 
+        tool_kwargs = {"tools": tools} if tools else {}
         text = apply_chat_template(processor, config, messages,
-                                   num_images=len(images), enable_thinking=True)
+                                   num_images=len(images), enable_thinking=True,
+                                   **tool_kwargs)
     else:
-        text = _messages_to_prompt(processor, messages, body.get("prompt") or "")
+        text = _messages_to_prompt(processor, messages, body.get("prompt") or "", tools=tools)
     max_tokens = int(body.get("max_tokens") or 1024)
     sampler = make_sampler(
         temp=float(body.get("temperature", 0.7)),

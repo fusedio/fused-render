@@ -46,7 +46,11 @@ router = APIRouter()
 # The CLI is driven as a bare completion engine: --tools= disables every
 # built-in tool, --setting-sources= skips user/project settings and
 # CLAUDE.md, --system-prompt-file REPLACES the shipped agent prompt, and
-# --no-session-persistence keeps everything off disk.
+# --no-session-persistence keeps everything off disk. A request naming
+# `mcpServers` is the one addition to that: --mcp-config/--strict-mcp-config
+# load exactly the servers it named (never a person's own globally
+# registered ones) and --allowedTools turns their tools on — the BUILT-IN
+# set stays off regardless (see _ai_cmd).
 #
 # LATENCY (D168/D169): the CLI is a Node program whose startup alone costs
 # ~1.5-2.5s — it dominated every call at haiku sizes. ONE persistent process
@@ -350,7 +354,47 @@ def _kill_process_tree(proc) -> None:
         pass
 
 
-def _ai_cmd(bin_path: str, model: str, sp_file: str) -> list[str] | str:
+def _mcp_key(mcp_servers: list | None) -> str | None:
+    """A stable, comparable fingerprint of an `mcpServers` list — `None` for
+    "no tools", so `_AiSession.configure`'s own `!=` check reads as plainly
+    for the common case (no server, no respawn just to prove it) as for the
+    uncommon one. `json.dumps(..., sort_keys=True)` rather than `repr`/`id`:
+    two requests naming the SAME servers in a different order (a client that
+    re-serialized a dict, say) must compare equal, or every such request
+    would pay a needless respawn for no config that actually changed."""
+    if not mcp_servers:
+        return None
+    return json.dumps(mcp_servers, sort_keys=True)
+
+
+def _mcp_config_json(mcp_servers: list) -> str:
+    """The `--mcp-config` FILE's own contents: `.mcp.json`'s shape,
+    `{"mcpServers": {name: {...definition minus name...}}}` — the identical
+    per-server object (`type`/`command`/`args`/`env`/`url`/`headers`) this
+    app already asks a user to type for `claude mcp add-json`
+    (`claude_config/mcp.py`) and for the playground's own "add a server"
+    form (`mcp_client.validate_server`'s docstring), just keyed by name
+    instead of carrying it as a field."""
+    servers = {}
+    for server in mcp_servers:
+        entry = {k: v for k, v in server.items() if k != "name"}
+        servers[server["name"]] = entry
+    return json.dumps({"mcpServers": servers})
+
+
+def _mcp_allowed_tools(mcp_servers: list) -> list[str]:
+    """One `mcp__<server>` pattern per configured server — Claude Code's own
+    permission-rule shorthand for "every tool this MCP server offers", so a
+    request that named a server does not also have to know that server's
+    exact tool names up front (`--mcp-config` alone loads the servers; this
+    is what makes their tools usable with nobody left to answer a permission
+    prompt in a headless completion process — see `_ai_cmd`'s own note on
+    `--permission-prompts none`)."""
+    return [f"mcp__{server['name']}" for server in mcp_servers]
+
+
+def _ai_cmd(bin_path: str, model: str, sp_file: str,
+           mcp_file: str | None = None, allowed_tools: tuple[str, ...] = ()) -> list[str] | str:
     """The stream-json spawn command for the persistent completion process.
 
     --input-format stream-json is what makes the warm instance possible: the
@@ -371,8 +415,27 @@ def _ai_cmd(bin_path: str, model: str, sp_file: str) -> list[str] | str:
     --system-prompt-file (`sp_file`, our own tempdir path) at spawn and via
     the set_model control_request afterwards, and the model is
     charset-validated (_AI_MODEL_RE). _popen_cmd turns the result into an
-    argv list, or one fully-quoted command string behind a .cmd/.bat shim."""
-    return _popen_cmd(bin_path, [
+    argv list, or one fully-quoted command string behind a .cmd/.bat shim.
+
+    `mcp_file`/`allowed_tools` are the MCP-tools extension: `--mcp-config
+    <mcp_file>` loads exactly the servers a request named (our own tempdir
+    path, written by `_ai_spawn`, the same "our own path, never user text on
+    the line" discipline `sp_file` already follows) and `--strict-mcp-config`
+    makes that the WHOLE MCP config for this process — never the servers a
+    person separately registered through Claude Code's own settings
+    (`claude_config/mcp.py`), which this relay has no business reaching for
+    on a caller's behalf. `--tools=` above still empties the BUILT-IN set
+    unconditionally (Bash, Edit, WebFetch, …; `--tools` and MCP tools are
+    independent surfaces — verified against `claude --help`, which describes
+    `--tools` as "the built-in set" only) — MCP tools are what
+    `allowed_tools` (`_mcp_allowed_tools`, `mcp__<server>` per server) turns
+    on, and `--permission-prompts none` is what stops an otherwise-unlisted
+    tool call from HANGING this headless process waiting for a human who is
+    not there to answer a permission prompt: an allowed tool runs with no
+    prompt at all, and anything else is auto-denied rather than parked.
+    Neither flag is added when `mcp_file` is None — an ordinary call names
+    no tools and this process's argv is byte-for-byte what it always was."""
+    args = [
         "-p",
         "--input-format", "stream-json",
         "--output-format", "stream-json",
@@ -388,7 +451,15 @@ def _ai_cmd(bin_path: str, model: str, sp_file: str) -> list[str] | str:
         "--tools=",
         "--setting-sources=",
         "--no-session-persistence",
-    ])
+    ]
+    if mcp_file:
+        args += [
+            "--mcp-config", mcp_file,
+            "--strict-mcp-config",
+            "--allowedTools", ",".join(allowed_tools),
+            "--permission-prompts", "none",
+        ]
+    return _popen_cmd(bin_path, args)
 
 
 async def _spawn_claude_stream(cmd: list[str] | str, env: dict):
@@ -425,34 +496,50 @@ async def _spawn_claude_stream(cmd: list[str] | str, env: dict):
     return await asyncio.create_subprocess_exec(*cmd, **kwargs)
 
 
-async def _ai_spawn(bin_path: str, model: str, system_prompt: str):
-    """Write the system-prompt file, build the command and spawn the
-    stream-json process; the sp file's path rides on the process object so
-    _ai_reap can delete it when the process is reaped (the instance outlives
-    any single request, so the file must too).
+async def _ai_spawn(bin_path: str, model: str, system_prompt: str,
+                    mcp_servers: list | None = None):
+    """Write the system-prompt file (and, when `mcp_servers` names any, the
+    MCP config file beside it), build the command and spawn the stream-json
+    process; both files' paths ride on the process object so _ai_reap can
+    delete them when the process is reaped (the instance outlives any single
+    request, so the files must too).
 
     The env is os.environ untouched: effort/thinking are Claude Code's own
     semantics now (the effortLevel flag setting), not env-var overrides."""
     sp_file = tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", suffix=".txt",
         prefix="fused_render_ai_sp_", delete=False)
+    mcp_file = None
     try:
         sp_file.write(system_prompt)
         sp_file.close()
+        if mcp_servers:
+            mcp_file = tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", suffix=".json",
+                prefix="fused_render_ai_mcp_", delete=False)
+            mcp_file.write(_mcp_config_json(mcp_servers))
+            mcp_file.close()
         proc = await _spawn_claude_stream(
-            _ai_cmd(bin_path, model, sp_file.name), dict(os.environ))
+            _ai_cmd(bin_path, model, sp_file.name,
+                   mcp_file.name if mcp_file else None,
+                   tuple(_mcp_allowed_tools(mcp_servers)) if mcp_servers else ()),
+            dict(os.environ))
     except BaseException:
-        try:
-            os.unlink(sp_file.name)
-        except OSError:
-            pass
+        for f in (sp_file, mcp_file):
+            if f is not None:
+                try:
+                    os.unlink(f.name)
+                except OSError:
+                    pass
         raise
     proc._fused_ai_sp_file = sp_file.name
+    proc._fused_ai_mcp_file = mcp_file.name if mcp_file else None
     return proc
 
 
 async def _ai_reap(proc) -> None:
-    """Kill a claude process, wait for it, and remove its system-prompt file.
+    """Kill a claude process, wait for it, and remove its system-prompt (and,
+    when it was spawned with tools, MCP config) file.
 
     Shielded: a reap is cleanup that must complete even when the caller is
     being cancelled (client disconnect, server shutdown) — an interrupted
@@ -469,6 +556,12 @@ async def _ai_reap(proc) -> None:
         if sp_file:
             try:
                 os.unlink(sp_file)
+            except OSError:
+                pass
+        mcp_file = getattr(proc, "_fused_ai_mcp_file", None)
+        if mcp_file:
+            try:
+                os.unlink(mcp_file)
             except OSError:
                 pass
 
@@ -504,23 +597,39 @@ class _AiSession:
     write failure) kills it and retries once on a fresh spawn. If a future
     CLI drops the set_model system_prompt field, that same path degrades
     gracefully: the control error triggers a respawn whose argv carries the
-    requested config."""
+    requested config.
+
+    **One exception to "no config state between requests": `_mcp_key`.**
+    MCP servers (`--mcp-config`) are argv, not something the stdin protocol
+    can reconfigure — see `configure`'s own note on why a request naming a
+    different tool set than the live process was spawned with forces a
+    respawn, the one case this class pays the cold-start cost again."""
 
     def __init__(self):
         self.lock = asyncio.Lock()
         self._proc = None
         self._ctrl_seq = 0
         self._spawn_task = None  # startup prewarm; ref so it isn't GC'd
+        # The MCP server set (`_mcp_key`'s fingerprint of it) the CURRENT
+        # process was SPAWNED with — the one piece of per-process config the
+        # class docstring's "no state carried between requests" does not
+        # hold for. Unlike model/system-prompt/effort, which the stdin
+        # control protocol can reconfigure on a live process, `--mcp-config`
+        # is argv: it can only be what the process was started with. See
+        # `configure`'s own note on why that makes this the one thing worth
+        # tracking here.
+        self._mcp_key = None
 
     # -- lifecycle ---------------------------------------------------------
 
-    async def _spawn(self, model: str, system_prompt: str):
+    async def _spawn(self, model: str, system_prompt: str, mcp_servers: list | None = None):
         bin_path = _claude_bin()
         if not bin_path:
             raise _AiProcFailure(
                 "claude binary not found on PATH; install Claude Code or "
                 f"set {_AI_BIN_ENV} to its location")
-        self._proc = await _ai_spawn(bin_path, model, system_prompt)
+        self._proc = await _ai_spawn(bin_path, model, system_prompt, mcp_servers)
+        self._mcp_key = _mcp_key(mcp_servers)
         return self._proc
 
     async def _discard(self) -> None:
@@ -642,7 +751,7 @@ class _AiSession:
                 return
 
     async def configure(self, model: str, system_prompt: str,
-                        effort: str | None):
+                        effort: str | None, mcp_servers: list | None = None):
         """Make the instance ready for one request; return its process.
 
         Spawns (or respawns a dead instance) if needed, then: /clear always —
@@ -663,11 +772,27 @@ class _AiSession:
           because the clamp PERSISTS across /clear (unlike effortLevel,
           which /clear resets) — then apply_flag_settings{effortLevel}.
 
+        **`mcp_servers` is the one setting this cannot reconfigure over the
+        stdin protocol at all — `--mcp-config` is argv, decided the moment
+        the process starts.** So a request whose MCP server set differs from
+        `self._mcp_key` (a request naming tools where the live process was
+        spawned bare, one naming none where it was spawned with some, or one
+        naming a genuinely different set) forces a respawn here, the same
+        branch a dead process already takes — a slower request (paying the
+        ~1.5-2.5s cold start `_AiSession`'s own docstring measures) rather
+        than a silently wrong one, which is what reusing a process spawned
+        for a DIFFERENT tool set would be: either tools the caller did not
+        ask for staying reachable, or ones it did ask for missing with no
+        error. The ordinary case — a run of requests naming the identical
+        set, tools or none — pays this once and then reuses the warm process
+        exactly as before.
+
         Raises _AiProcFailure/OSError — the caller discards and retries
         once on a fresh spawn."""
-        if self._proc is None or self._proc.returncode is not None:
+        if (self._proc is None or self._proc.returncode is not None
+                or _mcp_key(mcp_servers) != self._mcp_key):
             await self._discard()
-            await self._spawn(model, system_prompt)
+            await self._spawn(model, system_prompt, mcp_servers)
         await self._clear()
         # system_prompt is always non-empty here (the relay defaults it):
         # the CLI rejects an empty string, and there is no revert-to-default
@@ -805,7 +930,7 @@ _SAMPLING = {
 #: caller-facing option.
 _TEXT_OPTIONS = frozenset({
     "prompt", "provider", "model", "systemPrompt", "effort", "history", "raw",
-    "images", "temperature", "maxTokens", "topP"})
+    "images", "temperature", "maxTokens", "topP", "mcpServers"})
 _TEXT_SERVER_OPTIONS = _TEXT_OPTIONS | {"stream", "base"}
 
 
@@ -955,6 +1080,47 @@ def _images_unsupported_by_runner(model: str) -> str | None:
             "this checkpoint has no vision tower")
 
 
+#: How many MCP servers one request may name. A chat that wants more than a
+#: handful of tool SOURCES is unusual, and each one this relay will actually
+#: reach out to (a subprocess spawn or an HTTP round trip, per
+#: `mcp_client.py`) is real latency paid before the model ever sees a token
+#: — the same "bounded, not because the number is sacred, but because an
+#: unbounded list is every other caller's turn behind it" reasoning
+#: `_MAX_IMAGES` states for its own cap.
+_MAX_MCP_SERVERS = 8
+
+
+def _mcp_servers_problem(mcp_servers) -> str | None:
+    """Why this `mcpServers` list is unusable, or None. Only the SHAPE is
+    checked here — the same division `_images_problem` draws between shape
+    and support: whether a named server can actually be REACHED is found out
+    the first time something tries to (`mcp_client.list_all_tools`,
+    per-server, non-fatal to the rest — see that function's own docstring),
+    not refused up front by a probe that would just add latency to every
+    call, including the overwhelmingly common one that names no tools at
+    all.
+    """
+    from fused_render.ai import mcp_client
+
+    if not isinstance(mcp_servers, list):
+        return "'mcpServers' must be a list of server definitions"
+    if len(mcp_servers) > _MAX_MCP_SERVERS:
+        return f"'mcpServers' may not carry more than {_MAX_MCP_SERVERS} servers"
+    names = set()
+    for index, server in enumerate(mcp_servers):
+        if not isinstance(server, dict):
+            return f"'mcpServers[{index}]' must be an object"
+        try:
+            mcp_client.validate_server(server)
+        except mcp_client.McpError as exc:
+            return f"'mcpServers[{index}]': {exc}"
+        name = server["name"]
+        if name in names:
+            return f"'mcpServers' names {name!r} more than once"
+        names.add(name)
+    return None
+
+
 def _history_problem(history) -> str | None:
     """Why this history is unusable, or None. The message is the API's manners:
     a chat client passing the wrong shape should be told which turn and what
@@ -1032,6 +1198,136 @@ def _local_usage(event: dict) -> dict:
             "seconds": event.get("seconds")}
 
 
+#: How many model<->tool round trips ONE `/api/ai` call may make before this
+#: gives up and hands back whatever the last round said. Bounded for the
+#: reason every other per-request budget in this file is (`_MAX_IMAGES`,
+#: `_SAMPLING`'s ceilings): one resident model serves every page on this
+#: machine, and a model that keeps calling tools in a loop (a hallucinated
+#: tool, an MCP server that always errors, a genuinely open-ended task) is
+#: not one caller's slow request, it is every other caller's turn behind it.
+#: The LAST round never looks for a tool call at all (`_generate_with_tools`'s
+#: own `round_index < _MAX_TOOL_ROUNDS - 1` guard) — so the loop always
+#: terminates within this many rounds, whatever the model does.
+_MAX_TOOL_ROUNDS = 4
+
+
+def _generate_with_tools(model: str, request: dict, tool_index: dict):
+    """`supervisor.generate_text`'s own event shape — `prefill`/`chunk`/
+    `done` — PLUS two additive frame types, `tool_call`/`tool_result`, for as
+    many rounds as it takes the model to stop calling tools (capped at
+    `_MAX_TOOL_ROUNDS`). A drop-in replacement for a plain
+    `supervisor.generate_text(model, request)` call at ONE call site
+    (`_local_relay`) — everything downstream of that call (the job row, the
+    watchdog, cancellation, streaming vs. non-streaming) already treats its
+    argument as an opaque event generator and needs no change: `prefill` and
+    `chunk` events from every round, tool or final, are forwarded LIVE and
+    unchanged, so a tool round's own raw text (including the `<tool_call>…`
+    markup the model wrote it in) streams to the caller exactly like an
+    ordinary reply's tokens do, cancellation still lands on whichever round
+    is actually running (the existing per-chunk check in `_local_relay`'s
+    own `walk()` never had to learn this exists), and the SAME terminal
+    `done` shape closes the whole call, not each round.
+
+    **Why intermediate rounds are not hidden.** A model calling a tool is, at
+    the wire level, just generating text like any other round — suppressing
+    it would mean buffering a whole round server-side before deciding
+    whether to show it, which costs both the live-typing feel AND
+    responsive cancellation for no correctness gain: `tool_calls.py`'s own
+    parser only recognises a TAGGED call (`<tool_call>{…}</tool_call>`), so
+    the raw markup is a small, legible aside in the transcript rather than
+    something that needs hiding, and the two `tool_call`/`tool_result`
+    frames either side of it are what actually mark it as tool activity for
+    a reader (`client.ts`'s own note on how the playground renders them).
+
+    `messages` is mutated by growing a local copy, never `request["messages"]`
+    itself — each round hands `supervisor.generate_text` the FULL transcript
+    so far, exactly the same "resend the whole history, the worker's own
+    prompt-cache reuse makes the repeated prefix cheap" contract an ordinary
+    multi-turn `/api/ai` conversation already relies on (mlx_text/worker.py's
+    `PromptCacheState`), so calling it several times in one HTTP request is
+    architecturally no different from several ordinary requests in a row.
+
+    Usage across rounds: `tokens`/`seconds` are SUMMED (the true cost of
+    this whole call, tool rounds included — under-reporting it would be
+    exactly the AI-12 metric dishonesty this app's own usage counter exists
+    to avoid), `input_tokens` is the LAST round's own count (what the final
+    answer's prompt looked like; summing it would double-count the shared
+    history every round re-reads).
+    """
+    from fused_render.ai import mcp_client, supervisor, tool_calls
+
+    messages = list(request.get("messages") or [])
+    total_tokens = 0
+    total_seconds = 0.0
+    for round_index in range(_MAX_TOOL_ROUNDS):
+        round_request = {**request, "messages": messages}
+        events = supervisor.generate_text(model, round_request)
+        text_parts = []
+        last_done = None
+        for event in events:
+            etype = event.get("type")
+            if etype == "chunk":
+                text_parts.append(event.get("text") or "")
+            elif etype == "done":
+                last_done = event
+                break
+            yield event
+        if last_done is None:
+            # The worker's own generator ended with no terminal frame at all
+            # — cancelled out from under this loop, or the worker died mid-
+            # stream. Nothing left to try; report it the same way a bare
+            # `supervisor.generate_text` call's own caller already would.
+            yield {"type": "done", "ok": False,
+                  "error": "generation stopped before it finished"}
+            return
+        total_tokens += last_done.get("tokens") or 0
+        seconds = last_done.get("seconds")
+        if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
+            total_seconds += seconds
+        if not last_done.get("ok", True) or last_done.get("cancelled"):
+            # An error or a Stop ends the WHOLE call, not just this round —
+            # there is no next round to try when the last one did not
+            # actually finish. The merged token count still rides along:
+            # what was generated before the stop was real work either way
+            # (the same principle `_local_finish_reason`'s own comment
+            # states for a single-round cancellation).
+            yield {**last_done, "tokens": total_tokens,
+                  **({"seconds": round(total_seconds, 2)} if total_seconds else {})}
+            return
+        full_text = "".join(text_parts)
+        calls = (tool_calls.find_tool_calls(full_text)
+                if round_index < _MAX_TOOL_ROUNDS - 1 else [])
+        if not calls:
+            yield {**last_done, "tokens": total_tokens,
+                  **({"seconds": round(total_seconds, 2)} if total_seconds else {})}
+            return
+        # This round called at least one tool: record the model's own turn
+        # (tags stripped — the prose it wrote AROUND the call, if any,
+        # belongs to the assistant, not to a tool message), then run every
+        # call it made and feed each result back as its own `role: "tool"`
+        # turn before the next round.
+        messages.append({"role": "assistant",
+                         "content": tool_calls.strip_tool_calls(full_text)})
+        for call in calls:
+            wire_name, arguments = call["name"], call["arguments"]
+            yield {"type": "tool_call", "name": wire_name, "arguments": arguments}
+            entry = tool_index.get(wire_name)
+            if entry is None:
+                # A hallucinated tool name — not this app's bug to crash on;
+                # told to the model like any other tool error, so a model
+                # that misremembered a name has a chance to try the real one.
+                result_text, ok = f"no such tool: {wire_name!r}", False
+            else:
+                try:
+                    result_text = mcp_client.call_tool(
+                        entry["server"], entry["name"], arguments)
+                    ok = True
+                except mcp_client.McpError as exc:
+                    result_text, ok = str(exc), False
+            yield {"type": "tool_result", "name": wire_name, "result": result_text, "ok": ok}
+            messages.append({"role": "tool", "name": wire_name, "content": result_text})
+
+
 def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
                  body: dict, warnings: list | None = None, page: str = ""):
     """One completion from a model resident on THIS machine (SPEC §40).
@@ -1050,6 +1346,34 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
     the row this call opens below — the destination a click on it goes to.
     """
     from fused_render.ai import supervisor
+
+    # Normalized up here, ahead of everywhere below that appends to it
+    # (`_mcp_servers_problem` already validated the SHAPE at the API
+    # boundary; what happens next is whether each named server can actually
+    # be REACHED, which is only found out by trying).
+    warnings = list(warnings or [])
+
+    # MCP tools (SHAPE already validated by `_ai_relay`) — resolved HERE,
+    # once per call, rather than inside `_generate_with_tools`'s per-round
+    # loop: every round hands the model the SAME tool list, so listing it
+    # once and reusing the schema is both cheaper (no repeated server round
+    # trips) and the only way two rounds could ever disagree about what the
+    # model was told is available.
+    mcp_servers = body.get("mcpServers") or []
+    tool_index: dict = {}
+    if mcp_servers:
+        from fused_render.ai import mcp_client, tool_calls
+
+        mcp_tools, mcp_errors = mcp_client.list_all_tools(mcp_servers)
+        # A server that failed to list is REPORTED, not fatal to the whole
+        # call — see `mcp_client.list_all_tools`'s own docstring for why one
+        # misconfigured server must not take every other named server's
+        # tools off the table.
+        for error in mcp_errors:
+            warnings.append({"type": "mcp-server-unreachable", "message": error})
+        tool_schema, tool_index = tool_calls.build_tool_schema(mcp_tools)
+    else:
+        tool_schema = []
 
     # Prior turns first, then the one being asked. Validated by the caller, so
     # only the two fields the worker's chat template reads are passed on —
@@ -1080,11 +1404,13 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
         # from the worker's "absent = today's text path" contract for every
         # model that never uses it.
         **({"images": body.get("images")} if body.get("images") else {}),
+        **({"tools": tool_schema} if tool_schema else {}),
     }
     request = {k: v for k, v in request.items() if v is not None}
 
     try:
-        events = supervisor.generate_text(model, request)
+        events = (_generate_with_tools(model, request, tool_index) if tool_index
+                 else supervisor.generate_text(model, request))
         first = next(events, None)
     except supervisor.ModelNotReady as e:
         # NOT counted as a failure (AI-12b). This call did exactly what AI-5
@@ -1243,10 +1569,34 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
 
     warnings = list(warnings or [])
     if not stream:
-        text, usage, finish = [], {}, "stop"
+        # `tool_events`, never `tool_calls`: this function already binds
+        # that name to the MODULE (`from fused_render.ai import … tool_calls`
+        # above, when `mcp_servers` is non-empty) — a same-named local here
+        # would shadow it for the rest of this function's scope, which
+        # Python resolves for the WHOLE function body regardless of which
+        # branch actually runs.
+        text, usage, finish, tool_events = [], {}, "stop", []
         for event in walk():
             if event.get("type") == "chunk":
+                # A tool round's own text is included here too — every
+                # round's chunks stream through `walk()` the same way an
+                # ordinary reply's do (`_generate_with_tools`'s own
+                # docstring: intermediate rounds are never hidden), so the
+                # accumulated `text` below can carry a tool round's raw
+                # `<tool_call>…` markup for a caller that read this
+                # non-streaming — a known, accepted rough edge: the
+                # Playground itself always streams (`client.ts`'s
+                # `streamChat`), where each round's chunks and its
+                # `tool_call`/`tool_result` frames arrive as distinct events
+                # a reader can tell apart, which this flattened string
+                # cannot.
                 text.append(event.get("text") or "")
+            elif event.get("type") in ("tool_call", "tool_result"):
+                # Carried alongside the result rather than folded into
+                # `text`, additive to the wire shape (RH-11's own rule: a
+                # reader that has never heard of `toolCalls` simply never
+                # looks at the key).
+                tool_events.append(event)
             elif event.get("type") == "done":
                 if not event.get("ok", True):
                     return _ai_failed(model, "ai_error",
@@ -1258,10 +1608,14 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
         # here and at the three other terminal frames — so the graph and the
         # response can never disagree about what this completion generated.
         ai_metrics.record(model, usage)
-        return JSONResponse({"ok": True, "result": ai_result(
-            {"text": "".join(text)}, provider="local", model=model,
-            usage=ai_usage_tokens(usage), finish_reason=finish, warnings=warnings,
-            request_id=job, metadata={"seconds": usage.get("seconds")})})
+        return JSONResponse({
+            "ok": True,
+            "result": ai_result(
+                {"text": "".join(text)}, provider="local", model=model,
+                usage=ai_usage_tokens(usage), finish_reason=finish, warnings=warnings,
+                request_id=job, metadata={"seconds": usage.get("seconds")}),
+            **({"toolCalls": tool_events} if tool_events else {}),
+        })
 
     def lines():
         # Errors after the first byte are demoted to an ok:false done frame on a
@@ -1282,6 +1636,13 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
                     chunk = event.get("text") or ""
                     text.append(chunk)
                     yield json.dumps({"type": "chunk", "text": chunk}) + "\n"
+                elif event.get("type") in ("tool_call", "tool_result"):
+                    # Forwarded as its own NDJSON frame, additive to the wire
+                    # shape (an older reader's `frame.type === "chunk"`/`===
+                    # "done"` switch simply does not match it and moves on) —
+                    # `client.ts`'s own reader is what turns this into
+                    # something the playground shows.
+                    yield json.dumps(event) + "\n"
                 elif event.get("type") == "done":
                     ok = bool(event.get("ok", True))
                     usage = _local_usage(event)
@@ -1513,6 +1874,27 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
             "— send one or the other",
             status=400)
 
+    # MCP-provided tools (SHAPE only — see `_mcp_servers_problem`). Unlike
+    # `history`/`raw`/`images`, this is NOT a Claude-only-or-local-only
+    # semantic: both tiers can honour it, each its own way (the Claude tier
+    # hands the list straight to the CLI's own `--mcp-config`; the local
+    # tier resolves it itself, in `_local_relay` below) — so there is
+    # nothing to refuse here for either tier, only for `raw`, the one flag
+    # that already means "no chat template", which is also where a tool
+    # schema would have to be rendered.
+    mcp_servers = body.get("mcpServers")
+    if mcp_servers is not None:
+        problem = _mcp_servers_problem(mcp_servers)
+        if problem:
+            return _ai_error("bad_request", problem, status=400)
+        if raw:
+            return _ai_error(
+                "bad_request",
+                "'raw' sends the prompt with no chat template, which is "
+                "where a tool schema would have to be rendered — send one "
+                "or the other",
+                status=400)
+
     # The fork. Everything above is shared validation — a prompt is a prompt and
     # a stream flag is a stream flag wherever the tokens come from — and
     # everything below this line is the Claude CLI's own path. An explicit
@@ -1538,6 +1920,10 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
             warnings.append(_unsupported(
                 "topP", "apple", "Apple's on-device model samples by temperature "
                 "(or top-k), not nucleus probability"))
+        if mcp_servers:
+            warnings.append(_unsupported(
+                "mcpServers", "apple", "Apple's on-device framework exposes no "
+                "tool-calling hook to hand MCP tools to"))
         sampling = _sampling_problem(body)
         if sampling:
             return _ai_error("bad_request", sampling, status=400)
@@ -1836,7 +2222,7 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
                 _report_remote(detail=_REMOTE_ROW_DETAIL)
             try:
                 proc = await session.configure(model, system_prompt,
-                                               effort)
+                                               effort, mcp_servers)
                 return await _ai_drive(proc, prompt, _AI_TIMEOUT_S,
                                        on_delta=deliver)
             except asyncio.CancelledError:
@@ -1853,7 +2239,7 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
                 # or wedged in ways the returncode check can't see
                 try:
                     proc = await session.configure(
-                        model, system_prompt, effort)
+                        model, system_prompt, effort, mcp_servers)
                     return await _ai_drive(proc, prompt, _AI_TIMEOUT_S,
                                            on_delta=deliver)
                 except asyncio.CancelledError:
