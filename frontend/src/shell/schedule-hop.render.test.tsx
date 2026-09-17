@@ -72,7 +72,32 @@ function node() {
   };
 }
 
-afterEach(() => {
+// THE RENDERER THE CURRENT TEST IS HOLDING, so a failure that skips a test's
+// own `finally` still gets torn down before the next test's `installBody()`
+// replaces `doc.body` out from under it.
+//
+// Why this matters (the CI-only flake this file used to have): a leaked,
+// still-mounted box keeps its real `setTimeout`s alive — TaskPeek's
+// `PEEK_SETTLE_MS`/`PEEK_PARK_MS` among them. `afterEach` used to
+// unconditionally `delete doc.body` with nothing keeping that box's own
+// effects from firing later, against a `document.body` that had since been
+// replaced or deleted — and a portal effect finding no element there throws
+// "Target container is not a DOM element" deep inside the tree, which (no
+// error boundary here) unmounts that box to the root and prints "The above
+// error occurred in the <TaskPeek>/<Scheduled> component" — noise that lands
+// on whichever test happens to be running when the stale timer fires. On a
+// fast machine every test's own `finally` reaches its `closeBox` well before
+// any of that, so the box is long gone and its timers cleared (effect
+// cleanup) before the next test starts; a loaded CI runner is exactly where
+// that race stops being theoretical.
+let lastBox: ReactTestRenderer | null = null;
+
+afterEach(async () => {
+  if (lastBox) {
+    const box = lastBox;
+    lastBox = null;
+    await act(async () => box.unmount());
+  }
   globalThis.fetch = realFetch;
   delete doc.body;
 });
@@ -112,6 +137,46 @@ function record(over: Record<string, unknown> = {}) {
   };
 }
 
+/** Is the card's dialog up? Wrapped because `.root` itself throws on a tree
+ *  that has (even transiently) zero children — which a poll must read as
+ *  "not yet", not crash on. */
+function hasDialog(box: ReactTestRenderer): boolean {
+  try {
+    return box.root.findAll((n) => n.props?.role === "dialog", { deep: true }).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * POLL FOR THE CARD, rather than guess a fixed sleep long enough to cover it.
+ *
+ * The `?new=1&draft=` arm's own chain — `fetch("/api/drafts")` → `openForm`
+ * — is nothing but chained microtasks against a stub that resolves
+ * synchronously, so an `act(async () => { await Promise.resolve() })` loop
+ * flushes it deterministically; the zero-delay `setTimeout` a couple of
+ * effects ride on (`installDomShim`'s `requestAnimationFrame` shim, Base UI's
+ * own frame bookkeeping) needs one real tick to fire. A flat sleep picked a
+ * number of milliseconds that happened to cover both on this machine; a
+ * loaded CI box does not owe that number anything, and the previous flake —
+ * assertions running before the card had opened — traces straight back to
+ * it. Bounded generously (2s) so a genuine regression still fails fast
+ * rather than hanging.
+ */
+async function waitForDialog(box: ReactTestRenderer, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    await act(async () => {
+      await new Promise((done) => setTimeout(done, 0));
+    });
+    if (hasDialog(box)) return;
+    if (Date.now() >= deadline) return; // let the caller's own assertion report it
+    await act(async () => {
+      await new Promise((done) => setTimeout(done, 10));
+    });
+  }
+}
+
 /** Mount the Tasks page ON a URL, the way a hop arrives at it. */
 async function hopTo(search: string) {
   installBody();
@@ -125,10 +190,20 @@ async function hopTo(search: string) {
     // covers the page behind it.
     box = create(createElement(Scheduled), { createNodeMock: node });
   });
-  await act(async () => {
-    await new Promise((done) => setTimeout(done, 40));
-  });
+  // Registered the moment it exists — not after this function returns — so a
+  // throw from `waitForDialog` below still leaves something for `afterEach`
+  // to close.
+  lastBox = box;
+  await waitForDialog(box);
   return box;
+}
+
+/** The one door that unmounts a box AND retires it from `afterEach`'s
+ *  safety net — every test's `finally` goes through this, not `box.unmount()`
+ *  directly, so the two never disagree about whether it is still live. */
+async function closeBox(box: ReactTestRenderer): Promise<void> {
+  await act(async () => box.unmount());
+  if (lastBox === box) lastBox = null;
 }
 
 /** What the card is showing, by the labels a reader sees. */
@@ -151,15 +226,20 @@ test("a `new:` hop opens the card on that record — title, words and folder", a
     + "&target=" + encodeURIComponent("/tmp/lab")
     + "&from=" + encodeURIComponent("/explorer/view/tmp/lab?_side=claude"),
   );
-  const seen = fields(box);
-  // The card is UP — the live failure was no dialog at all, so this is the
-  // assertion the rest hang off.
-  expect(box.root.findAll((n) => n.props?.role === "dialog", { deep: true }).length)
-    .toBeGreaterThan(0);
-  expect(seen["What should Claude do?"]).toBe("Water the plants");
-  expect(seen["Additional instructions"]).toBe("the ones on the sill");
-  expect(seen["Add folder or file"]).toBe("/tmp/lab");
-  await act(async () => box.unmount());
+  try {
+    const seen = fields(box);
+    // The card is UP — the live failure was no dialog at all, so this is the
+    // assertion the rest hang off.
+    expect(hasDialog(box)).toBe(true);
+    expect(seen["What should Claude do?"]).toBe("Water the plants");
+    expect(seen["Additional instructions"]).toBe("the ones on the sill");
+    expect(seen["Add folder or file"]).toBe("/tmp/lab");
+  } finally {
+    // ALWAYS — an assertion above throwing must not skip this. A box left
+    // mounted keeps ticking (TaskPeek's own timers among them) past this
+    // test's end, into whatever `doc.body` the NEXT test installs.
+    await closeBox(box);
+  }
 });
 
 test("a SESSION hop lands in the session's folder, not the reader's home", async () => {
@@ -173,11 +253,14 @@ test("a SESSION hop lands in the session's folder, not the reader's home", async
     + "&target=" + encodeURIComponent("/tmp/lab")
     + "&from=" + encodeURIComponent("/explorer/view/tmp/lab?_side=claude"),
   );
-  const seen = fields(box);
-  expect(seen["What should Claude do?"]).toBe("Ship the notes");
-  expect(seen["Additional instructions"]).toBe("then tell Ada");
-  expect(seen["Add folder or file"]).toBe("/tmp/lab");
-  await act(async () => box.unmount());
+  try {
+    const seen = fields(box);
+    expect(seen["What should Claude do?"]).toBe("Ship the notes");
+    expect(seen["Additional instructions"]).toBe("then tell Ada");
+    expect(seen["Add folder or file"]).toBe("/tmp/lab");
+  } finally {
+    await closeBox(box);
+  }
 });
 
 test("a record that names its own target still wins over the hop's", async () => {
@@ -186,6 +269,9 @@ test("a record that names its own target still wins over the hop's", async () =>
   const box = await hopTo(
     "?new=1&draft=" + session + "&target=" + encodeURIComponent("/tmp/lab"),
   );
-  expect(fields(box)["Add folder or file"]).toBe("/tmp/chosen");
-  await act(async () => box.unmount());
+  try {
+    expect(fields(box)["Add folder or file"]).toBe("/tmp/chosen");
+  } finally {
+    await closeBox(box);
+  }
 });
