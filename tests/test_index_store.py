@@ -362,6 +362,49 @@ def test_compaction_progress_keeps_the_watchdog_from_reporting_abandoned(tmp_pat
         str(run_dir), clock[0], runner.ABANDONED_RUN_S) is False
 
 
+def test_the_blocking_merge_statement_itself_heartbeats(tmp_path, monkeypatch):
+    """The per-partition heartbeat (see the test above) only covers the
+    COPY loop. The dominant cost on a large merge is the single blocking
+    `CREATE TEMP TABLE merged AS ...` statement that runs BEFORE that loop —
+    with nothing touching the run directory for as long as that statement
+    takes, a merge slower than ABANDONED_RUN_S would read as a dead worker
+    with no heartbeat at all during it."""
+    monkeypatch.setattr(store_mod, "_MERGE_HEARTBEAT_S", 0.02)
+
+    real_connect = store_mod.background_connect
+
+    class _SlowDuringMerge:
+        """Proxies a real duckdb connection, only slowing the one statement
+        under test — everything else in compaction runs at normal speed."""
+
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *a, **kw):
+            if "CREATE TEMP TABLE merged" in sql:
+                time.sleep(0.2)
+            return self._real.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    monkeypatch.setattr(store_mod, "background_connect",
+                        lambda: _SlowDuringMerge(real_connect()))
+
+    cfg = _cfg(tmp_path, part_rows=5)
+    rows = [_row(f"/r/f{i}.txt") for i in range(23)]
+    seen = []
+    compact(cfg, "/r", _shard(tmp_path, cfg, [
+        ("/r", _scanned("s", rows, 23, 1, 0))]), pa, pq,
+        emit=lambda **ev: seen.append(ev))
+    phase_msgs = [e["msg"] for e in seen if e.get("type") == "phase"]
+    merge_heartbeats = [m for m in phase_msgs if "merging" in m]
+    # 0.2s of blocking work at a 0.02s heartbeat interval must land more than
+    # one tick — a single heartbeat could just be the ordinary "writing
+    # index" phase logged before the statement, not a heartbeat DURING it.
+    assert len(merge_heartbeats) >= 2
+
+
 # -- readability while a scan is compacting -----------------------------------
 
 def test_a_compaction_writes_a_new_generation_beside_the_old_one(tmp_path):
