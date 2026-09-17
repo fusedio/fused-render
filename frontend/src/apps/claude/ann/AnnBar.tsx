@@ -14,7 +14,13 @@
 // rather than a second implementation of it.
 import { useEffect, useRef } from "react";
 
-import { ANN_BAR, ANN_BAR_TOKENS, ANN_TOKEN_ROOT, type AnnMode } from "./types";
+import {
+  ANN_BAR,
+  ANN_BAR_TOKENS,
+  ANN_DONE_CHORD,
+  ANN_TOKEN_ROOT,
+  type AnnMode,
+} from "./types";
 import { barFolds, type BarMetrics } from "./geometry";
 
 export interface AnnBarHandlers {
@@ -106,8 +112,11 @@ export function buildBarNode(doc: Document, h: AnnBarHandlers): HTMLElement {
   const done = doc.createElement("button");
   done.className = "done";
   done.type = "button";
-  done.dataset.tip = "Send the notes to Claude and finish · Esc cancels";
-  done.setAttribute("aria-label", "Done — send the notes and finish");
+  done.dataset.tip = `Send the notes to Claude and finish · ${ANN_DONE_CHORD} · Esc cancels`;
+  // The chord is in the ACCESSIBLE NAME too, not only the tip: the tip is a
+  // hover-only answer, and this button is reachable — and skippable — by the
+  // very keyboard the shortcut is for.
+  done.setAttribute("aria-label", `Done — send the notes and finish (${ANN_DONE_CHORD})`);
   done.innerHTML = IC_DONE + '<span class="lbl">Done</span>';
   done.addEventListener("click", () => wiring.h.onDone());
 

@@ -29,9 +29,16 @@ import {
 import { barFit, createBarPush, paintBar } from "./AnnBar";
 import { chipEditXY, clockOf, pageXY, rectOf } from "./geometry";
 import { createRenderQueue, createXOLayer, hideHl, injectLayer, paintPins, pinSpotOf } from "./layer";
-import { createAnnMode, escapeAction, walkthroughOwns, type AnnModeMachine } from "./mode";
+import {
+  createAnnMode,
+  escapeAction,
+  isDoneChord,
+  walkthroughOwns,
+  type AnnModeMachine,
+  type AnnSendRefusal,
+} from "./mode";
 import { applyOverview, overviewFor, type OverviewResult } from "./overview";
-import { createAnnStore, isSendableNow, type AnnStore } from "./store";
+import { createAnnStore, hasSendable, isSendableNow, type AnnStore } from "./store";
 import { createAnnTarget, type AnnTarget } from "./target";
 import { wireTarget } from "./wire-target";
 import type { AnnAnchor, AnnLayout, AnnMode, AnnRecorder, AnnTool, Annotation } from "./types";
@@ -57,8 +64,13 @@ export interface UseAnnotationsOptions {
   composerHome?: () => Element | null;
   /** T:7720 — `activeRun || !sending`. */
   canSend(): boolean;
-  /** T:8487 `annAutoSubmit`. */
-  autoSubmit(): void;
+  /** T:8487 `annAutoSubmit` — AND IT ANSWERS whether the message actually went
+   *  (`AnnModeDeps.autoSubmit`). A `false` keeps ✓ Done's round armed rather
+   *  than stranding it as chips. */
+  autoSubmit(): boolean;
+  /** ✓ Done could not send — say so where the reader is looking. The mode is
+   *  held open either way; this is only the sentence. */
+  onSendRefused?(why: AnnSendRefusal): void;
   /** T:6867 — the nav lock's effect: `.chat-root.annlock`, `#back.disabled`,
    *  and the composer's block state. */
   onLock?(locked: boolean): void;
@@ -129,6 +141,21 @@ export interface AnnotationsApi {
 
   /** T:15982 — bound on BOTH documents; the frame side is re-attached per load. */
   onEscape(e: KeyboardEvent): void;
+  /** ⌘↩ / Ctrl+↩ — ✓ Done from the keyboard. Bound wherever `onEscape` is, and
+   *  for the same reason: the round is worked with focus in the FRAME as often
+   *  as in the chat. */
+  onDoneChord(e: KeyboardEvent): void;
+  /**
+   * IS THERE A ROUND TO SEND, ASKED OF THE STORE AND NOT OF A RENDER.
+   *
+   * `chips` is React state and answers the same question one commit LATE, which
+   * is the whole of the ⌘↩ bug: ✓ Done commits the open card and asks for the
+   * send inside one microtask, so the composer's own `hasAttachments` snapshot
+   * — taken at the last paint, before that note existed — still said the
+   * message carried nothing and the send refused (Akshil, 2026-09-17). Stable
+   * for the life of the mount, so a closure that captured it is never stale.
+   */
+  hasSendable(): boolean;
   /** `useNarrowView`'s `onArriveChat`. */
   arriveNarrowChat(): void;
   /** `useNarrowView`'s `onRemeasure` and `useSplit`'s `onDragTick`. */
@@ -450,6 +477,11 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
       closeRef.current();
       if (id) store.remove(id);
     },
+    // ⌘↩ IN THE CARD. Nothing is committed here first: `done()` is the one
+    // writer that commits the open draft and it re-reads the textarea itself
+    // (`commitDraft`), so a second commit on this path would be a second
+    // chance for the two to disagree about what an empty card is.
+    doneRound: () => void machineRef.current?.done(),
   });
 
   // ── the mode machine ─────────────────────────────────────────────────────
@@ -486,6 +518,7 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
       closeComposer: () => closeComposer(),
       hideHl: () => hideHl(layerRef.current.hl),
       autoSubmit: () => liveOpts.current.autoSubmit(),
+      onSendRefused: (why) => liveOpts.current.onSendRefused?.(why),
       canSend: () => liveOpts.current.canSend(),
       xo: () => targetRef.current?.xo() ?? false,
       onXOArm: () => liveOpts.current.onXOArm?.(),
@@ -531,6 +564,7 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
           composerOpen: () => isOpen(popRef.current),
           hl: () => layerRef.current.hl,
           onEscape: (e) => onEscapeRef.current(e),
+          onDoneChord: (e) => onDoneChordRef.current(e),
           closeComposer: () => closeComposer(),
           openComposer: (x, y, anchor) => openComposerAt(x, y, anchor),
           markPoint: (cx, cy, win, nearPath) => {
@@ -689,6 +723,37 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
     [closeComposer],
   );
   onEscapeRef.current = onEscape;
+
+  // ── ⌘↩ / Ctrl+↩ ──────────────────────────────────────────────────────────
+  const onDoneChordRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  const onDoneChord = useCallback((e: KeyboardEvent) => {
+    if (!isDoneChord(e)) return;
+    const m = machineRef.current;
+    // ONLY A ROUND THIS KEY CAN FINISH. Unarmed, ⌘↩ is nobody's here and must
+    // stay free for whatever claims it outside the mode; and while a
+    // WALKTHROUGH owns the mode `done()` refuses anyway (its own door, Bugbot
+    // PR #1074) — asking here as well is what keeps `preventDefault` off a
+    // press we did not act on.
+    if (!m || !m.armed() || walkthroughOwns(m.mode())) return;
+    e.preventDefault();
+    void m.done();
+  }, []);
+  onDoneChordRef.current = onDoneChord;
+
+  /**
+   * THE LIVE ANSWER TO "is there a round to send" (see `AnnotationsApi`). Reads
+   * the STORE, so a note committed one line above a send is already in it, and
+   * asks the machine for the walkthrough's window rather than a `mode` prop that
+   * is one commit behind for the same reason.
+   *
+   * Stable: `store` is built once per mount and the machine is read through its
+   * ref, so the composer's `submit` closure can hold this for ever without
+   * holding a stale answer with it.
+   */
+  const hasSendableNow = useCallback(
+    () => hasSendable(store.list(), walkthroughOwns(machineRef.current?.mode() ?? "off")),
+    [store],
+  );
 
   // ── wiring ───────────────────────────────────────────────────────────────
   useEffect(
@@ -888,6 +953,8 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
     removeNote,
 
     onEscape,
+    onDoneChord,
+    hasSendable: hasSendableNow,
     arriveNarrowChat: () => machine.arriveNarrowChat(),
     remeasure: () => renderRef.current(),
     onFrameLoad: () => {

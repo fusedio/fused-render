@@ -23,6 +23,7 @@ installDomShim();
 // imports are hoisted above `installDomShim()`.
 const { AnnStrip } = await import("./AnnStrip");
 const { annIdleTitleFor } = await import("../pane/paneUrl");
+const { ANN_DONE_CHORD } = await import("../ann");
 type AnnMode = import("../ann").AnnMode;
 
 const mounted: Array<ReturnType<typeof create>> = [];
@@ -125,7 +126,12 @@ test("the SPOKEN name changes with the state even though the drawing does not", 
   const names = FACES.map(([, mode, armed]) => draw({ mode, armed }).comment!["aria-label"]);
   expect(new Set(names).size).toBe(FACES.length - 1); // settling and transcribing share one
   expect(names[0]).toBe("Comment on the preview");
-  expect(names[1]).toBe("Done — send the notes and finish commenting");
+  // …and the chord rides in the name, where the changing word already is: the
+  // visible "Done" never moves (T:7689), so this is the only place the seat can
+  // teach its shortcut.
+  expect(names[1]).toBe(
+    `Done — send the notes and finish commenting (${ANN_DONE_CHORD})`,
+  );
 });
 
 test("the idle tooltip is the shared helper, kind-correct for the noun (T:7505)", () => {
