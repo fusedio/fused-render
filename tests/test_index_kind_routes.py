@@ -184,3 +184,19 @@ def test_search_for_the_apps_kind_is_zero_rows_not_a_500(home, tmp_path):
     assert body["covered"] is False
     assert body["entries"] == []
     assert body["total"] == 0
+
+
+# -- /api/index/kinds — what the management page lists ----------------------
+
+def test_kinds_lists_files_first_then_every_registered_kind(home, tmp_path):
+    resp = _client(tmp_path).get("/api/index/kinds")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    # "files" always leads: it predates the plugin registry and is never
+    # itself inside kinds.registered() (see `_kind_param`'s docstring).
+    assert body["kinds"][0] == "files"
+    # The built-in "apps" kind is registered at import time of this router
+    # (`apps_kind.register_builtin()`, unit 13's own note), so it is always
+    # present regardless of what a running server has scanned.
+    assert "apps" in body["kinds"][1:]

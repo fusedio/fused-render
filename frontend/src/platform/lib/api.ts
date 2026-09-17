@@ -708,7 +708,7 @@ export interface IndexRankResult {
 export function indexRank(
   fsPath: string,
   query: string,
-  opts: { signal?: AbortSignal; limit?: number; ranked?: boolean } = {},
+  opts: { signal?: AbortSignal; limit?: number; ranked?: boolean; kind?: string } = {},
 ): Promise<IndexRankResult> {
   const params = new URLSearchParams({ root: fsPath, q: query });
   if (opts.limit !== undefined) params.set("limit", String(opts.limit));
@@ -716,6 +716,27 @@ export function indexRank(
   // (D720), so a caller that never passes it (the warm-up/source-selection
   // probes) gets exactly the same answer it always did.
   if (opts.ranked !== undefined) params.set("ranked", String(opts.ranked));
+  // Omitted entirely when unset, same reasoning: the route defaults an
+  // absent `kind` to "files" (`_kind_param`), so every caller before the
+  // global search overlay existed keeps asking exactly what it always did.
+  if (opts.kind !== undefined) params.set("kind", opts.kind);
+  return getJson<IndexRankResult>("/api/index/rank?" + params.toString(), {
+    signal: opts.signal,
+  });
+}
+
+// GET /api/index/rank for a flat (non-"files") kind, e.g. "apps" — the global
+// search overlay's app-name group. `root` is deliberately never sent: a flat
+// kind has no navigable folder for a client to name (SPEC-index-plugins.md,
+// `_default_root`), only its own fixed default root the server already
+// knows.
+export function indexRankKind(
+  kind: string,
+  query: string,
+  opts: { signal?: AbortSignal; limit?: number } = {},
+): Promise<IndexRankResult> {
+  const params = new URLSearchParams({ kind, q: query });
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
   return getJson<IndexRankResult>("/api/index/rank?" + params.toString(), {
     signal: opts.signal,
   });
@@ -748,8 +769,16 @@ export interface IndexStatus {
   error: string | null;
 }
 
-export function indexStatus(signal?: AbortSignal): Promise<IndexStatus> {
-  return getJson<IndexStatus>("/api/index/status", { signal });
+export function indexStatus(signal?: AbortSignal, kind?: string): Promise<IndexStatus> {
+  const params = kind ? "?" + new URLSearchParams({ kind }).toString() : "";
+  return getJson<IndexStatus>("/api/index/status" + params, { signal });
+}
+
+// GET /api/index/kinds — every index kind the management page can offer a
+// control for: "files" always first, then every registered plugin kind
+// ("apps" included) sorted (routers/index.py's `api_index_kinds`).
+export function getIndexKinds(): Promise<{ kinds: string[] }> {
+  return getJson("/api/index/kinds");
 }
 
 // Preferences > Indexing. `roots` is what the scheduler scans (defaulted to
@@ -780,7 +809,9 @@ export function putIndexConfig(body: {
 
 // With no `root` this scans EVERY configured root, so the answer is a list.
 // `run_id`/`root` are the first run's, kept for callers that want just one.
-export function startIndexScan(opts: { root?: string; full?: boolean } = {}): Promise<{
+export function startIndexScan(
+  opts: { root?: string; full?: boolean; kind?: string } = {},
+): Promise<{
   run_id: string;
   root: string;
   runs: { run_id: string; root: string }[];
@@ -875,11 +906,15 @@ async function indexQueryPost(url: string, body: unknown): Promise<IndexQueryOut
   return outcomeFrom(res.status, data);
 }
 
-export function deleteIndex(): Promise<{ deleted: boolean }> {
+export function deleteIndex(kind?: string): Promise<{ deleted: boolean }> {
   // The corpus any open search fetched predates the delete; without this
   // signal nothing refetches it — the filesystem didn't change, so no
-  // dir-watch refresh ever arrives (lib/index-freshness).
-  return mutateJson<{ deleted: boolean }>("POST", "/api/index/delete", {}).then((r) => {
+  // dir-watch refresh ever arrives (lib/index-freshness). Only meaningful
+  // for the "files" store (in-folder search's own corpus), but harmless to
+  // fire regardless of which kind was actually deleted.
+  return mutateJson<{ deleted: boolean }>(
+    "POST", "/api/index/delete", kind ? { kind } : {},
+  ).then((r) => {
     noteIndexLifecycle();
     return r;
   });

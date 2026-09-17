@@ -146,8 +146,15 @@ export function IndexProposalsCardView({
 /** Polls `GET /api/index/proposals` on `POLL_MS`, discarding any response
  *  superseded by a newer request that landed first (the same `generation`
  *  counter `RepoUpdatesDock.tsx`'s own `useRepoUpdates` uses) and leaving the
- *  last snapshot standing on a failed poll rather than clearing the panel. */
-function useIndexProposals() {
+ *  last snapshot standing on a failed poll rather than clearing the panel.
+ *
+ *  Exported so the Index management page (shell/IndexManager.tsx) can render
+ *  the very same live confirm/refuse state as this status-bar chip, rather
+ *  than a second poll with its own idea of what is pending — decision #8's
+ *  confirmation surface lives on the page (`IndexManager`'s job), and this
+ *  hook is the one place "what is pending" is asked from the server, so nothing
+ *  duplicates it into a second, potentially-disagreeing copy. */
+export function useIndexProposals() {
   const [pending, setPending] = useState<IndexProposal[]>([]);
   const generation = useRef(0);
   const disposed = useRef(false);

@@ -99,6 +99,7 @@ let autoShowDecided = false;
 const Preferences = lazy(() => import("@shell/Preferences"));
 const Templates = lazy(() => import("@shell/templates/Templates"));
 const Mounts = lazy(() => import("@shell/Mounts"));
+const IndexManager = lazy(() => import("@shell/IndexManager"));
 const AiModels = lazy(() =>
   import("@apps/ai_models").then((m) => ({ default: m.AiModels })),
 );
@@ -702,6 +703,10 @@ export default function App({ config }: { config: Config }) {
   const isTemplates = pathname === "/templates";
   // PROTOTYPE: mounts page (see shell/Mounts.tsx).
   const isMounts = pathname === "/mounts";
+  // Index management page (shell/IndexManager.tsx) — SPEC-index-plugins.md's
+  // per-kind status/scan/delete list plus decision #8's confirm/refuse
+  // surface. Same chrome-free settings-page pattern as Mounts.
+  const isIndexManager = pathname === "/index";
   // Scheduled Claude messages (shell/Scheduled.tsx) — same chrome-free settings
   // pattern as Mounts.
   const isTasks = pathname === "/tasks";
@@ -748,6 +753,7 @@ export default function App({ config }: { config: Config }) {
     isPrefs ||
     isTemplates ||
     isMounts ||
+    isIndexManager ||
     isTasks ||
     isAiModels ||
     isApps ||
@@ -776,7 +782,9 @@ export default function App({ config }: { config: Config }) {
             ? "Templates"
             : isMounts
               ? "Mounts"
-              : isTasks
+              : isIndexManager
+                ? "Index"
+                : isTasks
                 ? "Tasks"
                 : isAiModels
                   ? "AI Models"
@@ -894,6 +902,15 @@ export default function App({ config }: { config: Config }) {
       <div id="content" key={epoch}>
         <Suspense fallback={<RouteFallback />}>
           <Mounts key={epoch} />
+        </Suspense>
+      </div>
+    );
+  } else if (isIndexManager) {
+    // Index management page — same chrome-free settings pattern as Mounts.
+    main = (
+      <div id="content" key={epoch}>
+        <Suspense fallback={<RouteFallback />}>
+          <IndexManager key={epoch} />
         </Suspense>
       </div>
     );

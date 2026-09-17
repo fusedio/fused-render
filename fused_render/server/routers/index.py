@@ -2373,6 +2373,17 @@ async def api_index_ask(request: Request, body: dict = Body(default={}),
 
 # --------------------------------------------------------------------- config
 
+@router.get("/api/index/kinds")
+def api_index_kinds():
+    """Every index kind the management page can offer a control for:
+    "files" first — it predates the plugin registry and is never itself in
+    `kinds.registered()` (see `_kind_param`'s own docstring) — then every
+    registered plugin kind, "apps" included, sorted. Read-only and gate-free
+    (unlike `/config`'s POST twin): naming what kinds exist reveals nothing a
+    client could not already learn by trying each one against `/config`."""
+    return {"ok": True, "kinds": ["files", *kinds.registered()]}
+
+
 @router.get("/api/index/config")
 def api_index_config(kind: str = Query(default="")):
     kind, err = _kind_param(kind)

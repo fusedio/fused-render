@@ -100,6 +100,15 @@ const MOUNTS_ICON = (
   </svg>
 );
 
+// A database cylinder: the Index management page (shell/IndexManager.tsx).
+const INDEX_ICON = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <ellipse cx="12" cy="5" rx="9" ry="3" />
+    <path d="M3 5v14a9 3 0 0 0 18 0V5" />
+    <path d="M3 12a9 3 0 0 0 18 0" />
+  </svg>
+);
+
 // A to-do list (lucide ListTodo, sized like the hand-drawn icons around it):
 // Tasks is the page about work, and the app page's Tasks tab wears the same
 // glyph (shell/AppPage.tsx) so the two read as one thing. Was a clock while the
@@ -704,6 +713,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   menuEntries.push(
     { href: "/templates", label: "Templates", icon: TEMPLATES_ICON },
     { href: "/mounts", label: "Mounts", icon: MOUNTS_ICON },
+    { href: "/index", label: "Index", icon: INDEX_ICON },
     // No /tasks entry here on purpose: Tasks is primary nav now (see the
     // rail below). Listing the same route in the menu too would light the Tasks
     // row and the Preferences trigger at once, since `prefsActive` treats every
