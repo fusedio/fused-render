@@ -2248,6 +2248,26 @@ export async function downloadAppFile(
   }
 }
 
+// Writes the `.fused` straight to the platform Downloads folder — server
+// side, not a browser blob download — and answers the real absolute path it
+// landed at. This is what makes the export immediately searchable: the
+// server queues its own destination folder for reindexing on the same
+// request, which a browser-owned save can never do because the server never
+// learns where the browser put the file.
+export async function saveAppFileToDisk(path: string, preview?: Blob): Promise<string> {
+  const form = new FormData();
+  form.set("path", path);
+  if (preview) form.set("preview", preview, "preview.png");
+  const res = await fetch("/api/appfile/export/save", {
+    method: "POST",
+    headers: { "X-Fused": "1" },
+    body: form,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error((data && data.error) || `export failed (${res.status})`);
+  return data.path as string;
+}
+
 // Where a `.fused` would clone to in the workspace, and whether it already has
 // (D397). `cloned` is decided by the destination folder EXISTING — there is no
 // records file — so it survives a restart, a moved .fused and a re-export, at

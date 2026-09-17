@@ -42,7 +42,7 @@
 // On macOS the first shot on a machine that has not granted Screen Recording
 // raises the TCC dialog (capture._darwin: "the prompt rides the first real
 // capture"), and THAT export ships plain; the ones after it carry a preview.
-import { downloadAppFile } from "./api";
+import { saveAppFileToDisk } from "./api";
 import { thumbUrl } from "./thumb-frame";
 
 // The slice of AppInfo the export path reads — structural, so the preview
@@ -96,15 +96,19 @@ function shotUrl(entryHtml: string): string {
 // painted pixels passes nothing and gets the stage, which is the whole reason
 // the stage exists. `cropRect` can only check geometry, so it cannot enforce
 // this — the promise is made where the state lives.
+// Returns the real absolute path the `.fused` landed at on disk (Downloads),
+// so a caller can raise a notification pointing at it — the whole reason the
+// export writes server-side now instead of handing the browser a blob it
+// saves wherever its own download settings land it.
 export async function exportAppFile(
   app: ExportableApp,
   captureEl?: Element | null,
-): Promise<void> {
+): Promise<string> {
   const preview =
     !app.preview_image && app.entry_html
       ? await captureAppPreview(app.entry_html, captureEl)
       : undefined;
-  return downloadAppFile(app.path, app.name, preview);
+  return saveAppFileToDisk(app.path, preview);
 }
 
 // Whether `el`'s box is fully inside the viewport and big enough that a shot

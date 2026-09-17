@@ -26,3 +26,69 @@
   to `os.utime` after each emit, sized so that two emits alone (the old
   behavior) would span past `ABANDONED_RUN_S` while the new per-partition
   cadence never lets any single gap approach it.
+
+## Workstream B — export a `.fused` app to disk
+
+- The spec's docstring language calling a `.fused` file "a manifest+payload
+  zip" is loose — `zipfile.is_zipfile()` returns `False` on a real export.
+  `.fused` is written by `appfile_container.write` in a custom container
+  format; validate exports with `appfile_container.is_container()`, not the
+  stdlib zip check.
+- New route: `POST /api/appfile/export/save`, taking `path` (the app folder,
+  `Form`) and an optional `preview` (`File`) — not a JSON body. The existing
+  browser-download export (`api_appfile_export_with_preview`) already
+  supports baking a caller-captured screenshot into the export as
+  `preview.png` when the folder has none authored; the new server-side-write
+  route keeps that same feature (multipart, not JSON) so exporting to disk is
+  not a regression for apps that rely on it. An over-cap or non-PNG capture
+  is dropped rather than raised, mirroring the existing route.
+- Destination directory: `~/Downloads`, resolved via `os.path.expanduser("~")`
+  (works on Windows too, since `USERPROFILE`-based expansion applies there).
+  Collision-avoidance (`App.fused`, `App (2).fused`, ...) happens before
+  calling `appfile.export_app_file`, which itself refuses to overwrite an
+  existing `out_path`.
+- The route calls `note_index_mutation(dest_dir)` synchronously after the
+  write succeeds, and raises a `jobs.upsert(...)` row (`page=<real_path>`,
+  `origin="Export"`, `server=True`) mirroring the AI image/video render
+  pattern (`fused_render/ai/supervisor.py`) of pointing a job's `page` at its
+  real output file, rather than inventing a separate reporting mechanism. Job
+  id uses `SERVER_ID_PREFIX + "export:" + secrets.token_hex(4)`, matching the
+  dominant id convention already used by `app_id.py`/`lan.py`/`templates_api.py`.
+- Test gotcha: `appfile.py` imports `note_index_mutation` by name
+  (`from fused_render.server.index_touch import note_index_mutation`), which
+  binds a local reference at import time. Monkeypatching
+  `index_touch.note_index_mutation` (the origin module) has no effect —
+  patch it on the importing module instead
+  (`monkeypatch.setattr(appfile_router, "note_index_mutation", ...)`). This
+  applies to any function imported by name into a router module.
+- Frontend: `saveAppFileToDisk()` (`api.ts`) posts the multipart request with
+  raw `fetch`/`FormData` rather than the JSON `postJson` helper, since the
+  backend expects multipart. `exportAppFile()` (`appShot.ts`) now returns
+  `Promise<string>` (the real path) instead of `Promise<void>`; the 3 other
+  call sites (`EntryActionsMenu.tsx`, `appCardMenu.ts`, `AppPage.tsx`) all
+  already discard or `.catch()` the promise without consuming a return value,
+  so this widening needed no changes there and added no notification at
+  those sites — the spec's two-action success notification is wired only at
+  `AppPreviewCard.tsx`'s export button, the one call site backed by a visible
+  card the export originated from.
+- `NotificationCard` already has two independent, distinctly-styled action
+  slots reachable off `StoredNotification`: `action` (-> `navAction`) and
+  `extraAction` (a second, separate `.q-all` button below the status line).
+  Threaded `extraAction` through `NotificationInput`/`StoredNotification`
+  (`notifications.ts`, including `forwardToShell()` for the iframe-forwarding
+  path) and into `RepoUpdatesDock.tsx`'s `MessageRowView`, which now passes
+  both `navAction={notification.action}` and
+  `extraAction={notification.extraAction}`. Deliberately NOT wired into
+  `MessagePopupCard.tsx` (the transient popup) — precedent already set by
+  `NotificationInput.page`'s existing "unused by the popup card" comment: a
+  fleeting toast is not where a two-destination choice belongs.
+- The export success notification: `action` = "Reveal folder" (calls the
+  existing `revealPath(realPath)`, which already handles being given a file
+  path by revealing/selecting it inside its parent folder — no dirname
+  needed); `extraAction` = "Open file" (calls `navigate(realPath, { isDir:
+  false })` from `router.ts` directly, NOT `navigateToJobPage` — that
+  helper's `KNOWN_FILE_EXTENSIONS` allowlist only recognizes
+  `.html`/`.htm`/`.png`/`.mp4`, so it would misclassify a `.fused` path as a
+  directory; `EmbedStrip.tsx` already treats `isDir === false && path ends in
+  .fused` as its one signal for "a `.fused` file is open", confirming
+  `navigate(path, { isDir: false })` is the correct call for this file type).
