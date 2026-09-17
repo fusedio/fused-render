@@ -75,25 +75,39 @@ disagreements: a trailing space used to be silently trimmed away, and
    literal `*` the user already typed is dropped rather than replaced, for
    the same reason a `*` they typed there already does the job.
 4. On the **final** `/`-separated segment only, wrap each end
-   **independently** with `**` (not `*`, same reasoning as point 3): prepend
-   `**` unless it already starts with `*`, append `**` unless it already ends
-   with `*`. This fires even when the segment has no whitespace at all —
-   `*.pdf` becomes `*.pdf**`, and `icon*copy` becomes `**icon*copy**`,
-   agreeing with `icon copy` -> `**icon**copy**`. Checking each end
-   independently (not "does this segment contain a `*` anywhere") is what
-   makes a mid-segment user-typed `*` (`icon*copy`) still get wrapped instead
-   of being treated as already-anchored. Earlier segments get the whitespace
-   collapse but no wrap of their own — `~/My Documents/report` becomes
-   `~/My**Documents/**report**`, not `~/**My**Documents**/...`. A `*` the
-   user typed themselves is always single-segment (`*`, never `**`); only the
-   wildcards this function inserts — the step-3 collapse and the step-4 wrap
-   — are the cross-directory `**` token.
+   **independently**, and the two ends use **different** tokens (code review
+   finding — an earlier version wrapped both ends with `**`, which is fixed
+   here): prepend `**` unless it already starts with `*` (same reasoning as
+   point 3 — this is what turns a fragment into "contains, anywhere below
+   this point"); append a single `*` unless it already ends with `*`. The
+   trailing wildcard's job is narrower than the leading one — it only has to
+   let an unanchored fragment also match a longer name/extension in the
+   **same** folder (`*.pdf` -> `*.pdf*`, so it still matches
+   `report.pdf.bak`), which a single segment-confined `*` already gives in
+   full. Appending `**` there instead would let a folder-anchored query like
+   `/*.pdf` also match `x.pdf/inner/deep.bin` (three segments below a
+   differently-named directory) — silently breaking that same anchor's own
+   "in this folder only" guarantee. This fires even when the segment has no
+   whitespace at all — `*.pdf` becomes `*.pdf*`, and `icon*copy` becomes
+   `**icon*copy*`, agreeing with `icon copy` -> `**icon**copy*`. Checking
+   each end independently (not "does this segment contain a `*` anywhere")
+   is what makes a mid-segment user-typed `*` (`icon*copy`) still get
+   wrapped instead of being treated as already-anchored. Earlier segments
+   get the whitespace collapse but no wrap of their own — `~/My
+   Documents/report` becomes `~/My**Documents/**report*`, not
+   `~/**My**Documents**/...`. A `*` the user typed themselves is always
+   single-segment (`*`, never `**`); of the wildcards this function inserts,
+   the step-3 collapse and the step-4 LEADING wrap are the cross-directory
+   `**` token, but the step-4 TRAILING wrap is a single segment-confined
+   `*`.
 
 **Known, accepted consequence** (do not special-case around it): a previously
-precise glob like `*.pdf` now also matches `report.pdf.bak` and `notes.pdfx` —
-every glob query trades some precision for grammar consistency with the
-whitespace rule. Likewise a single space (`"icon "`) now flips a query straight
-into glob mode.
+precise glob like `*.pdf` now also matches `report.pdf.bak` and `notes.pdfx`
+**within the same folder** — every glob query trades some same-folder
+precision for grammar consistency with the whitespace rule. It deliberately
+does **not** also match across a `/` (`x.pdf/inner/deep.bin`) — the trailing
+wrap is same-segment-confined, unlike the leading one. Likewise a single
+space (`"icon "`) now flips a query straight into glob mode.
 
 `mode` is `"glob"` the moment the expanded string contains a `*` anywhere — which
 now includes every whitespace-containing query AND every glob query, whitespace
@@ -184,7 +198,20 @@ three boolean columns off the basename (`nm`) alone —
   needed original case to detect a hump; finding a separator needs none. The
   literal is escaped with Python's `re.escape` (not the LIKE-metacharacter
   escaping the other three predicates use), since it is embedded in a
-  `regexp_matches` pattern, not a `LIKE` one.
+  `regexp_matches` pattern, not a `LIKE` one. Before that escape, any leading
+  run of non-alphanumeric characters is stripped off the literal (code
+  review finding 6): without this, an extension-glob literal like `.pdf` or
+  `.ts` (a final segment's literal already starts with its own leading `.`)
+  made the predicate structurally dead — the regex demanded a separator
+  immediately before the literal, i.e. before that leading `.` itself, which
+  for an ordinary file is just the basename character before the extension's
+  dot (`report.pdf`'s `t`) — never a separator, so this was false for
+  essentially every real extension match. Stripping the leading punctuation
+  moves the separator test to right before the literal's alphanumeric core
+  (`pdf`, not `.pdf`); the stripped `.` itself already satisfies
+  "non-alphanumeric," so an ordinary extension match now correctly reads as
+  boundary-true. A literal with no leading punctuation (`config`) is
+  unaffected — nothing to strip, same regex as before.
 
 — plus an `nm_exact` predicate computed by the caller (substring mode:
 `nm = lower(q)`; glob mode: see below), and `_lex_order_and_score(nm_exact, preds)`
@@ -444,6 +471,17 @@ mirroring `resolve_query`'s own `is_glob` check), confined to any depth under
 whole expanded pattern always searches any depth. A bare `*`-containing `q` (`*.pdf`)
 is therefore no longer a literal-character `ILIKE` match either — same accepted
 precision-glob consequence as §3.
+
+**A whitespace-only `q` is zero hits, not the whole corpus** (code review finding 3).
+`expand_whitespace_query` correctly resolves an all-whitespace string to `""` — there is
+no literal character anywhere in it to search on (§3, A2) — but that resolved-empty
+state used to be indistinguishable from `q` never having been passed at all, this
+function's own separate, legitimate "no filter" contract two paragraphs up: `q_trimmed`
+and `qlit` are ALSO empty for whitespace, so every filter guard was skipped and the
+unfiltered corpus came back. Fixed by checking `q and not expanded` explicitly (true
+only when the caller typed something and it search-empty) and answering with zero
+entries in that case — the same "resolved to nothing" state `search_ranked`'s
+`if not qs: return {hits: []}` guard already treats this way.
 
 ## 7. The source helpers are public — `files_src` / `dirs_src`
 

@@ -7,15 +7,17 @@ import { describe, expect, test } from "bun:test";
 import { broadenGlobOffer, broadenGlobPattern } from "@apps/explorer/listing/glob-broaden";
 
 describe("broadenGlobOffer", () => {
-  // Follow-up (search-trailing-space, A3/A5): "widen the name" (the former
-  // rung 1) is deleted — `expand_whitespace_query`/`expandWhitespaceQuery`
-  // now wraps a glob query's unstarred final segment in the CROSS-DIRECTORY
-  // "**" token, so the resolved pattern for "/home/iamsdas/*.js" is already
-  // "/home/iamsdas/*.js**" before any widening. Appending a single user "*"
+  // Follow-up (search-trailing-space, A3/A5; token narrowed back to a
+  // single "*" by a later code-review round, see glob-broaden.ts's own
+  // header comment): "widen the name" (the former rung 1) is deleted —
+  // `expand_whitespace_query`/`expandWhitespaceQuery` wraps a glob query's
+  // unstarred final segment in a single, segment-confined "*", so the
+  // resolved pattern for "/home/iamsdas/*.js" is already
+  // "/home/iamsdas/*.js*" before any widening. Appending a single user "*"
   // to the raw text (what that rung used to do) would make the segment
-  // already-starred and SUPPRESS that "**" wrap, trading it for a
-  // single-segment-confined star — narrower, not wider. There is only one
-  // rung left: "look in subfolders".
+  // already-starred and SUPPRESS that wrap — but the wrap's own token is
+  // just as narrow a single "*", so the result is redundant, not narrower.
+  // There is only one rung left: "look in subfolders".
   test("look in subfolders", () => {
     const offer = broadenGlobOffer("/home/iamsdas/*.js");
     expect(offer).toEqual({ pattern: "/home/iamsdas/**/*.js", label: "Look in subfolders" });
@@ -54,13 +56,14 @@ describe("broadenGlobOffer", () => {
   test("a bare, slash-free glob has nothing left to offer", () => {
     // Slash-free is already maximally broad on the SUBFOLDER dimension
     // (resolve_query's own implicit **/ prefix already covers every depth),
-    // and the NAME dimension's trailing edge is already at its broadest too:
-    // `expandWhitespaceQuery("*.js")` already resolves to "*.js**" (the
-    // cross-directory token) — there is no rung left that could widen this
-    // any further, and no "/" for the subfolder rung to work with either.
-    // This is the accepted precision-glob-loss consequence (DECISIONS.md),
-    // not a bug: a bare `*.js` search already matches ".jsx"/".json"
-    // everywhere.
+    // and the NAME dimension's trailing edge is already at its broadest
+    // available form too: `expandWhitespaceQuery("*.js")` already resolves
+    // to "*.js*" (a single, segment-confined star is exactly what an
+    // unstarred trailing edge gets) — there is no rung left that could
+    // widen this any further, and no "/" for the subfolder rung to work
+    // with either. This is the accepted same-folder precision-glob-loss
+    // consequence (DECISIONS.md), not a bug: a bare `*.js` search already
+    // matches ".jsx"/".json" in the same folder.
     expect(broadenGlobOffer("*.js")).toBeNull();
   });
 
@@ -85,13 +88,14 @@ describe("broadenGlobOffer", () => {
   // -- SPEC-search-space-wildcard.md: whitespace is an implied wildcard, so
   // a query with no literal "*" at all can still be running in glob mode
   // server-side. But expand_whitespace_query already wraps the final
-  // segment in a leading AND trailing "*" whenever it has no user-typed "*"
-  // of its own — appending a trailing "*" to the raw query text (rung 1)
-  // gives that segment a user-typed "*", which SUPPRESSES the implied
-  // leading "*" the original zero-hit search already had. The "widened"
-  // query would therefore be a strict subset of the original, guaranteed to
-  // also return zero hits. So a pure-whitespace query (no literal "*") gets
-  // no offer at all — it is already at its broadest expressible form.
+  // segment in a leading "**" AND a trailing "*" whenever it has no
+  // user-typed "*" of its own — appending a trailing "*" to the raw query
+  // text (rung 1) gives that segment a user-typed "*" at the END, which
+  // SUPPRESSES the wrap's OWN trailing "*" there, but the two are the same
+  // token, so nothing about the resolved pattern actually changes: the
+  // "widened" query would resolve identically to the original, still-zero-
+  // hit search. So a pure-whitespace query (no literal "*") gets no offer
+  // at all — it is already at its broadest expressible form.
   test("a whitespace query with no literal * has nothing left to offer", () => {
     expect(broadenGlobOffer("hello world")).toBeNull();
   });

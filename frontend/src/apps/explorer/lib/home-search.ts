@@ -196,16 +196,22 @@ export function patternTail(query: string): string {
  *
  * One documented exception to "byte-equivalent": "whitespace" here means
  * whatever `expand_whitespace_query`'s Python `\s` matches, NOT whatever
- * JS's native `\s`/`String.trim()` matches — the two disagree on U+FEFF
- * (ZERO WIDTH NO-BREAK SPACE, a leading BOM some editors/OSes prepend),
- * which Python's `\s` does not treat as whitespace (Unicode category Cf,
- * not a whitespace category) but JS's does. Every place below that would
- * naively reach for `\s` uses `NON_BOM_WS` instead, so a BOM-prefixed
- * literal takes the same rule-3 no-op path on both sides of the wire
- * (pinned by `test_expand_whitespace_query_does_not_treat_a_bom_as_
- * whitespace` in tests/test_index_query.py and this file's own
- * "does not treat a leading BOM" test) rather than silently resolving to
- * different modes in the two languages.
+ * JS's native `\s`/`String.trim()` matches — the two disagree in two
+ * places. First, U+FEFF (ZERO WIDTH NO-BREAK SPACE, a leading BOM some
+ * editors/OSes prepend): Python's `\s` does not treat it as whitespace
+ * (Unicode category Cf, not a whitespace category) but JS's does. Second
+ * (code review finding 7(b)), the four C0 "information separator" control
+ * characters U+001C-U+001F and U+0085 (NEL): Python's `\s` DOES treat these
+ * as whitespace (via CPython's Unicode bidirectional-class tables) but JS's
+ * does not (JS follows the `White_Space` property, which excludes all
+ * five). Every place below that would naively reach for `\s` uses
+ * `NON_BOM_WS` instead, which is defined to match exactly what Python's
+ * `\s` matches on both counts, so a BOM-prefixed or C0-separator-containing
+ * literal takes the same path on both sides of the wire (pinned by
+ * `test_expand_whitespace_query_does_not_treat_a_bom_as_whitespace` in
+ * tests/test_index_query.py and this file's own "does not treat a leading
+ * BOM" and "treats the C0 separators" tests) rather than silently
+ * resolving to different modes in the two languages.
  *
  * The rule:
  *  1. Whitespace-only (`raw` made ONLY of `NON_BOM_WS` characters,
@@ -218,13 +224,19 @@ export function patternTail(query: string): string {
  *  4. Collapse every whitespace run to `**` — dropped, not replaced,
  *     whenever a run directly borders a literal `*` the user already typed
  *     (`report *.pdf` must not stack a THIRD star beside it).
- *  5. On the FINAL `/`-separated segment only, wrap each END independently
- *     with `**`: prepend unless it already starts with `*`, append unless
- *     it already ends with `*`. This fires even when the segment has no
- *     whitespace at all — `*.pdf` becomes `*.pdf**` — which is what makes
- *     `icon*copy` -> `**icon*copy**` agree with `icon copy` ->
- *     `**icon**copy**`. Earlier segments get the whitespace collapse but no
- *     wrap.
+ *  5. On the FINAL `/`-separated segment only, wrap each END independently,
+ *     with DIFFERENT tokens (code review finding — an earlier version used
+ *     `**` on both ends, which let a folder-anchored query like `/*.pdf`
+ *     leak into a differently-named subtree, e.g. matching
+ *     `x.pdf/inner/deep.bin`): prepend `**` unless it already starts with
+ *     `*` (crosses directories, same as the whitespace collapse); append a
+ *     single `*` unless it already ends with `*` (confined to one
+ *     segment — its only job is letting an unanchored fragment also match a
+ *     longer name in the SAME folder, which one `*` already gives in full).
+ *     This fires even when the segment has no whitespace at all — `*.pdf`
+ *     becomes `*.pdf*` — which is what makes `icon*copy` -> `**icon*copy*`
+ *     agree with `icon copy` -> `**icon**copy*`. Earlier segments get the
+ *     whitespace collapse but no wrap.
  *
  * The invariant that survives (A4): the function never manufactures a run
  * of THREE OR MORE consecutive `*` unless the input already had one — it is
@@ -234,7 +246,8 @@ export function patternTail(query: string): string {
  *
  * Known, accepted consequence (do not special-case around it): a
  * previously-precise glob like `*.pdf` now also matches `report.pdf.bak`
- * and `notes.pdfx`. See DECISIONS.md.
+ * and `notes.pdfx` WITHIN THE SAME FOLDER — it deliberately does not also
+ * match across a `/`, unlike the leading wrap. See DECISIONS.md.
  */
 // "Whitespace, but not a BOM": JS's `\s` (and therefore `String.trim()`)
 // treats U+FEFF (ZERO WIDTH NO-BREAK SPACE, a leading BOM some editors/OSes
@@ -247,7 +260,19 @@ export function patternTail(query: string): string {
 // BOM-prefixed literal takes the same no-op path `expand_whitespace_query`
 // (query.py) takes for it, keeping the documented byte-equivalence between
 // the two (see `test_expand_whitespace_query_...bom...` in both test files).
-const NON_BOM_WS = /[^\S﻿]/;
+//
+// Gap 2 (the other direction \u2014 code review finding 7(b)): Python's `\s`
+// (and `str.isspace()`) ALSO matches five characters JS's `\s` does not:
+// the four C0 "information separator" control characters U+001C-U+001F
+// (FS/GS/RS/US) and U+0085 (NEL, NEXT LINE). This is because CPython's
+// Unicode tables classify these by bidirectional class (a paragraph/segment
+// separator), not by the `White_Space` property JS's `\s` follows exactly \u2014
+// `White_Space` excludes all five. `[-\u0085]` adds them back
+// in, alternated alongside the BOM-excluding class above, so this fragment
+// matches exactly what Python's `\s` matches: JS-whitespace-minus-BOM, plus
+// the five characters Python additionally treats as whitespace that JS does
+// not (pinned by this file's "treats the C0 separators" test).
+const NON_BOM_WS = /(?:[^\S\uFEFF]|[-\u0085])/;
 
 const ALL_NON_BOM_WS = new RegExp(`^${NON_BOM_WS.source}*$`);
 
@@ -268,7 +293,7 @@ export function expandWhitespaceQuery(raw: string): string {
   const collapsed = segments.map(collapseWs);
   let final = collapsed[last]!;
   if (!final.startsWith("*")) final = `**${final}`;
-  if (!final.endsWith("*")) final = `${final}**`;
+  if (!final.endsWith("*")) final = `${final}*`;
   collapsed[last] = final;
   return collapsed.join("/");
 }

@@ -241,9 +241,36 @@ def test_search_under_a_star_query_now_globs_instead_of_staying_literal(tmp_path
     cfg = _index(tmp_path, "/r", ["/r/beta.md", "/r/beta.md.bak", "/r/beta.txt"])
     out = search_under(cfg, "/r", q="*.md")
     rels = sorted(e["rel"] for e in out["entries"])
-    # "*.md" -> expand_whitespace_query -> "*.md**" -> matches beta.md AND
+    # "*.md" -> expand_whitespace_query -> "*.md*" -> matches beta.md AND
     # beta.md.bak (the precision-glob loss the spec explicitly accepts).
     assert rels == ["beta.md", "beta.md.bak"]
+
+
+def test_search_under_a_whitespace_only_query_has_nothing_to_search_for(tmp_path):
+    """Code review finding 3: a whitespace-only `q` fell all the way through
+    to the plain corpus, unfiltered — the opposite of what `q`'s own
+    docstring and `expand_whitespace_query`'s own contract intend.
+    `expand_whitespace_query("   ")` correctly resolves to `""` (there is no
+    literal character anywhere in an all-whitespace string to search on —
+    `test_expand_whitespace_query_whitespace_only_has_nothing_to_search_for`,
+    test_index_query.py, A2), but `search_under` conflated that RESOLVED
+    empty string with `q` never having been passed at all (its own,
+    LEGITIMATE "no filter, give me the whole corpus" contract) — the
+    `if q:`-gated code path ran expand_whitespace_query, got back `""`, and
+    then `qlit`'s own `if q_trimmed` guard (also empty, since `.strip()` of
+    whitespace is `""`) skipped the filter entirely, indistinguishable from
+    `q` never having been given. A few stray spacebar presses in the search
+    box therefore answered with the whole corpus rather than the zero hits
+    `resolve_query`/`search_ranked` already agree a whitespace-only query
+    gets (`search_ranked`'s own `if not qs: return {hits: []}` guard, keyed
+    off the identically-resolved empty pattern)."""
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/beta.md"])
+    out = search_under(cfg, "/r", q="   ")
+    assert out["entries"] == []
+    assert out["total"] == 0
+    # A genuinely absent `q` is unaffected — this remains the documented
+    # "no filter" contract, not a regression of it.
+    assert search_under(cfg, "/r")["total"] == 2
 
 
 def test_search_under_caps_the_corpus_and_flags_truncation(tmp_path):
@@ -329,7 +356,7 @@ def test_rank_route_returns_the_resolved_pattern_for_a_glob_hit(home, tmp_path):
     body = client.get("/api/index/rank",
                       params={"root": root, "q": "hello world"}).json()
     assert body["mode"] == "glob"
-    assert body["pattern"] == "**/**hello**world**"
+    assert body["pattern"] == "**/**hello**world*"
 
 
 def test_rank_route_answers_a_timing_breakdown(home, tmp_path):

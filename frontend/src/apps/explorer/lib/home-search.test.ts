@@ -86,18 +86,24 @@ describe("expandWhitespaceQuery / willResolveToGlobMode", () => {
   });
 
   it("wraps a whitespace-free glob too (fixes icon*copy)", () => {
-    expect(expandWhitespaceQuery("*.pdf")).toBe("*.pdf**");
-    expect(expandWhitespaceQuery("icon*copy")).toBe("**icon*copy**");
-    expect(expandWhitespaceQuery("src/**/*.ts")).toBe("src/**/*.ts**");
+    expect(expandWhitespaceQuery("*.pdf")).toBe("*.pdf*");
+    expect(expandWhitespaceQuery("icon*copy")).toBe("**icon*copy*");
+    expect(expandWhitespaceQuery("src/**/*.ts")).toBe("src/**/*.ts*");
     expect(willResolveToGlobMode("*.pdf")).toBe(true);
   });
 
   it("does not trim leading/trailing whitespace", () => {
+    // "icon " and " icon" are NOT symmetric: the trailing space's own
+    // collapse (rule 4) already produces a cross-directory "**" at that
+    // end, so rule 5's append never fires for it — but the LEADING space
+    // collapses to a "**" at the START, leaving the END untouched, so rule
+    // 5's single-"*" append still fires there (code review finding: the
+    // trailing case used to also get "**", leaking across a "/").
     expect(expandWhitespaceQuery("icon ")).toBe("**icon**");
-    expect(expandWhitespaceQuery(" icon")).toBe("**icon**");
+    expect(expandWhitespaceQuery(" icon")).toBe("**icon*");
     expect(expandWhitespaceQuery("*.js ")).toBe("*.js**");
     expect(expandWhitespaceQuery("hello world ")).toBe("**hello**world**");
-    expect(expandWhitespaceQuery(" hello world")).toBe("**hello**world**");
+    expect(expandWhitespaceQuery(" hello world")).toBe("**hello**world*");
   });
 
   it("the motivating trailing-space case: a space only ever widens (A3)", () => {
@@ -108,26 +114,37 @@ describe("expandWhitespaceQuery / willResolveToGlobMode", () => {
   });
 
   it("collapses whitespace runs to '**' and wraps the final segment", () => {
-    expect(expandWhitespaceQuery("hello world")).toBe("**hello**world**");
-    expect(expandWhitespaceQuery("hello  world")).toBe("**hello**world**");
+    expect(expandWhitespaceQuery("hello world")).toBe("**hello**world*");
+    expect(expandWhitespaceQuery("hello  world")).toBe("**hello**world*");
     expect(expandWhitespaceQuery("  hello world  ")).toBe("**hello**world**");
     expect(willResolveToGlobMode("hello world")).toBe(true);
   });
 
   it("wraps only the final segment, not earlier ones", () => {
-    expect(expandWhitespaceQuery("~/My Documents/report")).toBe("~/My**Documents/**report**");
+    expect(expandWhitespaceQuery("~/My Documents/report")).toBe("~/My**Documents/**report*");
   });
 
   it("wraps only the end that needs it", () => {
-    expect(expandWhitespaceQuery("*.pdf")).toBe("*.pdf**");
+    expect(expandWhitespaceQuery("*.pdf")).toBe("*.pdf*");
     expect(expandWhitespaceQuery("report*")).toBe("**report*");
     expect(expandWhitespaceQuery("*.pdf*")).toBe("*.pdf*");
   });
 
   it("never stacks a star beside a user star", () => {
-    expect(expandWhitespaceQuery("report *.pdf")).toBe("**report*.pdf**");
-    expect(expandWhitespaceQuery("*.pdf report")).toBe("*.pdf**report**");
-    expect(expandWhitespaceQuery("a * b")).toBe("**a*b**");
+    expect(expandWhitespaceQuery("report *.pdf")).toBe("**report*.pdf*");
+    expect(expandWhitespaceQuery("*.pdf report")).toBe("*.pdf**report*");
+    expect(expandWhitespaceQuery("a * b")).toBe("**a*b*");
+  });
+
+  it("trailing wrap does not cross a directory (code review finding)", () => {
+    // An earlier version appended "**" (the same cross-directory token as
+    // the leading wrap), which let a folder-anchored query like "/*.pdf"
+    // also match a file several segments below a differently-named
+    // directory. The trailing wrap's job is only to let an unanchored
+    // fragment also match a longer name in the SAME folder, which a single
+    // "*" already gives in full.
+    const pattern = expandWhitespaceQuery("/*.pdf");
+    expect(pattern).toBe("/*.pdf*");
   });
 
   // Code review finding: JS's `\s` (and `String.trim()`) treat U+FEFF
@@ -150,21 +167,45 @@ describe("expandWhitespaceQuery / willResolveToGlobMode", () => {
     expect(expandWhitespaceQuery(bom)).toBe(bom);
   });
 
+  // Code review finding 7(b): the BOM fix above closed ONE gap between
+  // Python's `\s` and JS's native `\s`, but not the only one. Python's `\s`
+  // (and `str.isspace()`) also matches the four C0 "information separator"
+  // control characters U+001C-U+001F (FS/GS/RS/US) and U+0085 (NEL, NEXT
+  // LINE) — both because CPython's Unicode tables mark their bidirectional
+  // class as a whitespace-like separator, not because of Unicode's
+  // `White_Space` property (which excludes them). JS's `\s` follows
+  // `White_Space` exactly and treats all five as ordinary non-whitespace
+  // characters. `NON_BOM_WS` is therefore extended with an explicit
+  // `[-]` alternative so a query containing one of these
+  // (vanishingly rare in practice — they are non-printing control
+  // characters no user is likely to type — but reachable via paste or a
+  // scripted client) still collapses the same way on both sides of the
+  // wire, rather than silently being treated as literal, non-widening
+  // characters here while `expand_whitespace_query` (query.py) widens on
+  // them.
+  it("treats the C0 separators (U+001C-U+001F) and NEL (U+0085) as whitespace (matches Python's \\s)", () => {
+    for (const cp of [0x1c, 0x1d, 0x1e, 0x1f, 0x85]) {
+      const ch = String.fromCodePoint(cp);
+      expect(expandWhitespaceQuery(`icon${ch}copy`)).toBe("**icon**copy*");
+      expect(expandWhitespaceQuery(ch)).toBe("");
+    }
+  });
+
   // Required behavior table — mirrors tests/test_index_query.py's
   // test_expand_whitespace_query_required_behavior_table row for row.
   it.each([
     ["report", "report"],
     ["icon ", "**icon**"],
-    [" icon", "**icon**"],
+    [" icon", "**icon*"],
     ["*.js ", "*.js**"],
-    ["icon*copy", "**icon*copy**"],
-    ["*.pdf", "*.pdf**"],
-    ["src/**/*.ts", "src/**/*.ts**"],
-    ["icon copy", "**icon**copy**"],
-    ["hello  world", "**hello**world**"],
-    ["report *.pdf", "**report*.pdf**"],
-    ["~/My Documents/report", "~/My**Documents/**report**"],
-    ["/*.pdf", "/*.pdf**"],
+    ["icon*copy", "**icon*copy*"],
+    ["*.pdf", "*.pdf*"],
+    ["src/**/*.ts", "src/**/*.ts*"],
+    ["icon copy", "**icon**copy*"],
+    ["hello  world", "**hello**world*"],
+    ["report *.pdf", "**report*.pdf*"],
+    ["~/My Documents/report", "~/My**Documents/**report*"],
+    ["/*.pdf", "/*.pdf*"],
     ["   ", ""],
     ["src ", "**src**"],
   ])("required behavior: %j -> %j", (query, expected) => {

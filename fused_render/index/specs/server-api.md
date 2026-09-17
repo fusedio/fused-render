@@ -278,9 +278,13 @@ away, UNLESS the whole string is whitespace, which resolves to empty), is run
 through `resolve_query` (`query.md §3`) before anything else: whitespace runs
 collapse into `**` (not `*` — a single-segment wildcard can't cross a `/`, so a
 `*` collapse would narrow a query typed with a space instead of widening it), the
-final path segment is wrapped in a leading and trailing `**` independently (even a
-whitespace-free one — `*.pdf` becomes `*.pdf**`, an accepted precision-glob
-trade-off), a leading `~`/`/`/drive letter/`..` can peel a `base` off the front,
+final path segment is wrapped at each end independently — but with different
+tokens (even a whitespace-free one — `*.pdf` becomes `*.pdf*`, an accepted
+same-folder precision-glob trade-off): a leading `**` (crosses directories,
+same reasoning as the whitespace collapse), a trailing single `*` (confined to
+one segment — a folder-anchored query like `/*.pdf` must stay anchored to that
+folder, not also match a `.pdf`-free file several segments below it), a leading
+`~`/`/`/drive letter/`..` can peel a `base` off the front,
 and the result decides `mode` — `"glob"` the moment the expanded string contains a
 `*` anywhere, including one introduced purely by whitespace with no character the
 user typed, else `"substring"`. `base` is the resolved search root (equal to the

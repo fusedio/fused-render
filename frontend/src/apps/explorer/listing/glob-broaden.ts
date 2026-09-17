@@ -6,37 +6,35 @@
 // nothing else here has to change.
 //
 // `resolve_query` (fused_render/index/query.py) already widens a slash-free
-// glob for free: "*.js" resolves to "**/*.js**" server-side, matching any
-// depth AND reaching the end of the final segment with the unrestricted,
-// cross-directory "**" token — so both the SUBFOLDER dimension and the NAME
+// glob for free: "*.js" resolves to "**/*.js*" server-side — the leading
+// "**/" matches any depth, and the final segment's own trailing edge is
+// already at ITS broadest too (a single, segment-confined "*" is exactly
+// what an unstarred end gets) — so both the SUBFOLDER dimension and the NAME
 // dimension's trailing edge are already maximally broad for a query that
 // doesn't already end in "*" of its own.
 //
 // A former rung 1, "widen the name" (append a trailing "*" to the raw query
-// text), lived here before the search-trailing-space round changed
-// `expand_whitespace_query`'s own final-segment wrap from a single "*" to
-// "**" (A3, DECISIONS.md). Under the OLD single-star wrap, appending a user
-// "*" to the raw text and letting the wrap rule skip an already-starred end
-// produced the exact same resolved pattern the wrap would have produced on
-// its own — correctly dead code, caught by the `genuinelyWidens` check
-// below returning false.
-//
-// Under the NEW "**" wrap it is not merely dead, it is BACKWARDS: appending
-// a single user "*" makes the query's trailing end already-starred, which
-// makes `expandWhitespaceQuery` skip its own "**" wrap on that end — trading
-// away the cross-directory reach the wrap would have supplied for a
-// single-segment-confined user star. The candidate `genuinelyWidens` a
-// *different* resolved pattern than the one already zero-hit, but it is
-// strictly NARROWER, never broader (verified by hand for every unstarred-end
-// shape: the wrap's "**" always reaches at least as far as a bare trailing
-// "*" can). Offering it would show the user a "widen" button that quietly
-// narrows their search. It has been deleted rather than "fixed forward":
-// there is no text this ladder could still append to a name that
-// `expand_whitespace_query` has not already appended a MORE unrestricted
-// version of itself. This is also what resolves the former rung 1's own
-// display-text bug (a trailing-space query like "*a* " producing the raw
-// offer text "*a* *", which read as if it inserted a second star beside the
-// user's own) — the whole rung is gone, not patched.
+// text), lived here once. For a time (search-trailing-space round, A3,
+// DECISIONS.md) `expand_whitespace_query`'s own final-segment trailing wrap
+// used the cross-directory "**" token instead of a single "*", which made
+// appending a user "*" actively BACKWARDS (it suppressed the wrap's own
+// "**" for a narrower, single-segment star) rather than merely redundant —
+// that version of this comment described that state. A later code-review
+// round (worktree-search-trailing-space, finding 1) narrowed the trailing
+// wrap back to a single "*" (a `**` there let a folder-anchored query like
+// "/*.pdf" leak across a directory boundary it should not cross), which
+// restores the ORIGINAL reason this rung is dead: appending a user "*" to
+// an unstarred end and letting the wrap rule skip it produces the exact
+// same resolved pattern the wrap would have produced unprompted — plain
+// redundant, not narrowing. Either way the conclusion is the same and the
+// rung stays deleted rather than "fixed forward": there is no text this
+// ladder could still append to a name that `expand_whitespace_query` has
+// not already appended an equally- (or, in the "**" era, more-)
+// unrestricted version of itself. This is also what resolves the former
+// rung 1's own display-text bug (a trailing-space query like "*a* "
+// producing the raw offer text "*a* *", which read as if it inserted a
+// second star beside the user's own) — the whole rung is gone, not
+// patched.
 //
 // What remains, rung "look in subfolders", still has real work to do: the
 // server's own "**/" prefix only fires for a query with NO "/" in it at

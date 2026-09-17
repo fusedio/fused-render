@@ -434,6 +434,16 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     precision-glob consequence, not a `search_under`-specific choice — see
     DECISIONS.md).
 
+    A WHITESPACE-ONLY `q` (code review finding 3) is not the same thing as
+    `q` never having been passed: an absent/empty `q` is this function's own
+    documented "no filter, whole corpus" contract, but a `q` that is
+    non-empty yet resolves via `expand_whitespace_query` to `""` (there is
+    no literal character anywhere in an all-whitespace string to search on)
+    means the caller typed something and it resolved to nothing — the same
+    resolved-empty state `search_ranked`'s `if not qs: return {hits: []}`
+    guard already treats as zero hits, not "everything." Answers with zero
+    entries in this case, never the unfiltered corpus.
+
     `token`, when given, follows `search_ranked`'s contract exactly: bound to
     the connection as soon as it exists, checked before the one real query,
     and an interrupt this token caused re-raises as `Cancelled`.
@@ -496,6 +506,18 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
             # gets.
             wildcard_regex = _q(_glob_to_regex(("**/" + expanded).lower()))
         qlit = like_literal(q_trimmed) if q_trimmed and wildcard_regex is None else ""
+        # Code review finding 3: `q` truthy but `expanded` empty means `q`
+        # was WHITESPACE-ONLY — `expand_whitespace_query`'s own contract
+        # (test_index_query.py, A2) already resolves that to `""` because
+        # there is no literal character anywhere in an all-whitespace string
+        # to search on, the SAME resolved-empty state `search_ranked`'s own
+        # `if not qs: return {hits: []}` guard treats as zero hits. This is
+        # NOT the same as `q` never having been passed at all (this
+        # function's own documented "no filter, whole corpus" contract,
+        # `q=""`/`q=None`) — conflating the two let a whitespace-only query
+        # fall through every filter guard below (`q_trimmed` and `qlit` are
+        # ALSO empty for whitespace) and answer with the unfiltered corpus.
+        no_match = bool(q) and not expanded
         # Files and directories compete in ONE depth-ordered query, not two.
         #
         # Two queries meant the files branch was served first and directories got
@@ -538,7 +560,7 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
                 f"{_depth_col(_cached_src_cols(con, dsrc, (cfg.dir, m.get('generation'), 'dirs')), 'dir')} AS depth FROM {dsrc} "
                 f"WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'{dlike}")
         entries, truncated = [], False
-        if branches:
+        if branches and not no_match:
             if token is not None:
                 token.check()
             # One row past the cap, so "there was more" is known without a count.
@@ -779,44 +801,61 @@ def expand_whitespace_query(raw: str) -> str:
        maximally broad on their own, and letting them merge into one
        cross-directory token changes nothing they can match.
     4. On the FINAL `/`-separated segment only: prepend `**` unless it
-       already starts with `*`, append `**` unless it already ends with
-       `*`. Also `**`, for the identical reason step 3 is: the implied
-       wrap is what turns a typed extension or name fragment into a
-       "contains, anywhere below this point" match, and confining that to
-       one segment would mean `src ` still couldn't reach `srcdir/file.txt`
-       even after step 3 fixed the middle case — both the run-collapse AND
-       the boundary wrap are widening operations this function inserts
-       itself, and both use the same token. A user-typed `*` is left alone
-       (still single-segment, still exactly what they typed) — only OUR
-       OWN inserted wildcards are `**`. Checking each END independently
-       (not "does this segment contain a `*` anywhere") is what fixes
-       `icon*copy` (a user-typed `*` in the MIDDLE of the segment) matching
-       the same files `icon copy` does — the old rule keyed off "does this
-       segment contain a `*` anywhere" and skipped the wrap entirely
-       whenever it did, which left a mid-segment `*` both-ends-anchored
-       with no wrap at all. `*.pdf` only gains a trailing `**` (it already
-       has a leading `*`), `report*` only gains a leading `**`, and an
-       already fully-wrapped `*.pdf*` gains neither. Earlier segments get
-       the whitespace collapse (step 3) but no wrap of their own
-       (`~/My Documents/report` -> `~/My**Documents/**report**`, not
-       `~/**My**Documents**/...`).
+       already starts with `*`, append a single `*` unless it already ends
+       with `*`. The two ends are NOT symmetric, on purpose. The leading
+       `**` is what turns a typed fragment into "contains, anywhere below
+       this point" from the start — it is what fixes the middle case, the
+       same reason step 3 inserts `**` — but the TRAILING wildcard's whole
+       job is narrower: make an unanchored typed fragment also match a
+       longer name/extension in the SAME folder (`report` -> matches
+       `report.pdf.bak` too, `*.pdf` -> matches `notes.pdfx` too). That is
+       a same-segment concern, so a single `*` (which cannot cross a `/`)
+       already satisfies it in full; appending `**` there would let a
+       folder-anchored query like `/*.pdf` also match `x.pdf/inner/deep.bin`
+       — a file that isn't even a PDF sitting three segments below a
+       differently-named directory — which contradicts this same grammar's
+       own "in this folder only" claim for a leading-`/` anchor (code
+       review finding: the trailing `**` used to leak this way). A
+       user-typed `*` is left alone (still single-segment, still exactly
+       what they typed) — only OUR OWN inserted wildcards are affected by
+       this rule, and only the leading one is `**`. Checking each END
+       independently (not "does this segment contain a `*` anywhere") is
+       what fixes `icon*copy` (a user-typed `*` in the MIDDLE of the
+       segment) matching the same files `icon copy` does — the old rule
+       keyed off "does this segment contain a `*` anywhere" and skipped the
+       wrap entirely whenever it did, which left a mid-segment `*`
+       both-ends-anchored with no wrap at all. `*.pdf` only gains a
+       trailing `*` (it already has a leading `*`), `report*` only gains a
+       leading `**`, and an already fully-wrapped `*.pdf*` gains neither.
+       Earlier segments get the whitespace collapse (step 3) but no wrap of
+       their own (`~/My Documents/report` -> `~/My**Documents/**report*`,
+       not `~/**My**Documents**/...`).
 
     Anti-goal, unchanged from the original version of this rule: a literal
     `" " -> "*"` substitution regresses the motivating case (`hello world`
     would become the both-ends-anchored `hello*world`, which does not match
     `hello world.txt` itself). The implied wrap in step 4 is what avoids
-    that; do not drop it.
+    that; do not drop it — but note the trailing half of that wrap is a
+    single `*`, not `**` (see above): `hello world` still matches
+    `hello world.txt` because the trailing `*` stays within the same
+    segment as `world`, which is all that example needs.
 
     Known, accepted consequences (confirmed with the user, not bugs):
     because step 4 no longer requires whitespace to fire, a whitespace-free
-    glob like `*.pdf` now also gets a trailing `**` (`*.pdf**`), so it
+    glob like `*.pdf` now also gains a trailing `*` (`*.pdf*`), so it
     matches `report.pdf.bak` and `notes.pdfx` too — precision globs are no
-    longer precise. And because steps 3/4 both insert `**`, a query that
-    used to only ever narrow within one directory (`src`, `src `) now
-    always widens across directories the moment it has any whitespace or
-    an un-anchored end — this is the whole point of the trailing-space
-    follow-up (`src ` must match `srcdir/file.txt`), not a side effect of
-    it. There is no escape hatch for either; see DECISIONS.md.
+    longer precise WITHIN a folder. It deliberately does NOT also match
+    across a `/` (`x.pdf/inner/deep.bin`) — the trailing wildcard is
+    same-segment-confined, unlike the leading one. And because step 3
+    inserts `**` for whitespace runs, a multi-word query still widens
+    across directories BETWEEN its words the moment it has whitespace
+    (`src file` reaches `src/nested/file.txt`) — that is the whole point of
+    the trailing-space follow-up (`src ` must match `srcdir/file.txt`,
+    which step 3's `**`-for-a-whitespace-run still gives it: the trailing
+    space itself collapses to `**`, not the step-4 append) — but the tail
+    past the last typed fragment's own end no longer over-widens past the
+    containing folder. There is no escape hatch for either; see
+    DECISIONS.md.
 
     A note on what this function no longer guarantees: an earlier version
     asserted "the output never contains `**` unless the input already did"
@@ -865,7 +904,7 @@ def expand_whitespace_query(raw: str) -> str:
     if not final.startswith("*"):
         final = "**" + final
     if not final.endswith("*"):
-        final = final + "**"
+        final = final + "*"
     segments[last] = final
     return "/".join(segments)
 
@@ -914,15 +953,15 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
     `raw` is run through `expand_whitespace_query` FIRST, before any of the
     base-splitting below even sees it (SPEC-search-space-wildcard.md) — a
     query with whitespace in it (`hello world`) comes out the other side
-    with wildcards already inserted (`**hello**world**`), so everything
+    with wildcards already inserted (`**hello**world*`), so everything
     past this point treats it exactly like a query the user typed with `*`
     in it directly. Only a query with NEITHER whitespace nor a `*` anywhere
     is untouched (`report` stays `report`); a whitespace-only query is `""`
     (nothing to search for, not "match everything"); a whitespace-free glob
-    like `*.pdf` is NOT untouched any more — it comes out `*.pdf**` — see
+    like `*.pdf` is NOT untouched any more — it comes out `*.pdf*` — see
     `expand_whitespace_query`'s own docstring for why, including why its
-    OWN inserted wildcards are the cross-directory `**` token rather than a
-    single-segment `*`.
+    leading inserted wildcard is the cross-directory `**` token while its
+    trailing one is a single segment-confined `*`.
 
     `mode` is "glob" the moment `raw` (after that expansion) contains a `*`
     anywhere, else "substring" — `?` and `[`/`]` are left as literal
@@ -1170,6 +1209,25 @@ def _name_predicate_sql(nm_col: str, literals: list) -> dict:
       character" or "start a group" instead of the literal character a user
       typed.
 
+      Before testing for a separator, any leading non-alphanumeric run is
+      stripped off the literal itself (code review finding 6) — without
+      this, a literal that already STARTS with punctuation (an extension
+      glob's final-segment literal, e.g. `.pdf` or `.ts` from `*.pdf`/
+      `*.ts`) made the predicate structurally dead: the regex demanded a
+      separator immediately before the literal, i.e. before its own leading
+      `.`, which for an ordinary file is the character right before the
+      extension's dot (`report.pdf`'s `t`) — any alnum basename character,
+      never a separator, so this was false for essentially every real
+      extension match. Stripping the leading punctuation before building the
+      regex moves the separator test to right before the literal's
+      alphanumeric CORE (`pdf`, not `.pdf`) — and the stripped-off `.` itself
+      already satisfies "non-alphanumeric," so an ordinary extension match
+      (`report.pdf`) now correctly reads as boundary-true. A literal with no
+      leading punctuation at all (`config`) is unaffected — there is nothing
+      to strip, so this is the exact same regex as before for every
+      non-extension case, including the `zz_config.py`/`aaaconfig.py` case
+      directly above.
+
     None of these read a position (no `strpos`, no `p0`): `LIKE`/
     `regexp_matches` answer "does this pattern exist anywhere" without
     exposing WHERE, which is exactly the occurrence-independence the
@@ -1186,7 +1244,18 @@ def _name_predicate_sql(nm_col: str, literals: list) -> dict:
     first_like = like_literal(literals[0])
     last_like = like_literal(literals[-1])
     chain_like = "%".join(like_literal(lit) for lit in literals)
-    first_re = _q(re.escape(literals[0]))
+    # `boundary`'s literal is the first run with its own leading
+    # non-alphanumeric characters stripped (code review finding 6): a literal
+    # that already starts with punctuation (an extension glob's ".pdf"/".ts")
+    # would otherwise need a SEPARATE separator before that punctuation too,
+    # which an ordinary basename never has (the character before an
+    # extension's dot is a plain alnum basename character) — see this
+    # function's own docstring on `boundary`. Falls back to the untouched
+    # literal when stripping would leave nothing (a literal made ENTIRELY of
+    # punctuation), since an empty core would make the regex's separator
+    # clause match almost anywhere.
+    _boundary_core = re.sub(r"^[^A-Za-z0-9]+", "", literals[0]) or literals[0]
+    first_re = _q(re.escape(_boundary_core))
     return {
         "prefix": f"{nm_col} LIKE lower('{first_like}') || '%' ESCAPE '\\'",
         "suffix": f"{nm_col} LIKE '%' || lower('{last_like}') ESCAPE '\\'",
@@ -1197,10 +1266,16 @@ def _name_predicate_sql(nm_col: str, literals: list) -> dict:
     }
 
 
-# Strictly less than the smallest gap between adjacent `score` weights
-# (100/250/500/1000 -> smallest gap 150) so `- LEAST(depth, _SCORE_DEPTH_CAP)`
-# can never push a row with SOME predicate true below a row with NONE true,
-# at any depth — see `_lex_order_and_score`'s docstring (Finding 4).
+# Strictly less than the smallest gap between adjacent `score` levels.
+# There are five levels, not four: 0 (no predicate holds), then
+# 100/250/500/1000 (contains/suffix/prefix/nm_exact). The binding gap is
+# between 0 and 100 (100), NOT between two of the four named weights (the
+# next-smallest gap, 250-100, is 150) — the worst case this cap has to
+# survive is a row with ONLY `contains` true (score contribution 100) against
+# a row with NOTHING true (score contribution 0). 99 is strictly less than
+# that 100, so `- LEAST(depth, _SCORE_DEPTH_CAP)` can never push a row with
+# SOME predicate true below a row with NONE true, at any depth — see
+# `_lex_order_and_score`'s docstring (Finding 4).
 _SCORE_DEPTH_CAP = 99
 
 
@@ -1247,9 +1322,11 @@ def _lex_order_and_score(nm_exact: str, preds: dict) -> tuple:
     — which `tier`/`contains` alone already separates — ranks the basename
     match first; a debug field that inverts the true order at depth is worse
     than no debug field). 99 is smaller than every gap between adjacent
-    weights (100/250/500/1000, smallest gap 150), so a row with SOME
-    predicate true (worst case: `contains` only, weight 100, any depth)
-    always outscores a row with NONE true (best case: depth 0, score 0) —
+    score LEVELS — there are five, not four: 0 (nothing matched), then
+    100/250/500/1000; the binding gap is between 0 and 100 (100), not
+    between two of the four named weights — so a row with SOME predicate
+    true (worst case: `contains` only, weight 100, any depth) always
+    outscores a row with NONE true (best case: depth 0, score 0) —
     `100 - 99 = 1 > 0`. This bounds `score`'s depth-driven error, it does not
     make `score` monotonic with the full vector in general (`boundary` and
     `length(nm)` still are not reflected in it at all) — `score` remains a
@@ -1610,6 +1687,12 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
     defaults to `None` and is only read when `literals` is non-empty (the
     caller's own contract: an empty `literals` list means there is nothing
     to test against `nm` at all, so `nm_regex` is never even reached).
+    Enforced, not merely documented (code review finding 5): a non-empty
+    `literals` with `nm_regex` left at its default asserts rather than
+    silently interpolating the Python string `"None"` into the generated SQL
+    as `regexp_matches(nm, 'None')` — a query that runs without error and
+    just never matches anything, which is a much harder bug to notice than a
+    loud failure at the call site that broke the pairing.
     `regex` itself remains the WHOLE, unmodified pattern's regex — it is
     still what `lrel` is filtered against in `WHERE`, since the file has to
     match the pattern in full, directory parts included; only the SCORING
@@ -1632,6 +1715,12 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
     applying it here needs no separate rule — the same one both modes share."""
     if score is None:
         score = bool(literals)
+    assert not (literals and nm_regex is None), (
+        "_glob_sql: literals is non-empty but nm_regex was not supplied — "
+        "every caller must pass a compiled nm_regex whenever literals is "
+        "truthy (see this function's own docstring), or the missing regex "
+        "silently becomes the Python string 'None' inside the generated SQL "
+        "rather than raising")
     if not score:
         return (
             f"SELECT rel, size, mtime, is_dir, depth FROM ({inner}) "

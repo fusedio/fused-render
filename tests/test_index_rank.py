@@ -335,7 +335,10 @@ def test_score_never_inverts_the_real_order_at_depth(tmp_path):
     scoring `0 - 2 = -2`, even though the real `ORDER BY` vector (`tier`/
     `contains` alone) ranks the basename match first. `_lex_order_and_score`
     now caps the subtracted term at `_SCORE_DEPTH_CAP` (99, strictly less
-    than the smallest gap between adjacent predicate weights), so `score`
+    than the smallest gap between adjacent score levels — 100, between "no
+    predicate holds" (0) and `contains` alone (100), not 150 as an earlier
+    version of this comment claimed reading only the four named weights;
+    see code review finding 4, query.py's own comment), so `score`
     can no longer invert the true order this way, though it remains a
     coarse display value, not a second ranking mechanism (see its
     docstring)."""
@@ -491,6 +494,42 @@ def test_boundary_predicate_escapes_regex_metacharacters(tmp_path):
     hits = search_ranked(cfg, "/r", "a.b")["hits"]
     rels = [h["rel"] for h in hits if h["rel"] in (decoy, genuine)]
     assert rels == [genuine, decoy]
+
+
+def test_boundary_predicate_is_not_dead_for_a_leading_punctuation_literal():
+    """Code review finding 6: `boundary`'s regex demands a separator (or the
+    string start) immediately BEFORE the literal — but an extension-glob
+    literal like ".pdf" (what `*.pdf`'s final segment resolves to) or ".ts"
+    already STARTS with a non-alphanumeric character, so the old regex
+    effectively required TWO separators in a row (one before the literal's
+    own leading punctuation, which is itself supposed to be doing that job).
+    For an ordinary file the character before an extension's dot is a plain
+    alnum basename character (`report.pdf`'s "t"), so this was true for
+    essentially no real file — `boundary` was dead for every extension glob.
+    Fixed by stripping the literal's own leading non-alphanumeric run before
+    building the boundary regex, so the check becomes "is there a separator
+    (the dot itself counts) right before the alphanumeric CORE of the
+    literal" — which a normal extension match always satisfies.
+
+    Evaluated directly against `_name_predicate_sql`'s own generated SQL
+    (rather than through a full ranking scenario) because, once fixed, an
+    extension literal's boundary is true for essentially every real hit —
+    there is no ranking tie left for it to break, which is exactly the
+    point: the predicate went from structurally dead (always false) to
+    structurally live (true for the case it exists to recognize), and a
+    ranking-only test could not distinguish "always false" from "coincidentally
+    tied so it never mattered"."""
+    import duckdb
+
+    from fused_render.index.query import _name_predicate_sql
+
+    preds = _name_predicate_sql("nm", [".pdf"])
+    con = duckdb.connect()
+    for nm, expected in [("report.pdf", True), ("readme.txt", False)]:
+        row = con.execute(
+            f"SELECT ({preds['boundary']}) FROM (SELECT '{nm}' AS nm)"
+        ).fetchone()
+        assert bool(row[0]) is expected, (nm, preds["boundary"])
 
 
 def test_glob_final_segment_tier_fix_for_path_shaped_patterns(tmp_path):
@@ -760,6 +799,26 @@ def test_glob_unranked_sql_has_no_scoring_apparatus(tmp_path):
     for banned in ("score", "segment_starts", "p0", "strpos", "name_bonus", "tier"):
         assert banned not in lowered, f"{banned!r} leaked into the unscored glob SQL"
     assert "order by depth asc, lower(rel) asc, rel asc" in lowered
+
+
+def test_glob_sql_refuses_literals_without_a_matching_nm_regex():
+    """Code review finding 5: `nm_regex` defaults to `None`, and is read
+    straight into the SQL text (`regexp_matches(nm, '{nm_regex}')`) whenever
+    `literals` is non-empty — the caller's contract (`_glob_sql`'s own
+    docstring) says `nm_regex` must be supplied together with a non-empty
+    `literals`, but nothing enforced it. Before this fix, calling with
+    `literals` truthy and `nm_regex` left at its default silently produced
+    `regexp_matches(nm, 'None')` — a query DuckDB would happily run (matching
+    the literal text "None", never a real hit) rather than a loud failure
+    pointing at the real bug: a caller that broke the literals/nm_regex
+    pairing. The only real caller (`search_ranked`) already ties the two
+    together correctly and is unaffected by this guard."""
+    from fused_render.index.query import _glob_sql
+
+    with pytest.raises(AssertionError):
+        _glob_sql("SELECT 1 AS rel, 1 AS size, 1 AS mtime, false AS is_dir, "
+                  "1 AS depth, 'icon' AS nm, 'icon.png' AS lrel",
+                  "^icon\\.png$", "", 10, literals=["icon"])
 
 
 def test_glob_pattern_with_no_literal_runs_uses_the_unscored_order(tmp_path):
