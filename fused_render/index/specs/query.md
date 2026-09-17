@@ -116,71 +116,102 @@ trying to resolve a glob against the filesystem.
 its own `ranked` param is true (the default) — `_glob_literal_runs` splits the
 resolved pattern on its wildcard tokens (the same three-way `**/ ` / `**` / `*`
 tokenizer `_glob_to_regex` uses, so a bare `**/*` correctly yields zero literal
-runs rather than a bogus one from naively splitting on `*`), and `_glob_score_sql`
-locates each literal run in `lrel` via chained `strpos` calls and combines, per
-run, the same `n + 3*(n-1)` run-length term, `segment_starts` hump/boundary bonus,
-and basename `name_bonus` that substring scoring uses, plus a **wildcard-swallow
-penalty** charged on the INTERIOR gaps only: `(last run's end position) -
-(first run's start position) - (sum of literal lengths)` — the telescoping sum of
-the gaps BETWEEN consecutive literal runs, never the leading or trailing `**`
-(which can legitimately span an unbounded, irrelevant prefix/suffix of the root-
-relative path). A pattern with exactly one literal run has an interior span of
-zero runs to sum, so its penalty is always 0 — this is what makes a
-single-literal-run glob's score IDENTICAL to `_rank_sql`'s substring score for
-the equivalent query (pinned by
-`test_glob_single_literal_run_score_matches_rank_sql_substring_score`, 0 diff
-across every corpus/row checked). An EARLIER version of this penalty charged
-`length(rel) - sum(literal lengths)` over the WHOLE root-relative path — i.e. it
-also counted the leading `**`'s reach as swallow. That inverted rankings whenever
-a shallow, weak match competed with a deep, exact one: the deep file paid for
-every ancestor directory in its path as if the pattern's own leading wildcard had
-to "eat" through them, even though a leading `**` reaching further into a longer
-path is not a worse match — it is the SAME pattern behaving exactly as globs are
-defined to. `icon copy.png` (pattern `**icon**copy**`, tight interior swallow)
-still outranks `icon-a-very-long-thing-copy.png` (same pattern, wide interior
-swallow) — the original motivating case for this penalty — but a deep, exact
-match like `deeply/nested/path/report` now correctly outranks a shallow,
-non-exact `xreport.txt` for `**report**` too, which the whole-path version got
-backwards (see DECISIONS.md for the full before/after).
+runs rather than a bogus one from naively splitting on `*`).
 
-`_glob_sql` also computes a **tier**, generalized from substring mode's
-basename/ancestor split: the SAME resolved regex is re-run against `nm` (the
-basename alone) — a match puts the hit in tier 1, anything else (an
-ancestor-only match, the pattern's literal content living only in a directory
-segment) is tier 3. (Substring mode's tier 2 — straddling the basename boundary —
-has no glob equivalent: a glob's tokenizer already treats `/` as a hard boundary,
-so there is no "straddling" case to detect.) `tier ASC` is restored as the
-PRIMARY sort key (`tier ASC, score DESC, depth ASC, lower(rel) ASC, rel ASC`) —
-it is the structural safety net regardless of how the swallow penalty is
-computed: a basename match should never rank below an ancestor-only match no
-matter what the score expression says, and tying correctness to score alone (the
-whole-path penalty's failure mode) is exactly what let it invert rankings in the
-first place.
+Ranking used to be a single scalar `score` built from **positional** terms — every
+term read `strpos(lrel, q)`, the position of the query's FIRST occurrence, even
+though the filter itself (`LIKE '%...%'`) matched ANY occurrence. That mismatch was
+a whole class of bugs, not one: a real `.js` file could lose to a `.json` file for
+`*.js` because both begin with the literal `.js` and nothing downstream of the
+first-occurrence read ever looked past it. Position reads are gone. Ranking is now
+**position-free**: a shared helper, `_name_predicate_sql(nm_col, literals)`, builds
+three boolean columns off the basename (`nm`) alone —
 
-There is deliberately **no** bonus for a longer total matched length: for
-a substring query a longer match is more specific, but for a glob a longer
-filename is not a better match, it is just a longer filename, so no term rewards
-sheer length. All of this happens in one SQL statement (`_glob_sql`), never a
+- `prefix` — `nm` starts with the first literal run
+- `suffix` — `nm` ends with the last literal run
+- `contains` — `nm` contains the literal run(s) in order (chained `LIKE '%…%…%'`,
+  which is also what fixes the old glob tier defect below)
+
+— plus an `nm_exact` predicate computed by the caller (substring mode:
+`nm = lower(q)`; glob mode: see below), and `_lex_order_and_score(nm_exact, preds)`
+turns those four booleans plus `depth` into an **`ORDER BY` column list**, not a
+weighted sum:
+
+```
+ORDER BY (nm_exact) DESC, (prefix) DESC, (suffix) DESC, (contains) DESC,
+          depth ASC, length(nm) ASC, lower(rel) ASC, rel ASC
+```
+
+This is the actual thing that decides order — a lexicographic comparison over the
+column vector, VS Code/Zed-style, not a scalar arithmetic total. `_rank_sql`
+(substring mode) and `_glob_sql` (glob mode) both call the same two helpers, so
+they cannot independently drift the way `_rank_sql` and the deleted
+`_glob_score_sql` used to (each re-implementing "name bonus" and "tail bonus" by
+hand, with no shared code to keep them in step). DuckDB has no implicit
+`BOOLEAN -> INTEGER` cast, so every predicate is wrapped in `CAST(... AS INTEGER)`
+before it is compared or weighted.
+
+`_lex_order_and_score` also still returns a `score` — kept ONLY for the wire
+contract and `explain`/debugging display (`server-api.md`'s hit dict keeps `score`,
+`tier`, `depth`, `longest_run`, `positions` on every hit). **`score` is a display
+value, not what decides order** — a weighted sum
+(`1000*nm_exact + 500*prefix + 250*suffix + 100*contains - depth`) that is
+monotonic with, but coarser than, the `ORDER BY` column vector above (ties in
+`score` are common and are broken by `length(nm)`/`rel`, which no scalar sum
+captures). Nothing downstream should infer order from `score` alone.
+
+`tier` collapsed from three values to two: `1` when `contains` is true (a basename
+match, of any strength), else `3` (an ancestor-only match — the pattern's literal
+content lives only in a directory segment, never in the basename at all). The old
+middle tier — a match that "straddles" the basename boundary — is dropped: `tier`
+is no longer a primary sort key (the lexicographic vector ahead of it in
+`ORDER BY` already separates match quality more finely and correctly), so
+distinguishing a third tier value bought nothing and its previous 2/3 boundary was
+itself a source of bugs. `tier`'s only remaining job is the coarse "does the
+basename match at all" flag callers already read off the wire.
+
+`_glob_sql` computes `nm_exact` differently from substring mode: plain
+`regexp_matches(nm, regex)` is NOT the same thing as "exact" for a
+wildcard-flanked pattern like `**icon**` — the compiled regex (`.*icon.*`) is true
+whenever `icon` occurs ANYWHERE in `nm`, i.e. it is semantically identical to
+`contains`, so using it directly as `nm_exact` would double-credit every
+`contains`-true row. `_glob_sql`'s `nm_exact` therefore also requires
+`length(nm) = sum(len(lit) for lit in literals)` — every character of `nm` is
+literal content with no wildcard slop — which is what "exact" is supposed to mean
+for a glob. This is also the fixed version of the old three-way tier's glob
+"generalization" defect: a plain regex-against-`nm` test alone could not tell an
+exact match from a same-basename `contains` match, which used to blur into the
+same tier.
+
+A pattern with exactly one literal run produces the SAME `_name_predicate_sql`
+output, and hence the same `order_by`/`score`, as `_rank_sql`'s substring mode for
+the equivalent query — this identity is pinned by
+`test_glob_single_literal_run_score_matches_rank_sql_substring_score` (0 diff
+across every corpus/row checked), and is a direct consequence of both modes
+sharing `_name_predicate_sql`/`_lex_order_and_score` rather than a coincidence
+that has to be maintained by hand.
+
+There is deliberately **no** bonus for a longer total matched length, and no
+`_TAIL_BONUS` (deleted — see DECISIONS.md): for a substring query a longer match
+used to be treated as more specific, but nothing in the position-free design reads
+match LENGTH at all any more, only WHICH of prefix/suffix/contains/exact hold. All
+of this happens in one SQL statement (`_glob_sql` / `_rank_sql`), never a
 Python-side loop, so it stays inside `con.interrupt()`'s reach.
 
-Both `_rank_sql` and `_glob_score_sql` also carry a `_TAIL_BONUS` (+25) — the
-symmetric counterpart to `name_bonus`'s basename-PREFIX case: a match ending
-exactly at the end of the basename (equivalently, at the end of `rel` itself,
-since the basename is `rel`'s own tail) earns the same +25 a match starting at
-the basename's first character does. Reported bug this closed: `*.js` resolves
-to a single literal run (`[".js"]`), which a `.json` file satisfies just as
-well as a real `.js` file does (`.json` starts with the literal `.js`) — with
-only one literal run the interior-swallow penalty above is always 0, so
-nothing told the two apart except the depth tie-break, which favoured the
-shallower `.json` files. Only the real `.js` file's match reaches the actual
-end of the basename; `.json`'s does not (two more characters follow it). In
-glob mode the bonus is computed off the LAST literal run's end position only —
-the only run that can ever reach the end of `rel` — which is why it costs
-nothing for the single-literal-run reduction invariant
-(`test_glob_single_literal_run_score_matches_rank_sql_substring_score`) to
-keep holding. Sized equal to the prefix bonus (not larger) so it cannot swamp
-it, and well under the +100 exact-basename bonus; see `_TAIL_BONUS`'s own
-comment in `query.py` for the depth-penalty arithmetic that sizes it.
+There is also no `n + 3*(n-1)` run-length term any more (it was a per-query
+constant added to every row — dead weight that never affected order) and no
+`_DEPTH_PENALTY`/`_SHALLOW_FREE` arithmetic — `depth ASC` in the `ORDER BY` list
+does that job directly, as an ordering column rather than a subtracted score term,
+with `length(nm) ASC` as a late tie-break (shorter basenames rank first among
+otherwise-tied rows) and `lower(rel) ASC, rel ASC` (case-insensitive, then
+byte-exact) as the final, total-order tie-break.
+
+**Deliberately dropped, not reimplemented:** the old camelCase/segment-start
+"hump" bonus (crediting a match starting right after a case change or a `/`) is
+gone and was NOT rebuilt in occurrence-independent form. `nm` is stored
+pre-lowercased in the index, so recovering case information to detect a hump would
+need a new stored column; this round treats that as out of scope and the loss as
+an accepted deviation from the review's recommendations (see DECISIONS.md).
 
 When `ranked=False`, or the pattern reduces to zero literal runs, `_glob_sql`
 computes no scoring apparatus at all — not "score then discard", and that

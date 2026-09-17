@@ -1083,7 +1083,10 @@ def test_search_ranked_honours_the_limit_in_sql_not_just_in_python(tmp_path):
             self._real = real
 
         def execute(self, sql, *a, **kw):
-            if "ORDER BY tier ASC" in sql:
+            # "AS score" only appears in the ranked (scored) SELECT — the
+            # lexicographic ORDER BY column list replaced the old fixed
+            # "ORDER BY tier ASC" string this test used to key off of.
+            if "AS score" in sql:
                 seen_limits.append(int(sql.rsplit("LIMIT", 1)[1].strip()))
             return self._real.execute(sql, *a, **kw)
 

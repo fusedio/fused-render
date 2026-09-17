@@ -22,9 +22,7 @@ still tests `fuzzy.ts` in full, subsequence pass included.
 `query.py` itself (its only importer) — covered here since they still gate
 which rows `search_ranked` can return.
 """
-import json
 import os
-from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -34,48 +32,10 @@ from fused_render.index.config import IndexConfig
 from fused_render.index.query import (
     MAX_GLOB_RANK_LIMIT,
     MAX_RANK_LIMIT,
-    is_hidden_rel,
-    query_wants_hidden,
     search_ranked,
 )
 from fused_render.index.runner import canonical_root
 from fused_render.index.store import Sink, compact
-
-FIXTURE = json.loads(
-    (Path(__file__).resolve().parent / "fixtures" / "rank-parity.json")
-    .read_text(encoding="utf-8"))
-
-
-def _group_case_only_ties(rels):
-    """`rels` with any run of CONSECUTIVE entries that are equal under
-    `.lower()` collapsed into a sorted tuple.
-
-    The deleted index/rank.py's own docstring flagged this as a KNOWN,
-    deliberate divergence: the JS ranker's final tie-break is
-    `Intl.Collator(sensitivity: "base")`, and both the old Python ranker and
-    this SQL rewrite use plain `rel ASC` (byte/ASCII comparison) instead —
-    every OTHER tie-break (tier, score, depth, `lower(rel)`) still has to
-    agree exactly, but a pair that is equal under all of them AND differs
-    only in case (e.g. "file.txt" vs "FILE.TXT") is not guaranteed to land in
-    the SAME order a locale-aware collator would pick. This is now purely a
-    CROSS-LANGUAGE divergence, not a within-SQL nondeterminism one: `rel ASC`
-    (query.py's `_rank_sql`) makes the SQL side's own order for such a pair
-    deterministic and repeatable run to run — the physical-row-order
-    dependency this helper originally existed to paper over is gone — but
-    that deterministic order can still legitimately differ from what
-    `Intl.Collator` would produce for the same pair, which is what this
-    helper still exists to tolerate. Grouping same-tie runs into an
-    order-independent tuple keeps the comparison strict about everything
-    else."""
-    out = []
-    i = 0
-    while i < len(rels):
-        j = i
-        while j + 1 < len(rels) and rels[j + 1].lower() == rels[i].lower():
-            j += 1
-        out.append(tuple(sorted(rels[i:j + 1])))
-        i = j + 1
-    return out
 
 
 def _index(tmp_path, root, files, dirs=()):
@@ -102,46 +62,141 @@ def _index(tmp_path, root, files, dirs=()):
     return cfg
 
 
-def _index_from_fixture(tmp_path):
-    """The fixture's own 64 entries, loaded into a real index under `/r`."""
-    files = [f"/r/{e['rel']}" for e in FIXTURE["entries"] if not e["is_dir"]]
-    dirs = [f"/r/{e['rel']}" for e in FIXTURE["entries"] if e["is_dir"]]
-    return _index(tmp_path, "/r", files, dirs=dirs)
+# -- the golden corpus (replaces tests/fixtures/rank-parity.json) ----------
+#
+# `tests/fixtures/rank-parity.json` (a flat 64-entry corpus + 25 queries,
+# generated FROM `frontend/src/platform/lib/fuzzy.ts` by
+# `bun scripts/gen-rank-fixture.ts`) and its consuming test
+# (`test_sql_ranking_matches_the_js_ranker_on_substring_hits`) are DELETED,
+# not merely unused. Two independent reasons, either alone sufficient:
+#
+# 1. `scripts/gen-rank-fixture.ts` imports a module that no longer exists
+#    (the JS-side rank-parity harness was cut along with the pieces of
+#    `fuzzy.ts` this round's SQL rewrite has no equivalent for), so the
+#    fixture can never be regenerated — keeping the stale JSON around would
+#    make it a silently-frozen snapshot of a ranker `query.py` no longer
+#    implements, not a living contract.
+# 2. Even if it could still be regenerated, comparing SQL's order against
+#    `fuzzy.ts`'s is no longer the right authority for the SUBSET of
+#    behavior this round changed. `fuzzy.ts` never had a `_TAIL_BONUS`, a
+#    2-vs-3-tier collapse, or a dropped camelCase-hump bonus — that parity
+#    test was already only checking `_rank_sql`'s PORTED pieces
+#    (`_is_segment_start`, `_name_tier`, `_sort_key`'s run/depth terms)
+#    against their JS originals, and this round intentionally diverges from
+#    several of those originals (see `_lex_order_and_score`'s docstring).
+#    Continuing to grade `query.py` against `fuzzy.ts` on the exact
+#    dimensions this round deliberately changed would fail by design, not
+#    by regression. See DECISIONS.md.
+#
+# The golden queries below replace it: HAND-REASONED (not captured from
+# whatever the implementation happens to emit) expected top orders, derived
+# directly from `_lex_order_and_score`'s documented column vector
+# (`nm_exact`, `prefix`, `suffix`, `contains`, `depth`, `length(nm)`,
+# `lower(rel)`, `rel`) rather than from any other ranker's output. Each
+# query's assertion is filtered to an explicit ALLOWLIST of the paths that
+# query is about (the same technique the deleted fixture test used via its
+# own `fixture_rels` filter) rather than asserting on the full result set,
+# because a real on-disk index — unlike a flat list — structurally creates a
+# dirs-table row for every ANCESTOR directory a stored file implies
+# (`index/store.py`'s `Sink.add`, one call per directory that holds files),
+# and some of those implied rows are themselves real, correctly-ranked
+# matches for a query (a directory literally named `js` is a legitimate
+# EXACT match for query "js") that would make a full-result-set comparison
+# fragile and beside the point of what each query below is testing.
+_NOISE = [f"noise/d{i}/f{i}.dat" for i in range(280)]
+_GROUPS = {
+    # The `js`/`json` extension-vs-substring probe (search-architecture-
+    # review.md's own worked example, §10.1): a bare `js` query used to grade
+    # `lib/app.js`, `js/lib/app.js` and `json/script.js` off whichever
+    # occurrence `strpos` found FIRST, tying two of them at the same score
+    # purely because their first "js" happens to sit in a directory segment.
+    "js": [
+        "g_ext/src/app.js",
+        "g_ext/node_modules/react.js/dist/bundle.js",
+        "g_probe/lib/app.js",
+        "g_probe/js/lib/app.js",
+        "g_probe/json/script.js",
+    ],
+    "config": ["g_config/config.json", "g_config/app-config"],
+    "readme": ["g_readme/README.md", "g_readme/docs/README.md",
+               "g_readme/a/b/c/README.md"],
+    "index": ["g_index/index", "g_index/sub/index.md", "g_index/sub2/index.js"],
+    "alpha": ["g_alpha/alpha.txt", "g_alpha/a/b/c/d/e/f/alpha-deep.txt"],
+}
+_GOLDEN_EXPECTED = {
+    # query -> expected order, filtered to _GROUPS[query]
+    #
+    # "js": all five basenames end with "js" (suffix=True) and contain it
+    # (contains=True) — none is a prefix or exact match — so every row ties
+    # on the four leading predicate columns and `depth ASC` decides first:
+    # the three depth-3 files (`app.js` x2, `script.js`) sort before the
+    # depth-4 `js/lib/app.js` before the depth-5 `node_modules` bundle. The
+    # depth-3 trio then breaks on `length(nm) ASC` ("app.js" — 6 chars —
+    # before "script.js" — 9 chars), and the app.js/app.js tie breaks on
+    # `lower(rel) ASC` ("g_ext/..." sorts before "g_probe/..."). This is the
+    # exact reordering search-architecture-review.md's probe called out as
+    # missing: the shallow `lib/app.js` files now correctly outrank both the
+    # `.json`-lookalike-named directory hit AND the ancestor-named `js/`
+    # decoy, instead of tying with them.
+    "js": ["g_ext/src/app.js", "g_probe/lib/app.js", "g_probe/json/script.js",
+           "g_probe/js/lib/app.js",
+           "g_ext/node_modules/react.js/dist/bundle.js"],
+    # "config": `config.json` is a basename PREFIX match (+500); `app-config`
+    # is a basename SUFFIX match only (+250) — the reported regression this
+    # round exists to fix (`3622523ad`'s `_TAIL_BONUS` tied these at the same
+    # score because it weighted a tail match exactly as heavily as a prefix
+    # one).
+    "config": ["g_config/config.json", "g_config/app-config"],
+    # "readme": all three are basename-prefix matches with an identical `nm`
+    # LENGTH ("README.md" folds to the same 9-character `nm` regardless of
+    # depth), so `depth ASC` alone orders them shallowest first.
+    "readme": ["g_readme/README.md", "g_readme/docs/README.md",
+               "g_readme/a/b/c/README.md"],
+    # "index": `g_index/index` is an EXACT basename match (nm == "index"),
+    # the one predicate column no other candidate here can share — it wins
+    # regardless of depth. The remaining two tie on prefix/contains and on
+    # `length(nm)` ("index.md"/"index.js" are both 8 characters), so
+    # `lower(rel) ASC` decides: "g_index/sub/index.md" sorts before
+    # "g_index/sub2/index.js" because `/` (0x2F) sorts before `2` (0x32) at
+    # the first differing byte.
+    "index": ["g_index/index", "g_index/sub/index.md", "g_index/sub2/index.js"],
+    # "alpha": both are basename-prefix matches with the same predicate
+    # profile, so `depth ASC` alone separates the shallow file from the one
+    # nested six directories deeper.
+    "alpha": ["g_alpha/alpha.txt", "g_alpha/a/b/c/d/e/f/alpha-deep.txt"],
+}
 
 
-@pytest.mark.parametrize("query", FIXTURE["queries"])
-def test_sql_ranking_matches_the_js_ranker_on_substring_hits(tmp_path, query):
-    """The fixture's expected order, RESTRICTED to substring matches — the
-    part of `fuzzy.ts`'s answer index-backed search can still reach. `str.find`
-    (Python) and `String.prototype.includes` (JS, via fuzzy.ts's own substring
-    branch) and SQL's `LIKE '%q%'`/`strpos` all agree on "is `query` a
-    substring", so filtering the JS-authoritative order down to substring
-    rows and comparing it to the SQL order is a same-language-independent
-    check that dropping the fuzzy pass didn't also reorder the tier-1/2/3
-    rows that remain."""
-    cfg = _index_from_fixture(tmp_path)
-    ql = query.lower()
-    show_hidden = query_wants_hidden(query)
-    expected = [rel for rel in FIXTURE["expected"][query]
-                if ql in rel.lower() and (show_hidden or not is_hidden_rel(rel))]
+def _golden_index(tmp_path):
+    files = list(_NOISE)
+    for group in _GROUPS.values():
+        files.extend(group)
+    return _index(tmp_path, "/r", [f"/r/{f}" for f in files])
+
+
+@pytest.mark.parametrize("query", sorted(_GROUPS))
+def test_golden_corpus_pins_the_hand_reasoned_top_order(tmp_path, query):
+    cfg = _golden_index(tmp_path)
+    allowed = set(_GROUPS[query])
     out = search_ranked(cfg, "/r", query, limit=200)
-    # A real on-disk index (unlike the flat fixture list) structurally must
-    # hold a dirs-table row for every ANCESTOR directory a stored file
-    # implies (index/store.py's `Sink.add`, one call per directory that
-    # holds files) — e.g. `fused_render/index/query.py` forces a row for
-    # `fused_render/index` even though the fixture never lists that
-    # directory as its own entry. Those implied-ancestor rows are real
-    # candidates the SQL side legitimately sees and the flat JS fixture
-    # never modeled, so they are filtered back out here rather than
-    # asserted on — this test is about ORDER, not about re-deriving which
-    # ancestor directories a real filesystem has.
-    fixture_rels = {e["rel"] for e in FIXTURE["entries"]}
-    got = [h["rel"] for h in out["hits"] if h["rel"] in fixture_rels]
-    assert _group_case_only_ties(got) == _group_case_only_ties(expected)
+    got = [h["rel"] for h in out["hits"] if h["rel"] in allowed]
+    assert got == _GOLDEN_EXPECTED[query]
+
+
+def test_golden_corpus_noise_never_leaks_into_a_targeted_query(tmp_path):
+    """None of the 280 noise paths (`noise/dN/fN.dat`) contain any of the
+    golden queries' substrings — a sanity check on the corpus itself, so a
+    query's allowlist-filtered assertion above is provably not silently
+    passing because unrelated noise rows swamped the real candidates."""
+    cfg = _golden_index(tmp_path)
+    for query in _GROUPS:
+        out = search_ranked(cfg, "/r", query, limit=1000)
+        noisy = [h["rel"] for h in out["hits"] if h["rel"].startswith("noise/")]
+        assert noisy == []
 
 
 def test_an_empty_query_ranks_nothing(tmp_path):
-    cfg = _index_from_fixture(tmp_path)
+    cfg = _golden_index(tmp_path)
     assert search_ranked(cfg, "/r", "")["hits"] == []
     assert search_ranked(cfg, "/r", "   ")["hits"] == []
 
@@ -240,13 +295,18 @@ def test_a_shallow_name_match_beats_a_deep_ancestor_only_match(tmp_path):
     assert out["hits"][0]["rel"] == "cfg-manager.txt"
 
 
-def test_the_depth_penalty_breaks_a_same_tier_same_score_tie_by_shallowness(
-    tmp_path,
-):
-    """Two ancestor-only (tier 3) hits with the IDENTICAL matched window (the
-    query matches the first path segment of both, at position 0, so raw
-    `score` before the depth term is identical) — DEPTH_PENALTY is what stops
-    the deeper one from winning purely by having accumulated more path."""
+def test_depth_breaks_a_same_predicate_tie_by_shallowness(tmp_path):
+    """Two ancestor-only (tier 3) hits whose basenames neither start with,
+    end with, nor contain "xxxxxxxx" at all — every `_name_predicate_sql`
+    column is `false` for both, so every ORDER BY column ahead of `depth`
+    ties. `depth ASC` is what stops the deeper one from winning purely by
+    having accumulated more path — the position-free redesign's replacement
+    for the deleted `_DEPTH_PENALTY` arithmetic (search-architecture-
+    review.md §6): a plain ordering column, not a subtracted constant, so
+    there is no formula left to pin an exact number against — only the
+    ORDER, and that `score` (a display-only weighted sum with no depth
+    term stronger than `- depth`) is strictly higher for the shallower row
+    purely because `depth` is smaller, not because of any predicate."""
     deep = "xxxxxxxx/xxxxxxxx/xxxxxxxx/xxxxxxxx/xxxxxxxx/deep.txt"  # depth 6
     shallow = "xxxxxxxx/shallow.txt"  # depth 2
     cfg = _index(tmp_path, "/r", [f"/r/{deep}", f"/r/{shallow}"])
@@ -258,14 +318,12 @@ def test_the_depth_penalty_breaks_a_same_tier_same_score_tie_by_shallowness(
     files = [h for h in out["hits"] if not h["is_dir"]]
     assert [h["rel"] for h in files] == [shallow, deep]
     assert files[0]["tier"] == files[1]["tier"] == 3
-    # The un-penalised (pre-`depth`) score IS identical — same matched
-    # window, same segment-start count — so the ordering above is entirely
-    # DEPTH_PENALTY's doing, not a difference in what matched.
-    n = len("xxxxxxxx")
-    bare = n + 3 * (n - 1) + 5  # one segment start (position 0)
     by_rel = {h["rel"]: h for h in out["hits"]}
-    assert by_rel[shallow]["score"] == bare  # depth 2, no penalty (<= SHALLOW_FREE)
-    assert by_rel[deep]["score"] == bare - 4 * (6 - 3)  # DEPTH_PENALTY * (depth - 3)
+    # No predicate is true for either file's basename ("shallow.txt" / "
+    # deep.txt" neither start with, end with, nor contain "xxxxxxxx"), so
+    # `score` is exactly `-depth` for both.
+    assert by_rel[shallow]["score"] == -2
+    assert by_rel[deep]["score"] == -6
 
 
 def test_the_exact_name_bonus_survives_the_depth_penalty(tmp_path):
@@ -326,47 +384,49 @@ def test_the_basename_suffix_bonus_does_not_reorder_an_exact_match_below_a_tail_
     assert [h["rel"] for h in out] == ["config", "app-config"]
 
 
-def test_tier_1_2_3_boundaries_including_a_match_straddling_the_basename(
+def test_tier_1_and_3_boundaries_including_a_match_straddling_the_basename(
     tmp_path,
 ):
-    """tier 1: query is a substring of the basename. tier 3: the match ends
-    strictly before the basename starts (ancestor-only). tier 2: everything
-    else — including a match that STRADDLES the boundary. A straddling match
-    is only possible when the matched substring literally contains the "/"
-    separator itself (the match is a run of CONSECUTIVE characters of `rel`),
-    so the query has to spell across it: "oo/ba" against "foo/bar.txt" starts
-    inside the directory segment "foo" and ends inside the basename "bar.txt"."""
+    """tier 1: the query is fully explainable within the basename alone
+    (`_name_predicate_sql`'s `contains`). tier 3: everything else, including
+    both an ancestor-only match AND a match that STRADDLES the `/` boundary.
+
+    The old 3-tier scheme (1/2/3, `_name_tier` in the deleted rank.py) had a
+    dedicated tier 2 for the straddle case ("oo/ba" against "foo/bar.txt",
+    which starts inside "foo" and ends inside "bar.txt") because it read a
+    single contiguous match window (`p0..p0+n`) and could ask "does this
+    window cross the boundary". The position-free redesign has no window to
+    ask that question of — `contains` is a pure existence test against `nm`
+    alone, so a straddling match (which by definition needs characters
+    OUTSIDE the basename) can never satisfy it, landing it in tier 3 with
+    every other non-name match. This is a deliberate collapse, not a gap:
+    `tier` is no longer a primary sort key (the lexicographic predicate
+    vector ahead of it already separates match quality more finely — see
+    `_lex_order_and_score`'s docstring), so the 3-way split had nothing left
+    to buy that `contains` alone doesn't already provide. Recorded in
+    DECISIONS.md."""
     cfg = _index(tmp_path, "/r", ["/r/name-has-alpha.txt",  # tier 1: "alpha" in name-has-alpha.txt
                                   "/r/alpha/unrelated.txt",  # tier 3: match ends before "unrelated.txt"
-                                  "/r/foo/bar.txt"])         # tier 2: "oo/ba" straddles the "/"
+                                  "/r/foo/bar.txt"])         # tier 3: "oo/ba" straddles the "/"
     by_rel = {h["rel"]: h for h in search_ranked(cfg, "/r", "alpha")["hits"]}
     assert by_rel["name-has-alpha.txt"]["tier"] == 1
     assert by_rel["alpha/unrelated.txt"]["tier"] == 3
     straddle = search_ranked(cfg, "/r", "oo/ba")["hits"]
     assert [h["rel"] for h in straddle] == ["foo/bar.txt"]
-    assert straddle[0]["tier"] == 2
+    assert straddle[0]["tier"] == 3
 
 
-def test_the_camelcase_hump_counts_as_a_segment_start(tmp_path):
-    """`_is_segment_start`'s camelCase test runs against the ORIGINAL-case
-    path, not the lowercased one — an upper-case letter preceded by a
-    lower-case one scores like a word boundary. Pinned by comparing a query
-    that lands ONLY on humps against a same-length query that lands on none:
-    the hump-aligned one must score higher."""
-    cfg = _index(tmp_path, "/r", ["/r/MyRenderTarget.ts"])
-    humps = search_ranked(cfg, "/r", "MRT")
-    assert humps["hits"] == []  # "MRT" is not a substring at all — sanity
-    # Compare two REAL substrings of the same file: one starting on a hump
-    # ("Render", right after the lowercase "y"), one starting mid-word
-    # ("ender", one character later, off any boundary).
-    on_hump = search_ranked(cfg, "/r", "render")["hits"][0]
-    off_hump = search_ranked(cfg, "/r", "ender")["hits"][0]
-    # Equalize for the different query length by comparing the SEGMENT-START
-    # contribution alone: score minus the "n + 3*(n-1)" run term and any name
-    # bonus (neither query is the whole basename or a prefix of it).
-    def bare(hit, n):
-        return hit["score"] - (n + 3 * (n - 1))
-    assert bare(on_hump, 6) > bare(off_hump, 5)
+# The old camelCase-hump segment-start bonus (`_is_segment_start`, ported
+# from the deleted rank.py) has no test here any more — it was DROPPED, not
+# reimplemented in occurrence-independent form. It read the matched window's
+# position against the ORIGINAL-case `rel` (`substr(rel, i, 1)` at the
+# match's own start/end), which is exactly the "which occurrence" question
+# this round's redesign exists to eliminate, and `nm` — the only column
+# every remaining predicate is built from — is stored already-lowercased, so
+# recovering case information for a hump test would need a brand new
+# original-case basename column. Left out as an explicit, reported
+# deviation from the old ranker's feature set rather than reintroduced as
+# another positional read. See DECISIONS.md and this round's report.
 
 
 def test_no_more_than_limit_rows_come_back_from_the_database(tmp_path):
@@ -411,20 +471,33 @@ def test_glob_ranking_a_tight_match_beats_a_long_wildcard_swallow(tmp_path):
         "icon copy.png", "icon-a-very-long-thing-copy.png"]
 
 
-def test_glob_ranked_hits_carry_a_real_score(tmp_path):
-    """Ranked glob hits carry a genuine, non-constant `score` (not the fixed
-    `0` every glob hit used to carry) — pinned by checking two hits with
-    different wildcard-swallow amounts do NOT share a score, and every hit
-    still carries the same key set (`rel`, `is_dir`, `size`, `mtime`,
-    `score`, `longest_run`, `tier`, `depth`) the other two modes' hits do.
-    `tier` is no longer a fixed `0` placeholder either — both basenames here
-    contain both literal runs (`icon`, `copy`), so both are tier 1, same rule
-    `_rank_sql` uses (query is a substring of the basename)."""
+def test_glob_ranked_hits_carry_the_wire_fields_and_order_by_length(tmp_path):
+    """Ranked glob hits carry the same key set (`rel`, `is_dir`, `size`,
+    `mtime`, `score`, `longest_run`, `tier`, `depth`) the other two modes'
+    hits do, and `tier` is no longer a fixed `0` placeholder — both basenames
+    here contain both literal runs (`icon`, `copy`), so both are tier 1, same
+    rule `_rank_sql` uses (query is fully explainable within the basename).
+
+    `icon copy.png` and `icon-a-very-long-thing-copy.png` tie on every
+    `_name_predicate_sql` column (both start with "icon", neither ends with
+    "copy", both contain the literal chain) — under the position-free
+    redesign there is no wildcard-swallow penalty left to break that tie on
+    `score` (deliberately: matched length/span is not a quality signal for a
+    glob, per the deleted `_glob_score_sql`'s own reasoning, which this
+    round keeps but implements as an absence of a term rather than a
+    penalty), so the two DO legitimately share a `score` now. The order
+    still comes out right — `icon copy.png` first — via `length(nm) ASC`,
+    the next column in `_lex_order_and_score`'s vector after the tied
+    predicates: this is the load-bearing proof that ORDER is decided by the
+    vector, not by `score DESC`, exactly as `_lex_order_and_score`'s
+    docstring warns a caller not to assume."""
     cfg = _index(tmp_path, "/r", ["/r/icon copy.png",
                                   "/r/icon-a-very-long-thing-copy.png"])
     hits = search_ranked(cfg, "/r", "**/**icon**copy**", glob=True)["hits"]
     assert len(hits) == 2
-    assert hits[0]["score"] != hits[1]["score"]
+    assert [h["rel"] for h in hits] == [
+        "icon copy.png", "icon-a-very-long-thing-copy.png"]
+    assert hits[0]["score"] == hits[1]["score"]  # tied on every predicate
     for h in hits:
         assert set(h) == {"rel", "is_dir", "size", "mtime",
                           "score", "longest_run", "tier", "depth"}
@@ -670,11 +743,11 @@ def test_a_backslash_in_the_query_does_not_break_the_sql(tmp_path):
 def test_unranked_returns_the_same_set_of_rows_ordered_depth_then_rel(tmp_path):
     """`ranked=False` keeps the exact same substring filter — same rows
     match — but orders `depth ASC, rel ASC` instead of scoring. Built on the
-    fixture harness like the JS-parity test above: gather the SET of rels
-    the ranked branch returns for a query, then check the unranked branch
-    returns the identical set, just reordered."""
-    cfg = _index_from_fixture(tmp_path)
-    for query in FIXTURE["queries"]:
+    golden corpus: gather the SET of rels the ranked branch returns for a
+    query, then check the unranked branch returns the identical set, just
+    reordered."""
+    cfg = _golden_index(tmp_path)
+    for query in sorted(_GROUPS):
         ranked_rels = {h["rel"] for h in search_ranked(cfg, "/r", query, limit=200)["hits"]}
         out = search_ranked(cfg, "/r", query, limit=200, ranked=False)
         got = [h["rel"] for h in out["hits"]]

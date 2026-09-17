@@ -364,15 +364,18 @@ reconstruct the hit's `rel` byte-exact. The two production call sites — the in
 listing (`listing/ranked-hits.ts`) and the home page (`lib/home-search.ts`) — compute
 positions independently (one per search box) but share this one render/match layer.
 
-**Parity is a test, not an intention.** The deleted `index/rank.py` used to be a line-
-for-line port of `fuzzy.ts` + `listing/search.ts`; `_rank_sql` is now a SQL port of just
-its substring branch. `fuzzy.ts` remains the authority for the folders it still ranks —
+**Parity was a test, not an intention, and is no longer asserted.** The deleted
+`index/rank.py` used to be a line-for-line port of `fuzzy.ts` + `listing/search.ts`;
+`_rank_sql` is now an independent, position-free, lexicographic-column ranker (see
+`index/specs/query.md` §3) and no longer aims to reproduce `fuzzy.ts`'s scalar-sum
+order term for term. `fuzzy.ts` remains the authority for the folders it still ranks —
 the in-folder search still ranks a live streamed walk in the browser, and only a
-browser-side ranker can rank a stream. The same box is therefore answered by either
-ranker depending on coverage, so both assert against `tests/fixtures/rank-parity.json`
-(generated from the JS side by `bun scripts/gen-rank-fixture.ts`):
-`tests/test_index_rank.py` (restricted to the fixture's substring-matching rows) and
-`frontend/src/apps/explorer/listing/rank-parity.test.ts` (the full fixture, unchanged).
+browser-side ranker can rank a stream — but the two rankers are allowed to diverge in
+tie-break and bonus behavior; only the highlighted-position recomputation (§8) is a
+wire contract between them. `tests/fixtures/rank-parity.json` and
+`scripts/gen-rank-fixture.ts` were deleted along with the JS-side rank-parity harness
+they were generated from; `tests/test_index_rank.py` now pins the SQL ranker against a
+hand-reasoned golden corpus instead.
 
 ### 7.1 `reason` — why an answer is what it is
 

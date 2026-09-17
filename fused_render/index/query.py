@@ -582,51 +582,53 @@ MAX_RANK_LIMIT = 2_000
 # rows a scrollable list and a select-all should ever hold at once.
 MAX_GLOB_RANK_LIMIT = 5_000
 
-# Chars that open a new "segment" in a path/name; a match right after one of
-# these reads as the start of a word and scores higher. Mirrors
-# frontend/src/platform/lib/fuzzy.ts's SEPARATORS exactly — change one, change
-# both, then regenerate tests/fixtures/rank-parity.json.
-_SEGMENT_SEPARATORS = ["/", ".", "-", "_", " "]
-
-# A deep, vague match used to out-score a shallow one on raw `score` alone —
-# score accumulates over the matched window, and DEPTH_PENALTY offsets a long
-# ancestor chain's extra segment-start bonuses. Mirrors fuzzy.ts's DEPTH_PENALTY
-# / SHALLOW_FREE. See the ORDER BY comment on `_rank_sql` for how these fold in.
-_DEPTH_PENALTY = 4
-_SHALLOW_FREE = 3
-
-# The missing symmetric counterpart to `name_bonus`'s basename-PREFIX case
-# (+25 for a match starting at the basename's first character): +25 for a
-# match ENDING at the basename's last character — equivalently, ending at the
-# end of `rel` itself, since the basename is `rel`'s own tail. Reported bug:
-# `*.js` (a single literal run, `[".js"]`) scored a `.json` file identically
-# to a real `.js` file — `.json` starts with the literal ".js", so it is just
-# as good a match for that one run, and with only one literal run the
-# interior-swallow penalty (`_glob_score_sql`) is always 0, so nothing told
-# them apart except the depth tie-break, which favoured the shallower
-# `.json`. Only the true `.js` file's match reaches the end of the basename;
-# `.json`'s does not (two more characters, "on", follow it).
+# Position-free, basename-first ranking (DECISIONS.md, search-architecture-
+# review.md §6/§10.1/§10.3). The scorer used to be a scalar sum
+# (`n + 3*(n-1) + 5*segment_starts - DEPTH_PENALTY*... + name_bonus +
+# _TAIL_BONUS`) built around `p0 = strpos(lrel, q) - 1` — the FIRST
+# occurrence of the query in the full path. That was the generator of a whole
+# bug class: `LIKE`/`regexp_matches` matches ANY occurrence, so every term
+# reading `p0` (the tail bonus, the segment-start count, the tier-2/3
+# boundary, and the glob path's chained `strpos` walk) could be graded
+# against a DIFFERENT occurrence than the one the filter actually matched on
+# — confirmed by probe (query `js`: `lib/app.js` scored 35, `js/lib/app.js`
+# and `json/script.js` both scored 10, purely because the first "js" in
+# their paths sits in a directory segment). `_TAIL_BONUS` (commit
+# 3622523ad) was the sharpest instance: sized equal to the prefix bonus, it
+# tied a true exact-basename match against a mere tail match at the same
+# depth, which `lower(rel) ASC` then resolved alphabetically instead of by
+# match quality (`config.json` vs `app-config`, both scoring 51).
 #
-# Sized equal to the prefix bonus, not larger: a tail match and a head match
-# are the same STRENGTH of signal (reaching one whole edge of the name), so
-# giving the tail more weight than the head would be arbitrary, and giving it
-# less would keep failing the very asymmetry this fixes. Measured against
-# `_DEPTH_PENALTY`/`_SHALLOW_FREE` on a 2-candidate corpus (one shallow
-# `.json` file competing with a `.js` file at increasing depth, everything
-# else held constant): the score gap a depth-D `.js` file must overcome grows
-# as `4 * (D - 2)` for D > 2 (e.g. 4 at depth 3, 16 at depth 6, 24 at depth 8,
-# 32 at depth 10) — so `+25` fixes every case up to depth 8, comfortably
-# covering the reported bug's own depth (2) and any realistically nested
-# project tree, without being large enough to beat the depth penalty at
-# arbitrary, unbounded depth (which would just trade one "wins by
-# construction" bug for another). A larger value, e.g. 100 (level with the
-# EXACT-basename bonus), was checked to cause exactly the bad ordering the
-# brief warned about: a merely-tail-matching "app-config" would then outscore
-# a true exact-basename match "config" for the query "config" once "config"'s
-# own extra segment-start/tail credit is accounted for — see
-# test_the_basename_suffix_bonus_does_not_reorder_an_exact_match_below_a_tail_match
-# and its glob-mode counterpart, which pin +25 as safe on that front.
-_TAIL_BONUS = 25
+# The replacement drops position entirely. Every signal below is a boolean
+# predicate over `nm` (the already-lowercased basename) and the query's
+# literal run(s), built once in `_name_predicate_sql` and shared by both
+# `_rank_sql` (one literal: the whole substring query) and `_glob_sql`
+# (`_glob_literal_runs`'s literal pieces) so the two modes cannot
+# independently drift the way `_rank_sql` and the deleted `_glob_score_sql`
+# did. `ORDER BY` on the resulting vector (`_lex_order_and_score`) replaces
+# the scalar sum — SQL does field-separated, VS-Code/Zed-style ranking
+# natively via `ORDER BY col1 DESC, col2 DESC, ...` without needing a single
+# number at all. `score` is still computed and returned (compatibility: see
+# `search_ranked`'s docstring) as a WEIGHTED SUM of the same predicates for
+# display/debugging only — the actual order comes from the `ORDER BY` vector,
+# not from sorting by this number, so a caller must not assume `score DESC`
+# reproduces the result order.
+#
+# `depth` and `length(nm)` remain as late, purely positional (not
+# position-in-string — position-in-CORPUS) tie-breaks: a shallower path and a
+# shorter filename are both real, position-free signals (Zoekt ranks on
+# filename length; a shallow match is more likely to be what the user meant
+# than a deep one with an identical name-quality signature), not first-
+# occurrence bonuses, so they carry no trace of the bug class above.
+#
+# No segment-start / camelCase-hump bonus survives this rewrite. The old one
+# read the ORIGINAL-case `rel` at the matched window's positions
+# (`p0..p0+n`) — inherently the same "which occurrence" question this
+# rewrite exists to eliminate, and `nm` (the column every predicate here is
+# built from) is stored already-lowercased, so recovering case information
+# for a hump test would need a new original-case basename column. Left out
+# rather than reintroduced as another positional read; see this round's
+# report for the explicit call-out.
 
 
 def _walk_from(start: str, rest: str, guard: "MountGuard | None" = None,
@@ -1083,34 +1085,142 @@ def is_hidden_rel(rel: str) -> bool:
     return rel.startswith(".") or "/." in rel
 
 
-def _rank_sql(inner: str, hidden: str, ql: str, qq: str, n: int, limit: int,
+def _name_predicate_sql(nm_col: str, literals: list) -> dict:
+    """Three position-free boolean predicates over `nm_col` (always `"nm"` in
+    practice — the already-lowercased basename column both `inner` branches
+    produce) built from `literals`, an ORDERED list of raw (un-escaped)
+    literal strings: `_rank_sql` passes the single-element `[qs]` (the whole
+    substring query IS one literal run), `_glob_sql` passes
+    `_glob_literal_runs(pattern)`'s multi-element output. This is the ONE
+    place either caller reads a literal against `nm` at all — sharing it is
+    what keeps the two modes from drifting the way `_rank_sql` and the
+    deleted `_glob_score_sql` used to (each re-implementing "name bonus"
+    separately, kept equal only by a test).
+
+    - `prefix`: `nm` starts with the FIRST literal run.
+    - `suffix`: `nm` ends with the LAST literal run.
+    - `contains`: every literal run occurs in `nm`, IN ORDER, with anything
+      (including nothing) between them — `nm LIKE '%lit0%lit1%...%litN%'`.
+      For a single literal this is exactly "the query is a substring of the
+      basename" (the old tier-1 test). For multiple literals this is what
+      replaces testing the WHOLE compiled regex against `nm`
+      (`query.py:1471` before this round) — the old test could never be true
+      for a path-shaped pattern like `**/src/*.ts`, because `_glob_to_regex`
+      compiles `**/ ` and `**` into `/`-crossing wildcards that a slash-free
+      `nm` can never satisfy, so every such glob was tier-3 for every hit
+      (search-architecture-review.md §10.3). This predicate does not care
+      what KIND of wildcard separated the literals in the original pattern —
+      it only asks whether `nm` alone could satisfy an in-order,
+      anything-between reading of them — so it comes back true exactly when
+      the pattern's literal content is fully explainable by the basename,
+      independent of how much of the pattern was directory-crossing syntax.
+
+    None of these read a position (no `strpos`, no `p0`): `LIKE` answers
+    "does this pattern exist anywhere" without exposing WHERE, which is
+    exactly the occurrence-independence the position-free redesign needs.
+
+    `literals=[]` (a literal-free glob, e.g. `**/*`) returns three `"false"`
+    literals rather than raising or dividing by anything — `_glob_sql`
+    never calls this for that case (it takes the fully-unscored branch
+    instead), but the function stays total rather than assuming its own
+    caller's discipline."""
+    if not literals:
+        return {"prefix": "false", "suffix": "false", "contains": "false"}
+    first_like = like_literal(literals[0])
+    last_like = like_literal(literals[-1])
+    chain_like = "%".join(like_literal(lit) for lit in literals)
+    return {
+        "prefix": f"{nm_col} LIKE lower('{first_like}') || '%' ESCAPE '\\'",
+        "suffix": f"{nm_col} LIKE '%' || lower('{last_like}') ESCAPE '\\'",
+        "contains": (f"{nm_col} LIKE '%' || lower('{chain_like}') || '%' "
+                     f"ESCAPE '\\'"),
+    }
+
+
+def _lex_order_and_score(nm_exact: str, preds: dict) -> tuple:
+    """The shared tail of both `_rank_sql` and `_glob_sql`: given `nm_exact`
+    (a mode-specific SQL boolean — `nm = lower(q)` for a substring query,
+    `regexp_matches(nm, regex)` for a glob, since only the CALLER knows how
+    to test "does the whole pattern hold within the basename alone") and
+    `preds` (`_name_predicate_sql`'s output), returns `(order_by, score,
+    tier)`.
+
+    `order_by` is the position-free, basename-first lexicographic vector
+    search-architecture-review.md §6 recommends: exact name, then basename
+    prefix, then basename suffix, then "the query is satisfiable within the
+    basename alone", THEN `depth`/`length(nm)`/`rel` as pure tie-breaks. This
+    is what actually decides the row order — `ORDER BY` reads it as a vector
+    comparison, column by column, which is exactly the field-separated
+    ranking VS Code/Zed do structurally (their power-of-two score bands ARE
+    this same lexicographic order, just encoded as one integer instead of
+    left as a column list).
+
+    `score` is a WEIGHTED SUM of the same four leading predicates, returned
+    for compatibility (`search_ranked` still emits it on every hit — existing
+    tests and probes read it) and for human debugging, but it is NOT what
+    decides the order: two hits can tie on `score` while the vector still
+    orders them (a `depth`/`length(nm)`/`rel` tie-break the scalar sum cannot
+    see), so nothing downstream may assume `ORDER BY score DESC` reproduces
+    this function's actual order. The weights (1000/500/250/100) are spaced
+    so each level dominates every combination of the levels below it and
+    `- depth` never crosses one (a basename match at any depth this index
+    could plausibly hold outranks a mere ancestor-only hit).
+
+    `tier` collapses to two values, not the old three: 1 when `contains`
+    holds (the match is fully explainable within the basename — subsumes the
+    old tier 1, and folds the old "straddles the directory/basename
+    boundary" tier 2 into "ancestor-only" here, since `contains` cannot
+    distinguish a straddle from a pure-ancestor hit without reading a
+    position), else 3. `_rank_sql`'s docstring below and DECISIONS.md record
+    this as a deliberate simplification, not an oversight: `tier` is no
+    longer a primary sort key at all (the four DESC columns ahead of it in
+    `order_by` already separate name matches from ancestor-only ones more
+    finely than tier alone ever did), so the three-way split it used to make
+    has nothing left to earn its keep for — it is kept as a coarse,
+    wire-compatible summary field, not a ranking mechanism."""
+    tier = f"CASE WHEN ({preds['contains']}) THEN 1 ELSE 3 END"
+    # DuckDB has no BOOLEAN*INTEGER overload (unlike Python's `True == 1`) —
+    # each predicate is cast to INTEGER before it can be weighted and summed.
+    score = (f"1000 * CAST({nm_exact} AS INTEGER) "
+             f"+ 500 * CAST({preds['prefix']} AS INTEGER) "
+             f"+ 250 * CAST({preds['suffix']} AS INTEGER) "
+             f"+ 100 * CAST({preds['contains']} AS INTEGER) "
+             f"- depth")
+    order_by = (f"({nm_exact}) DESC, ({preds['prefix']}) DESC, "
+                f"({preds['suffix']}) DESC, ({preds['contains']}) DESC, "
+                f"depth ASC, length(nm) ASC, lower(rel) ASC, rel ASC")
+    return order_by, score, tier
+
+
+def _rank_sql(inner: str, hidden: str, ql: str, qq: str, qs: str, limit: int,
               ranked: bool = True) -> str:
     """The whole rank query: substring filter, scoring, and ORDER BY ... LIMIT,
     all in SQL — no candidate cap, no Python-side pass.
 
     `ranked=False` (the owner's unranked-results preference, D720) keeps the
     exact same `WHERE lrel LIKE ...` substring filter and hidden-file handling
-    below, but drops the entire scoring apparatus — no `p0`/`strpos`, no
-    `segment_starts`, no `name_bonus`, no `score`, no `tier` — computed
-    nowhere, not computed-then-discarded. It orders `depth ASC, rel ASC`
-    instead: `depth` here is `rel_depth`, the same ROOT-RELATIVE depth the
-    ranked branch computes in `inner` (see `search_ranked`'s docstring on
-    `rel_depth` for why the parquet's own stored absolute `depth` column would
-    be the wrong one — the ranked branch had a real bug from exactly that mix-
-    up before it was fixed). This mirrors `search_under`'s own `ORDER BY
-    depth, path` above — the ordering the owner's user confirmed is usable.
-    `depth, rel` is a TOTAL order as long as `rel` is unique, which it is: a
-    file and a directory cannot share a path on a real filesystem, and both
-    parquet stores are keyed on that same path uniqueness — the ranked
-    branch's own final tie-break (`rel ASC`, after tier/score/depth/
-    lower(rel)) already leans on this identical fact. No `lower(rel)` ahead of
-    `rel` here — unlike the ranked branch, which needs it as an intermediate
-    tie-break before `rel ASC` because ties can survive tier/score/depth —
-    the unranked branch's ORDER BY has only two keys and `rel` alone already
-    makes it total, so a `lower(rel)` in front would reintroduce a case-
-    insensitive ordering question for no benefit (see D712 on the ranked
-    branch's own `lower(rel)`/`rel` split for the class of bug that guards
-    against, which does not apply to a two-key order that is already total).
+    below, but drops the entire scoring apparatus — no predicate columns, no
+    `score`, no `tier` — computed nowhere, not computed-then-discarded. It
+    orders `depth ASC, rel ASC` instead: `depth` here is `rel_depth`, the
+    same ROOT-RELATIVE depth the ranked branch computes in `inner` (see
+    `search_ranked`'s docstring on `rel_depth` for why the parquet's own
+    stored absolute `depth` column would be the wrong one — the ranked branch
+    had a real bug from exactly that mix-up before it was fixed). This
+    mirrors `search_under`'s own `ORDER BY depth, path` above — the ordering
+    the owner's user confirmed is usable. `depth, rel` is a TOTAL order as
+    long as `rel` is unique, which it is: a file and a directory cannot share
+    a path on a real filesystem, and both parquet stores are keyed on that
+    same path uniqueness — the ranked branch's own final tie-break (`rel
+    ASC`, after the lexicographic predicate vector/depth/length(nm)/
+    lower(rel)) already leans on this identical fact. No `lower(rel)` ahead
+    of `rel` here — unlike the ranked branch, which needs it as an
+    intermediate tie-break before `rel ASC` because ties can survive the
+    predicate vector/depth/length(nm) — the unranked branch's ORDER BY has
+    only two keys and `rel` alone already makes it total, so a `lower(rel)`
+    in front would reintroduce a case-insensitive ordering question for no
+    benefit (see D712 on the ranked branch's own `lower(rel)`/`rel` split for
+    the class of bug that guards against, which does not apply to a two-key
+    order that is already total).
 
     `inner` is the UNION ALL of the files/dirs branches (each already carries
     `rel`, `size`, `mtime`, `is_dir`, `depth` — RELATIVE to the search root,
@@ -1118,17 +1228,20 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, n: int, limit: int,
     `_name_col`'s doing) plus `lrel` (`lower(rel)`). `ql` is the ORIGINAL-case
     `qs` as a LIKE literal (metachars escaped, use with ESCAPE '\\'); `qq` is
     the same original-case string as a plain SQL string literal (quotes
-    doubled only) for `strpos`/`=` comparisons, which are not LIKE and must
-    not see LIKE's escapes. Every comparison against `ql`/`qq` below wraps
-    them in SQL's own `lower(...)` rather than lowering in Python first — see
-    the paragraph below for why. `n` is `len(qs)` — the constant `longest_run`
-    every surviving row shares now that the fuzzy/subsequence pass is gone
-    (see this module's docstring on `search_ranked` for why that constant
-    safely drops out of the ORDER BY).
+    doubled only) for the `nm = lower(qq)` exact-match test, which is not
+    LIKE and must not see LIKE's escapes. Every comparison against `ql`/`qq`
+    below wraps them in SQL's own `lower(...)` rather than lowering in Python
+    first — see the paragraph below for why. `qs` is the original-case query
+    string itself, passed through to `_name_predicate_sql` as the single
+    literal run a substring query is.
 
-    Ported line for line from the deleted index/rank.py's `fuzzy_match`
+    Ported (then substantially rewritten — see the position-free redesign
+    note above this function) from the deleted index/rank.py's `fuzzy_match`
     substring branch, `_is_segment_start`, `_name_tier` and `_sort_key` — see
-    that module's own history for the fuzzy-subsequence half this replaces.
+    that module's own history for the fuzzy-subsequence half this replaces,
+    and search-architecture-review.md §6/§10.1/§10.3 for why the position-
+    based scoring this function used to compute (`p0 = strpos(lrel, qq) - 1`,
+    `segment_starts`, `tail_bonus`) was replaced rather than kept.
 
     The query is lowercased IN SQL, with the same `lower()` call that already
     produces `lrel` — not in Python (`qs.lower()`) before being embedded as a
@@ -1146,95 +1259,48 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, n: int, limit: int,
     a character differently in the first place), which this rewrite no
     longer needs to inherit now that both sides are one implementation.
 
-    Per matched row, at the substring's start position `p0` (`strpos(lrel,
-    qq) - 1`, 0-indexed):
+    Per matched row, `_name_predicate_sql("nm", [qs])` builds the three
+    position-free basename predicates (`prefix`/`suffix`/`contains` — for a
+    single-literal substring query, `contains` is exactly "the query occurs
+    somewhere in the basename", the old tier-1 test) and `_lex_order_and_score`
+    combines them with `nm = lower(qq)` (the exact-basename test) into the
+    final `order_by`/`score`/`tier`. See both functions' own docstrings for
+    the full column set and why `score` is display-only.
 
-    - `score = n + 3*(n-1) + 5*segment_starts - DEPTH_PENALTY*max(0, depth -
-      SHALLOW_FREE) + name_bonus` — `n + 3*(n-1)` is rank.py's "+1 per char,
-      +3 for the whole run being consecutive" collapsed algebraically (a
-      substring match IS one run), `segment_starts` is how many of the `n`
-      matched positions land on a segment start (computed against the
-      ORIGINAL-case `rel`, not `lrel`, so the camelCase hump test survives
-      lowercasing — same reason rank.py's `_is_segment_start` does), and
-      `name_bonus` is +100 for an exact basename match, +25 for a basename
-      prefix, else 0.
-    - `tier` is 1 when `qs` is a substring of the basename, 3 when the match
-      ends before the basename starts (an ancestor-only hit), else 2.
-
-    `segment_starts` is a `list_filter` over `range(p0, p0+n)` — the lambda
-    only evaluates for the (small) matched window of each already-substring-
-    filtered row, not over every row in the corpus. `substr(rel, i, 1)` (1-
-    indexed) is therefore the ORIGINAL-case character at 0-indexed `i - 1` —
-    the "previous" character for the segment-start test at 0-indexed `i`;
-    `substr(rel, i + 1, 1)` is the character AT `i`. `c BETWEEN 'A' AND 'Z'`
-    is the ASCII-uppercase test (a plain byte comparison, matching rank.py's
-    `.isupper() and .isascii()` pair — and `regexp_matches(c, '^[A-Z]$')`,
-    which this was rewritten from: RE2's `[A-Z]` is byte/ASCII by default
-    too, so the two are equivalent, `BETWEEN` just doesn't pay for spinning
-    up the regex engine to answer a single-byte-range question).
-
-    Final order is `tier ASC, score DESC, depth ASC, lower(rel) ASC, rel ASC` —
-    `longest_run` does not appear because every surviving row shares it. The
-    trailing `rel ASC` is what makes this a TOTAL order: a pair equal under
-    every column before it (tier, score, depth) AND under `lower(rel)` — two
-    rels differing only in case, e.g. `notes/Alpha.txt` vs `notes/alpha.txt`
-    — was otherwise still an unresolved tie, and DuckDB's multi-threaded
-    top-N is free to resolve an unresolved tie arbitrarily, so the pair could
-    silently swap order between two runs of the identical query and shift
-    keyboard selection out from under a user who hadn't typed anything.
-    `rel` (byte/ASCII comparison, not `lower(rel)`) breaks that tie for free
-    — it costs nothing beyond a column DuckDB already has in hand — and
-    always resolves it the same way. This makes the SQL side deterministic
-    ON ITS OWN, but not necessarily identical to `frontend/src/platform/lib/
-    fuzzy.ts`'s tie-break: the JS ranker's is `Intl.Collator(sensitivity:
-    "base")`, which is locale-aware and does not always agree with a plain
-    ASCII byte comparison on which of a case-only pair sorts first. That
-    divergence is pre-existing (`tests/test_index_rank.py`'s
-    `_group_case_only_ties` helper exists because of it, not because of
-    this) and is unaffected by adding `rel ASC` here — it only fixes SQL's
-    OWN run-to-run stability, not cross-language agreement."""
+    Final order comes from `_lex_order_and_score`'s `order_by` — see its
+    docstring for the full vector and the trailing `rel ASC`'s role as what
+    makes this a TOTAL order (a pair equal under every earlier column,
+    including `lower(rel)` — two rels differing only in case, e.g.
+    `notes/Alpha.txt` vs `notes/alpha.txt` — was otherwise still an
+    unresolved tie, and DuckDB's multi-threaded top-N is free to resolve an
+    unresolved tie arbitrarily, so the pair could silently swap order between
+    two runs of the identical query and shift keyboard selection out from
+    under a user who hadn't typed anything). `rel` (byte/ASCII comparison,
+    not `lower(rel)`) breaks that tie for free — it costs nothing beyond a
+    column DuckDB already has in hand — and always resolves it the same way.
+    This makes the SQL side deterministic ON ITS OWN, but not necessarily
+    identical to `frontend/src/platform/lib/fuzzy.ts`'s tie-break: the JS
+    ranker's is `Intl.Collator(sensitivity: "base")`, which is locale-aware
+    and does not always agree with a plain ASCII byte comparison on which of
+    a case-only pair sorts first. That divergence is pre-existing and is
+    unaffected by `rel ASC` here — it only fixes SQL's OWN run-to-run
+    stability, not cross-language agreement."""
     if not ranked:
-        # No `p0`/`strpos`, no `segment_starts`, no `name_bonus`, no `score`,
-        # no `tier` — the scoring apparatus below is never built for this
-        # branch, not built and then left out of the SELECT list.
+        # No predicate columns, no `score`, no `tier` — the scoring apparatus
+        # below is never built for this branch, not built and then left out
+        # of the SELECT list.
         return (
             f"SELECT rel, size, mtime, is_dir, depth FROM ({inner}) "
             f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden} "
             f"ORDER BY depth ASC, rel ASC "
             f"LIMIT {limit}")
-    # `BETWEEN 'A' AND 'Z'`, not `regexp_matches(c, '^[A-Z]$')`: same ASCII-
-    # uppercase test (a single-byte comparison DuckDB can do without spinning
-    # up its regex engine), measured ~15-20% faster and byte-for-byte
-    # equivalent for this predicate — this only ever compares a length-1
-    # string against the two ASCII bytes 'A'/'Z', which is exactly what
-    # `^[A-Z]$` matched and nothing more.
-    segment_starts = (
-        f"len(list_filter(range(p0, p0 + {n}), i -> "
-        f"i = 0 OR list_contains({_SEGMENT_SEPARATORS!r}, substr(rel, i, 1)) "
-        f"OR (substr(rel, i + 1, 1) BETWEEN 'A' AND 'Z' "
-        f"AND NOT (substr(rel, i, 1) BETWEEN 'A' AND 'Z'))))"
-    )
-    name_bonus = (f"CASE WHEN nm = lower('{qq}') THEN 100 "
-                  f"WHEN nm LIKE lower('{ql}') || '%' ESCAPE '\\' THEN 25 ELSE 0 END")
-    # The symmetric counterpart to `name_bonus`'s prefix case: the match
-    # ends at the very end of `rel` — which, since the basename is `rel`'s
-    # own tail, is exactly "ends at the end of the basename". See
-    # `_TAIL_BONUS`'s own comment for the reported bug and the arithmetic
-    # that sizes it.
-    tail_bonus = f"CASE WHEN p0 + {n} = length(rel) THEN {_TAIL_BONUS} ELSE 0 END"
-    tier = (f"CASE WHEN strpos(nm, lower('{qq}')) > 0 THEN 1 "
-            f"WHEN p0 + {n} - 1 < length(rel) - length(nm) THEN 3 "
-            f"ELSE 2 END")
-    score = (f"{n} + 3 * ({n} - 1) + 5 * {segment_starts} "
-             f"- {_DEPTH_PENALTY} * greatest(0, depth - {_SHALLOW_FREE}) "
-             f"+ {name_bonus} + {tail_bonus}")
+    preds = _name_predicate_sql("nm", [qs])
+    order_by, score, tier = _lex_order_and_score(f"nm = lower('{qq}')", preds)
     return (
-        f"WITH matched AS ("
-        f"SELECT *, strpos(lrel, lower('{qq}')) - 1 AS p0 FROM ({inner}) "
-        f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden}) "
         f"SELECT rel, size, mtime, is_dir, depth, ({score}) AS score, "
-        f"({tier}) AS tier FROM matched "
-        f"ORDER BY tier ASC, score DESC, depth ASC, lower(rel) ASC, rel ASC "
+        f"({tier}) AS tier FROM ({inner}) "
+        f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden} "
+        f"ORDER BY {order_by} "
         f"LIMIT {limit}")
 
 
@@ -1257,10 +1323,11 @@ def _glob_literal_runs(pattern: str) -> list:
 
     This is the ONLY thing a glob hit has to score against: a glob match has
     no single contiguous "substring position" the way a `_rank_sql` hit does
-    (that hit's own `qs` never contains a wildcard), so scoring it means
-    locating each of THESE literal runs independently and combining their
-    signals — see `_glob_score_sql`. An empty return means there is nothing
-    to score; `_glob_sql` treats that identically to `ranked=False`."""
+    (that hit's own `qs` never contains a wildcard), so `_glob_sql` passes
+    this list straight to `_name_predicate_sql` (the same basename predicate
+    builder `_rank_sql` uses) rather than locating each run's position
+    separately. An empty return means there is nothing to test against `nm`
+    at all; `_glob_sql` treats that identically to `ranked=False`."""
     out = []
     cur = []
     i, n = 0, len(pattern)
@@ -1284,167 +1351,65 @@ def _glob_literal_runs(pattern: str) -> list:
     return out
 
 
-def _glob_score_sql(literals: list) -> tuple:
-    """Builds the extra `SELECT` columns (positions) and the final `score`
-    expression for ranked glob mode, from `literals` (`_glob_literal_runs`'s
-    output) — every one of them already known, by construction, to occur in
-    order somewhere in `lrel` (the row already passed the `regexp_matches`
-    filter that guarantees it).
-
-    Each literal run `lit_i` (length `n_i`) is located with `strpos`,
-    searching only the tail of `lrel` AFTER the previous run's end (`e_{i-1}`,
-    0 for the first run) — the same "start search from here" chaining
-    `_rank_sql` never needed (it has exactly one run) but a multi-run glob
-    does, so two literal runs that happen to share a substring don't both
-    resolve to the SAME occurrence. DuckDB evaluates a `SELECT` list's
-    aliases in order, so `p1`'s expression can reference `e0` (`p0 + n_0`)
-    defined two items earlier in the very same `SELECT` — confirmed against
-    a live connection before relying on it, not assumed from documentation.
-
-    Per run, `_rank_sql`'s own per-match signals are reused verbatim:
-    `n_i + 3*(n_i - 1)` (the run-length term, algebraically "+1 per matched
-    char, +3 for the whole run being consecutive" — a literal run IS one
-    contiguous run, same as a whole substring match is), `5 * segment_starts`
-    (how many of `lit_i`'s `n_i` matched positions land on a segment start,
-    tested against the ORIGINAL-case `rel` so a camelCase hump still counts
-    after `lrel` was lowercased), and the +100/+25 name bonus (`nm` — already
-    lowercased — exactly equal to `lit_i`, or prefixed by it). Each run's
-    contributions are summed across every literal run in the pattern.
-
-    On top of the summed per-run terms, two things `_rank_sql` has no
-    equivalent for because a plain substring match never needs them:
-
-    - The shared `_DEPTH_PENALTY`/`_SHALLOW_FREE` depth term, subtracted
-      once (not once per run) — identical to `_rank_sql`'s, so a deep glob
-      hit is disfavored the same way a deep substring hit is.
-    - A wildcard-swallow penalty, charged on INTERIOR gaps only — the span
-      from the FIRST literal run's start to the LAST literal run's end,
-      minus the runs' own summed length: `e_{last} - p_{first} -
-      sum(n_i)`. This is deliberately NOT `length(rel) - sum(n_i)` (an
-      earlier, wrong version of this formula, charged over the WHOLE
-      root-relative path): that version charged a point for every ancestor
-      character the LEADING `**` crossed, on top of the depth penalty above
-      that already charges for exactly that, so it swamped the name/tier
-      signal and made "shortest path wins" the de facto rule — the
-      opposite of what the swallow penalty is for. The head/tail `**` spans
-      are identical for every candidate matching the same pattern and carry
-      no information about match quality, so they must never be charged.
-      One direct, checkable consequence: a pattern with exactly ONE literal
-      run has ZERO interior gaps (`e_0 - p_0 - n_0 == 0` by construction,
-      since `e_0 = p_0 + n_0`), so its glob score is IDENTICAL to
-      `_rank_sql`'s score for the equivalent substring query — not merely
-      close (pinned by
-      `test_glob_single_literal_run_score_matches_rank_sql_substring_score`,
-      `tests/test_index_rank.py`). Deliberately NOT scored on matched
-      length either way (the brief's own warning, worth repeating here): a
-      glob's stars can swallow arbitrary text, so "the match spans more of
-      the filename" is not "a better match" the way it is for a plain
-      substring hit — it is backwards, rewarding a longer filename for
-      containing the same literal pieces with more junk between them.
-      `icon copy.png` (little to swallow) must outrank
-      `icon-a-very-long-thing-copy.png` (lots to swallow) even though every
-      per-run term above ties between them, which is exactly what this
-      interior-gap subtraction, not a matched-length bonus, buys.
-
-    Returns `(cols, score)`: `cols` is a list of `"<expr> AS <alias>"`
-    fragments to splice into the `matched` CTE's `SELECT *, ...` (the `p_i`/
-    `e_i` position columns — never exposed past that CTE), `score` is the
-    single SQL expression combining everything above."""
-    cols = []
-    run_terms = []
-    total_len = 0
-    prev_end = "0"
-    first_p_alias = None
-    last_e_alias = None
-    for i, lit in enumerate(literals):
-        n_i = len(lit)
-        total_len += n_i
-        lit_q = _q(lit)
-        p_alias, e_alias = f"p{i}", f"e{i}"
-        p_expr = (f"(strpos(substr(lrel, {prev_end} + 1), lower('{lit_q}')) "
-                  f"- 1 + {prev_end})")
-        cols.append(f"{p_expr} AS {p_alias}")
-        e_expr = f"({p_alias} + {n_i})"
-        cols.append(f"{e_expr} AS {e_alias}")
-        segment_starts = (
-            f"len(list_filter(range({p_alias}, {p_alias} + {n_i}), i -> "
-            f"i = 0 OR list_contains({_SEGMENT_SEPARATORS!r}, substr(rel, i, 1)) "
-            f"OR (substr(rel, i + 1, 1) BETWEEN 'A' AND 'Z' "
-            f"AND NOT (substr(rel, i, 1) BETWEEN 'A' AND 'Z'))))"
-        )
-        name_bonus = (
-            f"CASE WHEN nm = lower('{lit_q}') THEN 100 "
-            f"WHEN nm LIKE lower('{like_literal(lit)}') || '%' ESCAPE '\\' "
-            f"THEN 25 ELSE 0 END"
-        )
-        run_terms.append(f"({n_i} + 3 * ({n_i} - 1) + 5 * {segment_starts} "
-                         f"+ {name_bonus})")
-        if first_p_alias is None:
-            first_p_alias = p_alias
-        last_e_alias = e_alias
-        prev_end = e_alias
-    # Interior-only swallow penalty: the span from the FIRST run's start to
-    # the LAST run's end, minus the runs' own summed length — NEVER
-    # `length(rel) - total_len` (see this function's docstring on why that
-    # whole-path version was wrong). For a single run this is provably 0
-    # (`e_0 - p_0 - n_0 == 0`, since `e_0` is defined as `p_0 + n_0`), which
-    # is what makes the single-literal-run reduction invariant hold.
-    # The symmetric tail bonus (see `_TAIL_BONUS`'s own comment), applied
-    # ONCE, off the LAST run's end position — only the last run can ever
-    # reach the end of `rel`, by definition of "last". For a single-run
-    # pattern this is the exact same condition `_rank_sql`'s own tail_bonus
-    # tests (`e_0 == p_0 + n_0`, `first_p_alias`/`last_e_alias` both alias
-    # that one run), which is what keeps the single-literal-run reduction
-    # invariant holding with this term included too.
-    tail_bonus = f"CASE WHEN ({last_e_alias}) = length(rel) THEN {_TAIL_BONUS} ELSE 0 END"
-    score = (" + ".join(run_terms) +
-             f" - {_DEPTH_PENALTY} * greatest(0, depth - {_SHALLOW_FREE})"
-             f" - (({last_e_alias}) - ({first_p_alias}) - {total_len})"
-             f" + {tail_bonus}")
-    return cols, score
-
-
 def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
               literals: list = ()) -> str:
     """Glob mode's whole query: a full-match regex filter, plus — when
-    `literals` is non-empty — the scoring `_glob_score_sql` builds from those
-    literal runs.
+    `literals` is non-empty — the scoring `_name_predicate_sql`/
+    `_lex_order_and_score` build from those literal runs, the SAME two
+    functions `_rank_sql` uses. There is no glob-specific scoring code left
+    at all (the deleted `_glob_score_sql` — a `strpos`-chained, per-run
+    position walk — was the OTHER half of the first-occurrence bug class
+    this round eliminates, and duplicated `_rank_sql`'s own per-match terms
+    by hand, which is exactly the drift risk sharing the helpers removes).
 
     `literals=()` (the default) is what `search_ranked` passes in TWO
     distinct situations, and this function treats them identically because
     they need the identical answer: the caller's own `ranked=False`
     preference (D720, same contract `_rank_sql`'s unranked branch has: no
-    `p0`/`strpos`/`segment_starts`/`name_bonus`/`score` computed at all, not
-    computed then discarded), and a glob pattern with no literal run to score
-    in the first place (`**/*`, what a bare `*` resolves to) — there is
-    nothing `_glob_score_sql` could locate, so scoring every row identically
-    (or dividing by a would-be-zero `total_len`) would be silently wrong
-    rather than an honest "nothing to rank here." Both land on the SAME
-    order `_rank_sql`'s own unranked branch uses and for the same reason:
-    `depth ASC, lower(rel) ASC, rel ASC` — `rel` alone (after `lower(rel)`)
-    is what makes a case-only-differing pair (`notes/Alpha.txt` vs
-    `notes/alpha.txt`) resolve the same way on every run instead of however
-    DuckDB's multi-threaded top-N happens to land.
+    predicate columns, no `score`, no `tier` computed at all, not computed
+    then discarded), and a glob pattern with no literal run to score in the
+    first place (`**/*`, what a bare `*` resolves to) — there is nothing
+    `_name_predicate_sql` could test (`literals=[]` degenerates to
+    "false" for all three predicates, which would rank every row identically
+    rather than being an honest "nothing to rank here"). Both land on the
+    SAME order `_rank_sql`'s own unranked branch uses and for the same
+    reason: `depth ASC, lower(rel) ASC, rel ASC` — `rel` alone (after
+    `lower(rel)`) is what makes a case-only-differing pair (`notes/Alpha.txt`
+    vs `notes/alpha.txt`) resolve the same way on every run instead of
+    however DuckDB's multi-threaded top-N happens to land.
 
-    With `literals`, the query becomes a `WITH matched AS (...)` — same shape
-    as `_rank_sql`'s ranked branch — computing each literal run's position
-    columns inside the CTE (never exposed past it) and the final `score` and
-    `tier` in the outer `SELECT`, ordered the SAME way `_rank_sql` orders its
-    ranked branch: `tier ASC, score DESC, depth ASC, lower(rel) ASC, rel
-    ASC`. `tier` is generalized from `_rank_sql`'s own definition (1 = query
-    is a substring of the basename, 3 = match only in an ancestor folder) by
-    running the SAME full-match `regex` against `nm` instead of `lrel`: a
-    match there means the pattern is satisfiable within the basename alone
-    (tier 1), no match means the literal runs can only be connected by
-    crossing into an ancestor folder (tier 3). No tier 2 for glob mode — the
-    "straddles the basename boundary" middle case `_rank_sql` distinguishes
-    depends on a single contiguous match window (`p0`), which a multi-run
-    glob match does not have one of. `tier` restored as the PRIMARY sort key
-    is the fix for the code-review finding that an unqualified whole-path
-    swallow penalty could put a shallow, no-name-match hit ahead of a deep,
-    exact-basename one — sorting on `tier` first makes that structurally
-    impossible regardless of how the swallow penalty computes, the same
-    safety net `_rank_sql` has always had.
+    With `literals`, `_name_predicate_sql("nm", literals)` builds the same
+    three position-free predicates `_rank_sql` uses — for glob mode,
+    `contains` (the in-order, anything-between chain of every literal run
+    against `nm`) is what fixes the tier defect this round targets
+    (search-architecture-review.md §10.3): the OLD tier test ran the WHOLE
+    compiled regex against `nm`, which can never match a path-shaped pattern
+    like `**/src/*.ts` (the leading `**/ ` compiles to a `/`-crossing
+    wildcard `nm`, a slash-free basename, can never satisfy), so every such
+    glob was tier-3 for every hit regardless of how good the basename match
+    was. `contains` only asks whether `nm` alone can explain the pattern's
+    LITERAL content, independent of what kind of wildcard separated the
+    literals originally, so it comes back true exactly when it should.
+
+    `nm_exact` for glob mode is NOT plain `regexp_matches(nm, regex)`: for any
+    pattern with a wildcard either side of a literal (`**icon**`, what a bare
+    `icon` query resolves to), the compiled regex is `.*icon.*` — full-
+    matching that against `nm` is true whenever `icon` occurs ANYWHERE in
+    `nm`, which is exactly `contains`'s question, not "exact". Using it
+    directly as `nm_exact` double-credits every `contains` hit with the
+    +1000 exact-match weight too (caught empirically: `icon.png` scored 1599
+    against substring mode's 599 for the equivalent `icon` query, before this
+    was corrected). The fix adds a length constraint: `regexp_matches(nm,
+    regex) AND length(nm) = sum(len(lit) for lit in literals)` — a glob match
+    is "exact" only when EVERY character of `nm` is accounted for by the
+    pattern's literal content, i.e. every wildcard in the pattern matched
+    ZERO characters, which is the only way a wildcard pattern can mean the
+    same thing `_rank_sql`'s `nm = lower(qq)` means for a plain string.
+    `test_glob_single_literal_run_score_matches_rank_sql_substring_score`
+    (`tests/test_index_rank.py`) is the empirical check that this expression
+    and `_rank_sql`'s agree on the boolean VALUE (not text) for a
+    single-literal-run pattern, which is the only case the two modes'
+    `nm_exact` expressions are asked to agree on at all.
 
     `regex` is the already-lowercased, already-SQL-escaped pattern from
     `_glob_to_regex`; it is matched against `lrel`, never `rel` — glob mode
@@ -1466,17 +1431,16 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
             f"WHERE regexp_matches(lrel, '{regex}'){hidden} "
             f"ORDER BY depth ASC, lower(rel) ASC, rel ASC "
             f"LIMIT {limit}")
-    cols, score = _glob_score_sql(literals)
-    extra_cols = (", " + ", ".join(cols)) if cols else ""
-    tier = f"CASE WHEN regexp_matches(nm, '{regex}') THEN 1 ELSE 3 END"
+    preds = _name_predicate_sql("nm", literals)
+    total_len = sum(len(lit) for lit in literals)
+    nm_exact = (f"(regexp_matches(nm, '{regex}') "
+                f"AND length(nm) = {total_len})")
+    order_by, score, tier = _lex_order_and_score(nm_exact, preds)
     return (
-        f"WITH matched AS ("
-        f"SELECT *{extra_cols} FROM ({inner}) "
-        f"WHERE regexp_matches(lrel, '{regex}'){hidden}) "
         f"SELECT rel, size, mtime, is_dir, depth, ({score}) AS score, "
-        f"({tier}) AS tier "
-        f"FROM matched "
-        f"ORDER BY tier ASC, score DESC, depth ASC, lower(rel) ASC, rel ASC "
+        f"({tier}) AS tier FROM ({inner}) "
+        f"WHERE regexp_matches(lrel, '{regex}'){hidden} "
+        f"ORDER BY {order_by} "
         f"LIMIT {limit}")
 
 
@@ -1559,24 +1523,22 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     `ranked` is NOT ignored when `glob` is set (an earlier version of this
     docstring said it was — stale the moment glob mode grew its own scoring):
     `_glob_literal_runs(qs)` splits the resolved pattern on its `*` runs into
-    literal pieces, and `_glob_score_sql` locates and scores each one the
-    same way `_rank_sql` scores its own single match — run-length,
-    segment-starts, name bonus, the shared depth penalty — plus an
-    INTERIOR-only wildcard-swallow penalty (the span from the first literal
-    run's start to the last one's end, minus their summed length — NEVER
-    `length(rel)` minus the total, an earlier and wrong version of this
-    formula that charged every ancestor character the leading `**` crossed
-    and swamped the name/tier signal) with no equivalent in `_rank_sql`,
-    needed because a glob's stars can absorb arbitrary text and "the match
-    spans more of the filename" is backwards as a signal here
-    (`_glob_score_sql`'s docstring). `tier` is likewise generalized from
-    `_rank_sql`'s own definition and restored as the PRIMARY sort key
-    (`_glob_sql`'s docstring) — not the fixed `0` placeholder every glob hit
-    used to carry. `ranked=False` — and a pattern with no literal run at all
-    to score, e.g. the bare `**/*` a lone `*` resolves to — both fall back to
-    the SAME unscored `depth ASC, lower(rel) ASC, rel ASC` order `_rank_sql`'s
-    own unranked branch uses (no tier there either, same discipline as the
-    rest of the scoring apparatus: not computed, not computed-then-discarded).
+    literal pieces, and `_glob_sql` scores them with the SAME shared
+    `_name_predicate_sql`/`_lex_order_and_score` helpers `_rank_sql` uses —
+    no separate glob-scoring formula survives this round (the deleted
+    `_glob_score_sql` — a `strpos`-chained per-run position walk, plus an
+    interior-only wildcard-swallow penalty — was itself half the
+    first-occurrence bug class this round's redesign eliminates; see
+    `_glob_sql`'s docstring). `tier` is likewise built from the shared
+    `contains` predicate (`_lex_order_and_score`'s docstring on the 3-value
+    to 2-value collapse) rather than the fixed `0` placeholder every glob hit
+    used to carry, and — as with `_rank_sql` — is no longer a primary sort
+    key on its own; the lexicographic predicate vector is. `ranked=False` —
+    and a pattern with no literal run at all to score, e.g. the bare `**/*`
+    a lone `*` resolves to — both fall back to the SAME unscored `depth ASC,
+    lower(rel) ASC, rel ASC` order `_rank_sql`'s own unranked branch uses (no
+    tier there either, same discipline as the rest of the scoring apparatus:
+    not computed, not computed-then-discarded).
 
     `token` (index/cancel.CancelToken), when given, is bound to the duckdb
     connection the moment it exists and checked immediately before and after
@@ -1736,7 +1698,7 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
             # sides separately can disagree).
             ql = like_literal(qs)
             qq = _q(qs)
-            sql = _rank_sql(inner, hidden, ql, qq, n, limit + 1, ranked=ranked)
+            sql = _rank_sql(inner, hidden, ql, qq, qs, limit + 1, ranked=ranked)
         # One row past `limit` so "there was more" is known without a count —
         # same trick `search_under` uses for its own LIMIT.
         rows = con.execute(sql).fetchall()
