@@ -26,6 +26,7 @@ import json
 import os
 import threading
 import time
+import urllib.request
 
 import pytest
 from fastapi.testclient import TestClient
@@ -228,6 +229,85 @@ def test_the_host_posts_exited_on_the_idle_reap_too(monkeypatch, posts, host_run
     assert len(posts.wait_for("exited")) == 1
 
 
+def test_exited_is_posted_as_soon_as_the_child_is_gone(monkeypatch, posts,
+                                                        host_run):
+    """M7, 2026-09-17. An error, a rate limit or a cancel tears the turn down
+    with no `result` row ever written, so `exited` is the ONLY word the queue
+    gets — and if it waited on the 30 s idle reap, the folder stayed held for
+    half a minute after the process was dust. The loop's own condition is
+    `cli.poll() is None`, so it leaves on the very next drain tick; nothing here
+    may reintroduce a per-idle-tick check.
+
+    Real sleeps, default drain interval: what is measured is the lag, so the
+    knob under test is not turned off."""
+    host = _load("session_host")
+    monkeypatch.setattr(host, "_IDLE_REAP_SECONDS", 9999)
+    assert host._DRAIN_INTERVAL_SECONDS <= 1.0
+    cli = _FakeCli()
+
+    # The turn NEVER closes — no result row, ever. The child just dies.
+    def fake_state(agent, rd, cache):
+        return (True, False)
+
+    monkeypatch.setattr(host, "_turn_state_if_grown", fake_state)
+
+    def kill():
+        time.sleep(0.05)
+        cli.dead = True
+        killed.append(time.monotonic())
+
+    killed = []
+    threading.Thread(target=kill, daemon=True).start()
+    host._reap_loop(None, str(host_run), cli, str(host_run / "host.json"))
+
+    exited = posts.wait_for("exited")
+    assert len(exited) == 1
+    assert posts.of_kind("turn_ended") == [], "no result row ever landed"
+    assert time.monotonic() - killed[0] < 1.0, \
+        "the folder stayed held long after the process was gone"
+
+
+def test_a_post_that_cannot_connect_is_tried_once_more(monkeypatch, posts,
+                                                       host_run):
+    """Belt for the spawn storm: the one failure worth retrying is the one that
+    is over a second later — the server restarting, a listen backlog full for
+    an instant. One retry, then silence."""
+    host = _load("session_host")
+    monkeypatch.setattr(host, "_EVENT_RETRY_SECONDS", 0.01)
+    assert host._EVENT_TIMEOUT == 5.0
+    tries = []
+    real = posts.urlopen
+
+    def flaky(req, timeout=None):
+        tries.append(req.full_url)
+        if len(tries) == 1:
+            raise OSError("connection refused")
+        return real(req, timeout=timeout)
+
+    monkeypatch.setattr(urllib.request, "urlopen", flaky)
+    host._send_event("http://127.0.0.1:9" + host._EVENT_PATH,
+                     {"kind": "exited", "run_id": "r1"})
+
+    assert len(tries) == 2
+    assert len(posts.of_kind("exited")) == 1
+
+
+def test_a_post_that_keeps_failing_gives_up_after_the_retry(monkeypatch, posts,
+                                                            host_run):
+    host = _load("session_host")
+    monkeypatch.setattr(host, "_EVENT_RETRY_SECONDS", 0.01)
+    tries = []
+
+    def boom(req, timeout=None):
+        tries.append(1)
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    host._send_event("http://127.0.0.1:9" + host._EVENT_PATH, {"kind": "exited"})
+
+    assert len(tries) == 2, "one retry, not a loop"
+
+
 def test_the_host_falls_back_to_the_resumed_session_id(
         monkeypatch, posts, host_run):
     """A resume writes `resumed_from` and no minted `session_id`; that is still
@@ -325,6 +405,67 @@ def test_the_app_state_request_raises_no_card(tmp_path, monkeypatch, posts):
     assert posts.of_kind("card_raised") == []
 
 
+def test_the_permission_server_posts_card_cleared_when_the_decision_lands(
+        tmp_path, monkeypatch, posts):
+    """The card came down; the task is a RUNNING task again and wants its
+    folder back. Posted from the wait itself, because that is the one place
+    every route to a decision passes through — the page's endpoint, the
+    terminal, a file dropped beside the request."""
+    srv = _load("permission_server")
+    perm = tmp_path / "runs" / "20260917-130000-beef" / "perm"
+    perm.mkdir(parents=True)
+    monkeypatch.setattr(srv, "PERM_DIR", str(perm))
+    (perm / "req-7.res.json").write_text(json.dumps({"decision": "allow"}))
+
+    assert srv._await_decision("req-7") == {"decision": "allow"}
+
+    cleared = posts.wait_for("card_cleared")
+    assert len(cleared) == 1
+    body = cleared[0]["body"]
+    assert body["run_id"] == "20260917-130000-beef"
+    assert body["request_id"] == "req-7"
+    assert cleared[0]["fused"] == "1"
+
+
+def test_a_card_that_timed_out_is_cleared_too(tmp_path, monkeypatch, posts):
+    """Nobody answered, so this server wrote the deny itself — the card is off
+    the screen and the CLI is already acting on a verdict either way."""
+    srv = _load("permission_server")
+    perm = tmp_path / "runs" / "r1" / "perm"
+    perm.mkdir(parents=True)
+    monkeypatch.setattr(srv, "PERM_DIR", str(perm))
+    monkeypatch.setattr(srv, "WAIT_TIMEOUT", 0.0)
+
+    assert srv._await_decision("req-9")["decision"] == "deny"
+    assert len(posts.wait_for("card_cleared")) == 1
+
+
+def test_one_card_raises_once_and_clears_once(tmp_path, monkeypatch, posts):
+    """End to end through the tool handler: up when the request is parked, down
+    when the answer lands, and exactly one of each."""
+    srv = _load("permission_server")
+    perm = tmp_path / "runs" / "r1" / "perm"
+    perm.mkdir(parents=True)
+    monkeypatch.setattr(srv, "PERM_DIR", str(perm))
+
+    def answer_soon():
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            reqs = [f for f in os.listdir(perm) if f.endswith(".req.json")]
+            if reqs:
+                req_id = reqs[0][: -len(".req.json")]
+                (perm / (req_id + ".res.json")).write_text(
+                    json.dumps({"decision": "allow"}))
+                return
+            time.sleep(0.01)
+
+    threading.Thread(target=answer_soon, daemon=True).start()
+    srv._handle_approve({"tool_name": "Bash", "input": {"command": "ls"}})
+
+    assert len(posts.wait_for("card_raised")) == 1
+    assert len(posts.wait_for("card_cleared")) == 1
+
+
 def test_the_permission_server_posts_nothing_without_an_origin(
         tmp_path, monkeypatch, posts):
     srv = _load("permission_server")
@@ -388,6 +529,9 @@ class _FakeManager:
 
     def card_raised(self, task_key, run_id=""):
         self.calls.append(("card_raised", task_key, run_id))
+
+    def card_cleared(self, task_key, run_id, request_id):
+        self.calls.append(("card_cleared", task_key, run_id, request_id))
 
 
 @pytest.fixture()
@@ -463,6 +607,34 @@ def test_an_event_reaches_the_manager(client, flag, manager, kind, expected):
     assert r.status_code == 200
     assert r.json() == {"ok": True}
     assert manager.calls == [expected]
+
+
+def test_card_cleared_reaches_the_manager_with_its_request_id(client, flag,
+                                                              manager):
+    """The request id is not decoration: the manager matches the answer against
+    the card it parked, and a `card_cleared` for a question that is not the one
+    outstanding must not un-block the task."""
+    flag(True)
+    r = client.post("/api/tasks/queue/event", headers=HEADERS,
+                    json={"kind": "card_cleared", "run_id": "r1",
+                          "session_id": "sess-1", "request_id": "req-7"})
+    assert r.status_code == 200
+    assert manager.calls == [("card_cleared", "sess-1", "r1", "req-7")]
+
+
+def test_a_manager_with_no_card_cleared_yet_is_not_an_error(client, flag,
+                                                            manager,
+                                                            monkeypatch):
+    """`getattr`-guarded while T1's method lands: a half-landed tree drops the
+    event, it does not 500 the daemon thread that sent it."""
+    flag(True)
+    monkeypatch.delattr(type(manager), "card_cleared", raising=True)
+    r = client.post("/api/tasks/queue/event", headers=HEADERS,
+                    json={"kind": "card_cleared", "run_id": "r1",
+                          "session_id": "sess-1", "request_id": "req-7"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert manager.calls == []
 
 
 def test_exited_carries_the_return_code(client, flag, manager):

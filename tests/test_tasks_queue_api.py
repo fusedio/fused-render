@@ -40,6 +40,9 @@ from fused_render.server.routers import tasks as tasks_mod
 
 HEADERS = {"X-Fused": "1"}
 
+# The name an admission files a NAMELESS send under (`queue_manager`).
+PLACEHOLDER = queue_manager.PLACEHOLDER_PREFIX
+
 
 # ------------------------------------------------------------------ fixtures
 
@@ -195,7 +198,38 @@ class FakeManager:
 
     def is_free(self, folder, task_key=""):
         owner = self.owners.get(folder)
-        return owner is None or str(owner.get("task") or "") == task_key
+        if owner is None:
+            return True
+        if str(owner.get("task") or "").startswith(PLACEHOLDER):
+            # A placeholder is an ADMISSION, not a run: it settles a race
+            # between two nameless sends and never refuses one at the gate.
+            return True
+        return bool(self._names(owner) & ({task_key} - {""}))
+
+    @staticmethod
+    def _names(owner):
+        return {str((owner or {}).get(field) or "")
+                for field in ("task", "run_id", "session_id")} - {""}
+
+    def claim(self, folder, task_key, run_id="", session_id=""):
+        """The check and the filing under one lock — what a door that is about
+        to ACT on the answer asks instead of `is_free` then `started`."""
+        self.events.append(("claim", folder, task_key, run_id, session_id))
+        if not folder or not task_key:
+            return False
+        owner = self.owners.get(folder)
+        if owner is not None:
+            names = self._names(owner)
+            if {task_key, run_id, session_id} - {""} & names:
+                return True
+            if not (str(owner.get("task") or "").startswith(PLACEHOLDER)
+                    and not task_key.startswith(PLACEHOLDER)):
+                return False
+        self.remove_from_line(task_key)
+        self.owners[folder] = {"task": task_key, "task_key": task_key,
+                               "session_id": session_id or task_key,
+                               "run_id": run_id, "since": time.time()}
+        return True
 
     # -- the events a door fires -----------------------------------------
     def enqueue(self, folder, task_key, entry_id=""):
@@ -208,12 +242,21 @@ class FakeManager:
     def skip(self, task_key):
         self.events.append(("skip", task_key))
         folder = self._folder_of(task_key)
+        started = False
         if folder:
             keys = self.lines[folder]
             keys.remove(task_key)
             keys.insert(0, task_key)
             self.promoted.add(task_key)
-        return self.place(task_key)
+            if self.owners.get(folder) is None:
+                # The folder was free: the pump handed it straight over, and
+                # this task stands in no line at all now.
+                keys.remove(task_key)
+                self.owners[folder] = {"task": task_key, "task_key": task_key,
+                                       "session_id": task_key, "run_id": "",
+                                       "since": time.time()}
+                started = True
+        return {**self.place(task_key), "started": started}
 
     def remove(self, task_key):
         self.events.append(("remove", task_key))
@@ -931,9 +974,12 @@ def test_a_new_chats_second_message_is_not_queued_behind_its_own_run(
     has before it has a session."""
     flag()
     alpha, _beta = folders
-    assert _post(client, "/api/tasks/queue/admit",
-                 {"project": alpha, "session_id": "", "message": "first"}
-                 ).json() == {"run": True}
+    first = _post(client, "/api/tasks/queue/admit",
+                  {"project": alpha, "session_id": "", "message": "first"}).json()
+    assert first["run"] is True
+    # …and the folder is filed under the placeholder this send was given, so a
+    # second NAMELESS send would queue rather than race into it.
+    assert first["owner_token"].startswith(PLACEHOLDER)
     # The run appears: alive, in that folder, and it has not named itself.
     chat_run("run-1", alpha, pid=os.getpid())
     project_queue.invalidate_holders()
@@ -1234,7 +1280,13 @@ def test_skipping_a_task_that_already_answered_a_card_is_a_no_op(
         client, projects_dir, folders, monkeypatch, flag, priorities, manager):
     """A held answer is at the head of its folder by definition. From the
     outside that is exactly what Skip asked for, so it is answered rather than
-    refused — and nothing is written, because there is nothing to improve."""
+    refused — and nothing is written, because there is nothing to improve.
+
+    THROUGH THE MANAGER LIKE EVERYTHING ELSE. This used to be a short-circuit in
+    the endpoint (`held_answer` read, answer returned, `skip` never called),
+    which was a second set of rules about the head of a line — and the manager
+    already has them: an answered task moves to index 0 and newest press wins,
+    exactly as it does here."""
     flag()
     alpha, _beta = folders
     _transcript(projects_dir, "sess-holder", alpha)
@@ -1249,7 +1301,25 @@ def test_skipping_a_task_that_already_answered_a_card_is_a_no_op(
     # caller reads one answer.
     assert r.json()["ok"] is True and r.json()["position"] == 1
     assert "ahead_key" in r.json()
+    assert _kinds(manager, "skip") == [("skip", "sess-a")]
     assert priorities == []
+
+
+def test_skip_into_a_free_folder_is_answered_and_not_refused(
+        client, projects_dir, folders, flag, manager, priorities):
+    """`started` is the outcome a position cannot describe: the folder was free,
+    the pump handed the task the tree, and it stands in no line at all now.
+    Position 0 then means RUNNING — and the endpoint used to read that 0 as "not
+    queued" and answer 400 to the best possible outcome of "run this next"."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-a", alpha, "mine")
+    manager.line(alpha, "sess-a")            # in the line, nobody owns the tree
+
+    r = _post(client, "/api/tasks/queue/skip", {"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True
+    assert (manager.owner(alpha) or {})["task"] == "sess-a"
 
 
 # =================================================================== decide
@@ -2425,9 +2495,12 @@ def test_an_admitted_send_leaves_its_chat_draft_alone(
     alpha, _beta = folders
     key = drafts.NEW_CHAT_PREFIX + alpha + "/app.py"
     drafts.put_chat(key, "half a thought")
+    # The draft key is the name a session-less composer already has, so the
+    # placeholder is filed under it rather than under a fresh uuid.
     assert _post(client, "/api/tasks/queue/admit",
                  {"project": alpha, "message": "half a thought",
-                  "draft_key": key}).json() == {"run": True}
+                  "draft_key": key}).json() == {"run": True,
+                                                "owner_token": PLACEHOLDER + key}
     assert drafts.get_chat(key) is not None
 
 
@@ -2705,15 +2778,58 @@ def _kinds(manager, *names):
 
 def test_admit_takes_the_folder_through_the_manager(
         client, folders, flag, manager):
-    """`is_free` then `started`, and nothing stored: the folder was free, so
-    this send runs and the manager is told who has the tree."""
+    """ONE CALL, not a look and then a write: the folder was free, so this send
+    runs and the same call that asked is the one that filed it.
+
+    `is_free` then `started` was two acquisitions of the manager's lock with a
+    gap in between, and two sends into one free folder arriving on two request
+    threads both heard "free" and both spawned."""
     flag()
     alpha, _beta = folders
     assert _post(client, "/api/tasks/queue/admit",
                  {"project": alpha, "session_id": "sess-a", "message": "go"}
                  ).json() == {"run": True}
-    assert _kinds(manager, "started") == [("started", alpha, "sess-a", "", "sess-a")]
-    assert _kinds(manager, "enqueue") == []
+    assert _kinds(manager, "claim") == [("claim", alpha, "sess-a", "", "sess-a")]
+    assert _kinds(manager, "started", "enqueue") == []
+    assert (manager.owner(alpha) or {})["task"] == "sess-a"
+
+
+def test_a_second_nameless_send_queues_behind_the_first_ones_placeholder(
+        client, folders, flag, manager):
+    """A brand-new chat's first send names neither a session nor a run — the
+    spawn has not happened, because this is the call that says it may — so the
+    admission used to file NOBODY and the folder went on reading free. The
+    second nameless send was let straight into it.
+
+    The placeholder is that missing name. It is not a run (`is_free` never
+    refuses a send for one) and it expires on its own, because no process exists
+    yet to send the event that would free it."""
+    flag()
+    alpha, _beta = folders
+    first = _post(client, "/api/tasks/queue/admit",
+                  {"project": alpha, "message": "first"}).json()
+    assert first["run"] is True
+    assert (manager.owner(alpha) or {})["task"] == first["owner_token"]
+
+    second = _post(client, "/api/tasks/queue/admit",
+                   {"project": alpha, "message": "second"}).json()
+    assert second["run"] is False
+    assert second["entry"]["message"] == "second"
+
+
+def test_the_real_spawn_replaces_the_placeholder(
+        client, folders, flag, manager):
+    """`routers/run._file_owner` files the owner the moment `_start` returns,
+    with both names — which is the event that retires the placeholder."""
+    flag()
+    alpha, _beta = folders
+    token = _post(client, "/api/tasks/queue/admit",
+                  {"project": alpha, "message": "first"}).json()["owner_token"]
+    assert (manager.owner(alpha) or {})["task"] == token
+
+    manager.started(alpha, "sess-new", "run-1", "sess-new")
+    owner = manager.owner(alpha) or {}
+    assert (owner["task"], owner["run_id"]) == ("sess-new", "run-1")
 
 
 def test_admit_enqueues_the_entry_it_stored(
@@ -2782,6 +2898,54 @@ def test_skip_on_a_task_in_no_line_is_refused_and_presses_nothing_else(
     r = _post(client, "/api/tasks/queue/skip", {"key": "sess-a"})
     assert r.status_code == 400
     assert r.json()["error"] == "not queued"
+
+
+# --------------------------------------- what the manager asks this process
+#
+# `running`/`blocked` are injected into the manager and they are asked with the
+# OWNER RECORD, not a task key: half the index knows a conversation by a name
+# the registry never heard.
+
+
+def test_the_running_read_answers_to_a_run_id_when_that_is_all_there_is(
+        folders, chat_run):
+    """THE BUG: every scheduled message the pump starts owns its folder under
+    `pending:<entry id>` — no session, no registry row, no mark — so the status
+    read answered "dead" and `reconcile` dropped a LIVE owner on the next tick.
+    The record carries the run the spawn returned, and the run dir has a pid."""
+    alpha, _beta = folders
+    chat_run("run-1", alpha, pid=os.getpid())
+    assert tasks_mod._queue_running(
+        {"task": "pending:e1", "run_id": "run-1", "session_id": ""}) is True
+    assert tasks_mod._queue_running(
+        {"task": "pending:e1", "run_id": "run-9", "session_id": ""}) is False
+    # …and the bare key, which is all an older caller has, still answers.
+    assert tasks_mod._queue_running("pending:e1") is False
+    assert tasks_mod._queue_running("run-1") is True
+
+
+def test_a_placeholder_owner_is_never_asked_about(folders, chat_run):
+    """`admit:<token>` names no process — that is why it exists — so it answers
+    to nothing but its own expiry inside the manager."""
+    alpha, _beta = folders
+    chat_run("run-1", alpha, pid=os.getpid())
+    assert tasks_mod._queue_running(
+        {"task": PLACEHOLDER + "one", "run_id": "", "session_id": ""}) is False
+
+
+def test_the_parked_read_answers_to_a_run_id_too(folders, park):
+    """The cards belong to the RUN. An owner the index knows only by its run id
+    would otherwise read as "not parked" the moment it put a card up, and get
+    its folder taken away while a human was looking at the card."""
+    alpha, _beta = folders
+    park("run-1", "sess-1", alpha)
+    assert tasks_mod._queue_blocked(
+        {"task": "pending:e1", "run_id": "run-1", "session_id": ""}) is True
+    assert tasks_mod._queue_blocked(
+        {"task": "pending:e1", "run_id": "run-2", "session_id": ""}) is False
+    # …and the session half, unchanged.
+    assert tasks_mod._queue_blocked(
+        {"task": "pending:e1", "run_id": "", "session_id": "sess-1"}) is True
 
 
 def test_decide_hands_the_card_to_the_manager(

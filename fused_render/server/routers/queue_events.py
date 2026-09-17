@@ -12,6 +12,11 @@ spawned and does not otherwise talk to:
 * `card_raised` — a permission card was parked, so the task is waiting on a
   human and is no longer the one *running*. Seen by `permission_server.py` the
   instant it writes the request file, long before the page polls it.
+* `card_cleared` — that card has an answer, so the task is a running task
+  again. Seen by the same process, which is the ONLY one that sees every
+  answer: a card can be decided from the page, from the terminal, or by a file
+  dropped beside the request, and all three end as the `.res.json` this server
+  is already blocked on.
 
 Those two modules are TEMPLATES: stdlib only, no `fused_render` import (SPEC
 PY-15), spawned as separate processes. HTTP is the only wire they have back
@@ -40,10 +45,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# The three the transport sends. An unknown kind is a 400 and not a shrug: it
+# The four the transport sends. An unknown kind is a 400 and not a shrug: it
 # means a template and this file have drifted apart, which is a bug worth
 # seeing rather than an event worth dropping.
-KINDS = ("turn_ended", "exited", "card_raised")
+KINDS = ("turn_ended", "exited", "card_raised", "card_cleared")
 
 
 def _task_key(run_id: str) -> str:
@@ -85,12 +90,20 @@ def _task_key(run_id: str) -> str:
     return sorted(sessions)[0] if sessions else ""
 
 
-def _dispatch(kind: str, task_key: str, run_id: str, code) -> bool:
+def _dispatch(kind: str, task_key: str, run_id: str, code,
+              request_id: str = "") -> bool:
     manager = queue_manager.get()
     if kind == "turn_ended":
         manager.turn_ended(task_key, run_id)
     elif kind == "exited":
         manager.exited(task_key, run_id, code)
+    elif kind == "card_cleared":
+        # `getattr` while T1's method lands. A manager without it is one that
+        # never moved the task to `blocked` either, so dropping the event is
+        # the consistent answer rather than half a state machine.
+        cleared = getattr(manager, "card_cleared", None)
+        if cleared is not None:
+            cleared(task_key, run_id, request_id)
     else:
         manager.card_raised(task_key, run_id)
     return True
@@ -138,7 +151,8 @@ async def api_tasks_queue_event(payload: dict | None = Body(default=None),
         # In a threadpool: every manager event takes the one queue lock and
         # persists the index, and blocking the event loop on a disk write would
         # stall every other request the page has in flight beside this one.
-        await run_in_threadpool(_dispatch, kind, task_key, run_id, code)
+        await run_in_threadpool(_dispatch, kind, task_key, run_id, code,
+                                str(body.get("request_id") or ""))
     except Exception:  # noqa: BLE001 — see the module docstring
         logger.warning("queue event %s for %s (run %s) failed", kind, task_key,
                        run_id, exc_info=True)

@@ -532,27 +532,117 @@ def _qm():
     shipped — which is also the path the flag being off takes."""
     from fused_render import queue_manager
 
+    # Was there one BEFORE this call? A `get()` that builds is this process's
+    # first sight of the index, and a fresh index is not yet true (M6).
+    fresh = queue_manager.peek() is None
+    manager = None
     try:
-        return queue_manager.get()
+        manager = queue_manager.get()
     except (RuntimeError, NotImplementedError):
         pass
-    global _WIRE_TRIED
-    if _WIRE_TRIED:
-        return None
-    _WIRE_TRIED = True
-    try:
-        from fused_render.server.routers import tasks as tasks_api
+    if manager is None:
+        global _WIRE_TRIED
+        if _WIRE_TRIED:
+            return None
+        _WIRE_TRIED = True
+        try:
+            from fused_render.server.routers import tasks as tasks_api
 
-        tasks_api._wire_manager()
-        return queue_manager.get()
-    except Exception:  # noqa: BLE001 — no manager is a fall back, not a failure
-        logger.debug("no queue manager in this process", exc_info=True)
-        return None
+            tasks_api._wire_manager()
+            manager = queue_manager.get()
+        except Exception:  # noqa: BLE001 — no manager is a fall back, not a
+            # failure
+            logger.debug("no queue manager in this process", exc_info=True)
+            return None
+    if fresh:
+        _resume_once(manager)
+    return manager
+
+
+def _resume_once(manager) -> None:
+    """Ring the loop for the first manager this process builds, once.
+
+    **THE FLAG CAN BE FLIPPED ON WITH THE SERVER RUNNING** (M6, 2026-09-17).
+    Startup registers the factory and, with the queue off, deliberately builds
+    nothing. Flip the pref at 11am and this process has no index at all: the
+    listing reads through `queue_manager.peek()`, which never builds, so every
+    row draws un-queued until something else happens to reconcile — up to a
+    whole 30-second poll away.
+
+    **A RING, NOT A RECONCILE, and that is the careful part.** `reconcile` is
+    the manager's sweep and it PUMPS, and pumping spawns
+    (`QueueManager.__init__`: "a spawn must never be the side effect of a read,
+    a cancel or a gate check. A pass is the one place in the app where starting
+    work is the point"). Reconciling from here would put that spawn inside
+    whatever door happened to build the manager — a Cancel press, run-now's own
+    gate, the folder check on `/api/run` — and run-now in particular would then
+    lose the claim race against the sweep it had just triggered. So this rings
+    the doorbell instead: the tick wakes in about a second and reconciles on the
+    loop's own thread, where starting work is the point. One tick of blindness
+    becomes one second of it, and nothing spawns off a read.
+
+    Latched, because the ring is only interesting for the FIRST index this
+    process opens; after that the loop is reconciling on every pass anyway."""
+    global _RESUMED
+    if _RESUMED or manager is None or not _pq().enabled():
+        return
+    _RESUMED = True
+    try:
+        wake()
+    except Exception:  # noqa: BLE001 — a queue that cannot ring still runs
+        logger.debug("could not ring the loop for the new queue index",
+                     exc_info=True)
 
 
 # Latched: the factory is registered once and for ever, and a build where the
 # import fails will fail the same way every tick.
 _WIRE_TRIED = False
+# Latched too: the doorbell is rung for the first index this process opens (M6).
+_RESUMED = False
+
+
+def _claim_folder(manager, folder: str, task_key: str) -> bool:
+    """Take `folder` for `task_key` — or answer False because another task has
+    it. **One call, because look-then-act is the bug** (H3, 2026-09-17).
+
+    Run-now used to ask `is_free` here and file `started` only after `_send`
+    returned, and `_send` can be a process spawn: a whole minute could pass
+    between the question and the answer being acted on, with the folder reading
+    free to every other door for all of it. Two run-nows, or a run-now and a
+    tick, both saw a free tree and both sent. `claim` is the manager's atomic
+    check-and-own; nothing can slip between the two halves because there are no
+    two halves.
+
+    Best-effort in the same direction as every other gate here: a manager that
+    cannot answer gives a GO, never a silent drop of the user's message."""
+    if manager is None or not folder or not task_key:
+        return True
+    claim = getattr(manager, "claim", None)
+    try:
+        if claim is not None:
+            return bool(claim(folder, task_key))
+        # While T1's `claim` lands: the old two-step, but back-to-back with
+        # nothing in between — the gap is instructions, not a spawn.
+        if not manager.is_free(folder, task_key):
+            return False
+        manager.started(folder, task_key)
+        return True
+    except Exception:  # noqa: BLE001 — an undecidable gate is an open one
+        logger.debug("could not claim %s for %s", folder, task_key, exc_info=True)
+        return True
+
+
+def _release_folder(manager, task_key: str) -> None:
+    """Give a claimed folder back, for a run-now that claimed it and then did
+    not send (a busy conversation, a lost claim race). Owning a tree for a turn
+    that never started is how a folder ends up parked for ever."""
+    if manager is None or not task_key:
+        return
+    try:
+        manager.turn_ended(task_key)
+    except Exception:  # noqa: BLE001 — reconcile is the backstop
+        logger.debug("could not release the folder held for %s", task_key,
+                     exc_info=True)
 
 
 class SpawnBusy(Exception):
@@ -1770,12 +1860,30 @@ def cancel(entry_id: str) -> dict | None:
 
 def _queue_forget(entry: dict) -> None:
     """Tell the manager one entry's task has left its line. Best-effort: the
-    write above has happened either way, and `reconcile` is the backstop."""
+    write above has happened either way, and `reconcile` is the backstop.
+
+    **BY ENTRY, NEVER BY TASK KEY** (C4, 2026-09-17). `remove(task_key)` drops
+    everything filed under a key, and a key is a CONVERSATION, not a message: a
+    second message queued for a chat that is running right now is filed under
+    the very session that owns the folder. Cancelling it with `remove` released
+    a live turn's working tree and pumped the next task straight into it —
+    two Claude processes in one tree, from a Cancel press on something that had
+    not even started. `forget_entry` names the one line item the user
+    cancelled, so an owner mid-turn is untouched. Deleting the TASK is the
+    other verb and still uses `remove`: there the turn really is over."""
     manager = _qm() if _pq().enabled() else None
     if manager is None:
         return
+    entry_id = str(entry.get("id") or "")
     try:
-        manager.remove(_task_key(entry))
+        # `getattr` while T1's method lands; the keyed removal below is the old
+        # behaviour AND the old hazard, kept only so a half-landed tree still
+        # cancels something rather than raising.
+        forget = getattr(manager, "forget_entry", None)
+        if forget is not None and entry_id:
+            forget(entry_id)
+        else:
+            manager.remove(_task_key(entry))
     except Exception:  # noqa: BLE001 — a stale line is a pump, not a loss
         logger.debug("could not drop %s from its queue line",
                      entry.get("id"), exc_info=True)
@@ -1980,6 +2088,16 @@ def cancel_queued(entry_ids=None, all_queued: bool = False,
             _write(entries)
     if changed:
         _sync_wake()
+    # OUT OF THE LINE TOO, one by one (M5, 2026-09-17). The single `cancel`
+    # next door has always told the manager; this one — the Tasks page's
+    # "cancel all", and every multi-select cancel — wrote `cancelled` into the
+    # store and left the keys standing in their folders' lines, so the folder
+    # in front of them stayed held for messages the user had just cancelled
+    # until the next `reconcile` swept them.
+    for entry_id in cancelled:
+        entry = by_id.get(entry_id)
+        if entry is not None:
+            _queue_forget(entry)
     return {"cancelled": cancelled, "refused": refused, "reasons": reasons}
 
 
@@ -4088,7 +4206,10 @@ def _run_now_managed(manager, entry: dict, now: datetime) -> dict | None:
     folder = pq.queue_key(str(entry.get("target") or ""))
     entry_id = str(entry.get("id") or "")
     key = _task_key(entry, _by_id())
-    if not folder or manager.is_free(folder, key):
+    # THE GATE OWNS WHAT IT LETS THROUGH (H3): this is a claim, not a look. A
+    # None answer below means the folder is OURS from this instant — every path
+    # after it either sends or gives it back (`_release_folder`).
+    if not folder or _claim_folder(manager, folder, key):
         return None
     set_priority([entry_id], True)
     stored = _asked_now(dict(entry, priority=True), now)
@@ -4185,6 +4306,11 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
               else None)
     if queued is not None:
         return queued
+    # Past that line the folder is CLAIMED (H3) — `_run_now_managed` owns it on
+    # the way through, so every early return below has to hand it back.
+    task_key = _task_key(entry)
+    held = (manager is not None
+            and bool(_pq().queue_key(str(entry.get("target") or ""))))
     # The echo rule joins run-now's refusal only under the flag: main's run-now
     # refused on a warm transcript alone, and flag off stays that.
     if session and (session in busy
@@ -4195,6 +4321,8 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
         # for a message due next Tuesday it was not true: nothing would look at
         # it again until Tuesday. `_asked_now` is what makes it true — the
         # entry joins the line NOW while its `due` stays what was asked for.
+        if held:
+            _release_folder(manager, task_key)
         return {"ok": False, "found": True, "entry": _asked_now(entry, now),
                 "reason": ("the conversation this message continues has a turn "
                            "running right now — it will go on its own as soon "
@@ -4204,6 +4332,8 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
         # Lost the race with a tick (or another run-now) between the read above
         # and the claim. Refused rather than forced — the same answer
         # `cancel_queued` gives to the same race, and for the same reason.
+        if held:
+            _release_folder(manager, task_key)
         return {"ok": False, "found": True, "entry": None,
                 "reason": ("already claimed for sending — the scheduler got to "
                            "it first")}
@@ -4214,12 +4344,10 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
                        if str(e.get("id") or "") == entry_id), None)
     stored = stored or claimed
     if manager is not None:
-        # THE FOLDER IS TAKEN, and the manager has to hear it from here: this
-        # send went out through run-now's own gates rather than through a pump,
-        # so nothing else set an owner and the next message due in this tree
-        # would be started straight into it. `started` is the one event for
-        # "a turn is running in this folder now", whoever spawned it
-        # (design.md, the events table).
+        # THE FOLDER IS ALREADY OURS (the claim above); this RE-FILES the owner
+        # under the names the send just produced — the run it created and the
+        # session it resumed — so `is_free` answers to all three and the next
+        # message in this conversation is not told it is behind itself.
         folder = _pq().queue_key(str(stored.get("target") or ""))
         if folder:
             try:

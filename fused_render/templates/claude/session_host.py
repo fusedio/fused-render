@@ -206,7 +206,17 @@ def _turn_state_if_grown(agent, run_dir: str, cache: dict) -> tuple:
 # of the template tree.
 
 _EVENT_PATH = "/api/tasks/queue/event"
-_EVENT_TIMEOUT = 2.0
+# FIVE SECONDS, AND ONE RETRY (2026-09-17). Two was a guess, and the moment it
+# is wrong is exactly the moment it matters: a spawn storm — several sessions
+# starting at once — is when the server is slowest to answer AND when the
+# queue most needs to hear that a folder came free. A dropped `exited` parks a
+# working tree until the next reconcile. The cost of being generous is a daemon
+# thread living a few seconds longer, which nothing waits on but the one joined
+# post on the way out.
+_EVENT_TIMEOUT = 5.0
+# A connection failure is the retryable one: the server restarting, or a listen
+# backlog that was full for an instant. One retry, a second later.
+_EVENT_RETRY_SECONDS = 1.0
 
 
 def _meta_session_id(run_dir: str) -> str:
@@ -250,15 +260,30 @@ def _post_event(run_dir: str, kind: str, **extra):
 
 
 def _send_event(url: str, body: dict) -> None:
-    try:
-        req = urllib.request.Request(
-            url, data=json.dumps(body).encode("utf-8"),
-            headers={"Content-Type": "application/json", "X-Fused": "1"},
-            method="POST")
-        with urllib.request.urlopen(req, timeout=_EVENT_TIMEOUT) as resp:
-            resp.read()
-    except Exception:
-        pass
+    """POST it, and on a failure try once more a second later.
+
+    Still fire-and-forget: both attempts swallow everything. The retry is for
+    the one failure that is usually over by the time you look — the server
+    bouncing, or refusing a connection for an instant under a spawn storm —
+    and it is one retry, not a loop, because a queue event has a shelf life and
+    `reconcile` is the real backstop."""
+    data = json.dumps(body).encode("utf-8")
+    for attempt in (0, 1):
+        try:
+            req = urllib.request.Request(
+                url, data=data,
+                headers={"Content-Type": "application/json", "X-Fused": "1"},
+                method="POST")
+            with urllib.request.urlopen(req, timeout=_EVENT_TIMEOUT) as resp:
+                resp.read()
+            return
+        except Exception:
+            if attempt:
+                return
+        try:
+            time.sleep(_EVENT_RETRY_SECONDS)
+        except Exception:
+            return
 
 
 def main() -> None:

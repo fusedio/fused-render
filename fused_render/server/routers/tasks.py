@@ -117,6 +117,7 @@ import re
 import shutil
 import threading
 import time
+import uuid
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query
 from pydantic import BaseModel
@@ -5354,16 +5355,56 @@ def _queue_deliver(answer: dict) -> None:
     agent._decide(**raw)
 
 
-def _queue_session(task_key: str) -> str:
-    """The conversation behind a task key, or "" for one that has none yet.
+def _queue_identity(task) -> tuple[str, str]:
+    """`(session, run id)` to ask the status sync about, from either a bare task
+    key or the manager's owner/item RECORD.
 
-    A `pending:<entry-id>` key is a message that has never run: no transcript,
-    no registry row, no run dir — so every status question below answers False
-    for it without touching the disk."""
-    return "" if tasks_store.pending_entry(task_key) else task_key
+    A RECORD AND NOT A KEY, because half the index knows a conversation by a
+    name the registry has never heard: a `pending:<entry id>` owner is filed
+    under the entry that made it, a brand-new chat under the run it started, and
+    a status read that could only ask about the label answered "dead" for a turn
+    that was very much alive (`queue_manager.reconcile`). The record carries all
+    three names; the key form is what a caller with only a label has, and the
+    label is tried as BOTH — a session id and a run id are both just directory
+    names from here, and asking the wrong one costs a miss, never a wrong yes.
+
+    An `admit:` placeholder names no process at all (it exists precisely because
+    there is none yet), so it is never asked about."""
+    if isinstance(task, dict):
+        label = str(task.get("task") or "")
+        session = str(task.get("session_id") or "")
+        run_id = str(task.get("run_id") or "")
+    else:
+        label = str(task or "")
+        session = run_id = ""
+    if label.startswith(queue_manager.PLACEHOLDER_PREFIX):
+        return session, run_id
+    if label and not tasks_store.pending_entry(label):
+        session = session or label
+        run_id = run_id or label
+    return session, run_id
 
 
-def _queue_running(task_key: str) -> bool:
+def _run_dir_alive(run_id: str) -> bool:
+    """Does this run id name a run dir whose process is still up?
+
+    THE TIE-BREAKER THE REGISTRY CANNOT GIVE. A turn that started a second ago
+    has no mark and no registry row, but it does have a run dir with a live pid
+    in it — and `reconcile` asking "is this owner still there" has to be told
+    yes, or the index hands the folder to the next task while the first one is
+    still opening its transcript."""
+    if not run_id or project_queue.bad_id(run_id):
+        return False
+    agent = project_queue.agent_module()
+    if agent is None:
+        return False
+    run_dir = os.path.join(str(getattr(agent, "RUNS", "")), run_id)
+    if not os.path.isdir(run_dir):
+        return False
+    return project_queue.run_alive(agent, run_dir)
+
+
+def _queue_running(task) -> bool:
     """Is a turn open in this task right now — the manager's `running`.
 
     THE SAME STATUS SYNC THE LISTING READS, and deliberately only its registry
@@ -5372,32 +5413,43 @@ def _queue_running(task_key: str) -> bool:
     `live_from_registry` (the process's own status). The transcript-tail
     fallback is not asked — the manager consults this as a TIE-BREAKER on load
     and restart (design.md), where a tail that reads warm because a turn ended
-    forty seconds ago would hold a folder for nobody."""
-    session = _queue_session(task_key)
-    if not session:
-        return False
-    if tasks_watch.is_marked_running(session):
-        return True
-    verdict = tasks_watch.live_from_registry(session)
-    return bool(verdict and verdict[0])
+    forty seconds ago would hold a folder for nobody.
+
+    …and the run dir last (`_run_dir_alive`), which is the only channel that
+    answers during the seconds between a spawn and its registration."""
+    session, run_id = _queue_identity(task)
+    if session:
+        if tasks_watch.is_marked_running(session):
+            return True
+        verdict = tasks_watch.live_from_registry(session)
+        if verdict and verdict[0]:
+            return True
+    return _run_dir_alive(run_id)
 
 
-def _queue_blocked(task_key: str) -> bool:
+def _queue_blocked(task) -> bool:
     """Is this task parked on a card nobody has answered — the manager's
     `blocked`.
 
     The parked scan, read for one task: the bounded walk of the runs tree
     (`project_queue.scan_runs`) and the unanswered-request rule
     (`run_waiting`), which is the same pair the listing's `parked` column
-    reads. A parked run holds no folder, which is why the manager wants it."""
-    session = _queue_session(task_key)
-    if not session:
+    reads. A parked run holds no folder, which is why the manager wants it.
+
+    MATCHED BY RUN TOO, not only by session: the cards belong to the RUN, and an
+    owner the index knows only by its run id (a chat that has not minted a
+    session, a `pending:` message the pump started) would otherwise read as "not
+    parked" the moment it put a card up — and get its folder taken away while a
+    human was looking at the card."""
+    session, run_id = _queue_identity(task)
+    if not session and not run_id:
         return False
     agent = project_queue.agent_module()
     if agent is None:
         return False
     for run in project_queue.scan_runs(agent):
-        if session not in (run.get("sessions") or ()):
+        if not ((session and session in (run.get("sessions") or ()))
+                or (run_id and str(run.get("run_id") or "") == run_id)):
             continue
         if project_queue.run_waiting(agent, run):
             return True
@@ -5600,29 +5652,40 @@ def api_queue_admit(body: dict = Body(...),
     # is me" queued behind itself (Akshil, 2026-09-12).
     manager = queue_manager.get()
     chat_key = _admit_key(session_id, follow_of, by_id) or run_id
-    # ONE DECISION, NOT A LOOK AND THEN A WRITE — the reservation's whole
-    # reason, now the manager's. Two sends into one free folder arriving on two
-    # request threads used to both hear "free"; `is_free` and `started` are two
-    # calls into one lock, and the second send finds an owner.
+    # THE NAME THIS SEND OWNS THE FOLDER UNDER, minted here when the send has
+    # none of its own (`_owner_token`).
+    owner_token = chat_key or _owner_token(body)
+    # ONE DECISION, NOT A LOOK AND THEN A WRITE. `is_free` then `started` is two
+    # acquisitions of the manager's lock with a gap in between, and two sends
+    # into one free folder arriving on two request threads both heard "free" and
+    # both spawned. `claim` is the check and the filing under one lock: True
+    # means the folder is this task's from here, False that somebody else got it
+    # and this message queues.
     #
     # Asked at all only once this chat has nothing of its own in the line: an
     # owner filed here would be a folder held for a send that is about to be
     # queued anyway.
     #
-    # A folder ALREADY OWNED BY THIS TASK is free for it: a second message typed
-    # into a conversation that is running is the inbox-absorb case the chat has
-    # always had, and the answer is `run: true` so the send goes down the
-    # client's ordinary path (`agent._send`) rather than starting a second
+    # A folder ALREADY OWNED BY THIS TASK is claimed by it: a second message
+    # typed into a conversation that is running is the inbox-absorb case the
+    # chat has always had, and the answer is `run: true` so the send goes down
+    # the client's ordinary path (`agent._send`) rather than starting a second
     # process.
-    if not behind_own and manager.is_free(key, chat_key):
+    if not behind_own and manager.claim(key, owner_token, run_id, session_id):
         # THE FOLDER IS THIS TASK'S FROM HERE, and that record is the gate's —
         # nothing on the listing reads it. The row turns `in_progress` the way
         # every send's does, flag or no flag: the page marks the session as it
         # sends (`POST /api/tasks/running`, #1163) and that mark rings the poll.
         # Ringing here as well was the same bell twice about a row that had not
         # changed yet.
-        manager.started(key, chat_key, run_id, session_id)
-        return {"run": True}
+        if chat_key:
+            return {"run": True}
+        # A NAMELESS SEND GETS ITS NAME BACK. The client is untouched in this PR
+        # and ignores the field; the run it is about to start replaces the
+        # placeholder through the spawn site (`routers/run._file_owner` →
+        # `queue_manager.started`), and the token is here so the composer can
+        # eventually say "that owner is me" without waiting for a run id.
+        return {"run": True, "owner_token": owner_token}
 
     if not message.strip():
         return _error("message: cannot be empty — this folder is busy, and a "
@@ -5703,6 +5766,30 @@ def api_queue_admit(body: dict = Body(...),
             # free and the position 0 with nobody ahead, and this is still a
             # message waiting on an earlier one of its own.
             "behind_own": behind_own}
+
+
+def _owner_token(body: dict) -> str:
+    """A name for an admission that has none — `admit:<something>`.
+
+    A BRAND-NEW CHAT'S FIRST SEND NAMES NOBODY: there is no session (Claude Code
+    mints one inside the spawn) and no run (the spawn has not happened — this
+    endpoint is what says it may). So the admission filed no owner at all, the
+    folder went on reading free, and a second nameless send arriving in that
+    window was admitted straight into it — the exact race `claim` exists to
+    settle, walked around because there was nothing to write down.
+
+    THE IDENTITY THE CLIENT ALREADY SENDS, where it sends one. `draft_key` is a
+    session-less composer's own key (`new:<file>`) and it is stable across that
+    composer's sends, so two messages typed into one new chat claim one owner
+    rather than fighting over the folder. Otherwise a uuid, which is a name that
+    is at least unique — the placeholder's job is to be SOMEBODY, and it expires
+    on its own (`queue_manager.PLACEHOLDER_TTL`) because no process exists yet
+    to send the event that would free it."""
+    for field in ("draft_key", "pane", "turn", "client_id"):
+        value = str(body.get(field) or "").strip()
+        if value:
+            return queue_manager.PLACEHOLDER_PREFIX + value
+    return queue_manager.PLACEHOLDER_PREFIX + uuid.uuid4().hex
 
 
 def _admit_key(session_id: str, follow_of: str, by_id: dict) -> str:
@@ -5879,20 +5966,19 @@ def api_queue_skip(body: dict = Body(...),
     now = time.time()
     manager = queue_manager.get()
 
-    if manager.held_answer(key) is not None:
-        # Already at the head, and held somewhere Skip cannot improve: the
-        # answer is delivered the moment the folder frees. Answered rather than
-        # refused — from the outside this is exactly what Skip asked for.
-        # …with the same `ahead_*` the ordinary road answers with, so one caller
-        # reads one shape. `position` is this endpoint's own promise and is
-        # written after the place, never taken from it.
-        held_place = _queue_place(key, tasks)
-        return {**held_place, "ok": True, "position": 1}
-
-    # ONE CALL, AND IT IS THE PRESS. Position 0 back is "this task stands in no
-    # line" — it owns its folder, or it is not queued at all — which is the 400
-    # the docstring promises rather than a flag quietly set on nothing.
-    if int((manager.skip(key) or {}).get("position") or 0) == 0:
+    # ONE CALL, AND IT IS THE PRESS. `manager.skip` is the whole mechanism for
+    # an answered task too — it moves to the head of the line like anything else
+    # and newest press wins — so there is no held-answer arm here any more: a
+    # second road to the same answer is a second set of rules to keep in step
+    # with the first.
+    #
+    # Position 0 back is "this task stands in no line", which is the 400 the
+    # docstring promises rather than a flag quietly set on nothing — UNLESS the
+    # press itself started it. The folder was free, the pump handed it straight
+    # over, and a task that is now RUNNING is the best possible outcome of "run
+    # this next": answered 200, never refused.
+    outcome = manager.skip(key) or {}
+    if int(outcome.get("position") or 0) == 0 and not outcome.get("started"):
         return _error("not queued", status=400)
 
     # THE STORE'S FLAG, FOR THE CALENDAR AND NOTHING ELSE (see the docstring),

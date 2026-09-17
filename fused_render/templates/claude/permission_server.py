@@ -220,8 +220,8 @@ _EVENT_PATH = "/api/tasks/queue/event"
 _EVENT_TIMEOUT = 2.0
 
 
-def _post_card_raised(req_id: str) -> None:
-    """Announce the card `req_id` just parked in PERM_DIR.
+def _post_card(kind: str, req_id: str) -> None:
+    """Announce what just happened to the card `req_id` in PERM_DIR.
 
     The run id is PERM_DIR's parent directory name: `agent._perm_dir` is
     `<run_dir>/perm` and the run dir's own basename IS the run id everywhere
@@ -231,13 +231,37 @@ def _post_card_raised(req_id: str) -> None:
         origin = (os.environ.get("FUSED_RENDER_ORIGIN") or "").rstrip("/")
         if not origin or not PERM_DIR:
             return
-        body = {"kind": "card_raised",
+        body = {"kind": kind,
                 "run_id": os.path.basename(os.path.dirname(PERM_DIR)),
                 "request_id": req_id}
         threading.Thread(target=_send_event, args=(origin + _EVENT_PATH, body),
                          daemon=True).start()
     except Exception:
         pass  # a queue that never hears about this still shows the card
+
+
+def _post_card_raised(req_id: str) -> None:
+    """The card went up: this task is waiting on a human and holds nothing."""
+    _post_card("card_raised", req_id)
+
+
+def _post_card_cleared(req_id: str) -> None:
+    """The card came down: the decision is in, and this task is about to be a
+    RUNNING task again.
+
+    **THIS PROCESS IS THE ONLY ONE THAT SEES EVERY ANSWER** (2026-09-17). A card
+    can be answered from the page, from the terminal the CLI is attached to, or
+    by a file dropped next to the request — and the queue has to hear about all
+    three, or a task that was un-blocked hours ago still counts as blocked and
+    its folder is handed to somebody else while it works. Routing the decide
+    ENDPOINT through the manager would only cover the first of those. The wait
+    below is downstream of all of them: whatever wrote the answer, this is the
+    line that reads it.
+
+    Posted for the timeout fallback too. A card that timed out is not on screen
+    any more either, and the deny it produced is a verdict the CLI is already
+    acting on."""
+    _post_card("card_cleared", req_id)
 
 
 def _send_event(url: str, body: dict) -> None:
@@ -319,9 +343,17 @@ def _await_answer(res_path: str, timeout: float, fallback: dict) -> dict:
 
 
 def _await_decision(req_id: str) -> dict:
-    """Block until agent.py writes the decision file, or we give up."""
-    return _await_answer(os.path.join(PERM_DIR, req_id + ".res.json"),
-                         WAIT_TIMEOUT, {"decision": "deny", "reason": "timeout"})
+    """Block until agent.py writes the decision file, or we give up — then tell
+    the queue the card is gone (`_post_card_cleared`).
+
+    ONE POST PER CARD, and here rather than at the three places a decision can
+    come from: every one of them ends up as the `<id>.res.json` this loop is
+    already watching for."""
+    decision = _await_answer(os.path.join(PERM_DIR, req_id + ".res.json"),
+                             WAIT_TIMEOUT,
+                             {"decision": "deny", "reason": "timeout"})
+    _post_card_cleared(req_id)
+    return decision
 
 
 def _multi_answer_ok(value: str, labels: list) -> bool:

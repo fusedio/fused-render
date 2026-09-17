@@ -15,6 +15,8 @@ Two worlds, because `pump` behaves differently against each and both are real:
 """
 import json
 import os
+import threading
+import time
 
 import pytest
 
@@ -62,11 +64,22 @@ class World:
     def deliver(self, answer):
         self.delivered.append(answer)
 
-    def running(self, key):
-        return key in self.running_keys
+    @staticmethod
+    def names(task):
+        """Every name one status question can arrive under. The manager asks
+        with the whole RECORD — `{task, run_id, session_id}` — because half the
+        index knows a conversation by a name the registry never heard: a
+        `pending:` owner by the entry that made it, a new chat by its run."""
+        if isinstance(task, dict):
+            return {str(task.get(field) or "")
+                    for field in ("task", "run_id", "session_id")} - {""}
+        return {str(task or "")} - {""}
 
-    def blocked(self, key):
-        return key in self.blocked_keys
+    def running(self, task):
+        return bool(self.names(task) & self.running_keys)
+
+    def blocked(self, task):
+        return bool(self.names(task) & self.blocked_keys)
 
     def pending_due(self):
         return list(self.due)
@@ -206,7 +219,8 @@ def test_skip_pulls_a_blocked_task_back_into_the_line():
     m.enqueue(F1, "b")
     m.card_raised("a")
     assert (owner_key(m), blocked_of(m)) == ("b", ["a"])
-    assert m.skip("a") == {"key": F1, "position": 1, "ahead_key": "b"}
+    assert m.skip("a") == {"key": F1, "position": 1, "ahead_key": "b",
+                           "started": False}
     assert blocked_of(m) == []
     assert line_of(m) == ["a"]
 
@@ -215,8 +229,10 @@ def test_skip_of_the_owner_and_of_a_stranger_are_no_ops():
     m = World().manager()
     m.enqueue(F1, "a")
     m.enqueue(F1, "b")
-    assert m.skip("a") == {"key": "", "position": 0, "ahead_key": ""}
-    assert m.skip("nobody") == {"key": "", "position": 0, "ahead_key": ""}
+    assert m.skip("a") == {"key": "", "position": 0, "ahead_key": "",
+                           "started": False}
+    assert m.skip("nobody") == {"key": "", "position": 0, "ahead_key": "",
+                                "started": False}
     assert owner_key(m) == "a"
     assert line_of(m) == ["b"]
 
@@ -330,7 +346,7 @@ def test_is_free_answers_to_the_owners_task_run_or_session():
 
 
 def test_card_raised_parks_the_owner_and_hands_the_folder_on():
-    world = World()
+    world = World(spawns={"a": {"run_id": "run-a", "session_id": "sess-a"}})
     m = world.manager()
     m.enqueue(F1, "a")
     m.enqueue(F1, "b")
@@ -372,13 +388,23 @@ def test_card_answered_for_the_owner_is_not_held():
     assert m.held_answer("a") is None
 
 
-def test_card_answered_with_a_free_folder_is_not_held():
+def test_card_answered_with_a_free_folder_takes_the_folder_back():
+    """The task is PARKED in that folder — a live turn waiting on a human — and
+    the decision about to be delivered un-parks it, so the folder is its again.
+    Leaving it unowned let the next tick start a second turn in the very tree
+    this one was about to resume, and the re-owned record names the RUN the card
+    was raised against, not just the label."""
     m = World().manager()
     m.enqueue(F1, "a")
-    m.card_raised("a")                       # nothing behind it: the folder is free
-    assert owner_key(m) is None
-    assert m.card_answered("a", "run-a", "req", {"ok": True}) == {"held": False, "position": 0}
-    assert m.held_answer("a") is None
+    m.card_raised("a", "run")                # nothing behind it: the folder frees
+    assert (owner_key(m), blocked_of(m)) == (None, ["a"])
+
+    assert m.card_answered("a", "run", "req", {"ok": True}) == {"held": False,
+                                                                "position": 0}
+    assert m.held_answer("a") is None        # not held: the caller delivers it
+    assert owner_key(m) == "a"
+    assert blocked_of(m) == []
+    assert m.owner(F1)["run_id"] == "run"
 
 
 def test_card_answered_for_an_unknown_task_is_not_held():
@@ -530,22 +556,38 @@ def test_a_raising_spawn_drops_the_item_rather_than_the_line():
     assert owner_key(m) == "b"
 
 
-def test_a_raising_deliver_still_leaves_the_folder_owned():
+def test_a_raising_deliver_keeps_the_answer_and_the_place():
+    """The user pressed Allow, the folder freed, the replay failed — and the
+    verdict used to be GONE, because the answer was popped before the delivery
+    was attempted. Now the task goes back to the head of its line, promoted, the
+    folder is freed and the answer stays: the next event tries again."""
     world = World()
+    fail = {"now": True}
 
     def boom(answer):
         world.delivered.append(answer)
-        raise RuntimeError("the run went away")
+        if fail["now"]:
+            raise RuntimeError("the run went away")
 
     world.deliver = boom
     m = world.manager()
     m.enqueue(F1, "a")
     m.enqueue(F1, "b")
-    m.card_raised("a")
+    m.card_raised("a", "run")
     m.card_answered("a", "run-a", "req", {})
-    m.turn_ended("b")
-    assert owner_key(m) == "a"
+    m.turn_ended("b", "run")
+
+    assert owner_key(m) is None              # the folder is not held by a ghost
+    assert line_of(m) == ["a"]
+    assert m.positions()["a"]["priority"] is True
+    assert m.held_answer("a")["request_id"] == "req"
     assert len(world.delivered) == 1
+
+    fail["now"] = False                      # the next event retries it
+    m.pump(F1)
+    assert owner_key(m) == "a"
+    assert m.held_answer("a") is None
+    assert len(world.delivered) == 2
 
 
 def test_a_busy_spawn_keeps_its_place_and_stops_the_pump(monkeypatch):
@@ -920,7 +962,9 @@ def test_the_migration_survives_a_restart_that_has_already_run_it(state):
     """The index is the store now: a second process reads the answer out of
     `queue_index.json` and never looks at the renamed file again."""
     _legacy_file(state, _legacy("sess-a"))
-    loaded(idle_world())
+    first = idle_world()
+    first.running_keys.add("sess-a")
+    loaded(first)
     second = idle_world()
     second.running_keys.add("sess-a")
     again = loaded(second)
@@ -1031,6 +1075,521 @@ def test_notify_is_optional():
                         pending_due=lambda: [])
     m.enqueue(F1, "a")                       # would raise if notify were required
     assert m.snapshot()["folders"][F1]["line"] == []
+
+
+# ----------------------------------------------------------------- claim
+#
+# `is_free` then `started` is two acquisitions of one lock with a gap in
+# between, and two sends into one free folder both heard "free".
+
+
+def test_claim_is_the_check_and_the_filing():
+    m = idle_world().manager()
+    assert m.claim(F1, "a", "run-a", "sess-a") is True
+    assert owner_key(m) == "a"
+    assert (m.owner(F1)["run_id"], m.owner(F1)["session_id"]) == ("run-a", "sess-a")
+    assert m.claim(F1, "b", "run-b", "sess-b") is False
+    assert owner_key(m) == "a"
+
+
+def test_claim_by_the_owner_itself_is_still_true():
+    """A second message typed into a conversation that is running is the
+    inbox-absorb case the chat has always had — and any of the three names
+    answers for it."""
+    m = idle_world().manager()
+    m.claim(F1, "a", "run-a", "sess-a")
+    assert m.claim(F1, "a") is True
+    assert m.claim(F1, "sess-a") is True
+    assert m.claim(F1, "other", run_id="run-a") is True
+    assert owner_key(m) == "a"
+
+
+def test_claim_learns_the_better_name_the_second_message_carries():
+    m = idle_world().manager()
+    m.claim(F1, "run-1", run_id="run-1")
+    assert m.claim(F1, "run-1", run_id="run-1", session_id="sess-1") is True
+    assert m.owner(F1)["session_id"] == "sess-1"
+
+
+def test_claim_ignores_a_blank_folder_or_key():
+    m = idle_world().manager()
+    assert m.claim("", "a") is False
+    assert m.claim(F1, "") is False
+    assert m.snapshot()["folders"] == {}
+
+
+def test_claim_takes_a_task_out_of_whatever_line_it_stood_in():
+    m = idle_world().manager()
+    m.started(F1, "owner")
+    m.enqueue(F1, "b")
+    assert m.claim(F2, "b", "run-b") is True
+    assert line_of(m, F1) == []
+    assert owner_key(m, F2) == "b"
+
+
+# ------------------------------------------------------- the admit placeholder
+
+
+def test_a_nameless_admission_owns_the_folder_under_a_placeholder():
+    """A brand-new chat's first send has no session and no run — the spawn has
+    not happened, because this is the call that says it may. Filing nobody left
+    the folder reading free and let a second nameless send race into it."""
+    m = idle_world().manager()
+    assert m.claim(F1, qm.PLACEHOLDER_PREFIX + "one") is True
+    assert m.claim(F1, qm.PLACEHOLDER_PREFIX + "two") is False
+    assert owner_key(m) == qm.PLACEHOLDER_PREFIX + "one"
+
+
+def test_a_placeholder_gives_way_to_a_real_name():
+    """The chat that minted it, arriving with a run — or another one in the same
+    window, which cannot be told apart from here. Refusing would re-open the bug
+    the whole identity chase is about (a chat queued behind itself)."""
+    m = idle_world().manager()
+    m.claim(F1, qm.PLACEHOLDER_PREFIX + "one")
+    assert m.claim(F1, "sess-new", "run-1", "sess-new") is True
+    assert owner_key(m) == "sess-new"
+
+
+def test_started_from_the_real_spawn_retires_the_placeholder():
+    m = idle_world().manager()
+    m.claim(F1, qm.PLACEHOLDER_PREFIX + "one")
+    m.started(F1, "sess-new", "run-1", "sess-new")
+    owner = m.owner(F1)
+    assert (owner["task"], owner["run_id"]) == ("sess-new", "run-1")
+
+
+def test_a_placeholder_expires_and_never_refuses_a_send():
+    """THE ONE CLOCK IN THE QUEUE: no process exists yet, so no event can ever
+    free this record and it has to free itself. And while it stands it is not a
+    live turn — the run gate must not refuse the very start it was taken for."""
+    world = idle_world()
+    m = world.manager()
+    m.claim(F1, qm.PLACEHOLDER_PREFIX + "one")
+    assert m.is_free(F1) is True             # not a run: the gate lets it by
+    assert m.is_free(F1, "anybody") is True
+
+    world.now += qm.PLACEHOLDER_TTL + 5
+    assert m.claim(F1, qm.PLACEHOLDER_PREFIX + "two") is True
+    assert owner_key(m) == qm.PLACEHOLDER_PREFIX + "two"
+
+
+def test_reconcile_drops_an_expired_placeholder_and_pumps():
+    world = World()
+    m = world.manager()
+    m.claim(F1, qm.PLACEHOLDER_PREFIX + "one")
+    world.due = [(F1, "b", "e-b")]
+    world.spawned.clear()
+    m.reconcile()
+    assert owner_key(m) == qm.PLACEHOLDER_PREFIX + "one"   # still inside the TTL
+    assert line_of(m) == ["b"]
+
+    world.now += qm.PLACEHOLDER_TTL + 5
+    m.reconcile()
+    assert owner_key(m) == "b"
+    assert world.spawned == [(F1, "b")]
+
+
+def test_a_placeholder_owner_is_nobody_to_name():
+    """`admit:<token>` names no row on the Tasks page, and the client says
+    "behind a run in this folder" for an empty `ahead_key` — where printing the
+    token would put a uuid in the chip and link it to nothing."""
+    m = idle_world().manager()
+    m.claim(F1, qm.PLACEHOLDER_PREFIX + "one")
+    m.enqueue(F1, "b")
+    assert m.positions()["b"]["ahead_key"] == ""
+    assert m.place("b") == {"key": F1, "position": 1, "ahead_key": ""}
+
+
+def test_an_owner_named_only_by_its_run_is_nobody_to_name_either():
+    m = idle_world().manager()
+    m.started(F1, "", run_id="run-1")
+    m.enqueue(F1, "b")
+    assert m.positions()["b"]["ahead_key"] == ""
+
+
+def test_a_placeholder_never_rings_the_long_poll():
+    world = idle_world()
+    m = world.manager()
+    world.notified.clear()
+    m.claim(F1, qm.PLACEHOLDER_PREFIX + "one")
+    assert world.notified == []
+
+
+# ---------------------------------------------------- several cards, one run
+
+
+def test_two_cards_of_one_run_are_both_held_and_both_delivered():
+    """Keyed by `(task, run, request)`. A store keyed by the task alone let the
+    second answer overwrite the first, and the first decision — given by a human
+    who is waiting for it — was never delivered at all."""
+    world = World()
+    m = world.manager()
+    m.enqueue(F1, "a")
+    m.enqueue(F1, "b")
+    m.card_raised("a", "run")
+    assert m.card_answered("a", "run-a", "req-1", {"n": 1})["held"] is True
+    assert m.card_answered("a", "run-a", "req-2", {"n": 2})["held"] is True
+    assert [row["request_id"] for row in m.held_answers("a")] == ["req-1", "req-2"]
+
+    m.turn_ended("b", "run")
+    assert [d["request_id"] for d in world.delivered] == ["req-1", "req-2"]
+    assert m.held_answers("a") == []
+    assert owner_key(m) == "a"
+
+
+def test_the_same_question_answered_twice_keeps_the_first_verdict():
+    m = World().manager()
+    m.enqueue(F1, "a")
+    m.enqueue(F1, "b")
+    m.card_raised("a", "run")
+    m.card_answered("a", "run-a", "req-1", {"answer": "allow"})
+    assert m.card_answered("a", "run-a", "req-1", {"answer": "deny"}) == {
+        "held": True, "position": 1}
+    assert [row["raw"] for row in m.held_answers("a")] == [{"answer": "allow"}]
+
+
+def test_a_second_card_delivered_after_a_failure_keeps_the_first_one_gone():
+    """Idempotent: an answer is dropped the moment ITS delivery returns, so a
+    retry replays only what is left."""
+    world = World()
+    seen = []
+
+    def deliver(answer):
+        seen.append(answer["request_id"])
+        if answer["request_id"] == "req-2" and len(seen) == 2:
+            raise RuntimeError("the run went away")
+
+    world.deliver = deliver
+    m = world.manager()
+    m.enqueue(F1, "a")
+    m.enqueue(F1, "b")
+    m.card_raised("a", "run")
+    m.card_answered("a", "run-a", "req-1", {})
+    m.card_answered("a", "run-a", "req-2", {})
+    m.turn_ended("b", "run")
+    assert seen == ["req-1", "req-2"]
+    assert [row["request_id"] for row in m.held_answers("a")] == ["req-2"]
+
+    m.pump(F1)
+    assert seen == ["req-1", "req-2", "req-2"]
+    assert m.held_answers("a") == []
+
+
+# ------------------------------------------------------------ run identity
+
+
+def test_card_raised_matches_the_owner_by_its_run():
+    """The permission server knows the RUN it is serving; the owner may be filed
+    under a `pending:` key that card never heard of."""
+    m = idle_world().manager()
+    m.started(F1, "pending:e1", "run-7", "sess-7")
+    m.card_raised("sess-7", "run-7")
+    assert owner_key(m) is None
+    assert blocked_of(m) == ["sess-7"]
+    item = m.snapshot()["folders"][F1]["blocked"][0]
+    assert (item["run_id"], item["session_id"]) == ("run-7", "sess-7")
+
+
+def test_a_card_from_an_old_run_does_not_park_the_new_owner():
+    m = idle_world().manager()
+    m.started(F1, "sess-1", "run-2", "sess-1")
+    m.card_raised("sess-1", "run-1")         # an older run of the same chat
+    assert owner_key(m) == "sess-1"
+    assert blocked_of(m) == []
+
+
+def test_a_stale_exit_from_an_old_run_does_not_release_the_owner():
+    """When both sides name a run, the runs decide and nothing else does: a
+    session outlives many runs, and the host retries."""
+    m = idle_world().manager()
+    m.started(F1, "sess-1", "run-2", "sess-1")
+    m.exited("sess-1", "run-1", 0)
+    m.turn_ended("sess-1", "run-1")
+    assert owner_key(m) == "sess-1"
+
+    m.turn_ended("sess-1", "run-2")
+    assert owner_key(m) is None
+
+
+def test_an_event_with_no_run_id_still_matches_by_session():
+    m = idle_world().manager()
+    m.started(F1, "pending:e1", "run-7", "sess-7")
+    m.turn_ended("sess-7")
+    assert owner_key(m) is None
+
+
+# ------------------------------------------------------------- card_cleared
+
+
+def test_card_cleared_takes_a_free_folder_back():
+    """Somebody answered it elsewhere — a terminal, a file. The task is a live
+    turn that is no longer waiting on a human."""
+    m = idle_world().manager()
+    m.started(F1, "a", "run-a", "sess-a")
+    m.card_raised("a", "run-a")
+    assert (owner_key(m), blocked_of(m)) == (None, ["a"])
+
+    m.card_cleared("a", "run-a", "req-1")
+    assert owner_key(m) == "a"
+    assert blocked_of(m) == []
+    assert m.owner(F1)["run_id"] == "run-a"
+
+
+def test_card_cleared_goes_to_the_head_when_somebody_else_has_the_folder():
+    m = World().manager()
+    m.enqueue(F1, "a")
+    m.enqueue(F1, "b")
+    m.enqueue(F1, "c")
+    m.card_raised("a", "run")                # b owns, c waits, a blocked
+    m.card_cleared("a", "run")
+    assert blocked_of(m) == []
+    assert line_of(m) == ["a", "c"]
+    assert m.positions()["a"]["priority"] is True
+
+
+def test_card_cleared_leaves_a_verdict_we_are_already_holding_alone():
+    """A task with a held answer stands in the LINE, not blocked, so this is a
+    no-op for it — and that is the wanted answer: the held decision is what makes
+    the pump hand the folder back to that live run instead of trying to spawn a
+    turn for a session that is already running."""
+    m = World().manager()
+    m.enqueue(F1, "a")
+    m.enqueue(F1, "b")
+    m.card_raised("a", "run")
+    m.card_answered("a", "run-a", "req-1", {"answer": "allow"})
+    m.card_cleared("a", "run-a", "req-1")
+    assert [row["request_id"] for row in m.held_answers("a")] == ["req-1"]
+    assert line_of(m) == ["a"]
+
+
+def test_card_cleared_is_idempotent_and_ignores_a_task_that_is_not_parked():
+    m = World().manager()
+    m.enqueue(F1, "a")
+    m.enqueue(F1, "b")
+    before = m.snapshot()
+    m.card_cleared("a", "run")               # the owner, not parked
+    m.card_cleared("nobody", "run")
+    assert m.snapshot() == before
+
+    m.card_raised("a", "run")
+    m.card_cleared("a", "run")
+    after = m.snapshot()
+    m.card_cleared("a", "run")
+    assert m.snapshot() == after
+
+
+# ------------------------------------------------------------- forget_entry
+
+
+def test_forget_entry_drops_one_message_and_leaves_the_turn_alone():
+    """Cancelling the second thing you typed used to take the turn that was
+    running away from you: `remove` releases the folder, and a queued follow-up
+    is filed under the very task that owns it."""
+    m = idle_world().manager()
+    m.started(F1, "a", "run-a", "sess-a")
+    m.enqueue(F1, "b", "e-b")
+    m.enqueue(F1, "c", "e-c")
+    m.forget_entry("e-b")
+    assert owner_key(m) == "a"
+    assert line_of(m) == ["c"]
+
+
+def test_forget_entry_frees_the_folder_for_the_next_message():
+    world = World()
+    m = world.manager()
+    m.started(F1, "owner")
+    m.enqueue(F1, "b", "e-b")
+    m.enqueue(F1, "c", "e-c")
+    world.spawned.clear()
+    m.forget_entry("e-b")
+    assert line_of(m) == ["c"]
+    m.turn_ended("owner")
+    assert owner_key(m) == "c"
+
+
+def test_forget_entry_drops_the_answers_of_a_task_it_orphaned():
+    """The message is gone and it was the only place that task stood: a verdict
+    left behind would re-own a folder the day that key came round again."""
+    m = World().manager()
+    m.enqueue(F1, "a", "e-a")                # a owns, under entry e-a
+    m.enqueue(F1, "b")
+    m.card_raised("a", "run")                # b owns, a blocked
+    m.card_answered("a", "run-a", "req-1", {})
+    assert m.held_answer("a") is not None
+
+    m.forget_entry("e-a")
+    assert line_of(m) == []
+    assert m.held_answer("a") is None
+    assert owner_key(m) == "b"
+
+
+def test_forget_entry_ignores_a_blank_id():
+    m = World().manager()
+    m.enqueue(F1, "a")
+    before = m.snapshot()
+    m.forget_entry("")
+    assert m.snapshot() == before
+
+
+# ------------------------------------------------- reconcile and identity
+
+
+def test_reconcile_keeps_a_pending_owner_the_registry_knows_by_its_session():
+    """The bug: every scheduled message the pump starts owns its folder under
+    `pending:<entry id>`, which has no session and no registry row — so the
+    status read answered "dead" and the index dropped a LIVE owner on the very
+    next tick."""
+    world = World(spawns={"pending:e1": {"run_id": "run-1",
+                                         "session_id": "sess-1"}},
+                  due=[(F1, "pending:e1", "e1")])
+    m = world.manager()
+    assert owner_key(m) == "pending:e1"
+    world.due = []
+    world.running_keys.add("sess-1")         # the registry knows the SESSION
+    world.now += 60
+    m.reconcile()
+    assert owner_key(m) == "pending:e1"
+
+
+def test_reconcile_never_pops_a_spawn_that_has_not_landed_yet():
+    """An owner whose spawn has not come back with a run has nothing the status
+    sync can be asked about — no run dir, no registry row, no mark — so every
+    channel says "not running" about a process that is starting."""
+    world = idle_world()
+    m = world.manager()
+    m.started(F1, "a")                       # no run id yet
+    m.reconcile()
+    assert owner_key(m) == "a"
+
+    world.now += qm.SPAWN_GRACE + 5
+    m.reconcile()
+    assert owner_key(m) is None
+
+
+def test_reconcile_trusts_the_status_sync_once_a_spawn_has_a_run():
+    """With a run id there IS something to ask about — the run dir and the pid
+    in it — so the grace would only delay the truth by ten seconds."""
+    world = idle_world()
+    m = world.manager()
+    m.started(F1, "a", "run-a", "sess-a")
+    m.reconcile()
+    assert owner_key(m) is None
+
+
+def test_reconcile_asks_about_a_blocked_item_by_its_run():
+    world = idle_world()
+    m = world.manager()
+    m.started(F1, "pending:e1", "run-7", "sess-7")
+    m.card_raised("sess-7", "run-7")
+    world.blocked_keys.add("run-7")          # the CARDS are the run's
+    world.now += 60
+    m.reconcile()
+    assert blocked_of(m) == ["sess-7"]
+
+
+def test_reconcile_prunes_an_answer_nothing_can_deliver():
+    """A verdict whose task the index no longer points at anywhere, and whose
+    conversation nothing can find, would sit in the file for ever and re-own a
+    folder the day that key came round again."""
+    world = World()
+    m = world.manager()
+    m.enqueue(F1, "a")
+    m.enqueue(F1, "b")
+    m.card_raised("a", "run")
+    m.card_answered("a", "run-a", "req-1", {})
+    assert m.held_answer("a") is not None
+
+    m._state["folders"][F1]["line"] = []     # the world forgot it
+    world.now += 60
+    m.reconcile()
+    assert m.held_answer("a") is None
+
+
+def test_reconcile_keeps_an_answer_whose_task_is_still_live():
+    world = World()
+    m = world.manager()
+    m.enqueue(F1, "a")
+    m.enqueue(F1, "b")
+    m.card_raised("a", "run")
+    m.card_answered("a", "run-a", "req-1", {})
+    world.running_keys.update({"a", "b"})
+    world.now += 60
+    m.reconcile()
+    assert m.held_answer("a") is not None
+
+
+def test_a_legacy_answer_for_a_dead_run_is_not_migrated(state):
+    """The old store outlived the runs it was about. An upgrade on a machine
+    that has been off for a week must not re-own a folder for a process that
+    died days ago."""
+    _legacy_file(state, _legacy("sess-gone"), _legacy("sess-live", at=2.0))
+    world = idle_world()
+    world.running_keys.add("sess-live")
+    m = loaded(world)
+    assert m.held_answer("sess-gone") is None
+    assert m.held_answer("sess-live") is not None
+    assert line_of(m) == ["sess-live"]
+
+
+# ------------------------------------------------------- the lock and the spawn
+
+
+def test_an_event_never_waits_on_a_spawn():
+    """Starting a turn talks to another process. Holding the queue lock across
+    it made every event that arrived in that window — a card going up in another
+    folder, a turn ending in a third — wait on a spawn it had nothing to do
+    with. The pump DECIDES under the lock and does the work outside it."""
+    world = World()
+    inside = threading.Event()
+    release = threading.Event()
+
+    def slow(folder, key):
+        inside.set()
+        assert release.wait(5)
+        return {"run_id": "run-" + key, "session_id": "sess-" + key}
+
+    world.spawn = slow
+    m = world.manager()
+    m.started(F2, "other", "run-other", "sess-other")
+
+    thread = threading.Thread(target=m.enqueue, args=(F1, "slow"))
+    thread.start()
+    assert inside.wait(5)                    # the spawn is in flight
+
+    began = time.monotonic()
+    m.card_raised("other", "run-other")      # another folder, the same lock
+    m.turn_ended("nobody")
+    assert time.monotonic() - began < 1.0
+    assert blocked_of(m, F2) == ["other"]
+
+    release.set()
+    thread.join(5)
+    assert not thread.is_alive()
+    assert owner_key(m) == "slow"
+    assert m.owner(F1)["run_id"] == "run-slow"
+
+
+def test_a_turn_that_ends_mid_spawn_leaves_the_folder_to_whoever_has_it():
+    """The world moves on while the lock is down; a job that comes back to a
+    folder somebody else owns has nothing to patch and must not steal it."""
+    world = World()
+    inside = threading.Event()
+    release = threading.Event()
+
+    def slow(folder, key):
+        inside.set()
+        assert release.wait(5)
+        return {"run_id": "run-" + key, "session_id": "sess-" + key}
+
+    world.spawn = slow
+    m = world.manager()
+    thread = threading.Thread(target=m.enqueue, args=(F1, "slow"))
+    thread.start()
+    assert inside.wait(5)
+    m.started(F1, "barged-in", "run-b", "sess-b")
+    release.set()
+    thread.join(5)
+    assert owner_key(m) == "barged-in"
 
 
 # ------------------------------------------------------------- the singleton

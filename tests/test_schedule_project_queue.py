@@ -81,10 +81,14 @@ def fresh_process():
     schedule._watched.clear()
     schedule._wake.clear()
     schedule._cancel_rearm()
+    # The lazy-resume latch (M6) is per process, and a process here is the whole
+    # session: cleared either side so no case inherits another's first build.
+    schedule._RESUMED = False
     yield
     schedule._watched.clear()
     schedule._wake.clear()
     schedule._cancel_rearm()
+    schedule._RESUMED = False
 
 
 @pytest.fixture(autouse=True)
@@ -1522,6 +1526,24 @@ class RecordingManager:
     def remove(self, task_key):
         self.events.append(("remove", task_key))
 
+    def forget_entry(self, entry_id):
+        self.events.append(("forget_entry", entry_id))
+
+    def turn_ended(self, task_key, run_id=""):
+        self.events.append(("turn_ended", task_key))
+        self.owners = {f: o for f, o in self.owners.items()
+                       if str(o.get("task") or "") != task_key}
+
+    def claim(self, folder, task_key, run_id="", session_id=""):
+        """Atomic check-and-own: the ONE call the doors make where they used to
+        look and act later."""
+        self.events.append(("claim", folder, task_key))
+        if not self.is_free(folder, task_key):
+            return False
+        self.owners[folder] = {"task": task_key, "session_id": session_id,
+                               "run_id": run_id}
+        return True
+
     def pump(self, folder):
         self.events.append(("pump", folder))
 
@@ -1580,10 +1602,64 @@ def test_a_message_with_no_folder_goes_straight_and_never_into_a_line(
 
 
 def test_a_cancel_drops_the_task_from_its_line(folders, home, recorder):
+    """**By ENTRY, not by task key** (C4, 2026-09-17). A key is a conversation
+    and an entry is one message in it, so `remove(task_key)` was the wrong verb
+    for a Cancel: see the case below for what it cost."""
     _on(home)
     entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
     schedule.cancel(entry["id"])
-    assert _events(recorder, "remove") == [("remove", SID)]
+    assert _events(recorder, "forget_entry", "remove") == [
+        ("forget_entry", entry["id"])]
+
+
+def test_cancelling_a_queued_message_never_releases_a_running_turn(
+        folders, home, recorder):
+    """C4. Two messages for one conversation: the first is away and OWNS the
+    working tree, the second is still waiting. Cancelling the second used to
+    call `remove(SID)` — which found that key as the folder's owner, released a
+    live turn's tree and pumped the next task straight into it."""
+    _on(home)
+    key = _key(folders["alpha"])
+    recorder.owners[key] = {"task": SID, "session_id": SID, "run_id": "r-1"}
+    queued = schedule.create(str(folders["alpha"]), "and then this", _ago(1),
+                             session_id=SID)
+
+    schedule.cancel(queued["id"])
+
+    assert _events(recorder, "remove") == [], \
+        "a cancel named the whole conversation and evicted its live turn"
+    assert _events(recorder, "forget_entry") == [("forget_entry", queued["id"])]
+    assert recorder.owners[key]["task"] == SID
+
+
+def test_cancel_all_takes_every_message_out_of_its_line_too(folders, home,
+                                                            recorder):
+    """M5. The single `cancel` next door has always told the manager; the Tasks
+    page's "cancel all" wrote `cancelled` into the store and left the keys
+    standing in their folders' lines, holding the tree in front of them for
+    messages the user had just cancelled."""
+    _on(home)
+    first = schedule.create(str(folders["alpha"]), "one", _ago(60))
+    second = schedule.create(str(folders["beta"]), "two", _ago(30))
+
+    out = schedule.cancel_queued(all_queued=True)
+
+    assert sorted(out["cancelled"]) == sorted([first["id"], second["id"]])
+    assert sorted(_events(recorder, "forget_entry")) == sorted(
+        [("forget_entry", first["id"]), ("forget_entry", second["id"])])
+
+
+def test_a_refused_cancel_forgets_nothing(folders, home, recorder, spawned):
+    """An entry the tick has already claimed is away; cancel refuses it, and a
+    refusal must not take it out of a line it is the head of."""
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1))
+    schedule._claim(entry["id"], schedule._now())
+
+    out = schedule.cancel_queued([entry["id"]])
+
+    assert out["cancelled"] == [] and out["refused"] == [entry["id"]]
+    assert _events(recorder, "forget_entry", "remove") == []
 
 
 def test_run_now_on_an_owned_folder_is_a_skip_and_a_pump(folders, home,
@@ -1663,3 +1739,143 @@ def test_with_the_flag_off_the_tick_says_nothing_to_the_manager(
     schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
     assert [e["message"] for e in schedule.tick()] == ["go"]
     assert recorder.events == []
+
+
+# ============================================ H3: run-now looks and acts once
+#
+# Run-now asked `is_free`, then sent, then filed `started` — and `_send` can be
+# a process spawn, so up to a minute could pass between the question and the
+# answer being acted on with the tree reading FREE to every other door for all
+# of it. Two run-nows, or a run-now and a tick, both saw a free folder and both
+# sent into it (Akshil's QA, 2026-09-16). One `claim` closes it: the gate that
+# decides is the gate that owns.
+
+
+def test_run_now_claims_the_folder_before_it_sends(folders, home, recorder,
+                                                   spawned):
+    """The order is the fix. Nothing may be on the wire before the tree is
+    ours."""
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+    seen = []
+    taken = recorder.claim
+
+    def watching_claim(folder, task_key, run_id="", session_id=""):
+        seen.append(("claim", len(spawned)))
+        return taken(folder, task_key, run_id, session_id)
+
+    recorder.claim = watching_claim
+
+    assert schedule.run_now(entry["id"])["ok"] is True
+
+    assert seen == [("claim", 0)], "the folder was taken after the send, or not at all"
+    assert len(spawned) == 1
+    assert recorder.owners[_key(folders["alpha"])]["task"] == SID
+
+
+def test_run_now_that_loses_the_claim_is_a_skip_not_a_send(folders, home,
+                                                           recorder, spawned):
+    """The refusal arm of the same call: another task has the tree, so this is
+    the Skip verb and nothing is sent."""
+    _on(home)
+    key = _key(folders["alpha"])
+    recorder.owners[key] = {"task": SID2, "session_id": SID2, "run_id": "r-x"}
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+
+    out = schedule.run_now(entry["id"])
+
+    assert out["ok"] is False and out["reason"] == "queued"
+    assert ("claim", key, SID) in recorder.events
+    assert spawned == []
+    assert recorder.owners[key]["task"] == SID2
+
+
+def test_a_claimed_folder_is_given_back_when_the_conversation_is_busy(
+        folders, home, recorder, spawned, monkeypatch):
+    """The claim happens before the SESSION gates, so the arm that refuses on a
+    live turn has to hand the tree back. A folder owned for a turn that never
+    started is a folder parked until the next reconcile."""
+    _on(home)
+    monkeypatch.setattr(schedule, "_session_live",
+                        lambda session, now, seen=None: True)
+    monkeypatch.setattr(schedule, "_verdict_echo",
+                        lambda session, entries, now, seen=None: False)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+
+    out = schedule.run_now(entry["id"])
+
+    assert out["ok"] is False and "turn running right now" in out["reason"]
+    assert spawned == []
+    assert _events(recorder, "turn_ended") == [("turn_ended", SID)]
+    assert recorder.owners == {}
+
+
+def test_a_folder_claimed_for_a_send_that_lost_the_race_is_given_back(
+        folders, home, recorder, spawned, monkeypatch):
+    """Same rule for the other early return: the tick claimed the entry between
+    our read and our `_claim`, so nothing is sent from here."""
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+    monkeypatch.setattr(schedule, "_claim", lambda entry_id, now: None)
+
+    out = schedule.run_now(entry["id"])
+
+    assert out["ok"] is False and "already claimed" in out["reason"]
+    assert spawned == []
+    assert _events(recorder, "turn_ended") == [("turn_ended", SID)]
+
+
+# ================================= M6: the flag can be flipped on at runtime
+
+
+def test_the_first_manager_this_process_builds_rings_the_loop(home, monkeypatch):
+    """Startup registers the factory and, with the queue off, builds nothing —
+    building loads the index and reconciling it pumps. Flip the pref at 11am
+    and this process has no index: the listing reads through `peek()`, which
+    never builds, so every row draws un-queued until something reconciles — a
+    whole poll away.
+
+    So the first build RINGS THE LOOP. Not a reconcile from here: that sweep
+    spawns, and a spawn must never be the side effect of a cancel or a gate
+    check — the tick is the one place where starting work is the point, and it
+    is one second away once the doorbell goes."""
+    from fused_render import queue_manager
+
+    _on(home)
+    fake = RecordingManager()
+    before = queue_manager._factory
+    queue_manager.reset_for_tests(None)
+    queue_manager.set_factory(lambda: fake)
+    schedule._wake.clear()
+    try:
+        assert schedule._qm() is fake
+        assert schedule._wake.is_set(), "the new index waits out a whole poll"
+        schedule._wake.clear()
+        assert schedule._qm() is fake
+        assert schedule._qm() is fake
+    finally:
+        queue_manager.reset_for_tests(None)
+        queue_manager.set_factory(before)
+
+    assert not schedule._wake.is_set(), "rung on every ask, not on the build"
+    assert fake.events == [], "a door reconciled — and a reconcile spawns"
+
+
+def test_a_manager_built_with_the_queue_off_rings_nothing(home, monkeypatch):
+    """A switched-off queue must start nothing and wake nobody."""
+    from fused_render import queue_manager
+
+    _on(home, False)
+    fake = RecordingManager()
+    before = queue_manager._factory
+    queue_manager.reset_for_tests(None)
+    queue_manager.set_factory(lambda: fake)
+    schedule._wake.clear()
+    try:
+        assert schedule._qm() is fake
+    finally:
+        queue_manager.reset_for_tests(None)
+        queue_manager.set_factory(before)
+
+    assert not schedule._wake.is_set()
+    assert fake.events == []

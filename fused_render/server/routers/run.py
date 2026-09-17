@@ -32,8 +32,35 @@ def _queue_target(params: dict) -> str:
     return project_queue.queue_key(target) or ""
 
 
+def _own_folder(manager, folder: str, task_key: str, run_id: str,
+                session_id: str) -> bool:
+    """Take `folder` for this conversation, or answer False because another
+    task holds it. **One call, not a look and a later act** (H3/H4).
+
+    `claim` is the manager's atomic check-and-own: False when somebody else has
+    the tree, True — having filed us — when nobody has, or when the holder is
+    this very conversation under any of its three names (the inbox-absorb case,
+    a second message into a chat that is already running).
+
+    An owner that is ALREADY us is left exactly as it is. The record carries
+    three names and this call may know only one of them, so re-filing it here
+    would drop the other two and tell the conversation's next message that it is
+    standing behind itself.
+    """
+    claim = getattr(manager, "claim", None)
+    if claim is not None:
+        return bool(claim(folder, task_key, run_id, session_id))
+    # While T1's `claim` lands: back-to-back, with nothing in between.
+    if manager.owner(folder) is None:
+        manager.started(folder, task_key, run_id, session_id)
+        return True
+    return any(manager.is_free(folder, name)
+               for name in (task_key, run_id, session_id) if name)
+
+
 def _file_owner(resolved: str, params: dict, result: dict) -> None:
-    """Record who owns the folder the moment a `start` actually spawns.
+    """Record who owns the folder the moment a `start` or a `send` actually
+    spawns.
 
     THIS IS THE REAL SPAWN SITE FOR A CHAT (T3's handoff, 2026-09-17). The
     composer asks `/api/tasks/queue/admit` first, and that files the owner for
@@ -42,6 +69,14 @@ def _file_owner(resolved: str, params: dict, result: dict) -> None:
     still read free. A second nameless send arriving while the first was still
     inside `_start` was let straight through. Here both names exist: `_start`
     has returned the run it created and the session it minted.
+
+    **A `send` files an owner too** (H4, 2026-09-17). Only `start` did, so a
+    follow-up message into an existing conversation — the ordinary case, and the
+    one the Tasks page makes all day — ran a whole turn in a working tree the
+    index still read as free, and the next scheduled message for that tree went
+    straight in beside it. A send names itself (the page carries the session and
+    the run), so it is filed through `claim`: it takes a free tree and it does
+    NOT steal one another task is holding.
 
     The task key is the session when there is one (the Tasks page keys a chat by
     its session) and the run otherwise, which is the name the page's next
@@ -52,7 +87,8 @@ def _file_owner(resolved: str, params: dict, result: dict) -> None:
     try:
         if not _claude_agent(resolved):
             return
-        if str(params.get("action") or "") != "start":
+        action = str(params.get("action") or "")
+        if action not in ("start", "send"):
             return
         key = _queue_target(params)
         if not key:
@@ -60,16 +96,27 @@ def _file_owner(resolved: str, params: dict, result: dict) -> None:
         payload = result.get("result") if isinstance(result, dict) else None
         if not isinstance(payload, dict) or payload.get("error"):
             return
-        run_id = str(payload.get("run_id") or "")
-        if not run_id:
+        run_id = str(payload.get("run_id") or params.get("run_id") or "")
+        session_id = str(payload.get("session_id") or params.get("session_id") or "")
+        if not run_id and not session_id:
             return
         # The MINTED session — `_start` answers `new_session_id or session_id`,
         # so this is the conversation the run belongs to whether it is a fresh
         # chat or a resume.
-        session_id = str(payload.get("session_id") or params.get("session_id") or "")
         from fused_render import queue_manager
 
-        queue_manager.get().started(key, session_id or run_id, run_id, session_id)
+        manager = queue_manager.get()
+        if action == "start":
+            # A `start` that returned a run id IS a process in that tree,
+            # whatever the index believed a moment ago, and it may have MINTED
+            # the session — so this trusts the spawn, overwrites, and re-files
+            # the owner under the better name. A live turn with no owner is the
+            # single state this index exists to prevent.
+            manager.started(key, session_id or run_id, run_id, session_id)
+        else:
+            # A `send` went into a conversation the gate cleared a moment ago;
+            # it claims the tree and accepts a no rather than stealing one.
+            _own_folder(manager, key, session_id or run_id, run_id, session_id)
     except Exception:  # noqa: BLE001 — a filing that fails is not a failed run
         logger.debug("queue: could not file the owner of a start", exc_info=True)
 
@@ -100,19 +147,30 @@ def _folder_busy(resolved: str, params: dict) -> str:
         # keeps, and one that could differ from the admission in the same
         # second.
         manager = queue_manager.get()
-        # The names this send can offer for itself. `is_free` answers True for
-        # a folder this very task owns, which is the inbox-absorb case (a second
-        # message into a conversation that is running) and must not be refused.
-        owner = manager.owner(key)
         logger.debug("queue gate: %s key=%s session=%r run=%r owner=%r",
-                     action, key, session_id, run_id, owner)
-        # BOTH NAMES, not the first one that is set: an anonymous first send is
-        # filed under its run (`queue_manager.started`) and re-filed under the
-        # session once one exists, so a message that carries both must be
-        # matched against both or it can be told it is behind itself.
-        if manager.is_free(key, session_id) or manager.is_free(key, run_id):
+                     action, key, session_id, run_id, manager.owner(key))
+        # THE GATE DECIDES AND OWNS IN ONE CALL (H3/H4, 2026-09-17). It used to
+        # only look: `is_free` here, and the owner filed later — after `_start`
+        # had spawned a process, or, for a `send`, never at all. Everything that
+        # asked in between was told the tree was free. `claim` answers the same
+        # question and files the answer, atomically, so there is no in between.
+        #
+        # BOTH NAMES are handed over, not the first one that is set: an
+        # anonymous first send is filed under its run and re-filed under the
+        # session once one exists, so a message carrying both must be matched
+        # against both or it can be told it is behind itself. Matching is also
+        # what makes the inbox-absorb case pass — a second message into the
+        # conversation that is running is not somebody else.
+        task_key = session_id or run_id
+        if task_key:
+            if _own_folder(manager, key, task_key, run_id, session_id):
+                return ""
+        elif manager.is_free(key, ""):
+            # A brand-new chat's first send has NO name to own under; there is
+            # nothing to claim with. It passes a free folder and `_file_owner`
+            # files it the instant the spawn hands back a run id.
             return ""
-        owner = owner or {}
+        owner = manager.owner(key) or {}
         # A chat that has no session yet is named by the run it started, and the
         # owner carries both — equal run ids are one conversation whatever the
         # session says.
