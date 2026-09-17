@@ -516,3 +516,116 @@ def test_write_files_falls_back_when_the_owner_never_signals_ready(
     run = env({"xclip"}, run=_Run(gi_capable={sys.executable}))
     _linux.write_files(["/home/u/a.txt"])
     assert run.calls[-1][0][0] == "xclip"
+
+
+# ------------------------------------------ owner: readiness token, not "a line"
+
+# Regression for the finding that `_wait_for_owner_ready` used to be
+# `bool(stream.readline())` -- ANY line on the owner's stdout, not just its
+# readiness token, satisfied the handshake. A stray line before the token (a
+# distro Python's sitecustomize warning, a `gi` deprecation notice, a
+# half-written diagnostic before a crash) made `_write_via_owner` report
+# success for a selection that was never set, and skipped the very fallback
+# that would have worked.
+
+_WRONG_TOKEN_OWNER = (
+    "import sys\n"
+    "sys.stdin.buffer.read()\n"
+    "print('not-ready', flush=True)\n"
+    "import time; time.sleep(30)\n"
+)
+
+_STRAY_LINE_THEN_READY_OWNER = (
+    "import sys\n"
+    "sys.stdin.buffer.read()\n"
+    "print('a gi deprecation warning', flush=True)\n"
+    "print('ready', flush=True)\n"
+    "import time; time.sleep(30)\n"
+)
+
+_STRAY_LINE_NEVER_READY_OWNER = (
+    "import sys\n"
+    "sys.stdin.buffer.read()\n"
+    "print('a gi deprecation warning', flush=True)\n"
+    "import time; time.sleep(30)\n"
+)
+
+
+def test_write_files_falls_back_when_the_owner_prints_the_wrong_token(
+        env, tmp_path, monkeypatch):
+    owner = tmp_path / "owner.py"
+    owner.write_text(_WRONG_TOKEN_OWNER)
+    monkeypatch.setattr(_linux, "_owner_script_path", lambda: str(owner))
+    monkeypatch.setattr(_linux, "_OWNER_READY_TIMEOUT_S", 0.3)
+
+    _linux._reset_gi_interpreter_cache()
+    run = env({"xclip"}, run=_Run(gi_capable={sys.executable}))
+    _linux.write_files(["/home/u/a.txt"])
+    assert run.calls[-1][0][0] == "xclip"
+
+
+def test_write_files_tolerates_a_stray_line_before_the_ready_token(
+        env, tmp_path, monkeypatch):
+    # The deliberate design choice: a single stray line before the token is
+    # tolerated rather than instant failure, since it's common enough on a
+    # stock distro Python that failing the whole owner path over a cosmetic
+    # warning would give up a working machine for nothing.
+    owner = tmp_path / "owner.py"
+    owner.write_text(_STRAY_LINE_THEN_READY_OWNER)
+    monkeypatch.setattr(_linux, "_owner_script_path", lambda: str(owner))
+
+    _linux._reset_gi_interpreter_cache()
+    run = env({"xclip"}, run=_Run(gi_capable={sys.executable}))
+    _linux.write_files(["/home/u/a.txt"])
+    assert not any(argv[0] in ("xclip", "wl-copy") for argv, _ in run.calls)
+
+
+def test_write_files_falls_back_when_the_owner_only_ever_prints_stray_lines(
+        env, tmp_path, monkeypatch):
+    # Tolerance is bounded on both axes: a child that never stops writing
+    # junk (as opposed to one that's merely slow) must not turn the wait
+    # into an unbounded read.
+    owner = tmp_path / "owner.py"
+    owner.write_text(_STRAY_LINE_NEVER_READY_OWNER)
+    monkeypatch.setattr(_linux, "_owner_script_path", lambda: str(owner))
+    monkeypatch.setattr(_linux, "_OWNER_READY_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(_linux, "_OWNER_READY_MAX_STRAY_LINES", 2)
+
+    _linux._reset_gi_interpreter_cache()
+    run = env({"xclip"}, run=_Run(gi_capable={sys.executable}))
+    _linux.write_files(["/home/u/a.txt"])
+    assert run.calls[-1][0][0] == "xclip"
+
+
+# --------------------------------------- owner: a not-ready owner is killed
+
+def test_write_files_kills_an_owner_that_never_signals_ready(
+        env, tmp_path, monkeypatch):
+    owner = tmp_path / "owner.py"
+    owner.write_text(_SILENT_OWNER)
+    monkeypatch.setattr(_linux, "_owner_script_path", lambda: str(owner))
+    monkeypatch.setattr(_linux, "_OWNER_READY_TIMEOUT_S", 0.2)
+
+    _linux._reset_gi_interpreter_cache()
+    env({"xclip"}, run=_Run(gi_capable={sys.executable}))
+
+    spawned = []
+    real_popen = _linux.subprocess.Popen
+
+    def _tracking_popen(*a, **k):
+        proc = real_popen(*a, **k)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(_linux.subprocess, "Popen", _tracking_popen)
+
+    _linux.write_files(["/home/u/a.txt"])
+
+    assert len(spawned) == 1
+    # If write_files() didn't kill it, this sleep(30) owner is still alive
+    # and wait() would time out here instead of reaping it instantly.
+    spawned[0].wait(timeout=2)
+    assert spawned[0].returncode is not None, (
+        "a timed-out owner was left running instead of being killed")
+
+

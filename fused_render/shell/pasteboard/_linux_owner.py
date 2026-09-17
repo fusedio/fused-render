@@ -26,6 +26,14 @@ URI_LIST_TARGET = "text/uri-list"
 PLAIN_TARGET = "text/plain"
 PLAIN_UTF8_TARGET = "text/plain;charset=utf-8"
 
+# Must match `_linux._OWNER_READY_TOKEN` exactly (as bytes there, this string
+# encoded). The two modules can't import each other -- see the module
+# docstring, this one runs under a different, possibly gi-less interpreter --
+# so the token is duplicated rather than shared, the same way `path_to_uri`
+# is duplicated above instead of imported. Keep the two literals in step by
+# hand if either changes.
+OWNER_READY_TOKEN = "ready"
+
 
 def path_to_uri(path: str) -> str:
     """Absolute path -> a file:// URI with per-segment percent-encoding.
@@ -62,13 +70,17 @@ def main() -> None:
     """Read `{"paths": [...]}` off stdin, own the selection, and hold it
     until something else takes the clipboard away from us.
 
-    Readiness handshake with the parent: print exactly one line, flush it,
-    then `os.dup2` /dev/null over fd 1. The parent needs that one line to
-    know the selection is actually set before it treats this write as done;
-    after that, nothing must be able to block on this process's stdout ever
-    again, including this process itself — it is resident by design and
-    will hold fd 1 for as long as it owns the clipboard, which on the
-    SUCCESS path is indefinite.
+    Readiness handshake with the parent: print exactly `OWNER_READY_TOKEN`,
+    flush it, then `os.dup2` /dev/null over fd 1. The parent checks the line
+    against that literal token, not merely that a line arrived -- a stray
+    line before this point (a warning some distro Python's sitecustomize
+    prints to stdout, a `gi` deprecation notice) must not be mistaken for
+    readiness; the parent needs the confirmed token to know the selection is
+    actually set before it treats this write as done. After that, nothing
+    must be able to block on this process's stdout ever again, including
+    this process itself — it is resident by design and will hold fd 1 for
+    as long as it owns the clipboard, which on the SUCCESS path is
+    indefinite.
 
     We must exit once we lose ownership — otherwise every copy leaks a
     process that outlives its usefulness. `Gdk.Clipboard`'s `changed` signal
@@ -101,7 +113,7 @@ def main() -> None:
 
     clipboard.connect("changed", _on_changed)
 
-    print("ready", flush=True)
+    print(OWNER_READY_TOKEN, flush=True)
     devnull = os.open(os.devnull, os.O_WRONLY)
     os.dup2(devnull, 1)
     os.close(devnull)
