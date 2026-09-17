@@ -29,8 +29,8 @@ import {
 } from "@platform/lib/drafts";
 import { notify } from "@platform/lib/notifications";
 import { registerLeaveGuard } from "@platform/lib/router";
-import { onDraftChange } from "@shell/tasksPulse";
-import { UnsentMessageModal } from "@platform/ui/UnsentMessageModal";
+import { announceTasksChanged } from "@platform/lib/tasksChanged";
+import { announceDraftsGone, dropListingKeys, onDraftChange } from "@shell/tasksPulse";
 import "../styles/composer.css";
 import type { PermissionMode } from "../protocol/types";
 import type { RunStatus, SendOptions } from "../protocol/controller-api";
@@ -58,6 +58,49 @@ export const HOME_PLACEHOLDER = "Ask Claude…";
  *  real sentence is `schedBlockReason`'s, threaded through `blockedReason`; this
  *  is the floor, so a dead control is never a dead control with nothing to say. */
 export const BLOCKED_SEND_TITLE = "Waiting on a scheduled message";
+
+/** HOW LONG THE READER HAS TO TAKE IT BACK. The platform's own 2.5 s is the
+ *  window for a confirmation nobody has to act on; this card asks a question,
+ *  and a reader who has just landed on another page needs long enough to read
+ *  it, find the button and press it (Akshil, 2026-09-17: "for ~5 s"). */
+export const UNDO_TOAST_MS = 5000;
+
+/**
+ * THE TOAST'S UNDO — the draft this page just wrote, taken back.
+ *
+ * MODULE SCOPE, NOT A CALLBACK, because by the time it is pressed the composer
+ * that saved is usually gone: the press that made the save was a navigation.
+ * Everything it touches outlives the component — the syncer for the key, the
+ * held listing, the drafts channel.
+ *
+ * THE DELETE GOES THROUGH THE KEY'S OWN WRITER, exactly as the List's trash
+ * does (`ScheduleTaskViews.dropDraft`): a bare DELETE fired beside a pending
+ * PUT is the pair that ordering by hand never got right, and the syncer states
+ * the version it is deleting. `removed` rather than `ok` for that function's
+ * reason too — `ok` asks whether the server holds what this page last WANTED,
+ * and the answer must be about the delete.
+ *
+ * THE ROW GOES FIRST (`dropListingKeys`), because the reader pressed a button
+ * and a row that lingers until a poll catches up reads as a press that did
+ * nothing. If the DELETE then refuses, the row is NOT put back by hand: the
+ * draft is still on the server, `listingGen` was never bumped, and the next
+ * listing read paints it again — while the toast says the undo did not take.
+ */
+async function undoSavedDraft(key: string): Promise<void> {
+  dropListingKeys([key]);
+  const sync = draftSyncer(key);
+  sync.markDeleted();
+  const gone = (await sync.handoff()).removed;
+  if (!gone) {
+    notify({ title: "Could not undo — the draft is still in Upcoming", tone: "error" });
+    return;
+  }
+  sync.forget();
+  // …and the editors that record may ALSO be open in hear it now rather than on
+  // the next long-poll — the Tasks card the reader may have opened on it.
+  announceDraftsGone([key]);
+  announceTasksChanged();
+}
 
 /** Where the composer's own controls open: shadcn/Base UI popovers and menus
  *  (`platform/shadcn/ui/popover`, `dropdown-menu`) and any dialog. Focus
@@ -341,10 +384,10 @@ export interface ComposerCardProps {
    * the whole-tray wipe would have taken its files too (Bugbot 4028927464).
    */
   onRestoreAttachments?(paths: string[]): void | Promise<void | (() => void)>;
-  /** Empty the tray. What an answered "unsent message" question does to the
-   *  files, what adopting a record from elsewhere does to them, and what the
-   *  Schedule hop does once they are on the card — the way `take()` does it on
-   *  Send. */
+  /** Empty the tray. What leaving a never-sent chat does to the files once
+   *  they are on the draft, what adopting a record from elsewhere does to them,
+   *  and what the Schedule hop does once they are on the card — the way `take()`
+   *  does it on Send. */
   onDiscardAttachments?(): void;
   /**
    * ⌘V of a picture or a file (T:11719 `shotPasteHandler`). The handler decides
@@ -520,9 +563,16 @@ export function ComposerCard({
   //     message OF — what the words would become is an UPCOMING ROW on the Tasks
   //     card, and a box that autosaved into that list minted a task out of every
   //     half-typed thought. So this one writes nothing on its own and opens
-  //     empty, and the single moment its words can be lost — leaving — asks the
-  //     question instead ("Unsent message": save as draft, discard, cancel), with
-  //     `beforeunload`/`pagehide` under it.
+  //     empty, and the single moment its words can be lost — leaving — SAVES
+  //     them, silently, and says so on a toast with an Undo (Akshil,
+  //     2026-09-17). It used to ask instead ("Unsent message": save as draft,
+  //     discard, cancel), and the dialog was a door held shut in front of a
+  //     reader who had already decided to go somewhere: three buttons for a
+  //     question with one sensible answer, on every hop out of a chat. The
+  //     answer it kept getting is now what happens, and the one press that
+  //     undoes it rides on the confirmation. `pagehide` is the same save with
+  //     no room for a file copy, and there is no native prompt over it any
+  //     more — a reload writes the words and goes.
   //
   //     AND WHAT IT SAVES IS A TASK DRAFT, `draft:<id>`, minted fresh every time
   //     (`composerTaskDraft`; Akshil, 2026-09-16). It used to be this box's
@@ -555,11 +605,11 @@ export function ComposerCard({
    * box is cleared (Akshil, 2026-09-16).
    *
    * There are two roads out of a chat that has never been sent and they can
-   * both run for ONE set of words: the dialog's "Save as draft", and the
-   * `pagehide`/unmount write under it. Minting an id inside each would file the
-   * same half-sentence as two Upcoming rows. Minting one per EPISODE — one set
-   * of words, from the first keystroke to the clear — is the rule that makes
-   * "every save is a new draft" true without making "one save" mean two.
+   * both run for ONE set of words: the leave save, and the `pagehide`/unmount
+   * write under it. Minting an id inside each would file the same half-sentence
+   * as two Upcoming rows. Minting one per EPISODE — one set of words, from the
+   * first keystroke to the clear — is the rule that makes "every save is a new
+   * draft" true without making "one save" mean two.
    */
   const unsentId = useRef("");
   const mintUnsentId = useCallback((): string => {
@@ -963,24 +1013,23 @@ export function ComposerCard({
    *
    * FALSE FOR A SESSION'S COMPOSER, ALWAYS, and that single `!hasSession` is
    * what stands the whole leave-guard half of this file down on that road: the
-   * registration below, the native `beforeunload` prompt, the `pagehide` save
-   * and the unmount save all read this. A box that autosaves has nothing to
-   * lose, and asking "unsent message?" about words already on the server is a
-   * dialog that can only be answered wrong.
+   * registration below, the `pagehide` save and the unmount save all read this.
+   * A box that autosaves has nothing to lose, and a second write of words
+   * already on the server would be one draft too many.
    *
    * The ref is what every out-of-render handler reads, and it is written
    * SYNCHRONOUSLY by `clearComposer` below: a navigation fired in the same tick
    * as the clear must already see a clean box, or the guard it just satisfied
-   * asks the same question again.
+   * saves the same words again.
    */
   const dirty = !hasSession && (!!text.trim() || trayDraft.length > 0);
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
 
-  /** What an answered question leaves behind: an empty box and an empty tray
-   *  (Akshil, 2026-09-16: "after that, the composer is cleared"). Also the
-   *  Schedule hop's last act, for the same reason — those words are on the card
-   *  now, and two copies of one half-written thing is the bug this design ends. */
+  /** What a leave save leaves behind: an empty box and an empty tray (Akshil,
+   *  2026-09-16: "after that, the composer is cleared"). Also the Schedule hop's
+   *  last act, for the same reason — those words are on the card now, and two
+   *  copies of one half-written thing is the bug this design ends. */
   const clearComposer = useCallback(() => {
     textRef.current = "";
     dirtyRef.current = false;
@@ -998,16 +1047,24 @@ export function ComposerCard({
   }, [grow]);
 
   /**
-   * SAVE AS DRAFT — AND IT GOES THROUGH THE KEY'S ONE WRITER (Bugbot review of
-   * caef75eb1, HIGH-1).
+   * LEAVING SAVES THE WORDS AND GOES — AND IT GOES THROUGH THE KEY'S ONE WRITER
+   * (Bugbot review of caef75eb1, HIGH-1).
    *
-   * It used to be a bare `saveChatDraft`, which is a request with no `client`,
-   * no `seq` and no `If-Match` off the syncer's own book — so it could not be
-   * ordered against anything else this page had said about the key, and a
-   * straggling keepalive PUT from a reloaded tab was applied straight over the
-   * card's edits. `setText` + `handoff()` is the same sentence said to the
-   * writer that owns the record: one statement, ordered, versioned, and awaited
-   * until the server actually holds it.
+   * This was the dialog's "Save as draft" button, and it is now simply what
+   * leaving does (Akshil, 2026-09-17). Every other answer the dialog offered was
+   * a worse version of this one: "Discard" threw away words the reader could
+   * have got back from Upcoming in a second, and "Cancel" was a door held shut
+   * in front of someone who had already decided to go. So the hop happens, the
+   * record is written behind it, and the toast carries the single press that
+   * takes it back (`UNDO_TOAST_MS`, `undoSavedDraft`).
+   *
+   * THE ORDER IS THE POINT. The key is minted and the box is emptied
+   * SYNCHRONOUSLY — before the first await — because the navigation that asked
+   * is already on its way and must not be held up by a round trip, and because
+   * `clearComposer` forgets `unsentId`: reading it after the clear would file
+   * these words under the NEXT episode's id. Everything after that runs from a
+   * closure, on module state (`draftSyncer` outlives the editors), so it lands
+   * whether or not this composer is still mounted.
    *
    * `forget()` AFTERWARDS, because the record has left this page: the Tasks
    * card is where those words are edited now, and a syncer that went on wanting
@@ -1018,43 +1075,68 @@ export function ComposerCard({
    * a chat whose record already carries a bound form (the ✎ chip's time, repeat
    * and model) keeps every one of those settings. On a chat with no session it
    * mints a TASK draft instead — see `composerTaskDraft`, and the paragraph
-   * about `new:<file>` in the draft-key section above.
+   * about `new:<file>` in the draft-key section above. (Only the second road
+   * ever gets here: `dirty` is false on a session, so nothing registers a guard
+   * there. The branch is kept because `unloadSave` below has the same fork for
+   * the same reason, and one of the two spelling it differently is how they
+   * start disagreeing.)
    *
    * THE FILES ARE COPIED INTO THE TASK-SHOTS DIR FIRST, the same copy the
    * Schedule hop makes and for the same reason: a chat attachment's path is a
    * tempdir on a 12 h TTL and `POST /api/schedule` refuses any path outside
    * `schedule.shots_dir()`. A draft the card cannot schedule is half a draft.
+   *
+   * AND A FILE THAT DID NOT MAKE IT NO LONGER STOPS THE SAVE (Akshil,
+   * 2026-09-17, reversing Bugbot 4027244608's fail-closed). Refusing to write
+   * was the right answer while a dialog was up to refuse INTO — the reader was
+   * still standing in front of it. Nothing is standing in front of this: the hop
+   * has happened, and "nothing was saved" would mean the words are gone. So the
+   * draft is written with whatever copied, the toast names what did not, and the
+   * reader still has the record to put the picture back on.
    */
-  const saveDraftNow = useCallback(async (): Promise<string | null> => {
+  const saveAndLeave = useCallback(() => {
     const words = textRef.current.trim();
     const carry = (trayRead.current?.() ?? []).filter((a) => !a.pending && !!a.view);
-    const carried = carry.length ? await copyToTaskShots(carry).catch(() => []) : [];
-    // AND IT FAILS CLOSED ON A FILE THAT DID NOT MAKE IT (Bugbot 4027244608).
-    // `copyToTaskShots` is `allSettled` and returns the ones that worked, so a
-    // picture whose upload 500ed simply vanished from the draft and the dialog
-    // said "saved". A draft missing an attachment the reader put in the box is
-    // not the draft they asked to keep, and they are the only one who can decide
-    // what to do about it — so nothing is written and the box stays where it is.
-    if (carried.length !== carry.length) {
-      return "Could not attach every file to that draft — nothing was saved";
-    }
-    // A CHAT THAT HAS NEVER BEEN SENT SAVES A NEW DRAFT EVERY TIME
-    // (`composerTaskDraft`; Akshil, 2026-09-16). It used to write `new:<file>`,
-    // one record per FOLDER, so the second thing the reader saved out of a
-    // folder replaced the first without saying so. There is no chat here to be
-    // the unsent message of — there is an Upcoming task, and there can be as
-    // many of those as the reader writes.
-    const key = hasSessionRef.current
-      ? draftKeyRef.current
-      : taskDraftKey(mintUnsentId());
-    const sync = draftSyncer(key);
-    if (hasSessionRef.current) sync.setText(words, carried);
-    else sync.setTask(composerTaskDraft(words, fileRef.current ?? "", carried));
-    const out = await sync.handoff();
-    if (!out.ok) return "Could not save that draft — you are still in the chat";
-    sync.forget();
-    return null;
-  }, [mintUnsentId]);
+    const onSession = hasSessionRef.current;
+    const key = onSession ? draftKeyRef.current : taskDraftKey(mintUnsentId());
+    const target = fileRef.current ?? "";
+    clearComposer();
+    void (async () => {
+      const carried = carry.length ? await copyToTaskShots(carry).catch(() => []) : [];
+      const lost = carry.length - carried.length;
+      const sync = draftSyncer(key);
+      if (onSession) sync.setText(words, carried);
+      else sync.setTask(composerTaskDraft(words, target, carried));
+      const out = await sync.handoff();
+      if (!out.ok) {
+        // THE ONE OUTCOME WITH NOTHING TO OFFER. The box is already empty and
+        // the page has already moved, so there is no "you are still in the chat"
+        // to say any more — only that the write did not land. An error is
+        // retained by `resolveTier`, so it is still findable in the panel after
+        // the card goes.
+        notify({
+          title: "Could not save that draft",
+          detail: words.slice(0, 80),
+          tone: "error",
+        });
+        return;
+      }
+      sync.forget();
+      notify({
+        title: "Saved as draft",
+        ...(lost
+          ? {
+              detail: `${lost} file${lost === 1 ? "" : "s"} could not be attached`,
+            }
+          : {}),
+        action: { label: "Undo", onClick: () => void undoSavedDraft(key) },
+        // POP ONLY. An Undo that outlived its card would delete a draft the
+        // reader has since gone on writing — see `NotificationInput.retain`.
+        retain: false,
+        popupMs: UNDO_TOAST_MS,
+      });
+    })();
+  }, [clearComposer, mintUnsentId]);
 
   /**
    * THE LAST WRITE A DOOR-SLAM GETS — and it is WORDS ONLY (Bugbot review,
@@ -1100,69 +1182,60 @@ export function ComposerCard({
   }, [mintUnsentId]);
 
   /**
-   * THE QUESTION ITSELF, as a promise the router waits on.
+   * THE GUARD, AND IT ALWAYS SAYS YES.
    *
    * `registerLeaveGuard` is consulted by `navigate`/`navigateUrl` before they
    * push (platform/lib/router.ts), so a folder row, a breadcrumb, the Tasks page
-   * and the notification list all reach this dialog without knowing a composer
+   * and the notification list all reach this save without knowing a composer
    * exists. The two hops that do NOT go through those — closing the explorer's
-   * Claude panel and switching the session inside one pane — ask the same
-   * question through `confirmLeave()`; see ClaudeChat.
+   * Claude panel and switching the session inside one pane — reach it through
+   * `confirmLeave()`; see ClaudeChat, Listing and Preview.
    *
-   * REGISTERED ONLY WHILE THERE IS SOMETHING TO LOSE, which is what keeps every
-   * other navigation in the app synchronous: an empty registry is the fast path
-   * in `navigate`, and a clean composer registers nothing.
+   * IT IS STILL A GUARD rather than nothing at all, because the registry is the
+   * only thing that knows a composer is on screen: without it the panel's ✕ and
+   * the session switch would take the box away with no save under them at all
+   * (the unmount write is the floor, not the plan — it drops the tray). What
+   * changed is the answer: it used to be a promise nobody resolved until a
+   * reader had pressed one of three buttons, and it is now `true`, said in the
+   * same tick, with the words already on their way to the server.
    *
-   * A SECOND ASK WHILE THE DIALOG IS UP IS A NO. Two questions about one box is
-   * not a thing a reader can answer, and the hop that lost the race can be made
-   * again the moment the first one is settled.
+   * SYNCHRONOUS ON PURPOSE. `guarded` awaits this before pushing, so anything
+   * returned here is time the reader spends looking at the page they are
+   * leaving. The save is fired and not awaited for exactly that reason.
    */
-  const answer = useRef<((ok: boolean) => void) | null>(null);
-  const [asking, setAsking] = useState(false);
-  const askBeforeLeaving = useCallback((): Promise<boolean> => {
-    if (!dirtyRef.current) return Promise.resolve(true);
-    if (answer.current) return Promise.resolve(false);
-    return new Promise<boolean>((resolve) => {
-      answer.current = resolve;
-      setAsking(true);
-    });
-  }, []);
+  const saveBeforeLeaving = useCallback((): boolean => {
+    if (!dirtyRef.current) return true;
+    saveAndLeave();
+    return true;
+  }, [saveAndLeave]);
   useEffect(() => {
     if (!dirty) return;
-    return registerLeaveGuard(askBeforeLeaving);
-  }, [dirty, askBeforeLeaving]);
+    return registerLeaveGuard(saveBeforeLeaving);
+  }, [dirty, saveBeforeLeaving]);
 
   /**
-   * A RELOAD OR A TAB CLOSE, WHICH IS THE ONE PLACE THIS PAGE CANNOT ASK.
+   * A RELOAD OR A TAB CLOSE, AND IT IS SILENT TOO.
    *
-   * A browser will not render our dialog on the way out: `beforeunload` may only
-   * raise the NATIVE "leave site?" prompt, with the browser's own words, and
-   * nothing a listener does there can put a React modal on screen. So the two
-   * halves are split:
+   * There used to be a `beforeunload` here raising the browser's native "leave
+   * site?" prompt — the only warning the platform allows a page to give — with
+   * the `pagehide` save under it. It is gone (Akshil, 2026-09-17): an in-app hop
+   * no longer asks, and a reload that stopped to ask would be the same design
+   * saying two different things about the same words. What is left is the half
+   * that was always doing the real work: `pagehide` fires when the page is
+   * actually going, and the words are SAVED rather than dropped — `keepalive` is
+   * what lets that request outlive the document.
    *
-   *   * `beforeunload` raises that native prompt while the box is dirty, which
-   *     is the only warning the platform allows — the reader can still go back;
-   *   * `pagehide` fires when the page is actually going, and there is no
-   *     question left to ask, so the words are SAVED rather than dropped.
-   *     `keepalive` is what lets that request outlive the document.
-   *
-   * The floor is "never lose text silently", and a reload that answered the
-   * native prompt with "leave" would otherwise do exactly that.
+   * The floor is unchanged, and it is the only one that ever mattered: never
+   * lose text silently. Saving it silently is not losing it.
    */
   useEffect(() => {
     if (!dirty || typeof window === "undefined") return;
-    const onBeforeUnload = (ev: BeforeUnloadEvent) => {
-      ev.preventDefault();
-      ev.returnValue = "";
-    };
     const onPageHide = () => {
       if (!dirtyRef.current) return;
       unloadSave({ keepalive: true });
     };
-    window.addEventListener("beforeunload", onBeforeUnload);
     window.addEventListener("pagehide", onPageHide);
     return () => {
-      window.removeEventListener("beforeunload", onBeforeUnload);
       window.removeEventListener("pagehide", onPageHide);
     };
   }, [dirty, unloadSave]);
@@ -1176,21 +1249,12 @@ export function ComposerCard({
    * not, and an unmount is too late for a dialog. So the words are written
    * instead of dropped — the one outcome that is never wrong.
    *
-   * It cannot double-write behind an answered question: both answers clear the
-   * box synchronously (`clearComposer`), so by the time the unmount runs there
-   * is nothing dirty left to save.
+   * It cannot double-write behind a leave save: that clears the box
+   * synchronously (`clearComposer`), so by the time the unmount that followed it
+   * runs there is nothing dirty left to save.
    */
   useEffect(
     () => () => {
-      // A QUESTION THAT IS STILL UP HAS TO BE ANSWERED (Bugbot review, MED-4).
-      // `askBeforeLeaving` handed the router a promise; an unmount with the
-      // dialog on screen used to drop the resolver on the floor, and the
-      // navigation that was waiting on it never happened again — the app simply
-      // stopped responding to that click. A composer that is gone cannot save,
-      // so the answer is "no".
-      const pending = answer.current;
-      answer.current = null;
-      pending?.(false);
       if (!dirtyRef.current) return;
       unloadSave({});
     },
@@ -1588,7 +1652,8 @@ export function ComposerCard({
             // words are edited from now on — keeping a second copy in a box that
             // does not autosave is the disagreement this design ends, and a
             // cleared composer also stands the leave guard down, so the hop's
-            // own navigation is not met with "unsent message?".
+            // own navigation does not save a SECOND draft of what Continue has
+            // just filed.
             //
             // A SESSION'S BOX KEEPS ITS WORDS, because they are the same record:
             // its autosave is the writer the hop just handed off to, and
@@ -1702,48 +1767,6 @@ export function ComposerCard({
         </div>
         </div>
       </form>
-      {/* THE ONE QUESTION THIS BOX ASKS, and only ever about words that are
-          actually in it: the guard above never raises it for a clean composer.
-          Rendered last so it is a sibling of the form rather than a descendant
-          — it portals to the body anyway, and a dialog inside a form is a
-          submit button inside a form. */}
-      {asking ? (
-        <UnsentMessageModal
-          onSave={async () => {
-            const why = await saveDraftNow();
-            if (why) {
-              // THE QUESTION STAYS UP AND THE WORDS STAY HERE. Leaving with
-              // nothing saved is the outcome the dialog exists to prevent, so a
-              // refused write cannot be answered by going anyway — and the toast
-              // says WHICH refusal it was, because "the files would not copy"
-              // and "the record moved under you" are two different next moves.
-              notify({ title: why, tone: "error" });
-              return;
-            }
-            clearComposer();
-            setAsking(false);
-            const resolve = answer.current;
-            answer.current = null;
-            resolve?.(true);
-          }}
-          onDiscard={() => {
-            // NOTHING IS WRITTEN. The reader said these words are not worth
-            // keeping, and a "discard" that left a record behind would be the
-            // button not working.
-            clearComposer();
-            setAsking(false);
-            const resolve = answer.current;
-            answer.current = null;
-            resolve?.(true);
-          }}
-          onCancel={() => {
-            setAsking(false);
-            const resolve = answer.current;
-            answer.current = null;
-            resolve?.(false);
-          }}
-        />
-      ) : null}
     </>
   );
 }

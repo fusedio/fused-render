@@ -2651,13 +2651,16 @@ function ChatBody(props: ChatBodyProps) {
    * Back to the landing and opening another session both swap the conversation
    * inside this pane, so `navigate` never runs and the composer's leave guard is
    * never consulted — and the composer does not autosave, so its unsent text
-   * would simply be gone. They ask the same question the router asks
-   * (`confirmLeave`, platform/lib/router.ts): the dialog is the composer's own,
-   * and a `false` is the reader saying "stay".
+   * would simply be gone. They go through the same `confirmLeave()` the router
+   * does (platform/lib/router.ts), which is what gives the composer the moment
+   * it needs to save those words as a draft and say so.
+   *
+   * IT ANSWERS YES, ALWAYS — the composer saves rather than asking (Akshil,
+   * 2026-09-17) — but a `false` is still honoured: a guard that throws or a
+   * composer unmounted mid-answer must not be able to strand the hop.
    *
    * THE HOP IS A SEPARATE FUNCTION (`backNow`, `openSessionNow`) rather than a
-   * branch inside the handler: a question answered with Cancel must leave the
-   * chat exactly as it was, so nothing the hop does may run before the answer.
+   * branch inside the handler, so nothing it does can run before the answer.
    */
   const backNow = useCallback(() => {
     // A fresh transcript is a fresh card policy: an override from the

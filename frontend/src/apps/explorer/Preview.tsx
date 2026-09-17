@@ -1100,8 +1100,8 @@ function TemplatePreview({
    * is the in-place param sync — so the composer inside simply unmounted, and an
    * unsent message was saved without anybody being told. That is the one door
    * this design hands the reader: the same `confirmLeave()` the chat's own Back
-   * and session-switch ask (platform/lib/router.ts), and a "stay" leaves the
-   * panel exactly where it was.
+   * and session-switch ask (platform/lib/router.ts), which is where the composer
+   * saves those words and says so on a toast with an Undo.
    *
    * Only when CLAUDE is what is going away: every other companion has nothing to
    * lose, and a question in front of a git panel's ✕ is a dialog nobody earned.

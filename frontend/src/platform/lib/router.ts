@@ -296,41 +296,49 @@ function notifyNavigate(): void {
 
 // ---- the leave guard ------------------------------------------------------
 //
-// SOMETHING ON THIS PAGE HOLDS WORK THAT LEAVING WOULD LOSE, and it wants to
-// ask before the push happens. The chat composer is the one caller today: it
+// SOMETHING ON THIS PAGE HOLDS WORK THAT LEAVING WOULD LOSE, and it wants a
+// moment before the push happens. The chat composer is the one caller today: it
 // no longer autosaves what is being typed (design "drafts: one record", the
-// composer's own header), so an in-app hop is the moment its text either
-// becomes a draft or is thrown away — and only the reader can say which.
+// composer's own header), so an in-app hop is the moment its text becomes a
+// draft or stops existing.
+//
+// IT IS NOT A QUESTION ANY MORE (Akshil, 2026-09-17). The composer's guard used
+// to hold the push up behind a three-button dialog; it now writes the draft,
+// raises a toast with an Undo on it and answers `true` in the same tick. The
+// registry stays because it is still the only thing that tells a hop a composer
+// is on screen — and because a guard may still say `false` (a host that
+// unmounts mid-answer), which a caller must go on honouring.
 //
 // A REGISTRY RATHER THAN A PROP, because the hops that can lose the text are
 // spread across the whole shell (a folder row, a breadcrumb, the Tasks page,
 // a notification) and none of them knows a composer exists. `navigate` and
 // `navigateUrl` are the two doors every in-app hop goes through, so the
-// question is asked once, here.
+// guard is consulted once, here.
 //
-// SYNCHRONOUS WHEN NOBODY IS ASKING. An answer needs a modal and so a promise,
-// but the overwhelmingly common case is an empty registry — and every caller in
-// this app was written against a `navigate` that had already pushed by the time
-// it returned. With no guard registered the push happens in the same tick it
-// always did; only a registered guard makes a hop asynchronous.
+// SYNCHRONOUS WHEN NOBODY IS ASKING. The answer is a promise because it may be
+// one, but the overwhelmingly common case is an empty registry — and every
+// caller in this app was written against a `navigate` that had already pushed by
+// the time it returned. With no guard registered the push happens in the same
+// tick it always did; only a registered guard makes a hop asynchronous.
 //
 // `replaceSearch` is deliberately NOT guarded: it is the in-place param sync
-// (sort, search, `_mode`, `_side`), which is not leaving the page and would
-// put the question in front of a reader who only changed a sort order.
+// (sort, search, `_mode`, `_side`), which is not leaving the page and would put
+// a save in front of a reader who only changed a sort order.
 export type LeaveGuard = () => boolean | Promise<boolean>;
 
 const leaveGuards = new Set<LeaveGuard>();
 
 /**
- * Ask me before the next in-app navigation; the answer detaches me.
+ * Consult me before the next in-app navigation; the answer detaches me.
  *
  * SEVERAL MAY BE REGISTERED — two panes, each with a composer — AND ONLY THE
  * NEWEST IS ASKED (Bugbot review of caef75eb1, LOW). Asking all of them put two
- * "unsent message" dialogs on screen for one click, one behind the other, and a
- * reader cannot answer a question they cannot see. The newest registration is
- * the composer the reader most recently had something in, which is the one the
- * click is about; the others keep their words the way every other unasked host
- * does — the composer's own unmount save.
+ * "unsent message" dialogs on screen for one click, one behind the other. The
+ * dialog is gone, but the rule is not: the newest registration is the composer
+ * the reader most recently had something in, which is the one the click is
+ * about, and two toasts for one hop would be the same noise the dialogs were.
+ * The others keep their words the way every unasked host does — the composer's
+ * own unmount save.
  */
 export function registerLeaveGuard(guard: LeaveGuard): () => void {
   leaveGuards.add(guard);
@@ -362,22 +370,20 @@ export async function confirmLeave(): Promise<boolean> {
 }
 
 /**
- * The push itself, run now when nothing is asking and after the answer when
+ * The push itself, run now when nothing is registered and after the answer when
  * something is.
  *
- * A SECOND CLICK WHILE THE QUESTION IS UP IS DROPPED, deliberately. The guard
- * answers a second ask with `false` while its dialog is on screen (see
- * `askBeforeLeaving` in the composer), so this hop simply does not happen —
- * which is the right outcome for a reader who is being asked about the first
- * one. The click can be made again the moment the dialog is answered.
+ * A `false` STILL STOPS THE HOP. Nothing says it today — the composer's guard
+ * saves and returns `true` — but a host that takes a composer away while its
+ * answer is in the air must be able to say so, and a caller that ignored it
+ * would push into a pane that is no longer there.
  *
  * AND THE BROWSER'S OWN BACK/FORWARD IS NOT GUARDED AT ALL (Bugbot review,
  * MED-5). A `popstate` has already happened by the time a listener hears it,
- * and the only ways to put a question in front of it are a pushState sentinel
- * that fights the reader's history or the native `beforeunload` prompt, which
- * does not apply to a same-document hop. The floor under it is the composer's
- * unmount save: Back out of a chat with words in the box and they are written,
- * not lost — silently, which is the trade this door is stuck with.
+ * and the only way to get in front of it is a pushState sentinel that fights
+ * the reader's history. The floor under it is the composer's unmount save: Back
+ * out of a chat with words in the box and they are written, not lost — which is
+ * now what every other door does too.
  */
 function guarded(go: () => void): void {
   if (!leaveGuards.size) {

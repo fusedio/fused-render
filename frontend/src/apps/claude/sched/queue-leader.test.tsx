@@ -346,11 +346,11 @@ describe("the session the leader's run opened", () => {
     // (The ROWS themselves are the server's and come back on the next poll for
     // whatever conversation is on screen — what is cleared here is this page's
     // memory of what IT admitted.)
-    // READ OFF `backNow`, NOT `onBack`: both hops ask the composer's leave
-    // guard first (`confirmLeave`), so `onBack` is the question and `backNow`
-    // is everything that happens once it is answered yes — a Cancel must leave
-    // the chat exactly as it was, which is why nothing the hop does lives in
-    // the handler.
+    // READ OFF `backNow`, NOT `onBack`: both hops consult the composer's leave
+    // guard first (`confirmLeave`, which is where it saves its draft), so
+    // `onBack` is the asking and `backNow` is everything that happens once it
+    // has answered yes — a `false` must leave the chat exactly as it was, which
+    // is why nothing the hop does lives in the handler.
     const back = CHAT.slice(CHAT.indexOf("const backNow = useCallback("), CHAT.indexOf("const onBack ="));
     expect(back).toContain("setWaitingSeeds([]);");
     expect(back).toContain("setAdmitAhead(null);");

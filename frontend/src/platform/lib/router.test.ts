@@ -388,9 +388,10 @@ describe("confirmLeave", () => {
 
   test("ONLY THE NEWEST GUARD IS ASKED", async () => {
     // Bugbot review of caef75eb1, LOW. Asking every registered guard put two
-    // "unsent message" dialogs on screen for one click, one behind the other,
-    // and a reader cannot answer a question they cannot see. The newest
-    // registration is the composer they most recently had something in.
+    // "unsent message" dialogs on screen for one click, one behind the other.
+    // The dialog is gone — the composer saves and says so on a toast — but two
+    // of those for one hop would be the same noise. The newest registration is
+    // the composer they most recently had something in.
     const asked: string[] = [];
     const offOld = registerLeaveGuard(() => {
       asked.push("old");
@@ -412,7 +413,7 @@ describe("confirmLeave", () => {
 
   test("a guard that THROWS is a yes — a broken question is not a locked door", async () => {
     const off = registerLeaveGuard(() => {
-      throw new Error("the dialog blew up");
+      throw new Error("the guard blew up");
     });
     expect(await confirmLeave()).toBe(true);
     off();

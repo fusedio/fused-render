@@ -533,7 +533,8 @@ export default function Listing({
    * replace what is showing without a navigation, so the composer inside used to
    * unmount and have its unsent message saved with nobody told. Preview.tsx
    * carries the same guard for the file sidebar's copy of this panel; both read
-   * `confirmLeave()`, which is the composer's own dialog.
+   * `confirmLeave()`, which is how the composer gets to save those words and
+   * raise its "Saved as draft · Undo" toast before the pane goes.
    *
    * THROUGH TWO REFS rather than the values themselves: `paneSides`/`paneSide`
    * are resolved from the companion gates a few hundred lines below this, and a

@@ -63,6 +63,25 @@ export interface NotificationInput {
    *  actionable-notifications' "every row goes somewhere"). Unused by the
    *  popup card. */
   page?: string;
+  /**
+   * POP, BUT KEEP NOTHING — for an action that is only true WHILE THE CARD IS
+   * UP (the composer's "Saved as draft · Undo").
+   *
+   * `isRetained` normally reads an `action` as "this message is actionable, so
+   * it belongs in the panel", which is right for a Reconnect or an Open. An
+   * Undo is the other kind: it undoes the gesture the reader just made, and a
+   * panel row still offering it tomorrow is a button that deletes a draft they
+   * have since gone on writing. Never promotes — a `tone: "error"` message is
+   * retained whatever this says, for `resolveTier`'s reason.
+   */
+  retain?: boolean;
+  /**
+   * HOW LONG THE POPUP STAYS, when `JOB_POPUP_VISIBLE_MS` is not long enough to
+   * do what the card is asking. The default suits a confirmation nobody has to
+   * act on; a card carrying an Undo is a question with a deadline, and 2.5 s is
+   * not enough of one (Akshil, 2026-09-17).
+   */
+  popupMs?: number;
 }
 
 export interface StoredNotification {
@@ -73,6 +92,8 @@ export interface StoredNotification {
   tone?: "error" | "info";
   action?: NotificationCardAction;
   page?: string;
+  /** The caller's own visible window, or undefined for `JOB_POPUP_VISIBLE_MS`. */
+  popupMs?: number;
   // Dismissed, but still rendered while its exit animation plays (see
   // TOAST_EXIT_MS). Only ever true on the POPUP — a retained row is simply
   // removed outright, it has no exit animation of its own to play.
@@ -193,6 +214,9 @@ function resolveTier(input: NotificationInput): JobTier {
 function isRetained(input: NotificationInput, tier: JobTier): boolean {
   if (tier === "silent") return false;
   if (tier === "attention") return true;
+  // …and a producer may say so OUTRIGHT (`retain`), for an action whose whole
+  // meaning is the moment the card is on screen — see `NotificationInput`.
+  if (input.retain !== undefined) return input.retain;
   return Boolean(input.action || input.page);
 }
 
@@ -205,6 +229,7 @@ function toStored(input: NotificationInput, id: number): StoredNotification {
     tone: input.tone,
     action: input.action,
     page: input.page,
+    popupMs: input.popupMs,
     leaving: false,
   };
 }
@@ -349,7 +374,7 @@ export function notify(input: NotificationInput, replaceId?: number): number {
       // `silent` never pops, and an under-IS_TOP_EMBED `attention` message
       // never auto-expires.
       const neverExpiresHere = effectiveIsTopEmbed() && updated.tier === "attention";
-      if (updated.tier !== "silent" && !neverExpiresHere) armExitTimer(JOB_POPUP_VISIBLE_MS);
+      if (updated.tier !== "silent" && !neverExpiresHere) armExitTimer(visibleMsFor(updated));
       refreshSnapshot();
       emit();
       return replaceId;
@@ -370,7 +395,7 @@ export function notify(input: NotificationInput, replaceId?: number): number {
         exitTimer = null;
         popup = updated;
         if (!(effectiveIsTopEmbed() && updated.tier === "attention")) {
-          armExitTimer(JOB_POPUP_VISIBLE_MS);
+          armExitTimer(visibleMsFor(updated));
         }
       } else {
         // Finding #7b: the new content no longer resolves to a retained
@@ -413,7 +438,7 @@ export function notify(input: NotificationInput, replaceId?: number): number {
   // elsewhere. Every other tier still times out normally even there; only
   // a failure would otherwise vanish with no history anywhere.
   const neverExpiresHere = effectiveIsTopEmbed() && item.tier === "attention";
-  if (item.tier !== "silent" && !neverExpiresHere) armExitTimer(JOB_POPUP_VISIBLE_MS);
+  if (item.tier !== "silent" && !neverExpiresHere) armExitTimer(visibleMsFor(item));
 
   return id;
 }
@@ -422,6 +447,10 @@ export function notify(input: NotificationInput, replaceId?: number): number {
 // top of this file rather than re-declared — the same "one constant, not two
 // spellings of it" rule TOAST_EXIT_MS above follows for the reverse
 // direction (jobs.ts's JobPopupCard importing FROM this module).
+function visibleMsFor(item: StoredNotification): number {
+  return item.popupMs && item.popupMs > 0 ? item.popupMs : JOB_POPUP_VISIBLE_MS;
+}
+
 function armExitTimer(visibleMs: number): void {
   clearTimer(exitTimer);
   exitTimer = setTimer(() => {
