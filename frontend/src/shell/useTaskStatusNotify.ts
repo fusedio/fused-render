@@ -16,6 +16,16 @@
 // without re-running the effect, and prunes entries for tasks no longer
 // listed so a key reused by an unrelated future task starts fresh rather
 // than replaying a stale transition.
+//
+// WATCH START (2026-09-17 fix, see task-status-notify.ts's own header): this
+// document's own "since when have I been polling", in unix seconds — the
+// same unit as a pulse row's `happened_at`. Fixed once, at this hook's own
+// first tick, never advanced again: it is deliberately NOT "the last tick's
+// time", which would make the backfill window a single poll interval wide
+// and miss most short runs again. This is what lets a run that starts and
+// finishes between two polls still notify (task-status-notify.ts's
+// first-sighting-but-after-watch-start branch), without also flooding a
+// fresh tab with a popup for every one of its already-done rows.
 import { useEffect, useRef } from "react";
 import { notify } from "@platform/lib/notifications";
 import { isNarrator } from "@platform/lib/presence";
@@ -26,6 +36,7 @@ import { notificationForTransition } from "@shell/task-status-notify";
 export function useTaskStatusNotify(): void {
   const tasks = useTasksPulseRows();
   const previous = useRef<Map<string, string>>(new Map());
+  const watchStartS = useRef<number | null>(null);
 
   useEffect(() => {
     // Finding 9 (code review 2026-09-16): the narrator check used to short-
@@ -45,6 +56,7 @@ export function useTaskStatusNotify(): void {
     // is handed the narrator role. Only the actual `notify()` call stays
     // gated on `isNarrator()` — see header for why only the elected window
     // may raise these.
+    if (watchStartS.current === null) watchStartS.current = Date.now() / 1000;
     const narrator = isNarrator();
     const prev = previous.current;
     const liveKeys = new Set<string>();
@@ -52,7 +64,7 @@ export function useTaskStatusNotify(): void {
       liveKeys.add(task.key);
       const was = prev.get(task.key);
       const column = taskColumn(task);
-      const input = notificationForTransition(was, task);
+      const input = notificationForTransition(was, task, watchStartS.current);
       prev.set(task.key, column);
       if (narrator && input) notify(input);
     }

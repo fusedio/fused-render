@@ -103,21 +103,54 @@ function titleWithoutCaption(title: string, caption: string): string {
 
 /**
  * The notify() input for ONE task's status transition, or `null` when this
- * pair of statuses is not one the spec names — including no change at all,
- * and `previous === undefined`, a task's first sighting.
+ * pair of statuses is not one the spec names — including no change at all.
  *
- * FIRST SIGHTING IS DELIBERATELY NEVER A TRANSITION: a task already parked,
- * already blocked, or already done the moment this document starts polling
- * is not something that just happened — `attentionRows` (and the Tasks page
- * itself) already show it, and treating a page load as a wave of transitions
- * would flood a fresh tab with popups for every row already on screen.
+ * `previous === undefined` is a task's FIRST SIGHTING — either on this
+ * document's very first poll tick (every row already on screen, including
+ * 200 already-`done` ones) or a task whose key this document simply hadn't
+ * polled before. Those two cases must NOT be treated alike (2026-09-17 fix):
+ * a task already parked, already blocked, or already done at first sighting
+ * is not news BY DEFAULT — `attentionRows` (and the Tasks page itself)
+ * already show it, and treating a page load as a wave of transitions would
+ * flood a fresh tab with popups for every row already on screen. But a run
+ * that STARTS and FINISHES between two polls is ALSO a first sighting of its
+ * key (the pulse is keyed on `session_id`, one row per run — see
+ * SPEC-quiet-notifications.md's tasksPulse.ts note), and treating every first
+ * sighting as silent is exactly why "a finished task usually raises no
+ * notification at all" was reported as a bug: the 10s/30s poll routinely
+ * never sees a short run `in_progress` at all.
+ *
+ * `watchStartS` (unix seconds — same unit as `happened_at`) is the moment
+ * THIS document started watching, fixed once by the caller (the hook) at its
+ * own first tick. It is the only fact that can tell "backfill" (happened
+ * before I started looking) from "news" (happened after): a key arriving
+ * already in a TERMINAL column (`done`/`blocked`) whose own `happened_at` —
+ * "the newest thing that actually happened" on the row, tasks.py's own
+ * phrase, never a future due time — is AFTER `watchStartS` counts as that
+ * terminal transition, exactly as if this document had caught it mid-flight.
+ * A terminal row whose `happened_at` predates `watchStartS` is backfill and
+ * stays silent, which is also what makes a document's own first tick quiet
+ * by construction: the hook sets `watchStartS` to "now" at that very tick, so
+ * nothing already on the very first answer can have a LATER `happened_at`.
+ *
+ * `needs_attention` is deliberately NOT covered by this backfill/news split —
+ * only `done`/`blocked` are, per the spec's own table. A task already parked
+ * on a question at first sighting stays silent here regardless of timing;
+ * `attentionRows` is its permanent, always-current row.
  */
 export function notificationForTransition(
   previous: string | undefined,
   task: TaskPulseTask,
+  watchStartS: number,
 ): NotificationInput | null {
-  if (previous === undefined) return null;
   const column = taskColumn(task);
+  if (previous === undefined) {
+    if ((column === "done" || column === "blocked") && (task.happened_at ?? 0) > watchStartS) {
+      previous = "in_progress";
+    } else {
+      return null;
+    }
+  }
   if (column === previous) return null;
 
   if (column === "needs_attention") {
