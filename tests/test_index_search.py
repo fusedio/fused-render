@@ -241,7 +241,7 @@ def test_search_under_a_star_query_now_globs_instead_of_staying_literal(tmp_path
     cfg = _index(tmp_path, "/r", ["/r/beta.md", "/r/beta.md.bak", "/r/beta.txt"])
     out = search_under(cfg, "/r", q="*.md")
     rels = sorted(e["rel"] for e in out["entries"])
-    # "*.md" -> expand_whitespace_query -> "*.md*" -> matches beta.md AND
+    # "*.md" -> expand_whitespace_query -> "*.md**" -> matches beta.md AND
     # beta.md.bak (the precision-glob loss the spec explicitly accepts).
     assert rels == ["beta.md", "beta.md.bak"]
 
@@ -329,7 +329,7 @@ def test_rank_route_returns_the_resolved_pattern_for_a_glob_hit(home, tmp_path):
     body = client.get("/api/index/rank",
                       params={"root": root, "q": "hello world"}).json()
     assert body["mode"] == "glob"
-    assert body["pattern"] == "**/*hello*world*"
+    assert body["pattern"] == "**/**hello**world**"
 
 
 def test_rank_route_answers_a_timing_breakdown(home, tmp_path):
