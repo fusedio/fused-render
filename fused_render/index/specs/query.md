@@ -112,6 +112,21 @@ this (`_walk_from`) stops at the first `*`-segment, so a wildcard anywhere in an
 early segment ends the walk there and folds the rest into `pattern` rather than
 trying to resolve a glob against the filesystem.
 
+**Fixed this round**: a LEADING run of whitespace in front of one of these
+escape forms is stripped BEFORE `expand_whitespace_query` runs, not after —
+`" ~/Documents"`, `" /etc/hosts"`, `" ../notes"` and a leading-space Windows
+drive path all resolve exactly as they would without the leading space.
+Left unstripped, the leading run collapses into a `**` token glued onto the
+prefix these checks look for (`raw.startswith("~/")` etc.), so `" ~/Documents"`
+used to resolve to `"**~/**Documents**"` — a pattern that no longer starts
+with `~`, so the escape was silently missed and the query fell back to a
+box-relative search that matches nothing. This is narrowly scoped to the four
+escape forms: a leading space on a query with none of their shapes (`" icon"`)
+is untouched and still flips the query into glob mode via the ordinary
+whitespace rule, same as any other whitespace run. A TRAILING run of
+whitespace is never touched by this — the settled rule (point 1 above) is that
+a trailing space counts, and this fix does not reopen that.
+
 `search_ranked` (`server-api.md §7`) **does** score a `mode == "glob"` result when
 its own `ranked` param is true (the default) — `_glob_literal_runs` splits the
 FINAL SEGMENT of the resolved pattern (`_final_segment_pattern`, below — not the

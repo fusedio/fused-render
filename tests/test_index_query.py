@@ -713,6 +713,72 @@ def test_resolve_leading_slash_with_no_real_directory_stays_anchored():
                    "mode": "glob"}
 
 
+def test_resolve_a_leading_space_does_not_break_a_leading_slash_path(tmp_path):
+    """Bug report: a pasted absolute path with an accidental leading space
+    (`" /etc/hosts"`) used to have its `/etc` prefix swallowed by
+    `expand_whitespace_query`'s own whitespace-collapse (the leading space
+    became a `**` token glued onto `etc`) BEFORE `raw.startswith("/")` ever
+    got to look at it — so the path silently fell back to a box-relative
+    substring search instead of resolving as absolute. A leading run of
+    whitespace carries no meaning for the path-escape grammar (unlike a
+    TRAILING one, which must keep counting — see the trailing-space tests
+    above), so it is stripped before the escape is detected."""
+    etc = tmp_path / "etc"
+    etc.mkdir()
+    out = resolve_query("/box", f" {etc}/hosts")
+    assert out == {"base": norm(str(etc)), "pattern": "hosts", "mode": "substring"}
+
+
+def test_resolve_a_leading_space_does_not_break_tilde_escape(_home):
+    """Same bug, `~` form: `" ~/Documents"` used to resolve to
+    `{base: "/box", pattern: "**~/**Documents**"}` (the box root, not home)
+    because the leading space had already been folded into a `**~` token by
+    the time `raw.startswith("~/")` ran."""
+    out = resolve_query("/box", " ~/Documents")
+    assert out == {"base": _home, "pattern": "Documents", "mode": "substring"}
+
+
+def test_resolve_a_leading_space_does_not_break_dotdot_escape(_home):
+    """Same bug, `..` form — must resolve identically to the same query
+    without the leading space."""
+    box = _home + "/a/b"
+    with_space = resolve_query(box, " ../notes")
+    without_space = resolve_query(box, "../notes")
+    assert with_space == without_space
+    assert with_space == {"base": _home + "/a", "pattern": "notes",
+                           "mode": "substring"}
+
+
+def test_resolve_a_leading_space_does_not_break_a_windows_drive_path(monkeypatch):
+    """Same bug, Windows-drive form: a leading space used to swallow the
+    `C:` prefix into the whitespace-collapse's own `**` token before
+    `_DRIVE_ABS.match(raw)` ever ran, so the path fell through to being
+    treated as a bare relative query instead of an absolute drive path."""
+    real_dirs = {"C:/My Files", "C:/My Files/rep"}
+    monkeypatch.setattr(os.path, "isdir", lambda p: p in real_dirs)
+    with_space = resolve_query("/box", " C:/My Files/rep")
+    without_space = resolve_query("/box", "C:/My Files/rep")
+    assert with_space == without_space
+
+
+def test_resolve_a_trailing_space_still_counts_alongside_a_leading_one():
+    """The fix for the leading-space bug must not resurrect the OLD bug
+    (trailing space silently trimmed): a leading space is meaningless, a
+    trailing one is not, and the two must be handled independently."""
+    out = resolve_query("/box", " report ")
+    assert out == {"base": "/box", "pattern": "**/**report**", "mode": "glob"}
+
+
+def test_resolve_a_leading_space_on_a_plain_query_still_flips_to_glob():
+    """A leading space on a query with no path-escape shape (no `~`, no
+    leading `/`, no drive letter, no `..` segment) is NOT a path bug — it is
+    ordinary whitespace, and `expand_whitespace_query`'s own grammar (a
+    leading space widens a plain word into a glob, same as a trailing one)
+    must still apply unchanged."""
+    out = resolve_query("/box", " icon")
+    assert out == {"base": "/box", "pattern": "**/**icon**", "mode": "glob"}
+
+
 # -- stats ---------------------------------------------------------------------
 
 def test_stats_totals_without_breakdown_by_default(tmp_path):

@@ -876,7 +876,13 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
     """The one place a search box's typed string becomes a `(base, pattern,
     mode)` triple. `root` is the box's own root (home sends the home dir, the
     explorer sends the open folder); `raw` is the string exactly as typed,
-    unstripped of anything meaningful.
+    unstripped of anything meaningful — with one exception, below: a LEADING
+    run of whitespace in front of a path-escape (`~`, a leading `/`, a
+    Windows drive letter, a `..` segment) is stripped before that escape is
+    detected, since it carries no meaning for that grammar and would
+    otherwise be folded into a `**` token that hides the very prefix being
+    looked for. A leading run in front of anything else, and any TRAILING
+    run anywhere, stay exactly as typed.
 
     `guard`, when given, is threaded straight through to every `_walk_from`
     call below — see its docstring. `guard=None` (the default; every test in
@@ -964,6 +970,28 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
             blocked_out.append(blocked)
 
     raw = raw or ""
+    # A LEADING run of whitespace carries no meaning for the path-escape
+    # grammar (`~`, a leading `/`, a Windows drive letter, a `..` segment) —
+    # unlike a TRAILING run, which must keep counting (that is the bug this
+    # whole round's earlier fix was for). Left alone, `expand_whitespace_
+    # query` below folds a leading space into a `**` token glued onto the
+    # very prefix (`~/`, `/`, `C:`, `..`) the checks further down look for —
+    # `" ~/Documents"` becomes `"**~/**Documents**"`, which starts with `*`,
+    # not `~`, so the escape is silently missed and the query falls back to
+    # a box-relative search that (almost always) matches nothing. Detected
+    # and stripped here, BEFORE expansion, only when what is left actually
+    # looks like one of those forms — a leading space on a plain query
+    # (`" icon"`) is untouched and keeps flipping into glob mode exactly as
+    # any other whitespace does (`expand_whitespace_query`'s own grammar);
+    # only the path-escape forms are special-cased.
+    raw_lstripped = raw.lstrip()
+    if raw_lstripped != raw and (
+            raw_lstripped == "~"
+            or raw_lstripped.startswith("~/")
+            or raw_lstripped.startswith("/")
+            or _DRIVE_ABS.match(raw_lstripped)
+            or any(seg == ".." for seg in raw_lstripped.split("/"))):
+        raw = raw_lstripped
     # The implicit `**/` decision below is defined to read the RAW typed
     # string (before any of this function's own mutations) for a `/` —
     # captured here, before the drive-path backslash normalization that
