@@ -266,3 +266,77 @@ introduced this session. Out of scope for workstream D; not touched.
 `tests/test_index_freshness.py` (26), `tests/test_index_api.py` (118),
 `tests/test_index_runner.py`, `tests/test_index_store.py`,
 `tests/test_index_rank_concurrency.py`.
+
+## Workstream E — indexing performance harness
+
+**Self-review correction on workstream D's naming.** Before starting E,
+re-checked `test_the_scan_floor_sits_below_the_routers_check_debounce`
+(flagged during D's own self-review as possibly misnamed, since its
+assertion is `FRESHNESS_CHECK_S > MIN_INTERVAL_S + 1`). On re-reading: the
+name is correct as written — "the scan floor [MIN_INTERVAL_S] sits below the
+router's check debounce [FRESHNESS_CHECK_S]" is exactly what that inequality
+says. The earlier self-review flag was itself mistaken; no change made.
+
+**Harness extracted into `tests/index_perf_harness.py`.** Pulled `_tree`
+(synthetic corpus builder), `_prime_index` (real, compacted index primer) and
+the latency-sampling loop out of
+`test_index_rank_concurrency.py::test_rank_route_stays_fast_while_a_real_scan_is_running`
+into an importable module, unchanged in behavior — same signatures, same
+file layout, same DuckDB priming path. Added a `LatencyReport` dataclass
+(`p50`/`p95`/`max` properties over the sampled latencies, computed with
+`statistics.median`/`statistics.quantiles`) with an `assert_ceiling(seconds)`
+method so every call site gets the same two assertions (some overlap
+actually happened; the worst latency stayed under the ceiling) without
+repeating them. `sample_rank_latencies(client, root, running, ...)` is the
+generalized polling loop, parameterized on a `running()` callable so it works
+against a scan started either through `/api/index/scan` or directly through
+`runner.start`/`freshness.note_folder_opened`.
+
+No `scripts/` entry point: that directory's contents (`dev.sh`, the
+packaging/installer scripts, `build_model_mirror.py`) are build/release
+tooling, not ad hoc runnable measurement tools, so there is no existing
+convention for a script like this to follow. The harness stays
+`tests/`-only, importable by any test.
+
+**Existing regression test refactored onto the harness, not rewritten.**
+`test_rank_route_stays_fast_while_a_real_scan_is_running` now imports
+`build_tree`/`prime_index`/`sample_rank_latencies` from the harness and asserts
+`report.assert_ceiling(2.0)` — same corpus size, same ceiling, same behavior.
+Confirmed passing before and after the refactor. Dropped now-unused imports
+(`pyarrow`, `pyarrow.parquet`, `IndexConfig`, `canonical_root`, `Sink`,
+`compact`) from the test module now that their only uses moved into the
+harness.
+
+**New test for the freshness path workstream D made more eager.** Added
+`test_rank_route_stays_fast_while_a_freshness_triggered_rescan_runs`: builds
+a tree and a stale-relative-to-it primed index, calls
+`freshness.note_folder_opened(cfg, root, [root], now=...)` directly (past
+both `MIN_INTERVAL_S` and `QUIET_S`) to start the real on-demand scan the way
+a folder-open freshness check would, finds the resulting live run through
+`runner.active_run`, and samples rank latency against it with the same
+harness and the same 2.0s ceiling. Deliberately bypasses `/api/fs/list`'s
+background thread and `FRESHNESS_DELAY_S` wait — those, and the debounce
+constants themselves, are already covered by `test_index_freshness.py`; this
+test is only about the cost of the scan the check decides to start, which is
+the thing D's loosened constants make happen more often. Confirmed it
+actually observes overlap (does not skip) rather than only asserting on an
+empty sample set.
+
+**Large-corpus variant is opt-in, not default.** Added
+`test_rank_route_stays_fast_while_a_large_real_scan_is_running`
+(`n_dirs=4000, per_dir=150` — ~600k files, close to the corpus size
+`freshness.MIN_INTERVAL_S`'s docstring says it was profiled against),
+marked `@pytest.mark.perf_large`. Added a `perf_large` marker to
+`pyproject.toml` alongside the existing `integration` one and excluded it
+from `addopts` the same way (`-m "not integration and not perf_large"`), so
+`pytest` with no args still runs in seconds; `pytest -m perf_large` opts in
+explicitly. Verified default collection deselects it and explicit
+`-m perf_large --collect-only` finds it. Not run to completion here (that is
+the point — multi-minute by design), only collected.
+
+**Scoped tests run for workstream E (all passing unless noted):**
+`tests/test_index_rank_concurrency.py` (21, 1 pre-existing environment-
+dependent skip), plus a combined run with `tests/test_index_freshness.py`,
+`tests/test_index_api.py`, `tests/test_index_runner.py`,
+`tests/test_index_store.py` and `tests/test_search_index.py` (269 passed, 1
+skipped) to check for cross-file regressions from the import/refactor.
