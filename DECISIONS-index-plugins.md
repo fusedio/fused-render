@@ -439,48 +439,79 @@ test_index_examples_notes test_index_scan` → 484 passed (the 386-strong
 6-file baseline plus the new tests above and every other unit's suite,
 none regressed).
 
+## Unit 10 — `guarded_query.py`'s views made schema-driven
+
+**Design**: `_connect`'s `files` view was hardcoded to the "files" schema in
+exactly one place — the typed empty stand-in used when an index has no
+partitions yet (`_EMPTY_FILES`/`_EMPTY_DIRS`, literal SQL strings). The real
+partition-backed case already worked for any kind: `parquet_src` reads
+whatever columns are actually on disk, and `compact()` (Unit 9) already
+writes a registered kind's own columns. So the only gap was the empty case.
+
+Replaced the two literal strings with `_empty_stand_in(pa, arrow_schema)`,
+which builds `SELECT CAST(NULL AS <sql type>) AS <col>, ... WHERE false`
+from any pyarrow Schema — the same string/int64/int32/float64 → VARCHAR/
+BIGINT/INTEGER/DOUBLE mapping `schemas()` already documents. `_connect` now
+calls `schemas(pa, cfg.kind)` (previously always implicitly "files") and
+builds both views' empty stand-ins from the returned schemas. `dirs` still
+uses the shared, kind-agnostic dir schema — dirs bookkeeping was never
+"files"-specific to begin with, so nothing there needed to change.
+
+The DuckDB lockdown order (`allowed_directories` →
+`enable_external_access=false` → `lock_configuration=true`) is untouched:
+this only changes what the two `CREATE VIEW` statements select, which all
+runs before the lockdown exactly as before.
+
+**Tests**: extended `tests/test_index_guarded_query.py` with a registered
+non-"files" kind (identity + recency columns, mirroring the apps kind) and
+three new tests — a built index's `files` view answers with that kind's own
+columns (passed immediately: proof `parquet_src`'s path already worked), an
+EMPTY index of that kind still reports its own columns via `DESCRIBE` (the
+one that was red — `AssertionError` on the "files" column names — until
+`_empty_stand_in` landed), and `dirs`' schema is unaffected by the kind.
+
+**Verified**: `test_index_guarded_query.py` alone (42 passed) and the full
+prior regression set plus this file plus `test_index_rank_concurrency.py`
+(which spies on `guarded_query._connect`'s connection) → 544 passed, 1
+skipped, nothing regressed.
+
 ## Remaining work (exact resume pointers)
 
 This section was corrected by the following builder session (see prior
 paragraph in git history for what it replaced): the version before that
 said Part 2 was "not started" and listed `config.py`'s `kind` field as
-pending, both stale by the time that session ended. Units 7-9 above have
-closed the "declarable but never indexed/compacted" gap for the file-write
-half of the pipeline. This is the reconciled list, in priority order.
+pending, both stale by the time that session ended. Units 7-10 above have
+closed every Part 1 gap: a registered kind's rows are extracted, shard-
+written, compacted, AND queryable through the sandbox — the same path
+"files" has always had. This is the reconciled list, in priority order.
 
-1. **`guarded_query.py` per-kind views** (Part 1 — not done, now the
-   single biggest remaining risk in Part 1): `_connect`'s `CREATE VIEW
-   files/dirs AS...` and `_EMPTY_FILES`/`_EMPTY_DIRS` need a kind-driven
-   equivalent, so a second index is queryable through the sandbox at all.
-   The DuckDB lockdown order (`allowed_directories` →
-   `enable_external_access=false` → `lock_configuration=true`) MUST NOT
-   change relative order.
-2. **Apps-kind search** (Part 2 tail — not done): the working hypothesis
-   under "Open questions carried forward" below — `resolve_query`/
-   `search_ranked` stay byte-identical for "files"; a new function shapes
-   an apps-kind `inner` subquery and calls the same `_rank_sql`/
-   `_glob_sql` primitives — needs verifying before relying on it.
-3. **Confirm/refuse HTTP route + frontend UI** (Part 2 tail — not done):
+1. **Apps-kind search** (Part 2 tail — not done, now the single biggest
+   remaining risk): the working hypothesis under "Open questions carried
+   forward" below — `resolve_query`/`search_ranked` stay byte-identical for
+   "files"; a new function shapes an apps-kind `inner` subquery and calls
+   the same `_rank_sql`/`_glob_sql` primitives — needs verifying before
+   relying on it.
+2. **Confirm/refuse HTTP route + frontend UI** (Part 2 tail — not done):
    `manifest.propose_index`/`confirm_index`/`refuse_index` have no
    caller yet. Decision #8 ("never silent") needs a route plus a
    confirmation surface in the frontend.
-4. **Router generalization** (Part 1/2 tail — not done):
+3. **Router generalization** (Part 1/2 tail — not done):
    `routers/index.py`'s per-route bare `load_config()` calls need to
    accept an index identifier rather than assuming the single "files"
    store. The spec lists every call site with line numbers; change them
    in lockstep, and keep `fused.fileIndex.search`/`.query` in
    `static/runtime.js` working.
-5. **Management page** (not started): `apps/ai_models` is the precedent
+4. **Management page** (not started): `apps/ai_models` is the precedent
    for a prefix-routed built-in page (sidebar entry + lazy import in
    `App.tsx`) — build this feature's equivalent, and decide whether
    `frontend/src/shell/Indexing.tsx` folds into it or stays as a second,
    non-disagreeing source of truth.
-6. **Part 3 in its entirety** (not started): delete the shortcuts overlay
+5. **Part 3 in its entirety** (not started): delete the shortcuts overlay
    (surface + `frontend/src/platform/lib/shortcuts.ts:116`'s listing
    entry — delete, do not relocate to `?`), build the in-app ⌘K overlay,
    grouped by source with no cross-source score calibration, file search
    reusing `resolve_query`/`search_ranked` verbatim, app search reusing
-   whatever item 2 above produces, per-keystroke cancellation via the
+   whatever item 1 above produces, per-keystroke cancellation via the
    existing `CancelToken`/HTTP 499 machinery.
 
 **Already built and committed, for the avoidance of doubt**: the full
@@ -491,9 +522,11 @@ propose/confirm registry (`manifest.py`), one fully worked reference
 example indexer (`examples/notes_indexer/`), the house-style spec doc
 (`specs/index-plugins.md`, linked from `overview.md`), kind-aware
 `schemas()`/`Sink` (store.py), `IndexKind.extract` wired into every walker
-call site (scan.py), and a schema-driven `_compact_locked` (store.py) — a
-registered kind's rows are now extracted, shard-written, AND compacted into
-queryable partitions by a live scan, the same guarantee "files" has always
-had. What is NOT yet true: nothing outside `store.py` reads those partitions
-back — `guarded_query.py` (item 1 above) is what makes a second index
-queryable at all.
+call site (scan.py), a schema-driven `_compact_locked` (store.py), and
+schema-driven views in `guarded_query.py` — a registered kind's rows are
+now extracted, shard-written, compacted into queryable partitions, AND
+readable through the sandboxed connection by a live scan, the complete
+path "files" has always had end to end. What is NOT yet true: nothing
+outside `guarded_query.py`'s raw SQL surface exposes a second kind to a
+normal, ranked search — `search_ranked`/`resolve_query` (item 1 above) are
+still "files"-only.

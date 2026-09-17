@@ -7,11 +7,10 @@
 > `manifest.py` (`IndexManifest`, the propose/confirm store),
 > `examples/notes_indexer/` (a fully worked third-party reference). A
 > registered kind's rows are now extracted by the live walker
-> (`scan.py`'s `sink.add()` call sites) and compacted into partitions
-> (`store._compact_locked`, §6). Not yet built: a kind-driven
-> `guarded_query.py` (so a second index is queryable through the sandbox) and
-> the confirm/refuse HTTP route — see `Open questions` below and
-> `DECISIONS-index-plugins.md`.
+> (`scan.py`'s `sink.add()` call sites), compacted into partitions
+> (`store._compact_locked`, §6), and queryable through the sandboxed
+> connection (`guarded_query.py`, §7). Not yet built: the confirm/refuse
+> HTTP route — see `Open questions` below and `DECISIONS-index-plugins.md`.
 
 ## 1. The load-bearing rule: host owns the walk, plugin owns the row
 
@@ -189,25 +188,37 @@ The built-in `apps` kind declares `identity_column="path"`,
 `recency_column="updated_at"`. The `notes` example declares
 `identity_column="path"` only (no recency column).
 
+## 7. `guarded_query.py`'s views are schema-driven
+
+`_connect`'s `files` view is built against `cfg.kind`'s own row shape
+(`store.schemas(pa, cfg.kind)`), not a literal "files" schema — so a second
+registered kind's rows are queryable through the same sandboxed connection
+"files" has always used. `dirs` still uses the shared, kind-agnostic dirs
+schema (schemas() documents it as bookkeeping every index carries alike).
+
+The typed empty-table stand-in used when an index has no partitions yet
+(`_empty_stand_in`) is generated from the schema itself — one SQL cast per
+column, string→VARCHAR/int64→BIGINT/int32→INTEGER/float64→DOUBLE, the same
+mapping `schemas()` documents — rather than written by hand per kind, so a
+kind's row shape and its empty stand-in cannot drift apart.
+
+The DuckDB lockdown order (`allowed_directories` →
+`enable_external_access=false` → `lock_configuration=true`) is unchanged:
+this only touches what the two `CREATE VIEW` statements select, run before
+the lockdown as they always were.
+
 ## Open questions
 
-- `guarded_query.py`'s `_connect` (`CREATE VIEW files/dirs AS...`) and its
-  `_EMPTY_FILES`/`_EMPTY_DIRS` stand-ins are not yet kind-driven, so a
-  second index cannot be queried through the sandbox yet. The DuckDB
-  lockdown order (`allowed_directories` → `enable_external_access=false` →
-  `lock_configuration=true`) must not change relative order when this is
-  built.
 - The HTTP route(s) and frontend surface that actually call
   `manifest.propose_index`/`confirm_index`/`refuse_index` from a running
   app and a user click do not exist yet.
 
 ## See also
 
-- `index-store.md` — the on-disk shape a generalized `Sink`/`compact` would
-  need to serve per kind.
+- `index-store.md` — the on-disk shape `Sink`/`compact` serve per kind.
 - `query.md` — where a second kind's search would need its own
   `resolve_query`-equivalent, reusing `_rank_sql`/`_glob_sql` rather than
   duplicating the ranking grammar (see `DECISIONS-index-plugins.md`'s open
   question on this).
-- `scan.md` — the walker a kind's `extract` plugs into, once wired.
+- `scan.md` — the walker a kind's `extract` plugs into.
 - `server-api.md` — where a confirm/refuse HTTP surface would live.
