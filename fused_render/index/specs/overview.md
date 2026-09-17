@@ -26,6 +26,9 @@ that app's specs, updated to the ported reality.
   (`server-api.md`).
 - **Platform support** — the canonical path form every other spec assumes, plus what
   differs on macOS / Linux / Windows (`platform.md`).
+- **Plugins** — the `IndexKind` contract a second index (built-in or
+  third-party) registers against, and the propose/confirm gate on a
+  third-party one (`index-plugins.md`).
 
 ## Architecture at a glance
 
