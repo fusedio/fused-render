@@ -37,6 +37,7 @@ is not a gate, so it is left honest-but-understated rather than gamed with
 tests written for the metric.
 """
 import ast
+import builtins
 import importlib.util
 import inspect
 import json
@@ -1109,6 +1110,180 @@ def test_poll_reports_the_answer_so_a_re_attaching_frame_can_show_it(agent, tmp_
     perm = agent._permissions(run_dir)[0]
     assert perm["tool"] == "AskUserQuestion"
     assert perm["answers"] == {"Alpha or Beta?": "Beta"}
+
+
+def _hold_answer(tmp_path, monkeypatch, run_id, request_id):
+    """The project queue's held-answers store, written the way
+    `fused_render/project_queue.py` writes it, under a tmp FUSED_RENDER_HOME."""
+    home = tmp_path / "fused-render"
+    (home / "claude-sessions").mkdir(parents=True, exist_ok=True)
+    path = home / "claude-sessions" / "held_answers.json"
+    path.write_text(json.dumps({"version": 1, "answers": [
+        {"queue_key": "/work", "session_id": "s", "run_id": run_id,
+         "request_id": request_id, "payload": {"raw": {}}, "at": 1.0}]}))
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(home))
+    return path
+
+
+def test_a_card_whose_answer_is_held_says_so(agent, tmp_path, monkeypatch):
+    """A decision made while another task held the folder is parked by the
+    project queue and written when the folder frees, so nothing is in the run
+    dir yet. Without this the card reads unanswered and a reload invites a
+    second click on a question that has already been answered."""
+    run_dir = _park_a_question(agent, tmp_path, tool="Bash",
+                               tool_input={"command": "ls"})
+    assert agent._permissions(run_dir)[0]["held"] is False
+
+    _hold_answer(tmp_path, monkeypatch, "run", "req-q")
+    perm = agent._permissions(run_dir)[0]
+    assert perm["held"] is True
+    # …and still no decision on disk: held is not answered, it is answered-and-
+    # waiting, which is the distinction the card draws.
+    assert perm["decision"] == ""
+
+
+def test_a_held_answer_for_another_run_is_not_this_run_s(agent, tmp_path,
+                                                         monkeypatch):
+    """Keyed on `(run, request)` like the store itself — a matching request id
+    under a different run must not mark this one."""
+    run_dir = _park_a_question(agent, tmp_path, tool="Bash",
+                               tool_input={"command": "ls"})
+    _hold_answer(tmp_path, monkeypatch, "some-other-run", "req-q")
+    assert agent._permissions(run_dir)[0]["held"] is False
+
+
+def test_an_unreadable_held_store_costs_the_badge_and_not_the_cards(
+        agent, tmp_path, monkeypatch):
+    """One small JSON read per poll, and every way it can fail reads as nothing
+    held: the page's whole transcript is drawn off this list."""
+    run_dir = _park_a_question(agent, tmp_path, tool="Bash",
+                               tool_input={"command": "ls"})
+    path = _hold_answer(tmp_path, monkeypatch, "run", "req-q")
+    path.write_text("{not json")
+    assert agent._permissions(run_dir)[0]["held"] is False
+
+    monkeypatch.delenv("FUSED_RENDER_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "nowhere"))
+    assert agent._permissions(run_dir)[0]["held"] is False
+
+
+def test_a_missing_store_is_a_stat_and_never_an_open(agent, tmp_path,
+                                                     monkeypatch):
+    """`_permissions` is on the poll path and the project queue is a pref most
+    machines never turn on. A file that is not there must not cost an open per
+    poll for a feature nobody has switched on."""
+    run_dir = _park_a_question(agent, tmp_path, tool="Bash",
+                               tool_input={"command": "ls"})
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "no-such-home"))
+    opened = []
+    real_open = builtins.open
+
+    def spy(path, *args, **kw):
+        opened.append(str(path))
+        return real_open(path, *args, **kw)
+
+    monkeypatch.setattr(builtins, "open", spy)
+    assert agent._permissions(run_dir)[0]["held"] is False
+    assert not [p for p in opened if p.endswith("held_answers.json")]
+
+
+def test_a_run_whose_cards_are_all_answered_never_looks_for_the_store(
+        agent, tmp_path, monkeypatch):
+    """`held` is never true beside a `decision` — delivery writes the one and
+    drops the other — so a run with nothing left unanswered has nothing the
+    store could say about it, and asking is pure poll-path cost."""
+    run_dir = _park_a_question(agent, tmp_path, tool="Bash",
+                               tool_input={"command": "ls"})
+    asked = []
+    monkeypatch.setattr(agent, "_held_answers",
+                        lambda run_id: asked.append(run_id) or set())
+
+    # One card still open: the store is the only thing that can answer for it.
+    assert agent._permissions(run_dir)[0]["held"] is False
+    assert asked == ["run"]
+
+    agent._decide("run", "req-q", "allow", "once")
+    asked.clear()
+    assert agent._permissions(run_dir)[0]["decision"] == "allow"
+    assert asked == []
+
+
+def test_a_decided_card_is_never_badged_held(agent, tmp_path, monkeypatch):
+    """`held` is stamped off `(run, request)` and the store outlives delivery by
+    a moment: the decision is written first and the record dropped after, so a
+    poll landing between them — or a crash that left a stale record behind —
+    put "Answer queued" on a card whose answer is on disk (round-3 review,
+    2026-09-12). The decision wins; only an undecided card can be held."""
+    run_dir = _park_a_question(agent, tmp_path, tool="Bash",
+                               tool_input={"command": "ls"})
+    with open(os.path.join(agent._perm_dir(run_dir), "req-b.req.json"), "w") as fh:
+        json.dump({"id": "req-b", "tool": "Bash", "input": {"command": "ls -l"}}, fh)
+    agent._decide("run", "req-q", "allow", "once")
+    _hold_answer(tmp_path, monkeypatch, "run", "req-q")
+
+    rows = {row["id"]: row for row in agent._permissions(run_dir)}
+    assert rows["req-q"]["decision"] == "allow"
+    assert rows["req-q"]["held"] is False
+    # …and the open card beside it is still looked up, which is why the store
+    # was read at all.
+    assert rows["req-b"]["held"] is False
+
+
+def test_a_held_store_from_another_version_holds_nothing(agent, tmp_path,
+                                                         monkeypatch):
+    """`project_queue._answers` reads its own file this way and this half has to
+    agree: a layout neither side can half-understand must not be guessed at, or
+    a card gets badged off fields somebody invented."""
+    run_dir = _park_a_question(agent, tmp_path, tool="Bash",
+                               tool_input={"command": "ls"})
+    path = _hold_answer(tmp_path, monkeypatch, "run", "req-q")
+    assert agent._permissions(run_dir)[0]["held"] is True
+
+    state = json.loads(path.read_text())
+    state["version"] = agent.HELD_ANSWERS_VERSION + 1
+    path.write_text(json.dumps(state))
+    assert agent._permissions(run_dir)[0]["held"] is False
+
+    del state["version"]
+    path.write_text(json.dumps(state))
+    assert agent._permissions(run_dir)[0]["held"] is False
+
+
+def test_the_two_spellings_of_the_held_store_are_one_file(agent, tmp_path,
+                                                          monkeypatch):
+    """THE PATH IS SPELLED TWICE ON PURPOSE and nothing in either module can
+    notice the two drifting apart.
+
+    `fused_render/project_queue.py` writes it as `HELD_ANSWERS_FILE` under
+    `tasks_store.STATE_DIR`; agent.py re-derives it from `$FUSED_RENDER_HOME`
+    because a TEMPLATE may not import fused_render (SPEC PY-15). So this writes
+    through the one and reads through the other, which is the only test that
+    fails when one of them moves. The version stamp is the same pin at the level
+    of the file's shape."""
+    from fused_render import project_queue, tasks_store
+
+    house = tmp_path / "fused-render"
+    house.mkdir()
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(house))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    # STATE_DIR is read off the env AT IMPORT, so it is recomputed here exactly
+    # the way tasks_store computes it — that expression is half of what is
+    # under test.
+    monkeypatch.setattr(tasks_store, "STATE_DIR",
+                        os.path.join(os.environ["FUSED_RENDER_HOME"],
+                                     "claude-sessions"))
+    assert project_queue.STORE_VERSION == agent.HELD_ANSWERS_VERSION
+
+    run_dir = _park_a_question(agent, tmp_path, tool="Bash",
+                               tool_input={"command": "ls"})
+    assert agent._permissions(run_dir)[0]["held"] is False
+
+    assert project_queue.hold_answer("/work", "sess-a", "run", "req-q",
+                                     {"raw": {}}) is not None
+    perm = agent._permissions(run_dir)[0]
+    assert perm["held"] is True
+    # …and nothing was written to the run dir: held is answered-and-waiting.
+    assert perm["decision"] == ""
 
 
 def test_the_answers_param_reaches_decide_as_a_json_string(agent, tmp_path):

@@ -43,6 +43,7 @@ const app = (path: string, over: Record<string, unknown> = {}) => ({
   exists: true,
   running: false,
   unread: false,
+  queued: 0,
   iconUrl: null,
   ...over,
 });

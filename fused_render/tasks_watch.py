@@ -577,14 +577,17 @@ def _pid_alive_windows(pid: int) -> bool:
 
 
 def _wake_schedule() -> None:
-    """Tell the scheduler a session may just have freed.
+    """Tell the scheduler a folder may just have freed.
 
     THIS IS THE "wake, not wait" half of the queue. This loop already stats the
-    live registry once a second, so it learns that a run stopped — status left
-    RUNNING_STATUSES, the row departed, the pid died — long before the
-    scheduler's own 30-second timer would. Without the ring the next queued
-    task starts up to half a minute after the one in front of it finished,
-    which reads as a queue that is not moving.
+    live registry and this app's own run dirs once a second, so it learns the
+    two events that hand a folder over — a run STOPPED (status left
+    RUNNING_STATUSES, the row departed, the pid died) and a permission card
+    RAISED or ANSWERED (a run parked on a card holds nothing, so raising frees
+    the folder and answering takes it back) — long before the scheduler's own
+    30-second timer would. Without the ring the next queued task starts up to
+    half a minute after the one in front of it freed the folder, which reads as
+    a queue that is not moving.
 
     A HINT, never a mechanism: `schedule.wake` only shortens the wait, every
     rule about what fires stays in `schedule.tick`, and a ring that finds
@@ -858,7 +861,18 @@ def tick() -> set[str]:
     with _cond:
         anything_live = bool(_registry) or bool(_marks)
     if anything_live:
-        keys |= _read_permission_cards()
+        card_keys = _read_permission_cards()
+        keys |= card_keys
+        if card_keys:
+            # A card is the OTHER way a folder changes hands, and until now the
+            # only one nothing rang for: raising it parks the run (the folder is
+            # free — `project_queue.holders` does not count a `waiting` run),
+            # answering it takes the folder back. Akshil's QA, 2026-09-16: a task
+            # queued behind a blocked one waited out the scheduler's 30-second
+            # poll. One ring per tick, and never on the priming pass — a run's
+            # first sighting is a baseline that names nobody, so `card_keys` is
+            # empty there.
+            _wake_schedule()
     # LAST, so a mark whose registry row arrived in the same tick is retired
     # against a listing that already knows better. The row does not flicker
     # either way — `_live` reads `busy` over a mark — but the announcement

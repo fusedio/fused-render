@@ -15,7 +15,9 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 import type { Task } from "@platform/lib/api";
 
-const { useRecentTasks, useSessionTask } = await import("./useRecentTasks");
+const { skippedOverride } = await import("@shell/tasks-lib");
+const { noteQueueClaim, resetQueueClaims, useRecentTasks, useSessionTask } =
+  await import("./useRecentTasks");
 type SubscribeTasks = import("./useRecentTasks").SubscribeTasks;
 
 /** The subscriptions this mount opened, newest last, each with the callback the
@@ -63,6 +65,9 @@ const mounted: ReactTestRenderer[] = [];
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
   subs.length = 0;
+  // The claim store is MODULE state, exactly as the seeds below are: it outlives
+  // every renderer in a `bun test` process and has to be put back by hand.
+  resetQueueClaims();
 });
 
 interface Harness {
@@ -201,6 +206,51 @@ test("a lane's DRAFTS come first, and ties keep the server's order", async () =>
     laned("later", "upcoming"),
   ]);
   expect(h.rows()?.map((t) => t.key)).toEqual(["draft", "later", "a", "b"]);
+});
+
+// ---- RUN NEXT's claim (Akshil QA, 2026-09-16) -------------------------------
+// The Recent row IS the Tasks row, so its skip is the Tasks page's skip — and
+// the claim `TaskNode.skip` hands back had nowhere to go here. The press put a
+// request on the wire and the row could not change until the next full listing,
+// which reads as a button that does nothing.
+
+test("a skip's claim paints the row, ahead of the sort", async () => {
+  const h = await mount("/tpl", "/repo/x.py");
+  const waiting = laned("q", "queued", { queue_position: 4, queue_priority: false });
+  await h.serve([waiting]);
+  expect(h.rows()?.[0].queue_position).toBe(4);
+
+  // What `performSkip` answers with (tasks-lib.skippedOverride): head of the
+  // line, priority on, and nothing claimed about the run in flight.
+  await act(async () => noteQueueClaim(skippedOverride(waiting)));
+  expect(h.rows()?.[0].queue_position).toBe(1);
+  expect(h.rows()?.[0].queue_priority).toBe(true);
+  expect(h.rows()?.[0].status).toBe("queued");
+});
+
+test("…and the next listing retires it, right or wrong", async () => {
+  const h = await mount("/tpl", "/repo/x.py");
+  const waiting = laned("q", "queued", { queue_position: 4, queue_priority: false });
+  await h.serve([waiting]);
+  await act(async () => noteQueueClaim(skippedOverride(waiting)));
+  expect(h.rows()?.[0].queue_position).toBe(1);
+
+  // One answer about a key is the whole life of a claim about that key
+  // (tasks-lib.expireQueueOverrides) — otherwise a claim the server disagreed
+  // with would survive every poll and the row could never be corrected.
+  await h.serve([laned("q", "queued", { queue_position: 4, queue_priority: false })]);
+  expect(h.rows()?.[0].queue_position).toBe(4);
+  expect(h.rows()?.[0].queue_priority).toBe(false);
+});
+
+test("a claim for a key this pane has no row for changes nothing", async () => {
+  const h = await mount("/tpl", "/repo/x.py");
+  await h.serve([laned("a", "in_progress")]);
+  await act(async () =>
+    noteQueueClaim(skippedOverride(laned("elsewhere", "queued"))),
+  );
+  expect(h.rows()?.map((t) => t.key)).toEqual(["a"]);
+  expect(h.rows()?.[0].status).toBe("in_progress");
 });
 
 // ---- the header's own row ---------------------------------------------------
