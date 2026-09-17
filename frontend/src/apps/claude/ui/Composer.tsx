@@ -1416,6 +1416,10 @@ export function ComposerCard({
   useEffect(() => {
     const form = heldFormRef.current;
     if (hasSession || !draftKey || !form || heldVersion === undefined) return;
+    // A KEY THIS BOX HAS ALREADY SPENT — sent, or handed to the card — is not
+    // re-adopted when its own write echoes back through the listing
+    // (Bugbot 4039901300): the box was emptied on purpose.
+    if (settledKey.current === draftKey) return;
     const shown = heldShownRef.current;
     if (shown !== undefined && heldVersion <= shown) return;
     heldShownRef.current = heldVersion;
@@ -1796,6 +1800,10 @@ export function ComposerCard({
           }}
           onBlur={() => {
             focusedRef.current = false;
+            // A SENTENCE ENDS WHEN THE READER LEAVES THE BOX (Bugbot
+            // 4039858841): the held road's "mid-sentence" flag is not a
+            // permanent claim, and an idle box takes remote news again.
+            typedRef.current = false;
             // LEAVING THE BOX SENDS WHAT IS PENDING — on the road that has
             // something pending. The reader looking away is the likeliest moment
             // for a tab to be closed, a laptop to be shut or a link to be
