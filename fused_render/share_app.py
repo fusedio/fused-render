@@ -136,11 +136,16 @@ def drop_record(app_id: str) -> None:
             _write_records(records)
 
 
-def _app_lock(app_id: str) -> threading.Lock:
+def _app_lock(path: str) -> threading.Lock:
+    """One lock per app FOLDER. Keyed on the path rather than the id because a
+    first share has no id until `export_app_file` mints one a moment later —
+    two overlapping first shares keyed on `aid or path` would take different
+    locks and both push the same canvas."""
+    key = os.path.normcase(os.path.abspath(path))
     with _APP_LOCKS_GUARD:
-        lock = _APP_LOCKS.get(app_id)
+        lock = _APP_LOCKS.get(key)
         if lock is None:
-            lock = _APP_LOCKS[app_id] = threading.Lock()
+            lock = _APP_LOCKS[key] = threading.Lock()
         return lock
 
 
@@ -230,7 +235,11 @@ def _run_shim(request: dict, timeout: float) -> tuple[dict | None, JSONResponse 
         message = cli_error(proc.stderr, "sharing failed")
         low = message.lower()
         if "not signed in" in low or "re-authenticate" in low or "refresh your fused credentials" in low:
-            return None, _error(message, 401)
+            # `code` so the dialog can drop to its sign-in view: the
+            # credentials FILE exists (status says logged_in) but the token
+            # behind it is dead, and only this call can tell the two apart.
+            return None, JSONResponse({"error": message, "code": "not_logged_in"},
+                                      status_code=401)
         return None, _error(message, 502)
     try:
         out = json.loads(proc.stdout or "{}")
@@ -308,7 +317,7 @@ def api_share_publish(
         if not preview_bytes or len(preview_bytes) > appfile.MAX_PREVIEW_BYTES:
             preview_bytes = None
 
-    lock = _app_lock(aid or path)
+    lock = _app_lock(path)
     if not lock.acquire(blocking=False):
         return JSONResponse({"error": "this app is already being shared", "code": "busy"},
                             status_code=409)
@@ -414,7 +423,7 @@ def api_share_remove(body: dict = Body(...), x_fused: str | None = Header(defaul
         return _error("this app has never been shared")
     if not _logged_in():
         return _not_signed_in()
-    lock = _app_lock(aid)
+    lock = _app_lock(path)
     if not lock.acquire(blocking=False):
         return JSONResponse({"error": "this app is already being shared", "code": "busy"},
                             status_code=409)

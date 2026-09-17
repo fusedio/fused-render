@@ -71,6 +71,14 @@ export function ShareAppModal({
   const loginStampRef = useRef<number | null>(null);
   const pollRef = useRef<number | null>(null);
 
+  // `status.logged_in` is the credentials FILE existing (share_app.py, like
+  // canvases.py). A file can exist and be dead — the token behind it refused
+  // (a 401 with `code: not_logged_in` from publish/lookup/remove) — and only
+  // that call can tell. Remembered here so the dialog drops to its sign-in
+  // view; cleared when a sign-in completes (the file's stamp changes).
+  const [denied, setDenied] = useState(false);
+  const signedIn = !!status && status.logged_in && !denied;
+
   const refresh = useCallback(async () => {
     try {
       const s = await getShareStatus(app.path);
@@ -83,28 +91,41 @@ export function ShareAppModal({
     }
   }, [app.path]);
 
-  // First read, then — when signed in with no local record — ask Fused once
-  // whether a canvas for this app already exists somewhere.
-  useEffect(() => {
-    let cancelled = false;
-    void refresh().then((s) => {
-      if (cancelled || !s || !s.logged_in || s.shared || !s.can_share || !s.app_id) return;
+  // Ask Fused once whether a canvas for this app already exists somewhere
+  // (shared from another machine, or before the local record was lost).
+  // `goneRef` stands in for an effect's `cancelled` flag so a lookup started
+  // after a sign-in is dropped on unmount the same way as the mount one.
+  const goneRef = useRef(false);
+  const lookup = useCallback(
+    (s: ShareStatus | null) => {
+      if (!s || !s.logged_in || s.shared || !s.can_share || !s.app_id) return;
       setLooking(true);
       lookupShare(app.path)
         .then((r) => {
-          if (!cancelled && r.found && r.shared) setShared(r.shared);
+          if (!goneRef.current && r.found && r.shared) setShared(r.shared);
         })
-        .catch(() => {
-          /* a failed lookup is not an error worth a sentence — Share still works */
+        .catch((e: Error & { code?: string }) => {
+          // A failed lookup is not an error worth a sentence — Share still
+          // works — EXCEPT a refused token, which the sign-in view must show.
+          if (!goneRef.current && e.code === "not_logged_in") setDenied(true);
         })
         .finally(() => {
-          if (!cancelled) setLooking(false);
+          if (!goneRef.current) setLooking(false);
         });
+    },
+    [app.path],
+  );
+
+  // First read, then the remote lookup when signed in with no local record.
+  useEffect(() => {
+    goneRef.current = false;
+    void refresh().then((s) => {
+      if (!goneRef.current) lookup(s);
     });
     return () => {
-      cancelled = true;
+      goneRef.current = true;
     };
-  }, [app.path, refresh]);
+  }, [refresh, lookup]);
 
   useEffect(
     () => () => {
@@ -132,7 +153,13 @@ export function ShareAppModal({
           if (pollRef.current !== null) window.clearInterval(pollRef.current);
           pollRef.current = null;
           setBusy(null);
-          void refresh();
+          setDenied(false);
+          // The same two reads the open does: a freshly signed-in account
+          // may already hold a canvas for this app from another machine, and
+          // the primary action must then be its link, not a second Share.
+          void refresh().then((s) => {
+            if (!goneRef.current) lookup(s);
+          });
         } else if (!s.login_in_flight) {
           if (pollRef.current !== null) window.clearInterval(pollRef.current);
           pollRef.current = null;
@@ -155,6 +182,7 @@ export function ShareAppModal({
     } catch (e) {
       const error = e as Error & { code?: string };
       if (error.code === "not_logged_in") {
+        setDenied(true);
         void refresh();
       }
       setErr(error.message);
@@ -177,7 +205,9 @@ export function ShareAppModal({
       setArmed(false);
       notify({ title: "Share removed", tone: "info" });
     } catch (e) {
-      setErr((e as Error).message);
+      const error = e as Error & { code?: string };
+      if (error.code === "not_logged_in") setDenied(true);
+      setErr(error.message);
     } finally {
       setBusy(null);
     }
@@ -207,7 +237,7 @@ export function ShareAppModal({
         <code>pip install &quot;fused-render[fused]&quot;</code>.
       </p>
     );
-  } else if (status && !status.logged_in) {
+  } else if (status && !signedIn) {
     body = (
       <>
         <p>
@@ -307,7 +337,7 @@ export function ShareAppModal({
   }
 
   const footer =
-    status && status.can_share && status.cli_found && status.logged_in ? (
+    status && status.can_share && status.cli_found && signedIn ? (
       shared ? (
         <>
           <button

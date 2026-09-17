@@ -45,14 +45,34 @@ export interface ShareStatus {
 export const getShareStatus = (path: string) =>
   getJson<ShareStatus>("/api/share/status?path=" + encodeURIComponent(path));
 
+export type ShareError = Error & { status?: number; code?: string };
+
+// `postJson` throws an HttpError with the status but drops the body's `code`.
+// The dialog branches on one code — `not_logged_in`, which the server sends
+// as a 409 (no credentials file) or a 401 (a file whose token was refused) —
+// so both are folded onto the code here and the dialog reads one field.
+function withAuthCode<T>(p: Promise<T>): Promise<T> {
+  return p.catch((e: ShareError) => {
+    // 409 is also `busy`; the body code is gone, so the sentence decides.
+    if (e.status === 401 || (e.status === 409 && /not signed in/i.test(e.message))) {
+      e.code = e.code ?? "not_logged_in";
+    }
+    throw e;
+  });
+}
+
 export const lookupShare = (path: string) =>
-  postJson<{ found: boolean; app_id: string | null; shared?: SharedAppRecord }>(
-    "/api/share/lookup",
-    { path },
+  withAuthCode(
+    postJson<{ found: boolean; app_id: string | null; shared?: SharedAppRecord }>(
+      "/api/share/lookup",
+      { path },
+    ),
   );
 
 export const removeShare = (path: string) =>
-  postJson<{ ok: boolean; deleted_canvas: boolean }>("/api/share/remove", { path });
+  withAuthCode(
+    postJson<{ ok: boolean; deleted_canvas: boolean }>("/api/share/remove", { path }),
+  );
 
 /**
  * Publish (or update) the share. Multipart like the export POST: the optional
@@ -80,7 +100,7 @@ export async function publishShare(
   if (!res.ok) {
     const err = new Error(
       typeof body?.error === "string" ? body.error : `sharing failed (${res.status})`,
-    ) as Error & { status?: number; code?: string };
+    ) as ShareError;
     err.status = res.status;
     err.code = typeof body?.code === "string" ? body.code : undefined;
     throw err;

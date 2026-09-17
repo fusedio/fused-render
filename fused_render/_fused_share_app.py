@@ -70,8 +70,18 @@ def canvas_name(app_id: str) -> str:
     return app_id.replace("-", "_")
 
 
-def udf_slug(name: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9_]+", "_", name).strip("_")[:40] or "app"
+def udf_slug(app_id: str) -> str:
+    """The UDF name, and so the last path segment of the link.
+
+    Derived from the APP ID, never from the folder name: the link is
+    `…/<share_token>/<slug>.html`, and a slug that followed the folder would
+    change when the folder is renamed or the app is shared from a machine
+    where it sits under another name — and `import_collection_toml_zip`
+    replaces the canvas's UDF set, so every link already handed out would die
+    while the token stayed the same. The id is `<kebab name>-<8 hex>`, so the
+    slug still reads as the app's name.
+    """
+    slug = re.sub(r"[^A-Za-z0-9_]+", "_", app_id).strip("_")[:60] or "app"
     if slug[0].isdigit():
         slug = "app_" + slug
     return slug
@@ -194,7 +204,7 @@ def publish(req: dict) -> dict:
     api = get_api()
     handle = _handle()
     cname = canvas_name(app_id)
-    slug = udf_slug(name)
+    slug = udf_slug(app_id)
 
     remote = f"{_remote_prefix(handle, app_id)}{_sha10(local)}/{os.path.basename(local)}"
     fused.api.upload(local, remote)
@@ -251,7 +261,7 @@ def lookup(req: dict) -> dict:
     if not info:
         return {"found": False}
     token = info.get("share_token")
-    slug = udf_slug(req.get("name") or "")
+    slug = udf_slug(req["app_id"])
     out = {
         "found": True,
         "canvas_id": info["id"],
