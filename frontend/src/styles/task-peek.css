@@ -23,25 +23,21 @@
      asked for; it was 45 for a day, borrowed from the chat's identity row back
      when the peek wore that row (design.md, Header + list state v2). */
   --peek-head-h: 44px;
-  /* ONE HEADER CONTROL'S FOOTPRINT — the × and the ⋮ are squares of this, and
-     it is also the inset the app preview is given left and right (Akshil,
-     2026-09-14 — design.md, Polish batch 4, item 7: "left/right padding around
-     the preview = one icon-button width").
-
-     ONE VAR RATHER THAN TWO NUMBERS, because the point of the measure is that
-     the preview's edge lines up with the header's: the app's frame starts where
-     the × ends. `shell/peek-preview.ts` `PREVIEW_INSET` carried 28 for
-     the scale arithmetic, which is the one place a stylesheet cannot reach. */
+  /* ONE HEADER CONTROL'S FOOTPRINT — the × and the ⋮ are squares of this.
+     (Until 2026-09-16 it also set the preview's own side inset — Akshil,
+     2026-09-14, design.md, Polish batch 4, item 7 — but that inset is now its
+     own hairline var below, decoupled from the header's icon size.) */
   --peek-icon-w: 28px;
-  /* The preview's side inset: the header's 10px padding plus one icon button,
-     so the app's left edge sits where the × ends and its right edge where the
-     ⋮ begins (Akshil, 2026-09-14). `shell/peek-preview.ts` `PREVIEW_INSET`
-     carries the same 38. */
-  --peek-preview-inset: 38px;
-  /* Air above and below the preview card. `shell/peek-preview.ts`
-     `PREVIEW_PAD_Y` carries the same 12 — the box's height includes it, so the
+  /* The preview's side inset. Was 38px (the header's 10px padding plus one
+     icon button, so the app's left edge sat where the × ends and its right
+     edge where the ⋮ begins — Akshil, 2026-09-14); Akshil, 2026-09-16, cut it
+     to a hairline. `shell/peek-preview.ts` `PREVIEW_INSET` carries the same 1. */
+  --peek-preview-inset: 1px;
+  /* Air above and below the preview card. Was 12px; Akshil, 2026-09-16, cut
+     to a hairline, matching the side inset above. `shell/peek-preview.ts`
+     `PREVIEW_PAD_Y` carries the same 1 — the box's height includes it, so the
      app's viewport is sized to the card, not the box. */
-  --peek-preview-pad-y: 12px;
+  --peek-preview-pad-y: 1px;
   /* THE NARROWEST A WALL CARD IS WORTH DRAWING. Below about this the card's own
      head (a ring, a number, a folder chip) stops fitting on one line and the
      conversation inside it is a column of two-word lines. The wall drops a

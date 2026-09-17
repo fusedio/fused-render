@@ -5,8 +5,6 @@ export {
   ComposerCard,
   CHAT_PLACEHOLDER,
   HOME_PLACEHOLDER,
-  FOOTNOTE_LEAD,
-  FOOTNOTE_TAIL,
 } from "./Composer";
 export type {
   ComposerProps,
@@ -35,6 +33,7 @@ export {
 export { Topbar } from "./Topbar";
 export type { TopbarProps } from "./Topbar";
 export { Kebab, forgetTaskCaches, knownTaskId, useTaskId } from "./Kebab";
+export { useLimitWord, LIMIT_REFRESH_MS } from "./useLimitWord";
 export { ClaudeMark, CLAUDE_MARK_PATH } from "./ClaudeMark";
 export type { ClaudeMarkProps } from "./ClaudeMark";
 export { SentPop } from "./SentPop";
@@ -99,7 +98,6 @@ export {
   rowNeed,
   pickRowFit,
   fitFlags,
-  footnoteTight,
   pickHomeTitleStep,
   HOME_TITLE_STEPS,
   fitSelect,

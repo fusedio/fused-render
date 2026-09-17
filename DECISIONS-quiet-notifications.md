@@ -1883,3 +1883,111 @@ sanity check: 1 passed.
   notification popup/panel render.
 A human should exercise all four of the above in a running instance before
 calling Defects 1–3 and Additions 1–2 fully closed.
+
+## Fix 25: merged origin/main to clear a DIRTY PR (two conflicts)
+
+PR #1183 reported `mergeStateStatus: DIRTY`, which queues zero CI workflow
+runs — the PR was unverified, not green. Merged `origin/main` in
+(`git fetch origin main && git merge origin/main`); two files conflicted,
+both against real behavioral commits on main:
+`95bd752d4` ("Project queue: one task in progress per folder, the rest wait
+in line") and `1ce6df9fc` ("Tasks: a send is a row the moment it is sent").
+Read both commits' full diffs before resolving either conflict.
+
+**`frontend/src/shell/tasks-lib.ts`** — one conflict, in the import block.
+HEAD added `import { labelForSource } from "@platform/lib/format"` (this
+branch's Fix-16 "source-is-ambient-by-default" caption work); main added a
+`@platform/lib/queue` import block (`CHAT_ENTRY_ORIGIN`, `chatUrl`,
+`pendingEntryId`, `queuePosition`, `runningWaitingLabel`, `waitingLabel`) for
+the project-queue feature. Both imports are used elsewhere in the file by
+code neither side touched — kept both, no further changes needed. Verified
+the load-bearing hazard this task was explicitly warned about: `attentionRows`
+(the function that reads `labelForSource(task.project || task.target)`,
+project-first, per Fix 24's "index caption" fix) sits well outside main's
+diff and merged clean with **zero** conflict markers inside the function
+body — the project-first ordering (`task.project || task.target`, not
+`task.target || task.project`) survived byte-for-byte. Confirmed by grepping
+the merged file directly rather than trusting the absence of a conflict
+marker.
+
+**`fused_render/schedule.py`** — one conflict, in `_send()`, right after the
+spawn's `run_id` is confirmed and `_watching(entry["id"], True)` is called.
+HEAD's side (this branch's §5) called `_update(..., state=SENT, run_id=...,
+error="")` and then unconditionally `_emit(EVENT_STARTED, entry)` — the
+"scheduled run started" notification moment. Main's side (`95bd752d4`, the
+project-queue work) changed the SAME `_update(...)` call to also pass
+`host_sent=True` when the send was actually delivered as a guest message
+into an already-live chat session (`host_sent = res is not None` a few lines
+above, unrelated to anything this branch touches) and to also set
+`entry["host_sent"] = True` on the in-memory dict so the code just below
+(`cancellable=not host_sent`, an existing, unconflicted line right after
+this hunk) reads it correctly. These are two independent additions to
+adjacent statements, not competing edits to the same behavior: kept main's
+whole `_update(...)`/`entry["host_sent"]` block verbatim (a real host_sent
+send needs its `host_sent` flag persisted or a later cancel would kill the
+reader's own chat session, per `test_a_cancel_on_a_host_sent_entry_leaves_
+the_chats_session_alone` in `tests/test_schedule_project_queue.py`), then
+kept this branch's `_emit(EVENT_STARTED, entry)` call immediately after,
+with its existing comment plus one added sentence: a host_sent guest
+delivery still emits `EVENT_STARTED`, because the message really did reach
+a live session and start running there — the narrator's own presence
+suppression on `entry["target"]` already covers the "already looking at
+that chat" case, so no separate carve-out is needed for the guest path.
+
+**Checked the specific hazard the task named** — whether `1ce6df9fc`'s "a
+send is a row the moment it is sent" changes the status-transition shape
+`task-status-notify.ts`/`useTaskStatusNotify.ts` diffs against. That commit
+does not touch `frontend/src/shell/tasks-lib.ts` at all (confirmed:
+`git diff 1ce6df9fc~1 1ce6df9fc -- frontend/src/shell/tasks-lib.ts` is empty);
+its surface is server-side (`fused_render/server/routers/tasks.py`,
+`tasks_watch.py`) — a live send now appears as a placeholder task row, keyed
+by session id, with a synthetic message (`state: SENT`, `turn: ""`) that
+`_message_running`/`_status` already read as `in_progress` on the very first
+poll after send, rather than the row not existing at all until a transcript
+file appears. Traced this against `useTaskStatusNotify.ts`'s transition
+logic:
+- First sighting of a task is still explicitly never a transition
+  (`notificationForTransition` returns `null` when `previous === undefined`),
+  so the earlier appearance of the row does not itself fire anything new.
+- `previous`/`prev` is a `Map` keyed by `task.key` (the session id), pruned
+  every tick for keys no longer present. A send whose run dies before any
+  transcript exists makes its placeholder row **disappear** entirely (server
+  comment: "nothing happened") rather than transition to `done`/`blocked` —
+  the map entry is deleted on the next tick, not read as a transition, so no
+  spurious notification fires for a dead send.
+- The commit's own comment states the transcript row that follows is
+  "literally this row: same key, same number, no swap for the reader to
+  watch" — so a real send's lifecycle is placeholder(`in_progress`) →
+  transcript-backed(`in_progress`, same key) → eventually `done`/`blocked`,
+  which is if anything a STRICT IMPROVEMENT for this branch's notifier: a
+  transition that used to only become observable once a transcript file
+  existed (and could already be evaluated at `previous === undefined` for a
+  faster-than-poll turn, silently dropping the "just happened" notification)
+  is now observable one poll earlier, with `previous === "in_progress"`
+  already recorded, so `in_progress -> done`/`in_progress -> blocked` fire
+  strictly more reliably than before.
+
+**Net finding: no notifier defect from this merge.** Did not find a status
+transition this branch's notifier now fires on that it shouldn't, or a real
+transition it now misses, as a result of the row-at-send-time change.
+Reporting this explicitly per the build brief's instruction, rather than
+silently expanding scope — no code changed in `task-status-notify.ts` or
+`useTaskStatusNotify.ts` for this reason.
+
+**Verification after the merge** (both conflicts resolved, `git add`, not
+yet committed at time of these runs):
+- `bun --cwd frontend test` → 6550 pass, 0 fail (24199 `expect()` calls,
+  305 files).
+- `bunx tsc --noEmit -p frontend` → clean, no output.
+- `node frontend/scripts/check-boundaries.mjs` → `boundaries OK (828 files)`.
+- `.venv/bin/pytest tests/test_schedule.py tests/test_schedule_api.py
+  tests/test_schedule_recurring.py tests/test_schedule_reporting.py
+  tests/test_schedule_run_now.py tests/test_schedule_project_queue.py
+  tests/test_schedule_queue.py tests/test_schedule_queue_endpoint.py
+  tests/test_schedule_resend.py tests/test_schedule_session_liveness.py
+  tests/test_schedule_status_sync.py tests/test_schedule_wake.py
+  tests/test_task_sync_matrix.py tests/test_tasks_api.py
+  tests/test_tasks_sent_mark.py tests/test_tasks_watch.py
+  tests/test_tasks_store.py tests/test_tasks_queue_api.py` → 844 passed
+  (repo's own `pyproject.toml` runs xdist automatically; no `-n` flag was
+  passed).

@@ -20,7 +20,7 @@ import {
 } from "@platform/shadcn/ui/tabs";
 import type { Task } from "@platform/lib/api";
 import { TaskRowItem } from "@shell/ScheduleTaskViews";
-import { isDraftTask, isUpcomingLane } from "@shell/tasks-lib";
+import { isDraftTask, isUpcomingLane, taskHref } from "@shell/tasks-lib";
 import type { Artifact } from "../protocol/artifacts";
 import { ArtifactRow } from "./ArtifactRow";
 import {
@@ -33,7 +33,7 @@ import {
   rememberedTab,
 } from "./lists-visibility";
 import { paneChatUrl, taskPane } from "./list-rows";
-import { seedSessionTask } from "./useRecentTasks";
+import { noteQueueClaim, reloadRecentTasks, seedSessionTask } from "./useRecentTasks";
 import { Snapshots } from "./Snapshots";
 import type { SnapshotsState } from "./useSnapshots";
 
@@ -274,7 +274,30 @@ export function Lists({
       if (!onFillDraft) return { href: null };
       return { href: null, onPress: () => onFillDraft(task) };
     }
-    if (!task.session_id) return { href: null };
+    // A CHAT THAT HAS NEVER RUN (the project queue). It has no session id, so
+    // neither door below can open it: it is opened by the ENTRY it is waiting
+    // as, through `chatUrl`'s `queued` param, and always as a navigation — there
+    // is no transcript to swap into place, and the pane has to mount knowing its
+    // leader (`ClaudeChat`'s `QUEUED_PARAM`). Its row is the ordinary row: same
+    // height, same columns, same place in the sort, with `queued` on its ring.
+    if (!task.session_id) {
+      // ONE DOOR PER TASK, and it is `taskHref`'s (shell/tasks-lib): a row is a
+      // chat to open only when it is `queued`, was put in the line by a CHAT
+      // (`entry_origin`), and names a folder — an Upcoming one-off and a
+      // scheduled FORM are also `pending:<entry>` rows and must stay inert
+      // here, as they are on the Tasks page (merge audit, 2026-09-16).
+      const href = taskHref(task);
+      if (!href) return { href: null };
+      return {
+        href,
+        onPress: () => {
+          // Seeded like every other navigating arm below, so the header on
+          // the pane that opens does not wait out the whole listing.
+          seedSessionTask(task);
+          onNavigate?.(href);
+        },
+      };
+    }
     const pane = taskPane(task, file);
     if (!pane) {
       return {
@@ -319,7 +342,19 @@ export function Lists({
         // of floating lines rather than as one list.
         <div className="tasks-list-frame">
           {shownRecent.map((task) => (
-            <TaskRowItem key={task.key} task={task} {...pressFor(task)} />
+            <TaskRowItem
+              key={task.key}
+              task={task}
+              {...pressFor(task)}
+              // RUN NEXT'S TWO HALVES (Akshil QA, 2026-09-16). The row's own
+              // skip needs somewhere to put the claim it just made and a way to
+              // ask for the truth; unwired, the press was a request with no
+              // visible answer. Both go to the recents' store rather than to
+              // state in this component — it unmounts on the way into a chat,
+              // and the claim has to outlive that (`useRecentTasks`).
+              onQueued={noteQueueClaim}
+              onReload={reloadRecentTasks}
+            />
           ))}
         </div>
       )}

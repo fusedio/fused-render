@@ -170,7 +170,7 @@ export const PEEK_COVER_FLOOR = 360;
 export const SIDEBAR_HYSTERESIS = 16;
 
 /**
- * THE MIDDLE PANE WIDTH THE SIDEBAR GIVES WAY AT (Akshil, 2026-09-15).
+ * THE MIDDLE PANE WIDTH THE SIDEBAR GIVES WAY AT (Akshil, 2026-09-16).
  *
  * Until now the sidebar collapsed at the middle pane's ¾ floor (~820px on a
  * capped column), which on an ordinary laptop meant it went the moment a panel
@@ -181,8 +181,13 @@ export const SIDEBAR_HYSTERESIS = 16;
  * shrink all the way to this before the sidebar is asked for its room. The
  * same number decides an open (`openTimeCollapse`) and a manual re-expand of
  * the sidebar (`expandClosesPeek`).
+ *
+ * Was `MIDDLE_FLOOR` (500, sharing a line with the content floor) until
+ * 2026-09-16, when Akshil moved it to `PEEK_COVER_FLOOR` (360) instead — the
+ * sidebar now gives way at the same line the panel itself covers at, not the
+ * line the list stops shrinking at.
  */
-export const SIDEBAR_COLLAPSE_MIDDLE = MIDDLE_FLOOR;
+export const SIDEBAR_COLLAPSE_MIDDLE = PEEK_COVER_FLOOR;
 
 /** The page column's cap (`styles/schedule.css` `.prefs-page.schedule-page > *`)
  *  and the page's own side padding, used ONLY as the baseline's fallback when

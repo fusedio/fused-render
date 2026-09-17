@@ -31,8 +31,14 @@
 // 5. CARDS LAND BELOW THE PROSE THEY INTERRUPT. `syncPermissions` runs AFTER
 //    the segment render, every poll, and re-pins the open cards last
 //    (T:16305-16311, 14665-14775).
-import { markTaskIdle, markTaskRunning, scheduleMessage } from "@platform/lib/api";
+import {
+  decideThroughQueue,
+  markTaskIdle,
+  markTaskRunning,
+  scheduleMessage,
+} from "@platform/lib/api";
 import { chatDraftKey } from "@platform/lib/drafts";
+import { queueEnabled, queueFlagReady } from "../feature-flag";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
 import { runAgent } from "./agent";
@@ -66,6 +72,7 @@ import type {
   DecisionScope,
   LandedDecision,
   HistoryResponse,
+  InboxMessage,
   PermissionMode,
   PermissionRow,
   Phase,
@@ -193,6 +200,7 @@ function emptyState(file: string | null): ChatState {
     file,
     sessionId: null,
     runId: null,
+    lastRunId: null,
     status: "idle",
     turns: [],
     permissions: [],
@@ -202,6 +210,7 @@ function emptyState(file: string | null): ChatState {
     trouble: null,
     permissionMode: DEFAULT_PERMISSION,
     queued: [],
+    inbox: [],
     historyLoading: false,
     adopting: false,
     transcript: null,
@@ -439,6 +448,35 @@ export function createChatController(deps: ControllerDeps): ChatController {
     queued.length = 0;
     publishQueued();
   };
+  /**
+   * …AND THE SAME MESSAGES AS THE RUN SEES THEM (`PollResponse.inbox`).
+   *
+   * `queued` above is this DOCUMENT's memory of what it sent, and that is
+   * exactly what a reload — or the standing watch's `refreshHistory`, a full
+   * `turns` replace four times a minute — throws away, while the CLI goes on
+   * holding the words in its own stdin queue. Nothing has consumed the message,
+   * so the transcript does not have it either, and the reader's line vanished
+   * from the screen until the model got to it (Akshil, 2026-09-12).
+   *
+   * So the run reports its undrained inbox and this republishes it verbatim.
+   * The DEDUPE is not here: whether a row still needs a bubble depends on what
+   * the transcript and the optimistic list are drawing right now, which is a
+   * render-time question (`protocol/inbox.inboxBubbles`).
+   *
+   * IDENTITY IS THE LIST'S CONTENT, so an unchanged inbox emits nothing: this
+   * runs on every poll, and a fresh array each lap would re-render the chat four
+   * times a second for a list that had not moved.
+   */
+  let inboxSig = "";
+  const publishInbox = (rows: InboxMessage[]) => {
+    const sig = rows.map((r) => `${r.id}\u0000${r.text}`).join("\u0001");
+    if (sig === inboxSig) return;
+    inboxSig = sig;
+    emit({ inbox: rows });
+  };
+  /** Nothing is held once the run is over: the CLI has answered its inbox or
+   *  died with it, the same rule `clearQueued` states for the optimistic half. */
+  const clearInbox = () => publishInbox([]);
 
   // ---- params (the exact moments T writes them) ---------------------------
   //
@@ -487,10 +525,24 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * stood the session down (`tasks_watch.mark_running`'s stale-turn check):
    * belt-and-suspenders for the same race, for the ping this function cannot
    * itself await (the one `noteSessionId` fires from `resumeAttach`, seat `0`).
+   *
+   * `prompt` is THE WORDS JUST SENT — what the user typed, with the
+   * `<live-app-state>` block already off it (`sendMessage`'s `spoken`) — and
+   * the chat's FILE rides along with it. Both are facts only the sender holds
+   * this early, and the listing wants them for the same reason it wants the
+   * ring: the row should read "running, on these words" at the send, not once
+   * the transcript on disk has caught up. Absent on a mark that has no send
+   * behind it (`resumeAttach`'s ping, a re-attached run), and the server keeps
+   * whatever it already knew in that case. THE SERVER REMAINS THE SOURCE OF
+   * TRUTH: this only tells it sooner, and it hands the row back as it always
+   * did.
    */
-  const noteTurnRunning = (id: string, seat: number) => {
+  const noteTurnRunning = (id: string, seat: number, prompt?: string) => {
     if (!id) return;
-    const p = markTaskRunning(id, wallClock()).then(
+    const p = markTaskRunning(id, wallClock(), {
+      ...(prompt ? { text: prompt } : {}),
+      ...(FILE ? { file: FILE } : {}),
+    }).then(
       () => {},
       () => {
         // The 20-30 s polls, and the registry behind them, remain the fallback.
@@ -540,14 +592,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
    *  own yet — `resumeAttach`'s own probe, ahead of the `pollLoop` it hands off
    *  to, which re-marks running (with its own real seat) the moment it starts
    *  regardless (see `noteTurnRunning`). */
-  const noteSessionId = (id: string, seat = 0) => {
+  const noteSessionId = (id: string, seat = 0, prompt?: string) => {
     if (!id || state.sessionId === id) return;
     setParam({ session_id: id });
     emit({ sessionId: id });
     // A NEW CHAT LEARNS ITS OWN NAME MID-TURN, and this is the first moment the
     // mark above can name it. Guarded on a live run, so re-opening a finished
     // conversation does not announce a turn that is not happening.
-    if (activeRun) noteTurnRunning(id, seat);
+    if (activeRun) noteTurnRunning(id, seat, prompt);
   };
 
   /** T:16333 / T:17793 / T:13036 — `run` is in-flight bookkeeping and is
@@ -570,7 +622,15 @@ export function createChatController(deps: ControllerDeps): ChatController {
   };
 
   const setRunningUi = (on: boolean, status: RunStatus = on ? "running" : "idle") =>
-    emit({ status, runId: on ? activeRun : null });
+    emit(
+      // `lastRunId` is written on the way UP and never on the way down: it is
+      // the id the queue's admission names to be recognised as this folder's own
+      // caller, and the window it exists for is precisely the one after the turn
+      // ended (see `ChatState.lastRunId`).
+      on
+        ? { status, runId: activeRun, ...(activeRun ? { lastRunId: activeRun } : {}) }
+        : { status, runId: null },
+    );
 
   // ---- turns --------------------------------------------------------------
 
@@ -923,6 +983,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
     a.parkedIn === b.parkedIn &&
     a.sendError === b.sendError &&
     a.runId === b.runId &&
+    // The queue's own latch (types.ts `held`). A card restored by a reload is
+    // UNANSWERED until this arrives, so the poll that brings it has to republish
+    // even though every other field reads exactly the same.
+    a.held === b.held &&
     JSON.stringify(a.answers ?? {}) === JSON.stringify(b.answers ?? {});
 
   const permissionRows = (): PermissionRow[] => {
@@ -987,6 +1051,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
     scope: "" | DecisionScope,
     mode: "" | SwitchableMode,
     answers: Record<string, string>,
+    /** The project queue HELD this answer: the holder's task id, or "" when the
+     *  server could not name it. Undefined on the ordinary road — the card then
+     *  reads exactly as it always has (PermissionRow.queuedAhead). */
+    queuedAhead?: string,
   ) => {
     const prev = permCards.get(id);
     if (!prev) return;
@@ -998,6 +1066,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
       answers,
       placement: "parked",
       parkedIn: prev.parkedIn ?? activeTurnKey,
+      // LATCHED THE SAME WAY a delivered decision is, which is the whole claim:
+      // the reader decided, and the card stops taking clicks. Only the sentence
+      // differs, because only the delivery is still ahead.
+      ...(queuedAhead === undefined ? {} : { queuedAhead }),
     });
     publishPermissions();
   };
@@ -1056,7 +1128,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
   async function pollLoop(
     runId: string,
     gen: number,
-    opts: { ownTurn?: boolean } = {},
+    opts: { ownTurn?: boolean; prompt?: string } = {},
   ): Promise<void> {
     const seat = ++loopSeq;
     // This run is now the one the stop button aims at. Set here, the one place a
@@ -1079,7 +1151,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // inside `noteChatActivity`, which fires at BOTH turn boundaries: this one
     // means "a turn is open", and saying it again in the `finally` would mark a
     // row running for fifteen seconds after it finished.
-    noteTurnRunning(state.sessionId ?? "", seat);
+    noteTurnRunning(state.sessionId ?? "", seat, opts.prompt);
 
     /**
      * ONE BUBBLE PER REPLY IN THE PAYLOAD, keyed by SLOT.
@@ -1207,7 +1279,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         const data = (await run(
           dir,
           "poll",
-          { run_id: runId, file: FILE || "", native: "1" },
+          { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" },
           // The controller's own lifetime: `dispose` aborts, so an unmounted
           // chat's last poll does not run to completion on its own.
           { key: null, ...(life ? { signal: life.signal } : {}) },
@@ -1235,7 +1307,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         }
 
         const poll = data as PollResponse;
-        if (poll.session_id) noteSessionId(String(poll.session_id), seat);
+        if (poll.session_id) noteSessionId(String(poll.session_id), seat, opts.prompt);
         if (tick++ % ARTIFACTS_EVERY_TICKS === 0) deps.onArtifactsTick?.();
 
         // usage arrives only at message end; estimate from streamed text meanwhile
@@ -1243,6 +1315,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
         setStats(tokens, poll.phase || "thinking", poll.retry ?? null, poll.activity ?? null);
         noteSkills(poll.skills);
         surfaceAppState(poll.app_state, runId);
+        // THE LIVE HOST'S UNDRAINED FOLLOW-UPS, republished verbatim — see
+        // `publishInbox`. An older agent.py sends none, which reads as an empty
+        // inbox, which is what it was before this field existed.
+        publishInbox(Array.isArray(poll.inbox) ? poll.inbox : []);
 
         const segs = Array.isArray(poll.segments) ? poll.segments : [];
         const fullText = poll.text || "";
@@ -1594,7 +1670,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // either been answered above or died with the process. Guarded on
       // ownership for the same reason the chrome is — an abandoned loop's late
       // finally must not wipe the hint the newer loop's follow-up just put up.
-      if (loopSeq === seat) clearQueued();
+      if (loopSeq === seat) {
+        clearQueued();
+        clearInbox();
+      }
       // Turn boundary either way — the tasks surfaces should hear about it even
       // when a newer loop owns the chrome (the ACTIVITY is real regardless).
       noteChatActivity();
@@ -1747,13 +1826,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // `stripBlocks(outgoing)` for a wordless send is unaffected by the block
     // above — `wire.ts` strips every `<live-app-state>` — so a send that is
     // only pictures still reads as pictures.
-    const bubble = addUser(
-      text || stripBlocks(outgoing),
-      outgoing,
-      opts.attachments,
-      !!live,
-      opts.optimisticKey,
-    );
+    // THE WORDS, without the `<live-app-state>` block — the bubble's text, and
+    // the same string the tasks listing wants for its "last prompt" line, which
+    // is why it is named here rather than spelled twice (see `noteTurnRunning`).
+    const spoken = text || stripBlocks(outgoing);
+    const bubble = addUser(spoken, outgoing, opts.attachments, !!live, opts.optimisticKey);
     let started = false;
     try {
       let runId = "";
@@ -1832,11 +1909,27 @@ export function createChatController(deps: ControllerDeps): ChatController {
           },
           { key: null },
         )) as StartResponse;
-        // `StartResponse` is `{run_id}` | `{error}`; agent.py answers exactly one
-        // (agent.py:2452, plus main()'s own guards 5188-5191).
+        // `StartResponse` is `{run_id, session_id?}` | `{error}`; agent.py
+        // answers exactly one (agent.py:2452, plus main()'s own guards
+        // 5188-5191).
         const failed = (res as { error?: string }).error;
         if (failed) throw new Error(failed);
         runId = (res as { run_id: string }).run_id;
+        // THE SERVER NAMED THE SESSION AT SPAWN, so the url param, the state and
+        // the running mark all land HERE — at the send — instead of on the first
+        // poll two to four seconds later, which is the whole "status in under a
+        // second" of this change. The poll still reports the same id and
+        // `noteSessionId` is a no-op the second time, so an older server that
+        // omits this simply takes the old road.
+        //
+        // GUARDED LIKE THE RUN PARAM BELOW (`logGen === gen`): the id names the
+        // conversation THIS send started, and if the reader left for another
+        // chat while `start` was in flight, writing it to the url and the
+        // state would drag them back into a session they navigated away from
+        // (Bugbot). The run continues server-side and `resumeRun` can
+        // re-attach; the landing simply gains nothing.
+        const named = (res as { session_id?: string }).session_id;
+        if (named && logGen === gen) noteSessionId(String(named), 0, spoken);
       }
       started = true;
       // A run id is in-flight bookkeeping — never a place the reader navigated
@@ -1844,10 +1937,20 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // (PR-3, T:16673-16678).
       if (logGen === gen) {
         setRunParam(runId);
+        // THE RUN IS NAMED THE MOMENT IT EXISTS, not when the poll goes up
+        // (Akshil, 2026-09-12). `lastRunId` is what the queue's admission puts in
+        // its body so the server can recognise this page as the caller holding
+        // the folder — and the window that most needs it is the SHORTEST turn:
+        // send, Stop, type again. A stop landing between `start` answering and
+        // `pollLoop`'s first frame left the id unwritten, so the next admit was
+        // anonymous and the reader's own finished run queued their next message
+        // behind itself. `setRunningUi(true)` still writes it for every run this
+        // page adopts rather than starts; this is the one it starts.
+        emit({ lastRunId: runId });
         // `ownTurn`: this loop was started by THIS send, so anything the first
         // payload has already closed off is a turn that ended before it — see
-        // `adoptFirstSeam`.
-        await pollLoop(runId, gen, { ownTurn: true });
+        // `adoptFirstSeam`. `prompt` is what the running mark carries.
+        await pollLoop(runId, gen, { ownTurn: true, prompt: spoken });
       }
       // else: the reader left during start — the run continues server-side and
       // resumeRun can re-attach; the landing gains no run param.
@@ -1904,13 +2007,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // once the INBOX has taken it. Bumping here left a failed send with a
     // counter pollLoop read as a landed follow-up, and the reply split around
     // the gap where the rolled-back row had been (Bugbot, PR #996).
-    const bubble = addUser(
-      text || stripBlocks(outgoing),
-      outgoing,
-      opts.attachments,
-      !!live,
-      opts.optimisticKey,
-    );
+    const spoken = text || stripBlocks(outgoing);
+    const bubble = addUser(spoken, outgoing, opts.attachments, !!live, opts.optimisticKey);
     // KEYED BY A SEQ, not by the text: two identical follow-ups ("again") used
     // to collapse into one entry, and the first ack cleared both — so the second
     // one's hint left the composer while the message was still in flight.
@@ -2015,6 +2113,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
         const failed = (startedRes as { error?: string }).error;
         if (failed) throw new Error(failed);
         const fresh = (startedRes as { run_id: string }).run_id;
+        // Same `start`, same response, same reason as `sendMessage`'s road: a
+        // respawn re-spawns the session, and its id is answered here.
+        const named = (startedRes as { session_id?: string }).session_id;
+        if (named && logGen === gen) noteSessionId(String(named), 0, spoken);
         // A respawn re-sent this text as the OPENING message of a fresh run, so
         // it is not a follow-up waiting behind anything any more — it is the
         // turn now in flight. Drop the entry (the bubble stays: it is that
@@ -2022,7 +2124,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         drop();
         if (logGen === gen) {
           setRunParam(fresh);
-          void pollLoop(fresh, gen);
+          void pollLoop(fresh, gen, { prompt: spoken });
         }
         return;
       }
@@ -2204,6 +2306,60 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // of a `sendError` — so the previous attempt's reason goes first.
     clearSendError(id);
     try {
+      // ---- THE QUEUE'S DOOR, WHEN THERE IS ONE (prefs `queue.enabled`) -----
+      //
+      // A parked run does NOT hold its folder — it is going nowhere until
+      // somebody answers it, so the next task in the line is allowed to start.
+      // Which means the folder is usually busy by the time the reader comes
+      // back to this card, and writing the decision straight through would
+      // resume this run alongside the one that took its place: two runs in one
+      // folder, from the click the queue exists to make safe.
+      //
+      // So under the flag the decision goes to the queue's own door, which
+      // either passes it through (folder free — today's road, same result) or
+      // HOLDS it and puts this task at the head of the line. Held answers
+      // outrank every queued message in the folder, because somebody is already
+      // waiting on this one.
+      //
+      // Flag off: the endpoint is never called and the agent's own action runs,
+      // byte for byte as before. The flag is AWAITED first (`queueFlagReady`):
+      // a decision inside the first prefs read's window used to read "off" and
+      // write past the door (Akshil's QA, 2026-09-16).
+      await queueFlagReady();
+      if (queueEnabled()) {
+        const held = await decideThroughQueue({
+          run_id: runId,
+          request_id: id,
+          session_id: deps.params.get("session_id") || "",
+          project: FILE || "",
+          decision: fields.decision || "",
+          scope: fields.scope || "",
+          ...(fields.mode === undefined ? {} : { mode: fields.mode }),
+          ...(fields.answers === undefined ? {} : { answers: fields.answers }),
+          ...(fields.note === undefined ? {} : { note: fields.note }),
+          ...(fields.custom === undefined ? {} : { custom: fields.custom }),
+        });
+        if (held && held.held === true) {
+          // The card latches on the decision the reader MADE — first-writer-wins
+          // is unchanged, there is simply no verdict from the tool yet to
+          // report. `null` back to the callers, which is the same answer they
+          // already get for a decide that landed no mode: `decidePermission`
+          // and `decidePlan` both only read a response to follow a mode switch,
+          // and no mode has switched, because nothing has run.
+          resolveLocally(id, fields.decision, "", "", optimistic, held.ahead || "");
+          return null;
+        }
+        const passed = held as unknown as DecideResponse;
+        if (passed && passed.error) throw new Error(passed.error);
+        resolveLocally(
+          id,
+          (passed && "decision" in passed && passed.decision) || fields.decision,
+          ((passed && "scope" in passed && passed.scope) || "") as "" | DecisionScope,
+          ((passed && "mode" in passed && passed.mode) || "") as "" | SwitchableMode,
+          (passed && "answers" in passed && passed.answers) || optimistic,
+        );
+        return passed;
+      }
       const res = (await run(
         dir,
         "decide",
@@ -2421,6 +2577,15 @@ export function createChatController(deps: ControllerDeps): ChatController {
         false,
       );
     }
+    // THE LIVE RUN'S UNDRAINED INBOX, ON THE READ A RELOADING CHAT MAKES FIRST.
+    //
+    // The poll's copy keeps these bubbles up while a page stays open; a page that
+    // comes BACK reads `history` before it has a run to poll, and that window is
+    // exactly when the reader is looking for the follow-up they typed. Asked only
+    // beside `live_run`, which is the field that says whether anything is running
+    // at all — and `live_run: ""` publishes the empty list, because nothing is
+    // held when nothing is running.
+    if (live) publishInbox(Array.isArray(res.inbox) ? res.inbox : []);
     emit({
       turns: historyToTurns(res),
       transcript: res.transcript ?? null,
@@ -2453,6 +2618,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // Published, not just emptied: the hint under the box belongs to the
     // conversation that is leaving.
     clearQueued();
+    clearInbox();
     setParam({ session_id: sessionId });
     emit({
       sessionId,
@@ -2485,6 +2651,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // outside turn to arrive (Bugbot, PR #1075). `newChat` clears it through
       // `emptyState`; this is the other way a transcript is replaced.
       ownRunEndedAt: 0,
+      // AND THE RUN ID GOES WITH IT, for the same reason and one of its own: the
+      // queue's admission names `lastRunId` to be recognised as the caller that
+      // owns this folder's live run, and a run belonging to the conversation
+      // just closed is not that. `newChat` clears it through `emptyState`.
+      lastRunId: null,
     });
     // WHAT THIS PAGE ALREADY KNOWS ABOUT THE CONVERSATION paints before the
     // fetch is even sent: the Tasks wall loaded this chat into a tile, and the
@@ -2728,7 +2899,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // Tagged with this attach's seat so only this attach can let it go.
     if (runId) claimingRuns.set(runId, seat);
     try {
-      let probe = (await run(dir, "poll", { run_id: runId, file: FILE || "", native: "1" }, { key: null })) as
+      let probe = (await run(dir, "poll", { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" }, { key: null })) as
         | PollResponse
         | { error: string; done: true };
       if (logGen !== gen || disposed) return;
@@ -2743,7 +2914,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         i++
       ) {
         await sleep(UNKNOWN_RUN_RETRY_MS);
-        probe = (await run(dir, "poll", { run_id: runId, file: FILE || "", native: "1" }, { key: null })) as
+        probe = (await run(dir, "poll", { run_id: runId, file: FILE || "", native: "1", queue: queueEnabled() ? "1" : "0" }, { key: null })) as
           | PollResponse
           | { error: string; done: true };
         if (logGen !== gen || disposed) return;
@@ -2842,12 +3013,104 @@ export function createChatController(deps: ControllerDeps): ChatController {
        */
       const errorShown = (msg: string) =>
         !!msg && state.turns.some((t) => t.role === "error" && t.text === msg);
-      /** Drop the partial assistant rows under a matched user line: `pollLoop`
-       *  re-streams the whole turn, and the done branch re-renders it from the
-       *  probe payload (T:17831 / 17857). */
+      /**
+       * HAS THE AGENT'S POLL CURSOR ALREADY LEFT THIS RUN'S FIRST REPLY?
+       *
+       * `poll.window` is the byte offset in `out.jsonl` the payload opens at,
+       * and `_read_current_turn` advances it to "the start of the newest row
+       * that is provably a fresh, user-authored turn" — so anything above zero
+       * means at least one reply in this run has CLOSED and is no longer in any
+       * payload. A run is a whole SESSION now (one `claude`, many turns), which
+       * is how a page can attach to one whose earlier turns it is already
+       * showing.
+       *
+       * Absent on an older agent.py, and read as zero: the conservative
+       * direction, because zero is exactly today's behaviour.
+       */
+      // Under the flag only: the moved-window road exists for a follow-up that
+      // queued behind a live turn; flag off, re-attach is main's strip+append.
+      const windowMoved = queueEnabled() && (poll.window ?? 0) > 0;
+      /**
+       * Drop the partial assistant rows under a matched user line: `pollLoop`
+       * re-streams the whole turn, and the done branch re-renders it from the
+       * probe payload (T:17831 / 17857).
+       *
+       * …AND ONLY WHILE THE WINDOW STILL HOLDS THAT TURN (browser QA round 2,
+       * 2026-09-12). The whole premise is "what is stripped is re-rendered from
+       * this payload", and `matches` cannot carry it: `poll.message` is the
+       * run's ORIGINAL first message, so a run that has since absorbed a
+       * scheduler follow-up still matches the user line it opened with — while
+       * its window has moved on to the FOLLOW-UP's reply, which answers a
+       * different line entirely.
+       *
+       * That is the shape QA hit: a chat adopted by `openSession` after its
+       * leader ran (history = the leader's line + "SECOND"), then a queued
+       * follower dispatched into the same host. The probe matched the leader's
+       * line, stripped "SECOND", and the loop then streamed only "THIRD" —
+       * the earlier reply gone from the live DOM and brought back by a reload,
+       * because the JSONL had it all along.
+       *
+       * So a moved window APPENDS instead: the rows on screen are history's,
+       * this payload never contained them, and nothing here is entitled to
+       * throw away rows it cannot put back.
+       */
       const stripAfterLastUser = () => {
         if (!lastUser) return;
+        if (windowMoved) return;
         const cut = state.turns.findIndex((t) => t.key === lastUser.key);
+        if (cut >= 0 && cut < state.turns.length - 1) {
+          emit({ turns: state.turns.slice(0, cut + 1) });
+        }
+      };
+      /**
+       * …AND A MOVED WINDOW DOES NOT APPEND UNDER THAT LINE EITHER (round-3
+       * review, 2026-09-12).
+       *
+       * Refusing to STRIP was only half of it. `matches` compares the last
+       * bubble against `poll.message`, the run's FIRST message, so the run that
+       * absorbed a scheduler follow-up matches the LEADER'S line — and the
+       * payload above a moved cursor is the FOLLOW-UP'S reply. Appending it
+       * where the match points files "THIRD" under the prompt that produced
+       * "SECOND": an orphan reply whose own user line is nowhere on screen, and
+       * a reload that silently rearranges the conversation.
+       *
+       * The transcript already holds both rows — the follow-up's prompt and its
+       * answer — because `_history` reads the same JSONL the cursor moved
+       * through. So a moved window asks the source of truth instead of
+       * guessing: refresh, and let the file put the turn on screen in its own
+       * order. Nothing here has to reconstruct a seam it cannot see.
+       *
+       * `refreshHistory` refuses to draw over a send in flight, and THIS attach
+       * is that send, so the seat is let go here rather than only in the
+       * `finally` — which takes the same test and is idempotent.
+       */
+      const refreshFromTranscript = async (): Promise<boolean> => {
+        const sid = state.sessionId;
+        if (!sid) return false;
+        if (sendSeq === seat) sending = false;
+        const before = state.turns;
+        await refreshHistory(sid);
+        // A refresh that failed leaves the transcript exactly as it rendered
+        // (it warns and returns), and that is not news to scroll to.
+        return state.turns !== before;
+      };
+      /**
+       * The partial rows a refresh brought in under the FOLLOW-UP'S own line —
+       * the ones `pollLoop` is about to re-render from the window it was handed,
+       * and the reason the unmoved road strips at all.
+       *
+       * Anchored on the line the refresh put there, never on `lastUser` (which
+       * was read before it), and only when that line is NOT the one that
+       * matched: a transcript whose follow-up row has not been flushed yet would
+       * otherwise have this strip delete the reply above it all over again,
+       * which is the whole defect. Refusing costs a duplicated partial that the
+       * next refresh tidies; stripping wrongly costs a reply.
+       */
+      const stripUnderRefreshedUser = () => {
+        const rows = state.turns.filter((t): t is UserTurn => t.role === "user");
+        const tail = rows.length ? rows[rows.length - 1]! : null;
+        if (!tail || tail.text === probeMsg) return;
+        const cut = state.turns.findIndex((t) => t.key === tail.key);
         if (cut >= 0 && cut < state.turns.length - 1) {
           emit({ turns: state.turns.slice(0, cut + 1) });
         }
@@ -2941,7 +3204,31 @@ export function createChatController(deps: ControllerDeps): ChatController {
           addError(message);
         };
         if (poll.error) {
-          if (matches || !users.length) {
+          if (matches && windowMoved) {
+            // A FAILED FOLLOW-UP HANGS UNDER ITS OWN LINE (round-4 review,
+            // 2026-09-12). `matches` compares the last bubble against
+            // `poll.message` — the run's FIRST message — so a run that absorbed
+            // a scheduler follow-up matches the LEADER'S line while the payload
+            // above a moved cursor belongs to the follow-up. The success path
+            // below already answers that by asking the transcript
+            // (`refreshFromTranscript`); the error path did not, and filed the
+            // failure under the prompt that produced the reply ABOVE it — an
+            // error blamed on the wrong message, and the follow-up's own prompt
+            // still nowhere on screen.
+            //
+            // Same repair, same order: refresh first so the file puts the
+            // follow-up's line where it belongs, THEN append the failure, which
+            // lands under that line because it is now the last one. And only if
+            // the transcript is not already carrying the failure itself
+            // (`errorShown`, the rule the `shownAlready` branch below spells
+            // out): a refresh that brought an `error` row in with the prompt has
+            // said it already.
+            if (await refreshFromTranscript()) appended = true;
+            if (!errorShown(poll.error)) {
+              reportProbeError(poll.error);
+              appended = true;
+            }
+          } else if (matches || !users.length) {
             reportProbeError(poll.error);
             appended = true;
           } else if (unseen) {
@@ -2983,10 +3270,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
           stampOwnEnd();
           return;
         }
-        if (matches) {
+        if (matches && !windowMoved) {
           stripAfterLastUser();
           addAssistantFromProbe();
           appended = true;
+        } else if (matches) {
+          // THE MATCH POINTS AT A LINE THIS PAYLOAD NO LONGER ANSWERS (see
+          // `refreshFromTranscript`). The run is over, so the JSONL holds the
+          // follow-up's prompt AND its reply: the refresh renders both, in the
+          // file's own order, and nothing is appended under the leader's line.
+          if (await refreshFromTranscript()) appended = true;
         } else if ((!users.length && probeMsg) || unseen) {
           // Appended, never matched: the log is empty, or the turn is genuinely
           // `unseen` — a scheduled send that fired and finished between polls,
@@ -3020,10 +3313,17 @@ export function createChatController(deps: ControllerDeps): ChatController {
         stampOwnEnd();
         return;
       }
-      if (matches) {
+      if (matches && !windowMoved) {
         // In flight and this turn's user line is on screen: keep it, drop the
         // partial assistant rows.
         stripAfterLastUser();
+      } else if (matches) {
+        // In flight, and the cursor has already left the line that matched: the
+        // reply `pollLoop` is about to stream answers a follow-up whose prompt
+        // is in the JSONL and not on screen. Refresh first — the file supplies
+        // that prompt and everything before it — then drop the partial rows
+        // beneath it, which is exactly what the loop re-renders.
+        if (await refreshFromTranscript()) stripUnderRefreshedUser();
       } else if (probeMsg && !shownAlready) {
         addUser(probeMsg);
       }
@@ -3085,7 +3385,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       : (run(
           dir,
           "history",
-          { file: FILE || "", session_id: sessionId, native: "1" },
+          { file: FILE || "", session_id: sessionId, native: "1", queue: queueEnabled() ? "1" : "0" },
           { key: null },
         ) as Promise<HistoryResponse & { error?: string }>);
 
@@ -3183,6 +3483,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // would keep its run unadoptable for the rest of the page.
     claimingRuns.clear();
     clearQueued();
+    clearInbox();
     // Neither of these is a true default worth stamping — a session id is an
     // identifier and `run` is in-flight bookkeeping — so absent stays the
     // spelling for "none" (T:13031-13036). The DIFFERENCE between the two is in
@@ -3225,6 +3526,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
     addNote: (text: string, glyph: NoteTurn["glyph"] = "\u25f7") => {
       addNote(text, glyph);
     },
+    // The SAME slot every failed send writes (`sendMessage`'s catch), for the
+    // failure that happens before this controller is asked to do anything: the
+    // queue's admission (controller-api).
+    reportTrouble,
     isBusy: () => !!activeRun || sending,
     hasActiveRun: () => !!activeRun,
     /** Shown OR being claimed: the schedule poller's question is "may I attach

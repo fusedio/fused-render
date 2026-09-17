@@ -187,6 +187,24 @@ def test_hidden_entries_need_a_dot_leading_query_segment(tmp_path):
     assert ".env" in rels
 
 
+def test_glob_mode_hides_dotfiles_the_same_way_rank_mode_does(tmp_path):
+    """Code review finding: `_glob_sql` used to skip the hidden-file filter
+    `_rank_sql` applies, so a multi-word glob query (which, per
+    `expand_whitespace_query`, is any query with more than one whitespace-
+    separated word) could surface dotfiles a single-word query on the same
+    directory would hide. The rule has to be the SAME `query_wants_hidden`
+    check in both modes — a glob query with no dot-leading segment must
+    still hide `.env`, and one that does have a dot-leading segment must
+    still be able to reach it, exactly like substring mode above."""
+    cfg = _index(tmp_path, "/r", ["/r/.env", "/r/environment.yml"])
+    rels = [h["rel"] for h in
+            search_ranked(cfg, "/r", "*env*", glob=True)["hits"]]
+    assert ".env" not in rels and "environment.yml" in rels
+    rels = [h["rel"] for h in
+            search_ranked(cfg, "/r", ".env*", glob=True)["hits"]]
+    assert ".env" in rels
+
+
 def test_case_only_ties_get_a_deterministic_final_order(tmp_path):
     """`notes/Alpha.txt` and `notes/alpha.txt` are a tie on every column
     `_rank_sql`'s ORDER BY had before `rel ASC` was added (tier, score,

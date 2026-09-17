@@ -17,7 +17,13 @@ from fused_render.index import query as index_query
 from fused_render.index.cancel import CancelToken, Cancelled
 from fused_render.index.config import IndexConfig
 from fused_render.index.ignore import norm
-from fused_render.index.query import _glob_to_regex, prune, resolve_query, stats
+from fused_render.index.query import (
+    _glob_to_regex,
+    expand_whitespace_query,
+    prune,
+    resolve_query,
+    stats,
+)
 from fused_render.index.store import Sink, compact
 
 
@@ -109,6 +115,103 @@ def test_glob_to_regex_full_match_semantics(pattern, rel, expected):
     assert bool(_re.fullmatch(regex[1:-1], rel.lower())) is expected
 
 
+# -- whitespace as wildcard (SPEC-search-space-wildcard.md) --------------------
+#
+# `expand_whitespace_query` is the one shared transform both `resolve_query`
+# and `search_under` run the raw typed string through, before either does
+# anything else with it. It is pure string manipulation — no filesystem
+# access — so it is testable directly, without a `root`/`_home` fixture.
+
+def test_expand_whitespace_query_is_a_no_op_without_whitespace():
+    assert expand_whitespace_query("report") == "report"
+    assert expand_whitespace_query("*.pdf") == "*.pdf"
+    assert expand_whitespace_query("src/**/*.ts") == "src/**/*.ts"
+    assert expand_whitespace_query("") == ""
+
+
+def test_expand_whitespace_query_wraps_the_final_segment():
+    assert expand_whitespace_query("hello world") == "*hello*world*"
+    assert expand_whitespace_query("hello world.pdf") == "*hello*world.pdf*"
+
+
+def test_expand_whitespace_query_collapses_a_run_of_whitespace_to_one_star():
+    """Two spaces must behave identically to one — `**` is a different,
+    cross-directory wildcard in this grammar (spec §1.2), so a stray extra
+    space must not silently widen the match."""
+    assert expand_whitespace_query("hello  world") == expand_whitespace_query("hello world")
+    assert expand_whitespace_query("hello   world") == "*hello*world*"
+
+
+def test_expand_whitespace_query_trims_before_wildcarding():
+    """A trailing space mid-typing must not produce a stray wildcard."""
+    assert expand_whitespace_query("hello world ") == "*hello*world*"
+    assert expand_whitespace_query(" hello world") == "*hello*world*"
+
+
+def test_expand_whitespace_query_converts_earlier_segments_without_wrapping():
+    """Segments before the last get the space->`*` conversion but no added
+    leading/trailing wrap of their own."""
+    assert expand_whitespace_query("~/My Documents/report") == "~/My*Documents/*report*"
+
+
+def test_expand_whitespace_query_does_not_wrap_a_final_segment_with_a_user_star():
+    """When the final segment already has a user-typed `*`, rule 3's implied
+    wrap does not apply to it."""
+    assert expand_whitespace_query("*.pdf") == "*.pdf"
+
+
+def test_expand_whitespace_query_never_stacks_a_star_beside_a_user_star():
+    """Code review finding: a whitespace run directly beside a literal `*`
+    the user already typed must not insert a SECOND `*` next to it —
+    `report *.pdf` collapsing to `report**.pdf` would cross a folder
+    boundary (`**`) this query never asked for (spec: whitespace implies a
+    single-segment `*`, never `**`). The user's own `*` already does the
+    whitespace run's job, so the run is dropped instead of replaced.
+
+    (Reverses the earlier "accepted edge case" note that used to sit on
+    `test_expand_whitespace_query_does_not_wrap_a_final_segment_with_a_user_star`
+    above — see DECISIONS.md.)"""
+    assert expand_whitespace_query("report *.pdf") == "report*.pdf"
+    # No wrap is added here either — the final segment already has a
+    # user-typed `*`, so rule 4's implied wrap does not apply to it.
+    assert expand_whitespace_query("*.pdf report") == "*.pdf*report"
+    assert expand_whitespace_query("a * b") == "a*b"
+
+
+@pytest.mark.parametrize("filename,expected", [
+    ("hello-world.txt", True),
+    ("hello world.txt", True),
+    ("hello_world.py", True),
+    ("my_hello_big_world.py", True),
+    ("sub/hello world.txt", True),
+    ("HELLO World.txt", True),
+    ("hello world extra.txt", True),
+    ("world-hello.txt", False),
+    ("hello.world", True),
+])
+def test_hello_world_behavior_table(filename, expected):
+    """The spec's required-behavior table (§1), proven directly against
+    `_glob_to_regex` the same way `test_glob_to_regex_full_match_semantics`
+    already does, independent of any filesystem-backed base resolution."""
+    import re as _re
+
+    pattern = "**/" + expand_whitespace_query("hello world")
+    regex = _glob_to_regex(pattern.lower())
+    assert bool(_re.fullmatch(regex[1:-1], filename.lower())) is expected
+
+
+def test_hello_world_two_spaces_matches_the_same_set_as_one_space():
+    import re as _re
+
+    one = _re.fullmatch(
+        _glob_to_regex(("**/" + expand_whitespace_query("hello world")).lower())[1:-1],
+        "hello-world.txt")
+    two = _re.fullmatch(
+        _glob_to_regex(("**/" + expand_whitespace_query("hello  world")).lower())[1:-1],
+        "hello-world.txt")
+    assert bool(one) == bool(two) is True
+
+
 # -- query resolution ------------------------------------------------------------
 #
 # The behaviour table from the spec, turned into tests: every row names a
@@ -159,6 +262,20 @@ def test_resolve_explicit_any_depth_form_is_unchanged():
     assert out == {"base": "/box", "pattern": "**/*.csv", "mode": "glob"}
 
 
+def test_resolve_multi_word_query_becomes_an_ordered_glob():
+    out = resolve_query("/box", "hello world")
+    assert out == {"base": "/box", "pattern": "**/*hello*world*", "mode": "glob"}
+
+
+def test_resolve_two_spaces_resolves_identically_to_one():
+    assert resolve_query("/box", "hello world") == resolve_query("/box", "hello  world")
+
+
+def test_resolve_single_word_query_is_unaffected_by_the_whitespace_rule():
+    out = resolve_query("/box", "report")
+    assert out == {"base": "/box", "pattern": "report", "mode": "substring"}
+
+
 def test_resolve_tilde_star_escapes_to_home_at_depth_one(_home):
     out = resolve_query("/box", "~/*.csv")
     assert out == {"base": _home, "pattern": "*.csv", "mode": "glob"}
@@ -172,6 +289,16 @@ def test_resolve_tilde_path_walks_to_the_deepest_real_directory(_home):
 def test_resolve_tilde_path_stops_at_the_first_glob_segment(_home):
     out = resolve_query("/box", "~/a/*/b.csv")
     assert out == {"base": _home + "/a", "pattern": "*/b.csv", "mode": "glob"}
+
+
+def test_resolve_a_space_in_a_folder_segment_stops_the_walk_there(_home):
+    """Spec §2: the rule applies inside leading folder paths too. `My
+    Documents` becomes `My*Documents`, a glob segment, so `_walk_from` never
+    walks into it as a literal directory (even though `~/a/b` on disk here
+    has no such folder to walk into either way) — base stops at home,
+    exactly as it would for any other glob segment."""
+    out = resolve_query("/box", "~/My Documents/report")
+    assert out == {"base": _home, "pattern": "My*Documents/*report*", "mode": "glob"}
 
 
 def test_resolve_a_missing_named_folder_widens_instead_of_failing(_home):
@@ -332,6 +459,46 @@ def test_resolve_windows_drive_letter_path_with_forward_slashes(monkeypatch):
     monkeypatch.setattr(os.path, "isdir", lambda p: p in real_dirs)
     out = resolve_query("/box", "C:/Users/example/*.conf")
     assert out == {"base": "C:/Users/example", "pattern": "*.conf",
+                   "mode": "glob"}
+
+
+def test_resolve_windows_drive_letter_path_with_a_space_still_recognized(monkeypatch):
+    """Code review finding: `expand_whitespace_query` used to run BEFORE
+    `_DRIVE_ABS`'s check, so a drive path with a space in one of its
+    segments (`C:\\My Files\\rep`) got whitespace-collapsed while its
+    backslashes were still backslashes — the collapse treated the whole
+    string as one opaque segment (no `/` in it yet), wrapped a leading `*`
+    onto the front, and destroyed the `C:` prefix `_DRIVE_ABS` looks for —
+    the path silently stopped resolving as absolute at all (it would fall
+    through to being treated as a bare relative query instead). `_DRIVE_ABS`
+    must be checked, and backslashes folded to `/`, before
+    `expand_whitespace_query` ever runs, so the drive prefix survives and
+    this still resolves as a Windows absolute path — even though the walk
+    itself cannot advance PAST a segment the whitespace collapse turned into
+    a glob (`My Files` -> `My*Files`; `_walk_from` only walks literal,
+    `*`-free segments), so `base` stays at the drive root and the glob-ified
+    rest becomes the pattern instead."""
+    real_dirs = {"C:/My Files", "C:/My Files/rep"}
+    monkeypatch.setattr(os.path, "isdir", lambda p: p in real_dirs)
+    out = resolve_query("/box", "C:\\My Files\\rep")
+    # The all-backslash typed string has no literal "/" in it (spec: "a
+    # slash is the only thing that limits depth"), so it also widens to any
+    # depth the same as `test_resolve_windows_drive_letter_path_walks_the_
+    # filesystem` above — this decision is read from the RAW typed string,
+    # not from the "/"-joined form the drive-normalization step produces.
+    assert out == {"base": "C:/", "pattern": "**/My*Files/*rep*", "mode": "glob"}
+
+
+def test_resolve_windows_drive_letter_path_with_a_space_only_in_the_pattern(monkeypatch):
+    """When the space is confined to the segment PAST the real directories
+    (the ones `_walk_from` can still walk literally), the walk advances all
+    the way to `example`, and the space-as-wildcard grammar applies only to
+    what's left over as the pattern."""
+    real_dirs = {"C:/Users", "C:/Users/example"}
+    monkeypatch.setattr(os.path, "isdir", lambda p: p in real_dirs)
+    out = resolve_query("/box", "C:\\Users\\example\\hello world")
+    # Same all-backslash-typed-string widening as the test above.
+    assert out == {"base": "C:/Users/example", "pattern": "**/*hello*world*",
                    "mode": "glob"}
 
 

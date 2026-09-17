@@ -49,7 +49,7 @@
 // list that also held next Tuesday would answer a different question.
 //
 // Section layout and per-action busy/error state follow shell/Mounts.tsx.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import {
   getConfig,
@@ -103,12 +103,16 @@ import {
 } from "./tasksPulse";
 import {
   TASK_VIEWS,
+  applyQueueOverrides,
+  expireQueueOverrides,
   isChatDraftTask,
+  NO_QUEUE_OVERRIDES,
   provisionalTasks,
   viewFromSearch,
   viewUrl,
+  withQueueOverride,
 } from "./tasks-lib";
-import type { TaskView } from "./tasks-lib";
+import type { QueueOverride, QueueOverrides, TaskView } from "./tasks-lib";
 import { TaskCards } from "./TaskCards";
 import { TasksSkeleton } from "./TasksSkeleton";
 import { useMissingFolders } from "./useMissingFolders";
@@ -334,6 +338,16 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   const [tasksLoaded, setTasksLoaded] = useState(
     () => readListing() !== null || tasks.length > 0,
   );
+  // THE CLAIMS A QUEUE VERB MAKES, until the server speaks about the same key
+  // (tasks-lib.applyQueueOverrides). They live on the PAGE and not in the view
+  // that raised them for one reason: a claim exists to outrun the poll, and a
+  // view is remounted by every navigation — a store inside one would be undone
+  // by the answer it was written to beat. They are retired by the listing feed's
+  // subscription below, which is the one place the server's answer arrives.
+  const [queueOverrides, setQueueOverrides] = useState<QueueOverrides>(NO_QUEUE_OVERRIDES);
+  const noteQueued = useCallback((override: QueueOverride) => {
+    setQueueOverrides((cur) => withQueueOverride(cur, override));
+  }, []);
   const [queued, setQueued] = useState<ScheduledMessage[]>([]);
   const [running, setRunning] = useState<ScheduledMessage[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -847,6 +861,18 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
         setTasks(ev.rows);
         setTasksFailed(ev.failed);
         setTasksLoaded(true);
+        // THE SERVER HAS SPOKEN about every key it named, so every claim about
+        // one of them is over — right or wrong (tasks-lib.expireQueueOverrides).
+        // A full listing speaks about every key it holds; a delta about exactly
+        // the rows and `gone` keys it carries — which is the fast half of the
+        // same rule, since every queue verb rings the watcher and the delta it
+        // rings usually lands within milliseconds of the press that made the
+        // claim. A FAILED read has said nothing, and retires nothing.
+        if (ev.failed) return;
+        const spoken = ev.delta
+          ? [...ev.delta.rows.map((t) => t.key), ...ev.delta.gone]
+          : ev.rows.map((t) => t.key);
+        setQueueOverrides((cur) => expireQueueOverrides(cur, spoken));
       }),
     [],
   );
@@ -903,9 +929,19 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // The app page's scope, applied FIRST: `tasks` above stays the whole machine
   // (it is what publishTasks hands the sidebar), and everything the page shows
   // or offers to filter is derived from this narrowed set instead.
+  // The server's rows with the standing queue claims painted over them. FIRST,
+  // ahead of the scope and the filters, so a row a claim moves into Queued is
+  // filtered and counted as queued by everything downstream — the Status facet
+  // included. `publishTasks` above deliberately hands the sidebar the UNPAINTED
+  // rows: a claim is this page's optimism about a press made on this page, and
+  // the rail is not the place to carry it.
+  const painted = useMemo(
+    () => applyQueueOverrides(tasks, queueOverrides),
+    [tasks, queueOverrides],
+  );
   const inScope = useMemo(
-    () => (scope ? tasks.filter((t) => isUnderDir(t.project, scope.project)) : tasks),
-    [tasks, scope],
+    () => (scope ? painted.filter((t) => isUnderDir(t.project, scope.project)) : painted),
+    [painted, scope],
   );
   const projects = useMemo(() => projectOptions(inScope), [inScope]);
   // The Archive facet does not apply on the Calendar (see
@@ -927,8 +963,9 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // there navigates exactly as it did — the same rule that leaves the sidebar's
   // task list and the notifications alone
   // (.claude-design/task-side-peek/design.md).
-  // THE FLAG (task-peek-flag.ts, `task_peek_enabled`): experimental, default
-  // off, and off means this page is the page it has always been — no panel, no
+  // THE FLAG (task-peek-flag.ts, `task_peek_enabled`): default ON since
+  // 2026-09-17, and OFF — the switch, or the first frames before the prefs read
+  // lands — means this page is the page it has always been: no panel, no
   // `?peek=`, no measured fit, no walk attributes. Read here and handed down,
   // so there is one answer for the whole page.
   const peekOn = useTaskPeekEnabled();
@@ -1235,6 +1272,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               tasks={shown}
               home={home}
               onReload={reload}
+              onQueued={noteQueued}
               // A draft card's press re-opens the form it was saved from —
               // the same gesture, and the same callback, as the List row's.
               onOpenDraft={openDraft}
@@ -1314,6 +1352,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               // catch it anyway, so this is about the row not looking stuck for
               // twenty seconds, not about correctness.
               onReload={reload}
+              // A Skip pressed on a row paints the row before the poll agrees —
+              // the same claim the Board's drag makes, held by the page so it
+              // survives the view the press was made in (see `queueOverrides`).
+              onQueued={noteQueued}
               emptyLabel={emptyLabel}
             />
           )}

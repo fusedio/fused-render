@@ -98,15 +98,18 @@ describe("the flag module", () => {
     expect(FLAG).toContain(".catch(() => getPrefs())");
   });
 
-  it("reads the pref strictly: only a stored true is on", () => {
-    // A server that predates the switch sends no `task_peek` at all, and that
-    // must read as off — the pref's own default and today's behaviour.
-    expect(FLAG).toContain("p.task_peek?.enabled === true");
+  it("reads the pref as ON unless a stored false says otherwise", () => {
+    // The panel is default ON (shell/prefs.py `task_peek_enabled`, 2026-09-17),
+    // so a server that predates the switch — which sends no `task_peek` at all —
+    // must read as ON, the same answer the pref itself would give.
+    expect(FLAG).toContain("p.task_peek?.enabled !== false");
+    expect(FLAG).not.toContain("p.task_peek?.enabled === true");
   });
 
-  it("settles a failed read on OFF rather than leaving it unknown", () => {
-    // `null` sticking would be a page that never decides which behaviour it has.
-    expect(FLAG).toContain("if (generation === departed) set(false);");
+  it("settles a failed read on the default rather than leaving it unknown", () => {
+    // `null` sticking would be a page that never decides which behaviour it has,
+    // and the boolean it settles on is the pref's own default (now `true`).
+    expect(FLAG).toContain("if (generation === departed) set(true);");
   });
 });
 
@@ -627,19 +630,19 @@ describe("the one selected style, and the flag that gates it", () => {
 });
 
 describe("the preview's inset, and the page's gutters at width", () => {
-  it("gives the preview one header-button of air, and scales to what is left", () => {
-    // The app was welded to both walls of the panel while everything around it
-    // was inset (design.md, Polish batch 4, item 7). One var, so the preview's
-    // edge and the ×'s edge cannot drift apart.
+  it("gives the preview a hairline of air, and scales to what is left", () => {
+    // Was welded one header-button's width off both walls of the panel
+    // (design.md, Polish batch 4, item 7); Akshil, 2026-09-16, cut that inset
+    // to 1px — the header-button size (`--peek-icon-w`) no longer sets it.
     expect(PEEK_CSS).toContain("--peek-icon-w: 28px;");
     expect(PEEK_CSS).toContain("width: var(--peek-icon-w);");
-    expect(PEEK_CSS).toContain("--peek-preview-inset: 38px;");
+    expect(PEEK_CSS).toContain("--peek-preview-inset: 1px;");
     expect(PEEK_CSS).toContain("padding-left: var(--peek-preview-inset);");
     expect(PEEK_CSS).toContain("padding-right: var(--peek-preview-inset);");
     // The ARITHMETIC half of the same number — padding on a scroller does not
     // shrink what is inside it, so the frame has to be drawn at the inner
     // width or the gutter simply crops the app.
-    expect(read("peek-preview.ts")).toContain("export const PREVIEW_INSET = 38;");
+    expect(read("peek-preview.ts")).toContain("export const PREVIEW_INSET = 1;");
     expect(read("peek-preview.ts")).toContain("const inner = peekWidth - 2 * PREVIEW_INSET;");
   });
 

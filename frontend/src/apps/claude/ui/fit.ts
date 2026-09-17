@@ -71,19 +71,6 @@ export function fitFlags(fit: RowFit): {
   };
 }
 
-/** The footnote's budget is TWO LINES, and the second sentence is what pays
- *  (T:12369-12380). Measured in lines because the sentence's own length is the
- *  other variable — it names the target's kind. */
-export function footnoteTight(
-  clientHeight: number,
-  paddingTop: number,
-  paddingBottom: number,
-  lineHeight: number,
-): boolean {
-  const text = clientHeight - paddingTop - paddingBottom;
-  return lineHeight > 0 && text > lineHeight * 2 + 1;
-}
-
 /** The landing title's sizes, and they are the STYLESHEET's — this only picks
  *  the largest one the name fits on (T:12411). */
 export const HOME_TITLE_STEPS: readonly (readonly [number, string])[] = [
