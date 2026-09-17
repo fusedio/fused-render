@@ -296,18 +296,33 @@ re-derives highlight positions from its own typed text (`fuzzy.ts`'s
 **A `mode: "glob"` hit IS scored**, by default (`query.md §3`): `pattern` is split
 on its wildcard tokens into literal runs, each run is located in `rel` and scored
 with the same run-length/segment-boundary/basename terms substring mode uses, and
-a wildcard-swallow penalty (`length(rel)` minus the sum of the literal runs' own
-lengths) makes a tight match like `icon copy.png` outrank a wide one like
-`icon-a-very-long-thing-copy.png` for the same pattern — but never rewards a
+a wildcard-swallow penalty charged on the INTERIOR gaps only — the span between
+the first and last literal run, minus their own summed length, never the leading
+or trailing `**` — makes a tight match like `icon copy.png` outrank a wide one
+like `icon-a-very-long-thing-copy.png` for the same pattern — but never rewards a
 longer overall match the way substring mode's run-length term does, since a
-longer filename is not itself a better glob match. This is the caller's `ranked`
-preference (default true); with `ranked=False`, or a pattern with no literal runs
-at all (a bare `**/*`), no scoring expression is computed and hits come back in
-the original `depth ASC, lower(rel) ASC, rel ASC` order — the same order both
-branches used before ranking existed. A ranked glob hit's `tier` is still 0 (glob
-mode has no tier concept), and every hit — substring or glob, ranked or not —
-carries the identical key set, since the wire layer strips `score`/`tier`/
-`longest_run`/`positions` unconditionally (see below).
+longer filename is not itself a better glob match. (An earlier version of this
+penalty charged the swallow over the WHOLE root-relative path, which is wrong —
+it inverted rankings whenever a shallow, weak match competed with a deep, exact
+one, since it made every ancestor directory of a deep match count against it as
+if the pattern's own leading `**` had to "eat" through them. See DECISIONS.md.)
+A pattern with exactly one literal run has no interior gaps to sum, so its
+penalty is always 0 — making its score identical to `_rank_sql`'s substring
+score for the equivalent query. This is the caller's `ranked` preference
+(default true); with `ranked=False`, or a pattern with no literal runs at all (a
+bare `**/*`), no scoring expression is computed and hits come back in the
+original `depth ASC, lower(rel) ASC, rel ASC` order — the same order both
+branches used before ranking existed. A ranked glob hit's `tier` is now REAL, not
+a fixed 0: the same resolved regex is re-run against just the basename, a match
+is tier 1 and anything else (an ancestor-only match) is tier 3 — substring
+mode's tier 2 (straddling the basename boundary) has no glob equivalent, since a
+glob pattern already treats `/` as a hard boundary. `tier ASC` is restored as the
+PRIMARY sort key ahead of `score DESC` for both modes, so a basename match can
+never rank below an ancestor-only one regardless of what the score expression
+says. Every hit — substring or glob, ranked or not — carries the identical key
+set, since the wire layer strips `score`/`tier`/`longest_run`/`positions`
+unconditionally (see below); `ranked=False` computes no scoring apparatus at
+all, including no `tier`.
 
 **Why it exists.** §6's corpus is the whole ranking set shipped to the browser: 19.8 MB
 raw / 5.4 MB gzipped for 164,405 rows on a home directory whose index actually held

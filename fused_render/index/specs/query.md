@@ -120,20 +120,54 @@ runs rather than a bogus one from naively splitting on `*`), and `_glob_score_sq
 locates each literal run in `lrel` via chained `strpos` calls and combines, per
 run, the same `n + 3*(n-1)` run-length term, `segment_starts` hump/boundary bonus,
 and basename `name_bonus` that substring scoring uses, plus a **wildcard-swallow
-penalty** of `length(rel) - sum(literal lengths)` — the more of the filename the
-`*`s had to eat to connect the literals, the worse the score — so `icon copy.png`
-(pattern `**icon**copy**`, tight swallow) outranks
-`icon-a-very-long-thing-copy.png` (same pattern, wide swallow) even though both
-match. There is deliberately **no** bonus for a longer total matched length: for
+penalty** charged on the INTERIOR gaps only: `(last run's end position) -
+(first run's start position) - (sum of literal lengths)` — the telescoping sum of
+the gaps BETWEEN consecutive literal runs, never the leading or trailing `**`
+(which can legitimately span an unbounded, irrelevant prefix/suffix of the root-
+relative path). A pattern with exactly one literal run has an interior span of
+zero runs to sum, so its penalty is always 0 — this is what makes a
+single-literal-run glob's score IDENTICAL to `_rank_sql`'s substring score for
+the equivalent query (pinned by
+`test_glob_single_literal_run_score_matches_rank_sql_substring_score`, 0 diff
+across every corpus/row checked). An EARLIER version of this penalty charged
+`length(rel) - sum(literal lengths)` over the WHOLE root-relative path — i.e. it
+also counted the leading `**`'s reach as swallow. That inverted rankings whenever
+a shallow, weak match competed with a deep, exact one: the deep file paid for
+every ancestor directory in its path as if the pattern's own leading wildcard had
+to "eat" through them, even though a leading `**` reaching further into a longer
+path is not a worse match — it is the SAME pattern behaving exactly as globs are
+defined to. `icon copy.png` (pattern `**icon**copy**`, tight interior swallow)
+still outranks `icon-a-very-long-thing-copy.png` (same pattern, wide interior
+swallow) — the original motivating case for this penalty — but a deep, exact
+match like `deeply/nested/path/report` now correctly outranks a shallow,
+non-exact `xreport.txt` for `**report**` too, which the whole-path version got
+backwards (see DECISIONS.md for the full before/after).
+
+`_glob_sql` also computes a **tier**, generalized from substring mode's
+basename/ancestor split: the SAME resolved regex is re-run against `nm` (the
+basename alone) — a match puts the hit in tier 1, anything else (an
+ancestor-only match, the pattern's literal content living only in a directory
+segment) is tier 3. (Substring mode's tier 2 — straddling the basename boundary —
+has no glob equivalent: a glob's tokenizer already treats `/` as a hard boundary,
+so there is no "straddling" case to detect.) `tier ASC` is restored as the
+PRIMARY sort key (`tier ASC, score DESC, depth ASC, lower(rel) ASC, rel ASC`) —
+it is the structural safety net regardless of how the swallow penalty is
+computed: a basename match should never rank below an ancestor-only match no
+matter what the score expression says, and tying correctness to score alone (the
+whole-path penalty's failure mode) is exactly what let it invert rankings in the
+first place.
+
+There is deliberately **no** bonus for a longer total matched length: for
 a substring query a longer match is more specific, but for a glob a longer
 filename is not a better match, it is just a longer filename, so no term rewards
 sheer length. All of this happens in one SQL statement (`_glob_sql`), never a
 Python-side loop, so it stays inside `con.interrupt()`'s reach.
 
 When `ranked=False`, or the pattern reduces to zero literal runs, `_glob_sql`
-computes no scoring expression at all — not "score then discard" — and results
-come back in the original `depth ASC, lower(rel) ASC, rel ASC` order, matching
-`search_under`'s own unranked branch exactly.
+computes no scoring apparatus at all — not "score then discard", and that
+includes no `tier` either — and results come back in the original `depth ASC,
+lower(rel) ASC, rel ASC` order, matching `search_under`'s own unranked branch
+exactly.
 
 ## 4. Partition pruning
 
