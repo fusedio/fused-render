@@ -44,6 +44,7 @@ import {
   carryMarkToHeld,
   dayLabel,
   DRAFT_CHIP,
+  draftHeldByPeek,
   draftRing,
   draftTag,
   dropAction,
@@ -1326,9 +1327,11 @@ describe("dropLanes", () => {
     expect(SCHEDULE_CSS.indexOf(".schedule-ring--unread::after"))
       .toBeLessThan(SCHEDULE_CSS.indexOf(".schedule-ring--draft-held::after"));
     // Drawn by the two surfaces a settled task is SCANNED on, from one rule.
-    expect(VIEWS).toContain("draftHeld={draftRing(task)}");
+    // …and the List's stands down while the side peek holds that row's draft
+    // (tasks-lib.draftHeldByPeek): the composer one pane over is showing it.
+    expect(VIEWS).toContain("draftHeld={draftRing(task) && !heldInPeek}");
     expect(readFileSync(join(SHELL, "TaskCards.tsx"), "utf8"))
-      .toContain("draftHeld={draftRing(task)}");
+      .toContain("draftHeld={draftRing(task) && !heldInPeek}");
   });
 
   it("leaves an archived row with nothing unsent exactly as it was", () => {
@@ -2328,7 +2331,7 @@ describe("the unread mark", () => {
     // held thread), so the ring hollows on the row's own press rather than on the
     // next poll — the same number that used to feed the dot.
     expect(ROW).toMatch(
-      /<StatusIcon\s+status=\{taskColumn\(task\)\}\s+failed=\{ringFailed\(task\)\}\s+unread=\{unread > 0\}\s+count=\{unread\}\s+draftHeld=\{draftRing\(task\)\}\s*\/>/,
+      /<StatusIcon\s+status=\{taskColumn\(task\)\}\s+failed=\{ringFailed\(task\)\}\s+unread=\{unread > 0\}\s+count=\{unread\}\s+draftHeld=\{draftRing\(task\) && !heldInPeek\}\s*\/>/,
     );
     // Nothing trails the title any more: the ring leads the row, the title
     // follows, and the next thing is the live ping.
@@ -4232,7 +4235,7 @@ describe("the archive action", () => {
     // of a line other than dragging a card out of a lane that is rolled up
     // whenever it is empty.
     expect(card).toContain(
-      "{((peekOn && page) || file || folderMissing || hasDraft(task) || queue\n"
+      "{((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek) || queue\n"
       + "        || (SHOW_ROW_ACTIONS && run)) && (",
     );
     expect(card).toContain('className="tasks-card-acts"');
@@ -4541,7 +4544,7 @@ describe("the delete affordance", () => {
     expect(strip.indexOf("ICON_TRASH")).toBeLessThan(strip.indexOf("ICON_ARCHIVE"));
     // The strip is drawn for a gone folder even with nothing to file.
     expect(VIEWS_SRC).toContain(
-      "{((peekOn && page) || file || folderMissing || hasDraft(task) || queue\n"
+      "{((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek) || queue\n"
       + "        || (SHOW_ROW_ACTIONS && run)) && (",
     );
     // And the foot is back to the sentence alone — no trash before it there.
@@ -4878,7 +4881,8 @@ describe("an expanded thread leads with the draft it is carrying", () => {
 
   it("draws it as a message row, with the pencil in the ring's seat", () => {
     // Same class, same seats, same quoted body: it is about to BE a message.
-    expect(THREAD).toContain('{task.draft && (');
+    // …hidden while the side peek holds this very draft (draftHeldByPeek).
+    expect(THREAD).toContain('{task.draft && !heldInPeek && (');
     expect(THREAD).toContain('className="tasks-msg"');
     expect(THREAD).toContain('className="tasks-msg-body"');
     expect(THREAD).toContain('className="tasks-msg-time"');
@@ -5032,6 +5036,19 @@ describe("the Draft chip says ONE word, whichever kind of draft it is", () => {
     // Almost every row has neither.
     expect(draftTag(task({ key: "plain", status: "done" }))).toBe(null);
     expect(draftTag(task({ key: "plain", status: "done", draft: null }))).toBe(null);
+  });
+
+  it("is HELD, not listed, while the side peek has that row's chat open", () => {
+    // The peek's composer loads the row's unsent message, so the chip, the
+    // draft line and the ring's dot would repeat what the reader is looking at
+    // one pane to the right (Akshil, 2026-09-17, item 7). Only a row with a
+    // session can be peeked, and only one with a draft has anything to hide.
+    expect(draftHeldByPeek(withChatDraft, true)).toBe(true);
+    expect(draftHeldByPeek(withChatDraft, false)).toBe(false);
+    // A never-sent task draft has no chat to peek, so nothing is ever hidden.
+    expect(draftHeldByPeek(taskDraft, true)).toBe(false);
+    // …and a peeked row with nothing unsent has nothing to hide either.
+    expect(draftHeldByPeek(task({ key: "s-quiet", status: "done" }), true)).toBe(false);
   });
 
   it("says the same word on a server that predates the second kind", () => {

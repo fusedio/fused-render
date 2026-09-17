@@ -72,6 +72,7 @@ import {
   cancelIntent,
   carryMarkToHeld,
   draftRing,
+  draftHeldByPeek,
   draftTag,
   dropAction,
   dropLanes,
@@ -2687,7 +2688,9 @@ function TaskNode({
   const outcome = outcomeTag(task);
   // The `Draft` chip — this task's unsent composer text, or the row's own
   // unfinished form. tasks-lib.draftTag owns both cases and the tooltip.
-  const draft = draftTag(task);
+  // Hidden while the side peek holds this row's draft (tasks-lib.draftHeldByPeek).
+  const heldInPeek = draftHeldByPeek(task, peeked);
+  const draft = heldInPeek ? null : draftTag(task);
   // Run now / Re-run. tasks-lib decides all of it — whether it is offered,
   // which message it acts on, and WHICH CALL that is. The run-now half comes
   // from the same function the drag asks (runNowIntent), so the button and the
@@ -3361,7 +3364,7 @@ function TaskNode({
             failed={ringFailed(task)}
             unread={unread > 0}
             count={unread}
-            draftHeld={draftRing(task)}
+            draftHeld={draftRing(task) && !heldInPeek}
           />
           {/* The Board's drag onto Archive — or out of it — as a press. ONE
               button in this slot, never two: a task is either put away or it is
@@ -3861,7 +3864,7 @@ function TaskNode({
 
             NO CONFIRM. A draft is unsent text and the modal's own Discard has
             never asked either; see `discardDraft`. */}
-        {hasDraft(task) && !folderMissing && (
+        {hasDraft(task) && !folderMissing && !heldInPeek && (
           <button
             type="button"
             className="tasks-act tasks-act--delete"
@@ -4074,7 +4077,7 @@ function TaskNode({
               conversation whose composer is holding something — or a New task
               form bound to it, which is the same question to the reader and a
               different place to send them (`pressDraftLine`). */}
-          {task.draft && (
+          {task.draft && !heldInPeek && (
             <div
               className="tasks-msg"
               role="button"
@@ -5261,7 +5264,9 @@ function TaskCard({
   const outcome = outcomeTag(task);
   // …and the `Draft` chip: a chat draft joined onto this task's session, or
   // — on a draft row — the unfinished form itself (tasks-lib.draftTag).
-  const draft = draftTag(task);
+  // Hidden while the side peek holds this row's draft (tasks-lib.draftHeldByPeek).
+  const heldInPeek = draftHeldByPeek(task, peeked);
+  const draft = heldInPeek ? null : draftTag(task);
   // The lane this card is IN — the COLUMN it is drawn under, which is why it is
   // `laneOf` and not the status alone: a waiting card sits in Blocked, and the
   // header above it says Blocked. Not passed down either way: `groupByColumn`
@@ -5591,7 +5596,7 @@ function TaskCard({
           while the List shows it is exactly the divergence the shared flag exists
           to prevent (§1 — same element, same behaviour in every view). The strip
           itself is drawn whenever either survives its guard. */}
-      {((peekOn && page) || file || folderMissing || hasDraft(task) || queue
+      {((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek) || queue
         || (SHOW_ROW_ACTIONS && run)) && (
         <span className="tasks-card-acts">
           {/* DISCARD, the List row's own act in the card's hover strip — same
@@ -5599,7 +5604,7 @@ function TaskCard({
               PR C; §1 — one element, one behaviour in every view). Stands down
               on a card whose folder is gone, where the trash beside it is the
               stronger claim. */}
-          {hasDraft(task) && !folderMissing && (
+          {hasDraft(task) && !folderMissing && !heldInPeek && (
             <button
               type="button"
               className="tasks-act tasks-card-act tasks-act--delete"
