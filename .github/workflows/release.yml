@@ -225,6 +225,17 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="$(basename "$DMG_PATH" .dmg | sed 's/^FusedRender-//')"
+          # Never move latest.json BACKWARDS: rebuilding an older tag
+          # (workflow_dispatch --ref vX.Y.Z) must not point every install at
+          # that older version. Compare against the live manifest the app
+          # polls (MANIFEST_URL in fused_render/update/mac.py); a 404 (no
+          # manifest yet) or one that would not verify publishes.
+          LIVE="$(curl -fsSL "https://${CDN_DOMAIN}/${MACOS_PREFIX}/latest.json" 2>/dev/null || true)"
+          if ! uv run --no-project --with cryptography \
+              scripts/windows/generate_update_manifest.py newer-than "$VERSION" "$LIVE"; then
+            echo "::notice::live macOS manifest already names a newer version than $VERSION — leaving latest.json alone"
+            exit 0
+          fi
           uv run --no-project --with cryptography \
             scripts/windows/generate_update_manifest.py \
             "$VERSION" "$DMG_PATH" "https://${CDN_DOMAIN}/fused-render-dmgs" \
@@ -316,13 +327,24 @@ jobs:
           # import. Resolving the whole project here buys nothing and can fail
           # for reasons unrelated to signing a manifest (see the same flag on
           # the registry script in scripts/build_windows_installer.ps1).
-          uv run --no-project --with cryptography \
-            scripts/windows/generate_update_manifest.py \
-            "$VERSION" "$INSTALLER" "$BASE_URL" dist/latest.json
-          # no-cache: the updater polls this fixed name; a stale CDN copy
-          # would mask a release.
-          aws s3 cp dist/latest.json "s3://${S3_BUCKET}/${WINDOWS_PREFIX}/latest.json" \
-            --cache-control no-cache
+          # Never move latest.json BACKWARDS: rebuilding an older tag must not
+          # point every install at that older version. Compare against the
+          # live manifest the tray updater polls; a 404 (no manifest yet) or
+          # one that would not verify publishes. The installer upload,
+          # invalidation and release attachment below happen either way.
+          LIVE="$(curl -fsSL "${BASE_URL}/latest.json" 2>/dev/null || true)"
+          if uv run --no-project --with cryptography \
+              scripts/windows/generate_update_manifest.py newer-than "$VERSION" "$LIVE"; then
+            uv run --no-project --with cryptography \
+              scripts/windows/generate_update_manifest.py \
+              "$VERSION" "$INSTALLER" "$BASE_URL" dist/latest.json
+            # no-cache: the updater polls this fixed name; a stale CDN copy
+            # would mask a release.
+            aws s3 cp dist/latest.json "s3://${S3_BUCKET}/${WINDOWS_PREFIX}/latest.json" \
+              --cache-control no-cache
+          else
+            echo "::notice::live Windows manifest already names a newer version than $VERSION — leaving latest.json alone"
+          fi
           aws cloudfront create-invalidation \
             --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
             --paths "/${WINDOWS_PREFIX}/*"
