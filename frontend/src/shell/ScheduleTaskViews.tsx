@@ -3864,7 +3864,7 @@ function TaskNode({
 
             NO CONFIRM. A draft is unsent text and the modal's own Discard has
             never asked either; see `discardDraft`. */}
-        {hasDraft(task) && !folderMissing && (
+        {hasDraft(task) && !folderMissing && !heldInPeek && (
           <button
             type="button"
             className="tasks-act tasks-act--delete"
@@ -5596,7 +5596,7 @@ function TaskCard({
           while the List shows it is exactly the divergence the shared flag exists
           to prevent (§1 — same element, same behaviour in every view). The strip
           itself is drawn whenever either survives its guard. */}
-      {((peekOn && page) || file || folderMissing || hasDraft(task) || queue
+      {((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek) || queue
         || (SHOW_ROW_ACTIONS && run)) && (
         <span className="tasks-card-acts">
           {/* DISCARD, the List row's own act in the card's hover strip — same
@@ -5604,7 +5604,7 @@ function TaskCard({
               PR C; §1 — one element, one behaviour in every view). Stands down
               on a card whose folder is gone, where the trash beside it is the
               stronger claim. */}
-          {hasDraft(task) && !folderMissing && (
+          {hasDraft(task) && !folderMissing && !heldInPeek && (
             <button
               type="button"
               className="tasks-act tasks-card-act tasks-act--delete"

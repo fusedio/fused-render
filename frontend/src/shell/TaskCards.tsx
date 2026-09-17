@@ -775,7 +775,7 @@ function TaskCard({
 
               Stands down on a card whose folder is gone, where the trash beside
               it is the stronger claim — the same rule the List row keeps. */}
-          {hasDraft(task) && !gone && (
+          {hasDraft(task) && !gone && !heldInPeek && (
             <button
               type="button"
               className="task-card-door task-card-door--danger"
