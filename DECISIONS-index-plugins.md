@@ -826,3 +826,88 @@ global search overlay, and deleting the shortcuts overlay entirely —
 surface, listing, and the Mod+K entry at
 `frontend/src/platform/lib/shortcuts.ts:116` — per the standing rule to
 delete stranded code rather than leave it inert).
+
+## Unit 15 — the ⌘K global search overlay; shortcuts overlay deleted
+
+**One in-app overlay, not an OS-wide hotkey**, opened by the same Mod+K
+chord `App.tsx` already owned for the shortcuts cheat sheet
+(`shell/GlobalSearchOverlay.tsx`). Results are grouped by source — "Files"
+and "Apps" today, one section per registered kind that can answer a query
+— and each group is ranked **entirely within itself**: there is no merged
+list and no shared score axis, so a file's score is never compared against
+an app's. Rendering order within a group is exactly the order its own
+`/api/index/rank` response returned, same rule `home-search.ts` already
+follows.
+
+**No second matcher.** The files group calls `indexRank` — the very same
+`/api/index/rank` → `resolve_query`/`search_ranked` path
+`apps/explorer/FilesHome.tsx`'s own home search already uses. The apps
+group calls `indexRankKind("apps", …)`, which is `/api/index/rank?kind=apps`
+→ `search_apps_ranked`, unit 13's existing generalized route. Nothing here
+adds a third ranking function, so `query.py` and `fuzzy.ts` did not need
+touching — `fuzzy.ts`'s `fuzzyMatch`/`highlightSegments` are reused
+purely to re-derive highlight positions for already-ranked rows on the
+client, the exact pattern `FilesHome.tsx`/`home-search.ts` already use,
+since the wire shape (`IndexRankHit`) deliberately drops `score`/
+`positions` before it ever reaches the browser.
+
+**Per-keystroke `AbortController` cancellation, not a debounce** — both
+groups' effects create and abort their own controller per keystroke,
+mirroring `FilesHome.tsx`'s own rank effect exactly; the two groups' calls
+are independent, so a slow apps store can never hold up files or vice
+versa.
+
+**Opens a result; never runs one.** A file hit calls `navigate(base + "/"
++ hit.rel, { isDir })`, the same join `home-search.ts`'s `answerFrom` uses
+(`res.base` from the response, not a hardcoded home). An app hit calls
+`navigateUrl(appPageUrl(hit.rel))` — no base-joining needed, because
+`search_apps_ranked`'s own contract (`index/query.py`) makes an apps-kind
+hit's `rel` the app folder's absolute realpath already (`apps_kind.py`'s
+`identity_column="path"` → `app_listing.app_dict`'s
+`"path": os.path.realpath(folder)`). This opens the app's own management
+page (`AppPage.tsx`), exactly what clicking it in the Apps hub does —
+running or launching an app from a search result is out of scope
+(SPEC-index-plugins.md) and this overlay does not add a way to do it.
+
+**Chassis: the shared `Modal` (`platform/ui/modal/Modal.tsx`), not a
+hand-rolled portal.** An earlier draft of this file used its own
+`createPortal` + custom backdrop + manual Escape listener; that duplicated
+machinery `Modal` already owns for every other dialog in the app (focus
+trap, Esc, backdrop-close, enter/exit animation), so the file was rewritten
+to render inside `<Modal plainBody>` instead — the same choice
+`ShortcutsOverlay.tsx` had already made. What this component still owns on
+top of `Modal`, matching `ShortcutsOverlay`'s own precedent exactly: the
+overlay-lock hold (`acquireOverlay`/`releaseOverlay` in a `useLayoutEffect`)
+and a Mod+K-toggles-closed listener — `Modal` already closes on Esc, so no
+second Escape handler is added.
+
+**The shortcuts overlay is deleted outright, not relocated.**
+`platform/ui/ShortcutsOverlay.tsx`, `platform/lib/shortcuts.ts` (including
+its own `{ group: "View", keys: [MOD_LABEL, "K"], label: "Show this
+shortcut list" }` entry), and `styles/shortcuts.css` are removed, along
+with `shell.css`'s `@import` of that stylesheet (replaced with
+`styles/global-search.css`, the new overlay's own content rules — the
+shared dialog chrome comes from `deploy.css`, already imported). Confirmed
+by grep that exactly those files plus `App.tsx` referenced any of
+`ShortcutsOverlay`/`lib/shortcuts`/`shortcutGroups`/`shortcuts.css`, and
+that no test file referenced any symbol from them — so nothing is stranded
+and no test needed updating for the removal. Mod+K is not moved to `?` or
+any other chord; it simply means search now.
+
+**Verified**: `bunx tsc --noEmit` clean, `node scripts/check-boundaries.mjs`
+clean (826 files), `bun run build` succeeds and regenerates
+`fused_render/static/shell-dist/`. `bun test` (full suite): 6393 passed,
+1 failed — `ChatMount.render.test.tsx`'s "flag on renders the native box
+and NO iframe" case, which fails in isolation on this same checkout with
+no relation to search/shortcuts (chat-frame-placeholder class assertion),
+confirmed pre-existing and out of this unit's scope. No new test file was
+added for `GlobalSearchOverlay.tsx` itself — it is a thin composition of
+already-tested primitives (`indexRank`/`indexRankKind`, `Modal`,
+`fuzzyMatch`/`highlightSegments`, `navigate`/`navigateUrl`/`appPageUrl`),
+each covered where it is defined; no backend route changed in this unit; no
+Python tests re-run were needed beyond the existing unit 13/14 verification
+already on this branch.
+
+**Resume pointer**: items 1, 2, and 3 are all done — every unit in
+SPEC-index-plugins.md's top-level task ordering for this branch is
+complete.
