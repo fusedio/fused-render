@@ -1046,8 +1046,12 @@ describe("the chat does not rekey its own draft", () => {
     // is no CALL to it left in this file — only prose about why there is not.
     expect(src).not.toContain("saveChatDraft(");
     expect(src).not.toContain("saveChatDraft,");
-    expect(src).toContain("sync.handoff()");
-    expect(src).toContain("sync.flushNow(opts)");
+    // …AND SO DO THE HELD DRAFT'S OWN SAVE MOMENTS (2026-09-17). A session-less
+    // box holds one `draft:<id>` and writes it on a swap or an unmount: the
+    // record is STATED to the syncer and flushed through it, and an emptied box
+    // says the record should not exist — the same writer, in all three cases.
+    expect(src).toContain("sync.flushNow();");
+    expect(src).toContain("if (draftVersion(key) !== undefined) sync.markDeleted();");
   });
 });
 

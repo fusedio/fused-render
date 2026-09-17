@@ -20,17 +20,16 @@ import {
   draftVersion,
   forgetDraftVersion,
   fetchChatDraft,
-  newTaskDraftId,
+  joinDraft,
   peekDraftSyncer,
-  taskDraftKey,
+  rememberDraftVersion,
   useAutosave,
   type ChatDraft,
   type DraftAttachment,
+  type TaskDraftForm,
 } from "@platform/lib/drafts";
 import { notify } from "@platform/lib/notifications";
-import { registerLeaveGuard } from "@platform/lib/router";
 import { onDraftChange } from "@shell/tasksPulse";
-import { UnsentMessageModal } from "@platform/ui/UnsentMessageModal";
 import "../styles/composer.css";
 import type { PermissionMode } from "../protocol/types";
 import type { RunStatus, SendOptions } from "../protocol/controller-api";
@@ -48,6 +47,37 @@ import { EffortSelect } from "./EffortSelect";
 import { ModelSelect } from "./ModelSelect";
 import { PermissionSelect } from "./PermissionSelect";
 import { copyToTaskShots, SchedButton } from "./SchedButton";
+
+/**
+ * THE HELD DRAFT AS THE COMPOSER STATES IT: the box's words and copied files
+ * on top of the record's own SETTINGS (time, repeat, model, effort, permission,
+ * per-run flag). A composer has no opinion about those, so it carries them
+ * forward from the form it was seeded with rather than blanking them — a time
+ * picked on the Tasks card survives a sentence edited here. Only the form's
+ * own fields are kept: a listing row's `form` also carries version stamps and
+ * the like, and stating those back would be noise on every save.
+ */
+function heldFormOf(
+  base: TaskDraftForm | null,
+  text: string,
+  target: string,
+  attachments: DraftAttachment[],
+): TaskDraftForm {
+  const fresh = composerTaskDraft(text, target, attachments);
+  if (!base) return fresh;
+  return {
+    ...fresh,
+    target: base.target || fresh.target,
+    when: base.when ?? null,
+    repeat: base.repeat ?? null,
+    custom_rule: base.custom_rule ?? null,
+    model: base.model ?? "",
+    effort: base.effort ?? "",
+    permission: base.permission ?? "",
+    new_task_each_run: base.new_task_each_run ?? null,
+    session_id: base.session_id ?? "",
+  };
+}
 
 /** T:4227 / T:4156 — the box's own placeholder, verbatim. The chat one names
  *  who is being replied to; the landing one names the errand. */
@@ -388,6 +418,20 @@ export interface ComposerCardProps {
   fitRevision?: unknown;
   back: string;
   onNavigate?(url: string): void;
+  /**
+   * THE UPCOMING DRAFT THIS BOX HOLDS while there is no session (Akshil,
+   * 2026-09-17). The landing composer is where the folder's newest draft lives:
+   * `ClaudeChat` picks it off the listing, hands its key and stored form here,
+   * and hides that one row from the list underneath. Words typed here are
+   * saved under this key when the page loses focus, when the box is swapped to
+   * another draft, and when this composer unmounts — never per keystroke. An
+   * empty box on any of those moments deletes the record.
+   */
+  heldKey?: string | null;
+  heldForm?: (TaskDraftForm & { version?: number }) | null;
+  /** The held record was deleted elsewhere (its row trashed on the Tasks
+   *  page): the box has emptied itself, and the host should hold a fresh key. */
+  onHeldGone?(): void;
 }
 
 /** EVERYTHING THERE IS TO LOSE IN A COMPOSER: the words, and how many files are
@@ -476,6 +520,9 @@ export function ComposerCard({
   fitRevision,
   back,
   onNavigate,
+  heldKey,
+  heldForm,
+  onHeldGone,
 }: ComposerCardProps) {
   // WHAT IS IN THE BOX DEPENDS ON WHETHER THERE IS A CONVERSATION BEHIND IT —
   // the one fork this file has, and every rule below hangs off it (see "THE
@@ -597,9 +644,15 @@ export function ComposerCard({
   //     reader saved out of a folder landed on top of the first. `draftKey`
   //     below is therefore only the SESSION road's key now; the other road never
   //     writes under it, and nothing else in this app does either.
-  const draftKey = chatDraftKey(sessionId, file);
+  const draftKey = sessionId ? chatDraftKey(sessionId, file) : (heldKey ?? "");
   /** Which of the two rules above is in force. */
   const hasSession = !!sessionId;
+  /** Is there a record to mirror into at all — a session's, or the held draft's. */
+  const hasKey = !!draftKey;
+  const onHeldGoneRef = useRef(onHeldGone);
+  onHeldGoneRef.current = onHeldGone;
+  const heldFormRef = useRef(heldForm);
+  heldFormRef.current = heldForm;
   // …and the same fact for the handlers that were built before this render.
   const hasSessionRef = useRef(hasSession);
   hasSessionRef.current = hasSession;
@@ -649,24 +702,6 @@ export function ComposerCard({
   trayRead.current = attachments;
   const fileRef = useRef(file);
   fileRef.current = file;
-  /**
-   * THE ID A SESSION-LESS BOX'S WORDS WOULD BE FILED UNDER — minted by the
-   * first road that needs one, reused by the rest, and forgotten the moment the
-   * box is cleared (Akshil, 2026-09-16).
-   *
-   * There are two roads out of a chat that has never been sent and they can
-   * both run for ONE set of words: the dialog's "Save as draft", and the
-   * `pagehide`/unmount write under it. Minting an id inside each would file the
-   * same half-sentence as two Upcoming rows. Minting one per EPISODE — one set
-   * of words, from the first keystroke to the clear — is the rule that makes
-   * "every save is a new draft" true without making "one save" mean two.
-   */
-  const unsentId = useRef("");
-  const mintUnsentId = useCallback((): string => {
-    if (!unsentId.current) unsentId.current = newTaskDraftId();
-    return unsentId.current;
-  }, []);
-
   /**
    * WHICH SET OF WORDS THIS BOX IS ON — a counter, bumped every time the box is
    * emptied ON PURPOSE (Bugbot 4027549698).
@@ -797,7 +832,40 @@ export function ComposerCard({
     // ONLY A SESSION'S COMPOSER READS. A `new:<file>` box seeding from its
     // record would paint an Upcoming row back into a chat the reader had just
     // opened fresh, which is the thing the session-less rule exists to stop.
-    if (!hasSession) return;
+    if (!hasKey) return;
+    // THE HELD DRAFT SEEDS FROM THE ROW IT WAS PICKED OFF — no GET: the
+    // listing already carries the whole stored form (`_draft_row.form`). Every
+    // key change seeds again (a swap back to a draft held earlier is a fresh
+    // read of it), which the layout effect below makes safe by emptying the box
+    // first. The mirrors are written HERE, synchronously, so the effects that
+    // run after this one — the tray copy, the autosave — already read the new
+    // draft's words and state nothing stale under the new key.
+    if (!hasSession) {
+      const form = heldFormRef.current;
+      if (!form) return;
+      if (textRef.current) return;
+      const files = form.attachments ?? [];
+      const words = joinDraft(form.title, form.description);
+      const base = heldFormOf(form, words, form.target || (fileRef.current ?? ""), files);
+      baseFormRef.current = base;
+      carriedRef.current = files;
+      textRef.current = words;
+      trayDraftRef.current = files;
+      // THE ROW'S VERSION IS THIS PAGE'S VERSION: the first save states it as
+      // `If-Match`, so it lands as an edit of this record rather than a 409
+      // against a record this page "had never seen" (live repro, 2026-09-17).
+      if (typeof form.version === "number") rememberDraftVersion(draftKey, form.version);
+      draftSyncer(draftKey).seedTask(base);
+      restoreTray(files, { text: words, attachments: files });
+      if (words) {
+        spent.current = null;
+        setText(words);
+        autosaveRef.current.reset({ text: words, attachments: files });
+        grow();
+        setSeededAt((n) => n + 1);
+      }
+      return;
+    }
     if (seededKeys.current.has(draftKey)) return;
     seededKeys.current.add(draftKey);
     // Words typed before the GET answered are the reader's and outrank it.
@@ -852,7 +920,7 @@ export function ComposerCard({
         setSeededAt((n) => n + 1);
       }
     });
-  }, [hasSession, draftKey, grow, restoreTray]);
+  }, [hasKey, hasSession, draftKey, grow, restoreTray]);
 
   // What the tray holds, in the draft's own three fields. Read during render
   // because `attachments()` is a plain read of the host's state (ClaudeChat
@@ -917,10 +985,39 @@ export function ComposerCard({
   // `push` when the value CHANGES, so a silent push is a composer that writes
   // nothing at all.
   const focusedRef = useRef(false);
+  /**
+   * THE HELD DRAFT'S FILES AS THE CARD CAN USE THEM. A chat attachment lives in
+   * a tempdir on a 12 h TTL and `POST /api/schedule` refuses any path outside
+   * the task-shots dir, so the record is written with COPIES — made once per
+   * tray change below, off the render path, and the record re-stated when they
+   * land. Seeding and adopting put the record's own (already copied) files here.
+   */
+  const carriedRef = useRef<DraftAttachment[]>([]);
+  /** The held record's settings, carried forward on every save (`heldFormOf`). */
+  const baseFormRef = useRef<TaskDraftForm | null>(null);
+  /** The key whose life this box has already ended — sent, or handed to the
+   *  Tasks card — so the swap/unmount save below leaves it alone. */
+  const settledKey = useRef<string | null>(null);
+  /** State the held draft — words, copied files, folder — without sending it. */
+  const mirrorHeld = useCallback(() => {
+    const key = draftKeyRef.current;
+    if (!key || hasSessionRef.current) return;
+    const sync = draftSyncer(key);
+    // AN EMPTY BOX ON A RECORD THAT NEVER EXISTED wants nothing: no PUT of a
+    // blank form on every blur of an idle landing page.
+    if (!textRef.current.trim() && !carriedRef.current.length && draftVersion(key) === undefined) {
+      sync.unwant();
+      return;
+    }
+    sync.setTask(
+      heldFormOf(baseFormRef.current, textRef.current, fileRef.current ?? "", carriedRef.current),
+      { defer: true },
+    );
+  }, []);
   const autosave = useAutosave(
     { text, attachments: trayDraft },
     (value) => {
-      if (!hasSessionRef.current) return;
+      if (!draftKeyRef.current) return;
       // THE TRAY IS STILL FILLING FROM THE RECORD (Bugbot 4027549715). This
       // value's `attachments` is the tray as it is RIGHT NOW, which during a
       // restore is empty — writing it would persist a wipe of the very files
@@ -932,7 +1029,14 @@ export function ComposerCard({
         autosaveRef.current.reset(held);
         return;
       }
-      draftSyncer(draftKeyRef.current).setText(value.text, value.attachments);
+      if (hasSessionRef.current) {
+        draftSyncer(draftKeyRef.current).setText(value.text, value.attachments);
+        return;
+      }
+      // THE HELD DRAFT: stated, not sent. `defer` leaves it for the next flush
+      // — a window blur, `pagehide`, a swap, the unmount. The files are the
+      // task-shots COPIES (`carriedRef`), never the tray's tempdir paths.
+      mirrorHeld();
     },
     { key: draftKey },
   );
@@ -942,15 +1046,15 @@ export function ComposerCard({
   // adopt into right now. The answer detaches it, so a composer that has gone
   // cannot be asked to take somebody else's words.
   useEffect(() => {
-    if (!hasSession) return;
+    if (!hasKey) return;
     return draftSyncer(draftKey).watch({
       focused: () => focusedRef.current,
       localText: () => textRef.current,
-      adopt: (record) => adoptRef.current(record as ChatDraft | null),
+      adopt: (record) => adoptRef.current(record as ChatDraft | TaskDraftForm | null),
       onKept: () =>
         notify({ title: "Updated elsewhere, kept your text", tone: "info" }),
     });
-  }, [hasSession, draftKey]);
+  }, [hasKey, draftKey]);
   // `submit` is a useCallback built below; it needs the autosave handle, and the
   // handle's identity is stable, so it is read through the ref every other seat
   // in this file uses for the same reason.
@@ -988,10 +1092,6 @@ export function ComposerCard({
     if (!words.trim() && !files.length) return;
     autosaveRef.current.reset({ text: words, attachments: files });
     draftSyncer(draftKey).setText(words, files);
-    // …and the id those words would have been filed under as a TASK draft is
-    // spent: they are a chat's unsent message now, and the session's record is
-    // where they live.
-    unsentId.current = "";
   }, [hasSession, draftKey]);
 
   /**
@@ -1003,8 +1103,13 @@ export function ComposerCard({
    * `null` is the record deleted: the box empties the way its own Send empties
    * it, tray included, because the files were part of the draft that is gone.
    */
-  const adoptRecord = useCallback((record: ChatDraft | null) => {
-    const next = record?.text ?? "";
+  const adoptRecord = useCallback((record: ChatDraft | TaskDraftForm | null) => {
+    // A TASK record (the held draft's) is two fields; a chat record is one.
+    const next = !record
+      ? ""
+      : typeof (record as ChatDraft).text === "string"
+        ? (record as ChatDraft).text
+        : joinDraft((record as TaskDraftForm).title, (record as TaskDraftForm).description);
     const files = record?.attachments ?? [];
     /**
      * AND THE LATCH IS TOLD WHICH OF THE TWO THINGS THIS IS (`spent`, Bugbot
@@ -1052,7 +1157,22 @@ export function ComposerCard({
     // adopted would be written straight back over: the box changed, and a
     // change is what makes a request. `seedText` is the one way to say "this is
     // what is wanted AND what is there".
-    draftSyncer(draftKeyRef.current).seedText(next, files);
+    if (hasSessionRef.current) {
+      draftSyncer(draftKeyRef.current).seedText(next, files);
+    } else {
+      carriedRef.current = files;
+      if (record) {
+        const form = record as TaskDraftForm & { version?: number };
+        const base = heldFormOf(form, next, form.target || (fileRef.current ?? ""), files);
+        baseFormRef.current = base;
+        if (typeof form.version === "number") {
+          rememberDraftVersion(draftKeyRef.current, form.version);
+        }
+        draftSyncer(draftKeyRef.current).seedTask(base);
+      } else {
+        baseFormRef.current = null;
+      }
+    }
     grow();
   }, [grow, restoreTray]);
   const adoptRef = useRef(adoptRecord);
@@ -1088,8 +1208,8 @@ export function ComposerCard({
         // A SESSION-LESS BOX HEARS NOTHING. Its key is an Upcoming row's, and
         // that row's life — saved on the card, scheduled, trashed — is no news
         // for a chat the reader is typing a fresh message into.
-        if (!hasSessionRef.current) return;
         const key = draftKeyRef.current;
+        if (!key) return;
         const seen = draftVersion(key);
         if (gone.includes(key) && (certain || seen !== undefined)) {
           forgetDraftVersion(key);
@@ -1107,9 +1227,15 @@ export function ComposerCard({
           // not working.
           if (!certain && focusedRef.current && textRef.current.trim()) return;
           adoptRef.current(null);
+          // THE HELD DRAFT IS GONE FOR GOOD (trashed on the Tasks page): the
+          // host hands this box a fresh key to hold instead.
+          if (!hasSessionRef.current) onHeldGoneRef.current?.();
           return;
         }
         if (seen === undefined) return;
+        // A HELD DRAFT LEARNS OF CHANGES THROUGH ITS ROW (`heldForm`), which the
+        // same feed keeps current — see the effect below. No GET here.
+        if (!hasSessionRef.current) return;
         const row = changed.find((c) => c.key === key);
         if (!row || row.version <= seen) return;
         if (focusedRef.current && textRef.current.trim()) return;
@@ -1132,30 +1258,6 @@ export function ComposerCard({
     [],
   );
 
-  /**
-   * IS THERE ANYTHING HERE TO LOSE — words, or files in the tray. Pictures with
-   * no sentence at all are a message (T:17903), so they are worth the question
-   * on their own.
-   *
-   * FALSE FOR A SESSION'S COMPOSER, ALWAYS, and that single `!hasSession` is
-   * what stands the whole leave-guard half of this file down on that road: the
-   * registration below, the native `beforeunload` prompt, the `pagehide` save
-   * and the unmount save all read this. A box that autosaves has nothing to
-   * lose, and asking "unsent message?" about words already on the server is a
-   * dialog that can only be answered wrong.
-   *
-   * The ref is what every out-of-render handler reads, and it is written
-   * SYNCHRONOUSLY by `clearComposer` below: a navigation fired in the same tick
-   * as the clear must already see a clean box, or the guard it just satisfied
-   * asks the same question again.
-   */
-  // …AND IT IS THE MIRRORS' ANSWER, not this render's (`spent`, above). A render
-  // older than the last clear still shows the spent words; reading `text` here
-  // would re-register the leave guard and the native `beforeunload` prompt for a
-  // box the reader has already answered for, and then contradict the `dirtyRef`
-  // the handlers behind them read.
-  const dirty = dirtyRef.current;
-
   /** What an answered question leaves behind: an empty box and an empty tray
    *  (Akshil, 2026-09-16: "after that, the composer is cleared"). Also the
    *  Schedule hop's last act, for the same reason — those words are on the card
@@ -1177,228 +1279,126 @@ export function ComposerCard({
     // (`episode`, Bugbot 4027549698). An emptied box is exactly what that read
     // was told to fill.
     episode.current += 1;
-    // …AND THE NEXT WORDS ARE THE NEXT DRAFT. An emptied box starts a new
-    // episode, so whatever is typed into it next is filed under an id of its
-    // own rather than over the one just saved (`unsentId`).
-    unsentId.current = "";
     setText("");
     discardAttachments.current?.();
     grow();
   }, [grow]);
+  /** The Schedule hop took the held record to the Tasks card: the box empties
+   *  and the key is no longer this box's to save or delete. */
+  const handedOff = useCallback(() => {
+    settledKey.current = draftKeyRef.current;
+    clearComposer();
+  }, [clearComposer]);
 
   /**
-   * SAVE AS DRAFT — AND IT GOES THROUGH THE KEY'S ONE WRITER (Bugbot review of
-   * caef75eb1, HIGH-1).
+   * THE HELD DRAFT'S SAVE MOMENTS (Akshil, 2026-09-17). Three of them, and none
+   * of them is a keystroke: the window losing focus (`drafts.listen` flushes
+   * every syncer on `blur`/`pagehide`/`visibilitychange`), the box being swapped
+   * to another draft (this key changes), and this composer going away (a row
+   * press that opens a chat, the pane closing). The last two are this cleanup.
    *
-   * It used to be a bare `saveChatDraft`, which is a request with no `client`,
-   * no `seq` and no `If-Match` off the syncer's own book — so it could not be
-   * ordered against anything else this page had said about the key, and a
-   * straggling keepalive PUT from a reloaded tab was applied straight over the
-   * card's edits. `setText` + `handoff()` is the same sentence said to the
-   * writer that owns the record: one statement, ordered, versioned, and awaited
-   * until the server actually holds it.
-   *
-   * `forget()` AFTERWARDS, because the record has left this page: the Tasks
-   * card is where those words are edited now, and a syncer that went on wanting
-   * anything for this key would write the cleared box back over them.
-   *
-   * TWO RECORDS, ONE GESTURE. On a SESSION this states the chat record's words
-   * and files and NO `form`, which the contract reads as a patch (drafts §2):
-   * a chat whose record already carries a bound form (the ✎ chip's time, repeat
-   * and model) keeps every one of those settings. On a chat with no session it
-   * mints a TASK draft instead — see `composerTaskDraft`, and the paragraph
-   * about `new:<file>` in the draft-key section above.
-   *
-   * THE FILES ARE COPIED INTO THE TASK-SHOTS DIR FIRST, the same copy the
-   * Schedule hop makes and for the same reason: a chat attachment's path is a
-   * tempdir on a 12 h TTL and `POST /api/schedule` refuses any path outside
-   * `schedule.shots_dir()`. A draft the card cannot schedule is half a draft.
+   * An EMPTY box on the way out deletes the record: a draft with no words and
+   * no files is a row saying nothing. A key already spent — sent, or handed to
+   * the card — is left exactly as its spender left it.
    */
-  const saveDraftNow = useCallback(async (): Promise<string | null> => {
-    const words = textRef.current.trim();
-    const carry = (trayRead.current?.() ?? []).filter((a) => !a.pending && !!a.view);
-    const carried = carry.length ? await copyToTaskShots(carry).catch(() => []) : [];
-    // AND IT FAILS CLOSED ON A FILE THAT DID NOT MAKE IT (Bugbot 4027244608).
-    // `copyToTaskShots` is `allSettled` and returns the ones that worked, so a
-    // picture whose upload 500ed simply vanished from the draft and the dialog
-    // said "saved". A draft missing an attachment the reader put in the box is
-    // not the draft they asked to keep, and they are the only one who can decide
-    // what to do about it — so nothing is written and the box stays where it is.
-    if (carried.length !== carry.length) {
-      return "Could not attach every file to that draft — nothing was saved";
+  const heldBefore = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (hasSession || !draftKey) return;
+    const key = draftKey;
+    // A SWAP EMPTIES THE BOX BEFORE ANYTHING READS IT. The seed effect fills it
+    // from the new form a moment later; without this the tray and autosave
+    // effects, re-running on the key change, mirrored the OLD draft's words
+    // under the NEW key (review, 2026-09-17). Not on the first key of a mount
+    // — there is nothing to empty, and a stranded hand-back may be arriving.
+    if (heldBefore.current !== null && heldBefore.current !== key) {
+      spent.current = boxShape(textRef.current, trayDraftRef.current.length);
+      textRef.current = "";
+      trayDraftRef.current = [];
+      carriedRef.current = [];
+      baseFormRef.current = null;
+      episode.current += 1;
+      setText("");
+      discardAttachments.current?.();
+      autosaveRef.current.reset({ text: "", attachments: [] });
     }
-    // A CHAT THAT HAS NEVER BEEN SENT SAVES A NEW DRAFT EVERY TIME
-    // (`composerTaskDraft`; Akshil, 2026-09-16). It used to write `new:<file>`,
-    // one record per FOLDER, so the second thing the reader saved out of a
-    // folder replaced the first without saying so. There is no chat here to be
-    // the unsent message of — there is an Upcoming task, and there can be as
-    // many of those as the reader writes.
-    const key = hasSessionRef.current
-      ? draftKeyRef.current
-      : taskDraftKey(mintUnsentId());
-    const sync = draftSyncer(key);
-    if (hasSessionRef.current) sync.setText(words, carried);
-    else sync.setTask(composerTaskDraft(words, fileRef.current ?? "", carried));
-    const out = await sync.handoff();
-    if (!out.ok) return "Could not save that draft — you are still in the chat";
-    sync.forget();
-    return null;
-  }, [mintUnsentId]);
-
-  /**
-   * THE LAST WRITE A DOOR-SLAM GETS — and it is WORDS ONLY (Bugbot review,
-   * HIGH-1 and HIGH-2).
-   *
-   * Two reasons it is not the same call as "Save as draft":
-   *
-   *   * IT GOES THROUGH THE SYNCER, like every other write on this key, so it
-   *     carries the page's `client`/`seq` and the version it is editing. A bare
-   *     `saveChatDraft` from a tab that was reloading could otherwise land
-   *     AFTER the Tasks card had edited the same record and silently undo it.
-   *   * IT DROPS THE TRAY. A chat attachment's path is a tempdir on a 12 h TTL,
-   *     and `POST /api/schedule` refuses any path outside `schedule.shots_dir()`
-   *     — so writing those raw paths onto the record makes a draft the card
-   *     cannot schedule and that 404s tomorrow. The fix is a copy per file
-   *     (`copyToTaskShots`), and a copy is a round trip, which is exactly what a
-   *     `pagehide` handler does not have. So the words are saved, the files are
-   *     not, and the console says so; the two roads that CAN wait — the modal's
-   *     Save and the Schedule hop — carry the files properly.
-   */
-  const unloadSave = useCallback((opts: { keepalive?: boolean }) => {
-    // THE CHECK LIVES HERE TOO, not only in the two callers that already make
-    // it (the `pagehide` handler, the unmount cleanup). Both read `dirtyRef`
-    // before calling this — but a door-slam save that trusted its callers
-    // alone is one stale caller away from filing an already-saved-and-cleared
-    // box as a brand-new draft (`mintUnsentId` mints fresh the moment
-    // `unsentId` is empty, which is exactly what `clearComposer` just made
-    // it). Asking again, here, is what makes "no write after the box is
-    // clean" true regardless of who calls this next.
-    if (!dirtyRef.current) return;
-    const words = textRef.current.trim();
-    const dropped = trayDraftRef.current.length;
-    if (dropped && typeof console !== "undefined") {
-      console.warn(
-        "[composer] the page is going: saving the words only and dropping "
-          + `${dropped} attachment${dropped === 1 ? "" : "s"} — a task-shots copy `
-          + "is a round trip, and this handler has none.",
-      );
-    }
-    // …AND IT FILES THE SAME KIND OF RECORD THE DIALOG'S SAVE WOULD
-    // (`composerTaskDraft`): a chat with no session has no unsent message, it
-    // has a task nobody finished writing, and a door slammed on one must leave
-    // the same Upcoming row a pressed button would. Under the SAME id as that
-    // button's — `unsentId` is minted once per set of words — so a reader who
-    // saved and then reloaded has one draft, not two.
-    const sync = draftSyncer(
-      hasSessionRef.current ? draftKeyRef.current : taskDraftKey(mintUnsentId()),
-    );
-    if (hasSessionRef.current) sync.setText(words, []);
-    else sync.setTask(composerTaskDraft(words, fileRef.current ?? "", []));
-    sync.flushNow(opts);
-  }, [mintUnsentId]);
-
-  /**
-   * THE QUESTION ITSELF, as a promise the router waits on.
-   *
-   * `registerLeaveGuard` is consulted by `navigate`/`navigateUrl` before they
-   * push (platform/lib/router.ts), so a folder row, a breadcrumb, the Tasks page
-   * and the notification list all reach this dialog without knowing a composer
-   * exists. The two hops that do NOT go through those — closing the explorer's
-   * Claude panel and switching the session inside one pane — ask the same
-   * question through `confirmLeave()`; see ClaudeChat.
-   *
-   * REGISTERED ONLY WHILE THERE IS SOMETHING TO LOSE, which is what keeps every
-   * other navigation in the app synchronous: an empty registry is the fast path
-   * in `navigate`, and a clean composer registers nothing.
-   *
-   * A SECOND ASK WHILE THE DIALOG IS UP IS A NO. Two questions about one box is
-   * not a thing a reader can answer, and the hop that lost the race can be made
-   * again the moment the first one is settled.
-   */
-  const answer = useRef<((ok: boolean) => void) | null>(null);
-  const [asking, setAsking] = useState(false);
-  const askBeforeLeaving = useCallback((): Promise<boolean> => {
-    if (!dirtyRef.current) return Promise.resolve(true);
-    if (answer.current) return Promise.resolve(false);
-    // …AND A BOX MID-HANDOFF ANSWERS NOTHING. Save and Discard are both about
-    // the words the hop is carrying: one would file them a second time, the
-    // other would throw away what is being scheduled. The navigation that asked
-    // can be made again the moment the hop lands (Bugbot 4034977395).
-    if (hoppingRef.current) return Promise.resolve(false);
-    return new Promise<boolean>((resolve) => {
-      answer.current = resolve;
-      setAsking(true);
-    });
-  }, []);
-  useEffect(() => {
-    if (!dirty) return;
-    return registerLeaveGuard(askBeforeLeaving);
-  }, [dirty, askBeforeLeaving]);
-
-  /**
-   * A RELOAD OR A TAB CLOSE, WHICH IS THE ONE PLACE THIS PAGE CANNOT ASK.
-   *
-   * A browser will not render our dialog on the way out: `beforeunload` may only
-   * raise the NATIVE "leave site?" prompt, with the browser's own words, and
-   * nothing a listener does there can put a React modal on screen. So the two
-   * halves are split:
-   *
-   *   * `beforeunload` raises that native prompt while the box is dirty, which
-   *     is the only warning the platform allows — the reader can still go back;
-   *   * `pagehide` fires when the page is actually going, and there is no
-   *     question left to ask, so the words are SAVED rather than dropped.
-   *     `keepalive` is what lets that request outlive the document.
-   *
-   * The floor is "never lose text silently", and a reload that answered the
-   * native prompt with "leave" would otherwise do exactly that.
-   */
-  useEffect(() => {
-    if (!dirty || typeof window === "undefined") return;
-    const onBeforeUnload = (ev: BeforeUnloadEvent) => {
-      ev.preventDefault();
-      ev.returnValue = "";
-    };
-    const onPageHide = () => {
-      if (!dirtyRef.current) return;
-      unloadSave({ keepalive: true });
-    };
-    window.addEventListener("beforeunload", onBeforeUnload);
-    window.addEventListener("pagehide", onPageHide);
+    heldBefore.current = key;
     return () => {
-      window.removeEventListener("beforeunload", onBeforeUnload);
-      window.removeEventListener("pagehide", onPageHide);
+      if (settledKey.current === key) return;
+      const sync = draftSyncer(key);
+      const words = textRef.current.trim();
+      if (!words && !trayDraftRef.current.length) {
+        if (draftVersion(key) !== undefined) sync.markDeleted();
+        return;
+      }
+      sync.setTask(
+        heldFormOf(baseFormRef.current, textRef.current, fileRef.current ?? "", carriedRef.current),
+        { defer: true },
+      );
+      sync.flushNow();
     };
-  }, [dirty, unloadSave]);
+  }, [hasSession, draftKey]);
+  // Effects that read `textRef`/`carriedRef` must not run before the reset
+  // above: `useLayoutEffect` runs before every `useEffect` of the same commit.
 
   /**
-   * …AND THE SAME FLOOR FOR A HOST THAT TAKES THIS COMPOSER AWAY WITHOUT ASKING.
-   *
-   * Every door this file knows about asks first. A host that closes the pane
-   * from its own chrome (the explorer listing's pane ✕, which lives in
-   * `apps/explorer` and writes `_side=off` in place rather than navigating) does
-   * not, and an unmount is too late for a dialog. So the words are written
-   * instead of dropped — the one outcome that is never wrong.
-   *
-   * It cannot double-write behind an answered question: both answers clear the
-   * box synchronously (`clearComposer`), so by the time the unmount runs there
-   * is nothing dirty left to save.
+   * THE TRAY CHANGED: copy what is new into the task-shots dir and re-state the
+   * record with the copies (`carriedRef`). Keyed on the tray's paths so a
+   * re-render with the same chips copies nothing. A file whose copy failed is
+   * left out of the record and said so in the console — the words still save.
    */
-  useEffect(
-    () => () => {
-      // A QUESTION THAT IS STILL UP HAS TO BE ANSWERED (Bugbot review, MED-4).
-      // `askBeforeLeaving` handed the router a promise; an unmount with the
-      // dialog on screen used to drop the resolver on the floor, and the
-      // navigation that was waiting on it never happened again — the app simply
-      // stopped responding to that click. A composer that is gone cannot save,
-      // so the answer is "no".
-      const pending = answer.current;
-      answer.current = null;
-      pending?.(false);
-      if (!dirtyRef.current) return;
-      unloadSave({});
-    },
-    [unloadSave],
-  );
+  const trayPaths = trayDraft.map((a) => a.path).join("\u0000");
+  useEffect(() => {
+    if (hasSession || !draftKey) return;
+    if (heldBase.current) return; // still filling from the record: its files are already copies
+    const items = (trayRead.current?.() ?? []).filter((a) => !a.pending && !!a.view);
+    if (!items.length) {
+      carriedRef.current = [];
+      mirrorHeld();
+      return;
+    }
+    // THE RECORD'S OWN FILES, PUT BACK BY A SEED OR AN ADOPT, are already copies
+    // — the tray shows their task-shots paths — so nothing is copied twice.
+    const have = new Set(carriedRef.current.map((a) => a.path));
+    if (items.length === have.size && items.every((a) => have.has(a.view as string))) {
+      mirrorHeld();
+      return;
+    }
+    let live = true;
+    void copyToTaskShots(items)
+      .catch((): DraftAttachment[] => [])
+      .then((carried) => {
+        if (!live) return;
+        if (carried.length !== items.length && typeof console !== "undefined") {
+          console.warn(
+            `[composer] ${items.length - carried.length} attachment(s) could not be copied for the draft`,
+          );
+        }
+        carriedRef.current = carried;
+        mirrorHeld();
+      });
+    return () => {
+      live = false;
+    };
+  }, [hasSession, draftKey, trayPaths, mirrorHeld]);
+
+  /**
+   * THE HELD ROW MOVED ON WITHOUT THIS BOX (the same draft edited in a Tasks
+   * card in another tab, then saved): the listing's row is the news, and it
+   * carries the whole record (`form`). Adopted only when it is NEWER than what
+   * this page wrote and the reader is not mid-sentence here — the same rule
+   * the change feed applies to a session's record.
+   */
+  const heldVersion = typeof heldForm?.version === "number" ? heldForm.version : undefined;
+  useEffect(() => {
+    const form = heldFormRef.current;
+    if (hasSession || !draftKey || !form || heldVersion === undefined) return;
+    const seen = draftVersion(draftKey);
+    if (seen !== undefined && heldVersion <= seen) return;
+    if (focusedRef.current && textRef.current.trim()) return;
+    const words = joinDraft(form.title, form.description);
+    if (words === textRef.current && seen !== undefined) return;
+    adoptRef.current(form);
+  }, [hasSession, draftKey, heldVersion]);
 
   const rowRef = useRef<HTMLDivElement | null>(null);
   // The host's ref MIRRORS ours rather than replacing it: `useAutoGrow` owns the
@@ -1591,7 +1591,7 @@ export function ComposerCard({
     // just spent.
     episode.current += 1;
     setText("");
-    if (hasSession) {
+    if (draftKeyRef.current) {
       // THE DRAFT IS SPENT, AND SAYING SO IS THE WHOLE OF IT.
       //
       // `reset` first and with the value the box is ABOUT to have, so the render
@@ -1608,10 +1608,13 @@ export function ComposerCard({
       // sent sentence is never resurrected on the way there.
       autosaveRef.current.reset({ text: "", attachments: [] });
       draftSyncer(draftKeyRef.current).markDeleted();
+      // …and the held key's unmount/swap save has nothing left to say about it.
+      settledKey.current = draftKeyRef.current;
+      // A FOLLOW-UP TYPED IN THE NEXT BREATH NEEDS A KEY OF ITS OWN: the host
+      // holds a fresh one, so nothing typed after a Send lands under the sent
+      // draft's key (review, 2026-09-17).
+      if (!hasSessionRef.current) onHeldGoneRef.current?.();
     }
-    // A SESSION-LESS SEND WRITES NOTHING, because nothing wrote a record in the
-    // first place: words typed in that box were never a draft until somebody
-    // said so. There is no DELETE to fire and nothing to spend.
     // A live run gets this message DIRECTLY instead of parking it in a
     // page-side array (T:17889-17899).
     if (running && onFollowUp) onFollowUp(message);
@@ -1639,7 +1642,6 @@ export function ComposerCard({
     text,
     hasAttachments,
     hasAttachmentsNow,
-    hasSession,
     running,
     onFollowUp,
     onSend,
@@ -1851,7 +1853,7 @@ export function ComposerCard({
             // its autosave is the writer the hop just handed off to, and
             // emptying the box here would be an immediate DELETE of what
             // Continue had written a tick earlier.
-            {...(hasSession ? {} : { onHandedOff: clearComposer })}
+            {...(hasSession ? {} : { onHandedOff: handedOff, heldKey: draftKey })}
             // WHICH WORDS, AND WHEN IT HAS THEM. The hop reads the episode back
             // right before it writes and abandons a press whose sentence has
             // since been sent or discarded; `onHopChange` is how this box knows
@@ -1973,48 +1975,6 @@ export function ComposerCard({
         </div>
         </div>
       </form>
-      {/* THE ONE QUESTION THIS BOX ASKS, and only ever about words that are
-          actually in it: the guard above never raises it for a clean composer.
-          Rendered last so it is a sibling of the form rather than a descendant
-          — it portals to the body anyway, and a dialog inside a form is a
-          submit button inside a form. */}
-      {asking ? (
-        <UnsentMessageModal
-          onSave={async () => {
-            const why = await saveDraftNow();
-            if (why) {
-              // THE QUESTION STAYS UP AND THE WORDS STAY HERE. Leaving with
-              // nothing saved is the outcome the dialog exists to prevent, so a
-              // refused write cannot be answered by going anyway — and the toast
-              // says WHICH refusal it was, because "the files would not copy"
-              // and "the record moved under you" are two different next moves.
-              notify({ title: why, tone: "error" });
-              return;
-            }
-            clearComposer();
-            setAsking(false);
-            const resolve = answer.current;
-            answer.current = null;
-            resolve?.(true);
-          }}
-          onDiscard={() => {
-            // NOTHING IS WRITTEN. The reader said these words are not worth
-            // keeping, and a "discard" that left a record behind would be the
-            // button not working.
-            clearComposer();
-            setAsking(false);
-            const resolve = answer.current;
-            answer.current = null;
-            resolve?.(true);
-          }}
-          onCancel={() => {
-            setAsking(false);
-            const resolve = answer.current;
-            answer.current = null;
-            resolve?.(false);
-          }}
-        />
-      ) : null}
     </>
   );
 }

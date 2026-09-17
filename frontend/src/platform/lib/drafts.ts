@@ -927,6 +927,17 @@ interface GoneDesired {
 
 type Desired = ChatDesired | TaskDesired | GoneDesired;
 
+/**
+ * HOW A STATEMENT IS TIMED. `defer: true` records what is wanted but starts no
+ * autosave timer: the write goes out on the next `flushNow` — a window blur, a
+ * `pagehide`, an unmount, a swap — and never 600 ms after a keystroke. The
+ * Explorer's landing composer saves this way (Akshil, 2026-09-17: "we save
+ * drafts when the page goes out of focus").
+ */
+export interface DraftStateOptions {
+  defer?: boolean;
+}
+
 export interface DraftSyncer {
   /** The key this syncer is the writer for. */
   readonly key: string;
@@ -937,14 +948,22 @@ export interface DraftSyncer {
     text: string,
     attachments?: readonly DraftAttachment[],
     form?: ChatDraftForm,
+    opts?: DraftStateOptions,
   ): void;
   /** …and the task-draft shape of the same sentence, for a card with no chat
    *  behind it (`draft:<id>`). */
-  setTask(form: TaskDraftForm): void;
+  setTask(form: TaskDraftForm, opts?: DraftStateOptions): void;
   /** THE SERVER ALREADY HOLDS THIS — seeding an editor from a record, or taking
    *  one the change feed pushed. Sets what is wanted AND what is believed to be
    *  stored, so a box that merely filled writes nothing. */
   seedText(text: string, attachments?: readonly DraftAttachment[]): void;
+  /** `seedText` for a TASK record: what the Explorer composer holds when it
+   *  opens on an Upcoming draft it read off the listing row (`form`). */
+  seedTask(form: TaskDraftForm): void;
+  /** NOTHING IS WANTED AFTER ALL — for a key this page has never written: the
+   *  held composer emptied before its first save, so there is no record to
+   *  delete and nothing to state. A no-op while a request is on the wire. */
+  unwant(): void;
   /** THE RECORD SHOULD NOT EXIST. The send, and every Discard. Goes out at once
    *  rather than on the debounce — but still behind whatever is in flight. */
   markDeleted(): void;
@@ -1093,6 +1112,8 @@ function makeSyncer(key: string): InnerSyncer {
   // WHAT THE RECORD SHOULD HOLD, and what this page believes it does hold. The
   // gap between the two is the only thing that ever makes a request.
   let desired: Desired | undefined;
+  /** The last statement asked to wait for a flush (`DraftStateOptions.defer`). */
+  let deferred = false;
   let known: string | undefined;
   // HOW MANY REQUESTS ARE OUT. Normally one at most; two only across a keepalive
   // flush, which is allowed to pass (see the header).
@@ -1199,10 +1220,11 @@ function makeSyncer(key: string): InnerSyncer {
 
   /** Somebody changed what is wanted: a stall is over and the single retry is
    *  spent on the new state rather than the old one. */
-  const wanted = (next: Desired, urgently: boolean) => {
+  const wanted = (next: Desired, urgently: boolean, defer = false) => {
     const serial = serialOf(next);
     if (desired !== undefined && serialOf(desired) === serial && !urgently) return;
     desired = next;
+    deferred = defer && !urgently;
     stalled = false;
     retried = false;
     // A NEW STATEMENT UNSAYS THE LAST DELETE, whether it is another delete (the
@@ -1229,6 +1251,7 @@ function makeSyncer(key: string): InnerSyncer {
       return;
     }
     clearTimer();
+    if (deferred) return;
     timer = setTimeout(() => pump({}), AUTOSAVE_DELAY_MS);
   };
 
@@ -1380,6 +1403,7 @@ function makeSyncer(key: string): InnerSyncer {
     // Still typing: the newest state goes out on its own debounce rather than
     // one request per round trip.
     clearTimer();
+    if (deferred) return;
     timer = setTimeout(() => pump({}), AUTOSAVE_DELAY_MS);
   }
 
@@ -1456,7 +1480,7 @@ function makeSyncer(key: string): InnerSyncer {
 
   const api: InnerSyncer = {
     key,
-    setText(text, attachments = [], form) {
+    setText(text, attachments = [], form, opts) {
       wanted(
         {
           kind: "chat",
@@ -1465,10 +1489,11 @@ function makeSyncer(key: string): InnerSyncer {
           ...(form === undefined ? {} : { form }),
         },
         false,
+        !!opts?.defer,
       );
     },
-    setTask(form) {
-      wanted({ kind: "task", form }, false);
+    setTask(form, opts) {
+      wanted({ kind: "task", form }, false, !!opts?.defer);
     },
     seedText(text, attachments = []) {
       // A SEED IS NEWS ABOUT THE SERVER, AND STALE NEWS LOSES TO WHAT THIS PAGE
@@ -1487,6 +1512,21 @@ function makeSyncer(key: string): InnerSyncer {
       if (dirty() || out > 0) return;
       clearTimer();
       desired = { kind: "chat", text, attachments: attachments.slice() };
+      known = serialOf(desired);
+      retried = false;
+      stalled = false;
+      settleWaiters();
+    },
+    unwant() {
+      if (out > 0 || known !== undefined) return;
+      clearTimer();
+      desired = undefined;
+      deferred = false;
+    },
+    seedTask(form) {
+      if (dirty() || out > 0) return;
+      clearTimer();
+      desired = { kind: "task", form };
       known = serialOf(desired);
       retried = false;
       stalled = false;

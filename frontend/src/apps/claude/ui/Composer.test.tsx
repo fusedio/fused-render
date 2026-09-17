@@ -1,5 +1,21 @@
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
+/**
+ * WHAT THE PAGE LISTENS FOR, RECORDED BEFORE ANYTHING CAN ARM IT.
+ *
+ * `drafts.listen` binds ONE `blur`/`pagehide` pair for every syncer at once,
+ * the first time any syncer is made — and the shim's `window.addEventListener`
+ * is a no-op, so a listener armed before this line is a listener no test can
+ * fire. This runs above the imports for that reason: nothing here calls
+ * `draftSyncer` at module scope, so this suite's own first mount is what arms it.
+ */
+const winListeners: Record<string, ((ev: unknown) => void)[]> = {};
+(globalThis.window as unknown as {
+  addEventListener(t: string, fn: (ev: unknown) => void): void;
+  removeEventListener(t: string, fn: (ev: unknown) => void): void;
+}).addEventListener = (t, fn) => {
+  (winListeners[t] ||= []).push(fn);
+};
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
@@ -8,9 +24,10 @@ const {
 } = await import("./Composer");
 const { DEFAULT_EFFORT, DEFAULT_MODEL, DEFAULT_PERMISSION } =
   await import("./composer-defaults");
-const { forgetDraftVersion, resetDraftSyncers } = await import("@platform/lib/drafts");
+const { draftVersion, forgetDraftVersion, peekDraftSyncer, resetDraftSyncers } =
+  await import("@platform/lib/drafts");
 const { SchedButton } = await import("./SchedButton");
-import type { Attachment } from "../shots/types";
+import type { TaskDraftForm } from "@platform/lib/drafts";
 
 const realFetch = globalThis.fetch;
 beforeEach(() => {
@@ -751,12 +768,13 @@ test("the box opts out of Grammarly, all three spellings (T:4156-4157)", () => {
 // ---- NOTHING IS WRITTEN WHILE THE READER IS IN THE BOX ---------------------
 //
 // Akshil, 2026-09-16: "when I am in the composer, don't autosave as a draft —
-// I'm already there. If I do an operation that could lose the text, pop up a
-// warning: save as draft or discard. After that, the composer is cleared."
+// I'm already there."
 //
-// So the whole of this section is about REQUESTS THAT DO NOT HAPPEN, plus the
-// four gestures that do make one: Save as draft, pagehide, and the Schedule
-// hop's Continue. Every test counts the wire.
+// So this section is about REQUESTS THAT DO NOT HAPPEN: a box with no record
+// behind it at all (no session, no held draft) reads nothing, writes nothing,
+// and spends nothing on its Send. What the session road does instead is below
+// it; what a box HOLDING an Upcoming draft does is the last section of this
+// file. Every test counts the wire.
 
 interface Req {
   url: string;
@@ -1402,10 +1420,15 @@ test("a session's composer is NEVER asked about on the way out", async () => {
   }
 });
 
-// ---- the one question this box asks ---------------------------------------
+// ---- LEAVING ASKS NOTHING ANY MORE -----------------------------------------
 //
-// A container for the dialog to portal into, and a node mock for the focus
-// trap, both on `schedule-hop.render.test.tsx`'s pattern: react-dom's
+// The "Unsent message" dialog is gone with the road that needed it: a
+// session-less box now HOLDS a task draft and saves it on the way out, so there
+// is nothing left to ask about (see the held-draft section at the end of this
+// file). What survives here is the proof that no navigation off this composer
+// is ever held up — plus the DOM props that proof needs.
+//
+// The body stub is `schedule-hop.render.test.tsx`'s pattern: react-dom's
 // `createPortal` throws on a container that is not an element by `nodeType`,
 // from inside the render, which unmounts the tree and takes the assertions
 // with it. Installed per test and taken away again — `bun test` shares one
@@ -1453,453 +1476,6 @@ function watchPushes(): { urls: string[]; restore(): void } {
   return { urls, restore: () => { hist.pushState = real; } };
 }
 
-/** The dialog's own buttons, found by the words on them — which is how the
- *  reader finds them too. */
-function dialogButton(root: ReactTestRenderer["root"], label: string) {
-  const hit = root.findAll(
-    (n) => n.type === "button" && n.props.children === label,
-    { deep: true },
-  );
-  expect(hit.length).toBe(1);
-  return hit[0]!;
-}
-
-test("an in-app navigation with words in the box asks first, and Save writes ONCE", async () => {
-  installBody();
-  const seen = watchFetch();
-  const pushes = watchPushes();
-  const { navigateUrl } = await import("@platform/lib/router");
-  try {
-    // NO `createNodeMock` here: the dialog is PORTALED, so the mock the renderer
-    // uses for it comes off `doc.body` (see `installBody`), and giving this
-    // composer real-looking nodes would send `useAutoGrow` at a
-    // `getComputedStyle` this rig does not have.
-    const c = mount({ file: "/p/leaving.py", sessionId: "" });
-    c.type("a sentence nobody sent");
-    // The hop is made the way every row, breadcrumb and notification makes it.
-    await act(async () => {
-      navigateUrl("/tasks");
-      await tick();
-    });
-    // NOTHING HAS HAPPENED YET: the push is held, and not one byte is written
-    // before the reader has said which way.
-    expect(pushes.urls).toEqual([]);
-    expect(seen).toEqual([]);
-    expect(c.root.findAll((n) => n.type === "button" && n.props.children === "Save as draft"))
-      .toHaveLength(1);
-
-    await act(async () => {
-      dialogButton(c.root, "Save as draft").props.onClick();
-      await tick();
-    });
-    // ONE PUT, and it mints a TASK draft rather than writing this folder's one
-    // chat record (Akshil, 2026-09-16). A chat that has never been sent has no
-    // unsent message to keep — it has an Upcoming task nobody finished writing,
-    // and there can be as many of those as the reader writes.
-    expect(seen).toHaveLength(1);
-    expect(seen[0]!.method).toBe("PUT");
-    expect(seen[0]!.url.startsWith("/api/drafts/task/")).toBe(true);
-    expect(seen[0]!.url).not.toContain("new%3A");
-    expect(seen[0]!.body?.title).toBe("a sentence nobody sent");
-    expect(seen[0]!.body?.target).toBe("/p/leaving.py");
-    // …THROUGH THE KEY'S ONE WRITER, which is what `client` + `seq` say (Bugbot
-    // review of caef75eb1, HIGH-1). A bare `saveChatDraft` here carried neither,
-    // so a straggling write from this page could not be ordered against the
-    // card's edits and simply landed on top of them.
-    expect(typeof (seen[0]!.body as { client?: unknown }).client).toBe("string");
-    expect((seen[0]!.body as { seq?: unknown }).seq).toBe(1);
-    // …then the navigation it was holding up…
-    expect(pushes.urls).toEqual(["/tasks"]);
-    // …and the box is clean: the record is the copy now (Akshil, 2026-09-16,
-    // "after that, the composer is cleared").
-    expect(c.box().props.value).toBe("");
-  } finally {
-    pushes.restore();
-    delete doc.body;
-  }
-});
-
-test("Save as draft, then the navigation's own unmount, writes only once", async () => {
-  installBody();
-  const seen = watchFetch();
-  const pushes = watchPushes();
-  const { navigateUrl } = await import("@platform/lib/router");
-  try {
-    const c = mount({ file: "/p/repro.py", sessionId: "" });
-    c.type("a sentence nobody sent");
-    await act(async () => {
-      navigateUrl("/tasks");
-      await tick();
-    });
-    await act(async () => {
-      dialogButton(c.root, "Save as draft").props.onClick();
-      await tick();
-    });
-    expect(seen).toHaveLength(1);
-    // Simulate the navigation actually swapping the route out from under this
-    // composer, the way the real app does once the guard's promise resolves.
-    c.unmount();
-    await act(async () => {
-      await tick();
-    });
-    expect(seen).toHaveLength(1);
-  } finally {
-    pushes.restore();
-    delete doc.body;
-  }
-});
-
-test("an unmount racing the in-flight Save PUT still lands one record", async () => {
-  installBody();
-  const pushes = watchPushes();
-  const { navigateUrl } = await import("@platform/lib/router");
-  // A controllable fetch: the FIRST PUT (Save's own handoff) hangs until the
-  // test explicitly resolves it, so the composer's unmount can race ahead of
-  // the network round trip — the exact window the user's repro plausibly hits.
-  const seen: { url: string; method: string; body?: Record<string, unknown> }[] = [];
-  let releaseFirst: (() => void) | undefined;
-  (globalThis as { fetch: unknown }).fetch = (
-    url: string,
-    init?: RequestInit,
-  ) => {
-    const row = {
-      url: String(url),
-      method: init?.method ?? "GET",
-      body: init?.body ? JSON.parse(String(init.body)) : undefined,
-    };
-    seen.push(row);
-    const bland = () =>
-      new Response(
-        JSON.stringify({
-          ok: true,
-          chat: {},
-          task: {},
-          draft: { text: "", attachments: [], updated_at: 1, version: 1, form: {} },
-        }),
-        { status: 200 },
-      );
-    if (seen.length === 1) {
-      return new Promise<Response>((resolve) => {
-        releaseFirst = () => resolve(bland());
-      });
-    }
-    return Promise.resolve(bland());
-  };
-  try {
-    const c = mount({ file: "/p/repro2.py", sessionId: "" });
-    c.type("a sentence nobody sent");
-    await act(async () => {
-      navigateUrl("/tasks");
-      await tick();
-    });
-    // Click Save, but do NOT await its completion — the PUT it fires is the
-    // one being held open above.
-    act(() => {
-      dialogButton(c.root, "Save as draft").props.onClick();
-    });
-    await act(async () => {
-      await tick();
-    });
-    expect(seen).toHaveLength(1);
-    expect(seen[0]!.method).toBe("PUT");
-    // Race the unmount in BEFORE the held PUT answers — the composer's own
-    // cleanup runs while the reader's Save is still on the wire.
-    c.unmount();
-    await act(async () => {
-      await tick();
-    });
-    // Now let the held PUT land.
-    releaseFirst?.();
-    await act(async () => {
-      await tick(20);
-    });
-    const puts = seen.filter((r) => r.method === "PUT");
-    const ids = new Set(puts.map((r) => r.url));
-    expect(ids.size).toBe(1);
-    expect(puts).toHaveLength(1);
-  } finally {
-    pushes.restore();
-    delete doc.body;
-  }
-});
-
-test("a pagehide firing right after Save is a no-op, not a second draft", async () => {
-  // Two DIFFERENT "pagehide" listeners exist once a task draft has ever been
-  // saved: the composer's own (armed only while `dirty`, and torn down the
-  // instant the box clears — verified below) and `drafts.ts`'s single
-  // page-wide one, armed forever the first time any syncer is made and never
-  // torn down (by design: it has to flush whatever key is dirty NEXT, not
-  // just this one). This test's job is the composer's own half: once Save
-  // clears the box, firing every "pagehide" listener still on `window` must
-  // not write a second draft.
-  installBody();
-  const seen = watchFetch();
-  const pushes = watchPushes();
-  const { navigateUrl } = await import("@platform/lib/router");
-  const winListeners: Record<string, ((ev: unknown) => void)[]> = {};
-  const win = window as unknown as {
-    addEventListener(t: string, fn: (ev: unknown) => void): void;
-    removeEventListener(t: string, fn: (ev: unknown) => void): void;
-  };
-  const real = { add: win.addEventListener, remove: win.removeEventListener };
-  win.addEventListener = (t, fn) => {
-    (winListeners[t] ||= []).push(fn);
-  };
-  win.removeEventListener = (t, fn) => {
-    winListeners[t] = (winListeners[t] || []).filter((f) => f !== fn);
-  };
-  try {
-    const c = mount({ file: "/p/repro3.py", sessionId: "" });
-    c.type("a sentence nobody sent");
-    // Just the composer's own — nothing has called `draftSyncer` yet, so
-    // `drafts.ts`'s page-wide listener has not been armed in THIS process.
-    const beforeSave = (winListeners.pagehide || []).length;
-    await act(async () => {
-      navigateUrl("/tasks");
-      await tick();
-    });
-    await act(async () => {
-      dialogButton(c.root, "Save as draft").props.onClick();
-      await tick(40);
-    });
-    expect(seen).toHaveLength(1);
-    expect(c.box().props.value).toBe("");
-    // Fire every "pagehide" listener still registered, right now.
-    for (const fn of winListeners.pagehide || []) fn({ type: "pagehide" });
-    await act(async () => {
-      await tick(40);
-    });
-    // No second write, from either listener.
-    expect(seen).toHaveLength(1);
-    // And the composer's OWN listener count is back to what it was before it
-    // ever went dirty — `drafts.ts`'s page-wide one (armed by Save's own
-    // `draftSyncer` call) is the only kind allowed to still be there.
-    expect((winListeners.pagehide || []).length).toBeLessThanOrEqual(beforeSave + 1);
-  } finally {
-    win.addEventListener = real.add;
-    win.removeEventListener = real.remove;
-    pushes.restore();
-    delete doc.body;
-  }
-});
-
-test("a real attachments tray discarded alongside the text is one draft, not two", async () => {
-  // The whole scare here is whether the PARENT's attachment state (own render,
-  // own commit) and this box's OWN `text` state clear in the SAME commit —
-  // matching ClaudeChat's real wiring (`attachments: () => attach.items`,
-  // `onDiscardAttachments: attach.discard`, both threaded through a memo keyed
-  // on `attach.items`) — or whether a stray render in between sees `text: ""`
-  // but a STILL-FULL tray, reads `dirty` as true again, and leaves the
-  // unmount/pagehide check with a stale green light.
-  installBody();
-  const seen: { url: string; method: string; body?: Record<string, unknown> }[] = [];
-  const pushes = watchPushes();
-  const { navigateUrl } = await import("@platform/lib/router");
-  (globalThis as { fetch: unknown }).fetch = (
-    url: string,
-    init?: RequestInit,
-  ) => {
-    const u = String(url);
-    if (u.startsWith("/api/fs/raw")) {
-      return Promise.resolve(new Response("bytes", { status: 200 }));
-    }
-    if (u === "/api/schedule/shot") {
-      return Promise.resolve(
-        new Response(JSON.stringify({ path: "/shots-dir/a.png", kind: "image" }), {
-          status: 200,
-        }),
-      );
-    }
-    seen.push({
-      url: u,
-      method: init?.method ?? "GET",
-      body: init?.body ? JSON.parse(String(init.body)) : undefined,
-    });
-    return Promise.resolve(
-      new Response(
-        JSON.stringify({
-          ok: true,
-          chat: {},
-          task: {},
-          draft: { text: "", attachments: [], updated_at: 1, version: 1, form: {} },
-        }),
-        { status: 200 },
-      ),
-    );
-  };
-
-  const React = await import("react");
-  function Host() {
-    const [items, setItems] = React.useState([
-      { id: "a1", kind: "image" as const, view: "/shots/a.png", name: "a.png" },
-    ]);
-    // The SAME shape ClaudeChat hands the composer: a closure over the
-    // parent's OWN state, recreated whenever that state changes, and a
-    // discard that clears it on this same parent.
-    const attachments = React.useCallback(() => items, [items]);
-    const onDiscardAttachments = React.useCallback(() => setItems([]), []);
-    return (
-      <ComposerCard
-        variant="chat"
-        file="/p/attach-repro.py"
-        sessionId=""
-        controls={controls}
-        status="idle"
-        back="/explorer/view/p"
-        onSend={() => {}}
-        onFollowUp={() => {}}
-        onStop={() => {}}
-        attachments={attachments}
-        onDiscardAttachments={onDiscardAttachments}
-      />
-    );
-  }
-  let renderer: ReactTestRenderer | undefined;
-  act(() => {
-    renderer = create(<Host />);
-  });
-  const root = renderer!.root;
-  const box = () => root.findByType("textarea");
-  try {
-    act(() => {
-      box().props.onChange({ currentTarget: { value: "a sentence with a picture" } });
-    });
-    await act(async () => {
-      navigateUrl("/tasks");
-      await tick();
-    });
-    await act(async () => {
-      dialogButton(root, "Save as draft").props.onClick();
-      await tick(20);
-    });
-    const puts = seen.filter((r) => r.method === "PUT");
-    expect(puts).toHaveLength(1);
-    expect(puts[0]!.url.startsWith("/api/drafts/task/")).toBe(true);
-    expect(box().props.value).toBe("");
-    // The navigation's own unmount, right after — the exact moment a stale
-    // `dirtyRef` (resurrected by a lagging tray read) would fire a second,
-    // freshly-minted draft.
-    act(() => {
-      renderer!.unmount();
-    });
-    await act(async () => {
-      await tick(20);
-    });
-    const putsAfter = seen.filter((r) => r.method === "PUT");
-    expect(putsAfter).toHaveLength(1);
-    expect(new Set(putsAfter.map((r) => r.url)).size).toBe(1);
-  } finally {
-    pushes.restore();
-    delete doc.body;
-  }
-});
-
-test("a never-sent chat saves a NEW draft every time, never over the last one", async () => {
-  // THE BUG, in one test (Akshil, 2026-09-16): type, leave, Save as draft; come
-  // back, type something else, leave, Save as draft — and the second save landed
-  // on the first. It had to: the key was `new:<file>`, ONE record per folder,
-  // and Save stated the whole of it. Each save now mints its own `draft:<id>`,
-  // so the reader ends up with the two Upcoming rows they wrote.
-  installBody();
-  const seen = watchFetch();
-  const pushes = watchPushes();
-  const { navigateUrl } = await import("@platform/lib/router");
-  try {
-    const c = mount({ file: "/p/twice.py", sessionId: "" });
-    c.type("the first thing");
-    await act(async () => {
-      navigateUrl("/tasks");
-      await tick();
-    });
-    await act(async () => {
-      dialogButton(c.root, "Save as draft").props.onClick();
-      await tick();
-    });
-    // …the box is clean again, which is what starts the next draft.
-    expect(c.box().props.value).toBe("");
-
-    c.type("the second thing");
-    await act(async () => {
-      navigateUrl("/tasks");
-      await tick();
-    });
-    await act(async () => {
-      dialogButton(c.root, "Save as draft").props.onClick();
-      await tick();
-    });
-
-    expect(seen).toHaveLength(2);
-    // TWO RECORDS, both task drafts, both under ids of their own…
-    expect(seen.map((r) => r.body?.title))
-      .toEqual(["the first thing", "the second thing"]);
-    for (const r of seen) {
-      expect(r.method).toBe("PUT");
-      expect(r.url.startsWith("/api/drafts/task/")).toBe(true);
-      expect(r.body?.target).toBe("/p/twice.py");
-    }
-    expect(seen[0]!.url).not.toBe(seen[1]!.url);
-    // …and `new:<file>` was never written at all.
-    expect(seen.some((r) => r.url.includes("new%3A"))).toBe(false);
-  } finally {
-    pushes.restore();
-    delete doc.body;
-  }
-});
-
-test("Discard leaves with nothing written", async () => {
-  installBody();
-  const seen = watchFetch();
-  const pushes = watchPushes();
-  const { navigateUrl } = await import("@platform/lib/router");
-  try {
-    const c = mount({ file: "/p/dropped.py", sessionId: "" });
-    c.type("not worth keeping");
-    await act(async () => {
-      navigateUrl("/tasks");
-      await tick();
-    });
-    await act(async () => {
-      dialogButton(c.root, "Discard").props.onClick();
-      await tick();
-    });
-    // A discard that left a record behind is the button not working.
-    expect(seen).toEqual([]);
-    expect(pushes.urls).toEqual(["/tasks"]);
-    expect(c.box().props.value).toBe("");
-  } finally {
-    pushes.restore();
-    delete doc.body;
-  }
-});
-
-test("Cancel stays, with the text exactly as it was", async () => {
-  installBody();
-  const seen = watchFetch();
-  const pushes = watchPushes();
-  const { navigateUrl } = await import("@platform/lib/router");
-  try {
-    const c = mount({ file: "/p/staying.py", sessionId: "" });
-    c.type("still writing this");
-    await act(async () => {
-      navigateUrl("/tasks");
-      await tick();
-    });
-    await act(async () => {
-      dialogButton(c.root, "Cancel").props.onClick();
-      await tick();
-    });
-    expect(seen).toEqual([]);
-    expect(pushes.urls).toEqual([]);
-    expect(c.box().props.value).toBe("still writing this");
-    // …and the question is down, so the next hop can ask it again.
-    expect(c.root.findAll((n) => n.type === "button" && n.props.children === "Cancel"))
-      .toHaveLength(0);
-  } finally {
-    pushes.restore();
-    delete doc.body;
-  }
-});
-
 test("a CLEAN composer is never asked about, and the hop stays synchronous", async () => {
   // The guard registers only while there is something to lose, which is what
   // keeps every other navigation in this app the same synchronous call it has
@@ -1917,208 +1493,6 @@ test("a CLEAN composer is never asked about, and the hop stays synchronous", asy
     expect(pushes.urls).toEqual(["/tasks"]);
     expect(c.root.findAll((n) => n.type === "button" && n.props.children === "Save as draft"))
       .toHaveLength(0);
-  } finally {
-    pushes.restore();
-    delete doc.body;
-  }
-});
-
-test("a reload cannot be asked, so it is warned about and then SAVED", async () => {
-  // The browser will not render our dialog on the way out: `beforeunload` may
-  // only raise the native prompt. So the page raises it while the box is dirty
-  // — and `pagehide`, which fires when the page is actually going, writes the
-  // words with `keepalive` rather than letting them vanish.
-  const winListeners: Record<string, ((ev: unknown) => void)[]> = {};
-  const win = window as unknown as {
-    addEventListener(t: string, fn: (ev: unknown) => void): void;
-    removeEventListener(t: string, fn: (ev: unknown) => void): void;
-  };
-  const real = { add: win.addEventListener, remove: win.removeEventListener };
-  win.addEventListener = (t, fn) => {
-    (winListeners[t] ||= []).push(fn);
-  };
-  win.removeEventListener = (t, fn) => {
-    winListeners[t] = (winListeners[t] || []).filter((f) => f !== fn);
-  };
-  const seen = watchFetch();
-  try {
-    const c = mount({ file: "/p/reloaded.py", sessionId: "" });
-    // A clean box binds nothing: there is no reason to warn anybody.
-    expect(winListeners.beforeunload || []).toHaveLength(0);
-    c.type("the last sentence");
-    expect(winListeners.beforeunload || []).toHaveLength(1);
-    // The native prompt is asked for the only way a page is allowed to ask.
-    let prevented = false;
-    let returnValue: unknown;
-    const ev = {
-      preventDefault() {
-        prevented = true;
-      },
-      set returnValue(v: unknown) {
-        returnValue = v;
-      },
-      get returnValue() {
-        return returnValue;
-      },
-    };
-    winListeners.beforeunload![0]!(ev);
-    expect(prevented).toBe(true);
-    expect(returnValue).toBe("");
-    // …and the page actually goes.
-    await act(async () => {
-      for (const fn of winListeners.pagehide || []) fn({ type: "pagehide" });
-      await tick();
-    });
-    expect(seen).toHaveLength(1);
-    expect(seen[0]!.method).toBe("PUT");
-    expect(seen[0]!.keepalive).toBe(true);
-    // The same record the dialog's Save would have made — a door slammed on a
-    // never-sent chat leaves the Upcoming row a pressed button would.
-    expect(seen[0]!.url.startsWith("/api/drafts/task/")).toBe(true);
-    expect(seen[0]!.body?.title).toBe("the last sentence");
-    // …AND IT GOES THROUGH THE SYNCER LIKE EVERY OTHER WRITE ON THIS KEY.
-    expect(typeof (seen[0]!.body as { client?: unknown }).client).toBe("string");
-  } finally {
-    win.addEventListener = real.add;
-    win.removeEventListener = real.remove;
-  }
-});
-
-test("a door-slam saves the WORDS and drops the tray, on purpose", async () => {
-  // Bugbot review of caef75eb1, HIGH-2. A chat attachment's path is a tempdir on
-  // a 12 h TTL and `POST /api/schedule` refuses anything outside the task-shots
-  // dir, so writing those raw paths onto the record makes a draft the card
-  // cannot schedule and that 404s tomorrow. The copy that fixes it is a round
-  // trip per file, which `pagehide` has no room for — so the words go and the
-  // files do not.
-  const winListeners: Record<string, ((ev: unknown) => void)[]> = {};
-  const win = window as unknown as {
-    addEventListener(t: string, fn: (ev: unknown) => void): void;
-    removeEventListener(t: string, fn: (ev: unknown) => void): void;
-  };
-  const real = { add: win.addEventListener, remove: win.removeEventListener };
-  win.addEventListener = (t, fn) => {
-    (winListeners[t] ||= []).push(fn);
-  };
-  win.removeEventListener = (t, fn) => {
-    winListeners[t] = (winListeners[t] || []).filter((f) => f !== fn);
-  };
-  const seen = watchFetch();
-  try {
-    const c = mount({ file: "/p/slammed.py", sessionId: "", attachments: () => [tempShot] });
-    c.type("words and a picture");
-    await act(async () => {
-      for (const fn of winListeners.pagehide || []) fn({ type: "pagehide" });
-      await tick();
-    });
-    expect(seen).toHaveLength(1);
-    expect(seen[0]!.body?.title).toBe("words and a picture");
-    expect(seen[0]!.body?.attachments).toEqual([]);
-  } finally {
-    win.addEventListener = real.add;
-    win.removeEventListener = real.remove;
-  }
-});
-
-/** ONE READY CHIP holding a chat tempdir path — the shape every unload and
- *  every Save has to decide what to do about. */
-const tempShot = {
-  id: "att-1",
-  kind: "image" as const,
-  view: "/tmp/fused-chat/shot.png",
-  name: "shot.png",
-  pending: false,
-};
-
-test("Save FAILS CLOSED when a file could not be copied", async () => {
-  // Bugbot 4027244608. `copyToTaskShots` is `allSettled` and answers with the
-  // files that made it, so a picture whose upload 500ed simply vanished and the
-  // dialog reported success. A draft missing an attachment the reader put in the
-  // box is not the draft they asked to keep — and only they can decide what to
-  // do about that, so nothing is written and they stay where they are.
-  installBody();
-  const seen: Req[] = [];
-  (globalThis as { fetch: unknown }).fetch = (
-    url: string,
-    init?: RequestInit & { keepalive?: boolean },
-  ) => {
-    seen.push({
-      url: String(url),
-      method: init?.method ?? "GET",
-      body: init?.body ? JSON.parse(String(init.body)) : undefined,
-      keepalive: !!init?.keepalive,
-    });
-    // The copy's first step is reading the bytes back, and it is what fails.
-    return Promise.resolve(new Response("nope", { status: 500 }));
-  };
-  const pushes = watchPushes();
-  const { navigateUrl } = await import("@platform/lib/router");
-  const { _resetNotificationsForTest, getPopupNotification } =
-    await import("@platform/lib/notifications");
-  _resetNotificationsForTest();
-  try {
-    const c = mount({
-      file: "/p/half.py",
-      sessionId: "",
-      attachments: () => [tempShot],
-    });
-    c.type("with a picture");
-    await act(async () => {
-      navigateUrl("/tasks");
-      await tick();
-    });
-    await act(async () => {
-      dialogButton(c.root, "Save as draft").props.onClick();
-      await tick();
-    });
-    // NOT ONE WRITE, and the reader is still in the chat with their words.
-    expect(seen.filter((r) => r.method === "PUT")).toEqual([]);
-    expect(pushes.urls).toEqual([]);
-    expect(c.box().props.value).toBe("with a picture");
-    // …and the toast says WHICH refusal it was.
-    expect(getPopupNotification()?.title)
-      .toBe("Could not attach every file to that draft — nothing was saved");
-    // The question is still up, so the answer can be given again.
-    expect(c.root.findAll((n) => n.type === "button" && n.props.children === "Save as draft"))
-      .toHaveLength(1);
-  } finally {
-    pushes.restore();
-    delete doc.body;
-    _resetNotificationsForTest();
-  }
-});
-
-test("a pane taken away while the question is up answers it NO", async () => {
-  // Bugbot review of caef75eb1, MED-4. `askBeforeLeaving` hands the router a
-  // promise; an unmount with the dialog on screen used to drop the resolver, and
-  // the navigation waiting on it never happened — nor did any later one, because
-  // the click was simply swallowed. A composer that is gone cannot save, so the
-  // honest answer is "no", said out loud.
-  installBody();
-  watchFetch();
-  const { confirmLeave, navigateUrl } = await import("@platform/lib/router");
-  const pushes = watchPushes();
-  try {
-    const c = mount({ file: "/p/yanked.py", sessionId: "" });
-    c.type("mid-sentence");
-    let answered: boolean | undefined;
-    await act(async () => {
-      void confirmLeave().then((ok) => {
-        answered = ok;
-      });
-      await tick();
-    });
-    expect(answered).toBeUndefined();
-    await act(async () => {
-      c.unmount();
-      await tick();
-    });
-    expect(answered).toBe(false);
-    // …and with the guard gone the app navigates synchronously again.
-    act(() => {
-      navigateUrl("/tasks");
-    });
-    expect(pushes.urls).toEqual(["/tasks"]);
   } finally {
     pushes.restore();
     delete doc.body;
@@ -2163,350 +1537,180 @@ test("Continue CREATES the draft, then leaves, and the box is empty behind it", 
 });
 
 
-// ---- A RENDER OLDER THAN THE COMPOSER'S OWN CLEAR --------------------------
+// ---- THE DRAFT A SESSION-LESS BOX HOLDS ------------------------------------
 //
-// THE REPORTED BUG, and the one thing no earlier test in this file could stage.
+// Akshil, 2026-09-17: the landing composer IS where the folder's newest
+// Upcoming draft lives. `ClaudeChat` picks that row off the listing and hands
+// this box its key (`heldKey`, `draft:<id>`) and its stored form (`heldForm`),
+// and the box mirrors what is typed into that one record — stated on every
+// keystroke, WRITTEN only when the words could otherwise be lost: the window
+// losing focus, the box being swapped to another draft, and the unmount.
 //
-// `clearComposer` empties `textRef`/`dirtyRef` by hand and queues `setText("")`
-// at ordinary priority. `ClaudeChat` — this composer's real host — keeps the
-// whole conversation in a `useSyncExternalStore`, and every emit off that store
-// (a poll landing, a run tick, a controller notice) renders this subtree at SYNC
-// priority, which React runs WITHOUT applying the lower-priority update still
-// sitting in the box's own queue. The body then ran with the spent sentence
-// still in `text`, mirrored it back into both refs, and the unmount behind the
-// navigation filed it a SECOND time — under a second id, `unsentId` having been
-// blanked by the very clear that render predates. One press, two Upcoming rows,
-// the same words (bug report, 2026-09-17).
-//
-// The rig is that store, a concurrent root, and a Save driven OUTSIDE `act`:
-// `act` drains React's scheduler at every await, so inside one there is no
-// window left to render into at all.
+// So every test below counts the wire at a moment, not after a delay: the
+// 600 ms autosave is exactly what `defer` turns off.
 
-/** THE CONCURRENT ROOT. The option is real — it is how React's own suites test
- *  lane behaviour — but `@types/react-test-renderer` has never listed it, so the
- *  cast is a hole in the types and not in the renderer. */
-const CONCURRENT = { unstable_isConcurrent: true } as unknown as Parameters<
-  typeof create
->[1];
-
-/** The host store, and the press that makes it speak. */
-function laneRig() {
-  let version = 0;
-  const subs = new Set<() => void>();
+/** A listing row's stored form, as `GET /api/tasks` carries it (`form:
+ *  dict(record)` server-side, version included). */
+function heldRow(
+  title: string,
+  description = "",
+  version?: number,
+): TaskDraftForm & { version?: number } {
   return {
-    subscribe(fn: () => void) {
-      subs.add(fn);
-      return () => {
-        subs.delete(fn);
-      };
-    },
-    snap: () => version,
-    /** A sync-lane render of everything under the store. */
-    emit() {
-      version += 1;
-      for (const fn of [...subs]) fn();
-    },
+    title,
+    description,
+    target: "/p/held.py",
+    when: null,
+    repeat: null,
+    model: "",
+    effort: "",
+    permission: "",
+    attachments: [],
+    new_task_each_run: null,
+    session_id: "",
+    custom_rule: null,
+    ...(version === undefined ? {} : { version }),
   };
 }
 
-test("a sync-lane render between Save and the unmount does not mint a second draft", async () => {
-  installBody();
-  const seen = watchFetch();
-  const pushes = watchPushes();
-  const { navigateUrl } = await import("@platform/lib/router");
-  const React = await import("react");
-  const rig = laneRig();
-
-  function Host() {
-    React.useSyncExternalStore(rig.subscribe, rig.snap, rig.snap);
-    return (
-      <ComposerCard
-        variant="chat"
-        file="/p/lane.py"
-        sessionId=""
-        controls={controls}
-        status="idle"
-        back="/explorer/view/p"
-        onSend={() => {}}
-        onFollowUp={() => {}}
-        onStop={() => {}}
-      />
-    );
+/** THE WINDOW LOSING FOCUS. `drafts.listen` arms one `blur` listener for every
+ *  key at once, the first time any syncer is made — so this suite records what
+ *  gets armed on the shim's window and fires it. `bun test` shares one module
+ *  registry across files, so another suite may have armed it first and had its
+ *  listener swallowed by the shim's no-op; the fallback does by hand what that
+ *  listener does for every key (`flushNow`), so the case under test is the same
+ *  either way. */
+function blurWindow(key: string) {
+  const fns = winListeners.blur ?? [];
+  if (fns.length) {
+    for (const fn of fns) fn({ type: "blur" });
+    return;
   }
-
-  let renderer: ReactTestRenderer | undefined;
-  act(() => {
-    renderer = create(<Host />, CONCURRENT);
-  });
-  mounted.push(renderer!);
-  const root = renderer!.root;
-  const box = () => root.findByType("textarea");
-  try {
-    act(() => {
-      box().props.onChange({ currentTarget: { value: "a sentence nobody sent" } });
-    });
-    await act(async () => {
-      navigateUrl("/tasks");
-      await tick();
-    });
-    // Outside `act`, deliberately — see the note above.
-    dialogButton(root, "Save as draft").props.onClick();
-    await tick(40);
-    expect(seen.filter((r) => r.method === "PUT")).toHaveLength(1);
-    // …and NOW the host speaks, while `setText("")` is still queued.
-    rig.emit();
-    await tick(40);
-    // The navigation the reader answered for, finally taking the pane away.
-    act(() => renderer!.unmount());
-    await act(async () => {
-      await tick(40);
-    });
-    const puts = seen.filter((r) => r.method === "PUT");
-    // ONE RECORD, and the assertion that fails loudest on a regression is the
-    // count of distinct ids: a second write under the SAME id would be a
-    // harmless re-statement, and two ids is two rows in Upcoming.
-    expect(new Set(puts.map((r) => r.url)).size).toBe(1);
-    expect(puts).toHaveLength(1);
-    expect(puts[0]!.url.startsWith("/api/drafts/task/")).toBe(true);
-    expect(puts[0]!.body?.title).toBe("a sentence nobody sent");
-  } finally {
-    pushes.restore();
-    delete doc.body;
-  }
-});
-
-test("the same sentence typed straight back into the box is not the stale render", async () => {
-  // THE OTHER HALF OF THE LATCH, and the one way a fix for the above could cost
-  // a reader their words. The latch compares the box against what was spent, so
-  // a reader who saves "ship it" and types "ship it" again INSIDE the same
-  // window — before React has painted the cleared box — would, with a latch
-  // nothing stands down, have their second sentence read as the stale render of
-  // the first: no dialog on the way out, and the unmount save standing down too.
-  // A keystroke says these are new words before it paints them.
-  installBody();
-  const seen = watchFetch();
-  const pushes = watchPushes();
-  const { navigateUrl } = await import("@platform/lib/router");
-  const React = await import("react");
-  const rig = laneRig();
-
-  function Host() {
-    React.useSyncExternalStore(rig.subscribe, rig.snap, rig.snap);
-    return (
-      <ComposerCard
-        variant="chat"
-        file="/p/again.py"
-        sessionId=""
-        controls={controls}
-        status="idle"
-        back="/explorer/view/p"
-        onSend={() => {}}
-        onFollowUp={() => {}}
-        onStop={() => {}}
-      />
-    );
-  }
-
-  let renderer: ReactTestRenderer | undefined;
-  act(() => {
-    renderer = create(<Host />, CONCURRENT);
-  });
-  mounted.push(renderer!);
-  const root = renderer!.root;
-  const box = () => root.findByType("textarea");
-  try {
-    act(() => {
-      box().props.onChange({ currentTarget: { value: "ship it" } });
-    });
-    await act(async () => {
-      navigateUrl("/tasks");
-      await tick();
-    });
-    dialogButton(root, "Save as draft").props.onClick();
-    await tick(40);
-    expect(seen.filter((r) => r.method === "PUT")).toHaveLength(1);
-    // The very same words, typed back in before the cleared box has painted.
-    box().props.onChange({ currentTarget: { value: "ship it" } });
-    rig.emit();
-    await act(async () => {
-      await tick(40);
-    });
-    expect(box().props.value).toBe("ship it");
-    // …and leaving asks about them rather than walking off with them.
-    await act(async () => {
-      navigateUrl("/preferences");
-      await tick();
-    });
-    expect(
-      root.findAll((n) => n.type === "button" && n.props.children === "Save as draft"),
-    ).toHaveLength(1);
-    // …and a host that takes the pane away instead still files them, once, under
-    // an id of their own rather than over the sentence already in Upcoming.
-    act(() => renderer!.unmount());
-    await act(async () => {
-      await tick(40);
-    });
-    const puts = seen.filter((r) => r.method === "PUT");
-    expect(puts).toHaveLength(2);
-    expect(new Set(puts.map((r) => r.url)).size).toBe(2);
-    expect(puts[1]!.body?.title).toBe("ship it");
-  } finally {
-    pushes.restore();
-    delete doc.body;
-  }
-});
-
-
-// ---- A RENDER STALE IN ONE HALF AND FRESH IN THE OTHER ---------------------
-//
-// Bugbot 4036328238 (MED), PR #1180. The latch above compared the whole box —
-// words AND tray — as one value, and the two halves do not arrive together: the
-// words are this component's state and the tray is the host's. So the FIRST
-// half to catch up made the shape differ, the latch came off, and the mirrors
-// took the other half exactly as it stood: spent. Both directions are staged
-// here, and the assertion is the same in both — the answered Save wrote one
-// record, and the unmount behind it writes nothing more.
-
-/** THE HOST WITH A TRAY. `defer` is the whole variable: a host that empties its
- *  tray in the same tick as the clear leaves the WORDS to lag, and a host that
- *  has not re-rendered yet leaves the FILES to. */
-function trayHost(file: string, opts: { defer?: boolean } = {}) {
-  const rig = laneRig();
-  const chip: Attachment = {
-    id: "a1",
-    kind: "image",
-    view: "/w/app/shot.png",
-    name: "shot.png",
-  };
-  let items: readonly Attachment[] = [chip];
-  const Host = () => {
-    ReactForTray.useSyncExternalStore(rig.subscribe, rig.snap, rig.snap);
-    return (
-      <ComposerCard
-        variant="chat"
-        file={file}
-        sessionId=""
-        controls={controls}
-        status="idle"
-        back="/explorer/view/p"
-        hasAttachments={items.length > 0}
-        attachments={() => items}
-        onDiscardAttachments={() => {
-          // The deferred host is the one still painting the spent files.
-          if (!opts.defer) items = [];
-        }}
-        onSend={() => {}}
-        onFollowUp={() => {}}
-        onStop={() => {}}
-      />
-    );
-  };
-  return { Host, rig, drop: () => { items = []; } };
+  peekDraftSyncer(key)?.flushNow();
 }
 
-const ReactForTray = await import("react");
-
-test("a stale render that has only emptied the TEXT files nothing twice (Bugbot 4036328238)", async () => {
-  // The ordinary road: `clearComposer` calls the host's discard in its own tick,
-  // so the tray is empty on the very next render while `setText("")` is still
-  // queued. Old latch: "1 file + these words" no longer matches "0 files + these
-  // words", so it stood down and mirrored the spent SENTENCE — and the unmount
-  // filed it again, under a second id.
-  installBody();
+test("a held draft opens on the row's own words, and asks the server for nothing", async () => {
   const seen = watchFetch();
-  const pushes = watchPushes();
-  const { navigateUrl } = await import("@platform/lib/router");
-  const { Host, rig } = trayHost("/p/half-text.py");
-
-  let renderer: ReactTestRenderer | undefined;
-  act(() => {
-    renderer = create(<Host />, CONCURRENT);
+  const c = mount({
+    file: "/p/held.py",
+    sessionId: "",
+    heldKey: "draft:d-seed",
+    heldForm: heldRow("Ship the release", "and tell the team", 4),
   });
-  mounted.push(renderer!);
-  const root = renderer!.root;
-  try {
-    act(() => {
-      root.findByType("textarea").props.onChange({
-        currentTarget: { value: "words and a picture" },
-      });
-    });
-    await act(async () => {
-      navigateUrl("/tasks");
-      await tick();
-    });
-    // Outside `act`, so React is left with the cleared box still queued.
-    dialogButton(root, "Save as draft").props.onClick();
-    await tick(40);
-    const first = seen.filter((r) => r.method === "PUT");
-    expect(first).toHaveLength(1);
-    expect(first[0]!.body?.title).toBe("words and a picture");
-    // The host speaks: an empty tray, and the spent sentence still in the box.
-    rig.emit();
-    await tick(40);
-    act(() => renderer!.unmount());
-    await act(async () => {
-      await tick(40);
-    });
-    const puts = seen.filter((r) => r.method === "PUT");
-    expect(puts).toHaveLength(1);
-    expect(new Set(puts.map((r) => r.url)).size).toBe(1);
-  } finally {
-    pushes.restore();
-    delete doc.body;
-  }
+  await act(async () => {
+    await tick();
+  });
+  // The two card fields, back as one block of prose (`joinDraft`) — the listing
+  // row already carried the whole record, so there is no GET to make…
+  expect(c.box().props.value).toBe("Ship the release\n\nand tell the team");
+  // …and a box that merely opened has written nothing either.
+  expect(seen).toEqual([]);
+  forgetDraftVersion("draft:d-seed");
 });
 
-test("…and one that has only emptied the TRAY files nothing twice either", async () => {
-  // The mirror image, and the half the old latch could not even see: the words
-  // have painted empty and the host has not caught up, so the render shows no
-  // text and the spent FILES. "0 files + no words" did not match "1 file + those
-  // words" either, so the latch stood down again — and `dirtyRef` went true on
-  // the tray alone (a bare picture is a message), which is all `unloadSave`
-  // needs to file a second, wordless record.
-  installBody();
+test("typing waits for a flush: 700 ms writes nothing, the window blurring writes once", async () => {
   const seen = watchFetch();
-  const pushes = watchPushes();
-  const { navigateUrl } = await import("@platform/lib/router");
-  const { Host, rig } = trayHost("/p/half-tray.py", { defer: true });
-
-  let renderer: ReactTestRenderer | undefined;
-  act(() => {
-    renderer = create(<Host />, CONCURRENT);
+  const c = mount({ file: "/p/held.py", sessionId: "", heldKey: "draft:d-typing" });
+  c.type("a task I am still writing");
+  // Well past the 600 ms an autosave would have taken: `defer` means the
+  // statement is recorded and no timer is started at all.
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 700));
+    await tick();
   });
-  mounted.push(renderer!);
-  const root = renderer!.root;
-  try {
-    act(() => {
-      root.findByType("textarea").props.onChange({
-        currentTarget: { value: "a line and a shot" },
-      });
-    });
-    await act(async () => {
-      navigateUrl("/tasks");
-      await tick();
-    });
-    dialogButton(root, "Save as draft").props.onClick();
-    await act(async () => {
-      await tick(40);
-    });
-    // The words have painted away; the tray has not.
-    expect(root.findByType("textarea").props.value).toBe("");
-    rig.emit();
-    await act(async () => {
-      await tick(40);
-    });
-    act(() => renderer!.unmount());
-    await act(async () => {
-      await tick(40);
-    });
-    const puts = seen.filter((r) => r.method === "PUT");
-    expect(puts).toHaveLength(1);
-    expect(puts[0]!.body?.title).toBe("a line and a shot");
-    expect(new Set(puts.map((r) => r.url)).size).toBe(1);
-  } finally {
-    pushes.restore();
-    delete doc.body;
-  }
+  expect(seen).toEqual([]);
+  await act(async () => {
+    blurWindow("draft:d-typing");
+    await tick();
+  });
+  const puts = seen.filter((r) => r.method === "PUT");
+  expect(puts).toHaveLength(1);
+  expect(puts[0]!.url).toBe("/api/drafts/task/d-typing");
+  expect(puts[0]!.body?.title).toBe("a task I am still writing");
+  expect(c.box().props.value).toBe("a task I am still writing");
+  forgetDraftVersion("draft:d-typing");
+});
+
+test("the unmount is a save: one PUT, under the key the box was holding", async () => {
+  const seen = watchFetch();
+  const c = mount({ file: "/p/held.py", sessionId: "", heldKey: "draft:d-leave" });
+  c.type("words the pane is taking away");
+  await act(async () => {
+    c.unmount();
+    await tick();
+  });
+  const puts = seen.filter((r) => r.method === "PUT");
+  expect(puts).toHaveLength(1);
+  expect(puts[0]!.url).toBe("/api/drafts/task/d-leave");
+  expect(puts[0]!.body?.title).toBe("words the pane is taking away");
+  forgetDraftVersion("draft:d-leave");
+});
+
+test("an emptied held draft is DELETED on the way out, never saved as a blank row", async () => {
+  const seen = watchFetch();
+  const c = mount({ file: "/p/held.py", sessionId: "", heldKey: "draft:d-empty" });
+  c.type("something worth a row");
+  await act(async () => {
+    blurWindow("draft:d-empty");
+    await tick();
+  });
+  // The write landed, so this client knows the record's version — which is the
+  // whole condition on the delete: a key nobody has written has nothing to
+  // remove, and asking would be this page guessing about the server.
+  expect(draftVersion("draft:d-empty")).toBe(1);
+  c.type("");
+  await act(async () => {
+    c.unmount();
+    await tick();
+  });
+  const dels = seen.filter((r) => r.method === "DELETE");
+  expect(dels).toHaveLength(1);
+  expect(dels[0]!.url).toBe("/api/drafts/task/d-empty");
+  forgetDraftVersion("draft:d-empty");
+});
+
+test("swapping to another draft row saves the one being put down and seeds the one picked up", async () => {
+  const seen = watchFetch();
+  const c = mount({ file: "/p/held.py", sessionId: "", heldKey: "draft:d-first" });
+  c.type("the draft being put down");
+  c.rerender({
+    heldKey: "draft:d-second",
+    heldForm: heldRow("the draft being picked up", "", 2),
+  });
+  await act(async () => {
+    await tick();
+  });
+  // The key it LEFT is written, once, with the words that were in the box…
+  const puts = seen.filter((r) => r.method === "PUT");
+  expect(puts).toHaveLength(1);
+  expect(puts[0]!.url).toBe("/api/drafts/task/d-first");
+  expect(puts[0]!.body?.title).toBe("the draft being put down");
+  // …and the box is now on the row it was handed.
+  expect(c.box().props.value).toBe("the draft being picked up");
+  forgetDraftVersion("draft:d-first");
+  forgetDraftVersion("draft:d-second");
+});
+
+test("Send spends the held draft — the DELETE, on the key the box was holding", async () => {
+  const seen = watchFetch();
+  const c = mount({ file: "/p/held.py", sessionId: "", heldKey: "draft:d-sent" });
+  c.type("send this one");
+  expect(c.press("Enter")).toBe(true);
+  await act(async () => {
+    await tick();
+  });
+  expect(c.sent).toEqual([{ text: "send this one", model: DEFAULT_MODEL }]);
+  const dels = seen.filter((r) => r.method === "DELETE");
+  expect(dels).toHaveLength(1);
+  expect(dels[0]!.url).toBe("/api/drafts/task/d-sent");
+  expect(c.box().props.value).toBe("");
+  // …and the unmount behind it says nothing more about a key that is spent.
+  await act(async () => {
+    c.unmount();
+    await tick();
+  });
+  expect(seen.filter((r) => r.method !== "GET")).toHaveLength(1);
+  forgetDraftVersion("draft:d-sent");
 });
 
 

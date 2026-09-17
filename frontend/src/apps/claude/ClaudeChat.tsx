@@ -31,7 +31,13 @@ import {
 } from "react";
 
 import { confirmLeave, currentUrl, navigateUrl } from "@platform/lib/router";
-import { chatDraftKey } from "@platform/lib/drafts";
+import {
+  chatDraftKey,
+  newTaskDraftId,
+  taskDraftKey,
+  type TaskDraftForm,
+} from "@platform/lib/drafts";
+import { draftUpdatedAt, isDraftTask } from "@shell/tasks-lib";
 
 import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
@@ -1965,6 +1971,46 @@ function ChatBody(props: ChatBodyProps) {
     undefined,
     leftLive,
   );
+  /**
+   * THE DRAFT THE LANDING COMPOSER HOLDS (Akshil, 2026-09-17).
+   *
+   * On landing, the folder's NEWEST Upcoming draft (by its own clock) goes into
+   * the box and out of the list; with none, a fresh key is held so whatever is
+   * typed has a record to be saved under on blur. Pressing another draft row
+   * swaps: the box's current draft is saved (its row comes back) and the pressed
+   * one is held. Leaving the landing forgets the choice, so coming Back picks
+   * again from what is there then — a Send leaves the box empty (the sent draft
+   * is deleted), and the next landing starts from the list, not from memory.
+   */
+  const [held, setHeld] = useState<{ key: string; form: TaskDraftForm | null } | null>(null);
+  useEffect(() => {
+    if (inChat) {
+      setHeld(null);
+      return;
+    }
+    if (held || recent === null) return;
+    const newest = recent
+      .filter((t) => isDraftTask(t) && t.draft_kind === "task" && !!t.draft_id)
+      .sort((a, b) => draftUpdatedAt(b) - draftUpdatedAt(a))[0];
+    setHeld(
+      newest && newest.draft_id
+        ? { key: taskDraftKey(newest.draft_id), form: (newest.form ?? null) as TaskDraftForm | null }
+        : { key: taskDraftKey(newTaskDraftId()), form: null },
+    );
+  }, [inChat, held, recent]);
+  /** The held row as the feed keeps it — the composer adopts a newer version. */
+  const heldRow = useMemo(
+    () => (held && recent ? recent.find((t) => t.key === held.key) ?? null : null),
+    [held, recent],
+  );
+  const heldForm = (heldRow?.form ?? held?.form ?? null) as
+    | (TaskDraftForm & { version?: number })
+    | null;
+  const onHeldGone = useCallback(() => {
+    setHeld({ key: taskDraftKey(newTaskDraftId()), form: null });
+  }, []);
+  const heldRef = useRef(held);
+  heldRef.current = held;
   // …AND THE CHATS IN THIS FOLDER THAT HAVE NOT RUN YET are in the same list
   // for free: `/api/tasks` lists a chat whose first message queued as a row
   // keyed `pending:<leader id>` (the project queue), in this folder, and the
@@ -2480,7 +2526,7 @@ function ChatBody(props: ChatBodyProps) {
                 // autosaves under, spelled by the same function, and sent only
                 // while there is no session: a chat that has one is numbered
                 // under it and has nothing to carry forward.
-                ...(sid ? {} : { draft_key: chatDraftKey(null, file || "") }),
+                ...(sid ? {} : { draft_key: heldRef.current?.key ?? chatDraftKey(null, file || "") }),
               });
             } catch (err) {
               putDownQueuedShot();
@@ -2846,6 +2892,15 @@ function ChatBody(props: ChatBodyProps) {
    * second press finds the card it is asking for already up.
    */
   const onFillDraft = useCallback((task: Task) => {
+    // AN UPCOMING TASK DRAFT IN THIS FOLDER IS HELD, NOT OPENED (Akshil,
+    // 2026-09-17): it swaps into the composer, and the one that was there is
+    // saved back to the list by the composer's own key change.
+    if (isDraftTask(task) && task.draft_kind === "task" && task.draft_id) {
+      const key = taskDraftKey(task.draft_id);
+      if (heldRef.current?.key === key) return;
+      setHeld({ key, form: (task.form ?? null) as TaskDraftForm | null });
+      return;
+    }
     const href = draftHref(task);
     if (href) onNavigate(href);
   }, [onNavigate]);
@@ -4193,6 +4248,9 @@ function ChatBody(props: ChatBodyProps) {
             onOpenSession={onOpenSession}
             onFillDraft={onFillDraft}
             listsDisabled={ann.locked}
+            heldKey={held?.key ?? null}
+            heldForm={heldForm}
+            onHeldGone={onHeldGone}
           />
         )}
         {/* THE NOTE COMPOSER'S IDLE HOME (T:7291): ONE node, parked in the chat
