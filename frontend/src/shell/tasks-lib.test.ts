@@ -4235,7 +4235,7 @@ describe("the archive action", () => {
     // of a line other than dragging a card out of a lane that is rolled up
     // whenever it is empty.
     expect(card).toContain(
-      "{((peekOn && page) || file || folderMissing || hasDraft(task) || queue\n"
+      "{((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek) || queue\n"
       + "        || (SHOW_ROW_ACTIONS && run)) && (",
     );
     expect(card).toContain('className="tasks-card-acts"');
@@ -4544,7 +4544,7 @@ describe("the delete affordance", () => {
     expect(strip.indexOf("ICON_TRASH")).toBeLessThan(strip.indexOf("ICON_ARCHIVE"));
     // The strip is drawn for a gone folder even with nothing to file.
     expect(VIEWS_SRC).toContain(
-      "{((peekOn && page) || file || folderMissing || hasDraft(task) || queue\n"
+      "{((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek) || queue\n"
       + "        || (SHOW_ROW_ACTIONS && run)) && (",
     );
     // And the foot is back to the sentence alone — no trash before it there.
