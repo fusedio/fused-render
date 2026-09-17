@@ -170,29 +170,44 @@ export function patternTail(query: string): string {
  * `resolve_query` and `search_under` run a raw typed string through before
  * deciding `mode`. Kept here, not re-derived at each call site, so every
  * caller that needs to know whether a query WOULD settle in glob mode
- * before a response has come back agrees with the server by construction:
- * trim; a no-op when the trimmed string has no internal whitespace; else
- * collapse every whitespace run to a single `*` (never `**`, a different,
- * cross-directory token) and wrap the FINAL `/`-separated segment in a
- * leading/trailing `*`, but only when that segment has no user-typed `*`
- * of its own.
+ * before a response has come back agrees with the server by construction.
  *
- * A whitespace run directly beside a literal `*` the user already typed
- * (`report *.pdf`) must not stack a SECOND `*` next to it — that would
- * collapse into `**`, the cross-directory token, silently crossing a
- * folder boundary this query never asked to cross. The existing star
- * already does the whitespace run's job, so the run is dropped instead of
- * replaced whenever it borders one. Mirrors the identical fix in
- * `expand_whitespace_query` (`fused_render/index/query.py`) — see
- * DECISIONS.md for why the earlier "accepted edge case" note on this was
- * reversed.
+ * Byte-equivalent with `expand_whitespace_query` (`fused_render/index/
+ * query.py`) — a follow-up to the original whitespace-as-wildcard rule that
+ * fixes two disagreements:
+ *
+ *  1. A TRAILING space used to be trimmed away (`*.js ` searched for `*.js`,
+ *     silently dropping the space the user just typed). Trimming is gone:
+ *     leading/trailing whitespace is now as meaningful as any other run.
+ *  2. `icon copy` (found `icon copy.png`) and `icon*copy` (found nothing —
+ *     the typed `*` produced an anchored pattern requiring the name to END
+ *     in "copy") used to disagree. They no longer do, because the final
+ *     segment is now wrapped on `*` too, not only on whitespace.
+ *
+ * The rule:
+ *  1. No trimming.
+ *  2. The ONE no-op: a string with NEITHER whitespace NOR `*` anywhere
+ *     (`report`) is returned unchanged — still substring mode, still ranked.
+ *  3. Collapse every whitespace run to a single `*` (never `**`, a
+ *     different, cross-directory token) — dropped, not replaced, whenever a
+ *     run directly borders a literal `*` the user already typed
+ *     (`report *.pdf` must not stack into `report**.pdf`).
+ *  4. On the FINAL `/`-separated segment only, wrap each END independently:
+ *     prepend `*` unless it already starts with one, append `*` unless it
+ *     already ends with one. This fires even when the segment has no
+ *     whitespace at all — `*.pdf` becomes `*.pdf*` — which is what makes
+ *     `icon*copy` -> `*icon*copy*` agree with `icon copy` -> `*icon*copy*`.
+ *     Earlier segments get the whitespace collapse but no wrap.
+ *
+ * Known, accepted consequence (do not special-case around it): a
+ * previously-precise glob like `*.pdf` now also matches `report.pdf.bak`
+ * and `notes.pdfx`. See DECISIONS.md.
  */
 export function expandWhitespaceQuery(raw: string): string {
-  const trimmed = (raw ?? "").trim();
-  if (!trimmed || !/\s/.test(trimmed)) return trimmed;
-  const rawSegments = trimmed.split("/");
-  const last = rawSegments.length - 1;
-  const wrapLast = !rawSegments[last]!.includes("*");
+  const value = raw ?? "";
+  if (!/\s/.test(value) && !value.includes("*")) return value;
+  const segments = value.split("/");
+  const last = segments.length - 1;
   const collapseWs = (segment: string): string =>
     segment.replace(/\s+/g, (match, offset: number) => {
       const before = offset > 0 && segment[offset - 1] === "*";
@@ -200,9 +215,12 @@ export function expandWhitespaceQuery(raw: string): string {
         offset + match.length < segment.length && segment[offset + match.length] === "*";
       return before || after ? "" : "*";
     });
-  const segments = rawSegments.map(collapseWs);
-  if (wrapLast) segments[last] = `*${segments[last]}*`;
-  return segments.join("/");
+  const collapsed = segments.map(collapseWs);
+  let final = collapsed[last]!;
+  if (!final.startsWith("*")) final = `*${final}`;
+  if (!final.endsWith("*")) final = `${final}*`;
+  collapsed[last] = final;
+  return collapsed.join("/");
 }
 
 /**
@@ -344,10 +362,12 @@ export function narrowAnswer(answer: HomeAnswer, q: string): HomeHit[] {
     // rule this out before the pattern is even built.
     if (q.includes("*") || q.includes("/")) return [];
     const pattern = expandWhitespaceQuery(q);
-    // No internal whitespace left in the trimmed query: the server would
-    // resolve this back to SUBSTRING mode, not glob (`willResolveToGlobMode`
-    // would be false) — `expandWhitespaceQuery` returns it unchanged in that
-    // case, which is not a glob pattern this branch can safely match with.
+    // `q` already has no `*` of its own (ruled out above), so the only way
+    // `expandWhitespaceQuery` can still produce a `*`-free `pattern` here is
+    // the one no-op case: no whitespace anywhere in `q` either. That means
+    // the server would resolve `q` back to SUBSTRING mode, not glob
+    // (`willResolveToGlobMode` would be false) — not a glob pattern this
+    // branch can safely match with.
     if (!pattern.includes("*")) return [];
     const out: HomeHit[] = [];
     for (const hit of answer.hits) {

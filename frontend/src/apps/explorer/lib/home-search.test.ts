@@ -71,12 +71,25 @@ function answer(over: Partial<HomeAnswer> = {}): HomeAnswer {
 }
 
 describe("expandWhitespaceQuery / willResolveToGlobMode", () => {
-  it("is a no-op for a whitespace-free query, glob or not", () => {
+  it("is a no-op ONLY without whitespace or '*'", () => {
     expect(expandWhitespaceQuery("report")).toBe("report");
-    expect(expandWhitespaceQuery("*.pdf")).toBe("*.pdf");
-    expect(expandWhitespaceQuery("src/**/*.ts")).toBe("src/**/*.ts");
+    expect(expandWhitespaceQuery("")).toBe("");
     expect(willResolveToGlobMode("report")).toBe(false);
+  });
+
+  it("wraps a whitespace-free glob too (fixes icon*copy)", () => {
+    expect(expandWhitespaceQuery("*.pdf")).toBe("*.pdf*");
+    expect(expandWhitespaceQuery("icon*copy")).toBe("*icon*copy*");
+    expect(expandWhitespaceQuery("src/**/*.ts")).toBe("src/**/*.ts*");
     expect(willResolveToGlobMode("*.pdf")).toBe(true);
+  });
+
+  it("does not trim leading/trailing whitespace", () => {
+    expect(expandWhitespaceQuery("icon ")).toBe("*icon*");
+    expect(expandWhitespaceQuery(" icon")).toBe("*icon*");
+    expect(expandWhitespaceQuery("*.js ")).toBe("*.js*");
+    expect(expandWhitespaceQuery("hello world ")).toBe("*hello*world*");
+    expect(expandWhitespaceQuery(" hello world")).toBe("*hello*world*");
   });
 
   it("collapses whitespace runs to a single '*' and wraps the final segment", () => {
@@ -90,8 +103,48 @@ describe("expandWhitespaceQuery / willResolveToGlobMode", () => {
     expect(expandWhitespaceQuery("~/My Documents/report")).toBe("~/My*Documents/*report*");
   });
 
-  it("does not add a wrap when the final segment already carries a user '*'", () => {
-    expect(expandWhitespaceQuery("report *.pdf")).toBe("report*.pdf");
+  it("wraps only the end that needs it", () => {
+    expect(expandWhitespaceQuery("*.pdf")).toBe("*.pdf*");
+    expect(expandWhitespaceQuery("report*")).toBe("*report*");
+    expect(expandWhitespaceQuery("*.pdf*")).toBe("*.pdf*");
+  });
+
+  it("never stacks a star beside a user star", () => {
+    expect(expandWhitespaceQuery("report *.pdf")).toBe("*report*.pdf*");
+    expect(expandWhitespaceQuery("*.pdf report")).toBe("*.pdf*report*");
+    expect(expandWhitespaceQuery("a * b")).toBe("*a*b*");
+  });
+
+  // Required behavior table — mirrors tests/test_index_query.py's
+  // test_expand_whitespace_query_required_behavior_table row for row.
+  it.each([
+    ["report", "report"],
+    ["icon ", "*icon*"],
+    [" icon", "*icon*"],
+    ["*.js ", "*.js*"],
+    ["icon*copy", "*icon*copy*"],
+    ["*.pdf", "*.pdf*"],
+    ["src/**/*.ts", "src/**/*.ts*"],
+    ["icon copy", "*icon*copy*"],
+    ["hello  world", "*hello*world*"],
+    ["report *.pdf", "*report*.pdf*"],
+    ["~/My Documents/report", "~/My*Documents/*report*"],
+    ["/*.pdf", "/*.pdf*"],
+  ])("required behavior: %j -> %j", (query, expected) => {
+    expect(expandWhitespaceQuery(query)).toBe(expected);
+  });
+
+  // Property: the output never contains "**" unless the input already did.
+  it.each([
+    "report", "icon ", " icon", "*.js ", "icon*copy", "*.pdf",
+    "src/**/*.ts", "icon copy", "hello  world", "report *.pdf",
+    "~/My Documents/report", "/*.pdf", "a * b", "*.pdf report",
+    "report*", "*.pdf*", " ", "", "*", "**",
+  ])("never invents a double star: %j", (query) => {
+    const out = expandWhitespaceQuery(query);
+    if (!query.includes("**")) {
+      expect(out.includes("**")).toBe(false);
+    }
   });
 });
 
