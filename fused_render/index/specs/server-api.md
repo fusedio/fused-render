@@ -268,12 +268,15 @@ rather than a top-N of it). Plain JSON, a few KB — no columnar encoding and no
 special-casing, because that machinery (§6) exists for a 20 MB corpus and this is not
 one. A miss is a 200 with `covered: false` and no hits, exactly as for the corpus.
 
-`q`, exactly as typed (unstripped), is run through `resolve_query` (`query.md §3`)
-before anything else: whitespace runs collapse into wildcards, a leading `~`/`/`/drive
-letter/`..` can peel a `base` off the front, and the result decides `mode` —
-`"glob"` the moment the expanded string contains a `*` anywhere, including one
-introduced purely by whitespace with no character the user typed, else
-`"substring"`. `base` is the resolved search root (equal to the request's own `root`
+`q`, exactly as typed (unstripped — a trailing space is meaningful, not trimmed
+away), is run through `resolve_query` (`query.md §3`) before anything else:
+whitespace runs collapse into wildcards, the final path segment is wrapped in a
+leading and trailing `*` (even a whitespace-free one — `*.pdf` becomes `*.pdf*`,
+an accepted precision-glob trade-off), a leading `~`/`/`/drive letter/`..` can peel
+a `base` off the front, and the result decides `mode` — `"glob"` the moment the
+expanded string contains a `*` anywhere, including one introduced purely by
+whitespace with no character the user typed, else `"substring"`. `base` is the
+resolved search root (equal to the request's own `root`
 unless `q` escaped it), and `pattern` is exactly what a `mode: "glob"` hit's `rel` was
 full-matched against — the tail of the expanded `q` left after peeling off `base`,
 carrying any implicit `**/` prefix. `pattern` is populated in **both** modes (cheap —

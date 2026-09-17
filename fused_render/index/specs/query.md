@@ -48,25 +48,39 @@ becomes `{base, pattern, mode}`. It first runs `raw` through
 `expand_whitespace_query` — a **shared** transform (`search_under`, §6, runs the
 same one on `q`) that turns whitespace into wildcards without regressing the
 motivating "type two words, find the file with both in order" case a naive
-`" " -> "*"` substitution would:
+`" " -> "*"` substitution would. Follow-up to the original rule (fixes two
+disagreements: a trailing space used to be silently trimmed away, and
+`icon copy` / `icon*copy` used to disagree on whether they find the same file):
 
-1. Trim leading/trailing whitespace.
-2. A whitespace-free trimmed string is returned byte-for-byte unchanged — this is
-   what leaves `*.pdf`, `src/**/*.ts`, and any ordinary non-glob query untouched,
-   whether or not it already contains a literal `*`.
-3. Otherwise, collapse every run of whitespace to a single `*` (`hello  world`
-   with two spaces resolves identically to `hello world` — `**` means something
+1. **No trimming.** Leading/trailing whitespace is as meaningful as any other
+   run — `"*.js "` is not the same query as `"*.js"`.
+2. The **one** no-op: a string with **neither** whitespace **nor** `*` anywhere
+   (`report`) is returned byte-for-byte unchanged — still substring mode, still
+   ranked. A whitespace-free glob like `*.pdf` is **not** a no-op any more (see
+   point 4).
+3. Collapse every run of whitespace to a single `*` (`hello  world` with two
+   spaces resolves identically to `hello world` — `**` means something
    different in this grammar, a cross-directory wildcard, so a whitespace run
-   must never produce one).
-4. Imply a leading and trailing `*` on the **final** `/`-separated segment only,
-   and only when that segment has no user-typed `*` of its own — `hello world`
-   becomes `*hello*world*`, and `~/My Documents/report` becomes `~/My*Documents/
-   *report*`, not `~/*My*Documents*/...`: earlier segments get the whitespace
-   collapse but no wrap of their own.
+   must never produce one; a run bordering a literal `*` the user already typed
+   is dropped rather than replaced, for the same reason).
+4. On the **final** `/`-separated segment only, wrap each end **independently**:
+   prepend `*` unless it already starts with one, append `*` unless it already
+   ends with one. This fires even when the segment has no whitespace at all —
+   `*.pdf` becomes `*.pdf*`, and `icon*copy` becomes `*icon*copy*`, agreeing
+   with `icon copy` -> `*icon*copy*`. Earlier segments get the whitespace
+   collapse but no wrap of their own — `~/My Documents/report` becomes
+   `~/My*Documents/*report*`, not `~/*My*Documents*/...`.
+
+**Known, accepted consequence** (do not special-case around it): a previously
+precise glob like `*.pdf` now also matches `report.pdf.bak` and `notes.pdfx` —
+every glob query trades some precision for grammar consistency with the
+whitespace rule. Likewise a single space (`"icon "`) now flips a query straight
+into glob mode, losing relevance ranking; `_glob_sql` deliberately gains no
+scoring to compensate (SPEC-search-space-wildcard.md).
 
 `mode` is `"glob"` the moment the expanded string contains a `*` anywhere — which
-now includes every whitespace-containing query, not only one with a user-typed
-`*` — else `"substring"`. `?` and `[`/`]` are left as literal characters always
+now includes every whitespace-containing query AND every glob query, whitespace
+or not — else `"substring"`. `?` and `[`/`]` are left as literal characters always
 (people put them in filenames far more often than they mean them as patterns), so
 their presence never flips the mode. There is deliberately **no escape hatch** for
 a literal space in a filename — quoting is out of scope (SPEC-search-space-
@@ -235,12 +249,15 @@ function backs.
 
 `q` is run through the same `expand_whitespace_query` (§3) `resolve_query` runs `raw`
 through — one shared implementation, not two copies of the whitespace rule, so the
-public API gets the identical grammar the two search boxes do. A whitespace-free `q`
-is a no-op and the filter stays the plain `ILIKE` substring test it always was, `*`
-included, still a literal character. Whitespace flips the filter to the same
-glob-to-regex matching `resolve_query`'s glob mode uses, confined to any depth under
+public API gets the identical grammar the two search boxes do. `q` is a no-op — the
+filter stays the plain `ILIKE` substring test it always was — only when it has
+**neither** whitespace **nor** `*` anywhere. Either one flips the filter to the same
+glob-to-regex matching `resolve_query`'s glob mode uses (keyed on `"*" in expanded`,
+mirroring `resolve_query`'s own `is_glob` check), confined to any depth under
 `root` — this function never walks a base off `q` the way `resolve_query` does, so the
-whole expanded pattern always searches any depth.
+whole expanded pattern always searches any depth. A bare `*`-containing `q` (`*.pdf`)
+is therefore no longer a literal-character `ILIKE` match either — same accepted
+precision-glob consequence as §3.
 
 ## 7. The source helpers are public — `files_src` / `dirs_src`
 
