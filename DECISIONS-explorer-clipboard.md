@@ -201,3 +201,41 @@ failures under `src/apps/claude/` (`ChatMount.render.test.tsx`, a
 preview-hover test), the Linux single-clipboard-target limitation, cross-tab
 clipboard coordination, routing the four uncovered call sites (finding 7)
 through an explorer-aware wrapper, and all Python code.
+
+## Fix 7 — Linux multi-target clipboard write (backend, `SPEC-linux-multitarget-clipboard.md`)
+
+- Built per the spec on `worktree-explorer-clipboard-fixes`, no deviations —
+  every fact the spec listed as verified held on re-check, including the
+  end-to-end read-back against a real `wl-paste` (all four targets present,
+  bytes matching the spec's table).
+- `_write_via_owner`'s Popen uses `stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+  stderr=subprocess.DEVNULL` — stdout stays a pipe here, unlike the fallback
+  write's `DEVNULL`, because we genuinely need to read one line off it (the
+  readiness handshake). The pipes-and-forking trap the fallback's comment
+  describes doesn't recur the same way here since the owner doesn't fork —
+  but it's every bit as resident, so the same fix applies from the *owner's*
+  side instead: it dup2's fd 1 onto `/dev/null` itself right after printing,
+  so nothing is left for anyone to block on afterward. The parent still
+  closes its own read end once it has the line, purely as pipe-count
+  hygiene for a long-lived server process, not because leaving it open
+  would hang anything.
+- The interpreter-probe cache (`_gi_interpreter`) and the owner-spawn path
+  both go through the exact same `_linux.subprocess.run`/`.Popen` seam the
+  existing fallback tests fake — meaning every one of those existing tests'
+  first `write_files()` call would otherwise also trigger a probe, consuming
+  a slot in their `run.calls` recorder and shifting positional assertions
+  like `run.calls[0][0][0] == "wl-copy"` by one. Fixed with an autouse
+  fixture in `test_pasteboard_linux.py` that pins the cache to "no capable
+  interpreter" before and after every test; the handful of tests that
+  actually exercise probing/spawning opt back in with
+  `_linux._reset_gi_interpreter_cache()` explicitly, and the autouse
+  teardown always restores the pinned value afterward regardless of what
+  they left it as — so no ordering assumption between tests is load-bearing.
+- `_probe_gi_interpreter`'s candidate `/usr/bin/python3` and
+  `shutil.which("python3")` can collide (a normal desktop install commonly
+  has `/usr/bin/python3` be exactly what `which` finds), which the dedup-by-
+  set candidate list already handles; the test for the third candidate
+  therefore monkeypatches `shutil.which` directly to a distinct fake path
+  rather than going through the shared `env` fixture's `f"/usr/bin/{name}"`
+  fake, which would have produced the same string as the second candidate
+  and proven nothing.
