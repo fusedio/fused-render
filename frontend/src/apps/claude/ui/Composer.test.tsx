@@ -1379,6 +1379,38 @@ function watchPushes(): { urls: string[]; restore(): void } {
   return { urls, restore: () => { hist.pushState = real; } };
 }
 
+/** The shim's own `window` (`testDomShim.ts`) answers `addEventListener`/
+ *  `dispatchEvent` with no-ops — plenty for modules that only need the calls
+ *  to exist, not for a test that has to catch one. Same trick as
+ *  `useTaskId.test.tsx`'s `liveWindowEvents`: a real little bus for the
+ *  test's duration, restored after. */
+function liveWindowEvents(): () => void {
+  const w = globalThis.window as unknown as {
+    addEventListener: unknown;
+    removeEventListener: unknown;
+    dispatchEvent: unknown;
+  };
+  const was = { add: w.addEventListener, remove: w.removeEventListener, fire: w.dispatchEvent };
+  const bus = new Map<string, Set<(ev: Event) => void>>();
+  w.addEventListener = (type: string, fn: (ev: Event) => void) => {
+    const set = bus.get(type) ?? new Set();
+    set.add(fn);
+    bus.set(type, set);
+  };
+  w.removeEventListener = (type: string, fn: (ev: Event) => void) => {
+    bus.get(type)?.delete(fn);
+  };
+  w.dispatchEvent = (ev: Event) => {
+    for (const fn of [...(bus.get(ev.type) ?? [])]) fn(ev);
+    return true;
+  };
+  return () => {
+    w.addEventListener = was.add;
+    w.removeEventListener = was.remove;
+    w.dispatchEvent = was.fire;
+  };
+}
+
 /** ONE READY CHIP holding a chat tempdir path — the shape every unload and
  *  every leave save has to decide what to do about. */
 const tempShot = {
@@ -1395,7 +1427,15 @@ test("an in-app navigation with words in the box SAVES them and goes", async () 
   const { navigateUrl } = await import("@platform/lib/router");
   const { _resetNotificationsForTest, getPopupNotification } =
     await import("@platform/lib/notifications");
+  const { TASKS_CHANGED_EVENT } = await import("@platform/lib/tasksChanged");
   _resetNotificationsForTest();
+  // THE LISTING'S OWN EAR. Upcoming (and the sidebar, and any other tab-local
+  // subscriber) learns about the new draft through this poke, not the next
+  // long-poll — so the hop must fire exactly one of them.
+  const restoreEvents = liveWindowEvents();
+  let pokes = 0;
+  const onPoke = () => { pokes += 1; };
+  window.addEventListener(TASKS_CHANGED_EVENT, onPoke);
   try {
     const c = mount({ file: "/p/leaving.py", sessionId: "" });
     c.type("a sentence nobody sent");
@@ -1435,7 +1475,13 @@ test("an in-app navigation with words in the box SAVES them and goes", async () 
     // panel tomorrow would delete a draft that has been written since.
     const { getRetainedNotifications } = await import("@platform/lib/notifications");
     expect(getRetainedNotifications()).toEqual([]);
+    // …and the new row is announced ONCE the write lands — the same poke
+    // `undoSavedDraft` fires on its own write, so the two halves of this
+    // gesture agree about when Upcoming hears of it (Bugbot 4036729606).
+    expect(pokes).toBe(1);
   } finally {
+    window.removeEventListener(TASKS_CHANGED_EVENT, onPoke);
+    restoreEvents();
     pushes.restore();
     _resetNotificationsForTest();
   }

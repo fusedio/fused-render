@@ -1291,6 +1291,13 @@ export function ComposerCard({
         return;
       }
       sync.forget();
+      // …AND THE LISTING HEARS IT NOW, not on the next long-poll. This gesture
+      // already hopped the reader to Upcoming (or is about to), so a paint that
+      // reads the listing before this row exists on the server is the common
+      // case, not the rare one — and `undoSavedDraft` below announces on its
+      // own write for exactly the same reason: the two halves of one gesture
+      // must not disagree about when the card shows up.
+      announceTasksChanged();
       notify({
         title: "Saved as draft",
         ...(lost
