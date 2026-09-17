@@ -544,6 +544,75 @@ test("different families (different page) never collapse into each other", () =>
   expect(retained.every((n) => n.count === 1)).toBe(true);
 });
 
+// DEFECT 2 (2026-09-17 fix): the collapse used to only fire within
+// `GROUP_GAP_MS` (2 minutes) of the existing row's own `updatedAt` — too
+// short for the user's actual case (two runs of a Claude task, routinely
+// finishing far more than two minutes apart). A repeat must collapse into an
+// already-retained, still-undismissed row no matter how long ago it was
+// raised.
+test("a repeat collapses into an existing retained row even long after the old 2-minute burst window", () => {
+  const realNow = Date.now;
+  try {
+    let now = 1_000_000;
+    Date.now = () => now;
+    const id1 = notify({
+      title: "Transcripto YouTube transcriber finished",
+      tone: "info",
+      page: "/tasks/1",
+    });
+    now += 60 * 60 * 1000; // an hour later — routine for two separate task runs
+    const id2 = notify({
+      title: "Transcripto YouTube transcriber finished",
+      tone: "info",
+      page: "/tasks/1",
+    });
+    const retained = getRetainedNotifications();
+    expect(retained).toHaveLength(1);
+    expect(retained[0]?.count).toBe(2);
+    expect(id2).toBe(id1);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+// DEFECT 2, continued: once the earlier row has been DISMISSED, the family
+// no longer names anything to collapse into — the next repeat starts a fresh
+// row, exactly as it did before this fix (this branch was never asked to
+// make a dismissed row un-dismissable).
+test("a repeat after the earlier row was dismissed starts a fresh row, not a collapse", () => {
+  notify({ title: "Transcripto YouTube transcriber finished", tone: "info", page: "/tasks/1" });
+  const before = getRetainedNotifications();
+  expect(before).toHaveLength(1);
+  dismissNotification(before[0]!.id);
+  expect(getRetainedNotifications()).toHaveLength(0);
+
+  notify({ title: "Transcripto YouTube transcriber finished", tone: "info", page: "/tasks/1" });
+  const after = getRetainedNotifications();
+  expect(after).toHaveLength(1);
+  expect(after[0]?.count).toBe(1);
+});
+
+// DEFECT 3 (2026-09-17 fix): `messageFamily` used to key ONLY on `page`,
+// which collides whenever two DIFFERENT tasks fall back to the same
+// per-folder/global destination (`taskDestination`'s
+// `taskHref ?? folderHref ?? "/tasks"`) — the collapsed row is rebuilt from
+// the NEW input, so the older task's title silently vanished with no trace.
+// Title is now folded into the family key alongside `page`, so two different
+// tasks sharing a folder href must NOT collapse into one row, even though the
+// user's own case (same task, same title, same page) still does (covered by
+// the "same page" test above).
+test("two different tasks sharing the same folder-fallback page do not collapse into each other", () => {
+  notify({ title: "Transcript task finished", tone: "info", page: "/explorer/proj" });
+  notify({ title: "Cleanup task finished", tone: "info", page: "/explorer/proj" });
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(2);
+  expect(retained.every((n) => n.count === 1)).toBe(true);
+  expect(retained.map((n) => n.title)).toEqual([
+    "Transcript task finished",
+    "Cleanup task finished",
+  ]);
+});
+
 test("a suppressed replaceId call clears whatever that id was still showing", () => {
   const id = notify({ title: "Installing…", tone: "info", source: "/claude-config" });
   expect(popupSnapshot()?.title).toBe("Installing…");

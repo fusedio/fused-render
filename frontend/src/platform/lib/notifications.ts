@@ -28,7 +28,7 @@
 // (see `isRetained` below and DECISIONS-toasts-become-notifications.md) —
 // everything else is never added to it; its popup is its only trace.
 import { useSyncExternalStore } from "react";
-import { GROUP_GAP_MS, JOB_POPUP_VISIBLE_MS } from "@platform/lib/jobs";
+import { JOB_POPUP_VISIBLE_MS } from "@platform/lib/jobs";
 import type { JobTier } from "@platform/lib/jobs";
 import { IS_EMBED, IS_TOP_EMBED } from "@platform/lib/router";
 import { isFocusedHere } from "@platform/lib/presence";
@@ -91,25 +91,26 @@ export interface StoredNotification {
   action?: NotificationCardAction;
   page?: string;
   /** GROUPING/UPDATION (user: "better notification grouping/updation for
-   *  same source") — the family this row belongs to, `page:<page>` if it has
-   *  one, else `title:<title>`. A fresh `notify()` call that lands in the
-   *  SAME family as an already-retained row, within `GROUP_GAP_MS` of that
-   *  row's own `updatedAt`, UPDATES that row in place (same id, `count`
-   *  incremented) instead of stacking a second, byte-identical one — see
-   *  `notify()`'s own comment on this. Mirrors `jobs.ts`'s own family/burst
-   *  concept (`familyKey`/`clusterFamily`/`GROUP_GAP_MS`) rather than
-   *  inventing a second, divergent one — this module already sits in
-   *  `platform/lib` alongside `jobs.ts`, so importing `GROUP_GAP_MS` from
-   *  there is a plain in-layer reuse, not a `shell/` reach. */
+   *  same source") — the family this row belongs to: `page:<page>::<title>`
+   *  when it has a page, else `title:<title>`. Title is part of the key even
+   *  on the page branch (2026-09-17 fix) — `page` alone collided whenever two
+   *  DIFFERENT tasks fell back to the same per-folder/global destination
+   *  (`taskDestination`'s `taskHref ?? folderHref ?? "/tasks"`), silently
+   *  overwriting one task's completion with another's. A fresh `notify()`
+   *  call that lands in the SAME family as an already-retained row UPDATES
+   *  that row in place (same id, `count` incremented) instead of stacking a
+   *  second, byte-identical one, for as long as that row is still sitting in
+   *  the retained list undismissed — see `notify()`'s own comment on this. */
   family: string;
-  /** How many times this family has fired within the current burst — 1 the
-   *  first time, incremented on each collapse. `MessageRowView`
-   *  (RepoUpdatesDock.tsx) reads this to show "×N" once it exceeds 1. */
+  /** How many times this family has fired while its row has sat retained —
+   *  1 the first time, incremented on each collapse. `MessageRowView`
+   *  (RepoUpdatesDock.tsx) reads this to show a repeat count once it exceeds
+   *  1. */
   count: number;
   /** When this row's content was last set (fresh `notify()` or a collapsed
-   *  repeat) — `notify()`'s own clock for the `GROUP_GAP_MS` burst window
-   *  above. Not meant to be read for anything else (it is not a "raised at"
-   *  timestamp — a collapsed repeat overwrites it). */
+   *  repeat). Informational only — no longer gates the collapse window (see
+   *  `notify()`'s own comment: collapse now lasts as long as the row is
+   *  retained, not a fixed burst window). */
   updatedAt: number;
   /** A dimmed caption naming who raised this row — the message-side
    *  counterpart to `Job.origin` (jobs.ts, `.dl-origin`/`caption` on
@@ -254,13 +255,19 @@ function isSuppressed(input: NotificationInput, tier: JobTier): boolean {
   return isFocusedHere(input.source);
 }
 
-/** See `StoredNotification.family`'s own doc comment. `page` wins when
- *  present (a task's own destination is a stabler identity than its title
- *  text, which callers are free to phrase differently run to run); `title`
- *  is the fallback for messages with no destination at all — still useful
- *  for e.g. repeated identical toasts, not just task completions. */
+/** See `StoredNotification.family`'s own doc comment. `page` alone is NOT a
+ *  row identity: `taskDestination` (task-status-notify.ts) falls back to a
+ *  per-folder or global route (`folderHref(task) ?? "/tasks"`) once a task
+ *  has no live session of its own, so two DIFFERENT tasks routinely share a
+ *  `page` while naming completely different work. Title is folded in
+ *  alongside `page` so the family identifies THIS row, not just its
+ *  destination — the user's own case (same task, same title, same page)
+ *  still collapses, while two different tasks landing on the same folder
+ *  href do not silently overwrite one another. `title` alone is the
+ *  fallback for messages with no destination at all — still useful for e.g.
+ *  repeated identical toasts, not just task completions. */
 function messageFamily(input: NotificationInput): string {
-  return input.page ? `page:${input.page}` : `title:${input.title}`;
+  return input.page ? `page:${input.page}::${input.title}` : `title:${input.title}`;
 }
 
 function toStored(input: NotificationInput, id: number): StoredNotification {
@@ -472,22 +479,29 @@ export function notify(input: NotificationInput, replaceId?: number): number {
 
   // GROUPING/UPDATION (user: "better notification grouping/updation for
   // same source") — a fresh, retained-worthy message that shares its family
-  // (see `messageFamily`) with an ALREADY-RETAINED row, raised within
-  // `GROUP_GAP_MS` of that row's own `updatedAt`, updates that row IN PLACE
-  // (same id, `count` incremented) rather than stacking a second,
-  // byte-identical one. Checked here, not folded into `isRetained`/
-  // `resolveTier`, because it is purely about WHERE an already-decided
-  // retained item lands, exactly the same layering `isSuppressed` above
-  // keeps relative to `isRetained`. A `silent`/non-retained message is never
-  // a collapse candidate (nothing to collapse INTO — it never reaches the
-  // retained list either way), so this only runs once `isRetained` already
-  // said yes.
+  // (see `messageFamily`) with an ALREADY-RETAINED row updates that row IN
+  // PLACE (same id, `count` incremented) rather than stacking a second,
+  // byte-identical one. NO TIME WINDOW (2026-09-17 fix, replacing an earlier
+  // `GROUP_GAP_MS`-gated version): the user's own motivating case — two runs
+  // of the same Claude task, finished far more than two minutes apart — is
+  // the plain reading of "better notification grouping/updation for same
+  // source": a row the user has not dealt with yet gets updated, not
+  // duplicated, no matter how long it has been sitting there. As long as the
+  // earlier row is still in `retained` (i.e. undismissed), a repeat lands on
+  // it; once it is dismissed, the family is gone and the next repeat starts
+  // a fresh row. Checked here, not folded into `isRetained`/`resolveTier`,
+  // because it is purely about WHERE an already-decided retained item lands,
+  // exactly the same layering `isSuppressed` above keeps relative to
+  // `isRetained`. A `silent`/non-retained message is never a collapse
+  // candidate (nothing to collapse INTO — it never reaches the retained list
+  // either way), so this only runs once `isRetained` already said yes.
+  //
+  // `GROUP_GAP_MS`/jobs.ts is untouched — server-side job grouping still uses
+  // its own burst window, unaffected by this change.
   const tier = resolveTier(input);
   const now = Date.now();
   const collapseIdx = isRetained(input, tier)
-    ? retained.findIndex(
-        (n) => n.family === messageFamily(input) && now - n.updatedAt <= GROUP_GAP_MS,
-      )
+    ? retained.findIndex((n) => n.family === messageFamily(input))
     : -1;
 
   const id = collapseIdx !== -1 ? retained[collapseIdx].id : nextId++;
