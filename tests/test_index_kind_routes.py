@@ -164,3 +164,23 @@ def test_scan_roots_still_defaults_files_to_home(home, tmp_path):
     cfg = IndexConfig(dir=index_dir("files"), kind="files")
     assert index_router.scan_roots(cfg) == [
         index_router.runner.canonical_root("~")]
+
+
+# -- /api/index/search degrades to zero rows for a flat (non-"files") kind --
+
+def test_search_for_the_apps_kind_is_zero_rows_not_a_500(home, tmp_path):
+    """`search_under` (query.py's `index_search`) reaches for `dir`/`depth`
+    columns a flat "apps" store's schema does not have. Per SPEC-index-
+    plugins.md, an index that cannot answer degrades to zero rows, silently
+    — never an error — the same posture exported_apps.py and git_repos.py
+    already hold for their own index reads."""
+    _seed_apps_store(rows=[("solo", "/apps/solo/index.html", 1.0)])
+    resp = _client(tmp_path).get(
+        "/api/index/search",
+        params={"kind": "apps", "root": "/apps", "q": "solo"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["covered"] is False
+    assert body["entries"] == []
+    assert body["total"] == 0

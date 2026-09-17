@@ -342,6 +342,33 @@ def _kind_param(raw) -> tuple[str, JSONResponse | None]:
     return kind, None
 
 
+def _index_search_safe(cfg, root: str, q: str, limit: int, token: CancelToken):
+    """`index_search` (query.py's `search_under`), degraded to zero rows for
+    a kind whose schema it cannot answer — a flat kind like "apps" has no
+    `dir`/`depth`/`size` columns for a "corpus under this folder" query to
+    bind against, so `search_under` raises a `duckdb.BinderException`
+    reaching for them. Per SPEC-index-plugins.md's constraint ("an index
+    that cannot answer degrades to zero rows, never an error"), this is the
+    house pattern `fused_render/exported_apps.py` and
+    `fused_render/server/routers/git_repos.py` already hold for their own
+    index reads, applied here so `/api/index/search?kind=apps` is a normal
+    200 rather than a 500.
+
+    `Cancelled` is let straight through — that is `_bounded_index_read`'s own
+    catch, a client giving up, not the index failing to answer, and must
+    stay a 499, not a silent empty corpus."""
+    try:
+        return index_search(cfg, root, q=q, limit=limit, token=token)
+    except Cancelled:
+        raise
+    except Exception:  # noqa: BLE001 - an unanswerable index is zero rows
+        logger.debug("index search: kind %r cannot answer %r under %r",
+                     cfg.kind, q, root, exc_info=True)
+        return {"covered": False, "fresh": False, "updated": None,
+                "age_s": None, "root": root, "entries": [], "truncated": False,
+                "total": 0, "scanned_partitions": 0, "of_partitions": 0}
+
+
 def _default_root(kind: str) -> str:
     """The scan root a kind's own config falls back to when the user has
     never configured one — "~" for the "files" kind (see `scan_roots`), and
@@ -1877,10 +1904,13 @@ async def api_index_search(request: Request, root: str = Query(default=""),
     corpus is the whole ranking set, 25.7 MB on a 164k-entry home, and it is
     fetched in one shot on the user's first keystroke.
 
-    Files-tree-shaped, same as `/api/index/stats` next door: `kind` resolves
-    and loads the right store, but `search_under` itself stays hardcoded to
-    the "files"/"dirs" schema (a flat kind's rows have no folder to be
-    "under"), an accepted gap for the same reason as stats."""
+    Files-tree-shaped, same as `/api/index/stats` next door: `search_under`
+    itself stays hardcoded to the "files"/"dirs" schema (a flat kind's rows
+    have no folder to be "under"). Unlike stats/ask, this route is on the
+    global search overlay's path, so the schema mismatch is not left to
+    raise: `_index_search_safe` degrades a non-"files" kind to the same
+    zero-row "not covered" shape a never-built index answers with, per
+    SPEC-index-plugins.md's "never an error" constraint."""
     if not root.strip():
         return _error("'root' is required")
     kind, kind_err = _kind_param(kind)
@@ -1904,7 +1934,7 @@ async def api_index_search(request: Request, root: str = Query(default=""),
             # consuming a pool thread and, eventually, the whole lane.
             out, err = await _bounded_index_read(
                 "search", token, q, root, worker_t0,
-                index_search, cfg, root, q=q, limit=limit, token=token)
+                _index_search_safe, cfg, root, q=q, limit=limit, token=token)
             if err is not None:
                 return err
     if fmt != COLUMNS_FMT:
