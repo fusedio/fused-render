@@ -16,6 +16,16 @@ Corpus size is a parameter, not a constant, precisely so the default stays
 small enough to run in seconds under CI (see each call site for the size it
 picks) while a large-corpus run stays available as a deliberate, opt-in
 measurement rather than living in the default suite.
+
+The default `build_tree` size also has to stay under `cfg.nproc * 24`
+directories (`scan.py`'s threshold for fanning the walk out to a real
+"spawn"-context `multiprocessing.Pool`, `default_nproc()` being
+`max(2, min(10, cpu_count()))`): above it a default-suite test spawns real
+child processes that each reimport duckdb/pyarrow/pandas, which is heavy
+enough on a small, contended CI runner to starve or outright hang the
+worker. The default size below keeps every default-suite caller entirely
+in-process; only the `perf_large`-marked test asks for a tree big enough to
+exercise the real pool fan-out.
 """
 import statistics
 import time
@@ -30,10 +40,13 @@ from fused_render.index.runner import canonical_root
 from fused_render.index.store import Sink, compact
 
 
-def build_tree(root, n_dirs=400, per_dir=100):
+def build_tree(root, n_dirs=24, per_dir=150):
     """A real tree of `n_dirs * per_dir` files, big enough that a scan of it
-    overlaps a burst of ranks. `root` may be a `str` or `Path`; returned as
-    the same `str` form the caller passed in, for canonicalization later."""
+    overlaps a burst of ranks, and — at the default size — small enough that
+    the walk stays under the real multiprocessing pool's fan-out threshold
+    (see this module's docstring) on any core count. `root` may be a `str`
+    or `Path`; returned as the same `str` form the caller passed in, for
+    canonicalization later."""
     root = str(root)
     Path(root).mkdir(parents=True, exist_ok=True)
     for d in range(n_dirs):

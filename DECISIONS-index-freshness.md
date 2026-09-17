@@ -483,3 +483,64 @@ Tests: `tests/test_index_api.py`
 (`test_the_stamp_is_taken_after_the_scan_lookup_not_before_it`, which makes
 `note_folder_opened` sleep and asserts the recorded stamp lands after that
 sleep, not before it).
+
+## CI regression — real-scan perf tests spawned a multiprocessing pool on every core count
+
+All four `test-python` CI jobs went red: 3.13 failed a timing-sensitive lane
+test (`test_a_wedged_stats_or_search_request_does_not_permanently_hold_its_lane_slot`
+in `tests/test_index_api.py`, unmodified by this branch) on CPU contention,
+and 3.11/3.12 hung at 98% for ~23 minutes with orphan `python` processes left
+behind after cancellation.
+
+Root cause: `tests/index_perf_harness.py`'s `build_tree` defaulted to
+`n_dirs=400, per_dir=100`. `fused_render/index/scan.py`'s `run_scan` walks
+the top of a tree in-process only while the BFS frontier stays under
+`cfg.nproc * 24` directories; above that it fans the remaining subtrees out
+to a real `multiprocessing.get_context("spawn").Pool(cfg.nproc, ...)`, each
+child reimporting the full duckdb/pyarrow/pandas stack. `default_nproc()` is
+`max(2, min(10, os.cpu_count() or 4))`, so the threshold ranges 48-240
+depending on core count — always below 400. Both default-suite real-scan
+tests in `tests/test_index_rank_concurrency.py`
+(`test_rank_route_stays_fast_while_a_real_scan_is_running` and
+`test_rank_route_stays_fast_while_a_freshness_triggered_rescan_runs`) used
+this default, so on every machine, including small CI runners, each spawned
+a real process pool. Under `-n auto` xdist, several workers can hit these
+tests around the same time, multiplying the process/import/memory cost;
+`fused_render/index/runner.cancel()` only writes a cancel-flag file that a
+worker notices asynchronously (checked every ~200 dirs/files, and only
+inside the walk — not in the `while not res.ready(): res.wait(0.5)` loop
+that drives the pool), so a child stalled or OOM-killed under that
+contention is not detected or force-terminated by anything in the test or
+the production code path, leaving `pool.join()` — and the detached worker
+process holding it — running indefinitely. That matches the hang shape
+exactly and explains the orphan `python` processes CI had to kill manually.
+
+This confirms the spec's stated hypothesis (workstream E's real scan running
+concurrently with sibling xdist workers) but locates the specific mechanism:
+it is not scan CPU/IO load in general (the worker already nices itself and
+throttles I/O, workstream D territory) but the one-time cost of spawning a
+whole extra process pool that a small default-suite corpus should never have
+triggered in the first place.
+
+**Fix:** lowered `build_tree`'s defaults to `n_dirs=24, per_dir=150` — comfortably
+under the threshold even at the minimum possible `nproc` (2, threshold 48;
+25 directories land in the frontier including the root) — so both
+default-suite real-scan tests now walk entirely in-process and never spawn
+the pool. The `perf_large`-marked test
+(`test_rank_route_stays_fast_while_a_large_real_scan_is_running`) already
+passed its own explicit `n_dirs=4000, per_dir=150`, so it is unaffected and
+remains the only place exercising the real pool fan-out. No constant in
+`index/runner.py`, `index/store.py`, or `index/freshness.py` needed to
+change — `ABANDONED_RUN_S`, the compaction heartbeat, and `QUIET_S` all
+behave as workstreams A and D intended; they were not implicated.
+
+Verified locally: `tests/test_index_rank_concurrency.py` alone dropped from
+spawning a real 6-process pool (on this 6-core machine) to finishing in
+~1.2s with none; `tests/test_index_rank_concurrency.py` run together with
+`tests/test_index_api.py` (139 tests) passed in 5.5s under `-n auto` with no
+leftover `fused_render.index.worker` processes; the broader index test
+files (`test_index_scan.py`, `test_index_store.py`, `test_index_freshness.py`,
+`test_index_api.py`, `test_index_rank_concurrency.py` — 231 tests) also
+passed clean. Did not attempt to reproduce the exact CI hang locally
+(6 cores, no memory pressure); the fix removes the mechanism rather than
+papering over a reproduction.
