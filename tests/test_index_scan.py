@@ -130,6 +130,42 @@ def test_scan_dir_once_kind_obj_declining_every_file_yields_no_rows(tmp_path):
     assert payload[1] == []
 
 
+def test_scan_dir_once_survives_an_extract_that_raises(tmp_path, caplog):
+    """Review finding 5: a third-party `extract` is untrusted code from the
+    host's point of view (the same rule `apps_kind.py`'s own docstring
+    states) — a bug in ONE plugin's `extract` must degrade to "no row for
+    this file", never take the whole directory scan down. Before the fix,
+    only `OSError` was caught around the `extract` call site, so anything
+    else (a `TypeError`, a `KeyError` in a careless plugin) propagated out
+    of `scan_dir_once` uncaught, killing the run for every kind, not just
+    the misbehaving one."""
+    def extract(path, st):
+        if path.endswith("bad.txt"):
+            raise ValueError("boom")
+        return {"name": os.path.basename(path)}
+
+    kind = IndexKind(
+        name="_test_extract_raises",
+        columns=(Column("name", "string"),),
+        extract=extract,
+        text_column="name",
+    )
+    register(kind, replace=True)
+    (tmp_path / "bad.txt").write_text("x", encoding="utf-8")
+    (tmp_path / "good.txt").write_text("y", encoding="utf-8")
+    import logging
+    with caplog.at_level(logging.ERROR):
+        scan_kind, payload, subs = scan_dir_once(
+            _p(tmp_path), {}, IgnoreRules([]), _guard(tmp_path), kind_obj=kind)
+    sig, rows, total, mtime_ns, n_subdirs = payload
+    # The misbehaving file contributes no row, but the well-behaved one
+    # still does — one bad extractor call does not blank the directory.
+    assert rows == [{"name": "good.txt"}]
+    # Directory bookkeeping (bytes, signature) still counts BOTH files: the
+    # raising file was still walked and stat'd, only its row was dropped.
+    assert total == 2
+
+
 def test_scan_dir_once_prunes_ignored_subdirs(tmp_path):
     _tree(tmp_path)
     kind, payload, subs = scan_dir_once(

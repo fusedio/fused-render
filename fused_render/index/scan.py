@@ -14,11 +14,14 @@ See specs/scan.md and specs/scan-incremental.md.
 """
 import hashlib
 import json
+import logging
 import os
 import threading
 import time
 
 from fused_render.index import fsevents, kinds
+
+logger = logging.getLogger(__name__)
 from fused_render.index.config import IndexConfig
 from fused_render.index.ignore import (
     SKIP_DIRS,
@@ -168,7 +171,26 @@ def scan_dir_once(d, cache, rules, guard, devs=None, root_dev=None, kind_obj=Non
                                           ext.lower().lstrip("."),
                                           st.st_size, st.st_mtime))
                         else:
-                            row = kind_obj.extract(norm(e.path), st)
+                            # A third-party (or built-in) `extract` is
+                            # untrusted code from the host's point of view:
+                            # its OWN contract says "never raises", but the
+                            # host must not trust a plugin to have honored
+                            # that. Caught separately from the `OSError`
+                            # below (which is the HOST's own `os.scandir`/
+                            # `e.is_file` failing) so one bad plugin row
+                            # degrades to "skip it", never kills the run —
+                            # and the file still counts toward the
+                            # directory's signature/total size either way
+                            # (below, unconditionally), so a later edit to
+                            # it still invalidates the cached directory
+                            # instead of the row going stale forever.
+                            try:
+                                row = kind_obj.extract(norm(e.path), st)
+                            except Exception:
+                                logger.exception(
+                                    "IndexKind %r extract() raised on %r; "
+                                    "skipping the row", kind_obj.name, e.path)
+                                row = None
                             if row is not None:
                                 frows.append(row)
                         sig_entries.append((e.name, st.st_size, st.st_mtime_ns))
