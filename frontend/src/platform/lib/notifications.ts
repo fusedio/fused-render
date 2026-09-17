@@ -68,6 +68,12 @@ export interface NotificationInput {
   /** Retained as the ergonomic shorthand every call site already used. */
   tone?: "error" | "info";
   action?: NotificationCardAction;
+  /** A second, independent destination — `NotificationCard`'s own
+   *  `extraAction` slot (the "Fix with Claude" style quiet `.q-all` button
+   *  below the status line). A caller with only one thing to offer uses
+   *  `action` alone; this is for the rare row with two (a saved export's
+   *  "Open file" alongside `action`'s "Reveal folder"). */
+  extraAction?: NotificationCardAction;
   /** Click destination for the retained panel row (SPEC
    *  actionable-notifications' "every row goes somewhere"). Unused by the
    *  popup card. */
@@ -89,6 +95,7 @@ export interface StoredNotification {
   tier: JobTier;
   tone?: "error" | "info";
   action?: NotificationCardAction;
+  extraAction?: NotificationCardAction;
   page?: string;
   /** GROUPING/UPDATION (user: "better notification grouping/updation for
    *  same source") — the family this row belongs to: `page:<page>::<title>`
@@ -278,6 +285,7 @@ function toStored(input: NotificationInput, id: number): StoredNotification {
     tier: resolveTier(input),
     tone: input.tone,
     action: input.action,
+    extraAction: input.extraAction,
     page: input.page,
     family: messageFamily(input),
     count: 1,
@@ -364,6 +372,7 @@ function forwardToShell(n: StoredNotification): number | undefined {
       tier: n.tier === "trail" ? undefined : n.tier,
       tone: n.tone,
       action: n.action,
+      extraAction: n.extraAction,
       page: n.page,
     };
     return top?._fusedIngestNotification?.(input);

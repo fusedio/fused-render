@@ -200,9 +200,10 @@ describe("a plain focus not routed through requestSearchFocus is unchanged", () 
     // No `home` has resolved in this suite (the config fetch is left
     // pending), so `contractHome` returns the path unchanged — this is the
     // existing "seed with the current address" rule, not a new behavior.
-    // FileSearchField hands SearchField its PARENT folder as `fsPath` (the
-    // committed query searches/navigates against the parent, not the file
-    // itself) — that parent is what a plain focus seeds.
-    expect(input(renderer).props.value).toBe("/home/user");
+    // FileSearchField hands SearchField its own path as `crumbsFsPath` (what
+    // the resting crumbs display) while `fsPath` stays the PARENT folder a
+    // committed query actually searches/navigates against — a plain focus
+    // seeds the crumbs' own value, the file itself, not the parent.
+    expect(input(renderer).props.value).toBe("/home/user/Documents");
   });
 });

@@ -286,6 +286,7 @@ function MessageRowView({ notification }: { notification: StoredNotification }) 
       status={notification.count > 1 ? `Happened ${notification.count} times` : undefined}
       role={notification.tone === "error" ? "alert" : "status"}
       navAction={notification.action}
+      extraAction={notification.extraAction}
       onDismiss={{ onClick: dismiss, ariaLabel: `Dismiss ${notification.title}` }}
       rowClick={
         notification.page

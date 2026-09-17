@@ -20,6 +20,12 @@
 //     that answer a different question. Grouped rather than each given a tab
 //     because they are one question asked twice — which model, and with whose
 //     credentials.
+//   Fused account — sign in and out of the `fused login` provider Share and
+//     Canvases run on (shell/FusedAccountSection). Its own tab, not a section
+//     on Render or AI: the account is neither a rendering preference nor a
+//     model choice, and before it existed the only sign-in/out UI sat on the
+//     Canvases page behind that feature's flag (D427), so with the flag off
+//     there was no way to see which account this machine was on, or leave it.
 // **Inference engines used to be a tab here and is not any more** — it is the
 // Engines tab of /ai-models (shell/AiModelsEngines.tsx). It was the one control
 // on this page about MODELS rather than about rendering, and every consequence
@@ -74,8 +80,9 @@ import { publishTaskCardTitleMode } from "./task-card-title-flag";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { useThemePref } from "@platform/lib/theme";
 import { IndexingPanel } from "@shell/Indexing";
+import { FusedAccountSection } from "@shell/FusedAccountSection";
 
-type PrefsTab = "render" | "ai" | "indexing" | "lan";
+type PrefsTab = "render" | "ai" | "indexing" | "lan" | "account";
 
 // The one section on this page that is deliberately NOT server-backed. Every
 // other control here round-trips /api/prefs (shell/prefs.py); Appearance is
@@ -1106,6 +1113,7 @@ export default function Preferences() {
     requested === "indexing" ? "indexing"
     : requested === "ai" ? "ai"
     : requested === "lan" ? "lan"
+    : requested === "account" ? "account"
     : "render";
   const setTab = (next: PrefsTab) => {
     const params = new URLSearchParams(location.search);
@@ -1166,6 +1174,15 @@ export default function Preferences() {
             >
               Render local network
             </button>
+            {/* Fused account — sign in/out for Share and Canvases. See the
+                header comment for why it is a tab of its own. */}
+            <button
+              type="button"
+              className={"prefs-tab" + (tab === "account" ? " active" : "")}
+              onClick={() => setTab("account")}
+            >
+              Fused account
+            </button>
           </div>
           <div className="prefs-tabpanel">
             {tab === "render" && (
@@ -1188,6 +1205,7 @@ export default function Preferences() {
               </>
             )}
             {tab === "indexing" && <IndexingPanel prefs={prefs} onChange={setPrefs} />}
+            {tab === "account" && <FusedAccountSection />}
           </div>
         </>
       )}
