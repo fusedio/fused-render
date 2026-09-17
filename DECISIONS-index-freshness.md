@@ -64,13 +64,13 @@
 - Frontend: `saveAppFileToDisk()` (`api.ts`) posts the multipart request with
   raw `fetch`/`FormData` rather than the JSON `postJson` helper, since the
   backend expects multipart. `exportAppFile()` (`appShot.ts`) now returns
-  `Promise<string>` (the real path) instead of `Promise<void>`; the 3 other
-  call sites (`EntryActionsMenu.tsx`, `appCardMenu.ts`, `AppPage.tsx`) all
-  already discard or `.catch()` the promise without consuming a return value,
-  so this widening needed no changes there and added no notification at
-  those sites — the spec's two-action success notification is wired only at
-  `AppPreviewCard.tsx`'s export button, the one call site backed by a visible
-  card the export originated from.
+  `Promise<string>` (the real path) instead of `Promise<void>`. All four
+  call sites (`AppPreviewCard.tsx`, `EntryActionsMenu.tsx`, `appCardMenu.ts`,
+  `AppPage.tsx`) raise the export success notification: `notifyExportSaved`
+  (`appShot.ts`) is the one shared helper that builds it, called from all
+  four with the caller's own display name (`AppPage.tsx`'s and
+  `EntryActionsMenu.tsx`'s version-suffixed export name included) so the
+  notification names the same thing the file on disk is actually called.
 - `NotificationCard` already has two independent, distinctly-styled action
   slots reachable off `StoredNotification`: `action` (-> `navAction`) and
   `extraAction` (a second, separate `.q-all` button below the status line).

@@ -16,7 +16,7 @@
 // `entry` case alone; it has its own job back.
 import { revealPath, type AppInfo } from "./api";
 import { openApp } from "./appEntry";
-import { exportAppFile } from "./appShot";
+import { exportAppFile, notifyExportSaved } from "./appShot";
 import { copyToClipboard } from "./clipboard";
 import { navigate } from "./router";
 import { notify } from "./notifications";
@@ -77,11 +77,13 @@ export function appCardMenu(
             onClick: () => {
               // exportAppFile also bakes a native screen shot in as the
               // file's preview.png when the folder has no authored one (D396).
-              exportAppFile(app, captureEl).catch((e: Error) =>
-                notify({
-                  title: "Could not export " + app.name + ": " + e.message,
-                  tone: "error",
-                }),
+              exportAppFile(app, captureEl).then(
+                (realPath) => notifyExportSaved(app.name, realPath),
+                (e: Error) =>
+                  notify({
+                    title: "Could not export " + app.name + ": " + e.message,
+                    tone: "error",
+                  }),
               );
             },
           },

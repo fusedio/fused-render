@@ -34,14 +34,14 @@
 // live preview (D365).
 import { useEffect, useRef, useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
-import { appIconUrl, appfilePreviewUrl, rawUrl, revealPath } from "@platform/lib/api";
+import { appIconUrl, appfilePreviewUrl, rawUrl } from "@platform/lib/api";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
-import { exportAppFile } from "@platform/lib/appShot";
+import { exportAppFile, notifyExportSaved } from "@platform/lib/appShot";
 import { notify } from "@platform/lib/notifications";
 import { AppStar } from "@platform/ui/AppStar";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { thumbFrame } from "@platform/lib/thumb-frame";
-import { embedUrlForFsPath, navigate, navigateUrl } from "@platform/lib/router";
+import { embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
 import {
   appRecency,
   hrefFor,
@@ -452,20 +452,7 @@ export function AppPreviewCard({
           // appShot stages the app full-screen for the shot.
           exportAppFile(app, bodyLive ? thumbRef.current : null).then(
             (realPath) => {
-              notify({
-                title: "Exported " + app.name + " to " + realPath,
-                tone: "info",
-                action: {
-                  label: "Reveal folder",
-                  onClick: () => {
-                    revealPath(realPath).catch(() => {});
-                  },
-                },
-                extraAction: {
-                  label: "Open file",
-                  onClick: () => navigate(realPath, { isDir: false }),
-                },
-              });
+              notifyExportSaved(app.name, realPath);
             },
             (err: Error) => {
               notify({
