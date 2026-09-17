@@ -18,7 +18,7 @@ import os
 import threading
 import time
 
-from fused_render.index import fsevents
+from fused_render.index import fsevents, kinds
 from fused_render.index.config import IndexConfig
 from fused_render.index.ignore import (
     SKIP_DIRS,
@@ -36,6 +36,14 @@ from fused_render.index.store import (
     load_dir_cache,
     save_applied_ignore,
 )
+
+
+def _kind_obj(cfg: IndexConfig):
+    """The registered `IndexKind` a config's `cfg.kind` names, or `None` for
+    "files" — resolved once per run/child rather than looked up per file, so
+    a typo'd or unregistered kind fails at run start, not thousands of files
+    in."""
+    return None if cfg.kind == "files" else kinds.get(cfg.kind)
 
 
 def keep_subdirs(subdirs, rules: IgnoreRules, guard: MountGuard):
@@ -73,12 +81,23 @@ def _dir_sig(entries):
     return h.hexdigest()
 
 
-def scan_dir_once(d, cache, rules, guard, devs=None, root_dev=None):
+def scan_dir_once(d, cache, rules, guard, devs=None, root_dev=None, kind_obj=None):
     """Scan one directory. Returns (kind, payload, subdirs): kind "u"
     (unchanged; payload = cached file count), "s" (scanned; payload =
     (sig, file_rows, total_size, mtime_ns, n_subdirs)), or None on error. When
     `devs` is a set, the dir's device id is added to it (multi-volume
     detection).
+
+    `kind_obj` is the registered `IndexKind` this scan is walking for, or
+    `None` for "files" — the original, single hardcoded row shape, produced
+    exactly as it always was (a fixed tuple built inline, never routed
+    through `extract`). When `kind_obj` is given, each file is handed to its
+    `extract(path, st)` instead: a returned dict becomes the file's row, and
+    `None` means "not one of mine" — the file still counts toward the
+    directory's signature and size (that bookkeeping is the host's, not the
+    plugin's), it simply contributes no row. This is the entire enforcement
+    of "host owns the walk, plugin owns the row": a kind never chooses which
+    file to visit, only what to make of the one it is shown.
 
     `root_dev` confines the walk to the scan root's own filesystem. A mount —
     rclone, iCloud, SMB, an external disk — is always its own device, so this
@@ -143,10 +162,15 @@ def scan_dir_once(d, cache, rules, guard, devs=None, root_dev=None):
                         sig_entries.append((e.name + "/", 0, 0))
                     elif e.is_file(follow_symlinks=False):
                         st = e.stat(follow_symlinks=False)
-                        _, ext = os.path.splitext(e.name)
-                        frows.append((norm(e.path), d, e.name,
-                                      ext.lower().lstrip("."),
-                                      st.st_size, st.st_mtime))
+                        if kind_obj is None:
+                            _, ext = os.path.splitext(e.name)
+                            frows.append((norm(e.path), d, e.name,
+                                          ext.lower().lstrip("."),
+                                          st.st_size, st.st_mtime))
+                        else:
+                            row = kind_obj.extract(norm(e.path), st)
+                            if row is not None:
+                                frows.append(row)
                         sig_entries.append((e.name, st.st_size, st.st_mtime_ns))
                         dtotal += st.st_size
                 except OSError:
@@ -189,7 +213,8 @@ def _child_init(run_dir, no_cache):
         rules=cfg.rules,
         guard=guard,
         sink=Sink(os.path.join(run_dir, "shards"), f"c{os.getpid()}", pa, pq,
-                  cfg.shard_rows),
+                  cfg.shard_rows, kind=cfg.kind),
+        kind_obj=_kind_obj(cfg),
         devs=set(),
         # The scan root's filesystem, decided ONCE by the parent and carried
         # here: a child must not re-derive it (a stat of a root that has since
@@ -230,7 +255,8 @@ def _scan_subtree(subroot):
             _child_progress(stack[-1])
         d = stack.pop()
         kind, payload, subdirs = scan_dir_once(d, cache, rules, guard,
-                                               _CHILD["devs"], _CHILD["root_dev"])
+                                               _CHILD["devs"], _CHILD["root_dev"],
+                                               _CHILD["kind_obj"])
         stack.extend(subdirs)
         if kind:
             sink.add(d, kind, payload)
@@ -270,7 +296,8 @@ def _scan_dirs_threaded(dirs):
             if not cancelled[0]:
                 kind, payload, subdirs = scan_dir_once(d, cache, rules, guard,
                                                        _CHILD["devs"],
-                                                       _CHILD["root_dev"])
+                                                       _CHILD["root_dev"],
+                                                       _CHILD["kind_obj"])
                 for s in subdirs:
                     submit(s)
                 if kind:
@@ -334,6 +361,7 @@ def run_scan(run_dir: str) -> None:
     cfg = IndexConfig.from_dict(spec.get("config") or {})
     guard = MountGuard(mounts_dir=spec.get("mounts_dir"))
     rules = cfg.rules
+    kind_obj = _kind_obj(cfg)
     root = spec["root"]
     # The filesystem the walk stays on (scan_dir_once). Decided here, before
     # anything is scanned, and written back into the spec so every pool child
@@ -470,12 +498,13 @@ def run_scan(run_dir: str) -> None:
                     agg["current"] = j["current"]
             return agg
 
-        sink = Sink(shards_dir, "p", pa, pq, cfg.shard_rows)
+        sink = Sink(shards_dir, "p", pa, pq, cfg.shard_rows, kind=cfg.kind)
         cancelled = False
 
         if hint is not None:
             summary = _run_fsevents(cfg, rules, guard, root, hint, cache, sink,
-                                    ev, cancel_flag, devs, t0, pa, pq, root_dev)
+                                    ev, cancel_flag, devs, t0, pa, pq, root_dev,
+                                    kind_obj)
             if summary is not None and fs_id0 is not None and fs_uuid:
                 fsevents.save_state(cfg, root, fs_id0, fs_uuid, devs)
             if summary is not None:
@@ -494,7 +523,7 @@ def run_scan(run_dir: str) -> None:
                 break
             d = frontier.popleft()
             kind, payload, subdirs = scan_dir_once(d, cache, rules, guard, devs,
-                                                   root_dev)
+                                                   root_dev, kind_obj)
             frontier.extend(subdirs)
             if kind:
                 sink.add(d, kind, payload)
@@ -520,7 +549,7 @@ def run_scan(run_dir: str) -> None:
                     break
                 d = big.popleft()
                 kind, payload, subdirs = scan_dir_once(d, cache, rules, guard,
-                                                       devs, root_dev)
+                                                       devs, root_dev, kind_obj)
                 if kind:
                     sink.add(d, kind, payload)
                 for s2 in subdirs:
@@ -585,7 +614,7 @@ def run_scan(run_dir: str) -> None:
 
 
 def _run_fsevents(cfg, rules, guard, root, hint, cache, sink, ev, cancel_flag,
-                  devs, t0, pa, pq, root_dev=None):
+                  devs, t0, pa, pq, root_dev=None, kind_obj=None):
     """The FSEvents fast path: visit ONLY the dirs the OS journal reports and
     account explicitly for everything it didn't (specs/scan-incremental.md §4).
     Returns the run summary, or None when the run was cancelled (the caller
@@ -626,7 +655,7 @@ def _run_fsevents(cfg, rules, guard, root, hint, cache, sink, ev, cancel_flag,
             continue
         scanned.add(d)
         kind, payload, subdirs = scan_dir_once(
-            d, {} if force else cache, rules, guard, devs, root_dev)
+            d, {} if force else cache, rules, guard, devs, root_dev, kind_obj)
         if kind is None:
             deleted.append(d)   # unreadable/gone: drop cached subtree
             continue

@@ -14,6 +14,7 @@ from _thread_scoped import this_thread_only
 
 from fused_render.index.config import IndexConfig
 from fused_render.index.ignore import IgnoreRules, MountGuard, norm
+from fused_render.index.kinds import Column, IndexKind, register
 from fused_render.index.runner import canonical_root
 from fused_render.index.scan import keep_subdirs, run_scan, scan_dir_once
 from fused_render.index.store import (
@@ -53,6 +54,26 @@ def _tree(root):
     (root / "node_modules" / "junk.js").write_text("x", encoding="utf-8")
 
 
+def _register_txt_only_kind():
+    """A test IndexKind that extracts one row per ".txt" file (name + its
+    upper-cased stem) and declines everything else, so extraction results
+    are trivially distinguishable from the raw files-row tuples."""
+    def extract(path, st):
+        if not path.endswith(".txt"):
+            return None
+        stem = os.path.basename(path).rsplit(".", 1)[0]
+        return {"name": stem.upper(), "size": st.st_size}
+
+    kind = IndexKind(
+        name="_test_txt_only",
+        columns=(Column("name", "string"), Column("size", "int64")),
+        extract=extract,
+        text_column="name",
+    )
+    register(kind, replace=True)
+    return kind
+
+
 # -- scan_dir_once -------------------------------------------------------------
 
 def test_scan_dir_once_returns_rows_and_subdirs(tmp_path):
@@ -66,6 +87,47 @@ def test_scan_dir_once_returns_rows_and_subdirs(tmp_path):
     assert total == 2
     assert sorted(subs) == sorted([_p(tmp_path / "node_modules"), _p(tmp_path / "sub")])
     assert n_subdirs == 2
+
+
+def test_scan_dir_once_with_no_kind_obj_is_byte_identical_to_files(tmp_path):
+    """kind_obj=None (the default) must produce the exact same file rows as
+    before it existed as a parameter at all — the files kind is never routed
+    through IndexKind.extract."""
+    _tree(tmp_path)
+    rules = IgnoreRules([])
+    kind, payload, subs = scan_dir_once(
+        _p(tmp_path), {}, rules, _guard(tmp_path), kind_obj=None)
+    sig, rows, total, mtime_ns, n_subdirs = payload
+    assert rows == [(_p(tmp_path / "a.txt"), _p(tmp_path), "a.txt", "txt", 2, rows[0][5])]
+
+
+def test_scan_dir_once_routes_files_through_a_registered_kinds_extract(tmp_path):
+    """With a kind_obj, each file is handed to `extract(path, st)`: a row it
+    returns (a dict) replaces the files-row tuple, and None drops the file
+    from the shard entirely — the walk still visits it (it still counts
+    toward the directory signature), it just contributes nothing."""
+    kind = _register_txt_only_kind()
+    _tree(tmp_path)  # a.txt, sub/b.md, node_modules/junk.js
+    rules = IgnoreRules([])
+    scan_kind, payload, subs = scan_dir_once(
+        _p(tmp_path), {}, rules, _guard(tmp_path), kind_obj=kind)
+    sig, rows, total, mtime_ns, n_subdirs = payload
+    assert scan_kind == "s"
+    # Only a.txt matches the kind's extractor; node_modules/junk.js and
+    # sub/b.md are in subdirectories, not this directory's own listing.
+    assert rows == [{"name": "A", "size": 2}]
+    # Directory bookkeeping (signature, subdir count) is unaffected by which
+    # kind is walking: still both subdirs, still every file's bytes counted.
+    assert total == 2
+    assert n_subdirs == 2
+
+
+def test_scan_dir_once_kind_obj_declining_every_file_yields_no_rows(tmp_path):
+    kind = _register_txt_only_kind()
+    (tmp_path / "only.md").write_text("hi", encoding="utf-8")
+    scan_kind, payload, subs = scan_dir_once(
+        _p(tmp_path), {}, IgnoreRules([]), _guard(tmp_path), kind_obj=kind)
+    assert payload[1] == []
 
 
 def test_scan_dir_once_prunes_ignored_subdirs(tmp_path):
@@ -676,7 +738,7 @@ def test_threaded_scan_never_drops_entries_from_a_slow_worker(tmp_path, monkeypa
 
     slow_started = threading.Event()
 
-    def fake_scan_dir_once(d, cache, rules, guard, devs, root_dev):
+    def fake_scan_dir_once(d, cache, rules, guard, devs, root_dev, kind_obj=None):
         if d == "/fast":
             return None, None, []  # finishes instantly, produces nothing
         slow_started.set()
@@ -708,6 +770,7 @@ def test_threaded_scan_never_drops_entries_from_a_slow_worker(tmp_path, monkeypa
     monkeypatch.setattr(scan_mod, "_child_progress", lambda *a, **k: None)
     monkeypatch.setitem(scan_mod._CHILD, "sink", RecordingSink())
     monkeypatch.setitem(scan_mod._CHILD, "cache", {})
+    monkeypatch.setitem(scan_mod._CHILD, "kind_obj", None)
     monkeypatch.setitem(scan_mod._CHILD, "pool", InlineFirstPool())
     monkeypatch.setitem(scan_mod._CHILD, "rules", None)
     monkeypatch.setitem(scan_mod._CHILD, "guard", None)
