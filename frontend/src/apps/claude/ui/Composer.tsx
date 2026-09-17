@@ -821,6 +821,7 @@ export function ComposerCard({
       textRef.current = words;
       trayDraftRef.current = files;
       typedRef.current = false;
+      heldShownRef.current = typeof form.version === "number" ? form.version : undefined;
       // THE ROW'S VERSION IS THIS PAGE'S VERSION: the first save states it as
       // `If-Match`, so it lands as an edit of this record rather than a 409
       // against a record this page "had never seen" (live repro, 2026-09-17).
@@ -964,6 +965,14 @@ export function ComposerCard({
    * the reader's claim on the words; a caret is not.
    */
   const typedRef = useRef(false);
+  /**
+   * THE VERSION OF THE HELD RECORD THIS BOX LAST SHOWED (live repro,
+   * 2026-09-17). `draftVersion(key)` is the DOCUMENT's knowledge — the Tasks
+   * card on the same page writes v3 and remembers it there — so comparing the
+   * row against it read the card's own edit as "already seen" and never put it
+   * in the box. What this box has painted is a question only this box can answer.
+   */
+  const heldShownRef = useRef<number | undefined>(undefined);
   /** "Mid-sentence" for whichever road this box is on. */
   const typing = useCallback(
     () => (hasSessionRef.current ? focusedRef.current && !!textRef.current.trim() : typedRef.current),
@@ -1156,6 +1165,7 @@ export function ComposerCard({
         baseFormRef.current = base;
         if (typeof form.version === "number") {
           rememberDraftVersion(draftKeyRef.current, form.version);
+          heldShownRef.current = form.version;
         }
         draftSyncer(draftKeyRef.current).seedTask(base);
       } else {
@@ -1309,6 +1319,7 @@ export function ComposerCard({
       trayDraftRef.current = [];
       carriedRef.current = [];
       baseFormRef.current = null;
+      heldShownRef.current = undefined;
       episode.current += 1;
       typedRef.current = false;
       setText("");
@@ -1405,11 +1416,14 @@ export function ComposerCard({
   useEffect(() => {
     const form = heldFormRef.current;
     if (hasSession || !draftKey || !form || heldVersion === undefined) return;
-    const seen = draftVersion(draftKey);
-    if (seen !== undefined && heldVersion <= seen) return;
+    const shown = heldShownRef.current;
+    if (shown !== undefined && heldVersion <= shown) return;
+    heldShownRef.current = heldVersion;
+    // The row is newer than what is painted. Not over a reader mid-sentence,
+    // and not for this box's own save echoing back with the same words.
     if (typedRef.current) return;
     const words = joinDraft(form.title, form.description);
-    if (words === textRef.current && seen !== undefined) return;
+    if (words === textRef.current) return;
     adoptRef.current(form);
   }, [hasSession, draftKey, heldVersion]);
 
