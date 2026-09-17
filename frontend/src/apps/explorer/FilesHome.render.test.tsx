@@ -1173,3 +1173,74 @@ describe("the All files control in the search bar", () => {
     box.unmount();
   });
 });
+
+// A1 (code review): `q` used to be `query.trim()`, which silently dropped a
+// leading/trailing whitespace run before it ever reached `indexRank` —
+// defeating the whole search-trailing-space grammar (A3, DECISIONS.md) one
+// layer below where `expand_whitespace_query` (fused_render/index/query.py)
+// could ever see the space it exists to treat as meaningful.
+describe("A1: the query reaches indexRank verbatim, whitespace and all", () => {
+  test("a trailing space is sent to the server exactly as typed, not trimmed away", async () => {
+    const box = mount();
+    await type(box, "src ");
+    expect(rankCalls.filter((c) => c.q === "src ")).toHaveLength(1);
+    box.unmount();
+  });
+
+  test("'src' and 'src ' are genuinely different queries: no memo hit across the trim boundary", async () => {
+    // Before the fix, `query.trim()` folded "src" and "src " into the
+    // identical memo key — a real bug independent of the server, since
+    // `expand_whitespace_query` resolves them to different patterns ("src"
+    // substring-mode vs "**src**" glob-mode).
+    const box = mount();
+    await type(box, "src");
+    await flush(() => rankCalls[0].resolve(answer({ hits: [hit("src.txt")], total: 1 })));
+    await type(box, "src ");
+    expect(rankCalls.filter((c) => c.q === "src ")).toHaveLength(1);
+    box.unmount();
+  });
+
+  test("a single real character padded with spaces still fails the MIN_QUERY_CHARS gate", async () => {
+    // "a " is two raw characters but only one of real content — the same
+    // thin, near-noise query MIN_QUERY_CHARS exists to refuse, so the gate
+    // is measured on trimmed length, not raw length.
+    const box = mount();
+    await type(box, "a ");
+    expect(rankCalls.filter((c) => c.q === "a ")).toHaveLength(0);
+    box.unmount();
+  });
+
+  test("a whitespace-only query never fires a request — nothing to search for (A2)", async () => {
+    const box = mount();
+    await type(box, "   ");
+    expect(rankCalls.filter((c) => c.q === "   ")).toHaveLength(0);
+    box.unmount();
+  });
+
+  test("a whitespace-only query does not switch the page into search mode", async () => {
+    // `active` (and the panel it hands the page body to) reads a TRIMMED
+    // check, matching `expand_whitespace_query`'s own "nothing to search
+    // for" collapse (A2) — an all-space box is not meaningfully "active"
+    // search, however many spaces it holds.
+    let active = true;
+    let renderer!: ReactTestRenderer;
+    act(() => {
+      renderer = create(
+        createElement(FilesSearch, {
+          home: HOME,
+          initialQuery: "",
+          indexScan: null,
+          onActiveChange: (a: boolean) => {
+            active = a;
+          },
+          onScanRequested: () => {},
+        }),
+      );
+    });
+    mounted.push(renderer);
+    const input = () => renderer.root.findByProps({ className: "files-search-input" });
+    await flush(() => input().props.onChange({ target: { value: "   " } }));
+    expect(active).toBe(false);
+    renderer.unmount();
+  });
+});

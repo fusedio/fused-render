@@ -148,14 +148,36 @@ export function useListingSearch(
   // commits a cheap render with the old deferred value first (echoing the
   // keystroke), then a low-priority render picks up the new value.
   const deferredQuery = useDeferredValue(query);
-  const q = deferredQuery.trim();
+  // A1 (code review): `q` used to be `deferredQuery.trim()`, which silently
+  // dropped a leading/trailing whitespace run before it ever reached
+  // `indexRank` — one layer below where `expand_whitespace_query`
+  // (fused_render/index/query.py) could ever see the space it exists to
+  // treat as meaningful (A3, DECISIONS.md). `"src"` and `"src "` resolve to
+  // different server patterns ("src" substring vs "**src**" glob) and must
+  // stay different queries all the way down — the memo key, the request
+  // dedupe key, and the request itself all read this raw value now. A
+  // SEPARATE, trimmed value (`trimmedQ` below) is used only where the
+  // question being asked is "is there any real content here at all", the
+  // same question `expand_whitespace_query` asks when it collapses a
+  // whitespace-only string to `""` (A2).
+  const q = deferredQuery;
+  const trimmedQ = deferredQuery.trim();
   // Below MIN_QUERY_CHARS the query is too short to be worth a request — the
   // same gate the home page's box uses, and for the same reason: a
-  // single-character rank request is mostly noise.
-  const searching = q.length >= MIN_QUERY_CHARS;
+  // single-character rank request is mostly noise. Measured on the TRIMMED
+  // length: a single real character padded with spaces ("a ") is exactly
+  // that same thin query, not a two-character one, and a whitespace-derived
+  // pattern is at least as indiscriminate as a bare substring search (see
+  // MIN_QUERY_CHARS's own doc comment, lib/home-search.ts).
+  const searching = trimmedQ.length >= MIN_QUERY_CHARS;
   // `isStale` is completed below, once the request's own pending state is
   // known: the input can have settled while the answer for it is in flight.
-  const deferredStale = query.trim() !== q;
+  // Compares RAW against RAW (`query` vs. `q`, both untrimmed) — the two are
+  // literally the same string once React's deferred value has caught up to
+  // the live one, whitespace and all; comparing a trimmed live value against
+  // a raw deferred one would disagree forever for any query with leading or
+  // trailing whitespace, even once fully settled.
+  const deferredStale = query !== q;
 
   // Decision 5 revisited: a path-shaped, non-glob query (`path-shaped-
   // query.ts`) never runs a rank request — the same "any search on an
@@ -210,8 +232,12 @@ export function useListingSearch(
   // the second Enter that navigation exists to avoid. Any other mount
   // (a fresh load, a typed URL, a plain in-folder navigation) has no such
   // hint and starts closed exactly as before.
+  //
+  // Held RAW, not trimmed (A1): compared against `q` below, which is now raw
+  // too — trimming only this side would leave a whitespace-bearing query
+  // permanently unable to match its own commit.
   const committedGate = useRef<string | null>(
-    urlSync && navHintQCommitted() ? currentQuery().trim() : null,
+    urlSync && navHintQCommitted() ? currentQuery() : null,
   );
   const [gateNonce, setGateNonce] = useState(0);
   const gateOpen = !escapes || committedGate.current === q;
@@ -223,7 +249,8 @@ export function useListingSearch(
   // echoing a keystroke) would have this function commit against what was
   // in the box a moment ago, not what it just set it to.
   const commitSearch = (overrideValue?: string) => {
-    const live = (overrideValue ?? query).trim();
+    // RAW, matching `committedGate`/`q` above — see A1's comment there.
+    const live = overrideValue ?? query;
     if (committedGate.current === live) return;
     committedGate.current = live;
     setGateNonce((n) => n + 1);

@@ -777,3 +777,67 @@ describe("searchBase: the directory hits are relative to", () => {
     box.unmount();
   });
 });
+
+// A1 (code review): `q` used to be `deferredQuery.trim()`, which silently
+// dropped a trailing space before it ever reached `indexRank` — defeating
+// the whole search-trailing-space grammar (A3, DECISIONS.md) at this box's
+// own door, one layer below where `expand_whitespace_query`
+// (fused_render/index/query.py) could ever see the space it was designed to
+// treat as meaningful.
+describe("A1: the query reaches indexRank verbatim, whitespace and all", () => {
+  test("a trailing space is sent to the server exactly as typed, not trimmed away", async () => {
+    const box = await search("src ");
+    expect(rankCalls).toHaveLength(1);
+    expect(rankCalls[0].q).toBe("src ");
+    box.unmount();
+  });
+
+  test("'src' and 'src ' are genuinely different queries: no memo hit across the trim boundary", async () => {
+    // Before the fix, `deferredQuery.trim()` folded "src" and "src " into
+    // the identical memo key — a real bug independent of the server, since
+    // `expand_whitespace_query` resolves them to different patterns
+    // ("src" substring-mode vs "**src**" glob-mode).
+    const box = await search("src");
+    await flush(() => rankCalls[0].reply.resolve(answer({ hits: [hit("src.txt")], total: 1 })));
+    await flush(() => box.current().setQuery("src "));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(2);
+    expect(rankCalls[1].q).toBe("src ");
+    box.unmount();
+  });
+
+  test("a single real character padded with spaces still fails the MIN_QUERY_CHARS gate", async () => {
+    // "a " is two raw characters but only one of real content — the same
+    // thin, near-noise query MIN_QUERY_CHARS exists to refuse (a whitespace-
+    // derived pattern is at least as indiscriminate as a bare substring, see
+    // MIN_QUERY_CHARS's own doc comment, lib/home-search.ts), so the gate is
+    // measured on trimmed length, not raw length.
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
+    await flush(() => box.current().setQuery("a "));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(0);
+    expect(box.current().searching).toBe(false);
+    box.unmount();
+  });
+
+  test("a whitespace-only query never fires a request — nothing to search for (A2)", async () => {
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
+    await flush(() => box.current().setQuery("   "));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(0);
+    expect(box.current().searching).toBe(false);
+    box.unmount();
+  });
+
+  test("deferredStale compares raw against raw, so a settled trailing-space query is not stuck stale", async () => {
+    // `deferredStale` used to read `query.trim() !== q` — with `q` now raw,
+    // that comparison would permanently disagree for any query with leading/
+    // trailing whitespace once React's deferred value caught up to it. The
+    // fix compares `query !== q` (both raw), matching exactly when the
+    // deferred value has caught up to the live one, whitespace and all.
+    const box = await search("src ");
+    await flush(() => rankCalls[0].reply.resolve(answer({ hits: [hit("src.txt")], total: 1 })));
+    expect(box.current().isStale).toBe(false);
+    box.unmount();
+  });
+});

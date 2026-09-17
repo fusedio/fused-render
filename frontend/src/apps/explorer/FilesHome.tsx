@@ -446,14 +446,31 @@ export function FilesSearch({
   // apps/canvases/feature-flag.ts already established for "a Preferences-page
   // boolean a component elsewhere in the app needs on every request".
   const ranked = useRankedSearchEnabled();
-  const q = query.trim();
-  const active = q !== "";
+  // A1 (code review): `q` used to be `query.trim()`, which silently dropped a
+  // leading/trailing whitespace run before it ever reached `indexRank` — one
+  // layer below where `expand_whitespace_query` (fused_render/index/query.py)
+  // could ever see the space it exists to treat as meaningful (A3,
+  // DECISIONS.md). "report" and "report " resolve to different server
+  // patterns ("report" substring vs "**report**" glob) and must stay
+  // different queries all the way down — the memo key, the AI row's `query`
+  // prop, and the request itself all read this raw value now. A SEPARATE,
+  // trimmed value (`trimmedQ` below) is used only where the question being
+  // asked is "is there any real content here at all", the same question
+  // `expand_whitespace_query` asks when it collapses a whitespace-only string
+  // to `""` (A2).
+  const q = query;
+  const trimmedQ = query.trim();
+  const active = trimmedQ !== "";
   // Below MIN_QUERY_CHARS the REQUEST is gated, not `active`: `active` is what
   // hides bookmarks/recents and hands the page body to this panel, and doing
   // that on the first character would bounce the whole page as the user types
   // their second one. `searchable` instead governs whether a rank request goes
   // out and whether the AI row can ever be armed for the current query.
-  const searchable = q.length >= MIN_QUERY_CHARS;
+  // Measured on the TRIMMED length: a single real character padded with
+  // spaces ("a ") is exactly that same thin query, not a two-character one,
+  // and a whitespace-derived pattern is at least as indiscriminate as a bare
+  // substring search (see MIN_QUERY_CHARS's own doc comment, lib/home-search.ts).
+  const searchable = trimmedQ.length >= MIN_QUERY_CHARS;
   useEffect(() => onActiveChange(active), [active, onActiveChange]);
 
   // -- a query that is really an address --------------------------------------
