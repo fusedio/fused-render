@@ -72,6 +72,7 @@ import {
   cancelIntent,
   carryMarkToHeld,
   draftRing,
+  draftHeldByPeek,
   draftTag,
   dropAction,
   dropLanes,
@@ -2687,7 +2688,9 @@ function TaskNode({
   const outcome = outcomeTag(task);
   // The `Draft` chip — this task's unsent composer text, or the row's own
   // unfinished form. tasks-lib.draftTag owns both cases and the tooltip.
-  const draft = draftTag(task);
+  // Hidden while the side peek holds this row's draft (tasks-lib.draftHeldByPeek).
+  const heldInPeek = draftHeldByPeek(task, peeked);
+  const draft = heldInPeek ? null : draftTag(task);
   // Run now / Re-run. tasks-lib decides all of it — whether it is offered,
   // which message it acts on, and WHICH CALL that is. The run-now half comes
   // from the same function the drag asks (runNowIntent), so the button and the
@@ -3361,7 +3364,7 @@ function TaskNode({
             failed={ringFailed(task)}
             unread={unread > 0}
             count={unread}
-            draftHeld={draftRing(task)}
+            draftHeld={draftRing(task) && !heldInPeek}
           />
           {/* The Board's drag onto Archive — or out of it — as a press. ONE
               button in this slot, never two: a task is either put away or it is
@@ -4074,7 +4077,7 @@ function TaskNode({
               conversation whose composer is holding something — or a New task
               form bound to it, which is the same question to the reader and a
               different place to send them (`pressDraftLine`). */}
-          {task.draft && (
+          {task.draft && !heldInPeek && (
             <div
               className="tasks-msg"
               role="button"
@@ -5261,7 +5264,9 @@ function TaskCard({
   const outcome = outcomeTag(task);
   // …and the `Draft` chip: a chat draft joined onto this task's session, or
   // — on a draft row — the unfinished form itself (tasks-lib.draftTag).
-  const draft = draftTag(task);
+  // Hidden while the side peek holds this row's draft (tasks-lib.draftHeldByPeek).
+  const heldInPeek = draftHeldByPeek(task, peeked);
+  const draft = heldInPeek ? null : draftTag(task);
   // The lane this card is IN — the COLUMN it is drawn under, which is why it is
   // `laneOf` and not the status alone: a waiting card sits in Blocked, and the
   // header above it says Blocked. Not passed down either way: `groupByColumn`
