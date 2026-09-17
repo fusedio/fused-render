@@ -166,7 +166,15 @@ export function claudeTerminalCommand(path: string, isDir: boolean, parentDir: s
 // begin with, so a text write there says nothing about it. Every explorer
 // call site (Copy Path, Copy Paths, the Claude session command, Preview's
 // trouble report) imports copyToClipboard from here rather than from the
-// platform module directly, so this is the one place the rule has to live.
+// platform module directly, so this is the one place the rule lives FOR
+// EXPLORER-ORIGINATED WRITES. It does not cover a text write from anywhere
+// else in the SPA: the app-card menu's "Copy path" (platform/lib/appCardMenu.ts,
+// used by apps/builder/Apps.tsx), shell/TaskPeek.tsx's "copy resume command",
+// and claude_config's SkillsSection/PluginsSection all write straight to
+// @platform/lib/clipboard without clearing a pending explorer copy. Since none
+// of those moves focus away from the window, os-clipboard.ts's reconcile never
+// runs either — the explorer keeps offering a Paste whose file flavor is
+// already gone until the next focus change.
 export async function copyToClipboard(text: string): Promise<boolean> {
   // Captured before the write, checked after it: the write is a round-trip
   // (a permission prompt can gate it for seconds in Firefox/Safari), and the

@@ -8,10 +8,21 @@
 // keeps a cut/copy alive across navigation (and cut-dimming reappears when you
 // browse back to the source dir). One clipboard for the whole app, like the OS.
 //
-// PERSISTED IN sessionStorage, not localStorage: "one clipboard per window" —
-// a cut made in one tab has no business reappearing in another, but a reload
-// of THIS document (a hard nav the user didn't intend, or a dev refresh) must
-// not silently drop it. `clipboard` and `lastSeenOsToken` are written and
+// PERSISTED IN sessionStorage, not localStorage: localStorage would share one
+// clipboard across every window the browser has open, including ones from a
+// session long over. sessionStorage is scoped per tab, with one documented
+// exception: Chrome and Firefox CLONE it into a tab opened FROM the current
+// one (`target=_blank`, middle-click, Cmd-click on a link) — exactly the
+// affordance every folder link in this app offers (router.ts's spaLinkProps).
+// A cut three files, middle-click a folder card, and the new tab starts with
+// the same pending cut and the same cut-dimming; paste it there and the files
+// move, while the original tab still shows a cut whose sources are gone (its
+// own paste then fails or no-ops). The two tabs' clipboards are independent
+// from that point on — nothing here coordinates them — so this divergence is
+// a known, accepted gap rather than a bug to chase. A reload of THIS document
+// (a hard nav the user didn't intend, or a dev refresh) must not silently
+// drop the clipboard either, which sessionStorage also gives for free.
+// `clipboard` and `lastSeenOsToken` are written and
 // restored TOGETHER as one JSON blob under one key, never as two separate
 // entries, because they are one fact: the pair says both "what the user is
 // holding" and "what we've already reconciled against the OS clipboard for

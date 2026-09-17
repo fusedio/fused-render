@@ -102,15 +102,102 @@ places the brief's letter needed a judgment call to apply.
   like every other site — there is no special-casing by call site, only by
   outcome (success/failure) and by clipboard op (copy/cut).
 
+## Fix 4 — spaLinkProps/navigate had two encodings of one destination
+
+- `router.ts`'s `spaLinkProps` built `href` from `opts.search` alone while its
+  own `onClick` serialized `mode`/`sel`/`q` through `navigate` — a caller that
+  used the typed `mode`/`sel`/`q` options (ModelRow's "Open model card") got
+  an anchor whose href disagreed with what a left-click did. Middle-click and
+  Cmd-click landed on the model's default template mode instead of the model
+  card.
+- Fixed at the root: `destOptsQuery` is now the one place `mode`/`sel`/`q`
+  become a query string, used by both `navigate` and `spaLinkProps`. A caller
+  that only needs `mode`/`sel`/`q` no longer has anywhere to drift; `opts.search`
+  stays as an escape hatch for a destination not expressible that way (none
+  today) and wins outright over the derived query when given, rather than
+  merging with it.
+- `router.test.ts`'s "opts (mode, sel, q) pass through to navigate" test never
+  checked `href`, so it passed while asserting the very split that was the
+  bug. Rewritten to assert `href` and the click destination are the same URL.
+
+## Fix 5 — copyToClipboard's clear was unguarded across its own await
+
+- `fs-actions.ts`'s `copyToClipboard` wrote to the system clipboard, then
+  cleared a pending copy on success — with nothing pinning "the copy I'm
+  about to clear" to "the copy that was pending when I started the write".
+  A slow `navigator.clipboard.writeText` (a permission prompt can gate it for
+  seconds in Firefox/Safari) racing a fresh Cmd+C meant the old write's
+  resolution could wipe a newer copy the user made in the meantime, even
+  though the OS clipboard still held that newer copy's files.
+- Fixed with the same `getClipboardEpoch()` guard the focus-time reconcile
+  already uses across its own `await` — capture the epoch before the write,
+  skip the clear if it moved. No new mechanism.
+
+## Fix 6 — a failed clipboard persist write left stale data in place
+
+- `fs-clipboard.ts`'s `writeStoredState` swallowed a failed `setItem` and left
+  whatever was written last time still under the key — a quota failure (a
+  large multi-select copy serializes to a large blob) or storage revoked
+  mid-session degraded to STALE persistence, not no persistence: the next
+  reload restored a clipboard/token pair the user had since replaced or
+  explicitly cleared, inverting the guarantee `persist()`'s comment claims.
+- Fixed with a best-effort `sessionStorage.removeItem` on the catch path,
+  itself wrapped in try/catch since it can fail for the same reasons
+  `setItem` did.
+
+## Known limitations documented, not fixed (findings 4, 5, 7 — comments only)
+
+- **Linux: an empty OS-clipboard read can mean the publication died, not just
+  that a copy expired.** There is no OS-owned clipboard on Linux —
+  `_linux.write_files` forks `xclip`/`wl-copy` to hold the selection — so if
+  that helper process dies (server restart, the app quitting and taking its
+  process group with it, session cleanup) `read_files()` comes back `[]` with
+  a changed token, same as any other empty clipboard. The reconcile in
+  `os-clipboard.ts` treats this as "the copy is gone," which is the correct
+  call under the invariant (a copy is only a view of the OS clipboard; if the
+  view's target disappeared, the copy is gone either way) — but the file list
+  it drops is still perfectly pasteable in-app. Documented at the branch in
+  `os-clipboard.ts`, not changed.
+- **sessionStorage clones into a child tab.** The header comment in
+  `fs-clipboard.ts` used to justify sessionStorage with "a cut made in one tab
+  has no business reappearing in another" — that isn't what sessionStorage
+  does. Chrome and Firefox clone it into a tab opened FROM the current one
+  (`target=_blank`, middle-click, Cmd-click on a link) — exactly the gesture
+  every folder link in this app offers via `spaLinkProps`. Cut three files,
+  middle-click a folder card, and the new tab starts with the same pending
+  cut and cut-dimming; paste there and the files move, while the original tab
+  still shows a cut whose sources are gone. The two tabs' clipboards diverge
+  independently from that point — nothing coordinates them, and nothing
+  should (out of scope, per the brief). sessionStorage is still the right
+  choice over localStorage, which would share one clipboard across every
+  window including long-dead ones. Comment corrected in `fs-clipboard.ts` to
+  state this rather than the false "one clipboard per window" claim.
+- **`copyToClipboard` in `fs-actions.ts` only covers explorer-originated
+  writes.** Its comment claimed to be "the one place the rule has to live";
+  it is, but only for text writes that originate in the explorer. Four other
+  SPA surfaces write straight to `@platform/lib/clipboard` without clearing a
+  pending explorer copy: the app-card context menu's "Copy path"
+  (`platform/lib/appCardMenu.ts`, used by `apps/builder/Apps.tsx`),
+  `shell/TaskPeek.tsx`'s "copy resume command", and
+  `apps/claude_config/sections/SkillsSection.tsx` and
+  `PluginsSection.tsx`. None of these move focus away from the window, so
+  `os-clipboard.ts`'s reconcile never runs to catch the mismatch either — the
+  explorer keeps offering a Paste whose file flavor is already gone until the
+  next focus change. Routing those four call sites through an explorer-aware
+  wrapper is follow-up work, not part of this branch; the comment now says
+  what is actually true instead of overclaiming coverage.
+
 ## Test/verification state at handoff
 
-All three fixes are committed as separate commits on
-`worktree-explorer-clipboard-fixes`. Final scoped state:
-- `bun test src/apps/explorer` — 1234 pass, 0 fail
+All six fixes (three original + fixes 4/5/6 above) are committed as separate
+commits on `worktree-explorer-clipboard-fixes`. Final scoped state:
+- `bun test src/apps/explorer src/platform/lib/router.test.ts src/apps/ai_models` —
+  1896 pass, 0 fail
 - `bun run typecheck` — clean
 - `node scripts/check-boundaries.mjs` — `boundaries OK (804 files)`
 
 Out of scope, untouched, exactly as instructed: the two pre-existing
 failures under `src/apps/claude/` (`ChatMount.render.test.tsx`, a
-preview-hover test), the Linux single-clipboard-target limitation, and all
-Python code.
+preview-hover test), the Linux single-clipboard-target limitation, cross-tab
+clipboard coordination, routing the four uncovered call sites (finding 7)
+through an explorer-aware wrapper, and all Python code.

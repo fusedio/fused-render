@@ -57,12 +57,20 @@ export async function reconcileOsClipboard(): Promise<void> {
 
   if (os.paths.length === 0) {
     // An empty read is either "no bridge" (already returned above) or a real
-    // OS clipboard holding no files — cleared, or overwritten with text/an
-    // image. That IS evidence a pending COPY has expired, since a copy is
-    // only ever a view of what's on the OS clipboard and there's nothing
-    // there for it to be a view of any more. It is never evidence about a
-    // CUT: a cut is app-local state that was never published, so nothing the
-    // OS clipboard says — full, empty, or changed — can confirm or refute it.
+    // OS clipboard holding no files — cleared, overwritten with text/an
+    // image, or (Linux only) the selection owner going away: there is no
+    // OS-owned clipboard there, so `_linux.write_files` forks xclip/wl-copy
+    // to hold the selection, and read_files() comes back `[]` with a changed
+    // token the moment that helper process dies (a server restart, the app
+    // quitting and taking its process group with it, session cleanup) or
+    // neither `x-special/gnome-copied-files` nor `text/uri-list` is on offer
+    // for any other reason. Either way this reads as evidence a pending COPY
+    // has expired, since a copy is only ever a view of what's on the OS
+    // clipboard and there's nothing there for it to be a view of any more —
+    // including when what's gone missing is the publication itself rather
+    // than its replacement. It is never evidence about a CUT: a cut is
+    // app-local state that was never published, so nothing the OS clipboard
+    // says — full, empty, or changed — can confirm or refute it.
     if (getClipboard()?.op === "copy") setClipboard(null, false);
     return;
   }
