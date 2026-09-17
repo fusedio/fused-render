@@ -37,6 +37,7 @@ import type { AppInfo } from "@platform/lib/api";
 import { appIconUrl, appfilePreviewUrl, rawUrl } from "@platform/lib/api";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { exportAppFile } from "@platform/lib/appShot";
+import { openShareApp } from "@platform/lib/share-app";
 import { notify } from "@platform/lib/notifications";
 import { AppStar } from "@platform/ui/AppStar";
 import { MenuIcons } from "@platform/ui/MenuIcons";
@@ -459,6 +460,26 @@ export function AppPreviewCard({
         }}
       >
         {MenuIcons.download}
+      </button>
+      )}
+      {/* Share: the export chip's sibling, one slot to its left (apps.css
+          `.app-pcard-share`). Same .fused, published to the user's Fused
+          account as a public page instead of downloaded (share_app.py); the
+          dialog owns sign-in, the link and removal. Same crop-source rule as
+          Export: the thumb only once its frame has loaded. */}
+      {app.kind !== "appfile" && (
+      <button
+        type="button"
+        className="app-pcard-share"
+        title={"Share " + (app.title || app.name) + " as a public link"}
+        aria-label="Share app"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          openShareApp(app, bodyLive ? thumbRef.current : null);
+        }}
+      >
+        {MenuIcons.share}
       </button>
       )}
     </a>
