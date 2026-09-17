@@ -403,7 +403,13 @@ def _has_remote(app_dir: str) -> bool:
     if scope is None:
         return False
     repo_dir, _spec = scope
-    r = app_git._git(repo_dir, "remote")
+    try:
+        r = app_git._git(repo_dir, "remote")
+    except Exception:
+        # `_git` may raise TimeoutExpired / OSError (missing or hung git);
+        # a git that cannot answer must not fail the export — same "hands
+        # off" reading as a non-zero exit.
+        return True
     return r.returncode != 0 or bool((r.stdout or "").strip())
 
 

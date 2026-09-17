@@ -72,10 +72,12 @@ def is_valid(value: object) -> bool:
 def id_from_text(head: bytes | str) -> str | None:
     """The declared app id in a page's head bytes; None when the tag is
     absent or its content is not a well-formed id."""
+    # Encode BEFORE slicing: the budget is bytes on disk, and a character
+    # slice of a multi-byte-heavy head would see further than any reader
+    # of the file does.
     if isinstance(head, str):
-        head = head[:_META_SCAN_BYTES].encode("utf-8", "ignore")
-    else:
-        head = head[:_META_SCAN_BYTES]
+        head = head.encode("utf-8", "ignore")
+    head = head[:_META_SCAN_BYTES]
     tag = _TAG_RE.search(head)
     if not tag:
         return None
@@ -139,9 +141,22 @@ def stamp_entry(entry_html: str, value: str) -> bool:
         updated = _insert_tag(text, value)
         if updated is None:
             return False
+        # The anchor was found in a CHARACTER slice, but readers scan a BYTE
+        # budget: a multi-byte-heavy head can push the new tag past the 4 KiB
+        # every reader (this module, `has_fused_meta`) actually looks at. An
+        # id nobody can read back is not an id — the next export would mint
+        # another — so the write only stands if it reads back.
+        if id_from_text(updated) != value:
+            return False
         with open(entry_html, "w", encoding="utf-8") as fh:
             fh.write(updated)
-        return True
+        if app_id(entry_html) == value:
+            return True
+        # Belt and braces: the on-disk read disagrees with the in-memory one
+        # (a filesystem transcoding, a concurrent write). Put the page back.
+        with open(entry_html, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return False
     except (OSError, UnicodeError):
         return False
 
