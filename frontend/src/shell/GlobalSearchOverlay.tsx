@@ -42,11 +42,18 @@ const GROUP_LIMIT = 8;
 
 type FileGroup = { base: string; hits: IndexRankHit[] };
 
-function displayText(hit: IndexRankHit, base: string): string {
-  // Same "~/" rebasing FilesHome's own hit rows use — the query typically
-  // matched a path segment, so showing the segment beats showing the whole
-  // absolute string.
-  return base ? "~/" + hit.rel : hit.rel;
+// Exported purely so a test can exercise the "~/" rebasing rule directly
+// (review finding 8's own regression: mislabeling a mount-rooted hit as
+// "~/...") — the same reason ActivityDock.tsx exports `retiredEngines`
+// rather than only reaching it through a full render.
+export function displayText(hit: IndexRankHit, base: string, home: string): string {
+  // Same "~/" rebasing FilesHome's own hit rows use (`hit.path.startsWith(
+  // home + "/")`) — but keyed on whether `base` IS the home directory, not
+  // merely non-empty. `/api/index/rank`'s `base` is whatever root the query
+  // actually resolved against — a mount, or any other configured root — and
+  // rendering every one of those as "~/..." labelled two different files
+  // under two different roots identically as "~/foo/bar.ts".
+  return base === home ? "~/" + hit.rel : hit.rel;
 }
 
 function HighlightedText({ text, query }: { text: string; query: string }) {
@@ -75,15 +82,17 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
 function FileRow({
   hit,
   base,
+  home,
   query,
   onOpen,
 }: {
   hit: IndexRankHit;
   base: string;
+  home: string;
   query: string;
   onOpen: () => void;
 }) {
-  const text = displayText(hit, base);
+  const text = displayText(hit, base, home);
   return (
     <button type="button" className="gso-row" onClick={onOpen}>
       <span className="gso-row-name">
@@ -229,6 +238,7 @@ export default function GlobalSearchOverlay({
                   key={h.rel}
                   hit={h}
                   base={files?.base ?? home}
+                  home={home}
                   query={q}
                   onOpen={() => openFile(h, files?.base ?? home)}
                 />
