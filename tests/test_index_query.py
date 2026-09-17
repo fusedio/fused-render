@@ -245,6 +245,27 @@ def test_expand_whitespace_query_never_stacks_a_star_beside_a_user_star():
     assert expand_whitespace_query("a * b") == "**a*b**"
 
 
+def test_expand_whitespace_query_does_not_treat_a_bom_as_whitespace():
+    """Code review finding: the TS mirror (home-search.ts's
+    `expandWhitespaceQuery`) claims byte-equivalence with this function, but
+    JS's `\\s` (and `String.trim()`) treat U+FEFF (ZERO WIDTH NO-BREAK
+    SPACE, a leading BOM some editors/OSes prepend) as whitespace, while
+    Python's `\\s` (and `str.strip()`) do not — U+FEFF is Unicode category
+    Cf (format), not a whitespace category. This function was already
+    correct (rule 2's no-op branch fires for a BOM-prefixed literal, same
+    as any other bare word); the TS side is the one that needed a fix (a
+    `[^\\S\\uFEFF]` character class in place of a bare `\\s`) to match. This
+    test pins the Python side of that agreement so a future change to
+    either side that breaks it is caught here, not just in home-search.
+    test.ts."""
+    bom = "﻿"
+    assert expand_whitespace_query(bom + "abc") == bom + "abc"
+    # A BOM alone is a real (non-whitespace) character as far as this
+    # grammar is concerned, so it is not the "nothing to search for" case
+    # either.
+    assert expand_whitespace_query(bom) == bom
+
+
 @pytest.mark.parametrize("query,expected", [
     ("report", "report"),
     ("icon ", "**icon**"),

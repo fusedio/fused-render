@@ -194,9 +194,23 @@ export function patternTail(query: string): string {
  *     empty query already behaves (it used to become the "match anything"
  *     glob `"*"`).
  *
+ * One documented exception to "byte-equivalent": "whitespace" here means
+ * whatever `expand_whitespace_query`'s Python `\s` matches, NOT whatever
+ * JS's native `\s`/`String.trim()` matches — the two disagree on U+FEFF
+ * (ZERO WIDTH NO-BREAK SPACE, a leading BOM some editors/OSes prepend),
+ * which Python's `\s` does not treat as whitespace (Unicode category Cf,
+ * not a whitespace category) but JS's does. Every place below that would
+ * naively reach for `\s` uses `NON_BOM_WS` instead, so a BOM-prefixed
+ * literal takes the same rule-3 no-op path on both sides of the wire
+ * (pinned by `test_expand_whitespace_query_does_not_treat_a_bom_as_
+ * whitespace` in tests/test_index_query.py and this file's own
+ * "does not treat a leading BOM" test) rather than silently resolving to
+ * different modes in the two languages.
+ *
  * The rule:
- *  1. Whitespace-only (`raw.trim() === ""`, including the truly empty
- *     string) resolves to `""` — no wildcard, nothing to search for.
+ *  1. Whitespace-only (`raw` made ONLY of `NON_BOM_WS` characters,
+ *     including the truly empty string) resolves to `""` — no wildcard,
+ *     nothing to search for.
  *  2. Otherwise, no trimming.
  *  3. The ONE no-op besides rule 1: a string with NEITHER whitespace NOR
  *     `*` anywhere (`report`) is returned unchanged — still substring mode,
@@ -222,14 +236,30 @@ export function patternTail(query: string): string {
  * previously-precise glob like `*.pdf` now also matches `report.pdf.bak`
  * and `notes.pdfx`. See DECISIONS.md.
  */
+// "Whitespace, but not a BOM": JS's `\s` (and therefore `String.trim()`)
+// treats U+FEFF (ZERO WIDTH NO-BREAK SPACE, a leading BOM some editors/OSes
+// prepend) as whitespace; Python's `\s` (and `str.strip()`) does not — it is
+// Unicode category Cf (format), not a whitespace category. `[^\S\uFEFF]` is
+// the standard JS idiom for this: inside a negated class, `\S` and `\uFEFF`
+// are unioned before the negation, so the class matches exactly the
+// characters that are whitespace AND not U+FEFF — i.e. Python's `\s`. Used
+// everywhere this function would otherwise reach for a bare `\s`, so a
+// BOM-prefixed literal takes the same no-op path `expand_whitespace_query`
+// (query.py) takes for it, keeping the documented byte-equivalence between
+// the two (see `test_expand_whitespace_query_...bom...` in both test files).
+const NON_BOM_WS = /[^\S﻿]/;
+
+const ALL_NON_BOM_WS = new RegExp(`^${NON_BOM_WS.source}*$`);
+
 export function expandWhitespaceQuery(raw: string): string {
   const value = raw ?? "";
-  if (value.trim() === "") return "";
-  if (!/\s/.test(value) && !value.includes("*")) return value;
+  if (ALL_NON_BOM_WS.test(value)) return "";
+  if (!NON_BOM_WS.test(value) && !value.includes("*")) return value;
   const segments = value.split("/");
   const last = segments.length - 1;
+  const wsRun = new RegExp(NON_BOM_WS.source + "+", "g");
   const collapseWs = (segment: string): string =>
-    segment.replace(/\s+/g, (match, offset: number) => {
+    segment.replace(wsRun, (match, offset: number) => {
       const before = offset > 0 && segment[offset - 1] === "*";
       const after =
         offset + match.length < segment.length && segment[offset + match.length] === "*";

@@ -794,7 +794,19 @@ def expand_whitespace_query(raw: str) -> str:
     insertion is never placed directly beside one of the function's OWN
     prior insertions or directly beside a spot that already satisfies the
     check. See `test_expand_whitespace_query_never_invents_a_run_of_three_
-    or_more_stars`."""
+    or_more_stars`.
+
+    `frontend/src/apps/explorer/lib/home-search.ts`'s `expandWhitespaceQuery`
+    mirrors this function and claims byte-equivalence with it (code review
+    finding: that claim used to be untrue for one input). This function's
+    `\\s` (Python's, via `re`) does NOT treat U+FEFF (a leading BOM) as
+    whitespace — it is Unicode category Cf (format) — but JS's native `\\s`/
+    `String.trim()` does; the TS mirror now special-cases that one character
+    (`NON_BOM_WS`, a `[^\\S\\uFEFF]` class) so a BOM-prefixed literal takes
+    this function's same no-op path on both sides rather than resolving to
+    a different mode client-side. See `test_expand_whitespace_query_does_
+    not_treat_a_bom_as_whitespace` (this file's tests) and the equivalent
+    test in home-search.test.ts."""
     raw = raw or ""
     if raw.strip() == "":
         return ""

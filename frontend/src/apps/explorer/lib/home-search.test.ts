@@ -130,6 +130,26 @@ describe("expandWhitespaceQuery / willResolveToGlobMode", () => {
     expect(expandWhitespaceQuery("a * b")).toBe("**a*b**");
   });
 
+  // Code review finding: JS's `\s` (and `String.trim()`) treat U+FEFF
+  // (ZERO WIDTH NO-BREAK SPACE / a leading BOM) as whitespace; Python's `\s`
+  // (and `str.strip()`) do not — U+FEFF is Unicode category Cf (format), not
+  // a whitespace category. `expand_whitespace_query` in query.py therefore
+  // takes rule 2's no-op branch for a BOM-prefixed literal (no real
+  // whitespace, no "*") and leaves it byte-for-byte unchanged, still
+  // substring mode. This mirror is written to agree with that — a BOM is
+  // never treated as a query-widening whitespace run here either — rather
+  // than with JS's native notion of "whitespace", so the documented
+  // byte-equivalence with query.py holds for this input too.
+  it("does not treat a leading BOM (U+FEFF) as whitespace (matches Python's \\s)", () => {
+    const bom = "﻿";
+    expect(expandWhitespaceQuery(bom + "abc")).toBe(bom + "abc");
+    expect(willResolveToGlobMode(bom + "abc")).toBe(false);
+    // A BOM alone has a real (non-whitespace) character in it as far as
+    // this grammar is concerned, so it is not the "nothing to search for"
+    // case either — matching Python's `chr(0xFEFF).strip() != ""`.
+    expect(expandWhitespaceQuery(bom)).toBe(bom);
+  });
+
   // Required behavior table — mirrors tests/test_index_query.py's
   // test_expand_whitespace_query_required_behavior_table row for row.
   it.each([
