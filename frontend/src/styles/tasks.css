@@ -192,6 +192,14 @@
   gap: var(--tasks-row-gap);
   padding: var(--tasks-row-pad-y) var(--tasks-row-pad);
   font-size: 13px;
+  /* ONE LINE BOX FOR EVERY WORD IN THE ROW (Akshil, 2026-09-18: "T056", the
+     title, the count and the time did not sit on one line). Flex centres each
+     child's BOX, and with `line-height: normal` every font draws its own box —
+     the monospace id 13px tall, the system title 16px, the 11px time 13px — so
+     the glyphs land at different heights even though the boxes are centred.
+     One explicit line height makes the boxes equal, and equal boxes centred
+     put the text on one visual line. */
+  line-height: 16px;
   cursor: pointer;
   transition: background-color 0.08s ease;
   /* What `.tasks-rowlink` below is measured against. The row's navigation is a
