@@ -820,6 +820,7 @@ export function ComposerCard({
       carriedRef.current = files;
       textRef.current = words;
       trayDraftRef.current = files;
+      typedRef.current = false;
       // THE ROW'S VERSION IS THIS PAGE'S VERSION: the first save states it as
       // `If-Match`, so it lands as an edit of this record rather than a 409
       // against a record this page "had never seen" (live repro, 2026-09-17).
@@ -955,6 +956,20 @@ export function ComposerCard({
   // nothing at all.
   const focusedRef = useRef(false);
   /**
+   * HAS THE READER TYPED SINCE THE BOX WAS LAST FILLED FROM THE RECORD — the
+   * held road's answer to "is somebody mid-sentence here" (live repro,
+   * 2026-09-17). The landing composer AUTOFOCUSES, so "the caret is in the box
+   * and the box is not empty" is true the moment a draft is seeded into it,
+   * and a card edit landing a second later was never adopted. Keystrokes are
+   * the reader's claim on the words; a caret is not.
+   */
+  const typedRef = useRef(false);
+  /** "Mid-sentence" for whichever road this box is on. */
+  const typing = useCallback(
+    () => (hasSessionRef.current ? focusedRef.current && !!textRef.current.trim() : typedRef.current),
+    [],
+  );
+  /**
    * THE HELD DRAFT'S FILES AS THE CARD CAN USE THEM. A chat attachment lives in
    * a tempdir on a 12 h TTL and `POST /api/schedule` refuses any path outside
    * the task-shots dir, so the record is written with COPIES — made once per
@@ -1021,7 +1036,7 @@ export function ComposerCard({
   useEffect(() => {
     if (!hasKey) return;
     return draftSyncer(draftKey).watch({
-      focused: () => focusedRef.current,
+      focused: () => (hasSessionRef.current ? focusedRef.current : typedRef.current),
       localText: () => textRef.current,
       adopt: (record) => adoptRef.current(record as ChatDraft | TaskDraftForm | null),
       onKept: () =>
@@ -1120,6 +1135,7 @@ export function ComposerCard({
     // a seed's answer still in the air was asked about the ones this replaces,
     // and `null` here — the record deleted — is the case it must never undo.
     episode.current += 1;
+    typedRef.current = false;
     setText(next);
     discardAttachments.current?.();
     // …and the tray takes its hold before the reset below, for the same reason
@@ -1198,7 +1214,7 @@ export function ComposerCard({
           // this draft's own row is the reader saying so in the first person,
           // and answering that with "no, you were typing" would be the button
           // not working.
-          if (!certain && focusedRef.current && textRef.current.trim()) return;
+          if (!certain && typing()) return;
           adoptRef.current(null);
           // THE HELD DRAFT IS GONE FOR GOOD (trashed on the Tasks page): the
           // host hands this box a fresh key to hold instead.
@@ -1252,6 +1268,7 @@ export function ComposerCard({
     // (`episode`, Bugbot 4027549698). An emptied box is exactly what that read
     // was told to fill.
     episode.current += 1;
+    typedRef.current = false;
     setText("");
     discardAttachments.current?.();
     grow();
@@ -1293,6 +1310,7 @@ export function ComposerCard({
       carriedRef.current = [];
       baseFormRef.current = null;
       episode.current += 1;
+      typedRef.current = false;
       setText("");
       discardAttachments.current?.();
       autosaveRef.current.reset({ text: "", attachments: [] });
@@ -1389,7 +1407,7 @@ export function ComposerCard({
     if (hasSession || !draftKey || !form || heldVersion === undefined) return;
     const seen = draftVersion(draftKey);
     if (seen !== undefined && heldVersion <= seen) return;
-    if (focusedRef.current && textRef.current.trim()) return;
+    if (typedRef.current) return;
     const words = joinDraft(form.title, form.description);
     if (words === textRef.current && seen !== undefined) return;
     adoptRef.current(form);
@@ -1748,6 +1766,7 @@ export function ComposerCard({
             // and a latch left standing would read the render that paints them
             // as the one that predates the clear.
             spent.current = null;
+            typedRef.current = true;
             setText(value);
             grow();
           }}
