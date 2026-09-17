@@ -1096,6 +1096,15 @@ export function ComposerCard({
    *     Save and the Schedule hop — carry the files properly.
    */
   const unloadSave = useCallback((opts: { keepalive?: boolean }) => {
+    // THE CHECK LIVES HERE TOO, not only in the two callers that already make
+    // it (the `pagehide` handler, the unmount cleanup). Both read `dirtyRef`
+    // before calling this — but a door-slam save that trusted its callers
+    // alone is one stale caller away from filing an already-saved-and-cleared
+    // box as a brand-new draft (`mintUnsentId` mints fresh the moment
+    // `unsentId` is empty, which is exactly what `clearComposer` just made
+    // it). Asking again, here, is what makes "no write after the box is
+    // clean" true regardless of who calls this next.
+    if (!dirtyRef.current) return;
     const words = textRef.current.trim();
     const dropped = trayDraftRef.current.length;
     if (dropped && typeof console !== "undefined") {

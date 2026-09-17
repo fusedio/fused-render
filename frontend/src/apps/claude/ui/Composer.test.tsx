@@ -1413,6 +1413,281 @@ test("an in-app navigation with words in the box asks first, and Save writes ONC
   }
 });
 
+test("Save as draft, then the navigation's own unmount, writes only once", async () => {
+  installBody();
+  const seen = watchFetch();
+  const pushes = watchPushes();
+  const { navigateUrl } = await import("@platform/lib/router");
+  try {
+    const c = mount({ file: "/p/repro.py", sessionId: "" });
+    c.type("a sentence nobody sent");
+    await act(async () => {
+      navigateUrl("/tasks");
+      await tick();
+    });
+    await act(async () => {
+      dialogButton(c.root, "Save as draft").props.onClick();
+      await tick();
+    });
+    expect(seen).toHaveLength(1);
+    // Simulate the navigation actually swapping the route out from under this
+    // composer, the way the real app does once the guard's promise resolves.
+    c.unmount();
+    await act(async () => {
+      await tick();
+    });
+    expect(seen).toHaveLength(1);
+  } finally {
+    pushes.restore();
+    delete doc.body;
+  }
+});
+
+test("an unmount racing the in-flight Save PUT still lands one record", async () => {
+  installBody();
+  const pushes = watchPushes();
+  const { navigateUrl } = await import("@platform/lib/router");
+  // A controllable fetch: the FIRST PUT (Save's own handoff) hangs until the
+  // test explicitly resolves it, so the composer's unmount can race ahead of
+  // the network round trip — the exact window the user's repro plausibly hits.
+  const seen: { url: string; method: string; body?: Record<string, unknown> }[] = [];
+  let releaseFirst: (() => void) | undefined;
+  (globalThis as { fetch: unknown }).fetch = (
+    url: string,
+    init?: RequestInit,
+  ) => {
+    const row = {
+      url: String(url),
+      method: init?.method ?? "GET",
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    };
+    seen.push(row);
+    const bland = () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          chat: {},
+          task: {},
+          draft: { text: "", attachments: [], updated_at: 1, version: 1, form: {} },
+        }),
+        { status: 200 },
+      );
+    if (seen.length === 1) {
+      return new Promise<Response>((resolve) => {
+        releaseFirst = () => resolve(bland());
+      });
+    }
+    return Promise.resolve(bland());
+  };
+  try {
+    const c = mount({ file: "/p/repro2.py", sessionId: "" });
+    c.type("a sentence nobody sent");
+    await act(async () => {
+      navigateUrl("/tasks");
+      await tick();
+    });
+    // Click Save, but do NOT await its completion — the PUT it fires is the
+    // one being held open above.
+    act(() => {
+      dialogButton(c.root, "Save as draft").props.onClick();
+    });
+    await act(async () => {
+      await tick();
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.method).toBe("PUT");
+    // Race the unmount in BEFORE the held PUT answers — the composer's own
+    // cleanup runs while the reader's Save is still on the wire.
+    c.unmount();
+    await act(async () => {
+      await tick();
+    });
+    // Now let the held PUT land.
+    releaseFirst?.();
+    await act(async () => {
+      await tick(20);
+    });
+    const puts = seen.filter((r) => r.method === "PUT");
+    const ids = new Set(puts.map((r) => r.url));
+    expect(ids.size).toBe(1);
+    expect(puts).toHaveLength(1);
+  } finally {
+    pushes.restore();
+    delete doc.body;
+  }
+});
+
+test("a pagehide firing right after Save is a no-op, not a second draft", async () => {
+  // Two DIFFERENT "pagehide" listeners exist once a task draft has ever been
+  // saved: the composer's own (armed only while `dirty`, and torn down the
+  // instant the box clears — verified below) and `drafts.ts`'s single
+  // page-wide one, armed forever the first time any syncer is made and never
+  // torn down (by design: it has to flush whatever key is dirty NEXT, not
+  // just this one). This test's job is the composer's own half: once Save
+  // clears the box, firing every "pagehide" listener still on `window` must
+  // not write a second draft.
+  installBody();
+  const seen = watchFetch();
+  const pushes = watchPushes();
+  const { navigateUrl } = await import("@platform/lib/router");
+  const winListeners: Record<string, ((ev: unknown) => void)[]> = {};
+  const win = window as unknown as {
+    addEventListener(t: string, fn: (ev: unknown) => void): void;
+    removeEventListener(t: string, fn: (ev: unknown) => void): void;
+  };
+  const real = { add: win.addEventListener, remove: win.removeEventListener };
+  win.addEventListener = (t, fn) => {
+    (winListeners[t] ||= []).push(fn);
+  };
+  win.removeEventListener = (t, fn) => {
+    winListeners[t] = (winListeners[t] || []).filter((f) => f !== fn);
+  };
+  try {
+    const c = mount({ file: "/p/repro3.py", sessionId: "" });
+    c.type("a sentence nobody sent");
+    // Just the composer's own — nothing has called `draftSyncer` yet, so
+    // `drafts.ts`'s page-wide listener has not been armed in THIS process.
+    const beforeSave = (winListeners.pagehide || []).length;
+    await act(async () => {
+      navigateUrl("/tasks");
+      await tick();
+    });
+    await act(async () => {
+      dialogButton(c.root, "Save as draft").props.onClick();
+      await tick(40);
+    });
+    expect(seen).toHaveLength(1);
+    expect(c.box().props.value).toBe("");
+    // Fire every "pagehide" listener still registered, right now.
+    for (const fn of winListeners.pagehide || []) fn({ type: "pagehide" });
+    await act(async () => {
+      await tick(40);
+    });
+    // No second write, from either listener.
+    expect(seen).toHaveLength(1);
+    // And the composer's OWN listener count is back to what it was before it
+    // ever went dirty — `drafts.ts`'s page-wide one (armed by Save's own
+    // `draftSyncer` call) is the only kind allowed to still be there.
+    expect((winListeners.pagehide || []).length).toBeLessThanOrEqual(beforeSave + 1);
+  } finally {
+    win.addEventListener = real.add;
+    win.removeEventListener = real.remove;
+    pushes.restore();
+    delete doc.body;
+  }
+});
+
+test("a real attachments tray discarded alongside the text is one draft, not two", async () => {
+  // The whole scare here is whether the PARENT's attachment state (own render,
+  // own commit) and this box's OWN `text` state clear in the SAME commit —
+  // matching ClaudeChat's real wiring (`attachments: () => attach.items`,
+  // `onDiscardAttachments: attach.discard`, both threaded through a memo keyed
+  // on `attach.items`) — or whether a stray render in between sees `text: ""`
+  // but a STILL-FULL tray, reads `dirty` as true again, and leaves the
+  // unmount/pagehide check with a stale green light.
+  installBody();
+  const seen: { url: string; method: string; body?: Record<string, unknown> }[] = [];
+  const pushes = watchPushes();
+  const { navigateUrl } = await import("@platform/lib/router");
+  (globalThis as { fetch: unknown }).fetch = (
+    url: string,
+    init?: RequestInit,
+  ) => {
+    const u = String(url);
+    if (u.startsWith("/api/fs/raw")) {
+      return Promise.resolve(new Response("bytes", { status: 200 }));
+    }
+    if (u === "/api/schedule/shot") {
+      return Promise.resolve(
+        new Response(JSON.stringify({ path: "/shots-dir/a.png", kind: "image" }), {
+          status: 200,
+        }),
+      );
+    }
+    seen.push({
+      url: u,
+      method: init?.method ?? "GET",
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    });
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          chat: {},
+          task: {},
+          draft: { text: "", attachments: [], updated_at: 1, version: 1, form: {} },
+        }),
+        { status: 200 },
+      ),
+    );
+  };
+
+  const React = await import("react");
+  function Host() {
+    const [items, setItems] = React.useState([
+      { id: "a1", kind: "image" as const, view: "/shots/a.png", name: "a.png" },
+    ]);
+    // The SAME shape ClaudeChat hands the composer: a closure over the
+    // parent's OWN state, recreated whenever that state changes, and a
+    // discard that clears it on this same parent.
+    const attachments = React.useCallback(() => items, [items]);
+    const onDiscardAttachments = React.useCallback(() => setItems([]), []);
+    return (
+      <ComposerCard
+        variant="chat"
+        file="/p/attach-repro.py"
+        sessionId=""
+        controls={controls}
+        status="idle"
+        back="/explorer/view/p"
+        onSend={() => {}}
+        onFollowUp={() => {}}
+        onStop={() => {}}
+        attachments={attachments}
+        onDiscardAttachments={onDiscardAttachments}
+      />
+    );
+  }
+  let renderer: ReactTestRenderer | undefined;
+  act(() => {
+    renderer = create(<Host />);
+  });
+  const root = renderer!.root;
+  const box = () => root.findByType("textarea");
+  try {
+    act(() => {
+      box().props.onChange({ currentTarget: { value: "a sentence with a picture" } });
+    });
+    await act(async () => {
+      navigateUrl("/tasks");
+      await tick();
+    });
+    await act(async () => {
+      dialogButton(root, "Save as draft").props.onClick();
+      await tick(20);
+    });
+    const puts = seen.filter((r) => r.method === "PUT");
+    expect(puts).toHaveLength(1);
+    expect(puts[0]!.url.startsWith("/api/drafts/task/")).toBe(true);
+    expect(box().props.value).toBe("");
+    // The navigation's own unmount, right after — the exact moment a stale
+    // `dirtyRef` (resurrected by a lagging tray read) would fire a second,
+    // freshly-minted draft.
+    act(() => {
+      renderer!.unmount();
+    });
+    await act(async () => {
+      await tick(20);
+    });
+    const putsAfter = seen.filter((r) => r.method === "PUT");
+    expect(putsAfter).toHaveLength(1);
+    expect(new Set(putsAfter.map((r) => r.url)).size).toBe(1);
+  } finally {
+    pushes.restore();
+    delete doc.body;
+  }
+});
+
 test("a never-sent chat saves a NEW draft every time, never over the last one", async () => {
   // THE BUG, in one test (Akshil, 2026-09-16): type, leave, Save as draft; come
   // back, type something else, leave, Save as draft — and the second save landed
