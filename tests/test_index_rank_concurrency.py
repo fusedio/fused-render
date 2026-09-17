@@ -330,3 +330,91 @@ def test_rank_route_stays_fast_while_a_real_scan_is_running(home, tmp_path):
             time.sleep(0.1)
 
     report.assert_ceiling(2.0)
+
+
+@pytest.mark.perf_large
+def test_rank_route_stays_fast_while_a_large_real_scan_is_running(
+        home, tmp_path):
+    """Same shape as the default-size case above, over a corpus close to the
+    588k-file one `freshness.MIN_INTERVAL_S`'s docstring cites as what it was
+    profiled against — deliberately NOT in the default suite (a from-scratch
+    walk and compaction over this many files takes minutes), so this is
+    opt-in: `pytest -m perf_large`."""
+    root = _tree(str(tmp_path / "src"), n_dirs=4000, per_dir=150)
+    _prime_index(tmp_path, root, n=600_000)
+    client = TestClient(create_app(start_dir=root))
+
+    started = client.post("/api/index/scan",
+                          json={"root": root, "full": True},
+                          headers={"X-Fused": "1"})
+    assert started.status_code == 200, started.text
+    run_id = started.json()["run_id"]
+
+    def running():
+        return client.get("/api/index/status",
+                          params={"run_id": run_id}).json()["running"]
+
+    try:
+        if not running():
+            pytest.skip("the scan finished before the first rank request; "
+                        "cannot observe overlap on this machine")
+        report = sample_rank_latencies(client, root, running, max_samples=60)
+    finally:
+        client.post("/api/index/cancel", json={"run_id": run_id},
+                    headers={"X-Fused": "1"})
+        deadline = time.time() + 300
+        while time.time() < deadline and running():
+            time.sleep(0.1)
+
+    report.assert_ceiling(2.0)
+
+
+def test_rank_route_stays_fast_while_a_freshness_triggered_rescan_runs(
+        home, tmp_path):
+    """The on-demand rescan a folder-open freshness check starts is a real,
+    detached worker like any other — workstream D made the check that starts
+    it eager (FRESHNESS_CHECK_S 62s, QUIET_S 3s), and this pins that the
+    eagerness bought nothing for free: a future loosening of those constants
+    that let the rescan starve interactive rank should fail here.
+
+    Goes straight through `freshness.note_folder_opened`, not
+    `/api/fs/list`'s background thread + FRESHNESS_DELAY_S wait — that
+    plumbing, and the debounce constants themselves, are covered by
+    test_index_freshness.py; this test is only about the cost of the scan
+    the check decides to start."""
+    from fused_render.index import freshness, runner
+    from fused_render.index.runner import canonical_root
+
+    root = _tree(str(tmp_path / "src"))
+    cfg = _prime_index(tmp_path, root)
+    canon = canonical_root(root)
+
+    # Stale: MIN_INTERVAL_S and QUIET_S have both long since cleared, and the
+    # indexed dirs row (stamped 1_000_000_000 by `_prime_index`) predates it.
+    now = time.time() + freshness.MIN_INTERVAL_S + freshness.QUIET_S + 60
+    result = freshness.note_folder_opened(cfg, root, [root], now=now)
+    assert result.started == canon, result
+
+    run = runner.active_run(cfg, canon)
+    assert run is not None, "note_folder_opened said started but left no live run"
+    run_id = run["run_id"]
+
+    client = TestClient(create_app(start_dir=root))
+
+    def running():
+        return client.get("/api/index/status",
+                          params={"run_id": run_id}).json()["running"]
+
+    try:
+        if not running():
+            pytest.skip("the rescan finished before the first rank request; "
+                        "cannot observe overlap on this machine")
+        report = sample_rank_latencies(client, root, running)
+    finally:
+        client.post("/api/index/cancel", json={"run_id": run_id},
+                    headers={"X-Fused": "1"})
+        deadline = time.time() + 60
+        while time.time() < deadline and running():
+            time.sleep(0.1)
+
+    report.assert_ceiling(2.0)
