@@ -39,7 +39,9 @@ import threading
 
 from fused_render.index.cancel import Cancelled
 from fused_render.index.config import IndexConfig
-from fused_render.index.store import parquet_src, partition_files, search_threads
+from fused_render.index.store import (
+    parquet_src, partition_files, schemas, search_threads,
+)
 
 # Rows a single query may return, whatever the caller asks for.
 MAX_LIMIT = 5_000
@@ -66,19 +68,25 @@ def _statement_types():
     return {t.SELECT, t.CALL, t.EXPLAIN}
 
 
-# The typed empty stand-ins used when the index has no partitions yet, so a
-# query written against a built index fails on nothing but its own logic.
-# MIRRORS store.schemas — int32 → INTEGER, int64 → BIGINT, float64 → DOUBLE —
-# and tests/test_index_guarded_query.py DESCRIBEs both views against it, which
-# is what stops the two drifting.
-_EMPTY_FILES = ("SELECT CAST(NULL AS VARCHAR) AS path, CAST(NULL AS VARCHAR) AS dir, "
-                "CAST(NULL AS VARCHAR) AS name, CAST(NULL AS VARCHAR) AS ext, "
-                "CAST(NULL AS BIGINT) AS size, CAST(NULL AS DOUBLE) AS mtime, "
-                "CAST(NULL AS INTEGER) AS depth WHERE false")
-_EMPTY_DIRS = ("SELECT CAST(NULL AS VARCHAR) AS dir, CAST(NULL AS VARCHAR) AS sig, "
-               "CAST(NULL AS INTEGER) AS n_files, CAST(NULL AS BIGINT) AS total_size, "
-               "CAST(NULL AS BIGINT) AS mtime_ns, CAST(NULL AS INTEGER) AS n_subdirs, "
-               "CAST(NULL AS INTEGER) AS depth WHERE false")
+def _empty_stand_in(pa, arrow_schema) -> str:
+    """A `SELECT ... WHERE false` naming every column of `arrow_schema` with
+    its own type, so a query written against a built index fails on nothing
+    but its own logic even when the index has no partitions yet.
+
+    The SQL cast for each pyarrow type is the same mapping store.schemas()
+    documents (string → VARCHAR, int64 → BIGINT, int32 → INTEGER, float64 →
+    DOUBLE) — the closed four types kinds.py's `Column` admits, so a kind
+    cannot declare anything this cannot name. Built from the schema itself
+    rather than written out by hand per kind: `schemas()` is the one place a
+    kind's row shape is declared, and `tests/test_index_guarded_query.py`
+    DESCRIBEs the resulting view against that same schema, so the two cannot
+    drift apart the way a hand-written stand-in per kind could."""
+    sql_by_pa = {pa.string(): "VARCHAR", pa.int64(): "BIGINT",
+                 pa.int32(): "INTEGER", pa.float64(): "DOUBLE"}
+    casts = ", ".join(
+        f"CAST(NULL AS {sql_by_pa[field.type]}) AS {field.name}"
+        for field in arrow_schema)
+    return f"SELECT {casts} WHERE false"
 
 
 def _one_read_statement(sql: str) -> str:
@@ -109,17 +117,25 @@ def _one_read_statement(sql: str) -> str:
 
 
 def _connect(cfg: IndexConfig):
-    """An in-memory connection holding `files` and `dirs`, then locked down."""
+    """An in-memory connection holding `files` and `dirs`, then locked down.
+
+    `files`' row shape follows `cfg.kind` — the same schema `store.Sink`
+    wrote shards against for this index — so a second registered kind is
+    queryable through this exact guard, not just "files". `dirs` never
+    varies by kind (schemas() documents it as shared bookkeeping)."""
     import duckdb
+    import pyarrow as pa
 
     con = duckdb.connect()
     # Capped like every other interactive index read (search_threads' docstring
     # in store.py) — must run before the lockdown below: `SET threads` after
     # `lock_configuration=true` would itself be refused.
     con.execute(f"SET threads TO {search_threads()}")
-    files = parquet_src(partition_files(cfg)) or _EMPTY_FILES
+    file_schema, dir_schema = schemas(pa, cfg.kind)
+    files = parquet_src(partition_files(cfg)) or _empty_stand_in(pa, file_schema)
     dirs = (parquet_src([cfg.dirs_parquet])
-            if os.path.exists(cfg.dirs_parquet) else None) or _EMPTY_DIRS
+            if os.path.exists(cfg.dirs_parquet) else None)
+    dirs = dirs or _empty_stand_in(pa, dir_schema)
     # LAZY views, not tables. Copying the rows in first was the obvious shape
     # and is strictly slower: measured at 300k rows, 14.9ms to materialise a
     # table against 6.8ms for the view — the parquet is already columnar and

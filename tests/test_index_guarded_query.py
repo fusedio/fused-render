@@ -16,6 +16,7 @@ from fused_render.index import guarded_query
 from fused_render.index.cancel import CancelToken, Cancelled
 from fused_render.index.config import IndexConfig
 from fused_render.index.guarded_query import MAX_LIMIT, run_guarded
+from fused_render.index.kinds import Column, IndexKind, register
 from fused_render.index.store import Sink, compact, schemas
 
 
@@ -86,6 +87,58 @@ def test_the_files_view_reads_only_the_manifests_partitions(tmp_path):
     on_disk = len([f for f in os.listdir(cfg.files_dir) if f.endswith(".parquet")])
     assert on_disk > 1  # the previous generation is still there
     assert run_guarded(cfg, "SELECT count(*) FROM files")["rows"] == [[2]]
+
+
+# -- a registered (non-"files") kind is queryable the same way ----------------
+
+def _register_notes_kind(name="_test_gq_notes"):
+    kind = IndexKind(
+        name=name,
+        columns=(Column("title", "string"), Column("path", "string"),
+                  Column("rank", "int64")),
+        extract=lambda path, st: None,
+        text_column="title",
+        identity_column="path",
+        recency_column="rank",
+    )
+    register(kind, replace=True)
+    return kind
+
+
+def _notes_index(tmp_path, kind_name, root="/r", rows=(("a", "/r/a.md", 1),)):
+    cfg = IndexConfig(dir=str(tmp_path / "ix"), kind=kind_name)
+    shards = str(tmp_path / "run" / "shards")
+    os.makedirs(shards, exist_ok=True)
+    sink = Sink(shards, "t", pa, pq, cfg.shard_rows, kind=kind_name)
+    payload = [{"title": t, "path": p, "rank": r} for t, p, r in rows]
+    sink.add(root, "s", ("sig", payload, 0, 1, 0))
+    sink.close()
+    compact(cfg, root, shards, pa, pq)
+    return cfg
+
+
+def test_a_registered_kinds_files_view_carries_its_own_schema(tmp_path):
+    _register_notes_kind()
+    cfg = _notes_index(tmp_path, "_test_gq_notes")
+    out = run_guarded(cfg, "SELECT title, path, rank FROM files ORDER BY title")
+    assert out["columns"] == ["title", "path", "rank"]
+    assert out["rows"] == [["a", "/r/a.md", 1]]
+
+
+def test_a_registered_kinds_empty_index_answers_with_its_own_columns(tmp_path):
+    kind = _register_notes_kind(name="_test_gq_notes_empty")
+    cfg = IndexConfig(dir=str(tmp_path / "ix2"), kind="_test_gq_notes_empty")
+    assert run_guarded(cfg, "SELECT count(*) FROM files")["rows"] == [[0]]
+    got = [r[0] for r in run_guarded(cfg, "DESCRIBE files")["rows"]]
+    assert got == list(kind.pa_schema(pa).names)
+
+
+def test_a_registered_kinds_dirs_view_still_uses_the_shared_dirs_schema(tmp_path):
+    _register_notes_kind(name="_test_gq_notes_dirs")
+    cfg = _notes_index(tmp_path, "_test_gq_notes_dirs")
+    _, dir_schema = schemas(pa)
+    got = [r[0] for r in run_guarded(cfg, "DESCRIBE dirs")["rows"]]
+    assert got == list(dir_schema.names)
 
 
 # -- the statement-type gate ---------------------------------------------------
