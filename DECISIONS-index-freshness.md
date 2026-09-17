@@ -92,3 +92,56 @@
   directory; `EmbedStrip.tsx` already treats `isDir === false && path ends in
   .fused` as its one signal for "a `.fused` file is open", confirming
   `navigate(path, { isDir: false })` is the correct call for this file type).
+
+## Workstream C — path bar drops the filename
+
+- Verified the spec's warned-about hazard is real: seeding the box from
+  `crumbsPath` (the file's own full path) without anything else breaks TWO
+  separate `isPristineQuery` call sites that assumed the seed was always
+  `fsPath` (the search scope / parent folder):
+  - `FileSearchField.tsx`'s own navigation-effect guard
+    (`isPristineQuery(q, parentPath, home)`) exists specifically to stop a
+    plain focus from immediately handing off to the parent folder with the
+    pre-filled seed as a "committed" search (its own header comment says so).
+    Seeding with the fuller file path made that seed no longer equal
+    `parentPath`, so the guard read it as "already edited" and fired
+    `navigate(parentPath, { isDir: true, q: query })` on focus alone —
+    confirmed by temporarily reverting the fix and watching
+    `FileSearchField.render.test.tsx`'s new focus test fail with the seeded
+    value truncated back to the parent.
+  - `SearchField.tsx`'s own `pristine` (search-affordance/completion
+    exclusion) and its "already holding the pre-filled path" re-focus branch
+    (`:696`) both compared against `fsPath` alone too.
+  - Fix (per spec's fallback): `isPristineQuery` (query-pristine.ts) takes an
+    optional 4th argument, `crumbsFsPath` — a query is pristine if it matches
+    either `fsPath` (the scope) or `crumbsFsPath` (the display path), in
+    either `contractHome` notation. `SearchField.tsx` passes `crumbsPath` at
+    both its own call sites (`:432`'s `pristine`, `:696`'s re-focus check);
+    `FileSearchField.tsx`'s guard passes its own `fsPath` (the file) as that
+    4th argument. This preserves the scope/display split exactly: a
+    committed query still searches/navigates against `fsPath` (the parent) —
+    nothing about `commitSearch`/`navigate`'s own target changed — while the
+    box's own pristine detection recognizes either seed shape as untouched.
+  - Folder views pass no `crumbsFsPath` prop, so `crumbsPath` there already
+    equals `fsPath` (`SearchField.tsx:237`) — the new 4th argument is then a
+    no-op duplicate of the existing check, confirmed unchanged by running the
+    full `src/apps/explorer` test directory (1217 tests) after the fix.
+  - Ctrl-L / Breadcrumb click-to-edit (`Breadcrumb.tsx:694`,
+    `requestSearchFocus`) was not touched — it seeds verbatim through a
+    different branch (`focusFromRequestRef`), confirmed unchanged by
+    `search-focus.test.ts` and the "Ctrl/Cmd+L and click-to-edit" describe
+    block in `search-button-empty-open.render.test.tsx`.
+- An existing test, `search-button-empty-open.render.test.tsx`'s "a plain
+  focus not routed through requestSearchFocus is unchanged" test, was
+  asserting the OLD buggy behavior verbatim (seeded value truncated to the
+  parent folder) — it mounts `FileSearchField` directly with a file path.
+  Updated its expectation and comment to the fixed value (the file's own
+  path) rather than leaving it silently locking in the bug.
+- New tests: `query-pristine.test.ts` (the `crumbsFsPath` argument, both that
+  it's recognized as pristine and that it doesn't loosen a genuinely-edited
+  query), and `FileSearchField.render.test.tsx`'s new "focusing the box over
+  a file" describe block (seeds the full file path; a second focus after the
+  first still reads as pristine, i.e. selects rather than re-seeding
+  differently) — the latter confirmed to fail against the pre-fix code
+  (reverted `crumbsPath` back to `fsPath` in the seed line, watched it fail
+  with the truncated parent path, then restored the fix).
