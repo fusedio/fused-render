@@ -212,6 +212,11 @@ async def api_appfile_export_to_disk(
             "title": f"Exported {os.path.basename(out_path)}",
             "state": "done",
             "kind": "task",
+            # The client raises its own two-action notification ("Reveal
+            # folder" / "Open file") on this same export, so this row must
+            # not ALSO pop a card — `popupJobs` already drops a `done` job
+            # whose stored tier is `silent`.
+            "tier": "silent",
         },
         page=real_path,
         origin="Export",
