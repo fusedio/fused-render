@@ -965,7 +965,7 @@ export function ComposerCard({
   /** A task-shots copy still in the air, so a save that cannot wait for a
    *  render (the swap/unmount flush) can wait for THIS instead of writing the
    *  words without the files (Bugbot 4039383093). */
-  const copyingRef = useRef<Promise<DraftAttachment[]> | null>(null);
+  const copyingRef = useRef<{ key: string; files: Promise<DraftAttachment[]> } | null>(null);
   /** The held record's settings, carried forward on every save (`heldFormOf`). */
   const baseFormRef = useRef<TaskDraftForm | null>(null);
   /** The key whose life this box has already ended — sent, or handed to the
@@ -1318,8 +1318,11 @@ export function ComposerCard({
       // came (Bugbot 4039383093). The copy itself is not aborted by the key
       // change — only its mirror into the box is (`live`, below).
       const pending = copyingRef.current;
-      if (pending) {
-        void pending.then(write);
+      copyingRef.current = null;
+      // …AND ONLY THIS KEY'S COPY (Bugbot 4039448662): one started for a draft
+      // held earlier belongs to that record, not to this one.
+      if (pending && pending.key === key) {
+        void pending.files.then(write);
         return;
       }
       write(carriedRef.current);
@@ -1340,6 +1343,8 @@ export function ComposerCard({
     if (heldBase.current) return; // still filling from the record: its files are already copies
     const items = (trayRead.current?.() ?? []).filter((a) => !a.pending && !!a.view);
     if (!items.length) {
+      // A tray emptied while a copy was in the air: that copy is nobody's now.
+      copyingRef.current = null;
       carriedRef.current = [];
       mirrorHeld();
       return;
@@ -1353,9 +1358,10 @@ export function ComposerCard({
     }
     let live = true;
     const copy = copyToTaskShots(items).catch((): DraftAttachment[] => []);
-    copyingRef.current = copy;
+    const mine = { key: draftKey, files: copy };
+    copyingRef.current = mine;
     void copy.then((carried) => {
-      if (copyingRef.current === copy) copyingRef.current = null;
+      if (copyingRef.current === mine) copyingRef.current = null;
       if (carried.length !== items.length && typeof console !== "undefined") {
         console.warn(
           `[composer] ${items.length - carried.length} attachment(s) could not be copied for the draft`,
