@@ -251,6 +251,28 @@ hand, with no shared code to keep them in step). DuckDB has no implicit
 `BOOLEAN -> INTEGER` cast, so every predicate is wrapped in `CAST(... AS INTEGER)`
 before it is compared or weighted.
 
+**At most 3 rows may share one basename (`nm`) in a single response.**
+Reported defect: once a run of same-named files (fifteen `.jshintrc`) tied on
+every predicate above, the remaining tie-breaks (`depth`, `length(nm)`,
+`rel`) clustered identical basenames together instead of spreading results
+across distinct names — one machine-generated tree could fill the entire
+visible response with copies of one filename. Both `_rank_sql` and
+`_glob_sql` splice a shared `QUALIFY row_number() OVER (PARTITION BY nm
+ORDER BY <that same statement's own order_by>) <= 3` into every branch that
+ends in `ORDER BY ... LIMIT` (ranked and unranked alike), placed BEFORE that
+`ORDER BY ... LIMIT` — DuckDB evaluates `QUALIFY` ahead of the outer `ORDER
+BY`/`LIMIT`, so the cap is decided before the row count is, and the 3
+survivors per basename are the best 3 by the statement's own ordering, not
+an arbitrary 3. Capping in SQL before `LIMIT`, rather than truncating the
+Python-side result afterward, is what keeps this from silently returning
+fewer rows than a caller's `limit` asked for — the returned `total`/
+`truncated` fields (`server-api.md §7`) are read off this SAME capped
+result set, so "Showing top N of M+" already reflects the post-cap count
+with no separate accounting needed, and the existing `limit + 1` overfetch
+(`search_ranked` always asks for one more row than `limit` so `truncated`
+needs no separate COUNT query) is unaffected — it still overfetches from,
+and slices, the already-capped set.
+
 `_lex_order_and_score` also still returns a `score` — kept ONLY for the wire
 contract and `explain`/debugging display (`server-api.md`'s hit dict keeps `score`,
 `tier`, `depth`, `longest_run`, `positions` on every hit). **`score` is a display

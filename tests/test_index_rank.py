@@ -823,6 +823,54 @@ def test_non_dot_query_keeps_prefix_before_suffix(tmp_path):
     assert hits.index("config.json") < hits.index("app-config")
 
 
+# -- Fix 2: at most 3 rows may share one basename `nm` in a single response --
+#
+# Reported defect: once fifteen `.jshintrc` files tied on every predicate,
+# the remaining tie-breaks (depth, length(nm), path) clustered identical
+# basenames together instead of spreading them — one machine-generated tree
+# filled the whole visible window with the same filename. Capped via SQL
+# `QUALIFY row_number() OVER (PARTITION BY nm ORDER BY <same vector>) <= 3`,
+# applied BEFORE the statement's own `ORDER BY ... LIMIT` so a capped
+# basename never silently shrinks how many rows a caller's `limit` asked for.
+
+def test_basename_cap_limits_to_top_3_per_name(tmp_path):
+    files = [f"/r/d{i}/dup.txt" for i in range(6)]
+    cfg = _index(tmp_path, "/r", files)
+    hits = [h for h in search_ranked(cfg, "/r", "dup")["hits"] if not h["is_dir"]]
+    assert len(hits) == 3
+    # Every row ties on every predicate column and on depth/length(nm) — the
+    # tie breaks on `lower(rel)`/`rel ASC`, so the three alphabetically-first
+    # paths are the "top 3 by the ordering" that must survive.
+    assert [h["rel"] for h in hits] == [
+        "d0/dup.txt", "d1/dup.txt", "d2/dup.txt"]
+
+
+def test_basename_cap_does_not_shrink_the_limit_or_break_truncation(tmp_path):
+    """The cap must be applied in SQL before `LIMIT`, not after: with 10
+    distinctly-named matches plus 6 more sharing one basename (capped to 3
+    survivors) and a `limit` comfortably above 13, every survivor must come
+    back and `truncated` must stay False."""
+    files = ([f"/r/single{i}.dup" for i in range(10)]
+             + [f"/r/d{i}/dup.txt" for i in range(6)])
+    cfg = _index(tmp_path, "/r", files)
+    result = search_ranked(cfg, "/r", "dup", limit=50)
+    hits = [h for h in result["hits"] if not h["is_dir"]]
+    assert len(hits) == 13
+    assert result["truncated"] is False
+    assert result["total"] == 13
+
+
+def test_glob_basename_cap_limits_to_top_3_per_name(tmp_path):
+    """Same cap, glob mode: `_glob_sql` needs the identical QUALIFY clause,
+    keyed off the same ordering vector its own ORDER BY uses."""
+    files = [f"/r/d{i}/dup.txt" for i in range(6)]
+    cfg = _index(tmp_path, "/r", files)
+    hits = [h["rel"] for h in
+            search_ranked(cfg, "/r", "**dup**", glob=True)["hits"]
+            if not h["is_dir"]]
+    assert len(hits) == 3
+
+
 def test_glob_unranked_reproduces_the_old_depth_then_alpha_order(tmp_path):
     """`ranked=False` for a glob query must still answer `depth ASC,
     lower(rel) ASC, rel ASC` — the exact order glob mode always used before

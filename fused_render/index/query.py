@@ -1299,6 +1299,36 @@ def _name_predicate_sql(nm_col: str, literals: list) -> dict:
 # `_lex_order_and_score`'s docstring (Finding 4).
 _SCORE_DEPTH_CAP = 99
 
+# At most this many rows sharing one basename (`nm`) survive into a single
+# response. Reported defect: once a run of same-named files (fifteen
+# `.jshintrc`, one machine-generated tree's worth) tied on every predicate
+# column above, the remaining tie-breaks (`depth`, `length(nm)`, `rel`)
+# CLUSTERED identical basenames together instead of spreading results across
+# distinct names — one such tree could fill the entire visible response with
+# copies of the same filename. Applied via a `QUALIFY row_number() OVER
+# (PARTITION BY nm ORDER BY <the branch's own order_by>) <= _MAX_PER_BASENAME`
+# clause (`_qualify_basename_cap`, below) in EVERY branch that emits an
+# `ORDER BY ... LIMIT` (`_rank_sql`'s both branches, `_glob_sql`'s both
+# branches) — placed BEFORE that `ORDER BY ... LIMIT` in the same statement,
+# since DuckDB evaluates `QUALIFY` ahead of the outer `ORDER BY`/`LIMIT`, so
+# capping happens before the row count is decided rather than after (capping
+# AFTER `LIMIT` would silently return fewer rows than the caller's `limit`
+# asked for, since the trimmed rows have already left the result set).
+_MAX_PER_BASENAME = 3
+
+
+def _qualify_basename_cap(order_by: str) -> str:
+    """The shared `QUALIFY` fragment both `_rank_sql` and `_glob_sql` splice
+    into their `ORDER BY ... LIMIT` tail. `order_by` MUST be the exact same
+    vector the statement's own `ORDER BY` uses — not merely a similar one —
+    so the `_MAX_PER_BASENAME` rows this keeps per `nm` are the best `nm`
+    has to offer BY THE STATEMENT'S OWN ORDERING, not an arbitrary subset a
+    differently-ordered window would have kept instead. Partitions on `nm`,
+    the same lowercased basename column every predicate in
+    `_name_predicate_sql`/`_lex_order_and_score` already reads."""
+    return (f"QUALIFY row_number() OVER "
+            f"(PARTITION BY nm ORDER BY {order_by}) <= {_MAX_PER_BASENAME} ")
+
 
 def _lex_order_and_score(nm_exact: str, preds: dict) -> tuple:
     """The shared tail of both `_rank_sql` and `_glob_sql`: given `nm_exact`
@@ -1493,10 +1523,12 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, qs: str, limit: int,
         # No predicate columns, no `score`, no `tier` — the scoring apparatus
         # below is never built for this branch, not built and then left out
         # of the SELECT list.
+        unranked_order = "depth ASC, rel ASC"
         return (
             f"SELECT rel, size, mtime, is_dir, depth FROM ({inner}) "
             f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden} "
-            f"ORDER BY depth ASC, rel ASC "
+            f"{_qualify_basename_cap(unranked_order)}"
+            f"ORDER BY {unranked_order} "
             f"LIMIT {limit}")
     preds = _name_predicate_sql("nm", [qs])
     order_by, score, tier = _lex_order_and_score(f"nm = lower('{qq}')", preds)
@@ -1504,6 +1536,7 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, qs: str, limit: int,
         f"SELECT rel, size, mtime, is_dir, depth, ({score}) AS score, "
         f"({tier}) AS tier FROM ({inner}) "
         f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden} "
+        f"{_qualify_basename_cap(order_by)}"
         f"ORDER BY {order_by} "
         f"LIMIT {limit}")
 
@@ -1758,10 +1791,12 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
         "silently becomes the Python string 'None' inside the generated SQL "
         "rather than raising")
     if not score:
+        unscored_order = "depth ASC, lower(rel) ASC, rel ASC"
         return (
             f"SELECT rel, size, mtime, is_dir, depth FROM ({inner}) "
             f"WHERE regexp_matches(lrel, '{regex}'){hidden} "
-            f"ORDER BY depth ASC, lower(rel) ASC, rel ASC "
+            f"{_qualify_basename_cap(unscored_order)}"
+            f"ORDER BY {unscored_order} "
             f"LIMIT {limit}")
     preds = _name_predicate_sql("nm", literals)
     if literals:
@@ -1781,6 +1816,7 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
         f"SELECT rel, size, mtime, is_dir, depth, ({score_expr}) AS score, "
         f"({tier}) AS tier FROM ({inner}) "
         f"WHERE regexp_matches(lrel, '{regex}'){hidden} "
+        f"{_qualify_basename_cap(order_by)}"
         f"ORDER BY {order_by} "
         f"LIMIT {limit}")
 
