@@ -11,9 +11,8 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import {
-  navigate,
   navigateUrl,
-  urlForFsPath,
+  spaLinkProps,
   embedUrlForFsPath,
   EMBED_PREFIX,
   VIEW_PREFIX,
@@ -505,17 +504,7 @@ export function RecentPreviewCard({
 // card's header, so it would have to arrive as a prop — none does, on purpose.
 export function FolderPreviewCard({ path }: { path: string }) {
   return (
-    <a
-      className="fhb-card"
-      href={urlForFsPath(path)}
-      title={path}
-      onClick={(e) => {
-        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
-          return;
-        e.preventDefault();
-        navigate(path, { isDir: true });
-      }}
-    >
+    <a className="fhb-card" title={path} {...spaLinkProps(path, { isDir: true })}>
       <span className="fhb-card-head">
         <span className="fh-card-icon" aria-hidden="true">
           {iconForEntry(basename(path), true)}
