@@ -68,6 +68,34 @@ invalid column type, duplicate column names, text_column not in columns,
 `replace=True` overwrite, `get()` on an unknown name, `registered()`
 sortedness.
 
+## Unit 2 — `fused_render/index/config.py`
+
+**Design**: `IndexConfig.kind: str = "files"` added; `index_dir(kind="files")`
+and `load_config(dir=None, kind="files")` both take the new parameter.
+`index_dir("files")` resolves to the byte-identical `home_dir()/index` path
+it always has (zero migration) — every other kind nests under it as
+`home_dir()/index/<kind>`. `to_dict()`/`from_dict()` both carry `kind` now.
+
+**Bug found and fixed in passing**: `save_config()` called
+`load_config(cfg.dir)` with no `kind`, which would have silently reset
+`cfg.kind` back to `"files"` on every save for any non-files config. Fixed
+to `load_config(cfg.dir, kind=cfg.kind)`. Covered by
+`test_save_config_preserves_a_non_files_kind`.
+
+**Left alone deliberately**: `to_dict()`'s pre-existing omission of `roots`
+(present in `from_dict`'s known-keys set but never written by `to_dict`) is
+untouched — it predates this work, is not part of the kind generalization,
+and fixing incidental pre-existing bugs outside the task's scope risks
+masking a behavior something else already depends on. Flagged here in case
+a future unit needs `roots` to survive a worker round-trip, at which point
+it should be fixed with its own test and its own commit.
+
+**Tests**: extended `tests/test_index_config.py` with 7 new tests (TDD:
+written, watched fail with `TypeError`/`AttributeError`, then made to
+pass). Full suite plus `test_index_store`, `test_index_api`,
+`test_index_query`, `test_index_rank`, `test_search` re-run clean (317
+passed) to confirm no regression from the `index_dir()` signature change.
+
 ## Open questions carried forward (not yet resolved)
 
 - `config.py`'s `to_dict()` omits `roots` even though `from_dict()`'s
