@@ -8,9 +8,11 @@
 > `examples/notes_indexer/` (a fully worked third-party reference). A
 > registered kind's rows are now extracted by the live walker
 > (`scan.py`'s `sink.add()` call sites), compacted into partitions
-> (`store._compact_locked`, §6), and queryable through the sandboxed
-> connection (`guarded_query.py`, §7). Not yet built: the confirm/refuse
-> HTTP route — see `Open questions` below and `DECISIONS-index-plugins.md`.
+> (`store._compact_locked`, §6), queryable through the sandboxed
+> connection (`guarded_query.py`, §7), and rankable through the same
+> scoring "files" gets (`query.search_apps_ranked`, §8). Not yet built: the
+> confirm/refuse HTTP route — see `Open questions` below and
+> `DECISIONS-index-plugins.md`.
 
 ## 1. The load-bearing rule: host owns the walk, plugin owns the row
 
@@ -207,6 +209,36 @@ The DuckDB lockdown order (`allowed_directories` →
 this only touches what the two `CREATE VIEW` statements select, run before
 the lockdown as they always were.
 
+## 8. Apps-kind search (`query.search_apps_ranked`)
+
+A registered kind's rows are a flat corpus, not a directory tree, so
+`resolve_query`/`search_ranked` stay byte-identical for "files" and a
+separate function, `search_apps_ranked(cfg, q, limit, token, ranked,
+glob)`, ranks any other registered kind instead of generalizing those two.
+It confirms rather than merely assumes the hypothesis this file used to
+carry as an open question: `_rank_sql`/`_glob_sql` were already written
+against an ABSTRACT `inner` subquery shape (`rel, size, mtime, is_dir,
+depth, nm, lrel`), not hardwired to files/dirs, so a second, differently-
+shaped `inner` reuses both unchanged.
+
+`search_apps_ranked` reads `IndexKind.identity_column`/`text_column`/
+`recency_column` off `cfg.kind`'s own registration (never hardcoded to
+"apps"), so any registered kind with an `identity_column` can be searched
+this way. `rel`/`lrel` come from the identity column (an absolute path;
+unlike "files" there is no root, so `inner` is the kind's whole corpus,
+unpruned — no prefix/coverage concept applies). `nm` is the lowercased
+text column. `is_dir` is always false and `depth` always 0 — a flat kind
+has no hierarchy for either to carry meaning. `mtime` comes from the
+recency column when the kind declares one, else NULL; `size` is always
+NULL (no kind declares one today). A kind with no `identity_column`
+raises `ValueError` — a contract error the caller made, not a data state,
+so it surfaces the same way whether or not the index has been scanned yet.
+
+Glob mode inherits `_glob_to_regex`'s existing single-segment semantics
+unchanged: a bare `*` does not cross `/`, so a pattern matching across the
+identity column's own path segments needs `**`, exactly as it would for a
+deeply nested "files" path.
+
 ## Open questions
 
 - The HTTP route(s) and frontend surface that actually call
@@ -216,9 +248,7 @@ the lockdown as they always were.
 ## See also
 
 - `index-store.md` — the on-disk shape `Sink`/`compact` serve per kind.
-- `query.md` — where a second kind's search would need its own
-  `resolve_query`-equivalent, reusing `_rank_sql`/`_glob_sql` rather than
-  duplicating the ranking grammar (see `DECISIONS-index-plugins.md`'s open
-  question on this).
+- `query.md` — `search_apps_ranked` (§8), which reuses `_rank_sql`/
+  `_glob_sql` rather than duplicating the ranking grammar.
 - `scan.md` — the walker a kind's `extract` plugs into.
 - `server-api.md` — where a confirm/refuse HTTP surface would live.

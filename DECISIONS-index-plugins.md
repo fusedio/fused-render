@@ -275,16 +275,13 @@ committed state; none was left mid-edit.
   `test_to_dict_from_dict_round_trip_carries_the_store_location` before
   editing `to_dict()`/`from_dict()` for the new `kind` field, so the `kind`
   field doesn't repeat the same asymmetry by accident.
-- `query.py`'s `_rank_sql`/`_glob_sql` appear to already be reusable
-  against an abstract "inner" subquery shape (`rel, size, mtime, is_dir,
-  nm, lrel, depth`) rather than being hardwired to the files/dirs schema.
-  Working hypothesis (not yet implemented or tested): keep
-  `resolve_query`/`search_ranked` byte-identical for "files" (satisfying
-  the spec's "file search MUST reuse resolve_query/search_ranked
-  unchanged"), and give the apps-kind search its own function that shapes
-  its own `inner` and calls the same `_rank_sql`/`_glob_sql` primitives —
-  satisfying "query.py generalizes" without a full rewrite of a
-  1427-line file. Needs verification once Part 2 starts.
+- **Resolved by Unit 11**: `query.py`'s `_rank_sql`/`_glob_sql` were indeed
+  already reusable against an abstract "inner" subquery shape (`rel, size,
+  mtime, is_dir, nm, lrel, depth`) rather than being hardwired to the
+  files/dirs schema. `search_apps_ranked` keeps `resolve_query`/
+  `search_ranked` byte-identical for "files" and shapes its own `inner` for
+  any registered kind with an `identity_column`, calling the same
+  `_rank_sql`/`_glob_sql` primitives unchanged.
 
 ## Unit 7 — `schemas()`/`Sink` generalization (store.py)
 
@@ -475,44 +472,98 @@ prior regression set plus this file plus `test_index_rank_concurrency.py`
 (which spies on `guarded_query._connect`'s connection) → 544 passed, 1
 skipped, nothing regressed.
 
+## Unit 11 — `search_apps_ranked` (query.py)
+
+**Design**: confirmed the "Open questions carried forward" hypothesis by
+implementation rather than inspection alone — `_rank_sql`/`_glob_sql` take
+an ABSTRACT `inner` subquery (`rel, size, mtime, is_dir, depth, nm, lrel`),
+never touching files/dirs column names directly, so a second function
+shapes a different `inner` and reuses both unchanged. `search_ranked`/
+`resolve_query` are untouched — byte-identical, exactly as the spec's
+"file search MUST reuse resolve_query/search_ranked unchanged" requires.
+
+`search_apps_ranked(cfg, q, limit, token, ranked, glob)` reads
+`kinds.get(cfg.kind)`'s `identity_column`/`text_column`/`recency_column` at
+call time rather than hardcoding "apps"'s names, so any registered kind
+with a declared `identity_column` can reuse it unchanged. A kind with no
+`identity_column` raises `ValueError` — checked BEFORE the manifest lookup,
+since a kind with no identity column is a contract error the caller made,
+not a data state, and must surface identically whether or not anything has
+been scanned yet. Column mapping onto `inner`: `rel`/`lrel` from the
+identity column (an absolute path, no root to be relative to — unlike
+"files" there is no root/prefix/coverage concept, so `inner` is the kind's
+whole corpus, unpruned), `nm` from the lowercased text column, `is_dir`
+always false, `depth` always 0 (no hierarchy to penalize by — the same
+"no natural signal" fallback `_dedup_keys` already takes), `mtime` from the
+recency column when declared else NULL, `size` always NULL (no kind
+declares one today).
+
+**Glob-mode gotcha (test correction, not a function bug)**: a bare `*` in
+`_glob_to_regex` becomes `[^/]*` and never crosses `/` — only `**` does.
+Since a flat kind's `rel` is a full, multi-segment absolute path (not
+root-relative the way a "files" `rel` can be shallow), a glob pattern
+matching across the identity column's own path segments needs `**`, the
+same as it would for a deeply nested "files" path. The test originally
+used a bare `*one*`, which cannot match `/apps/one/index.html` (`one` sits
+in a middle segment); corrected to `**one**` rather than special-casing
+`search_apps_ranked`'s glob column mapping, since the existing semantics
+are consistent with how "files" glob search already treats depth.
+
+**Tests**: new `tests/test_index_apps_search.py`, 11 tests (TDD: written
+first, confirmed red — `ImportError` before the function existed, then two
+genuine logic failures on the first real implementation attempt described
+below — then made to pass). Covers: substring-match tiering, exact-vs-
+prefix scoring, recency-as-mtime, no-recency-column reports no mtime,
+every hit `is_dir: False`, empty query, unbuilt index, unranked ordering by
+identity column, glob-mode matching, a kind with no `identity_column`
+raises, and the row-cap-plus-truncation-flag contract.
+
+**Errors and fixes**: first implementation attempt checked the manifest
+(and returned an empty result) BEFORE resolving `kind_obj`/validating
+`identity_column`, so a kind with no `identity_column` and no manifest yet
+short-circuited to the empty-result branch instead of raising — reordered
+so the identity-column check runs first. The glob-mode test failure above
+was a test correction, not a code fix — no line of `search_apps_ranked`,
+`_rank_sql`, or `_glob_sql` changed for it.
+
+**Verified**: `test_index_apps_search.py` alone (11 passed) and the full
+prior regression set (`test_index_query test_index_store test_index_api
+test_apps_api test_index_rank test_search test_index_kinds
+test_index_config test_index_apps_kind test_index_manifest
+test_index_examples_notes test_index_scan test_index_rank_concurrency
+test_index_guarded_query test_index_apps_search`) → 555 passed, 1 skipped,
+nothing regressed.
+
 ## Remaining work (exact resume pointers)
 
-This section was corrected by the following builder session (see prior
-paragraph in git history for what it replaced): the version before that
-said Part 2 was "not started" and listed `config.py`'s `kind` field as
-pending, both stale by the time that session ended. Units 7-10 above have
-closed every Part 1 gap: a registered kind's rows are extracted, shard-
-written, compacted, AND queryable through the sandbox — the same path
-"files" has always had. This is the reconciled list, in priority order.
+Units 7-11 above have closed every Part 1 gap AND the apps-kind search
+gap: a registered kind's rows are extracted, shard-written, compacted,
+queryable through the sandbox, AND rankable through the same scoring
+"files" gets — the only thing left is the HTTP/frontend surface and the
+⌘K overlay itself. This is the reconciled list, in priority order.
 
-1. **Apps-kind search** (Part 2 tail — not done, now the single biggest
-   remaining risk): the working hypothesis under "Open questions carried
-   forward" below — `resolve_query`/`search_ranked` stay byte-identical for
-   "files"; a new function shapes an apps-kind `inner` subquery and calls
-   the same `_rank_sql`/`_glob_sql` primitives — needs verifying before
-   relying on it.
-2. **Confirm/refuse HTTP route + frontend UI** (Part 2 tail — not done):
-   `manifest.propose_index`/`confirm_index`/`refuse_index` have no
-   caller yet. Decision #8 ("never silent") needs a route plus a
-   confirmation surface in the frontend.
-3. **Router generalization** (Part 1/2 tail — not done):
+1. **Confirm/refuse HTTP route + frontend UI** (Part 2 tail — not done,
+   now the single biggest remaining risk): `manifest.propose_index`/
+   `confirm_index`/`refuse_index` have no caller yet. Decision #8 ("never
+   silent") needs a route plus a confirmation surface in the frontend.
+2. **Router generalization** (Part 1/2 tail — not done):
    `routers/index.py`'s per-route bare `load_config()` calls need to
    accept an index identifier rather than assuming the single "files"
    store. The spec lists every call site with line numbers; change them
    in lockstep, and keep `fused.fileIndex.search`/`.query` in
    `static/runtime.js` working.
-4. **Management page** (not started): `apps/ai_models` is the precedent
+3. **Management page** (not started): `apps/ai_models` is the precedent
    for a prefix-routed built-in page (sidebar entry + lazy import in
    `App.tsx`) — build this feature's equivalent, and decide whether
    `frontend/src/shell/Indexing.tsx` folds into it or stays as a second,
    non-disagreeing source of truth.
-5. **Part 3 in its entirety** (not started): delete the shortcuts overlay
+4. **Part 3 in its entirety** (not started): delete the shortcuts overlay
    (surface + `frontend/src/platform/lib/shortcuts.ts:116`'s listing
    entry — delete, do not relocate to `?`), build the in-app ⌘K overlay,
    grouped by source with no cross-source score calibration, file search
    reusing `resolve_query`/`search_ranked` verbatim, app search reusing
-   whatever item 1 above produces, per-keystroke cancellation via the
-   existing `CancelToken`/HTTP 499 machinery.
+   `search_apps_ranked`, per-keystroke cancellation via the existing
+   `CancelToken`/HTTP 499 machinery.
 
 **Already built and committed, for the avoidance of doubt**: the full
 plugin contract (`kinds.py`, now with `identity_column`/`recency_column`),
@@ -522,11 +573,13 @@ propose/confirm registry (`manifest.py`), one fully worked reference
 example indexer (`examples/notes_indexer/`), the house-style spec doc
 (`specs/index-plugins.md`, linked from `overview.md`), kind-aware
 `schemas()`/`Sink` (store.py), `IndexKind.extract` wired into every walker
-call site (scan.py), a schema-driven `_compact_locked` (store.py), and
-schema-driven views in `guarded_query.py` — a registered kind's rows are
-now extracted, shard-written, compacted into queryable partitions, AND
-readable through the sandboxed connection by a live scan, the complete
-path "files" has always had end to end. What is NOT yet true: nothing
-outside `guarded_query.py`'s raw SQL surface exposes a second kind to a
-normal, ranked search — `search_ranked`/`resolve_query` (item 1 above) are
-still "files"-only.
+call site (scan.py), a schema-driven `_compact_locked` (store.py),
+schema-driven views in `guarded_query.py`, and `search_apps_ranked`
+(query.py) — a registered kind's rows are now extracted, shard-written,
+compacted into queryable partitions, readable through the sandboxed
+connection, AND rankable through the same `_rank_sql`/`_glob_sql` scoring
+"files" has always had. What is NOT yet true: nothing calls
+`propose_index`/`confirm_index`/`refuse_index` from an HTTP route or a
+user click, no router accepts an index identifier beyond the single
+"files" store, there is no management page, and Part 3 (the ⌘K overlay,
+the shortcuts-overlay deletion) has not been started.
