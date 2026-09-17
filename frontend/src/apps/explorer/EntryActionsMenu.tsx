@@ -37,7 +37,7 @@
 import { useEffect, useState } from "react";
 import { Plug, Stethoscope } from "lucide-react";
 import { addCurrentApp, getAppEntry, statPath } from "@platform/lib/api";
-import { exportAppFile } from "@platform/lib/appShot";
+import { exportAppFile, notifyExportSaved } from "@platform/lib/appShot";
 import { openShareApp } from "@platform/lib/share-app";
 import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
 import { AppDoctorStatusDot } from "@platform/ui/AppDoctorStatusDot";
@@ -192,7 +192,7 @@ export function EntryActionsMenu({
             () => false,
           )
         : false;
-      await exportAppFile(
+      const realPath = await exportAppFile(
         {
           path: exportPath,
           name: exportName,
@@ -205,6 +205,7 @@ export function EntryActionsMenu({
         },
         isLive ? document.querySelector(".preview-frame.is-shown") : null,
       );
+      notifyExportSaved(exportName, realPath);
     } catch (e) {
       notify({ title: "Could not export " + name + ": " + (e as Error).message, tone: "error" });
     } finally {

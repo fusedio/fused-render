@@ -1556,6 +1556,14 @@ def test_startup_scan_is_debounced(home, tmp_path, monkeypatch):
     assert started == []
 
 
+def test_the_startup_debounce_is_a_few_minutes_not_fifteen(home):
+    """Its stated job is stopping a dev-server reload loop (or three windows
+    opening at once) from queueing scan after scan — a job five minutes does
+    exactly as well as fifteen, at a quarter the cost to a machine that really
+    was left on and reopened."""
+    assert 4 * 60 <= index_router.SCAN_DEBOUNCE_S <= 6 * 60
+
+
 def test_startup_scan_rescans_once_the_debounce_has_elapsed(home, tmp_path, monkeypatch):
     src = _tree(tmp_path)
     started = []
@@ -1783,6 +1791,17 @@ def test_startup_warm_refuses_a_mount_backed_home(home, tmp_path, monkeypatch):
                         lambda cfg, root, **kw: called.append(root) or {})
     index_router.run_startup_warm()
     assert called == []
+
+
+def test_the_warm_wait_ceiling_still_sits_just_past_the_abandoned_threshold():
+    """The ceiling exists so a worker killed mid-walk (never writes `run_end`)
+    is spotted by the ABANDONED_RUN_S mtime check before the warm gives up for
+    the pathological reason (a worker alive but wedged) instead. That ordering
+    breaks if the two ever drift apart — a ceiling shorter than the threshold
+    would give up before a merely-slow-but-live worker's death could even be
+    detected."""
+    assert index_router.WARM_WAIT_DEADLINE_S > runner.ABANDONED_RUN_S
+    assert index_router.WARM_WAIT_DEADLINE_S - runner.ABANDONED_RUN_S <= 60
 
 
 def test_startup_scan_records_the_run_the_warm_waits_on(home, tmp_path, monkeypatch):
@@ -2102,6 +2121,33 @@ def test_the_freshness_check_defers_before_it_stamps_the_check_clock(
     assert runner.canonical_root(str(src)) in index_router._freshness_checked
 
 
+def test_the_stamp_is_taken_after_the_scan_lookup_not_before_it(
+        home, tmp_path, monkeypatch, instant_freshness_delay):
+    """FRESHNESS_CHECK_S's 2s margin over MIN_INTERVAL_S only holds if the
+    stamp reflects when the check actually finished, not when it started.
+    `note_folder_opened` does a duckdb lookup and can spawn a scan subprocess
+    before it returns — if that latency ate into the margin instead of being
+    excluded from it, the effective cadence could stretch past double the
+    interval, which is the very drift FRESHNESS_CHECK_S exists to prevent."""
+    monkeypatch.setattr(index_router, "_freshness_checked", {})
+
+    def slow_note_folder_opened(cfg, path, roots, now=None):
+        time.sleep(0.05)
+        return index_router.freshness.FreshnessCheck()
+
+    monkeypatch.setattr(index_router.freshness, "note_folder_opened",
+                        slow_note_folder_opened)
+    src = _freshness_root(tmp_path)
+    before = time.time()
+    index_router._run_freshness_check(str(src))
+    after = time.time()
+    stamped = index_router._freshness_checked[runner.canonical_root(str(src))]
+    # A stamp taken before the lookup would land near `before`; only a stamp
+    # taken after the lookup returns can be this late.
+    assert stamped >= before + 0.05
+    assert stamped <= after
+
+
 def test_a_check_that_will_refuse_anyway_never_waits(home, tmp_path,
                                                      monkeypatch):
     """The wait holds the one-at-a-time slot, so only a check that is going to do
@@ -2292,9 +2338,9 @@ def test_a_folder_that_goes_quiet_after_the_check_refused_it_still_gets_scanned(
     sub = src / "sub"
     _write_dirs_index(load_config(), {str(src): 1, str(sub): 1})
     disk_mtime = os.stat(str(sub)).st_mtime
-    # The watcher's own debounce: the check runs ~3s after the change, well
-    # inside the quiet window (freshness.QUIET_S is 30s).
-    check_now = disk_mtime + 3.0
+    # The watcher's own debounce: the check runs ~1s after the change, still
+    # inside the quiet window (freshness.QUIET_S).
+    check_now = disk_mtime + 1.0
     index_router._run_freshness_check(str(sub), now=check_now)
     assert started == []  # refused, exactly as reported
     assert len(scheduled) == 1

@@ -59,6 +59,12 @@ export interface NotificationInput {
   /** Retained as the ergonomic shorthand every call site already used. */
   tone?: "error" | "info";
   action?: NotificationCardAction;
+  /** A second, independent destination — `NotificationCard`'s own
+   *  `extraAction` slot (the "Fix with Claude" style quiet `.q-all` button
+   *  below the status line). A caller with only one thing to offer uses
+   *  `action` alone; this is for the rare row with two (a saved export's
+   *  "Open file" alongside `action`'s "Reveal folder"). */
+  extraAction?: NotificationCardAction;
   /** Click destination for the retained panel row (SPEC
    *  actionable-notifications' "every row goes somewhere"). Unused by the
    *  popup card. */
@@ -82,6 +88,25 @@ export interface NotificationInput {
    * not enough of one (Akshil, 2026-09-17).
    */
   popupMs?: number;
+  /**
+   * AN OUTSIDE CLICK DOES NOT CLOSE THIS ONE (Bugbot 4035442489).
+   *
+   * The ordinary popup is a remark, and a press anywhere else is the reader
+   * saying "seen it" — `usePopupCardLifecycle`'s outside-press rule, which is
+   * right for everything that is only telling you something.
+   *
+   * A card whose whole point is a button the reader has a few seconds to find
+   * is the other kind, and the composer's "Saved as draft · Undo" is the case
+   * that named this: the save happens DURING a hop, so the card lands on a page
+   * the reader is already reaching into — and their first click on it, on
+   * anything at all, took the Undo away before they could see it was there.
+   *
+   * Sticky only turns off the two DISMISSALS THAT ARE NOT A DECISION ABOUT THIS
+   * CARD (an outside press, focus moving into an app iframe). Its own timer
+   * (`popupMs`), Escape and the ✕ all still close it, so nothing is ever stuck
+   * on screen.
+   */
+  sticky?: boolean;
 }
 
 export interface StoredNotification {
@@ -91,9 +116,12 @@ export interface StoredNotification {
   tier: JobTier;
   tone?: "error" | "info";
   action?: NotificationCardAction;
+  extraAction?: NotificationCardAction;
   page?: string;
   /** The caller's own visible window, or undefined for `JOB_POPUP_VISIBLE_MS`. */
   popupMs?: number;
+  /** Outside presses do not close this card — see `NotificationInput.sticky`. */
+  sticky?: boolean;
   // Dismissed, but still rendered while its exit animation plays (see
   // TOAST_EXIT_MS). Only ever true on the POPUP — a retained row is simply
   // removed outright, it has no exit animation of its own to play.
@@ -228,8 +256,10 @@ function toStored(input: NotificationInput, id: number): StoredNotification {
     tier: resolveTier(input),
     tone: input.tone,
     action: input.action,
+    extraAction: input.extraAction,
     page: input.page,
     popupMs: input.popupMs,
+    sticky: input.sticky,
     leaving: false,
   };
 }
@@ -311,7 +341,14 @@ function forwardToShell(n: StoredNotification): number | undefined {
       tier: n.tier === "trail" ? undefined : n.tier,
       tone: n.tone,
       action: n.action,
+      extraAction: n.extraAction,
       page: n.page,
+      // …AND HOW THE POPUP BEHAVES TRAVELS WITH IT. The shell is what actually
+      // draws this card, so a window and a stickiness left behind here are a
+      // pane's Undo getting 2.5 s and the shell's ordinary outside-press rule —
+      // which is the bug `sticky` exists to fix, back again one frame out.
+      popupMs: n.popupMs,
+      sticky: n.sticky,
     };
     return top?._fusedIngestNotification?.(input);
   } catch {

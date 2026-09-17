@@ -17,6 +17,7 @@ const {
   isJobPageRoute,
   rewriteLegacyUrl,
   withPreviewFlag,
+  spaLinkProps,
   confirmLeave,
   registerLeaveGuard,
 } = await import("./router");
@@ -360,6 +361,97 @@ describe("navigateToJobPage dispatches a Job.page value", () => {
     expect(pushedJobPage("/Users/me/Work/site.com").state).toEqual({ fsDir: true });
     expect(pushedJobPage("/Users/me/Work/app.v2").state).toEqual({ fsDir: true });
     expect(pushedJobPage("/Users/me/.config").state).toEqual({ fsDir: true });
+  });
+});
+
+// spaLinkProps is the one place the "real anchor, intercepted on a plain
+// left-click" pattern lives — every in-app folder link (BookmarkCards,
+// FilesHome, the app page's several "Open the folder" links, AiModelsPage,
+// ModelRow) spreads its return value onto an <a> instead of repeating the
+// modifier-key guard inline. A fake MouseEvent stands in for React's: only
+// defaultPrevented/button/metaKey/ctrlKey/shiftKey/altKey and preventDefault
+// are ever read.
+function fakeClick(overrides?: Partial<{
+  defaultPrevented: boolean;
+  button: number;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+}>) {
+  let prevented = false;
+  const event = {
+    defaultPrevented: false,
+    button: 0,
+    metaKey: false,
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+    ...overrides,
+    preventDefault: () => {
+      prevented = true;
+    },
+  };
+  return { event, wasPrevented: () => prevented };
+}
+
+describe("spaLinkProps", () => {
+  test("href is the real destination url, so middle-click / new-tab keeps working", () => {
+    const props = spaLinkProps("/Users/me/Work/widget", { isDir: true });
+    expect(props.href).toBe("/explorer/view/Users/me/Work/widget");
+  });
+
+  test("a search string rides onto the href untouched", () => {
+    const props = spaLinkProps("/Users/me/model.gguf", { search: "?_mode=model_card" });
+    expect(props.href).toBe("/explorer/view/Users/me/model.gguf?_mode=model_card");
+  });
+
+  test("a plain left-click is intercepted and handed to navigate", () => {
+    const pushed = pushedFrom("", () => {
+      const props = spaLinkProps("/Users/me/Work/widget", { isDir: true });
+      const { event, wasPrevented } = fakeClick();
+      // biome-ignore lint: test double, not a real MouseEvent
+      props.onClick(event as any);
+      expect(wasPrevented()).toBe(true);
+    });
+    expect(pushed).toBe("/explorer/view/Users/me/Work/widget");
+  });
+
+  test("middle-click, a modifier, or an already-handled event is left alone", () => {
+    const cases: Partial<Parameters<typeof fakeClick>[0]>[] = [
+      { button: 1 },
+      { metaKey: true },
+      { ctrlKey: true },
+      { shiftKey: true },
+      { altKey: true },
+      { defaultPrevented: true },
+    ];
+    for (const overrides of cases) {
+      const pushed = pushedFrom("", () => {
+        const props = spaLinkProps("/Users/me/Work/widget", { isDir: true });
+        const { event, wasPrevented } = fakeClick(overrides);
+        // biome-ignore lint: test double, not a real MouseEvent
+        props.onClick(event as any);
+        expect(wasPrevented()).toBe(false);
+      });
+      expect(pushed).toBe("");
+    }
+  });
+
+  test("opts (mode, sel, q) are serialized onto href AND passed through to navigate, so a left-click lands where the href already pointed", () => {
+    const props = spaLinkProps("/Users/me/model.gguf", {
+      isDir: true,
+      mode: "model_card",
+      sel: "child.txt",
+      q: "term",
+    });
+    const pushed = pushedFrom("", () => {
+      props.onClick(fakeClick().event as any);
+    });
+    expect(props.href).toBe(
+      "/explorer/view/Users/me/model.gguf?_mode=model_card&sel=child.txt&q=term"
+    );
+    expect(pushed).toBe(props.href);
   });
 });
 

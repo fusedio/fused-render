@@ -1545,16 +1545,28 @@ function makeSyncer(key: string): InnerSyncer {
  */
 let listening = false;
 
+/**
+ * EVERY PENDING STATE, ON THE WIRE NOW — the one implementation of "the page is
+ * going", and the one a test fires in place of an event the DOM shim cannot
+ * deliver (`window` is a no-op stub there; see `usePopupCardLifecycle`'s own
+ * note on the same point).
+ *
+ * It is exported because a leave save states its words HERE, on the syncer,
+ * before it copies any files (`Composer.saveAndLeave`, Bugbot 4035442481) — so
+ * "a door slammed during the copy still writes the words" is a claim about this
+ * function, and a test that re-implemented its loop would be asserting against
+ * its own copy of the thing it is checking.
+ */
+export function flushAllDraftSyncers(opts: { keepalive?: boolean } = {}): void {
+  for (const sync of syncers.values()) sync.flushNow(opts);
+}
+
 function listen(): void {
   if (listening || typeof window === "undefined") return;
   listening = true;
-  const leaving = () => {
-    for (const sync of syncers.values()) sync.flushNow({ keepalive: true });
-  };
+  const leaving = () => flushAllDraftSyncers({ keepalive: true });
   window.addEventListener("pagehide", leaving);
-  window.addEventListener("blur", () => {
-    for (const sync of syncers.values()) sync.flushNow();
-  });
+  window.addEventListener("blur", () => flushAllDraftSyncers());
   if (typeof document !== "undefined") {
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "hidden") leaving();

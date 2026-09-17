@@ -26,6 +26,16 @@
 //      window blur while an iframe already held focus (alt-tab, devtools, a
 //      native file picker) must not.
 //
+// `sticky` TURNS 3 AND 4 OFF, and only those two (Bugbot 4035442489). They are
+// the two that read "the reader has moved on" out of a press that was never
+// about this card — fine for a card that is only telling you something, wrong
+// for one holding a button the reader has a few seconds to find. The composer's
+// "Saved as draft · Undo" pops DURING a hop, so it lands on a page the reader is
+// already reaching into, and their first click anywhere took the Undo away.
+// A sticky card is never stuck: its own timer still ends it, the ✕ still closes
+// it, and Escape — behaviour 5, which exists only for this case — is the
+// keyboard's way out of a card that no longer answers a click.
+//
 // `globalThis`, not `window`/`document`, for every timer and listener here —
 // the same reason `lib/notifications.ts` (and `lib/toast.ts` before it)
 // gives at length: `window`/`document` are no-op stubs in the test DOM shim,
@@ -41,6 +51,7 @@ export function usePopupCardLifecycle({
   onGone,
   visibleMs,
   exitMs,
+  sticky = false,
 }: {
   cardRef: RefObject<HTMLElement | null>;
   leaving: boolean;
@@ -50,6 +61,9 @@ export function usePopupCardLifecycle({
    *  means "never on its own" — see behaviour 1 above. */
   visibleMs: number | null;
   exitMs: number;
+  /** Outside presses and iframe focus do not close this card; Escape does.
+   *  See the `sticky` paragraph above. */
+  sticky?: boolean;
 }): void {
   // Read by the exit timer without re-arming it on every render — a fresh
   // `onGone` closure from the parent's own re-render must not restart this
@@ -76,7 +90,16 @@ export function usePopupCardLifecycle({
 
   const cardRefLive = cardRef;
   useEffect(() => {
-    if (leaving) return;
+    if (leaving || !sticky) return;
+    const onKey = (e: Event) => {
+      if ((e as KeyboardEvent).key === "Escape") setLeaving(true);
+    };
+    globalThis.addEventListener("keydown", onKey, true);
+    return () => globalThis.removeEventListener("keydown", onKey, true);
+  }, [leaving, sticky, setLeaving]);
+
+  useEffect(() => {
+    if (leaving || sticky) return;
     const isInside = (target: Node | null) => {
       if (!target) return false;
       if (cardRefLive.current?.contains(target)) return true;
@@ -89,11 +112,11 @@ export function usePopupCardLifecycle({
     };
     globalThis.addEventListener("click", onOutside, true);
     return () => globalThis.removeEventListener("click", onOutside, true);
-  }, [leaving, cardRefLive, setLeaving]);
+  }, [leaving, sticky, cardRefLive, setLeaving]);
 
   const wasIframeRef = useRef(document.activeElement instanceof HTMLIFrameElement);
   useEffect(() => {
-    if (leaving) return;
+    if (leaving || sticky) return;
     const onBlur = () => {
       const isIframeNow = document.activeElement instanceof HTMLIFrameElement;
       if (isIframeNow && !wasIframeRef.current) setLeaving(true);
@@ -101,5 +124,5 @@ export function usePopupCardLifecycle({
     };
     globalThis.addEventListener("blur", onBlur);
     return () => globalThis.removeEventListener("blur", onBlur);
-  }, [leaving, setLeaving]);
+  }, [leaving, sticky, setLeaving]);
 }

@@ -927,7 +927,12 @@ describe("the syncer's table of interleavings", () => {
     expect(src).toContain('document.addEventListener("visibilitychange"');
     expect(src).toContain('window.addEventListener("blur"');
     // …and the one that leaves carries keepalive, which is what makes it leave.
-    expect(src).toContain("sync.flushNow({ keepalive: true })");
+    // It goes through the EXPORTED flush now (Bugbot 4035442481): a leave save
+    // states its words on the syncer before it copies any files, so "a door
+    // slammed mid-copy still writes them" is a claim about this one function —
+    // and the test that makes it fires exactly what `pagehide` fires.
+    expect(src).toContain("const leaving = () => flushAllDraftSyncers({ keepalive: true })");
+    expect(src).toContain("for (const sync of syncers.values()) sync.flushNow(opts)");
     // …AND THEY ARE ARMED BY THE WRITER, not by one editor's mount. Hung off
     // `useAutosave`'s first effect, a document whose only writer was something
     // else — the List's trash reaching for `peekDraftSyncer`, a card that never

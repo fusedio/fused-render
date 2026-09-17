@@ -50,6 +50,99 @@ function installBody() {
   doc.body = { nodeType: 1, children: [] as unknown[], createNodeMock: node };
 }
 
+/** "There was no such global", which is not the same answer as `undefined` —
+ *  one is a `ReferenceError` on read and the other is not. */
+const MISSING = Symbol("missing");
+
+/** What was on `globalThis` under each name `installMeasuring` took over, so
+ *  the teardown puts the run back exactly as it found it. */
+const measuringWas = new Map<string, unknown>();
+
+/**
+ * THE MEASURING APPARATUS THE PAGE REACHES FOR ON MOUNT, for the length of
+ * these three tests: two observer constructors and `getComputedStyle`.
+ *
+ * This is what the suite was failing on, and it is an environment gap rather
+ * than a race. `Scheduled`'s list measurer and `TaskPeek`'s host each do a bare
+ * `new ResizeObserver(...)` in a LAYOUT effect, and `row-fit` reaches for a
+ * `MutationObserver` and `getComputedStyle` in another — none of them guarded,
+ * because in a browser there is nothing to guard. A throw from a layout effect
+ * is not a failed assertion: React unmounts the tree to the root. So the card
+ * never appears — the 2 s `waitForDialog` poll just runs out — and every later
+ * read of `box.root` dies with "Can't access .root on unmounted test renderer",
+ * which names the symptom and not one word of the cause. The previous round
+ * read that as timing and answered it with a poll; no poll can wait its way to
+ * a constructor that is not there.
+ *
+ * TAKEN OVER UNCONDITIONALLY, not installed only when missing — that is the
+ * half-measure that made this look CI-only. `bun test` shares one `globalThis`
+ * across the whole run and suites leave their own measuring stubs on it, cut to
+ * their own fixtures: `row-fit.test.ts`'s `fakeRow` alone leaves behind a
+ * permanent `getComputedStyle` that reads a `__style` property off the node it
+ * is handed, which answers `undefined` for every node in THIS suite. So which
+ * error the page died of came down to where the runner happened to reach this
+ * file: a bare global on CI (`ReferenceError: ResizeObserver is not defined`),
+ * somebody else's leftover locally (`undefined is not an object (evaluating
+ * 'cs.columnGap')`). One cause, two spellings. The suite states all three
+ * itself and hands back whatever was there.
+ *
+ * Inert on purpose: nothing in these tests resizes or mutates, so a delivery
+ * road would have nothing to deliver, and every style reads as the empty string
+ * — which is what an unstyled element answers anyway, and what every caller
+ * here already rounds to zero.
+ *
+ * They do NOT belong in `testDomShim`: a standing global would quietly flip the
+ * suites that deliberately exercise the no-observer path (`Transcript`'s
+ * `settled` starts true where there is nothing to measure) or count calls
+ * through a stub of their own.
+ */
+function installMeasuring() {
+  const g = globalThis as Record<string, unknown>;
+  const inert = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+    takeRecords() {
+      return [] as unknown[];
+    }
+  };
+  const stubs: Record<string, unknown> = {
+    ResizeObserver: inert,
+    MutationObserver: inert,
+    // A CSSStyleDeclaration is not only a bag of string properties: `row-fit`
+    // asks it for `getPropertyValue("--tasks-row-gap")`. A Proxy that answers
+    // every lookup with "" hands back a string where a method was wanted, and
+    // calling it throws out of the same layout effect this fixture exists to
+    // keep alive. So the methods are real functions and only the properties
+    // fall through to "".
+    getComputedStyle: () =>
+      new Proxy(
+        {
+          getPropertyValue: () => "",
+          getPropertyPriority: () => "",
+          item: () => "",
+          length: 0,
+        } as Record<string, unknown>,
+        {
+          get: (target, key) => (key in target ? target[key as string] : ""),
+        },
+      ),
+  };
+  for (const [name, stub] of Object.entries(stubs)) {
+    if (!measuringWas.has(name)) measuringWas.set(name, name in g ? g[name] : MISSING);
+    g[name] = stub;
+  }
+}
+
+function removeMeasuring() {
+  const g = globalThis as Record<string, unknown>;
+  for (const [name, before] of measuringWas) {
+    if (before === MISSING) delete g[name];
+    else g[name] = before;
+  }
+  measuringWas.clear();
+}
+
 /** Everything the card's mount effects reach for on a real element. */
 function node() {
   return {
@@ -64,6 +157,9 @@ function node() {
     closest: () => null,
     querySelector: () => null,
     querySelectorAll: () => [] as unknown[],
+    // `row-fit`'s measurer walks `scope.children` — an absent list is an
+    // `Array.from(undefined)` throw out of the same layout effect.
+    children: [] as unknown[],
     style: {} as Record<string, string>,
     value: "",
     getBoundingClientRect: () => ({
@@ -99,6 +195,7 @@ afterEach(async () => {
     await act(async () => box.unmount());
   }
   globalThis.fetch = realFetch;
+  removeMeasuring();
   delete doc.body;
 });
 
@@ -180,6 +277,7 @@ async function waitForDialog(box: ReactTestRenderer, timeoutMs = 2000): Promise<
 /** Mount the Tasks page ON a URL, the way a hop arrives at it. */
 async function hopTo(search: string) {
   installBody();
+  installMeasuring();
   const loc = globalThis.location as unknown as { search: string; pathname: string };
   loc.pathname = "/tasks";
   loc.search = search;

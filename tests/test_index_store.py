@@ -5,6 +5,7 @@ See fused_render/index/specs/index-store.md.
 """
 import json
 import os
+import time
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -296,6 +297,112 @@ def test_compact_emits_phase_events_when_given_a_sink(tmp_path):
         ("/r", _scanned("s", [_row("/r/a.txt")], 10, 1, 0))]), pa, pq,
         emit=lambda **ev: seen.append(ev))
     assert any(e.get("msg") == "writing index" for e in seen)
+
+
+def test_compact_emits_progress_across_multiple_partitions(tmp_path):
+    """A compaction spanning several partitions must keep emitting through
+    the whole partition-write loop, not just once at the start and once at
+    the end — that gap is what the liveness watchdog reads as a dead worker
+    during a real multi-partition merge (specs/index-store.md §4)."""
+    cfg = _cfg(tmp_path, part_rows=5)
+    rows = [_row(f"/r/f{i}.txt") for i in range(23)]
+    seen = []
+    compact(cfg, "/r", _shard(tmp_path, cfg, [
+        ("/r", _scanned("s", rows, 23, 1, 0))]), pa, pq,
+        emit=lambda **ev: seen.append(ev))
+    n_parts = len(read_manifest(cfg)["partitions"])
+    assert n_parts >= 4
+    phase_msgs = [e["msg"] for e in seen if e.get("type") == "phase"]
+    # one distinguishable message per partition, on top of "writing index"
+    # and "writing signatures"
+    assert len(phase_msgs) >= n_parts + 2
+
+
+def test_compaction_progress_keeps_the_watchdog_from_reporting_abandoned(tmp_path):
+    """Reproduces the bug directly, on a fake clock standing in for a
+    compaction slow enough that two emits alone (the old "writing index" /
+    "writing signatures" phases) would span past ABANDONED_RUN_S, while
+    `spec.json` — backdated once and never touched again — proves the fix
+    does not depend on anything else in the run directory moving."""
+    from fused_render.index.scan import _emit
+    from fused_render.index import runner
+
+    cfg = _cfg(tmp_path, part_rows=5)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    events_path = run_dir / "events.jsonl"
+    spec = run_dir / "spec.json"
+    spec.write_text("{}")
+    old = time.time() - runner.ABANDONED_RUN_S - 60
+    os.utime(spec, (old, old))
+
+    ev = open(events_path, "a")
+    step = runner.ABANDONED_RUN_S - 5
+    clock = [old]
+    ticks = []
+
+    def emit(**kw):
+        clock[0] += step
+        _emit(ev, **kw)
+        os.utime(events_path, (clock[0], clock[0]))
+        ticks.append(clock[0])
+
+    rows = [_row(f"/r/f{i}.txt") for i in range(23)]
+    shards = _shard(tmp_path, cfg, [("/r", _scanned("s", rows, 23, 1, 0))])
+    compact(cfg, "/r", shards, pa, pq, emit=emit)
+    ev.close()
+
+    n_parts = len(read_manifest(cfg)["partitions"])
+    assert len(ticks) >= n_parts + 2
+    gaps = [b - a for a, b in zip(ticks, ticks[1:])]
+    assert all(g < runner.ABANDONED_RUN_S for g in gaps)
+    # two emits alone, at this cadence, would have spanned past the threshold
+    assert ticks[-1] - ticks[0] > runner.ABANDONED_RUN_S
+    assert runner._looks_abandoned(
+        str(run_dir), clock[0], runner.ABANDONED_RUN_S) is False
+
+
+def test_the_blocking_merge_statement_itself_heartbeats(tmp_path, monkeypatch):
+    """The per-partition heartbeat (see the test above) only covers the
+    COPY loop. The dominant cost on a large merge is the single blocking
+    `CREATE TEMP TABLE merged AS ...` statement that runs BEFORE that loop —
+    with nothing touching the run directory for as long as that statement
+    takes, a merge slower than ABANDONED_RUN_S would read as a dead worker
+    with no heartbeat at all during it."""
+    monkeypatch.setattr(store_mod, "_MERGE_HEARTBEAT_S", 0.02)
+
+    real_connect = store_mod.background_connect
+
+    class _SlowDuringMerge:
+        """Proxies a real duckdb connection, only slowing the one statement
+        under test — everything else in compaction runs at normal speed."""
+
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *a, **kw):
+            if "CREATE TEMP TABLE merged" in sql:
+                time.sleep(0.2)
+            return self._real.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    monkeypatch.setattr(store_mod, "background_connect",
+                        lambda: _SlowDuringMerge(real_connect()))
+
+    cfg = _cfg(tmp_path, part_rows=5)
+    rows = [_row(f"/r/f{i}.txt") for i in range(23)]
+    seen = []
+    compact(cfg, "/r", _shard(tmp_path, cfg, [
+        ("/r", _scanned("s", rows, 23, 1, 0))]), pa, pq,
+        emit=lambda **ev: seen.append(ev))
+    phase_msgs = [e["msg"] for e in seen if e.get("type") == "phase"]
+    merge_heartbeats = [m for m in phase_msgs if "merging" in m]
+    # 0.2s of blocking work at a 0.02s heartbeat interval must land more than
+    # one tick — a single heartbeat could just be the ordinary "writing
+    # index" phase logged before the statement, not a heartbeat DURING it.
+    assert len(merge_heartbeats) >= 2
 
 
 # -- readability while a scan is compacting -----------------------------------

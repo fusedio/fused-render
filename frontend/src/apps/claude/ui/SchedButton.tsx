@@ -33,7 +33,7 @@ import {
   newTaskDraftId,
   taskDraftKey,
 } from "@platform/lib/drafts";
-import type { DraftAttachment } from "@platform/lib/drafts";
+import type { DraftAttachment, DraftSyncer } from "@platform/lib/drafts";
 import { schedulerUrl, taskDraftUrl } from "../sched/scheduled";
 import { useDismissOnWindow } from "./useDismissOnWindow";
 
@@ -81,6 +81,29 @@ export interface SchedButtonProps {
    * with a question the reader has already answered by pressing Continue.
    */
   onHandedOff?(): void;
+  /**
+   * WHICH SET OF WORDS THE BOX IS ON — a counter the composer bumps every time
+   * it empties itself (a Send, a Discard, an answered leave dialog).
+   *
+   * The hop is not instantaneous: the confirm closes first, then a round trip
+   * per attachment, and only then is anything written. So the number is read
+   * when Continue is pressed and read AGAIN immediately before the write is
+   * stated, and a hop whose words have been spent in between says nothing at
+   * all. Without it a Send's `markDeleted` was followed by this hop's `setText`
+   * on the same key, and the sentence the reader had just sent came back as a
+   * scheduled follow-up (Bugbot 4034977395).
+   */
+  episode?(): number;
+  /**
+   * A HOP IS IN FLIGHT — true the moment Continue is accepted, false again the
+   * moment it is over (aborted, refused, or navigating).
+   *
+   * `leaving` below only ever blocked a SECOND Continue; the box beside it
+   * stayed fully live, so Send, Discard and a leave-dialog answer could each
+   * spend or re-file the same words while the copies ran. The composer freezes
+   * itself on this — one gesture at a time on one set of words.
+   */
+  onHopChange?(inFlight: boolean): void;
   onNavigate?(url: string): void;
 }
 
@@ -179,6 +202,8 @@ export function SchedButton({
   disabledReason,
   onCancel,
   onHandedOff,
+  episode,
+  onHopChange,
   onNavigate,
 }: SchedButtonProps) {
   const [open, setOpen] = useState(false);
@@ -206,19 +231,69 @@ export function SchedButton({
    * tick.
    */
   const leaving = useRef(false);
+  /**
+   * THE FREEZE, SAID ONCE (Bugbot 4034977395).
+   *
+   * A hop that has begun owns these words until it ends, and `leaving` on its
+   * own only ever said so to this button's second press. So every place that
+   * moves it also dims the trigger — a live calendar in a frozen row is a lie —
+   * and tells the composer, which shuts Send, the box and its own leave dialog
+   * for the same window. One call, because three flags that can disagree is a
+   * second copy of the bug rather than a fix for it.
+   */
+  const [hopping, setHopping] = useState(false);
+  const hopChange = useRef(onHopChange);
+  hopChange.current = onHopChange;
+  const hold = useCallback((on: boolean) => {
+    leaving.current = on;
+    setHopping(on);
+    hopChange.current?.(on);
+  }, []);
 
   const go = useCallback(() => {
     // The confirm can OUTLIVE the press that opened it — the schedule poll may
     // block this chat while the question is still on screen — so the last word
     // on whether a task may be made from here is read HERE (T:12091).
     if (disabled || leaving.current) return;
-    leaving.current = true;
+    hold(true);
     const text = draft().trim();
     const tray = attachments?.() ?? [];
     setOpen(false);
     // The chips whose bytes actually exist — `take()`'s rule, and the only
     // ones either road below can carry (a pending upload names no file yet).
     const carry = tray.filter((a) => !a.pending && !!a.view);
+    /**
+     * THE WORDS THIS PRESS IS ABOUT, named by the episode the box was on when
+     * it happened — and asked for again at the last moment before anything is
+     * written, because everything in between is a round trip.
+     */
+    const era = episode?.() ?? 0;
+    /** Have they been spent or re-filed since? The episode says the box emptied
+     *  under this hop (a Send, a Discard, an answered dialog); `isGone` says the
+     *  key's one writer has a delete out for the record — and a `setText` behind
+     *  that delete is the resurrection this guard exists to stop. */
+    const spent = (sync: DraftSyncer): boolean =>
+      (episode?.() ?? 0) !== era || sync.isGone();
+    /** NOTHING WRITTEN, NOTHING LEFT, AND THE READER TOLD WHY — every abort
+     *  from here down is those same three things, so it is one sentence. */
+    const stop = (why: string): void => {
+      hold(false);
+      notify({ title: why, tone: "error" });
+    };
+    /**
+     * AND A FILE THAT DID NOT COPY STOPS THE WHOLE HOP (Bugbot 4034977406).
+     *
+     * `copyToTaskShots` is `allSettled` and hands back only what landed, so a
+     * picture whose upload 500ed simply vanished — and on a session the hop then
+     * `setText`s that shorter list straight over the attachments the record was
+     * already holding. "Save as draft" has always failed closed on exactly this
+     * (`saveDraftNow`); scheduling is the same bargain, and a task the reader
+     * cannot see their file on is not the task they asked for.
+     */
+    const short = (carried: DraftAttachment[]): boolean =>
+      carried.length !== carry.length;
+    const PARTIAL = "Could not attach every file — nothing was scheduled";
+    const SPENT = "Those words already left the box — nothing was scheduled";
     /**
      * A CHAT THAT HAS NEVER BEEN SENT MINTS A NEW DRAFT, EVERY PRESS (Akshil,
      * 2026-09-16).
@@ -243,27 +318,31 @@ export function SchedButton({
       // in Upcoming saying nothing, so the press opens a blank card on this
       // folder instead and the reader fills it in there.
       if (!text && !carry.length) {
-        leaving.current = false;
+        hold(false);
         onNavigate?.(schedulerUrl("", back, file ?? ""));
         return;
       }
       const mint = (carried: DraftAttachment[]): void => {
+        if (short(carried)) {
+          stop(PARTIAL);
+          return;
+        }
         const sync = draftSyncer(taskDraftKey(id));
+        if (spent(sync)) {
+          stop(SPENT);
+          return;
+        }
         sync.setTask(composerTaskDraft(text, file ?? "", carried));
         void sync.handoff().then((out) => {
           if (!out.ok) {
-            leaving.current = false;
-            notify({
-              title: "Could not save that draft — you are still in the chat",
-              tone: "error",
-            });
+            stop("Could not save that draft — you are still in the chat");
             return;
           }
           // The record is the card's now: this page stops wanting anything for
           // it, and the box it came out of is emptied (one copy, one place).
           sync.forget();
           onHandedOff?.();
-          leaving.current = false;
+          hold(false);
           // `hop`: this is a Schedule PRESS, not a draft row — the card opens
           // on now+2m and planning, exactly as the session hop's `?new=1` does
           // (Bugbot 4028344051).
@@ -284,7 +363,7 @@ export function SchedButton({
     // the record, and it is the record the task form is about to go on editing.
     const key = chatDraftKey(sessionId, file);
     const leave = (): void => {
-      leaving.current = false;
+      hold(false);
       // …AND THE FOLDER THIS CHAT IS IN. A `new:<file>` key spells it; a session
       // key does not, and without it the card opened on the reader's home
       // (Akshil, 2026-09-16). This composer knows the path — it is mounted on
@@ -345,7 +424,15 @@ export function SchedButton({
       words: string = text,
       again = false,
     ): void => {
+      if (short(carried)) {
+        stop(PARTIAL);
+        return;
+      }
       const sync = draftSyncer(key);
+      if (spent(sync)) {
+        stop(SPENT);
+        return;
+      }
       sync.setText(words, carried);
       void sync.handoff().then((out) => {
         if (out.ok) {
@@ -365,11 +452,7 @@ export function SchedButton({
           leave();
           return;
         }
-        leaving.current = false;
-        notify({
-          title: "Could not save that draft — you are still in the chat",
-          tone: "error",
-        });
+        stop("Could not save that draft — you are still in the chat");
       });
     };
     // AN EMPTY TRAY HAS NOTHING TO COPY. The round trip per file below is the
@@ -391,7 +474,8 @@ export function SchedButton({
     void copyToTaskShots(tray)
       .catch((): DraftAttachment[] => [])
       .then(hand);
-  }, [disabled, draft, attachments, file, sessionId, back, onHandedOff, onNavigate]);
+  }, [disabled, draft, attachments, file, sessionId, back, episode, hold, onHandedOff,
+      onNavigate]);
 
   const cancel = useCallback(() => {
     setOpen(false);
@@ -420,7 +504,10 @@ export function SchedButton({
             className="c-pill c-schedbtn"
             aria-label={why}
             title={disabled && disabledReason ? disabledReason : SCHED_LABEL}
-            disabled={disabled}
+            // AND IT IS OFF WHILE ITS OWN HANDOFF IS OUT (`hopping`). `go`
+            // refuses a second press either way; this is the half the reader can
+            // see, and it is the same `.c-schedbtn:disabled` the block draws.
+            disabled={disabled || hopping}
           >
             <CalendarIcon />
           </button>

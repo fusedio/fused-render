@@ -20,6 +20,13 @@
 // its own once `useNotificationPopup()` goes null, it needs no callback for
 // that).
 //
+// A `sticky` MESSAGE KEEPS ITS SECONDS (Bugbot 4035442489). `notify({ sticky:
+// true })` — the composer's "Saved as draft · Undo" — turns the outside-press
+// and iframe-blur dismissals off, because that card pops DURING a hop and the
+// reader's first click on the page they landed on was closing it before they
+// could reach the Undo. The store's own `popupMs` timer, Escape and the ✕ all
+// still end it, so this is a card that waits, not one that sticks.
+//
 // THE ✕ ONLY CLOSES THE CARD — calls `dismissPopup()`, never
 // `dismissNotification()`. A message with nothing retained
 // (`transient`/`silent`) loses nothing either way; an `attention`/`trail`
@@ -54,6 +61,7 @@ export default function MessagePopupCard() {
     onGone: NOOP,
     visibleMs: null,
     exitMs: 0,
+    sticky: notification?.sticky ?? false,
   });
 
   if (!notification) return null;
@@ -69,6 +77,7 @@ export default function MessagePopupCard() {
         terminal={notification.tone === "error" ? "error" : undefined}
         role={notification.tone === "error" ? "alert" : "status"}
         navAction={notification.action}
+        extraAction={notification.extraAction}
         onDismiss={{ onClick: () => dismissPopup() }}
       />
     </div>

@@ -449,7 +449,13 @@
    composer looking fully live — measured against :1777, which draws `.6` and
    `not-allowed`. Ships with `.c-schedbtn:disabled` below, or T's documented
    pairing of the two refusals stays half-drawn. */
-.c-composer textarea:disabled {
+/* …AND THE SAME DIM FOR THE SAME REASON WHILE A SCHEDULE HOP IS OUT
+   (Bugbot 4034977395). The box is `readonly` rather than `disabled` there — the
+   words are still the reader's to read and copy, and the caret must not be
+   yanked out mid-gesture — but a box that will not take a keystroke has to look
+   like one either way. */
+.c-composer textarea:disabled,
+.c-composer textarea[readonly] {
   opacity: 0.6;
   cursor: not-allowed;
 }

@@ -1,7 +1,9 @@
 // SPEC-omnibox-search-affordance.md correction (2026-09-10): the field
-// always arrives pre-filled with the folder currently being searched
-// (SearchField.tsx's own `onFocus`: `setQuery(contractHome(fsPath, home))`
-// on an empty box) — a hard user requirement, not a default worth changing.
+// always arrives pre-filled with the path its crumbs are showing (a folder
+// host: the folder being searched; a file host: the file itself)
+// (SearchField.tsx's own `onFocus`: `setQuery(contractHome(crumbsPath,
+// home))` on an empty box) — a hard user requirement, not a default worth
+// changing.
 // "Has the user actually typed something" is therefore NOT `query === ""`;
 // an untouched, pre-filled box reads as edited by that test even though
 // nothing has been typed into it at all.
@@ -28,9 +30,22 @@ export function isPristineQuery(
   query: string,
   fsPath: string,
   home: string | undefined,
+  // The file host's own display path (SearchField.tsx's `crumbsFsPath`),
+  // when it differs from the search scope `fsPath` (the file's parent). A
+  // file host pre-fills the box with its OWN full path, not the parent, so
+  // that seed must read as pristine too — checked in either `contractHome`
+  // notation, exactly like `fsPath` above. Omitted (folder hosts, where the
+  // two are the same path already) changes nothing.
+  crumbsFsPath?: string,
 ): boolean {
   const trimmed = query.trim();
   if (trimmed === "") return true;
   const typed = stripTrailingSlash(trimmed);
-  return typed === stripTrailingSlash(fsPath) || typed === stripTrailingSlash(contractHome(fsPath, home));
+  if (typed === stripTrailingSlash(fsPath) || typed === stripTrailingSlash(contractHome(fsPath, home))) {
+    return true;
+  }
+  if (crumbsFsPath === undefined) return false;
+  return (
+    typed === stripTrailingSlash(crumbsFsPath) || typed === stripTrailingSlash(contractHome(crumbsFsPath, home))
+  );
 }
