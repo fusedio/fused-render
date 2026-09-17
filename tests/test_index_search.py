@@ -222,13 +222,28 @@ def test_search_under_two_spaces_matches_the_same_set_as_one(tmp_path):
 
 
 def test_search_under_single_word_query_is_unaffected(tmp_path):
-    """No whitespace, no transform: an explicit `*` stays a literal character
-    for `search_under` exactly as it does today (this function does not gain
-    full glob-mode support — only the whitespace-as-wildcard rule; see
-    DECISIONS.md)."""
+    """A bare word with neither whitespace nor `*` is the one no-op case:
+    `expand_whitespace_query` returns it unchanged, so `search_under` stays
+    on the plain `ILIKE '%q%'` substring filter exactly as it does today."""
     cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/beta.md"])
     out = search_under(cfg, "/r", q="beta")
     assert [e["rel"] for e in out["entries"]] == ["beta.md"]
+
+
+def test_search_under_a_star_query_now_globs_instead_of_staying_literal(tmp_path):
+    """Follow-up to SPEC-search-space-wildcard.md: `expand_whitespace_query`
+    no longer leaves a whitespace-free `*`-containing query untouched (Rule 4
+    wraps the final segment regardless of whitespace), so `search_under`'s
+    mode switch — keyed on `"*" in expanded`, mirroring `resolve_query`'s own
+    `is_glob` check — now flips a bare `*.md` into glob-to-regex matching
+    instead of treating the `*` as a literal character under ILIKE. This is
+    the accepted precision-glob consequence from DECISIONS.md, not a bug."""
+    cfg = _index(tmp_path, "/r", ["/r/beta.md", "/r/beta.md.bak", "/r/beta.txt"])
+    out = search_under(cfg, "/r", q="*.md")
+    rels = sorted(e["rel"] for e in out["entries"])
+    # "*.md" -> expand_whitespace_query -> "*.md*" -> matches beta.md AND
+    # beta.md.bak (the precision-glob loss the spec explicitly accepts).
+    assert rels == ["beta.md", "beta.md.bak"]
 
 
 def test_search_under_caps_the_corpus_and_flags_truncation(tmp_path):
