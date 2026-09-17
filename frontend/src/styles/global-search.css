@@ -1,0 +1,87 @@
+/* The Mod+K global search overlay (shell/GlobalSearchOverlay.tsx,
+   SPEC-index-plugins.md Part 3). Rendered inside a `Modal` with
+   `plainBody`, so the surrounding chrome — scrim, dialog card, head, ✕,
+   enter/exit animation, and the bare `<input>` skin — all come from
+   deploy.css already; only the content below the input is this file's own. */
+
+.gso-input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.gso-results {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+/* One section per source (files, apps, …) — grouped and ranked ONLY within
+   itself (SPEC-index-plugins.md: no cross-source score calibration), so
+   nothing here ever interleaves rows from two groups. */
+.gso-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.gso-group-title {
+  margin: 0 0 2px;
+  padding: 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+
+.gso-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 8px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+
+.gso-row:hover,
+.gso-row:focus-visible {
+  background: var(--bg);
+  outline: none;
+}
+
+.gso-row-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gso-row-tag {
+  flex: none;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.gso-mark {
+  background: none;
+  color: inherit;
+  font-weight: 700;
+  padding: 0;
+}
+
+.gso-empty {
+  margin: 4px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}

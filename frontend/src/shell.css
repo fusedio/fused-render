@@ -21,7 +21,10 @@
 @import "./styles/deploy.css";
 @import "./styles/fields.css";
 @import "./styles/buttons-modal.css";
-@import "./styles/shortcuts.css";
+/* The Mod+K global search overlay (SPEC-index-plugins.md Part 3) — a Modal
+   dialog (buttons-modal.css above), so its own rules only add the
+   input/results/row layout on top of that chrome. */
+@import "./styles/global-search.css";
 @import "./styles/account.css";
 @import "./styles/preferences.css";
 /* Next to preferences.css: the Claude config app (/claude-config)

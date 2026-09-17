@@ -65,7 +65,7 @@ import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
 import { PEEK_PARAM } from "@shell/task-peek-store";
 import { useTaskPeekEnabled } from "@shell/task-peek-flag";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
-import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
+import GlobalSearchOverlay from "@shell/GlobalSearchOverlay";
 import { isMod } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { reconcileOsClipboard } from "@apps/explorer/lib/os-clipboard";
@@ -620,28 +620,31 @@ export default function App({ config }: { config: Config }) {
     if (!IS_PREVIEW) void reconcileOsClipboard();
   }, []);
 
-  // Mod+K cheat sheet. Owned by App, not Listing: it documents the whole shell
-  // (breadcrumb, history, view chords), so it has to open from any route — a
-  // preview, panel/tab mode, Preferences, or an unrecognized URL where no
-  // Listing is mounted at all. Listing therefore has NO Mod+K binding of its
-  // own, which also means the chord can't be handled twice.
-  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  // Mod+K global search (SPEC-index-plugins.md Part 3). Owned by App, not
+  // Listing: it has to open from any route — a preview, panel/tab mode,
+  // Preferences, or an unrecognized URL where no Listing is mounted at all.
+  // Listing therefore has NO Mod+K binding of its own, which also means the
+  // chord can't be handled twice. This replaced the Mod+K shortcuts cheat
+  // sheet outright (no second surface, no relocation to "?") — a global
+  // search over files and apps is worth the chord more than a static list
+  // of chords is.
+  const [searchOpen, setSearchOpen] = useState(false);
   // Read inside the once-registered listener so it can't re-open an overlay
-  // that's already up (while open, ShortcutsOverlay's own handler owns Mod+K
-  // and closes it — a stale-closure `false` here would immediately reopen it).
-  const shortcutsOpenRef = useRef(false);
-  shortcutsOpenRef.current = shortcutsOpen;
+  // that's already up (while open, GlobalSearchOverlay's own handler owns
+  // Mod+K and closes it — a stale-closure `false` here would immediately
+  // reopen it).
+  const searchOpenRef = useRef(false);
+  searchOpenRef.current = searchOpen;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing) return;
       if (!isMod(e) || e.key.toLowerCase() !== "k") return;
-      if (shortcutsOpenRef.current) return; // the overlay handles its own close
-      // Don't stack the cheat sheet on a dialog, context menu, or preview that
-      // already holds the overlay lock — Esc would then close them in the wrong
-      // order.
+      if (searchOpenRef.current) return; // the overlay handles its own close
+      // Don't stack search on a dialog, context menu, or preview that already
+      // holds the overlay lock — Esc would then close them in the wrong order.
       if (isOverlayOpen()) return;
       e.preventDefault(); // don't let the browser's Ctrl/Cmd+K take it
-      setShortcutsOpen(true);
+      setSearchOpen(true);
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -1073,11 +1076,14 @@ export default function App({ config }: { config: Config }) {
       <div id="app">
         <OnboardingWizard key={epoch} config={config} />
         <NotificationHost />
-        {/* Mod+K is App-wide (the listener above runs here too), so the sheet
+        {/* Mod+K is App-wide (the listener above runs here too), so search
             must be renderable here — or the flag flips with nothing shown and
-            the sheet pops open on whatever page the wizard lets go to. */}
-        {shortcutsOpen && (
-          <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
+            search pops open on whatever page the wizard lets go to. */}
+        {searchOpen && (
+          <GlobalSearchOverlay
+            home={config.home.replace(/\\/g, "/")}
+            onClose={() => setSearchOpen(false)}
+          />
         )}
       </div>
     );
@@ -1130,8 +1136,11 @@ export default function App({ config }: { config: Config }) {
           explorer kebab): the menu entries cannot own a dialog, so they post
           a request to platform/lib/share-app and this host renders it. */}
       <ShareAppHost />
-      {shortcutsOpen && (
-        <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
+      {searchOpen && (
+        <GlobalSearchOverlay
+          home={config.home.replace(/\\/g, "/")}
+          onClose={() => setSearchOpen(false)}
+        />
       )}
     </div>
   );
