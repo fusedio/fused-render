@@ -415,15 +415,15 @@ def warm_root() -> str:
 # nothing against the ~2.2 s the warm is saving.
 WARM_WAIT_POLL_S = 0.5
 # ...and the hard ceiling on that wait. The first-ever whole-home scan that
-# motivated this took 9.2 s (570k files, 74k dirs); six minutes is ~40x that,
+# motivated this took 9.2 s (570k files, 74k dirs); two minutes is ~13x that,
 # so even a much larger home on a much slower disk still gets warmed. This is
 # the LAST resort, not the usual exit: a worker killed mid-walk never writes
-# `run_end`, and the wait spots that within ABANDONED_RUN_S (5 min) through the
+# `run_end`, and the wait spots that within ABANDONED_RUN_S (90 s) through the
 # same mtime check `runner.status` uses. The ceiling sits just past that so the
 # common death takes the specific path, and covers only the pathological rest —
 # a worker alive but wedged — so the thread can never poll for the process
 # lifetime.
-WARM_WAIT_DEADLINE_S = 6 * 60.0
+WARM_WAIT_DEADLINE_S = 2 * 60.0
 
 
 def _wait_for_scan(cfg: IndexConfig, run_id: str) -> bool:

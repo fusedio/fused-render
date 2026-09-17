@@ -205,7 +205,7 @@ all of it billed to a keystroke. The warm moves it to idle.
   one scan `run_startup_scan` just spawned for that root (recorded in `_startup_runs`)
   and then searches again. It is not a scheduler: one named run, polled every
   `WARM_WAIT_POLL_S` (0.5 s, the worker's heartbeat cadence) with a hard
-  `WARM_WAIT_DEADLINE_S` ceiling (6 min — just past `runner.ABANDONED_RUN_S`, so a dead
+  `WARM_WAIT_DEADLINE_S` ceiling (2 min — just past `runner.ABANDONED_RUN_S`, so a dead
   worker is reported not-running before the ceiling is reached), on a daemon thread that
   cannot hold the process open. The search and the sweep then run **whatever ended the
   wait** — a finished scan, a dead worker, a pruned run dir, the ceiling — because how a

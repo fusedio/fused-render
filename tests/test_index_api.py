@@ -1793,6 +1793,17 @@ def test_startup_warm_refuses_a_mount_backed_home(home, tmp_path, monkeypatch):
     assert called == []
 
 
+def test_the_warm_wait_ceiling_still_sits_just_past_the_abandoned_threshold():
+    """The ceiling exists so a worker killed mid-walk (never writes `run_end`)
+    is spotted by the ABANDONED_RUN_S mtime check before the warm gives up for
+    the pathological reason (a worker alive but wedged) instead. That ordering
+    breaks if the two ever drift apart — a ceiling shorter than the threshold
+    would give up before a merely-slow-but-live worker's death could even be
+    detected."""
+    assert index_router.WARM_WAIT_DEADLINE_S > runner.ABANDONED_RUN_S
+    assert index_router.WARM_WAIT_DEADLINE_S - runner.ABANDONED_RUN_S <= 60
+
+
 def test_startup_scan_records_the_run_the_warm_waits_on(home, tmp_path, monkeypatch):
     """The warm waits on the run THIS process started, so the scheduler has to
     hand it over — `run_startup_scan` used to drop `runner.start`'s run id on

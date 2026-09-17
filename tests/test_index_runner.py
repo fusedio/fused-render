@@ -221,6 +221,15 @@ def test_start_joins_a_full_run_when_only_an_incremental_is_asked_for(tmp_path, 
     assert len(spawned) == 1
 
 
+def test_a_dead_run_is_reported_promptly_not_after_several_minutes():
+    """Compaction now heartbeats per partition (see the store.py loop this
+    threshold's own comment points at), so the long silent gap a whole-store
+    rewrite used to leave no longer has to be tolerated here — a genuinely
+    dead worker should be reported dead within about a minute and a half, not
+    five."""
+    assert 60 <= runner.ABANDONED_RUN_S <= 120
+
+
 def test_start_ignores_an_abandoned_run_of_the_same_root(tmp_path, spawned):
     """Liveness is the heartbeat, not the mere presence of a run dir: a
     killed worker leaves a `running` log behind, and treating that as live
