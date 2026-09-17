@@ -376,9 +376,10 @@ fused-render-open = "fused_render.winopen:main"
 # `pytest -m integration`.
 # To debug a single test serially, override: `pytest -n0 -x path::test`.
 [tool.pytest.ini_options]
-addopts = "-n auto -m \"not integration\""
+addopts = "-n auto -m \"not integration and not perf_large\""
 markers = [
     "integration: hits a real external tool/service rather than a fake (opt-in only: `pytest -m integration`).",
+    "perf_large: runs the indexing perf harness over a large (multi-minute) synthetic corpus rather than the default fast-CI size (opt-in only: `pytest -m perf_large`).",
 ]
 
 [tool.coverage.run]

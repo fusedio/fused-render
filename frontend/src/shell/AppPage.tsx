@@ -76,7 +76,7 @@ import {
   Webhook,
   type LucideIcon,
 } from "lucide-react";
-import { exportAppFile } from "@platform/lib/appShot";
+import { exportAppFile, notifyExportSaved } from "@platform/lib/appShot";
 import { openShareApp } from "@platform/lib/share-app";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppStar } from "@platform/ui/AppStar";
@@ -489,7 +489,7 @@ export default function AppPage({
         ".app-page-overview:not(.is-hidden) .app-page-frame",
       );
       const captureEl = isLive && frame?.dataset.loaded === "1" ? frame : null;
-      await exportAppFile(
+      const realPath = await exportAppFile(
         {
           path: exportPath,
           name: exportName,
@@ -504,6 +504,7 @@ export default function AppPage({
         },
         captureEl,
       );
+      notifyExportSaved(exportName, realPath);
     } catch (e) {
       notify({
         title: "Could not export " + slug + ": " + (e as Error).message,

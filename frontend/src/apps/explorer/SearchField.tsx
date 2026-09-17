@@ -416,20 +416,21 @@ export function SearchField({
     setQuery(item.path);
     searchInputRef.current?.focus();
   };
-  // The field's own resting state: empty, or still exactly the folder path
-  // the box pre-filled itself with on focus (`onFocus` below,
-  // `contractHome(fsPath, home)`) — query-pristine.ts's `isPristineQuery`.
-  // Nothing has been TYPED in either case, even though the box's own value
-  // is non-empty in the second — the distinction `searchAffordance` below
-  // and the completion exclusion need (SPEC-omnibox-search-affordance.md
-  // correction, 2026-09-10).
+  // The field's own resting state: empty, or still exactly the path the box
+  // pre-filled itself with on focus (`onFocus` below, `contractHome(crumbsPath,
+  // home)` — a file host's own path, not the parent scope `fsPath`, since
+  // that is what actually lands in the box) — query-pristine.ts's
+  // `isPristineQuery`. Nothing has been TYPED in either case, even though
+  // the box's own value is non-empty in the second — the distinction
+  // `searchAffordance` below and the completion exclusion need
+  // (SPEC-omnibox-search-affordance.md correction, 2026-09-10).
   //
   // FINDING 5 (code review, 2026-09-10): checked against `q` (the deferred,
   // trimmed value), not the live `query` above — the same reasoning
   // FileSearchField.tsx's own pristine guard already applies to its
   // navigation effect, applied here to keep this in step with `escapes`
   // (see the `q` prop's own doc comment).
-  const pristine = isPristineQuery(q, fsPath, home);
+  const pristine = isPristineQuery(q, fsPath, home, crumbsPath);
 
   // SPEC-omnibox-search-affordance.md scope item 4 (variant E): the ONE
   // pressable search offer the dropdown gets, plus the non-interactive
@@ -673,8 +674,15 @@ export function SearchField({
               // Search button — still opens holding the current path,
               // selected: the field is a location bar first, and typing
               // over a pre-filled address is the one thing every text input
-              // already teaches you to expect.
-              setQuery(contractHome(fsPath, home));
+              // already teaches you to expect. Seeded from `crumbsPath` (what
+              // the resting crumbs just displayed), not `fsPath` (the search
+              // scope) — a file host's crumbs show the file itself, and a
+              // plain focus over a file must open holding that file's own
+              // path, not its parent folder with the filename dropped.
+              // `isPristineQuery`'s own `crumbsFsPath` argument (above and
+              // below) is what keeps a committed query still searching the
+              // parent despite this seed being the fuller path.
+              setQuery(contractHome(crumbsPath, home));
               seedSelectRef.current = true;
               // The select effect below is keyed on `seedRequestToken`
               // ALONE, so arming `seedSelectRef` without also bumping the
@@ -685,7 +693,7 @@ export function SearchField({
               // requested-focus path: a token that changes unconditionally
               // is the only dependency that can't be bailed out of.
               setSeedRequestToken((t) => t + 1);
-            } else if (isPristineQuery(query, fsPath, home)) {
+            } else if (isPristineQuery(query, fsPath, home, crumbsPath)) {
               // Already holding the pre-filled path from an earlier focus
               // that blurred without committing (searchBoxBlurAction's
               // "unpin" keeps the text). Nothing to re-seed, but a click

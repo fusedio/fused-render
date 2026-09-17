@@ -97,11 +97,12 @@ export function FileSearchField({ active, fsPath }: FileSearchFieldProps) {
   //
   // `!isPristineQuery(q, ...)` (SPEC-omnibox-search-affordance.md
   // correction, 2026-09-10) — a hard requirement, not an optimisation: this
-  // box always arrives pre-filled with `parentPath`'s own absolute path
-  // (SearchField.tsx's `onFocus`), and since `escapesFsPath` no longer
-  // treats a same-subtree absolute path as escaping, that untouched
-  // pre-fill alone now satisfies `searching && gateOpen` the MOMENT the
-  // field is focused — before the user has typed a single character.
+  // box always arrives pre-filled with the FILE's own absolute path
+  // (SearchField.tsx's `onFocus`, seeded from `crumbsFsPath`), and since
+  // `escapesFsPath` no longer treats a same-subtree absolute path as
+  // escaping, that untouched pre-fill alone now satisfies `searching &&
+  // gateOpen` the MOMENT the field is focused — before the user has typed a
+  // single character.
   // Without this guard, focusing a file's search box would immediately hand
   // off to the parent folder with the pre-filled path as its "committed"
   // query, which is not a search anyone asked for.
@@ -116,7 +117,12 @@ export function FileSearchField({ active, fsPath }: FileSearchFieldProps) {
   useLayoutEffect(() => {
     if (!active || firedRef.current) return;
     if (!searching || !gateOpen) return;
-    if (isPristineQuery(q, parentPath, home)) return;
+    // `fsPath` (this file's own path) as the 4th argument: SearchField now
+    // seeds this box with the file's own full path (`crumbsFsPath`), not
+    // `parentPath` alone — that seed must still read as pristine here too,
+    // or a plain focus would immediately hand off to the parent with the
+    // file's own path as a "committed" search query.
+    if (isPristineQuery(q, parentPath, home, fsPath)) return;
     firedRef.current = true;
     navigate(parentPath, { isDir: true, q: query });
   });

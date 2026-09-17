@@ -376,12 +376,13 @@ def list_runs(cfg: IndexConfig, limit: int = 20) -> dict:
 
 # Two thresholds for an unfinished run directory, because the two mistakes
 # cost differently. A worker touches its run dir at least every half second
-# while it walks, but a big DuckDB compaction can go quiet for a while — so
-# REPORTING a run as dead waits a few minutes (wrongly saying "indexing…"
-# for minutes after a crash is annoying; wrongly saying a live scan died is
-# just a stale label until the next event lands). DELETING its directory
+# while it walks, and compaction heartbeats per partition rather than staying
+# silent for the whole rewrite (store.py) — so REPORTING a run as dead can
+# wait under two minutes rather than several (wrongly saying "indexing…" for
+# that long after a crash is still annoying; wrongly saying a live scan died
+# is just a stale label until the next event lands). DELETING its directory
 # waits a day: pruning a live run's shards out from under it loses the scan.
-ABANDONED_RUN_S = 5 * 60
+ABANDONED_RUN_S = 90
 STALE_RUN_S = 24 * 3600
 
 
