@@ -225,6 +225,75 @@ def test_skip_pulls_a_blocked_task_back_into_the_line():
     assert line_of(m) == ["a"]
 
 
+def test_skip_of_a_blocked_task_on_a_free_folder_resumes_without_spawning():
+    """Bugbot, PR #1194: skip of a task parked in `blocked` used to pump it as
+    ordinary queued work — no held answer, `resumed` unset — which spawned a
+    SECOND turn (or dropped the item) beside the run that is still alive,
+    waiting on its card. The fix files it as a resume marker: the pump owns
+    it without spawning, exactly like `card_cleared` does."""
+    world = World()
+    m = world.manager()
+    m.enqueue(F1, "a")
+    m.card_raised("a", "run")                # the only task; folder frees, a parked
+    assert (owner_key(m), blocked_of(m)) == (None, ["a"])
+    world.spawned.clear()
+
+    result = m.skip("a")
+
+    assert world.spawned == [], "a second turn beside the parked run"
+    assert owner_key(m) == "a"
+    assert m.owner(F1)["run_id"] == "run"
+    assert result["started"] is True
+    assert m.snapshot()["folders"][F1]["owner"]["starting"] is False
+
+
+def test_card_answered_on_a_skip_resumed_owner_delivers_directly():
+    """The owner IS the blocked run once skip resumes it — `card_answered`
+    matching the owner returns not-held so the decide endpoint delivers the
+    verdict straight into the live turn, same as any other owner."""
+    world = World()
+    m = world.manager()
+    m.enqueue(F1, "a")
+    m.card_raised("a", "run")
+    m.skip("a")
+    assert owner_key(m) == "a"
+    assert m.card_answered("a", "run", "req", {"x": 1}) == {"held": False,
+                                                             "position": 0}
+    assert world.delivered == []             # the caller delivers it, not this call
+
+
+def test_card_cleared_on_a_skip_resumed_owner_is_a_no_op():
+    """The task is no longer in `blocked` once skip resumes it as owner, so
+    `card_cleared` — somebody answering the same card elsewhere — is a no-op
+    that keeps ownership exactly where it is."""
+    world = World()
+    m = world.manager()
+    m.enqueue(F1, "a")
+    m.card_raised("a", "run")
+    m.skip("a")
+    before = m.snapshot()
+    m.card_cleared("a", "run")
+    assert m.snapshot() == before
+    assert owner_key(m) == "a"
+
+
+def test_reconcile_keeps_a_skip_resumed_owner_that_is_still_blocked():
+    """A skip-resumed owner is still a parked card, not a live turn — only
+    `blocked(record)` says it is worth keeping."""
+    world = idle_world()
+    m = world.manager()
+    m.started(F1, "a", "run-a", "sess-a")
+    m.card_raised("a", "run-a")
+    m.skip("a")
+    assert owner_key(m) == "a"
+    world.blocked_keys.add("run-a")
+    m.reconcile()
+    assert owner_key(m) == "a"
+    world.blocked_keys.discard("run-a")
+    m.reconcile()
+    assert owner_key(m) is None
+
+
 def test_skip_of_the_owner_and_of_a_stranger_are_no_ops():
     m = World().manager()
     m.enqueue(F1, "a")
@@ -285,6 +354,41 @@ def test_remove_of_a_stranger_changes_nothing():
     before = m.snapshot()
     m.remove("nobody")
     assert m.snapshot() == before
+
+
+def test_remove_of_a_stuck_line_head_pumps_the_next_task(monkeypatch):
+    """Bugbot, PR #1194: after `SpawnBusy` the owner is already None with the
+    item that failed sitting at line[0]. `remove` of exactly that task used to
+    only pump when the removed task was the OWNER, leaving the rest of the
+    line — "owner None, line [X, Y]" — waiting for ever."""
+    class Busy(Exception):
+        pass
+
+    monkeypatch.setattr(qm, "_BUSY", (Busy,))
+    monkeypatch.setattr(qm, "_BUSY_TRIED", True)
+    world = World()
+    attempts = []
+
+    def spawn(folder, key):
+        attempts.append(key)
+        if key == "x":
+            raise Busy()
+        return {"run_id": "run-" + key, "session_id": "sess-" + key}
+
+    world.spawn = spawn
+    m = world.manager()
+    m.started(F1, "owner")
+    m.enqueue(F1, "x")
+    m.enqueue(F1, "y")
+    m.turn_ended("owner")                    # owner frees; x is busy, resigns
+    assert owner_key(m) is None
+    assert line_of(m) == ["x", "y"]
+
+    attempts.clear()
+    m.remove("x")
+    assert line_of(m) == []
+    assert owner_key(m) == "y"
+    assert attempts == ["y"]
 
 
 # ------------------------------------------------------------------- started
@@ -1127,6 +1231,49 @@ def test_claim_takes_a_task_out_of_whatever_line_it_stood_in():
     assert owner_key(m, F2) == "b"
 
 
+def test_claim_pumps_a_folder_it_pulled_a_stuck_line_head_out_of():
+    """Bugbot, PR #1194: `claim` taking a task out of another folder's line
+    used to never pump that folder — only `remove`/`started` pulling a task
+    out of a folder it OWNED did. After `SpawnBusy` or a failed deliver a
+    folder's owner can already be None with its line sitting on its own, and
+    the item this call takes may be the only thing ever going to unstick it."""
+    world = World()
+    m = world.manager()
+    m._state["folders"][F1] = {
+        "owner": None, "blocked": [],
+        "line": [{"task": "b", "entry_id": "", "promoted": False,
+                 "run_id": "", "session_id": "", "resumed": False},
+                {"task": "c", "entry_id": "", "promoted": False,
+                 "run_id": "", "session_id": "", "resumed": False}]}
+    world.spawned.clear()
+
+    assert m.claim(F2, "b", "run-b", "sess-b") is True
+
+    assert line_of(m, F1) == []
+    assert owner_key(m, F1) == "c"
+    assert world.spawned == [(F1, "c")]
+    assert owner_key(m, F2) == "b"
+
+
+def test_started_pumps_a_folder_it_pulled_a_stuck_line_head_out_of():
+    world = World()
+    m = world.manager()
+    m._state["folders"][F1] = {
+        "owner": None, "blocked": [],
+        "line": [{"task": "b", "entry_id": "", "promoted": False,
+                 "run_id": "", "session_id": "", "resumed": False},
+                {"task": "c", "entry_id": "", "promoted": False,
+                 "run_id": "", "session_id": "", "resumed": False}]}
+    world.spawned.clear()
+
+    m.started(F2, "b", "run-b", "sess-b")
+
+    assert line_of(m, F1) == []
+    assert owner_key(m, F1) == "c"
+    assert world.spawned == [(F1, "c")]
+    assert owner_key(m, F2) == "b"
+
+
 def test_claim_took_separates_taking_a_folder_from_already_owning_it():
     """One bool could not tell "I have it now" from "I already had it", and
     run-now hands the tree back on a later refusal — which, in the `own` case,
@@ -1138,6 +1285,76 @@ def test_claim_took_separates_taking_a_folder_from_already_owning_it():
     assert m.claim_took(F1, "b", "run-b") == (False, False)
     assert m.claim_took("", "a") == (False, False)
     assert m.claim(F1, "a") is True, "the bool wrapper is what the doors read"
+
+
+def test_a_follow_up_claim_absorbed_survives_one_turn_ended():
+    """Bugbot, PR #1194: a follow-up `claim` that finds its own conversation
+    already owns the folder used to return `(True, False)` without recording
+    that a SECOND send is now in flight — so the EARLIER send's `turn_ended`
+    released the owner while the absorbed send was still running in the same
+    host. `turns` counts sends in flight; only the matching number of
+    `turn_ended` calls releases the folder."""
+    m = idle_world().manager()
+    assert m.claim_took(F1, "a", "run-a", "sess-a") == (True, True)
+    assert m.claim_took(F1, "a", "run-a", "sess-a") == (True, False)   # absorbed
+    assert m.owner(F1)["turns"] == 2
+
+    m.turn_ended("a", "run-a")               # the first send's result row
+    assert owner_key(m) == "a", "the absorbed send is still running"
+
+    m.turn_ended("a", "run-a")               # the second send's result row
+    assert owner_key(m) is None
+
+
+def test_started_by_the_owner_itself_also_counts_a_turn():
+    """`started` overwriting the owner unconditionally used to reset `turns`
+    to one every time — the same bug `claim_took` had, from the spawn-site
+    door instead of the ordinary one."""
+    m = idle_world().manager()
+    m.started(F1, "a", "run-a", "sess-a")
+    m.started(F1, "a", "run-a", "sess-a")
+    assert m.owner(F1)["turns"] == 2
+    m.turn_ended("a", "run-a")
+    assert owner_key(m) == "a"
+    m.turn_ended("a", "run-a")
+    assert owner_key(m) is None
+
+
+def test_exited_releases_regardless_of_turns_in_flight():
+    """The child process is gone; no send can still be running in it, so
+    `exited` must not wait for as many calls as `turns` counts."""
+    m = idle_world().manager()
+    m.claim_took(F1, "a", "run-a", "sess-a")
+    m.claim_took(F1, "a", "run-a", "sess-a")
+    assert m.owner(F1)["turns"] == 2
+    m.exited("a", "run-a", 0)
+    assert owner_key(m) is None
+
+
+def test_turns_persist_across_a_fresh_instance(state):
+    world = idle_world()
+    m = world.manager()
+    m.claim_took(F1, "a", "run-a", "sess-a")
+    m.claim_took(F1, "a", "run-a", "sess-a")
+
+    second = idle_world()
+    second.running_keys.add("a")
+    fresh = second.manager()
+    assert fresh.owner(F1)["turns"] == 2
+    fresh.turn_ended("a", "run-a")
+    assert owner_key(fresh) == "a"
+    fresh.turn_ended("a", "run-a")
+    assert owner_key(fresh) is None
+
+
+def test_a_single_turn_still_releases_on_the_first_turn_ended():
+    """No regression for the ordinary case: one send in, one `turn_ended`,
+    released."""
+    m = idle_world().manager()
+    m.claim_took(F1, "a", "run-a", "sess-a")
+    assert m.owner(F1)["turns"] == 1
+    m.turn_ended("a", "run-a")
+    assert owner_key(m) is None
 
 
 def test_claim_took_calls_a_placeholder_a_take():
@@ -1579,6 +1796,43 @@ def test_reconcile_never_pops_a_spawn_that_has_not_landed_yet():
     assert owner_key(m) == "a"
 
     world.now += qm.SPAWN_GRACE + 5
+    m.reconcile()
+    assert owner_key(m) is None
+
+
+def test_reconcile_never_pops_an_in_flight_spawn_past_the_grace():
+    """Bugbot, PR #1194: `SPAWN_GRACE` is 10s, but `dispatch_entry`/`_send` can
+    block up to 60s (the subprocess timeout). A reconcile that only looked at
+    age popped a `starting` owner mid-spawn and started a SECOND task beside
+    it. An owner whose spawn is known to still be in flight is never popped
+    for age, however old it gets — only once the spawn actually lands does
+    `reconcile` fall back to consulting `running` as usual."""
+    world = World()
+    inside = threading.Event()
+    release = threading.Event()
+
+    def slow(folder, key):
+        inside.set()
+        assert release.wait(5)
+        return {"run_id": "run-" + key, "session_id": "sess-" + key}
+
+    world.spawn = slow
+    m = world.manager()
+    thread = threading.Thread(target=m.enqueue, args=(F1, "slow"))
+    thread.start()
+    assert inside.wait(5)                    # the spawn is in flight
+
+    world.now += qm.SPAWN_GRACE + 5          # far older than the grace
+    m.reconcile()
+    assert owner_key(m) == "slow"            # not popped: the spawn is still going
+    assert line_of(m) == []
+
+    release.set()
+    thread.join(5)
+    assert owner_key(m) == "slow"
+    assert m.owner(F1)["run_id"] == "run-slow"
+
+    world.running_keys.discard("run-slow")   # landed: the status sync decides now
     m.reconcile()
     assert owner_key(m) is None
 

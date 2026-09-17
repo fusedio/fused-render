@@ -127,7 +127,16 @@ def _owner_rec(raw) -> dict | None:
             "session_id": _text(raw.get("session_id")),
             "task": key, "entry_id": _text(raw.get("entry_id")),
             "since": _number(raw.get("since")),
-            "starting": bool(raw.get("starting"))}
+            "starting": bool(raw.get("starting")),
+            # IN-FLIGHT SENDS INTO THIS OWNER (2026-09-17, Bugbot PR #1194). A
+            # follow-up `claim`/`started` that finds its own conversation
+            # already owns the folder is a SECOND send absorbed into it, and
+            # `turn_ended` must not release the folder for the first send's
+            # result row while the second is still going. An index with no
+            # field to load (every one before today) had exactly one send in
+            # flight — the default is 1, never 0, because a stored 0 would
+            # already have been released rather than persisted.
+            "turns": int(_number(raw.get("turns"))) or 1}
 
 
 def _answer_rec(raw) -> dict | None:
@@ -250,6 +259,17 @@ class QueueManager:
         # What the last transaction DECIDED and `_flush` has still to do, with
         # the lock released: `(kind, folder, item)`. See `_txn`.
         self._starting: list[tuple[str, str, dict]] = []
+        # TASK KEYS WHOSE SPAWN IS STILL IN FLIGHT (2026-09-17, Bugbot PR
+        # #1194) — added in `_pump` (phase 1, under the lock, the same moment
+        # the job is queued) and removed in `_start_one` (phase 2, the moment
+        # the injected `spawn` call has actually returned). `dispatch_entry`/
+        # `_send` can block up to 60s; `SPAWN_GRACE` is only 10s, so
+        # `reconcile` used to pop a `starting` owner mid-spawn and start a
+        # second task beside it. An owner in this set is never popped for age
+        # alone; not in it, `SPAWN_GRACE` still applies (e.g. a crash mid-spawn,
+        # where a fresh process's set starts empty). Not persisted: it
+        # describes THIS process's in-flight calls, nothing a restart inherits.
+        self._spawning: set[str] = set()
         self._state = self._load()
         self._migrate_legacy()
         # NOT RECONCILED HERE, and that absence is load-bearing. `reconcile`
@@ -454,19 +474,45 @@ class QueueManager:
             rec[name] = keep
         return found
 
+    def _take_everywhere(self, task_key: str, keys: set,
+                         except_folder: str = "") -> None:
+        """Pull `task_key` out of every line/blocked list it stands in — it is
+        about to be owned elsewhere — and PUMP every folder it was actually
+        taken from other than `except_folder` (the one the caller is about to
+        own explicitly, so pumping it first would only be overwritten).
+
+        After `SpawnBusy` or a failed deliver a folder's owner can already be
+        None with its line sitting untouched; the item taken here may have
+        been the only thing standing between that empty owner and the next
+        task ever getting a turn (Bugbot, PR #1194). `_pump` is a no-op unless
+        the folder is free with a non-empty line, so this only ever does
+        something in exactly that stuck state."""
+        for other_key, other_rec in self._state["folders"].items():
+            if self._take(other_rec, task_key) is None:
+                continue
+            keys.add(task_key)
+            if other_key != except_folder:
+                self._pump(other_key, keys)
+
     def _own(self, rec: dict, item: dict, run_id: str = "",
-             session_id: str = "") -> dict:
+             session_id: str = "", turns: int = 1) -> dict:
         """File `item` as this folder's owner, run first (see `_owner_rec`).
 
         The item's own `run_id`/`session_id` are the fallback, which is what
         makes re-owning a BLOCKED task honest: the run that raised the card is
-        the run that gets the folder back."""
+        the run that gets the folder back.
+
+        `turns` is the number of sends in flight into this owner — always 1
+        for a FRESH ownership (the one send that just took the folder); a
+        follow-up absorbed into a running owner does not call this, it
+        increments the existing record instead (`claim_took`, `started`)."""
         rec["owner"] = {"run_id": _text(run_id) or _text(item.get("run_id")),
                         "session_id": (_text(session_id)
                                        or _text(item.get("session_id"))),
                         "task": item["task"],
                         "entry_id": item.get("entry_id", ""),
-                        "since": float(self._clock()), "starting": False}
+                        "since": float(self._clock()), "starting": False,
+                        "turns": turns}
         return rec["owner"]
 
     def _release(self, rec: dict, folder: str, keys: set) -> None:
@@ -660,7 +706,13 @@ class QueueManager:
             return
         self._own(rec, item, _text(answers[0]["run_id"]) if answers else "")
         rec["owner"]["starting"] = True
-        self._starting.append(("deliver" if answers else "spawn", folder, item))
+        kind = "deliver" if answers else "spawn"
+        if kind == "spawn":
+            # PHASE 1 OF THE SPAWN: the decision, under the lock. `_start_one`
+            # (phase 2, lock released) removes this the moment the injected
+            # `spawn` call returns — see `_spawning`'s docstring in `__init__`.
+            self._spawning.add(key)
+        self._starting.append((kind, folder, item))
 
     def _start_one(self, kind: str, folder: str, item: dict, keys: set) -> None:
         """One queued job, with the lock RELEASED for the injected call."""
@@ -675,6 +727,10 @@ class QueueManager:
         except Exception as exc:  # noqa: BLE001 — every outcome is handled below
             failure = exc
         with self._lock:
+            # PHASE 2: the injected `spawn` call has returned (or raised), so
+            # whatever it is doing to the world it has finished doing. From
+            # here `reconcile` may treat this owner as an ordinary one again.
+            self._spawning.discard(key)
             rec = self._folder(folder)
             owner = self._still_starting(rec, item)
             if owner is None:
@@ -794,10 +850,24 @@ class QueueManager:
             owner = rec["owner"]
             if owner is not None and owner["task"] == task_key:
                 return {**_nowhere(), "started": False}
+            was_blocked = any(i["task"] == task_key for i in rec["blocked"])
             item = self._take(rec, task_key)
             if item is None:
                 return {**_nowhere(), "started": False}
             item["promoted"] = True
+            if was_blocked:
+                # A BLOCKED TASK IS A LIVE RUN PARKED ON A CARD, NOT A MESSAGE
+                # (Bugbot, PR #1194). Filed as ordinary queued work, a pump
+                # that hands it a free folder has no held answer and no
+                # message to spawn — the run is still waiting on its card —
+                # so it either spawned a SECOND turn beside the parked one or
+                # dropped the item outright. A RESUME MARKER (the same device
+                # `card_cleared` uses) makes the pump own it without spawning;
+                # the card being answered is what actually lets it go, and
+                # `card_answered`/`card_cleared` both work against an owner
+                # that is blocked — `blocked(record)` is what keeps it alive
+                # for `reconcile` in the meantime.
+                item["resumed"] = True
             rec["line"].insert(0, item)
             keys.add(task_key)
             self._pump(folder, keys)
@@ -815,11 +885,21 @@ class QueueManager:
             if self._state["answers"].pop(task_key, None) is not None:
                 keys.add(task_key)
             for folder, rec in list(self._state["folders"].items()):
-                if self._take(rec, task_key) is not None:
+                touched = self._take(rec, task_key) is not None
+                if touched:
                     keys.add(task_key)
                 owner = rec["owner"]
                 if owner is not None and owner["task"] == task_key:
                     self._release(rec, folder, keys)
+                elif touched:
+                    # AFTER `SpawnBusy` OR A FAILED DELIVER the owner is
+                    # already None and the item just taken may have been
+                    # sitting at line[0] — the only thing between an empty
+                    # owner and the next task getting a turn (Bugbot, PR
+                    # #1194). `_pump` is a no-op unless the folder is free
+                    # with a non-empty line, so this only ever does something
+                    # in exactly that stuck state.
+                    self._pump(folder, keys)
 
     def forget_entry(self, entry_id: str) -> None:
         """ONE MESSAGE IS GONE — not the task it belongs to.
@@ -906,18 +986,23 @@ class QueueManager:
                 owner = rec["owner"] = None
             if owner is not None:
                 if self._owner_matches(owner, task_key, run_id, session_id):
-                    # THE SAME CONVERSATION, under a better name than it had.
+                    # THE SAME CONVERSATION, under a better name than it had —
+                    # OR a follow-up absorbed into a turn already running.
+                    # Every claim landing here dispatches ANOTHER send into
+                    # this owner, so `turns` counts it: an earlier send's
+                    # `turn_ended` must not release the folder while this one
+                    # is still going (Bugbot, PR #1194).
                     if run_id and not owner["run_id"]:
                         owner["run_id"] = _text(run_id)
                     if session_id and not owner["session_id"]:
                         owner["session_id"] = _text(session_id)
+                    owner["turns"] = int(owner.get("turns") or 0) + 1
                     return True, False
                 if not (_is_placeholder(owner["task"])
                         and not _is_placeholder(task_key)):
                     return False, False
                 keys.add(owner["task"])
-            for other in self._state["folders"].values():
-                self._take(other, task_key)
+            self._take_everywhere(task_key, keys, except_folder=folder)
             self._own(rec, {"task": task_key, "entry_id": ""}, _text(run_id),
                       _text(session_id))
             keys.add(task_key)
@@ -947,14 +1032,24 @@ class QueueManager:
         if not folder or not task_key:
             return
         with self._txn() as keys:
-            for other in self._state["folders"].values():
-                self._take(other, task_key)
+            self._take_everywhere(task_key, keys, except_folder=folder)
             rec = self._folder(folder)
             previous = rec["owner"]
             if previous is not None and previous["task"] != task_key:
                 keys.add(previous["task"])
-            self._own(rec, {"task": task_key, "entry_id": ""},
-                      _text(run_id), _text(session_id))
+            if previous is not None and previous["task"] == task_key:
+                # THE OWNER ITSELF, DECLARING AGAIN: another send dispatched
+                # into this same conversation while its last one was still
+                # going. Overwriting via `_own` would reset `turns` to one and
+                # let an EARLIER send's `turn_ended` release the folder out
+                # from under this one — the same case `claim_took` handles
+                # for its own door (Bugbot, PR #1194).
+                previous["run_id"] = _text(run_id) or previous["run_id"]
+                previous["session_id"] = _text(session_id) or previous["session_id"]
+                previous["turns"] = int(previous.get("turns") or 0) + 1
+            else:
+                self._own(rec, {"task": task_key, "entry_id": ""},
+                          _text(run_id), _text(session_id))
             keys.add(task_key)
 
     def card_raised(self, task_key: str, run_id: str = "") -> None:
@@ -1098,22 +1193,33 @@ class QueueManager:
         return True
 
     def turn_ended(self, task_key: str, run_id: str = "") -> None:
-        """The session host saw a `result` row: the owner's turn is over; pump."""
-        self._finish(task_key, run_id)
+        """The session host saw a `result` row: ONE SEND into the owner is
+        over. Released only once every send this owner has absorbed has
+        ended — `owner["turns"]` counts sends in flight, `claim_took`/
+        `started` increment it when a follow-up is absorbed into a turn
+        already running, and an earlier send's `result` row must not release
+        the folder out from under a later one still going in the same host
+        (Bugbot, PR #1194)."""
+        self._finish(task_key, run_id, force=False)
 
     def exited(self, task_key: str, run_id: str = "", code: int | None = None) -> None:
-        """The child process is gone. Same effect as `turn_ended`, and for one
-        turn the two arrive in either order — which is why both are no-ops
-        against an owner that has already moved on."""
-        self._finish(task_key, run_id)
+        """The child process is gone — no send can still be in flight in it,
+        so this releases regardless of `turns`, unlike `turn_ended`."""
+        self._finish(task_key, run_id, force=True)
 
-    def _finish(self, task_key: str, run_id: str = "") -> None:
+    def _finish(self, task_key: str, run_id: str = "", force: bool = False) -> None:
         with self._txn() as keys:
             for folder, rec in list(self._state["folders"].items()):
                 owner = rec["owner"]
                 if owner is None:
                     continue
                 if self._event_matches(owner, task_key, run_id):
+                    if not force:
+                        remaining = int(owner.get("turns") or 0) - 1
+                        if remaining > 0:
+                            owner["turns"] = remaining
+                            keys.add(owner["task"])
+                            return
                     self._release(rec, folder, keys)
                     return
 
@@ -1262,6 +1368,17 @@ class QueueManager:
                     if self._stale_placeholder(owner, now):
                         keys.add(owner["task"])
                         rec["owner"] = None
+                    continue
+                if owner.get("starting") and owner["task"] in self._spawning:
+                    # THE SPAWN IS STILL IN FLIGHT. `dispatch_entry`/`_send`
+                    # can block up to 60s (the subprocess timeout) — far
+                    # longer than `SPAWN_GRACE` — and there is nothing the
+                    # status sync can be asked about a process with no run id
+                    # yet, so an owner known to still be spawning is never
+                    # popped for being dead, whatever its age (Bugbot, PR
+                    # #1194). `SPAWN_GRACE` below is the backstop for a
+                    # `starting` owner NOT in this set — e.g. after a crash
+                    # mid-spawn, where a fresh process's set starts empty.
                     continue
                 if (not _text(owner.get("run_id"))
                         and now - _number(owner.get("since")) < SPAWN_GRACE):
