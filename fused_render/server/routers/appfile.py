@@ -53,8 +53,11 @@ def api_appfile_export(path: str = ""):
     """Build and download ``<app name>.fused`` for the app folder at ``path``.
 
     A GET, deliberately: the trigger is browser navigation from the card menu,
-    which cannot set headers, and the operation is read-only against the
-    folder (the zip lands in a temp dir removed once the response is sent).
+    which cannot set headers. The file lands in a temp dir removed once the
+    response is sent. The one write to the folder itself is the app's FIRST
+    export stamping ``<meta name="fused-app-id">`` into its entry page
+    (`app_id.py`) — an identity the app then keeps for life, so the same
+    folder exported again produces a file with the same ``app_id``.
     """
     if not path or not os.path.isabs(path):
         return _error("path must be an absolute app folder path")

@@ -54,25 +54,32 @@ export const PREVIEW_CHAT_MIN = 180;
  * `peekWidth / 1280` any more (Akshil, 2026-09-14 — design.md, Polish batch 4,
  * item 7).
  *
- * The box is inset by one header-button width on each side (`--peek-icon-w` in
- * styles/task-peek.css), so the app's edges line up with the × and the ⋮ above
- * it instead of being welded to the panel's walls. The SCALE has to know about
- * that: padding on a scroller does not shrink what is inside it, so a frame
- * still drawn at `peekWidth / 1280` would simply push 2×28px of app out past
- * the right-hand gutter and grow a horizontal scrollbar for it.
+ * The box is inset by this on each side (`--peek-preview-inset` in
+ * styles/task-peek.css) rather than welded to the panel's walls. The SCALE
+ * has to know about that: padding on a scroller does not shrink what is
+ * inside it, so a frame still drawn at `peekWidth / 1280` would simply push
+ * 2×this much of app out past the gutter and grow a horizontal scrollbar
+ * for it.
+ *
+ * Was 38 (one header-button width, so the app's edges lined up with the ×
+ * and the ⋮ above it — Akshil, 2026-09-14); Akshil, 2026-09-16, cut to a
+ * hairline — the alignment-with-the-header reasoning no longer applies, this
+ * is just "keep the scroller from clipping the frame's own edge".
  *
  * ONE NUMBER IN TWO LANGUAGES, which is the caveat: CSS owns the gutter, this
  * owns the arithmetic, and neither can read the other. They are named in each
  * other's comments and pinned together by `peek-preview.test.ts`.
  */
-export const PREVIEW_INSET = 38;
+export const PREVIEW_INSET = 1;
 
 /** Air above and below the preview CARD inside the box — `padding-top` /
  *  `padding-bottom` of `.task-side-peek-preview` (styles/task-peek.css). The
  *  box's `height` includes it, so the card the app is drawn in is this much
  *  shorter, twice — and the virtual viewport has to be sized to the CARD, or
- *  the app is 24px taller than its frame and scrolls under the border. */
-export const PREVIEW_PAD_Y = 12;
+ *  the app is taller than its frame and scrolls under the border.
+ *
+ *  Was 12; Akshil, 2026-09-16, cut to a hairline, matching `PREVIEW_INSET`. */
+export const PREVIEW_PAD_Y = 1;
 
 /** One arrow press on the horizontal seam, matching the vertical one's. */
 export const PREVIEW_KEY_STEP = 10;

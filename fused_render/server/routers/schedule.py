@@ -184,6 +184,198 @@ async def api_schedule_shot(file: UploadFile | None = File(default=None),
     return body
 
 
+def resolve_target(value, field: str = "target"):
+    """`(resolved path, None)` for a create body's target, or `("", error)`.
+
+    TWO refusals, both of which have to happen before anything is stored, and
+    both of which every caller that creates an entry owes:
+
+    * **it is required.** A scheduled turn with no path is an agent turned loose
+      on whatever the process happens to be sitting in.
+    * **it may not be mount-backed.** The bytes under the mounts dir come from a
+      remote over FUSE and every peer gate refuses those paths (the claude
+      template's `condition.py` exists for this single refusal), so scheduling
+      against one would route around that gate. `is_mount_backed` is imported per
+      call, not at module scope: binding the name at import would freeze it past
+      the mounts registry's own seams, the same reason the peer gates resolve it
+      late.
+
+    Resolved the way the model will resolve it (expanduser + abspath), so the
+    path this clears is the path that gets scheduled. `field` names the field in
+    the message because the queue's admission calls it `project` and a person
+    reading "target: required" after sending a `project` learns nothing.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return "", _error(f"{field}: required", status=400)
+
+    from fused_render.shell.mounts import is_mount_backed
+
+    resolved = os.path.abspath(os.path.expanduser(value.strip()))
+    if is_mount_backed(resolved):
+        return "", _error(
+            f"{field}: refused — a scheduled session must not run against a "
+            "remote mount", status=400)
+    return resolved, None
+
+
+def create_entry(target: str, body: dict, due, *, repeats: str = "",
+                 rule: dict | None = None, create_target: bool = False,
+                 origin: str = "") -> dict:
+    """`schedule.create` with a request body's optional fields forwarded exactly
+    as this router forwards them. Raises `ValueError` with the model's sentence.
+
+    ONE copy of the forwarding list, because there are now two endpoints that
+    create an entry from a request body — the New task form here, and the chat
+    admission next door (`POST /api/tasks/queue/admit`), which stores the very
+    message a user just typed when its folder is busy. A queued chat send that
+    silently dropped `model`, `effort` or the attachments would be a different
+    message from the one that would have gone had the folder been free, which is
+    the one thing the queue must never be: it delays work, it does not change it.
+
+    `title`, `description`, `new_task_each_run`, `session_learned`, `immediate`,
+    `images` and `attachments` are passed straight through and normalised by the
+    model (`_text`/`_flag`/`_images`/`_attachments`), not validated here — the
+    form omits a field rather than sending a blank one, so "absent", "null" and
+    "" all have to mean the same thing, and this layer must not hold a second
+    copy of the model's rules. What it must not do is DROP them; a body-dict
+    endpoint silently ignores what it does not name, which is how they went
+    missing in the first place.
+
+    `follow_of` is forwarded the same way and validated by the model, which is
+    the only layer that can: it names an entry in the scheduler's store, so
+    "does this exist" is a question only that store answers. The admission
+    endpoint is its one sender — a message typed into a chat whose first message
+    is still queued has no session id to pass, and this is what keeps the two
+    of them one task.
+
+    `origin` is the one field here that is NOT taken from the body, and that is
+    the whole of it: it says which surface asked for this message, and a request
+    cannot be trusted to say. The chat admission passes `"chat"` because it IS
+    the chat's send path; the New task form and the calendar pass nothing, and
+    their entries carry none — which is what lets a chat tell a message it
+    queued itself from one somebody scheduled into it (`schedule.create`).
+
+    `model` and `effort` are likewise not validated into a 400: `--model` takes
+    an alias or a full id and `--effort` one of five levels, and the authority on
+    both is the CLI this server shells out to, not a list in this file that would
+    go stale the day Claude Code learns a new one. A value the CLI refuses fails
+    the RUN, with the CLI's own sentence on the entry, which is a better error
+    than a 400 written from a guess.
+    """
+    return schedule.create(
+        target, body.get("message"), due,
+        session_id=str(body.get("session_id") or ""),
+        permission_mode=str(body.get("permission_mode") or ""),
+        model=str(body.get("model") or ""),
+        effort=str(body.get("effort") or ""),
+        repeats=repeats, rule=rule,
+        title=body.get("title"), description=body.get("description"),
+        new_task_each_run=body.get("new_task_each_run"),
+        session_learned=body.get("session_learned"),
+        immediate=body.get("immediate"),
+        images=body.get("images"),
+        attachments=body.get("attachments"),
+        follow_of=str(body.get("follow_of") or ""),
+        origin=origin,
+        create_target=create_target)
+
+
+def spend_chat_draft(key, entry: dict, sent: str = "") -> bool:
+    """The chat draft a QUEUED SEND spent: its TASK number moves onto the entry
+    that message became, and the record goes. True if anything moved.
+
+    THE SAME TWO MOVES `api_schedule_create` MAKES FOR A FORM, one surface over.
+    A New task card that is scheduled hands over its `draft_id`, and the number
+    the draft row was wearing is rekeyed onto `pending:<entry-id>` before the
+    record is dropped, so the TASK-118 somebody has been typing into is the
+    TASK-118 they end up with. A chat whose send is QUEUED is that same event —
+    the words in the composer have just become a booked message — and until this
+    it made neither move: the `new:<file>` draft kept the number it was
+    allocated at the first keystroke, `_task_number` minted a SECOND one for
+    `pending:<entry-id>`, and the reader watched TASK-057 become TASK-058 on the
+    send that queued it. The abandoned key then sat in `task_ids.json` for ever,
+    which also left `_settle_new_chats` scanning the runs tree on every listing
+    for a draft nothing would ever settle (review, PR #1124).
+
+    THE NUMBER ONLY MOVES OFF A `new:<file>` KEY, which is the schedule form's
+    own rule read through the other door: a chat that HAS a session is numbered
+    under that session, and this message is landing in it, so there is nothing to
+    carry forward and only the record goes. Moving anything onto
+    `pending:<entry-id>` there would invent a second identity for a task that
+    already has one.
+
+    THE RECORD GOES ONLY IF IT STILL HOLDS THE WORDS THAT WERE SENT. The key is
+    the still-open composer's own, and a follow-up typed while the first send
+    was being admitted (the notes capture and the tray copy run first) can
+    autosave under it before this runs — deleting then would lose that
+    follow-up from the store while the box still showed it, so a reload dropped
+    it (Bugbot, 1d50d4303). With `sent` given, a record whose text differs from
+    the message that queued is left alone; the number still moves, since it is
+    the entry's now either way. Without `sent` (a form draft's road) the record
+    goes as before.
+
+    ONE IMPLEMENTATION, TWO DOORS (merge of PR #1124 into
+    design-drafts-one-record, 2026-09-17). `api_schedule_create` spends the chat
+    draft a scheduled message was written in (`draft_key`) and the queue admit
+    spends the one a queued send came out of, and those are the same event said
+    twice — so they are the same function, and the guards below are the union of
+    what each had. The form's road passes no `sent` (the create IS the spend, and
+    there is no later keystroke to protect) and the queue's passes the message it
+    admitted.
+
+    Best-effort like every other draft write on this road, and for the same
+    reason: the message IS queued, and a read-only state dir must not turn that
+    into a 500. A draft that could not be dropped costs one stale row, never the
+    task. `""` — an absent or malformed key, which is what every client written
+    before the queue sends — does nothing at all.
+    """
+    key = drafts.chat_key(key)
+    if not key:
+        return False
+    session = str(entry.get("session_id") or "")
+    moved = False
+    spent: set[str] = set()
+    try:
+        if drafts.is_new_chat_key(key) and not session:
+            # `rekey_moved` and not `rekey`, because on THIS branch the common
+            # case is nothing to move: a session-less composer autosaves
+            # nothing, so a `new:<file>` key normally carries no record and
+            # therefore no number, and every ordinary new-chat send names a key
+            # that is not in `task_ids.json` at all. Reading whether the number
+            # actually changed hands is what keeps that send a true no-op
+            # instead of an announcement about a key nobody is watching.
+            moved = tasks_store.rekey_moved(
+                key, tasks_store.pending_key(str(entry.get("id") or "")))
+        stale = False
+        if sent:
+            record = drafts.get_chat(key) or {}
+            held = str(record.get("text") or "").strip()
+            stale = bool(held) and held != sent.strip()
+        if not stale:
+            # BOTH HALVES OF THAT ONE RECORD. A chat key whose words live in a
+            # form bound to the session is the same "one record, two doors" the
+            # composer's own send spends whole (`DELETE /api/drafts/chat/<key>`):
+            # leaving the form behind would put the sentence back on the row as
+            # unsent the moment the listing repainted, on the very task it just
+            # became.
+            spent |= set(drafts.delete_bound(key))
+            if drafts.delete_chat(key):
+                spent.add(key)
+            moved = moved or bool(spent)
+    except OSError:
+        return moved
+    if moved:
+        # A `new:<file>` draft IS a row (`routers/tasks.py::_new_chat_draft_row`),
+        # and it has just stopped being one — a page holding the changes
+        # long-poll should hear that in the same breath as the queued row it
+        # turned into, not on its next full listing. The session rides along
+        # because THAT row has just lost the `✎ Draft` chip it was wearing
+        # (`_bound_chips`), and the bound keys because they were rows of their
+        # own until this call.
+        tasks_watch.notify((spent | {key, session}) - {""})
+    return moved
+
+
 @router.post("/api/schedule")
 def api_schedule_create(body: dict = Body(...),
                         x_fused: str | None = Header(default=None)):
@@ -191,24 +383,10 @@ def api_schedule_create(body: dict = Body(...),
     if guard is not None:
         return guard
 
-    target = body.get("target")
-    if not isinstance(target, str) or not target.strip():
-        return _error("target: required", status=400)
-
-    # Refused before anything is stored — see the module docstring. Resolved the
-    # same way the model will resolve it (expanduser + abspath), so the path this
-    # check clears is the path that gets scheduled.
-    #
-    # Imported per call, not at module scope: binding the name at import would
-    # freeze it past the mounts registry's own seams (the same reason the peer
-    # gates resolve it late).
-    from fused_render.shell.mounts import is_mount_backed
-
-    resolved = os.path.abspath(os.path.expanduser(target.strip()))
-    if is_mount_backed(resolved):
-        return _error(
-            "target: refused — a scheduled session must not run against a "
-            "remote mount", status=400)
+    # Refused before anything is stored — see `resolve_target`.
+    resolved, refusal = resolve_target(body.get("target"))
+    if refusal is not None:
+        return refusal
 
     # `delay_seconds` is the other way to say when: a page offering "in 30
     # minutes" should not have to do timezone arithmetic to say it. Exactly one
@@ -260,56 +438,16 @@ def api_schedule_create(body: dict = Body(...),
             return _error("delay_seconds: must be positive", status=400)
         due = datetime.now(timezone.utc) + timedelta(seconds=seconds)
 
-    # `title`, `description`, `new_task_each_run`, `session_learned` and
-    # `immediate` are
-    # passed straight through and normalised by the model (`_text`/`_flag`),
-    # not here. Deliberately NOT
-    # validated into a 400: the form omits them when they are blank or unticked,
-    # so "absent" and "empty" have to mean the same thing, and a request that
-    # carries a stray null for one of them should still schedule the message
-    # rather than be refused over a label. What this layer must not do is DROP
-    # them — a body-dict endpoint silently ignores what it does not name, which
-    # is how they went missing in the first place.
+    # Everything optional on the body is forwarded by `create_entry`, which
+    # documents at length what is passed through unvalidated and why. THE ONE
+    # ENDPOINT ALLOWED TO MAKE A FOLDER is this one: the New task form lets you
+    # name a folder that does not exist yet — it shows the path as a new folder
+    # while you type it — and `create_target=True` is where that promise is kept.
+    # One missing leaf under an existing parent is created, two missing levels
+    # are still a 400. See `schedule.create`.
     try:
-        entry = schedule.create(
-            resolved, body.get("message"), due,
-            session_id=str(body.get("session_id") or ""),
-            permission_mode=str(body.get("permission_mode") or ""),
-            # WHICH Claude runs the task, and how hard it thinks. Both optional
-            # and both "" by default — "" is "pass no flag", so a task without
-            # an opinion keeps behaving exactly as every task did before these
-            # existed, and the session detects its own defaults.
-            #
-            # NOT validated into a 400 here, for the same reason
-            # `permission_mode` is not: `--model` takes an alias or a full id,
-            # `--effort` takes one of five levels, and the authority on both is
-            # the CLI this server shells out to — not a list in this file that
-            # would go stale the day Claude Code learns a new one. A value the
-            # CLI refuses fails the RUN, with the CLI's own sentence on the
-            # entry, which is a better error than a 400 written from a guess.
-            model=str(body.get("model") or ""),
-            effort=str(body.get("effort") or ""),
-            repeats=repeats, rule=rule,
-            title=body.get("title"), description=body.get("description"),
-            new_task_each_run=body.get("new_task_each_run"),
-            session_learned=body.get("session_learned"),
-            immediate=body.get("immediate"),
-            images=body.get("images"),
-            # The SAME attachments with their names and kinds beside them
-            # (D619). Passed through unvalidated exactly like `images` is —
-            # `schedule._attachments` is what refuses anything not living under
-            # the task-shots dir, so the create endpoint keeps its habit of not
-            # holding a second copy of the model's rules. Either field alone is
-            # enough; each is derived from the other when only one arrives, so a
-            # client that has not been rebuilt still schedules attachments and a
-            # client that sends only the richer field still gets `images` stored.
-            attachments=body.get("attachments"),
-            # THE ONE ENDPOINT ALLOWED TO MAKE A FOLDER. The New task form lets
-            # you name a folder that does not exist yet — it shows the path as a
-            # new folder while you type it — and this is where that promise is
-            # kept: one missing leaf under an existing parent is created, two
-            # missing levels are still a 400. See `schedule.create`.
-            create_target=True)
+        entry = create_entry(resolved, body, due, repeats=repeats, rule=rule,
+                             create_target=True)
     except ValueError as exc:
         return _error(str(exc), status=400)
 
@@ -425,27 +563,17 @@ def api_schedule_create(body: dict = Body(...),
     #
     # Best-effort and optional like every other clean-up here: the message IS
     # scheduled, and a draft that could not be dropped costs one stale row.
-    # BOTH HALVES OF THAT ONE RECORD. A chat key whose words live in a form
-    # bound to the session is the same "one record, two doors" the composer's
-    # own send already spends whole (`DELETE /api/drafts/chat/<key>`): leaving
-    # the form behind would put the sentence back on the row as unsent the
-    # moment the listing repainted, on the very task it just became.
+    #
+    # THROUGH `spend_chat_draft`, WHICH IS THAT PARAGRAPH AS A FUNCTION. The
+    # queue admit (`routers/tasks.py`) spends a chat draft on exactly the same
+    # terms one door over — a queued send is this create said from the composer
+    # — and two copies of "carry the number, then drop both halves of the
+    # record" is the kind of pair that drifts on the first fix applied to one of
+    # them. No `sent` here: the create IS the spend, so there is no later
+    # keystroke in that box to protect (merge, 2026-09-17).
     chat_draft = drafts.chat_key(body.get("draft_key"))
     if chat_draft:
-        try:
-            if (drafts.is_new_chat_key(chat_draft)
-                    and not str(entry.get("session_id") or "")):
-                tasks_store.rekey(chat_draft,
-                                  tasks_store.pending_key(str(entry.get("id") or "")))
-            spent = set(drafts.delete_bound(chat_draft))
-            if drafts.delete_chat(chat_draft):
-                spent.add(chat_draft)
-            if spent:
-                tasks_watch.notify(
-                    (spent | {chat_draft, str(entry.get("session_id") or "")})
-                    - {""})
-        except OSError:
-            pass
+        spend_chat_draft(chat_draft, entry)
 
     # ...AND SO IS THE CHAT DRAFT THIS CAME FROM. Scheduling into a session is
     # the composer's other exit: the words in the box are now a booked message,
@@ -580,7 +708,44 @@ def api_schedule_run_now(body: dict = Body(...),
     code: 404 when there is no such entry, 409 when there is one and it cannot
     run (already sent, already sending, cancelled, or its conversation is
     mid-turn). Both carry the model's sentence, because "it didn't run" without
-    a reason is what makes a dragged card feel broken."""
+    a reason is what makes a dragged card feel broken.
+
+    **QUEUED IS NOT A REFUSAL, and it is a 200.** With the project queue on
+    (`project_queue`), a folder another task is holding does not refuse this
+    message — it HOLDS it: the entry stays pending, gains `priority` (asking for
+    something now IS a skip, and skipping is what run-now means once the folder
+    is busy), and the row reads `queued` at position 1. Nothing went wrong and
+    nothing was lost, so an error status would be a lie the client then has to
+    undo — the dragged card would snap back over work that is going out the
+    moment the folder frees. The answer carries `ok: false` with a `reason` of
+    `"queued"` and the name of the task in front, which is the sentence the card
+    prints.
+
+    Naming who is ahead is a TASKS fact — the numbering and the title
+    precedence — so it is asked of the tasks router (`queue_ahead_of`), which
+    owns both. Imported inside the function: the two routers are siblings and a
+    module-level import in this direction is a cycle waiting for the first person
+    to add one in the other.
+
+    **AND SO IS THE POSITION.** The model counts a folder's line in ENTRIES
+    (`schedule._queue_position`); the Tasks page counts it in TASKS — one slot
+    each, however many messages a task has queued — and that is the number on
+    the row, in the chip and in "#2 in line". Two numbers for one line is one
+    number wrong, so the page's is taken here too (`tasks._queue_place`, the
+    same derivation the admit and skip verbs answer with) and the model's is
+    kept only as the fallback for a task the listing does not place. Both are
+    read off ONE collection, because they are two facts about one set of tasks.
+
+    Naming it carries the LINK as well as the words — `ahead_session` and
+    `ahead_target`, `tasks-lib.taskHref`'s own pair — so the card that says
+    "behind TASK-041" can be clicked through to the conversation in front. Both
+    "" for a holder that has no session yet, which is the case the sentence
+    below is about.
+
+    The holder is named by its TASK key (`ahead_task_key`) rather than by its
+    session: an entry the scheduler has claimed but not yet spawned has no
+    session at all, and it is `pending:<id>` — a real row, with a real number —
+    that the user is waiting behind."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -589,6 +754,35 @@ def api_schedule_run_now(body: dict = Body(...),
     if not isinstance(entry_id, str) or not entry_id.strip():
         return _error("entry_id: required", status=400)
     result = schedule.run_now(entry_id.strip())
+    if result.get("queued"):
+        from fused_render.server.routers import tasks as tasks_api
+
+        # ONE COLLECTION FOR BOTH HALVES. Naming the holder and placing this row
+        # are two questions about the same set of tasks, and collecting is a
+        # glob over every transcript on the machine — asking each to collect for
+        # itself walked it twice for one reply (round-2 review, 2026-09-12).
+        tasks = tasks_api._collect()
+        task_key = schedule._task_key(result["entry"])
+        place = tasks_api._queue_place(task_key, tasks)
+        # THE PAGE'S ANSWER FIRST, and the model's only as the fallback — the
+        # same precedence the position below takes, and for the same reason.
+        # "Behind" now names the task DIRECTLY in front (`_queue_lines`), which
+        # for a run-now is the holder anyway; taking it from the placement is
+        # what keeps the card's sentence and the row's identical when it is not
+        # (a second window promoted something in the same second).
+        ahead_key = str(place["ahead_key"] or result.get("ahead_task_key")
+                        or result.get("ahead_session") or "")
+        ahead = tasks_api.queue_ahead_of(ahead_key, tasks)
+        return {"ok": False, "reason": "queued", "entry": result["entry"],
+                "position": place["position"] or int(result.get("position") or 1),
+                "ahead_key": ahead_key,
+                # WHAT THE ROW THAT JUST QUEUED IS CALLED — the same mint the
+                # chat's own admission answers with (`tasks_api._task_number`),
+                # off the collection this reply already holds, so a Run now on a
+                # message that has never run can say "TASK-047 runs next" instead
+                # of waiting for the listing to name it.
+                "task_id": tasks_api._task_number(task_key, tasks),
+                **ahead}
     if not result["ok"]:
         return _error(result["reason"],
                       status=404 if not result["found"] else 409)

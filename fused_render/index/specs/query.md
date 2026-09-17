@@ -40,6 +40,53 @@ into a single `other` bucket; empty extensions reported as `no ext`) is computed
 when the caller passes `breakdown=True` — the `GROUP BY ext` pass costs the same table
 scan again for a shape most callers never read.
 
+## 3. `resolve_query` and the search grammar
+
+`resolve_query(root, raw, guard=None, blocked_out=None, token=None)` (used by the
+ranked route, `server-api.md §7`) is the one place a search box's typed string
+becomes `{base, pattern, mode}`. It first runs `raw` through
+`expand_whitespace_query` — a **shared** transform (`search_under`, §6, runs the
+same one on `q`) that turns whitespace into wildcards without regressing the
+motivating "type two words, find the file with both in order" case a naive
+`" " -> "*"` substitution would:
+
+1. Trim leading/trailing whitespace.
+2. A whitespace-free trimmed string is returned byte-for-byte unchanged — this is
+   what leaves `*.pdf`, `src/**/*.ts`, and any ordinary non-glob query untouched,
+   whether or not it already contains a literal `*`.
+3. Otherwise, collapse every run of whitespace to a single `*` (`hello  world`
+   with two spaces resolves identically to `hello world` — `**` means something
+   different in this grammar, a cross-directory wildcard, so a whitespace run
+   must never produce one).
+4. Imply a leading and trailing `*` on the **final** `/`-separated segment only,
+   and only when that segment has no user-typed `*` of its own — `hello world`
+   becomes `*hello*world*`, and `~/My Documents/report` becomes `~/My*Documents/
+   *report*`, not `~/*My*Documents*/...`: earlier segments get the whitespace
+   collapse but no wrap of their own.
+
+`mode` is `"glob"` the moment the expanded string contains a `*` anywhere — which
+now includes every whitespace-containing query, not only one with a user-typed
+`*` — else `"substring"`. `?` and `[`/`]` are left as literal characters always
+(people put them in filenames far more often than they mean them as patterns), so
+their presence never flips the mode. There is deliberately **no escape hatch** for
+a literal space in a filename — quoting is out of scope (SPEC-search-space-
+wildcard.md).
+
+Base resolution (peeling a leading `~`, an absolute path, a Windows drive letter,
+or a `..`-containing relative query off into `base`, with whatever is left as
+`pattern`) runs on the ALREADY-expanded string, so a leading folder path is
+subject to the same whitespace-as-wildcard rule as the trailing name — "apply
+everywhere" is a deliberate scope choice, not an oversight. The walk that does
+this (`_walk_from`) stops at the first `*`-segment, so a wildcard anywhere in an
+early segment ends the walk there and folds the rest into `pattern` rather than
+trying to resolve a glob against the filesystem.
+
+`search_ranked` (`server-api.md §7`) never scores a `mode == "glob"` result —
+every hit is an equal full-pattern match with no ranking signal to compute, so
+results are returned in the same `depth ASC, rel ASC` order `search_under`
+already used for its own unranked branch. This is an accepted consequence, not a
+gap: SPEC-search-space-wildcard.md explicitly keeps scoring out of glob mode.
+
 ## 4. Partition pruning
 
 Partitions are globally sorted by path and the manifest records each one's `min`/`max`
@@ -183,7 +230,17 @@ search read a slice of the index rather than all of it.
 `q` is an **optional** server-side substring filter. The explorer deliberately does not
 pass it: its client-side matching is subsequence-based, so pre-narrowing to substrings
 server-side would silently drop legitimate matches. It exists for a caller that only
-wants the hits.
+wants the hits — including `fused.fileIndex.search`, the public JS bridge this
+function backs.
+
+`q` is run through the same `expand_whitespace_query` (§3) `resolve_query` runs `raw`
+through — one shared implementation, not two copies of the whitespace rule, so the
+public API gets the identical grammar the two search boxes do. A whitespace-free `q`
+is a no-op and the filter stays the plain `ILIKE` substring test it always was, `*`
+included, still a literal character. Whitespace flips the filter to the same
+glob-to-regex matching `resolve_query`'s glob mode uses, confined to any depth under
+`root` — this function never walks a base off `q` the way `resolve_query` does, so the
+whole expanded pattern always searches any depth.
 
 ## 7. The source helpers are public — `files_src` / `dirs_src`
 

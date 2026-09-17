@@ -20,7 +20,7 @@ import {
 } from "@platform/shadcn/ui/tabs";
 import type { Task } from "@platform/lib/api";
 import { TaskRowItem } from "@shell/ScheduleTaskViews";
-import { isDraftTask, upcomingEditEntry } from "@shell/tasks-lib";
+import { isDraftTask, taskHref, upcomingEditEntry } from "@shell/tasks-lib";
 import type { Artifact } from "../protocol/artifacts";
 import { ArtifactRow } from "./ArtifactRow";
 import {
@@ -34,7 +34,7 @@ import {
 } from "./lists-visibility";
 import { paneChatUrl, taskPane } from "./list-rows";
 import { SCHEDULE_URL } from "../sched/scheduled";
-import { seedSessionTask } from "./useRecentTasks";
+import { noteQueueClaim, reloadRecentTasks, seedSessionTask } from "./useRecentTasks";
 import { Snapshots } from "./Snapshots";
 import type { SnapshotsState } from "./useSnapshots";
 
@@ -243,12 +243,54 @@ export function Lists({
    * Neither `isChatDraftTask` nor `draft_id` is consulted here: the two kinds of
    * draft differ only in how their record is addressed, which is a question this
    * list does not ask.
+   *
+   * …AND A QUEUED CHAT OPENS ITS CHAT (PR #1124, merged 2026-09-17). A message
+   * a reader typed into a composer and that is waiting behind somebody else's
+   * run in the same folder is not a draft and not a form: it has no record to
+   * edit and no card to edit it in, and the conversation IS the row. It is the
+   * one row with no session that still has a door, and `taskHref` is the whole
+   * test for it.
    */
   const pressFor = (task: Task): { href: string | null; onPress?: () => void } => {
     if (disabled) return { href: null };
     if (isDraftTask(task)) {
       if (!onFillDraft) return { href: null };
       return { href: null, onPress: () => onFillDraft(task) };
+    }
+    // A CHAT THAT HAS NEVER RUN (the project queue, PR #1124). It has no
+    // session id, so neither door below can open it: it is opened by the ENTRY
+    // it is waiting as, through `chatUrl`'s `queued` param, and always as a
+    // navigation — there is no transcript to swap into place, and the pane has
+    // to mount knowing its leader (`ClaudeChat`'s `QUEUED_PARAM`). Its row is
+    // the ordinary row: same height, same columns, same place in the sort, with
+    // `queued` on its ring.
+    //
+    // ASKED BEFORE THE CARD BELOW, and that order is the whole reconciliation
+    // of the two branches (merge, 2026-09-17). Such a row IS in the `queued`
+    // lane with one message waiting, so `upcomingEditEntry` would answer for it
+    // and send the press to the Edit card — taking the conversation away from
+    // the one row whose entire content is a conversation. `taskHref` is the
+    // narrower question and therefore the earlier one; it is also the order the
+    // Tasks page itself reads these two in (`activate`'s thread arm before its
+    // edit arm, tasks-lib `taskHref`).
+    if (!task.session_id) {
+      // ONE DOOR PER TASK, and it is `taskHref`'s (shell/tasks-lib): a row is a
+      // chat to open only when it is `queued`, was put in the line by a CHAT
+      // (`entry_origin`), and names a folder — an Upcoming one-off and a
+      // scheduled FORM are also `pending:<entry>` rows and fall through to the
+      // card below, as they do on the Tasks page.
+      const queued = taskHref(task);
+      if (queued) {
+        return {
+          href: queued,
+          onPress: () => {
+            // Seeded like every other navigating arm below, so the header on
+            // the pane that opens does not wait out the whole listing.
+            seedSessionTask(task);
+            onNavigate?.(queued);
+          },
+        };
+      }
     }
     // A MESSAGE WAITING TO GO OUT — WHETHER OR NOT IT HAS A THREAD BEHIND IT
     // (Bugbot, PR #1180). The interesting content of such a row is the
@@ -313,7 +355,19 @@ export function Lists({
         // of floating lines rather than as one list.
         <div className="tasks-list-frame">
           {recent.map((task) => (
-            <TaskRowItem key={task.key} task={task} {...pressFor(task)} />
+            <TaskRowItem
+              key={task.key}
+              task={task}
+              {...pressFor(task)}
+              // RUN NEXT'S TWO HALVES (Akshil QA, 2026-09-16). The row's own
+              // skip needs somewhere to put the claim it just made and a way to
+              // ask for the truth; unwired, the press was a request with no
+              // visible answer. Both go to the recents' store rather than to
+              // state in this component — it unmounts on the way into a chat,
+              // and the claim has to outlive that (`useRecentTasks`).
+              onQueued={noteQueueClaim}
+              onReload={reloadRecentTasks}
+            />
           ))}
         </div>
       )}

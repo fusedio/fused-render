@@ -825,3 +825,23 @@ def test_the_head_keeps_scanning_past_a_machinery_record(projects_dir):
     # is a prompt this module writes for a subagent, never one the user typed,
     # and its sibling reader in templates/claude/agent.py has always skipped it.
     assert tasks_store.head(str(path))[2] == "fix the parser"
+
+
+def test_one_folder_is_one_counter_however_it_is_spelled():
+    # A transcript's cwd arrives in the OS's own spelling and a scheduled
+    # entry's target arrives through `os.path.abspath`; on Windows the two spell
+    # one folder with different slashes. Keyed on the raw string, each spelling
+    # had a counter of its own, and a queued chat's row and the row holding its
+    # folder were both TASK-001 (Windows CI, PR #1124). The counter is looked up
+    # by the canonical name, so both spellings count on together.
+    native = "C:\\Users\\me\\proj"
+    canonical = "C:/Users/me/proj"
+    ids = tasks_store.ensure_ids([("holder", canonical, 1.0), ("pending:e1", native, 2.0)])
+    assert ids == {"holder": "TASK-001", "pending:e1": "TASK-002"}
+    # …and a store written before the rule — a record whose project is the
+    # native spelling — still raises the high-water mark for the canonical one.
+    assert tasks_store.ensure_ids([("later", canonical, 3.0)])["later"] == "TASK-003"
+    # The record keeps the project as it was given: the counter is a lookup,
+    # not a rewrite of what is stored.
+    assert tasks_store.task_ids()["pending:e1"]["project"] == native
+

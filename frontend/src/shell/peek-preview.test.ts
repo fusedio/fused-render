@@ -43,6 +43,7 @@ const app = (path: string, over: Record<string, unknown> = {}) => ({
   exists: true,
   running: false,
   unread: false,
+  queued: 0,
   iconUrl: null,
   ...over,
 });
@@ -61,7 +62,7 @@ describe("previewBox", () => {
     const narrow = previewBox(564, 2000, null);
     const wide = previewBox(900, 2000, null);
     const inner = (w: number) => w - 2 * PREVIEW_INSET;
-    expect(PREVIEW_INSET).toBe(38); // `--peek-preview-inset`, styles/task-peek.css
+    expect(PREVIEW_INSET).toBe(1); // `--peek-preview-inset`, styles/task-peek.css
     expect(narrow.scale).toBeCloseTo(inner(564) / PREVIEW_VW, 6);
     expect(wide.scale).toBeCloseTo(inner(900) / PREVIEW_VW, 6);
     // `frameHeight` is the VIRTUAL viewport, unscaled — 720 when the box is
@@ -98,14 +99,14 @@ describe("previewBox", () => {
     // Akshil, 2026-09-16: the aspect is locked on both axes. Past the natural
     // height the width is the tighter fit, so the scale stays the panel's and
     // the extra height is padding — the frame never grows past 1280×720.
-    // 716 wide is 640 inside its 38px gutters, so the scale is a round 0.5.
-    const natural = previewBox(716, 2000, null);
+    // 642 wide is 640 inside its 1px gutters, so the scale is a round 0.5.
+    const natural = previewBox(642, 2000, null);
     expect(natural.frameHeight).toBe(PREVIEW_VH);
     expect(natural.scale).toBeCloseTo(0.5, 6);
-    expect(PREVIEW_PAD_Y).toBe(12);
-    const taller = previewBox(716, 2000, 600 + 2 * PREVIEW_PAD_Y);
+    expect(PREVIEW_PAD_Y).toBe(1);
+    const taller = previewBox(642, 2000, 600 + 2 * PREVIEW_PAD_Y);
     expect(taller.scale).toBe(natural.scale);
-    expect(taller.height).toBe(624);
+    expect(taller.height).toBe(602);
     expect(taller.frameHeight).toBe(PREVIEW_VH);
     // 360 drawn in a 600px card — 240px of air, split by the CSS.
     expect(taller.frameHeight * taller.scale).toBeCloseTo(360, 6);

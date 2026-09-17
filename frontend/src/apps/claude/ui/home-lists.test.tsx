@@ -31,6 +31,7 @@ const { snapAgo, snapDeltaLabel, snapRuns, snapVersionLabel } = await import(
   "../protocol/snapshots"
 );
 const { Lists } = await import("./Lists");
+const { TaskRowItem } = await import("@shell/ScheduleTaskViews");
 type ListsProps = import("./Lists").ListsProps;
 const { listTabKey, nextTab, rememberedTab, resetRememberedTab } = await import(
   "./lists-visibility"
@@ -342,6 +343,32 @@ test("a FAILED snapshots read keeps its place in the block, holding the retry", 
   act(() => (retry.props as { onClick: () => void }).onClick());
   expect(reloaded).toBe(1);
   expect(text(all(json, "c-snapsnote")[0])).toContain("store unreadable");
+});
+
+// RUN NEXT ON A RECENT ROW (Akshil QA, 2026-09-16: "the skip button does
+// nothing"). `TaskNode.skip` is one call and two answers — the claim to paint
+// until the server speaks (`onQueued`) and the re-read that fetches the truth
+// (`onReload`) — and this list forwarded neither, so the press put a request on
+// the wire and then had nothing to show for it until the next full listing, up
+// to a poll later. A control that answers a press with nothing IS a dead one.
+test("a Recent row carries Run next's two handles", () => {
+  const r = mount(
+    <Lists
+      file="/repo/x.py"
+      agentDir="/tpl"
+      recent={[chat("s1", { status: "queued", queue_position: 3 })]}
+      artifacts={[]}
+      onOpen={() => {}}
+    />,
+  );
+  const rows = r.root.findAllByType(TaskRowItem);
+  expect(rows.length).toBe(1);
+  const props = rows[0].props as { onQueued?: unknown; onReload?: unknown };
+  // The store behind both is the recents' own (`useRecentTasks`), and not state
+  // in this component: it unmounts on the way into a chat, and a claim exists to
+  // outlive exactly that.
+  expect(typeof props.onQueued).toBe("function");
+  expect(typeof props.onReload).toBe("function");
 });
 
 test("two filled lists earn the tab bar; an empty one earns no tab", () => {
@@ -1071,6 +1098,63 @@ test("…AND A SCHEDULED FOLLOW-UP ON AN EXISTING THREAD OPENS THE SAME CARD", (
     .onClick({ preventDefault() {}, metaKey: false, ctrlKey: false, button: 0 }));
   // The card, not the thread: `onOpen` is what a transcript press would call.
   expect(hops).toEqual(["/tasks?edit=e-8"]);
+});
+
+test("…BUT A QUEUED CHAT OPENS ITS CHAT, NOT A CARD", () => {
+  // The merge of the project queue (PR #1124) into one-record (PR #1180),
+  // 2026-09-17. A message a reader typed into a composer and that is waiting
+  // behind somebody else's run in the same folder lands in the `queued` lane
+  // with exactly one message pending — so `upcomingEditEntry` answers for it
+  // and would send the press to the Edit card, taking the conversation away
+  // from the one row whose entire content IS a conversation. `taskHref` is the
+  // narrower question (queued, chat-origin, names a folder) and is therefore
+  // asked first, which is the order the Tasks page reads these two in as well.
+  const queued = chatDraft({
+    key: "pending:e-9",
+    kind: "task",
+    state: "queued",
+    status: "queued",
+    entry_origin: "chat",
+    draft_kind: "",
+    draft_id: "",
+    draft: null,
+    session_id: "",
+    messages: [{ entry_id: "e-9", state: "pending", at: 1, message_id: "m-9" }],
+  } as unknown as Partial<Task>);
+  const { r, hops } = pressDraft([queued]);
+  const link = r.root.findAll((n) => n.type === "a")[0];
+  expect(link.props.href).toBe(
+    "/explorer/view/repo/x.py?_side=claude&session_id=&queued=e-9",
+  );
+  act(() => (link.props as { onClick(ev: unknown): void })
+    .onClick({ preventDefault() {}, metaKey: false, ctrlKey: false, button: 0 }));
+  expect(hops).toEqual(["/explorer/view/repo/x.py?_side=claude&session_id=&queued=e-9"]);
+});
+
+test("…and a queued FORM still opens its card, because it has one", () => {
+  // The other half of the same rule: an entry the New task modal or the
+  // calendar composed is also keyed `pending:<entry>` and can also be `queued`,
+  // and its content is an instruction that has not run. `taskHref` refuses it
+  // (`entry_origin`), so it falls through to the card — the same answer the
+  // Tasks List and Board give it.
+  const form = chatDraft({
+    key: "pending:e-10",
+    kind: "task",
+    state: "queued",
+    status: "queued",
+    entry_origin: "form",
+    draft_kind: "",
+    draft_id: "",
+    draft: null,
+    session_id: "",
+    messages: [{ entry_id: "e-10", state: "pending", at: 1, message_id: "m-10" }],
+  } as unknown as Partial<Task>);
+  const { r, hops } = pressDraft([form]);
+  const link = r.root.findAll((n) => n.type === "a")[0];
+  expect(link.props.href).toBe("/tasks?edit=e-10");
+  act(() => (link.props as { onClick(ev: unknown): void })
+    .onClick({ preventDefault() {}, metaKey: false, ctrlKey: false, button: 0 }));
+  expect(hops).toEqual(["/tasks?edit=e-10"]);
 });
 
 test("the move's machinery is gone from the row module, not merely unused", () => {

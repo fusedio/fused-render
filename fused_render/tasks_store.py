@@ -109,6 +109,8 @@ import time
 import urllib.parse
 from datetime import datetime, timezone
 
+from fused_render._view_url_codec import canonical_fs_path
+
 try:
     import fcntl  # POSIX only — Windows falls back to no inter-process lock,
     # the same posture as claude_sessions.api_claude_session_triage, whose
@@ -150,6 +152,20 @@ _MSG_WIDTH = 3
 def pending_key(entry_id: str) -> str:
     """The task key for a scheduled message that has not run yet."""
     return PENDING_PREFIX + entry_id
+
+
+def pending_entry(key: str) -> str:
+    """`pending_key` read backwards: the entry id inside a `pending:<entry-id>`
+    task key, and "" for a key that is a session id.
+
+    The inverse exists because the entry id is the one name a queued task has
+    that NEVER MOVES — the key itself rekeys onto the session the moment the
+    leader's run mints one (§5) — so every client gesture aimed at a waiting
+    chat (open it, skip it, cancel it) has to be able to name the entry rather
+    than the row. Spelled here, beside the forward rule, so the prefix is
+    written once."""
+    key = str(key or "")
+    return key[len(PENDING_PREFIX):] if key.startswith(PENDING_PREFIX) else ""
 
 
 def format_task_id(n: int) -> str:
@@ -283,17 +299,39 @@ def erased(key: str = "") -> set[str]:
             if isinstance(store.get(k), dict) and store[k].get("erased")}
 
 
+def _counter(project: str) -> str:
+    """The name of the counter a project's numbers come out of: its canonical
+    spelling (`canonical_fs_path` — forward slashes on a drive path, unchanged
+    on POSIX).
+
+    ONE FOLDER, ONE COUNTER, HOWEVER IT WAS SPELLED. A task's project reaches
+    this store by two roads: a transcript's `cwd`, written by Claude Code in the
+    OS's own spelling, and a scheduled entry's `target`, which the router ran
+    through `os.path.abspath` — and on Windows those two spell the same folder
+    with different slashes. Keyed on the raw string, each spelling had a counter
+    of its own and a queued chat's row and the row holding its folder were both
+    TASK-001 (Windows CI, PR #1124). The record still stores the project as it
+    was given; only the counter is looked up by the canonical name, so a store
+    written before this rule counts on unchanged.
+
+    A guessed project (the lossy directory-name decode) mints no number at all
+    under the queue (`routers/tasks.py::_numbers`), so no counter is keyed on
+    the wrong spelling in the first place."""
+    return canonical_fs_path(project or "")
+
+
 def _next_numbers(store: dict) -> dict[str, int]:
-    """project -> highest number allocated in it. "Max seen plus one" is the
-    allocation rule precisely so a deleted task's number is never handed out
-    again: counting live tasks would recycle it."""
+    """project (canonical, see `_counter`) -> highest number allocated in it.
+    "Max seen plus one" is the allocation rule precisely so a deleted task's
+    number is never handed out again: counting live tasks would recycle it."""
     high: dict[str, int] = {}
     for key in list(store):
         rec = _record(store, key)
         if rec is None:
             continue
-        if rec["n"] > high.get(rec["project"], 0):
-            high[rec["project"]] = rec["n"]
+        counter = _counter(rec["project"])
+        if rec["n"] > high.get(counter, 0):
+            high[counter] = rec["n"]
     return high
 
 
@@ -400,7 +438,7 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
                 if not project:
                     continue
                 rec = _record(store, key)
-                if rec is None or rec["project"] == project:
+                if rec is None or _counter(rec["project"]) == _counter(project):
                     continue
                 _spend(store, rec)
                 store.pop(key, None)
@@ -413,8 +451,9 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
         # in the same millisecond still number deterministically.
         missing.sort(key=lambda it: (it[2] if it[2] is not None else 0.0, it[0]))
         for key, project, _order in missing:
-            n = high.get(project, 0) + 1
-            high[project] = n
+            counter = _counter(project)
+            n = high.get(counter, 0) + 1
+            high[counter] = n
             store[key] = {"project": project, "n": n}
             changed = True
 
@@ -426,6 +465,15 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
         return out, changed
 
     return _update(TASK_IDS_FILE, mutate)
+
+
+def stored_number(store: dict, key: str) -> str:
+    """The number `key` already holds in a `task_ids()` snapshot, or "" — a
+    READ, never an allocation. For the caller that must not mint (a task whose
+    project is only guessed, `routers/tasks.py::_numbers`) but must still show
+    the number a task was given before."""
+    rec = _record(store, str(key or ""))
+    return format_task_id(rec["n"]) if rec is not None else ""
 
 
 def rekey(old: str, new: str) -> str:
@@ -447,9 +495,12 @@ def rekey_moved(old: str, new: str) -> bool:
 
     `_settle_new_chats` needs this to stay idempotent — a settle pass that
     calls `notify()` every time it re-finds an already-settled key turns one
-    move into an unbounded loop (bugbot / live repro, 2026-09-15). Every other
-    rekey call site (`schedule.py`, twice) fires-and-forgets and never reads
-    `rekey`'s return either, so nothing else needs this."""
+    move into an unbounded loop (bugbot / live repro, 2026-09-15).
+    `schedule.spend_chat_draft` needs it for the mirror-image reason: the key it
+    is handed usually has no number at all (a session-less composer autosaves
+    nothing, so there is no `new:<file>` record to be numbered), and announcing
+    a move that did not happen would put a `gone` on every ordinary new-chat
+    send. The remaining rekey call sites fire and forget."""
     old, new = str(old or ""), str(new or "")
     if not old or not new or old == new:
         return False

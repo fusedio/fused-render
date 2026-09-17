@@ -56,6 +56,7 @@ import tempfile
 import zipfile
 from datetime import datetime, timezone
 
+from fused_render import app_id as app_identity
 from fused_render import app_listing
 from fused_render import appfile_container as container
 from fused_render.zip_import import (
@@ -320,6 +321,17 @@ def export_app_file(app_dir: str, out_path: str,
         raise AppFileError(f"refusing to overwrite existing file: {out_path}")
 
     entry_rel = os.path.relpath(entry, app_dir).replace(os.sep, "/")
+    # The app's stable identity (app_id.py) is minted on its FIRST export and
+    # written into the entry page itself — before the members are walked and
+    # sized, since stamping changes the entry's bytes. The manifest copies
+    # whatever the page carries, so `app_id` in a `.fused` means the tag is
+    # in its entry too; when the page cannot take the tag (a read-only extract
+    # of an older `.fused`, no <head> anchor, a tree with a git remote that a
+    # write would leave dirty) the export goes out with no `app_id` rather
+    # than an id the next export would mint afresh.
+    app_id = app_identity.app_id(entry)
+    if app_id is None and not _has_remote(app_dir):
+        app_id = app_identity.ensure(entry, os.path.basename(app_dir))
     members = list(_iter_app_files(app_dir))
     if not any(rel == entry_rel for _, rel in members):
         raise AppFileError(
@@ -364,11 +376,11 @@ def export_app_file(app_dir: str, out_path: str,
     os.close(fd)
     try:
         try:
-            manifest = container.write(
-                tmp,
-                {"name": os.path.basename(app_dir), "entry": entry_rel,
-                 "exported_at": _utc_now()},
-                payload)
+            index: dict = {"name": os.path.basename(app_dir), "entry": entry_rel,
+                           "exported_at": _utc_now()}
+            if app_id is not None:
+                index["app_id"] = app_id
+            manifest = container.write(tmp, index, payload)
         except container.ContainerError as exc:
             raise AppFileError(str(exc))
         os.replace(tmp, out_path)
@@ -376,6 +388,29 @@ def export_app_file(app_dir: str, out_path: str,
         if os.path.exists(tmp):
             os.unlink(tmp)
     return manifest
+
+
+def _has_remote(app_dir: str) -> bool:
+    """Whether ``app_dir``'s owning repo has a remote — the discriminator
+    `meta_migration._has_remote` uses for "externally synced, hands off":
+    stamping a tracked file there leaves the checkout dirty and breaks its
+    ``--ff-only`` pull. Managed app repos and the shared `local` repo never
+    have one. A failing `git` reads as "has one" — when git cannot answer,
+    the safe direction is not writing."""
+    from fused_render import app_git
+
+    scope = app_git._repo_scope(app_dir)
+    if scope is None:
+        return False
+    repo_dir, _spec = scope
+    try:
+        r = app_git._git(repo_dir, "remote")
+    except Exception:
+        # `_git` may raise TimeoutExpired / OSError (missing or hung git);
+        # a git that cannot answer must not fail the export — same "hands
+        # off" reading as a non-zero exit.
+        return True
+    return r.returncode != 0 or bool((r.stdout or "").strip())
 
 
 def _utc_now() -> str:
@@ -392,6 +427,14 @@ def exported_at(manifest: dict) -> str | None:
     forwarded only as a short string — never parsed here, never raised on."""
     v = manifest.get("exported_at")
     return v if isinstance(v, str) and 0 < len(v) <= 64 else None
+
+
+def app_id_of(manifest: dict) -> str | None:
+    """The manifest's ``app_id`` when it is a well-formed id, else None —
+    files exported before the id existed have none, and the value comes out
+    of an untrusted file, so it is validated and never used as a path."""
+    v = manifest.get("app_id")
+    return v if app_identity.is_valid(v) else None
 
 
 def _entry_problem(entry: object) -> bool:
@@ -535,9 +578,9 @@ def _make_read_only(root: str) -> None:
 def open_app_file(fused_path: str, reuse_only: bool = False) -> dict:
     """Extract the ``.fused`` file into the content-addressed cache (re-using
     a prior extract of the same bytes) and return
-    ``{"dir", "entry", "name", "reused", "exported_at"}`` with absolute paths
-    (``exported_at`` is the file's UTC export stamp, None for files that
-    predate it).
+    ``{"dir", "entry", "name", "reused", "exported_at", "app_id"}`` with
+    absolute paths (``exported_at`` is the file's UTC export stamp and
+    ``app_id`` its stable identity, each None for files that predate it).
 
     The extracted entry page must still carry the fused-app marker — the
     manifest names the entry, but the marker is what the /apps hub and the
@@ -571,7 +614,7 @@ def open_app_file(fused_path: str, reuse_only: bool = False) -> dict:
     if os.path.isdir(dest):
         if os.path.isfile(entry_abs) and app_listing.has_fused_meta(entry_abs):
             return {"dir": dest, "entry": entry_abs, "name": name, "reused": True,
-                    "exported_at": exported_at(manifest)}
+                    "exported_at": exported_at(manifest), "app_id": app_id_of(manifest)}
         if reuse_only:
             raise AppFileError("this app file has not been opened yet")
         # A half-extracted or manually-damaged cache dir: rebuild it. Files
@@ -627,7 +670,7 @@ def open_app_file(fused_path: str, reuse_only: bool = False) -> dict:
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return {"dir": dest, "entry": entry_abs, "name": name, "reused": False,
-            "exported_at": exported_at(manifest)}
+            "exported_at": exported_at(manifest), "app_id": app_id_of(manifest)}
 
 
 def _lift_read_only(root: str) -> None:
@@ -650,7 +693,8 @@ def clone_dir() -> str:
 
 def clone_target(fused_path: str) -> dict:
     """Where the ``.fused`` at ``fused_path`` would clone to, and whether that
-    is already there: ``{"name", "slug", "path", "cloned", "exported_at"}``.
+    is already there: ``{"name", "slug", "path", "cloned", "exported_at",
+    "app_id"}``.
 
     A read-only probe — one bounded manifest read plus one ``isdir`` — so the
     header button can pick its label without extracting anything.
@@ -676,13 +720,48 @@ def clone_target(fused_path: str) -> dict:
     stem = os.path.splitext(os.path.basename(fused_path))[0]
     slug = _slug(name, fallback=_slug(stem))
     dest = os.path.join(clone_dir(), slug)
+    app_id = app_id_of(manifest)
+    # Identity beats the slug: a clone the user RENAMED (or an app whose name
+    # changed between exports) is still this app if its entry page carries
+    # the file's id, so the button offers to open it instead of cloning a
+    # second copy beside it. Slug presence stays the answer for files with
+    # no id (exports before the tag existed).
+    by_id = _local_app_with_id(app_id) if app_id else None
+    if by_id is not None:
+        dest = by_id
     return {
         "name": name or stem,
         "slug": slug,
         "path": dest.replace(os.sep, "/"),
         "cloned": os.path.isdir(dest),
         "exported_at": exported_at(manifest),
+        "app_id": app_id,
     }
+
+
+def _local_app_with_id(app_id: str) -> str | None:
+    """The folder directly under ``clone_dir()`` whose entry page declares
+    ``app_id``, or None. One 4 KiB head read per local app — bounded by the
+    number of apps the user keeps in ``local/``, so it stays fit for the
+    unguarded GET probe (D397). Never joins the id into a path."""
+    local = clone_dir()
+    try:
+        names = sorted(os.listdir(local))
+    except OSError:
+        return None
+    for n in names:
+        if n.startswith("."):
+            continue
+        d = os.path.join(local, n)
+        if not os.path.isdir(d):
+            continue
+        try:
+            entry = app_listing.app_entry(d)
+        except OSError:
+            continue
+        if entry and app_identity.app_id(entry) == app_id:
+            return d
+    return None
 
 
 def clone_app_file(fused_path: str) -> dict:

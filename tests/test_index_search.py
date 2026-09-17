@@ -188,6 +188,49 @@ def test_search_under_optional_query_filters_server_side(tmp_path):
     assert [e["rel"] for e in out["entries"]] == ["beta.md"]
 
 
+# -- whitespace as wildcard (SPEC-search-space-wildcard.md §3) -----------------
+#
+# `fused.fileIndex.search` (the public JS bridge, backed by this function)
+# gets the same space-as-wildcard semantics as `resolve_query` — a breaking
+# change to an API user pages already call, accepted and intended. Unlike
+# `resolve_query`, `search_under` never walks the filesystem for a base: `q`
+# is purely a filter over the already-fixed `root`, so a whitespace-derived
+# pattern searches any depth under it (the same "**/ " prefix an unadorned
+# `resolve_query` glob with no "/" gets).
+
+def test_search_under_multi_word_query_finds_separator_variants(tmp_path):
+    cfg = _index(tmp_path, "/r", [
+        "/r/hello-world.txt", "/r/hello world.txt", "/r/hello_world.py",
+        "/r/my_hello_big_world.py", "/r/sub/hello world.txt",
+        "/r/HELLO World.txt", "/r/hello world extra.txt",
+        "/r/world-hello.txt",
+    ])
+    rels = sorted(e["rel"] for e in search_under(cfg, "/r", q="hello world")["entries"])
+    assert rels == sorted([
+        "hello-world.txt", "hello world.txt", "hello_world.py",
+        "my_hello_big_world.py", "sub/hello world.txt",
+        "HELLO World.txt", "hello world extra.txt",
+    ])
+    assert "world-hello.txt" not in rels
+
+
+def test_search_under_two_spaces_matches_the_same_set_as_one(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/hello-world.txt", "/r/world-hello.txt"])
+    one = sorted(e["rel"] for e in search_under(cfg, "/r", q="hello world")["entries"])
+    two = sorted(e["rel"] for e in search_under(cfg, "/r", q="hello  world")["entries"])
+    assert one == two == ["hello-world.txt"]
+
+
+def test_search_under_single_word_query_is_unaffected(tmp_path):
+    """No whitespace, no transform: an explicit `*` stays a literal character
+    for `search_under` exactly as it does today (this function does not gain
+    full glob-mode support — only the whitespace-as-wildcard rule; see
+    DECISIONS.md)."""
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/beta.md"])
+    out = search_under(cfg, "/r", q="beta")
+    assert [e["rel"] for e in out["entries"]] == ["beta.md"]
+
+
 def test_search_under_caps_the_corpus_and_flags_truncation(tmp_path):
     cfg = _index(tmp_path, "/r", [f"/r/f{i}.txt" for i in range(10)])
     out = search_under(cfg, "/r", limit=3)
@@ -258,6 +301,38 @@ def test_rank_route_answers_ranked_hits(home, tmp_path):
     assert body["ok"] is True and body["covered"] is True
     assert body["hits"][0]["rel"] == "readme.md"
     assert body["total"] == len(body["hits"])
+
+
+def test_rank_route_returns_the_resolved_pattern_for_a_glob_hit(home, tmp_path):
+    """SPEC-search-space-wildcard.md §4: the client needs the RESOLVED
+    pattern (whitespace already expanded, any base peeled off) to locate a
+    glob hit's own literal pieces for highlighting — the raw `q` it typed is
+    not enough, since `resolve_query`'s base walk is filesystem-dependent
+    and not something the client can redo itself."""
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/hello world.txt"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "hello world"}).json()
+    assert body["mode"] == "glob"
+    assert body["pattern"] == "**/*hello*world*"
+
+
+def test_rank_route_answers_a_timing_breakdown(home, tmp_path):
+    """The server already measures `total_ms`/`lane_wait_ms`/`worker_ms` for
+    the log line at ~750ms WARNING threshold (see `api_index_rank`) — the
+    frontend needs the same numbers on the wire to tell "slow server" from
+    "slow somewhere outside the handler" (queueing/transit) when a customer's
+    own console shows a multi-second round trip."""
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/readme.md"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "readme"}).json()
+    assert body["ok"] is True
+    timing = body["timing"]
+    assert set(timing) == {"total_ms", "lane_wait_ms", "worker_ms"}
+    for key in ("total_ms", "lane_wait_ms", "worker_ms"):
+        assert isinstance(timing[key], (int, float))
+        assert timing[key] >= 0
 
 
 def test_rank_route_logs_the_request_total_at_debug(home, tmp_path, caplog):

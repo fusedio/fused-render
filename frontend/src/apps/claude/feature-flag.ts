@@ -49,6 +49,31 @@ const listeners = new Set<(v: boolean | null) => void>();
 let recap = true;
 const recapListeners = new Set<(v: boolean) => void>();
 
+/**
+ * THE THIRD SWITCH THIS ONE PREFS READ ANSWERS: `prefs.queue.enabled`, the
+ * project queue — one task in progress per folder (shell/prefs.py
+ * `project_queue_enabled`).
+ *
+ * Here rather than in a module of its own for `recap`'s reason: every chat
+ * embed already causes exactly one `/api/prefs` GET, and the composer asks this
+ * on the keystroke that sends — a second reader would be a second round trip
+ * per mount for one boolean.
+ *
+ * NOT a tri-state, and the argument is the opposite of the native flag's. `null`
+ * up there exists because a premature `false` MOUNTS the wrong implementation;
+ * this one mounts nothing. It gates ONE extra call in front of a send, it
+ * DEFAULTS OFF, and off is exactly what every send did before the feature
+ * existed — so "not asked yet" and "off" are the same answer, and the worst a
+ * send inside the first read's window can do is behave like today.
+ */
+let queue = false;
+const queueListeners = new Set<(v: boolean) => void>();
+/** A read has SETTLED at least once this page — landed or failed. After that,
+ *  `queueEnabled()` is an answer and not a guess, and a send does not wait on
+ *  another round trip (Bugbot: a failed GET used to null `reading`, so every
+ *  send and decide waited up to 8 s until one succeeded). */
+let settledOnce = false;
+
 function set(next: boolean | null) {
   if (enabled === next) return;
   enabled = next;
@@ -59,6 +84,12 @@ function setRecap(next: boolean) {
   if (recap === next) return;
   recap = next;
   for (const listener of recapListeners) listener(next);
+}
+
+function setQueue(next: boolean) {
+  if (queue === next) return;
+  queue = next;
+  for (const listener of queueListeners) listener(next);
 }
 
 /**
@@ -146,6 +177,10 @@ function read(): Promise<void> {
       // that predates the field (or one whose prefs.json has never been
       // written) must read as on rather than silently losing the feature.
       setRecap(p.chat?.recap !== false);
+      // `=== true`, the opposite polarity from the recap above: this one is
+      // OPT-IN, so a server with no such field is a server whose sends are not
+      // admitted through anything.
+      setQueue(p.queue?.enabled === true);
     })
     .catch(() => {
       // STILL NO ANSWER — so `false`, not `null`. `null` is "not asked yet" and
@@ -156,10 +191,18 @@ function read(): Promise<void> {
       // default the pref itself has, and it is what these sites rendered before
       // the flag existed — never-broken outranks the tri-state. `reading` is
       // cleared so a later mount (or a publish) can still ask again.
-      if (generation === departed) set(false);
+      if (generation !== departed) return;
+      // ONLY A FIRST READ SETTLES ON `false` (review, 2026-09-16). A re-read —
+      // a tab coming back into view — that fails keeps the answer the page
+      // already has: `set(false)` here remounted every live native chat as the
+      // legacy iframe on one refused GET after a laptop wake. And `reading` is
+      // cleared only by the read that owns it, never by a superseded one.
+      if (!settledOnce) set(false);
       reading = null;
     })
-    .then(() => {});
+    .then(() => {
+      if (generation === departed) settledOnce = true;
+    });
   return reading;
 }
 
@@ -169,6 +212,99 @@ function read(): Promise<void> {
  *  skeleton for a click that was not about it. */
 export function publishChatRecapEnabled(next: boolean) {
   setRecap(next);
+}
+
+/** Hand over a known-fresh answer for the project queue (the prefs payload a
+ *  PUT returned). No `generation` bump, for `publishChatRecapEnabled`'s reason:
+ *  this is not the value `read()` retries for, and taking the native flag's
+ *  answer away would put every mount back on a skeleton for a click that was
+ *  not about it. */
+/**
+ * THE FLAG IS READ, NOT GUESSED, BEFORE A SEND ASKS IT (Akshil's QA, 2026-09-16).
+ *
+ * `queueEnabled()` answers `false` until the one prefs read lands, and "off"
+ * was argued to be the safe default — every send behaved like today. It is
+ * not safe with the queue ON: a send made inside that window skipped the
+ * queue's door and started a second run in a busy folder. So the send path
+ * awaits this first: the in-flight read, or a fresh one when nothing has
+ * asked yet. Bounded by the same 8 s backstop every read here has; a read that
+ * failed leaves the flag at its default, which is what it would have been.
+ */
+export function queueFlagReady(): Promise<void> {
+  if (reading) return reading;
+  if (settledOnce) return Promise.resolve();
+  return read();
+}
+
+/**
+ * Ask the server again. The one read per page load was the right economy for
+ * a flag that never moved under a page; this one is flipped in Settings, and
+ * a TAB THAT WAS ALREADY OPEN went on sending by the old answer (Akshil's QA,
+ * 2026-09-16: the beta tab never queued). Called when the window comes back
+ * into view — the moment a reader who toggled the pref elsewhere returns.
+ */
+export function rereadFlags(): Promise<void> {
+  // A NEW GENERATION, so the read this replaces cannot speak after it (Bugbot):
+  // without the bump an older GET that later timed out still matched
+  // `generation`, called `set(false)`, and remounted every native chat embed as
+  // the legacy iframe over a newer read that had already succeeded.
+  generation += 1;
+  reading = null;
+  return read();
+}
+
+/** The `localStorage` key a Settings toggle announces itself on, so every
+ *  OTHER tab of this app hears the flip through the `storage` event instead of
+ *  keeping the answer it read at load. */
+export const QUEUE_FLAG_BROADCAST_KEY = "fused-render:project-queue";
+
+export function publishProjectQueueEnabled(next: boolean) {
+  setQueue(next);
+  try {
+    localStorage.setItem(QUEUE_FLAG_BROADCAST_KEY, JSON.stringify({ on: next, at: Date.now() }));
+  } catch {
+    // Storage may be unavailable; the other tabs still re-read on focus.
+  }
+}
+
+/** One `storage` event, as the listener below sees it. Exported so the rule
+ *  can be exercised where the test DOM has no `StorageEvent`. */
+export function applyQueueFlagBroadcast(key: string | null, newValue: string | null): void {
+  if (key !== QUEUE_FLAG_BROADCAST_KEY || !newValue) return;
+  try {
+    setQueue((JSON.parse(newValue) as { on?: unknown }).on === true);
+  } catch {
+    // A malformed broadcast is ignored; the next focus re-reads.
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (ev) => applyQueueFlagBroadcast(ev.key, ev.newValue));
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") void rereadFlags();
+  });
+}
+
+/** Is the project queue on RIGHT NOW — the question a SEND asks, in the same
+ *  tick it is dispatched in, which is why this is a plain read and not a hook.
+ *  Defaults false; see `queue` for why that is an answer and not an absence. */
+export function queueEnabled(): boolean {
+  return queue;
+}
+
+/** Subscribe to the project queue switch. Triggers the same one prefs read the
+ *  native flag uses, so a chat that is already mounted pays nothing for asking. */
+export function useProjectQueueEnabled(): boolean {
+  const [current, setCurrent] = useState<boolean>(queueEnabled);
+  useEffect(() => {
+    queueListeners.add(setCurrent);
+    setCurrent(queueEnabled());
+    void read();
+    return () => {
+      queueListeners.delete(setCurrent);
+    };
+  }, []);
+  return current;
 }
 
 /** Whether the session-recap fold is offered. Defaults ON — see `recap`. */
@@ -208,10 +344,12 @@ export function nativeChatEnabledNow(): boolean | null {
  *  otherwise keep the answer the suite just took away. */
 export function resetNativeChatFlagForTests() {
   reading = null;
+  settledOnce = false;
   generation += 1;
   prefsDeadlineMs = GATE_FALLBACK_MS;
   set(null);
   setRecap(true);
+  setQueue(false);
 }
 
 /**

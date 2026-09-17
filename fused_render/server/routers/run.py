@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from urllib.parse import parse_qsl, urlsplit
 
 from fastapi import APIRouter, Body, Header, Request, Response
@@ -11,7 +12,50 @@ from fused_render.shell import prefetch as shell_prefetch
 from fused_render.shell import prefs as shell_prefs
 from fused_render.shell import mounts as shell_mounts
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _folder_busy(resolved: str, params: dict) -> str:
+    """The refusal for a claude-agent `start`/`send` into a folder another task
+    holds with a LIVE run, or "" when the send may go. Flag off: always "".
+    Best-effort — any failure to decide is a "go", which is what shipped."""
+    try:
+        if not str(resolved).replace("\\", "/").endswith("/templates/claude/agent.py"):
+            return ""
+        action = str(params.get("action") or "")
+        if action not in ("start", "send"):
+            return ""
+        from fused_render import project_queue
+        if not project_queue.enabled():
+            return ""
+        target = str(params.get("_file") or params.get("file") or "")
+        if not target:
+            return ""
+        key = project_queue.queue_key(target)
+        if not key:
+            return ""
+        holder = project_queue.holder_for(key)
+        session_id = str(params.get("session_id") or "")
+        run_id = str(params.get("run_id") or "")
+        logger.debug("queue gate: %s %s key=%s session=%r run=%r holder=%r",
+                    action, target, key, session_id, run_id, holder)
+        # A live process refuses, and so does a send THIS PAGE-OR-ANOTHER has
+        # announced in the last seconds (a `sending` holder off the sent mark or
+        # a scheduler claim): the process is about to be there. What does not
+        # refuse is a bare reservation — the chat's own admission a moment ago.
+        if not holder or holder.get("kind") not in ("run", "starting", "sending"):
+            return ""
+        if session_id and holder.get("session_id") == session_id:
+            return ""
+        if run_id and holder.get("run_id") == run_id:
+            return ""
+        ahead = str(holder.get("task_key") or holder.get("session_id") or "another task")
+        return ("This folder has another task in progress (%s) — the message was "
+                "not sent. Reload the page and send it again to put it in the "
+                "folder's line." % ahead)
+    except Exception:  # noqa: BLE001 — an undecidable gate is an open one
+        return ""
 
 
 @router.post("/api/run")
@@ -55,6 +99,21 @@ async def api_run(request: Request, body: dict = Body(...),
     resolved, resolve_error = resolve_py(py, html)
     if resolve_error is not None:
         return resolve_error
+
+    # THE QUEUE'S GATE, ON THE SERVER TOO (Akshil's QA, 2026-09-16). The chat
+    # asks `/api/tasks/queue/admit` before it spawns, but a page whose copy of
+    # the pref was stale — a tab opened before the switch, a send made before
+    # its prefs read landed — skipped the door and started a second run in a
+    # busy folder. The door is the server's rule, so the server holds it here
+    # as well: a `start`/`send` of the claude agent into a folder another task
+    # is RUNNING in is refused with the same words the composer shows for a
+    # refused admission. Only a live run refuses — a reservation is the chat's
+    # own admission a moment ago, and an anonymous first send must pass it.
+    refused = _folder_busy(resolved, params)
+    if refused:
+        return Response(content=dumps_result({"ok": True, "result": {"error": refused},
+                                              "resolved_py": resolved}),
+                        media_type="application/json")
 
     # Engine dispatch (D69/§20): both paths return the same wire shape
     # ({ok, result, error:{type,message,traceback}, stdout} — the fused

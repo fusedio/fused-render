@@ -542,3 +542,85 @@ def test_stale_idle_does_not_retire_a_newer_turns_mark(claude_home):
         assert not tasks_watch.is_marked_running(SID)
         row = client.get("/api/tasks").json()["tasks"][0]
         assert (row["live"], row["status"]) == (False, "done")
+
+
+# --------------------------------------------- the card rings the queue
+
+
+class _CardAgent:
+    """The parts of agent.py the card watch reads: where the runs live, and
+    where a run keeps its cards."""
+
+    def __init__(self, runs):
+        self.RUNS = str(runs)
+
+    def _perm_dir(self, run_dir):
+        return os.path.join(run_dir, "perm")
+
+    def _session_from_out(self, run_dir):
+        return ""
+
+
+@pytest.fixture()
+def carded(tmp_path, monkeypatch):
+    runs = tmp_path / "runs"
+    run_dir = runs / "20260916-120000-abcdef"
+    (run_dir / "perm").mkdir(parents=True)
+    (run_dir / "meta.json").write_text(
+        json.dumps({"file": "/proj", "resumed_from": "", "session_id": SID}),
+        encoding="utf-8")
+    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: _CardAgent(runs))
+    return run_dir
+
+
+@pytest.fixture()
+def rings(monkeypatch):
+    """Every `schedule.wake` the tick fires. `_wake_schedule` imports the
+    scheduler inside the call, so patching the module's attribute is enough."""
+    from fused_render import schedule
+
+    calls = []
+    monkeypatch.setattr(schedule, "wake", lambda: calls.append(1))
+    return calls
+
+
+def test_a_card_rings_the_scheduler_instead_of_waiting_out_its_poll(
+        claude_home, carded, rings):
+    """Akshil's QA, 2026-09-16: a task queued behind a BLOCKED one took ~30s to
+    start. A raised card parks the run, which frees the folder for whatever is
+    queued behind it — but the only thing that knew was this loop, and it said
+    nothing, so the queued task waited out the scheduler's 30-second poll.
+    Answering the card is the same event in reverse."""
+    tasks_watch.reset()
+    _registry(claude_home, SID, status="busy")
+    tasks_watch.tick()
+    assert rings == [], "the baseline sighting of a run dir names nobody"
+
+    tasks_watch.tick()
+    assert rings == [], "nothing moved: no card, no ring"
+
+    (carded / "perm" / "p1.req.json").write_text(
+        json.dumps({"id": "p1", "tool": "Bash", "input": {}}), encoding="utf-8")
+    assert tasks_watch.tick() == {SID}
+    assert rings == [1], "raised: the folder is free, ring once"
+
+    tasks_watch.tick()
+    assert rings == [1], "the card is old news; a ring is not repeated"
+
+    (carded / "perm" / "p1.decision.json").write_text(
+        json.dumps({"decision": "allow"}), encoding="utf-8")
+    tasks_watch.tick()
+    assert rings == [1, 1], "answered: the folder is taken back, ring again"
+
+
+def test_a_tick_with_no_card_does_not_ring(claude_home, carded, rings):
+    """The ring is a hint the scheduler pays an early pass for, so it is only
+    worth firing on the event itself: a transcript growing under a run that is
+    still holding its folder changes nothing about the queue."""
+    tasks_watch.reset()
+    _registry(claude_home, SID, status="busy")
+    _transcript(claude_home, SID)
+    tasks_watch.tick()
+    _transcript(claude_home, SID, lines=2)
+    assert tasks_watch.tick() == {SID}, "the transcript grew"
+    assert rings == []

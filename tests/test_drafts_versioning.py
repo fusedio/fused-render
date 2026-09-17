@@ -16,6 +16,7 @@ The fixtures are `test_drafts.py`'s, shared through `conftest`-style imports of
 the same helpers — everything lives under tmp_path, and nothing here reads the
 developer's own ~/.claude or ~/.fused-render.
 """
+import inspect
 import json
 from urllib.parse import quote
 
@@ -25,6 +26,7 @@ from fastapi.testclient import TestClient
 from fused_render import drafts, schedule_wake, tasks_store, tasks_watch
 from fused_render.server import create_app
 from fused_render.server.routers import claude_sessions as sessions_mod
+from fused_render.server.routers import schedule as schedule_mod
 from fused_render.server.routers import tasks as tasks_mod
 
 WRITE = {"X-Fused": "1"}
@@ -488,6 +490,55 @@ def test_scheduling_by_draft_key_spends_a_bound_form_too(client, tmp_path,
     assert drafts.get_task("draft-0001") is None
     row = _by_key(client)["sess-a"]
     assert row["bound_draft"] == "" and row["draft"] is None
+
+
+def test_spending_a_key_with_no_record_is_a_no_op(client, tmp_path):
+    """The ordinary new-chat send, on this branch (merge, 2026-09-17).
+
+    A session-less composer autosaves nothing (§4), so `new:<file>` normally
+    holds no record and carries no number — and yet every such send names the
+    key anyway (`run-controller`'s `draft_key`, the queue admit's `draft_key`),
+    because the key is free to state and the server is the one that knows
+    whether there is anything under it. Nothing must happen: no number invented
+    for the entry, no record touched, and no `gone` announced about a key no
+    editor is holding.
+    """
+    target = tmp_path / "project"
+    target.mkdir()
+    key = "new:" + str(target / "never-typed.py")
+    gen = client.get("/api/tasks").json()["generation"]
+
+    r = client.post("/api/schedule", headers=WRITE,
+                    json={"target": str(target), "message": "straight out",
+                          "delay_seconds": 600, "draft_key": key})
+    assert r.status_code == 200, r.text
+    entry_id = str(r.json()["entry"]["id"])
+    assert drafts.get_chat(key) is None
+    assert tasks_store.task_number(key) == "", "nothing was ever numbered here"
+    changed = client.get(f"/api/tasks/changes?since={gen}&wait=0").json()
+    assert key not in changed.get("drafts", {}).get("gone", []), (
+        "a key with no record is not news")
+    # The entry gets its own number, minted the ordinary way rather than
+    # carried off a draft that never existed.
+    assert _by_key(client)[tasks_store.pending_key(entry_id)]["task_id"]
+
+
+def test_one_spend_for_both_doors(client, tmp_path):
+    """There is exactly ONE "spend a chat draft by key" (merge of the project
+    queue, PR #1124, 2026-09-17).
+
+    `POST /api/schedule` spends the draft a scheduled message was written in and
+    the queue admit spends the one a queued send came out of, and those are the
+    same event said twice: carry the TASK number forward off a `new:<file>` key,
+    then drop both halves of the record. Two copies of that drift on the first
+    fix applied to one of them — #1124's copy had the stale-text guard the
+    create's did not, the create's had the bound form the queue's did not — so
+    the create goes through `spend_chat_draft` and this reads that it does.
+    """
+    src = inspect.getsource(schedule_mod.api_schedule_create)
+    assert "spend_chat_draft(chat_draft, entry)" in src
+    assert "drafts.delete_bound(chat_draft)" not in src, (
+        "the second copy is back")
 
 
 def test_a_draft_key_that_is_not_one_changes_nothing(client, tmp_path):

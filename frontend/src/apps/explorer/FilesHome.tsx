@@ -7,7 +7,13 @@ import { useEffect, useRef, useState } from "react";
 import { navigate, navigateUrl, replaceSearch, urlForFsPath } from "@platform/lib/router";
 import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
-import type { Config, ClaudeSessionFolder, GitRepos, IndexStatus } from "@platform/lib/api";
+import type {
+  Config,
+  ClaudeSessionFolder,
+  GitRepos,
+  IndexRankResult,
+  IndexStatus,
+} from "@platform/lib/api";
 import { searchCaveat } from "@apps/explorer/listing/index-caveat";
 import { useRankedSearchEnabled } from "@apps/explorer/lib/ranked-search-pref";
 import {
@@ -77,6 +83,68 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 // the grid happens to lay out at the current width.
 // 9 fills a 3×3 grid at the layout's usual three columns.
 const MAX_CARDS = 9;
+
+// The server's own DEBUG/WARNING log line (api_index_rank) promotes at
+// 750ms — but that only covers time INSIDE the handler. The client measures
+// the full round trip (`issuedAt.current` to the response landing), so a
+// customer stuck at 6-7s with a healthy server would never see anything past
+// that 750ms threshold. 2s is well clear of it — comfortably past normal
+// variance — and picks out only the episodes a user would actually notice
+// and complain about, not every request that nudges past the server's own
+// much tighter bar.
+const SLOW_SEARCH_WARN_MS = 2000;
+
+// Rounds to 1 decimal place for display. The server already rounds its own
+// timing numbers to 1 decimal (see fused_render/server/routers/index.py), so
+// this is a no-op on those — but `elapsedMs - timing.total_ms` is a fresh
+// subtraction of an integer (`Date.now()` deltas) against that rounded
+// float, and float subtraction of the two does not land on a clean decimal
+// (e.g. `2000 - 1600.1 === 399.9000000000001`). Rounding every number that
+// reaches this line, derived or echoed, means the printed line can never
+// carry a 15-17 significant-digit float for a support engineer to puzzle
+// over on a screenshot.
+function r1(ms: number): number {
+  return Math.round(ms * 10) / 10;
+}
+
+/** A single, self-explanatory console line for a support engineer reading a
+ * screenshot: the query, what the browser measured end to end, and — when
+ * the server sent it — its own breakdown of where that time went inside the
+ * handler. The gap between the two (`elapsedMs` minus the server's own
+ * `total_ms`) is real time this request spent somewhere the server never
+ * saw it: connection queueing, ASGI accept backlog, transit, etc. It is
+ * labeled "unaccounted / outside handler" rather than named as any one of
+ * those, because nothing here actually measures which. */
+function warnSlowSearch(query: string, elapsedMs: number,
+                        timing: IndexRankResult["timing"]): void {
+  if (!timing) {
+    console.warn(
+      `[explorer] slow home search: query=${JSON.stringify(query)} ` +
+      `elapsed=${elapsedMs}ms — server timing unavailable (older server, ` +
+      `or the response omitted it)`);
+    return;
+  }
+  const unaccountedMs = Math.max(0, r1(elapsedMs - timing.total_ms));
+  console.warn(
+    `[explorer] slow home search: query=${JSON.stringify(query)} ` +
+    `elapsed=${elapsedMs}ms | server: total=${r1(timing.total_ms)}ms ` +
+    `lane_wait=${r1(timing.lane_wait_ms)}ms worker=${r1(timing.worker_ms)}ms | ` +
+    `unaccounted/outside-handler=${unaccountedMs}ms`);
+}
+
+/** Same audience and shape as `warnSlowSearch` above, for the branch that
+ * never gets there: a slow request that THROWS (a wedged-index 503 after
+ * `ABANDON_S`, pool exhaustion, a network failure) never reaches `.then()`,
+ * so without this the exact scenario the feature exists for — a customer
+ * stuck for many seconds on a wedged read — logs nothing. Prefixed
+ * "FAILED" and carries the error text so a support engineer can tell a
+ * successful-but-slow search from a failed one at a glance, never having to
+ * infer it from which of two near-identical lines they're looking at. */
+function warnSlowSearchFailed(query: string, elapsedMs: number, error: Error): void {
+  console.warn(
+    `[explorer] slow home search FAILED: query=${JSON.stringify(query)} ` +
+    `elapsed=${elapsedMs}ms — request failed: ${error.message}`);
+}
 
 type LaunchTab = "recents" | "sessions" | "repos";
 
@@ -594,7 +662,9 @@ export function FilesSearch({
       indexRank(home, q, { signal: ctl.signal, limit: RANK_FETCH_LIMIT, ranked }).then(
         (res) => {
           if (ctl.signal.aborted) return;
-          const next = answerFrom(res, q, Date.now() - issuedAt.current);
+          const elapsedMs = Date.now() - issuedAt.current;
+          if (elapsedMs >= SLOW_SEARCH_WARN_MS) warnSlowSearch(q, elapsedMs, res.timing);
+          const next = answerFrom(res, q, elapsedMs);
           memo.current.put(q, next);
           setAnswer(next);
           setFailure("");
@@ -602,6 +672,8 @@ export function FilesSearch({
         },
         (err: Error) => {
           if (ctl.signal.aborted || err.name === "AbortError") return;
+          const elapsedMs = Date.now() - issuedAt.current;
+          if (elapsedMs >= SLOW_SEARCH_WARN_MS) warnSlowSearchFailed(q, elapsedMs, err);
           // The rows in hand STAY. They are the best answer available on a page
           // with no live walk, and the banner below says the refresh failed.
           setFailure(err.message);

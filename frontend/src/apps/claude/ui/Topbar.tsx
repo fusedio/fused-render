@@ -78,6 +78,15 @@ export interface TopbarProps {
   /** A turn is live: one source of truth for the mark and the composer's stop
    *  square (T:1342-1349). */
   running: boolean;
+  /**
+   * THE OTHER WORD THIS SEAT CAN SAY — "paused · resumes 4:00 AM", when the
+   * plan's usage limit stopped this session (`platform/lib/usage-limit`).
+   *
+   * It REPLACES "running" rather than sitting beside it: they are answers to one
+   * question ("is anything happening here"), and a limited session is precisely
+   * one where nothing is. "" on every ordinary chat.
+   */
+  status?: string;
 }
 
 export function Topbar({
@@ -88,6 +97,7 @@ export function Topbar({
   pending,
   home,
   running,
+  status,
 }: TopbarProps) {
   if (task) {
     return (
@@ -100,6 +110,14 @@ export function Topbar({
       <div className="c-topbar" title={sessionId || undefined}>
         <TaskPeekWho task={task} running={running} />
         <TaskPeekProject task={task} {...(home ? { home } : {})} />
+        {/* THE PAUSED WORD STILL LANDS HERE (`status`, platform/lib/usage-limit):
+            the ring says running or not, and "resumes 4:00 AM" is the one fact
+            about this conversation the ring cannot carry. */}
+        {status ? (
+          <span className="c-tb-paused" aria-live="polite">
+            {status}
+          </span>
+        ) : null}
         {/* NO "running" WORD HERE (Akshil, 2026-09-14): the ring at the left
             already says it, and one line saying one thing twice spends the
             header's last inch on nothing. The page's own turn clock still
@@ -154,7 +172,13 @@ export function Topbar({
       {/* `aria-live="polite"`, not assertive: this is an ambient state, and a
           reader that interrupts to announce the start of every turn is worse
           than one that mentions it when it next comes up for air (T:4078). */}
-      {running ? (
+      {status ? (
+        // NOT `.c-tb-run`: that word shimmers, and a shimmer on "paused" would
+        // animate the one state whose whole content is that nothing is moving.
+        <span className="c-tb-paused" aria-live="polite">
+          {status}
+        </span>
+      ) : running ? (
         <span className="c-tb-run" aria-live="polite">
           running
         </span>

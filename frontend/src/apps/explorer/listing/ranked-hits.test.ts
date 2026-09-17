@@ -62,9 +62,28 @@ describe("hitsFromRank", () => {
     // coincidental substring as the match or, for a hit with none, produce
     // the same `[]` as a hit that should have been highlighted — both
     // indistinguishable from a bug without consulting the server's own mode.
+    // With no `pattern` argument (the fourth parameter, omitted here), there
+    // is nothing for `globMatch` to test against, so this renders
+    // unhighlighted rather than dropped.
     const [row] = hitsFromRank([hit({ rel: "report.csv" })], "*.csv", "glob");
     expect(row.entry.rel).toBe("report.csv");
     expect(row.positions).toEqual([]);
+  });
+
+  test("a glob-mode hit highlights its literal pieces via the server's resolved pattern (§4)", () => {
+    // SPEC-search-space-wildcard.md §4: the caller passes `res.pattern`
+    // (`IndexRankResult.pattern`) — the server's resolved, base-peeled,
+    // whitespace-expanded pattern, NOT the raw typed query — as the fourth
+    // argument, and `globMatch` (platform/lib/fuzzy.ts) locates each literal
+    // piece of it within the hit's `rel`.
+    const [row] = hitsFromRank(
+      [hit({ rel: "my_hello_big_world.py" })],
+      "hello world",
+      "glob",
+      "**/*hello*world*",
+    );
+    expect(row.entry.rel).toBe("my_hello_big_world.py");
+    expect(row.positions!.map((i) => "my_hello_big_world.py"[i]).join("")).toBe("helloworld");
   });
 
   test("a query carrying a base prefix the server already consumed still highlights the leaf", () => {

@@ -22,10 +22,13 @@
 // A glob-mode query is a third case, and it is not a disagreement to
 // reconcile: a glob hit is not promised to be a substring of the query text
 // in the first place (`*.csv` matching `report.csv` has no literal `"*.csv"`
-// anywhere in the path), so `substringMatch` is never even run over one —
-// `hitsFromRank`'s `mode` parameter skips straight to the unhighlighted,
-// row-kept outcome instead of asking a test that was never going to apply.
-import { substringMatch } from "@platform/lib/fuzzy";
+// anywhere in the path). It gets its own matcher instead of skipping
+// highlighting: `globMatch` (platform/lib/fuzzy.ts) locates each literal
+// piece of the RESOLVED pattern (`IndexRankResult.pattern`, not the raw
+// typed query — see that field's own doc comment) within `rel` directly,
+// via the same capture-group trick `_glob_to_regex` (query.py) uses
+// server-side (SPEC-search-space-wildcard.md §4).
+import { globMatch, substringMatch } from "@platform/lib/fuzzy";
 import type { IndexRankHit } from "@platform/lib/api";
 import type { SearchHit } from "@apps/explorer/listing/types";
 
@@ -34,17 +37,19 @@ import type { SearchHit } from "@apps/explorer/listing/types";
  * `mode` is which matcher the server actually ran (`IndexRankResult.mode`),
  * and it decides how a hit's highlight is recomputed: a substring-mode hit
  * still gets `substringMatch` re-run over it (see module comment for why),
- * but a glob-mode hit is never re-tested that way. A glob match like
- * `*.csv` against `report.csv` has no literal substring relationship to the
- * query text at all, so running `substringMatch` over it would be testing
- * something the match was never promised to satisfy — it renders unhighlighted
- * instead, same as any other hit the browser's matcher does not confirm, but
- * without ever risking a false "no highlight, real hit" verdict standing in
- * for a mislabeled coincidental one. Defaults to `"substring"`. */
+ * while a glob-mode hit is matched against `pattern` (`IndexRankResult.
+ * pattern` — the server's resolved, base-peeled, whitespace-expanded
+ * pattern, required whenever `mode === "glob"`) via `globMatch` instead. A
+ * glob hit `globMatch` itself cannot confirm (should not happen for a hit the
+ * server already matched, but this does not assume it) renders unhighlighted
+ * rather than dropped — same posture as a substring hit the browser's own
+ * matcher fails to confirm (see module comment). Defaults to `"substring"`,
+ * with `pattern` unused in that mode. */
 export function hitsFromRank(
   hits: IndexRankHit[],
   q: string,
   mode: "substring" | "glob" = "substring",
+  pattern?: string,
 ): SearchHit[] {
   if (!q) return [];
   // A query that escapes the box root (query-base.ts's `escapesBase`) carries
@@ -63,6 +68,8 @@ export function hitsFromRank(
         substringMatch(q, h.rel)?.positions ??
         (leaf !== q ? substringMatch(leaf, h.rel)?.positions : undefined) ??
         [];
+    } else if (mode === "glob" && pattern) {
+      positions = globMatch(pattern, h.rel)?.positions ?? [];
     }
     return { entry: { rel: h.rel, is_dir: h.is_dir, size: h.size, mtime: h.mtime }, positions };
   });
