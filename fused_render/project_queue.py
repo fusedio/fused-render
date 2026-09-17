@@ -112,6 +112,9 @@ _AGENT_MOD = None
 _AGENT_MOD_TRIED = False
 _AGENT_MOD_LOCK = threading.Lock()
 
+# The one `MountGuard` behind `queue_key` — see `_guard`.
+_GUARD: MountGuard | None = None
+
 
 # ------------------------------------------------------------------- the flag
 
