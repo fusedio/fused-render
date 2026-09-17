@@ -288,18 +288,41 @@ function isSuppressed(input: NotificationInput, tier: JobTier): boolean {
   return isFocusedHere(input.source);
 }
 
-/** See `StoredNotification.family`'s own doc comment. `page` alone is NOT a
- *  row identity: `taskDestination` (task-status-notify.ts) falls back to a
- *  per-folder or global route (`folderHref(task) ?? "/tasks"`) once a task
- *  has no live session of its own, so two DIFFERENT tasks routinely share a
- *  `page` while naming completely different work. Title is folded in
- *  alongside `page` so the family identifies THIS row, not just its
- *  destination — the user's own case (same task, same title, same page)
- *  still collapses, while two different tasks landing on the same folder
- *  href do not silently overwrite one another. `title` alone is the
- *  fallback for messages with no destination at all — still useful for e.g.
- *  repeated identical toasts, not just task completions. */
+/** See `StoredNotification.family`'s own doc comment.
+ *
+ * DEFECT (2026-09-17, live repro): `page` was ALSO tried as the row
+ * identity's other half, and that is wrong in the opposite direction from
+ * the one the DEFECT-3 comment above used to warn about. `page` here is
+ * `taskDestination(task)` -> `taskHref` (tasks-lib.ts), which for a task with
+ * a live session embeds that run's own PER-RUN `session_id`
+ * (`explorerUrl(task.target || task.project, task.session_id)`). Two
+ * separate runs of the identical task — the user's own "i ran it twice, I
+ * just want them grouped" case — therefore get two DIFFERENT `page` values
+ * and never collapse, no matter how identical their title and caption are.
+ * `page` is the wrong axis on both ends: too coarse when it falls back to a
+ * shared folder/global route (DEFECT 3), too fine when it carries a
+ * per-run session id (this fix).
+ *
+ * The axis that is actually stable across repeats of "the same work" is the
+ * CAPTION — "who/what made this" (`input.origin || labelForSource(input.source)`,
+ * exactly `toStored`'s own caption computation, kept in lockstep with it on
+ * purpose) — plus the title. A caption is set for every call site this
+ * collapse exists for (the finished-task notice sets `origin` to the task's
+ * project caption; other retained callers set `source`), so this is tried
+ * FIRST and, when it resolves to something non-empty, wins outright — page
+ * is not consulted at all in that case, which is exactly what fixes the
+ * repro (same caption, same title, different page -> same family).
+ *
+ * Only when there is no caption at all (a caller with neither `origin` nor
+ * `source`) does this fall back to the pre-existing `page`-then-`title`
+ * chain, so no existing call site's behavior changes: `page` alone is still
+ * not a row identity for that fallback (DEFECT 3's reasoning stands — two
+ * different captionless tasks sharing a folder-fallback page must not
+ * collapse), and `title` alone remains the last resort for messages with no
+ * destination and no caption at all. */
 function messageFamily(input: NotificationInput): string {
+  const caption = input.origin || labelForSource(input.source);
+  if (caption) return `caption:${caption}::${input.title}`;
   return input.page ? `page:${input.page}::${input.title}` : `title:${input.title}`;
 }
 

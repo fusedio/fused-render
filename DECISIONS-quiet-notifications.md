@@ -2332,3 +2332,81 @@ src/shell/RepoUpdatesDock.test.tsx` → 151 pass, 0 fail, 372 expect() calls.
 calls, Ran 6578 tests across 305 files. `bunx tsc --noEmit -p frontend` →
 clean. `node frontend/scripts/check-boundaries.mjs` → `boundaries OK (831
 files)`.
+
+## Defect 4: `page` collision (not just fallback-page collision) — two runs of
+## the SAME task never collapsed, because `page` embeds a per-run session id
+
+**Reported live, in a browser, by the user, not hypothesised**: "i ran it
+twice. I just want them grouped." Two separate Claude tasks were created with
+the identical title ("Reply with exactly one word: APPLE") in the same
+project folder (`.../Showcase Drafts/Transcripto`). Both finished. The
+Notifications panel showed TWO stacked, byte-identical cards, no "Happened 2
+times", no collapse — the exact pile-up this whole feature exists to remove.
+
+**Root cause**: `messageFamily` (`notifications.ts`) still keyed its
+page-branch on `input.page`. For the finished-task call site
+(`task-status-notify.ts`'s `in_progress -> done` branch), `page:
+taskDestination(task)` -> `taskHref(task)` (`tasks-lib.ts:1564`) ->
+`explorerUrl(task.target || task.project, task.session_id)`. **`task_id` is
+per-run** — every run of "the same work" mints its own `session_id`, so
+`taskHref` returns a genuinely different URL each time, even for two runs of
+the identical task, identical title, identical project. `page` therefore
+never repeats across runs, so the family never repeats, so nothing ever
+collapsed — not a rare edge case, the ordinary case for exactly what this
+feature was built for.
+
+This is the same field (`page`) that Defect 3 (see the two-different-tasks
+entry above) had already flagged as too COARSE on its OTHER failure mode (two
+different tasks sharing a fallback `/tasks` or folder href). `page` is wrong
+on both ends: too coarse when it falls back to a shared route, too fine when
+it carries a per-run session id. Neither end makes it a sound row identity by
+itself.
+
+**Fix**: `messageFamily` now tries the resolved CAPTION first —
+`input.origin || labelForSource(input.source)`, exactly `toStored`'s own
+caption computation, not a second, driftable copy of it — combined with
+`title`. Two calls with the same caption and the same title collapse
+regardless of `page`, because `page` is not consulted at all once a caption
+resolves to something non-empty. Only when there is no caption at all (no
+`origin`, no `source`) does the family fall back to the pre-existing
+`page`-then-`title` chain, so Defect 3's fix (folder-fallback collisions) and
+every other existing call site's behavior are unchanged — verified by keeping
+every pre-existing family test green with no edits to them.
+
+The collapsed row is still rebuilt from the NEWEST input (`notify()`'s own
+`{ ...base, count: ..., updatedAt: now }`, where `base = toStored(input, id)`
+uses the CURRENT call's `input`, not the retained row's stale one) — so the
+grouped row's `page` is the newer run's page, and clicking it opens the run
+that just finished, not the stale earlier one. Confirmed by a new test
+asserting `retained[0].page` equals the SECOND call's page.
+
+**New tests** (`notifications.test.ts`):
+- `"two finished-task notices with the same caption and title but different
+  (per-run) pages collapse into one row pointing at the newer page"` — the
+  regression test for the live defect; written first, watched fail against
+  the pre-fix `messageFamily` (collapsed to 2 rows, count 1 each), then
+  passes.
+- `"same caption but different titles stay as two separate rows"`.
+- `"same title but different captions stay as two separate rows"`.
+
+**Not touched**: `isSuppressed`, `isPopupSuppressed`, `effectiveTier`,
+`isRetained`, the error/`attention` path, the burst-window-removal from
+Defect 2, and `RepoUpdatesDock.tsx`'s "Happened N times" wording (open
+question with the user, left alone).
+
+**Commands run**: `bun test src/platform/lib/notifications.test.ts
+src/shell/task-status-notify.test.ts src/shell/useTaskStatusNotify.test.ts` →
+all pass. `bun --cwd frontend test` (full suite, `bun test src`) → 6581 pass,
+0 fail, 24266 expect() calls, Ran 6581 tests across 305 files. `bunx tsc
+--noEmit -p frontend` → clean. `node frontend/scripts/check-boundaries.mjs` →
+`boundaries OK (831 files)`.
+
+Aside, not a defect in this branch: running `bun test
+src/platform/lib/notifications.test.ts` (or any single file that imports
+`router.ts`) in complete isolation throws `ReferenceError: location is not
+defined` from `router.ts`'s module-scope `rewriteLegacyPath` IIFE — reproduces
+identically against the unmodified `HEAD` (verified via a temporary `git
+stash`), so it is a pre-existing single-file-invocation quirk in this bun
+version, not something this fix introduced. Running the same file together
+with even one other file, or as part of the full `bun test src`, passes
+clean.

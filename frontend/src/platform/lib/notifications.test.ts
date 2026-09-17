@@ -639,6 +639,57 @@ test("two different tasks sharing the same folder-fallback page do not collapse 
   ]);
 });
 
+// DEFECT (2026-09-17 fix, live repro): the finished-task family used to key
+// on `page`, which is `taskDestination(task)` -> `taskHref` and embeds that
+// run's own PER-RUN `session_id` — two separate runs of the identical task
+// therefore got two different `page` values and never collapsed. This is
+// the user's own "i ran it twice, I just want them grouped" case: same
+// caption (`origin`), same title, genuinely different `page` (a different
+// run's session url). They must collapse into one row, and that row must
+// point at the NEWER run's page — the collapse rebuilds from the latest
+// input, and a click on the grouped row should land on the run the user
+// just finished, not the stale earlier one.
+test("two finished-task notices with the same caption and title but different (per-run) pages collapse into one row pointing at the newer page", () => {
+  notify({
+    title: "Reply with exactly one word: APPLE",
+    detail: "Finished",
+    tone: "info",
+    origin: "Transcripto",
+    page: "/explorer/view/Transcripto?session=run-1",
+  });
+  notify({
+    title: "Reply with exactly one word: APPLE",
+    detail: "Finished",
+    tone: "info",
+    origin: "Transcripto",
+    page: "/explorer/view/Transcripto?session=run-2",
+  });
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(1);
+  expect(retained[0]?.count).toBe(2);
+  expect(retained[0]?.page).toBe("/explorer/view/Transcripto?session=run-2");
+});
+
+// Same caption, different titles — must NOT collapse just because they share
+// a source. The title stays part of the family identity.
+test("same caption but different titles stay as two separate rows", () => {
+  notify({ title: "Task A finished", tone: "info", origin: "Transcripto", page: "/explorer/view/a" });
+  notify({ title: "Task B finished", tone: "info", origin: "Transcripto", page: "/explorer/view/b" });
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(2);
+  expect(retained.every((n) => n.count === 1)).toBe(true);
+});
+
+// Same title, different captions — two different sources doing the same
+// kind of work must not be conflated into one row.
+test("same title but different captions stay as two separate rows", () => {
+  notify({ title: "Reply with exactly one word: APPLE", tone: "info", origin: "Transcripto", page: "/a" });
+  notify({ title: "Reply with exactly one word: APPLE", tone: "info", origin: "OtherApp", page: "/b" });
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(2);
+  expect(retained.every((n) => n.count === 1)).toBe(true);
+});
+
 test("a suppressed replaceId call clears whatever that id was still showing", () => {
   const id = notify({ title: "Installing…", tone: "info", source: "/claude-config" });
   expect(popupSnapshot()?.title).toBe("Installing…");
