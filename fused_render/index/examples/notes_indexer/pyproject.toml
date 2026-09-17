@@ -1,0 +1,3 @@
+[tool.fused-render.index]
+module = "indexer.py"
+kind = "notes"
