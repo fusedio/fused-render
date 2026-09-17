@@ -1,0 +1,166 @@
+"""A third-party app's index manifest ([tool.fused-render.index] in its own
+pyproject.toml) and the propose/confirm registry that backs "app proposes,
+user confirms, never silent" (SPEC-index-plugins.md decision #8). Mirrors
+background_apps.py's manifest-parsing and autostart-store conventions.
+"""
+import os
+
+import pytest
+
+from fused_render.index import manifest as manifest_mod
+from fused_render.index.manifest import load_manifest
+
+
+def _write_pyproject(folder, body):
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, "pyproject.toml"), "w", encoding="utf-8") as fh:
+        fh.write(body)
+
+
+def _write_module(folder, name="indexer.py", body="def register():\n    pass\n"):
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, name), "w", encoding="utf-8") as fh:
+        fh.write(body)
+
+
+# -- load_manifest ------------------------------------------------------------
+
+
+def test_load_manifest_none_without_a_pyproject(tmp_path):
+    assert load_manifest(str(tmp_path)) is None
+
+
+def test_load_manifest_none_on_corrupt_toml(tmp_path):
+    _write_pyproject(str(tmp_path), "{not valid toml")
+    assert load_manifest(str(tmp_path)) is None
+
+
+def test_load_manifest_none_without_the_index_table(tmp_path):
+    _write_pyproject(str(tmp_path), '[tool.fused-render.app]\nmain = "x.py"\n')
+    assert load_manifest(str(tmp_path)) is None
+
+
+def test_load_manifest_none_when_module_is_missing(tmp_path):
+    _write_pyproject(
+        str(tmp_path),
+        '[tool.fused-render.index]\nmodule = "indexer.py"\nkind = "widgets"\n',
+    )
+    assert load_manifest(str(tmp_path)) is None
+
+
+def test_load_manifest_none_when_kind_is_missing(tmp_path):
+    _write_module(str(tmp_path))
+    _write_pyproject(str(tmp_path), '[tool.fused-render.index]\nmodule = "indexer.py"\n')
+    assert load_manifest(str(tmp_path)) is None
+
+
+def test_load_manifest_rejects_a_module_path_escaping_the_folder(tmp_path):
+    outside = tmp_path / "outside.py"
+    outside.write_text("def register():\n    pass\n", encoding="utf-8")
+    folder = tmp_path / "app"
+    _write_pyproject(
+        str(folder),
+        '[tool.fused-render.index]\nmodule = "../outside.py"\nkind = "widgets"\n',
+    )
+    assert load_manifest(str(folder)) is None
+
+
+def test_load_manifest_rejects_a_directory_as_the_module(tmp_path):
+    folder = tmp_path / "app"
+    os.makedirs(str(folder / "notafile.py"), exist_ok=True)
+    _write_pyproject(
+        str(folder),
+        '[tool.fused-render.index]\nmodule = "notafile.py"\nkind = "widgets"\n',
+    )
+    assert load_manifest(str(folder)) is None
+
+
+def test_load_manifest_returns_module_and_kind(tmp_path):
+    folder = tmp_path / "app"
+    _write_module(str(folder))
+    _write_pyproject(
+        str(folder),
+        '[tool.fused-render.index]\nmodule = "indexer.py"\nkind = "widgets"\n',
+    )
+    m = load_manifest(str(folder))
+    assert m is not None
+    assert m.folder == os.path.abspath(str(folder))
+    assert m.module == os.path.join(os.path.abspath(str(folder)), "indexer.py")
+    assert m.kind == "widgets"
+
+
+# -- propose / confirm registry ------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _isolated_store(tmp_path, monkeypatch):
+    monkeypatch.setattr(manifest_mod, "_store_path",
+                        lambda: str(tmp_path / "index_proposals.json"))
+
+
+def _app_folder(tmp_path, name="myapp", kind="widgets"):
+    folder = tmp_path / name
+    _write_module(str(folder))
+    _write_pyproject(
+        str(folder),
+        f'[tool.fused-render.index]\nmodule = "indexer.py"\nkind = "{kind}"\n',
+    )
+    return str(folder)
+
+
+def test_propose_index_adds_a_valid_manifest_to_pending(tmp_path):
+    folder = _app_folder(tmp_path)
+    assert manifest_mod.propose_index(folder) is True
+    assert os.path.realpath(folder) in manifest_mod.pending_folders()
+    assert os.path.realpath(folder) not in manifest_mod.confirmed_folders()
+
+
+def test_propose_index_false_without_a_valid_manifest(tmp_path):
+    folder = tmp_path / "noindex"
+    folder.mkdir()
+    assert manifest_mod.propose_index(str(folder)) is False
+    assert manifest_mod.pending_folders() == []
+
+
+def test_confirm_index_moves_pending_to_confirmed(tmp_path):
+    folder = _app_folder(tmp_path)
+    manifest_mod.propose_index(folder)
+    assert manifest_mod.confirm_index(folder) is True
+    assert os.path.realpath(folder) in manifest_mod.confirmed_folders()
+    assert os.path.realpath(folder) not in manifest_mod.pending_folders()
+
+
+def test_confirm_index_false_when_never_proposed(tmp_path):
+    folder = _app_folder(tmp_path)
+    assert manifest_mod.confirm_index(folder) is False
+    assert manifest_mod.confirmed_folders() == []
+
+
+def test_refuse_index_drops_a_pending_proposal(tmp_path):
+    folder = _app_folder(tmp_path)
+    manifest_mod.propose_index(folder)
+    manifest_mod.refuse_index(folder)
+    assert manifest_mod.pending_folders() == []
+    assert manifest_mod.confirmed_folders() == []
+
+
+def test_refuse_index_revokes_an_already_confirmed_folder(tmp_path):
+    folder = _app_folder(tmp_path)
+    manifest_mod.propose_index(folder)
+    manifest_mod.confirm_index(folder)
+    manifest_mod.refuse_index(folder)
+    assert manifest_mod.confirmed_folders() == []
+
+
+def test_reproposing_an_already_confirmed_folder_is_a_silent_no_op(tmp_path):
+    """Confirmation is sticky: a folder the user already approved does not
+    fall back to "pending" (and thus reprompt) just because the app called
+    propose again — that would be exactly the silent-reprompt-fatigue this
+    decision exists to avoid, and it would also make "confirmed" not really
+    mean confirmed."""
+    folder = _app_folder(tmp_path)
+    manifest_mod.propose_index(folder)
+    manifest_mod.confirm_index(folder)
+    assert manifest_mod.propose_index(folder) is True
+    assert os.path.realpath(folder) in manifest_mod.confirmed_folders()
+    assert os.path.realpath(folder) not in manifest_mod.pending_folders()
