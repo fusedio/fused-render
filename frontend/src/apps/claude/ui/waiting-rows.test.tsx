@@ -605,7 +605,7 @@ describe("admission, in the send window", () => {
       '...(sid ? {} : { draft_key: chatDraftKey(null, file || "") }),',
     );
     // The same function the composer keys on, so the two spellings cannot drift.
-    expect(CHAT).toContain('import { chatDraftKey, moveChatDraft } from "@platform/lib/drafts";');
+    expect(CHAT).toContain('import { chatDraftKey } from "@platform/lib/drafts";');
   });
 
   it("joins a follow-up to the message already in the line, not to a new task", () => {

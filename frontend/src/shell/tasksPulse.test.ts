@@ -8,6 +8,8 @@ import {
   CATCH_UP_SETTLE_MS,
   CHANGES_BACKOFF_MS,
   LISTING_FLOOR_MS,
+  onDraftChange,
+  dropListingKeys,
   listingFeedLive,
   onGone,
   readListing,
@@ -443,5 +445,137 @@ describe("subscribeListing", () => {
     await settle();
     off();
     expect(seen[seen.length - 1].rows.map((t) => t.key)).toEqual(["a"]);
+  });
+});
+
+describe("dropListingKeys", () => {
+  test("takes the row off the held listing and announces it as gone", async () => {
+    const e = env([], [{ tasks: [row("a"), row("b")] }]);
+    const gone: string[][] = [];
+    const offGone = onGone((keys) => gone.push(keys));
+    const seen: ListingEvent[] = [];
+    const off = subscribeListing((ev) => seen.push(ev), e);
+    await settle();
+
+    dropListingKeys(["a"]);
+    const last = seen[seen.length - 1];
+    expect(last.rows.map((t) => t.key)).toEqual(["b"]);
+    // Announced as the long-poll would have announced it, so the cleanup behind
+    // a vanished draft runs whoever pressed the button.
+    expect(last.delta).toEqual({ rows: [], gone: ["a"] });
+    expect(gone[gone.length - 1]).toEqual(["a"]);
+    expect(readListing()?.map((t) => t.key)).toEqual(["b"]);
+    off();
+    offGone();
+  });
+
+  test("a key nothing is holding still reaches onGone, and repaints nobody", async () => {
+    const e = env([], [{ tasks: [row("a")] }]);
+    const gone: string[][] = [];
+    const offGone = onGone((keys) => gone.push(keys));
+    const seen: ListingEvent[] = [];
+    const off = subscribeListing((ev) => seen.push(ev), e);
+    await settle();
+    const painted = seen.length;
+
+    dropListingKeys(["new:/somewhere/else"]);
+    expect(gone[gone.length - 1]).toEqual(["new:/somewhere/else"]);
+    expect(seen.length).toBe(painted);
+    off();
+    offGone();
+  });
+
+  test("nothing at all for an empty list", async () => {
+    const e = env([], [{ tasks: [row("a")] }]);
+    const gone: string[][] = [];
+    const offGone = onGone((keys) => gone.push(keys));
+    const off = subscribeListing(() => {}, e);
+    await settle();
+    dropListingKeys([]);
+    dropListingKeys([""]);
+    expect(gone).toEqual([]);
+    off();
+    offGone();
+  });
+
+  test("the drop does NOT age the generation the server's next answer is judged by",
+    async () => {
+      // A local removal is not news from the server, so a full read that left
+      // before it must still land — otherwise the row would be stuck gone until
+      // something else moved.
+      const e = env([], [{ tasks: [row("a"), row("b")], generation: 5 },
+                         { tasks: [row("b")], generation: 5 }]);
+      const seen: ListingEvent[] = [];
+      const off = subscribeListing((ev) => seen.push(ev), e);
+      await settle();
+      dropListingKeys(["a"]);
+      refreshListing();
+      await settle();
+      expect(seen[seen.length - 1].rows.map((t) => t.key)).toEqual(["b"]);
+      off();
+    });
+});
+
+describe("onDraftChange", () => {
+  // design §3: the change answer now says which DRAFT records moved and to what
+  // version, so an open composer or task card adopts another tab's save within a
+  // second instead of finding out on its next reload. It replaced App.tsx's
+  // `onGone` → `fetchDrafts` → mark-spent loop, which was one whole read of the
+  // drafts store per announcement — hundreds a second on a real machine when a
+  // server bug kept re-announcing one key (the incident `coalesceLatest` existed
+  // for).
+  const drafts = (changed: { key: string; version: number }[], gone: string[]) =>
+    ({ changed, gone });
+
+  test("carries the server's changed/gone straight through", async () => {
+    const e = env(
+      [{ generation: 1 },
+       { generation: 2, rows: [], gone: [],
+         drafts: drafts([{ key: "new:/a/x.py", version: 4 }], ["sess-9"]) }],
+      [{ tasks: [], generation: 1 }],
+    );
+    const seen: Array<[{ key: string; version: number }[], string[]]> = [];
+    const offDrafts = onDraftChange((changed, gone) => seen.push([changed, gone]));
+    const off = subscribeListing(() => {}, e);
+    await settle();
+    expect(seen).toEqual([[[{ key: "new:/a/x.py", version: 4 }], ["sess-9"]]]);
+    offDrafts();
+    off();
+  });
+
+  test("…even on an answer whose rows and `gone` are both empty", async () => {
+    // A version bump on a record two tabs are open on moves no ROW at all — the
+    // listing is unchanged — and the fold below `continue`s past such an answer.
+    // So the draft delta is announced first and unconditionally, or a second
+    // tab's save would never reach the first one's composer.
+    const e = env(
+      [{ generation: 1 },
+       { generation: 3, rows: [], gone: [],
+         drafts: drafts([{ key: "sess-1", version: 8 }], []) }],
+      [{ tasks: [], generation: 1 }],
+    );
+    const seen: string[] = [];
+    const offDrafts = onDraftChange((changed) => seen.push(...changed.map((c) => c.key)));
+    const off = subscribeListing(() => {}, e);
+    await settle();
+    expect(seen).toEqual(["sess-1"]);
+    offDrafts();
+    off();
+  });
+
+  test("and says nothing at all when the answer carries no drafts key", async () => {
+    // `full: true` answers carry none (contract §3), and so does every older
+    // server. Firing an empty event would wake every subscriber for nothing.
+    const e = env(
+      [{ generation: 1 }, { generation: 4, rows: [], gone: ["sess-2"] }],
+      [{ tasks: [], generation: 1 }],
+    );
+    let fired = 0;
+    const offDrafts = onDraftChange(() => { fired += 1; });
+    const off = subscribeListing(() => {}, e);
+    await settle();
+    expect(fired).toBe(0);
+    offDrafts();
+    off();
   });
 });

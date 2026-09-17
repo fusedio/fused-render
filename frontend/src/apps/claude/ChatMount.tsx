@@ -228,17 +228,6 @@ export interface ChatMountProps {
    * a peek, a thumbnail or a listing preview.
    */
   recap?: boolean;
-  /**
-   * DROP THE UPCOMING LANE FROM THIS MOUNT'S "Recent chats" — `ClaudeChat`'s
-   * own prop (and `Lists`' before that), carried through untouched. Set by
-   * exactly one host today: the explorer's Claude side panel (Preview.tsx's
-   * `?_side=claude` sidebar and ListingPreviewPane's folder pane) — the
-   * reader opened it to talk about the thing already on screen, not to be
-   * shown a queue of scheduled-for-later work and drafts sitting beside it.
-   * LEGACY has no such filter (the template draws its own list), so this has
-   * no flag-off counterpart — it only ever reaches the native branch below.
-   */
-  hideUpcoming?: boolean;
 }
 
 export function ChatMount(props: ChatMountProps) {
@@ -294,7 +283,6 @@ export function ChatMount(props: ChatMountProps) {
         {...(props.annotateTarget ? { annotateTarget: props.annotateTarget } : {})}
         {...(props.onNavigate ? { onNavigate: props.onNavigate } : {})}
         {...(props.recap ? { recap: true } : {})}
-        {...(props.hideUpcoming ? { hideUpcoming: true } : {})}
       />
      </Suspense>
     </div>

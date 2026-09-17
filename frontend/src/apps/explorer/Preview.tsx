@@ -25,7 +25,7 @@ import {
 } from "@platform/lib/api";
 import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
 import { captureAppPreview, cropRect } from "@platform/lib/appShot";
-import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, embedUrlForFsPath, replaceSearch, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
+import { confirmLeave, navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, embedUrlForFsPath, replaceSearch, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import {
@@ -1137,7 +1137,7 @@ function TemplatePreview({
   // Also the one place that records a close/reopen into the session's shared
   // hidden flag (`lib/side-hidden-store.ts`) — a close here must be visible to
   // the folder pane's later mounts too, same store either surface writes.
-  const setSide = (next: string | null) => {
+  const applySide = (next: string | null) => {
     setSideHidden(next === null);
     // A user click is always real, URL-worthy state now, whichever way it
     // went — the flag-only closed state `sideFromHiddenFlag` guards against
@@ -1153,6 +1153,30 @@ function TemplatePreview({
     );
     replaceSearch(location.pathname + (search ? "?" + search : ""));
     setSideReq({ open: next !== null, mode: next });
+  };
+  /**
+   * …AND TAKING THE CLAUDE PANEL OFF SCREEN ASKS FIRST (Bugbot review of
+   * caef75eb1, MED-3).
+   *
+   * The panel's ✕ and a switch to another companion both REPLACE what is on
+   * screen without a navigation — `replaceSearch` is deliberately unguarded, it
+   * is the in-place param sync — so the composer inside simply unmounted, and an
+   * unsent message was saved without anybody being told. That is the one door
+   * this design hands the reader: the same `confirmLeave()` the chat's own Back
+   * and session-switch ask (platform/lib/router.ts), and a "stay" leaves the
+   * panel exactly where it was.
+   *
+   * Only when CLAUDE is what is going away: every other companion has nothing to
+   * lose, and a question in front of a git panel's ✕ is a dialog nobody earned.
+   */
+  const setSide = (next: string | null) => {
+    if (activeSide !== "claude" || next === "claude") {
+      applySide(next);
+      return;
+    }
+    void confirmLeave().then((ok) => {
+      if (ok) applySide(next);
+    });
   };
   const toggleSide = () => {
     if (activeSide) setSide(null);
@@ -2432,15 +2456,6 @@ function TemplatePreview({
                    (ChatMount's `recap`). */
                 {...(IS_PREVIEW ? { preview: true, noFocus: true } : { recap: true })}
                 {...(nativeAsk && claudeAskRoute !== "content" ? { initialAsk: nativeAsk } : {})}
-                /* THE EXPLORER SIDE PANEL'S OWN CUT: this sidebar is a
-                   companion beside a file the reader is already looking at,
-                   not a place to browse unstarted work — so its "Recent
-                   chats" drops the Upcoming lane (drafts and scheduled-for-
-                   later tasks alike, ChatMount's `hideUpcoming`). The content
-                   pane's OWN `_mode=claude` render (above, the full-page
-                   chat) does not carry this: it is the primary chat the
-                   reader opened onto this file, exactly like the landing. */
-                hideUpcoming
               />
             }
             onSelect={setSide}

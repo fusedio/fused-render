@@ -37,6 +37,7 @@ import {
 import {
   IS_PANEL_PANE,
   IS_SNAPSHOT,
+  confirmLeave,
   embedUrlForFsPath,
   navigate,
   replaceSearch,
@@ -515,7 +516,7 @@ export default function Listing({
   // snapshot or panel pane is not the addressable folder view either, so a close
   // inside one must not shut every OTHER open folder/file's sidebar for the rest
   // of the session.
-  const setSide = (next: PaneSideState) => {
+  const applySide = (next: PaneSideState) => {
     setSideState(next);
     if (!paneEnabled) return;
     setSideHidden(!next.open);
@@ -525,6 +526,30 @@ export default function Listing({
     else params.set("_side", v);
     const qs = params.toString();
     replaceSearch(location.pathname + (qs ? "?" + qs : ""));
+  };
+  /**
+   * …AND TAKING THE CLAUDE COMPANION OFF SCREEN ASKS FIRST (Bugbot review of
+   * caef75eb1, MED-3) — the pane's ✕ and a switch to another companion both
+   * replace what is showing without a navigation, so the composer inside used to
+   * unmount and have its unsent message saved with nobody told. Preview.tsx
+   * carries the same guard for the file sidebar's copy of this panel; both read
+   * `confirmLeave()`, which is the composer's own dialog.
+   *
+   * THROUGH TWO REFS rather than the values themselves: `paneSides`/`paneSide`
+   * are resolved from the companion gates a few hundred lines below this, and a
+   * closure over a `const` declared later in the same body is the temporal
+   * dead-zone trap `selectSide`'s own comment warns about.
+   */
+  const showingClaude = useRef(false);
+  const wouldShowClaude = useRef<(next: PaneSideState) => boolean>(() => false);
+  const setSide = (next: PaneSideState) => {
+    if (!showingClaude.current || wouldShowClaude.current(next)) {
+      applySide(next);
+      return;
+    }
+    void confirmLeave().then((ok) => {
+      if (ok) applySide(next);
+    });
   };
   // Reopening keeps the mode the pane was shut on, so closing and reopening is
   // not a reset. Session-only — see paneSideParam on why the URL records only
@@ -916,6 +941,11 @@ export default function Listing({
   // `agent.py` — the moment the probe landed.
   const paneUndecided = paneSides.length === 0;
   const paneSide = activePaneSide(paneSides, sideState.mode);
+  // The two facts `setSide`'s guard above needs, written on every render (see
+  // its own comment for why they are refs and not values).
+  showingClaude.current = paneOpen && paneSide === "claude";
+  wouldShowClaude.current = (next) =>
+    next.open && activePaneSide(paneSides, next.mode) === "claude";
 
   // Picking the mode that is ALREADY first on offer records NO choice (`mode: null`),
   // so the leading companion keeps the clean URL (PT-9, D285): a click on Claude

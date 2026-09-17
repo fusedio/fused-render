@@ -295,6 +295,101 @@ function notifyNavigate(): void {
   window.dispatchEvent(new Event(NAV_EVENT));
 }
 
+// ---- the leave guard ------------------------------------------------------
+//
+// SOMETHING ON THIS PAGE HOLDS WORK THAT LEAVING WOULD LOSE, and it wants to
+// ask before the push happens. The chat composer is the one caller today: it
+// no longer autosaves what is being typed (design "drafts: one record", the
+// composer's own header), so an in-app hop is the moment its text either
+// becomes a draft or is thrown away — and only the reader can say which.
+//
+// A REGISTRY RATHER THAN A PROP, because the hops that can lose the text are
+// spread across the whole shell (a folder row, a breadcrumb, the Tasks page,
+// a notification) and none of them knows a composer exists. `navigate` and
+// `navigateUrl` are the two doors every in-app hop goes through, so the
+// question is asked once, here.
+//
+// SYNCHRONOUS WHEN NOBODY IS ASKING. An answer needs a modal and so a promise,
+// but the overwhelmingly common case is an empty registry — and every caller in
+// this app was written against a `navigate` that had already pushed by the time
+// it returned. With no guard registered the push happens in the same tick it
+// always did; only a registered guard makes a hop asynchronous.
+//
+// `replaceSearch` is deliberately NOT guarded: it is the in-place param sync
+// (sort, search, `_mode`, `_side`), which is not leaving the page and would
+// put the question in front of a reader who only changed a sort order.
+export type LeaveGuard = () => boolean | Promise<boolean>;
+
+const leaveGuards = new Set<LeaveGuard>();
+
+/**
+ * Ask me before the next in-app navigation; the answer detaches me.
+ *
+ * SEVERAL MAY BE REGISTERED — two panes, each with a composer — AND ONLY THE
+ * NEWEST IS ASKED (Bugbot review of caef75eb1, LOW). Asking all of them put two
+ * "unsent message" dialogs on screen for one click, one behind the other, and a
+ * reader cannot answer a question they cannot see. The newest registration is
+ * the composer the reader most recently had something in, which is the one the
+ * click is about; the others keep their words the way every other unasked host
+ * does — the composer's own unmount save.
+ */
+export function registerLeaveGuard(guard: LeaveGuard): () => void {
+  leaveGuards.add(guard);
+  return () => {
+    leaveGuards.delete(guard);
+  };
+}
+
+/**
+ * MAY THIS PAGE BE LEFT — for a call site that is not a `navigate`.
+ *
+ * Closing the Claude panel in the explorer's listing and switching the session
+ * inside one pane both replace what is on screen without pushing a URL, and
+ * both lose an unsent composer exactly as a hop would. They ask this instead.
+ *
+ * A GUARD THAT THROWS IS A YES. A broken question must never be a door that
+ * cannot be opened.
+ */
+export async function confirmLeave(): Promise<boolean> {
+  if (!leaveGuards.size) return true;
+  // A `Set` keeps insertion order, so the last entry is the newest guard.
+  const asked = Array.from(leaveGuards).pop();
+  if (!asked) return true;
+  try {
+    return await asked();
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * The push itself, run now when nothing is asking and after the answer when
+ * something is.
+ *
+ * A SECOND CLICK WHILE THE QUESTION IS UP IS DROPPED, deliberately. The guard
+ * answers a second ask with `false` while its dialog is on screen (see
+ * `askBeforeLeaving` in the composer), so this hop simply does not happen —
+ * which is the right outcome for a reader who is being asked about the first
+ * one. The click can be made again the moment the dialog is answered.
+ *
+ * AND THE BROWSER'S OWN BACK/FORWARD IS NOT GUARDED AT ALL (Bugbot review,
+ * MED-5). A `popstate` has already happened by the time a listener hears it,
+ * and the only ways to put a question in front of it are a pushState sentinel
+ * that fights the reader's history or the native `beforeunload` prompt, which
+ * does not apply to a same-document hop. The floor under it is the composer's
+ * unmount save: Back out of a chat with words in the box and they are written,
+ * not lost — silently, which is the trade this door is stuck with.
+ */
+function guarded(go: () => void): void {
+  if (!leaveGuards.size) {
+    go();
+    return;
+  }
+  void confirmLeave().then((ok) => {
+    if (ok) go();
+  });
+}
+
 // Windows fs paths are rooted at a drive letter ("C:/…"), not at "/" — the
 // shell's canonical form keeps forward slashes and adds a leading slash only
 // for POSIX paths. A bare drive ("C:", how a drive root decodes from a URL,
@@ -490,8 +585,13 @@ export function navigate(
           ...(typeof opts?.q === "string" ? { qCommitted: true } : null),
         }
       : null;
-  history.pushState(state, "", urlForFsPath(fsPath, search));
-  notifyNavigate();
+  // THE URL IS BUILT NOW AND PUSHED WHEN THE GUARD ANSWERS: everything above
+  // reads `location.search`, which is still this page's while the question is up.
+  const href = urlForFsPath(fsPath, search);
+  guarded(() => {
+    history.pushState(state, "", href);
+    notifyNavigate();
+  });
 }
 
 // The directory hint carried by the navigation that landed on the current URL
@@ -579,8 +679,11 @@ export function navigateUrl(url: string, opts?: { isDir?: boolean }): void {
   // Stored urls (bookmarks, recents, .bookmark files) may predate the
   // /explorer prefix rename; an in-app push skips the module-init rewrite, so
   // map here or the dispatcher won't recognize the path.
-  history.pushState(state, "", rewriteLegacyUrl(url));
-  notifyNavigate();
+  const href = rewriteLegacyUrl(url);
+  guarded(() => {
+    history.pushState(state, "", href);
+    notifyNavigate();
+  });
 }
 
 export function currentUrl(): string {

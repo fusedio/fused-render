@@ -5480,17 +5480,14 @@ export function scheduleMessage(body: {
   // delete the client made separately could be the half that failed, leaving a
   // draft row beside the task it had already become.
   draft_id?: string;
-  // THE CHAT DRAFT THIS TASK WAS TYPED IN, when the card was opened from the
-  // composer's Schedule button (`new:<file>` for a chat with no session yet, a
-  // session id otherwise). The server deletes it as part of creating the task.
+  // THE CHAT RECORD THIS TASK IS, when the card was editing one (`new:<file>`
+  // for a chat with no session yet, a session id otherwise). The server deletes
+  // it as part of creating the task and moves its TASK number onto the entry —
+  // `draft_id`'s twin for the other kind of record (contract §5).
   //
-  // NOT THE SAME THING AS `draft_id`, and not covered by `session_id` either:
-  // the hop's first autosave normally moves the chat draft onto the task draft,
-  // but Schedule pressed inside that 600 ms debounce mints no task draft at all
-  // — and a brand-new chat has no session id to travel in the other field. So
-  // the origin key rides here, and the composer's copy goes wherever this task
-  // came from (Bugbot, PR #1118).
-  from_chat_key?: string;
+  // NOT covered by `session_id`: a brand-new chat has no session id at all, and
+  // its record is keyed `new:<file>` precisely because of it.
+  draft_key?: string;
 }): Promise<{ entry: ScheduledMessage }> {
   return postJson<{ entry: ScheduledMessage }>("/api/schedule", body);
 }

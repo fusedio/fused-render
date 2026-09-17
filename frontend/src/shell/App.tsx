@@ -599,6 +599,24 @@ export default function App({ config }: { config: Config }) {
     return () => window.removeEventListener(TASKS_CHANGED_EVENT, pokeTasks);
   }, []);
 
+  // THE OTHER DIRECTION — a row that LEFT, and the composer still holding its
+  // words — IS NO LONGER WIRED HERE (design "one record", §3).
+  //
+  // This used to hear `onGone`, re-read the whole drafts store to find out which
+  // of those keys had really lost a record, and mark each one spent so every
+  // composer mounted on it emptied itself. Three things were wrong with it and
+  // all three are gone with the mechanism: `gone` says "this key is not a row",
+  // not "this draft was deleted", so it needed a verifying GET; that GET was one
+  // per announcement, which a server re-announcing one key turned into hundreds
+  // of `/api/drafts` a second on a real machine; and "spent" was a client-side
+  // belief that a second tab could not see.
+  //
+  // The server now pushes `drafts: {changed: [{key, version}], gone: [key]}` on
+  // the same change answer (contract §3), and the two editors that can be open
+  // on a draft — the chat composer and the New task card — subscribe for their
+  // OWN key (`tasksPulse.onDraftChange`). Nothing has to be looked up, nothing
+  // has to be coalesced, and the other window hears it too.
+
   // Keep <html data-theme> in step with the appearance preference for the
   // page's lifetime (SPEC §30): another window's override, and — while the
   // setting is System — the OS flipping mid-session, including macOS's
