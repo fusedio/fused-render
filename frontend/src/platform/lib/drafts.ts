@@ -370,6 +370,37 @@ export function composerTaskDraft(
   };
 }
 
+/**
+ * THE HELD DRAFT AS THE COMPOSER STATES IT: the box's words and copied files
+ * on top of the record's own SETTINGS (time, repeat, model, effort, permission,
+ * per-run flag). A composer has no opinion about those, so it carries them
+ * forward from the form it was seeded with rather than blanking them — a time
+ * picked on the Tasks card survives a sentence edited here. Only the form's
+ * own fields are kept: a listing row's `form` also carries version stamps and
+ * the like, and stating those back would be noise on every save.
+ */
+export function heldFormOf(
+  base: TaskDraftForm | null,
+  text: string,
+  target: string,
+  attachments: DraftAttachment[],
+): TaskDraftForm {
+  const fresh = composerTaskDraft(text, target, attachments);
+  if (!base) return fresh;
+  return {
+    ...fresh,
+    target: base.target || fresh.target,
+    when: base.when ?? null,
+    repeat: base.repeat ?? null,
+    custom_rule: base.custom_rule ?? null,
+    model: base.model ?? "",
+    effort: base.effort ?? "",
+    permission: base.permission ?? "",
+    new_task_each_run: base.new_task_each_run ?? null,
+    session_id: base.session_id ?? "",
+  };
+}
+
 /** Extra request options a FLUSH needs and an ordinary autosave does not. */
 export interface DraftWriteOptions {
   /** Let the request outlive the document — the only way a write started from

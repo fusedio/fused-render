@@ -1982,22 +1982,36 @@ function ChatBody(props: ChatBodyProps) {
    * again from what is there then — a Send leaves the box empty (the sent draft
    * is deleted), and the next landing starts from the list, not from memory.
    */
-  const [held, setHeld] = useState<{ key: string; form: TaskDraftForm | null } | null>(null);
+  const freshHeld = () => ({ key: taskDraftKey(newTaskDraftId()), form: null as TaskDraftForm | null });
+  // A KEY FROM THE FIRST RENDER (Bugbot 4039383069): words typed while the
+  // listing is still loading have a record to be saved under, and are never
+  // attached to somebody else's row — the newest draft is taken only onto a
+  // box that is still empty when the listing lands.
+  const [held, setHeld] = useState<{ key: string; form: TaskDraftForm | null } | null>(
+    () => (inChat ? null : freshHeld()),
+  );
+  const pickedHeld = useRef(false);
   useEffect(() => {
     if (inChat) {
       setHeld(null);
+      pickedHeld.current = false;
       return;
     }
-    if (held || recent === null) return;
+    if (!held) {
+      setHeld(freshHeld());
+      return;
+    }
+    if (pickedHeld.current || recent === null) return;
+    pickedHeld.current = true;
+    const typed = !!boxRef.current?.value.trim() || attach.items.length > 0;
+    if (typed) return;
     const newest = recent
       .filter((t) => isDraftTask(t) && t.draft_kind === "task" && !!t.draft_id)
       .sort((a, b) => draftUpdatedAt(b) - draftUpdatedAt(a))[0];
-    setHeld(
-      newest && newest.draft_id
-        ? { key: taskDraftKey(newest.draft_id), form: (newest.form ?? null) as TaskDraftForm | null }
-        : { key: taskDraftKey(newTaskDraftId()), form: null },
-    );
-  }, [inChat, held, recent]);
+    if (newest && newest.draft_id) {
+      setHeld({ key: taskDraftKey(newest.draft_id), form: (newest.form ?? null) as TaskDraftForm | null });
+    }
+  }, [inChat, held, recent, boxRef, attach.items.length]);
   /** The held row as the feed keeps it — the composer adopts a newer version. */
   const heldRow = useMemo(
     () => (held && recent ? recent.find((t) => t.key === held.key) ?? null : null),

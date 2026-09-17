@@ -15,11 +15,11 @@ import {
 import { useAutoGrow } from "@platform/lib/autoGrow";
 import {
   chatDraftKey,
-  composerTaskDraft,
   draftSyncer,
   draftVersion,
   forgetDraftVersion,
   fetchChatDraft,
+  heldFormOf,
   joinDraft,
   peekDraftSyncer,
   rememberDraftVersion,
@@ -47,37 +47,6 @@ import { EffortSelect } from "./EffortSelect";
 import { ModelSelect } from "./ModelSelect";
 import { PermissionSelect } from "./PermissionSelect";
 import { copyToTaskShots, SchedButton } from "./SchedButton";
-
-/**
- * THE HELD DRAFT AS THE COMPOSER STATES IT: the box's words and copied files
- * on top of the record's own SETTINGS (time, repeat, model, effort, permission,
- * per-run flag). A composer has no opinion about those, so it carries them
- * forward from the form it was seeded with rather than blanking them — a time
- * picked on the Tasks card survives a sentence edited here. Only the form's
- * own fields are kept: a listing row's `form` also carries version stamps and
- * the like, and stating those back would be noise on every save.
- */
-function heldFormOf(
-  base: TaskDraftForm | null,
-  text: string,
-  target: string,
-  attachments: DraftAttachment[],
-): TaskDraftForm {
-  const fresh = composerTaskDraft(text, target, attachments);
-  if (!base) return fresh;
-  return {
-    ...fresh,
-    target: base.target || fresh.target,
-    when: base.when ?? null,
-    repeat: base.repeat ?? null,
-    custom_rule: base.custom_rule ?? null,
-    model: base.model ?? "",
-    effort: base.effort ?? "",
-    permission: base.permission ?? "",
-    new_task_each_run: base.new_task_each_run ?? null,
-    session_id: base.session_id ?? "",
-  };
-}
 
 /** T:4227 / T:4156 — the box's own placeholder, verbatim. The chat one names
  *  who is being replied to; the landing one names the errand. */
@@ -993,6 +962,10 @@ export function ComposerCard({
    * land. Seeding and adopting put the record's own (already copied) files here.
    */
   const carriedRef = useRef<DraftAttachment[]>([]);
+  /** A task-shots copy still in the air, so a save that cannot wait for a
+   *  render (the swap/unmount flush) can wait for THIS instead of writing the
+   *  words without the files (Bugbot 4039383093). */
+  const copyingRef = useRef<Promise<DraftAttachment[]> | null>(null);
   /** The held record's settings, carried forward on every save (`heldFormOf`). */
   const baseFormRef = useRef<TaskDraftForm | null>(null);
   /** The key whose life this box has already ended — sent, or handed to the
@@ -1283,6 +1256,9 @@ export function ComposerCard({
     discardAttachments.current?.();
     grow();
   }, [grow]);
+  /** The held record's settings, for the Schedule hop to carry forward the way
+   *  every other save here does (`heldFormOf`). Read at press time. */
+  const readHeldBase = useCallback((): TaskDraftForm | null => baseFormRef.current, []);
   /** The Schedule hop took the held record to the Tasks card: the box empties
    *  and the key is no longer this box's to save or delete. */
   const handedOff = useCallback(() => {
@@ -1330,11 +1306,23 @@ export function ComposerCard({
         if (draftVersion(key) !== undefined) sync.markDeleted();
         return;
       }
-      sync.setTask(
-        heldFormOf(baseFormRef.current, textRef.current, fileRef.current ?? "", carriedRef.current),
-        { defer: true },
-      );
-      sync.flushNow();
+      const base = baseFormRef.current;
+      const text = textRef.current;
+      const target = fileRef.current ?? "";
+      const write = (carried: DraftAttachment[]) => {
+        sync.setTask(heldFormOf(base, text, target, carried), { defer: true });
+        sync.flushNow();
+      };
+      // FILES STILL BEING COPIED go into this save once they land, rather than
+      // being dropped because the render that would have carried them never
+      // came (Bugbot 4039383093). The copy itself is not aborted by the key
+      // change — only its mirror into the box is (`live`, below).
+      const pending = copyingRef.current;
+      if (pending) {
+        void pending.then(write);
+        return;
+      }
+      write(carriedRef.current);
     };
   }, [hasSession, draftKey]);
   // Effects that read `textRef`/`carriedRef` must not run before the reset
@@ -1364,18 +1352,19 @@ export function ComposerCard({
       return;
     }
     let live = true;
-    void copyToTaskShots(items)
-      .catch((): DraftAttachment[] => [])
-      .then((carried) => {
-        if (!live) return;
-        if (carried.length !== items.length && typeof console !== "undefined") {
-          console.warn(
-            `[composer] ${items.length - carried.length} attachment(s) could not be copied for the draft`,
-          );
-        }
-        carriedRef.current = carried;
-        mirrorHeld();
-      });
+    const copy = copyToTaskShots(items).catch((): DraftAttachment[] => []);
+    copyingRef.current = copy;
+    void copy.then((carried) => {
+      if (copyingRef.current === copy) copyingRef.current = null;
+      if (carried.length !== items.length && typeof console !== "undefined") {
+        console.warn(
+          `[composer] ${items.length - carried.length} attachment(s) could not be copied for the draft`,
+        );
+      }
+      if (!live) return;
+      carriedRef.current = carried;
+      mirrorHeld();
+    });
     return () => {
       live = false;
     };
@@ -1853,7 +1842,7 @@ export function ComposerCard({
             // its autosave is the writer the hop just handed off to, and
             // emptying the box here would be an immediate DELETE of what
             // Continue had written a tick earlier.
-            {...(hasSession ? {} : { onHandedOff: handedOff, heldKey: draftKey })}
+            {...(hasSession ? {} : { onHandedOff: handedOff, heldKey: draftKey, heldBase: readHeldBase })}
             // WHICH WORDS, AND WHEN IT HAS THEM. The hop reads the episode back
             // right before it writes and abandons a press whose sentence has
             // since been sent or discarded; `onHopChange` is how this box knows
