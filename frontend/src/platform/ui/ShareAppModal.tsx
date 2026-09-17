@@ -63,7 +63,14 @@ export function ShareAppModal({
 }) {
   const [status, setStatus] = useState<ShareStatus | null>(null);
   const [shared, setShared] = useState<SharedAppRecord | null>(null);
-  const [busy, setBusy] = useState<Busy>(null);
+  const [busy, setBusyState] = useState<Busy>(null);
+  // Mirrored in a ref so the background lookup's late callback can read what
+  // is running NOW, not the value its closure captured when it started.
+  const busyRef = useRef<Busy>(null);
+  const setBusy = (next: Busy) => {
+    busyRef.current = next;
+    setBusyState(next);
+  };
   const [err, setErr] = useState("");
   const [copied, setCopied] = useState(false);
   const [armed, setArmed] = useState(false);
@@ -107,7 +114,13 @@ export function ShareAppModal({
         .catch((e: Error & { code?: string }) => {
           // A failed lookup is not an error worth a sentence — Share still
           // works — EXCEPT a refused token, which the sign-in view must show.
-          if (!goneRef.current && e.code === "not_logged_in") setDenied(true);
+          // Not while a publish/update/remove is running, though: that call
+          // gets the same 401 and reports it itself once it ends, whereas
+          // flipping the view mid-flight would hide the running export
+          // behind a Sign in button that `busy` keeps inert.
+          if (!goneRef.current && busyRef.current === null && e.code === "not_logged_in") {
+            setDenied(true);
+          }
         })
         .finally(() => {
           if (!goneRef.current) setLooking(false);
