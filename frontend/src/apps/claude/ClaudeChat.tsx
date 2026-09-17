@@ -1999,6 +1999,7 @@ function ChatBody(props: ChatBodyProps) {
   /** A folder switch is in progress: the box still shows the OLD folder's
    *  draft for a render, so its words are not "typed" (Bugbot 4040204492). */
   const switching = useRef<string | null>(null);
+  const switchSeenFresh = useRef(false);
   useEffect(() => {
     if (heldFile.current === file) return;
     heldFile.current = file;
@@ -2027,10 +2028,27 @@ function ChatBody(props: ChatBodyProps) {
       !file || t.target === file || (t.target ?? "").startsWith(file + "/") || t.project === file;
     if (switching.current) {
       if (held.key !== switching.current) return; // the old key — the fresh one lands next render
+      // THE FIRST LOOK AT THE FRESH KEY trusts the composer's reset over the
+      // DOM (the box may still paint the old folder's words this render); EVERY
+      // LATER LOOK asks the box, because by then anything in it was typed here
+      // (Bugbot 4040301152). A folder with no rows yet keeps asking until one
+      // arrives or the reader types.
+      const first = !switchSeenFresh.current;
+      switchSeenFresh.current = true;
+      if (!first) {
+        const typed = !!boxRef.current?.value.trim() || attach.items.length > 0;
+        if (typed) {
+          switching.current = null;
+          switchSeenFresh.current = false;
+          pickedHeld.current = true;
+          return;
+        }
+      }
       // …and the LISTING has to be this folder's too: the previous folder's rows
       // can still be on hand for a beat. No row of this folder yet = ask again.
       if (!recent.some(here)) return;
       switching.current = null;
+      switchSeenFresh.current = false;
       pickedHeld.current = true;
     } else {
       pickedHeld.current = true;
