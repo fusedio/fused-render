@@ -430,12 +430,20 @@ describe("spaLinkProps", () => {
     }
   });
 
-  test("opts (mode, sel, q) pass through to navigate, same as a caller of navigate() directly", () => {
+  test("opts (mode, sel, q) are serialized onto href AND passed through to navigate, so a left-click lands where the href already pointed", () => {
+    const props = spaLinkProps("/Users/me/model.gguf", {
+      isDir: true,
+      mode: "model_card",
+      sel: "child.txt",
+      q: "term",
+    });
     const pushed = pushedFrom("", () => {
-      const props = spaLinkProps("/Users/me/model.gguf", { isDir: true, mode: "model_card" });
       props.onClick(fakeClick().event as any);
     });
-    expect(pushed).toBe("/explorer/view/Users/me/model.gguf?_mode=model_card");
+    expect(props.href).toBe(
+      "/explorer/view/Users/me/model.gguf?_mode=model_card&sel=child.txt&q=term"
+    );
+    expect(pushed).toBe(props.href);
   });
 });
 
