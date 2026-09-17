@@ -1424,3 +1424,139 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         if token is not None:
             token.unbind()
         con.close()
+
+
+def search_apps_ranked(cfg: IndexConfig, q: str = "", limit: int = RANK_LIMIT,
+                       token=None, ranked: bool = True, glob: bool = False) -> dict:
+    """Rank `cfg.kind`'s rows against `q`, the same scoring `search_ranked`
+    gives "files" — proof that `_rank_sql`/`_glob_sql` were already written
+    against an ABSTRACT `inner` shape (`rel, size, mtime, is_dir, depth, nm,
+    lrel`) rather than hardwired to the files/dirs schema, per
+    specs/index-plugins.md's "apps-kind search" section.
+
+    Built for the built-in "apps" kind (identity_column="path",
+    text_column="name") but reads `IndexKind.identity_column`/`text_column`/
+    `recency_column` off `cfg.kind`'s own registration rather than
+    hardcoding those names, so any registered kind whose rows are a flat
+    list — not a directory tree, unlike "files" — can reuse this unchanged.
+
+    Unlike `search_ranked`, there is no root, no prefix, no coverage
+    semantics, and no second "dirs" branch: a registered kind's rows are
+    not filesystem directories the way `dirs.parquet` bookkeeps them, they
+    are just rows, so `inner` is the ONE partition source, unpruned (a
+    kind's whole corpus, not a subtree of it — there is no subtree to
+    scope to). Column mapping onto the `_rank_sql`/`_glob_sql` contract:
+
+    - `rel` is the identity column's own value (an absolute path, per
+      `IndexKind.identity_column`'s contract in kinds.py) — the same role
+      `rel` plays for files, just not root-relative, since there is no
+      root. This is also the value returned in every hit, so a caller can
+      still resolve a hit back to the row it came from.
+    - `nm` is the lowercased text column — the same role a file's `name`
+      plays, so a query matching an app's NAME (tier 1) still outranks one
+      that only happens to appear elsewhere in its path (tier 2/3).
+    - `is_dir` is always false — a registered kind's row is never a
+      directory in this sense, unlike a "files" hit which can be either.
+    - `depth` is always 0 — a flat kind has no meaningful hierarchy to
+      penalize by, so `_rank_sql`'s depth penalty drops out uniformly (the
+      same "no natural signal, fall back to a constant" posture
+      `store._dedup_keys` already takes for a kind with no
+      `recency_column`).
+    - `mtime` is the recency column's value when the kind declares one
+      (`updated_at` for "apps"), else NULL — a kind with no recency column
+      simply reports no mtime, rather than inventing one.
+    - `size` is always NULL: no registered kind today declares one, and
+      unlike `mtime` there is no single "the" numeric column a kind's
+      contract designates as size's analogue.
+
+    Hidden-entry filtering (`query_wants_hidden`) is unchanged from
+    `search_ranked`: `identity_column` is documented to be an absolute
+    filesystem path, so the same dotfile convention applies.
+
+    `token`/cancellation and the row-cap-plus-one truncation trick are
+    identical to `search_ranked`'s own, for the same reasons documented
+    there."""
+    from fused_render.index import kinds
+
+    # Checked before the manifest even exists — an unbuilt index is a normal,
+    # empty answer (below), but a kind with no `identity_column` is a
+    # contract error the caller made, not a data state, so it must surface
+    # the same way regardless of whether anything has been scanned yet.
+    kind_obj = kinds.get(cfg.kind)
+    if not kind_obj.identity_column:
+        raise ValueError(
+            f"IndexKind {cfg.kind!r} has no identity_column declared; "
+            f"cannot be searched (see kinds.IndexKind.identity_column)")
+    identity = kind_obj.identity_column
+    text_col = kind_obj.text_column
+    recency = kind_obj.recency_column
+
+    m = read_manifest(cfg)
+    if not m or not m.get("partitions"):
+        return {"hits": [], "truncated": False, "total": 0}
+    qs = (q or "").strip()
+    if not qs:
+        return {"hits": [], "truncated": False, "total": 0}
+
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(f"SET threads TO {search_threads()}")
+    if token is not None:
+        token.bind(con)
+    try:
+        limit = max(0, min(int(limit), MAX_GLOB_RANK_LIMIT if glob else MAX_RANK_LIMIT))
+        fsrc = files_src(cfg, m["partitions"])
+        mtime_expr = (f"CAST({recency} AS DOUBLE)" if recency
+                      else "CAST(NULL AS DOUBLE)")
+        inner = (
+            f"SELECT {identity} AS rel, CAST(NULL AS BIGINT) AS size, "
+            f"{mtime_expr} AS mtime, false AS is_dir, 0 AS depth, "
+            f"lower({text_col}) AS nm, lower({identity}) AS lrel FROM {fsrc}")
+        if token is not None:
+            token.check()
+        n = len(qs)
+        hidden = ("" if _wants_hidden(qs)
+                  else " AND NOT (lrel LIKE '.%' OR lrel LIKE '%/.%')")
+        if glob:
+            regex = _q(_glob_to_regex(qs.lower()))
+            sql = _glob_sql(inner, regex, hidden, limit + 1)
+        else:
+            ql = like_literal(qs)
+            qq = _q(qs)
+            sql = _rank_sql(inner, hidden, ql, qq, n, limit + 1, ranked=ranked)
+        rows = con.execute(sql).fetchall()
+        if token is not None:
+            token.check()
+        truncated = len(rows) > limit
+        if glob:
+            hits = [{"rel": rel, "is_dir": bool(is_dir),
+                     "size": int(size) if size is not None else None,
+                     "mtime": float(mtime) if mtime is not None else None,
+                     "score": 0, "longest_run": 0, "tier": 0,
+                     "depth": int(depth)}
+                    for rel, size, mtime, is_dir, depth in rows[:limit]]
+        elif ranked:
+            hits = [{"rel": rel, "is_dir": bool(is_dir),
+                     "size": int(size) if size is not None else None,
+                     "mtime": float(mtime) if mtime is not None else None,
+                     "score": int(score), "longest_run": n, "tier": int(tier),
+                     "depth": int(depth)}
+                    for rel, size, mtime, is_dir, depth, score, tier
+                    in rows[:limit]]
+        else:
+            hits = [{"rel": rel, "is_dir": bool(is_dir),
+                     "size": int(size) if size is not None else None,
+                     "mtime": float(mtime) if mtime is not None else None,
+                     "score": 0, "longest_run": n, "tier": 0,
+                     "depth": int(depth)}
+                    for rel, size, mtime, is_dir, depth in rows[:limit]]
+        return {"hits": hits, "truncated": truncated, "total": len(hits)}
+    except duckdb.InterruptException:
+        if token is not None and token.cancelled:
+            raise Cancelled() from None
+        raise
+    finally:
+        if token is not None:
+            token.unbind()
+        con.close()
