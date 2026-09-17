@@ -1540,6 +1540,36 @@ test("a two-member group with one failing member gets the attention stripe and c
   expect(text(findAll(tree, "dl-summary")[0])).toBe("1 needs you");
 });
 
+// DEFECT 2 (live testing, 2026-09-17): the user's screenshot showed two
+// same-source ERROR rows ("Transcripto" text-gen, `mlx-lm`'s
+// `ArraysCache.trim` AttributeError, unrelated to this branch) rendered as
+// two separate rows instead of one group. Root cause was Defect 1 —
+// `job.source` carried the Playground's dirty, ever-changing query string,
+// so `familyKey` (`job.source || job.page`) never matched between the two
+// requests. This test pins the fix at THIS layer: once two ERROR jobs share
+// the exact same (now-canonical, post-Defect-1) `source` and `group` — the
+// live shape a real `sys:ai-text:` pair actually has — they cluster into
+// ONE row here, exactly like the "Needs you" grouping test above.
+test("DEFECT 2: two same-source, same-group ERROR jobs cluster into one attention row, not two", () => {
+  const e1 = failedJob({
+    id: "sys:ai-text:e1",
+    group: "sys:ai-text",
+    source: "/ai-models/playground",
+  });
+  const e2 = failedJob({
+    id: "sys:ai-text:e2",
+    group: "sys:ai-text",
+    source: "/ai-models/playground",
+  });
+  const tree = renderView({ rows: [], terminal: [e1, e2] });
+  // One row for the pair, not two — grouping, not suppression: both members
+  // are errors, so the group is never dropped or folded, only combined.
+  expect(findAll(tree, "dl-row")).toHaveLength(1);
+  expect(findAll(tree, "dl-row-group-attention")).toHaveLength(1);
+  expect(text(findAll(tree, "dl-model")[0])).toBe("0 of 2 done");
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("1 needs you");
+});
+
 test("a two-member group counts as ONE row toward the chip's total, not two", () => {
   // Counts rows, not raw jobs (user decision, verbatim: "yes we should count
   // rows") — the chip's numeral must read "1", the number of rows on screen,

@@ -208,6 +208,18 @@ export default function NotificationCard({
 
   return (
     <div className={rowClassName} {...rowClickProps}>
+      {/* DEFECT 3(a) (live testing, 2026-09-17): a small dimmed EYEBROW naming
+          who raised this row, ABOVE the title — the user's own words, "a top
+          row/section for the emitting page context". Fix 17 originally drew
+          this caption AFTER `secondary` (`.dl-model`), so a card read title,
+          then model, then the page name buried on a third line — exactly
+          backwards from "context first". Moved here, before `.dl-row-head`,
+          so every surface that already passes `caption` (JobRow, GroupJobRow,
+          AttentionRowView, MessageRowView, JobPopupCard, MessagePopupCard —
+          all six go through this one component) gets the eyebrow placement
+          for free, from this single change. `.dl-model` (the model name)
+          stays exactly where it was, unmoved. */}
+      {caption != null && caption !== "" && <div className="dl-origin dl-eyebrow">{caption}</div>}
       <div className="dl-row-head">
         <span
           className={"dl-title" + (titleMode === "id" ? " dl-title-id" : "")}
@@ -270,7 +282,6 @@ export default function NotificationCard({
           {secondary}
         </div>
       )}
-      {caption != null && caption !== "" && <div className="dl-origin">{caption}</div>}
       {figures != null && <div className="dl-row-figures">{figures}</div>}
       {progress !== undefined && (
         <div className={"dl-bar" + (stalled ? " is-stalled" : "")}>

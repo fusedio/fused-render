@@ -1648,3 +1648,238 @@ visibly matches its job-row counterpart's caption in a live popup/panel
 render, in both themes. A human should trigger a client-raised notification
 or a waiting-task row from one of the six shell routes and confirm the
 caption reads the same as a job row raised from that same route.
+
+## Fix 20: Defect 1 (live testing, 2026-09-17) — presence identity was the full query string, breaking grouping and suppression
+
+**Root cause, pre-confirmed by a curl showing two duplicate Playground job
+rows**: `currentPresencePage()` (`platform/lib/presence.ts`) fell back to
+`currentUrl()`, which includes the full query string. The Playground syncs
+its prompt/model into that query string on every keystroke/model change, so
+the page's "identity" changed constantly. Two consequences, both from the
+same cause: (a) `familyKey` in `jobs.ts` is `${job.source || job.page}
+${job.group}`, so two renders from the same page essentially never shared a
+key once `source` carried a different query string each time; (b)
+`matchesSource` required an exact string match once either side had a `?`,
+so a job's captured `source` almost never matched the CURRENT live page
+either — suppression silently stopped working and popups kept firing for a
+page the user was already looking at.
+
+**Fix — canonicalize identity in exactly one place.** Added
+`canonicalPresenceIdentity()` in `presence.ts`: strip everything from the
+first `?` or `#` onward, UNLESS the untouched string is itself a registered
+key in `ORIGIN_BY_ROUTE` (`platform/lib/originRoutes.ts`) — in which case
+keep it whole. This makes `ORIGIN_BY_ROUTE` the single authority for "is
+this query-bearing string a genuinely distinct identity, or just app
+state" — the same table `router.ts`/`format.ts`/`jobs.py` already share, so
+no second list of "queries that matter" gets invented. `currentPresencePage()`
+now runs its `currentUrl()` fallback through this function, which means
+every consumer of that one choke point — the `X-Fused-Source` header sent
+by `api.ts`, `isOpenAnywhere`/`isFocusedHere`, and `familyKey` — gets the
+fix for free. No changes were needed in `api.ts` or `jobs.ts` themselves.
+
+**Decision 1 — `matchesSource` DOES canonicalize both of its inputs.**
+Chose this over leaving it comparing raw strings, for backward compatibility
+with `Job.source` values already persisted (in `localStorage`/in-flight
+state) from before this fix shipped — a "dirty" source captured pre-fix must
+still suppress correctly against a freshly-canonicalized live page, or every
+already-open tab would show one wrong popup on first load after the deploy.
+Canonicalizing on read, at the comparison boundary, costs nothing extra (the
+values are short strings) and needs no migration of stored data.
+
+**Decision 2 — the "exact match required once either side has `?`" rule
+still earns its keep, and is NOT dead weight.** Once both sides are
+canonicalized, the ONLY strings that can still carry a `?` are the
+registered `ORIGIN_BY_ROUTE` entries themselves (e.g.
+`/preferences?tab=indexing`) — every non-registered query was just stripped
+to its bare route. For those registered entries, the rule is exactly what
+stops `/preferences?tab=indexing` from prefix/cross-matching its bare
+sibling `/preferences`, which is the one case this whole fix is designed to
+keep distinct (per the brief: "`/preferences?tab=indexing` stays distinct
+from bare `/preferences`"). Removing the rule would silently merge every
+registered query-bearing surface back into its bare route, undoing the one
+thing the "keep it whole" branch of canonicalization exists to protect.
+
+**Test-update tradeoff, made explicitly rather than silently.** An existing
+test, `"matchesSource: a query-bearing page never prefix-matches a bare
+route"`, asserted `/preferences?tab=lan` never matches bare `/preferences`.
+`tab=lan` is NOT a registered `ORIGIN_BY_ROUTE` key (only `tab=indexing`
+is), so under the new rule it canonicalizes down to the bare route and DOES
+match — which is correct per the brief's algorithm (an unregistered query is
+app state, not identity). Grepped the codebase: `tab=lan` appears exactly
+once, as a plain navigation `href` on a "Fix with Claude"-style button in
+`RepoUpdatesDock.tsx:224` — never as a source any job/message producer
+names — so there is no live functional case that depended on treating it as
+a distinct identity. Updated the stale test to describe the new intended
+behaviour (`"an unregistered query is app state and canonicalizes down to
+the bare route"`) and added a new test using the actually-registered
+`tab=indexing` key (`"a REGISTERED query-bearing surface (ORIGIN_BY_ROUTE)
+never matches the bare route"`) as the real regression guard for
+genuinely-distinct-surface behaviour.
+
+**Tests added** (`platform/lib/presence.test.ts`): the two `matchesSource`
+tests above; `"matchesSource: two Playground URLs differing only by
+prompt/model app-state still match (grouping/suppression bug)"` using the
+exact URL shapes from the curl evidence; `"currentPresencePage: two renders
+on the same route with different app-state query strings canonicalize to
+the same identity"`; `"currentPresencePage: a registered ORIGIN_BY_ROUTE
+query stays whole, distinct from the bare route"` (the latter two mutate
+`globalThis.location` directly, save/restore in try/finally — bun does not
+reset globals between test files in one run, see `testDomShim.ts`).
+Targeted run: `bun test src/platform/lib/presence.test.ts` -> 32 pass, 0
+fail, 52 expect() calls.
+
+## Fix 21: Defect 2 — same-family ERROR rows now cluster, with zero additional production code
+
+As predicted in the brief, Defect 2 ("two ERROR rows from the same failing
+job family did not group into one attention row") was a downstream
+consequence of Defect 1's stale-query `job.source` values defeating
+`familyKey`. Added a test to confirm this rather than assuming it:
+`RepoUpdatesDock.test.tsx`'s `"DEFECT 2: two same-source, same-group ERROR
+jobs cluster into one attention row, not two"`. It passes with NO
+production code changes beyond Fix 20 above — `groupJobs`/`clusterFamily`
+in `jobs.ts` already grouped correctly once `job.source` values became
+canonically identical. Errors are still never suppressed and never folded
+away; grouping two error rows into one attention row is not suppression —
+both member jobs remain individually visible inside the expanded group, per
+D-C. Full-file run: `bun test src/shell/RepoUpdatesDock.test.tsx` -> 89
+pass, 0 fail, 235 expect() calls.
+
+## Fix 22: Defect 3(a) — the emitting-page caption moves above the title, in the one shared component
+
+Fix 17 drew the `.dl-origin` caption AFTER `secondary` (`.dl-model`), so a
+card read title, then model name, then the page name buried on a third
+line — backwards from "context first". Moved the caption's render to BEFORE
+`.dl-row-head` in `platform/ui/NotificationCard.tsx` (class `"dl-origin
+dl-eyebrow"`), so it is the row's first line, a small dimmed eyebrow above
+the title. `.dl-model` is untouched, exactly where it was. Because all six
+caption-bearing surfaces (JobRow, GroupJobRow, AttentionRowView,
+MessageRowView, JobPopupCard, MessagePopupCard) delegate to this ONE shared
+component's `caption` prop, this single change applies everywhere Defect
+3(a) named — no per-surface edits were needed or made.
+`styles/notifications.css`: added `.dl-eyebrow { margin-top: 0; }` (no
+font-size/colour override needed — it reuses `.dl-origin`'s existing dim
+styling, just repositioned). Verification across the six related test
+files (`NotificationCard.test.tsx`, `JobRow.test.tsx`, `JobPopupCard.test.tsx`,
+`AttentionRowView`/`MessageRowView` coverage in `RepoUpdatesDock.test.tsx`,
+etc.): 199 pass, 0 fail, 505 expect() calls.
+
+## Fix 23: Defect 3(b) / Addition 2 — "Recent (1)" disclosure now styled as a section heading
+
+User's own words, relayed mid-round as the stated priority: "the recents
+thing is very ugly." Grepped `notifications.css` BEFORE touching anything
+and confirmed `.dl-recent-toggle`/`.dl-section-recent` had ZERO existing
+CSS rules — it was rendering as a raw, unstyled `<button>`, exactly matching
+the bug report ("a bordered box floating mid-panel... an unstyled default
+button"). Added a full rule set matching `.dl-section-head`'s established
+look: 10px uppercase muted text, full-width clickable target, a rotating
+`▸` chevron via `::after` keyed off `aria-expanded` (closed vs. open), a
+hover state, and `.dl-section-recent { padding-bottom: 6px; }` for the
+section's own spacing. Pure styling, per the brief's own note that this
+needs no new tests beyond not breaking the existing tests asserting the
+section exists and folds — confirmed those still pass in the full suite
+run below.
+
+## Fix 24: Addition 1 — a task's caption named its entry-page basename ("index"), not its app
+
+Relayed mid-round, root cause given verbatim: a Claude-template task inside
+an app called "Transcripto" captioned "index" ("Transcripto YouTube
+transcriber finished" / "index"). `shell/tasks-lib.ts`'s `attentionRows()`
+computed `origin: labelForSource(task.target || task.project)` —
+target-FIRST. Per `folderHref`'s own comment (`schedule-lib.ts`, ~line
+583), a task made from inside an app targets that app's ENTRY PAGE
+(`.../index.html`), so target-first yields the basename "index" once the
+extension is stripped, for every app in the system alike.
+
+**Fix**: swapped to `origin: labelForSource(task.project || task.target)`,
+matching `folderHref`'s own established order exactly, with a comment in
+`tasks-lib.ts` pointing at `folderHref` as the precedent so this does not
+get swapped back. `project` names the app/folder, which is what a caption
+is for; `target` remains the fallback for a task with no project at all.
+
+**The general case, not just the symptom.** `labelForSource`'s
+(`platform/lib/format.ts`) basename fallback will produce "index" for ANY
+source ending in an index-like entry file, from ANY caller — not just this
+one now-fixed call site (`notifications.ts` can reach the same fallback via
+a client-raised message with no project to prefer). Decision: when the
+extension-stripped basename is exactly `"index"` (case-insensitive — the
+one entry-file spelling this codebase documents, per `folderHref`), walk up
+one path segment to the containing folder name instead, since that is what
+actually varies between apps and "index" alone never does. Deliberately
+scoped to this one closed, documented convention rather than generalizing
+to "any uninformative-looking basename" (`main`, `app`, etc.) — those would
+be unevidenced guesses, whereas "index" is a known, closed spelling. A path
+with nothing above the entry file (no parent segment) falls through to
+"index" unchanged; there is nothing truer to say without a project name,
+which this function still cannot resolve (per its own header comment on the
+server-side `projectenv` divergence).
+
+**Tests added**: `shell/tasks-lib.test.ts` —
+`"names the row from the app folder (project), not its entry page (target)
+— the 'index' caption bug"` (pins the exact Transcripto shape) and
+`"falls back to the containing folder when only an entry-page target is
+available"` (project absent entirely, general-case coverage via
+`labelForSource`). Had to update one now-stale pre-existing test in the
+same describe block (`"names who raised the row, from the task's own
+target/project"`) — its `withTarget` case relied on `task()`'s factory
+default `project` ("/Users/me/Desktop/fused") being irrelevant when only
+`target` was set; now that `project` wins, that case needed `project: ""`
+added explicitly to still exercise the target-only path. `platform/lib/format.test.ts` —
+`"walks up to the containing folder when the basename is an uninformative
+entry file — the 'index' caption bug"`, covering: lower/upper-case
+`index.html`, extensionless `index`, no-parent-segment fallthrough, and a
+negative case (`main.py` is left alone, proving the walk-up does not
+generalize beyond "index").
+
+Grepped Python `tests/` for `labelForSource`, `attentionRows`, and both
+orderings of `task.target`/`task.project` before editing: the only hits are
+`tests/test_claude_live_run.py` (a docstring describing an UNRELATED
+Python-side "live run adoption" lookup that also happens to be named
+`task.target || task.project`, not this function) and
+`tests/test_jobs_api.py` (parses `originRoutes.ts`'s object literal, not
+`format.ts`/`tasks-lib.ts`) — neither asserts on the lines this fix
+touched. Ran `test_origin_by_route_matches_the_client_table` directly as a
+sanity check: 1 passed.
+
+## Verification for Fix 20–24 (this round)
+
+- `bun --cwd frontend test` (full suite) -> 6251 pass, 0 fail, 23074
+  expect() calls across 297 files.
+- `bunx tsc --noEmit -p frontend` -> clean, no output.
+- `node frontend/scripts/check-boundaries.mjs` -> `boundaries OK (813 files)`.
+- `.venv/bin/python -m pytest tests/test_jobs_api.py -k
+  test_origin_by_route_matches_the_client_table -q` -> 1 passed (the only
+  Python-side test touching a symbol this round's edits share a name
+  with; no `.py` file was edited this round, so no broader pytest run was
+  warranted).
+- Grepped `tests/` for `labelForSource`, `attentionRows`, `matchesSource`,
+  `currentPresencePage`, `canonicalPresenceIdentity` — confirmed no other
+  literal-source-line assertions exist against the touched TypeScript.
+- Confirmed the `ArraysCache.trim` mlx-lm text-generation bug (explicitly
+  out of scope) is untouched by this round and by this branch as a whole:
+  `git diff main...HEAD` touches `fused_render/ai/supervisor.py`,
+  `fused_render/server/routers/ai_runtime.py` (only the `api_ai_image`/
+  `api_ai_video` render routes — threading a new `X-Fused-Source` header
+  through, from earlier work in this branch, not this round), `jobs.py`,
+  `schedule.py`, `server/common.py`, and `server/routers/jobs.py` — none of
+  these touch the text-generation/mlx-lm engine path where `ArraysCache`
+  lives. This round's own edits are entirely `frontend/src/platform/lib/
+  presence.ts`, `frontend/src/shell/tasks-lib.ts`,
+  `frontend/src/platform/lib/format.ts`, `frontend/src/platform/ui/
+  NotificationCard.tsx`, `frontend/src/styles/notifications.css`, and their
+  test files.
+
+**Not verified — no browser in this session:**
+- That the eyebrow caption (Fix 22) visually reads as a top row above the
+  title, rather than overlapping or misaligning, on every one of the six
+  surfaces, in both light and dark theme.
+- That the "Recent" disclosure (Fix 23) now visually matches the panel's
+  other section headings' font size, weight, colour, and spacing exactly,
+  rather than merely sharing the same CSS rules on paper.
+- That a live Playground render sequence (two renders, differing only in
+  prompt/model query state) now visibly clusters into one row in the actual
+  running app, matching the curl-evidence bug this round fixes at its root.
+- That a real Transcripto-style (or any other app-hosted) Claude task now
+  visibly captions with the app's folder name instead of "index" in a live
+  notification popup/panel render.
+A human should exercise all four of the above in a running instance before
+calling Defects 1–3 and Additions 1–2 fully closed.

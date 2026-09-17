@@ -15,6 +15,7 @@
 // `notifications.ts`'s own header comment on why it uses a same-origin
 // `window.top` global instead for the parent/child case).
 import { NAV_EVENT, currentUrl, fsPathFromLocation, IS_EMBED } from "@platform/lib/router";
+import { ORIGIN_BY_ROUTE } from "@platform/lib/originRoutes";
 
 export interface PresenceEntry {
   page: string;
@@ -193,16 +194,66 @@ function pruneStale(map: Record<string, PresenceEntry>, now: number): Record<str
   return next;
 }
 
+// ---- canonical identity --------------------------------------------------
+
+/** Defect 1 (live testing, 2026-09-17): `currentPresencePage()` used to
+ *  return `currentUrl()` verbatim — pathname + query, exactly as the address
+ *  bar would show it. That is fine for a route whose query is genuinely part
+ *  of "which page is this" (a Preferences tab), but most query-bearing shell
+ *  routes carry APP STATE, not identity: the Playground syncs its prompt and
+ *  model into the query string on every keystroke-ish change, so two
+ *  requests seconds apart from the SAME open tab produced two different
+ *  `page`/`source` values. Two consequences, both observed live:
+ *   - `familyKey` (`jobs.ts`) is `job.source || job.page`, so the two
+ *     text-gen rows never shared a key and could never group.
+ *   - `matchesSource` requires an exact match once either side carries a
+ *     `?`, so the row's own `source` (captured when the request was made)
+ *     almost never exact-matched the CURRENT presence page by the time the
+ *     job finished — suppression silently never fired, which is very likely
+ *     why popups kept appearing for a page the user never left.
+ *
+ *  THE RULE: a query-bearing string's identity is the string itself ONLY
+ *  when it is a registered key in `ORIGIN_BY_ROUTE` — that table is already
+ *  the closed set of "this exact route+query is its own distinct surface"
+ *  (`/preferences?tab=indexing` beside bare `/preferences`, Fix 19).
+ *  Everything else canonicalizes down to the bare path: a Playground prompt,
+ *  a model id, `_side=claude`, a `session_id` are shell/app state, never
+ *  identity, and dropping the query (and any hash) is what makes two
+ *  requests from the same open tab collapse to the same value.
+ *
+ *  APPLIED IN ONE PLACE per consumer, not three: `currentPresencePage()`
+ *  (below) canonicalizes what THIS document stamps into its own presence
+ *  entry and what `api.ts`'s `ambientSourceHeaders()` sends as
+ *  `X-Fused-Source` — the same value `familyKey` groups by once the server
+ *  echoes it back as `Job.source`. `matchesSource` ALSO canonicalizes both
+ *  of its arguments (not just trusts its callers to have already done so),
+ *  because a `Job.source` already sitting in the store from before this fix
+ *  shipped is exactly the "dirty" value this bug produced — canonicalizing
+ *  at compare-time lets an old dirty row still match a freshly-canonical
+ *  live presence page instead of being stuck matching a URL nobody will
+ *  ever show again. */
+function canonicalPresenceIdentity(value: string): string {
+  if (Object.prototype.hasOwnProperty.call(ORIGIN_BY_ROUTE, value)) return value;
+  const qIdx = value.indexOf("?");
+  const hIdx = value.indexOf("#");
+  const cut = Math.min(qIdx === -1 ? value.length : qIdx, hIdx === -1 ? value.length : hIdx);
+  return value.slice(0, cut);
+}
+
 // ---- source matching --------------------------------------------------
 
 /** Is `page` (what a window is currently showing) the same "place" as
  *  `source` (what a job or message names as its origin)? Two shapes, each
  *  needing a different rule:
  *
- *  - A query-bearing shell route (`/preferences?tab=lan`) must match ONLY
- *    the exact same route+query — `/preferences?tab=lan` is not "open" just
- *    because `/preferences?tab=indexing` is. Neither side is ever read as a
- *    prefix of the other once either one carries a `?`.
+ *  - A query-bearing shell route that is a registered `ORIGIN_BY_ROUTE` key
+ *    (`/preferences?tab=indexing`) must match ONLY the exact same
+ *    route+query — it is not "open" just because bare `/preferences` is.
+ *    Once canonicalization (above) has reduced every OTHER query-bearing
+ *    string down to its bare path, this is the only shape that can still
+ *    reach here carrying a `?`, so the rule below still earns its keep: it
+ *    stops that registered surface from cross-matching, or being
+ *    prefix-matched against, the bare route it sits beside.
  *  - Everything else (a bare shell route, or an fs path) matches by prefix
  *    on a path boundary: an app folder counts as open when a window is
  *    showing anything nested under it (`/a/project` vs. a window on
@@ -212,19 +263,25 @@ function pruneStale(map: Record<string, PresenceEntry>, now: number): Record<str
  *    is what keeps `/a/project` from matching `/a/project-2`. */
 export function matchesSource(page: string, source: string): boolean {
   if (!page || !source) return false;
-  if (page === source) return true;
-  if (page.includes("?") || source.includes("?")) return false;
-  return page.startsWith(source + "/") || source.startsWith(page + "/");
+  const p = canonicalPresenceIdentity(page);
+  const s = canonicalPresenceIdentity(source);
+  if (p === s) return true;
+  if (p.includes("?") || s.includes("?")) return false;
+  return p.startsWith(s + "/") || s.startsWith(p + "/");
 }
 
 // ---- current document's own "page" -------------------------------------
 
 /** What THIS document would write as its own `page` — an fs path when it's
- *  showing one (`/explorer/view/...`, `/explorer/embed/...`), else the shell
- *  route + query as-is (so `/preferences?tab=lan` round-trips exactly). */
+ *  showing one (`/explorer/view/...`, `/explorer/embed/...`; an fs path
+ *  never carries a query, so it needs no canonicalization), else the shell
+ *  route canonicalized per `canonicalPresenceIdentity` above (so
+ *  `/preferences?tab=indexing` round-trips exactly, while
+ *  `/ai-models/playground?prompt=...&model=...` round-trips as bare
+ *  `/ai-models/playground`). */
 export function currentPresencePage(): string {
   try {
-    return fsPathFromLocation() ?? currentUrl();
+    return fsPathFromLocation() ?? canonicalPresenceIdentity(currentUrl());
   } catch {
     return "";
   }

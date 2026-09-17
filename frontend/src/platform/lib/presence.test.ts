@@ -7,6 +7,7 @@ installDomShim();
 
 const {
   matchesSource,
+  currentPresencePage,
   isOpenAnywhere,
   snapshotIsOpenAnywhere,
   isNarrator,
@@ -43,9 +44,90 @@ test("matchesSource: /preferences?tab=lan matches itself exactly", () => {
   expect(matchesSource("/preferences?tab=lan", "/preferences?tab=lan")).toBe(true);
 });
 
-test("matchesSource: a query-bearing page never prefix-matches a bare route", () => {
-  expect(matchesSource("/preferences?tab=lan", "/preferences")).toBe(false);
-  expect(matchesSource("/preferences", "/preferences?tab=lan")).toBe(false);
+// Defect 1 (2026-09-17): `tab=lan` is NOT a registered `ORIGIN_BY_ROUTE` key
+// (only `/preferences?tab=indexing` is, per Fix 19) and nothing today raises
+// a job/message with that source — it is used exactly once in this codebase,
+// as a plain navigation TARGET (`RepoUpdatesDock.tsx`'s "Fix with Claude"
+// button), never as a presence identity a producer names. Per the new
+// canonicalization rule, an unregistered query is app/shell state, not
+// identity, so it now collapses to the bare route and DOES match it — this
+// replaces the old test above, which pinned the opposite (pre-fix) behavior.
+// A genuinely registered query-bearing surface stays distinct — see the next
+// test, which is the real regression guard this one used to (incompletely)
+// stand in for.
+test("matchesSource: an unregistered query is app state and canonicalizes down to the bare route", () => {
+  expect(matchesSource("/preferences?tab=lan", "/preferences")).toBe(true);
+  expect(matchesSource("/preferences", "/preferences?tab=lan")).toBe(true);
+});
+
+test("matchesSource: a REGISTERED query-bearing surface (ORIGIN_BY_ROUTE) never matches the bare route", () => {
+  expect(matchesSource("/preferences?tab=indexing", "/preferences")).toBe(false);
+  expect(matchesSource("/preferences", "/preferences?tab=indexing")).toBe(false);
+});
+
+// ---- Defect 1: canonicalization collapses app-state query params ---------
+
+test("matchesSource: two Playground URLs differing only by prompt/model app-state still match (grouping/suppression bug)", () => {
+  const a = "/ai-models/playground?prompt=Explain+how+a+language+model+picks&model=mlx-community%2FLFM2.5-1.2B-Instruct-4bit";
+  const b = "/ai-models/playground?model=mlx-community%2FLFM2.5-1.2B-Instruct-4bit";
+  // Both directions: a stale `Job.source` captured at request time still
+  // matches the live (and differently-dirty) current presence page.
+  expect(matchesSource(a, b)).toBe(true);
+  expect(matchesSource(b, a)).toBe(true);
+  // And the canonical bare route matches either dirty variant too — this is
+  // what makes a row raised from a page whose query has since changed stay
+  // suppressed while that page is still open.
+  expect(matchesSource("/ai-models/playground", a)).toBe(true);
+  expect(matchesSource(a, "/ai-models/playground")).toBe(true);
+});
+
+// ---- currentPresencePage: canonicalization at the source ------------------
+//
+// This is what `api.ts`'s `ambientSourceHeaders()` sends as `X-Fused-Source`
+// on every request, and what `familyKey` (jobs.ts) ultimately groups by once
+// the server echoes it back as `Job.source` — so proving canonicalization
+// happens HERE is what proves "two renders from the same page with
+// different query strings share a family key and cluster into one row".
+// Mutates the shared `location` stub directly (a plain object off
+// `installDomShim`, not `defineProperty`d) and restores it, since this file
+// shares one `globalThis` with every other suite in the same `bun test`
+// process (see that shim's own header).
+test("currentPresencePage: two renders on the same route with different app-state query strings canonicalize to the same identity", () => {
+  const loc = (globalThis as unknown as { location: { pathname: string; search: string } })
+    .location;
+  const savedPathname = loc.pathname;
+  const savedSearch = loc.search;
+  try {
+    loc.pathname = "/ai-models/playground";
+    loc.search =
+      "?prompt=Explain+how+a+language+model+picks+the+next+word&model=mlx-community%2FLFM2.5-1.2B-Instruct-4bit";
+    const first = currentPresencePage();
+    loc.search = "?model=mlx-community%2FLFM2.5-1.2B-Instruct-4bit";
+    const second = currentPresencePage();
+    expect(first).toBe("/ai-models/playground");
+    expect(second).toBe("/ai-models/playground");
+    expect(first).toBe(second);
+  } finally {
+    loc.pathname = savedPathname;
+    loc.search = savedSearch;
+  }
+});
+
+test("currentPresencePage: a registered ORIGIN_BY_ROUTE query stays whole, distinct from the bare route", () => {
+  const loc = (globalThis as unknown as { location: { pathname: string; search: string } })
+    .location;
+  const savedPathname = loc.pathname;
+  const savedSearch = loc.search;
+  try {
+    loc.pathname = "/preferences";
+    loc.search = "?tab=indexing";
+    expect(currentPresencePage()).toBe("/preferences?tab=indexing");
+    loc.search = "";
+    expect(currentPresencePage()).toBe("/preferences");
+  } finally {
+    loc.pathname = savedPathname;
+    loc.search = savedSearch;
+  }
 });
 
 // ---- isOpenAnywhere / staleness / throw-degrade ------------------------

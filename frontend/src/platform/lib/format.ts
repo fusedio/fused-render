@@ -56,9 +56,35 @@ export function labelForSource(source: string | undefined): string {
   // header comment above for why this function stops here rather than also
   // resolving a project name.
   const stripped = withoutQuery.replace(/[/\\]+$/, "");
-  const base = stripped.split(/[/\\]/).pop() || stripped;
+  const segments = stripped.split(/[/\\]/).filter(Boolean);
+  const base = segments[segments.length - 1] || stripped;
   const dot = base.lastIndexOf(".");
-  return dot > 0 ? base.slice(0, dot) : base;
+  const name = dot > 0 ? base.slice(0, dot) : base;
+  // ADDITION 1's general case (live testing, 2026-09-17): the symptom was one
+  // task ("Transcripto YouTube transcriber finished") captioned "index",
+  // because its source was an app's ENTRY PAGE (".../Transcripto/index.html"
+  // — see `folderHref`'s comment in schedule-lib.ts: every task made from
+  // inside an app targets that entry page). Fixing the one call site that fed
+  // this an entry page (`tasks-lib.ts`'s `attentionRows`, now project-first)
+  // removes THAT symptom, but this fallback is shared by every caller
+  // (notifications.ts too), any of which can still hand it a bare entry-page
+  // path with no project name to prefer. "index" alone never identifies what
+  // ran — it is the same basename for every app in the system — so when the
+  // extension-stripped basename is exactly "index" (case-insensitive; the
+  // only entry-file spelling this codebase uses, per folderHref), walk up one
+  // segment to the containing folder name instead, which is what actually
+  // varies between apps. Deliberately narrow: this does NOT generalize to
+  // "any uninformative-looking basename" (e.g. "main", "app") — those are
+  // guesses with no evidence behind them, whereas "index" is a documented,
+  // closed convention. A path with nothing above the entry file (no parent
+  // segment) falls through to "index" unchanged; there is nothing truer to
+  // say without a project name, which this function cannot resolve (see the
+  // file header comment).
+  if (/^index$/i.test(name) && segments.length > 1) {
+    const parent = segments[segments.length - 2];
+    if (parent) return parent;
+  }
+  return name;
 }
 
 export function formatSize(bytes: number | null | undefined): string {

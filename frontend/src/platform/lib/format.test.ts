@@ -112,6 +112,25 @@ describe("labelForSource: agrees with the server's origin_for_page on every know
   it("still falls back to a bare basename for a route the table does not cover", () => {
     expect(labelForSource("/Users/me/Projects/my-app")).toBe("my-app");
   });
+
+  it("walks up to the containing folder when the basename is an uninformative entry file — the 'index' caption bug", () => {
+    // ADDITION 1 (live testing, 2026-09-17): a task raised from inside an app
+    // targets that app's entry page (folderHref's documented convention), so
+    // a bare basename fallback here produced the literal caption "index" —
+    // the same string for EVERY app in the system. "index" is a closed,
+    // documented convention (not a guess), so it's the one basename this
+    // fallback treats as uninformative and walks up past.
+    expect(labelForSource("/Users/me/Apps/Transcripto/index.html")).toBe("Transcripto");
+    expect(labelForSource("/Users/me/Apps/Transcripto/INDEX.HTML")).toBe("Transcripto");
+    expect(labelForSource("/Users/me/Apps/Transcripto/index")).toBe("Transcripto");
+    // Nothing above the entry file to walk up to: falls through unchanged
+    // rather than inventing a folder name that isn't there.
+    expect(labelForSource("index.html")).toBe("index");
+    // A basename that merely LOOKS uninformative but isn't the documented
+    // "index" convention is left alone — this fallback does not generalize
+    // to guessing at every short/generic-looking name.
+    expect(labelForSource("/Users/me/Apps/Transcripto/main.py")).toBe("main");
+  });
 });
 
 describe("formatParams", () => {

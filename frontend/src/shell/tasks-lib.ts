@@ -4495,7 +4495,15 @@ export function attentionRows(tasks: TaskPulseTask[]): AttentionRow[] {
       taskId: task.task_id,
       title: task.title,
       href: taskHref(task) ?? folderHref(task) ?? "/tasks",
-      origin: labelForSource(task.target || task.project),
+      // ADDITION 1 (live testing, 2026-09-17): `project` FIRST, matching
+      // `folderHref`'s (schedule-lib.ts) own established order — do NOT swap
+      // this back to `target || project`. A task made from inside an app
+      // targets the app's ENTRY PAGE (".../index.html" — see folderHref's own
+      // comment), so target-first here produced the caption "index" for a
+      // Transcripto task ("Transcripto YouTube transcriber finished" / "index").
+      // `project` names the containing app/folder, which is what a caption is
+      // for; `target` is only a fallback for a task with no project at all.
+      origin: labelForSource(task.project || task.target),
     });
   }
   return rows;

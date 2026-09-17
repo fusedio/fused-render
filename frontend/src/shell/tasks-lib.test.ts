@@ -10135,8 +10135,12 @@ describe("attentionRows", () => {
   // `Job.origin`, reusing `labelForSource` (notifications.ts) rather than a
   // second labeller.
   it("names who raised the row, from the task's own target/project", () => {
+    // ADDITION 1 (live testing, 2026-09-17): `project` now wins over `target`
+    // (see the "index" caption bug tests below), so this needs `project`
+    // explicitly cleared to exercise the target-only path — `task()`'s own
+    // default `project` would otherwise win and mask what this case tests.
     const withTarget = attentionRows([
-      task({ key: "s", status: "needs_attention", target: "/Users/me/my-project" }),
+      task({ key: "s", status: "needs_attention", target: "/Users/me/my-project", project: "" }),
     ]);
     expect(withTarget[0].origin).toBe("my-project");
 
@@ -10149,6 +10153,42 @@ describe("attentionRows", () => {
       task({ key: "n", status: "needs_attention", target: "", project: "" }),
     ]);
     expect(neither[0].origin).toBe("");
+  });
+
+  // ADDITION 1 (live testing, 2026-09-17): a Claude-template task made from
+  // inside an app targets that app's ENTRY PAGE (folderHref's own documented
+  // convention, schedule-lib.ts) — e.g. ".../Transcripto/index.html" — while
+  // `project` names the app folder itself. `origin` used to read
+  // `target || project`, so it named the entry page first and produced the
+  // literal caption "index" for a real task ("Transcripto YouTube
+  // transcriber finished" / "index"). `project` must win here, exactly as it
+  // already does in `folderHref`.
+  it("names the row from the app folder (project), not its entry page (target) — the 'index' caption bug", () => {
+    const rows = attentionRows([
+      task({
+        key: "t",
+        status: "needs_attention",
+        title: "Transcripto YouTube transcriber finished",
+        target: "/Users/me/Apps/Transcripto/index.html",
+        project: "/Users/me/Apps/Transcripto",
+      }),
+    ]);
+    expect(rows[0].origin).toBe("Transcripto");
+  });
+
+  // The general case `labelForSource` now covers: even with NO project at
+  // all, a bare entry-page target should not caption as the uninformative
+  // "index" — it should walk up to the folder that actually varies.
+  it("falls back to the containing folder when only an entry-page target is available", () => {
+    const rows = attentionRows([
+      task({
+        key: "t2",
+        status: "needs_attention",
+        target: "/Users/me/Apps/Transcripto/index.html",
+        project: "",
+      }),
+    ]);
+    expect(rows[0].origin).toBe("Transcripto");
   });
 });
 
