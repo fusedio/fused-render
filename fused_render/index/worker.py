@@ -15,7 +15,23 @@ import os
 import platform
 import sys
 
+from fused_render.index import apps_kind
 from fused_render.index.scan import run_scan
+
+# The detached worker process (`python -m fused_render.index.worker`) and
+# every pool child it spawns (`scan.py`'s `_child_init` imports this module
+# for `_set_background_io_policy`, which is what actually pulls this file
+# in for a pool child too) import only this module and `scan.py` — never
+# `server/routers/index.py`, whose own import registers the built-in "apps"
+# kind as a side effect. Without registering it here too, `_kind_obj(cfg)`
+# (scan.py) raises `KeyError: no IndexKind registered as 'apps'` for every
+# apps scan run out of process, and it raises above the `try` this module's
+# `run_scan` reports failures through, so the run dies with no `run_end`
+# event at all. `replace=True` for the same reason `routers/index.py` uses
+# it: importing this module more than once in one process (tests, a pool
+# child re-importing it) must re-register cleanly, not raise on a name
+# collision.
+apps_kind.register_builtin(replace=True)
 
 # How far below the server this process (and every pool child and stat thread
 # it goes on to spawn, since niceness is inherited) runs. The invariant it
