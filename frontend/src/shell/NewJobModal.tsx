@@ -3364,6 +3364,7 @@ export default function NewJobModal({
           target: value.target,
           new_task_each_run: value.new_task_each_run,
         },
+        { defer: true },
       );
       return;
     }
@@ -3373,10 +3374,17 @@ export default function NewJobModal({
       draftIdRef.current = id;
       setDraftId(id);
     }
-    draftSyncer(taskDraftKey(id)).setTask(value);
+    // STATED, NOT SENT (Akshil, 2026-09-17): the card writes when the window
+    // loses focus, when the page goes, when it closes — not 600 ms after every
+    // keystroke. Same rule as the composers.
+    draftSyncer(taskDraftKey(id)).setTask(value, { defer: true });
   }, { key: syncKey });
   const autosaveRef = useRef(autosave);
   autosaveRef.current = autosave;
+  // CLOSING THE CARD IS A SAVE MOMENT. Discard and Schedule have already said
+  // their piece (`reset(null)` + delete / forget), so this finds nothing to send
+  // on those roads; on a plain ✕ it carries the last edits.
+  useEffect(() => () => autosaveRef.current.flush(), []);
   /**
    * WHAT THIS CARD ANSWERS WHEN THE RECORD MOVED UNDER IT (design §2), read
    * through a ref because the rule is registered with the KEY and the fields it

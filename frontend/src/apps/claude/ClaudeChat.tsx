@@ -1991,6 +1991,18 @@ function ChatBody(props: ChatBodyProps) {
     () => (inChat ? null : freshHeld()),
   );
   const pickedHeld = useRef(false);
+  // A NEW FOLDER IS A NEW LANDING (Bugbot 4040029407). This component survives
+  // the Explorer switching targets, so the held key has to be let go by hand:
+  // the composer saves the old folder's draft on its way out (key change) and
+  // the next listing picks this folder's newest.
+  const heldFile = useRef(file);
+  useEffect(() => {
+    if (heldFile.current === file) return;
+    heldFile.current = file;
+    if (inChat) return;
+    pickedHeld.current = false;
+    setHeld(freshHeld());
+  }, [file, inChat]);
   useEffect(() => {
     if (inChat) {
       setHeld(null);
@@ -2005,13 +2017,18 @@ function ChatBody(props: ChatBodyProps) {
     pickedHeld.current = true;
     const typed = !!boxRef.current?.value.trim() || attach.items.length > 0;
     if (typed) return;
+    // ONLY THIS FOLDER'S DRAFTS — the listing can still be the previous
+    // target's for a beat after a switch, and a draft aimed elsewhere must not
+    // land in this box.
+    const here = (t: Task): boolean =>
+      !file || t.target === file || (t.target ?? "").startsWith(file + "/") || t.project === file;
     const newest = recent
-      .filter((t) => isDraftTask(t) && t.draft_kind === "task" && !!t.draft_id)
+      .filter((t) => isDraftTask(t) && t.draft_kind === "task" && !!t.draft_id && here(t))
       .sort((a, b) => draftUpdatedAt(b) - draftUpdatedAt(a))[0];
     if (newest && newest.draft_id) {
       setHeld({ key: taskDraftKey(newest.draft_id), form: (newest.form ?? null) as TaskDraftForm | null });
     }
-  }, [inChat, held, recent, boxRef, attach.items.length]);
+  }, [inChat, held, recent, boxRef, attach.items.length, file]);
   /** The held row as the feed keeps it — the composer adopts a newer version. */
   const heldRow = useMemo(
     () => (held && recent ? recent.find((t) => t.key === held.key) ?? null : null),
