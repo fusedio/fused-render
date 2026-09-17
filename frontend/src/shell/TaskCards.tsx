@@ -56,6 +56,7 @@ import {
   shortTaskId,
   cardKey,
   cardsForTasks,
+  draftHeldByPeek,
   draftTag,
   ERASE_BLOCKED_HINT,
   emptyPaneFailed,
@@ -532,7 +533,9 @@ function TaskCard({
   // Words nobody has sent, in this conversation's composer — the List row's and
   // the Board card's own chip, from the same function, so the three views
   // cannot describe one draft differently (tasks-lib.draftTag).
-  const draft = draftTag(task);
+  // Hidden while the side peek holds this card's draft (tasks-lib.draftHeldByPeek).
+  const heldInPeek = draftHeldByPeek(task, peeked);
+  const draft = heldInPeek ? null : draftTag(task);
   // Both halves have to be there before anything can be framed: no session means
   // there is no conversation yet, and no template means the folder's stat has
   // not answered (or has no chat mode at all).
@@ -672,7 +675,7 @@ function TaskCard({
           <StatusIcon
             status={taskColumn(task)}
             failed={ringFailed(task)}
-            draftHeld={draftRing(task)}
+            draftHeld={draftRing(task) && !heldInPeek}
           />
           {/* The id keeps the List row's muted skin whatever the title row below
               shows. It was lifted to bold + full fg while that row was the
@@ -772,7 +775,7 @@ function TaskCard({
 
               Stands down on a card whose folder is gone, where the trash beside
               it is the stronger claim — the same rule the List row keeps. */}
-          {hasDraft(task) && !gone && (
+          {hasDraft(task) && !gone && !heldInPeek && (
             <button
               type="button"
               className="task-card-door task-card-door--danger"
