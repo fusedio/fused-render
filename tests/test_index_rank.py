@@ -758,6 +758,71 @@ def test_glob_tier_generalization_ancestor_only_ranks_below_a_name_match(tmp_pat
         "name-has-alpha.txt", "alpha/unrelated.txt"]
 
 
+# -- Fix 1: an extension-shaped query (literal starts with ".") ranks the ----
+# -- basename SUFFIX predicate above the basename PREFIX predicate ----------
+#
+# Reported defect: searching `.js` in the home search box returned fifteen
+# `.jshintrc` files ABOVE the one real `script.js`. `.jshintrc` is a basename
+# PREFIX match for the literal `.js` (`nm LIKE '.js%'`), while `script.js` is
+# a basename SUFFIX match (`nm LIKE '%.js'`) — prefix is checked first in the
+# unmodified `_lex_order_and_score` vector, so the accidental dotfile prefix
+# wins. A query whose literal begins with "." is an extension query — the
+# user means a suffix, and `.jshintrc` matching as a prefix is an accident of
+# its own leading dot. Keyed on the LAST element of the `literals` list
+# `_name_predicate_sql` receives (`_rank_sql` passes `[qs]`; `_glob_sql`
+# passes the final-segment literal runs, so `*.js` -> `*.js*` -> `['.js']`
+# gets the same swap).
+
+def test_extension_query_ranks_suffix_above_prefix(tmp_path):
+    cfg = _index(tmp_path, "/r", [
+        "/r/a/.jshintrc",
+        "/r/b/.jshintrc",
+        "/r/c/.jshintrc",
+        "/r/script.js",
+    ])
+    hits = [h["rel"] for h in search_ranked(cfg, "/r", ".js")["hits"]]
+    files = [r for r in hits if r.endswith(".jshintrc") or r == "script.js"]
+    assert files[0] == "script.js"
+
+
+def test_extension_glob_query_ranks_suffix_above_prefix(tmp_path):
+    """Glob-mode counterpart: `*.js` resolves (`resolve_query`) to the
+    pattern `**/*.js*`, whose final segment is `*.js*` — `_glob_literal_runs`
+    on that final segment yields the single literal run `['.js']`, the same
+    last-element check `_rank_sql`'s single-element `[qs]` triggers on.
+
+    A plain `**/*.js*` can never actually surface this bug end-to-end: its
+    query text neither starts with "." nor contains "/.", so
+    `query_wants_hidden` hides every dotfile candidate outright (including
+    `.jshintrc`) before ranking ever runs — a separate, pre-existing,
+    documented behavior (glob-mode dot-intent does not survive
+    `resolve_query`), not part of either fix here. To exercise the
+    prefix/suffix predicate conflict itself, the query below adds a `.d`
+    directory segment (`**/.d/**/*.js*`) purely to satisfy
+    `query_wants_hidden` (it contains "/."), while keeping the FINAL segment
+    identical (`*.js*`, literal run `['.js']`) — both files live under that
+    `.d` directory so the directory-segment requirement doesn't itself
+    exclude either one."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/.d/a/.jshintrc",
+        "/r/.d/script.js",
+    ])
+    hits = search_ranked(cfg, "/r", "**/.d/**/*.js*", glob=True)["hits"]
+    files = [h["rel"] for h in hits if not h["is_dir"]]
+    assert files[0] == ".d/script.js"
+
+
+def test_non_dot_query_keeps_prefix_before_suffix(tmp_path):
+    """Regression guard: the extension-query swap above must not touch an
+    ordinary (non-dot) query — prefix still outranks suffix."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/config.json",   # prefix match for "config"
+        "/r/app-config",    # suffix match only
+    ])
+    hits = [h["rel"] for h in search_ranked(cfg, "/r", "config")["hits"]]
+    assert hits.index("config.json") < hits.index("app-config")
+
+
 def test_glob_unranked_reproduces_the_old_depth_then_alpha_order(tmp_path):
     """`ranked=False` for a glob query must still answer `depth ASC,
     lower(rel) ASC, rel ASC` — the exact order glob mode always used before

@@ -1237,10 +1237,30 @@ def _name_predicate_sql(nm_col: str, literals: list) -> dict:
     literals rather than raising or dividing by anything — `_glob_sql`
     never calls this for that case (it takes the fully-unscored branch
     instead), but the function stays total rather than assuming its own
-    caller's discipline."""
+    caller's discipline.
+
+    A fifth, non-SQL entry, `"suffix_before_prefix"`, is a plain Python bool:
+    true when the LAST literal run starts with a non-alphanumeric extension
+    marker (`.`) — an extension-shaped query (`.js`, or `*.js` -> `.js` as
+    the final-segment literal `_glob_sql` passes). Reported defect: searching
+    `.js` returned dotfiles like `.jshintrc` ABOVE the real `script.js`,
+    because `.jshintrc` satisfies the basename PREFIX predicate
+    (`nm LIKE '.js%'`) while `script.js` only satisfies the basename SUFFIX
+    predicate (`nm LIKE '%.js'`), and prefix outranks suffix in the
+    unmodified vector — an accident of the dotfile's OWN leading dot, not a
+    better match. For a dot-leading literal the user means "this extension",
+    i.e. a suffix, so `_lex_order_and_score` swaps prefix and suffix (in both
+    `order_by` and `score`) when this flag is set. Keyed on the LAST element
+    (the one `suffix` itself is built from, `literals[-1]`) rather than the
+    first, so both callers get it right: `_rank_sql` passes the single-
+    element `[qs]` (first == last), and `_glob_sql` passes the final
+    segment's literal runs (`*.js` -> final segment `.js*`... -> `['.js']`,
+    still first == last for a single-extension pattern, but keyed on the
+    element `suffix` actually reads, not an assumption that they always
+    coincide)."""
     if not literals:
         return {"prefix": "false", "suffix": "false", "contains": "false",
-                "boundary": "false"}
+                "boundary": "false", "suffix_before_prefix": False}
     first_like = like_literal(literals[0])
     last_like = like_literal(literals[-1])
     chain_like = "%".join(like_literal(lit) for lit in literals)
@@ -1263,6 +1283,7 @@ def _name_predicate_sql(nm_col: str, literals: list) -> dict:
                      f"ESCAPE '\\'"),
         "boundary": (f"regexp_matches({nm_col}, "
                      f"'(^|[^a-z0-9])' || lower('{first_re}'))"),
+        "suffix_before_prefix": literals[-1].startswith("."),
     }
 
 
@@ -1344,17 +1365,32 @@ def _lex_order_and_score(nm_exact: str, preds: dict) -> tuple:
     `order_by` already separate name matches from ancestor-only ones more
     finely than tier alone ever did), so the three-way split it used to make
     has nothing left to earn its keep for — it is kept as a coarse,
-    wire-compatible summary field, not a ranking mechanism."""
+    wire-compatible summary field, not a ranking mechanism.
+
+    `preds["suffix_before_prefix"]` (see `_name_predicate_sql`'s docstring)
+    swaps `prefix` and `suffix` in BOTH `order_by` and `score` for an
+    extension-shaped literal (`.js`, ...): the predicate that would otherwise
+    rank second (`suffix`) takes the FIRST slot and its weight (500), and the
+    one that would otherwise rank first (`prefix`) takes the second slot and
+    its weight (250) — every other column (`contains`, `boundary`,
+    `depth`/`length(nm)`/`rel`) keeps its exact position, and the weight
+    SCALE (1000/500/250/100, `_SCORE_DEPTH_CAP`) is untouched, so `score`
+    stays coherent with whichever order `order_by` actually emits rather than
+    contradicting it."""
     tier = f"CASE WHEN ({preds['contains']}) THEN 1 ELSE 3 END"
+    if preds.get("suffix_before_prefix"):
+        hi_pred, lo_pred = preds["suffix"], preds["prefix"]
+    else:
+        hi_pred, lo_pred = preds["prefix"], preds["suffix"]
     # DuckDB has no BOOLEAN*INTEGER overload (unlike Python's `True == 1`) —
     # each predicate is cast to INTEGER before it can be weighted and summed.
     score = (f"1000 * CAST({nm_exact} AS INTEGER) "
-             f"+ 500 * CAST({preds['prefix']} AS INTEGER) "
-             f"+ 250 * CAST({preds['suffix']} AS INTEGER) "
+             f"+ 500 * CAST({hi_pred} AS INTEGER) "
+             f"+ 250 * CAST({lo_pred} AS INTEGER) "
              f"+ 100 * CAST({preds['contains']} AS INTEGER) "
              f"- LEAST(depth, {_SCORE_DEPTH_CAP})")
-    order_by = (f"({nm_exact}) DESC, ({preds['prefix']}) DESC, "
-                f"({preds['suffix']}) DESC, ({preds['contains']}) DESC, "
+    order_by = (f"({nm_exact}) DESC, ({hi_pred}) DESC, "
+                f"({lo_pred}) DESC, ({preds['contains']}) DESC, "
                 f"({preds['boundary']}) DESC, "
                 f"depth ASC, length(nm) ASC, lower(rel) ASC, rel ASC")
     return order_by, score, tier

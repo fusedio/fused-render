@@ -223,6 +223,25 @@ ORDER BY (nm_exact) DESC, (prefix) DESC, (suffix) DESC, (contains) DESC,
           (boundary) DESC, depth ASC, length(nm) ASC, lower(rel) ASC, rel ASC
 ```
 
+**Extension-shaped queries swap `prefix` and `suffix`.** Reported defect:
+searching `.js` returned dotfiles like `.jshintrc` ABOVE the one real
+`script.js`, because `.jshintrc` satisfies `prefix` (`nm LIKE '.js%'`) while
+`script.js` only satisfies `suffix` (`nm LIKE '%.js'`), and `prefix` outranks
+`suffix` in the vector above — an accident of the dotfile's OWN leading dot,
+not a better match. `_name_predicate_sql` computes a fifth, Python-only flag,
+`suffix_before_prefix`, keyed on whether the LAST literal run (the one
+`suffix` itself is built from — `_rank_sql`'s single-element `[qs]`,
+`_glob_sql`'s final-segment literal runs, so `*.js` -> final segment `.js*`
+-> `['.js']` gets it too) starts with `.`. When set, `_lex_order_and_score`
+swaps `prefix` and `suffix` in BOTH the `ORDER BY` vector and the `score`
+weighted sum (the predicate that would otherwise rank/weigh second takes the
+first slot and its weight, 500, and vice versa, 250) — every other column
+keeps its position, and the weight scale and depth cap below are unchanged,
+so `score` stays coherent with whichever order the vector actually emits.
+For `.js`: `ORDER BY (nm_exact) DESC, (suffix) DESC, (prefix) DESC, ...`. For
+an ordinary, non-dot literal like `config`: unchanged, `ORDER BY (nm_exact)
+DESC, (prefix) DESC, (suffix) DESC, ...`.
+
 This is the actual thing that decides order — a lexicographic comparison over the
 column vector, VS Code/Zed-style, not a scalar arithmetic total. `_rank_sql`
 (substring mode) and `_glob_sql` (glob mode) both call the same two helpers, so
