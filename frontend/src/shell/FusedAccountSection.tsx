@@ -44,26 +44,36 @@ export function FusedAccountSection() {
   const aliveRef = useRef(true);
 
   const refresh = useCallback(async () => {
-    const s = await getCanvasesStatus();
+    let s = await getCanvasesStatus();
     if (!aliveRef.current) return s;
-    setStatus(s);
-    publishLoggedIn(s);
     if (s.logged_in) {
-      // The handle is one control-plane call; a failure here (a dead token,
-      // a blip) is not a failure of the page — the row says "Signed in"
-      // without a name and the 401 case shows up as the CLI's own sentence.
+      // `logged_in` is the credentials FILE existing. The whoami call is what
+      // tells a live store from a dead one: a 401 (the CLI says
+      // re-authenticate) is DOWNGRADED to signed-out before anything is shown
+      // or published — the same verdict the Canvases page reaches — so the
+      // row offers Sign in rather than a Log out that would change nothing,
+      // and the sidebar's remembered refusal of this exact store (its
+      // `creds_stamp`) is kept rather than cleared by a cheerful publish.
       try {
         const who = await getWhoami();
-        if (aliveRef.current) setHandle(who.handle);
+        if (!aliveRef.current) return s;
+        setHandle(who.handle);
       } catch (e) {
-        if (aliveRef.current) {
-          setHandle(null);
+        if (!aliveRef.current) return s;
+        setHandle(null);
+        const status = (e as Error & { status?: number }).status;
+        if (status === 401) {
+          s = { ...s, logged_in: false };
+        } else {
+          // A blip, not a verdict: still signed in, just nameless for now.
           setError((e as Error).message);
         }
       }
     } else {
       setHandle(null);
     }
+    setStatus(s);
+    publishLoggedIn(s);
     return s;
   }, []);
 
@@ -87,7 +97,9 @@ export function FusedAccountSection() {
         .then((s) => {
           if (cancelled) return;
           setStatus(s);
-          publishLoggedIn(s);
+          // Not published from here: a raw file-presence read would clear the
+          // sidebar's remembered refusal of a dead store. `refresh` publishes
+          // once the login completes, after whoami has vouched for it.
           if (s.logged_in && s.creds_stamp !== loginStampRef.current) {
             setLoggingIn(false);
             setError(null);
@@ -126,8 +138,11 @@ export function FusedAccountSection() {
 
   const onCancel = () =>
     act(async () => {
-      await cancelLogin();
+      // Drop `loggingIn` FIRST: once the child is cancelled a poll tick can
+      // see `login_in_flight` false and, still armed, would report "Sign-in
+      // was not completed" for a cancel the reader asked for.
       setLoggingIn(false);
+      await cancelLogin();
     });
 
   const onLogout = () =>
