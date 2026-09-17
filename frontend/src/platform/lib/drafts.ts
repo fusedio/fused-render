@@ -1721,7 +1721,8 @@ export function useAutosave<T>(
 
   const flush = useCallback(() => {
     const on = keyRef.current;
-    if (on) draftSyncer(on).flushNow();
+    // Only a writer that exists: a flush on the way out must not mint one.
+    if (on) peekDraftSyncer(on)?.flushNow();
   }, []);
   const reset = useCallback((next: T) => {
     written.current = JSON.stringify(next) ?? "";

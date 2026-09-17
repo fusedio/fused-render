@@ -1006,15 +1006,25 @@ test("a read that FAILED leaves the box empty and says nothing", async () => {
   expect(seen).toHaveLength(1);
 });
 
-test("a session's typing AUTOSAVES, on the syncer's own ordered PUT", async () => {
+test("a session's typing WAITS FOR A FLUSH, then goes out on the syncer's own ordered PUT", async () => {
   const seen = storeWith({});
   const c = mount({ file: "/p/typed.py", sessionId: "sess-typing" });
   await act(async () => {
     await tick();
   });
   c.type("a follow-up in progress");
+  // ONE RULE FOR EVERY COMPOSER: the session road states its draft and starts
+  // no timer, so 700 ms — well past the 600 ms an autosave would once have
+  // taken — buys nothing on its own.
   await act(async () => {
     await new Promise((r) => setTimeout(r, 700));
+    await tick();
+  });
+  expect(seen.filter((r) => r.method !== "GET")).toEqual([]);
+  // The WINDOW losing focus is the save moment, and it is worth exactly one
+  // write.
+  await act(async () => {
+    blurWindow("sess-typing");
     await tick();
   });
   const puts = seen.filter((r) => r.method === "PUT");
@@ -1031,6 +1041,53 @@ test("a session's typing AUTOSAVES, on the syncer's own ordered PUT", async () =
   expect((puts[0]!.body as { form?: unknown }).form).toBeUndefined();
   expect(c.box().props.value).toBe("a follow-up in progress");
   forgetDraftVersion("sess-typing");
+});
+
+test("LEAVING THE BOX is not leaving the page: a textarea blur alone writes nothing", async () => {
+  // "Out of focus" is the WINDOW, not the textarea (Akshil, 2026-09-17). A
+  // reader tabbing to the model picker and back is not a save moment, and the
+  // flush the session road used to fire here made every such hop a PUT.
+  const seen = storeWith({});
+  const c = mount({ file: "/p/tabbed.py", sessionId: "sess-tabbed" });
+  await act(async () => {
+    await tick();
+  });
+  c.type("a sentence I am stepping away from");
+  await act(async () => {
+    c.box().props.onBlur();
+    await new Promise((r) => setTimeout(r, 700));
+    await tick();
+  });
+  expect(seen.filter((r) => r.method !== "GET")).toEqual([]);
+  // …and the words are still here to be saved when a real save moment comes.
+  await act(async () => {
+    blurWindow("sess-tabbed");
+    await tick();
+  });
+  const puts = seen.filter((r) => r.method === "PUT");
+  expect(puts).toHaveLength(1);
+  expect(puts[0]!.body?.text).toBe("a sentence I am stepping away from");
+  forgetDraftVersion("sess-tabbed");
+});
+
+test("a session composer's UNMOUNT is a save: one PUT, under the session's key", async () => {
+  // Leaving this chat for another, or closing the pane. Nothing is written per
+  // keystroke any more, so the teardown has to carry the last sentence.
+  const seen = storeWith({});
+  const c = mount({ file: "/p/left.py", sessionId: "sess-leaving" });
+  await act(async () => {
+    await tick();
+  });
+  c.type("the last thing I typed before the pane closed");
+  await act(async () => {
+    c.unmount();
+    await tick();
+  });
+  const puts = seen.filter((r) => r.method === "PUT");
+  expect(puts).toHaveLength(1);
+  expect(puts[0]!.url).toBe("/api/drafts/chat/sess-leaving");
+  expect(puts[0]!.body?.text).toBe("the last thing I typed before the pane closed");
+  forgetDraftVersion("sess-leaving");
 });
 
 test("a session's SEND spends the record — the DELETE it always fired", async () => {
@@ -1162,14 +1219,16 @@ test("a seeded tray is never written as empty on the way in", async () => {
   expect(seen.filter((r) => r.method !== "GET")).toEqual([]);
   // …AND A READER TYPING INTO THAT GAP MAY NOT STATE AN EMPTY TRAY. The value
   // this box holds right now is "these words, no files", and saying it would
-  // persist the wipe before the chips arrived.
+  // persist the wipe before the chips arrived — so not even a flush in the
+  // middle of the gap (the window losing focus) may write it out.
   c.type("two files and a sentence, plus one more");
   await act(async () => {
     await new Promise((r) => setTimeout(r, 700));
+    blurWindow("sess-tray");
     await tick();
   });
   expect(seen.filter((r) => r.method !== "GET")).toEqual([]);
-  // The chips land; the next keystroke goes out, and it carries both files.
+  // The chips land; the next flush goes out, and it carries both files.
   await act(async () => {
     land!();
     await tick();
@@ -1177,6 +1236,7 @@ test("a seeded tray is never written as empty on the way in", async () => {
   c.type("two files and a sentence, plus two more");
   await act(async () => {
     await new Promise((r) => setTimeout(r, 700));
+    blurWindow("sess-tray");
     await tick();
   });
   const puts = seen.filter((r) => r.method === "PUT");
@@ -1349,10 +1409,12 @@ test("a stale restore's abort takes back only its own chips, never a newer resto
   expect(tray.map((s) => s.view)).toEqual(["/shots/b.csv"]);
 
   // …and nothing here ever asked to persist an empty tray: a keystroke forces
-  // the render that reads it, and the PUT it produces still carries b.csv.
+  // the render that reads it, and the PUT the next flush produces still carries
+  // b.csv.
   c.type("still here");
   await act(async () => {
     await new Promise((r) => setTimeout(r, 700));
+    blurWindow("sess-new");
     await tick();
   });
   const puts = seen.filter((r) => r.method === "PUT");
@@ -1382,8 +1444,15 @@ test("words typed before the session lands move onto the session's record", asyn
   c.type("the follow-up I typed while it was starting");
   expect(seen.filter((r) => r.method !== "GET")).toEqual([]);
   c.rerender({ sessionId: "sess-flip" });
+  // The flip STATES the words under the new key and starts no timer — same
+  // deferral as every other road — so they go out on the next flush.
   await act(async () => {
     await new Promise((r) => setTimeout(r, 700));
+    await tick();
+  });
+  expect(seen.filter((r) => r.method !== "GET")).toEqual([]);
+  await act(async () => {
+    blurWindow("sess-flip");
     await tick();
   });
   const puts = seen.filter((r) => r.method === "PUT");

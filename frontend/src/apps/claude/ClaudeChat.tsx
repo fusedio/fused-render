@@ -1991,6 +1991,25 @@ function ChatBody(props: ChatBodyProps) {
     () => (inChat ? null : freshHeld()),
   );
   const pickedHeld = useRef(false);
+  // A NEW FOLDER IS A NEW LANDING (Bugbot 4040029407). This component survives
+  // the Explorer switching targets, so the held key has to be let go by hand:
+  // the composer saves the old folder's draft on its way out (key change) and
+  // the next listing picks this folder's newest.
+  const heldFile = useRef(file);
+  /** A folder switch is in progress: the box still shows the OLD folder's
+   *  draft for a render, so its words are not "typed" (Bugbot 4040204492). */
+  const switching = useRef<string | null>(null);
+  const switchSeenFresh = useRef(false);
+  useEffect(() => {
+    if (heldFile.current === file) return;
+    heldFile.current = file;
+    if (inChat) return;
+    pickedHeld.current = false;
+    const fresh = freshHeld();
+    switching.current = fresh.key;
+    switchSeenFresh.current = false; // a new switch starts with a first look (Bugbot 4040391987)
+    setHeld(fresh);
+  }, [file, inChat]);
   useEffect(() => {
     if (inChat) {
       setHeld(null);
@@ -2002,16 +2021,50 @@ function ChatBody(props: ChatBodyProps) {
       return;
     }
     if (pickedHeld.current || recent === null) return;
-    pickedHeld.current = true;
-    const typed = !!boxRef.current?.value.trim() || attach.items.length > 0;
-    if (typed) return;
+    // AFTER A FOLDER SWITCH THE PICK WAITS FOR THE FRESH KEY (Bugbot
+    // 4040204492): in the commit that changed `file`, `held` is still the old
+    // folder's and the box still holds its words. Latching here would read
+    // those words as typed and skip the new folder's newest for good.
+    const here = (t: Task): boolean =>
+      !file || t.target === file || (t.target ?? "").startsWith(file + "/") || t.project === file;
+    if (switching.current) {
+      if (held.key !== switching.current) return; // the old key — the fresh one lands next render
+      // THE FIRST LOOK AT THE FRESH KEY trusts the composer's reset over the
+      // DOM (the box may still paint the old folder's words this render); EVERY
+      // LATER LOOK asks the box, because by then anything in it was typed here
+      // (Bugbot 4040301152). A folder with no rows yet keeps asking until one
+      // arrives or the reader types.
+      const first = !switchSeenFresh.current;
+      switchSeenFresh.current = true;
+      if (!first) {
+        const typed = !!boxRef.current?.value.trim() || attach.items.length > 0;
+        if (typed) {
+          switching.current = null;
+          switchSeenFresh.current = false;
+          pickedHeld.current = true;
+          return;
+        }
+      }
+      // …and the LISTING has to be this folder's too: the previous folder's rows
+      // can still be on hand for a beat. No row of this folder yet = ask again.
+      if (!recent.some(here)) return;
+      switching.current = null;
+      switchSeenFresh.current = false;
+      pickedHeld.current = true;
+    } else {
+      pickedHeld.current = true;
+      const typed = !!boxRef.current?.value.trim() || attach.items.length > 0;
+      if (typed) return;
+    }
+    // ONLY THIS FOLDER'S DRAFTS (`here`): a draft aimed elsewhere must not land
+    // in this box.
     const newest = recent
-      .filter((t) => isDraftTask(t) && t.draft_kind === "task" && !!t.draft_id)
+      .filter((t) => isDraftTask(t) && t.draft_kind === "task" && !!t.draft_id && here(t))
       .sort((a, b) => draftUpdatedAt(b) - draftUpdatedAt(a))[0];
     if (newest && newest.draft_id) {
       setHeld({ key: taskDraftKey(newest.draft_id), form: (newest.form ?? null) as TaskDraftForm | null });
     }
-  }, [inChat, held, recent, boxRef, attach.items.length]);
+  }, [inChat, held, recent, boxRef, attach.items.length, file]);
   /** The held row as the feed keeps it — the composer adopts a newer version. */
   const heldRow = useMemo(
     () => (held && recent ? recent.find((t) => t.key === held.key) ?? null : null),

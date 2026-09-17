@@ -1925,14 +1925,25 @@ describe("the card edits one record, and says which", () => {
     expect(save).toContain("new_task_each_run: value.new_task_each_run,");
     expect(save.slice(save.indexOf("if (recordKey) {"), save.indexOf("let id = draftIdRef")))
       .not.toContain("description:");
+    // STATED, NOT SENT: the chat-keyed road defers too, so a keystroke starts no
+    // 600 ms timer of its own.
+    expect(save).toContain("{ defer: true },");
   });
 
   test("…and a card with no chat behind it still mints a task draft", () => {
     const save = src().slice(src().indexOf("const autosave = useAutosave(draftBody,"));
     expect(save).toContain("id = newTaskDraftId();");
     // ONE WRITER, TWO SHAPES: the same syncer, keyed `draft:<id>` instead of on
-    // the chat. The card states what it wants; nothing here dispatches.
-    expect(save).toContain("draftSyncer(taskDraftKey(id)).setTask(value);");
+    // the chat. The card states what it wants; nothing here dispatches — and
+    // `defer` means nothing here SENDS either, until a flush moment comes.
+    expect(save).toContain("draftSyncer(taskDraftKey(id)).setTask(value, { defer: true });");
+  });
+
+  test("…and closing the card is one of those flush moments", () => {
+    // Nothing is written per keystroke any more, so the card's own teardown has
+    // to carry the last edits out. Discard and Schedule have already reset the
+    // autosave, so this finds nothing to send on those roads.
+    expect(src()).toContain("useEffect(() => () => autosaveRef.current.flush(), []);");
   });
 
   test("the move's machinery is gone from the card", () => {

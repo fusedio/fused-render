@@ -999,6 +999,13 @@ export function ComposerCard({
   const mirrorHeld = useCallback(() => {
     const key = draftKeyRef.current;
     if (!key || hasSessionRef.current) return;
+    // A KEY THIS BOX HAS SPENT IS THE CARD'S NOW (G2, Akshil 2026-09-17).
+    // Continue empties the box, and the emptying used to be mirrored as a BLANK
+    // form under the very key the Tasks card had just taken — so the card's own
+    // flush on "Back to chat" (one syncer per key, shared by both) sent that
+    // blank and the server read it as a delete. Twice round and the draft was
+    // gone. Nothing this box says about a spent key is a statement any more.
+    if (settledKey.current === key) return;
     const sync = draftSyncer(key);
     // AN EMPTY BOX ON A RECORD THAT NEVER EXISTED wants nothing: no PUT of a
     // blank form on every blur of an idle landing page.
@@ -1027,7 +1034,13 @@ export function ComposerCard({
         return;
       }
       if (hasSessionRef.current) {
-        draftSyncer(draftKeyRef.current).setText(value.text, value.attachments);
+        // A SESSION'S DRAFT SAVES THE SAME WAY THE HELD ONE DOES (Akshil,
+        // 2026-09-17): stated on every change, written when the window loses
+        // focus, when the page goes, and when this composer unmounts — never
+        // 600 ms after a keystroke. One rule for every composer.
+        draftSyncer(draftKeyRef.current).setText(value.text, value.attachments, undefined, {
+          defer: true,
+        });
         return;
       }
       // THE HELD DRAFT: stated, not sent. `defer` leaves it for the next flush
@@ -1088,7 +1101,18 @@ export function ComposerCard({
     // road here: nothing left behind, nothing to state.
     if (!words.trim() && !files.length) return;
     autosaveRef.current.reset({ text: words, attachments: files });
-    draftSyncer(draftKey).setText(words, files);
+    draftSyncer(draftKey).setText(words, files, undefined, { defer: true });
+  }, [hasSession, draftKey]);
+  // …AND THE SESSION ROAD'S UNMOUNT IS A SAVE MOMENT TOO, now that nothing is
+  // written per keystroke: leaving the chat for another, closing the pane.
+  useEffect(() => {
+    if (!hasSession || !draftKey) return;
+    const key = draftKey;
+    return () => {
+      // `peek`, not `draftSyncer`: a key nothing wrote needs no writer minted
+      // for it on the way out (review, 2026-09-17).
+      peekDraftSyncer(key)?.flushNow();
+    };
   }, [hasSession, draftKey]);
 
   /**
@@ -1290,6 +1314,8 @@ export function ComposerCard({
    *  and the key is no longer this box's to save or delete. */
   const handedOff = useCallback(() => {
     settledKey.current = draftKeyRef.current;
+    // The clear below is not a change to mirror (see `mirrorHeld`).
+    autosaveRef.current.reset({ text: "", attachments: [] });
     clearComposer();
   }, [clearComposer]);
 
@@ -1327,6 +1353,9 @@ export function ComposerCard({
       autosaveRef.current.reset({ text: "", attachments: [] });
     }
     heldBefore.current = key;
+    // A spent key is spent for THIS box only while it is still the key on
+    // hand; a new key starts with a clean slate.
+    if (settledKey.current && settledKey.current !== key) settledKey.current = null;
     return () => {
       if (settledKey.current === key) return;
       const sync = draftSyncer(key);
@@ -1423,11 +1452,33 @@ export function ComposerCard({
     const shown = heldShownRef.current;
     if (shown !== undefined && heldVersion <= shown) return;
     heldShownRef.current = heldVersion;
-    // The row is newer than what is painted. Not over a reader mid-sentence,
-    // and not for this box's own save echoing back with the same words.
-    if (typedRef.current) return;
+    // THE SETTINGS AND THE VERSION FOLLOW THE RECORD, ALWAYS (Bugbot
+    // 4040204501; live repro 2026-09-18): a time picked on the card, a model,
+    // a repeat — this box has no opinion on them and carries the record's
+    // forward, whatever it does with the words. The version is what the next
+    // save names as `If-Match`; a statement already deferred is re-made over
+    // both, so a blur cannot write the old settings back with a stale version.
+    const target = form.target || (fileRef.current ?? "");
+    const files = form.attachments ?? carriedRef.current;
+    const sync = peekDraftSyncer(draftKey);
+    rememberDraftVersion(draftKey, heldVersion);
+    // THE WORDS: theirs when this box is idle, ours while a sentence is being
+    // typed (the reader's claim; a 409 toast settles it if they collide).
+    if (typedRef.current) {
+      baseFormRef.current = heldFormOf(form, textRef.current, target, files);
+      mirrorHeld();
+      return;
+    }
     const words = joinDraft(form.title, form.description);
-    if (words === textRef.current) return;
+    if (words === textRef.current) {
+      // Same words, newer record: a settings-only edit, or this box's own save
+      // echoing back. Take it as stored, then re-state anything still pending.
+      const base = heldFormOf(form, words, target, files);
+      baseFormRef.current = base;
+      sync?.seedTask(base);
+      mirrorHeld();
+      return;
+    }
     adoptRef.current(form);
   }, [hasSession, draftKey, heldVersion]);
 
@@ -1804,13 +1855,9 @@ export function ComposerCard({
             // 4039858841): the held road's "mid-sentence" flag is not a
             // permanent claim, and an idle box takes remote news again.
             typedRef.current = false;
-            // LEAVING THE BOX SENDS WHAT IS PENDING — on the road that has
-            // something pending. The reader looking away is the likeliest moment
-            // for a tab to be closed, a laptop to be shut or a link to be
-            // followed, and 600 ms is a long time for the last sentence to exist
-            // only here. A session-less box has nothing on the wire to flush:
-            // looking away from it costs nothing and means nothing.
-            if (hasSession) draftSyncer(draftKeyRef.current).flushNow();
+            // LEAVING THE BOX IS NOT LEAVING THE PAGE (Akshil, 2026-09-17: "out
+            // of focus" is the window, not the textarea). The save moments are
+            // the window blur, `pagehide`, and this composer's unmount.
           }}
           {...(onPaste ? { onPaste } : {})}
         />
