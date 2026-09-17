@@ -1519,14 +1519,15 @@ def _parked_runs() -> dict:
     answered; what the task is waiting on is the folder, which is what `queued`
     says.
 
-    One walk of the runs tree, shared with the holder derivation
+    One walk of the runs tree, shared with the manager's `blocked` check
     (`project_queue.scan_runs`) — the `meta.json` and the session ids come back
     already read, and only the pid is touched here.
 
     AND ONE `_permissions` PER RUN, shared with it too. Both readers ask the
     same run the same question on the same listing — this one what it is parked
-    ON, `holders()` whether it is parked at all — and the answer is a directory
-    listing plus a file per card. `project_queue.run_permissions` reads it once
+    ON, the manager's `blocked` check whether it is parked at all — and the
+    answer is a directory listing plus a file per card.
+    `project_queue.run_permissions` reads it once
     onto the scanned record, which lives exactly as long as the walk does
     (round-2 review, 2026-09-12).
 
@@ -5248,8 +5249,8 @@ def _rules_behind(entries: list[dict]) -> list[str]:
 # --------------------------------------------------------------- the queue verbs
 # ONE TASK IN PROGRESS PER FOLDER, from the client's side. Three POSTs, and they
 # exist because the client cannot derive any of them: who holds a folder is a
-# fact about live processes (`project_queue.holders`), and a page guessing it is
-# how two views end up disagreeing about one task.
+# fact the queue manager keeps (`queue_manager.owner`), and a page guessing it
+# is how two views end up disagreeing about one task.
 #
 # ALL THREE CARRY THE D3 X-FUSED HEADER, unlike every other write in this file.
 # The reads here are unguarded and so is `POST /api/tasks/read` — it moves a
@@ -5520,12 +5521,12 @@ def api_queue_admit(body: dict = Body(...),
     nothing has polled it. So the second message — which by then DOES carry a
     session id — asked about a folder held by a process neither id could match,
     and was told `#1 in line · behind a run in this folder`: queued behind
-    itself, for the whole of `project_queue.STARTING_GRACE` (Akshil, folder
-    qa-folder-b, 2026-09-12). The client passes the run it started; the holder
-    carries the run it is; equal run ids are one conversation whatever the
-    session says (`project_queue.is_free`). The other half of the same fix
-    learns the run's session from the live registry by pid, so the anonymous
-    window is now seconds instead of two minutes (`project_queue.run_sessions`).
+    itself (Akshil, folder qa-folder-b, 2026-09-12). The client passes the run
+    it started; the folder's owner carries the run it is; equal run ids are one
+    conversation whatever the session says (`queue_manager.is_free`). The other
+    half of the same fix learns the run's session from the live registry by pid,
+    so the anonymous window is now seconds rather than minutes
+    (`project_queue.run_sessions`).
 
     **`draft_key` IS THE DRAFT THIS SEND SPENT**, and it is how a queued chat
     keeps the name it already had. A session-less composer autosaves under

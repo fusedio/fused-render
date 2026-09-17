@@ -116,6 +116,11 @@ EXPECTED_STARTUP = [
     "_startup_warm_engine",
     "_startup_resurrect_background_apps",
     "_startup_sync_user_plugin",
+    # Added 2026-09-17 (PR 2): the project queue's factory is registered here
+    # explicitly, and with the flag on the manager is built and reconciled once
+    # so a restart resumes every folder's line. BEFORE `_startup_schedule`, whose
+    # first tick otherwise self-wires it as a fallback.
+    "_startup_queue_manager",
     "_startup_schedule",
     "_startup_tasks_watch",
     "_startup_tasks_warm",

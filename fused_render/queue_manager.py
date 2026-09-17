@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import logging
+import os
 import threading
 import time
 from typing import Callable
@@ -30,6 +31,15 @@ from fused_render import tasks_store
 logger = logging.getLogger(__name__)
 
 INDEX_FILE = "queue_index.json"
+
+# The store the derived-holder layer kept its parked card decisions in, migrated
+# into the index the first time a manager loads and then renamed out of the way
+# (`QueueManager._migrate_legacy`). Named here rather than imported from
+# `project_queue` because T5's deletion takes the store with it, and a migration
+# that stops working the moment its source module is cleaned up is a migration
+# that never runs on the machine that needed it.
+LEGACY_ANSWERS_FILE = "held_answers.json"
+MIGRATED_SUFFIX = ".migrated"
 
 
 def _text(value) -> str:
@@ -84,6 +94,34 @@ def _empty_folder() -> dict:
     return {"owner": None, "line": [], "blocked": []}
 
 
+def _nowhere() -> dict:
+    """The answer for a task that stands in no line — position 0, no folder."""
+    return {"key": "", "position": 0, "ahead_key": ""}
+
+
+def _legacy_records() -> list[dict]:
+    """The old `held_answers.json` rows: `{queue_key, session_id, run_id,
+    request_id, payload: {raw}, at}`.
+
+    `project_queue.read_legacy_held_answers()` is the reader T5 leaves behind and
+    the one to prefer — it knows that store's own shape. A build where the name
+    is gone (or the import fails) reads the file directly, because the whole
+    point of the migration is that it must still run on the upgrade where the
+    old module has already been cleaned up."""
+    try:
+        from fused_render import project_queue
+
+        reader = getattr(project_queue, "read_legacy_held_answers", None)
+        if callable(reader):
+            return [row for row in (reader() or []) if isinstance(row, dict)]
+    except Exception:
+        logger.debug("queue: project_queue could not hand over the legacy answers",
+                     exc_info=True)
+    raw = tasks_store.load_state(LEGACY_ANSWERS_FILE)
+    rows = raw.get("answers") if isinstance(raw, dict) else None
+    return [row for row in (rows if isinstance(rows, list) else []) if isinstance(row, dict)]
+
+
 _BUSY: tuple = ()
 _BUSY_TRIED = False
 
@@ -136,6 +174,7 @@ class QueueManager:
         self._clock = clock or time.time
         self._lock = threading.RLock()
         self._state = self._load()
+        self._migrate_legacy()
         # NOT RECONCILED HERE, and that absence is load-bearing. `reconcile`
         # pumps, and pumping SPAWNS — so a manager built by whatever happened to
         # ask for it first would start turns as a side effect of a cancel, a
@@ -186,6 +225,71 @@ class QueueManager:
             tasks_store._update(INDEX_FILE, mutate)
         except OSError:
             logger.debug("could not write %s", INDEX_FILE, exc_info=True)
+
+    def _migrate_legacy(self) -> None:
+        """Fold the derived-holder layer's `held_answers.json` into the index,
+        once, then move the file aside.
+
+        A parked card decision was the one piece of queue state the old layer
+        kept outside the scheduler's store, so it is the one piece a rebuild
+        cannot re-derive: the user pressed Allow, the folder was busy, and the
+        answer has been waiting ever since. Dropping it on upgrade would leave
+        a live run parked on a card nobody will ever answer again.
+
+        **The task goes back into the line at the HEAD, promoted.** It is not a
+        message waiting for its turn — it is a turn already running, parked, and
+        owed the decision it was promised, which is exactly what
+        `card_answered` does for an answer taken today. Oldest `at` first, the
+        order the old deliverer used (`project_queue.held_answers`).
+
+        NO PUMP AND NO NOTIFY: construction is inert on purpose (see `__init__`),
+        so the first `reconcile()` is what actually hands these folders out.
+
+        Best-effort at every step. A state dir that will not rename keeps the
+        file, and the next load re-runs an idempotent migration (`setdefault`
+        on the answer, the standing line checked before an insert)."""
+        path = os.path.join(tasks_store.STATE_DIR, LEGACY_ANSWERS_FILE)
+        if not os.path.exists(path):
+            return
+        try:
+            records = _legacy_records()
+        except Exception:
+            logger.exception("queue: could not read %s; leaving it alone",
+                             LEGACY_ANSWERS_FILE)
+            return
+        known: set[str] = set()
+        for rec in self._state["folders"].values():
+            if rec["owner"] is not None:
+                known.add(rec["owner"]["task"])
+            known.update(i["task"] for i in rec["line"] + rec["blocked"])
+        heads: dict[str, int] = {}
+        changed = False
+        for record in sorted(records, key=lambda r: _number(r.get("at"))):
+            session_id = _text(record.get("session_id"))
+            if not session_id:
+                continue
+            payload = record.get("payload")
+            raw = payload.get("raw") if isinstance(payload, dict) else None
+            self._state["answers"].setdefault(session_id, {
+                "run_id": _text(record.get("run_id")),
+                "request_id": _text(record.get("request_id")),
+                "raw": copy.deepcopy(raw) if isinstance(raw, dict) else {},
+                "at": _number(record.get("at"))})
+            changed = True
+            folder = _text(record.get("queue_key"))
+            if not folder or session_id in known:
+                continue
+            slot = heads.get(folder, 0)
+            self._folder(folder)["line"].insert(
+                slot, {"task": session_id, "entry_id": "", "promoted": True})
+            heads[folder] = slot + 1
+            known.add(session_id)
+        if changed:
+            self._save()
+        try:
+            os.replace(path, path + MIGRATED_SUFFIX)
+        except OSError:
+            logger.debug("queue: could not rename %s aside", path, exc_info=True)
 
     @contextlib.contextmanager
     def _txn(self):
@@ -283,20 +387,26 @@ class QueueManager:
                       _text(started.get("session_id")))
 
     def _place(self, task_key: str) -> dict:
-        for rec in self._state["folders"].values():
+        """``{"key", "position", "ahead_key"}`` for one task.
+
+        `key` IS THE FOLDER, not the task — the same field `positions()` answers
+        and the same one the listing's row reads (`_queue_row`): a queued row
+        says which folder it is waiting on, and the task's own key is the dict
+        key it is filed under."""
+        for folder, rec in self._state["folders"].items():
             for i, item in enumerate(rec["line"]):
                 if item["task"] == task_key:
                     owner = rec["owner"]
                     ahead = rec["line"][i - 1]["task"] if i else (owner["task"] if owner else "")
-                    return {"position": i + 1, "ahead_key": ahead}
-        return {"position": 0, "ahead_key": ""}
+                    return {"key": folder, "position": i + 1, "ahead_key": ahead}
+        return _nowhere()
 
     # ------------------------------------------------------------ events
     def enqueue(self, folder: str, task_key: str, entry_id: str = "") -> dict:
         """Append to the folder's line, then pump. Idempotent: a key that already
         owns, stands in a line or sits blocked keeps the place it has."""
         if not folder or not task_key:
-            return {"position": 0, "ahead_key": ""}
+            return _nowhere()
         with self._txn() as keys:
             where, _rec = self._locate(task_key)
             if where is None:
@@ -314,13 +424,13 @@ class QueueManager:
         with self._txn() as keys:
             folder, rec = self._locate(task_key)
             if rec is None:
-                return {"position": 0, "ahead_key": ""}
+                return _nowhere()
             owner = rec["owner"]
             if owner is not None and owner["task"] == task_key:
-                return {"position": 0, "ahead_key": ""}
+                return _nowhere()
             item = self._take(rec, task_key)
             if item is None:
-                return {"position": 0, "ahead_key": ""}
+                return _nowhere()
             item["promoted"] = True
             rec["line"].insert(0, item)
             keys.add(task_key)
@@ -346,7 +456,17 @@ class QueueManager:
 
         The caller checked `is_free` at admission, so this trusts it and
         overwrites. A manager that argued here would leave a live turn with no
-        owner, which is the one state the index exists to prevent."""
+        owner, which is the one state the index exists to prevent.
+
+        **A NAMELESS SEND IS FILED UNDER ITS RUN** (T3's handoff, 2026-09-17). A
+        brand-new chat's first send has no session — Claude Code mints one
+        somewhere inside the spawn — so there was nothing to call the task and
+        `started` filed nobody, which left the folder reading free and let a
+        second nameless send into it while the first was still starting. The run
+        id is a name: it exists the moment `_start` returns, the page carries it
+        on every message afterwards, and `is_free` answers to it. When the
+        session does arrive it simply re-files under the better name."""
+        task_key = task_key or _text(run_id)
         if not folder or not task_key:
             return
         with self._txn() as keys:
@@ -438,13 +558,28 @@ class QueueManager:
             return copy.deepcopy(owner) if owner else None
 
     def is_free(self, folder: str, task_key: str = "") -> bool:
-        """Free, or owned by `task_key` itself."""
+        """Free, or owned by `task_key` itself.
+
+        THREE NAMES FOR ONE CONVERSATION and any of them is enough: the owner's
+        task key, the session it is running, and the run it is. A chat that has
+        not minted a session yet is filed under its run (`started`), and its
+        very next message names that run — so matching on the task key alone
+        would tell a conversation it is standing behind itself."""
         owner = self.owner(folder)
-        return owner is None or (bool(task_key) and owner["task"] == task_key)
+        if owner is None:
+            return True
+        if not task_key:
+            return False
+        return task_key in (owner.get("task") or "", owner.get("run_id") or "",
+                            owner.get("session_id") or "")
 
     def positions(self) -> dict[str, dict]:
         """``{task_key: {"key", "position", "ahead_key", "priority"}}`` — the
         shape `_queue_lines` returned, for every task standing in a line.
+
+        `key` IS THE FOLDER THIS TASK IS WAITING ON (`queue_key`), which is what
+        the field meant before the manager existed and what the listing reads it
+        as (`_queue_row` → `_row`). The task's own key is the dict key.
 
         Blocked tasks hold nothing and stand in no line, so they are not here.
         `priority` is the ⤒: true only at the head, and only when it got there by
@@ -452,17 +587,18 @@ class QueueManager:
         user sees is not the order they created."""
         with self._lock:
             out: dict[str, dict] = {}
-            for rec in self._state["folders"].values():
+            for folder, rec in self._state["folders"].items():
                 owner = rec["owner"]
                 for i, item in enumerate(rec["line"]):
                     ahead = rec["line"][i - 1]["task"] if i else (owner["task"] if owner else "")
-                    out[item["task"]] = {"key": item["task"], "position": i + 1,
+                    out[item["task"]] = {"key": folder, "position": i + 1,
                                          "ahead_key": ahead,
                                          "priority": i == 0 and bool(item["promoted"])}
             return out
 
     def place(self, task_key: str) -> dict:
-        """``{"position", "ahead_key"}`` for one task; position 0 = not queued."""
+        """``{"key", "position", "ahead_key"}`` for one task; position 0 = not
+        queued, and `key` is the FOLDER (see `_place`)."""
         with self._lock:
             return self._place(task_key)
 

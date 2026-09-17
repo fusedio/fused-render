@@ -463,6 +463,46 @@ def create_app(start_dir: str) -> FastAPI:
 
         user_plugin.start()
 
+    # The project queue's dispatcher (queue_manager.py), wired EXPLICITLY.
+    #
+    # `routers/tasks._wire_manager()` registers the factory, and importing that
+    # router at the top of this file already ran it once — but the scheduler,
+    # the event transport, the doors and `/api/run`'s gate all reach the manager,
+    # and which of them happens to be first must not decide whether this process
+    # has one at all. `schedule._qm()` still self-wires as a FALLBACK (and the
+    # scheduler's tests rely on that path); this is the rule, said once, at the
+    # moment the process is brought up.
+    #
+    # Then, and ONLY with the flag on, build the manager and reconcile once so a
+    # restart resumes every folder's line immediately rather than on whatever
+    # event happens to arrive first. That is deliberate work: building reconciles
+    # and reconciling PUMPS, which SPAWNS (see `queue_manager.peek`) — which is
+    # exactly why it is a startup event and not the create_app body (tests build
+    # apps without lifespan and must never start a turn), and why it runs on a
+    # daemon thread like `_startup_tasks_warm`: resuming a line can spawn several
+    # Claude processes and must not hold up the first page paint.
+    @on_startup
+    async def _startup_queue_manager():
+        from fused_render import project_queue, queue_manager
+        from fused_render.server.routers import tasks as tasks_router_mod
+
+        tasks_router_mod._wire_manager()
+        if not project_queue.enabled():
+            return
+
+        def resume():
+            try:
+                queue_manager.get().reconcile()
+            except Exception:  # noqa: BLE001 — a queue that cannot resume must
+                # not take the server down with it; the next tick tries again.
+                logger.exception("could not resume the project queue at startup")
+
+        thread = threading.Thread(target=resume, daemon=True,
+                                  name="fused-queue-resume")
+        thread.start()
+        # For tests, the same seam `_startup_tasks_warm` leaves.
+        app.state.queue_resume = thread
+
     # Scheduled Claude messages (schedule.py). A startup event and emphatically
     # NOT the create_app body: this loop SENDS things, and its first tick fires
     # everything already overdue. Tests build the app without running lifespan,

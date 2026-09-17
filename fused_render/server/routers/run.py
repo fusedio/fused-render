@@ -16,6 +16,64 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _claude_agent(resolved: str) -> bool:
+    return str(resolved).replace("\\", "/").endswith("/templates/claude/agent.py")
+
+
+def _queue_target(params: dict) -> str:
+    """The folder this call is about, or "" when the queue has nothing to say —
+    flag off, no target, or a target that resolves to no folder."""
+    from fused_render import project_queue
+    if not project_queue.enabled():
+        return ""
+    target = str(params.get("_file") or params.get("file") or "")
+    if not target:
+        return ""
+    return project_queue.queue_key(target) or ""
+
+
+def _file_owner(resolved: str, params: dict, result: dict) -> None:
+    """Record who owns the folder the moment a `start` actually spawns.
+
+    THIS IS THE REAL SPAWN SITE FOR A CHAT (T3's handoff, 2026-09-17). The
+    composer asks `/api/tasks/queue/admit` first, and that files the owner for
+    every send that HAS a name — but a brand-new chat's first send has neither a
+    session nor a run id to offer, so the admission filed nobody and the folder
+    still read free. A second nameless send arriving while the first was still
+    inside `_start` was let straight through. Here both names exist: `_start`
+    has returned the run it created and the session it minted.
+
+    The task key is the session when there is one (the Tasks page keys a chat by
+    its session) and the run otherwise, which is the name the page's next
+    message carries. `is_free` answers to all three.
+
+    Best-effort under one `try`, the same posture as `_folder_busy`: a filing
+    that fails must never turn a run that already started into an error."""
+    try:
+        if not _claude_agent(resolved):
+            return
+        if str(params.get("action") or "") != "start":
+            return
+        key = _queue_target(params)
+        if not key:
+            return
+        payload = result.get("result") if isinstance(result, dict) else None
+        if not isinstance(payload, dict) or payload.get("error"):
+            return
+        run_id = str(payload.get("run_id") or "")
+        if not run_id:
+            return
+        # The MINTED session — `_start` answers `new_session_id or session_id`,
+        # so this is the conversation the run belongs to whether it is a fresh
+        # chat or a resume.
+        session_id = str(payload.get("session_id") or params.get("session_id") or "")
+        from fused_render import queue_manager
+
+        queue_manager.get().started(key, session_id or run_id, run_id, session_id)
+    except Exception:  # noqa: BLE001 — a filing that fails is not a failed run
+        logger.debug("queue: could not file the owner of a start", exc_info=True)
+
+
 def _folder_busy(resolved: str, params: dict) -> str:
     """The refusal for a claude-agent `start`/`send` into a folder another task
     owns, or "" when the send may go. Flag off: always "". Best-effort — any
@@ -23,18 +81,12 @@ def _folder_busy(resolved: str, params: dict) -> str:
     body sits under one `try`: an unreadable index must cost a gate, never a
     send."""
     try:
-        if not str(resolved).replace("\\", "/").endswith("/templates/claude/agent.py"):
+        if not _claude_agent(resolved):
             return ""
         action = str(params.get("action") or "")
         if action not in ("start", "send"):
             return ""
-        from fused_render import project_queue
-        if not project_queue.enabled():
-            return ""
-        target = str(params.get("_file") or params.get("file") or "")
-        if not target:
-            return ""
-        key = project_queue.queue_key(target)
+        key = _queue_target(params)
         if not key:
             return ""
         from fused_render import queue_manager
@@ -48,15 +100,17 @@ def _folder_busy(resolved: str, params: dict) -> str:
         # keeps, and one that could differ from the admission in the same
         # second.
         manager = queue_manager.get()
-        # The task this send belongs to: its session, else the run it already
-        # started. `is_free` answers True for a folder this very task owns,
-        # which is the inbox-absorb case (a second message into a conversation
-        # that is running) and must not be refused.
-        mine = session_id or run_id
+        # The names this send can offer for itself. `is_free` answers True for
+        # a folder this very task owns, which is the inbox-absorb case (a second
+        # message into a conversation that is running) and must not be refused.
         owner = manager.owner(key)
-        logger.debug("queue gate: %s %s key=%s session=%r run=%r owner=%r",
-                     action, target, key, session_id, run_id, owner)
-        if manager.is_free(key, mine):
+        logger.debug("queue gate: %s key=%s session=%r run=%r owner=%r",
+                     action, key, session_id, run_id, owner)
+        # BOTH NAMES, not the first one that is set: an anonymous first send is
+        # filed under its run (`queue_manager.started`) and re-filed under the
+        # session once one exists, so a message that carries both must be
+        # matched against both or it can be told it is behind itself.
+        if manager.is_free(key, session_id) or manager.is_free(key, run_id):
             return ""
         owner = owner or {}
         # A chat that has no session yet is named by the run it started, and the
@@ -146,6 +200,10 @@ async def api_run(request: Request, body: dict = Body(...),
         # loop free (the endpoint is async now for the engine's sake).
         work = asyncio.to_thread(run_python, resolved, params)
     result = await work
+    # THE FOLDER'S OWNER IS FILED HERE, at the one place a chat's turn is
+    # actually spawned — see `_file_owner`. Nothing before this call has a run
+    # id or a session to file under for a brand-new chat's first send.
+    _file_owner(resolved, params, result)
     # A script that ran may have written anything, anywhere — including
     # through the git template's stage/unstage/commit (templates/git/ops.py),
     # which runs on this same subprocess-per-call path and so cannot reach

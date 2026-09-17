@@ -539,3 +539,80 @@ def test_a_manager_that_throws_is_never_a_500(client, flag, manager,
                           "session_id": "sess-1"})
     assert r.status_code == 200
     assert r.json() == {"ok": False}
+
+
+# ------------------------------------------------------- the startup wiring
+
+
+def _queue_startup(app):
+    """`create_app`'s queue handler, off the list it publishes for exactly this
+    (`app.state.startup_handlers`)."""
+    for handler in app.state.startup_handlers:
+        if handler.__name__ == "_startup_queue_manager":
+            return handler
+    raise AssertionError("create_app registered no queue startup handler")
+
+
+def _run(handler):
+    import asyncio
+
+    asyncio.run(handler())
+
+
+@pytest.fixture(autouse=True)
+def restore_factory():
+    """The wiring tests below register the REAL factory on purpose. Put back
+    whatever was there so a later test cannot build a live manager by accident."""
+    before = queue_manager._factory
+    yield
+    queue_manager.set_factory(before)
+
+
+def test_startup_registers_the_factory_explicitly(tmp_path, flag, monkeypatch):
+    """THE WIRING IS A RULE, NOT AN IMPORT ORDER. The factory is registered when
+    the tasks router is imported and `schedule._qm()` re-registers it as a
+    fallback, but the scheduler, the transport, the doors and `/api/run`'s gate
+    all reach the manager — so which of them happened to be first must not
+    decide whether this process has one. Startup says it once, out loud."""
+    flag(False)
+    app = create_app(start_dir=str(tmp_path))
+    queue_manager.set_factory(None)
+    _run(_queue_startup(app))
+    assert queue_manager._factory is not None
+    # Flag off: registered and NOT built. Building reconciles, and reconciling
+    # spawns — a switched-off queue must start nothing.
+    assert queue_manager.peek() is None
+
+
+def test_startup_resumes_the_lines_when_the_flag_is_on(tmp_path, flag, monkeypatch):
+    """A restart with a half-run line resumes it now, not on whatever event
+    happens to arrive first. On a daemon thread, because resuming can spawn
+    several Claude processes and must not hold up the first page paint."""
+    flag(True)
+    app = create_app(start_dir=str(tmp_path))
+    reconciled = []
+
+    class _Manager:
+        def reconcile(self):
+            reconciled.append(True)
+
+    queue_manager.reset_for_tests(_Manager())
+    try:
+        _run(_queue_startup(app))
+        app.state.queue_resume.join(timeout=5)
+        assert reconciled == [True]
+    finally:
+        queue_manager.reset_for_tests(None)
+
+
+def test_a_queue_that_cannot_resume_does_not_take_the_server_down(tmp_path, flag,
+                                                                  monkeypatch):
+    flag(True)
+    app = create_app(start_dir=str(tmp_path))
+
+    def boom():
+        raise RuntimeError("index unreadable")
+
+    monkeypatch.setattr(queue_manager, "get", boom)
+    _run(_queue_startup(app))
+    app.state.queue_resume.join(timeout=5)

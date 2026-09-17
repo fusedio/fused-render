@@ -101,6 +101,19 @@ def idle_world(**kw):
     return world
 
 
+def loaded(world):
+    """A manager as `_load` + the migration leave it, with NO `reconcile()`.
+
+    What construction alone did is exactly what the migration tests are about:
+    reconcile pumps, and a pump hands the head of the line its stored answer
+    straight away — a true and wanted outcome, but one that erases the state
+    under test."""
+    return qm.QueueManager(spawn=world.spawn, deliver=world.deliver,
+                           running=world.running, blocked=world.blocked,
+                           pending_due=world.pending_due, notify=world.notify,
+                           clock=world.clock)
+
+
 def line_of(manager, folder=F1):
     return [i["task"] for i in manager.snapshot()["folders"][folder]["line"]]
 
@@ -124,7 +137,7 @@ def test_enqueue_into_a_free_folder_spawns_and_owns():
     assert world.spawned == [(F1, "a")]
     assert owner_key(m) == "a"
     assert line_of(m) == []
-    assert place == {"position": 0, "ahead_key": ""}
+    assert place == {"key": "", "position": 0, "ahead_key": ""}
     owner = m.owner(F1)
     assert (owner["run_id"], owner["session_id"]) == ("run", "sess")
     assert owner["since"] > 0
@@ -149,17 +162,17 @@ def test_enqueue_is_idempotent_everywhere():
     m.card_raised("a")                       # a -> blocked, b takes the folder
     assert (owner_key(m), line_of(m), blocked_of(m)) == ("b", ["c"], ["a"])
 
-    assert m.enqueue(F1, "b") == {"position": 0, "ahead_key": ""}    # the owner
-    assert m.enqueue(F1, "c") == {"position": 1, "ahead_key": "b"}   # in line
-    assert m.enqueue(F1, "a") == {"position": 0, "ahead_key": ""}    # blocked
+    assert m.enqueue(F1, "b") == {"key": "", "position": 0, "ahead_key": ""}    # the owner
+    assert m.enqueue(F1, "c") == {"key": F1, "position": 1, "ahead_key": "b"}   # in line
+    assert m.enqueue(F1, "a") == {"key": "", "position": 0, "ahead_key": ""}    # blocked
     assert line_of(m) == ["c"]
     assert blocked_of(m) == ["a"]
 
 
 def test_enqueue_ignores_a_blank_folder_or_key():
     m = World().manager()
-    assert m.enqueue("", "a") == {"position": 0, "ahead_key": ""}
-    assert m.enqueue(F1, "") == {"position": 0, "ahead_key": ""}
+    assert m.enqueue("", "a") == {"key": "", "position": 0, "ahead_key": ""}
+    assert m.enqueue(F1, "") == {"key": "", "position": 0, "ahead_key": ""}
     assert m.snapshot()["folders"] == {}
 
 
@@ -193,7 +206,7 @@ def test_skip_pulls_a_blocked_task_back_into_the_line():
     m.enqueue(F1, "b")
     m.card_raised("a")
     assert (owner_key(m), blocked_of(m)) == ("b", ["a"])
-    assert m.skip("a") == {"position": 1, "ahead_key": "b"}
+    assert m.skip("a") == {"key": F1, "position": 1, "ahead_key": "b"}
     assert blocked_of(m) == []
     assert line_of(m) == ["a"]
 
@@ -202,8 +215,8 @@ def test_skip_of_the_owner_and_of_a_stranger_are_no_ops():
     m = World().manager()
     m.enqueue(F1, "a")
     m.enqueue(F1, "b")
-    assert m.skip("a") == {"position": 0, "ahead_key": ""}
-    assert m.skip("nobody") == {"position": 0, "ahead_key": ""}
+    assert m.skip("a") == {"key": "", "position": 0, "ahead_key": ""}
+    assert m.skip("nobody") == {"key": "", "position": 0, "ahead_key": ""}
     assert owner_key(m) == "a"
     assert line_of(m) == ["b"]
 
@@ -284,6 +297,33 @@ def test_started_ignores_a_blank_folder_or_key():
     m.started("", "a")
     m.started(F1, "")
     assert m.snapshot()["folders"] == {}
+
+
+def test_started_with_no_task_key_files_the_owner_under_its_run():
+    """A brand-new chat's first send has no session — Claude Code mints one
+    inside the spawn — so the run id is the only name it has. Filing nobody left
+    the folder reading free and let a second nameless send straight in (T3's
+    handoff, 2026-09-17)."""
+    m = idle_world().manager()
+    m.started(F1, "", run_id="run-1")
+    assert owner_key(m) == "run-1"
+    assert m.owner(F1)["run_id"] == "run-1"
+    assert m.is_free(F1) is False
+    assert m.is_free(F1, "run-1") is True
+    assert m.is_free(F1, "somebody-else") is False
+
+
+def test_is_free_answers_to_the_owners_task_run_or_session():
+    """Three names for one conversation and any of them is enough — otherwise
+    the chat that owns the folder is told it is standing behind itself."""
+    m = idle_world().manager()
+    m.started(F1, "task-a", run_id="run-1", session_id="sess-1")
+    assert m.is_free(F1, "task-a") is True
+    assert m.is_free(F1, "run-1") is True
+    assert m.is_free(F1, "sess-1") is True
+    assert m.is_free(F1, "") is False
+    assert m.is_free(F1, "stranger") is False
+    assert m.is_free(F2, "") is True
 
 
 # --------------------------------------------------------------- card_raised
@@ -372,7 +412,7 @@ def test_answered_then_skipped_puts_the_answer_second():
     assert line_of(m) == ["a", "c"]
     m.skip("c")
     assert line_of(m) == ["c", "a"]
-    assert m.place("a") == {"position": 2, "ahead_key": "c"}
+    assert m.place("a") == {"key": F1, "position": 2, "ahead_key": "c"}
 
 
 def test_pump_delivers_a_stored_answer_instead_of_spawning():
@@ -568,14 +608,31 @@ def test_positions_shape_and_priority():
     m.enqueue(F1, "b")
     m.enqueue(F1, "c")
     assert m.positions() == {
-        "b": {"key": "b", "position": 1, "ahead_key": "a", "priority": False},
-        "c": {"key": "c", "position": 2, "ahead_key": "b", "priority": False},
+        "b": {"key": F1, "position": 1, "ahead_key": "a", "priority": False},
+        "c": {"key": F1, "position": 2, "ahead_key": "b", "priority": False},
     }
     m.skip("c")
     assert m.positions() == {
-        "c": {"key": "c", "position": 1, "ahead_key": "a", "priority": True},
-        "b": {"key": "b", "position": 2, "ahead_key": "c", "priority": False},
+        "c": {"key": F1, "position": 1, "ahead_key": "a", "priority": True},
+        "b": {"key": F1, "position": 2, "ahead_key": "c", "priority": False},
     }
+
+
+def test_positions_key_is_the_folder_not_the_task():
+    """`key` is the folder a queued task is WAITING ON, which is what the field
+    meant before the manager existed and what `_queue_row` → `_row` reads it as
+    (a row's own key is the dict key it is filed under). Two folders, so a bug
+    that echoes the task back cannot pass by coincidence."""
+    m = World().manager()
+    m.enqueue(F1, "a")
+    m.enqueue(F1, "b")
+    m.enqueue(F2, "c")
+    m.enqueue(F2, "d")
+    places = m.positions()
+    assert places["b"]["key"] == F1
+    assert places["d"]["key"] == F2
+    assert m.place("b")["key"] == F1
+    assert m.place("d")["key"] == F2
 
 
 def test_promotion_stops_showing_once_it_is_no_longer_the_head():
@@ -606,7 +663,7 @@ def test_positions_of_an_ownerless_line_names_nobody_ahead():
     m = World().manager()
     m._state["folders"][F1] = {"owner": None, "blocked": [],
                                "line": [{"task": "b", "entry_id": "", "promoted": False}]}
-    assert m.positions()["b"] == {"key": "b", "position": 1, "ahead_key": "",
+    assert m.positions()["b"] == {"key": F1, "position": 1, "ahead_key": "",
                                   "priority": False}
 
 
@@ -619,9 +676,9 @@ def test_place_and_is_free_and_owner_reads():
     assert m.is_free(F1) is False
     assert m.is_free(F1, "a") is True
     assert m.is_free(F1, "b") is False
-    assert m.place("a") == {"position": 0, "ahead_key": ""}
-    assert m.place("b") == {"position": 1, "ahead_key": "a"}
-    assert m.place("nobody") == {"position": 0, "ahead_key": ""}
+    assert m.place("a") == {"key": "", "position": 0, "ahead_key": ""}
+    assert m.place("b") == {"key": F1, "position": 1, "ahead_key": "a"}
+    assert m.place("nobody") == {"key": "", "position": 0, "ahead_key": ""}
 
 
 def test_owner_read_is_a_copy():
@@ -808,6 +865,131 @@ def test_snapshot_is_a_copy():
     snap = m.snapshot()
     snap["folders"][F1]["owner"]["task"] = "mutated"
     assert owner_key(m) == "a"
+
+
+# ------------------------------------------------- the held-answers migration
+
+
+def _legacy_file(state, *records):
+    """The derived-holder layer's `held_answers.json`, written the way
+    `project_queue.hold_answer` wrote it (`STORE_VERSION` 1 — the reader refuses
+    a shape it does not know)."""
+    path = os.path.join(str(state), qm.LEGACY_ANSWERS_FILE)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"version": 1, "answers": list(records)}, f)
+    return path
+
+
+def _legacy(session_id, queue_key=F1, at=1.0, run_id="", request_id="", raw=None):
+    return {"queue_key": queue_key, "session_id": session_id,
+            "run_id": run_id or ("run-" + session_id),
+            "request_id": request_id or ("req-" + session_id),
+            "payload": {"raw": raw if raw is not None else {"decision": "allow"}},
+            "at": at}
+
+
+def test_a_legacy_held_answer_is_migrated_into_the_index(state):
+    """A parked card decision is the ONE piece of queue state the old layer kept
+    that a rebuild cannot re-derive: nobody but the user knows what they clicked.
+    It comes across as an answer plus a place at the HEAD of its folder's line —
+    the task is a turn already running and parked, owed the decision it was
+    promised, which is where `card_answered` puts one taken today."""
+    path = _legacy_file(state, _legacy("sess-a", raw={"decision": "allow",
+                                                      "scope": "once"}))
+    world = idle_world()
+    world.running_keys.add("sess-a")
+    m = loaded(world)
+    assert m.held_answer("sess-a") == {"run_id": "run-sess-a",
+                                       "request_id": "req-sess-a",
+                                       "raw": {"decision": "allow", "scope": "once"},
+                                       "at": 1.0}
+    assert line_of(m) == ["sess-a"]
+    assert m.positions()["sess-a"] == {"key": F1, "position": 1, "ahead_key": "",
+                                       "priority": True}
+    assert not os.path.exists(path)
+    assert os.path.exists(path + qm.MIGRATED_SUFFIX)
+    # And the first reconcile is what actually hands it over — construction
+    # itself never delivers, because construction never pumps.
+    assert world.delivered == []
+    m.reconcile()
+    assert [a["request_id"] for a in world.delivered] == ["req-sess-a"]
+    assert owner_key(m) == "sess-a"
+
+
+def test_the_migration_survives_a_restart_that_has_already_run_it(state):
+    """The index is the store now: a second process reads the answer out of
+    `queue_index.json` and never looks at the renamed file again."""
+    _legacy_file(state, _legacy("sess-a"))
+    loaded(idle_world())
+    second = idle_world()
+    second.running_keys.add("sess-a")
+    again = loaded(second)
+    assert again.held_answer("sess-a")["request_id"] == "req-sess-a"
+    assert line_of(again) == ["sess-a"]
+
+
+def test_the_migration_keeps_the_old_order_and_splits_by_folder(state):
+    """Oldest `at` first — the order the old deliverer used — and each folder
+    gets its own head, so two answers parked for two projects do not interleave."""
+    _legacy_file(state,
+                 _legacy("sess-c", queue_key=F2, at=30.0),
+                 _legacy("sess-b", at=20.0),
+                 _legacy("sess-a", at=10.0))
+    world = idle_world()
+    world.running_keys.update({"sess-a", "sess-b", "sess-c"})
+    m = loaded(world)
+    assert line_of(m, F1) == ["sess-a", "sess-b"]
+    assert line_of(m, F2) == ["sess-c"]
+    assert set(m.snapshot()["answers"]) == {"sess-a", "sess-b", "sess-c"}
+
+
+def test_the_migration_does_not_queue_a_task_the_index_already_places(state):
+    """The index is the newer truth. A session that already owns its folder, or
+    already stands in a line, keeps the place it has and only gains the answer —
+    two entries for one task is a line that runs a turn twice."""
+    with open(os.path.join(str(state), qm.INDEX_FILE), "w", encoding="utf-8") as f:
+        json.dump({"folders": {F1: {"owner": {"task": "sess-a", "run_id": "run-sess-a"},
+                                    "line": [{"task": "sess-b"}], "blocked": []}},
+                   "answers": {}}, f)
+    _legacy_file(state, _legacy("sess-a", at=10.0), _legacy("sess-b", at=20.0))
+    world = idle_world()
+    world.running_keys.update({"sess-a", "sess-b"})
+    m = loaded(world)
+    assert owner_key(m) == "sess-a"
+    assert line_of(m) == ["sess-b"]
+    assert m.held_answer("sess-a")["request_id"] == "req-sess-a"
+    assert m.held_answer("sess-b")["request_id"] == "req-sess-b"
+
+
+def test_no_legacy_file_is_not_a_migration(state):
+    """The ordinary case, and it must cost nothing: no file, no rename, no write
+    of an index that had nothing to say."""
+    loaded(idle_world())
+    assert not os.path.exists(os.path.join(str(state), qm.INDEX_FILE))
+    assert not os.path.exists(
+        os.path.join(str(state), qm.LEGACY_ANSWERS_FILE + qm.MIGRATED_SUFFIX))
+
+
+def test_a_legacy_record_with_no_session_is_skipped(state):
+    """An answer nobody can be given is an answer nobody is owed. The file still
+    moves aside — re-reading it every load would keep failing the same way."""
+    path = _legacy_file(state, {"queue_key": F1, "session_id": "", "run_id": "r",
+                                "request_id": "q", "payload": {}, "at": 1.0},
+                        "not even a dict")
+    m = loaded(idle_world())
+    assert m.snapshot()["answers"] == {}
+    assert m.snapshot()["folders"] == {}
+    assert os.path.exists(path + qm.MIGRATED_SUFFIX)
+
+
+def test_the_migration_survives_a_legacy_store_that_will_not_read(state):
+    """A corrupt file holds nothing, the same answer the old store always gave,
+    and construction still succeeds."""
+    with open(os.path.join(str(state), qm.LEGACY_ANSWERS_FILE), "w",
+              encoding="utf-8") as f:
+        f.write("{not json")
+    m = loaded(idle_world())
+    assert m.snapshot()["answers"] == {}
 
 
 # -------------------------------------------------------------------- notify
