@@ -858,25 +858,42 @@ def overwrite_app_file(fused_path: str) -> dict:
         return {**clone_app_file(fused_path), "overwritten": False}
     src = open_app_file(fused_path)["dir"]
     dest = target["path"]
-    for name in sorted(os.listdir(src)):
-        if name in _OVERWRITE_KEEP:
-            continue
-        s_path = os.path.join(src, name)
-        d_path = os.path.join(dest, name)
-        if os.path.isdir(s_path):
-            # A FILE in the copy where the payload has a folder (or the other
-            # way round) cannot be merged; the payload's shape wins.
-            if os.path.isfile(d_path) or os.path.islink(d_path):
-                os.unlink(d_path)
-            shutil.copytree(s_path, d_path, dirs_exist_ok=True, copy_function=_copy_over)
-        else:
-            if os.path.isdir(d_path) and not os.path.islink(d_path):
-                shutil.rmtree(d_path)
-            _copy_over(s_path, d_path)
+    _merge_tree(src, dest, skip=_OVERWRITE_KEEP)
     return {**target, "cloned": True, "overwritten": True}
 
 
-def _copy_over(src: str, dst: str) -> str:
+def _merge_tree(src: str, dst: str, skip: frozenset[str] = frozenset()) -> None:
+    """Lay ``src``'s files over ``dst`` at every depth, the payload's SHAPE
+    winning wherever the two disagree: a file, symlink or anything else in the
+    copy where the payload has a folder is removed and a real folder made; a
+    real folder in the copy where the payload has a file is removed. Entries
+    of ``dst`` the payload does not name are left alone. Our own walk rather
+    than ``copytree(dirs_exist_ok=True)``: that one raises on a nested
+    file-vs-folder clash (a partial merge no retry can finish) and ENTERS a
+    directory symlink in the copy, writing the payload — and a trailing
+    ``copystat`` — onto whatever it points at. ``skip`` names top-level
+    entries of ``src`` never copied."""
+    for name in sorted(os.listdir(src)):
+        if name in skip:
+            continue
+        s_path = os.path.join(src, name)
+        d_path = os.path.join(dst, name)
+        if os.path.isdir(s_path) and not os.path.islink(s_path):
+            # A symlink at d_path is unlinked, never entered — even one that
+            # resolves to a directory — so nothing lands on its target.
+            if os.path.islink(d_path) or (os.path.lexists(d_path) and not os.path.isdir(d_path)):
+                os.unlink(d_path)
+            os.makedirs(d_path, exist_ok=True)
+            _merge_tree(s_path, d_path)
+        elif os.path.isfile(s_path) and not os.path.islink(s_path):
+            if os.path.isdir(d_path) and not os.path.islink(d_path):
+                shutil.rmtree(d_path)
+            _copy_over(s_path, d_path)
+        # A symlink or special file in the extract is not something the
+        # export produces (symlinks are skipped on the way out); ignored.
+
+
+def _copy_over(src: str, dst: str) -> None:
     """Replace ``dst``'s bytes with ``src``'s, touching no mode but ``dst``'s
     own when it is read-only. A symlink at ``dst`` is unlinked rather than
     written THROUGH — the payload's file replaces the link, and whatever it
@@ -886,4 +903,3 @@ def _copy_over(src: str, dst: str) -> str:
     elif os.path.isfile(dst) and not os.access(dst, os.W_OK):
         os.chmod(dst, 0o644)
     shutil.copyfile(src, dst)
-    return dst
