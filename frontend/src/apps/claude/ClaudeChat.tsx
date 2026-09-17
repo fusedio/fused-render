@@ -2007,6 +2007,7 @@ function ChatBody(props: ChatBodyProps) {
     pickedHeld.current = false;
     const fresh = freshHeld();
     switching.current = fresh.key;
+    switchSeenFresh.current = false; // a new switch starts with a first look (Bugbot 4040391987)
     setHeld(fresh);
   }, [file, inChat]);
   useEffect(() => {
