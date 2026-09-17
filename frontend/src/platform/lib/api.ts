@@ -2259,9 +2259,14 @@ export interface AppFileCloneTarget {
   name: string;
   /** That name reduced to one path-safe segment — the folder under local/. */
   slug: string;
-  /** Absolute destination, forward-slashed. */
+  /** Absolute destination, forward-slashed. When the file carries an
+   *  `app_id` and a folder under local/ already declares it (a renamed
+   *  clone), this is THAT folder rather than local/<slug>. */
   path: string;
   cloned: boolean;
+  /** The app's stable identity (`<meta name="fused-app-id">`, minted on
+   *  first export); null for files exported before it existed. */
+  app_id?: string | null;
 }
 
 export function getAppFileCloneTarget(path: string): Promise<AppFileCloneTarget> {
