@@ -293,36 +293,45 @@ trivially known to contain the raw query as a literal substring, so the client
 re-derives highlight positions from its own typed text (`fuzzy.ts`'s
 `substringMatch`) exactly as it always did.
 
-**A `mode: "glob"` hit IS scored**, by default (`query.md §3`): `pattern` is split
-on its wildcard tokens into literal runs, each run is located in `rel` and scored
-with the same run-length/segment-boundary/basename terms substring mode uses, and
-a wildcard-swallow penalty charged on the INTERIOR gaps only — the span between
-the first and last literal run, minus their own summed length, never the leading
-or trailing `**` — makes a tight match like `icon copy.png` outrank a wide one
-like `icon-a-very-long-thing-copy.png` for the same pattern — but never rewards a
-longer overall match the way substring mode's run-length term does, since a
-longer filename is not itself a better glob match. (An earlier version of this
-penalty charged the swallow over the WHOLE root-relative path, which is wrong —
-it inverted rankings whenever a shallow, weak match competed with a deep, exact
-one, since it made every ancestor directory of a deep match count against it as
-if the pattern's own leading `**` had to "eat" through them. See DECISIONS.md.)
-A pattern with exactly one literal run has no interior gaps to sum, so its
-penalty is always 0 — making its score identical to `_rank_sql`'s substring
-score for the equivalent query. This is the caller's `ranked` preference
-(default true); with `ranked=False`, or a pattern with no literal runs at all (a
-bare `**/*`), no scoring expression is computed and hits come back in the
-original `depth ASC, lower(rel) ASC, rel ASC` order — the same order both
-branches used before ranking existed. A ranked glob hit's `tier` is now REAL, not
-a fixed 0: the same resolved regex is re-run against just the basename, a match
-is tier 1 and anything else (an ancestor-only match) is tier 3 — substring
-mode's tier 2 (straddling the basename boundary) has no glob equivalent, since a
-glob pattern already treats `/` as a hard boundary. `tier ASC` is restored as the
-PRIMARY sort key ahead of `score DESC` for both modes, so a basename match can
-never rank below an ancestor-only one regardless of what the score expression
-says. Every hit — substring or glob, ranked or not — carries the identical key
-set, since the wire layer strips `score`/`tier`/`longest_run`/`positions`
-unconditionally (see below); `ranked=False` computes no scoring apparatus at
-all, including no `tier`.
+**A `mode: "glob"` hit IS scored**, by default (`query.md §3`): both modes share
+the SAME two helpers, `_name_predicate_sql` and `_lex_order_and_score` — there is
+no glob-specific scoring formula. `pattern`'s FINAL segment (the part after its
+last directory-crossing boundary — `_final_segment_pattern`, `query.md §3`; the
+whole pattern's earlier segments can never appear in `nm`, a slash-free
+basename) is split on its wildcard tokens into literal runs, and those runs feed
+the same position-free boolean columns substring mode uses: `prefix`, `suffix`,
+`contains` (an in-order, anything-between existence test — this is what fixes the
+old glob tier defect: a path-shaped pattern like `**/src/*.ts` used to be scored
+off the WHOLE pattern's literal runs, including a directory-segment literal like
+`"src/"` that can never match `nm`, so it was tier 3 for every hit regardless of
+match quality) and `boundary` (a word/segment-start existence test). There is no
+wildcard-swallow penalty and no run-length bonus of any kind — a longer or
+tighter overall match is not itself a better or worse glob match under the
+position-free design; a tie between two equally-good matches is broken by
+`depth`/`length(nm)`/`rel`, ordering columns, not subtracted score terms. A
+pattern with exactly one literal run in its final segment produces the SAME
+predicate values, and hence the same `order_by`/`score`, as `_rank_sql`'s
+substring mode for the equivalent query. This is the caller's `ranked`
+preference (default true); with `ranked=False`, or a pattern with no literal
+content anywhere (a bare `**/*`), no scoring expression is computed and hits
+come back in the original `depth ASC, lower(rel) ASC, rel ASC` order — the same
+order both branches used before ranking existed. An ancestor-only pattern whose
+final segment has no literal content (`**/alpha/*`) is different from that: it
+still gets a real, computed `tier == 3` (not the unscored placeholder `0`),
+since the WHOLE pattern does have literal content, just none that survives
+confining to the final segment. A ranked glob hit's `tier` is REAL, not a fixed
+0: `1` when `contains` holds (a basename match), else `3` (ancestor-only) —
+substring mode's old middle tier (straddling the basename boundary) has no
+equivalent here either, for the identical reason `query.md §3` gives for
+substring mode: `contains` is a pure existence test with no positional "window"
+to ask whether it straddles anything. `tier` is NOT a primary sort key for
+either mode — the lexicographic predicate vector (`nm_exact`, `prefix`, `suffix`,
+`contains`, `boundary`, then `depth`/`length(nm)`/`rel`) already separates match
+quality more finely than a tier value ever did; `tier` is kept only as a coarse,
+wire-compatible summary field. Every hit — substring or glob, ranked or not —
+carries the identical key set, since the wire layer strips
+`score`/`tier`/`longest_run`/`positions` unconditionally (see below);
+`ranked=False` computes no scoring apparatus at all, including no `tier`.
 
 **Why it exists.** §6's corpus is the whole ranking set shipped to the browser: 19.8 MB
 raw / 5.4 MB gzipped for 164,405 rows on a home directory whose index actually held
@@ -347,11 +356,13 @@ substring branch always set `longestRun = len(q)`, the maximum a subsequence-onl
 could reach, and `rankCompare` ordered on `longestRun` first — so every substring hit
 already outranked every subsequence-only one. With the subsequence pass gone,
 `longest_run` is constant across every surviving row and drops out of the SQL `ORDER
-BY` entirely (`tier ASC, score DESC, depth ASC, lower(rel) ASC, rel ASC` — the trailing
-`rel ASC` is a later fix, a free final tie-break so a pair equal in every other column,
-including `lower(rel)`, doesn't land in an arbitrary order on a multi-threaded top-N);
-`longest_run` is still reported on each hit, since the wire contract and
-`listing/ranked-hits.ts` still read it.
+BY` entirely (`(nm_exact) DESC, (prefix) DESC, (suffix) DESC, (contains) DESC,
+(boundary) DESC, depth ASC, length(nm) ASC, lower(rel) ASC, rel ASC` — `query.md §3`
+has the full column-by-column vector and why it replaced a scalar `score DESC`/`tier
+ASC` sort entirely; the trailing `rel ASC` is a free final tie-break so a pair equal
+in every other column, including `lower(rel)`, doesn't land in an arbitrary order on
+a multi-threaded top-N); `longest_run` is still reported on each hit, since the wire
+contract and `listing/ranked-hits.ts` still read it.
 
 **`positions` are not returned, in either mode.** The client re-runs `fuzzyMatch`
 (substring mode) or `globMatch` (glob mode, matching `pattern` against each hit's

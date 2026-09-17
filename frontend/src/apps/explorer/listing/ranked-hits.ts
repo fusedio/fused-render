@@ -10,8 +10,7 @@
 // terms of, not merely a weaker test that happens to agree with it.
 //
 // The two rankers agree on substring hits (index-backed search is substring-
-// only; tests/fixtures/rank-parity.json, restricted to substring rows, pins
-// that in both languages) — but this file does not depend on it: a row the
+// only) — but this file does not depend on it: a row the
 // browser's matcher refuses loses its HIGHLIGHT and keeps its place. Dropping
 // it instead would mean a file that exists, that the server ranked, and that
 // the search cannot find. In practice this rarely fires for a ranked hit: the

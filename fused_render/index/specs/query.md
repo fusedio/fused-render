@@ -114,9 +114,33 @@ trying to resolve a glob against the filesystem.
 
 `search_ranked` (`server-api.md §7`) **does** score a `mode == "glob"` result when
 its own `ranked` param is true (the default) — `_glob_literal_runs` splits the
-resolved pattern on its wildcard tokens (the same three-way `**/ ` / `**` / `*`
+FINAL SEGMENT of the resolved pattern (`_final_segment_pattern`, below — not the
+whole pattern) on its wildcard tokens (the same three-way `**/ ` / `**` / `*`
 tokenizer `_glob_to_regex` uses, so a bare `**/*` correctly yields zero literal
 runs rather than a bogus one from naively splitting on `*`).
+
+**Fixed this round**: scoring used to run `_glob_literal_runs` on the WHOLE
+pattern, so a path-shaped glob like `**/src/*.ts` produced literal runs
+`["src/", ".ts"]` — `"src/"` is a directory-segment literal that can never appear
+in `nm`, a slash-free basename, so `contains` (and everything built on it,
+including `tier`) was false for EVERY hit regardless of match quality.
+`_final_segment_pattern(pattern)` returns only the sub-pattern after the LAST
+directory-crossing boundary (a literal `/` or a `**/ ` token — a bare `**` is
+NOT a boundary, since it can match zero characters within a single segment, and
+treating it as one would wrongly truncate an already-correct single-segment
+pattern like `**icon**copy**`). `search_ranked` builds `literals`/`nm_regex` from
+this final segment, not the raw pattern, so only content that can legally live in
+`nm` is ever tested against it; `regex` itself (what `lrel` is filtered against in
+`WHERE`) is unchanged — the file still has to match the full pattern, directory
+parts included.
+
+An ancestor-only pattern whose final segment has NO literal content at all
+(`**/alpha/*` — "alpha" is a directory requirement, never tested against `nm`)
+still gets a real, computed `tier == 3`, not the unscored placeholder `tier == 0`
+a truly literal-free pattern (`**/*`) gets: `_glob_sql` takes an explicit `score`
+flag, set from whether the WHOLE pattern has any literal content anywhere (not
+only its final segment), so this case stays on the scored path with `contains`
+forced false, matching the answer it got before `_final_segment_pattern` existed.
 
 Ranking used to be a single scalar `score` built from **positional** terms — every
 term read `strpos(lrel, q)`, the position of the query's FIRST occurrence, even
@@ -131,15 +155,30 @@ three boolean columns off the basename (`nm`) alone —
 - `suffix` — `nm` ends with the last literal run
 - `contains` — `nm` contains the literal run(s) in order (chained `LIKE '%…%…%'`,
   which is also what fixes the old glob tier defect below)
+- `boundary` — `nm` contains the FIRST literal run immediately preceded by either
+  the start of the string or a non-alphanumeric character
+  (`regexp_matches(nm, '(^|[^a-z0-9])' || <literal, regex-escaped>)`). Added after
+  a code review found the first three predicates alone let a tie fall through to
+  `lower(rel) ASC` — pure alphabetical order — whenever two candidates tied on
+  every predicate above AND on `depth`/`length(nm)` (reproduced: `aaaconfig.py`
+  outranked `zz_config.py` for query `config` purely because `'a' < 'z'`, even
+  though `zz_config.py`'s match sits right after a `_` separator, a stronger
+  signal than the identical text buried mid-word). Still position-free (a boolean
+  existence test, like the other three) and reads no case information (`nm` is
+  already lowercased) — this is NOT the dropped camelCase-hump bonus below, which
+  needed original case to detect a hump; finding a separator needs none. The
+  literal is escaped with Python's `re.escape` (not the LIKE-metacharacter
+  escaping the other three predicates use), since it is embedded in a
+  `regexp_matches` pattern, not a `LIKE` one.
 
 — plus an `nm_exact` predicate computed by the caller (substring mode:
 `nm = lower(q)`; glob mode: see below), and `_lex_order_and_score(nm_exact, preds)`
-turns those four booleans plus `depth` into an **`ORDER BY` column list**, not a
+turns those five booleans plus `depth` into an **`ORDER BY` column list**, not a
 weighted sum:
 
 ```
 ORDER BY (nm_exact) DESC, (prefix) DESC, (suffix) DESC, (contains) DESC,
-          depth ASC, length(nm) ASC, lower(rel) ASC, rel ASC
+          (boundary) DESC, depth ASC, length(nm) ASC, lower(rel) ASC, rel ASC
 ```
 
 This is the actual thing that decides order — a lexicographic comparison over the
@@ -155,10 +194,24 @@ before it is compared or weighted.
 contract and `explain`/debugging display (`server-api.md`'s hit dict keeps `score`,
 `tier`, `depth`, `longest_run`, `positions` on every hit). **`score` is a display
 value, not what decides order** — a weighted sum
-(`1000*nm_exact + 500*prefix + 250*suffix + 100*contains - depth`) that is
-monotonic with, but coarser than, the `ORDER BY` column vector above (ties in
-`score` are common and are broken by `length(nm)`/`rel`, which no scalar sum
-captures). Nothing downstream should infer order from `score` alone.
+(`1000*nm_exact + 500*prefix + 250*suffix + 100*contains - LEAST(depth, 99)`, NOT
+`boundary`, which stays a pure tie-break with no weight of its own) that is
+coarser than, and NOT guaranteed monotonic with, the `ORDER BY` column vector
+above — ties in `score` are common and are broken by `boundary`/`length(nm)`/`rel`,
+which no scalar sum captures. Nothing downstream should infer order from `score`
+alone.
+
+`- depth` is capped at 99, not subtracted unbounded: an earlier version subtracted
+depth without bound, which could INVERT `score`'s relative order at depth even
+though the real `ORDER BY` vector never did — a `contains`-only match at depth 601
+scored `100 - 601 = -501`, below a same-tier ancestor-only match at depth 2 scoring
+`0 - 2 = -2`, though the vector (via `tier`/`contains` alone) correctly ranks the
+basename match first. 99 is smaller than the smallest gap between adjacent weights
+(100/250/500/1000, smallest gap 150), so a row with ANY predicate true outscores a
+row with NONE true at any depth (`100 - 99 = 1 > 0`). This bounds `score`'s
+depth-driven error; it does not make `score` fully monotonic with the vector in
+general (`boundary` and `length(nm)` are still not reflected in it at all) — it
+remains a coarse display value, not a second ranking mechanism.
 
 `tier` collapsed from three values to two: `1` when `contains` is true (a basename
 match, of any strength), else `3` (an ancestor-only match — the pattern's literal
