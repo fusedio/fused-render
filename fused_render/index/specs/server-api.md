@@ -260,34 +260,54 @@ same redundancy for an eighth of the time.
 
 `GET /api/index/rank?root=&q=&limit=` answers `{ok, covered, fresh, reason, updated,
 age_s, root, base, mode, pattern, hits, total, truncated, scanned_partitions,
-of_partitions}`, where each hit is `{rel, is_dir, size, mtime, score, longest_run,
-tier, depth}` and `limit` defaults to 200 (hard cap `MAX_RANK_LIMIT`, 2,000; a
-`mode: "glob"` answer instead uses `MAX_GLOB_RANK_LIMIT`, 5,000 — every glob hit is an
-equal match with no tail to trim, so the client select-alls the whole fetched set
-rather than a top-N of it). Plain JSON, a few KB — no columnar encoding and no gzip
-special-casing, because that machinery (§6) exists for a 20 MB corpus and this is not
-one. A miss is a 200 with `covered: false` and no hits, exactly as for the corpus.
+of_partitions}`, where each hit is `{rel, is_dir, size, mtime}` on the wire —
+`query.py` computes `score`, `tier`, `depth` and `longest_run` per hit too (every
+mode, ranked or not, computes the same key set — see below), but the router strips
+all four (`_WIRE_DROP`, `server/routers/index.py`) before the response goes out,
+since none of them is meant to be a wire contract (see "Parity is a test" below).
+`limit` defaults to 200 (hard cap `MAX_RANK_LIMIT`, 2,000; a
+`mode: "glob"` answer instead uses `MAX_GLOB_RANK_LIMIT`, 5,000 — a glob's candidate
+set can still be far wider than a substring's, so the ceiling stays generous even
+though, per below, glob hits are ranked too now). Plain JSON, a few KB — no columnar
+encoding and no gzip special-casing, because that machinery (§6) exists for a 20 MB
+corpus and this is not one. A miss is a 200 with `covered: false` and no hits, exactly
+as for the corpus.
 
 `q`, exactly as typed (unstripped — a trailing space is meaningful, not trimmed
-away), is run through `resolve_query` (`query.md §3`) before anything else:
-whitespace runs collapse into wildcards, the final path segment is wrapped in a
-leading and trailing `*` (even a whitespace-free one — `*.pdf` becomes `*.pdf*`,
-an accepted precision-glob trade-off), a leading `~`/`/`/drive letter/`..` can peel
-a `base` off the front, and the result decides `mode` — `"glob"` the moment the
-expanded string contains a `*` anywhere, including one introduced purely by
-whitespace with no character the user typed, else `"substring"`. `base` is the
-resolved search root (equal to the request's own `root`
-unless `q` escaped it), and `pattern` is exactly what a `mode: "glob"` hit's `rel` was
-full-matched against — the tail of the expanded `q` left after peeling off `base`,
-carrying any implicit `**/` prefix. `pattern` is populated in **both** modes (cheap —
-it is already computed) but only meaningful for highlighting when `mode == "glob"`:
-in substring mode a hit's `rel` is trivially known to contain the raw query as a
-literal substring, so the client re-derives highlight positions from its own typed
-text (`fuzzy.ts`'s `substringMatch`) exactly as it always did.
+away, UNLESS the whole string is whitespace, which resolves to empty), is run
+through `resolve_query` (`query.md §3`) before anything else: whitespace runs
+collapse into `**` (not `*` — a single-segment wildcard can't cross a `/`, so a
+`*` collapse would narrow a query typed with a space instead of widening it), the
+final path segment is wrapped in a leading and trailing `**` independently (even a
+whitespace-free one — `*.pdf` becomes `*.pdf**`, an accepted precision-glob
+trade-off), a leading `~`/`/`/drive letter/`..` can peel a `base` off the front,
+and the result decides `mode` — `"glob"` the moment the expanded string contains a
+`*` anywhere, including one introduced purely by whitespace with no character the
+user typed, else `"substring"`. `base` is the resolved search root (equal to the
+request's own `root` unless `q` escaped it), and `pattern` is exactly what a
+`mode: "glob"` hit's `rel` was full-matched against — the tail of the expanded `q`
+left after peeling off `base`, carrying any implicit `**/` prefix. `pattern` is
+populated in **both** modes (cheap — it is already computed) but only meaningful
+for highlighting when `mode == "glob"`: in substring mode a hit's `rel` is
+trivially known to contain the raw query as a literal substring, so the client
+re-derives highlight positions from its own typed text (`fuzzy.ts`'s
+`substringMatch`) exactly as it always did.
 
-**A `mode: "glob"` hit is never scored** (`query.md §3`) — there is no ranking signal
-to compute when every hit is an equal full-pattern match — and is returned in
-`depth ASC, rel ASC` order instead of the substring branch's `tier`/`score` order.
+**A `mode: "glob"` hit IS scored**, by default (`query.md §3`): `pattern` is split
+on its wildcard tokens into literal runs, each run is located in `rel` and scored
+with the same run-length/segment-boundary/basename terms substring mode uses, and
+a wildcard-swallow penalty (`length(rel)` minus the sum of the literal runs' own
+lengths) makes a tight match like `icon copy.png` outrank a wide one like
+`icon-a-very-long-thing-copy.png` for the same pattern — but never rewards a
+longer overall match the way substring mode's run-length term does, since a
+longer filename is not itself a better glob match. This is the caller's `ranked`
+preference (default true); with `ranked=False`, or a pattern with no literal runs
+at all (a bare `**/*`), no scoring expression is computed and hits come back in
+the original `depth ASC, lower(rel) ASC, rel ASC` order — the same order both
+branches used before ranking existed. A ranked glob hit's `tier` is still 0 (glob
+mode has no tier concept), and every hit — substring or glob, ranked or not —
+carries the identical key set, since the wire layer strips `score`/`tier`/
+`longest_run`/`positions` unconditionally (see below).
 
 **Why it exists.** §6's corpus is the whole ranking set shipped to the browser: 19.8 MB
 raw / 5.4 MB gzipped for 164,405 rows on a home directory whose index actually held

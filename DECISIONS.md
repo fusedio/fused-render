@@ -1940,3 +1940,55 @@ in "copy" — the two spellings of "contains both pieces" disagreed.
 No deviations from the brief's required-behavior table, property test, or file list — every file named in the brief (`query.py`, `home-search.ts`, `SearchField.tsx`, `query.md`, `server-api.md`, `glob-broaden.ts`, and the six named test files) was touched. `tests/test_index_rank.py` needed no edits: its `resolve_query`/`expand_whitespace_query`-adjacent tests all call `search_ranked` with an already-resolved pattern string (`glob=True`), never a raw query run through the new transform, so nothing in that file was affected by this round — confirmed by running it (`141 passed` alongside `test_index_search.py`, both unmodified-and-green before any new tests were added to the latter).
 
 Verified this round: `pytest tests/test_index_query.py -q` → 113 passed. `pytest tests/test_index_rank.py tests/test_index_search.py -q` → 141 passed before new tests, still green with the 2 new `search_under` tests added. `bun test src/apps/explorer` → 1249 passed, 0 fail (includes `home-search.test.ts`, `glob-broaden.test.ts`, `zero-match-offer.test.ts`, `zero-match-offer-wrap.test.ts`, `ranked-hits.test.ts`). `bun test src/platform/lib/fuzzy.test.ts` → unaffected, all pass (it exercises `globMatch` directly against pre-built pattern strings, never `expandWhitespaceQuery`).
+
+## Search grammar follow-up, continued: `**` not `*`, and glob results now rank (2026-09-17, worktree-search-trailing-space)
+
+A2/A3/A4 landed (`bc8d139c5`, `c5214dcc2`) after the entry above was written,
+and changed the wildcard the whitespace transform inserts from a single `*`
+to `**` — shipped without a DECISIONS entry of its own. Recorded here
+alongside this round's own addition (glob ranking), since both change the
+same two functions the prior entry describes and the prior entry's own
+`*`-language is now inaccurate.
+
+| # | Decision | Why | Verification |
+|---|---|---|---|
+| D-new | **`expand_whitespace_query` collapses a whitespace run to `**`, and wraps the final segment's ends with `**`, not `*` (superseding the `*`-wrap language in the entry above)** | A single `*` cannot cross a `/` — it is confined to one path segment by `_glob_to_regex`'s own tokenizer. Collapsing `hello world` to `hello*world` would therefore NARROW what a typed space matches (losing `hello/sub/world.txt`), the opposite of what typing a space is supposed to do (widen). `**` is the only token both this function and `_glob_to_regex` already treat as "any number of whole segments," so it is the only correct choice for a wildcard the function itself inserts. A `*` the USER types remains single-segment always; only inserted wildcards (the step-3 collapse, the step-4 wrap) are `**`. | `tests/test_index_query.py`'s `expand_whitespace_query` table and `home-search.test.ts`'s TS mirror pin `**` (not `*`) at every collapse/wrap site; `_glob_to_regex`'s own tokenizer tests (pre-existing) already required `**/ ` / `**` to be recognized as multi-segment tokens, so no new machinery was needed on the matching side — only the string the transform emits changed. |
+| D-new | **Whitespace-only input resolves to `""`, not to a bare `*`/`**`** | Before this rule a query that was all spaces would collapse-and-wrap into a pattern matching literally everything under the root — a user who cleared their search back to spaces (easy to do with a held backspace/space key) would get a full, unranked, unbounded glob dump instead of "nothing typed." `.strip()`-then-check is cheap and matches how an actually-empty query is already handled. | `test_expand_whitespace_query_whitespace_only_is_empty` (new, `tests/test_index_query.py`) and its TS mirror. |
+| D-new | **Part B: glob-mode results ARE scored when `ranked=True` (the default), reversing the "glob is never scored" rule the SPEC and the entry above both stated** | The `**`-insertion change above means an ordinary two-word query like `icon copy` now ALWAYS resolves to glob mode (any query containing whitespace does) — so "glob is unscored" stopped being a rare edge case affecting only power-user glob syntax and started being the common path for the everyday two-word search, which absolutely needs relevance ranking (a tight match like `icon copy.png` must outrank `icon-a-very-long-thing-copy.png`). The old "equal match, no ranking signal" premise was true when globs were narrow and hand-typed; it stopped being true the moment whitespace started producing wide `**` patterns with many arbitrarily-ordered hits. | `test_glob_ranking_a_tight_match_beats_a_long_wildcard_swallow`, `test_glob_ranked_hits_carry_a_real_score` (`tests/test_index_rank.py`). |
+| D-new | **Scoring formula: per literal run (the pieces of the pattern between `*`/`**` tokens), reuse `_rank_sql`'s `n + 3*(n-1)` run-length term, `segment_starts` hump-bonus, and basename `name_bonus`; sum across runs; subtract a wildcard-swallow penalty `length(rel) - sum(literal lengths)`; apply NO bonus for total matched length** | Reusing the substring scorer's per-run terms means a glob hit and a substring hit that happen to match the same characters are scored the same way — one scoring vocabulary, not two. The swallow penalty is new: for a glob, unlike a substring, the total matched length is a `*`-swallowed segment, not something the user typed — a longer swallow means the pattern matched a WORSE (less specific) target, so it is penalized, not rewarded. This is the opposite of substring scoring's run-length term, which is why no "longer match wins" bonus was carried over: for a glob, longer is never better. | `test_glob_ranking_a_tight_match_beats_a_long_wildcard_swallow` (`icon copy.png` beats `icon-a-very-long-thing-copy.png` for the same pattern) pins the penalty; `test_glob_ranked_hits_carry_a_real_score` pins that the two hits get DIFFERENT (not tied) scores from the reused per-run terms. |
+| D-new | **`ranked=False` and "pattern has zero literal runs" (e.g. `**/*` from a bare `*`) both take a SEPARATE, unscored SQL branch (`_glob_sql`'s `literals=()` case) — no scoring expression is ever built, then discarded** | D703's cancellation-gap lesson: every scored statement must be one thing `con.interrupt()` can reach, so a "compute the score, then don't use it" path would be both wasted work and a second code path to keep correct. Unifying `ranked=False` with "no literals to score" avoids a third branch and a divide-by-zero (an empty `literals` list has no runs to sum a penalty over). | `test_glob_unranked_reproduces_the_old_depth_then_alpha_order`, `test_glob_unranked_sql_has_no_scoring_apparatus` (asserts `"score"`/`"segment_starts"`/`"strpos"` are textually absent from the generated SQL, not merely unused), `test_glob_pattern_with_no_literal_runs_uses_the_unscored_order`. |
+| D-new | **Literal-run extraction (`_glob_literal_runs`) walks the pattern with the SAME three-way tokenizer `_glob_to_regex` uses (`**/ ` as one token, then bare `**`, then lone `*`), not `re.split(r"\*+", pattern)`** | The naive split is wrong: for `"**/*"` it reports a literal `"/"` between two star-runs, but `"**/ "` is a SINGLE token that can match ZERO whole segments — there is no `/` guaranteed to exist in a match, so scoring a bogus `"/"` run computes a real-looking but meaningless score. Caught by a failing test before this was noticed, not by inspection. | `test_glob_pattern_with_no_literal_runs_uses_the_unscored_order` failed with a real but wrong score (`-3` instead of `0`) under the naive-split version; passes now that `_glob_literal_runs` returns `[]` for `"**/*"`. |
+| D-new | **Hit dict key sets stay identical across substring / ranked-glob / unranked-glob branches** | The HTTP layer's `_WIRE_DROP` (`server/routers/index.py`) strips `score`/`tier`/`depth`/`longest_run`/`positions` unconditionally before the response goes out, regardless of which branch produced the hit — so any branch-specific key would be invisible on the wire but would still break internal callers (tests, any future in-process reader) that inspect the dict directly. | `test_glob_ranked_hits_carry_a_real_score` asserts the exact key set `{"rel", "is_dir", "size", "mtime", "score", "longest_run", "tier", "depth"}` on a ranked-glob hit; existing substring/unranked-glob tests already pinned the same set. |
+
+**Docs**: `fused_render/index/specs/query.md` §3 rewritten for `**` (not `*`)
+insertion, the whitespace-only→empty rule, and glob-mode scoring (was
+"never scored," now describes the literal-run/swallow-penalty formula).
+`server-api.md` §7 updated to match, and its `hits` shape corrected in the
+same pass to name the wire-dropped fields — `{rel, is_dir, size, mtime}` on
+the wire, not the full `{..., score, longest_run, tier, depth}` set the text
+previously implied every consumer sees (a pre-existing inaccuracy, unrelated
+to this round's grammar change, fixed while already rewriting the adjacent
+text). `SearchField.tsx`'s `SEARCH_GRAMMAR_HINT` reworded ("in that order,
+even split across a subfolder" instead of "space works like *") since a
+two-word query can now match across a folder boundary, which the old copy
+did not describe and would have undersold.
+
+**Open finding, not fixed here**: `useListingSearch.ts`'s own header comment
+states plainly that no live-walk fallback path exists any more — every
+in-folder query resolves through `/api/index/rank`, with an on-demand scan +
+poll for an uncovered folder, never a client-side walk. This appears to
+contradict older comments still present in `query.py`, `server-api.md`
+("reserves the live streamed walk for the folders no scan can ever cover"),
+and this file's own now-superseded September 16 entry above ("`fuzzy.ts` ...
+still ranks the live streamed walk for the folders no scan will ever
+cover"). Flagging rather than resolving: reconciling which statement is
+current needs someone who can confirm whether the live-walk code path was
+actually deleted or merely stopped being reachable, which is outside this
+round's Part B/docs scope.
+
+Verified this round: `pytest tests/test_index_query.py -q`,
+`pytest tests/test_index_rank.py -q` (56 passed, including 4 new glob-ranking
+tests), `pytest tests/test_index_search.py -q` — all green.
+`bun --cwd frontend test src/apps/explorer` → 1266 passed, 0 fail (the one
+`document is not defined` line in the output is a pre-existing React/JSDOM
+console warning in `FilesHome.render.test.tsx`, not a test failure).

@@ -52,31 +52,48 @@ motivating "type two words, find the file with both in order" case a naive
 disagreements: a trailing space used to be silently trimmed away, and
 `icon copy` / `icon*copy` used to disagree on whether they find the same file):
 
-1. **No trimming.** Leading/trailing whitespace is as meaningful as any other
-   run — `"*.js "` is not the same query as `"*.js"`.
-2. The **one** no-op: a string with **neither** whitespace **nor** `*` anywhere
-   (`report`) is returned byte-for-byte unchanged — still substring mode, still
-   ranked. A whitespace-free glob like `*.pdf` is **not** a no-op any more (see
-   point 4).
-3. Collapse every run of whitespace to a single `*` (`hello  world` with two
-   spaces resolves identically to `hello world` — `**` means something
-   different in this grammar, a cross-directory wildcard, so a whitespace run
-   must never produce one; a run bordering a literal `*` the user already typed
-   is dropped rather than replaced, for the same reason).
-4. On the **final** `/`-separated segment only, wrap each end **independently**:
-   prepend `*` unless it already starts with one, append `*` unless it already
-   ends with one. This fires even when the segment has no whitespace at all —
-   `*.pdf` becomes `*.pdf*`, and `icon*copy` becomes `*icon*copy*`, agreeing
-   with `icon copy` -> `*icon*copy*`. Earlier segments get the whitespace
+0. **Whitespace-only has nothing to search for.** A string that is all
+   whitespace (`"   "`, including empty after `.strip()`) resolves to `""`,
+   the same as an already-empty query — never to a bare `*`/`**`. Every other
+   rule below treats whitespace as meaningful once a real character is
+   present; a run of spaces with no literal character anywhere is not "match
+   everything", it is nothing typed.
+1. **No trimming**, otherwise. Leading/trailing whitespace next to an actual
+   literal is as meaningful as any other run — `"*.js "` (a trailing space)
+   is not the same query as `"*.js"`, and must not collapse back to it.
+2. The **one** no-op: a string with **neither** whitespace **nor** `*`
+   anywhere (`report`) is returned byte-for-byte unchanged — still substring
+   mode, still ranked. A whitespace-free glob like `*.pdf` is **not** a no-op
+   any more (see point 4).
+3. Collapse every run of whitespace to `**` — **not** a single `*`
+   (`hello  world` with two spaces still resolves identically to
+   `hello world`; the collapse only changes WHICH wildcard it produces). A
+   typed space is a widening operation, never a narrowing one: a
+   single-segment `*` cannot cross a `/`, so a single-`*` collapse would
+   narrow `src `'s matches (losing `srcdir/file.txt`) instead of widening
+   them, which is backwards for what typing a space means. A run bordering a
+   literal `*` the user already typed is dropped rather than replaced, for
+   the same reason a `*` they typed there already does the job.
+4. On the **final** `/`-separated segment only, wrap each end
+   **independently** with `**` (not `*`, same reasoning as point 3): prepend
+   `**` unless it already starts with `*`, append `**` unless it already ends
+   with `*`. This fires even when the segment has no whitespace at all —
+   `*.pdf` becomes `*.pdf**`, and `icon*copy` becomes `**icon*copy**`,
+   agreeing with `icon copy` -> `**icon**copy**`. Checking each end
+   independently (not "does this segment contain a `*` anywhere") is what
+   makes a mid-segment user-typed `*` (`icon*copy`) still get wrapped instead
+   of being treated as already-anchored. Earlier segments get the whitespace
    collapse but no wrap of their own — `~/My Documents/report` becomes
-   `~/My*Documents/*report*`, not `~/*My*Documents*/...`.
+   `~/My**Documents/**report**`, not `~/**My**Documents**/...`. A `*` the
+   user typed themselves is always single-segment (`*`, never `**`); only the
+   wildcards this function inserts — the step-3 collapse and the step-4 wrap
+   — are the cross-directory `**` token.
 
 **Known, accepted consequence** (do not special-case around it): a previously
 precise glob like `*.pdf` now also matches `report.pdf.bak` and `notes.pdfx` —
 every glob query trades some precision for grammar consistency with the
 whitespace rule. Likewise a single space (`"icon "`) now flips a query straight
-into glob mode, losing relevance ranking; `_glob_sql` deliberately gains no
-scoring to compensate (SPEC-search-space-wildcard.md).
+into glob mode.
 
 `mode` is `"glob"` the moment the expanded string contains a `*` anywhere — which
 now includes every whitespace-containing query AND every glob query, whitespace
@@ -95,11 +112,28 @@ this (`_walk_from`) stops at the first `*`-segment, so a wildcard anywhere in an
 early segment ends the walk there and folds the rest into `pattern` rather than
 trying to resolve a glob against the filesystem.
 
-`search_ranked` (`server-api.md §7`) never scores a `mode == "glob"` result —
-every hit is an equal full-pattern match with no ranking signal to compute, so
-results are returned in the same `depth ASC, rel ASC` order `search_under`
-already used for its own unranked branch. This is an accepted consequence, not a
-gap: SPEC-search-space-wildcard.md explicitly keeps scoring out of glob mode.
+`search_ranked` (`server-api.md §7`) **does** score a `mode == "glob"` result when
+its own `ranked` param is true (the default) — `_glob_literal_runs` splits the
+resolved pattern on its wildcard tokens (the same three-way `**/ ` / `**` / `*`
+tokenizer `_glob_to_regex` uses, so a bare `**/*` correctly yields zero literal
+runs rather than a bogus one from naively splitting on `*`), and `_glob_score_sql`
+locates each literal run in `lrel` via chained `strpos` calls and combines, per
+run, the same `n + 3*(n-1)` run-length term, `segment_starts` hump/boundary bonus,
+and basename `name_bonus` that substring scoring uses, plus a **wildcard-swallow
+penalty** of `length(rel) - sum(literal lengths)` — the more of the filename the
+`*`s had to eat to connect the literals, the worse the score — so `icon copy.png`
+(pattern `**icon**copy**`, tight swallow) outranks
+`icon-a-very-long-thing-copy.png` (same pattern, wide swallow) even though both
+match. There is deliberately **no** bonus for a longer total matched length: for
+a substring query a longer match is more specific, but for a glob a longer
+filename is not a better match, it is just a longer filename, so no term rewards
+sheer length. All of this happens in one SQL statement (`_glob_sql`), never a
+Python-side loop, so it stays inside `con.interrupt()`'s reach.
+
+When `ranked=False`, or the pattern reduces to zero literal runs, `_glob_sql`
+computes no scoring expression at all — not "score then discard" — and results
+come back in the original `depth ASC, lower(rel) ASC, rel ASC` order, matching
+`search_under`'s own unranked branch exactly.
 
 ## 4. Partition pruning
 
