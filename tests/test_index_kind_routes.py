@@ -132,6 +132,19 @@ def test_rank_for_the_apps_kind_ranks_against_search_apps_ranked(home, tmp_path)
         assert "score" not in h and "tier" not in h
 
 
+def test_rank_for_the_apps_kind_carries_covered_true(home, tmp_path):
+    """`GlobalSearchOverlay.tsx` gates its Apps group on `res.covered` —
+    `search_apps_ranked`'s early returns (no manifest, empty query) and its
+    success path all omitted the key entirely, so `/api/index/rank?kind=apps`
+    never carried it and the Apps group of Mod+K search rendered empty no
+    matter what the index held (review finding 3)."""
+    _seed_apps_store(rows=[("solo", "/apps/solo/index.html", 1.0)])
+    resp = _client(tmp_path).get("/api/index/rank",
+                                 params={"kind": "apps", "q": "solo"})
+    assert resp.status_code == 200
+    assert resp.json()["covered"] is True
+
+
 def test_rank_for_the_apps_kind_does_not_require_a_root(home, tmp_path):
     """`root` is a "files"-tree concept (the box's own folder); a flat kind
     has no such thing, so omitting it must not 400 the way it would for

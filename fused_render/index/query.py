@@ -1440,12 +1440,17 @@ def search_apps_ranked(cfg: IndexConfig, q: str = "", limit: int = RANK_LIMIT,
     hardcoding those names, so any registered kind whose rows are a flat
     list — not a directory tree, unlike "files" — can reuse this unchanged.
 
-    Unlike `search_ranked`, there is no root, no prefix, no coverage
+    Unlike `search_ranked`, there is no root, no prefix, no partial-coverage
     semantics, and no second "dirs" branch: a registered kind's rows are
     not filesystem directories the way `dirs.parquet` bookkeeps them, they
     are just rows, so `inner` is the ONE partition source, unpruned (a
     kind's whole corpus, not a subtree of it — there is no subtree to
-    scope to). Column mapping onto the `_rank_sql`/`_glob_sql` contract:
+    scope to). Every return carries `covered: True` regardless — an unbuilt
+    index and an empty query both answer zero hits, not "not covered", the
+    same "always covered" answer `_rank_flat_kind_worker`'s `reason: ""`
+    already gives; the caller (`GlobalSearchOverlay.tsx`) gates on this key
+    exactly the way it gates on `search_ranked`'s. Column mapping onto the
+    `_rank_sql`/`_glob_sql` contract:
 
     - `rel` is the identity column's own value (an absolute path, per
       `IndexKind.identity_column`'s contract in kinds.py) — the same role
@@ -1493,10 +1498,10 @@ def search_apps_ranked(cfg: IndexConfig, q: str = "", limit: int = RANK_LIMIT,
 
     m = read_manifest(cfg)
     if not m or not m.get("partitions"):
-        return {"hits": [], "truncated": False, "total": 0}
+        return {"hits": [], "truncated": False, "total": 0, "covered": True}
     qs = (q or "").strip()
     if not qs:
-        return {"hits": [], "truncated": False, "total": 0}
+        return {"hits": [], "truncated": False, "total": 0, "covered": True}
 
     import duckdb
 
@@ -1551,7 +1556,8 @@ def search_apps_ranked(cfg: IndexConfig, q: str = "", limit: int = RANK_LIMIT,
                      "score": 0, "longest_run": n, "tier": 0,
                      "depth": int(depth)}
                     for rel, size, mtime, is_dir, depth in rows[:limit]]
-        return {"hits": hits, "truncated": truncated, "total": len(hits)}
+        return {"hits": hits, "truncated": truncated, "total": len(hits),
+                "covered": True}
     except duckdb.InterruptException:
         if token is not None and token.cancelled:
             raise Cancelled() from None

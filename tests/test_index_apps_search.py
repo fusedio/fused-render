@@ -111,7 +111,7 @@ def test_an_unbuilt_index_answers_with_no_hits_rather_than_an_error(tmp_path):
     cfg = IndexConfig(dir=str(tmp_path / "ix-unbuilt"),
                       kind="_test_apps_search_unbuilt")
     out = search_apps_ranked(cfg, "anything")
-    assert out == {"hits": [], "truncated": False, "total": 0}
+    assert out == {"hits": [], "truncated": False, "total": 0, "covered": True}
 
 
 def test_unranked_orders_by_identity_column_alone(tmp_path):
