@@ -807,6 +807,31 @@ export function requestFolderScan(fsPath: string): Promise<FolderScanRequest> {
   return mutateJson("POST", "/api/index/scan-folder", { path: fsPath });
 }
 
+// GET/POST /api/index/proposals* — the third-party index-plugin
+// propose/confirm/refuse surface (SPEC-index-plugins.md decision #8, "the
+// app proposes, the user confirms — never silent"). `IndexProposalsDock`
+// drives `confirm`/`refuse` from a user's click; nothing here calls
+// `propose` — that is a running third-party app's own act, not this shell's.
+export interface IndexProposal {
+  folder: string;
+  kind: string | null;
+}
+
+export function getIndexProposals(): Promise<{
+  pending: IndexProposal[];
+  confirmed: IndexProposal[];
+}> {
+  return getJson("/api/index/proposals");
+}
+
+export function confirmIndexProposal(folder: string): Promise<{ ok: boolean }> {
+  return postJson("/api/index/proposals/confirm", { folder });
+}
+
+export function refuseIndexProposal(folder: string): Promise<{ ok: boolean }> {
+  return postJson("/api/index/proposals/refuse", { folder });
+}
+
 // POST /api/index/query and /api/index/ask — read-only SQL over the index, and
 // the same thing from a question in English (index/specs/query.md §5).
 //

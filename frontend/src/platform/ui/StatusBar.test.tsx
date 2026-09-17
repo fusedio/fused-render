@@ -47,6 +47,24 @@ test("renders all three sections, left to right: models, activity, repoUpdates",
   ]);
 });
 
+test("renders the fourth, conditional section rightmost when given one", () => {
+  const tree = create(
+    <StatusBar
+      models={<div className="fake-models">m</div>}
+      activity={<div className="fake-activity">a</div>}
+      repoUpdates={<div className="fake-updates">u</div>}
+      indexProposals={<div className="fake-proposals">p</div>}
+    />,
+  ).toJSON();
+  const bar = tree as ReactTestRendererJSON;
+  expect(classesOf(bar.children as unknown as ReactTestRendererJSON[])).toEqual([
+    "fake-models",
+    "fake-activity",
+    "fake-updates",
+    "fake-proposals",
+  ]);
+});
+
 test("omitted sections render nothing for their slot — not an empty wrapper", () => {
   const tree = create(<StatusBar activity={<div className="fake-activity">a</div>} />).toJSON();
   const bar = tree as ReactTestRendererJSON;

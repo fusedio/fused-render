@@ -29,10 +29,14 @@ import { useEffect, useRef } from "react";
  *  its own chip (`shell/ModelsDock.tsx`) — Engines stayed folded into
  *  Activity (`platform/ui/DownloadManager.tsx`) since only Models' filled/
  *  outlined dot is load-bearing for the user. So there are three entries now:
- *  one for Models, one for Activity (jobs + engines), one for Notifications.
- *  Named rather than inferred so the tie-break cannot silently change if the
- *  bar's markup is reordered for visual reasons. */
-export const SECTION_ORDER = ["models", "activity", "notifications"] as const;
+ *  one for Models, one for Activity (jobs + engines), one for Notifications,
+ *  and one for `index-proposals` (`shell/IndexProposalsDock.tsx`, decision #8
+ *  of SPEC-index-plugins.md) rightmost, since it draws nothing at all until
+ *  an app has something to ask for and so cannot compete for attention
+ *  against the three sections that are always present. Named rather than
+ *  inferred so the tie-break cannot silently change if the bar's markup is
+ *  reordered for visual reasons. */
+export const SECTION_ORDER = ["models", "activity", "notifications", "index-proposals"] as const;
 export type SectionKey = (typeof SECTION_ORDER)[number];
 
 interface Entry {

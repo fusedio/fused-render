@@ -1,7 +1,10 @@
 // The bottom status bar (SPEC §36, D563, redesigned D565): a thin strip
 // inside `#main` holding THREE ALWAYS-PRESENT categories — Models, Activity
 // and Notifications — left to right, so a page's content ends above it
-// instead of a floating card overlaying it.
+// instead of a floating card overlaying it. A fourth, conditional section,
+// `indexProposals` (decision #8, SPEC-index-plugins.md), sits rightmost and
+// draws nothing at all while there is nothing for it to gate — see its own
+// header comment for why it does not get an idle state like the other three.
 //
 // STATUS-BAR MERGE, THEN A PARTIAL REVERT: this bar used to hold four
 // categories — Models, Engines, Jobs and Notifications (D591 added Engines;
@@ -112,16 +115,22 @@ export default function StatusBar({
   models,
   activity,
   repoUpdates,
+  indexProposals,
 }: {
   models?: ReactNode;
   activity?: ReactNode;
   repoUpdates?: ReactNode;
+  /** `shell/IndexProposalsDock.tsx` — omitted (rather than falling back to
+   *  some bare component) the same way `models`/`repoUpdates` already are:
+   *  this bar must not depend on a shell that may not be there. */
+  indexProposals?: ReactNode;
 }) {
   return (
     <div className="status-bar">
       {models}
       {activity ?? <DownloadManager />}
       {repoUpdates}
+      {indexProposals}
     </div>
   );
 }

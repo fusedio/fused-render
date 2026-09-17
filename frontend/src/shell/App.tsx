@@ -59,6 +59,7 @@ import StatusBar from "@platform/ui/StatusBar";
 import ModelsDock from "@shell/ModelsDock";
 import ActivityDock from "@shell/ActivityDock";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
+import IndexProposalsDock from "@shell/IndexProposalsDock";
 import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
 import { PEEK_PARAM } from "@shell/task-peek-store";
 import { useTaskPeekEnabled } from "@shell/task-peek-flag";
@@ -1099,6 +1100,10 @@ export default function App({ config }: { config: Config }) {
             repoUpdates={
               <RepoUpdatesDock terminal={terminalJobs} onTerminalPatch={setTerminalJobs} />
             }
+            /* Decision #8 (SPEC-index-plugins.md): self-contained — it polls
+               its own endpoint and needs nothing from any other section's
+               state, unlike RepoUpdatesDock above. */
+            indexProposals={<IndexProposalsDock />}
           />
         )}
       </div>
