@@ -539,6 +539,12 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
                 f"COPY (SELECT * FROM merged LIMIT {cfg.part_rows} "
                 f"OFFSET {i * cfg.part_rows}) "
                 f"TO '{_sql(fp)}' (FORMAT PARQUET, ROW_GROUP_SIZE 65536)")
+            # One partition's COPY can itself run long on a big merge; a
+            # heartbeat per partition (rather than once for the whole loop)
+            # is what keeps the liveness watchdog (`runner._looks_abandoned`)
+            # from calling a live compaction dead — nothing else touches the
+            # run directory for the length of this loop.
+            phase(f"writing index (partition {i + 1}/{n_parts})")
             # The folded bounds are their own aggregate, not lower() of the
             # byte-wise ones: the two orders disagree, so a partition can
             # hold a folded-smaller path than its byte-wise minimum. Pruning
