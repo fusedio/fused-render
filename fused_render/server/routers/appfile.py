@@ -162,8 +162,10 @@ def _unique_export_path(dest_dir: str, file_name: str) -> str:
 
 
 @router.post("/api/appfile/export/save")
-def api_appfile_export_to_disk(
-    body: dict = Body(...), x_fused: str | None = Header(default=None)
+async def api_appfile_export_to_disk(
+    path: str = Form(default=""),
+    preview: UploadFile | None = File(default=None),
+    x_fused: str | None = Header(default=None),
 ):
     """Write ``<app name>.fused`` straight to the platform Downloads folder
     and report its real path, instead of handing the browser a blob it saves
@@ -176,18 +178,27 @@ def api_appfile_export_to_disk(
     known the instant the file exists, so `note_index_mutation` can queue
     Downloads for a rescan synchronously, on the same request — no freshness
     gate involved at all.
+
+    Same optional-preview shape as `api_appfile_export_with_preview`: an
+    over-cap or non-PNG capture is dropped rather than raised, since it comes
+    off a best-effort screen grab and a failed grab must cost the thumbnail,
+    not the export.
     """
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    path = body.get("path") if isinstance(body, dict) else None
     if not path or not os.path.isabs(path):
         return _error("path must be an absolute app folder path")
+    preview_bytes: bytes | None = None
+    if preview is not None:
+        preview_bytes = await preview.read(appfile.MAX_PREVIEW_BYTES + 1)
+        if not preview_bytes or len(preview_bytes) > appfile.MAX_PREVIEW_BYTES:
+            preview_bytes = None
     dest_dir = _export_destination_dir()
     file_name = appfile.default_file_name(path)
     out_path = _unique_export_path(dest_dir, file_name)
     try:
-        appfile.export_app_file(path, out_path)
+        appfile.export_app_file(path, out_path, preview_bytes=preview_bytes)
     except appfile.AppFileError as exc:
         return _error(str(exc))
     note_index_mutation(dest_dir)

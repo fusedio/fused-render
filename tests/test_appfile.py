@@ -373,7 +373,7 @@ def test_export_to_disk_writes_the_real_file_and_notes_the_mutation(tmp_path, mo
 
     r = client.post(
         "/api/appfile/export/save",
-        json={"path": str(app_dir)},
+        data={"path": str(app_dir)},
         headers={"X-Fused": "1"},
     )
     assert r.status_code == 200
@@ -390,7 +390,7 @@ def test_export_to_disk_writes_the_real_file_and_notes_the_mutation(tmp_path, mo
     # sibling filename instead.
     r2 = client.post(
         "/api/appfile/export/save",
-        json={"path": str(app_dir)},
+        data={"path": str(app_dir)},
         headers={"X-Fused": "1"},
     )
     assert r2.status_code == 200
@@ -400,5 +400,37 @@ def test_export_to_disk_writes_the_real_file_and_notes_the_mutation(tmp_path, mo
     assert os.path.isfile(out_path2)
 
     # Missing the X-Fused guard is refused, like every other mutating route.
-    r3 = client.post("/api/appfile/export/save", json={"path": str(app_dir)})
+    r3 = client.post("/api/appfile/export/save", data={"path": str(app_dir)})
     assert r3.status_code == 403
+
+
+def test_export_to_disk_bakes_a_caller_captured_preview(tmp_path, monkeypatch):
+    """The disk-write export takes the same optional capture the browser
+    download route does — a folder with no authored preview.png ships with
+    whatever the caller photographed, not a blank thumbnail."""
+    from fastapi.testclient import TestClient
+
+    from fused_render import appfile
+    from fused_render.server.app import create_app
+
+    monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    dest_dir = tmp_path / "downloads"
+    dest_dir.mkdir()
+    monkeypatch.setattr(
+        "fused_render.server.routers.appfile._export_destination_dir",
+        lambda: str(dest_dir),
+    )
+
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    app_dir = make_app(tmp_path)
+    png = b"\x89PNG\r\n\x1a\n" + b"x" * 16
+
+    r = client.post(
+        "/api/appfile/export/save",
+        data={"path": str(app_dir)},
+        files={"preview": ("preview.png", png, "image/png")},
+        headers={"X-Fused": "1"},
+    )
+    assert r.status_code == 200
+    assert appfile.read_preview(r.json()["path"]) == png
