@@ -80,7 +80,7 @@ describe("hitsFromRank", () => {
       [hit({ rel: "my_hello_big_world.py" })],
       "hello world",
       "glob",
-      "**/*hello*world*",
+      "**/**hello**world**",
     );
     expect(row.entry.rel).toBe("my_hello_big_world.py");
     expect(row.positions!.map((i) => "my_hello_big_world.py"[i]).join("")).toBe("helloworld");

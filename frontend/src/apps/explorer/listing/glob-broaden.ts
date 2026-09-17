@@ -2,31 +2,47 @@
 // rungs — each a small, deliberate alternative with a reason a person would
 // recognize, not a chain of string mutations tried until one sticks.
 //
-// The order is a decision, not an accident: "widen the name" comes before
-// "look in subfolders" because it keeps the search in the folder the user
-// was already looking at (see DECISIONS-omnibox-search-affordance.md for
-// what changing that order would cost). Adding a future rung — case-
-// insensitivity, say — means appending one more record to RUNGS below;
+// Adding a future rung means appending one more record to RUNGS below;
 // nothing else here has to change.
 //
 // `resolve_query` (fused_render/index/query.py) already widens a slash-free
-// glob for free: "*.js" resolves to "**/*.js" server-side, matching any
-// depth, so the SUBFOLDER dimension is already maximally broad for a
-// slash-free query — but the NAME dimension is untouched, and rung 1 still
-// applies to it.
+// glob for free: "*.js" resolves to "**/*.js**" server-side, matching any
+// depth AND reaching the end of the final segment with the unrestricted,
+// cross-directory "**" token — so both the SUBFOLDER dimension and the NAME
+// dimension's trailing edge are already maximally broad for a query that
+// doesn't already end in "*" of its own.
 //
-// Follow-up (search-trailing-space): `expand_whitespace_query` now wraps
-// EVERY glob-mode query's final segment in a trailing "*" too, not only a
-// whitespace-derived one (see home-search.ts's own doc comment) — so by the
-// time a search is glob-mode and zero-hit, the ACTUAL pattern the server ran
-// already ends in "*". Rung 1 ("append a trailing * to the raw query text")
-// can therefore no longer be assumed to widen anything just because the RAW
-// text doesn't end in "*" — the string comparison the ladder used to make
-// its "genuinely widens" decision on has to run each candidate back through
-// `expandWhitespaceQuery` and compare the RESOLVED patterns, not the raw
-// query text, or it will offer a rerun that resolves to the exact same
-// pattern that already returned zero hits (this exact bug, previously fixed
-// for the whitespace-only case below, generalizes to every glob query now).
+// A former rung 1, "widen the name" (append a trailing "*" to the raw query
+// text), lived here before the search-trailing-space round changed
+// `expand_whitespace_query`'s own final-segment wrap from a single "*" to
+// "**" (A3, DECISIONS.md). Under the OLD single-star wrap, appending a user
+// "*" to the raw text and letting the wrap rule skip an already-starred end
+// produced the exact same resolved pattern the wrap would have produced on
+// its own — correctly dead code, caught by the `genuinelyWidens` check
+// below returning false.
+//
+// Under the NEW "**" wrap it is not merely dead, it is BACKWARDS: appending
+// a single user "*" makes the query's trailing end already-starred, which
+// makes `expandWhitespaceQuery` skip its own "**" wrap on that end — trading
+// away the cross-directory reach the wrap would have supplied for a
+// single-segment-confined user star. The candidate `genuinelyWidens` a
+// *different* resolved pattern than the one already zero-hit, but it is
+// strictly NARROWER, never broader (verified by hand for every unstarred-end
+// shape: the wrap's "**" always reaches at least as far as a bare trailing
+// "*" can). Offering it would show the user a "widen" button that quietly
+// narrows their search. It has been deleted rather than "fixed forward":
+// there is no text this ladder could still append to a name that
+// `expand_whitespace_query` has not already appended a MORE unrestricted
+// version of itself. This is also what resolves the former rung 1's own
+// display-text bug (a trailing-space query like "*a* " producing the raw
+// offer text "*a* *", which read as if it inserted a second star beside the
+// user's own) — the whole rung is gone, not patched.
+//
+// What remains, rung "look in subfolders", still has real work to do: the
+// server's own "**/" prefix only fires for a query with NO "/" in it at
+// all; a query that already names one folder level ("iamsdas/*.js") gets no
+// such help and still benefits from inserting "**/" before its own final
+// segment.
 
 import { expandWhitespaceQuery } from "@apps/explorer/lib/home-search";
 
@@ -39,21 +55,11 @@ export interface BroadenRung {
   widen: (query: string) => string | null;
 }
 
-// Rung 1 — "widen the name": append a trailing "*" to the query's own text,
-// so ".js" also catches ".jsx", ".json", ".js.map" in the same place the
-// user already typed. Cheap, and reads like something a person would type
-// themselves. Doesn't apply once the query already ends in "*" — appending
-// another would rerun an identical search.
-function widenName(query: string): string | null {
-  if (query.endsWith("*")) return null;
-  return `${query}*`;
-}
-
-// Rung 2 — "look in subfolders": insert the same "**/" `resolve_query` would
-// already have added server-side for a slash-free glob, immediately before
-// the query's own last segment, so the pattern reaches every depth under
+// "Look in subfolders": insert the same "**/" `resolve_query` would already
+// have added server-side for a slash-free glob, immediately before the
+// query's own last segment, so the pattern reaches every depth under
 // whatever base it already had: "/home/iamsdas/*.js" becomes
-// "/home/iamsdas/**/*.js". Only reached once rung 1 doesn't apply.
+// "/home/iamsdas/**/*.js".
 function widenSubfolders(query: string): string | null {
   if (!query.includes("/")) return null;
   const segments = query.split("/");
@@ -62,10 +68,7 @@ function widenSubfolders(query: string): string | null {
   return `${head}/**/${last}`;
 }
 
-const RUNGS: BroadenRung[] = [
-  { label: "Widen the name", widen: widenName },
-  { label: "Look in subfolders", widen: widenSubfolders },
-];
+const RUNGS: BroadenRung[] = [{ label: "Look in subfolders", widen: widenSubfolders }];
 
 // A query is already maximally broad on the SUBFOLDER dimension when its
 // last segment is already "**" (an explicit recursive tail), when a

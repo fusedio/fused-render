@@ -174,7 +174,7 @@ export function patternTail(query: string): string {
  *
  * Byte-equivalent with `expand_whitespace_query` (`fused_render/index/
  * query.py`) — a follow-up to the original whitespace-as-wildcard rule that
- * fixes two disagreements:
+ * fixes three disagreements (DECISIONS.md, worktree-search-trailing-space):
  *
  *  1. A TRAILING space used to be trimmed away (`*.js ` searched for `*.js`,
  *     silently dropping the space the user just typed). Trimming is gone:
@@ -183,21 +183,40 @@ export function patternTail(query: string): string {
  *     the typed `*` produced an anchored pattern requiring the name to END
  *     in "copy") used to disagree. They no longer do, because the final
  *     segment is now wrapped on `*` too, not only on whitespace.
+ *  3. A trailing space used to NARROW rather than widen: the wildcard it
+ *     inserted was a single-segment `*`, which cannot cross a `/`, so
+ *     `"src "` lost `srcdir/file.txt` even though `"src"` (substring mode)
+ *     matched it. Every wildcard THIS function inserts — the whitespace
+ *     collapse and the final-segment end wrap alike — is now the
+ *     cross-directory `**` token, never a bare `*`: a space only ever
+ *     widens. A whitespace-only query (`"   "`) has no literal character
+ *     left to search for at all, so it resolves to `""`, matching how an
+ *     empty query already behaves (it used to become the "match anything"
+ *     glob `"*"`).
  *
  * The rule:
- *  1. No trimming.
- *  2. The ONE no-op: a string with NEITHER whitespace NOR `*` anywhere
- *     (`report`) is returned unchanged — still substring mode, still ranked.
- *  3. Collapse every whitespace run to a single `*` (never `**`, a
- *     different, cross-directory token) — dropped, not replaced, whenever a
- *     run directly borders a literal `*` the user already typed
- *     (`report *.pdf` must not stack into `report**.pdf`).
- *  4. On the FINAL `/`-separated segment only, wrap each END independently:
- *     prepend `*` unless it already starts with one, append `*` unless it
- *     already ends with one. This fires even when the segment has no
- *     whitespace at all — `*.pdf` becomes `*.pdf*` — which is what makes
- *     `icon*copy` -> `*icon*copy*` agree with `icon copy` -> `*icon*copy*`.
- *     Earlier segments get the whitespace collapse but no wrap.
+ *  1. Whitespace-only (`raw.trim() === ""`, including the truly empty
+ *     string) resolves to `""` — no wildcard, nothing to search for.
+ *  2. Otherwise, no trimming.
+ *  3. The ONE no-op besides rule 1: a string with NEITHER whitespace NOR
+ *     `*` anywhere (`report`) is returned unchanged — still substring mode,
+ *     still ranked.
+ *  4. Collapse every whitespace run to `**` — dropped, not replaced,
+ *     whenever a run directly borders a literal `*` the user already typed
+ *     (`report *.pdf` must not stack a THIRD star beside it).
+ *  5. On the FINAL `/`-separated segment only, wrap each END independently
+ *     with `**`: prepend unless it already starts with `*`, append unless
+ *     it already ends with `*`. This fires even when the segment has no
+ *     whitespace at all — `*.pdf` becomes `*.pdf**` — which is what makes
+ *     `icon*copy` -> `**icon*copy**` agree with `icon copy` ->
+ *     `**icon**copy**`. Earlier segments get the whitespace collapse but no
+ *     wrap.
+ *
+ * The invariant that survives (A4): the function never manufactures a run
+ * of THREE OR MORE consecutive `*` unless the input already had one — it is
+ * allowed to concatenate two adjacent user-typed single stars into `**`
+ * once the whitespace between them is dropped (`"* *"` -> `"**"`), which is
+ * accepted, not invented.
  *
  * Known, accepted consequence (do not special-case around it): a
  * previously-precise glob like `*.pdf` now also matches `report.pdf.bak`
@@ -205,6 +224,7 @@ export function patternTail(query: string): string {
  */
 export function expandWhitespaceQuery(raw: string): string {
   const value = raw ?? "";
+  if (value.trim() === "") return "";
   if (!/\s/.test(value) && !value.includes("*")) return value;
   const segments = value.split("/");
   const last = segments.length - 1;
@@ -213,12 +233,12 @@ export function expandWhitespaceQuery(raw: string): string {
       const before = offset > 0 && segment[offset - 1] === "*";
       const after =
         offset + match.length < segment.length && segment[offset + match.length] === "*";
-      return before || after ? "" : "*";
+      return before || after ? "" : "**";
     });
   const collapsed = segments.map(collapseWs);
   let final = collapsed[last]!;
-  if (!final.startsWith("*")) final = `*${final}`;
-  if (!final.endsWith("*")) final = `${final}*`;
+  if (!final.startsWith("*")) final = `**${final}`;
+  if (!final.endsWith("*")) final = `${final}**`;
   collapsed[last] = final;
   return collapsed.join("/");
 }
@@ -332,9 +352,9 @@ export function answerFrom(
  * off `q` itself; reproducing that walk locally is exactly the "no local
  * test can reproduce the server's semantics" case below, so it still
  * bails). For that narrow shape, `expand_whitespace_query`'s own transform
- * (fused_render/index/query.py) is fully reproducible client-side: trim,
- * collapse whitespace runs to a single `*`, then wrap the whole (single-
- * segment) query in a leading/trailing `*`. Every multi-word home query
+ * (fused_render/index/query.py) is fully reproducible client-side: no
+ * trimming, collapse whitespace runs to `**`, then wrap the whole (single-
+ * segment) query in a leading/trailing `**`. Every multi-word home query
  * hits this path on every keystroke while the user is still typing inside
  * or adding a word — SPEC-search-space-wildcard.md's whole motivating case
  * — so bailing to `[]` here blanked the result list between keystrokes for

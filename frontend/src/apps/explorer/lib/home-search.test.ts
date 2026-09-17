@@ -77,73 +77,94 @@ describe("expandWhitespaceQuery / willResolveToGlobMode", () => {
     expect(willResolveToGlobMode("report")).toBe(false);
   });
 
+  it("whitespace-only has nothing to search for (A2)", () => {
+    // A whitespace-only query used to collapse into "*" (match everything);
+    // there is no literal character left to narrow on, so it now resolves
+    // to "", same as an empty query.
+    expect(expandWhitespaceQuery("   ")).toBe("");
+    expect(expandWhitespaceQuery(" ")).toBe("");
+  });
+
   it("wraps a whitespace-free glob too (fixes icon*copy)", () => {
-    expect(expandWhitespaceQuery("*.pdf")).toBe("*.pdf*");
-    expect(expandWhitespaceQuery("icon*copy")).toBe("*icon*copy*");
-    expect(expandWhitespaceQuery("src/**/*.ts")).toBe("src/**/*.ts*");
+    expect(expandWhitespaceQuery("*.pdf")).toBe("*.pdf**");
+    expect(expandWhitespaceQuery("icon*copy")).toBe("**icon*copy**");
+    expect(expandWhitespaceQuery("src/**/*.ts")).toBe("src/**/*.ts**");
     expect(willResolveToGlobMode("*.pdf")).toBe(true);
   });
 
   it("does not trim leading/trailing whitespace", () => {
-    expect(expandWhitespaceQuery("icon ")).toBe("*icon*");
-    expect(expandWhitespaceQuery(" icon")).toBe("*icon*");
-    expect(expandWhitespaceQuery("*.js ")).toBe("*.js*");
-    expect(expandWhitespaceQuery("hello world ")).toBe("*hello*world*");
-    expect(expandWhitespaceQuery(" hello world")).toBe("*hello*world*");
+    expect(expandWhitespaceQuery("icon ")).toBe("**icon**");
+    expect(expandWhitespaceQuery(" icon")).toBe("**icon**");
+    expect(expandWhitespaceQuery("*.js ")).toBe("*.js**");
+    expect(expandWhitespaceQuery("hello world ")).toBe("**hello**world**");
+    expect(expandWhitespaceQuery(" hello world")).toBe("**hello**world**");
   });
 
-  it("collapses whitespace runs to a single '*' and wraps the final segment", () => {
-    expect(expandWhitespaceQuery("hello world")).toBe("*hello*world*");
-    expect(expandWhitespaceQuery("hello  world")).toBe("*hello*world*");
-    expect(expandWhitespaceQuery("  hello world  ")).toBe("*hello*world*");
+  it("the motivating trailing-space case: a space only ever widens (A3)", () => {
+    // "src" (substring mode) already matches "srcdir/file.txt"; "src " must
+    // keep matching it, which requires the inserted wildcard to cross a
+    // directory boundary.
+    expect(expandWhitespaceQuery("src ")).toBe("**src**");
+  });
+
+  it("collapses whitespace runs to '**' and wraps the final segment", () => {
+    expect(expandWhitespaceQuery("hello world")).toBe("**hello**world**");
+    expect(expandWhitespaceQuery("hello  world")).toBe("**hello**world**");
+    expect(expandWhitespaceQuery("  hello world  ")).toBe("**hello**world**");
     expect(willResolveToGlobMode("hello world")).toBe(true);
   });
 
   it("wraps only the final segment, not earlier ones", () => {
-    expect(expandWhitespaceQuery("~/My Documents/report")).toBe("~/My*Documents/*report*");
+    expect(expandWhitespaceQuery("~/My Documents/report")).toBe("~/My**Documents/**report**");
   });
 
   it("wraps only the end that needs it", () => {
-    expect(expandWhitespaceQuery("*.pdf")).toBe("*.pdf*");
-    expect(expandWhitespaceQuery("report*")).toBe("*report*");
+    expect(expandWhitespaceQuery("*.pdf")).toBe("*.pdf**");
+    expect(expandWhitespaceQuery("report*")).toBe("**report*");
     expect(expandWhitespaceQuery("*.pdf*")).toBe("*.pdf*");
   });
 
   it("never stacks a star beside a user star", () => {
-    expect(expandWhitespaceQuery("report *.pdf")).toBe("*report*.pdf*");
-    expect(expandWhitespaceQuery("*.pdf report")).toBe("*.pdf*report*");
-    expect(expandWhitespaceQuery("a * b")).toBe("*a*b*");
+    expect(expandWhitespaceQuery("report *.pdf")).toBe("**report*.pdf**");
+    expect(expandWhitespaceQuery("*.pdf report")).toBe("*.pdf**report**");
+    expect(expandWhitespaceQuery("a * b")).toBe("**a*b**");
   });
 
   // Required behavior table — mirrors tests/test_index_query.py's
   // test_expand_whitespace_query_required_behavior_table row for row.
   it.each([
     ["report", "report"],
-    ["icon ", "*icon*"],
-    [" icon", "*icon*"],
-    ["*.js ", "*.js*"],
-    ["icon*copy", "*icon*copy*"],
-    ["*.pdf", "*.pdf*"],
-    ["src/**/*.ts", "src/**/*.ts*"],
-    ["icon copy", "*icon*copy*"],
-    ["hello  world", "*hello*world*"],
-    ["report *.pdf", "*report*.pdf*"],
-    ["~/My Documents/report", "~/My*Documents/*report*"],
-    ["/*.pdf", "/*.pdf*"],
+    ["icon ", "**icon**"],
+    [" icon", "**icon**"],
+    ["*.js ", "*.js**"],
+    ["icon*copy", "**icon*copy**"],
+    ["*.pdf", "*.pdf**"],
+    ["src/**/*.ts", "src/**/*.ts**"],
+    ["icon copy", "**icon**copy**"],
+    ["hello  world", "**hello**world**"],
+    ["report *.pdf", "**report*.pdf**"],
+    ["~/My Documents/report", "~/My**Documents/**report**"],
+    ["/*.pdf", "/*.pdf**"],
+    ["   ", ""],
+    ["src ", "**src**"],
   ])("required behavior: %j -> %j", (query, expected) => {
     expect(expandWhitespaceQuery(query)).toBe(expected);
   });
 
-  // Property: the output never contains "**" unless the input already did.
+  // Property (A4): the function may deliberately insert "**", so the old
+  // "never invents a double star" claim no longer holds — what survives is
+  // that it never manufactures a run of THREE OR MORE consecutive "*"
+  // unless the input already had one.
   it.each([
     "report", "icon ", " icon", "*.js ", "icon*copy", "*.pdf",
     "src/**/*.ts", "icon copy", "hello  world", "report *.pdf",
     "~/My Documents/report", "/*.pdf", "a * b", "*.pdf report",
-    "report*", "*.pdf*", " ", "", "*", "**",
-  ])("never invents a double star: %j", (query) => {
+    "report*", "*.pdf*", " ", "", "*", "**", "a* *", "* *",
+  ])("never invents a run of three or more stars: %j", (query) => {
     const out = expandWhitespaceQuery(query);
-    if (!query.includes("**")) {
-      expect(out.includes("**")).toBe(false);
+    const maxRun = (s: string) => Math.max(0, ...(s.match(/\*+/g) ?? []).map((r) => r.length));
+    if (maxRun(query) < 3) {
+      expect(maxRun(out)).toBeLessThan(3);
     }
   });
 });
@@ -304,14 +325,14 @@ describe("answerFrom", () => {
   });
 
   it("highlights a glob hit's literal pieces via the server's resolved pattern (§4)", () => {
-    // "hello world" -> "**/*hello*world*" (expand_whitespace_query,
+    // "hello world" -> "**/**hello**world**" (expand_whitespace_query,
     // fused_render/index/query.py) — the resolved pattern the server sends
     // back on `res.pattern`, NOT the raw typed query, is what `globMatch`
     // needs to find the literal pieces.
     const out = answerFrom(
       rankResult({
         mode: "glob",
-        pattern: "**/*hello*world*",
+        pattern: "**/**hello**world**",
         hits: [rankHit("my_hello_big_world.py")],
       }),
       "hello world",
