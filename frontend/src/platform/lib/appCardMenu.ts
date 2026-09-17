@@ -17,6 +17,7 @@
 import { revealPath, type AppInfo } from "./api";
 import { openApp } from "./appEntry";
 import { exportAppFile } from "./appShot";
+import { openShareApp } from "./share-app";
 import { copyToClipboard } from "./clipboard";
 import { navigate } from "./router";
 import { notify } from "./notifications";
@@ -84,6 +85,14 @@ export function appCardMenu(
                 }),
               );
             },
+          },
+          // The export's sibling: the same .fused, published to the user's
+          // Fused account as a public page instead of downloaded
+          // (share_app.py). The dialog owns sign-in, the link and removal.
+          {
+            label: "Share…",
+            icon: MenuIcons.share,
+            onClick: () => openShareApp(app, captureEl),
           },
         ] satisfies MenuEntry[])),
     {

@@ -289,7 +289,8 @@
    positioned against the CARD, so assistive tech announces it; z-index lifts
    it over the thumb and its pointer shield. Keyboard users get it without
    hover via :focus-visible. */
-.app-pcard-export {
+.app-pcard-export,
+.app-pcard-share {
   position: absolute;
   bottom: 8px;
   right: 8px;
@@ -309,19 +310,30 @@
   transition: opacity 0.12s ease;
 }
 .app-pcard:hover .app-pcard-export,
-.app-pcard-export:focus-visible {
+.app-pcard:hover .app-pcard-share,
+.app-pcard-export:focus-visible,
+.app-pcard-share:focus-visible {
   opacity: 1;
 }
-.app-pcard-export:hover {
+.app-pcard-export:hover,
+.app-pcard-share:hover {
   color: var(--fg);
   box-shadow: 0 2px 8px var(--shadow-sm);
 }
 /* While appShot photographs the screen, the chip must not be in the pixels:
    clicking it does not end the hover, so it would sit in the baked
    preview.png forever. No transition, so it is gone by the next frame. */
-body[data-capture-shooting] .app-pcard-export {
+body[data-capture-shooting] .app-pcard-export,
+body[data-capture-shooting] .app-pcard-share {
   opacity: 0 !important;
   transition: none;
+}
+
+/* The Share chip is the export chip's sibling: same size, same reveal, one
+   slot to its left. Sharing publishes the same .fused the export downloads,
+   so the two sit together wherever either appears. */
+.app-pcard-share {
+  right: 40px;
 }
 
 /* A ROW: the app's mark as a column of its own, then the two text lines

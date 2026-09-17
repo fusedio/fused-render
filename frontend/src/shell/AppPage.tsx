@@ -72,10 +72,12 @@ import {
   Files,
   Download,
   ListTodo,
+  Share2,
   Webhook,
   type LucideIcon,
 } from "lucide-react";
 import { exportAppFile } from "@platform/lib/appShot";
+import { openShareApp } from "@platform/lib/share-app";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppStar } from "@platform/ui/AppStar";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
@@ -622,6 +624,33 @@ export default function AppPage({
               {exporting ? "Exporting…" : "Export"}
               <Download data-icon="inline-end" />
             </Button>
+            {/* Export's sibling: the same .fused, published to the user's
+                Fused account as a public page (share_app.py). LIVE ONLY —
+                the shared canvas is named after the app's id and always
+                carries "the app", so publishing an old commit under it would
+                silently downgrade every link already sent. The Overview
+                frame is the capture source under the same rule as Export. */}
+            {versionLabel === "Live" && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="app-page-share"
+                disabled={snapshot.pending || snapshot.error}
+                title="Share the live app as a public link"
+                onClick={() => {
+                  const frame = document.querySelector<HTMLIFrameElement>(
+                    ".app-page-overview:not(.is-hidden) .app-page-frame",
+                  );
+                  openShareApp(
+                    { path: dir, name: slug, entry_html: entry ?? undefined },
+                    frame?.dataset.loaded === "1" ? frame : null,
+                  );
+                }}
+              >
+                Share
+                <Share2 data-icon="inline-end" />
+              </Button>
+            )}
           </div>
         )}
       </header>

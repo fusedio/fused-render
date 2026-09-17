@@ -52,6 +52,7 @@ import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
+import { ShareAppHost } from "@platform/ui/ShareAppModal";
 import OnboardingWizard from "@shell/onboarding/OnboardingWizard";
 import { ONBOARDING_PATH, shouldAutoShow } from "@shell/onboarding/state";
 import { onboardingUrl } from "@shell/onboarding/progress";
@@ -1103,6 +1104,10 @@ export default function App({ config }: { config: Config }) {
         )}
       </div>
       <NotificationHost jobPopup={popupJob} onJobPopupGone={() => setPopupJob(null)} />
+      {/* One dialog for every "Share" entry (card chip, card menu, app page,
+          explorer kebab): the menu entries cannot own a dialog, so they post
+          a request to platform/lib/share-app and this host renders it. */}
+      <ShareAppHost />
       {shortcutsOpen && (
         <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
       )}
