@@ -1540,9 +1540,23 @@ class RecordingManager:
         self.events.append(("claim", folder, task_key))
         if not self.is_free(folder, task_key):
             return False
-        self.owners[folder] = {"task": task_key, "session_id": session_id,
-                               "run_id": run_id}
+        # The same conversation under a BETTER name, as the real one does: a
+        # claim by the owner fills in blanks and never blanks what is there.
+        prior = self.owners.get(folder) or {}
+        self.owners[folder] = {
+            "task": task_key,
+            "session_id": session_id or str(prior.get("session_id") or ""),
+            "run_id": run_id or str(prior.get("run_id") or "")}
         return True
+
+    def claim_took(self, folder, task_key, run_id="", session_id=""):
+        """`(ok, took)` — the tri-state the doors read. `took` is False when
+        this task ALREADY owned the tree, which is the case run-now must not
+        hand back."""
+        prior = self.owners.get(folder)
+        own = prior is not None and str(prior.get("task") or "") == task_key
+        ok = self.claim(folder, task_key, run_id, session_id)
+        return ok, bool(ok and not own)
 
     def pump(self, folder):
         self.events.append(("pump", folder))
@@ -1808,6 +1822,31 @@ def test_a_claimed_folder_is_given_back_when_the_conversation_is_busy(
     assert spawned == []
     assert _events(recorder, "turn_ended") == [("turn_ended", SID)]
     assert recorder.owners == {}
+
+
+def test_run_now_on_a_follow_up_never_releases_the_turn_it_follows(
+        folders, home, recorder, spawned, monkeypatch):
+    """The other half of the same rule (Bugbot, #1194). `claim` answered True
+    both when it TOOK the tree and when this very conversation already held it
+    — and the busy-session arm released either one, so Run now on a follow-up
+    ended the live turn it was following and pumped the next task into the same
+    tree. Only the call that took the folder may hand it back."""
+    _on(home)
+    key = _key(folders["alpha"])
+    recorder.owners[key] = {"task": SID, "session_id": SID, "run_id": "r-1"}
+    monkeypatch.setattr(schedule, "_session_live",
+                        lambda session, now, seen=None: True)
+    monkeypatch.setattr(schedule, "_verdict_echo",
+                        lambda session, entries, now, seen=None: False)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+
+    out = schedule.run_now(entry["id"])
+
+    assert out["ok"] is False and "turn running right now" in out["reason"]
+    assert spawned == []
+    assert _events(recorder, "turn_ended") == [], "the live turn was released"
+    assert recorder.owners[key] == {"task": SID, "session_id": SID,
+                                    "run_id": "r-1"}
 
 
 def test_a_folder_claimed_for_a_send_that_lost_the_race_is_given_back(

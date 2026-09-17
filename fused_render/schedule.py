@@ -601,9 +601,14 @@ _WIRE_TRIED = False
 _RESUMED = False
 
 
-def _claim_folder(manager, folder: str, task_key: str) -> bool:
-    """Take `folder` for `task_key` — or answer False because another task has
-    it. **One call, because look-then-act is the bug** (H3, 2026-09-17).
+def _claim_folder(manager, folder: str, task_key: str) -> tuple[bool, bool]:
+    """Take `folder` for `task_key`: `(ok, took)`. **One call, because
+    look-then-act is the bug** (H3, 2026-09-17).
+
+    `ok` False means another task has it. `took` says whether THIS call is what
+    took it, and only a caller that took it may give it back — see
+    `QueueManager.claim_took`: run-now on a follow-up whose own chat holds the
+    tree gets `(True, False)`, and releasing there ended the live turn.
 
     Run-now used to ask `is_free` here and file `started` only after `_send`
     returned, and `_send` can be a process spawn: a whole minute could pass
@@ -614,22 +619,31 @@ def _claim_folder(manager, folder: str, task_key: str) -> bool:
     two halves.
 
     Best-effort in the same direction as every other gate here: a manager that
-    cannot answer gives a GO, never a silent drop of the user's message."""
+    cannot answer gives a GO, never a silent drop of the user's message — and
+    `took` False with it, because a gate that does not know what it did must not
+    undo it."""
     if manager is None or not folder or not task_key:
-        return True
+        return True, False
+    took_fn = getattr(manager, "claim_took", None)
     claim = getattr(manager, "claim", None)
     try:
+        if took_fn is not None:
+            ok, took = took_fn(folder, task_key)
+            return bool(ok), bool(took)
         if claim is not None:
-            return bool(claim(folder, task_key))
+            # A manager from before the tri-state: one bool, so "took" is the
+            # best guess there is — which is the behaviour this had.
+            ok = bool(claim(folder, task_key))
+            return ok, ok
         # While T1's `claim` lands: the old two-step, but back-to-back with
         # nothing in between — the gap is instructions, not a spawn.
         if not manager.is_free(folder, task_key):
-            return False
+            return False, False
         manager.started(folder, task_key)
-        return True
+        return True, True
     except Exception:  # noqa: BLE001 — an undecidable gate is an open one
         logger.debug("could not claim %s for %s", folder, task_key, exc_info=True)
-        return True
+        return True, False
 
 
 def _release_folder(manager, task_key: str) -> None:
@@ -4184,9 +4198,16 @@ def _asked_now(entry: dict, now: datetime) -> dict:
     return stored or dict(entry, run_now_at=stamp)
 
 
-def _run_now_managed(manager, entry: dict, now: datetime) -> dict | None:
-    """Run-now's answer when another task owns this entry's folder, or None
-    when the folder is this entry's to run in.
+def _run_now_managed(manager, entry: dict, now: datetime) -> tuple[dict | None,
+                                                                    bool]:
+    """`(answer, took)`: run-now's answer when another task owns this entry's
+    folder, or None when the folder is this entry's to run in — and whether
+    this call is what TOOK the folder.
+
+    `took` is what every early return below reads before handing the tree back
+    (`_release_folder`). A run-now on a message that follows a chat which
+    already owns the tree claims `own`, not `took`, and releasing there ended
+    the live turn and pumped the next task into the same tree (Bugbot, #1194).
 
     ONE DERIVATION, NOT TWO (PR 2, 2026-09-17): who owns the folder is
     `manager.owner` and where this message lands is `manager.place` after the
@@ -4209,8 +4230,9 @@ def _run_now_managed(manager, entry: dict, now: datetime) -> dict | None:
     # THE GATE OWNS WHAT IT LETS THROUGH (H3): this is a claim, not a look. A
     # None answer below means the folder is OURS from this instant — every path
     # after it either sends or gives it back (`_release_folder`).
-    if not folder or _claim_folder(manager, folder, key):
-        return None
+    ok, took = _claim_folder(manager, folder, key)
+    if not folder or ok:
+        return None, bool(took)
     set_priority([entry_id], True)
     stored = _asked_now(dict(entry, priority=True), now)
     manager.enqueue(folder, key, entry_id)
@@ -4221,7 +4243,7 @@ def _run_now_managed(manager, entry: dict, now: datetime) -> dict | None:
             "queued": True, "position": int(place.get("position") or 1),
             "ahead_task_key": str(owner.get("task") or ""),
             "ahead_session": str(owner.get("session_id") or ""),
-            "ahead_run": str(owner.get("run_id") or "")}
+            "ahead_run": str(owner.get("run_id") or "")}, False
 
 
 def run_now(entry_id: str, now: datetime | None = None) -> dict:
@@ -4302,15 +4324,17 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
     # index and nothing else. With the flag off (or in a build with no manager)
     # there is no folder rule at all and run-now is the one that shipped.
     manager = _qm() if _pq().enabled() else None
-    queued = (_run_now_managed(manager, entry, now) if manager is not None
-              else None)
+    queued, took = (_run_now_managed(manager, entry, now) if manager is not None
+                    else (None, False))
     if queued is not None:
         return queued
-    # Past that line the folder is CLAIMED (H3) — `_run_now_managed` owns it on
-    # the way through, so every early return below has to hand it back.
+    # Past that line the folder is ours (H3) — but only the call that TOOK it
+    # may hand it back. `own` means the chat this message continues is holding
+    # the tree with a turn in flight, and `turn_ended` on that owner would kill
+    # the live turn and start the next task in the same tree; the message is
+    # absorbed by that turn (or goes on the next pass) instead.
     task_key = _task_key(entry)
-    held = (manager is not None
-            and bool(_pq().queue_key(str(entry.get("target") or ""))))
+    held = bool(took)
     # The echo rule joins run-now's refusal only under the flag: main's run-now
     # refused on a warm transcript alone, and flag off stays that.
     if session and (session in busy

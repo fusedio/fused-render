@@ -1127,6 +1127,30 @@ def test_claim_takes_a_task_out_of_whatever_line_it_stood_in():
     assert owner_key(m, F2) == "b"
 
 
+def test_claim_took_separates_taking_a_folder_from_already_owning_it():
+    """One bool could not tell "I have it now" from "I already had it", and
+    run-now hands the tree back on a later refusal — which, in the `own` case,
+    handed back the live turn of the chat this message follows (Bugbot #1194)."""
+    m = idle_world().manager()
+    assert m.claim_took(F1, "a", "run-a", "sess-a") == (True, True)
+    assert m.claim_took(F1, "a", "run-a", "sess-a") == (True, False)
+    assert m.claim_took(F1, "sess-a") == (True, False)
+    assert m.claim_took(F1, "b", "run-b") == (False, False)
+    assert m.claim_took("", "a") == (False, False)
+    assert m.claim(F1, "a") is True, "the bool wrapper is what the doors read"
+
+
+def test_claim_took_calls_a_placeholder_a_take():
+    world = idle_world()
+    m = world.manager()
+    m.claim(F1, qm.PLACEHOLDER_PREFIX + "one")
+    assert m.claim_took(F1, "sess-new", "run-1", "sess-new") == (True, True)
+
+    m2 = idle_world().manager()
+    m2.claim(F1, qm.PLACEHOLDER_PREFIX + "one")
+    assert m2.claim_took(F1, qm.PLACEHOLDER_PREFIX + "two") == (False, False)
+
+
 # ------------------------------------------------------- the admit placeholder
 
 
@@ -1376,6 +1400,99 @@ def test_card_cleared_is_idempotent_and_ignores_a_task_that_is_not_parked():
     after = m.snapshot()
     m.card_cleared("a", "run")
     assert m.snapshot() == after
+
+
+# ------------------------------------------ card_cleared: the resume marker
+#
+# The card was answered by a route that does NOT hold the folder — a terminal,
+# a file, another UI — while another task owns the tree. That run is resuming
+# right now and waits for nobody, so what goes into the line is not work to
+# start: it is a process to hand the folder to (Bugbot, PR #1194).
+
+RUNS = {"a": {"run_id": "run-a", "session_id": "sess-a"},
+        "b": {"run_id": "run-b", "session_id": "sess-b"},
+        "c": {"run_id": "run-c", "session_id": "sess-c"}}
+
+
+def parked_elsewhere(**kw):
+    """a is a live run whose card was answered outside the queue; b holds the
+    folder. Returns `(world, manager)` with the marker already filed."""
+    world = World(spawns=RUNS, **kw)
+    m = world.manager()
+    m.enqueue(F1, "a", "e-a")
+    m.enqueue(F1, "b", "e-b")
+    m.card_raised("a", "run-a")              # b takes the folder, a is parked
+    m.card_cleared("a", "run-a", "req-1")
+    world.spawned.clear()
+    return world, m
+
+
+def test_card_cleared_files_a_resume_marker_when_somebody_else_holds():
+    _world, m = parked_elsewhere()
+    head = m.snapshot()["folders"][F1]["line"][0]
+    assert head["task"] == "a"
+    assert head["resumed"] is True
+    assert head["promoted"] is True
+    assert head["entry_id"] == ""
+    assert head["run_id"] == "run-a"
+
+
+def test_the_pump_hands_the_folder_to_a_resume_marker_without_spawning():
+    """THE BUG: filed as ordinary queued work the marker named no pending entry,
+    `spawn` answered None, the pump dropped it — and started the NEXT task in
+    the tree the resuming process was already editing."""
+    world, m = parked_elsewhere()
+    m.enqueue(F1, "c", "e-c")
+
+    m.turn_ended("b", "run-b")               # the owner finishes
+
+    assert owner_key(m) == "a"
+    assert world.spawned == [], "a second turn beside the run that is resuming"
+    assert m.owner(F1)["run_id"] == "run-a"
+    assert line_of(m) == ["c"]
+
+
+def test_a_resume_marker_with_a_held_verdict_is_still_delivered():
+    """The two can meet: this card was cleared elsewhere and a verdict of ours
+    for another card of the same run is still waiting. Delivery wins — it is
+    the one thing that run is owed, and it is a no-op on disk if it is late."""
+    world, m = parked_elsewhere()
+    m.card_answered("a", "run-a", "req-2", {"answer": "allow"})
+
+    m.turn_ended("b", "run-b")
+
+    assert owner_key(m) == "a"
+    assert world.spawned == []
+    assert [row["request_id"] for row in world.delivered] == ["req-2"]
+
+
+def test_reconcile_keeps_a_live_resume_marker_and_drops_a_dead_one():
+    """It names no pending entry — it never will — so the only thing that says
+    whether it is still worth a folder is the status sync."""
+    world, m = parked_elsewhere()
+    world.running_keys.add("run-b")          # the owner is still going
+
+    world.running_keys.add("run-a")
+    m.reconcile()
+    assert line_of(m) == ["a"]
+
+    world.running_keys.discard("run-a")
+    m.reconcile()
+    assert line_of(m) == []
+
+
+def test_forget_entry_leaves_a_resume_marker_alone():
+    """Cancelling a message cannot un-queue a process that is already running."""
+    _world, m = parked_elsewhere()
+    m.forget_entry("e-a")
+    assert line_of(m) == ["a"]
+    assert m.snapshot()["folders"][F1]["line"][0]["resumed"] is True
+
+
+def test_a_resume_marker_survives_a_restart():
+    world, _m = parked_elsewhere()
+    head = loaded(world).snapshot()["folders"][F1]["line"][0]
+    assert (head["task"], head["resumed"]) == ("a", True)
 
 
 # ------------------------------------------------------------- forget_entry

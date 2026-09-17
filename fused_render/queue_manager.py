@@ -86,7 +86,8 @@ def _item(raw) -> dict | None:
     promotion, never the whole folder's line."""
     if isinstance(raw, str):
         return ({"task": raw, "entry_id": "", "promoted": False,
-                 "run_id": "", "session_id": ""} if raw else None)
+                 "run_id": "", "session_id": "", "resumed": False}
+                if raw else None)
     if not isinstance(raw, dict):
         return None
     key = _text(raw.get("task"))
@@ -101,7 +102,14 @@ def _item(raw) -> dict | None:
             # the same run the card was raised against, not just the label the
             # page draws.
             "run_id": _text(raw.get("run_id")),
-            "session_id": _text(raw.get("session_id"))}
+            "session_id": _text(raw.get("session_id")),
+            # A RESUME MARKER, AND NOT A QUEUED MESSAGE (2026-09-17). Set by
+            # `card_cleared` when the card was answered by a route that does not
+            # hold the folder — a terminal, a file, another UI. That run is
+            # resuming RIGHT NOW and waits for nobody, so the item standing at
+            # the head of the line is not work to start: it is a process to hand
+            # the folder to. The pump owns it WITHOUT spawning (`_pump`).
+            "resumed": bool(raw.get("resumed"))}
 
 
 def _owner_rec(raw) -> dict | None:
@@ -361,7 +369,8 @@ class QueueManager:
                 continue
             slot = heads.get(folder, 0)
             self._folder(folder)["line"].insert(
-                slot, {"task": session_id, "entry_id": "", "promoted": True})
+                slot, {"task": session_id, "entry_id": "", "promoted": True,
+                       "resumed": False})
             heads[folder] = slot + 1
             known.add(session_id)
         if changed:
@@ -637,6 +646,18 @@ class QueueManager:
         key = item["task"]
         keys.add(key)
         answers = self._answers_of(key)
+        if not answers and item.get("resumed"):
+            # A RESUME MARKER IS A PROCESS, NOT A MESSAGE (2026-09-17). Its card
+            # was answered by a route that does not hold the folder, so that run
+            # came back to life the moment the verdict hit the disk — it is not
+            # waiting on this pump and there is nothing here to start. Owning it
+            # is the whole job: no spawn (a second turn in the same tree beside
+            # the one already resuming) and no deliver (we hold no verdict for
+            # it). The folder comes back the ordinary way, when the status sync
+            # says that run is done or its host posts `turn_ended`/`exited` —
+            # which it will, because the process is ours.
+            self._own(rec, item)
+            return
         self._own(rec, item, _text(answers[0]["run_id"]) if answers else "")
         rec["owner"]["starting"] = True
         self._starting.append(("deliver" if answers else "spawn", folder, item))
@@ -749,7 +770,8 @@ class QueueManager:
             if where is None:
                 self._folder(folder)["line"].append(
                     {"task": task_key, "entry_id": _text(entry_id),
-                     "promoted": False, "run_id": "", "session_id": ""})
+                     "promoted": False, "run_id": "", "session_id": "",
+                     "resumed": False})
                 keys.add(task_key)
                 self._pump(folder, keys)
             return self._place(task_key)
@@ -815,7 +837,14 @@ class QueueManager:
                 for name in ("line", "blocked"):
                     kept = []
                     for item in rec[name]:
-                        if item.get("entry_id") == entry_id:
+                        # A RESUME MARKER NAMES NO MESSAGE. It stands for a run
+                        # that is already going, so cancelling a message can
+                        # never be what takes it out of the line — and it holds
+                        # no `entry_id` for exactly that reason. Guarded anyway:
+                        # an index written before this rule may carry one.
+                        if item.get("resumed"):
+                            kept.append(item)
+                        elif item.get("entry_id") == entry_id:
                             keys.add(item["task"])
                             orphans.add(item["task"])
                         else:
@@ -828,7 +857,8 @@ class QueueManager:
     def claim(self, folder: str, task_key: str, run_id: str = "",
               session_id: str = "") -> bool:
         """TAKE THE FOLDER, OR LEARN THAT SOMEBODY ELSE HAS IT — one decision,
-        under one lock.
+        under one lock. `claim_took` is the same call with the second half of
+        the answer; this is the truthy wrapper the doors read.
 
         True means it is yours from here (or already was); False means somebody
         else owns it and the caller must queue. The admission asked `is_free` and
@@ -847,8 +877,27 @@ class QueueManager:
         overlap it would close, so the name wins and the placeholder is replaced.
         Two NAMELESS claims are the case the placeholder exists for, and the
         second of those is refused."""
+        return self.claim_took(folder, task_key, run_id, session_id)[0]
+
+    def claim_took(self, folder: str, task_key: str, run_id: str = "",
+                   session_id: str = "") -> tuple[bool, bool]:
+        """`claim`, and WHETHER THIS CALL IS WHAT TOOK THE FOLDER: `(ok, took)`.
+
+        One bool could not tell "I have it now" from "I already had it", and a
+        caller that undoes its claim on a later refusal has to know which it
+        was. Run-now claims the tree, then meets the busy-SESSION arm and hands
+        the tree back — and when the claim was `own`, the thing it handed back
+        was the LIVE turn of the chat this message follows: `turn_ended` on an
+        owner mid-turn, the folder freed, the next task started in the same tree
+        (Bugbot, PR #1194). `took` is False there, so nothing is released and
+        the message is absorbed by the running turn exactly as it is today.
+
+        `took` is True only where the owner before this call was nobody — an
+        empty folder, an expired placeholder, or a placeholder giving way to a
+        real name. False with `ok` True means this conversation already owned
+        it; False with `ok` False means somebody else does."""
         if not folder or not task_key:
-            return False
+            return False, False
         with self._txn() as keys:
             rec = self._folder(folder)
             owner = rec["owner"]
@@ -862,17 +911,17 @@ class QueueManager:
                         owner["run_id"] = _text(run_id)
                     if session_id and not owner["session_id"]:
                         owner["session_id"] = _text(session_id)
-                    return True
+                    return True, False
                 if not (_is_placeholder(owner["task"])
                         and not _is_placeholder(task_key)):
-                    return False
+                    return False, False
                 keys.add(owner["task"])
             for other in self._state["folders"].values():
                 self._take(other, task_key)
             self._own(rec, {"task": task_key, "entry_id": ""}, _text(run_id),
                       _text(session_id))
             keys.add(task_key)
-            return True
+            return True, True
 
     def started(self, folder: str, task_key: str, run_id: str = "",
                 session_id: str = "") -> None:
@@ -927,7 +976,7 @@ class QueueManager:
                 label = _text(task_key) or owner["task"]
                 rec["blocked"].append(
                     {"task": label, "entry_id": owner.get("entry_id", ""),
-                     "promoted": False,
+                     "promoted": False, "resumed": False,
                      "run_id": _text(owner.get("run_id")) or _text(run_id),
                      "session_id": _text(owner.get("session_id"))})
                 self._release(rec, folder, keys)
@@ -1015,9 +1064,26 @@ class QueueManager:
             item = self._take(rec, task_key)
             if item is None:
                 return
-            item["promoted"] = True
-            rec["line"].insert(0, item)
+            # THE HEAD OF THE LINE, BUT NOT AS QUEUED WORK. This run is resuming
+            # right now — the verdict is already on disk and Claude Code read it
+            # — so the item filed here is a RESUME MARKER: the pump gives it the
+            # folder without spawning anything (`_pump`). Filed as ordinary
+            # queued work it named no pending entry, `spawn` answered None, the
+            # pump dropped it and started the NEXT task beside a process that
+            # was already editing that tree.
+            marker = {"task": item["task"], "entry_id": "", "promoted": True,
+                      "run_id": _text(item.get("run_id")) or _text(run_id),
+                      "session_id": _text(item.get("session_id")),
+                      "resumed": True}
+            rec["line"].insert(0, marker)
             keys.add(task_key)
+            # THE ONE CASE TWO PROCESSES CAN OVERLAP, so it is said out loud:
+            # nothing here can stop a run that somebody else un-parked, and the
+            # folder it is editing belongs to another task until that run ends.
+            logger.info("card answered outside the queue while %s held %s; "
+                        "%s will take the folder next",
+                        _text((rec["owner"] or {}).get("task")), folder,
+                        task_key)
 
     def _reown_blocked(self, rec: dict, task_key: str, run_id: str,
                        keys: set) -> bool:
@@ -1174,7 +1240,8 @@ class QueueManager:
                     continue
                 self._folder(folder)["line"].append(
                     {"task": task_key, "entry_id": _text(entry_id),
-                     "promoted": False, "run_id": "", "session_id": ""})
+                     "promoted": False, "run_id": "", "session_id": "",
+                     "resumed": False})
                 known.add(task_key)
                 keys.add(task_key)
 
