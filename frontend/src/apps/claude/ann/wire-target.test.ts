@@ -77,6 +77,7 @@ function deps(state: Rig) {
       tool: () => state.tool,
       composerOpen: () => state.open,
       hl: () => hl,
+      onDoneChord: () => {},
       onEscape: () => {
         state.escapes++;
       },

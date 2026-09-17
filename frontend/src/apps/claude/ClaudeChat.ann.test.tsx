@@ -37,6 +37,7 @@ const { createMemoryParamsStore } = await import("./params/store");
 const { resetAgentDirCacheForTests } = await import("./protocol/agent");
 const { ANN_TAG, PANE_SHOT_TAG } = await import("./protocol/wire");
 const { publishProjectQueueEnabled } = await import("./feature-flag");
+const { isMac } = await import("@platform/lib/platform");
 type Attachment = import("./shots/types").Attachment;
 type AttachApi = import("./ui/attachApi").AttachApi;
 
@@ -186,6 +187,29 @@ function pressEscape(): { defaultPrevented: boolean } {
     preventDefault() {
       (this as { defaultPrevented: boolean }).defaultPrevented = true;
     },
+  };
+  for (const fn of [...keydowns]) fn(ev as unknown as KeyboardEvent);
+  return ev;
+}
+
+/** ⌘↩ / Ctrl+↩ on the chat's own document, spelled for whichever platform the
+ *  suite runs on: `isMod` is EXCLUSIVE, so a hard-coded `metaKey` would pass on
+ *  a Mac and assert nothing in CI. */
+function pressDoneChord(over: Record<string, unknown> = {}): {
+  defaultPrevented: boolean;
+} {
+  const ev = {
+    key: "Enter",
+    metaKey: isMac,
+    ctrlKey: !isMac,
+    shiftKey: false,
+    altKey: false,
+    target: null,
+    defaultPrevented: false,
+    preventDefault() {
+      (this as { defaultPrevented: boolean }).defaultPrevented = true;
+    },
+    ...over,
   };
   for (const fn of [...keydowns]) fn(ev as unknown as KeyboardEvent);
   return ev;
@@ -901,6 +925,119 @@ test("Escape with nothing armed is the HOST's press, not this chat's", async () 
   });
   await settle();
   // Nothing to claim and nothing broken: the seat is still at rest.
+  expect(commentSeat(r).props["aria-pressed"]).toBe("false");
+});
+
+// ---- ⌘↩ -------------------------------------------------------------------
+
+test("⌘↩ in comment mode is ✓ Done — the round goes, and the press is claimed", async () => {
+  // Akshil, 2026-09-17: ✓ Done was a click and only a click, while the note the
+  // reader has just typed leaves them at the keyboard.
+  const { r } = await mountChat();
+  await act(async () => commentSeat(r).props.onClick());
+  await settle();
+  await act(async () => makeNote("this button is too small"));
+  await settle();
+  expect(annChips(r)).toHaveLength(1);
+
+  let ev: { defaultPrevented: boolean } = { defaultPrevented: false };
+  await act(async () => {
+    ev = pressDoneChord();
+  });
+  await settle(30);
+
+  // The same three things the button does: send, disarm, hand the nav lock back.
+  expect(started()).toHaveLength(1);
+  expect(started()[0]!.params.message).toContain("this button is too small");
+  expect(commentSeat(r).props["aria-pressed"]).toBe("false");
+  expect(rootClass(r)).not.toContain("annlock");
+  expect(ev.defaultPrevented).toBe(true);
+});
+
+test("⌘↩ STRAIGHT FROM THE OPEN CARD sends the note the reader never saved", async () => {
+  // THE GESTURE THE BUG WAS FOUND IN (Akshil, 2026-09-17): "i had comment open
+  // and i typed comment and i directly pressed [cmd+]enter". No Enter first, so
+  // the note exists only in the card until `done()` commits it — and the send
+  // it then asks for happens in the SAME microtask, before any paint.
+  const { r } = await mountChat();
+  await act(async () => commentSeat(r).props.onClick());
+  await settle();
+  const ann = annotationsForTests()!;
+  ann.bindPop(POP.pop);
+  clickInApp(BODY as unknown as Element);
+  await settle();
+  POP.ta.value = "this button is too small";
+
+  await act(async () => {
+    pressDoneChord();
+  });
+  await settle(30);
+
+  // It went, words and all — and the round is finished, not stranded.
+  expect(started()).toHaveLength(1);
+  expect(started()[0]!.params.message).toContain("this button is too small");
+  expect(annChips(r)).toHaveLength(0);
+  expect(commentSeat(r).props["aria-pressed"]).toBe("false");
+});
+
+test("a ⌘↩ the chat CANNOT take keeps the round armed, with the chips standing", async () => {
+  // `set(false)` used to run whether or not anything was sent, so every road on
+  // which the composer refuses — a send already out, a pending scheduled
+  // message, an upload in flight — ended with the mode gone and the notes
+  // sitting as chips nobody had been handed (Akshil, 2026-09-17).
+  const open = heldStart();
+  const { r } = await mountChat();
+  // A first message, parked mid-`start`: the send window's latch is closed, so
+  // the composer refuses everything until it opens.
+  await typeInBox(r, "first message");
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle();
+  expect(started()).toHaveLength(1);
+
+  await act(async () => commentSeat(r).props.onClick());
+  await settle();
+  await act(async () => makeNote("and this label is wrong"));
+  await settle();
+
+  await act(async () => {
+    pressDoneChord();
+  });
+  await settle();
+
+  // NOTHING WAS SENT — and nothing was lost either: the mode, the lock and the
+  // chip are all still here, so the next ⌘↩ is the retry.
+  expect(started()).toHaveLength(1);
+  expect(annChips(r)).toHaveLength(1);
+  expect(commentSeat(r).props["aria-pressed"]).toBe("true");
+  expect(rootClass(r)).toContain("annlock");
+  // …and the reader is told, rather than left to notice.
+  expect(JSON.stringify(r.toJSON())).toContain("Your notes were not sent");
+
+  // The door opens, the same press finishes the round.
+  await act(async () => open());
+  await settle(30);
+  await act(async () => {
+    pressDoneChord();
+  });
+  await settle(30);
+  expect(started()).toHaveLength(2);
+  expect(started()[1]!.params.message).toContain("and this label is wrong");
+  expect(commentSeat(r).props["aria-pressed"]).toBe("false");
+  expect(annChips(r)).toHaveLength(0);
+});
+
+test("⌘↩ with nothing armed is nobody's press", async () => {
+  const { r } = await mountChat();
+  let ev: { defaultPrevented: boolean } = { defaultPrevented: false };
+  await act(async () => {
+    ev = pressDoneChord();
+  });
+  await settle();
+  // Unclaimed, so whatever owns the chord outside annotate mode still gets it.
+  expect(ev.defaultPrevented).toBe(false);
+  expect(started()).toHaveLength(0);
   expect(commentSeat(r).props["aria-pressed"]).toBe("false");
 });
 

@@ -9,7 +9,8 @@ import { describe, expect, test } from "bun:test";
 
 const { createMemoryParamsStore } = await import("../params/store");
 const { createAnnStore } = await import("./store");
-const { createAnnMode, escapeAction, walkthroughOwns } = await import("./mode");
+const { createAnnMode, escapeAction, isDoneChord, walkthroughOwns } = await import("./mode");
+const { isMac } = await import("@platform/lib/platform");
 import type { AnnMode, AnnRecorder } from "./types";
 
 interface Rig {
@@ -39,6 +40,11 @@ interface Rig {
   finishSettle(to: "off" | "transcribing"): void;
   capable: { value: boolean };
   canSend: { value: boolean };
+  /** What the composer's `submit` answers — false is every road it refuses on
+   *  (blocked box, upload in flight, send already out, no composer mounted). */
+  submits: { ok: boolean };
+  /** Why the round was refused, as `done()` reported it. */
+  refusals: string[];
   composer: { open: boolean; text: string };
   /** Resolves the pending `commitDraft`, so a test can hold the await open the
    *  way a real save does. */
@@ -53,6 +59,8 @@ function rig(opts: { params?: Record<string, string>; capable?: boolean } = {}):
   const rec = { on: false, phase: null as null | "settling" | "transcribing", ended: 0, discarded: 0, abandoned: 0 };
   const capable = { value: opts.capable ?? true };
   const canSend = { value: true };
+  const submits = { ok: true };
+  const refusals: string[] = [];
   const composer = { open: false, text: "" };
   let releaseCommit: () => void = () => {};
   const recorder: AnnRecorder = {
@@ -95,7 +103,14 @@ function rig(opts: { params?: Record<string, string>; capable?: boolean } = {}):
       log.push("close");
     },
     hideHl: () => log.push("hideHl"),
-    autoSubmit: () => log.push("submit"),
+    autoSubmit: () => {
+      log.push("submit");
+      return submits.ok;
+    },
+    onSendRefused: (why) => {
+      refusals.push(why);
+      log.push("refused:" + why);
+    },
     canSend: () => canSend.value,
     xo: () => false,
     now: () => 5000,
@@ -109,6 +124,8 @@ function rig(opts: { params?: Record<string, string>; capable?: boolean } = {}):
     recorder,
     capable,
     canSend,
+    submits,
+    refusals,
     composer,
     releaseCommit: () => releaseCommit(),
     beginSettle() {
@@ -363,6 +380,92 @@ describe("§D — comment → off", () => {
     expect(r.store.pending()).toHaveLength(1);
   });
 
+  // ---- A REFUSED SEND KEEPS THE ROUND (Akshil, 2026-09-17) -----------------
+  //
+  // "when i had comment open and i typed comment and i directly pressed
+  // [cmd+]enter, it exited annotation mode and my comment saved but it didn't
+  // push it in the chat."
+  //
+  // `set(false)` used to run on EVERY road out of `done()`, including the two
+  // on which nothing was sent, so a refusal read exactly like a success: the
+  // mode went, the pins went, the bar went, and the round was left as a row of
+  // chips with no sign that Claude had never been handed them.
+
+  test("a composer that REFUSES the send leaves the round armed and says why", async () => {
+    const r = rig();
+    r.machine.set(true);
+    r.store.add({ content: "make it blue" });
+    r.submits.ok = false;
+
+    await r.machine.done();
+
+    // It tried — the refusal is the composer's, not a door that never opened.
+    expect(r.log.filter((l) => l === "submit")).toHaveLength(1);
+    // …and the mode is still here, which is what makes the next ⌘↩ the retry.
+    expect(modeOf(r)).toBe("comment");
+    expect(r.machine.armed()).toBe(true);
+    expect(r.machine.locked()).toBe(true);
+    expect(r.store.pending()).toHaveLength(1);
+    expect(r.refusals).toEqual(["refused"]);
+  });
+
+  test("the same ⌘↩ a moment later is the retry, and it finishes the round", async () => {
+    const r = rig();
+    r.machine.set(true);
+    r.store.add({ content: "make it blue" });
+    r.submits.ok = false;
+    await r.machine.done();
+    expect(modeOf(r)).toBe("comment");
+
+    r.submits.ok = true;
+    await r.machine.done();
+    expect(r.log.filter((l) => l === "submit")).toHaveLength(2);
+    expect(modeOf(r)).toBe("off");
+  });
+
+  test("the `starting` window keeps the round too, and names its own reason", async () => {
+    const r = rig();
+    r.machine.set(true);
+    r.store.add({ content: "words" });
+    r.canSend.value = false;
+
+    await r.machine.done();
+
+    expect(r.log).not.toContain("submit");
+    expect(modeOf(r)).toBe("comment");
+    expect(r.machine.armed()).toBe(true);
+    expect(r.refusals).toEqual(["starting"]);
+  });
+
+  test("a round with NOTHING to send still disarms — a refusal needs something refused", async () => {
+    // The mode is not held open by a composer that would have said no to a
+    // message there was never going to be: ✓ Done on an empty round is the
+    // reader saying "I am finished", and it finishes.
+    const r = rig();
+    r.machine.set(true);
+    r.submits.ok = false;
+    r.canSend.value = false;
+    await r.machine.done();
+    expect(r.log).not.toContain("submit");
+    expect(r.refusals).toEqual([]);
+    expect(modeOf(r)).toBe("off");
+  });
+
+  test("the note typed into the open card is committed BEFORE the round is judged", async () => {
+    // The ⌘↩ the reader actually presses: one note, typed, never saved by hand.
+    // `done()` has to commit it and then see it — a `pending` read taken before
+    // the commit would call this an empty round and disarm without sending.
+    const r = rig();
+    r.machine.set(true);
+    r.composer.open = true;
+    r.composer.text = "this button is too small";
+    const done = r.machine.done();
+    r.releaseCommit();
+    await done;
+    expect(r.log.filter((l) => l === "submit")).toHaveLength(1);
+    expect(modeOf(r)).toBe("off");
+  });
+
   test("ONE Done at a time (Bugbot #664): a second click inside the commit's await cannot re-send", async () => {
     const r = rig();
     r.machine.set(true);
@@ -580,6 +683,33 @@ describe("who claims Escape (T:15950)", () => {
     expect(escapeAction(false, true, true)).toBe("close-composer");
     expect(escapeAction(false, false, true)).toBe("exit-annotate");
     expect(escapeAction(false, false, false)).toBe("");
+  });
+});
+
+describe("who claims ⌘↩", () => {
+  /** Spelled for whichever platform the suite runs on: `isMod` is exclusive, so
+   *  a hard-coded `metaKey` would pass on a Mac and assert nothing in CI. */
+  const chord = (over: Partial<KeyboardEvent> = {}) =>
+    ({
+      key: "Enter",
+      metaKey: isMac,
+      ctrlKey: !isMac,
+      shiftKey: false,
+      altKey: false,
+      ...over,
+    }) as KeyboardEvent;
+
+  test("the primary modifier and Enter, and nothing else", () => {
+    expect(isDoneChord(chord())).toBe(true);
+    // A bare Enter is the note composer's SAVE and must stay its own.
+    expect(isDoneChord(chord({ metaKey: false, ctrlKey: false }))).toBe(false);
+    // The other modifier: Ctrl+Enter on a Mac, Cmd+Enter off one.
+    expect(isDoneChord(chord({ metaKey: !isMac, ctrlKey: isMac }))).toBe(false);
+    // Shift is the composer's newline, Alt is the tool override — both held
+    // mean a press aimed at something else in this very mode.
+    expect(isDoneChord(chord({ shiftKey: true }))).toBe(false);
+    expect(isDoneChord(chord({ altKey: true }))).toBe(false);
+    expect(isDoneChord(chord({ key: "a" }))).toBe(false);
   });
 });
 

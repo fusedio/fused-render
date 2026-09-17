@@ -427,6 +427,51 @@ test("the seat with NO seed is ✓ Done: notes alone, and a refusal says so", ()
   expect(answered).toBe(false);
 });
 
+test("✓ Done's round is asked for LIVE, not read off the last paint", () => {
+  // THE ⌘↩ BUG (Akshil, 2026-09-17). ✓ Done commits the open note card and
+  // presses this seat inside one microtask: the store has the note, React has
+  // not painted, so `hasAttachments` — a render-time snapshot taken before that
+  // write — still says the message carries nothing. The send refused, and the
+  // mode machine disarmed anyway: "my comment saved but it didn't push it in
+  // the chat".
+  //
+  // `hasAttachmentsNow` is called HERE, in the tick the send happens, which is
+  // the whole of the difference.
+  const seat: Seat = { current: null };
+  let round = false;
+  const c = mount({ submitRef: seat, hasAttachments: false, hasAttachmentsNow: () => round });
+
+  // Nothing to carry, an empty box: refused, exactly as before.
+  let answered = true;
+  act(() => {
+    answered = seat.current!();
+  });
+  expect(answered).toBe(false);
+  expect(c.sent).toHaveLength(0);
+
+  // A note lands in the store. NO re-render, no new props — this is the state
+  // the real ✓ Done presses in.
+  round = true;
+  act(() => {
+    answered = seat.current!();
+  });
+  expect(answered).toBe(true);
+  expect(c.sent.map((x) => x.text)).toEqual([""]);
+});
+
+test("the live round does not override the doors that refuse for a REASON", () => {
+  // It answers "is there something to send", never "send it anyway": a blocked
+  // box still refuses, and the caller still hears `false`.
+  const shut: Seat = { current: null };
+  const c = mount({ submitRef: shut, blocked: true, hasAttachmentsNow: () => true });
+  let answered = true;
+  act(() => {
+    answered = shut.current!();
+  });
+  expect(answered).toBe(false);
+  expect(c.sent).toHaveLength(0);
+});
+
 test("the send window's latch refuses the second submit and KEEPS its words", () => {
   // The parent takes the latch inside `onSend`, in the very tick this call is
   // made — which is the race: a second Enter arriving before React has
