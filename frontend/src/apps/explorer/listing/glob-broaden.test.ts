@@ -7,20 +7,31 @@ import { describe, expect, test } from "bun:test";
 import { broadenGlobOffer, broadenGlobPattern } from "@apps/explorer/listing/glob-broaden";
 
 describe("broadenGlobOffer", () => {
-  test("widens the name first: a trailing * is appended when the query lacks one", () => {
+  // Follow-up (search-trailing-space): `expand_whitespace_query`/
+  // `expandWhitespaceQuery` now wrap a glob query's final segment in a
+  // trailing "*" whenever it doesn't already have one — so the RESOLVED
+  // pattern for "/home/iamsdas/*.js" was ALREADY "/home/iamsdas/*.js*"
+  // before any widening. Rung 1 ("widen the name") appending that same
+  // trailing "*" to the raw text resolves to the identical pattern — not a
+  // genuine widen — so the ladder now falls straight through to rung 2 for
+  // every one of these. See glob-broaden.ts's `genuinelyWidens`.
+  test("rung 1 is a no-op once the trailing * is already implied; falls through to subfolders", () => {
     const offer = broadenGlobOffer("/home/iamsdas/*.js");
-    expect(offer).toEqual({ pattern: "/home/iamsdas/*.js*", label: "Widen the name" });
+    expect(offer).toEqual({ pattern: "/home/iamsdas/**/*.js", label: "Look in subfolders" });
   });
 
-  test("a relative two-segment pattern is widened the same way", () => {
+  test("a relative two-segment pattern falls through to subfolders the same way", () => {
     expect(broadenGlobOffer("*/*.json")).toEqual({
-      pattern: "*/*.json*",
-      label: "Widen the name",
+      pattern: "*/**/*.json",
+      label: "Look in subfolders",
     });
   });
 
-  test("a depth-1 anchor at the box root (leading slash, no further segment) widens by name too", () => {
-    expect(broadenGlobOffer("/*.csv")).toEqual({ pattern: "/*.csv*", label: "Widen the name" });
+  test("a depth-1 anchor at the box root (leading slash, no further segment) falls through too", () => {
+    expect(broadenGlobOffer("/*.csv")).toEqual({
+      pattern: "/**/*.csv",
+      label: "Look in subfolders",
+    });
   });
 
   test("looks in subfolders next: offered once the query already ends in *", () => {
@@ -46,12 +57,17 @@ describe("broadenGlobOffer", () => {
     expect(broadenGlobOffer("/home/iamsdas/**/*.js")).toBeNull();
   });
 
-  test("a bare, slash-free glob still gets name-widened", () => {
+  test("a bare, slash-free glob has nothing left to offer", () => {
     // Slash-free is already maximally broad on the SUBFOLDER dimension
     // (resolve_query's own implicit **/ prefix already covers every depth),
-    // but the NAME dimension is untouched — catching ".jsx"/".json" here is
-    // still a genuine widen.
-    expect(broadenGlobOffer("*.js")).toEqual({ pattern: "*.js*", label: "Widen the name" });
+    // and — as of the search-trailing-space follow-up — the NAME dimension
+    // is now ALSO already at its broadest: `expandWhitespaceQuery("*.js")`
+    // already resolves to "*.js*", so rung 1 offering to append that same
+    // "*" is not a genuine widen, and there is no "/" for rung 2 to work
+    // with either. This is the accepted precision-glob-loss consequence
+    // (DECISIONS.md), not a bug: a bare `*.js` search already matches
+    // ".jsx"/".json" everywhere, so there is nothing broader left to offer.
+    expect(broadenGlobOffer("*.js")).toBeNull();
   });
 
   test("not a glob at all — no widening exists to offer", () => {
@@ -91,10 +107,14 @@ describe("broadenGlobOffer", () => {
 
 describe("broadenGlobPattern (pattern text only, for callers that don't need the label)", () => {
   test("returns the winning rung's pattern", () => {
-    expect(broadenGlobPattern("/home/iamsdas/*.js")).toBe("/home/iamsdas/*.js*");
+    expect(broadenGlobPattern("/home/iamsdas/*.js")).toBe("/home/iamsdas/**/*.js");
   });
 
   test("null when the ladder offers nothing", () => {
     expect(broadenGlobPattern("readme")).toBeNull();
+  });
+
+  test("null when the ladder's only candidate resolves identically (search-trailing-space)", () => {
+    expect(broadenGlobPattern("*.js")).toBeNull();
   });
 });

@@ -105,7 +105,16 @@ function base() {
 
 describe("settledZeroMatchOffer", () => {
   test("offers to broaden a genuinely settled, zero-hit glob search", () => {
-    expect(settledZeroMatchOffer(base())).toEqual({ pattern: "*.txt*", label: "Widen the name" });
+    // A slash-free "*.txt" no longer has a genuine rung-1 widen of its own
+    // (search-trailing-space follow-up: `expandWhitespaceQuery` already
+    // resolves it to "*.txt*", so appending another trailing "*" reruns the
+    // identical pattern — see glob-broaden.test.ts). A query with a "/" still
+    // has a genuine rung-2 widen ("look in subfolders"), so that is what
+    // this test exercises the pass-through with.
+    expect(settledZeroMatchOffer({ ...base(), q: "/home/x/*.txt" })).toEqual({
+      pattern: "/home/x/**/*.txt",
+      label: "Look in subfolders",
+    });
   });
 
   // The finding itself: `scanPending` is false and `searchState` is still

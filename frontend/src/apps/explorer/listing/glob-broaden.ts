@@ -14,6 +14,21 @@
 // depth, so the SUBFOLDER dimension is already maximally broad for a
 // slash-free query — but the NAME dimension is untouched, and rung 1 still
 // applies to it.
+//
+// Follow-up (search-trailing-space): `expand_whitespace_query` now wraps
+// EVERY glob-mode query's final segment in a trailing "*" too, not only a
+// whitespace-derived one (see home-search.ts's own doc comment) — so by the
+// time a search is glob-mode and zero-hit, the ACTUAL pattern the server ran
+// already ends in "*". Rung 1 ("append a trailing * to the raw query text")
+// can therefore no longer be assumed to widen anything just because the RAW
+// text doesn't end in "*" — the string comparison the ladder used to make
+// its "genuinely widens" decision on has to run each candidate back through
+// `expandWhitespaceQuery` and compare the RESOLVED patterns, not the raw
+// query text, or it will offer a rerun that resolves to the exact same
+// pattern that already returned zero hits (this exact bug, previously fixed
+// for the whitespace-only case below, generalizes to every glob query now).
+
+import { expandWhitespaceQuery } from "@apps/explorer/lib/home-search";
 
 // One rung of the ladder: what a person would call this widening (shown
 // beside the resulting pattern in the offer row), and how to derive the
@@ -76,21 +91,35 @@ export interface BroadenOffer {
 
 // A whitespace-only query (no literal `*` typed at all) DOES settle in
 // `mode: "glob"` server-side (SPEC-search-space-wildcard.md §1), but this
-// ladder's rungs have nothing genuinely broader to offer it: expand_whitespace_query
-// already wraps the final segment in a leading AND trailing `*` (`hello
-// world` -> `*hello*world*`) whenever that segment has no user-typed `*` of
-// its own. Rung 1 ("widen the name") only appends a TRAILING `*` to the raw
-// query text; run back through expand_whitespace_query, that text now
-// contains a user-typed `*` on its last segment, so the implied leading `*`
-// is suppressed — the "widened" pattern drops the leading wildcard the
-// original search already had. That is not broader, it is a strict subset,
-// which is exactly how this ladder previously offered a widened query that
-// was guaranteed to also return zero hits (findings review). So a query is
-// only treated as glob-like here when it carries a literal `*` the ladder
-// can safely extend — pure whitespace queries are already at their
-// broadest expressible form and get no offer.
+// ladder never gets to see it as a genuine widen candidate: it is gated out
+// here, kept deliberately conservative rather than generalized to "would
+// this resolve to glob mode" — a query with no literal `*` is left entirely
+// to the substring-mode UI elsewhere. A query IS treated as glob-like once
+// it carries a literal `*` anywhere.
 function looksLikeGlob(query: string): boolean {
   return query.includes("*");
+}
+
+// Whether running `candidate` through the SAME transform the server applies
+// (`expandWhitespaceQuery`, mirroring `expand_whitespace_query` in
+// fused_render/index/query.py) would actually search something different
+// from what `current` already searched and got zero hits for.
+//
+// This is required, not optional, now that `expandWhitespaceQuery` always
+// wraps a glob-mode query's final segment in a trailing `*` (search-
+// trailing-space follow-up): comparing the RAW rung output against the RAW
+// query — this ladder's original check — used to be a safe proxy for "will
+// this search something new" back when only a whitespace-derived query got
+// an implied wildcard. It no longer is. `/home/x/*.js` and `/home/x/*.js*`
+// are different raw strings but now resolve to the IDENTICAL server pattern
+// ("/home/x/*.js*"), because the trailing `*` rung 1 would add was already
+// implied. Comparing raw strings would offer that rerun anyway — a rerun
+// guaranteed to return the same zero hits, exactly the bug a previous round
+// hit for the whitespace-only case (see the `looksLikeGlob` doc comment
+// above and DECISIONS.md) — so every rung's output is checked against the
+// RESOLVED pattern here, not the raw text.
+function genuinelyWidens(current: string, candidate: string): boolean {
+  return expandWhitespaceQuery(candidate) !== expandWhitespaceQuery(current);
 }
 
 // Walks the ladder in order and returns the first rung that actually
@@ -102,7 +131,9 @@ export function broadenGlobOffer(query: string): BroadenOffer | null {
   if (alreadyMaximallyBroadOnDepth(query)) return null;
   for (const rung of RUNGS) {
     const pattern = rung.widen(query);
-    if (pattern !== null && pattern !== query) return { pattern, label: rung.label };
+    if (pattern !== null && pattern !== query && genuinelyWidens(query, pattern)) {
+      return { pattern, label: rung.label };
+    }
   }
   return null;
 }
