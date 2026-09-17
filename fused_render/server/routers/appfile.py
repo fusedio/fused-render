@@ -146,6 +146,23 @@ def _export_destination_dir() -> str:
     return d
 
 
+def _export_file_name(path: str, name: str) -> str:
+    """The ``.fused`` file's own name: the caller's display name when one is
+    given, the app folder's own basename otherwise.
+
+    A caller building a versioned export (`AppPage.tsx`/`EntryActionsMenu.tsx`
+    compute `${name}-${versionLabel}`) does so specifically so a v7 snapshot
+    export never lands beside a live export under the same ambiguous name —
+    `os.path.basename` strips any directory component a request body could
+    otherwise smuggle in, so this can only ever choose a bare filename inside
+    `dest_dir`, never escape it.
+    """
+    base = os.path.basename((name or "").strip())
+    if not base:
+        return appfile.default_file_name(path)
+    return base if base.lower().endswith(".fused") else base + ".fused"
+
+
 def _unique_export_path(dest_dir: str, file_name: str) -> str:
     """The first name in `dest_dir` that does not already exist — `App.fused`,
     then `App (2).fused`, `App (3).fused`, ... `export_app_file` itself
@@ -164,12 +181,16 @@ def _unique_export_path(dest_dir: str, file_name: str) -> str:
 @router.post("/api/appfile/export/save")
 async def api_appfile_export_to_disk(
     path: str = Form(default=""),
+    name: str = Form(default=""),
     preview: UploadFile | None = File(default=None),
     x_fused: str | None = Header(default=None),
 ):
-    """Write ``<app name>.fused`` straight to the platform Downloads folder
-    and report its real path, instead of handing the browser a blob it saves
-    wherever the user's download settings land it.
+    """Write ``<name>.fused`` straight to the platform Downloads folder and
+    report its real path, instead of handing the browser a blob it saves
+    wherever the user's download settings land it. ``name`` is the caller's
+    own display name for the file (a version export's own
+    ``${name}-${versionLabel}``, see `_export_file_name`); it falls back to
+    the app folder's own basename when blank.
 
     This is what makes the export immediately searchable: writing through
     the browser leaves the real destination unknown to the server, so the
@@ -198,7 +219,7 @@ async def api_appfile_export_to_disk(
         if not preview_bytes or len(preview_bytes) > appfile.MAX_PREVIEW_BYTES:
             preview_bytes = None
     dest_dir = _export_destination_dir()
-    file_name = appfile.default_file_name(path)
+    file_name = _export_file_name(path, name)
     out_path = _unique_export_path(dest_dir, file_name)
     try:
         appfile.export_app_file(path, out_path, preview_bytes=preview_bytes)

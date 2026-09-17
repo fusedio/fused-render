@@ -71,3 +71,17 @@ test("the preview header crops the SHOWN frame, which is the painted one", () =>
   // satisfies the same contract without needing the card's attribute.
   expect(PREVIEW).toContain('document.querySelector(".preview-frame.is-shown")');
 });
+
+// -- the export's own display name must reach the disk write ----------------
+
+// AppPage.tsx and EntryActionsMenu.tsx both compute a version-suffixed
+// `exportName` (`${name}-${versionLabel}`) specifically so a v7 snapshot
+// export never collides with a live export in Downloads. That name has
+// nowhere to go once it leaves this function's own call to
+// saveAppFileToDisk — losing it here silently makes every export land under
+// the app folder's own basename instead.
+test("exportAppFile threads the caller's own display name into the disk write", () => {
+  const fn = SHOT.slice(SHOT.indexOf("export async function exportAppFile("));
+  const body = fn.slice(0, fn.indexOf("\n}"));
+  expect(body).toContain("saveAppFileToDisk(app.path, app.name, preview)");
+});

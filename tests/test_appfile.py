@@ -409,6 +409,61 @@ def test_export_to_disk_writes_the_real_file_and_notes_the_mutation(tmp_path, mo
     assert r3.status_code == 403
 
 
+def test_export_to_disk_uses_the_callers_display_name(tmp_path, monkeypatch):
+    """AppPage.tsx and EntryActionsMenu.tsx compute a version-suffixed name
+    (`${name}-${versionLabel}`) specifically so a snapshot export never
+    collides with a live export of the same app in Downloads. That name must
+    become the written file's actual name, not just something the caller
+    discards after computing it."""
+    from fastapi.testclient import TestClient
+
+    from fused_render import appfile, appfile_container
+    from fused_render.server.routers import appfile as appfile_router
+    from fused_render.server.app import create_app
+
+    monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    dest_dir = tmp_path / "downloads"
+    dest_dir.mkdir()
+    monkeypatch.setattr(
+        appfile_router, "_export_destination_dir", lambda: str(dest_dir)
+    )
+    monkeypatch.setattr(appfile_router, "note_index_mutation", lambda *paths: None)
+
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    app_dir = make_app(tmp_path)
+
+    r = client.post(
+        "/api/appfile/export/save",
+        data={"path": str(app_dir), "name": "myapp-v7"},
+        headers={"X-Fused": "1"},
+    )
+    assert r.status_code == 200
+    out_path = r.json()["path"]
+    assert os.path.basename(out_path) == "myapp-v7.fused"
+    assert appfile_container.is_container(out_path)
+
+    # A second export under the SAME sha/name never collides into the plain
+    # app-folder basename either — it gets a free sibling of the requested
+    # name, not of the fallback.
+    r2 = client.post(
+        "/api/appfile/export/save",
+        data={"path": str(app_dir), "name": "myapp-v7"},
+        headers={"X-Fused": "1"},
+    )
+    out_path2 = r2.json()["path"]
+    assert os.path.basename(out_path2) == "myapp-v7 (2).fused"
+
+    # No name at all still falls back to the app folder's own basename.
+    r3 = client.post(
+        "/api/appfile/export/save",
+        data={"path": str(app_dir)},
+        headers={"X-Fused": "1"},
+    )
+    out_path3 = r3.json()["path"]
+    assert os.path.basename(out_path3) == f"{os.path.basename(str(app_dir))}.fused"
+
+
 def test_export_to_disk_job_row_is_silent(tmp_path, monkeypatch):
     """The route's own success job must not ALSO pop a card: the client
     already raises its own two-action notification ("Reveal folder" /

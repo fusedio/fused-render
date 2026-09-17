@@ -108,7 +108,7 @@ export async function exportAppFile(
     !app.preview_image && app.entry_html
       ? await captureAppPreview(app.entry_html, captureEl)
       : undefined;
-  return saveAppFileToDisk(app.path, preview);
+  return saveAppFileToDisk(app.path, app.name, preview);
 }
 
 // Whether `el`'s box is fully inside the viewport and big enough that a shot
