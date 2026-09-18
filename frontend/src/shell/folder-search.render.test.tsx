@@ -154,6 +154,8 @@ async function openCard(
   hangSearch = false,
   slowDir = "",
   searchDelay = 0,
+  lateHome: Promise<void> | null = null,
+  ignoreAbort = false,
 ) {
   const { default: NewJobModal } = await import("./NewJobModal");
   installWindowTimers();
@@ -196,6 +198,11 @@ async function openCard(
         const t = setTimeout(() => resolve({
           ok: true, status: 200, json: () => Promise.resolve(body),
         } as unknown as Response), searchDelay);
+        // `ignoreAbort` IS THE RACE ITSELF: aborting is a request to stop, and a
+        // reply already on the wire lands anyway. Without it every cancelled
+        // request rejects tidily and the stale-SUCCESS path is unreachable —
+        // which is exactly how it survived review.
+        if (ignoreAbort) return;
         init?.signal?.addEventListener("abort", () => {
           clearTimeout(t);
           const err = new Error("aborted");
@@ -204,7 +211,12 @@ async function openCard(
         });
       });
     }
-    if (u.startsWith("/api/config")) return json({ home: "/Users/me" });
+    if (u.startsWith("/api/config")) {
+      // `home` arrives from here, and a test can hold it to watch what the card
+      // does with a `~` path before it has one.
+      return lateHome ? lateHome.then(() => json({ home: "/Users/me" }))
+                      : json({ home: "/Users/me" });
+    }
     // THE PATH CHECK. By default every path the field holds EXISTS — `listDir`
     // answers, the verdict is "ok", and no "New folder" row joins the list. A
     // test that wants that row passes `missing`: the typed path then fails to
@@ -213,6 +225,9 @@ async function openCard(
     if (u.startsWith("/api/fs/list")) {
       const at = decodeURIComponent((u.split("path=")[1] ?? "").split("&")[0]);
       if (missing && at === missing) return Promise.reject(new Error("no such dir"));
+      // NO DISK HAS A FOLDER CALLED `~`. A fixture that answered one would let
+      // a card that never expanded the tilde look perfectly healthy.
+      if (at.startsWith("~")) return Promise.reject(new Error("no such dir"));
       // THE COMPLETION SOURCE. Keyed by the folder being listed, so a test can
       // stage one directory's children and watch the field complete through
       // them; anything not staged lists empty, which is the ordinary case and
@@ -773,4 +788,122 @@ test("`~/…` still offers ONE new folder when the leaf is really absent", async
   expect(newFolderRow(b).length).toBe(1);
   expect(b.root.findAll(
     (n) => String(n.props?.className ?? "").includes("schedule-form-bad")).length).toBe(0);
+});
+
+// ---- the two waits are not one wait ------------------------------------------
+//
+// Bugbot, PR #1213: "path check freezes folder dropdown". One flag covered both
+// the lookup engines and the 400ms path-stat that follows every keystroke, and
+// the wash it drove carried `pointer-events: none` — so for 400ms after each
+// letter the whole panel was dimmed and dead, including rows that had been
+// sitting there answered for a second.
+
+/** Is this row still pressable — i.e. does it still carry its handler and is the
+ *  panel not claiming otherwise. */
+function rowsClickable(b: ReactTestRenderer): boolean {
+  const rows = b.root.findAll((n) => n.type === "button" && n.props.role === "option");
+  return rows.length > 0 && rows.every((r) => typeof r.props.onClick === "function");
+}
+
+test("a query too short to search shows no loading at all", async () => {
+  // One letter never reaches the index (`FOLDER_SEARCH_MIN`), so there is no
+  // lookup to wait for — and the path check's own wait is not the list's.
+  const b = await openCard([], [], "", DESKTOP);
+  await act(async () => { pathField(b).props.onFocus({}); });
+  await act(async () => { pathField(b).props.onChange({ target: { value: "a" } }); });
+  await act(async () => { await new Promise((r) => setTimeout(r, 40)); });
+
+  expect(waitRows(b).length).toBe(0);
+  expect(panelLoading(b)).toBe(false);
+});
+
+test("the path check alone never dims or disables the rows", async () => {
+  // The rows are answered and on screen; the stat that follows the next
+  // keystroke says nothing about them.
+  const b = await openCard(["/Users/me/Desktop/annfocus-repro"], [], "", DESKTOP);
+  await act(async () => { pathField(b).props.onFocus({}); });
+  await act(async () => { pathField(b).props.onChange({ target: { value: "ann" } }); });
+  await settle();
+  expect(pathRowLabels(b).length).toBeGreaterThan(0);
+
+  // Type on. Between the search settling and the 400ms verdict landing there is
+  // a window that used to be dead.
+  await act(async () => { pathField(b).props.onChange({ target: { value: "annf" } }); });
+  await act(async () => { await new Promise((r) => setTimeout(r, 330)); });
+
+  expect(panelLoading(b)).toBe(false);
+  expect(rowsClickable(b)).toBe(true);
+});
+
+test("the wash lasts exactly as long as the SEARCH does", async () => {
+  const b = await openCard([], [], "", DESKTOP, /* hangSearch */ true);
+  await act(async () => { pathField(b).props.onFocus({}); });
+  await act(async () => { pathField(b).props.onChange({ target: { value: "zzzz" } }); });
+  await settle();
+  expect(panelLoading(b)).toBe(true);
+
+  // …and when it settles, the wash goes even though the verdict may not have.
+  const done = await openCard([], [], "", DESKTOP);
+  await act(async () => { pathField(done).props.onFocus({}); });
+  await act(async () => { pathField(done).props.onChange({ target: { value: "zzzz" } }); });
+  await settle();
+  expect(panelLoading(done)).toBe(false);
+});
+
+// ---- a superseded answer is not news ------------------------------------------
+
+test("an older search that lands late is discarded, and loading stays", async () => {
+  // Bugbot: "stale search wins after abort". Aborting is a REQUEST to stop, not
+  // a guarantee of having stopped — a reply that settled in the moment before
+  // the next keystroke fired still resolves. Taking it painted the previous
+  // query's folders under the newer query's text AND cleared loading while a
+  // newer request was still out, which let the empty state speak again.
+  //
+  // Staged with a search that answers slowly enough for two to overlap: the
+  // first is armed, the second supersedes it, and the first's reply arrives
+  // afterwards.
+  const b = await openCard(["/Users/me/Desktop/annfocus-repro"], [], "", DESKTOP,
+                           false, "", /* searchDelay */ 400, null,
+                           /* ignoreAbort */ true);
+  await act(async () => { pathField(b).props.onFocus({}); });
+  await act(async () => { pathField(b).props.onChange({ target: { value: "ann" } }); });
+  // Past the debounce, so the first request is genuinely out…
+  await act(async () => { await new Promise((r) => setTimeout(r, 260)); });
+  // …and superseded before it can answer.
+  await act(async () => { pathField(b).props.onChange({ target: { value: "annfocus" } }); });
+  // Long enough for the FIRST reply to arrive (t≈600ms: armed at 200, +400 to
+  // answer), and short of the second's (t≈860ms: armed at 460).
+  await act(async () => { await new Promise((r) => setTimeout(r, 420)); });
+
+  // Its rows were never taken, and the wait is still the newer request's.
+  expect(pathRowLabels(b)).toEqual([]);
+  expect(panelLoading(b)).toBe(true);
+  expect(emptyLine(b).length).toBe(0);
+});
+
+// ---- `~` before home has landed ----------------------------------------------
+
+test("`~/…` typed before home arrives says nothing, then answers", async () => {
+  // Bugbot: "tilde check ignores loaded home". `home` comes from `/api/config` a
+  // beat after mount; a `~` path typed or pasted before it landed was probed
+  // literally and drew the red line — and the check never re-ran, so it stayed.
+  let landHome!: () => void;
+  const held = new Promise<void>((r) => { landHome = r; });
+  const b = await openCard([], [], "", { "/Users/me/Desktop": DESKTOP["/Users/me/Desktop"] },
+                           false, "", 0, held);
+  await act(async () => { pathField(b).props.onFocus({}); });
+  await act(async () => { pathField(b).props.onChange({ target: { value: "~/Desktop/ann" } }); });
+  await settle();
+
+  // Nothing is claimed about a path the card cannot resolve yet.
+  const redLine = () => b.root.findAll(
+    (n) => String(n.props?.className ?? "").includes("schedule-form-bad"));
+  expect(redLine().length).toBe(0);
+  expect(newFolderRow(b).length).toBe(0);
+
+  // …and when home lands the check runs, with no red line and real rows.
+  await act(async () => { landHome(); });
+  await settle();
+  expect(redLine().length).toBe(0);
+  expect(pathRowLabels(b)).toEqual(["~/Desktop/ann-demo/", "~/Desktop/annotate-pack/"]);
 });

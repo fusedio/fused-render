@@ -317,18 +317,31 @@ function useFolderSearch(
 ): { rows: FolderRow[]; pending: boolean } {
   const [found, setFound] = useState<FolderRow[]>([]);
   const [pending, setPending] = useState(false);
+  // WHOSE ANSWER COUNTS — the request this effect is on, and only that one
+  // (Bugbot, PR #1213: "stale search wins after abort").
+  //
+  // Aborting is a REQUEST to stop, not a guarantee of having stopped: a reply
+  // that settled in the moment before the next keystroke fired still resolves,
+  // and the old code took it — painting the previous query's folders under the
+  // newer query's text and, worse, clearing `pending` while a newer request was
+  // still out, so the empty state was free to speak again. A settlement that is
+  // not the current request's is not news.
+  const current = useRef<AbortController | null>(null);
   useEffect(() => {
     const spec = open ? folderSearchSpec(typed) : null;
     if (!spec) {
+      current.current = null;
       setFound([]);
       setPending(false);
       return;
     }
     setPending(true);
     const stop = new AbortController();
+    current.current = stop;
     const timer = window.setTimeout(() => {
       searchFiles(spec, stop.signal).then(
         (r) => {
+          if (current.current !== stop) return;
           setFound(r.entries.filter((e) => e.is_dir).map((e) => {
             const path = normPath(e.path);
             return { path, name: leafOf(path), where: parentOf(path), is_dir: true };
@@ -336,6 +349,7 @@ function useFolderSearch(
           setPending(false);
         },
         (err) => {
+          if (current.current !== stop) return;
           // AN ABORT IS NOT AN ANSWER (Bugbot, PR #1213). Every keystroke
           // cancels the request before it, and treating that rejection as
           // "nothing found" emptied the list and flashed "No folder matches"
@@ -3310,19 +3324,29 @@ export default function NewJobModal({
   const completions = completing.rows;
   const foundFolders = searching.rows;
   /**
-   * IS AN ANSWER STILL COMING (Akshil, 2026-09-18: "when I am searching show a
-   * spinner… right now for a split second it shows me create new folder, or no
-   * results — jarring").
+   * TWO WAITS, AND THEY ARE NOT THE SAME WAIT (Bugbot, PR #1213: "path check
+   * freezes folder dropdown"). Folding them into one flag meant the 400ms
+   * path-stat that follows EVERY keystroke dimmed and disabled the whole
+   * panel — the remembered folders, completions already on screen, Browse, New
+   * folder — and put "Looking for folders" under a one-letter query that was
+   * never going to search for anything.
    *
-   * Whichever engine is live, and BOTH halves of its wait: the 200ms debounce
-   * and the request after it. To the reader they are one wait, and the gap
-   * between them is exactly where the empty state used to flash.
+   * `searchPending` IS THE LIST'S OWN WAIT: a lookup engine with its debounce
+   * armed or its request out. It is the only thing that dims, and the only
+   * thing that draws ghost rows — so a query too short to search shows neither,
+   * because neither is true.
    *
-   * The path CHECK counts too. `newFolder` is its verdict, and it is debounced
-   * 400ms — longer than either lookup — so "create this folder" could appear
-   * over a list that was still being answered.
+   * `verdictPending` IS THE PATH CHECK'S, and it gates exactly the two things
+   * that are statements ABOUT the verdict: "create this folder", which is a
+   * claim that it does not exist, and "no folder matches", which is a claim
+   * that nothing does. Both were the flicker Akshil reported; neither has
+   * anything to say about rows already on screen.
    */
-  const lookupPending = completing.pending || searching.pending || pathChecking;
+  const searchPending = completing.pending || searching.pending;
+  const verdictPending = pathChecking;
+  //: …and the pair, for the two affordances that must wait for BOTH: a list
+  //: still arriving cannot be called empty either.
+  const lookupPending = searchPending || verdictPending;
   // The remembered folders, narrowed by the same rule the Tasks page narrows
   // its project menu with (`tasks-lib.projectMatches`: case-folded substring
   // over the name and the path). SEARCH MODE ONLY: a reader spelling out an
@@ -3371,6 +3395,18 @@ export default function NewJobModal({
       setPathChecking(false);
       return;
     }
+    // `~` WITH NO HOME YET IS NOT A VERDICT, IT IS A WAIT (Bugbot, PR #1213).
+    // `home` arrives from `/api/config` a beat after mount, and a `~/…` path
+    // typed or PASTED before it landed would be probed literally — the red
+    // "Only one new folder can be created" line, again, on a path that is
+    // perfectly good. There is nothing to say about it yet, so nothing is said:
+    // the check stays pending and the effect re-runs when `home` lands (it is a
+    // dep). The last verdict is left alone rather than cleared, which is the
+    // same discipline `settle` keeps.
+    if (p.startsWith("~") && !home) {
+      setPathChecking(true);
+      return;
+    }
     setPathChecking(true);
     let stale = false;
     // Neither piece of state is cleared up front: the last verdict stays on
@@ -3411,7 +3447,11 @@ export default function NewJobModal({
       stale = true;
       window.clearTimeout(timer);
     };
-  }, [target]);
+    // `home` IS A DEP, and Bugbot caught that it was not: it arrives from
+    // `/api/config` after mount, so a `~` path checked before it landed was
+    // checked literally and never re-checked. The check is cheap and `home`
+    // changes once in the life of the card.
+  }, [target, home]);
 
   // IS THE "<name> — New folder" SUGGESTION ON SCREEN. It is drawn by its own
   // branch (a different shape — a badge and a line about when it becomes true),
@@ -4931,7 +4971,7 @@ export default function NewJobModal({
               // blur handler's relatedTarget is null there and the list would
               // unmount before its click fired (Bugbot, PR #541).
               <div
-                className={"schedule-recents" + (lookupPending ? " is-loading" : "")}
+                className={"schedule-recents" + (searchPending ? " is-loading" : "")}
                 id={recentsId}
                 role="listbox"
                 aria-label="Folders"
@@ -5009,7 +5049,7 @@ export default function NewJobModal({
                     until the next one lands — steady geometry, visible
                     progress"). An empty panel is the one case that has nothing
                     to dim. */}
-                {lookupPending && !pathRows.length && (
+                {searchPending && !pathRows.length && (
                   <div className="schedule-recents-wait">
                     <SkeletonLines rows={3} label="Looking for folders" />
                   </div>

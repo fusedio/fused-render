@@ -1710,9 +1710,9 @@ describe("where the new-folder answer is shown", () => {
 
   test("the row lives inside the recents dropdown, under the matches", () => {
     const s = src();
-    // The panel's class is composed now — it wears `is-loading` while a lookup
+    // The panel's class is composed now — it wears `is-loading` while a SEARCH
     // is out — so the pair is found rather than the whole attribute.
-    const open = s.indexOf('"schedule-recents" + (lookupPending');
+    const open = s.indexOf('"schedule-recents" + (searchPending');
     const rowAt = s.indexOf("schedule-recents-new\"");
     expect(open).toBeGreaterThan(-1);
     expect(rowAt).toBeGreaterThan(open);

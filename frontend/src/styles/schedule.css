@@ -4481,8 +4481,14 @@ input.schedule-when-field {
    replaced must not take a click meant for its successor. */
 .schedule-recents.is-loading .schedule-picker-row {
   opacity: 0.45;
-  pointer-events: none;
 }
+
+/* NO `pointer-events: none` HERE, unlike the Browse panel this borrows from
+   (Bugbot, PR #1213). There the whole listing is being REPLACED, so a row about
+   to vanish must not take a click meant for its successor. Here the rows on
+   screen are the last true answer and they stay — a reader who can see the
+   folder they want must be able to press it, whatever else is still arriving.
+   Dim says "more is coming"; it must not also say "and you may not act". */
 
 /* …and the FIRST answer, which has nothing to dim. The app's own ghost rows
    (`SkeletonLines`, the same the peek holds over a booting chat), padded to the
