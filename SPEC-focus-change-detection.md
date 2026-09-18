@@ -84,11 +84,11 @@ these two sources fires on very nearly every check.
 The fix (`index/detect.py`'s `_filter_hint`) runs the SAME per-path filter
 `scan._run_fsevents` already applies to a journal-driven hint
 (`ignored_for_index(rules, p, tree=True) or guard.blocks(p) or
-is_inside_leaf_dir(p)`) before deciding whether anything changed, and
-`index/ignore.py`'s `default_ignore()` now also names `~/Library` (a PATH
-pattern keyed off the real OS home, not a bare `DEFAULT_IGNORE_NAMES` entry —
-see that function's docstring for why a bare name would be too broad). A
-change under either is correctly still invisible to `hint()`'s only OTHER
+is_inside_leaf_dir(p)`) before deciding whether anything changed. **This
+paragraph originally continued: "and `index/ignore.py`'s `default_ignore()`
+now also names `~/Library`" — that part was corrected in the final fix
+round, see below.** A change under `ignored_for_index`/`guard.blocks`/
+`is_inside_leaf_dir` is correctly still invisible to `hint()`'s only OTHER
 caller (`scan.py`'s incremental walk skips them for the same reason a scan
 would never want to spend index rows on them), so filtering them out of
 THIS caller's boolean is consistent, not a new exemption invented for this
@@ -100,6 +100,44 @@ error): a live run of the root must never be superseded by a focus event
 `runner.start` joining an already-running scan must not be reported as
 "started" by this trigger (it would mislead the caller's log and wake the
 Activity card for a scan this trigger had no hand in). See DECISIONS.md.
+
+## Errata (final fix round): `~/Library` moved OUT of `default_ignore()`
+
+The code-review round above added `~/Library` to `index/ignore.py`'s
+`default_ignore()` specifically so `_filter_hint` would drop macOS's
+constant `~/Library` churn from a raw hint. That fix put the trigger's
+correctness in the wrong place: `default_ignore()` feeds `IndexConfig.ignore`
+(`index/config.py:49`), which is USER-EDITABLE and, once a user has ever
+pressed Save in the Indexing preferences panel, FROZEN to whatever
+`default_ignore()` returned at save time (`index/config.py:151-155` writes
+it verbatim; `frontend/src/shell/Indexing.tsx:160,187` is what saves it).
+Anyone who saved before this entry existed keeps a snapshot without it
+forever, and `_filter_hint`'s noise-dropping — hence the whole quiet path —
+silently degrades back into "scan on nearly every focus event" for exactly
+that population. A trigger's own correctness must never be able to be
+broken by a user editing an unrelated preference.
+
+The final fix round therefore:
+
+* Reverted the `~/Library` entry from `default_ignore()`. It was also too
+  broad a DEFAULT on its own terms — `~/Library` holds `Application
+  Support`, `Mail` and `Fonts`, content a user may legitimately want home
+  search to reach — independent of the editability problem above.
+* Gave `index/detect.py` its own small, non-editable noise list
+  (`_NOISE_HOME_SUFFIXES` / `_os_noise_roots()` / `_is_os_noise()`),
+  consulted directly by `_filter_hint` alongside `ignored_for_index`/
+  `guard.blocks`/`is_inside_leaf_dir`. The trigger now answers "is this
+  journal entry noise?" entirely from its own authority, never from
+  `cfg.rules`.
+* Separately, and for an unrelated reason (requested, not a correctness
+  fix), added `~/Library/Caches` to `default_ignore()` as its own PATH
+  pattern — `~/Library/Caches` is never searchable content, same rationale
+  as `.cache`. This does change `IgnoreRules.sig()` and forces a full
+  rescan on upgrade for anyone without a saved custom list; see
+  DECISIONS.md for why that is accepted here.
+
+See DECISIONS.md ("Final fix round") for the full account, including the
+unrelated Windows CI regression this round also fixed.
 
 ## What to build
 

@@ -2415,3 +2415,110 @@ tests/test_index_ignore.py tests/test_index_mount_safe.py
 tests/test_index_freshness.py` (195 passed) and `bun test
 src/apps/explorer src/platform/lib` (2198 passed across the two runs, 0
 failed) after every change in this round.
+
+## Final fix round (Windows regression, `~/Library` default reverted, `~/Library/Caches` added)
+
+Three items, unrelated to each other except by timing.
+
+1. **Windows CI regression in `test_index_detect.py`'s own quiet-path test
+   (High, test-only).** `test-python-windows` failed
+   `test_realistic_noisy_hint_on_a_real_home_root_starts_no_scan`: a scan
+   started where the test asserted none would. Root cause was in the TEST,
+   not in `detect.py`: it redirected home with
+   `monkeypatch.setenv("HOME", str(tmp_path))` alone. `os.path.expanduser("~")`
+   reads `HOME` on POSIX but **ignores it entirely on Windows** (it consults
+   `USERPROFILE`, then `HOMEDRIVE`+`HOMEPATH`) — so on Windows CI the redirect
+   silently no-opped, `default_home_dirs()` (which `MountGuard` uses to build
+   its blocked roots) and `detect._os_noise_roots()` (new this round, see
+   item 2) both resolved against the REAL runner's user profile, and none of
+   the test's tmp-path-shaped noise paths (`.fused-render/...`,
+   `Library/Caches/...`) matched either filter — so the "noise" was seen as a
+   real change and a scan started. `tests/test_index_mount_safe.py`
+   (`test_the_guard_blocks_every_fused_render_home_not_just_the_current_one`)
+   had already hit and fixed this exact platform gap by patching
+   `os.path.expanduser` directly instead of relying on `HOME`; the two
+   `test_index_detect.py` tests that build "realistic" home-shaped noise now
+   do the same (`tests/test_index_detect.py::_fake_home`). macOS being green
+   proved nothing here, per the brief — the bug was in a Windows-specific
+   corner of `expanduser`, invisible on any POSIX runner regardless of how
+   thorough the test looked.
+
+   Made `detect._filter_hint` more robust independent of that test fix:
+   every hinted path is now `norm`ed before it is checked against
+   `ignored_for_index`/`is_inside_leaf_dir`/`IgnoreRules` (all of which split
+   and match on `/` and document that they expect the `norm`ed form). This
+   never matters in production — `fsevents.hint` only returns non-`None` on
+   darwin, where its paths are already forward-slashed — but it means the
+   filter is correct by construction for whatever shape of path a caller
+   (a test, a future non-macOS accelerator) hands it, rather than correct
+   only because production happens to always hand it clean input.
+
+2. **The quiet-path trigger's correctness must not depend on a
+   user-editable preference (High).** The previous round's fix
+   (`~/Library` added to `default_ignore()`, D-numbered above) made
+   `detect._filter_hint`'s noise-dropping depend on the LIVE
+   `default_ignore()` output via `cfg.rules`. That does not hold for anyone
+   who has ever pressed Save in the Indexing preferences panel
+   (`frontend/src/shell/Indexing.tsx`): `IndexConfig.ignore`
+   (`index/config.py:49`) is a dataclass default consulted ONLY when the
+   persisted config has no `ignore` key, `save_config`
+   (`index/config.py:151-155`) writes the list verbatim, and the panel seeds
+   its textarea from the live defaults and persists the whole list on Save
+   (`Indexing.tsx:160`, `:187`). Anyone who saved BEFORE `~/Library` was
+   added carries a frozen snapshot without it, forever — `default_ignore()`
+   is never consulted again for them — and the trigger silently degenerates
+   back into "scan on nearly every focus event", the exact defect the
+   previous round meant to close, for a population the tests could not see
+   (a fresh `IndexConfig()` in every test always gets the live defaults).
+
+   Fix: `detect.py` now carries its own `_NOISE_HOME_SUFFIXES` /
+   `_os_noise_roots()` / `_is_os_noise()`, a small non-editable list
+   consulted directly in `_filter_hint`, independent of `cfg.rules`. The
+   trigger now answers "is this journal entry noise?" from its own
+   authority — a user can empty or rewrite their ignore list and this
+   trigger's quiet path is unaffected either way. See the comment at
+   `_NOISE_HOME_SUFFIXES`'s definition for the full argument against folding
+   it back into `default_ignore()`.
+
+   Reverted the `~/Library` entry `default_ignore()` grew for this
+   (`fused_render/index/ignore.py`). It was too broad a DEFAULT regardless
+   of the above: `~/Library` also holds `Application Support`, `Mail` and
+   `Fonts`, which a user may legitimately want home search to reach, and a
+   default that broad should never have been the fix for an internal
+   trigger's own correctness problem. Reverting it also removes the forced
+   `ignore_sig()` change that entry caused, so nobody pays the
+   full-rescan-on-upgrade `sig()`'s own docstring warns changing the default
+   list causes — except see item 3, which reintroduces exactly that cost on
+   purpose, for a different reason.
+
+3. **Added `~/Library/Caches` to the user-visible default ignore list
+   (requested).** Distinct from items 1-2: `~/Library/Caches` is never
+   searchable content, the same argument that already put `.cache` in
+   `DEFAULT_IGNORE_NAMES`, so it belongs in `default_ignore()` on its own
+   merits regardless of what `detect.py` needs. Added as a PATH pattern
+   keyed off the real OS home (`os.path.expanduser("~/Library/Caches")`),
+   not a bare `DEFAULT_IGNORE_NAMES` entry — a bare `Caches` would ban every
+   unrelated directory anywhere on disk named `Caches`. macOS-only in
+   practice; the path simply never exists elsewhere, so the pattern is
+   inert there.
+
+   **This does change `IgnoreRules.sig()`** (any change to the default
+   pattern list does, per that method's own docstring), which means the
+   first scan after upgrading to a build with this change is a full rescan
+   for every user who has not saved a custom ignore list (custom-list users
+   are unaffected either way, and were never getting this entry
+   automatically regardless). Accepted here because the entry was
+   explicitly requested and the tradeoff — one full rescan, once, in
+   exchange for `~/Library/Caches` never surfacing in home search again —
+   favors taking it. Recorded here so it is a decision, not a silent side
+   effect discovered later via `routers/git_repos.py`-style detective work.
+
+Verification: `pytest tests/test_index_detect.py tests/test_index_api.py
+tests/test_index_ignore.py tests/test_index_mount_safe.py
+tests/test_index_freshness.py` — 195 passed, 0 failed, on this worktree's
+macOS runner. **Windows itself was not run** (no Windows machine available
+in this environment); the fix for item 1 was derived by reading
+`ntpath.expanduser`'s documented behavior and cross-checking it against
+`test_index_mount_safe.py`'s own prior fix for the identical gap, not by
+reproducing the CI failure locally. No frontend files changed this round,
+so no `bun test` run was needed.
