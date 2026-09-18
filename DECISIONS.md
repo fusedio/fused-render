@@ -2808,3 +2808,78 @@ shared with a user's own files, so the same collision cannot occur there.
 The rule going forward: a platform's download naming must be a shape its own
 released artifact's filename can never take, whenever `_updates_dir()` is a
 directory the app does not own outright.
+
+## Task 14 — The Linux stamp is keyed by the AppImage's resolved path, on both sides
+
+`update/linux.py`'s `_install_appimage` stamps
+`os.path.realpath(self._bundle)` (`installed.write_linux_stamp`), because the
+swap itself resolves any symlink before `os.replace()` — same rationale as
+mac's `_install_dmg` resolving `self._bundle` first. But both readers were
+passing the UNRESOLVED path: `installed.installed_version()` used
+`startup.appimage_path()` straight (that function only wraps `$APPIMAGE`, it
+never realpaths), and `update/linux.py`'s `_disk_version()` used
+`self._bundle` straight. Whenever `$APPIMAGE` or an ancestor directory is a
+symlink — exactly the case the swap deliberately resolves — the stamp's
+`path` field never equalled what the readers compared it against,
+`_linux_installed_version()` always returned `None`, and the "restart to
+finish updating" banner never appeared after an otherwise successful
+install, silently.
+
+Fixed by resolving once, on the read side, inside
+`installed._linux_installed_version()` itself, rather than at each call
+site: `installed_version()` and `update/linux.py`'s `_disk_version()` both
+already route through it, so one `os.path.realpath()` there — documented as
+the enforced invariant "the stamp is keyed by the AppImage's resolved path"
+— fixes both readers without a `realpath` call sprinkled at every caller
+that happens to have a Linux update path in hand. Any future reader of the
+stamp inherits the correct behaviour by construction instead of needing to
+remember it.
+
+`test_install_resolves_a_symlinked_appimage_before_swapping` did not catch
+this: it only asserts `manager.status()["state"] == "installed"`, which is
+in-memory state set unconditionally at the end of a successful swap and
+never touches the stamp file at all. Added
+`test_disk_version_reads_back_through_a_symlinked_appimage`, which installs
+behind a symlinked AppImage and then reads the version back the same way
+production code does — `manager._disk_version()` and
+`installed.installed_version()` — confirmed to fail with `None` against the
+unfixed reader before the `realpath()` was added.
+
+## Task 15 — Linux manifest upload must happen before the invalidation that is supposed to cover it
+
+`release.yml`'s Linux job invalidated `/${LINUX_PREFIX}/*` in the "Publish
+AppImage + attach to release" step, then uploaded `dist/linux-latest.json`
+in a later step, with a comment claiming the earlier invalidation "already
+covers this manifest's path". It does not: a request for `latest.json`
+landing in the window between the two steps re-caches whatever manifest was
+live before this release, and CloudFront then serves that stale manifest
+until something else invalidates the path again. The macOS job in the same
+workflow already has the right shape — upload `dist/macos-latest.json`, then
+invalidate — this job just had the two steps in the other order.
+
+Reordered to match: the AppImage upload step no longer invalidates at all;
+a new "Invalidate CloudFront" step runs last, after both the AppImage and
+the manifest are on S3. `VERSION` (computed once from the built artifact's
+filename, the same rule as the DMG/installer) is now exported via
+`$GITHUB_ENV` from the upload step instead of being re-derived by a second
+`sed` in the manifest step. The comment above the invalidation step now
+says what actually holds — the ordering removes the stale-cache window; the
+manifest upload's own `--cache-control no-cache` is noted as the reason that
+window was survivable even before the reorder, not as a substitute for it.
+
+## Task 16 — Stop re-deriving VERSION from the AppImage filename with a fragile sed
+
+`release.yml`'s "Publish signed Linux update manifest" step re-derived
+`VERSION` from `$APPIMAGE`'s basename with
+`sed -E 's/^FusedRender-(.*)-x86_64\.AppImage$/\1/'`, even though the
+preceding step already computed the same `VERSION` from the same filename
+one step earlier. `sed` passes its input through unchanged when a pattern
+doesn't match, and `set -euo pipefail` does not catch that — a future
+filename change (an arch-suffix rename, say) would silently publish a
+manifest whose `version` field is the entire filename instead of failing
+the build.
+
+Removed the second parse: the "Publish AppImage + attach to release" step
+now exports `VERSION` via `$GITHUB_ENV` (Task 15) alongside `APPIMAGE`, the
+same pattern already used to carry `$APPIMAGE` across steps, so there is
+only one place the filename is ever parsed.
