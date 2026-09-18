@@ -190,7 +190,10 @@ export interface AgentRequests {
   app_state: AppStateRequest;
   sessions: FileRequest;
   live_run: FileSessionRequest;
-  defaults: FileRequest;
+  /** `session_id` OPTIONAL, exactly as `live_run` takes it: with one the agent
+   *  answers for THAT conversation (off its own transcript), without one for
+   *  the folder. See `agent._defaults` and `ui/composer-defaults`. */
+  defaults: FileRequest & { session_id?: string };
   history: FileSessionRequest;
   snapshots: SnapshotsRequest;
   snapshot_plan: SnapshotPlanRequest;

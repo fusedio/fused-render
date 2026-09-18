@@ -3076,6 +3076,9 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # has no run to be parked, which is what the empty key would otherwise
     # accidentally match.
     waiting = (parked or {}).get(task["session_id"]) if task["session_id"] else None
+    # The flags this task's runs are launched with — see `_run_settings`. Both
+    # "" for a task that never chose, which is most of them.
+    model, effort = _run_settings(task)
     # WHERE IN THE LINE, asked once here for the same reason `waiting` is: the
     # status, the position and the name of the task in front have to describe one
     # state of one folder. `{}` for a task nobody said was queued, which is every
@@ -3138,6 +3141,13 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # an LLM call. Read from the entry so a store that grows the field later
         # starts working without a change here.
         "description": _description(task),
+        # WHICH CLAUDE THIS TASK'S RUNS USE and how hard it thinks — "" for the
+        # overwhelming majority, which chose neither. Not drawn anywhere: it is
+        # what the side peek's composer opens on, so a task set up with a model
+        # shows that model instead of whatever the folder last used
+        # (`_run_settings`).
+        "model": model,
+        "effort": effort,
         # Over the WHOLE merged thread, not the three-message tail: "is anything
         # running in this task?" and "is every message filed away?" are both
         # questions about all of it, and a run pushed out of the window by two
@@ -4041,6 +4051,46 @@ def _draft_rows(only: frozenset | set | None = None,
             continue
         rows.append(_new_chat_draft_row(key, record, numbers.get(key, "")))
     return rows
+
+
+def _run_settings(task: dict) -> tuple[str, str]:
+    """(model, effort) — the flags this task's runs are launched with, or ""
+    for a task that never chose.
+
+    THE ENTRY IS THE TRUTH, not a second opinion about it. `schedule._send`
+    hands `entry["model"]` / `entry["effort"]` straight to
+    `claude_spawn.spawn_helper`, which hands them to `claude --model` /
+    `--effort` (`agent._claude_argv`). There is no gap between "what the task
+    is set to" and "what the run used", so one field answers both questions and
+    nothing has to decide between them.
+
+    WHY THE ROW CARRIES THEM AT ALL, when the design says the card asks and the
+    list stays quiet (NewJobModal's own note): nothing here DRAWS them. They are
+    for the side peek, whose composer is a real chat — and a chat with no
+    opinion handed to it detects the model last used in that FOLDER
+    (`agent._defaults`), which is the right answer for a chat somebody opened on
+    a folder and the wrong one for a task that was set up with a model. The peek
+    showed a reader settings they had not chosen (Akshil, 2026-09-18).
+
+    NEWEST FIRST, and PER FIELD. A task is a thread and a thread can hold
+    several scheduled messages; the newest that names a setting is the one a
+    reader is about to act on — the same rule `_description` takes over the same
+    list. Per field rather than per entry because an entry that pinned only the
+    effort must not wipe a model an earlier one pinned; that is also how
+    `agent._defaults` fills its own two fields.
+
+    "" IS A REAL ANSWER and the load-bearing one. It means "this task has no
+    opinion", which is what leaves the chat's own detection speaking for every
+    conversation that never went through the New task card. Answering "sonnet"
+    here would pin every hand-typed chat on the machine to a model nobody chose.
+    """
+    model = effort = ""
+    for entry in reversed(task["entries"]):
+        model = model or str(entry.get("model") or "").strip()
+        effort = effort or str(entry.get("effort") or "").strip()
+        if model and effort:
+            break
+    return model, effort
 
 
 def _description(task: dict) -> str:

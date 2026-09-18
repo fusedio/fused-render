@@ -3133,6 +3133,22 @@ export interface Task {
   // session or entry behind it to take one from.
   title_source: "user" | "ai" | "message" | "entry" | "draft";
   description: string;
+  /**
+   * WHICH CLAUDE THIS TASK'S RUNS USE and how hard it thinks — `""` on both for
+   * the overwhelming majority, which chose neither (`tasks.py::_run_settings`).
+   *
+   * NOTHING DRAWS THEM, and that is still the design ("the card asks, the list
+   * stays quiet" — shell/NewJobModal). They are here for the side peek, whose
+   * composer is a REAL chat: handed no opinion, it detects the model last used
+   * in that folder (`agent._defaults`) and showed the reader settings they had
+   * never chosen. The peek states the task's own instead, at the top of the
+   * ranking the composer already had (`param > detected > pref > constant`).
+   *
+   * `""` is a real answer — "this task has no opinion" — and is what leaves
+   * detection speaking for every conversation that is not a task.
+   */
+  model: string;
+  effort: string;
   // Decided by the SERVER, once, for every view — List, Board and Calendar all
   // read this rather than each deriving a column from the newest message.
   //
