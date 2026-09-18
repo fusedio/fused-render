@@ -578,22 +578,33 @@ export function ShareAppModal({
         }}
       >
         <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-[560px]" showCloseButton={false}>
-          <DialogHeader className="gap-1 px-6 pt-5 pb-4">
-            <div className="flex items-start justify-between gap-3">
+          {/* Title bar only — the two cards under it each carry their own
+              sentence, so a description here said nothing twice. The sheet
+              is still named for assistive tech: `sr-only` description. */}
+          <DialogHeader className="gap-0 px-6 pt-4 pb-3">
+            <div className="flex items-center justify-between gap-3">
               <DialogTitle className="truncate text-[15px] font-semibold leading-6">
                 Share {app.name}
               </DialogTitle>
               <DialogClose
-                render={<Button variant="ghost" size="icon-sm" className="-mt-0.5 -mr-2" />}
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="-mr-2 bg-transparent text-muted-foreground hover:text-foreground"
+                  />
+                }
                 disabled={working}
               >
                 <XIcon />
                 <span className="sr-only">Close</span>
               </DialogClose>
             </div>
-            <DialogDescription>Choose how people get this app.</DialogDescription>
+            <DialogDescription className="sr-only">
+              Share this app as a public link or as a .fused file.
+            </DialogDescription>
           </DialogHeader>
-          <div className="flex flex-col gap-3 px-6 pb-6">
+          <div className="flex flex-col gap-3 px-6 pb-5">
             <OptionCard
               icon={<Globe />}
               title={linkTitle}
