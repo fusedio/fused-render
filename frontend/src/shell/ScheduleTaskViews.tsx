@@ -1134,9 +1134,10 @@ const PROJECT_SEARCH_MIN = 8;
  * THE SEARCH IS THE PAGE'S OWN, not a second one. The field is the toolbar's
  * search field — same wrapper, same magnifier, same `field-control` — and the
  * rule behind it is the toolbar's too (`tasks-lib.projectMatches`: case-folded
- * substring over the name the row prints and the path behind it). Nothing here
- * touches the file index: that is a search of the DISK, in a language of its
- * own (globs, `~` escapes — DECISIONS-one-search-language.md), and these rows
+ * substring over the name the row prints — the name only, not the path behind
+ * it, since the menu shows names). Nothing here touches the file index: that
+ * is a search of the DISK, in a language of its own (globs, `~` escapes —
+ * DECISIONS-one-search-language.md), and these rows
  * are a list this page is already holding.
  */
 function ProjectFacet({

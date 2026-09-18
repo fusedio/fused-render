@@ -6251,10 +6251,13 @@ describe("filters", () => {
   // "Add search functionality for … the project filter" (Akshil, 2026-09-18).
   // A machine with 28 folders in this menu is a machine where the reader knows
   // the name and cannot find the row.
-  it("finds a folder by the name the row prints, or by the path behind it", () => {
+  it("finds a folder by the name the row prints — and by nothing else", () => {
     expect(projectMatches("/Users/me/Desktop/fused-render", "render")).toBe(true);
-    // The PATH too, so a parent folder narrows to everything under it.
-    expect(projectMatches("/Users/me/Desktop/fused-render", "desktop/fu")).toBe(true);
+    // NOT the path behind it (Akshil, 2026-09-18: "only do name"): the menu
+    // shows names, so a hit on a segment the reader cannot see looked wrong.
+    expect(projectMatches("/Users/me/Desktop/fused-render", "desktop")).toBe(false);
+    expect(projectMatches("/Users/me/Desktop/fused-render", "desktop/fu")).toBe(false);
+    expect(projectMatches("/Users/me/Desktop/fused-render", "me/")).toBe(false);
     // Case-folded, like the toolbar's own box.
     expect(projectMatches("/Users/me/Desktop/Aviary", "AVIARY")).toBe(true);
     expect(projectMatches("/Users/me/Desktop/Aviary", "aviary")).toBe(true);
