@@ -1770,6 +1770,21 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
     single-literal-run pattern, which is the only case the two modes'
     `nm_exact` expressions are asked to agree on at all.
 
+    That length test is only correct for a SINGLE literal run, where "matched
+    the whole name and nothing more" is a fair reading of "exact". Reported
+    defect: `fused render` (two literal runs, `["fused", "render"]`,
+    `total_len == 11`) made `~/ios/FusedRender` and two rclone cache
+    directories named `FusedRender` (`nm` == `"fusedrender"`, 11 characters —
+    the ONLY 11-character spelling) rank above `~/Work/fused-render` (`nm`
+    == `"fused-render"`, 12 characters, so not "exact" by the length test),
+    because `nm_exact` is the FIRST column in `order_by` and never lets the
+    tie reach `depth`, where `Work/fused-render` would win. With more than
+    one literal run, `length(nm) == total_len` silently means "the only exact
+    match is the spelling with no separators between the words at all",
+    which excludes `fused-render`, `fused_render` and `fused render` — every
+    natural spelling of a multi-word name — from the exact tier. Keyed
+    strictly on `len(literals) > 1` (see below) so the single-literal case
+    above is untouched.
     `nm_regex` is `regex`'s counterpart for the FINAL SEGMENT only —
     `_glob_to_regex(_final_segment_pattern(pattern))`, compiled and passed
     in by `search_ranked` alongside `literals` (which is likewise
@@ -1823,7 +1838,31 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
             f"ORDER BY {unscored_order} "
             f"LIMIT {limit}")
     preds = _name_predicate_sql("nm", literals)
-    if literals:
+    if literals and len(literals) > 1:
+        # Multi-literal "exact": `length(nm) == total_len` demands the
+        # spelling with NO separators at all (`fusedrender`), so it silently
+        # excludes every natural spelling of a multi-word name
+        # (`fused-render`, `fused_render`, `fused render`) from the exact
+        # tier — see DECISIONS.md ("`fused render` outranked by
+        # `fusedrender`..."). With more than one literal run, "exact" instead
+        # means the literals occur in order with nothing but separator
+        # characters between them, including nothing at all. Reuses
+        # `boundary`'s own separator class (`[^a-z0-9]` — `nm` is already
+        # lowercased, so no case handling is needed here either) rather than
+        # inventing a second, subtly different notion of "separator". Each
+        # literal is `re.escape`d (this is a `regexp_matches` pattern, not a
+        # `LIKE` one) and lowered in SQL, not Python, for the same
+        # `lower()`-folding-agreement reason `_rank_sql`/`boundary` already
+        # lower in SQL rather than in Python.
+        sep_lits = " || '[^a-z0-9]*' || ".join(
+            f"lower('{_q(re.escape(lit))}')" for lit in literals)
+        nm_exact = f"regexp_matches(nm, '^' || {sep_lits} || '$')"
+    elif literals:
+        # `len(literals) == 1`: bit-identical to this branch's pre-existing
+        # behaviour — `_rank_sql` always passes exactly one literal, and this
+        # is the only shape its equivalent-query test
+        # (`test_glob_single_literal_run_score_matches_rank_sql_substring_score`)
+        # pins, so the single-literal path must never change meaning.
         total_len = sum(len(lit) for lit in literals)
         nm_exact = (f"(regexp_matches(nm, '{nm_regex}') "
                     f"AND length(nm) = {total_len})")

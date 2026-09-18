@@ -32,6 +32,7 @@ from fused_render.index.config import IndexConfig
 from fused_render.index.query import (
     MAX_GLOB_RANK_LIMIT,
     MAX_RANK_LIMIT,
+    _glob_sql,
     search_ranked,
 )
 from fused_render.index.runner import canonical_root
@@ -756,6 +757,111 @@ def test_glob_tier_generalization_ancestor_only_ranks_below_a_name_match(tmp_pat
     assert by_rel["alpha/unrelated.txt"]["tier"] == 3
     assert [h["rel"] for h in hits] == [
         "name-has-alpha.txt", "alpha/unrelated.txt"]
+
+
+# -- Fix: multi-literal `nm_exact` is separator-tolerant --------------------
+#
+# Reported defect: `fused render` (home search) resolves to the glob pattern
+# `**fused**render*`, whose final segment has TWO literal runs,
+# `["fused", "render"]`. The pre-fix `nm_exact` (`length(nm) == total_len`,
+# `total_len == 11`) only credited the ZERO-separator spelling
+# (`"fusedrender"`, 11 characters) as exact — `~/Work/fused-render` (`nm ==
+# "fused-render"`, 12 characters) never qualified, so `~/ios/FusedRender` and
+# two `.../rclone/vfs/Volumes/FusedRender*` cache directories (all
+# `nm == "fusedrender"`) outranked the obviously-wanted
+# `~/Work/fused-render`, since `nm_exact` is the FIRST `ORDER BY` column and
+# the tie never reached `depth`.
+
+def test_glob_multi_literal_exact_is_separator_tolerant_fused_render_defect(
+    tmp_path,
+):
+    """The exact reported defect: `fused render` must rank the shallow
+    `Work/fused-render` above a deeper `Work/fused-render/ios/FusedRender`
+    and above same-depth `FusedRender` cache directories — `fused-render`
+    (with a separator) now counts as exact too, so `depth` gets to break the
+    tie instead of the zero-separator spelling winning outright."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/Work/fused-render/README.md",
+        "/r/Work/fused-render/ios/FusedRender/app.txt",
+        "/r/rclone/vfs/Volumes/FusedRender1/x.txt",
+        "/r/rclone/vfs/Volumes/FusedRender2/x.txt",
+    ])
+    hits = search_ranked(cfg, "/r", "**fused**render*", glob=True)["hits"]
+    dirs = [h["rel"] for h in hits if h["is_dir"]]
+    assert dirs[0] == "Work/fused-render"
+
+
+def test_glob_multi_literal_exact_all_four_spellings_tie_above_a_non_exact_hit(
+    tmp_path,
+):
+    """All four natural spellings of "fused render" — no separator, `-`,
+    `_`, and a literal space — must satisfy the new separator-tolerant
+    `nm_exact`, and therefore all four must outrank a same-tier `contains`
+    only match (a basename that has "fused" and "render" in order but not as
+    a clean, separator-joined pair, and not at a word boundary either)."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/fusedrender.txt",
+        "/r/fused-render.txt",
+        "/r/fused_render.txt",
+        "/r/fused render.txt",
+        "/r/xfusedrenderx.txt",  # contains-only: no boundary, not exact
+    ])
+    hits = search_ranked(cfg, "/r", "**fused**render*", glob=True)["hits"]
+    files = [h["rel"] for h in hits if not h["is_dir"]]
+    exact_spellings = {
+        "fusedrender.txt", "fused-render.txt",
+        "fused_render.txt", "fused render.txt",
+    }
+    assert set(files[:4]) == exact_spellings
+    assert files[4] == "xfusedrenderx.txt"
+
+
+def test_glob_single_literal_nm_exact_sql_is_unchanged(tmp_path):
+    """Hard constraint from the fix: the single-literal path (what
+    `_rank_sql` always hits, and what a single-literal-run glob like `*.js`
+    hits too) must stay BIT-IDENTICAL to its pre-existing `nm_exact` SQL —
+    the new separator-tolerant branch is keyed strictly on
+    `len(literals) > 1` and must never fire for one literal run."""
+    inner = "SELECT rel, nm, lrel, depth, size, mtime, is_dir FROM t"
+    sql = _glob_sql(
+        inner, "^.*icon.*$", "", 20,
+        literals=["icon"], nm_regex="^.*icon.*$")
+    assert "(regexp_matches(nm, '^.*icon.*$') AND length(nm) = 4)" in sql
+    assert "[^a-z0-9]*" not in sql
+
+
+def test_glob_multi_literal_exact_escapes_regex_metacharacters():
+    """A literal containing a regex metacharacter (`.`) must not be read as
+    "any character" once it is embedded in the `nm_exact` `regexp_matches`
+    pattern this fix adds — a user typing `a.b c` must not get `.` read as
+    "any character". Tested directly against `_glob_sql`'s generated
+    `nm_exact` expression (bypassing the outer WHERE-clause regex, which
+    already escapes independently and is unchanged by this fix) so this
+    specifically exercises the new expression's own escaping, not the
+    pre-existing full-pattern filter."""
+    import duckdb
+
+    inner = "SELECT rel, nm, lrel, depth, size, mtime, is_dir FROM t"
+    sql = _glob_sql(
+        inner, "^.*a\\.b.*c.*$", "", 20,
+        literals=["a.b", "c"], nm_regex="^.*a\\.b.*c.*$")
+    # Pull just the `nm_exact` fragment (the first ORDER BY column) and run
+    # it standalone against synthetic `nm` values.
+    con = duckdb.connect()
+    start = sql.index("ORDER BY (") + len("ORDER BY (")
+    end = sql.index(") DESC", start)
+    nm_exact_expr = sql[start:end]
+    for nm, expected in [
+        ("a.b c", True),       # literal dot, literal (non-alnum) separator
+        ("a.b-c", True),       # literal dot, a different non-alnum separator
+        ("a.bxc", False),      # "x" is alnum, not a separator: not exact
+        ("axbxc", False),      # "." read as a literal, not "any character"
+        ("xa.bxcx", False),    # extra characters outside the two runs
+    ]:
+        row = con.execute(
+            f"SELECT {nm_exact_expr} FROM (SELECT ? AS nm)", [nm]
+        ).fetchone()
+        assert row[0] is expected, (nm, row[0])
 
 
 # -- Fix 1: an extension-shaped query (literal starts with ".") ranks the ----

@@ -332,10 +332,36 @@ whenever `icon` occurs ANYWHERE in `nm`, i.e. it is semantically identical to
 `contains`-true row. `_glob_sql`'s `nm_exact` therefore also requires
 `length(nm) = sum(len(lit) for lit in literals)` — every character of `nm` is
 literal content with no wildcard slop — which is what "exact" is supposed to mean
-for a glob. This is also the fixed version of the old three-way tier's glob
-"generalization" defect: a plain regex-against-`nm` test alone could not tell an
-exact match from a same-basename `contains` match, which used to blur into the
-same tier.
+for a glob, **but only when the final segment has exactly one literal run**. This
+is also the fixed version of the old three-way tier's glob "generalization"
+defect: a plain regex-against-`nm` test alone could not tell an exact match from
+a same-basename `contains` match, which used to blur into the same tier.
+
+**With more than one literal run, `nm_exact` is separator-tolerant, not
+zero-separator-only** (fixed this round, worktree-search-trailing-space).
+Reported defect: `fused render` (two literal runs, `["fused", "render"]`,
+`total_len == 11`) resolved `nm_exact` to true ONLY for `nm == "fusedrender"`
+(the one 11-character, zero-separator spelling), so `~/ios/FusedRender` and two
+`.../rclone/vfs/Volumes/FusedRender*` cache directories outranked the
+obviously-wanted `~/Work/fused-render` (`nm == "fused-render"`, 12 characters,
+so not "exact" under the length test) — `nm_exact` is the FIRST `ORDER BY`
+column, so the tie never reached `depth`, where the shallow, correct answer
+would have won. The length test is correct for a SINGLE literal run (`_rank_sql`
+always passes exactly one, where "matched the whole name and nothing more" is a
+fair reading of "exact"), but for MULTIPLE literal runs it silently narrows
+"exact" to "the one spelling with no separators between the words at all,"
+excluding every natural multi-word spelling. Keyed strictly on
+`len(literals) > 1` so the single-literal path (and hence `_rank_sql`'s own
+behavior, and single-literal-run globs like `*.js`) is untouched: for more than
+one literal, `nm_exact` becomes `regexp_matches(nm, '^' || lower(lit0) ||
+'[^a-z0-9]*' || lower(lit1) || ... || '$')`, each literal `re.escape`d (this is
+a `regexp_matches` pattern, not a `LIKE` one) and lowered in SQL — every
+literal run must appear, in order, separated by zero or more non-alphanumeric
+characters and nothing else, and nothing may precede the first or follow the
+last. This reuses `boundary`'s own separator character class (`[^a-z0-9]`)
+rather than inventing a second, subtly different notion of "separator." So for
+`fused render`, all four of `fusedrender`, `fused-render`, `fused_render` and
+`fused render` are exact, and `depth` correctly breaks the tie among them.
 
 A pattern with exactly one literal run produces the SAME `_name_predicate_sql`
 output, and hence the same `order_by`/`score`, as `_rank_sql`'s substring mode for
