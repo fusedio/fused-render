@@ -79,4 +79,25 @@ describe("escapesFsPath", () => {
   test("a tilde query gates while home is still unresolved — nothing to compare against yet", () => {
     expect(escapesFsPath("~/*/*.json", FS_PATH, undefined)).toBe(true);
   });
+
+  // FINDING 1 (code review, worktree-search-trailing-space): edge whitespace
+  // must not change the verdict — it carries wildcard meaning further down
+  // the pipeline (expandWhitespaceQuery), never a base relocation. Before
+  // the fix, a bare trailing space on the box's own pre-filled `fsPath` text
+  // flipped this from false to true, and a trailing space on a bare "~"
+  // flipped `escapesBase`'s exact-match check the other way.
+  test.each([["/Users/iamsdas "], ["/Users/iamsdas/"], [" /Users/iamsdas"]])(
+    "%j (edge whitespace around the exact folder) is still not an escape",
+    (query) => {
+      expect(escapesFsPath(query, FS_PATH, HOME)).toBe(false);
+    },
+  );
+
+  test("a trailing space still gates a genuinely different subtree", () => {
+    expect(escapesFsPath("/Users/iamsdas2 ", FS_PATH, HOME)).toBe(true);
+  });
+
+  test('"~ " (tilde plus trailing space) still resolves home and is not an escape', () => {
+    expect(escapesFsPath("~ ", FS_PATH, HOME)).toBe(false);
+  });
 });

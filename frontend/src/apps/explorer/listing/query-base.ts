@@ -56,10 +56,29 @@ export function escapesBase(query: string): boolean {
 // gate: changing which subtree gets walked is a real scope change, and an
 // explicit Enter is what confirms it.
 export function escapesFsPath(
-  query: string,
+  rawQuery: string,
   fsPath: string,
   home: string | undefined,
 ): boolean {
+  // FINDING 1 (code review, worktree-search-trailing-space): trimmed at the
+  // door, matching `isPathShapedQuery`'s own `query.trim()` (path-shaped-
+  // query.ts) — the caller-side inconsistency this fixes. Edge whitespace is
+  // never part of a query's BASE (the segments this function compares
+  // against `fsPath`): the whitespace grammar (`expand_whitespace_query`,
+  // fused_render/index/query.py; `expandWhitespaceQuery`, lib/home-search.ts)
+  // only gives leading/trailing space meaning as a WILDCARD on the final
+  // segment's TEXT, never as a reason to relocate the base itself. Left
+  // untrimmed, a bare trailing space appended to the box's own pre-filled
+  // `fsPath` text (e.g. "/Users/iamsdas ") glued onto the last compared
+  // segment and made it mismatch its clean `fsPath` counterpart — flipping
+  // this to "escapes" for a keystroke that added no glob character at all,
+  // which forced an Enter-gated commit on a query the box's own design
+  // comment (useListingSearch.ts) says should keep live-filtering. The same
+  // untrimmed comparison also defeated the "~"/"~/" exact-match checks in
+  // `escapesBase` below for a trailing-spaced tilde query (e.g. "~ "),
+  // silently reading it as NOT escaping at all. Trimming here, once, fixes
+  // both: nothing downstream in this function ever needed the raw edges.
+  const query = rawQuery.trim();
   if (!escapesBase(query)) return false;
   // A ".." segment always walks up and out of `fsPath` — genuinely a
   // different subtree no matter where it lands — so no further check is

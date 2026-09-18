@@ -212,6 +212,12 @@ export function useListingSearch(
   // path from a genuinely different one with no `fsPath` to compare against,
   // and it stays as it is for `isPathQuery` (path-shaped-query.ts), which
   // asks a different question and would regress if it changed meaning.
+  //
+  // `q` is passed RAW here, same as everywhere else in this hook (A1) —
+  // `escapesFsPath` trims its own input before comparing base segments
+  // (FINDING 1, code review, worktree-search-trailing-space; query-base.ts),
+  // so this call site needs no trim of its own to stay consistent with
+  // `isPathShapedQuery` above, which trims internally for the same reason.
   const escapes = escapesFsPath(q, fsPath, home);
   // The specific query text Enter was last pressed for. A ref, not state: it
   // must not itself cause a render, only unlock the fetch effect below (which
