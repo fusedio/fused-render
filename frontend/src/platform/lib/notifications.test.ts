@@ -767,3 +767,95 @@ test("a suppressed replaceId call clears whatever that id was still showing", ()
   // other dismiss in this store uses) rather than being left to sit forever.
   expect(getPopupNotification()?.leaving).toBe(true);
 });
+
+// ---- F1 (2026-09-18 fix, code review round): ingest retains/collapses
+// WITHOUT popping ------------------------------------------------------------
+//
+// The pane that raised this message already popped its OWN card, in its own
+// corner (App.tsx's `!IS_EMBED` guard means only a pane's own document runs
+// the local `notify()` call that pops it). If the shell's ingest handler also
+// called `notify()`, the shell would pop a SECOND, identical card for the
+// same event, and "latest wins" would let it silently evict — and cancel the
+// exit timer of — whatever card the shell itself happened to be showing.
+
+test("an ingested message is retained and collapses but never pops a card in the receiving document (F1)", () => {
+  const ingest = (globalThis as unknown as { _fusedIngestNotification: (input: unknown) => number })
+    ._fusedIngestNotification;
+
+  expect(getPopupNotification()).toBeNull();
+  const id = ingest({ title: "pane error", tone: "error" });
+
+  // Retained (and collapse-eligible), exactly like a local notify() call.
+  expect(getRetainedNotifications().map((n) => n.title)).toEqual(["pane error"]);
+  expect(typeof id).toBe("number");
+  // But NOT popped — that is the whole point of F1.
+  expect(getPopupNotification()).toBeNull();
+});
+
+test("an ingested message does not evict a popup the receiving document is already showing (F1)", () => {
+  const ingest = (globalThis as unknown as { _fusedIngestNotification: (input: unknown) => number })
+    ._fusedIngestNotification;
+
+  notify({ title: "local notice", tone: "error" });
+  expect(getPopupNotification()?.title).toBe("local notice");
+
+  ingest({ title: "forwarded notice", tone: "error" });
+
+  // The shell's own popup is untouched — the forwarded message only landed
+  // in the retained list, it never became "latest wins" popup content.
+  expect(getPopupNotification()?.title).toBe("local notice");
+  expect(getRetainedNotifications().map((n) => n.title).sort()).toEqual([
+    "forwarded notice",
+    "local notice",
+  ]);
+});
+
+test("two ingested messages sharing a family still collapse into one retained row even though neither ever pops (F1 + existing collapse contract)", () => {
+  const ingest = (globalThis as unknown as { _fusedIngestNotification: (input: unknown) => number })
+    ._fusedIngestNotification;
+  const id1 = ingest({ title: "Task finished", tone: "info", origin: "fused-render", page: "/tasks/1" });
+  const id2 = ingest({ title: "Task finished", tone: "info", origin: "fused-render", page: "/tasks/1" });
+  expect(id2).toBe(id1);
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(1);
+  expect(retained[0]?.count).toBe(2);
+  expect(getPopupNotification()).toBeNull();
+});
+
+// ---- F2 (2026-09-18 fix, code review round): no runaway self-forward ------
+//
+// `IS_TOP_EMBED` (router.ts) is `IS_EMBED && window === window.top &&
+// !IS_PREVIEW && !IS_SNAPSHOT` — so a TOP-LEVEL window loaded at an embed URL
+// with `_preview=1`/`snapshot=1` is `IS_EMBED` but NOT `IS_TOP_EMBED`, and
+// `forwardToShell`'s `!effectiveIsEmbed() || effectiveIsTopEmbed()` guard does
+// not fire for it. `window.top` for that document IS the document itself, so
+// without a separate structural guard: notify() -> forwardToShell() -> its
+// OWN `_fusedIngestNotification` -> notify() -> forwardToShell() -> ...
+// forever.
+
+test("forwardToShell refuses to forward to itself when window.top === window, even when IS_EMBED but not IS_TOP_EMBED (F2)", () => {
+  _setIsEmbedForTest(true);
+  _setIsTopEmbedForTest(false); // models a top-level window at an embed URL with _preview=1/snapshot=1
+  (globalThis.window as unknown as Record<string, unknown>).top = globalThis.window;
+
+  let ingestCalls = 0;
+  const realIngest = (globalThis as unknown as Record<string, unknown>)
+    ._fusedIngestNotification as (input: unknown) => number;
+  (globalThis as unknown as Record<string, unknown>)._fusedIngestNotification = (input: unknown) => {
+    ingestCalls++;
+    return realIngest(input);
+  };
+
+  try {
+    expect(() => notify({ title: "self", tone: "error" })).not.toThrow();
+    // Must never call its own ingest handler — there is nothing above this
+    // document to forward to, whatever IS_EMBED/IS_TOP_EMBED say.
+    expect(ingestCalls).toBe(0);
+    // The message still lands locally, exactly as an ordinary top-level
+    // notify would — the guard only suppresses the (self-)forward, not the
+    // notice.
+    expect(getPopupNotification()?.title).toBe("self");
+  } finally {
+    (globalThis as unknown as Record<string, unknown>)._fusedIngestNotification = realIngest;
+  }
+});
