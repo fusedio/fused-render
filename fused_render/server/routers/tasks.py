@@ -5345,7 +5345,22 @@ def _queue_spawn(folder: str, task_key: str) -> dict | None:
     entry_id = _oldest_due_entry(task_key)
     if not entry_id:
         return None
-    return schedule.dispatch_entry(entry_id)
+    started = schedule.dispatch_entry(entry_id)
+    session_id = str((started or {}).get("session_id") or "")
+    if session_id:
+        # A TURN JUST BEGAN ON THIS SESSION, and the manager is the one caller
+        # that knows it (Akshil's list audit, 2026-09-18). The watcher may still
+        # hold this session's `turn_ended` stamp from the previous turn; only a
+        # newer mark or a strictly newer registry mtime clears it, and a
+        # hand-off inside the same second — or a registry row that never left
+        # `busy` — clears neither, so the row read "done" while the next turn
+        # ran. The page marks its own sends this way; the queue marks the ones
+        # it dispatches.
+        try:
+            tasks_watch.mark_running(session_id)
+        except Exception:  # noqa: BLE001 — a missed mark is the old behaviour
+            logger.debug("could not mark %s running", session_id, exc_info=True)
+    return started
 
 
 def _oldest_due_entry(task_key: str) -> str:

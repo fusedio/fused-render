@@ -3091,3 +3091,23 @@ def test_with_the_flag_off_no_door_touches_the_manager(
     assert _post(client, "/api/tasks/queue/decide",
                  _decide_body(alpha)).json()["held"] is False
     assert manager.events == []
+
+
+def test_a_queue_dispatched_turn_marks_its_session_running(monkeypatch):
+    """Akshil's list audit (2026-09-18): the watcher may still hold the previous
+    turn's `turn_ended` stamp for this session, and a hand-off inside the same
+    second cleared nothing — the row read done while the next turn ran. The
+    queue is the one caller that knows a turn just began, so it marks it."""
+    from fused_render import tasks_watch as tw
+
+    tw.reset()
+    monkeypatch.setattr(tasks_mod, "_oldest_due_entry", lambda key: "e-1")
+    monkeypatch.setattr(tasks_mod.schedule, "dispatch_entry",
+                        lambda entry_id, now=None: {"run_id": "r-1",
+                                                    "session_id": "sess-1"})
+    tw.mark_turn_ended("sess-1", "r-0", time.time())
+    assert tw.is_turn_ended("sess-1")
+    assert tasks_mod._queue_spawn("/w/alpha", "sess-1") == {"run_id": "r-1",
+                                                            "session_id": "sess-1"}
+    assert tw.is_marked_running("sess-1")
+    assert not tw.is_turn_ended("sess-1")
