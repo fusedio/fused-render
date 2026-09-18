@@ -421,6 +421,29 @@ class QueueManager:
         except OSError:
             logger.debug("queue: could not rename %s aside", path, exc_info=True)
 
+    def _folder_fingerprints(self) -> dict:
+        """Snapshot of every folder's owner + line ORDER, for `_txn`'s diff."""
+        out = {}
+        for folder, rec in self._state["folders"].items():
+            owner = rec.get("owner")
+            out[folder] = (owner["task"] if owner else "",
+                           tuple(item["task"] for item in rec.get("line", ())))
+        return out
+
+    @staticmethod
+    def _line_facts(snap: tuple) -> dict:
+        """Every line task's own displayed fact in one snapshot: `(index,
+        ahead_key)` — what `_place` turns into "Nth in line, behind X". Two
+        tasks with the same fact in two snapshots have nothing stale to
+        refresh on the Tasks page; anything else does."""
+        owner_task, line = snap
+        facts = {}
+        ahead = owner_task
+        for index, task in enumerate(line):
+            facts[task] = (index, ahead)
+            ahead = task
+        return facts
+
     @contextlib.contextmanager
     def _txn(self):
         """One event: the lock, the task keys it touched, then persist — and the
@@ -436,10 +459,39 @@ class QueueManager:
         re-takes it for microseconds to patch the result in.
 
         Handlers use the `_`-prefixed internals inside, so a pump nested in an
-        enqueue is still one write and one notify."""
+        enqueue is still one write and one notify.
+
+        BELT: a handler that reorders a folder's line, or lets a removal/
+        hand-off shift everyone behind it, can forget to add every displaced
+        task's key to `keys` — that bug is easy to reintroduce one folder
+        mutation at a time (skip's "both A and B claim 1st in line", PR
+        #1194). So this also diffs each folder's `_line_facts()` from before
+        the body ran to after: any task whose `(index, ahead_key)` moved gets
+        added. A pure append (nothing existing shifted) adds nothing extra —
+        the new key is already `keys.add()`-ed by the handler — so this never
+        over-fires on the common case. A REORDER of the very same set of line
+        tasks (skip's `⤒`) touches the owner too, since what its row would
+        call "up next" just changed name."""
         with self._lock:
             keys: set[str] = set()
+            before = self._folder_fingerprints()
             yield keys
+            after = self._folder_fingerprints()
+            for folder, after_snap in after.items():
+                before_snap = before.get(folder, ("", ()))
+                if before_snap == after_snap:
+                    continue
+                before_facts = self._line_facts(before_snap)
+                after_facts = self._line_facts(after_snap)
+                for task in set(before_facts) | set(after_facts):
+                    if before_facts.get(task) != after_facts.get(task):
+                        keys.add(task)
+                if (set(before_snap[1]) == set(after_snap[1])
+                        and before_snap[1] != after_snap[1]):
+                    if before_snap[0]:
+                        keys.add(before_snap[0])
+                    if after_snap[0]:
+                        keys.add(after_snap[0])
             self._save()
         self._flush(keys)
 
@@ -535,6 +587,42 @@ class QueueManager:
                         "since": float(self._clock()), "starting": False,
                         "turns": turns}
         return rec["owner"]
+
+    @staticmethod
+    def _inherit_placeholder(previous: dict | None, owner: dict) -> None:
+        """Fold a replaced `admit:` placeholder's unconsumed claim tokens and
+        turn count onto the fresh owner that takes its place. A no-op unless
+        `previous` IS a live placeholder.
+
+        FACTORED OUT OF `started` AND `claim_took` (2026-09-17, Bugbot PR
+        #1194, third round): both call `_own`, which always writes a CLEAN
+        record — `claims: []`, `turns: 1` — right for a folder that was free,
+        wrong for one a placeholder was already holding. `started`'s copy
+        landed first (PR #1194, second push); `claim_took`'s NAMED-claim-
+        gives-way-to-a-placeholder branch had the exact same shape and the
+        exact same bug, just never caught by a test that checked a token
+        survived a RENAME through `claim_took` rather than through `started`.
+        Dropping the claims list there made the run gate call an
+        already-admitted send unadmitted and claim the folder a second time —
+        `turn_ended`'s single decrement never brought a doubled count back to
+        zero.
+
+        `turns` is kept AT THE PLACEHOLDER'S OWN COUNT — never reset to `_own`'s
+        default of 1 (that would forget a follow-up already absorbed into it)
+        and never incremented here either. Neither caller has a token to ask
+        "is this send the one the placeholder already counted, or a genuinely
+        new one arriving in the same instant" — `started` never receives one
+        by design (see its own docstring on `turns`), and `claim_took`'s
+        signature has nowhere to put one. Between undercounting and
+        overcounting, undercounting is the safe direction: a `turns` too high
+        never frees the folder until `exited`'s force path, but one too low
+        frees it a decrement early and starts a second turn beside a live one.
+        Keeping exactly what the placeholder already had risks neither by more
+        than the one send both paths already know about."""
+        if previous is None or not _is_placeholder(_text(previous.get("task"))):
+            return
+        owner["claims"] = list(previous.get("claims") or [])
+        owner["turns"] = max(1, int(previous.get("turns") or 1))
 
     @staticmethod
     def _mint_claim(owner: dict) -> str:
@@ -1067,10 +1155,15 @@ class QueueManager:
                     return False, False, ""
                 keys.add(owner["task"])
             self._take_everywhere(task_key, keys, except_folder=folder)
-            self._own(rec, {"task": task_key, "entry_id": ""}, _text(run_id),
-                      _text(session_id))
+            fresh = self._own(rec, {"task": task_key, "entry_id": ""},
+                              _text(run_id), _text(session_id))
+            # A NAME REPLACING A PLACEHOLDER INHERITS ITS CLAIMS AND TURNS
+            # (Bugbot, PR #1194, third round) — `owner` above is still the
+            # placeholder `_own` just wrote over, None-safe when the folder
+            # was free instead. See `_inherit_placeholder`.
+            self._inherit_placeholder(owner, fresh)
             keys.add(task_key)
-            return True, True, self._mint_claim(rec["owner"])
+            return True, True, self._mint_claim(fresh)
 
     def consume_claim(self, folder: str, token: str) -> bool:
         """Remove `token` from `folder`'s owner, ONCE — the run gate's proof
@@ -1095,6 +1188,21 @@ class QueueManager:
             if not isinstance(claims, list) or text_token not in claims:
                 return False
             claims.remove(text_token)
+            # PROOF THIS OWNER IS WHO THE CALLER SAYS (2026-09-17, Bugbot PR
+            # #1194, third round). A live placeholder is not free to a
+            # stranger (`is_free`), and `started`'s post-spawn refile cannot
+            # otherwise tell "the admission this placeholder was minted for,
+            # naming itself" from "a stranger's spawn landing on somebody
+            # else's reservation" — both call it with a real name the
+            # placeholder never had. Consuming ITS OWN token here is the one
+            # thing only the admitted send could have presented, so `started`
+            # trusts the mark and nothing else (`_is_placeholder` guard there).
+            # Transient and never copied onward by `_inherit_placeholder`: the
+            # owner this marks is the placeholder itself, and once it is
+            # retired (or gives way some other way) the mark has done its one
+            # job.
+            if owner is not None:
+                owner["consumed"] = True
             return True
 
     def started(self, folder: str, task_key: str, run_id: str = "",
@@ -1121,7 +1229,22 @@ class QueueManager:
         which left the folder reading free and let a second nameless send into
         it while the first was still starting. The run id is a name: it exists
         the moment `_start` returns, the page carries it on every message
-        afterwards, and `is_free` answers to it."""
+        afterwards, and `is_free` answers to it.
+
+        **NEVER OVERWRITES A LIVE FOREIGN PLACEHOLDER** (CORRECTED 2026-09-17,
+        Bugbot PR #1194, third round). This call has no way to prove it is the
+        admission that minted a still-live placeholder rather than a stranger
+        whose spawn reached here some other way — both name a real conversation
+        the placeholder never had. The one thing only the admitted send could
+        have presented is the placeholder's own claim token, and
+        `consume_claim` marks the owner the instant that happens
+        (`owner["consumed"]`); this refuses (logs, does nothing) rather than
+        replace a live, unconsumed placeholder on a guess. The run gate
+        (`routers/run.py::_folder_busy`) is the real fix — `is_free` no longer
+        calls a live placeholder free to a stranger, so that send is refused
+        before it ever reaches a spawn — this is the backstop for a caller
+        that reaches `started` some other way. An EXPIRED placeholder still
+        gives way unconditionally, same as `is_free`."""
         task_key = task_key or _text(run_id)
         if not folder or not task_key:
             return
@@ -1141,26 +1264,30 @@ class QueueManager:
                     previous["session_id"] = _text(session_id)
                 keys.add(task_key)
                 return
+            if (previous is not None
+                    and _is_placeholder(_text(previous.get("task")))
+                    and not self._stale_placeholder(previous)
+                    and not previous.get("consumed")):
+                logger.warning(
+                    "queue: %s tried to replace the live placeholder %s in "
+                    "%s with no consumed claim; refusing to overwrite (the "
+                    "run gate should have refused this send)",
+                    task_key, previous.get("task"), folder)
+                return
             self._take_everywhere(task_key, keys, except_folder=folder)
             rec = self._folder(folder)
             previous = rec["owner"]
             if previous is not None:
                 keys.add(previous["task"])
             # A FRESH OWNER either way: no owner at all (the legacy/anonymous
-            # path `claim` never saw), or a placeholder/stranger this send's
-            # own name trumps because the caller (admit, run-now) already
-            # claimed the folder and this is trusted to say so. `_own`
-            # defaults `turns` to 1, which is right for both — a placeholder's
-            # `turns` was already 1 from the `claim` that filed it.
+            # path `claim` never saw), or a placeholder this send's own name
+            # trumps because the guard above already vetted it (consumed its
+            # token, or expired). `_inherit_placeholder` carries the
+            # placeholder's claims and turns onto the fresh record — see its
+            # docstring.
             owner = self._own(rec, {"task": task_key, "entry_id": ""},
                               _text(run_id), _text(session_id))
-            if previous is not None and _is_placeholder(previous.get("task")):
-                # THE PLACEHOLDER'S TOKENS AND TURNS SURVIVE THE RENAME (Bugbot,
-                # PR #1194). Admission minted a claim on the placeholder and the
-                # chat is about to present it at the run gate; dropping it here
-                # made the gate call that send unadmitted and count it twice.
-                owner["claims"] = list(previous.get("claims") or [])
-                owner["turns"] = max(1, int(previous.get("turns") or 1))
+            self._inherit_placeholder(previous, owner)
             keys.add(task_key)
 
     def card_raised(self, task_key: str, run_id: str = "") -> None:
@@ -1350,15 +1477,27 @@ class QueueManager:
         very next message names that run — so matching on the task key alone
         would tell a conversation it is standing behind itself.
 
-        **A PLACEHOLDER OWNER IS NOT A RUN.** `admit:<token>` is what an
-        admission leaves for a chat that has no name yet, and its whole job is to
-        settle a race between two ADMISSIONS (`claim`). It is not a live turn, so
-        it never refuses a send at the run gate (`routers/run._folder_busy`) —
-        which would be this record refusing the very start it was taken for."""
+        **A LIVE PLACEHOLDER IS NOT FREE TO A STRANGER** (CORRECTED 2026-09-17,
+        Bugbot PR #1194, third round). `admit:<token>` is what an admission
+        leaves for a chat that has no name yet, and it used to read free to
+        EVERY caller — which let a brand-new chat's first `/api/run start`
+        with no session, no run and no claim token pass a folder another
+        admission had already reserved: two brand-new chats spawned in one
+        tree. A live placeholder is free only to the admission that minted it,
+        which can name itself only by its OWN placeholder key here (`task_key
+        == owner["task"]`) — the run gate proves the stronger claim, "I hold
+        this admission's token", through `consume_claim` instead, since
+        `is_free` takes no token and a caller with no name yet has nothing else
+        to offer. `task_key=""` — a stranger with no name at all — is
+        therefore never free against a live placeholder, which is exactly the
+        case that was open. An EXPIRED placeholder is still free to anyone, as
+        before: nothing will ever post an event for a process that never
+        started, so it cannot answer to a token or a name and has to expire on
+        its own (`PLACEHOLDER_TTL`)."""
         owner = self.owner(folder)
         if owner is None:
             return True
-        if _is_placeholder(_text(owner.get("task"))):
+        if _is_placeholder(_text(owner.get("task"))) and self._stale_placeholder(owner):
             return True
         if not task_key:
             return False

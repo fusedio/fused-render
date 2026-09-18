@@ -154,12 +154,19 @@ def _folder_busy(resolved: str, params: dict, body: dict | None = None) -> str:
                                                    session_id)[0])
             if passed:
                 return ""
-        elif manager.is_free(key, ""):
+        elif admitted or manager.is_free(key, ""):
             # A brand-new chat's first send has NO name to claim or look up
-            # under yet — nothing here can tell it apart from a stranger's, so
-            # this is never actively claimed, admitted or not. It passes a free
-            # folder (or one still sitting behind admit's own `admit:<token>`
-            # reservation, which `is_free` never counts) and `_file_owner`
+            # under yet — nothing here can tell it apart from a stranger's
+            # by name alone. `is_free` now refuses a live placeholder to
+            # exactly that stranger (CORRECTED 2026-09-17, Bugbot PR #1194,
+            # third round: it used to read free to everyone here, which let a
+            # second brand-new chat's nameless send pass a folder another
+            # admission had already reserved and spawn beside it). This
+            # admission's OWN first send has nothing to check `is_free`
+            # against either — it is the same nameless placeholder — so
+            # `admitted` (a token this call just consumed, proof this is the
+            # very send `claim_for_send` counted) is what lets it through
+            # instead. Neither proof, on a free folder, still passes: `_file_owner`
             # files the real names the instant the spawn hands them back.
             return ""
         owner = manager.owner(key) or {}

@@ -204,6 +204,22 @@ def test_a_second_anonymous_start_is_refused_once_the_first_has_spawned(real_gat
         AGENT, _params(action="send", session_id="sess-1", run_id="r-1")) == ""
 
 
+def test_a_second_nameless_tokenless_start_is_refused_against_a_live_admission(
+        real_gate):
+    """CORRECTED 2026-09-17, Bugbot PR #1194, third round: `is_free` used to
+    call a live `admit:` placeholder free to EVERY caller, so a second
+    brand-new chat's first `/api/run start` — no session, no run, and no
+    `queue_claim` because it never called admit at all — passed a folder
+    another admission had already reserved, and BOTH ended up spawning. The
+    first admission's `claim_for_send` (what `/api/tasks/queue/admit` does)
+    reserves the placeholder the instant the composer asks; the gate must now
+    refuse a second nameless stranger against that live reservation rather
+    than reading it as an open folder."""
+    _ok, _took, _token = real_gate.claim_for_send(
+        "/w/alpha", queue_manager.PLACEHOLDER_PREFIX + "one")
+    assert run_router._folder_busy(AGENT, _params())
+
+
 def test_a_start_that_mints_no_session_is_still_filed_under_its_run(real_gate):
     """The run id is a name on its own, and `is_free` answers to it."""
     run_router._file_owner(AGENT, _params(), _started("r-1"))

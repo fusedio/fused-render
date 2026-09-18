@@ -25,12 +25,21 @@
 // that, so the chat borrows the peek's own component rather than growing a
 // second header that must be kept looking like it.
 import type { Task } from "@platform/lib/api";
+// THE QUEUE'S WORDS, from the one builder three surfaces share — "1st in line ·
+// behind TASK-046" (platform/lib/queue). The header says the same sentence the
+// Tasks row says, because it is the same fact about the same task.
+import { queueCaption, type QueueFacts } from "@platform/lib/queue";
 // THE TASK PANEL'S OWN IDENTITY BLOCK (shell/TaskPeekWho.tsx). Imported rather
 // than restated: the side peek and this header are two windows onto one
 // conversation, and a reader who moves between them must not have to pair up
 // two different headers (Akshil, 2026-09-14). Its CSS is `styles/task-peek.css`,
 // which the shell loads for every page through `shell.css` — the chat draws
 // inside that document, so there is nothing to import here.
+// THE LIST'S OWN STATUS RING. A queued task wears a dashed ring on the Tasks
+// page (`schedule-ring--queued`, styles/schedule.css) and the chat now wears the
+// same one — reused rather than restated, so the two cannot drift into two
+// vocabularies for one state (the drift this whole header was written against).
+import { StatusIcon } from "@shell/ScheduleTaskViews";
 import { TaskPeekProject, TaskPeekWho } from "@shell/TaskPeekWho";
 import { shortTaskId } from "@shell/tasks-lib";
 import "../styles/composer.css";
@@ -87,6 +96,21 @@ export interface TopbarProps {
    * one where nothing is. "" on every ordinary chat.
    */
   status?: string;
+  /**
+   * THIS CONVERSATION'S OWN QUEUE FACTS (`useSchedule.row`) — the live
+   * `/api/tasks` row, off the change feed.
+   *
+   * The Tasks page has always drawn a queued chat as a dashed yellow ring and a
+   * caption; this pane drew nothing at all, so a reader whose send was sitting
+   * behind somebody else's run had a header that looked exactly like a chat that
+   * was idle (Akshil, 2026-09-17). Nothing new is invented for it: the ring is
+   * the list's `StatusIcon` and the words are `queueCaption`'s.
+   *
+   * Only `status === "queued"` draws — `queueCaption` answers null for every
+   * other row, and a running conversation already has the ring in `TaskPeekWho`
+   * and the composer's own clock to say so.
+   */
+  queue?: QueueFacts | null;
 }
 
 export function Topbar({
@@ -98,7 +122,10 @@ export function Topbar({
   home,
   running,
   status,
+  queue,
 }: TopbarProps) {
+  // Null on every row that is not waiting in a line, which is the common case.
+  const line = queue ? queueCaption(queue) : null;
   if (task) {
     return (
       // THE FULL SESSION ID STAYS REACHABLE. The peek's identity block prints
@@ -110,6 +137,7 @@ export function Topbar({
       <div className="c-topbar" title={sessionId || undefined}>
         <TaskPeekWho task={task} running={running} />
         <TaskPeekProject task={task} {...(home ? { home } : {})} />
+        {line ? <QueuedWord line={line.text} /> : null}
         {/* THE PAUSED WORD STILL LANDS HERE (`status`, platform/lib/usage-limit):
             the ring says running or not, and "resumes 4:00 AM" is the one fact
             about this conversation the ring cannot carry. */}
@@ -169,6 +197,11 @@ export function Topbar({
           {label}
         </span>
       ) : null}
+      {/* THE QUEUED RING AND ITS SENTENCE, for the conversation that has no task
+          row to draw the peek's identity block from — a brand-new chat whose
+          first message is still in its folder's line, which is precisely the one
+          this state matters most on. */}
+      {line ? <QueuedWord line={line.text} /> : null}
       {/* `aria-live="polite"`, not assertive: this is an ambient state, and a
           reader that interrupts to announce the start of every turn is worse
           than one that mentions it when it next comes up for air (T:4078). */}
@@ -184,5 +217,28 @@ export function Topbar({
         </span>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * `⊘ queued · 1st in line · behind TASK-046` in the header's last inch.
+ *
+ * THE RING IS THE LIST'S and the words are the queue's one builder; what is
+ * local here is only the seat. It rides in `.c-tb-paused`, the muted span the
+ * usage limit's "paused · resumes 4:00 AM" already uses — the same register for
+ * the same kind of fact (this conversation is not moving, and here is why), so
+ * the header grows no third way of saying a state.
+ *
+ * The WORD is spoken as well as ringed: the ring's own `aria-label` says
+ * "Queued", and the sentence after it is the part a reader can act on.
+ */
+function QueuedWord({ line }: { line: string }) {
+  return (
+    <span className="c-tb-paused" aria-live="polite">
+      <span className="task-side-peek-status" title="Queued">
+        <StatusIcon status="queued" />
+      </span>
+      {" queued · " + line}
+    </span>
   );
 }

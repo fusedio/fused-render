@@ -4203,6 +4203,14 @@ function ChatBody(props: ChatBodyProps) {
                 // (platform/lib/usage-limit). Read off this chat's own row, which
                 // is the same field the Tasks page draws the red ring from.
                 status={limitWord}
+                // …AND THE QUEUE'S OWN STATE, off this conversation's LIVE row
+                // (`useSchedule.row`, the tasks change feed). The Tasks list has
+                // always shown a queued chat as a dashed ring and "1st in line ·
+                // behind TASK-046"; this header said nothing, so a reader whose
+                // send was behind somebody else's run could not tell it from an
+                // idle chat (Akshil, 2026-09-17). `Topbar` draws it only while
+                // the row says `queued`.
+                queue={queueOn ? sched.row : null}
               />
             ) : null}
             <Transcript

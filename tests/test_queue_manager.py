@@ -1181,6 +1181,74 @@ def test_notify_is_optional():
     assert m.snapshot()["folders"][F1]["line"] == []
 
 
+def test_skip_notifies_everyone_whose_line_position_moved():
+    """User screenshot, PR #1194: after Skip on b the Tasks list showed BOTH
+    "b 1st in line" and "a 1st in line" — `skip` only notified the task it
+    was called on, so a's row (now second, behind b) kept its stale "1st in
+    line" fact. Reordering the line moves EVERY task still in it, including
+    c whose `ahead_key` flips from b to a."""
+    world = World()
+    m = world.manager()
+    for key in ("owner", "a", "b", "c"):
+        m.enqueue(F1, key)
+    world.notified.clear()
+
+    m.skip("b")
+
+    assert line_of(m) == ["b", "a", "c"]
+    assert world.notified == [{"owner", "a", "b", "c"}]
+
+
+def test_turn_ended_notifies_the_new_owner_and_the_rest_of_the_line():
+    """A pump handing the folder to the next task shifts every remaining line
+    item's position/ahead_key too, not just the outgoing and incoming
+    owner."""
+    world = World()
+    m = world.manager()
+    for key in ("owner", "a", "b", "c"):
+        m.enqueue(F1, key)
+    world.notified.clear()
+
+    m.turn_ended("owner")
+
+    assert owner_key(m) == "a"
+    assert line_of(m) == ["b", "c"]
+    assert world.notified == [{"owner", "a", "b", "c"}]
+
+
+def test_card_answered_inserting_at_head_notifies_the_whole_line():
+    """`card_answered` while busy promotes the parked task to the head of the
+    line — everybody already queued behind it (here, c) moves down one and
+    needs a fresh row too."""
+    world = World()
+    m = world.manager()
+    m.enqueue(F1, "a")
+    m.enqueue(F1, "b")
+    m.enqueue(F1, "c")
+    m.card_raised("a")                       # b owns, c waits, a blocked
+    world.notified.clear()
+
+    m.card_answered("a", "run-a", "req-1", {"answer": "allow"})
+
+    assert line_of(m) == ["a", "c"]
+    assert world.notified == [{"a", "c"}]
+
+
+def test_remove_of_a_line_item_notifies_everyone_still_behind_it():
+    """Removing a's entry moves b and c up a slot each even though their
+    relative order to each other never changes."""
+    world = World()
+    m = world.manager()
+    for key in ("owner", "a", "b", "c"):
+        m.enqueue(F1, key)
+    world.notified.clear()
+
+    m.remove("a")
+
+    assert line_of(m) == ["b", "c"]
+    assert world.notified == [{"a", "b", "c"}]
+
+
 # ----------------------------------------------------------------- claim
 #
 # `is_free` then `started` is two acquisitions of one lock with a gap in
@@ -1395,6 +1463,26 @@ def test_claim_took_calls_a_placeholder_a_take():
     assert m2.claim_took(F1, qm.PLACEHOLDER_PREFIX + "two") == (False, False)
 
 
+def test_claim_took_over_a_placeholder_keeps_its_claims_and_turns():
+    """Bugbot PR #1194, third round: `claim_took`'s NAMED-claim-gives-way-to-
+    a-placeholder branch had the exact same drop-the-claims-and-turns bug
+    `started` already had fixed for its own rename — a second, unrelated
+    send absorbed into the placeholder before a real name replaced it lost
+    its own consumable token, and the run gate counted it unadmitted a
+    second time. Both are now the same helper (`_inherit_placeholder`)."""
+    m = idle_world().manager()
+    _ok, _took, first = m.claim_for_send(F1, qm.PLACEHOLDER_PREFIX + "one")
+    _ok2, _took2, second = m.claim_for_send(F1, qm.PLACEHOLDER_PREFIX + "one")
+    assert m.owner(F1)["turns"] == 2
+    ok, took = m.claim_took(F1, "sess-new", "run-1", "sess-new")
+    assert (ok, took) == (True, True)
+    owner = m.owner(F1)
+    assert owner["task"] == "sess-new"
+    assert owner["turns"] == 2, "the absorbed follow-up's turn must not be dropped"
+    assert m.consume_claim(F1, first) is True
+    assert m.consume_claim(F1, second) is True
+
+
 # ----------------------------------------------------- the per-send claim token
 #
 # Bugbot, PR #1194, second round: a gate that only LOOKS (never claims) let a
@@ -1505,24 +1593,75 @@ def test_a_placeholder_gives_way_to_a_real_name():
 
 
 def test_started_from_the_real_spawn_retires_the_placeholder():
+    """The normal path: admission claims the placeholder AND mints a token,
+    the run gate `consume_claim`s it (proof this is the very send that was
+    admitted — the mark `started` now checks, Bugbot PR #1194 third round),
+    and only then is the spawn's own refile trusted to replace it."""
     m = idle_world().manager()
-    m.claim(F1, qm.PLACEHOLDER_PREFIX + "one")
+    _ok, _took, token = m.claim_for_send(F1, qm.PLACEHOLDER_PREFIX + "one")
+    assert m.consume_claim(F1, token) is True
     m.started(F1, "sess-new", "run-1", "sess-new")
     owner = m.owner(F1)
     assert (owner["task"], owner["run_id"]) == ("sess-new", "run-1")
 
 
-def test_a_placeholder_expires_and_never_refuses_a_send():
-    """THE ONE CLOCK IN THE QUEUE: no process exists yet, so no event can ever
-    free this record and it has to free itself. And while it stands it is not a
-    live turn — the run gate must not refuse the very start it was taken for."""
+def test_started_never_overwrites_a_live_foreign_placeholder():
+    """CORRECTED 2026-09-17, Bugbot PR #1194, third round: `started` used to
+    trust ANY caller to retire a placeholder, so a stranger's spawn — one
+    that skipped admission and reached the spawn site some other way — could
+    clobber another admission's live reservation and run two brand-new chats
+    in one tree. Without a consumed claim as proof, `started` cannot tell
+    that caller apart from the admission that filed the placeholder, so it
+    refuses (no-op) rather than guess; the real fix is the run gate refusing
+    that stranger before it ever spawns (`is_free`, `test_run_folder_gate.py`)
+    — this is the backstop for a caller that reaches `started` anyway."""
+    m = idle_world().manager()
+    m.claim(F1, qm.PLACEHOLDER_PREFIX + "one")   # no token ever consumed
+    m.started(F1, "stranger-sess", "run-x", "stranger-sess")
+    owner = m.owner(F1)
+    assert owner["task"] == qm.PLACEHOLDER_PREFIX + "one"
+
+
+def test_started_overwrites_an_expired_placeholder_with_no_token():
+    """An expired placeholder gives way unconditionally, same as `is_free` —
+    nothing will ever post an event for a process that never started, so it
+    cannot be expected to present a token either."""
     world = idle_world()
     m = world.manager()
     m.claim(F1, qm.PLACEHOLDER_PREFIX + "one")
-    assert m.is_free(F1) is True             # not a run: the gate lets it by
-    assert m.is_free(F1, "anybody") is True
+    world.now += qm.PLACEHOLDER_TTL + 5
+    m.started(F1, "sess-new", "run-1", "sess-new")
+    owner = m.owner(F1)
+    assert (owner["task"], owner["run_id"]) == ("sess-new", "run-1")
+
+
+def test_a_live_placeholder_is_free_only_to_itself():
+    """CORRECTED 2026-09-17, Bugbot PR #1194, third round: `is_free` used to
+    call a live placeholder free to EVERY caller, so the run gate's
+    `is_free(folder, "")` on a nameless send let a STRANGER's send past a
+    folder another admission had already reserved, and two brand-new chats
+    spawned in one tree (see `test_run_folder_gate.py`, the real gate). A
+    live placeholder is free only to the exact key it was minted under; a
+    caller with a real name proves itself with a consumed claim token
+    instead, which `is_free` cannot see (`routers/run.py::_folder_busy`)."""
+    m = idle_world().manager()
+    m.claim(F1, qm.PLACEHOLDER_PREFIX + "one")
+    assert m.is_free(F1) is False
+    assert m.is_free(F1, "stranger") is False
+    assert m.is_free(F1, qm.PLACEHOLDER_PREFIX + "one") is True
+
+
+def test_a_placeholder_expires_and_never_refuses_a_send():
+    """THE ONE CLOCK IN THE QUEUE: no process exists yet, so no event can ever
+    free this record and it has to free itself. Once expired it is free to
+    anybody, same as before — only a LIVE placeholder is now guarded."""
+    world = idle_world()
+    m = world.manager()
+    m.claim(F1, qm.PLACEHOLDER_PREFIX + "one")
 
     world.now += qm.PLACEHOLDER_TTL + 5
+    assert m.is_free(F1) is True
+    assert m.is_free(F1, "anybody") is True
     assert m.claim(F1, qm.PLACEHOLDER_PREFIX + "two") is True
     assert owner_key(m) == qm.PLACEHOLDER_PREFIX + "two"
 
@@ -2104,17 +2243,25 @@ def test_reset_for_tests_installs_a_manager():
     assert qm.get() is m
 
 
-def test_the_real_spawn_keeps_the_placeholders_claim_tokens():
+def test_the_real_spawn_keeps_the_placeholders_other_claim_tokens():
     """Bugbot PR #1194: renaming an `admit:` placeholder to the spawned run
-    used to write a fresh owner with no `claims`, so the token admission had
-    minted was gone by the time the run gate presented it — and the gate then
-    counted the send a second time."""
+    used to write a fresh owner with no `claims`, so a SECOND send absorbed
+    into the same placeholder (`claim_for_send` called again before the first
+    spawn returns) found its own token gone the moment the run gate presented
+    it — and the gate counted that send a second time.
+
+    One of the two tokens is consumed first: the guard `started` now checks
+    (Bugbot PR #1194, third round) needs proof THIS call is the admitted
+    send, not a stranger's. The OTHER token belongs to the absorbed
+    follow-up and must survive the rename untouched, same as `turns`."""
     manager = idle_world().manager()
-    ok, took, token = manager.claim_for_send(F1, qm.PLACEHOLDER_PREFIX + "abc")
-    assert ok and took and token
+    _ok, _took, first = manager.claim_for_send(F1, qm.PLACEHOLDER_PREFIX + "abc")
+    _ok2, _took2, second = manager.claim_for_send(F1, qm.PLACEHOLDER_PREFIX + "abc")
+    assert manager.owner(F1)["turns"] == 2
+    assert manager.consume_claim(F1, first) is True
     manager.started(F1, "sess-1", run_id="run-1", session_id="sess-1")
     owner = manager.owner(F1)
     assert owner["task"] == "sess-1"
-    assert owner["turns"] == 1
-    assert manager.consume_claim(F1, token) is True
-    assert manager.consume_claim(F1, token) is False
+    assert owner["turns"] == 2
+    assert manager.consume_claim(F1, second) is True
+    assert manager.consume_claim(F1, second) is False
