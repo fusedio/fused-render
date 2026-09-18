@@ -12,6 +12,7 @@ Style follows tests/test_index_freshness.py: assert on the trigger (did
 `runner.start` get called, for which root), never on a real scan.
 """
 import logging
+import os
 
 import pytest
 
@@ -65,6 +66,29 @@ def _root(tmp_path):
 
 def _no_recent_scan(monkeypatch):
     monkeypatch.setattr(runner, "last_scan", lambda cfg, root: None)
+
+
+def _fake_home(monkeypatch, tmp_path):
+    """Redirect `~` to `tmp_path` for BOTH `default_home_dirs()` (this app's
+    own state home, consulted by `MountGuard`) and `detect._os_noise_roots()`
+    (this trigger's own `~/Library`-style noise list) — the two things a
+    `~`-shaped path in this test needs to line up with.
+
+    `monkeypatch.setenv("HOME", ...)` alone is NOT portable: `os.path.
+    expanduser("~")` reads `HOME` on POSIX but ignores it entirely on
+    Windows (it consults `USERPROFILE`/`HOMEDRIVE`+`HOMEPATH` instead), so a
+    `HOME`-only redirect silently resolves to the REAL Windows user profile
+    in CI, and none of this test's tmp-path-shaped noise paths land under it
+    — the noise filter then never fires and a scan starts where the test
+    expects none. `tests/test_index_mount_safe.py` (`test_the_guard_blocks_
+    every_fused_render_home_not_just_the_current_one`) hit the identical
+    problem and fixed it the same way: patch `os.path.expanduser` directly,
+    which is honoured on every platform because it IS the thing every
+    caller here (`default_home_dirs()`, `detect._os_noise_roots()`) calls."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        os.path, "expanduser",
+        lambda p: p.replace("~", str(tmp_path), 1) if p.startswith("~") else p)
 
 
 # -- the three hint() outcomes -------------------------------------------------
@@ -273,7 +297,7 @@ def test_realistic_noisy_hint_on_a_real_home_root_starts_no_scan(
     root, `hint` reporting only noise (this app's own state home, plus
     `~/Library` churn) must still take the quiet path — not "look changed"
     just because the raw journal saw something move."""
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _fake_home(monkeypatch, tmp_path)
     _no_recent_scan(monkeypatch)
     calls = []
     monkeypatch.setattr(runner, "start",
@@ -297,7 +321,7 @@ def test_realistic_noisy_hint_mixed_with_a_real_change_still_scans(
         tmp_path, monkeypatch, spawned):
     """The filter must not overreach: noise dropped alongside a genuine
     change under the same root still starts the scan."""
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _fake_home(monkeypatch, tmp_path)
     _no_recent_scan(monkeypatch)
     root = runner.canonical_root(str(tmp_path))
     mixed = {
