@@ -584,3 +584,13 @@ def test_a_failed_nameless_start_gives_its_placeholder_back(real_gate):
     assert real_gate.owner("/w/alpha") is None
     retry: dict = {}
     assert run_router._folder_busy(AGENT, _params(), retry) == ""
+
+
+def test_an_empty_start_result_gives_its_placeholder_back_too(real_gate):
+    """Bugbot PR #1194: a start that answers a dict with neither an error nor
+    a run/session id produced nothing to own the folder with either."""
+    body: dict = {}
+    assert run_router._folder_busy(AGENT, _params(), body) == ""
+    assert real_gate.owner("/w/alpha") is not None
+    run_router._file_owner(AGENT, _params(), {"ok": True, "result": {}}, body)
+    assert real_gate.owner("/w/alpha") is None

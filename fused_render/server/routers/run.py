@@ -87,6 +87,9 @@ def _file_owner(resolved: str, params: dict, result: dict,
         run_id = str(payload.get("run_id") or params.get("run_id") or "")
         session_id = str(payload.get("session_id") or params.get("session_id") or "")
         if not run_id and not session_id:
+            # Nothing to file under: no run came of this start (Bugbot, PR
+            # #1194 — same release as the error path above).
+            _drop_placeholder(key, body)
             return
         # The MINTED session — `_start` answers `new_session_id or session_id`,
         # so this is the conversation the run belongs to whether it is a fresh
