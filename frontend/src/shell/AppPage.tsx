@@ -692,11 +692,19 @@ export default function AppPage({
                       />
                     }
                   >
-                    <Icon data-icon="inline-start" />
+                    {id === "doctor" ? (
+                      // The at-a-glance signal the old header button carried:
+                      // worst failing severity, neutral while unknown. It sits
+                      // as a badge on the icon's top-right corner (owner's
+                      // brief), not after the label.
+                      <span className="app-page-doctor-mark">
+                        <Icon data-icon="inline-start" />
+                        <AppDoctorStatusDot checks={doctorChecks} />
+                      </span>
+                    ) : (
+                      <Icon data-icon="inline-start" />
+                    )}
                     {label}
-                    {/* The at-a-glance signal the old header button carried:
-                        worst failing severity, neutral while unknown. */}
-                    {id === "doctor" && <AppDoctorStatusDot checks={doctorChecks} />}
                   </TabsTrigger>
                 );
               })}

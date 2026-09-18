@@ -254,6 +254,24 @@
   pointer-events: none;
 }
 
+/* The App Doctor trigger's icon wears the status dot as a corner badge
+   (shell/AppPage.tsx): the wrapper is the icon's box, the dot is pinned to its
+   top-right and drawn smaller than the standalone dot (app-doctor.css). */
+.app-page-doctor-mark {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+
+.app-page-doctor-mark .appdoc-dot {
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  width: 5px;
+  height: 5px;
+  margin: 0;
+}
+
 /* The panels (one per APP_PAGE_TABS entry, class `app-page-<id>` beside this).
    A `keepMounted` panel — the Overview — stays behind the active one as
    display:none, not unmounted, so the running app keeps its state. */
