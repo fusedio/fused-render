@@ -7,6 +7,8 @@
 // page uses to hand the shared pulse a known-fresh answer) rather than
 // waiting out its poll timers.
 import { beforeEach, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { installDomShim } from "@platform/lib/testDomShim";
@@ -104,6 +106,33 @@ async function publish(rows: TaskPulseTask[]): Promise<void> {
 beforeEach(() => {
   presenceStore.clear();
   _resetNotificationsForTest();
+});
+
+// DEFECT (2026-09-18 fix, live repro): App.tsx calls `useTaskStatusNotify()`
+// unconditionally, and this hook's own header comment used to assert that
+// mounting only inside the shell's `App` already excluded embeds from this
+// poll — wrong, because App.tsx renders that same `App` for an embedded pane
+// too (e.g. a split view's left pane). N documents watching the same task
+// each ran this hook's poll and raised the same finished-task notice, which
+// `notifications.ts`'s pane->shell forwarding then carried up again — the
+// duplicate-row repro this branch of the fix targets.
+//
+// `IS_EMBED` is read once, at module init, off `location` (router.ts) — like
+// every other module-scope embed check in this shell, it cannot be flipped
+// mid-process for a second test file to see the opposite value (bun shares
+// one module registry across a whole `bun test` run; see notifications.ts's
+// own `effectiveIsEmbed` comment on exactly this constraint). Pinned as
+// source structure instead, the same way home-performance.test.ts asserts
+// main.tsx's own `if (IS_EMBED) return;` boot-path guard.
+test("useTaskStatusNotify guards its own effect against IS_EMBED before it can raise anything", () => {
+  const src = readFileSync(join(import.meta.dir, "useTaskStatusNotify.ts"), "utf8");
+  expect(src).toContain('import { IS_EMBED } from "@platform/lib/router";');
+  const guard = src.indexOf("if (IS_EMBED) return;");
+  expect(guard).toBeGreaterThan(-1);
+  // Guards the whole effect BODY, not the `useEffect(...)` call itself — a
+  // conditional hook call would break the rules of hooks.
+  expect(src.indexOf("useEffect(() => {")).toBeLessThan(guard);
+  expect(guard).toBeLessThan(src.indexOf("notify(input)"));
 });
 
 describe("useTaskStatusNotify", () => {
