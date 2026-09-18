@@ -1,5 +1,5 @@
-// Index — the /index-manager sentinel, entered from the sidebar's own
-// "Index" entry (GlobalSidebar) or the /index-manager URL directly. The
+// Index — the /index sentinel, entered from the sidebar's own
+// "Index" entry (GlobalSidebar) or the /index URL directly. The
 // management page SPEC-index-plugins.md's message one asked for: "I want to
 // make this more modular and accessible using a new page."
 //
