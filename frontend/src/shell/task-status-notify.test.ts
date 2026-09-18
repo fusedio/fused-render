@@ -145,6 +145,26 @@ describe("notificationForTransition", () => {
     expect(n?.origin).toBe("Transcripto");
   });
 
+  // 2026-09-18 fix (user: "these 2 fused-render notifications should have
+  // been grouped together as count"): two finished tasks in the same folder
+  // usually have DIFFERENT titles ("hi", "New session"), so `notifications.
+  // ts`'s ordinary caption+title family never collapsed them. This call site
+  // is the one that opts into the coarser, per-folder `familyKey`.
+  test("in_progress -> done sets a per-folder familyKey so two different finished tasks in the same folder collapse", () => {
+    const t1 = task({ status: "done", project: "/sandbox/fused-render", title: "hi" });
+    const t2 = task({ status: "done", project: "/sandbox/fused-render", title: "New session" });
+    const n1 = notificationForTransition("in_progress", t1, 0);
+    const n2 = notificationForTransition("in_progress", t2, 0);
+    expect(n1?.familyKey).toBeTruthy();
+    expect(n1?.familyKey).toBe(n2?.familyKey);
+  });
+
+  test("in_progress -> done with no caption at all sets no familyKey, so it falls back to the ordinary page/title family", () => {
+    const t = task({ status: "done", project: "", target: "" });
+    const n = notificationForTransition("in_progress", t, 0);
+    expect(n?.familyKey).toBeUndefined();
+  });
+
   test("in_progress -> blocked is a never-suppressed, retained, actioned failure", () => {
     const n = notificationForTransition(
       "in_progress",

@@ -112,6 +112,28 @@ export interface NotificationInput {
    *  treats `""` the same as absent either way, but an explicit `undefined`
    *  reads honestly at the call site). */
   origin?: string;
+  /** OPT-IN family override (2026-09-18 fix, "these 2 fused-render
+   *  notifications should have been grouped together as count"). Default
+   *  collapse identity is caption+TITLE (`messageFamily` below) — correct
+   *  for the general case (an unrelated error and an unrelated info message
+   *  in the same folder must stay two rows), but wrong for a finished-task
+   *  notice: two finished runs in the same folder ("hi", "New session") share
+   *  a caption but never share a title, so they never collapsed, which is
+   *  the exact bug this field exists to fix. Rather than loosen the default
+   *  key for every caller (an unrelated error/info pair sharing a folder
+   *  would then wrongly merge too), a caller that wants collapse coarser
+   *  than "caption+title" sets this explicitly; `messageFamily` prefers it
+   *  outright over the caption/page/title chain when present. Only
+   *  `task-status-notify.ts`'s `in_progress -> done` branch sets it today —
+   *  see its own comment. TRADE-OFF: because the collapsed row is always
+   *  rebuilt from the LATEST input (same as the existing per-run-page
+   *  collapse above), a folder's newest finished task overwrites the title
+   *  of whatever finished task was shown before it — "hi" then "New session"
+   *  finishing in the same folder shows "New session" with `count: 2`, not
+   *  both titles. Accepted for the same reason the per-run-page collapse
+   *  already accepts it: `count` carries "how many", the row's job is to
+   *  point at what's most likely to matter now (the newest one). */
+  familyKey?: string;
 }
 
 export interface StoredNotification {
@@ -290,6 +312,12 @@ function isSuppressed(input: NotificationInput, tier: JobTier): boolean {
 
 /** See `StoredNotification.family`'s own doc comment.
  *
+ * `input.familyKey`, when the caller set one, wins outright over every axis
+ * below — see its own doc comment on `NotificationInput` for why this is an
+ * explicit per-caller opt-in (a finished-task notice) rather than a change to
+ * everyone's default caption+title identity (an unrelated error and an
+ * unrelated info message in the same folder must still stay two rows).
+ *
  * DEFECT (2026-09-17, live repro): `page` was ALSO tried as the row
  * identity's other half, and that is wrong in the opposite direction from
  * the one the DEFECT-3 comment above used to warn about. `page` here is
@@ -321,6 +349,7 @@ function isSuppressed(input: NotificationInput, tier: JobTier): boolean {
  * collapse), and `title` alone remains the last resort for messages with no
  * destination and no caption at all. */
 function messageFamily(input: NotificationInput): string {
+  if (input.familyKey) return `familyKey:${input.familyKey}`;
   const caption = input.origin || labelForSource(input.source);
   if (caption) return `caption:${caption}::${input.title}`;
   return input.page ? `page:${input.page}::${input.title}` : `title:${input.title}`;

@@ -299,3 +299,98 @@ is strictly better than the pre-`acd656d8b` state (three separate,
 un-merged rows, i.e. an implicit "count of 3" spread across three cards
 instead of one badge). Flagged here for whoever next touches
 `NotificationInput`/`messageFamily`, rather than patched blind.
+
+---
+
+# F6. Finished-task notices collapse per folder, not per title (2026-09-18)
+
+User screenshot: two finished-task rows sitting side by side in "Worth
+keeping" —
+
+    fused-render / hi          / Finished
+    fused-render / New session / Finished
+
+— "these 2 fused render notifications should have been grouped together as
+count." Same complaint as the branch's original motivating bug, not fully
+fixed by it: `messageFamily`'s default key is `caption:${caption}::${input.
+title}` (the DEFECT/2026-09-17 fix documented above), so two finished tasks
+in the SAME folder with DIFFERENT titles ("hi" vs. "New session" — a task's
+own title, not a fixed label) never shared a family and never collapsed.
+
+## Why an opt-in field, not a looser default
+
+Considered just dropping `title` from the default family key so any two
+retained messages sharing a caption collapse. Rejected: that would also
+merge an unrelated error and an unrelated info message raised from the same
+folder into one row, silently hiding one of them behind a `count` bump —
+exactly the failure mode the brief calls out and the existing test "same
+caption but different titles stay as two separate rows"
+(`notifications.test.ts`) already locks in for the general case. Loosening
+the default breaks that test's actual intent even if the literal assertion
+happened to still pass for some inputs.
+
+Added `familyKey?: string` to `NotificationInput` instead — an explicit
+per-caller opt-in. `messageFamily` checks it first and, when present, uses
+`familyKey:${input.familyKey}` outright, skipping the caption/page/title
+chain entirely. Only `task-status-notify.ts`'s `in_progress -> done` branch
+sets it (`task-finished:${caption}`, only when `caption` is non-empty — a
+captionless finished task has no folder identity to key on, so it falls
+back to the ordinary chain, matching every other captionless caller's
+existing behavior unchanged).
+
+## Why no change was needed for "show the newest title/page"
+
+The brief's design decision — collapsed row shows the most recent task's
+title and page, `count` carries the rest — falls out of the EXISTING
+`retainAndCollapse` code for free: on a family match it already rebuilds the
+stored row from the latest `input` via `toStored`, only carrying `count`
+forward (`{ ...base, count: retained[collapseIdx].count + 1, ... }`). This
+is the identical mechanism the pre-existing per-run-page collapse (DEFECT,
+2026-09-17) already relies on to point a collapsed row at the newer run's
+`page`. No new "pick the latest" logic was written — `familyKey` only
+changes which rows land in the SAME bucket, not what happens once they do.
+
+## Trade-off, stated plainly
+
+A folder's newest finished task overwrites the title of whatever finished
+task was shown before it under the same `familyKey` — "hi" then "New
+session" finishing in the same folder ends up as one row reading "New
+session" with `count: 2`, not a row naming both. Accepted because this is
+exactly the same trade-off the per-run-page collapse above already made
+(and shipped) for the identical reason: the row's job is to point at what's
+most likely to matter right now (the newest thing), and `count` is what
+communicates "there's more than one" — a literal list of every past title
+was never how this panel worked even before this fix (a family collapse
+always discarded the PREVIOUS row's exact content, this just changes which
+rows are considered the same family).
+
+## Tests (TDD, confirmed red before the fix)
+
+Reverted the `messageFamily`/`familyKey`-consuming changes via a tagged WIP
+stash (`notif-collapse-fix-wip-verify-red`), ran `bun test src/platform/lib
+src/shell`, and confirmed exactly 3 of the newly-added tests failed (the
+two direct `familyKey`-collapse tests in `notifications.test.ts` plus one
+in `task-status-notify.test.ts`) while every other new test — the
+"unrelated non-familyKey notice doesn't collapse" case and the "no caption
+-> no familyKey" fallback case — passed unmodified, confirming those are
+genuinely independent of the fix rather than tautological. Re-applied the
+stash (`git stash apply <sha>`, then dropped it by that sha) to restore the
+fix; full targeted run came back to 2629 pass / 0 fail (up from the
+pre-change 2624), and `bun run typecheck` is clean.
+
+Added to `notifications.test.ts`: two notices sharing a `familyKey` but
+different titles/pages collapse into one row with `count: 2`, showing the
+newer title and page; a `familyKey`-bearing notice and an unrelated non-
+`familyKey` notice sharing a caption do NOT collapse; the same collapse via
+`_fusedIngestNotification` (ingest path), confirming `retainAndCollapse` —
+shared by `notify()` and `ingestNotification` since F1 — carries the field
+through the ingest boundary with no special-casing needed. Added to
+`task-status-notify.test.ts`: the `in_progress -> done` branch sets a
+non-empty `familyKey` shared across two different-titled tasks in the same
+folder, and sets no `familyKey` at all when there's no caption to key on.
+
+## What the brief got right / nothing found wrong
+
+The brief's read of the bug (caption+title family key, title differs across
+finished runs, never collapses) matched the code exactly on inspection — no
+correction needed here, unlike some earlier rounds' DECISIONS entries.

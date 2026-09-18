@@ -746,6 +746,63 @@ test("same caption but different titles stay as two separate rows", () => {
   expect(retained.every((n) => n.count === 1)).toBe(true);
 });
 
+// ---- familyKey opt-in (2026-09-18 fix, user: "these 2 fused-render
+// notifications should have been grouped together as count") -----------------
+//
+// Two finished tasks in the same folder share a caption but usually have
+// DIFFERENT titles ("hi", "New session"), so the ordinary caption+title
+// family above never collapses them — that's the bug this field fixes. A
+// caller opts in with `familyKey`; `messageFamily` prefers it outright over
+// caption/page/title when present.
+
+test("two notices with the same familyKey collapse into one row with count 2, showing the newer title and page (familyKey opt-in)", () => {
+  notify({
+    title: "hi",
+    detail: "Finished",
+    tone: "info",
+    origin: "fused-render",
+    page: "/explorer/view/fused-render?session=run-1",
+    familyKey: "task-finished:fused-render",
+  });
+  notify({
+    title: "New session",
+    detail: "Finished",
+    tone: "info",
+    origin: "fused-render",
+    page: "/explorer/view/fused-render?session=run-2",
+    familyKey: "task-finished:fused-render",
+  });
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(1);
+  expect(retained[0]?.count).toBe(2);
+  expect(retained[0]?.title).toBe("New session");
+  expect(retained[0]?.page).toBe("/explorer/view/fused-render?session=run-2");
+});
+
+// A finished-task notice (familyKey set) and an unrelated non-task notice
+// (no familyKey) sharing the SAME caption must NOT collapse just because
+// they're in the same folder — familyKey is scoped to the shape that opts
+// in, not a loosening of everyone's default caption+title identity.
+test("a familyKey notice and an unrelated non-familyKey notice sharing a caption do not collapse", () => {
+  notify({
+    title: "New session",
+    detail: "Finished",
+    tone: "info",
+    origin: "fused-render",
+    page: "/explorer/view/fused-render?session=run-1",
+    familyKey: "task-finished:fused-render",
+  });
+  notify({
+    title: "Something went wrong",
+    tone: "error",
+    origin: "fused-render",
+    page: "/explorer/view/fused-render",
+  });
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(2);
+  expect(retained.every((n) => n.count === 1)).toBe(true);
+});
+
 // Same title, different captions — two different sources doing the same
 // kind of work must not be conflated into one row.
 test("same title but different captions stay as two separate rows", () => {
@@ -820,6 +877,32 @@ test("two ingested messages sharing a family still collapse into one retained ro
   expect(retained).toHaveLength(1);
   expect(retained[0]?.count).toBe(2);
   expect(getPopupNotification()).toBeNull();
+});
+
+// Ingest path collapses by familyKey the same way a local notify() call does
+// — retainAndCollapse() is the shared code both go through, so this is
+// mostly a contract check that the ingest boundary doesn't strip the field.
+test("two ingested finished-task notices with the same familyKey but different titles collapse into one row (familyKey opt-in via ingest)", () => {
+  const ingest = (globalThis as unknown as { _fusedIngestNotification: (input: unknown) => number })
+    ._fusedIngestNotification;
+  ingest({
+    title: "hi",
+    tone: "info",
+    origin: "fused-render",
+    page: "/tasks/run-1",
+    familyKey: "task-finished:fused-render",
+  });
+  ingest({
+    title: "New session",
+    tone: "info",
+    origin: "fused-render",
+    page: "/tasks/run-2",
+    familyKey: "task-finished:fused-render",
+  });
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(1);
+  expect(retained[0]?.count).toBe(2);
+  expect(retained[0]?.title).toBe("New session");
 });
 
 // ---- F2 (2026-09-18 fix, code review round): no runaway self-forward ------

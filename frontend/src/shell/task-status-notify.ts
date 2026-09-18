@@ -194,6 +194,21 @@ export function notificationForTransition(
       tone: "info",
       origin: caption || undefined,
       page: taskDestination(task),
+      // FAMILY-BY-FOLDER, NOT BY TITLE (2026-09-18 fix, user: "these 2
+      // fused-render notifications should have been grouped together as
+      // count"). `notifications.ts`'s default family is caption+TITLE, which
+      // is right for most messages (two unrelated notices from the same
+      // folder must stay separate rows) but wrong for two DIFFERENT finished
+      // tasks in the SAME folder ("hi", "New session") — different titles,
+      // same folder, and the user's own framing is "grouped ... as count",
+      // i.e. one row per folder, not one row per exact task name. Only set
+      // when there is a caption at all — a captionless finished task (no
+      // project, no target) has no folder identity to group by, so it falls
+      // back to `messageFamily`'s ordinary page/title chain untouched. See
+      // `familyKey`'s own doc comment on `NotificationInput` for the
+      // accepted trade-off (the newest finished task's title wins; `count`
+      // carries the rest).
+      familyKey: caption ? `task-finished:${caption}` : undefined,
     };
   }
   return null;
