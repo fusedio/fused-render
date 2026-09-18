@@ -375,19 +375,28 @@ function capRetained(list: StoredNotification[]): StoredNotification[] {
 // `nextId` sequence, exactly as if `notify()` had been called locally, and
 // hands that id back to the caller so the pane can remember which shell-side
 // id its own (locally-invisible) retained copy corresponds to.
+//
+// ROUTED THROUGH `notify()` ITSELF (2026-09-18 fix), not a hand-rolled
+// append — this used to skip `notify()`'s own family-collapse lookup
+// entirely and push straight onto `retained`, so N documents forwarding the
+// SAME finished-task notice (e.g. N sub-documents watching one task) stacked
+// N byte-identical rows instead of collapsing into one with `count`
+// incremented (the live repro: three copies of one finished-task notice,
+// two of another). Calling `notify()` here is what actually makes ingest
+// "exactly as if `notify()` had been called locally", rather than merely
+// documenting that as an intention — every one of `notify()`'s own
+// behaviors (family-collapse, the id it mints/returns, popping a card,
+// `isSuppressed`) now applies identically whether a message was raised
+// here or forwarded in. It does not re-forward what it just received:
+// `forwardToShell` (below) only fires when THIS document is itself an
+// embedded, non-top pane, which the receiving (shell) document never is in
+// the ordinary case — see its own guard.
 function installIngest(): void {
   try {
     (globalThis as unknown as {
       _fusedIngestNotification?: (input: NotificationInput) => number;
       _fusedDismissNotification?: (id: number) => void;
-    })._fusedIngestNotification = (input: NotificationInput) => {
-      const id = nextId++;
-      const item = toStored(input, id);
-      retained = capRetained([...retained, item]);
-      refreshSnapshot();
-      emit();
-      return id;
-    };
+    })._fusedIngestNotification = (input: NotificationInput) => notify(input);
     (globalThis as unknown as {
       _fusedDismissNotification?: (id: number) => void;
     })._fusedDismissNotification = (id: number) => {

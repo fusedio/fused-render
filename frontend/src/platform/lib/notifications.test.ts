@@ -397,6 +397,72 @@ test("a forwarded message is minted a fresh id in the RECEIVING document's own s
   expect(new Set(ids).size).toBe(ids.length);
 });
 
+// DEFECT (2026-09-18 fix, live repro): "fused-render / File system change
+// detection vs indexing / Finished" showed up as THREE byte-identical
+// retained rows in the shell's Notifications panel, and "fused-share /
+// Files / Finished" as two — each one a separate document (a sub-document
+// watching the same task) forwarding the exact same finished-task notice
+// through `_fusedIngestNotification`. `notify()` already collapses a fresh
+// call into an already-retained row sharing its `messageFamily` (see its own
+// "GROUPING/UPDATION" comment); the ingest receiver skipped that lookup
+// entirely and appended straight onto `retained`, so anything reaching the
+// shell via forwarding — rather than a local `notify()` call — stacked
+// duplicates forever. Two ingests sharing a family must collapse into one
+// retained row with `count` incremented, exactly like two local `notify()`
+// calls do.
+test("two ingested messages sharing a family collapse into one retained row with count 2 (2026-09-18 fix)", () => {
+  const ingest = (globalThis as unknown as {
+    _fusedIngestNotification: (input: unknown) => number;
+  })._fusedIngestNotification;
+  let id1 = -1;
+  let id2 = -1;
+  act(() => {
+    id1 = ingest({
+      title: "File system change detection vs indexing",
+      detail: "Finished",
+      tone: "info",
+      origin: "fused-render",
+      page: "/tasks/1",
+    });
+    id2 = ingest({
+      title: "File system change detection vs indexing",
+      detail: "Finished",
+      tone: "info",
+      origin: "fused-render",
+      page: "/tasks/1",
+    });
+  });
+  expect(id2).toBe(id1);
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(1);
+  expect(retained[0]?.count).toBe(2);
+});
+
+// In the ordinary (non-nested-embed) case the receiving document IS the
+// top-level shell, where `forwardToShell`'s own
+// `!effectiveIsEmbed() || effectiveIsTopEmbed()` guard already returns
+// `undefined` — an ingested message must not be forwarded again in that
+// (the common) case, whatever internal path (`notify()` or otherwise) the
+// receiver uses to collapse it.
+test("an ingested message is not re-forwarded by a top-level (non-embed) receiver", () => {
+  const reForwardCalls: unknown[] = [];
+  (globalThis.window as unknown as Record<string, unknown>).top = {
+    _fusedIngestNotification: (input: unknown) => {
+      reForwardCalls.push(input);
+      return 999;
+    },
+  };
+
+  const ingest = (globalThis as unknown as {
+    _fusedIngestNotification: (input: unknown) => number;
+  })._fusedIngestNotification;
+  act(() => {
+    ingest({ title: "pane error", tone: "error" });
+  });
+
+  expect(reForwardCalls).toEqual([]);
+});
+
 test("dismissNotification in a pane forwards to the shell's own (independently-minted) copy, not just the pane's invisible one (finding #8)", () => {
   _setIsEmbedForTest(true);
   _setIsTopEmbedForTest(false);
