@@ -2246,3 +2246,69 @@ Three findings against this PR. Kept brief per an explicit scope change mid-roun
 
 **Finding D (real, fixed) — `isPathShapedQuery` (`frontend/src/apps/explorer/listing/path-shaped-query.ts`) still trimmed.** A fourth Bugbot pass caught that Finding A's fix only touched `escapesFsPath`; `isPathShapedQuery` (the path chip, and the gate on whether a rank request is sent at all — `useListingSearch.ts`'s `runsSearch = searching && !isPathQuery`) still did a bare `query.trim()` before its own `escapesBase` check, the exact bug Finding A fixed in the other function. Verified live: `q="/Users/iamsdas "` (the box's OWN pre-filled path plus a trailing space) resolved server-side to a glob search of the PARENT (`base: "/Users", pattern: "**iamsdas**"`), yet the trimmed check saw a clean, glob-free `"/Users/iamsdas"` and classified it as an exact path — showing the "Path" chip and suppressing the search entirely, so `runsSearch` never fired and the user's keystroke did nothing. Fixed by extracting the exact normalization `escapesFsPath` already used into a shared, exported `normalizeQueryForResolution` (`query-base.ts`) and having `isPathShapedQuery` run it too, adding an explicit `!normalized.includes("*")` check (the whitespace-injected glob has no literal `*` in the raw text, so `listingAddress`'s own substring check can't see it) — the two predicates now share one normalization step and cannot diverge from each other or the server again. Enumerated before changing anything: `listingAddress` (used by `isPathShapedQuery`, `useTypedPathAddress.ts`, `completion-target.ts`) was left untouched — its job (what would Enter open / what should complete) is deliberately whitespace-naive per its own header comment, and the fix lives entirely in the caller that needed server-parity, not in the shared resolver the other two callers rely on staying as-is. Tests (`path-shaped-query.test.ts`): a folder path plus trailing space is no longer path-shaped; `"~ "` is no longer path-shaped. 50/50 pass across `path-shaped-query.test.ts` + `query-base.test.ts`. All three named consumers (path chip via `isPathQuery`, Enter gate via `escapes`/`gateOpen`, and the eventual `/api/index/rank` request) now agree: neither query is treated as an exact path, both fall through to a real search, and `"/Users/iamsdas "` additionally waits for Enter (a genuine base change to the parent) while `"~ "` live-filters immediately (stays anchored at the box's own root) — matching `escapesFsPath`'s verdict in both cases.
 
+
+## worktree-focus-change-detection
+
+Built per SPEC-focus-change-detection.md: `fused_render/index/detect.py` (policy),
+a new `/api/index/note-home-focus` endpoint (wiring only, `server/routers/index.py`),
+and a frontend `visibilitychange` trigger (`apps/explorer/lib/focus-detect.ts` +
+`FilesHome.tsx`).
+
+Decisions made while implementing (spec left them open or under-specified):
+
+* **`detect.py` does not re-check `runner.active_run()` before calling
+  `runner.start()`**, unlike `freshness.py`'s `note_folder_opened`. The
+  freshness precheck exists because a folder-level trigger must not be the
+  thing that "discovers" a mismatch a live run of the enclosing root already
+  covers — a subtler, folder-vs-root distinction that does not apply here:
+  this trigger operates at the ROOT level already, so `runner.start`'s own
+  exact-root-match join (harmless `already_running`-style behaviour) is
+  sufficient. Simpler and still correct; not re-litigated once the join
+  semantics were re-read in runner.py.
+
+* **`MIN_HIDDEN_S` lives in `index/detect.py`, not the router.** The spec's
+  prose introduces the constant while describing the endpoint, which reads
+  ambiguously about which module owns it. Treated it as domain policy (same
+  status as `QUIET_S`/`MIN_INTERVAL_S` living in `freshness.py`, not in
+  `routers/index.py`) so it is exercised directly by `tests/test_index_detect.py`
+  without needing the FastAPI test client. The router's own
+  `note_home_focused` wiring function does NOT re-check it — only the
+  cheaper, synchronous `index_gate.indexing_allowed()` gate, to avoid
+  spawning a thread pointlessly, mirroring exactly what `note_folder_opened`
+  (router) does before its own thread spawn.
+
+* **Added router-level tests to `tests/test_index_api.py`** (a "-- home-focus
+  detection --" section, mirroring the existing "-- open-folder freshness --"
+  section) even though the spec's test list only enumerated `detect.py`-level
+  cases for `tests/test_index_detect.py`. Left the endpoint entirely
+  untested would have meant the fire-and-forget wiring (guard, thread spawn,
+  concurrency slot, malformed-body tolerance) had no coverage at all — the
+  existing precedent (`note_folder_opened`'s own router-level tests) already
+  established that this router file is expected to test its wiring
+  separately from the policy module's tests.
+
+* **`_detect_slot` is a module-level `threading.Lock()`**, matching
+  `_freshness_slot` exactly (one check in flight, dropped rather than
+  queued) rather than anything keyed per-root — the per-root pacing already
+  lives in `detect.DETECT_INTERVAL_S`/`_detect_checked`, so the router-level
+  slot only needs to stop two concurrent focus-regain requests (e.g. two
+  browser tabs) from running the journal replay loop over all roots at once,
+  which is a single global concern, not a per-root one.
+
+* **Frontend gate module lives at `apps/explorer/lib/focus-detect.ts`**
+  (not `platform/lib/`), since the trigger is home-page-specific by design
+  (decision #1 in the spec — not app-wide focus), following
+  `apps/explorer/lib/home-search.ts`'s placement rather than
+  `shell/indexing-lib.ts`'s (that one backs Preferences, a cross-app
+  surface).
+
+* **No client-side rate limiting beyond the hidden-duration floor.** The
+  server's `DETECT_INTERVAL_S`/`freshness.MIN_INTERVAL_S` floors already make
+  every quiet call cheap and every redundant call a no-op, so the frontend
+  effect fires on every qualifying visibility transition without its own
+  debounce — adding one would just be a second copy of a floor the server
+  already owns definitively.
+
+Nothing in the spec was found to be wrong; the two "not yet finalized" items
+noted mid-build (the endpoint's route name, the frontend module's exact
+shape) are settled as above.
