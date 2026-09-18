@@ -2455,3 +2455,64 @@ Verified via `.venv/bin/python -m pytest -q tests/test_mac_update.py
 tests/test_linux_update.py tests/test_installed.py tests/test_app_lifespan.py`
 — 91 passed, all four files, including the two previously-broken
 `test_mac_update.py` router-integration tests.
+
+## Task 5 — Linux relaunch: a capability probe on `startup`, not a `sys.platform` check
+
+`supervisor/core.py` is genuinely platform-neutral — it reaches every
+OS-specific behavior only through the `_backend` seam (`Job`, `instance`,
+`startup`, `ui`, plus the optional `update`/`integrate`/`deintegrate` hooks) —
+and it is shared, unmodified, between the win32 and Linux backends. A
+`fused-render://relaunch` link therefore has to be handled in code both
+backends run, but the actual respawn only makes sense on Linux (there is no
+`.AppImage` to `Popen` on Windows, which has its own separate updater in
+`supervisor/_win32/update.py`). Rather than importing `sys` into the decision
+(the module already avoids `sys.platform` branches everywhere else, matching
+`_backend.py`'s "module namespace, not an ABC" seam), the gate is a plain
+capability probe: `hasattr(startup, "appimage_path")`. `startup` is the
+per-backend module already re-exported at the top of `core.py`
+(`startup = _backend.startup`) — the Linux backend's `startup.py` has
+`appimage_path()` (it needs it for `.desktop` `Exec=` lines and the autostart
+entry), the win32 one never has and never will. This means the SAME check
+that decides "should `_open_command` signal a relaunch at all" and "does
+`_respawn_after_relaunch` have anything to `Popen`" is one attribute lookup,
+with no platform string to keep in sync between them, and it fails safe on
+any future third backend that doesn't have the hook either (falls through to
+the pre-Task-5 no-tab no-op, exactly like win32 today).
+
+The relaunch signal itself follows the exact idiom `_event_loop`'s
+`exit_confirm`/`uninstall_confirm` queues already established: a
+`queue.Queue[None]` created INSIDE `_event_loop` (not passed in as a
+parameter — this matters, since `_event_loop`'s call sites in
+`tests/test_supervisor_core.py` all call it positionally with exactly 5 args,
+and keeping its signature unchanged means every one of those pre-existing
+tests keeps passing with zero edits), threaded down through
+`_spawn_open`/`_safe_open`/`_open_command` as an optional trailing parameter
+that defaults to `None` everywhere. `None` is also what `run()`'s
+INITIAL-launch `_spawn_open` call (before `_event_loop`, and therefore before
+any `relaunch_requested` queue exists, even starts) passes implicitly — a
+relaunch link arriving as the very first launch argv is not a real scenario
+(there is nothing running yet to relaunch away from), so silently degrading
+that one call site to the old no-op costs nothing.
+
+`_teardown` needed zero changes for RELAUNCH, confirmed by re-reading its
+branches: only `SERVER_DIED` (hard `job.close()`, no graceful shutdown) and
+`UPGRADE` (skips `_stop_pipe`, answers `upgrade_response` at the end) get
+special-cased; RELAUNCH — like the pre-existing `TRAY_EXIT` — automatically
+takes the shared `_stop_pipe` -> `_safe_graceful_shutdown` -> `process.wait`
+-> `job.close()` path.
+
+`fused-render://relaunch?reason=fda` needed no explicit guard either:
+`deeplink.is_relaunch_url` and `deeplink.is_fda_relaunch_url` match disjoint,
+mutually exclusive frozensets of URL forms by construction, so special-casing
+only `is_relaunch_url` in `_open_command` already leaves the `?reason=fda`
+form falling through to the `is_launch_url` branch exactly as it did before
+this change — there was nothing to "leave alone" beyond checking the right
+function.
+
+Verified via `.venv/bin/python -m pytest -q tests/test_supervisor_core.py
+tests/test_supervisor_deep_link.py tests/test_supervisor_shutdown.py
+tests/test_win_supervisor_update.py tests/test_mac_update.py
+tests/test_linux_update.py tests/test_installed.py` — 156 passed, 1 skipped
+(a pre-existing, unrelated darwin-only skip guard in
+`tests/test_supervisor_core.py`'s module docstring convention), zero
+failures.
