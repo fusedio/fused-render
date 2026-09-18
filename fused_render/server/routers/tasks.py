@@ -1708,10 +1708,23 @@ def _queue_row(place: dict) -> dict:
     newer press reads "2nd in line" and keeps the button that would make it
     first.
     """
+    raw_names = place.get("ahead_names")
+    names = ([str(name) for name in raw_names if str(name)]
+             if isinstance(raw_names, list) else [])
     return {
         "key": str(place.get("key") or ""),
         "position": int(place.get("position") or 0),
         "ahead_key": str(place.get("ahead_key") or ""),
+        # EVERY NAME THE THING IN FRONT MIGHT BE FILED UNDER, best first
+        # (`queue_manager._page_names`). `ahead_key` is the one to print and is
+        # unchanged; this is the list `_name_ahead` LOOKS UP with, because the
+        # index and the listing key one chat off different facts — an owner
+        # still filed under its run id, a dispatched message whose row has
+        # already rekeyed onto its session — and the row read "1st in line" with
+        # nothing behind it for exactly as long as the two disagreed. Coerced
+        # element by element for the same reason every field here is: the index
+        # is a file on disk.
+        "ahead_names": names,
         "ahead": "",
         "ahead_title": "",
         # "Behind TASK-041" is a sentence the reader wants to FOLLOW, and the
@@ -1753,13 +1766,28 @@ def _name_ahead(queue: dict[str, dict], numbers: dict[str, str],
     claimed message the scheduler has not spawned) — there is no conversation to
     open until one exists, and `taskHref` itself answers null for exactly that.
     """
-    wanted = {q["ahead_key"] for q in queue.values() if q["ahead_key"]}
+    aliases: dict[str, str] | None = None
+    picks: list[tuple[dict, str]] = []
+    for q in queue.values():
+        names = [name for name in (q["ahead_key"], *(q.get("ahead_names") or []))
+                 if name]
+        if not names:
+            continue
+        # THE FIRST NAME THAT HITS A ROW, and the printed key only as the
+        # fallback. A direct hit first, because a name that IS a listing key
+        # needs no index built for it.
+        chosen = next((name for name in names if name in tasks), "")
+        if not chosen:
+            if aliases is None:
+                aliases = _ahead_aliases(tasks)
+            chosen = next((aliases[name] for name in names if name in aliases), "")
+        picks.append((q, chosen or q["ahead_key"]))
+    wanted = {key for _q, key in picks if key}
     if not wanted:
         return
     stored = tasks_store.task_ids() if wanted - set(numbers) else {}
     facts = {key: _ahead_facts(tasks, key) for key in wanted}
-    for q in queue.values():
-        key = q["ahead_key"]
+    for q, key in picks:
         if not key:
             continue
         number = numbers.get(key) or ""
@@ -1775,6 +1803,40 @@ def _name_ahead(queue: dict[str, dict], numbers: dict[str, str],
 
 
 _NO_AHEAD = {"title": "", "session": "", "target": ""}
+
+
+def _ahead_aliases(tasks: dict[str, dict]) -> dict[str, str]:
+    """`other name -> the key the listing filed that chat under`, for the names
+    a row is NOT keyed by: its session id and its `pending:<entry>` keys.
+
+    THE INDEX AND THE LISTING NAME ONE CHAT DIFFERENTLY, and this is the join
+    between them. The queue manager holds whatever it knew when the turn started
+    — a run id for a chat that had no session yet, `pending:<entry>` for a
+    message the pump dispatched — while the listing rekeys onto the session the
+    moment one exists (`_entry_key` → `_entry_session`). So "behind TASK-x" was
+    simply missing whenever the holder's stored name was not the name its row
+    now has, which is every brand-new chat's first queued follower and every
+    queue-dispatched leader in the seconds before its session is stamped.
+
+    Built only when a direct lookup misses (`_name_ahead`), because the ordinary
+    listing is one where every holder is filed under the name it is drawn
+    under and there is nothing to translate. `setdefault`, so a row that IS
+    keyed by a name keeps it: the direct hit is always the better answer."""
+    out: dict[str, str] = {}
+    for key, task in tasks.items():
+        session = str(task.get("session_id") or "")
+        if session and session != key:
+            out.setdefault(session, key)
+        # A pending message's entry is the one name of it that never moves, and
+        # it reads off the collection (`entries`) or off a built row
+        # (`messages`) — this is called with both.
+        ids = [str(entry.get("id") or "") for entry in (task.get("entries") or ())]
+        ids += [str(msg.get("entry_id") or "")
+                for msg in (task.get("messages") or ())]
+        for entry_id in ids:
+            if entry_id:
+                out.setdefault(tasks_store.pending_key(entry_id), key)
+    return out
 
 
 def _ahead_facts(tasks: dict[str, dict], key: str) -> dict:

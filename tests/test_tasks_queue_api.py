@@ -112,6 +112,19 @@ def no_agent(monkeypatch):
     monkeypatch.setattr(project_queue, "agent_module", lambda: None)
 
 
+def _page_names(*names):
+    """The thing in front, spelled every way the page might have filed it —
+    `queue_manager._page_names`'s rule, stated here the way the fake states
+    every other read: best first, no blanks, no repeats, and never the
+    `admit:<token>` of a placeholder, which names nothing anywhere."""
+    out = []
+    for name in names:
+        name = str(name or "")
+        if name and not name.startswith("admit:") and name not in out:
+            out.append(name)
+    return out
+
+
 class FakeManager:
     """The queue manager, standing in for the real index.
 
@@ -140,20 +153,31 @@ class FakeManager:
         self.events: list[tuple] = []
 
     # -- the way a case states a line ------------------------------------
-    def line(self, folder, *task_keys, holder="", priority=()):
+    def line(self, folder, *task_keys, holder="", priority=(),
+             holder_session=None, holder_run=None):
         """`folder`'s line, in order: `task_keys[0]` is #1.
 
         `holder` is the task key that OWNS the folder — what position 1 stands
         behind, and what makes the folder busy — and `priority` the keys that
         got where they are by a skip or an answer, which is the only thing that
         lights `queue_priority`. No keys at all is a folder that is owned with
-        nobody waiting on it yet."""
+        nobody waiting on it yet.
+
+        `holder_session` / `holder_run` state the holder's OTHER names where a
+        case needs them to differ from its key — a brand-new chat the index
+        still files under its run id, a dispatched message filed under
+        `pending:<entry>`. By default they are the same name spelled the way the
+        ordinary case spells it, which is what every case that says nothing
+        means."""
         self.lines[folder] = list(task_keys)
         self.promoted.update(priority)
+        session = (("" if holder.startswith("pending:") else holder)
+                   if holder_session is None else holder_session)
         self.owners[folder] = ({"task": holder, "task_key": holder,
-                                "session_id": ("" if holder.startswith("pending:")
-                                               else holder),
-                                "run_id": "r-" + holder, "since": time.time()}
+                                "session_id": session,
+                                "run_id": ("r-" + holder if holder_run is None
+                                           else holder_run),
+                                "since": time.time()}
                                if holder else None)
         return self
 
@@ -176,11 +200,15 @@ class FakeManager:
         for folder, keys in self.lines.items():
             owner = self.owners.get(folder) or {}
             ahead = str(owner.get("task") or "")
+            names = _page_names(owner.get("task"), owner.get("session_id"),
+                                owner.get("run_id"))
             for position, task_key in enumerate(keys, start=1):
                 out[task_key] = {
                     "key": folder, "position": position, "ahead_key": ahead,
+                    "ahead_names": names,
                     "priority": position == 1 and task_key in self.promoted}
                 ahead = task_key
+                names = _page_names(task_key)
         return out
 
     def place(self, task_key):
@@ -850,6 +878,73 @@ def test_behind_names_the_task_directly_ahead_and_not_always_the_holder(
     assert rows["sess-3"]["queue_ahead"] == rows["sess-2"]["task_id"]
     assert rows["sess-3"]["queue_ahead_title"] == "waiting: sess-2"
     assert rows["sess-3"]["queue_ahead_session"] == "sess-2"
+
+
+def test_a_holder_the_index_files_under_its_run_is_still_named_by_its_session(
+        client, projects_dir, folders, flag, manager):
+    """"1ST IN LINE" WITH NOTHING BEHIND IT (Akshil, QA of PR #1194). A
+    brand-new chat holds the folder under the only name it had when its turn
+    started — its run id — while its row on the page is filed under the session
+    Claude Code minted a moment later. The two names are the same chat, so the
+    sentence the reader wants ("behind TASK-041 · holding the folder") is
+    available; it was simply looked up under the one name that names no row.
+
+    `queue_ahead_key` is deliberately unchanged: it is what the index holds, and
+    the fix is the LOOKUP (`ahead_names`), not the field."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    _transcript(projects_dir, "sess-a", alpha, "waiting my turn")
+    manager.line(alpha, "sess-a", holder="run-h", holder_session="sess-holder",
+                 holder_run="run-h")
+
+    rows = _rows(client)
+    assert rows["sess-a"]["queue_position"] == 1
+    assert rows["sess-a"]["queue_ahead_key"] == "run-h"
+    assert rows["sess-a"]["queue_ahead"] == rows["sess-holder"]["task_id"]
+    assert rows["sess-a"]["queue_ahead_title"] == "holding the folder"
+    assert rows["sess-a"]["queue_ahead_session"] == "sess-holder"
+    assert rows["sess-a"]["queue_ahead_target"] == alpha
+
+
+def test_a_dispatched_holder_is_named_through_the_entry_its_row_rekeyed_off(
+        client, projects_dir, folders, flag, manager):
+    """The other half of the same miss: the pump dispatched a scheduled message
+    and the index holds it as `pending:<entry>`, but the listing has ALREADY
+    rekeyed that entry's row onto the session its run published
+    (`_entry_key` → `_entry_session`). The row is right there — under a
+    different name — and the entry id is the one name of it that never moves."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "the dispatched message")
+    _transcript(projects_dir, "sess-a", alpha, "waiting my turn")
+    schedule._write([_entry("e1", "the dispatched message", alpha,
+                            session_id="sess-holder")])
+    manager.line(alpha, "sess-a", holder="pending:e1")
+
+    rows = _rows(client)
+    assert "pending:e1" not in rows          # the row rekeyed onto the session
+    assert rows["sess-a"]["queue_ahead_key"] == "pending:e1"
+    assert rows["sess-a"]["queue_ahead"] == rows["sess-holder"]["task_id"]
+    assert rows["sess-a"]["queue_ahead_session"] == "sess-holder"
+
+
+def test_a_holder_no_name_of_which_is_a_row_still_names_nobody(
+        client, projects_dir, folders, flag, manager):
+    """The honest empty is kept. A holder the collection does not contain under
+    ANY of its names — a terminal `claude` the app never started — leaves the
+    fields empty and the client says "behind a run in this folder", which is
+    true, where half an answer would offer a click that goes nowhere."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-a", alpha, "waiting my turn")
+    manager.line(alpha, "sess-a", holder="run-h", holder_session="sess-gone",
+                 holder_run="run-h")
+
+    row = _rows(client)["sess-a"]
+    assert row["queue_position"] == 1
+    assert (row["queue_ahead"], row["queue_ahead_title"],
+            row["queue_ahead_session"]) == ("", "", "")
 
 
 def test_a_second_unanswered_card_still_needs_attention(

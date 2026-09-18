@@ -741,6 +741,59 @@ class QueueManager:
             return ""
         return task
 
+    @staticmethod
+    def _page_names(task: str, session_id: str, entry_id: str,
+                    run_id: str) -> list[str]:
+        """EVERY NAME ONE CHAT MIGHT BE FILED UNDER on the Tasks page, best
+        first and each one only once.
+
+        `_names` above is the same three names as an unordered SET, for asking
+        "is this the same conversation"; this one is ordered, adds the
+        `pending:<entry>` key and drops placeholders, because it is a lookup
+        list and the order is which name to try first.
+
+        `_ahead_label` answers what a row PRINTS; this answers what a row can be
+        FOUND by, and the two are different questions because the manager and
+        the listing key the same chat off different facts. The manager files an
+        owner under whatever it knew when the turn started — a run id for a
+        brand-new chat, `pending:<entry>` for a message the pump dispatched —
+        while the listing rekeys onto the session the moment one exists. So the
+        one name the manager holds can name no row at all while another name of
+        the very same chat names it perfectly (`tasks.py::_name_ahead`).
+
+        A placeholder is dropped and is never the answer: `admit:<token>` is a
+        name for an admission, not for a chat, and it names nothing anywhere.
+        Its OTHER names are kept — a placeholder with a run filed against it is
+        a turn like any other, and that run's session is a row."""
+        out: list[str] = []
+        for name in (task, session_id,
+                     tasks_store.pending_key(entry_id) if entry_id else "",
+                     run_id):
+            if name and not _is_placeholder(name) and name not in out:
+                out.append(name)
+        return out
+
+    @classmethod
+    def _owner_page_names(cls, owner) -> list[str]:
+        """`_page_names` for a folder's owner — what position 1 stands behind."""
+        if owner is None:
+            return []
+        return cls._page_names(_text(owner.get("task")),
+                               _text(owner.get("session_id")),
+                               _text(owner.get("entry_id")),
+                               _text(owner.get("run_id")))
+
+    @classmethod
+    def _item_page_names(cls, item) -> list[str]:
+        """`_page_names` for a line item — what position n > 1 stands behind. A
+        line item carries the same names an owner does, filled in as the pump
+        learns them, so a queued task ahead of another is findable the same
+        way."""
+        return cls._page_names(_text(item.get("task")),
+                               _text(item.get("session_id")),
+                               _text(item.get("entry_id")),
+                               _text(item.get("run_id")))
+
     # -- the answer store -------------------------------------------------
 
     def _answers_of(self, task_key: str) -> list:
@@ -1557,16 +1610,33 @@ class QueueManager:
         `priority` is the ⤒: true only at the head, and only when it got there by
         a skip or an answer, because that is the only case where the order the
         user sees is not the order they created. `ahead_key` is "" for an owner
-        with no name a page can draw (`_ahead_label`)."""
+        with no name a page can draw (`_ahead_label`).
+
+        `ahead_names` IS THE SAME THING IN FRONT, SPELLED EVERY WAY IT MIGHT BE
+        FILED (`_page_names`): its task key, its session id, its
+        `pending:<entry>` key, its run id. `ahead_key` keeps its meaning and is still the one name
+        to PRINT; this is the list to LOOK UP with, because the manager and the
+        listing key one chat off different facts and the name the index holds is
+        very often not the name the page filed the row under. A first-in-line
+        row read "1st in line" with nothing behind it for as long as those two
+        disagreed — a brand-new chat whose owner is still a run id, a dispatched
+        message whose row has already rekeyed onto its session.
+
+        `place()` is deliberately NOT given this: it answers one task's slot for
+        the endpoints that have just moved a line, and its dict is the reply
+        those endpoints return."""
         with self._lock:
             out: dict[str, dict] = {}
             for folder, rec in self._state["folders"].items():
                 ahead = self._ahead_label(rec["owner"])
+                names = self._owner_page_names(rec["owner"])
                 for i, item in enumerate(rec["line"]):
                     if i:
                         ahead = rec["line"][i - 1]["task"]
+                        names = self._item_page_names(rec["line"][i - 1])
                     out[item["task"]] = {"key": folder, "position": i + 1,
                                          "ahead_key": ahead,
+                                         "ahead_names": list(names),
                                          "priority": i == 0 and bool(item["promoted"])}
             return out
 
