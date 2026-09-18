@@ -2516,3 +2516,42 @@ tests/test_linux_update.py tests/test_installed.py` — 156 passed, 1 skipped
 (a pre-existing, unrelated darwin-only skip guard in
 `tests/test_supervisor_core.py`'s module docstring convention), zero
 failures.
+
+## Task 6 — Publish the Linux manifest: carrying $APPIMAGE across steps, and the bash -n check
+
+`scripts/windows/generate_update_manifest.py` takes `<version> <artifact>
+<base-url> <output>` and signs whatever artifact it is given — nothing in it
+is actually Windows-specific despite the path it lives at (the macOS job
+already reuses it for the DMG). Reusing it for the AppImage needed no changes
+to the script itself, only a new step in `build-linux-release` that calls it
+the same way the macOS/Windows jobs do.
+
+The one wrinkle: unlike the macOS job (which exports `$DMG_PATH`/
+`$DMG_SHA256` to `$GITHUB_ENV` in its upload step, so its later manifest step
+can read them back), the Linux job's existing "Publish AppImage + attach to
+release" step only wrote `version`/`appimage_url` to `$GITHUB_OUTPUT` (step
+outputs, visible to later JOBS via `needs.*.outputs`, not to later STEPS in
+the same job via a bare `$VAR`). A new step after it would have had no
+`$APPIMAGE` to read. Fixed by adding one more `echo "APPIMAGE=$APPIMAGE" >>
+"$GITHUB_ENV"` line to that existing step, mirroring `$DMG_PATH`'s exact
+pattern — the new "Publish signed Linux update manifest" step then re-derives
+`$VERSION` from it with the same `sed` the artifacts step itself uses, rather
+than also exporting `$VERSION` separately (again matching how the macOS
+step re-derives `VERSION` from `$DMG_PATH` instead of getting its own env var).
+
+The spec's verification block's second line, `bash -n
+.github/workflows/release.yml`, fails identically on both `main` and this
+branch (confirmed by diffing `bash -n` against `main`'s copy of the file) —
+it's a YAML file, not a bash script, and GitHub Actions' `${{ }}` /
+mapping syntax is not valid bash grammar at all (the failure is at line 113,
+in a step name unrelated to this change: `Select an Xcode with the macOS 26
+SDK (apple tier helper)`, whose parenthesized name bash reads as a subshell).
+`bash -n` is not a meaningful syntax check for this file; actionlint (the
+spec's suggested alternative) is not installed in this sandbox, so this
+change is instead verified with `python3 -c "import yaml;
+yaml.safe_load(open('.github/workflows/release.yml'))"`, which parses clean.
+
+No test file covers this workflow step (nothing in the spec's Tests section
+calls for one, and there is no CI-yaml test harness in this repo to hook a
+new test into) — verification here is the yaml-parse check above plus the
+diff-against-mac-job comparison recorded here.
