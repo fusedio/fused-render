@@ -28,8 +28,11 @@ because they need the runtime's own knowledge:
   (`fused_api_version`),
 * generated state loose in the tree instead of under `.fused/`,
 * `pyproject.toml` and `icon.svg` / `icon.png` parsing, when either is there at all,
-* whether the folder's own git repo has everything committed, and
-* whether the current branch has commits its upstream does not.
+* whether the folder's own git repo has everything committed,
+* whether the current branch has commits its upstream does not, and
+* — the one MODEL-BACKED row — whether the views render alike across
+  browsers (`cross-browser`, `app_doctor_ai.py`): on demand, cached on the
+  view files' checksum, read here from that cache only.
 
 FACT VS CANDIDATE — MEASURED, NOT ASSUMED. A run of `ci/app_check.py` over
 the 8 apps in a real `~/Fused/local` produced 40 content findings, and every
@@ -77,14 +80,14 @@ _SCRIPT_REL = os.path.join("ci", "app_check.py")
 PASS = "pass"
 FAIL = "fail"
 SKIP = "skip"
-# A check whose answer needs a Claude session rather than a deterministic
+# A check whose answer needs a Claude call rather than a deterministic
 # read — "not run yet, press to run" — contributes nothing to `ok` and
 # nothing to the severity dot until it has actually been run: an unreviewed
-# question is not a failure, and it is not a pass either. No check reports
-# this today (every row here is answered by a file read, a regex, or a `git`
-# call); it exists so the state a model-backed check needs is already part
-# of the vocabulary the modal renders, rather than a special case bolted on
-# whenever the first one lands.
+# question is not a failure, and it is not a pass either. One check reports
+# it: `cross-browser` (`app_doctor_ai.py`), whose verdict is cached on a
+# checksum of the app's view files and read back here — a GET never spawns
+# the model, so a row that has never been run, or whose app changed since it
+# was, is UNRUN until someone presses Check.
 UNRUN = "unrun"
 
 # ------------------------------------------------------- section/severity/kind
@@ -102,6 +105,11 @@ _CHECK_META: dict[str, tuple[str, str, str]] = {
     "readme": ("essentials", "warning", "fact"),
     "icon": ("essentials", "warning", "fact"),
     "device-paths": ("sharing", "warning", "candidate"),
+    # The one MODEL-BACKED row (app_doctor_ai.py): on demand, cached on the
+    # app's content, never run by a GET. A candidate, not a fact — a model's
+    # reading of a rubric earns a second look before an edit, which is what
+    # the candidate prompt asks the fix session for.
+    "cross-browser": ("sharing", "warning", "candidate"),
     "git": ("sharing", "warning", "fact"),
     "pushed": ("sharing", "warning", "fact"),
     "generated": ("sharing", "warning", "fact"),
@@ -132,6 +140,13 @@ def _meta(cid: str) -> tuple[str, str, str]:
     return _CHECK_META[cid]
 
 
+# The rows a person runs by pressing the row's own Check button rather than
+# the doctor answering on every GET (`POST /api/apps/doctor/run`). The modal
+# reads `ondemand` off the row to draw that button — and a Re-check on a
+# settled one — rather than keeping a second list of ids.
+ON_DEMAND = frozenset({"cross-browser"})
+
+
 def _check(cid: str, label: str, state: str, detail: str,
            findings: list | None = None) -> dict:
     section, severity, kind = _meta(cid)
@@ -144,6 +159,7 @@ def _check(cid: str, label: str, state: str, detail: str,
         "state": state,
         "detail": detail,
         "findings": findings or [],
+        "ondemand": cid in ON_DEMAND,
     }
 
 
@@ -587,6 +603,19 @@ def _git_check(app_dir: str) -> dict:
     )
 
 
+def _cross_browser_check(app_dir: str) -> dict:
+    """The model-backed row, FROM ITS CACHE ONLY — `app_doctor_ai.row_state`
+    never spawns anything. The run itself is the router's
+    `POST /api/apps/doctor/run`, which writes the cache this reads."""
+    from fused_render import app_doctor_ai
+
+    try:
+        state, detail, findings = app_doctor_ai.row_state(app_dir)
+    except Exception as exc:  # noqa: BLE001 — a doctor never crashes on its patient
+        state, detail, findings = UNRUN, f"could not read the last verdict: {exc}", []
+    return _check(app_doctor_ai.CHECK_ID, app_doctor_ai.LABEL, state, detail, findings)
+
+
 def _pushed_check(app_dir: str) -> dict:
     state, subjects, skip_reason = _pushed_pending(app_dir)
     return _check(
@@ -652,6 +681,7 @@ def report(app_dir: str) -> dict:
         "icon": _icon_check(app_dir),
         "git": _git_check(app_dir),
         "pushed": _pushed_check(app_dir),
+        "cross-browser": _cross_browser_check(app_dir),
     }
     checks = [by_id[cid] for cid in CHECK_ORDER]
 
@@ -698,6 +728,8 @@ def report_one(app_dir: str, check_id: str) -> dict | None:
         return _git_check(app_dir)
     if check_id == "pushed":
         return _pushed_check(app_dir)
+    if check_id == "cross-browser":
+        return _cross_browser_check(app_dir)
     raise AssertionError(f"unreachable: {check_id!r} is in _CHECK_META but not dispatched")
 
 
@@ -758,6 +790,9 @@ def _findings_block(detail: str, findings: list[dict]) -> str:
         "- " + (f"{f.get('path', '.')}:{f['line']}" if f.get("line") else
                 str(f.get('path', '.')))
         + f": {f.get('rule', '')}: {f.get('excerpt', '')}"
+        # A model-backed row (`cross-browser`) also says what to change; a
+        # deterministic row's findings have no such line and add nothing.
+        + (f" — suggested fix: {f['fix']}" if f.get("fix") else "")
         for f in findings
     )
     return "\n".join(lines)

@@ -160,6 +160,9 @@
 .appdoc-row-actions {
   display: flex;
   align-items: center;
+  /* Two controls sit here on a settled on-demand row — Fix/Review beside the
+     icon-only Re-check (AppDoctorModal.tsx) — so they need air between them. */
+  gap: 4px;
   height: 20px;
   flex: none;
   margin: 0;
@@ -246,6 +249,34 @@
   overflow: hidden;
   text-overflow: ellipsis;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* A model-backed row's findings (AppDoctorModal.tsx, `check.ondemand`) are
+ * sentences for the author, not source lines: the where-tag sits on its own
+ * line above a wrapping body-face sentence, and the suggested fix reads as a
+ * quieter line under it. No height cap — two or three short paragraphs are
+ * the whole point of the row, and a scrollbar over them would hide the fix. */
+.appdoc-findings-prose {
+  max-height: none;
+  gap: 8px;
+}
+
+.appdoc-findings-prose li {
+  flex-direction: column;
+  gap: 1px;
+  align-items: stretch;
+  white-space: normal;
+}
+
+.appdoc-findings-prose .appdoc-excerpt {
+  overflow: visible;
+  font-family: inherit;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.appdoc-fix {
+  color: var(--fg-muted);
 }
 
 .appdoc-more {
