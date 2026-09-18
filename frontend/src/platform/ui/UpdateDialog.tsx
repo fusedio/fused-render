@@ -47,6 +47,10 @@ export type UpdateDialogProps =
       /** The version sitting on disk, waiting for the restart. */
       installedVersion: string;
       stage: RestartStage;
+      /** This window found a restart RECORD and is still asking the server
+       *  whether that restart is actually in flight. The stage says `ready`
+       *  meanwhile, and it may be about to say otherwise. */
+      verifying?: boolean;
       onRestart: () => void;
     };
 
@@ -94,6 +98,14 @@ export function UpdateDialog(props: UpdateDialogProps) {
       busy
       onClose={() => {}}
       footer={
+        // NOT WHILE THE ANSWER IS STILL COMING. `verifying` means this window
+        // read a restart record and has asked the server whether that restart is
+        // still running; until it answers, the stage reads `ready` and a press
+        // would start a SECOND restart on top of the one being verified. The
+        // button keeps its box and its label and simply cannot be pressed —
+        // showing nothing there would move the footer under the reader's cursor
+        // for the fraction of a second the request takes.
+        //
         // THE BUTTON IS DRAWN FOR `gave-up` AS WELL AS `ready`. Both are
         // stages with nothing in flight to narrate, and `gave-up` is the one
         // the reader most needs a control on: the restart did not take, the
@@ -102,7 +114,12 @@ export function UpdateDialog(props: UpdateDialogProps) {
         // way out that is not a page reload. Drawing the (empty) stage line
         // there instead left a blocking dialog with no control at all.
         props.stage === "ready" || props.stage === "gave-up" ? (
-          <button type="button" className="btn btn-primary" onClick={props.onRestart}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={props.onRestart}
+            disabled={props.verifying === true}
+          >
             Restart fused-render
           </button>
         ) : (

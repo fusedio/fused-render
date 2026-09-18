@@ -65,6 +65,13 @@ export const RESTART_STORAGE_KEY = "fused_restart_requested_at";
  *  clock and should not be rounded up to whenever the next fetch times out. */
 const TICK_MS = 1_000;
 
+/** How long `wake()` waits for the server before it gives up on an answer — the
+ *  same budget `ServerStatusBanner`'s own probe uses (PROBE_TIMEOUT_MS). A hung
+ *  request must not hold the dialog's button in limbo indefinitely, and a server
+ *  that cannot answer inside four seconds is, for this decision, a server that is
+ *  not answering: the record is adopted, exactly as for a refused connection. */
+export const RESTART_ASK_TIMEOUT_MS = 4_000;
+
 /** What a press looks like on the wire AND on disk — one shape for both
  *  channels, so a window cannot learn two different things about one press. */
 export interface RestartRecord {
@@ -97,13 +104,20 @@ export interface RestartStoreHost {
   /** What the server is serving RIGHT NOW. Only the record path uses it — see
    *  `wake`. `null` version means "could not tell". */
   ask?: () => Promise<{ ok: boolean; version: string | null }>;
+  askTimeoutMs?: number;
 }
+
+/** What a surface reads: the stage machine's state, plus whether this window is
+ *  still ASKING the server about a record it found. `verifying` exists so the
+ *  dialog does not offer a button during that gap — a press in it would start a
+ *  SECOND restart on top of the one being verified. */
+export type RestartView = RestartState & { verifying: boolean };
 
 export interface RestartStore {
   requestRestart(): void;
   noteRestartProbe(probe: { ok: boolean; version?: string | null }): void;
   subscribe(fn: () => void): () => void;
-  snapshot(): RestartState;
+  snapshot(): RestartView;
   /** Deliver a message as the channel would — the seam a second window's test
    *  double posts into. */
   receive(data: unknown): void;
@@ -157,9 +171,15 @@ function defaultHost(): Required<RestartStoreHost> {
       }
     },
     now: () => Date.now(),
+    askTimeoutMs: RESTART_ASK_TIMEOUT_MS,
     ask: async () => {
+      // Aborted on the same budget the store races it against, so a hung request
+      // is not merely ignored — it is cancelled, and does not sit on a
+      // connection for the life of the page.
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), RESTART_ASK_TIMEOUT_MS);
       try {
-        const res = await fetch("/api/config", { cache: "no-store" });
+        const res = await fetch("/api/config", { cache: "no-store", signal: ctrl.signal });
         if (!res.ok) return { ok: false, version: null };
         const body = await res.json();
         return { ok: true, version: typeof body.version === "string" ? body.version : null };
@@ -167,6 +187,8 @@ function defaultHost(): Required<RestartStoreHost> {
         // The server is not answering — which is what a restart in flight looks
         // like, and the caller reads it that way.
         return { ok: false, version: null };
+      } finally {
+        clearTimeout(timer);
       }
     },
   };
@@ -182,6 +204,18 @@ export function createRestartStore(host: RestartStoreHost = {}): RestartStore {
   let channel: ChannelLike | null = null;
   let ticker: ReturnType<typeof setInterval> | undefined;
   let started = false;
+  /** The `at` of the record currently being verified, or null. Doubles as the
+   *  "a wake is in flight" flag and as the guard against two overlapping wakes
+   *  verifying the same record twice. */
+  let verifyingAt: number | null = null;
+  /** Cached so `snapshot` returns a stable reference between notifications —
+   *  `useSyncExternalStore` re-renders every subscriber otherwise. */
+  let view: RestartView = { ...state, verifying: false };
+
+  function publishView(): void {
+    view = { ...state, verifying: verifyingAt !== null };
+    listeners.forEach((fn) => fn());
+  }
 
   function read(): RestartRecord | null {
     const store = h.storage();
@@ -238,7 +272,7 @@ export function createRestartStore(host: RestartStoreHost = {}): RestartStore {
     state = next;
     if (ending) write(null);
     arm();
-    if (changed) listeners.forEach((fn) => fn());
+    if (changed) publishView();
   }
 
   /** Keep the clock running exactly while there is a wait to time out. */
@@ -267,6 +301,26 @@ export function createRestartStore(host: RestartStoreHost = {}): RestartStore {
     latch(body.at, typeof body.served === "string" ? body.served : null);
   }
 
+  /** `h.ask()`, bounded. An injected host may hang forever and a real fetch can
+   *  too; a hung request must not hold the dialog's button in limbo. A timeout
+   *  is treated as "not answering", which is the same answer a refused
+   *  connection gives and means the same thing here: the app is between
+   *  processes, so the record is adopted. */
+  async function askBounded(): Promise<{ ok: boolean; version: string | null }> {
+    const budget = h.askTimeoutMs ?? RESTART_ASK_TIMEOUT_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        h.ask(),
+        new Promise<{ ok: boolean; version: string | null }>((resolve) => {
+          timer = setTimeout(() => resolve({ ok: false, version: null }), budget);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /**
    * Re-read the durable record. Called on start and on every wake-up
    * (visibilitychange / focus), which is the case a broadcast cannot cover: a
@@ -286,13 +340,18 @@ export function createRestartStore(host: RestartStoreHost = {}): RestartStore {
    *     restart already completed, so forget it and latch nothing;
    *   • the server is serving the SAME version — the old process is still up,
    *     which is exactly a restart in flight: latch;
-   *   • the server does not answer — also a restart in flight (the app is
-   *     between processes): latch.
+   *   • the server does not answer, or does not answer in time — also a restart
+   *     in flight (the app is between processes): latch.
    * A record with no `served` on it cannot be compared at all, so it is treated
    * as finished: never raise an undismissable dialog you cannot justify.
    *
-   * FRESHNESS-BOUNDED first, by the same cap the stage machine runs on, so a
-   * record from a previous session costs no request at all.
+   * EVERYTHING IT DECIDES IS STALE BY THE TIME IT DECIDES IT (bugbot, PR #1214).
+   * The request takes a moment, and in that moment a press can land here or a
+   * broadcast can arrive from another window — both NEWER than the record this
+   * call read. Writing `null` then would destroy the new press's record, and
+   * latching the old `at` would expire the cap early and drop other windows off
+   * the story. So the state and the record are BOTH re-read afterwards and the
+   * whole result is discarded unless nothing moved.
    */
   async function wake(): Promise<void> {
     const record = read();
@@ -307,15 +366,35 @@ export function createRestartStore(host: RestartStoreHost = {}): RestartStore {
       write(null);
       return;
     }
-    const seen = await h.ask();
-    // Re-read after the await: a broadcast or a press of our own may have
-    // arrived while the request was out, and it is fresher than this record.
-    if (state.requestedAt === record.at && state.stage !== "ready") return;
+    // One outcome per record: a second wake landing on the same one (focus and
+    // visibilitychange both fire on the same gesture) joins rather than races.
+    if (verifyingAt === record.at) return;
+
+    const wasAt = state.requestedAt;
+    verifyingAt = record.at;
+    publishView();
+    let seen: { ok: boolean; version: string | null };
+    try {
+      seen = await askBounded();
+    } finally {
+      verifyingAt = null;
+    }
+
+    // Anything newer than what this call read wins outright.
+    const nowRecord = read();
+    const moved =
+      state.requestedAt !== wasAt || nowRecord === null || nowRecord.at !== record.at;
+    if (moved) {
+      publishView();
+      return;
+    }
     if (seen.ok && seen.version && seen.version !== record.served) {
       write(null);
+      publishView();
       return;
     }
     latch(record.at, record.served);
+    publishView();
   }
 
   function start(): void {
@@ -361,7 +440,7 @@ export function createRestartStore(host: RestartStoreHost = {}): RestartStore {
         listeners.delete(fn);
       };
     },
-    snapshot: () => state,
+    snapshot: () => view,
     receive,
     wake,
     forget: () => write(null),
@@ -375,6 +454,8 @@ export function createRestartStore(host: RestartStoreHost = {}): RestartStore {
       }
       channel = null;
       state = initialRestart();
+      view = { ...state, verifying: false };
+      verifyingAt = null;
       lastServed = null;
       listeners.clear();
       started = false;
@@ -399,7 +480,7 @@ export function noteRestartProbe(probe: { ok: boolean; version?: string | null }
   store.noteRestartProbe(probe);
 }
 
-export function useRestartFlow(): RestartState {
+export function useRestartFlow(): RestartView {
   return useSyncExternalStore(
     (fn) => store.subscribe(fn),
     () => store.snapshot(),

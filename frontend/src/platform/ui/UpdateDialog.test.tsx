@@ -201,3 +201,46 @@ test("neither mode can be closed from the chrome", async () => {
     expect(r.root.findAll((n) => n.props?.["aria-modal"] === "true").length).toBe(1);
   }
 });
+
+test("the button cannot be pressed while the window is still verifying a record", async () => {
+  // bugbot, PR #1214: `wake()` is async, so a window that found a restart record
+  // paints `ready` until the server answers. A press in that gap would start a
+  // SECOND restart on top of the one being verified.
+  const presses: number[] = [];
+  const r = await mount(
+    <UpdateDialog
+      kind="restart"
+      version="0.5.50"
+      installedVersion="0.5.51"
+      stage="ready"
+      verifying
+      onRestart={() => presses.push(1)}
+    />,
+  );
+  const button = r.root.findAllByType("button")[0];
+  expect(button.props.disabled).toBe(true);
+  // The box and the label stay, so the footer does not move under the cursor for
+  // the fraction of a second the request takes.
+  expect(text(button)).toBe("Restart fused-render");
+  expect(byClass(r, "update-dialog-stage").length).toBe(0);
+});
+
+test("the button is live again once the check has answered", async () => {
+  const presses: number[] = [];
+  const r = await mount(
+    <UpdateDialog
+      kind="restart"
+      version="0.5.50"
+      installedVersion="0.5.51"
+      stage="ready"
+      verifying={false}
+      onRestart={() => presses.push(1)}
+    />,
+  );
+  const button = r.root.findAllByType("button")[0];
+  expect(button.props.disabled).toBe(false);
+  await act(async () => {
+    button.props.onClick();
+  });
+  expect(presses.length).toBe(1);
+});

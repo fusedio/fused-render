@@ -265,6 +265,7 @@ export default function ServerStatusBanner() {
         // dialog's title is a version number and must never read "v".
         installedVersion={installedVersion || update?.latest_version || version}
         stage={flow.stage}
+        verifying={flow.verifying}
         onRestart={requestRestart}
       />
     );

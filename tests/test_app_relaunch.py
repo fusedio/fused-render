@@ -15,6 +15,14 @@ import pytest
 import fused_render.app as app_mod
 
 
+def _script_for(pid, **kw):
+    """The shell the relauncher would run, without running it."""
+    calls = []
+    app_mod.spawn_relauncher("/Applications/FusedRender.app", pid,
+                             popen=lambda *a, **k: calls.append(a), **kw)
+    return calls[0][0][2]
+
+
 def _fake_executable(tmp_path):
     contents = tmp_path / "FusedRender.app" / "Contents"
     (contents / "MacOS").mkdir(parents=True)
@@ -120,10 +128,14 @@ def test_the_relauncher_never_escalates_over_a_live_process():
     app_mod.spawn_relauncher("/Applications/FusedRender.app", 1,
                              popen=lambda *a, **k: calls.append(a))
     script = calls[0][0][2]
-    assert 'macos="$bundle/Contents/MacOS"' in script
-    assert '/usr/bin/pgrep -f "$macos"' in script
-    # The shell's own argv carries the bundle path, so it must not match itself.
-    assert '/usr/bin/grep -qv "^$$$"' in script
+    assert 'exe=/Applications/FusedRender.app/Contents/MacOS/FusedRender;' in script
+    assert '/usr/bin/pgrep -f "^$exe"' in script
+    # NOT the directory. `Contents/MacOS` also holds `python` (every engine run,
+    # index worker and helper execs it) and `fused-apple-ai` — and `os._exit`
+    # REPARENTS children rather than killing them, so a stranded helper outlives
+    # the quit. A directory-wide probe would read one as "the successor is
+    # booting", refuse to escalate, and leave the user with no app at all.
+    assert '"$bundle/Contents/MacOS"' not in script
     # A live process means KEEP WAITING; the escalation is the `else` branch.
     assert script.index("if alive; then") < script.index('-n -a "$bundle"')
     assert "still booting, not asking again" in script
@@ -137,10 +149,12 @@ def test_the_liveness_probe_is_the_pgrep_line_by_default():
     app_mod.spawn_relauncher("/Applications/FusedRender.app", 1,
                              popen=lambda *a, **k: calls.append(a))
     assert f"alive() {{ {app_mod.ALIVE_PROBE}; }}" in calls[0][0][2]
-    assert '/usr/bin/pgrep -f "$macos"' in app_mod.ALIVE_PROBE
-    # Without the self-exclusion the probe reports "alive" forever — this shell's
-    # own command line carries the bundle path — and would never escalate.
-    assert '/usr/bin/grep -qv "^$$$"' in app_mod.ALIVE_PROBE
+    # The APP EXECUTABLE, anchored at the start of the command line: the app's own
+    # children run as `Contents/MacOS/python` and must never satisfy it, and the
+    # anchor also keeps this shell — whose argv carries the path in an assignment,
+    # not as argv[0] — from matching itself.
+    assert app_mod.ALIVE_PROBE == '/usr/bin/pgrep -f "^$exe" >/dev/null 2>&1'
+    assert "MacOS/python" not in app_mod.ALIVE_PROBE
 
     injected = []
     app_mod.spawn_relauncher("/Applications/FusedRender.app", 1,
@@ -170,7 +184,7 @@ mac_only = pytest.mark.skipif(sys.platform != "darwin",
 
 
 def _run_relauncher(tmp_path, *, alive_probe=None, successor_after=None,
-                    wait_s=6.0, real_successor=False):
+                    wait_s=6.0, real_successor=False, write_pidfile=True):
     """Run the REAL generated shell against a throwaway pid and a stub opener,
     with the clock scaled down so its own logic — not a twenty-five-second sleep
     — is what the test exercises. Returns (opens, log lines)."""
@@ -192,20 +206,33 @@ def _run_relauncher(tmp_path, *, alive_probe=None, successor_after=None,
     victim.wait()
     successor = None
     if successor_after is not None:
-        if real_successor:
+        if real_successor == "helper":
+            # A STRANDED CHILD, not a successor: the app's engine runs, index
+            # workers and helpers all exec `Contents/MacOS/python`, and
+            # `os._exit` reparents them rather than killing them, so one can
+            # outlive the quit. The probe must not read this as "the app is
+            # back".
+            successor = subprocess.Popen(
+                ["/bin/sh", "-c",
+                 f"exec -a {bundle}/Contents/MacOS/python sleep {wait_s + 4}"])
+        elif real_successor:
             # A process whose argv sits under the bundle's MacOS dir — what the
             # DEFAULT probe looks for, and true from the instant a real
             # successor execs.
+            # argv[0] IS the app executable — what the default probe anchors on.
+            # Deliberately not `Contents/MacOS/python`: that is what the app's own
+            # children run as, and the probe must NOT match those.
             successor = subprocess.Popen(
                 ["/bin/sh", "-c",
-                 f"exec -a {bundle}/Contents/MacOS/FusedRender sleep {wait_s + 2}"])
+                 f"exec -a {bundle}/Contents/MacOS/FusedRender sleep {wait_s + 4}"])
         else:
             # The injected probe's own signal: a file, so "is a successor
             # booting?" is a fact the test states rather than one it hopes the
             # host's `pgrep` will agree with.
             (tmp_path / "booting").write_text("1")
         time.sleep(successor_after)
-        pidfile.write_text("999")
+        if write_pidfile:
+            pidfile.write_text("999")
     deadline = time.monotonic() + wait_s
     while time.monotonic() < deadline:
         if log.exists() and ("successor is up" in log.read_text()
@@ -219,10 +246,12 @@ def _run_relauncher(tmp_path, *, alive_probe=None, successor_after=None,
             log.read_text().splitlines() if log.exists() else [])
 
 
-def _fast_clock(monkeypatch, *, boot_wait, deadline):
+def _fast_clock(monkeypatch, *, deadline, retry_after=1):
+    """The shell's own clock is whole seconds (it reads `date +%s`), so a test
+    scales the DEADLINE and the retry window down rather than into fractions."""
     monkeypatch.setattr(app_mod, "RELAUNCH_POLL_S", 0.05)
     monkeypatch.setattr(app_mod, "RELAUNCH_SETTLE_S", 0.1)
-    monkeypatch.setattr(app_mod, "RELAUNCH_BOOT_WAIT_S", boot_wait)
+    monkeypatch.setattr(app_mod, "RELAUNCH_RETRY_AFTER_S", retry_after)
     monkeypatch.setattr(app_mod, "RELAUNCH_DEADLINE_S", deadline)
 
 
@@ -237,12 +266,12 @@ def test_a_slow_but_successful_launch_is_asked_for_exactly_once(monkeypatch, tmp
     is the RULE ("never `-n` while something is alive") rather than whether this
     host's `pgrep` agrees about a fake process. The default probe gets its own
     test below."""
-    _fast_clock(monkeypatch, boot_wait=1.0, deadline=6.0)
-    # Pidfile at 3x the boot wait — the successor sails past several boundaries
-    # at which the old code would have asked again.
+    _fast_clock(monkeypatch, deadline=12)
+    # The pidfile lands well past several retry boundaries — every one of which
+    # the old code would have escalated on.
     opens, log = _run_relauncher(
         tmp_path, alive_probe=f'[ -f {tmp_path / "booting"} ]',
-        successor_after=3.2, wait_s=8.0)
+        successor_after=4.0, wait_s=10.0)
 
     assert len(opens) == 1, opens
     assert opens[0].startswith("-a "), opens
@@ -256,8 +285,8 @@ def test_a_slow_but_successful_launch_is_asked_for_exactly_once(monkeypatch, tmp
 def test_a_launch_that_left_nothing_running_does_escalate(monkeypatch, tmp_path):
     """The other half: with the probe finding nothing at all, the first ask
     demonstrably did nothing and `-n` is the right next move."""
-    _fast_clock(monkeypatch, boot_wait=1.0, deadline=3.5)
-    opens, log = _run_relauncher(tmp_path, alive_probe="false", wait_s=8.0)
+    _fast_clock(monkeypatch, deadline=6)
+    opens, log = _run_relauncher(tmp_path, alive_probe="false", wait_s=12.0)
 
     assert len(opens) == app_mod.RELAUNCH_OPEN_TRIES, opens
     assert opens[0].startswith("-a ")
@@ -271,8 +300,8 @@ def test_the_default_probe_sees_a_real_child_of_the_bundle(monkeypatch, tmp_path
     the bundle path — the half the injected probe above deliberately does not
     exercise. Darwin-only because that is the only place it has to work, and the
     only place `pgrep -f`'s matching is the one this was written against."""
-    _fast_clock(monkeypatch, boot_wait=1.0, deadline=6.0)
-    opens, log = _run_relauncher(tmp_path, successor_after=3.2, wait_s=8.0,
+    _fast_clock(monkeypatch, deadline=12)
+    opens, log = _run_relauncher(tmp_path, successor_after=4.0, wait_s=10.0,
                                  real_successor=True)
 
     assert len(opens) == 1, opens
@@ -523,3 +552,23 @@ def test_quit_action_reports_whether_it_claimed_the_teardown():
         start=lambda *a, **k: None, remove_pidfile=lambda: None)
     assert action() is True
     assert action() is False
+
+
+@mac_only
+def test_a_stranded_helper_child_is_not_mistaken_for_the_app(monkeypatch, tmp_path):
+    """THE SECOND REGRESSION (bugbot, PR #1214). The quit ends in `os._exit`,
+    which REPARENTS the app's children rather than killing them — and every
+    engine run, index worker and helper execs `Contents/MacOS/python`, inside the
+    same bundle. A probe scoped to the DIRECTORY reads one of those as "the
+    successor is booting", refuses to escalate for the whole deadline, and the
+    user is left with no app at all after a silent `open`.
+
+    So: a leftover helper is running, the app itself is not, and the relauncher
+    must still escalate."""
+    _fast_clock(monkeypatch, deadline=6)
+    opens, log = _run_relauncher(tmp_path, successor_after=0.5, wait_s=12.0,
+                                 real_successor="helper", write_pidfile=False)
+
+    assert len(opens) > 1, opens
+    assert any(line.startswith("-n -a ") for line in opens), opens
+    assert "still booting" not in "\n".join(log)

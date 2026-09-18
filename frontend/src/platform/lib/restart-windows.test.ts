@@ -24,6 +24,11 @@ const { bannerSurface } = await import("@platform/lib/server-status");
 
 type Store = ReturnType<typeof createRestartStore>;
 
+/** Let every pending microtask AND the timer queue turn over, which is what an
+ *  in-flight `wake()` needs to finish: it awaits the host's `ask`, then re-reads
+ *  the record it was verifying. */
+const flush = () => new Promise<void>((done) => setTimeout(done, 0));
+
 /** One origin's shared state: the broadcast bus every awake window is attached
  *  to, and the one localStorage behind them all. */
 function origin() {
@@ -34,6 +39,15 @@ function origin() {
   /** What every window's `/api/config` answers. `null` = the server is not
    *  answering at all, which is what a restart in flight looks like. */
   let serving: string | null = "0.5.90";
+  /** When true, `ask()` never resolves on its own — the store's own timeout is
+   *  the only thing that can end it. */
+  let hold = false;
+  /** How many times ANY window has asked the server. One record must cost one
+   *  ask, however many wake-ups fire on it. */
+  let asks = 0;
+
+  /** A test can hold `ask()` open to model a slow or hung server. */
+  let held: null | { release: (answer: { ok: boolean; version: string | null }) => void } = null;
 
   /** `awake: false` models a throttled/frozen background window — it holds a
    *  channel that never delivers, which is precisely what Chrome does to a
@@ -66,8 +80,18 @@ function origin() {
         removeItem: (k) => void items.delete(k),
       }),
       listen: (_type, fn) => wakers.push(fn),
-      ask: async () =>
-        serving === null ? { ok: false, version: null } : { ok: true, version: serving },
+      ask: () => {
+        asks += 1;
+        if (hold) {
+          return new Promise<{ ok: boolean; version: string | null }>((resolve) => {
+            held = { release: resolve };
+          });
+        }
+        return Promise.resolve(
+          serving === null ? { ok: false, version: null } : { ok: true, version: serving },
+        );
+      },
+      askTimeoutMs: 40,
       navigate: (href) => void navigations.push(href),
       now: () => clock,
     });
@@ -87,10 +111,14 @@ function origin() {
        *  Async, because adopting a record means asking the server first. */
       focus: async () => {
         wakers.forEach((fn) => fn());
-        await store.wake();
+        await flush();
       },
-      /** A fresh document reads the record on start — the same await. */
-      settle: () => store.wake(),
+      /** A fresh document reads the record on start (mounting the banner
+       *  subscribes, which starts the store, which wakes). Draining the queue is
+       *  how a test waits for THAT wake rather than starting a competing one —
+       *  a second `wake()` would be refused as a duplicate and return before the
+       *  first had answered. */
+      settle: flush,
     };
   }
 
@@ -103,6 +131,16 @@ function origin() {
     serve: (version: string | null) => {
       serving = version;
     },
+    /** Hang every `ask()` from now on. */
+    hang: (on: boolean) => {
+      hold = on;
+    },
+    releaseAsk: (answer: { ok: boolean; version: string | null }) => {
+      held?.release(answer);
+      held = null;
+    },
+    held: () => held !== null,
+    asks: () => asks,
     stored: () => items.get(RESTART_STORAGE_KEY) ?? null,
     disposeAll: () => made.forEach((s) => s.dispose()),
   };
@@ -306,5 +344,152 @@ test("the reload path forgets the record on its way out", async () => {
   a.store.requestRestart();
   expect(o.stored()).not.toBeNull();
   a.store.forget();
+  expect(o.stored()).toBeNull();
+});
+
+// ---- what a wake decides is STALE by the time it decides it ----------------
+// (bugbot, PR #1214, HIGH). The request takes a moment, and in that moment a
+// press can land here or a broadcast can arrive from another window — both NEWER
+// than the record the wake read. Writing `null` then destroys the new press's
+// record; latching the old `at` expires the cap early and drops other windows
+// off the story.
+
+test("a press landing during an in-flight wake wins, and its record survives", async () => {
+  const o = origin();
+  origins.push(o);
+  const a = o.windowFor();
+  a.store.noteRestartProbe({ ok: true, version: "0.5.90" });
+  a.store.requestRestart();
+  const firstAt = JSON.parse(o.stored()!).at;
+
+  // A fresh document comes up and starts verifying that record.
+  o.advance(5_000);
+  o.hang(true);
+  const b = o.windowFor();
+  await flush();
+  expect(o.held()).toBe(true);
+
+  // While the answer is out, a NEWER press happens.
+  o.advance(1_000);
+  b.store.noteRestartProbe({ ok: true, version: "0.5.90" });
+  b.store.requestRestart();
+  const secondAt = JSON.parse(o.stored()!).at;
+  expect(secondAt).toBeGreaterThan(firstAt);
+
+  // The stale answer arrives saying "already on a new version" — which for the
+  // OLD record would mean "clear it". It must not touch the new one.
+  o.releaseAsk({ ok: true, version: "0.5.91" });
+  await flush();
+  expect(o.stored()).not.toBeNull();
+  expect(JSON.parse(o.stored()!).at).toBe(secondAt);
+  // …and the window is living the NEW press, on the NEW instant.
+  expect(b.store.snapshot().requestedAt).toBe(secondAt);
+  expect(b.stage()).toBe("quitting");
+});
+
+test("a hung server resolves on the store's own timeout, and adopts", async () => {
+  // The banner's probe to the same endpoint has a 4s budget; a wake with none
+  // would hold the dialog's button in limbo for as long as the socket stayed
+  // open. A timeout means the same thing a refused connection does here.
+  const o = origin();
+  origins.push(o);
+  const a = o.windowFor();
+  a.store.noteRestartProbe({ ok: true, version: "0.5.90" });
+  a.store.requestRestart();
+  o.advance(5_000);
+  o.hang(true);
+  const b = o.windowFor();
+  await flush();
+  expect(b.store.snapshot().verifying).toBe(true);
+  expect(b.stage()).toBe("ready");
+  // Nothing ever answers; the store's own clock ends it.
+  await new Promise((done) => setTimeout(done, 80));
+  expect(b.store.snapshot().verifying).toBe(false);
+  expect(b.stage()).toBe("quitting");
+});
+
+test("the button is not offered while a wake is in flight", async () => {
+  // `stage` reads `ready` during the gap and may be about to say otherwise, so a
+  // press in it would start a SECOND restart on top of the one being verified.
+  const o = origin();
+  origins.push(o);
+  const a = o.windowFor();
+  a.store.noteRestartProbe({ ok: true, version: "0.5.90" });
+  a.store.requestRestart();
+  o.advance(5_000);
+  o.hang(true);
+  const b = o.windowFor();
+  await flush();
+  expect(b.store.snapshot()).toMatchObject({ stage: "ready", verifying: true });
+  o.releaseAsk({ ok: true, version: "0.5.90" });
+  await flush();
+  expect(b.store.snapshot()).toMatchObject({ stage: "quitting", verifying: false });
+});
+
+test("two overlapping wakes produce one outcome", async () => {
+  // `focus` and `visibilitychange` both fire on the same gesture.
+  const o = origin();
+  origins.push(o);
+  const a = o.windowFor();
+  a.store.noteRestartProbe({ ok: true, version: "0.5.90" });
+  a.store.requestRestart();
+  const at = JSON.parse(o.stored()!).at;
+  o.advance(5_000);
+  o.hang(true);
+  const b = o.windowFor();
+  await flush();
+  expect(o.asks()).toBe(1);
+  // A second and third wake on the same record JOIN rather than racing — each
+  // would otherwise open its own request, and only the last could ever be
+  // answered.
+  void b.store.wake();
+  void b.store.wake();
+  await flush();
+  expect(o.asks()).toBe(1);
+  expect(o.held()).toBe(true);
+  o.releaseAsk({ ok: true, version: "0.5.90" });
+  await flush();
+  expect(b.store.snapshot().requestedAt).toBe(at);
+  expect(b.stage()).toBe("quitting");
+  expect(b.store.snapshot().verifying).toBe(false);
+});
+
+// ---- the reload path, for a press that could never reach `back` -------------
+// (bugbot, PR #1214, MEDIUM, case (i)). `back` needs a `served` to compare
+// against, so a press made before any healthy probe cannot reach it — and the
+// clear-on-ending path therefore never runs for one.
+
+test("the reload path forgets a record that could never have reached back", async () => {
+  const o = origin();
+  origins.push(o);
+  const a = o.windowFor();
+  // No probe ever ran, so `served` is null and `back` is unreachable for this
+  // press by construction.
+  a.store.requestRestart();
+  expect(JSON.parse(o.stored()!).served).toBeNull();
+  expect(a.stage()).toBe("quitting");
+  // `reduceProbe` says reload; `ServerStatusBanner` forgets first.
+  a.store.forget();
+  expect(o.stored()).toBeNull();
+  // The document that comes up on the new server has nothing to adopt.
+  o.serve("0.5.91");
+  const fresh = o.windowFor();
+  await fresh.settle();
+  expect(fresh.stage()).toBe("ready");
+});
+
+test("a discarded tab restoring onto the new server clears the record", async () => {
+  // Case (ii): the tab was never the one that reloaded, so nothing called
+  // `forget()` — the server's own answer is what ends it.
+  const o = origin();
+  origins.push(o);
+  const a = o.windowFor();
+  a.store.noteRestartProbe({ ok: true, version: "0.5.90" });
+  a.store.requestRestart();
+  o.advance(30_000);
+  o.serve("0.5.91");
+  const restored = o.windowFor();
+  await restored.settle();
+  expect(restored.stage()).toBe("ready");
   expect(o.stored()).toBeNull();
 });

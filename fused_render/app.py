@@ -14,6 +14,7 @@ import importlib.util
 import json
 import logging
 import os
+import plistlib
 import secrets
 import shlex
 import socket
@@ -723,26 +724,60 @@ RELAUNCH_POLL_S = 0.2
 # 20 s later worked first time).
 RELAUNCH_SETTLE_S = 1.0
 
-# How long a successor is given to write its pidfile before the ask is counted as
-# having done nothing. STRICTLY LONGER THAN SERVER_READY_TIMEOUT_S, and that is
-# the whole point: `_bootstrap_server` waits up to that ceiling for its own
+# How long a VISIBLY ALIVE successor is given to produce its pidfile before the
+# relauncher stops expecting one. Strictly longer than SERVER_READY_TIMEOUT_S,
+# and that is the point: `_bootstrap_server` waits up to that ceiling for its own
 # server and only then calls `_write_pidfile`, so a slow-but-perfectly-healthy
-# launch has no pidfile for fifteen seconds after the process starts — plus the
-# seconds a cold start of a signed bundle takes before any Python runs. A shorter
-# wait here would read a successful launch as a failed one and "retry" it, which
-# is how the retry meant to rescue a lost launch would instead create the
-# two-servers-one-port race it exists to avoid (bugbot, PR #1214).
+# launch has no pidfile for fifteen seconds after it starts — plus the seconds a
+# cold start of a signed bundle takes before any Python runs.
 RELAUNCH_BOOT_WAIT_S = 25.0
 
-# The relauncher's own overall deadline, and it is the number that has to stay
-# under the page's 60 s cap (RESTART_GIVE_UP_MS,
-# frontend/src/platform/lib/restart-flow.ts) so the two surfaces stop promising
-# at about the same moment rather than one of them insisting after the other has
-# given the page back to the "isn't running" card.
+# How long after an ask before the relauncher checks whether ANYTHING started at
+# all. Much shorter than the boot wait above, and for a different question: "is
+# the app running" is answerable within a second or two of `open` (the process
+# execs long before it has a server), where "has it finished booting" is not.
+# Keeping the two apart is what lets a genuinely silent `open` be retried
+# promptly without ever mistaking a booting successor for a failed launch.
+RELAUNCH_RETRY_AFTER_S = 5.0
+
+# The relauncher's overall deadline, COUNTED FROM ITS OWN START — which is the
+# press, not the pid's death: it is spawned by `begin_quit`'s `on_claim`, at the
+# very start of the teardown. That distinction is load-bearing. The teardown may
+# take up to QUIT_HARD_DEADLINE_S (34 s), so a deadline counted from the pid's
+# death could still be running 84 s after the press, long after the page gave up
+# at RESTART_GIVE_UP_MS (60 s, frontend/src/platform/lib/restart-flow.ts) and
+# told the user the app is not running. Counted from the press it is under that
+# cap whatever the teardown does (bugbot, PR #1214).
 RELAUNCH_DEADLINE_S = 50.0
 
 # How many times it asks, the first ask included.
 RELAUNCH_OPEN_TRIES = 3
+
+
+def bundle_executable(bundle: str) -> str:
+    """The bundle's MAIN binary name — `CFBundleExecutable`, e.g. FusedRender.
+
+    Not "anything under Contents/MacOS": the bundle also ships
+    `Contents/MacOS/python` (the packaged interpreter every engine run, index
+    worker and helper execs — see engine.py) and `Contents/MacOS/fused-apple-ai`.
+    Those are the app's CHILDREN, and `os._exit` REPARENTS children rather than
+    killing them, so a leftover one outlives the quit — which is why the liveness
+    probe has to name the app itself. A probe that matched the directory would
+    read a stranded helper as "the successor is booting", refuse to escalate, and
+    leave the user with no app at all (bugbot, PR #1214).
+
+    Falls back to the conventional name: a bundle whose Info.plist cannot be read
+    is one the relauncher is about to `open` anyway, and a probe that is slightly
+    wrong is better than one that matches everything.
+    """
+    try:
+        with open(os.path.join(bundle, "Contents", "Info.plist"), "rb") as f:
+            name = plistlib.load(f).get("CFBundleExecutable")
+        if isinstance(name, str) and name:
+            return name
+    except (OSError, plistlib.InvalidFileException):
+        pass
+    return "FusedRender"
 
 
 def relauncher_log_path(pid: int) -> str:
@@ -769,7 +804,7 @@ def relauncher_log_path(pid: int) -> str:
 # Its own constant so a test can swap in a probe it controls and assert the RULE
 # (never `-n` over a live process) without depending on the host's `pgrep`
 # semantics — which differ on Linux, where CI runs the string-level tests.
-ALIVE_PROBE = '/usr/bin/pgrep -f "$macos" 2>/dev/null | /usr/bin/grep -qv "^$$$"'
+ALIVE_PROBE = '/usr/bin/pgrep -f "^$exe" >/dev/null 2>&1'
 
 
 def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
@@ -813,8 +848,6 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
         pidfile = PIDFILE
     if alive_probe is None:
         alive_probe = ALIVE_PROBE
-    boot_ticks = max(1, int(RELAUNCH_BOOT_WAIT_S / RELAUNCH_POLL_S))
-    deadline_ticks = max(boot_ticks, int(RELAUNCH_DEADLINE_S / RELAUNCH_POLL_S))
     # Paths go through variables rather than being spliced into every command:
     # `shlex.quote` makes each one safe as an argument, and a single assignment
     # keeps a path containing a quote or a `$` from having to be re-escaped for
@@ -824,12 +857,19 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
         f"pidfile={shlex.quote(pidfile)}; "
         f"log={shlex.quote(log)}; "
         f"opener={shlex.quote(opener)}; "
-        'macos="$bundle/Contents/MacOS"; '
+        f"exe={shlex.quote(os.path.join(bundle, 'Contents', 'MacOS', bundle_executable(bundle)))}; "
+        # THE CLOCK STARTS HERE, not when the pid dies. This shell is spawned by
+        # `begin_quit`'s `on_claim`, at the very start of the teardown, so its
+        # own start is the press — and the teardown may take up to
+        # QUIT_HARD_DEADLINE_S, which a deadline counted from the pid's death
+        # would add on top of its own budget and blow straight through the page's
+        # cap.
+        "t0=$(/bin/date +%s); "
         'say() { printf "%s relauncher[%s] %s\\n" '
         '"$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$1" >>"$log" 2>/dev/null; }; '
-        # ANY process running out of this bundle — see ALIVE_PROBE. A shell
-        # FRAGMENT, not an argument, so it is spliced rather than quoted; the
-        # only caller that passes one is a test.
+        # ANY process running as the app ITSELF — see ALIVE_PROBE and
+        # `bundle_executable`. A shell FRAGMENT, not an argument, so it is
+        # spliced rather than quoted; the only caller that passes one is a test.
         f"alive() {{ {alive_probe}; }}; "
         f'say "parked on pid {int(pid)}; bundle=$bundle"; '
         f"while /bin/kill -0 {int(pid)} 2>/dev/null; do /bin/sleep {RELAUNCH_POLL_S}; done; "
@@ -843,25 +883,32 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
         # can't resolve to some other registered install.
         '"$opener" -a "$bundle" "fused-render://launch"; rc=$?; '
         'say "open attempt 1 exited $rc"; '
-        "try=1; waited=0; "
-        f'while [ "$waited" -lt {deadline_ticks} ]; do '
+        f"try=1; next=$(( $(/bin/date +%s) + {int(RELAUNCH_RETRY_AFTER_S)} )); "
+        "while :; do "
         'if [ -f "$pidfile" ]; then '
         'say "successor is up after attempt $try"; exit 0; fi; '
-        "waited=$((waited + 1)); "
-        f"/bin/sleep {RELAUNCH_POLL_S}; "
-        f'if [ $((waited % {boot_ticks})) -eq 0 ]; then '
+        "now=$(/bin/date +%s); left=$(( t0 + "
+        f"{int(RELAUNCH_DEADLINE_S)} - now )); "
+        'if [ "$left" -le 0 ]; then break; fi; '
+        'if [ "$now" -ge "$next" ]; then '
         "if alive; then "
-        f'say "no pidfile yet, but a process for this bundle is running '
-        f'— still booting, not asking again"; '
-        f'elif [ "$try" -lt {RELAUNCH_OPEN_TRIES} ]; then '
+        'say "no pidfile yet, but the app is running — still booting, not asking again"; '
+        f'next=$(( now + {int(RELAUNCH_RETRY_AFTER_S)} )); '
+        # A retry needs room to be WORTH anything: enough of the deadline left to
+        # see whether the new ask started anything at all. No try is ever issued
+        # on the deadline tick.
+        f'elif [ "$try" -lt {RELAUNCH_OPEN_TRIES} ] && [ "$left" -ge {int(RELAUNCH_RETRY_AFTER_S)} ]; then '
         "try=$((try + 1)); "
-        # `-n` ONLY here: nothing is running out of this bundle, so forcing a new
-        # instance cannot produce a second server racing the first.
+        # `-n` ONLY here: nothing is running as the app, so forcing a new instance
+        # cannot produce a second server racing the first.
         '"$opener" -n -a "$bundle" "fused-render://launch"; rc=$?; '
         'say "open attempt $try (-n, nothing was running) exited $rc"; '
+        f'next=$(( now + {int(RELAUNCH_RETRY_AFTER_S)} )); '
         "else "
-        'say "no successor and nothing running, out of attempts"; '
+        'say "no successor and nothing running; no room for another ask"; '
+        f'next=$(( now + {int(RELAUNCH_RETRY_AFTER_S)} )); '
         "fi; fi; "
+        f"/bin/sleep {RELAUNCH_POLL_S}; "
         "done; "
         'say "giving up: the app did not come back"; '
         "exit 1"
