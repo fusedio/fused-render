@@ -2654,3 +2654,43 @@ re-running the full mac suite after the fix (all 5 designated test files,
 141 passed) confirms none of its assertions were relying on the dead seam to
 land on the right answer.
 
+
+## Task 9 — Releasing the election lock before, not after, the relaunch respawn
+
+`_respawn_after_relaunch()` `Popen`s the new AppImage while this process
+still holds the `flock` on `supervisor.lock`. `PrimaryInstance.release()` is
+only ever called from the early `ShutdownForUpgrade` branch in `run()`; the
+normal teardown path just lets the process exit and relies on the kernel to
+drop the flock when the last fd closes. If the freshly spawned AppImage
+reaches `instance.acquire()` before this interpreter finishes unwinding, it
+gets `EWOULDBLOCK`, demotes itself to a `SecondaryInstance`, and forwards its
+open request to a primary whose accept loop (`_stop_pipe`, torn down inside
+`_teardown`, which by then has already run) is no longer listening — the
+relaunch produces no app at all. Reproduced as a failing test
+(`test_relaunch_releases_the_lock_before_respawning` in
+`tests/test_supervisor_core.py`) asserting `release` happens before
+`respawn`; it failed with `['respawn'] == ['release', 'respawn']` against the
+unfixed `run()` (no `release` call at all).
+
+Fixed by calling `inst.release()` immediately before
+`_respawn_after_relaunch(paths)` in `run()`'s post-event-loop block, so the
+lock comes off on the same thread, before the child process is even
+`Popen`'d — closing the race window rather than narrowing it.
+
+That call was moved into a `finally` around `_teardown(...)`, to also cover
+`_teardown` raising `SupervisorStoppedError` (the child process tree did not
+stop in time). Without the `finally`, a `RELAUNCH` whose child tree is slow
+to exit would skip the respawn entirely and just crash out of `run()` with
+nothing to show for it. By the time `_teardown` can raise that error, it has
+already stopped the tray, torn down the pipe, and sent the graceful-shutdown
+request — the only thing left unfinished is the child tree actually exiting,
+which is not a reason to also refuse to bring up the replacement process:
+`_available_port()` already tolerates a lingering old server still holding
+its port (it falls back to another one), so the new AppImage can start
+either way. The decision here is to respawn regardless and let the
+`SupervisorStoppedError` continue to propagate out of `run()` afterwards,
+exactly as it would for any other exit reason — covered by
+`test_relaunch_still_respawns_when_teardown_raises_supervisor_stopped_error`,
+which asserts both `release`/`respawn` happened AND that the error still
+raises.
+

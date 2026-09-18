@@ -133,24 +133,49 @@ def run(initial: protocol.Command) -> None:
     reason, upgrade_response = _event_loop(
         port, process, paths, tray_handle.actions, pipe_requests
     )
-    _teardown(
-        reason,
-        upgrade_response,
-        port=port,
-        token=token,
-        paths=paths,
-        job=job,
-        process=process,
-        inst=inst,
-        pipe_requests=pipe_requests,
-        pipe_thread=pipe_thread,
-        tray_handle=tray_handle,
-    )
-    if reason is _ExitReason.RELAUNCH:
-        # After _teardown above: the tray, pipe, and supervised server are
-        # already stopped, exactly as for TRAY_EXIT — this is the one extra
-        # step relaunch needs on top of that shared path.
-        _respawn_after_relaunch(paths)
+    try:
+        _teardown(
+            reason,
+            upgrade_response,
+            port=port,
+            token=token,
+            paths=paths,
+            job=job,
+            process=process,
+            inst=inst,
+            pipe_requests=pipe_requests,
+            pipe_thread=pipe_thread,
+            tray_handle=tray_handle,
+        )
+    finally:
+        if reason is _ExitReason.RELAUNCH:
+            # Drop the election lock BEFORE spawning the replacement process.
+            # `PrimaryInstance.release()` is otherwise only ever called from
+            # the early ShutdownForUpgrade branch above — the normal teardown
+            # path just lets the process exit and the kernel drop the flock —
+            # so without this call the lock stays held for as long as this
+            # interpreter takes to unwind. If the freshly-Popen'd AppImage
+            # reaches `instance.acquire()` before that happens, it gets
+            # EWOULDBLOCK, demotes to a SecondaryInstance, and forwards to a
+            # primary whose accept loop `_stop_pipe` (inside `_teardown`,
+            # above) already shut down: the relaunch produces no app at all.
+            # Releasing here, on the loop thread, before `_respawn_after_
+            # relaunch`'s Popen, closes that window.
+            #
+            # In a `finally`, not after `_teardown` returns: by the time
+            # `_teardown` can raise `SupervisorStoppedError` (the process
+            # tree would not stop) it has already stopped the tray and the
+            # pipe and run the graceful-shutdown request — the only thing
+            # that didn't finish is the child process tree actually exiting.
+            # A relaunch that skipped the respawn there would quit and never
+            # come back for a failure that isn't otherwise fatal to the user
+            # being able to run the app; respawning anyway costs nothing —
+            # `_available_port()` already falls back past a port a lingering
+            # old tree is still holding — so the new AppImage is launched
+            # either way and the error still propagates to `__main__`, which
+            # logs it exactly as it would for any other reason.
+            inst.release()
+            _respawn_after_relaunch(paths)
 
 
 def _event_loop(

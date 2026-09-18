@@ -379,3 +379,96 @@ def test_respawn_after_relaunch_exits_quietly_without_the_hook(monkeypatch):
     core._respawn_after_relaunch(_Paths())  # must not raise
 
     assert spawned == []
+
+
+# ---- run(): the relaunch respawn must not race the election flock -----------
+
+
+class _FakePrimaryInstance:
+    """Stand-in for `instance.PrimaryInstance`: never a SecondaryInstance (so
+    `run()` takes the primary branch), records `release()` calls so tests can
+    assert it happens BEFORE the respawn's Popen."""
+
+    def __init__(self, calls):
+        self._calls = calls
+
+    def serve(self, requests, log=None):
+        return threading.Thread(target=lambda: None)
+
+    def release(self):
+        self._calls.append("release")
+
+
+class _FakeRunPaths:
+    @classmethod
+    def discover(cls) -> "_FakeRunPaths":
+        return cls()
+
+    def create(self) -> None:
+        pass
+
+    def log(self, message) -> None:
+        pass
+
+
+def _patch_run_up_to_the_event_loop(monkeypatch, calls, *, teardown):
+    """Stub out every collaborator `run()` touches before and after
+    `_event_loop` so the primary-instance branch runs for real, down to the
+    finally block under test, without spawning a real server, tray or pipe."""
+    inst = _FakePrimaryInstance(calls)
+    monkeypatch.setattr(core.instance, "acquire", lambda names: inst)
+    monkeypatch.setattr(core, "DesktopPaths", _FakeRunPaths)
+    monkeypatch.setattr(core, "_spawn_desktop_integration", lambda paths: None)
+    monkeypatch.setattr(core, "_start_ready_server",
+                        lambda paths, token: (object(), object(), 9000))
+    monkeypatch.setattr(core, "_spawn_open", lambda *a, **kw: None)
+    monkeypatch.setattr(core.startup, "enabled", lambda: False)
+
+    class _FakeTrayHandle:
+        actions = queue.Queue()
+
+        def stop(self) -> None:
+            pass
+
+    monkeypatch.setattr(core.tray, "start", lambda *a, **kw: _FakeTrayHandle())
+    monkeypatch.setattr(core, "_event_loop",
+                        lambda *a, **kw: (core._ExitReason.RELAUNCH, None))
+    monkeypatch.setattr(core, "_teardown", teardown)
+    monkeypatch.setattr(core, "_respawn_after_relaunch",
+                        lambda paths: calls.append("respawn"))
+    return inst
+
+
+def test_relaunch_releases_the_lock_before_respawning(monkeypatch):
+    # `PrimaryInstance.release()` is otherwise only called from the early
+    # ShutdownForUpgrade branch — without releasing it here too, the flock
+    # stays held for as long as this interpreter takes to unwind, and the
+    # freshly-spawned AppImage can lose the race for it (see the module's
+    # `_respawn_after_relaunch`/`run()` for the full story). The lock must
+    # come off BEFORE the respawn is attempted, not after.
+    calls = []
+    _patch_run_up_to_the_event_loop(monkeypatch, calls, teardown=lambda *a, **kw: None)
+
+    core.run(protocol.Open("fused-render://relaunch"))
+
+    assert calls == ["release", "respawn"]
+
+
+def test_relaunch_still_respawns_when_teardown_raises_supervisor_stopped_error(monkeypatch):
+    # By the time `_teardown` can raise SupervisorStoppedError (the process
+    # tree would not stop), the tray, pipe and graceful-shutdown request have
+    # already run — only the child failing to actually exit is left. A
+    # relaunch must still bring the new AppImage up rather than quitting with
+    # nothing to show for it; the error still propagates afterwards, exactly
+    # as it would for any other exit reason.
+    calls = []
+
+    def teardown(*a, **kw):
+        raise core.SupervisorStoppedError("Python process tree did not stop")
+
+    _patch_run_up_to_the_event_loop(monkeypatch, calls, teardown=teardown)
+
+    with pytest.raises(core.SupervisorStoppedError):
+        core.run(protocol.Open("fused-render://relaunch"))
+
+    assert calls == ["release", "respawn"]
