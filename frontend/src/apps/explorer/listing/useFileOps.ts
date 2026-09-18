@@ -20,7 +20,8 @@ import {
   getConfig,
 } from "@platform/lib/api";
 import type { ArchiveFormat } from "@platform/lib/api";
-import { openShareApp } from "@platform/lib/share-app";
+import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
+import { useAppSharingFeature } from "@platform/lib/share-app-flag";
 import {
   normDir,
   join,
@@ -87,6 +88,10 @@ export function useFileOps({
   // passes false, or the bar would answer with the wrong folder's actions.
   ownsBar?: boolean;
 }) {
+  // Whether a folder row's menu offers Share (the sheet) or the plain
+  // "Export App File" — see share-app-flag.ts; default off. Read here, at the
+  // hook's top, not inside the menu closure (which is not a render).
+  const sharing = useAppSharingFeature();
   // The open context menu (position + items) and the open modal, both local to
   // this folder view.
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
@@ -825,14 +830,24 @@ export function useFileOps({
       // link or the whole folder as one .fused app file (SPEC §43 AF-4). Offered
       // on every folder rather than probing the app entry up front — both
       // routes validate server-side and their "not a fused app" reason is
-      // what the sheet's cards then say. No `entry_html`: a listing row has
-      // no on-screen render to photograph, so the file ships plain.
+      // what the sheet's cards then say. Behind `app_sharing_enabled`
+      // (share-app-flag.ts, default off): flag off, the row is the plain
+      // "Export App File" it was before the sheet — straight to Downloads.
       ...(row.isDir
-        ? [{
-            label: "Share…",
-            icon: MenuIcons.share,
-            onClick: () => openShareApp({ path: row.path, name: row.name }),
-          } as MenuEntry]
+        ? [sharing
+            ? {
+                label: "Share…",
+                icon: MenuIcons.share,
+                onClick: () => openShareApp({ path: row.path, name: row.name }),
+              } as MenuEntry
+            : {
+                label: "Export App File",
+                // `download`, not `compress`: the Compress row sits directly
+                // above this one, and two rows with one glyph read as one
+                // action. Same glyph as the other flag-off surfaces.
+                icon: MenuIcons.download,
+                onClick: () => void exportAppFileOnly({ path: row.path, name: row.name }),
+              } as MenuEntry]
         : []),
       "separator",
       { label: "Cut", icon: MenuIcons.cut, onClick: () => setClipboard({ paths: [row.path], op: "cut" }) },

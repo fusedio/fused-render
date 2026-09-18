@@ -16,7 +16,8 @@
 // `entry` case alone; it has its own job back.
 import { revealPath, type AppInfo } from "./api";
 import { openApp } from "./appEntry";
-import { openShareApp } from "./share-app";
+import { exportAppFileOnly, openShareApp } from "./share-app";
+import { appSharingEnabled } from "./share-app-flag";
 import { copyToClipboard } from "./clipboard";
 import { navigate } from "./router";
 import { notify } from "./notifications";
@@ -61,18 +62,31 @@ export function appCardMenu(app: AppInfo): MenuEntry[] {
     },
     // Share: ONE entry for both ways out — the sheet behind it (ShareAppModal)
     // offers a public link on the user's Fused account (share_app.py) and the
-    // whole app as one double-clickable `.fused` file (SPEC §43, D385). Not
-    // offered on a card that already IS a .fused file (the export route would
-    // 400 on a non-folder).
+    // whole app as one double-clickable `.fused` file (SPEC §43, D385). Behind
+    // `app_sharing_enabled` (share-app-flag.ts, default off): with the flag
+    // off the entry is the plain "Export App File" it was before the sheet —
+    // the `.fused` straight to Downloads, a toast saying where. Read
+    // synchronously: this menu is built at click time, not a component, and
+    // the flag's last answer (off until read) is the right one for a menu
+    // that lives a second. Not offered on a card that already IS a .fused
+    // file (the export route would 400 on a non-folder).
     ...(isAppFile
       ? []
-      : ([
-          {
-            label: "Share…",
-            icon: MenuIcons.share,
-            onClick: () => openShareApp(app),
-          },
-        ] satisfies MenuEntry[])),
+      : appSharingEnabled()
+        ? ([
+            {
+              label: "Share…",
+              icon: MenuIcons.share,
+              onClick: () => openShareApp(app),
+            },
+          ] satisfies MenuEntry[])
+        : ([
+            {
+              label: "Export App File",
+              icon: MenuIcons.download,
+              onClick: () => void exportAppFileOnly(app),
+            },
+          ] satisfies MenuEntry[])),
     {
       label: "Copy Path",
       icon: MenuIcons.copyPath,

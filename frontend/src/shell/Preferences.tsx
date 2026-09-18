@@ -50,6 +50,7 @@ import {
   cancelHfLogin,
   getHfAuth,
   hfLogout,
+  putAppSharingEnabled,
   putCanvasesEnabled,
   putNativeChatEnabled,
   putProjectQueueEnabled,
@@ -67,6 +68,7 @@ import {
 } from "@platform/lib/api";
 import qrcode from "qrcode-generator";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
+import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import {
   publishChatRecapEnabled,
   publishNativeChatEnabled,
@@ -227,6 +229,51 @@ function CanvasesSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pref
         <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
         <span>
           <b>Show Canvases</b> in the sidebar and the Settings menu.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// App sharing: the unified Share sheet (public link + .fused file) in place of
+// the plain Export / Download action on every app surface. Off by default, and
+// this is the only place it can be turned on. Same one-checkbox section shape
+// as Canvases above, same publish-after-PUT so the surfaces already mounted
+// (the sidebar's app page, an /apps grid in a split) flip with the checkbox.
+function AppSharingSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = prefs.app_sharing.enabled;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putAppSharingEnabled(!enabled);
+      onChange(next);
+      publishAppSharingEnabled(next.app_sharing.enabled);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>App sharing</h2>
+      <p className="deploy-muted">
+        Share an app as a public link on your Fused account, or as a <code>.fused</code> file,
+        from one Share button. Off by default — every app surface then offers the plain Export
+        that saves the <code>.fused</code> file to Downloads.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Enable Fused app sharing</b> — replace Export with a Share button offering a public
+          link or a file.
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -1191,6 +1238,7 @@ export default function Preferences() {
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
                 <CanvasesSection prefs={prefs} onChange={setPrefs} />
+                <AppSharingSection prefs={prefs} onChange={setPrefs} />
                 <NativeChatSection prefs={prefs} onChange={setPrefs} />
                 <ProjectQueueSection prefs={prefs} onChange={setPrefs} />
                 <TaskPeekSection prefs={prefs} onChange={setPrefs} />
