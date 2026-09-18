@@ -23,6 +23,7 @@
 // works in three of four bars is a menu that will be reported as broken in the
 // fourth.
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import type { MenuEntry, MenuItem } from "@platform/ui/ContextMenu";
 import { modeTitle } from "@platform/lib/mode-name";
 
 // Exactly one of left/right is set: a left-anchored popup grows rightwards from
@@ -261,46 +262,38 @@ export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
   );
 }
 
-export interface OverflowItem {
-  label: string;
-  onClick: () => void;
-  // Optional leading glyph, in the same 16px slot the mode rows use
-  // (.bar-menu-item-icon). A menu is all-or-nothing about icons in practice —
-  // one iconless row among icon'd ones reads as a broken row — so a caller
-  // either gives every item one or none.
-  icon?: ReactNode;
-  // Listed but not clickable, with `title` saying why (the native tooltip, the
-  // same carrier ModeMenu's disabledReason uses). A row that vanishes while its
-  // precondition is unmet reads as a menu that changes shape; a dimmed row
-  // reads as the same menu with one thing unavailable right now.
-  disabled?: boolean;
-  title?: string;
-  // Something small after the label — a status dot, a spinner — in the row's
-  // trailing slot.
-  trailing?: ReactNode;
-}
-
-// A menu may group its items. Same shape as ContextMenu's entry list, so the
-// two menus describe a separator the same way.
-export type OverflowEntry = OverflowItem | "separator";
+// One vocabulary for every menu in the explorer: the bars' `⋮` rows are
+// ContextMenu's MenuItem, so a list built once (the folder menu, bar-menus'
+// folderMenu) renders in this dropdown and in a right-click <ContextMenu>
+// without conversion. `icon` is the same 16px slot the mode rows use
+// (.bar-menu-item-icon) — a menu is all-or-nothing about icons in practice, so
+// a caller either gives every item one or none. `disabled` + `title` is a row
+// listed but not clickable with the reason as the native tooltip: a row that
+// vanishes while its precondition is unmet reads as a menu that changes shape,
+// a dimmed row as the same menu with one thing unavailable right now.
+// `submenu` has no home in this flat dropdown and is rendered as a plain,
+// disabled row — the folder menu carries none.
+export type OverflowItem = MenuItem;
+export type OverflowEntry = MenuEntry;
 
 // THE PATH `···`/`⋮` IS GONE from this module. It held the two low-frequency
 // one-shots every view OF A PATH offers (reveal, copy path) plus — over a file —
 // the two splits, and it had two homes: the crumb bar for a file/preview and the
 // listing's own search row for a folder.
 //
-// Both callers took the items somewhere better. The folder's are in the listing
-// header's `⋮` (Listing.tsx), beside the rest of the folder's operations. The
-// file's are in the CRUMB BAR'S RIGHT-CLICK MENU (Breadcrumb's onBarContextMenu,
-// items from lib/bar-menus), which is where the hand goes first on a bar and
-// where they cost no chrome at all — and which is also how Rename and "Open in
-// Claude Code", both missing from the four-item dropdown, joined them.
+// Both callers took the items somewhere better. The folder's are in THE FOLDER
+// MENU (lib/bar-menus' folderMenu) — one list that the listing's kebab, its
+// background right-click and the crumb bar's right-click all open. The file's
+// are in the CRUMB BAR'S RIGHT-CLICK MENU (Breadcrumb's onBarContextMenu, items
+// from lib/bar-menus), which is where the hand goes first on a bar and where
+// they cost no chrome at all — and which is also how Rename and "Open in Claude
+// Code", both missing from the four-item dropdown, joined them.
 //
 // `OverflowMenu` below stays: the panel pane bars use it for their own one-shot
-// ("Open in a new tab"), and the file preview's crumb bar uses it as THE kebab
-// for the app-level actions that used to stand in that bar as bordered buttons
-// (EntryActionsMenu.tsx: App Doctor, Share, Open as project, Open in
-// embed, MCP config).
+// ("Open in a new tab"), the file preview's crumb bar uses it as THE kebab for
+// the app-level actions that used to stand in that bar as bordered buttons
+// (EntryActionsMenu.tsx: App Doctor, Share, Open as project, Open in embed,
+// MCP config), and the folder listing's search row uses it for the folder menu.
 
 // `⋮` menu for the bars. Renders nothing when it has no items, so a caller can
 // pass a conditional list without guarding the control itself.
@@ -354,11 +347,11 @@ export function OverflowMenu({
                 type="button"
                 role="menuitem"
                 className="bar-menu-item"
-                disabled={item.disabled}
+                disabled={item.disabled || item.submenu !== undefined}
                 title={item.title}
                 onClick={() => {
                   close();
-                  item.onClick();
+                  item.onClick?.();
                 }}
               >
                 {item.icon && <span className="bar-menu-item-icon">{item.icon}</span>}

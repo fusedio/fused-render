@@ -12,10 +12,9 @@ import type { MenuEntry, MenuItem } from "@platform/ui/ContextMenu";
 const {
   crumbMenu,
   fileBarMenu,
-  folderBarMenu,
+  folderMenu,
   splitItems,
   canRenameBase,
-  withFolderRename,
 } = await import("@apps/explorer/lib/bar-menus");
 
 // Labels in order, with separators spelled out — the whole point of these tests
@@ -44,28 +43,45 @@ test("splitItems rows carry a glyph, so the menu is not half-iconed", () => {
   }
 });
 
-test("folderBarMenu is the folder's own menu plus the splits", () => {
-  // Stand-in for useFileOps.backgroundMenu() — the folder list is NOT restated
-  // here, it is passed in, and this test is what pins that contract.
-  const background: MenuEntry[] = [
-    { label: "New Folder…" },
-    { label: "New File…" },
-    "separator",
-    { label: "Paste", disabled: true },
-  ];
-  const items = folderBarMenu(background, () => {});
+test("folderMenu shows the groups in a fixed order with one separator between", () => {
+  // Stand-ins for what the surfaces fill in — the rows are NOT restated here,
+  // they are passed in, and this test is what pins that contract.
+  const items = folderMenu({
+    copy: [{ label: "Copy path" }],
+    app: [{ label: "App Doctor" }, { label: "Share…" }],
+    open: [{ label: "Open in New Tab" }, { label: "Split right" }],
+    create: [{ label: "New Folder…" }, { label: "Paste", disabled: true }],
+    folder: [{ label: "Rename…" }, { label: "Refresh" }],
+  });
   expect(labels(items)).toEqual([
-    "New Folder…",
-    "New File…",
+    "App Doctor",
+    "Share…",
     "—",
+    "New Folder…",
     "Paste",
     "—",
+    "Rename…",
+    "Refresh",
+    "—",
+    "Open in New Tab",
     "Split right",
-    "Split down",
+    "—",
+    "Copy path",
   ]);
   // Passed through untouched, disabled state included (Paste with an empty
   // clipboard is a listed-but-dead row, not a missing one).
   expect(item(items, "Paste").disabled).toBe(true);
+});
+
+test("folderMenu draws no rule for an empty or absent group, at either end or between", () => {
+  // A plain folder (no app rows) in a panel pane (nothing extra to open).
+  expect(labels(folderMenu({ app: [], create: [{ label: "New File…" }], copy: [{ label: "Copy path" }] }))).toEqual([
+    "New File…",
+    "—",
+    "Copy path",
+  ]);
+  expect(labels(folderMenu({ folder: [{ label: "Refresh" }] }))).toEqual(["Refresh"]);
+  expect(folderMenu({})).toEqual([]);
 });
 
 test("crumbMenu is exactly the two ancestor items, in the row menu's order", () => {
@@ -220,23 +236,4 @@ test("canRenameBase fails closed while config hasn't loaded (home/mountsRoot und
   expect(canRenameBase("/Users/x/Projects", {})).toBe(false);
   expect(canRenameBase("/Users/x/Projects", { home: "/Users/x" })).toBe(false);
   expect(canRenameBase("/Users/x/Projects", { home: "/Users/x", mountsRoot: "/m" })).toBe(true);
-});
-
-test("withFolderRename leads the list with Rename… + a separator when allowed", () => {
-  const rest: MenuEntry[] = [{ label: "New Folder…" }, "separator", { label: "Refresh" }];
-  let renamed = false;
-  const items = withFolderRename(rest, "/Users/x/Projects", { home: "/Users/x", mountsRoot: "/m" }, () => {
-    renamed = true;
-  });
-  expect(labels(items)).toEqual(["Rename…", "—", "New Folder…", "—", "Refresh"]);
-  item(items, "Rename…").onClick?.();
-  expect(renamed).toBe(true);
-  expect(item(items, "Rename…").icon).not.toBeNull();
-});
-
-test("withFolderRename hands the list back untouched when the guard refuses", () => {
-  const rest: MenuEntry[] = [{ label: "New Folder…" }, "separator", { label: "Refresh" }];
-  const items = withFolderRename(rest, "/Users/x", { home: "/Users/x" }, () => {});
-  expect(items).toBe(rest); // same array, not just same shape
-  expect(labels(items)).toEqual(["New Folder…", "—", "Refresh"]);
 });
