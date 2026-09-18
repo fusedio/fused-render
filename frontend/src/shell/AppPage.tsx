@@ -70,13 +70,11 @@ import { snapshotFrameSrc } from "@platform/lib/snapshot-param";
 import {
   AppWindow,
   Files,
-  Download,
   ListTodo,
   Share2,
   Webhook,
   type LucideIcon,
 } from "lucide-react";
-import { exportAppFile, notifyExportSaved } from "@platform/lib/appShot";
 import { openShareApp } from "@platform/lib/share-app";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppStar } from "@platform/ui/AppStar";
@@ -457,14 +455,19 @@ export default function AppPage({
   // header dot and is never reused to seed the dialog.
   const doctorChecks = useAppDoctorChecks(entry ? dir : null);
 
-  // ---- export "at the selected version" -------------------------------------
+  // ---- share "at the selected version" --------------------------------------
   //
-  // The picker only ever writes/reads `_snapshot`; this is the one place that
-  // turns "which version is selected" into "which folder to export" — a
-  // resolved snapshot's OWN extracted tree (`snap.dir`, never `snap.app_dir`:
-  // that is the LIVE folder the sha resolved FROM, and exporting it would
-  // silently ship the live app labelled as the picked commit) when one is
-  // picked, the live app folder otherwise.
+  // One Share button opens the unified sheet (ShareAppModal): the public link
+  // and the `.fused` download as two cards. The picker only ever writes/reads
+  // `_snapshot`; this is the one place that turns "which version is selected"
+  // into "which folder the FILE card exports" — a resolved snapshot's OWN
+  // extracted tree (`snap.dir`, never `snap.app_dir`: that is the LIVE folder
+  // the sha resolved FROM, and exporting it would silently ship the live app
+  // labelled as the picked commit) when one is picked, the live app folder
+  // otherwise. The LINK card is live only — the shared canvas is named after
+  // the app's id and always carries "the app", so publishing an old commit
+  // under it would silently downgrade every link already sent — and the sheet
+  // says so for a snapshot rather than hiding the route.
   //
   // Gated on `snapshot.pending`/`snapshot.error` (not just disabled — the
   // click handler also refuses) for the same reason every frame/fetch on this
@@ -474,55 +477,41 @@ export default function AppPage({
   // version being resolved — that is exactly the class of bug this branch
   // has already had several of.
   const versionLabel = useAppVersionLabel(dir, snapshot.sha);
-  const [exporting, setExporting] = useState(false);
-  const exportDisabled = exporting || snapshot.pending || snapshot.error;
-  const handleExport = async () => {
-    if (exportDisabled) return;
-    setExporting(true);
-    try {
-      const isLive = snapshot.sha === null;
-      const exportPath = snapshot.snap ? snapshot.snap.dir : dir;
-      // The filename carries the version so an exported v7 sitting beside a
-      // live export in Downloads is never ambiguous about which is which.
-      const exportName = isLive ? slug : `${slug}-${versionLabel}`;
-      // The Overview frame IS the running app, so when it is the visible tab
-      // and has a document loaded it is the capture source: the export shoots
-      // the pixels already on screen, nothing navigates, nothing flashes.
-      // Without it `exportAppFile` builds its stage — a full-viewport scrim
-      // plus a fresh reload of the entry for ~1.5s — which is exactly the
-      // flash this avoids. Any other tab, or a frame still loading, still
-      // falls through to the stage (any picture beats no thumbnail).
-      const frame = document.querySelector<HTMLIFrameElement>(
-        ".app-page-overview:not(.is-hidden) .app-page-frame",
-      );
-      const captureEl = isLive && frame?.dataset.loaded === "1" ? frame : null;
-      const realPath = await exportAppFile(
-        {
-          path: exportPath,
-          name: exportName,
-          // A preview capture is only attempted for a LIVE export. For a
-          // snapshot, `exportAppFile`'s stage fallback would reload the ENTRY
-          // PAGE'S LIVE copy to shoot it — a screenshot of the wrong era baked
-          // into a file labelled as the old commit. Omitting `entry_html` here
-          // skips preview capture entirely rather than risk that; the
-          // snapshot export ships with no preview.png, which
-          // `downloadAppFile` already handles.
-          entry_html: isLive ? entry ?? undefined : undefined,
-        },
-        captureEl,
-      );
-      notifyExportSaved(exportName, realPath);
-    } catch (e) {
-      notify({
-        title: "Could not export " + slug + ": " + (e as Error).message,
-        tone: "error",
-        // See the icon-pick notify() above — same reasoning, same no-op
-        // today (an error is never suppressed).
-        source: dir,
-      });
-    } finally {
-      setExporting(false);
-    }
+  const shareDisabled = snapshot.pending || snapshot.error;
+  const handleShare = () => {
+    if (shareDisabled) return;
+    const isLive = snapshot.sha === null;
+    const exportPath = snapshot.snap ? snapshot.snap.dir : dir;
+    // The filename carries the version so an exported v7 sitting beside a
+    // live export in Downloads is never ambiguous about which is which.
+    const exportName = isLive ? slug : `${slug}-${versionLabel}`;
+    // The Overview frame IS the running app, so when it is the visible tab
+    // and has a document loaded it is the capture source: the export shoots
+    // the pixels already on screen, nothing navigates, nothing flashes.
+    // Without it `exportAppFile` builds its stage — a full-viewport scrim
+    // plus a fresh reload of the entry for ~1.5s — which is exactly the
+    // flash this avoids. Any other tab, or a frame still loading, still
+    // falls through to the stage (any picture beats no thumbnail).
+    const frame = document.querySelector<HTMLIFrameElement>(
+      ".app-page-overview:not(.is-hidden) .app-page-frame",
+    );
+    const captureEl = isLive && frame?.dataset.loaded === "1" ? frame : null;
+    openShareApp({ path: dir, name: slug, entry_html: entry ?? undefined }, captureEl, {
+      file: {
+        path: exportPath,
+        name: exportName,
+        // A preview capture is only attempted for a LIVE export. For a
+        // snapshot, `exportAppFile`'s stage fallback would reload the ENTRY
+        // PAGE'S LIVE copy to shoot it — a screenshot of the wrong era baked
+        // into a file labelled as the old commit. Omitting `entry_html` here
+        // skips preview capture entirely rather than risk that; the snapshot
+        // export ships with no preview.png, which the export route already
+        // handles.
+        entry_html: isLive ? entry ?? undefined : undefined,
+      },
+      link: isLive,
+      versionLabel,
+    });
   };
 
   return (
@@ -601,58 +590,30 @@ export default function AppPage({
             >
               Open in explorer
             </Button>
-            {/* Exports the folder AT THE PICKER'S SELECTED VERSION — the live
-                folder for "Live", the resolved snapshot's own extracted tree
-                for a commit (see the `handleExport` comment above). Disabled
-                through the same pending/error window every other read on
-                this page already gates on, so a click mid-resolve can never
-                silently export the wrong era. */}
+            {/* ONE Share: the sheet behind it holds both the public link and
+                the .fused download (see the `handleShare` comment above).
+                Disabled through the same pending/error window every other
+                read on this page already gates on, so a click mid-resolve
+                can never silently export the wrong era. */}
             <Button
               size="sm"
               variant="outline"
-              className="app-page-export"
-              disabled={exportDisabled}
+              className="app-page-share"
+              disabled={shareDisabled}
               title={
                 snapshot.pending
                   ? "Waiting for this version to finish loading"
                   : snapshot.error
                     ? "This version failed to load; retry it from the version picker"
                     : versionLabel === "Live"
-                      ? "Export the live app as a .fused file"
-                      : `Export the app as of ${versionLabel} as a .fused file`
+                      ? "Share the app — public link or .fused file"
+                      : `Share the app as of ${versionLabel} as a .fused file`
               }
-              onClick={handleExport}
+              onClick={handleShare}
             >
-              {exporting ? "Exporting…" : "Export"}
-              <Download data-icon="inline-end" />
+              Share
+              <Share2 data-icon="inline-end" />
             </Button>
-            {/* Export's sibling: the same .fused, published to the user's
-                Fused account as a public page (share_app.py). LIVE ONLY —
-                the shared canvas is named after the app's id and always
-                carries "the app", so publishing an old commit under it would
-                silently downgrade every link already sent. The Overview
-                frame is the capture source under the same rule as Export. */}
-            {versionLabel === "Live" && (
-              <Button
-                size="sm"
-                variant="outline"
-                className="app-page-share"
-                disabled={snapshot.pending || snapshot.error}
-                title="Share the live app as a public link"
-                onClick={() => {
-                  const frame = document.querySelector<HTMLIFrameElement>(
-                    ".app-page-overview:not(.is-hidden) .app-page-frame",
-                  );
-                  openShareApp(
-                    { path: dir, name: slug, entry_html: entry ?? undefined },
-                    frame?.dataset.loaded === "1" ? frame : null,
-                  );
-                }}
-              >
-                Share
-                <Share2 data-icon="inline-end" />
-              </Button>
-            )}
           </div>
         )}
       </header>

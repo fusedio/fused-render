@@ -455,35 +455,19 @@
 }
 
 /* ---- Share app dialog (platform/ui/ShareAppModal.tsx) --------------------- */
-/* The link row: a read-only field that takes the width, Copy and Open beside
-   it at .btn weight. Reuses the fs-dialog field look so the two compact
-   dialogs read as one family. */
-.share-app-link {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-.share-app-link input {
-  flex: 1 1 auto;
-  min-width: 0;
-  font: inherit;
-  font-size: 13px;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 7px 10px;
-  text-overflow: ellipsis;
-}
-.share-app-link input:focus {
-  outline: none;
-  border-color: var(--fg-muted);
-}
-.share-app-link .btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
-  text-decoration: none;
+/* The sheet is shadcn (Tailwind classes in the component); this is the one
+   rule it cannot carry itself. Both of its routes photograph the screen
+   (appShot), and with the /apps card's thumb as the crop source the open
+   sheet sits DIRECTLY over the rect being shot — its scrim and popup would
+   bake into the artifact's permanent preview.png. appShot marks the body for
+   the shot's frame; every shadcn dialog and alert layer vanishes for it, with
+   no transition so it is gone by the next paint. `visibility`, not `opacity`:
+   an opacity-0 layer still paints a compositing hit, and this must be nothing. */
+body[data-capture-shooting] [data-slot="dialog-overlay"],
+body[data-capture-shooting] [data-slot="dialog-content"],
+body[data-capture-shooting] [data-slot="alert-dialog-overlay"],
+body[data-capture-shooting] [data-slot="alert-dialog-content"] {
+  visibility: hidden !important;
+  transition: none !important;
+  animation: none !important;
 }

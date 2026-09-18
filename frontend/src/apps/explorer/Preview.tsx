@@ -1966,7 +1966,7 @@ function TemplatePreview({
       {!stat.is_dir && fsPath.toLowerCase().endsWith(".fused") && (
         <CloneAppFileButton fsPath={fsPath} />
       )}
-      {/* The app-level actions — App Doctor, Download app (the .fused export,
+      {/* The app-level actions — App Doctor, Share (public link or .fused file,
           SPEC §43 AF-4), Open as project, Open in embed, MCP config — are the
           kebab AFTER the mode control (EntryActionsMenu, below). They stood here
           as bordered buttons of their own for a while; the argument for the

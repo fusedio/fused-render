@@ -2245,10 +2245,6 @@ export async function downloadTemplatesExport(names: string[]): Promise<void> {
   }
 }
 
-// Download an app folder as a single `.fused` app file (SPEC §43, D385).
-// fetch + blob rather than a bare <a download>, same reason as the templates
-// export above: a non-2xx JSON error (not an app, over
-// budget) surfaces to the caller instead of saving as a corrupt file.
 // The exported card's thumbnail: the preview.png INSIDE the .fused at `path`,
 // served as bytes by a single-member zip read (never an extraction). 404s when
 // the file ships without one — the card's onError fallback owns that case.
@@ -2256,50 +2252,11 @@ export function appfilePreviewUrl(path: string): string {
   return "/api/appfile/preview?path=" + encodeURIComponent(path);
 }
 
-export async function downloadAppFile(
-  path: string,
-  name: string,
-  // Optional capture of the app to bake into the .fused as its preview.png
-  // (D396). The server only uses it when the folder has no authored one.
-  preview?: Blob,
-): Promise<void> {
-  let res: Response;
-  if (preview) {
-    const form = new FormData();
-    form.set("path", path);
-    form.set("preview", preview, "preview.png");
-    res = await fetch("/api/appfile/export", {
-      method: "POST",
-      headers: { "X-Fused": "1" },
-      body: form,
-    });
-  } else {
-    res = await fetch("/api/appfile/export?path=" + encodeURIComponent(path));
-  }
-  if (!res.ok) {
-    let message = `export failed (${res.status})`;
-    try {
-      const body = await res.json();
-      if (body && typeof body.error === "string") message = body.error;
-    } catch {
-      /* non-JSON error body — keep the status-based message */
-    }
-    throw new Error(message);
-  }
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  try {
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = name + ".fused";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  } finally {
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
-  }
-}
-
+// The `.fused` app file export (SPEC §43, D385). Once a browser blob download
+// (`downloadAppFile`, GET /api/appfile/export); every caller now goes through
+// the share sheet, and the sheet needs the real path back, so the server-side
+// save below is the one client of the export route left.
+//
 // Writes the `.fused` straight to the platform Downloads folder — server
 // side, not a browser blob download — and answers the real absolute path it
 // landed at. This is what makes the export immediately searchable: the
