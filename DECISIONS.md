@@ -2312,3 +2312,106 @@ Decisions made while implementing (spec left them open or under-specified):
 Nothing in the spec was found to be wrong; the two "not yet finalized" items
 noted mid-build (the endpoint's route name, the frontend module's exact
 shape) are settled as above.
+
+## worktree-focus-change-detection — code review fix round
+
+Six findings from code review, fixed in `index/detect.py`,
+`index/ignore.py`, `server/routers/index.py` (no code change needed there —
+see below), `frontend/src/apps/explorer/FilesHome.tsx`, and
+`frontend/src/apps/explorer/FilesHome.render.test.tsx`.
+
+1. **Unfiltered hint made the quiet path unreachable on a real `~` root
+   (High).** `fsevents.hint()` does no ignore-rule filtering of its own, so
+   its raw output on a home root routinely included this app's own writes
+   under `~/.fused-render/**` and macOS's constant `~/Library` churn,
+   neither of which the original `_check_root` filtered before collapsing
+   the hint to a boolean. Fixed two ways together:
+   * `index/detect.py` gained `_filter_hint`, applying the exact per-path
+     filter `scan._run_fsevents` already applies to a journal-driven hint —
+     `ignored_for_index(rules, p, tree=True) or guard.blocks(p) or
+     is_inside_leaf_dir(p)` — before deciding whether anything changed.
+     `guard.blocks(p)` alone (MountGuard covers the whole app state home,
+     not only its `mounts` subdir) makes the scan's own writes inert.
+   * `index/ignore.py`'s `default_ignore()` now also names `~/Library`, as a
+     PATH pattern keyed off the real OS home (`os.path.expanduser("~")`),
+     deliberately NOT a bare `DEFAULT_IGNORE_NAMES` entry — a bare name
+     would ban every unrelated directory anywhere on disk literally named
+     "Library" (an Arduino sketch folder, a Java project), where a path
+     pattern only ever matches the one real OS home. This is a genuine,
+     if narrow, indexing-behaviour change: a fresh install (or anyone who
+     never customized their ignore list) no longer indexes `~/Library`.
+     Judged worth it — nothing under it was ever content a home search
+     should surface, and the existing `.cache`/`.fused`/`dist`/`build`
+     entries already accept the identical "system churn, not user content"
+     trade for narrower directories. `SPEC-focus-change-detection.md` has an
+     Errata section recording why the original spec's "non-empty -> scan"
+     line was incomplete.
+   * Test requirement from the review: `test_realistic_noisy_hint_on_a_real_home_root_starts_no_scan`
+     feeds a REALISTIC `(forced_dirs, [])` shape — real paths under
+     `~/.fused-render` and `~/Library` — and asserts no scan starts, plus a
+     sibling test that the same noise mixed with one genuine changed path
+     still scans (the filter must not overreach).
+
+2. **Missing `runner.active_run` guard (Medium).** `_check_root` called
+   `runner.start` unconditionally; a live run under a different
+   `ignore_sig` (exactly the state right after an ignore-list edit) would be
+   SUPERSEDED — cancelled and respawned — by a focus event, discarding its
+   walk progress. Added the same guard `freshness.note_folder_opened`
+   already applies for the identical reason ("a triggered scan must not be
+   the thing that discovers a mismatch"): if `runner.active_run(cfg, root)`
+   is not `None`, refuse outright. The spec review noted this trigger
+   operates at the ROOT level already (unlike the folder-open trigger, which
+   needed the distinction argued out), so the refusal applies directly.
+
+3. **`started` reported roots where nothing was started (Low/Medium).**
+   `runner.start` returns `{"already_running": True}` when it joins a live
+   run instead of spawning one; `_check_root` ignored that key and returned
+   `True` regardless, so the router logged "home-page focus found changes...
+   rescanning" and woke the Activity card for a scan this trigger had no
+   hand in — actively misleading during exactly the window a full home scan
+   is running. Fixed by checking `result.get("already_running")` after
+   `runner.start` returns and treating it as "not started". No router change
+   needed: `routers/index.py`'s wiring already just trusts `detect.py`'s
+   return value.
+
+4. **Journal replay before any MountGuard check (Low).** `_check_root`
+   reached `fsevents.hint` -> `device_uuid` -> `os.stat(root)` with no guard,
+   contradicting the documented rule (`freshness.note_folder_opened`'s own
+   comment: MountGuard runs "BEFORE any kernel syscall on the caller's
+   path", because a stat on a wedged rclone/NFS mount blocks forever).
+   Latent, not live, today (a mount-backed root has no saved fsevents state,
+   so `hint` returns `None` at its own first check) but fixed properly:
+   `_check_root` now builds one `MountGuard` and checks `guard.blocks(root)`
+   before `_hint` runs, and reuses the same guard object in `_filter_hint`
+   (finding 1) rather than constructing it twice.
+
+5. **Wrong comment about `bool`/`any` (Low).** The old comment claimed
+   `any(hinted)` was called and would be false for `(set(), [])`; neither is
+   true (`any()` was never called, and `bool((set(), []))` is `True` — a
+   non-empty tuple). Restructured rather than just re-worded: `hinted is
+   None` is now its own explicit check, and the emptiness test runs against
+   the FILTERED `forced`/`subtrees` from finding 1 — there is no longer a
+   place where a comment needs to explain a non-obvious boolean coercion.
+
+6. **`visibilitychange` alone misses the desktop-app headline scenario
+   (Low).** Switching to a different application while the window stays
+   visible fires neither `visibilitychange` (`document.hidden` never
+   becomes true) nor was covered at all by the original listener. Added
+   `window` `blur`/`focus` alongside it in `FilesHome.tsx`, unified through
+   one `isAway()` check (`document.hidden || !document.hasFocus()`) rather
+   than three independent per-event handlers, so a transition that raises
+   more than one of the three events (a tab hide often fires both a
+   `visibilitychange` and a `blur`) still fires the endpoint exactly once —
+   the `hiddenSince.current === null` guard on both the "went away" and
+   "came back" branches absorbs the duplicate. `FilesHome.render.test.tsx`
+   needed its `window` stub (from `Clock.install()`, shared with
+   `FileSearchField.render.test.tsx` via `hook-harness.ts`) extended with
+   `addEventListener`/`removeEventListener` — it previously only stubbed
+   `dispatchEvent` because nothing rendered here called `window.
+  addEventListener` before this fix.
+
+Verification: `pytest tests/test_index_detect.py tests/test_index_api.py
+tests/test_index_ignore.py tests/test_index_mount_safe.py
+tests/test_index_freshness.py` (195 passed) and `bun test
+src/apps/explorer src/platform/lib` (2198 passed across the two runs, 0
+failed) after every change in this round.
