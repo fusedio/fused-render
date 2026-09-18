@@ -1257,6 +1257,15 @@ export interface Prefs {
    *  Optional for the same reason `task_peek` is: a server that predates the
    *  switch sends nothing, and nothing reads as off. */
   task_cards?: { last_message: boolean };
+  /** Whether a finished-task notification fires for a session that entered
+   *  from an interactive terminal, rather than only one started through
+   *  fused-render's own Claude template (shell/prefs.py
+   *  `task_notify_terminal_sessions`, default off). Optional for the same
+   *  reason `task_cards` is: a server that predates the switch sends nothing,
+   *  and nothing reads as off — the default this branch fixed a bug by
+   *  choosing. See `Task.entrypoint`'s own doc comment for why this can only
+   *  ever be a best-effort filter, never an exact one. */
+  task_notify?: { terminal_sessions: boolean };
   // Local-network sharing of ~/Fused/local (lan.py, opt-in, default off):
   // the stored switch plus the live listener — `url` once it is serving
   // (http://render.fused.local/), `error` when the bind or mDNS failed.
@@ -1487,6 +1496,13 @@ export function putTaskPeekEnabled(enabled: boolean): Promise<Prefs> {
  *  the conversation's newest message, or the task's own title. */
 export function putTaskCardTitleMode(lastMessage: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { task_card_last_message: lastMessage });
+}
+
+/** Whether a finished-task notification fires for an interactive-terminal
+ *  session too (shell/prefs.py `task_notify_terminal_sessions`, default
+ *  off). See `Prefs.task_notify`'s own doc comment. */
+export function putTaskNotifyTerminalSessionsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { task_notify_terminal_sessions: enabled });
 }
 
 export function putChatRecapEnabled(enabled: boolean): Promise<Prefs> {
@@ -3121,6 +3137,20 @@ export interface Task {
   project: string; // the FOLDER: a task on ~/x/foo.py belongs to project ~/x
   target: string; // what the task actually points at (may be that file)
   session_id: string; // "" until the first run
+  // How the transcript's own session ENTERED — "cli" for an interactive
+  // terminal (`claude` typed by hand), "sdk-cli" for a headless/programmatic
+  // spawn (what templates/claude/agent.py produces). Read off the
+  // transcript's first `type: "user"` record (tasks_store.head); `null` for
+  // a task with no transcript yet or one predating the field (the server
+  // always sends the key, via `task.get("entrypoint")`, but that read is
+  // `None`), and `undefined` for a server that predates the field entirely.
+  // NEVER defaulted to a value — task-status-notify.ts's terminal-session
+  // gate has to be able to tell "no signal" from an explicit "cli" and fails
+  // open on either falsy case. This is a PROXY for "started outside our own
+  // template", not proof: an unrelated SDK-driven session also reports
+  // "sdk-cli", which is exactly why the notify-terminal-sessions preference
+  // exists rather than trying to make this exact.
+  entrypoint?: "cli" | "sdk-cli" | null;
   title: string;
   // Which source won: the user's own title, Claude Code's own `ai-title`
   // record, the first line of the session's own first prompt (`message`), or —
@@ -3412,6 +3442,9 @@ export interface Task {
 // its conversation (tasks-lib `attentionRows`/`taskHref`) — see
 // routers/tasks.py `_PULSE_FIELDS` for why four short strings beat the second
 // /api/tasks poll the alternative would have cost.
+// `entrypoint` (2026-09-18) is here for useTaskStatusNotify.ts's
+// finished-task notice, which has to gate on "cli" vs everything else
+// without a second poll — see `Task.entrypoint`'s own doc comment.
 export type TaskPulseTask = Pick<
   Task,
   | "key"
@@ -3427,6 +3460,7 @@ export type TaskPulseTask = Pick<
   | "next_run"
   | "next_run_entry"
   | "next_run_repeats"
+  | "entrypoint"
 >;
 
 export function getTasks(): Promise<{ tasks: Task[]; generation?: number }> {

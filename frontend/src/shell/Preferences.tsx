@@ -55,6 +55,7 @@ import {
   putProjectQueueEnabled,
   putTaskPeekEnabled,
   putTaskCardTitleMode,
+  putTaskNotifyTerminalSessionsEnabled,
   putChatRecapEnabled,
   putLanEnabled,
   getLanPairToken,
@@ -77,6 +78,7 @@ import { navigate, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { publishTaskPeekEnabled } from "./task-peek-flag";
 import { publishTaskCardTitleMode } from "./task-card-title-flag";
+import { publishTaskNotifyTerminalSessions } from "./task-notify-terminal-flag";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { useThemePref } from "@platform/lib/theme";
 import { IndexingPanel } from "@shell/Indexing";
@@ -491,6 +493,59 @@ function TaskCardTitleSection({
           <b>Title a task by its last message</b> — the newest thing said in the
           conversation, yours or Claude's, with the task number leading the row
           instead. Tasks with nothing said yet keep their title.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// A finished-task notification is scoped to sessions started from
+// fused-render's own Claude template (2026-09-18 fix — the reported bug: a
+// plain `claude` session typed by hand in a terminal, nothing to do with
+// fused-render, raising a fused-render "Finished" notice). This is the
+// opt-BACK-in for an interactive terminal session too — default off, same
+// shape as `TaskCardTitleSection` above.
+function TaskNotifyTerminalSection({
+  prefs,
+  onChange,
+}: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // `?? false`: a server that predates the switch sends nothing, which is off
+  // — both the pref's own default and the behaviour this branch shipped.
+  const enabled = prefs.task_notify?.terminal_sessions ?? false;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putTaskNotifyTerminalSessionsEnabled(!enabled);
+      onChange(next);
+      // Published so useTaskStatusNotify picks it up on its next tick rather
+      // than on a reload — the same hand-over the switches above make.
+      publishTaskNotifyTerminalSessions(next.task_notify?.terminal_sessions === true);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Tasks: notify when terminal sessions finish</h2>
+      <p className="deploy-muted">
+        fused-render can't always tell every headless Claude session apart from its own — this
+        also raises finished-task notifications for a Claude session you started by hand in a
+        terminal.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Notify when terminal sessions finish</b> — off by default, so a plain{" "}
+          <code>claude</code> session you started yourself stays quiet.
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -1195,6 +1250,7 @@ export default function Preferences() {
                 <ProjectQueueSection prefs={prefs} onChange={setPrefs} />
                 <TaskPeekSection prefs={prefs} onChange={setPrefs} />
                 <TaskCardTitleSection prefs={prefs} onChange={setPrefs} />
+                <TaskNotifyTerminalSection prefs={prefs} onChange={setPrefs} />
               </>
             )}
             {tab === "lan" && <LanSection prefs={prefs} onChange={setPrefs} />}

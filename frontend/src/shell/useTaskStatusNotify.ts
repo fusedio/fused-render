@@ -77,11 +77,18 @@ import { IS_EMBED, IS_TOP_EMBED } from "@platform/lib/router";
 import { useTasksPulseRows } from "@shell/tasksPulse";
 import { taskColumn } from "@shell/tasks-lib";
 import { notificationForTransition } from "@shell/task-status-notify";
+import { useTaskNotifyTerminalSessions } from "@shell/task-notify-terminal-flag";
 
 export function useTaskStatusNotify(): void {
   const tasks = useTasksPulseRows();
   const previous = useRef<Map<string, string>>(new Map());
   const watchStartS = useRef<number | null>(null);
+  // The Preferences toggle (default off — see task-notify-terminal-flag.ts's
+  // own header) for whether a finished-task notice fires for an interactive-
+  // terminal session too. Read as a live subscription, not a snapshot, so
+  // flipping it in Preferences takes effect on the very next tick without a
+  // reload.
+  const notifyTerminalSessions = useTaskNotifyTerminalSessions();
 
   useEffect(() => {
     if (IS_EMBED && !IS_TOP_EMBED) return;
@@ -92,12 +99,13 @@ export function useTaskStatusNotify(): void {
       liveKeys.add(task.key);
       const was = prev.get(task.key);
       const column = taskColumn(task);
-      const input = notificationForTransition(was, task, watchStartS.current);
+      const input = notificationForTransition(
+        was, task, watchStartS.current, notifyTerminalSessions);
       prev.set(task.key, column);
       if (input) notify(input);
     }
     for (const key of Array.from(prev.keys())) {
       if (!liveKeys.has(key)) prev.delete(key);
     }
-  }, [tasks]);
+  }, [tasks, notifyTerminalSessions]);
 }

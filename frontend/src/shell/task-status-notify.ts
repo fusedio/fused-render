@@ -142,6 +142,27 @@ export function notificationForTransition(
   previous: string | undefined,
   task: TaskPulseTask,
   watchStartS: number,
+  // TERMINAL-SESSION SCOPING (2026-09-18): the reported bug — a plain
+  // `claude` session started by hand in a terminal, nothing to do with
+  // fused-render at all, raising a fused-render "Finished" notice — because
+  // this hook watches EVERY session in the machine-wide `~/.claude/projects`
+  // pool, not only ones started from our own template. `task.entrypoint` is
+  // the one signal a transcript carries for this: "cli" for an interactive
+  // terminal, "sdk-cli" for a headless/programmatic spawn (what
+  // templates/claude/agent.py's own spawn produces) — see `TaskPulseTask`'s
+  // own doc comment on why this is a PROXY, not proof, and can only ever be
+  // "fairly sure", never exact.
+  //
+  // Threaded in as a plain argument, not read off a module here, because
+  // this function is deliberately pure (the header comment above: "so the
+  // rules can be tested without a DOM") — the caller (useTaskStatusNotify.ts)
+  // owns subscribing to the preference.
+  //
+  // Defaults to `false` (the pref's own shipping default) purely so the many
+  // existing 3-argument call sites in task-status-notify.test.ts keep
+  // compiling; none of them set `entrypoint: "cli"`, so the gate below never
+  // fires for them regardless of this default.
+  notifyTerminalSessions = false,
 ): NotificationInput | null {
   const column = taskColumn(task);
   if (previous === undefined) {
@@ -164,6 +185,15 @@ export function notificationForTransition(
     };
   }
   if (previous === "in_progress" && column === "done") {
+    // TERMINAL-SESSION GATE (2026-09-18): only an EXACT "cli" counts as
+    // "started outside our own template" — a missing/unknown entrypoint
+    // (an older transcript, or a head read that hasn't resolved yet) fails
+    // OPEN and still notifies, exactly as it always has. Narrower than "not
+    // sdk-cli", deliberately: the whole point of the terminal-sessions
+    // preference is that "sdk-cli" is a proxy, not proof, so treating
+    // anything-but-sdk-cli as interactive would silence sessions this
+    // signal was never confident about in the first place.
+    if (task.entrypoint === "cli" && !notifyTerminalSessions) return null;
     // THIRD REVERSAL, 2026-09-17 — the code-review-round fix (see
     // DECISIONS-quiet-notifications.md's "notification card regression"
     // entry) restoring what the SECOND reversal above accidentally deleted.

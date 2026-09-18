@@ -165,6 +165,47 @@ describe("notificationForTransition", () => {
     expect(n?.familyKey).toBeUndefined();
   });
 
+  // TERMINAL-SESSION SCOPING (2026-09-18): the reported bug — a plain
+  // interactive-terminal `claude` session raising a fused-render notice —
+  // scoped by `task.entrypoint`, threaded through as a plain argument since
+  // this function stays pure. See task-status-notify.ts's own comment on the
+  // gate for why "cli" is the only value that suppresses, and why unknown
+  // fails open.
+  describe("in_progress -> done is scoped to non-terminal sessions by default", () => {
+    test("a cli-entrypoint task notifies nothing with the preference off (the default)", () => {
+      const t = task({ status: "done", entrypoint: "cli" });
+      expect(notificationForTransition("in_progress", t, 0)).toBeNull();
+      expect(notificationForTransition("in_progress", t, 0, false)).toBeNull();
+    });
+
+    test("a cli-entrypoint task notifies once the preference is on", () => {
+      const t = task({ status: "done", entrypoint: "cli" });
+      const n = notificationForTransition("in_progress", t, 0, true);
+      expect(n?.tone).toBe("info");
+      expect(n?.detail).toBe("Finished");
+    });
+
+    test("an sdk-cli-entrypoint task notifies regardless of the preference", () => {
+      const t = task({ status: "done", entrypoint: "sdk-cli" });
+      expect(notificationForTransition("in_progress", t, 0, false)?.tone).toBe("info");
+      expect(notificationForTransition("in_progress", t, 0, true)?.tone).toBe("info");
+    });
+
+    test("a task with no entrypoint at all notifies regardless of the preference (fails open)", () => {
+      const t = task({ status: "done" });
+      expect(notificationForTransition("in_progress", t, 0, false)?.tone).toBe("info");
+      expect(notificationForTransition("in_progress", t, 0, true)?.tone).toBe("info");
+    });
+
+    test("needs_attention and in_progress -> blocked are unaffected by entrypoint", () => {
+      const blocked = task({ status: "blocked", entrypoint: "cli" });
+      expect(notificationForTransition("in_progress", blocked, 0, false)?.tone).toBe("error");
+      const attention = task({ status: "needs_attention", entrypoint: "cli" });
+      expect(notificationForTransition("in_progress", attention, 0, false)?.title)
+        .toContain("needs your input");
+    });
+  });
+
   test("in_progress -> blocked is a never-suppressed, retained, actioned failure", () => {
     const n = notificationForTransition(
       "in_progress",
