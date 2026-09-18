@@ -762,11 +762,11 @@ export function indexRank(
   });
 }
 
-// GET /api/index/rank for a flat (non-"files") kind, e.g. "apps" — the global
-// search overlay's app-name group. `root` is deliberately never sent: a flat
-// kind has no navigable folder for a client to name (SPEC-index-plugins.md,
-// `_default_root`), only its own fixed default root the server already
-// knows.
+// GET /api/index/rank for a flat (non-"files") kind, e.g. "notes" — a
+// third-party or example plugin's own corpus, not the "files" tree. `root`
+// is deliberately never sent: a flat kind has no navigable folder for a
+// client to name (SPEC-index-plugins.md, `_default_root`), only its own
+// fixed default root the server already knows.
 export function indexRankKind(
   kind: string,
   query: string,
@@ -812,8 +812,8 @@ export function indexStatus(signal?: AbortSignal, kind?: string): Promise<IndexS
 }
 
 // GET /api/index/kinds — every index kind the management page can offer a
-// control for: "files" always first, then every registered plugin kind
-// ("apps" included) sorted (routers/index.py's `api_index_kinds`).
+// control for: "files" always first, then every other registered plugin
+// kind, sorted (routers/index.py's `api_index_kinds`).
 export function getIndexKinds(): Promise<{ kinds: string[] }> {
   return getJson("/api/index/kinds");
 }

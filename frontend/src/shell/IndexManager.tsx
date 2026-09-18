@@ -6,10 +6,10 @@
 // **What lives here, and why nothing else does:**
 //
 // - Every registered index KIND (GET /api/index/kinds — "files" plus
-//   whatever third-party/example kinds are registered, "apps" always among
-//   them) with its own status, Scan/Full scan/Delete controls. This is the
-//   one place a non-"files" kind can be seen or managed at all; nothing in
-//   Preferences ever mentions a kind by name.
+//   whatever third-party/example kinds are registered, e.g. the "notes"
+//   reference plugin) with its own status, Scan/Full scan/Delete controls.
+//   This is the one place a non-"files" kind can be seen or managed at
+//   all; nothing in Preferences ever mentions a kind by name.
 // - Decision #8's confirm/refuse surface (`useIndexProposals`, shared with
 //   the status-bar `IndexProposalsDock`) — an app proposing an index of its
 //   own folder is confirmed or refused here, not only from the status bar.
@@ -45,13 +45,12 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import NotificationCard from "@platform/ui/NotificationCard";
 
-// The label a kind's own card wears. "files" and "apps" are named for what
-// they hold rather than for their internal registry key, which is otherwise
-// meaningless to a reader; a third-party kind not in this table falls back
+// The label a kind's own card wears. "files" is named for what it holds
+// rather than for its internal registry key, which is otherwise meaningless
+// to a reader; a third-party (or example) kind not in this table falls back
 // to its raw name (below), unadorned rather than mistranslated.
 const KIND_LABELS: Record<string, string> = {
   files: "Files",
-  apps: "Apps",
 };
 
 function kindLabel(kind: string): string {
@@ -268,8 +267,9 @@ export default function IndexManager() {
     <div className="prefs-page index-manager-page">
       <h1 className="prefs-title">Index</h1>
       <p className="deploy-muted">
-        Every index this app maintains — the file index behind search, the app-name index over
-        ~/Fused, and any third-party index a running app has registered — in one place.
+        Every index this app maintains — the file index behind search, and any third-party index
+        a running app has registered — in one place. Apps aren't indexed: the Apps hub and ⌘K's
+        search both read the live app listing instead.
       </p>
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {!kinds && !error && <SkeletonLines rows={4} label="Loading indexes" />}
