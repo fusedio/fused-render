@@ -5334,45 +5334,20 @@ def _scan_transcript(path: str) -> tuple:
     return model, effort
 
 
-def _defaults(file: str, session_id: str = "") -> dict:
-    """The model/effort the selectors should open on — for THIS CONVERSATION
-    when one is named, else the ones last used in this project.
+def _defaults(file: str) -> dict:
+    """The model/effort the user ACTUALLY last used with Claude Code for this
+    project — through this template or the CLI directly — so the selectors can
+    preselect a real config instead of a hardcoded guess.
 
-    THE SESSION IS THE TRUTH WHEN THERE IS ONE (Akshil, 2026-09-18: "what I
-    select as a user stays"). Without `session_id` this answers a question about
-    a FOLDER, and every door into a chat asked it that way — so the same
-    conversation opened from the Tasks peek, from the peek's Open button, from a
-    row, from the chat list or from a bare URL could each be told the model last
-    used in that folder by some OTHER chat. A conversation's own transcript
-    records the model on every assistant row and the effort beside it, so it
-    answers for itself: the task's `--model` if that is what it ran with, and a
-    pill the reader changed mid-chat if that is what they did. One question, one
-    answer, whatever door was used.
-
-    Falls through to the folder when the named session has no readable
-    transcript — a conversation that has not run yet, or an id from another
-    machine. That case is the caller's to seed (the Tasks peek hands the task's
-    own stored model for a task with no session), and a wrong guess here would
-    outrank it.
-
-    Priority: this session's transcript, then the newest session transcripts in
-    this project's store (true last-used, shared by CLI and template runs since
-    both key sessions on the same cwd munge), then settings files (project
-    .claude/settings.local.json, project .claude/settings.json,
-    ~/.claude/settings.json — the `model` and `effortLevel` keys). Empty fields
-    mean nothing was detected; the page keeps its own fallback."""
+    Priority: newest session transcripts in this project's store (true
+    last-used, shared by CLI and template runs since both key sessions on the
+    same cwd munge), then settings files (project .claude/settings.local.json,
+    project .claude/settings.json, ~/.claude/settings.json — the `model` and
+    `effortLevel` keys). Empty fields mean nothing was detected; the page keeps
+    its own fallback."""
     workdir = _workdir(os.path.abspath(file))
     model = effort = source = ""
     proj = os.path.join(PROJECTS, _munge(workdir))
-    # THIS CONVERSATION FIRST. `_bad_id` for the reason every other reader of a
-    # session id has it: the id becomes a path here, and one that does not
-    # round-trip is not a session this store can hold.
-    if session_id and not _bad_id(session_id):
-        mine = os.path.join(proj, session_id + ".jsonl")
-        if os.path.exists(mine):
-            model, effort = _scan_transcript(mine)
-            if model or effort:
-                source = "session"
     try:
         names = [n for n in os.listdir(proj) if n.endswith(".jsonl")]
         paths = sorted((os.path.join(proj, n) for n in names),
@@ -6467,10 +6442,7 @@ def main(action: str = "start", file: str = "", message: str = "",
     if action == "defaults":
         if not file:
             return {"error": "missing target file (no _file param?)"}
-        # `session_id` is optional and already bound above: with one this
-        # answers for THAT conversation, without one for the folder — see
-        # `_defaults`. Same shape as `live_run` two branches up.
-        return _defaults(file, session_id)
+        return _defaults(file)
     if action == "history":
         if not file:
             return {"error": "missing target file (no _file param?)"}

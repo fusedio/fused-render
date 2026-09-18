@@ -516,16 +516,7 @@ export function TaskPeek({
       // where every other framing site applies it (legacy-src.ts's header).
       // `noFocus` below is the same fact for the native branch.
       ? withNoFocus(
-          peekFrameSrc(template, task.target || task.project, task.session_id,
-                       anchor ?? undefined,
-                       // The task's own model/effort, so the FLAG-OFF frame
-                       // opens on them too — the native branch seeds the same
-                       // two through `ChatMount`. Only while there is no session
-                       // (see that prop for why), and both "" for a task that
-                       // chose neither, which appends nothing either way.
-                       task.session_id
-                         ? {}
-                         : { model: task.model, effort: task.effort }),
+          peekFrameSrc(template, task.target || task.project, task.session_id, anchor ?? undefined),
         )
       : null;
   const resolving = !src && !gone && !!task?.session_id && template === undefined;
@@ -1351,25 +1342,6 @@ export function TaskPeek({
                 title={`${shortTaskId(task.task_id)} ${title}`}
                 file={task.target || task.project}
                 sessionId={task.session_id}
-                // WHAT THIS TASK IS SET TO, and ONLY WHILE IT HAS NO SESSION
-                // (Akshil, 2026-09-18: "I saw the sidebar peek — the values
-                // there were different", then "what I select as a user stays").
-                //
-                // Once the conversation exists it answers for itself: detection
-                // now asks `agent._defaults` about THIS SESSION and reads the
-                // model and effort off its own transcript, which is the same
-                // answer through every door into the chat — the peek, its Open
-                // button, a row, the chat list, a bare URL. Seeding the param on
-                // top of that would outrank it (`param > detected`), and a pill
-                // the reader changed mid-chat would be undone on the next open:
-                // the very thing this pair was added to stop.
-                //
-                // Before the first run there is no transcript to ask, and the
-                // task's own stored setting is the only true answer — so the
-                // seed speaks for exactly that window and then stands down.
-                {...(task.session_id
-                  ? {}
-                  : { model: task.model, effort: task.effort })}
                 // ONE TURN TO LAND ON, when the press that opened this was a
                 // message row rather than a task row (task-peek-store
                 // `PeekState.anchor`). Absent, the conversation opens where a

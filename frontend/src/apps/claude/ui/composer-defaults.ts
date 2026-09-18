@@ -141,25 +141,10 @@ export function useComposerDefaults(
   const [detectionReady, setDetectionReady] = useState(false);
   const [prefsReady, setPrefsReady] = useState(false);
 
-  // WHICH CONVERSATION THE PILLS ARE ABOUT. Detection used to ask about the
-  // FOLDER alone, and `agent._defaults` answered with the model last used
-  // anywhere in it — so the same chat reached from the Tasks peek, from its Open
-  // button, from a row or from a bare URL could each be told a different thing,
-  // and a model the reader had picked in THIS chat lost to one some other chat
-  // in the same folder used more recently (Akshil, 2026-09-18: "what I select as
-  // a user stays"). The session names the transcript that records what this
-  // conversation actually ran with, so the answer is the same through every
-  // door. "" — a chat with no session yet — asks the folder question exactly as
-  // before, and the host's own seed (`ChatMount`'s `model`/`effort`) is what
-  // speaks for that case.
-  const sessionId = snapshot.session_id || "";
-
   useEffect(() => {
     if (!agentDir || !file) return;
     let live = true;
-    void runAgent(agentDir, "defaults",
-                  sessionId ? { file, session_id: sessionId } : { file },
-                  { key: null })
+    void runAgent(agentDir, "defaults", { file }, { key: null })
       .then((out) => {
         if (!live) return;
         const d = out as DefaultsResponse;
@@ -183,12 +168,7 @@ export function useComposerDefaults(
     return () => {
       live = false;
     };
-    // `sessionId` IS A DEP: a chat that starts without one learns it seconds
-    // later (the CLI reports it, `run-controller` writes it into the params),
-    // and the first answer was about the folder. Re-asking then is what makes a
-    // conversation's own settings appear as soon as it has an identity —
-    // and it is one cheap read of one transcript's tail.
-  }, [agentDir, file, sessionId]);
+  }, [agentDir, file]);
 
   useEffect(() => {
     let live = true;

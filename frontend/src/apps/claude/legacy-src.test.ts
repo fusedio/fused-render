@@ -60,35 +60,6 @@ describe("site 2 — the tasks card popup", () => {
       cardFrameSrc(TPL, DIR, SESSION).replace("compact=1", "peek=1"),
     );
   });
-
-  // The task's own run settings (Akshil, 2026-09-18). The template reads the
-  // same two params the native branch seeds (`curModel`/`curEffort`, T:11901),
-  // so the opt-out path must not be the one still showing the model last used
-  // in that folder.
-  it("carries the task's model and effort when it has them", () => {
-    expect(peekFrameSrc(TPL, DIR, SESSION, undefined,
-                        { model: "claude-fable-5-1", effort: "max" })).toBe(
-      "/render?path=%2Fw%2Fproj%2F.fused%2Fclaude%2Ftemplate.html" +
-        "&_file=%2Fw%2Fproj" +
-        "&chat_only=1&peek=1" +
-        "&session_id=0f1e2d3c-4b5a" +
-        "&model=claude-fable-5-1&effort=max",
-    );
-    // …after `msg`, so one open with both is still one stable string.
-    expect(peekFrameSrc(TPL, DIR, SESSION, "u-9", { model: "opus" })).toBe(
-      peekFrameSrc(TPL, DIR, SESSION, "u-9") + "&model=opus",
-    );
-  });
-
-  it("appends NOTHING for a task that chose neither", () => {
-    // "" is the common answer, and the URL it produces has to be the one every
-    // existing caller already got — byte for byte, which is this file's whole
-    // contract.
-    const bare = peekFrameSrc(TPL, DIR, SESSION);
-    expect(peekFrameSrc(TPL, DIR, SESSION, undefined, { model: "", effort: "" }))
-      .toBe(bare);
-    expect(peekFrameSrc(TPL, DIR, SESSION, undefined, {})).toBe(bare);
-  });
 });
 
 describe("site 3 — the explorer file sidebar", () => {

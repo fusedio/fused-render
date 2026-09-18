@@ -150,32 +150,6 @@ export interface ChatMountProps {
   sessionId?: string;
   /** `run` handed over by a host (the canvas fix run). */
   runId?: string;
-  /**
-   * `model` / `effort` — WHAT THIS CONVERSATION IS SET TO, stated by a host that
-   * knows (the Tasks page's side peek, from the task's own row).
-   *
-   * A SEED, NOT A SYNC, and that is the whole of the difference from the three
-   * ids above. The composer ranks `param > detected > pref > constant`
-   * (ui/composer-defaults) and `detected` is `agent._defaults` — the model last
-   * used in that FOLDER, read off its newest transcripts. That is the right
-   * answer for a chat somebody opened on a folder and the wrong one for a TASK
-   * that was set up with a model of its own: the peek showed a reader a model
-   * and an effort they had never chosen (Akshil, 2026-09-18, "I saw the sidebar
-   * peek — the values there were different"). Stating the task's own settings
-   * puts them at the top of a ranking that already existed.
-   *
-   * They are written ONCE, into the store's seed below, and never pushed again
-   * — unlike `sessionId`/`runId`/`msgAnchor`, which `useHostIds` keeps in step.
-   * These two are values the READER can change: the pills write the same two
-   * params, and an effect that kept re-stating the host's answer would undo the
-   * pick on the next render the listing caused (it re-reads every 20-30s).
-   *
-   * "" and absent are the same answer — "this host has no opinion" — and it is
-   * the load-bearing one: it leaves detection speaking for every chat that is
-   * not a task, which is most of them.
-   */
-  model?: string;
-  effort?: string;
   /** `msg` — ONE TURN inside the conversation, to open scrolled to. The
    *  transcript stamps `data-msg` on every turn it draws and the param is spent
    *  the moment the named one is on screen (params/store.ts). Handed over by
@@ -271,10 +245,6 @@ export function ChatMount(props: ChatMountProps) {
     if (props.sessionId) seed.session_id = props.sessionId;
     if (props.runId) seed.run = props.runId;
     if (props.msgAnchor) seed.msg = props.msgAnchor;
-    // …and the run settings, seeded and then left alone — see `model` above for
-    // why these two are not in `useHostIds` beside the ids.
-    if (props.model) seed.model = props.model;
-    if (props.effort) seed.effort = props.effort;
     return createMemoryParamsStore(seed);
   });
   useHostIds(memory, props.sessionId, props.runId, props.msgAnchor);
