@@ -251,3 +251,98 @@ all genuine (no false positives):
   declared key: an all-null cell per column for that one row, degrading
   it rather than raising. Covered by a new test in `test_index_store.py`,
   confirmed red (the exact predicted `AttributeError`) before the fix.
+
+## Fix round 2: bugbot findings
+
+A second Bugbot pass, against this PR's own commits (starting from
+`bd3929262`'s manifest.py `register`-vs-`register_kind` fix). Genuine
+findings fixed below; three findings investigated and NOT changed, with
+the evidence that ruled each one out.
+
+**Fixed:**
+
+- **HIGH: a confirmed-but-unregistered kind killed the scan with no
+  `run_end`.** `scan.py`'s `run_scan` called `_kind_obj(cfg)` — which
+  raises `KeyError` for a name not in `kinds.registered()` — BEFORE its
+  own `try:` block even started, and before the `run_start` event was
+  emitted. `register_confirmed_kinds()` (fix round 1(b)) is deliberately
+  best-effort, so "confirmed" and "registered" can legitimately diverge:
+  a module that fails to import, or that never calls `kinds.register`
+  despite declaring a `kind` name, leaves a kind permanently confirmed
+  but never scannable. Before this fix, hitting that state didn't just
+  fail the scan — the whole worker process died on a bare `KeyError`,
+  with no `run_end` event ever written, so `run_scan`'s own documented
+  contract ("Never raises... reported as a terminal `run_end` event")
+  was silently broken for this one path, and the poller (`KindCard`)
+  spun on "scanning" forever. Fixed by moving `_kind_obj(cfg)` to be the
+  first statement inside the `try:`. Covered by a new test in
+  `test_index_scan.py`,
+  `test_a_confirmed_but_unregistered_kind_fails_the_run_with_a_run_end`,
+  confirmed red (bare `KeyError`, no `run_end`) via a temporary revert
+  before the fix.
+- **MEDIUM: `/api/index/rank` never forwarded glob mode for non-"files"
+  kinds.** `_rank_flat_kind_worker` (routers/index.py) always called
+  `search_apps_ranked` with `glob=False` and hardcoded
+  `out["mode"] = "substring"`, even though `search_apps_ranked` itself
+  already implements glob mode (documented in
+  `specs/index-plugins.md` §8) for any flat kind. A glob query against
+  the "apps" kind (or any third-party flat kind) silently fell back to
+  substring matching with no error. Fixed by computing
+  `is_glob = "*" in (q or "")` — the same rule `resolve_query` already
+  uses for the "files" tree — and forwarding it. Covered by a new test
+  in `test_index_kind_routes.py`,
+  `test_rank_for_the_apps_kind_honors_a_glob_query`, confirmed red
+  (`mode` stayed `"substring"`) before the fix.
+- **LOW/MEDIUM: `Column.name` was never validated as a safe SQL
+  identifier.** `Column.__post_init__` validated `type` against a
+  closed set but never validated `name` — yet a kind's
+  `identity_column`/`text_column`/`recency_column` (which must equal
+  some declared `Column.name`) flow straight into unescaped, unquoted
+  f-string SQL in `query.py`'s `search_apps_ranked` and `store.py`'s
+  `_dir_expr`/compaction. A third-party plugin — exactly the case this
+  module's own "trust decision #2" exists to keep at arm's length —
+  could otherwise break or inject that SQL purely via a column name,
+  independent of any row `extract()` ever returns. Fixed by requiring
+  `name` to match `^[A-Za-z_][A-Za-z0-9_]*$`. Covered by new
+  parametrized tests in `test_index_kinds.py`
+  (`test_column_rejects_a_name_that_is_not_a_safe_sql_identifier`,
+  `test_column_accepts_an_ordinary_identifier_name`), confirmed red (7
+  of 7 malicious names failed to raise) before the fix. No existing
+  built-in or test kind declared a name this rejects.
+- **LOW: stale route comment in `IndexManager.tsx`.** The header
+  comment described the page as entered via "the /index-manager URL
+  directly", but the real route (confirmed against
+  `routers/shell.py`'s `@router.get("/index")`, `App.tsx`'s
+  `pathname === "/index"`, and `GlobalSidebar.tsx`'s
+  `{ href: "/index", ... }`) is `/index`. Comment-only fix; no test.
+
+**Investigated, NOT a bug — no change made:**
+
+- **MEDIUM: startup auto-scan only covers "files".** `routers/index.py`'s
+  `run_startup_scan` never auto-scans any registered kind besides
+  "files". This is not an oversight: this same decisions doc already
+  states it as a deliberate non-goal ("Startup scans remain 'files'-only;
+  no other kind is auto-scanned at boot").
+- **MEDIUM: `query.py`'s hidden-file filter on flat kinds.** The theory
+  was that `NOT (lrel LIKE '.%' OR lrel LIKE '%/.%')` (`lrel` = lowercased
+  `identity_column`, an absolute path for flat kinds like "apps") could
+  false-positive on an incidental dot elsewhere in the path (e.g. a
+  username like "john.smith"). Verified via a DuckDB script against both
+  relative and absolute identity values: the pattern only matches a dot
+  immediately after a path separator (or at the very start), so a dot
+  embedded mid-segment does not trigger it. Not reproduced.
+- **MEDIUM: `apps_kind.py`'s realpath'd identity vs. non-realpath'd
+  walked directories.** The theory was that `app_dict`'s
+  `"path": os.path.realpath(path)` (a deliberate prior fix, unrelated to
+  this PR) could desync from `store.py`'s `rows_kept`/old-row
+  carry-forward logic under a symlinked workspace root, silently
+  dropping an app's row on an incremental rescan. Built an end-to-end
+  reproduction (`run_scan` twice, through a symlinked root, with an
+  unrelated second app added between runs to force a real compaction
+  merge): the app's row survived both scans. Root cause the theory
+  missed: `scan.py`'s cache-reuse path re-emits even unchanged/cached
+  rows directly into the CURRENT run's shard (`sink.add`) rather than
+  relying on `store.py`'s `rows_kept` carry-forward — that mechanism only
+  matters for directories entirely outside the current run's walked
+  coverage, a narrower case than the theory assumed. Not reproduced; no
+  code change.
