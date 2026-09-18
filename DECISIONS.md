@@ -2328,3 +2328,38 @@ Read in full before resuming a build session on this branch. Append, do not rewr
   macOS one; see the Task 2 section below for where that directory lives.
 - Task 1 done, committed. `tests/test_mac_update.py` — all 63 tests green,
   unmodified.
+
+### Task 2/3 design decisions: stamp location, `_updates_dir()` override
+
+Stamp file (Task 3) lives at `os.path.join(shell.storage.home_dir(), "linux-update-stamp.json")` —
+`shell/storage.home_dir()`, not `supervisor.paths.DesktopPaths`. Reasoning:
+`DesktopPaths.discover_linux()`'s own docstring says its `state` field IS
+`shell/storage.home_dir()` with no `FUSED_RENDER_HOME` override — "the exact
+dir the dev/CLI and the released macOS app use... byte-for-byte the same".
+Reading `home_dir()` directly gets the same directory the supervisor's
+`DesktopPaths` resolves to (via the `FUSED_RENDER_HOME` env var the
+supervisor sets on its child) without `update/` (server-side code, runs
+inside the child server process, not the supervisor) importing
+`supervisor.paths` and creating an `update` -> `supervisor` coupling that
+doesn't otherwise exist. `write_json`/`read_json` in `shell/storage.py` are
+reused as-is for the stamp's atomic write / tolerant-of-corruption read.
+
+`LinuxUpdateManager._updates_dir()` overrides the base (macOS-hardcoded)
+implementation to return the AppImage's own parent directory (falling back
+to `home_dir()/updates` only for the check-only dev-manager case, where
+there is no AppImage at all). This isn't spelled out verbatim in the spec's
+Task 2 list, but it's required for correctness: the base class's
+`start_auto_checks()` unconditionally calls `_sweep_stale_downloads()`,
+which calls `self._updates_dir()` — left unoverridden on Linux that would
+create and sweep a macOS `~/Library/Application Support/...` path on Linux,
+which is harmless but pointless, and `_install_appimage`'s own
+`_check_disk_space` call needs the AppImage's parent dir anyway (Task 2 step
+2), so the override makes both call sites and the download-dir consistent:
+downloads, the disk-space check, and the stale-download sweep all agree on
+"next to the current AppImage".
+
+Class naming: kept `UpdateManager` in `linux.py`'s own namespace (not
+`LinuxUpdateManager`), subclassing the shared base under the `_base` alias —
+same reasoning as `mac.py` (see the Task 1 notes above): nothing outside
+`linux.py` needs the base class's own name from there, and `linux.UpdateManager`
+mirrors `mac.UpdateManager` for the dispatch in `update/__init__.py` (Task 4).
