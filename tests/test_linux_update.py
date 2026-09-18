@@ -148,18 +148,22 @@ def test_sweep_spares_the_running_appimage_and_an_unrelated_sibling(tmp_path):
     # `_updates_dir()` on Linux IS the AppImage's own parent — a directory
     # the user owns, not a dedicated one this app controls — so the sweep
     # must touch only what a stale download of its own could plausibly have
-    # left behind, never the whole directory. The released AppImage's own
-    # name ("FusedRender-<version>-x86_64.AppImage") matches
-    # `_DOWNLOAD_PREFIX`/`_DOWNLOAD_SUFFIX` just as well as a stale download
-    # would, so name-matching alone is not enough: the manager's own bundle
-    # path has to be excluded explicitly.
+    # left behind, never the whole directory. `_DOWNLOAD_PREFIX`/
+    # `_DOWNLOAD_SUFFIX` are chosen so a released AppImage's own name
+    # ("FusedRender-<version>-x86_64.AppImage") can never match them — but the
+    # manager's own bundle path is still excluded explicitly, by real path, as
+    # a second line of defence, which this test exercises by giving the
+    # running bundle a name that (hypothetically) does match the download
+    # shape.
     parent = tmp_path / "Applications"
     parent.mkdir()
-    appimage = parent / "FusedRender-9.9.9-x86_64.AppImage"
+    appimage = parent / (linux.UpdateManager._DOWNLOAD_PREFIX + "running" +
+                          linux.UpdateManager._DOWNLOAD_SUFFIX)
     appimage.write_bytes(b"the-running-appimage")
     sibling = parent / "some-users-unrelated-file.txt"
     sibling.write_bytes(b"not ours")
-    stale = parent / "FusedRender-staged.AppImage"
+    stale = parent / (linux.UpdateManager._DOWNLOAD_PREFIX + "staged" +
+                       linux.UpdateManager._DOWNLOAD_SUFFIX)
     stale.write_bytes(b"a leftover from a previous session")
 
     manager = linux.UpdateManager(bundle=str(appimage), method="appimage")
@@ -167,6 +171,32 @@ def test_sweep_spares_the_running_appimage_and_an_unrelated_sibling(tmp_path):
 
     assert appimage.read_bytes() == b"the-running-appimage"
     assert sibling.read_bytes() == b"not ours"
+    assert not stale.exists()  # the one thing actually worth sweeping
+
+
+def test_sweep_spares_a_release_shaped_sibling_appimage(tmp_path):
+    # A second, non-running AppImage the user deliberately keeps beside the
+    # live one (a rollback copy, or a newer build not yet switched to) has a
+    # release-shaped name — "FusedRender-<version>-x86_64.AppImage" — which is
+    # NOT the manager's own bundle. It must survive the sweep purely because
+    # its name cannot be confused with the manager's own download naming, not
+    # because of the running-bundle realpath exclusion (that only spares the
+    # one file actually in use).
+    parent = tmp_path / "Applications"
+    parent.mkdir()
+    running = parent / "FusedRender-9.9.9-x86_64.AppImage"
+    running.write_bytes(b"the-running-appimage")
+    kept_sibling = parent / "FusedRender-0.5.52-x86_64.AppImage"
+    kept_sibling.write_bytes(b"a deliberately kept rollback copy")
+    stale = parent / (linux.UpdateManager._DOWNLOAD_PREFIX + "staged" +
+                       linux.UpdateManager._DOWNLOAD_SUFFIX)
+    stale.write_bytes(b"a leftover from a previous session")
+
+    manager = linux.UpdateManager(bundle=str(running), method="appimage")
+    manager._sweep_stale_downloads()
+
+    assert running.read_bytes() == b"the-running-appimage"
+    assert kept_sibling.read_bytes() == b"a deliberately kept rollback copy"
     assert not stale.exists()  # the one thing actually worth sweeping
 
 
@@ -191,7 +221,7 @@ def test_a_successful_install_swaps_the_appimage_and_writes_the_stamp(monkeypatc
     new_bytes = b"new-appimage-bytes"
 
     def fake_download(manifest, *, dir, prefix, suffix, progress, should_abort):
-        assert prefix == "FusedRender-"
+        assert prefix == ".fused-render-update-"
         assert suffix == ".AppImage"
         progress(len(new_bytes), len(new_bytes))
         path = os.path.join(dir, prefix + "staged" + suffix)

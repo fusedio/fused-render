@@ -82,7 +82,15 @@ _DISK_SPACE_FACTOR = _base._DISK_SPACE_FACTOR
 # MAC_STARTUP_DELAY_S (own module, own patchability) even though the two
 # currently agree on the same number.
 LINUX_STARTUP_DELAY_S = 1.0
-_DOWNLOAD_PREFIX = "FusedRender-"
+# Deliberately NOT "FusedRender-"/".AppImage": the released artifact itself is
+# named "FusedRender-<version>-x86_64.AppImage", which would match that shape
+# exactly, and `_updates_dir()` here is the AppImage's own parent directory —
+# a directory the USER owns and may keep other AppImages in (a rollback copy,
+# a newer build not yet switched to). `_sweep_stale_downloads()` (_manager.py)
+# deletes everything matching this prefix/suffix on every boot, so the prefix
+# must be a shape a release build's filename can never take. The leading dot
+# also keeps a downloading partial out of the user's file manager listing.
+_DOWNLOAD_PREFIX = ".fused-render-update-"
 _DOWNLOAD_SUFFIX = ".AppImage"
 
 

@@ -663,7 +663,7 @@ class UpdateManager:
         Scoped to entries whose name matches THIS manager's own
         `_DOWNLOAD_PREFIX`/`_DOWNLOAD_SUFFIX` — never the whole directory.
         On mac `_updates_dir()` is a dedicated `…/fused-render/updates`
-        directory the app owns outright, so an unscoped sweep only ever hit
+        directory the app owns outright, so an unscoped sweep only ever hits
         the app's own leftovers; on Linux it is the AppImage's own parent
         directory (`_updates_dir()` there deliberately downloads next to the
         running AppImage, since `os.replace()` needs the same filesystem), a
@@ -672,12 +672,14 @@ class UpdateManager:
         delete every sibling file on every boot; scoping it to the download
         naming pattern is what makes this safe on both platforms.
 
-        Name-matching alone is not enough to spare the running artifact
-        itself, though: the released AppImage is named
-        `FusedRender-<version>-x86_64.AppImage`, which matches
-        `FusedRender-`/`.AppImage` the same way a stale download would — so
-        the manager's own target path is excluded explicitly, by real path,
-        on top of the name match."""
+        Each subclass's `_DOWNLOAD_PREFIX`/`_DOWNLOAD_SUFFIX` is chosen so a
+        released artifact's own filename can never match it (Linux's leading
+        dot, in particular, can never appear in `FusedRender-<version>-
+        x86_64.AppImage`) — so name-matching alone already spares every real
+        artifact, running or not, on both platforms. The manager's own target
+        path is excluded explicitly too, by real path, as a second line of
+        defence on top of the name match — belt and braces, not the only
+        thing standing between this sweep and a user's file."""
         import shutil
         prefix = self._DOWNLOAD_PREFIX
         suffix = self._DOWNLOAD_SUFFIX
