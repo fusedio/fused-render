@@ -29,7 +29,7 @@ import uvicorn
 
 from fused_render import desktop_probe
 from fused_render._branch import branch_dir, branch_port
-from fused_render.logs import log_path, setup_logging
+from fused_render.logs import log_dir, log_path, setup_logging
 from fused_render.server import (
     create_app, export_app_env, set_server_origin_env, write_server_json,
 )
@@ -704,27 +704,114 @@ def bundle_path() -> str | None:
 # QUIT_HARD_DEADLINE_S), slow enough to cost nothing.
 RELAUNCH_POLL_S = 0.2
 
+# How long the relauncher waits AFTER our pid disappears before it asks
+# LaunchServices for a new instance. The pid going away is not the same event as
+# LaunchServices letting go of the app: for a moment the dead instance is still
+# the registered owner of the bundle, and `open -a` in that window is delivered
+# to a process that is already gone — it exits 0 having done nothing at all,
+# which is exactly the silent failure this file could not diagnose (real-app test
+# of PR #1214: teardown finished, no successor, no crash report, `open` by hand
+# 20 s later worked first time).
+RELAUNCH_SETTLE_S = 1.0
 
-def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen):
+# How many times it asks. The first ask is a plain `open -a`; every later one
+# adds `-n`, which forces a NEW instance even if LaunchServices still believes
+# one is running — the escalation is deliberately second, because `-n` against a
+# genuinely live app would give the user two servers racing for one port, and by
+# the time a retry happens our pid has been gone for RELAUNCH_BOOT_WAIT_S and
+# that cannot be what is happening.
+RELAUNCH_OPEN_TRIES = 4
+
+# How long a successor is given to write its pidfile before the ask is counted
+# as having done nothing. A cold start of a signed bundle is seconds (six, on
+# the machine this was diagnosed on), so this is generous on purpose; four tries
+# at ~11 s each lands just inside the page's own 60 s cap
+# (RESTART_GIVE_UP_MS, frontend/src/platform/lib/restart-flow.ts), so the two
+# surfaces stop promising at about the same moment.
+RELAUNCH_BOOT_WAIT_S = 10.0
+
+
+def relauncher_log_path(pid: int) -> str:
+    """Where the relauncher writes its own timeline.
+
+    Beside the app's own `fused-render-<pid>.log`, named for the pid it is
+    watching, so `ls -t` in the log dir puts the two next to each other: the app
+    log ends with "quit teardown finished" and this one says what happened next.
+    A separate file because the process that would have written those lines into
+    the app log is the one that just exited — a relauncher that logs nowhere is
+    precisely why "the app never came back" was undiagnosable the first time.
+    """
+    return os.path.join(log_dir(), f"fused-render-relaunch-{int(pid)}.log")
+
+
+def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
+                     log=None, pidfile=None):
     """Detached shell child that waits for `pid` to exit, then `open`s the
-    bundle. A dying app cannot start its own successor — `open` on a bundle
-    that is still running only foregrounds it — so the wait has to happen in a
-    process that survives us: its own session, no inherited pipes.
+    bundle — and keeps asking until a successor actually answers.
+
+    A dying app cannot start its own successor — `open` on a bundle that is
+    still running only foregrounds it — so the wait has to happen in a process
+    that survives us: its own session, no inherited pipes.
 
     The poll loop has no timeout of its own: the pid it waits on is guaranteed
-    to die within QUIT_HARD_DEADLINE_S (start_quit's watchdog terminates the
-    app past it, teardown finished or not), so a bounded wait here would only
-    duplicate that guarantee."""
-    # `open -a <bundle> fused-render://launch`, not a plain `open <bundle>`:
-    # a plain open is a normal launch, which boots onto a fresh home tab and
-    # steals focus from the page that asked for the restart. Delivering the
-    # launch action instead makes the successor's handler set state["docs"]
-    # and open nothing (D128); -a pins WHICH copy launches, so the deep link
-    # can't resolve to some other registered install.
-    quoted = shlex.quote(bundle)
+    to die within QUIT_HARD_DEADLINE_S (start_quit's watchdog terminates the app
+    past it, teardown finished or not), so a bounded wait here would only
+    duplicate that guarantee.
+
+    IT VERIFIES, RATHER THAN HOPING. `open` exits 0 for "I handed the URL to
+    something", which includes handing it to the instance that is in the middle
+    of disappearing — so its exit code says nothing about whether the app came
+    back. The successor's PIDFILE is the signal that does: `begin_quit` removes
+    it before this shell is ever spawned (the removal is ordered ahead of the
+    `on_claim` hook, deliberately), so the file existing again can only mean a
+    new instance booted.
+    """
+    if log is None:
+        log = relauncher_log_path(pid)
+    if pidfile is None:
+        pidfile = PIDFILE
+    waits = max(1, int(RELAUNCH_BOOT_WAIT_S / RELAUNCH_POLL_S))
+    # Paths go through variables rather than being spliced into every command:
+    # `shlex.quote` makes each one safe as an argument, and a single assignment
+    # keeps a path containing a quote or a `$` from having to be re-escaped for
+    # the log messages as well as for `open`.
     script = (
-        f"while /bin/kill -0 {int(pid)} 2>/dev/null; do sleep {RELAUNCH_POLL_S}; done; "
-        f"exec /usr/bin/open -a {quoted} fused-render://launch"
+        f"bundle={shlex.quote(bundle)}; "
+        f"pidfile={shlex.quote(pidfile)}; "
+        f"log={shlex.quote(log)}; "
+        'say() { printf "%s relauncher[%s] %s\\n" '
+        '"$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$1" >>"$log" 2>/dev/null; }; '
+        f'say "parked on pid {int(pid)}; bundle=$bundle"; '
+        f"while /bin/kill -0 {int(pid)} 2>/dev/null; do /bin/sleep {RELAUNCH_POLL_S}; done; "
+        f'say "pid {int(pid)} has exited"; '
+        "try=0; "
+        f'while [ "$try" -lt {RELAUNCH_OPEN_TRIES} ]; do '
+        "try=$((try + 1)); "
+        f"/bin/sleep {RELAUNCH_SETTLE_S}; "
+        # `open -a <bundle> fused-render://launch`, not a plain `open <bundle>`:
+        # a plain open is a normal launch, which boots onto a fresh home tab and
+        # steals focus from the page that asked for the restart. Delivering the
+        # launch action instead makes the successor's handler set state["docs"]
+        # and open nothing (D128); -a pins WHICH copy launches, so the deep link
+        # can't resolve to some other registered install.
+        'if [ "$try" -eq 1 ]; then '
+        '/usr/bin/open -a "$bundle" "fused-render://launch"; '
+        "else "
+        '/usr/bin/open -n -a "$bundle" "fused-render://launch"; '
+        "fi; "
+        "rc=$?; "
+        'say "open attempt $try exited $rc"; '
+        "waited=0; "
+        f'while [ "$waited" -lt {waits} ]; do '
+        'if [ -f "$pidfile" ]; then '
+        'say "successor is up after attempt $try"; exit 0; fi; '
+        "waited=$((waited + 1)); "
+        f"/bin/sleep {RELAUNCH_POLL_S}; "
+        "done; "
+        f'say "no successor within {RELAUNCH_BOOT_WAIT_S}s of attempt $try"; '
+        "done; "
+        'say "giving up: the app did not come back"; '
+        "exit 1"
     )
     return popen(
         ["/bin/sh", "-c", script],
@@ -733,6 +820,22 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen):
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+
+def _spawn_relauncher_logged(bundle: str, pid: int):
+    """`spawn_relauncher` plus the one line that says it happened.
+
+    The first cut logged NOTHING here, which is why a restart that quit cleanly
+    and never came back could not be told apart from one where the spawn never
+    ran at all (real-app test of PR #1214). One line, naming the child's pid, the
+    bundle it will open and the file it writes to, is the difference between a
+    guess and a diagnosis.
+    """
+    log = relauncher_log_path(pid)
+    child = spawn_relauncher(bundle, pid, log=log)
+    logger.info("relauncher parked: pid %s watching pid %s, bundle %s, log %s",
+                getattr(child, "pid", "?"), pid, bundle, log)
+    return child
 
 
 def begin_relaunch(*, quit_action, bundle=None, spawn=None,
@@ -789,7 +892,7 @@ def begin_relaunch(*, quit_action, bundle=None, spawn=None,
                         "reads fine — nothing a relaunch would change")
             return False
         if spawn is None:
-            spawn = spawn_relauncher
+            spawn = _spawn_relauncher_logged
         if not quit_action(on_claim=lambda: spawn(bundle, os.getpid())):
             logger.info("relaunch deep link ignored: quit already in progress")
             return False
@@ -805,7 +908,7 @@ def begin_relaunch(*, quit_action, bundle=None, spawn=None,
                     running, installed)
         return False
     if spawn is None:
-        spawn = spawn_relauncher
+        spawn = _spawn_relauncher_logged
     if not quit_action(on_claim=lambda: spawn(bundle, os.getpid())):
         logger.info("relaunch deep link ignored: quit already in progress")
         return False

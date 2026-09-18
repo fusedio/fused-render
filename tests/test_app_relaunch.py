@@ -68,6 +68,129 @@ def test_relauncher_quotes_a_bundle_path_with_spaces():
     assert "'/Applications/My Apps/FusedRender.app'" in script
 
 
+# ---- what the relauncher does AFTER our pid dies (real-app test, PR #1214) --
+#
+# The first cut was `exec open -a <bundle> <url>` the instant `kill -0` failed,
+# and it logged nothing at all. On the real app that quit cleanly and NOTHING
+# came back: no successor, no relauncher shell left alive, no crash report — and
+# no way to tell whether the spawn had even happened. Running the exact same
+# `open` by hand twenty seconds later worked first time, which is the signature
+# of asking LaunchServices for a new instance while it still believes the dying
+# one is the bundle's owner: the URL goes to a process that is already gone and
+# `open` reports success.
+
+
+def test_the_relauncher_settles_before_it_asks_for_a_new_instance():
+    calls = []
+    app_mod.spawn_relauncher("/Applications/FusedRender.app", 4242,
+                             popen=lambda *a, **k: calls.append(a))
+    script = calls[0][0][2]
+    # The pid wait is unchanged; the sleep AFTER it is the new part.
+    assert f"/bin/sleep {app_mod.RELAUNCH_SETTLE_S}" in script
+    assert script.index("kill -0 4242") < script.index(
+        f"/bin/sleep {app_mod.RELAUNCH_SETTLE_S}")
+    assert app_mod.RELAUNCH_SETTLE_S > 0
+
+
+def test_the_relauncher_verifies_a_successor_instead_of_trusting_open():
+    """`open` exits 0 for "I handed the URL to something", which includes handing
+    it to the instance that is disappearing — so its exit code says nothing about
+    whether the app came back. The successor's pidfile is the signal that does."""
+    calls = []
+    app_mod.spawn_relauncher("/Applications/FusedRender.app", 1,
+                             popen=lambda *a, **k: calls.append(a),
+                             pidfile="/tmp/x/server.pid")
+    script = calls[0][0][2]
+    assert "pidfile=/tmp/x/server.pid;" in script
+    assert '[ -f "$pidfile" ]' in script
+    # It waits for the file rather than exiting on the `open` return.
+    assert "exec /usr/bin/open" not in script
+
+
+def test_the_relauncher_retries_and_escalates_to_a_new_instance():
+    calls = []
+    app_mod.spawn_relauncher("/Applications/FusedRender.app", 1,
+                             popen=lambda *a, **k: calls.append(a))
+    script = calls[0][0][2]
+    assert f'-lt {app_mod.RELAUNCH_OPEN_TRIES}' in script
+    assert app_mod.RELAUNCH_OPEN_TRIES > 1
+    # The FIRST ask is a plain open; only a retry forces a second instance. `-n`
+    # against a genuinely live app would give the user two servers racing for one
+    # port, so the escalation has to come after a plain ask demonstrably did
+    # nothing.
+    assert '/usr/bin/open -a "$bundle"' in script
+    assert '/usr/bin/open -n -a "$bundle"' in script
+    assert script.index('/usr/bin/open -a "$bundle"') < script.index(
+        '/usr/bin/open -n -a "$bundle"')
+
+
+def test_the_relauncher_gives_up_around_the_same_time_the_page_does():
+    """The page's own cap is 60s (RESTART_GIVE_UP_MS, restart-flow.ts). The
+    relauncher must not still be trying long after the dialog has stopped
+    promising — the two surfaces would be telling different stories."""
+    worst_case = app_mod.RELAUNCH_OPEN_TRIES * (
+        app_mod.RELAUNCH_SETTLE_S + app_mod.RELAUNCH_BOOT_WAIT_S)
+    assert 30 <= worst_case <= 60
+
+
+def test_the_relauncher_writes_its_own_timeline():
+    """A relauncher that logs nowhere is exactly what made "the app never came
+    back" undiagnosable: the process that would have written those lines into the
+    app log is the one that just exited."""
+    calls = []
+    app_mod.spawn_relauncher("/Applications/FusedRender.app", 77896,
+                             popen=lambda *a, **k: calls.append(a),
+                             log="/tmp/logs/fused-render-relaunch-77896.log")
+    script = calls[0][0][2]
+    assert "log=/tmp/logs/fused-render-relaunch-77896.log;" in script
+    assert '>>"$log"' in script
+    for line in ("parked on pid 77896", "has exited", "open attempt",
+                 "successor is up", "giving up"):
+        assert line in script, line
+
+
+def test_the_relauncher_log_sits_beside_the_app_log(monkeypatch, tmp_path):
+    monkeypatch.setenv("FUSED_RENDER_LOG_DIR", str(tmp_path))
+    path = app_mod.relauncher_log_path(4242)
+    assert os.path.dirname(path) == str(tmp_path)
+    # Named for the pid it watches, so `ls -t` puts it next to that process's own
+    # `fused-render-<pid>.log` — the one whose last line is the teardown.
+    assert path.endswith("fused-render-relaunch-4242.log")
+
+
+def test_the_spawn_says_so_in_the_app_log(monkeypatch, tmp_path, caplog):
+    """One line naming the child's pid, the bundle and the log file — the
+    difference between a guess and a diagnosis."""
+    monkeypatch.setenv("FUSED_RENDER_LOG_DIR", str(tmp_path))
+
+    class FakeChild:
+        pid = 5150
+
+    monkeypatch.setattr(app_mod, "spawn_relauncher",
+                        lambda bundle, pid, **kw: FakeChild())
+    with caplog.at_level("INFO", logger="fused_render"):
+        app_mod._spawn_relauncher_logged("/Applications/FusedRender.app", 4242)
+    line = "\n".join(r.getMessage() for r in caplog.records)
+    assert "5150" in line and "4242" in line
+    assert "/Applications/FusedRender.app" in line
+    assert "fused-render-relaunch-4242.log" in line
+
+
+def test_the_pidfile_is_gone_before_the_relauncher_is_spawned():
+    """The verification above only means anything because of this ordering: the
+    file existing again can only be a NEW instance if the dying one removed its
+    own first. `begin_quit` does that inside the claim, ahead of `on_claim`."""
+    order = []
+    state = {}
+    app_mod.begin_quit(
+        state,
+        start=lambda *a, **k: order.append("teardown"),
+        remove_pidfile=lambda: order.append("pidfile gone"),
+        on_claim=lambda: order.append("relauncher parked"),
+    )
+    assert order == ["pidfile gone", "relauncher parked", "teardown"]
+
+
 # ------------------------------------------------------------ begin_relaunch
 
 
