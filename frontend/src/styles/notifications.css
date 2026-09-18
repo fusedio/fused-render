@@ -1400,26 +1400,34 @@
   color: var(--fg);
 }
 
-/* Update variants (server-status.ts): a newer version is available — either
-   the tab is stale (refresh) or the running server is (restart the app).
-   Informational, not an outage, so warning tones instead of error red. */
-.server-status-update {
-  border-color: var(--warning-strong);
-}
-
-.server-status-update .server-status-title {
-  color: var(--warning-strong);
-}
-
-/* ---- The refresh DIALOG (ServerStatusBanner's UpdateDialog) ---------------- */
-/* NO RULES OF ITS OWN ANY MORE. `update-refresh` alone is not a card — the
-   bundle in this tab is no longer the one the server serves, so the page behind
-   it cannot be trusted to answer — and it now blocks on the shared platform
+/* ---- The update DIALOG (platform/ui/UpdateDialog) -------------------------- */
+/* ALMOST NO RULES OF ITS OWN. NEITHER update case is a card: the refresh one
+   because the bundle in this tab is no longer the one the server serves, and
+   the restart one because the app itself is about to go away — so the page
+   behind either cannot be trusted to answer. Both block on the shared platform
    Modal chassis (deploy.css / buttons-modal.css), the same one the Delete task
    dialog uses (Akshil, 2026-09-14). The `.server-update-backdrop/-dialog/
    -title/-body/-action` skin that used to live here was a second modal
-   vocabulary for one dialog and went with it; `busy` is what keeps this one
-   undismissable. See ServerStatusBanner.tsx. */
+   vocabulary for one dialog and went with it, and `.server-status-update` — the
+   warning-toned restart CARD — went with the card itself (D1, 2026-09-18).
+   `busy` is what keeps the dialog undismissable. See UpdateDialog.tsx.
+
+   The one rule left is the restart mode's stage line, which stands where the
+   button stood: the footer is a flex row of controls, and a bare line of text
+   dropped into it would sit at a button's baseline without a button's weight. */
+.update-dialog-stage {
+  /* THE SAME BOX `.btn` OCCUPIED — 32px tall, 13px type (buttons-modal.css) —
+     so the footer does not change height on the press that swaps one for the
+     other; the dialog must not resize under a reader mid-restart. Muted and
+     unbordered, because it is a status line where a control used to be and must
+     not read as a control that has stopped working. */
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 2px;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
 
 /* The FDA strip's (FdaStrip.tsx) how-to, an ordered list in the strip body. */
 .fda-steps {

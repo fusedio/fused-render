@@ -33,6 +33,14 @@ let configUpdate: UpdateStatus | null = status({});
 let checkAnswer: () => UpdateStatus = () => status({});
 const posts: string[] = [];
 beforeEach(() => {
+  // RESET BEFORE, not only after. The store is module-global and `started` is
+  // process-wide, so a suite that ran EARLIER in the same `bun test` and
+  // mounted something subscribing to it (`ServerStatusBanner`, through
+  // `NotificationHost`, since the restart dialog reads this store) leaves it
+  // started with whatever its own unstubbed fetch produced — `ensureStarted`
+  // then returns immediately here and the first test mounts against a null
+  // status and renders nothing at all.
+  resetUpdateStatusForTests();
   posts.length = 0;
   (globalThis as { fetch: unknown }).fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;

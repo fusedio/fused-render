@@ -243,7 +243,7 @@ _HEAD_CHARS = 256 * 1024
 _HEAD_LINES = 2000
 
 # path -> (size_at_parse, cwd, first_ts, first_prompt)
-_HEAD_CACHE: dict[str, tuple[int, str | None, str | None, str]] = {}
+_HEAD_CACHE: dict[str, tuple[int, str | None, str | None, str, bool]] = {}
 
 
 def _load_state(filename: str) -> dict:
@@ -314,7 +314,7 @@ def ai_title(record) -> str:
 _parse_ts = session_liveness.parse_ts
 
 
-def _parse_head(path: str) -> tuple[str | None, str | None, str]:
+def _parse_head(path: str) -> tuple[str | None, str | None, str, bool]:
     """(cwd, first timestamp, first user prompt), streaming from the top and
     stopping as soon as all three are known — normally within a few lines.
 
@@ -328,6 +328,9 @@ def _parse_head(path: str) -> tuple[str | None, str | None, str]:
     cwd: str | None = None
     first_ts: str | None = None
     prompt = ""
+    # The first wordless send's marker, held back as a last resort — the same
+    # deferral `tasks_store._parse_head` makes, for its reason.
+    carried = ""
     chars = 0
     count = 0
     try:
@@ -372,33 +375,49 @@ def _parse_head(path: str) -> tuple[str | None, str | None, str]:
                         raw = _first_text(msg.get("content"))
                         prompt = (tasks_store.strip_machinery(raw)
                                   or tasks_store.ann_notes(raw))
+                        # A send that said nothing ANYWHERE — a screenshot on
+                        # its own, pins nobody wrote on — is named by what it
+                        # carried ("pane screenshot"). Kept aside, not taken:
+                        # words on a later record still win, which is why the
+                        # scan carries on.
+                        if not prompt and not carried:
+                            carried = tasks_store.carried_words(raw)
                 if cwd is not None and first_ts is not None and prompt:
                     break
     except OSError:
-        return None, None, ""
-    return cwd, first_ts, prompt
+        return None, None, "", False
+    # THE FOURTH VALUE IS "IS THIS PROMPT SETTLED" — the same distinction
+    # `tasks_store._parse_head` draws, for the same cache (Bugbot, PR #1213). A
+    # marker is what a chat shows while none of its sends has carried words YET,
+    # and a transcript is append-only: the words can still arrive.
+    return cwd, first_ts, prompt or carried, bool(prompt)
 
 
 def _head(path: str, size: int) -> tuple[str | None, str | None, str]:
     """_parse_head, cached per path. Transcripts are append-only, so a head
     that was fully resolved stays valid however much the file grows; an
     incomplete one is retried once the file has more to offer, and a file
-    that shrank was replaced and is re-read from scratch."""
+    that shrank was replaced and is re-read from scratch.
+
+    A MARKER-ONLY HEAD IS NOT RESOLVED (Bugbot, PR #1213), and the whole of the
+    bug is in the word: banking "pane screenshot" as this chat's name meant the
+    row kept it over every word the reader typed afterwards. It is shown, it is
+    just not banked — the next append re-reads and the first real words win."""
     cached = _HEAD_CACHE.get(path)
     if cached is not None:
-        cached_size, cwd, first_ts, prompt = cached
-        complete = bool(prompt) and first_ts is not None and cwd is not None
+        cached_size, cwd, first_ts, prompt, settled = cached
+        complete = settled and first_ts is not None and cwd is not None
         if cached_size == size or (size > cached_size and complete):
             if size != cached_size:
                 # Record the size we just saw, not the one we last parsed at,
                 # so the entry always describes the file's current extent and
                 # a later shrink is still recognized as a different file.
-                _HEAD_CACHE[path] = (size, cwd, first_ts, prompt)
+                _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, settled)
             return cwd, first_ts, prompt
     if len(_HEAD_CACHE) > 20000:  # unbounded only if the user has 20k sessions
         _HEAD_CACHE.clear()
-    cwd, first_ts, prompt = _parse_head(path)
-    _HEAD_CACHE[path] = (size, cwd, first_ts, prompt)
+    cwd, first_ts, prompt, settled = _parse_head(path)
+    _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, settled)
     return cwd, first_ts, prompt
 
 

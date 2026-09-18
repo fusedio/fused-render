@@ -31,7 +31,7 @@ nothing about what an install does, and nothing in the UI mentions Homebrew.
 - "dmg": download the signed DMG, verify, and swap the .app bundle in place.
   Replacing the bundle under a running process is the SUPPORTED existing flow
   (a manual DMG drag does exactly this): installed.installed_version() then
-  drifts from __version__, ServerStatusBanner shows the restart card, and
+  drifts from __version__, ServerStatusBanner raises the restart dialog, and
   fused-render://relaunch (app.begin_relaunch) respawns from disk. That
   relaunch guard REQUIRES the drift, which is why the swap happens on install
   rather than being deferred to quit.

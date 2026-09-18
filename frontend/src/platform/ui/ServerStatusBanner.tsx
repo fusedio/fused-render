@@ -11,20 +11,41 @@
 // it survives the epoch-keyed view remounts. Styling is .server-status* in
 // styles/notifications.css.
 //
-// ONE OF THE STATES IS NOT A CARD: `update-refresh` is a blocking dialog on the
-// shared platform Modal chassis, because the page behind it is talking to a
-// server that no longer serves this bundle — every click from here is a guess
-// about which side answers. It is suppressed on a dev server, where the two
-// versions disagree by design, and forced up as a PREVIEW there under
-// `?update_modal=1` — the three modes are `updateDialogMode`'s, stated once in
-// server-status.ts.
+// TWO OF THE STATES ARE NOT CARDS. Both update cases are the one blocking
+// dialog on the shared platform Modal chassis (`UpdateDialog`, D1), because the
+// page behind either of them is talking to a version that is going away — every
+// click from here is a guess about which side answers:
+//   • `update-refresh` — the served bundle moved; a refresh fixes it. Suppressed
+//     on a dev server, where the two versions disagree by design, and forced up
+//     as a PREVIEW there under `?update_modal=1` — the three modes are
+//     `updateDialogMode`'s, stated once in server-status.ts.
+//   • the restart case — the disk is ahead of the running app. It USED TO BE a
+//     card here with a bare `fused-render://relaunch` link on it, which sat
+//     forever and said nothing about whether the press had worked. It is the
+//     dialog's "restart" mode now, it POPS ON ITS OWN the moment the install
+//     lands (D2 — off the shared update-status store, not a new poll), and it
+//     narrates the restart through `restart-flow.ts`'s stages.
+//
+// WHILE A RESTART IS IN FLIGHT THE "down" CARD IS SUPPRESSED (step 5): the app
+// being gone is the restart working, and two surfaces telling opposite stories
+// about the same outage is the bug this flow exists to fix. The cap
+// (RESTART_GIVE_UP_MS) is what gives the card back.
 import { useEffect, useRef, useState } from "react";
 
-import { Modal } from "@platform/ui/modal/Modal";
+import UpdateDialog from "@platform/ui/UpdateDialog";
 import {
+  forgetRestartRecord,
+  noteRestartProbe,
+  requestRestart,
+  useRestartFlow,
+} from "@platform/lib/restart-store";
+import { useUpdateStatus } from "@platform/lib/update-status";
+import {
+  bannerSurface,
   initialStatus,
   reduceProbe,
   updateDialogMode,
+  updateDialogPreview,
   UPDATE_DIALOG_KEY,
   type ProbeResult,
   type ServerBanner,
@@ -105,11 +126,26 @@ function useServerStatus(): {
       }
       if (disposed) return;
 
+      // EVERY probe, in flight or not — the restart store needs the version a
+      // healthy probe reports (so a press knows what was running) as much as it
+      // needs the failures that follow one. Fed before the reload check below
+      // on purpose: `reduceProbe` owning the reload is what keeps this flow from
+      // having a second one (see restart-flow.ts's header).
+      noteRestartProbe({ ok: result.ok, version: result.version ?? null });
+
       const wasDown = stateRef.current.banner === "down";
       const { state: next, reload } = reduceProbe(stateRef.current, result, BUILD_VERSION);
       if (reload) {
         // Server came back updated — the tab was blocked anyway, and views are
         // URL-synced, so swap in the new shell without asking.
+        //
+        // The durable restart record goes FIRST. This reload is the end of the
+        // restart whether or not the stage machine ever reached `back` (a press
+        // made before any healthy probe has no version to compare against, so it
+        // cannot), and the fresh document that comes up a moment from now reads
+        // that record on start — left behind, it would raise the undismissable
+        // dialog over a server that is already fine (bugbot, PR #1214).
+        forgetRestartRecord();
         window.location.reload();
         return;
       }
@@ -173,91 +209,71 @@ function useServerStatus(): {
   };
 }
 
-/** The `update-refresh` case: a BLOCKING dialog, not a card in the stack. The
- *  bundle in this tab is not the one the server serves any more, so there is
- *  nothing on the page behind it worth keeping usable — and one button, because
- *  there is exactly one way out. No ✕, no Esc, no backdrop click: a dismissable
- *  version prompt is a card, and this deliberately is not one.
- *
- *  ON THE SHARED CHASSIS (Akshil, 2026-09-14: "check the delete task modal,
- *  reuse that same component"). It used to be a hand-rolled backdrop + box with
- *  a `.server-update-*` skin of its own, which is how a second dialog vocabulary
- *  gets into the app; it is now `Modal` used exactly the way `EraseTaskModal`
- *  uses it — title, a sentence in the body, the one button in the footer — so it
- *  wears the Delete-task dialog's chrome, tokens and animation for free.
- *
- *  NOT DISMISSABLE, expressed in the chassis' own vocabulary:
- *   • `busy` is the chassis' "this cannot be closed from the chrome" lever. It
- *     drops the ✕ entirely (Modal does not render it while busy) and makes
- *     `decideClose` answer "block" for both Esc and a backdrop press. No
- *     `dismissable` prop exists — this IS that prop under another name, and the
- *     usual reading ("an action is running") is true enough here: the page is
- *     mid-swap onto a version it does not have.
- *   • `onClose` is required by `ModalProps` and is therefore a NO-OP: with
- *     `busy` set, nothing in the chassis can reach it, and a real handler would
- *     only describe a close that must never happen.
- *   • Focus lands on the Refresh button without an `initialFocus` ref, because
- *     the chassis' fallback picks the first focusable outside `.modal-head` and
- *     — with the ✕ gone — that button is the only focusable in the dialog. The
- *     same fact makes the chassis' Tab trap a no-op cycle: first === last, so
- *     Tab and Shift+Tab keep focus where it is.
- *   • `aria-modal` + `aria-labelledby` come from the chassis.
- */
-function UpdateDialog({ version }: { version: string }) {
-  // ESCAPE IS SWALLOWED FOR THE WHOLE PAGE, which `busy` alone does not do:
-  // `busy` only stops the chassis from closing THIS dialog. The stale page
-  // behind the scrim is still mounted and still listening — another modal's Esc
-  // stack, the sidebar, a peek — so a press here would close something the
-  // reader cannot see instead of doing nothing at all. Capture phase on
-  // `document` with `stopImmediatePropagation`, because the listeners being
-  // headed off are document-level ones that React's synthetic propagation never
-  // reaches; the dialog blocks every other input by covering the page, and this
-  // is the one key that gets past a scrim.
-  useEffect(() => {
-    const swallowEscape = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.preventDefault();
-      e.stopImmediatePropagation();
-    };
-    document.addEventListener("keydown", swallowEscape, true);
-    return () => document.removeEventListener("keydown", swallowEscape, true);
-  }, []);
-
-  return (
-    <Modal
-      title={`fused-render updated to v${version}`}
-      busy
-      onClose={() => {}}
-      footer={
-        <button
-          type="button"
-          className="btn btn-primary"
-          onClick={() => window.location.reload()}
-        >
-          Refresh page
-        </button>
-      }
-    >
-      <p>This page is still on v{BUILD_VERSION}. Refresh to load the new version.</p>
-    </Modal>
-  );
-}
-
 export default function ServerStatusBanner() {
   const { banner, version, installedVersion, dev, checkNow } = useServerStatus();
   const mode = updateDialogMode(dev, searchOverride(), storedDialogOverride());
+  // The SHARED update poll (platform/lib/update-status), the same store the
+  // sidebar badge and the Settings row read — no second timer, and it is what
+  // makes the restart dialog PROACTIVE (D2): `state === "installed"` is the
+  // instant the swap finished, reported on that store's 2 s busy cadence, where
+  // the banner's own `update-restart` has to wait for the next 5 s probe to
+  // notice the disk moved. Whichever says so first is enough.
+  const update = useUpdateStatus();
+  const flow = useRestartFlow();
+  // WHAT GOES ON SCREEN is a pure decision (server-status.ts `bannerSurface`) —
+  // the restart dialog outranking the "down" card is the whole of step 5, and a
+  // rule two surfaces have to agree on should be a test, not a reading of the
+  // `if`s below.
+  const surface = bannerSurface({
+    banner,
+    mode,
+    updateState: update?.state,
+    stage: flow.stage,
+  });
 
   // PREVIEW, ahead of every banner state and of the `hidden` early return: on a
   // dev server there is no version mismatch to wait for, so a preview gated on
   // `update-refresh` would still show nothing — which is the bug this fixes.
   // The numbers are the real ones (see `updateDialogMode`); `version` arrives
   // with the first probe, the same probe that reports `dev`, so this cannot
-  // paint a blank one. It outranks the down/restart cards deliberately: the
+  // paint a blank one. It outranks the down card and the real restart dialog
+  // deliberately: the
   // flag is an explicit "show me this dialog", and it is set by hand.
-  if (mode === "preview") return <UpdateDialog version={version} />;
-  if (banner === "hidden") return null;
+  if (mode === "preview") {
+    const preview = updateDialogPreview(searchOverride(), storedDialogOverride());
+    if (preview?.kind === "restart") {
+      return (
+        <UpdateDialog
+          kind="restart"
+          version={version}
+          installedVersion={installedVersion || version}
+          stage={preview.stage}
+          onRestart={requestRestart}
+        />
+      );
+    }
+    return <UpdateDialog kind="refresh" version={version} buildVersion={BUILD_VERSION} />;
+  }
 
-  if (banner === "reconnected") {
+  if (surface === "restart-dialog") {
+    return (
+      <UpdateDialog
+        kind="restart"
+        version={version}
+        // The store's `latest_version` is the fallback for the seconds between
+        // the install landing and the next probe re-reading the disk: the
+        // dialog's title is a version number and must never read "v".
+        installedVersion={installedVersion || update?.latest_version || version}
+        stage={flow.stage}
+        verifying={flow.verifying}
+        onRestart={requestRestart}
+      />
+    );
+  }
+
+  if (surface === "none") return null;
+
+  if (surface === "reconnected") {
     return (
       <div className="server-status server-status-reconnected" role="status" aria-live="polite">
         Reconnected — fused-render is back.
@@ -265,32 +281,8 @@ export default function ServerStatusBanner() {
     );
   }
 
-  if (banner === "update-refresh") {
-    // Nothing at all on a dev server — see `updateDialogMode` for why the
-    // prompt is wrong there rather than merely noisy. ("preview" is already
-    // handled above, so only "real" reaches the dialog from here.)
-    if (mode === "off") return null;
-    return <UpdateDialog version={version} />;
-  }
-
-  if (banner === "update-restart") {
-    return (
-      <div className="server-status server-status-update" role="status" aria-live="polite">
-        <div className="server-status-title">
-          fused-render v{installedVersion} is installed
-        </div>
-        <div className="server-status-body">
-          The app is still running v{version}. Restart fused-render to finish the update.
-        </div>
-        {/* fused-render://relaunch: the OS hands the link to the running app,
-            which quits through the normal teardown and respawns from the
-            bundle on disk. The down-card shows while it's gone, and the
-            reconnect probe auto-reloads this page onto the new version. */}
-        <a className="server-status-launch" href="fused-render://relaunch">
-          Restart fused-render
-        </a>
-      </div>
-    );
+  if (surface === "refresh-dialog") {
+    return <UpdateDialog kind="refresh" version={version} buildVersion={BUILD_VERSION} />;
   }
 
   return (

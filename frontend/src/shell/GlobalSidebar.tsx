@@ -24,6 +24,7 @@ import {
   updateRelevant,
   useUpdateStatus,
 } from "@platform/lib/update-status";
+import { requestRestart } from "@platform/lib/restart-store";
 import { navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { TOURS, startTour } from "@platform/lib/tours";
@@ -482,17 +483,21 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // the row's own label follow the store as the state moves.
   const handleUpdatePick = () => {
     if (!updateStatus) return;
-    // "Ready to restart" restarts (Akshil, 2026-09-08) — the same link the
-    // badge's own button and the ServerStatusBanner card use.
+    // "Ready to restart" restarts (Akshil, 2026-09-08) — through the ONE
+    // handler every restart goes through (platform/lib/restart-store), the same
+    // one the badge's own button calls. It latches the press and tells the
+    // other windows before it navigates, so a restart started from this row
+    // lights the blocking dialog's stages in every open window, exactly as one
+    // started from the badge does.
     if (updateStatus.state === "installed") {
-      window.location.assign("fused-render://relaunch");
+      requestRestart();
       return;
     }
     // ONLY AN UPDATE THAT IS WAITING GETS INSTALLED (bugbot, PR #1049): the
     // row is drawn for every relevant state, but "Updating…" must not start
-    // a second install under the first, and "Ready to restart" is the
-    // ServerStatusBanner's restart card's job — this row is a status line
-    // there, the same as UpdateBadge's installed state.
+    // a second install under the first, and "Ready to restart" is handled
+    // above — this row is a status line for it, the same as UpdateBadge's
+    // installed state.
     if (updateStatus.state !== "available" && updateStatus.state !== "error") return;
     // Same order as UpdateBadge.install: the poke comes AFTER the install
     // answers, so the poll it arms sees "installing" and runs at the busy

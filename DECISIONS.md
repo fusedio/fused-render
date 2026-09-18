@@ -2718,3 +2718,34 @@ deriving `parent = os.path.dirname(appimage)`, both in `_install_appimage`
 and in `_updates_dir()` (which needs to agree with the swap target's actual
 filesystem for the same `os.replace()`-atomicity reason `_install_appimage`
 does) — mirroring mac's existing pattern rather than inventing a new one.
+
+
+## Task 11 — Merging origin/main's `tier=jobs.SILENT` install-done report into the `_manager.py` extraction
+
+`origin/main` landed the update -> restart dialog work (#1214) while this
+branch had already moved the platform-neutral half of `UpdateManager` out of
+`mac.py` into `_manager.py`. The two touched the same terminal-install
+report from opposite directions: #1214 changed WHAT it reports (the done
+row now carries `tier=jobs.SILENT`, since the blocking restart dialog is now
+the whole announcement and a `trail`-tier toast beside it is a duplicate),
+this branch changed WHERE the code reporting it lives.
+
+Resolved the `mac.py` conflict by keeping this branch's side: `mac.py`
+itself now defines only `_install_artifact`, a two-line override that calls
+`_install_dmg`, with `install()`, `_install()`, `_job_report()`,
+`_job_clear_cancel()`, `_beat_installing()` and `_cancel_requested()` living
+solely in `_manager.py`. The incoming `tier=jobs.SILENT` argument and its
+comment (why silence is a property of success only, why it also means the
+row is not retained) were ported verbatim into the terminal `_job_report`
+call inside `_manager.py._install()`, which both `mac.UpdateManager` and
+`linux.UpdateManager` share — the dialog is platform-neutral chrome, so the
+tier belongs there rather than duplicated per platform. The incoming
+job-upsert-fallback comment (dropping the mention of "ServerStatusBanner.tsx's
+restart card" for the blocking restart dialog wording) moved the same way,
+into `_manager.py._job_report`. `mac.py`'s own docstring line already read
+"raises the restart dialog", so nothing there needed to change.
+`tests/test_mac_update.py`'s three new tests (`test_a_finished_install_pops_nothing`,
+`test_a_failed_install_is_as_loud_as_it_ever_was`,
+`test_the_running_download_row_is_untouched_by_the_silent_finish`) pass
+unmodified against the refactor, since they only observe `mac.jobs` /
+`mac.DONE_MESSAGE` / the job registry, not which module owns the code.
