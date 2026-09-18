@@ -959,3 +959,43 @@ test("flag OFF nothing subscribes to the feed", async () => {
   const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")], "s1", [], false);
   expect(h.feeding()).toBe(false);
 });
+
+test("a done chat's row updates when its session's new message is queued in another task", async () => {
+  // The bug (Akshil, 2026-09-17): a chat ALREADY OPEN with a session (done ring)
+  // sends a message into a folder that another task owns. The feed delivers
+  // status:"queued" but the header keeps the done ring until reload. Trace:
+  // schedFindTask prioritizes the sessionId key before the pending key, so it
+  // returns the old done task instead of the new queued entry's task.
+  const h = await mount(
+    // Initial: first message pending for session s1
+    [{ ...pending("a", "2026-09-09T14:00:00+00:00"), session_id: "s1", origin: "chat" }],
+    "s1",
+    // The task for this session (done, so entry "a" finished)
+    [{ key: "s1", status: "done", task_id: "TASK-001" }],
+    true,
+  );
+  expect(h.state().rec?.status).toBe("done");
+
+  // Simulate entry "a" finishing: remove it from pending (it's no longer "pending" state).
+  // Then add a new pending entry "b"
+  h.serve([
+    { ...pending("a", "2026-09-09T14:00:00+00:00"), session_id: "s1", origin: "chat", state: "sent" },
+    { ...pending("b", "2026-09-09T15:00:00+00:00"), session_id: "s1", origin: "chat" },
+  ]);
+  await h.poll();
+  expect(h.state().waitingHere.length).toBe(1); // Only "b" is pending (entry "a" is sent)
+
+  // The feed delivers tasks: the old done task PLUS the new queued task for entry "b"
+  await h.feed([
+    // The old done task is still in the listing (for entry "a")
+    { key: "s1", status: "done", task_id: "TASK-001" },
+    // The new queued entry is under a different task (for entry "b")
+    { key: "pending:b", status: "queued", task_id: "TASK-002", queue_position: 2, queue_ahead: "TASK-046" },
+  ]);
+
+  // The header should show the FIRST PENDING ENTRY'S TASK, which is "b" (queued).
+  // Before the fix, schedFindTask would return the "s1" (done) task instead of
+  // the "pending:b" (queued) task, because it checked sessionId before pending key.
+  expect(h.state().row?.status).toBe("queued");
+  expect(h.state().row?.queue_position).toBe(2);
+});
