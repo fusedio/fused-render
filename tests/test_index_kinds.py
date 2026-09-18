@@ -21,6 +21,36 @@ def test_column_rejects_an_unknown_type():
         Column("size", "not-a-real-type")
 
 
+@pytest.mark.parametrize("bad_name", [
+    "path; DROP TABLE x",
+    "path FROM secrets --",
+    "path\"",
+    "path'",
+    "",
+    "2path",
+    "path with space",
+])
+def test_column_rejects_a_name_that_is_not_a_safe_sql_identifier(bad_name):
+    """Bugbot LOW/MEDIUM finding: `Column.__post_init__` validated `type`
+    but never `name` — and a `Column.name` is not merely a label. It flows
+    straight into raw f-string SQL, unescaped and unquoted, wherever a
+    plugin's `identity_column`/`text_column`/`recency_column` is used
+    (query.py's `search_apps_ranked`: `f"SELECT {identity} AS rel, ...
+    lower({text_col}) AS nm"`; store.py's `_dir_expr`). A third-party
+    plugin — the one case this whole module exists to keep at arm's length
+    (module docstring's "trust decision #2") — could otherwise declare a
+    column whose very NAME breaks or injects into that SQL, entirely
+    independent of any row `extract()` ever returns."""
+    with pytest.raises(ValueError):
+        Column(bad_name, "string")
+
+
+def test_column_accepts_an_ordinary_identifier_name():
+    Column("updated_at", "string")
+    Column("_private", "string")
+    Column("name2", "string")
+
+
 def test_kind_rejects_duplicate_column_names():
     with pytest.raises(ValueError):
         IndexKind(

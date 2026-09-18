@@ -24,6 +24,7 @@ files kind); every kind needs exactly one, or there is nothing to rank.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -34,6 +35,20 @@ from typing import Callable, Optional
 # guarded_query's empty-table stand-ins don't know how to handle.
 _TYPES = {"string", "int64", "int32", "float64"}
 
+# A column's `name` is not just a label: `identity_column`/`text_column`/
+# `recency_column` (whichever `Column.name` a kind picks for those) flow
+# straight into raw f-string SQL, unescaped and unquoted — query.py's
+# `search_apps_ranked` builds `f"SELECT {identity} AS rel, ...
+# lower({text_col}) AS nm"` and store.py's `_dir_expr` does the same for
+# compaction. A third-party plugin (this module's own "trust decision #2":
+# a plugin supplies row DATA, never code the host runs at query time) could
+# otherwise break or inject that SQL purely through a column's name, with
+# no `extract()` row ever involved. A plain SQL-identifier shape (a letter
+# or underscore, then letters/digits/underscores) is exactly what every
+# real column name here already looks like, and closes that off the same
+# way `_TYPES` closes off an arbitrary `type` string.
+_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
 
 @dataclass(frozen=True)
 class Column:
@@ -41,12 +56,20 @@ class Column:
     "int32", "float64" — the physical types the store/compaction/guarded-query
     layers already know how to carry; anything else is rejected at
     declaration time rather than surfacing as a confusing DuckDB error deep
-    in compaction."""
+    in compaction. `name` must be a plain SQL identifier (see `_NAME_RE`),
+    rejected here for the same reason and at the same point as an unknown
+    `type` — this exact string is later interpolated unescaped into SQL."""
 
     name: str
     type: str
 
     def __post_init__(self) -> None:
+        if not _NAME_RE.match(self.name):
+            raise ValueError(
+                f"Column name {self.name!r} is not a plain SQL identifier "
+                f"(must match {_NAME_RE.pattern!r}) — column names reach "
+                f"raw SQL unescaped (query.py/store.py)"
+            )
         if self.type not in _TYPES:
             raise ValueError(
                 f"Column {self.name!r} has type {self.type!r}; "
