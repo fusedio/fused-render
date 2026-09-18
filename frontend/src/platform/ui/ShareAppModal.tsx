@@ -436,15 +436,15 @@ export function ShareAppModal({
             className="h-8 flex-1 truncate bg-muted/40 font-mono text-[12.5px] text-foreground"
           />
           <Button
-            size="sm"
-            variant={copied ? "secondary" : "outline"}
+            size="icon-sm"
+            variant="outline"
             onClick={copy}
             disabled={!url}
-            title="Copy link"
-            className="min-w-[4.75rem]"
+            title={copied ? "Copied" : "Copy link"}
+            aria-label={copied ? "Copied" : "Copy link"}
+            className={copied ? "text-foreground" : "text-muted-foreground hover:text-foreground"}
           >
-            {copied ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
-            {copied ? "Copied" : "Copy"}
+            {copied ? <Check /> : <Copy />}
           </Button>
           {url && (
             <Button
@@ -471,24 +471,18 @@ export function ShareAppModal({
               </span>
             ) : null}
             {handle && <span className="truncate">as @{handle}</span>}
-            {shared.workbench_url && (
-              <a
-                href={shared.workbench_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-muted-foreground underline underline-offset-3 hover:text-foreground"
-              >
-                Workbench
-              </a>
-            )}
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
+            {/* Outline, not ghost: the shell ships Tailwind without preflight,
+                so a variant that sets no background inherits the base
+                `button` fill and reads as a disabled grey slab. Same weight
+                as Update beside it; the red arrives only on hover. */}
             <Button
               size="sm"
-              variant="ghost"
+              variant="outline"
               disabled={working}
               onClick={() => setConfirmRevoke(true)}
-              className="text-muted-foreground hover:text-destructive"
+              className="text-muted-foreground hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
             >
               {busy === "remove" && <Loader2 data-icon="inline-start" className="animate-spin" />}
               {busy === "remove" ? "Revoking…" : "Revoke"}
@@ -544,9 +538,12 @@ export function ShareAppModal({
         <span className="mx-1.5 opacity-50">·</span>
         {saved.path}
       </span>
+      {/* `bg-transparent` on both: no preflight, so a ghost button would
+          otherwise show the UA's grey buttonface fill. */}
       <Button
         size="xs"
         variant="ghost"
+        className="bg-transparent"
         onClick={() => {
           revealPath(saved.path).catch(() => {});
         }}
@@ -557,6 +554,7 @@ export function ShareAppModal({
       <Button
         size="xs"
         variant="ghost"
+        className="bg-transparent"
         onClick={() => {
           onClose();
           navigate(saved.path, { isDir: false });
