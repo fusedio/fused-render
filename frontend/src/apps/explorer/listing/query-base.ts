@@ -20,6 +20,8 @@
 // escaping is the safe side of the ambiguity: a genuine absolute path is
 // the expensive case and it does get gated, while `/foo` used as an anchor
 // only costs one extra keypress.
+import { expandWhitespaceQuery } from "@apps/explorer/lib/home-search";
+
 const DRIVE_ABS = /^[A-Za-z]:[\\/]/;
 
 export function escapesBase(query: string): boolean {
@@ -60,25 +62,59 @@ export function escapesFsPath(
   fsPath: string,
   home: string | undefined,
 ): boolean {
-  // FINDING 1 (code review, worktree-search-trailing-space): trimmed at the
-  // door, matching `isPathShapedQuery`'s own `query.trim()` (path-shaped-
-  // query.ts) — the caller-side inconsistency this fixes. Edge whitespace is
-  // never part of a query's BASE (the segments this function compares
-  // against `fsPath`): the whitespace grammar (`expand_whitespace_query`,
-  // fused_render/index/query.py; `expandWhitespaceQuery`, lib/home-search.ts)
-  // only gives leading/trailing space meaning as a WILDCARD on the final
-  // segment's TEXT, never as a reason to relocate the base itself. Left
-  // untrimmed, a bare trailing space appended to the box's own pre-filled
-  // `fsPath` text (e.g. "/Users/iamsdas ") glued onto the last compared
-  // segment and made it mismatch its clean `fsPath` counterpart — flipping
-  // this to "escapes" for a keystroke that added no glob character at all,
-  // which forced an Enter-gated commit on a query the box's own design
-  // comment (useListingSearch.ts) says should keep live-filtering. The same
-  // untrimmed comparison also defeated the "~"/"~/" exact-match checks in
-  // `escapesBase` below for a trailing-spaced tilde query (e.g. "~ "),
-  // silently reading it as NOT escaping at all. Trimming here, once, fixes
-  // both: nothing downstream in this function ever needed the raw edges.
-  const query = rawQuery.trim();
+  // FINDING (code review round 2, worktree-search-trailing-space): a plain
+  // `.trim()` here (the previous fix, FINDING 1 below) was itself wrong,
+  // because it treats edge whitespace as meaningless — but trailing
+  // whitespace is NOT meaningless to the server. `expand_whitespace_query`
+  // (fused_render/index/query.py) turns a trailing space into a wildcard on
+  // the FINAL path segment, which can peel that segment off the walked base
+  // entirely: `/Users/iamsdas ` (the box's own pre-filled path plus one
+  // trailing space) resolves server-side to `base: "/Users", pattern:
+  // "**iamsdas**"` — the walk stops at the PARENT, because "iamsdas**" now
+  // carries a glob character and `_walk_from` cannot consume a glob-bearing
+  // segment as a real directory. A trim-based comparison here saw
+  // "iamsdas" === "iamsdas" and called that "still inside the folder" —
+  // exactly the scope change this gate exists to catch, missed. Verified
+  // live against `/api/index/rank`: `q=/Users/iamsdas%20` answers
+  // `base: "/Users"`, not `/Users/iamsdas`.
+  //
+  // Symmetrically, a trailing space defeats `escapesBase`'s "~"/"~/"
+  // exact-match checks in the OTHER direction: `expand_whitespace_query`
+  // wraps a lone "~" plus trailing space into a glob token (`"**~**"`) that
+  // no longer starts with a literal "~" at all, so the server does not
+  // resolve it as a home path — it searches the CURRENT folder recursively
+  // for the literal character "~". Verified live: `q=~%20` (root
+  // `/Users/iamsdas`) answers `base: "/Users/iamsdas", pattern:
+  // "**/**~**"` — the box's own root, never `home`. A `.trim()`
+  // (`"~ "` -> `"~"`) reads this as a genuine home escape and, whenever
+  // `home !== fsPath`, gates a query the server never leaves the current
+  // folder for.
+  //
+  // The fix: mirror the SAME two-step process `resolve_query` itself runs
+  // (fused_render/index/query.py) — strip a LEADING run of whitespace only
+  // when what is left already looks like one of the escape forms (a lone
+  // leading space carries no meaning for that grammar and would otherwise
+  // be swallowed into a `**` token glued onto the very prefix being looked
+  // for), then run the REAL whitespace-expansion transform
+  // (`expandWhitespaceQuery`, lib/home-search.ts, byte-equivalent with
+  // `expand_whitespace_query`) — never a bare trim — before doing any
+  // escape-shape or segment comparison. A query with no whitespace and no
+  // "*" is a no-op under that transform, so every existing edge-free case
+  // is unaffected; only a query whose whitespace/glob shape actually
+  // changes what the server searches changes verdict here too.
+  const lstripped = rawQuery.replace(/^\s+/, "");
+  let normalized = rawQuery;
+  if (
+    lstripped !== rawQuery &&
+    (lstripped === "~" ||
+      lstripped.startsWith("~/") ||
+      lstripped.startsWith("/") ||
+      DRIVE_ABS.test(lstripped) ||
+      lstripped.split("/").includes(".."))
+  ) {
+    normalized = lstripped;
+  }
+  const query = expandWhitespaceQuery(normalized);
   if (!escapesBase(query)) return false;
   // A ".." segment always walks up and out of `fsPath` — genuinely a
   // different subtree no matter where it lands — so no further check is
