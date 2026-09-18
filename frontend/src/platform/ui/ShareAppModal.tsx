@@ -110,7 +110,13 @@ interface CanvasesStatusLite {
   login_in_flight: boolean;
 }
 
-type Busy = null | "publish" | "update" | "remove" | "login" | "export";
+// The four actions that photograph the screen or mutate the share — at most
+// one runs at a time. Sign-in is NOT one of them: it is a browser round-trip
+// the user may take minutes over (or never finish), and the file route needs
+// no account, so it has its own flag (`loggingIn`) and may overlap an export.
+// One shared flag for both was the bug: an export started mid-login and the
+// login poll's `setBusy(null)` then dropped the export lock (Bugbot, #1207).
+type Busy = null | "publish" | "update" | "remove" | "export";
 
 // One row of the sheet: a glyph plate, a title with its one-line description,
 // the row's action at the right, and whatever the route has to show once it
@@ -172,6 +178,7 @@ export function ShareAppModal({
     busyRef.current = next;
     setBusyState(next);
   };
+  const [loggingIn, setLoggingIn] = useState(false);
   const [linkErr, setLinkErr] = useState("");
   const [fileErr, setFileErr] = useState("");
   const [copied, setCopied] = useState(false);
@@ -268,14 +275,17 @@ export function ShareAppModal({
   );
 
   const onLogin = async () => {
-    if (busy) return;
+    // Not while a shot is being taken: the browser window this opens could
+    // land over the rect being photographed. Not twice, either — a second
+    // poll would run alongside the first.
+    if (loggingIn || busy !== null) return;
     setLinkErr("");
-    setBusy("login");
+    setLoggingIn(true);
     loginStampRef.current = status?.creds_stamp ?? null;
     try {
       await postJson<{ ok: boolean }>("/api/canvases/login", {});
     } catch (e) {
-      setBusy(null);
+      setLoggingIn(false);
       setLinkErr((e as Error).message);
       return;
     }
@@ -285,7 +295,7 @@ export function ShareAppModal({
         if (completed) {
           if (pollRef.current !== null) window.clearInterval(pollRef.current);
           pollRef.current = null;
-          setBusy(null);
+          setLoggingIn(false);
           setDenied(false);
           // The same two reads the open does: a freshly signed-in account
           // may already hold a canvas for this app from another machine, and
@@ -296,7 +306,7 @@ export function ShareAppModal({
         } else if (!s.login_in_flight) {
           if (pollRef.current !== null) window.clearInterval(pollRef.current);
           pollRef.current = null;
-          setBusy(null);
+          setLoggingIn(false);
           setLinkErr("Sign-in was not completed — try again.");
         }
       });
@@ -341,12 +351,11 @@ export function ShareAppModal({
   };
 
   const doExport = async () => {
-    // The file route needs no account, so a sign-in in flight (a browser
-    // round-trip the user may never finish) must not block it — only another
-    // screen-shooting action does. Same predicate as the button's `disabled`
-    // (`working`), so the click never lands on a button that then does
-    // nothing (Bugbot, #1207).
-    if (busy !== null && busy !== "login") return;
+    // The file route needs no account, so a sign-in in flight (its own flag)
+    // does not block it — only another screen-shooting action does. Same
+    // predicate as the button's `disabled` (`working`), so the click never
+    // lands on a button that then does nothing (Bugbot, #1207).
+    if (busy !== null) return;
     setFileErr("");
     setBusy("export");
     try {
@@ -370,8 +379,7 @@ export function ShareAppModal({
 
   // Publishing and exporting both photograph the screen; a sheet dismissed
   // mid-shot would leave the capture pointed at whatever replaced it.
-  const working =
-    busy === "publish" || busy === "update" || busy === "remove" || busy === "export";
+  const working = busy !== null;
   const linkBusy = busy === "publish" || busy === "update" || busy === "remove";
   const isLiveFile = !versionLabel || versionLabel === "Live";
 
@@ -402,12 +410,12 @@ export function ShareAppModal({
     // Disabled while ANY action runs, matching onLogin's own guard: a browser
     // window opening mid-export could cover the rect being shot.
     linkAction = (
-      <Button size="sm" onClick={onLogin} disabled={busy !== null}>
-        {busy === "login" && <Loader2 data-icon="inline-start" className="animate-spin" />}
-        {busy === "login" ? "Waiting for sign-in…" : "Sign in to Fused"}
+      <Button size="sm" onClick={onLogin} disabled={loggingIn || working}>
+        {loggingIn && <Loader2 data-icon="inline-start" className="animate-spin" />}
+        {loggingIn ? "Waiting for sign-in…" : "Sign in to Fused"}
       </Button>
     );
-    linkBody = busy === "login" ? (
+    linkBody = loggingIn ? (
       <p className="m-0 text-[13px] leading-5 text-muted-foreground">
         Finish signing in in the browser window that just opened.
       </p>
