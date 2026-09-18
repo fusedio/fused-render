@@ -124,7 +124,7 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { appLandingUrl } from "@platform/lib/appLanding";
 import { navigateUrl } from "@platform/lib/router";
-import { announceTasksChanged } from "@platform/lib/tasksChanged";
+import { announceAppDoctorChanged, announceTasksChanged } from "@platform/lib/tasksChanged";
 
 // A FAILING state draws by severity, not just by colour: a critical failure
 // is an alert circle, a warning is a triangle (the shape everyone already
@@ -294,8 +294,17 @@ function CheckRow({
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  disabled={anyChecking || busy}
-                  title={checking ? "Checking…" : "Re-check with Claude (Sonnet)"}
+                  // Not while a fix session is live on this app: it is about
+                  // to change the very files a re-check would read, so the
+                  // verdict would be stale the moment it landed.
+                  disabled={anyChecking || busy || !!check.task || otherTaskLive}
+                  title={
+                    checking
+                      ? "Checking…"
+                      : check.task || otherTaskLive
+                        ? "An App Doctor task is editing this app — re-check once it has finished"
+                        : "Re-check with Claude (Sonnet)"
+                  }
                   aria-label="Re-check"
                   onClick={() => onCheck(check, true)}
                 >
@@ -403,9 +412,24 @@ export function useAppDoctorReport(dir: string, onDone?: () => void) {
     setError(null);
     try {
       const res = await runAppDoctorOnDemand(dir, check.id, force);
+      // The header dot (useAppDoctorChecks) fetched once at open and would
+      // otherwise stay clean over a row that just went red; the verdict is
+      // cached now, so its refetch is free.
+      announceAppDoctorChanged(dir);
       if (alive.current) {
         setReport((r) =>
-          r ? { ...r, checks: r.checks.map((c) => (c.id === res.check.id ? res.check : c)) } : r,
+          r
+            ? {
+                ...r,
+                // The run endpoint knows nothing about fix sessions and
+                // returns `task: null`; the row's live task — its own, or a
+                // Fix-all's — is still running, so it is kept from the row
+                // being replaced rather than dropped with it.
+                checks: r.checks.map((c) =>
+                  c.id === res.check.id ? { ...res.check, task: c.task } : c,
+                ),
+              }
+            : r,
         );
       }
     } catch (e) {

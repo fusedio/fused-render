@@ -56,6 +56,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 from datetime import datetime, timezone
@@ -466,7 +467,7 @@ def _run_locked(app_dir: str) -> tuple[dict | None, str | None]:
     # asking for JSON in the prompt (`_parse_verdict` reads the result text)
     # and pass no `--json-schema` at all. `_popen_cmd` turns the list into
     # the shim's single command string where needed.
-    from fused_render.server.ai import _needs_cmd_shim, _popen_cmd
+    from fused_render.server.ai import _kill_process_tree, _needs_cmd_shim, _popen_cmd
 
     bin_path = agent._claude_bin()
     shim = _needs_cmd_shim(bin_path)
@@ -482,18 +483,31 @@ def _run_locked(app_dir: str) -> tuple[dict | None, str | None]:
                 "--system-prompt-file", sp_file]
         if not shim:
             args += ["--json-schema", json.dumps(_SCHEMA, separators=(",", ":"))]
+        cmd = _popen_cmd(bin_path, args)
         try:
             proc = subprocess.Popen(
-                _popen_cmd(bin_path, args),
+                cmd,
+                # A STRING is the shim's command line and only means anything
+                # through cmd.exe — `shell=True` is the sync twin of
+                # `ai._spawn_claude_stream`'s create_subprocess_shell, and
+                # just as there it is no injection surface: the payload is
+                # ours, fully quoted, and every free text rides stdin or a
+                # file. A list is exec'd directly.
+                shell=isinstance(cmd, str),
                 cwd=workdir, env=agent._spawn_env(), stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                encoding="utf-8", errors="replace")
+                encoding="utf-8", errors="replace",
+                creationflags=(subprocess.CREATE_NO_WINDOW
+                               if sys.platform == "win32" else 0))
         except (OSError, ValueError) as exc:
             return None, f"could not start claude: {exc}"
         try:
             stdout, stderr = proc.communicate(input=message + "\n", timeout=TIMEOUT)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            # The tree, not just the top process: behind the shim `proc` is
+            # cmd.exe, and a bare kill would orphan the node child that is
+            # still burning tokens (`ai._kill_process_tree`).
+            _kill_process_tree(proc)
             proc.communicate()
             return None, f"the check did not answer within {int(TIMEOUT)}s"
     finally:
@@ -521,17 +535,23 @@ def _run_locked(app_dir: str) -> tuple[dict | None, str | None]:
         "omitted": gathered["omitted"],
         **verdict,
     }
-    write_cache(app_dir, stored)
+    written = write_cache(app_dir, stored)
     # Read back through the same path a GET uses, so the row the button
-    # returns is byte-for-byte what the next open will draw. If the cache
-    # could not be written (read-only clone), synthesise from `stored`.
+    # returns is byte-for-byte what the next open will draw. Two ways that
+    # read can still come back UNRUN, told apart rather than blamed on one:
+    # the cache could not be written (read-only clone, mount-backed folder),
+    # or the app changed WHILE the model was reading it, so the verdict that
+    # was just written already describes a folder that is gone.
     state, detail, findings = row_state(app_dir)
     from fused_render.app_doctor import FAIL, PASS, UNRUN
 
     if state == UNRUN:
         state = PASS if verdict["ok"] else FAIL
-        detail = verdict["summary"] or ("nothing browser-specific found" if verdict["ok"]
-                                        else f"{len(verdict['findings'])} to look at")
-        detail += " (not cached: this folder is read-only)"
+        detail = verdict["summary"] or (
+            "nothing will look or behave differently in another browser" if verdict["ok"]
+            else f"{len(verdict['findings'])} thing"
+                 f"{'' if len(verdict['findings']) == 1 else 's'} will look different in another browser")
+        detail += (" (not cached: this folder is read-only)" if not written
+                   else " (the app changed while it was being checked — Check again)")
         findings = verdict["findings"]
     return (state, detail, findings), None
