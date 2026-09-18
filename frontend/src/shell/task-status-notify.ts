@@ -64,6 +64,7 @@ import { labelForSource } from "@platform/lib/format";
 import { taskColumn } from "@shell/tasks-lib";
 import { taskHref } from "@shell/tasks-lib";
 import { folderHref } from "@shell/schedule-lib";
+import { recentFsPath } from "@apps/explorer/lib/recents";
 
 /** Where a click on this task's own notification should land — the same
  *  fallback chain `attentionRows` already uses (a live session's chat, else
@@ -163,6 +164,23 @@ export function notificationForTransition(
   // compiling; none of them set `entrypoint: "cli"`, so the gate below never
   // fires for them regardless of this default.
   notifyTerminalSessions = false,
+  // ALREADY-OPEN POPUP SUPPRESSION (F8, 2026-09-18): "we never want to show
+  // notifications for tasks when the claude template / app is already
+  // opened" — a screenshot showed the exact session's own chat on screen,
+  // task-finished popup still firing. Injected (not imported) for the same
+  // reason `notifyTerminalSessions` above is: this function stays pure and
+  // DOM-free; `useTaskStatusNotify.ts` supplies the real presence check
+  // (`snapshotIsOpenAnywhere`, platform/lib/presence.ts), batched once per
+  // poll tick rather than once per task. Takes an already-normalized fs
+  // path/route (see `taskDestination`'s call site below, which runs
+  // `taskDestination(task)` through `recentFsPath` before calling this —
+  // `taskDestination` returns an `/explorer/view/...` HREF with a query
+  // string, which is not the shape presence entries store; a bare
+  // `isOpenAnywhere(taskDestination(task))` call silently never matches
+  // anything). Defaults to "nothing is open" so the many existing
+  // lower-arity call sites in task-status-notify.test.ts keep compiling
+  // unchanged.
+  isDestinationOpen: (page: string) => boolean = () => false,
 ): NotificationInput | null {
   const column = taskColumn(task);
   if (previous === undefined) {
@@ -209,6 +227,17 @@ export function notificationForTransition(
     // two `source` used to conflate). Set `origin` here, never `source` —
     // the whole point of the second reversal above stands.
     const caption = taskCaption(task);
+    const destination = taskDestination(task);
+    // ALREADY-OPEN GATE (F8): only suppress the POPUP (`quiet: true` below),
+    // never the retained row — the user's own correction: "by show I mean
+    // popup ... if that is not simple enough to do just dont have a
+    // notification" (popup-only turned out simple, so that's what shipped).
+    // Excludes the bare `/tasks` fallback deliberately: `taskDestination`
+    // falls all the way through to `/tasks` for a task with no session AND
+    // no folder, and suppressing on THAT would go quiet for every such task
+    // whenever anyone merely has the Tasks page open — a page with no
+    // relation to this specific task at all.
+    const quiet = destination !== "/tasks" && isDestinationOpen(recentFsPath(destination));
     return {
       title: titleWithoutCaption(task.title || "A task", caption),
       // "Finished" moves OUT of the title and into `detail` (`.dl-model`,
@@ -223,7 +252,8 @@ export function notificationForTransition(
       detail: "Finished",
       tone: "info",
       origin: caption || undefined,
-      page: taskDestination(task),
+      page: destination,
+      quiet,
       // FAMILY-BY-FOLDER, NOT BY TITLE (2026-09-18 fix, user: "these 2
       // fused-render notifications should have been grouped together as
       // count"). `notifications.ts`'s default family is caption+TITLE, which

@@ -134,6 +134,17 @@ export interface NotificationInput {
    *  already accepts it: `count` carries "how many", the row's job is to
    *  point at what's most likely to matter now (the newest one). */
   familyKey?: string;
+  /** POPUP-ONLY SUPPRESSION (F8, 2026-09-18) — retain the row exactly as
+   *  normal, but never arm/show its popup card. Distinct from both
+   *  `isSuppressed` (drops the message ENTIRELY, popup and row alike) and
+   *  from simply not calling `notify()` at all: a caller that already knows
+   *  "the user is looking straight at this" still wants the row to exist for
+   *  later (they may navigate away before dismissing it), it just should not
+   *  interrupt them with a card for something already on their screen.
+   *  `task-status-notify.ts`'s `in_progress -> done` branch is the first (and
+   *  so far only) caller — see its own comment for why a finished task whose
+   *  destination is already open sets this instead of returning `null`. */
+  quiet?: boolean;
 }
 
 export interface StoredNotification {
@@ -679,6 +690,16 @@ export function notify(input: NotificationInput, replaceId?: number): number {
   }
 
   const { id, item } = retainAndCollapse(input);
+
+  // QUIET (F8): retain without ever arming a popup — see `quiet`'s own doc
+  // comment on `NotificationInput`. Mirrors `ingestNotification`'s own
+  // retain-without-pop shape (pane->shell forwarding), just reached from a
+  // local `notify()` call instead of the cross-document ingest boundary.
+  if (input.quiet) {
+    refreshSnapshot();
+    emit();
+    return id;
+  }
 
   // LATEST WINS: a fresh popup always replaces whatever is currently
   // showing — see this module's own header comment on why that differs

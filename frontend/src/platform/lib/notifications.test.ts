@@ -803,6 +803,70 @@ test("a familyKey notice and an unrelated non-familyKey notice sharing a caption
   expect(retained.every((n) => n.count === 1)).toBe(true);
 });
 
+// ---- quiet: popup suppression without dropping the row (F8, 2026-09-18) ---
+//
+// "we never want to show notifications for tasks when the claude template /
+// app is already opened" — the user's correction on what "show" means:
+// suppress the POPUP only, still retain the row (task-status-notify.ts's own
+// F8 comment has the full story). `quiet` is the opt-in lever: it is checked
+// AFTER `retainAndCollapse`, so the row is built and collapsed exactly as
+// normal — only the popup-arming half of `notify()` is skipped.
+
+test("quiet: true retains the row but never arms a popup", () => {
+  const id = notify({
+    title: "Finished",
+    tone: "info",
+    origin: "fused-render",
+    page: "/explorer/view/fused-render?session_id=run-1",
+    quiet: true,
+  });
+  expect(id).toBeGreaterThan(0);
+  expect(getPopupNotification()).toBeNull();
+  expect(getRetainedNotifications().map((n) => n.title)).toEqual(["Finished"]);
+});
+
+test("quiet: false (or omitted) pops normally — the ordinary path is unaffected", () => {
+  notify({
+    title: "Finished",
+    tone: "info",
+    origin: "fused-render",
+    page: "/explorer/view/fused-render?session_id=run-1",
+  });
+  expect(getPopupNotification()?.title).toBe("Finished");
+  expect(getRetainedNotifications().map((n) => n.title)).toEqual(["Finished"]);
+});
+
+// A quiet notice must still participate in the SAME familyKey collapse a
+// normal one does — this is what lets a folder's second finished task, whose
+// app happens to still be open, update the existing row's count instead of
+// silently never touching it because its popup path was skipped.
+test("quiet: true still collapses into the same familyKey row and increments count", () => {
+  notify({
+    title: "hi",
+    detail: "Finished",
+    tone: "info",
+    origin: "fused-render",
+    page: "/explorer/view/fused-render?session_id=run-1",
+    familyKey: "task-finished:fused-render",
+  });
+  notify({
+    title: "New session",
+    detail: "Finished",
+    tone: "info",
+    origin: "fused-render",
+    page: "/explorer/view/fused-render?session_id=run-2",
+    familyKey: "task-finished:fused-render",
+    quiet: true,
+  });
+  const retained = getRetainedNotifications();
+  expect(retained).toHaveLength(1);
+  expect(retained[0]?.count).toBe(2);
+  expect(retained[0]?.title).toBe("New session");
+  // The FIRST notify()'s popup is still whatever it was — a quiet repeat
+  // must not retroactively clear or replace an already-popped card either.
+  expect(getPopupNotification()?.title).toBe("hi");
+});
+
 // Same title, different captions — two different sources doing the same
 // kind of work must not be conflated into one row.
 test("same title but different captions stay as two separate rows", () => {

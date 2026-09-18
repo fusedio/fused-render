@@ -73,6 +73,7 @@
 // fresh tab with a popup for every one of its already-done rows.
 import { useEffect, useRef } from "react";
 import { notify } from "@platform/lib/notifications";
+import { snapshotIsOpenAnywhere } from "@platform/lib/presence";
 import { IS_EMBED, IS_TOP_EMBED } from "@platform/lib/router";
 import { useTasksPulseRows } from "@shell/tasksPulse";
 import { taskColumn } from "@shell/tasks-lib";
@@ -95,12 +96,18 @@ export function useTaskStatusNotify(): void {
     if (watchStartS.current === null) watchStartS.current = Date.now() / 1000;
     const prev = previous.current;
     const liveKeys = new Set<string>();
+    // ONE presence snapshot for the whole tick (F8) — see
+    // `snapshotIsOpenAnywhere`'s own doc comment: this loop calls
+    // `notificationForTransition` once per task, and a fresh
+    // `localStorage` read/parse per task per tick is exactly the pattern
+    // it exists to avoid.
+    const isOpenAnywhere = snapshotIsOpenAnywhere();
     for (const task of tasks) {
       liveKeys.add(task.key);
       const was = prev.get(task.key);
       const column = taskColumn(task);
       const input = notificationForTransition(
-        was, task, watchStartS.current, notifyTerminalSessions);
+        was, task, watchStartS.current, notifyTerminalSessions, isOpenAnywhere);
       prev.set(task.key, column);
       if (input) notify(input);
     }
