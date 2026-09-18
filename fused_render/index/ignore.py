@@ -244,13 +244,35 @@ def default_ignore() -> list[str]:
     a redirected home does not stop the DEFAULT home's mounts from sitting in
     the middle of the tree being scanned. `**/` spans zero or more levels, so
     one pattern per home also covers every branch-nested checkout's own mounts
-    folder."""
+    folder.
+
+    Also names the OS user's `~/Library` (macOS only in practice — the path
+    simply never exists elsewhere, so the pattern is inert there). This is a
+    PATH pattern, not a bare `DEFAULT_IGNORE_NAMES` entry, and deliberately
+    keyed off the real OS home (`os.path.expanduser("~")`) rather than
+    `default_home_dirs()` (this app's OWN state homes, `~/.fused-render` and
+    `FUSED_RENDER_HOME` — unaffected by either): a bare name would ALSO ban
+    every unrelated directory anywhere on disk that happens to be named
+    `Library` (an Arduino sketch folder, a Java project). `~/Library` churns
+    constantly (Safari/Mail caches, saved app state, Spotlight, ...) and none
+    of it is content a user searches home for — same rationale as `.cache`/
+    `.fused` above, just system- not app-owned. Added here (2026-09,
+    SPEC-focus-change-detection.md's review) because
+    `index/detect.py`'s home-focus trigger collapses `fsevents.hint`'s raw,
+    unfiltered journal output to a boolean, and this directory's constant
+    churn made that boolean true on nearly every check of a real `~` root —
+    see `detect._filter_hint`, which is what actually needs this list to be
+    complete, not the walk (the walk was already fine either way)."""
     seen, out = set(), []
     for base in default_home_dirs():
         pattern = norm(os.path.join(base, "**", "mounts"))
         if pattern not in seen:
             seen.add(pattern)
             out.append(pattern)
+    library = norm(os.path.expanduser("~/Library"))
+    if library not in seen:
+        seen.add(library)
+        out.append(library)
     return DEFAULT_IGNORE_NAMES + out
 
 
