@@ -2382,7 +2382,7 @@ export function TaskList({
           said. */}
       {rows.map((task) => (
         <TaskNode
-          key={task.task_id || task.key}
+          key={task.key}
           task={task}
           home={home}
           showProject={showProject}

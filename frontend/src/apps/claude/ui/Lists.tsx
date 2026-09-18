@@ -356,7 +356,7 @@ export function Lists({
         <div className="tasks-list-frame">
           {recent.map((task) => (
             <TaskRowItem
-              key={task.task_id || task.key}
+              key={task.key}
               task={task}
               {...pressFor(task)}
               // RUN NEXT'S TWO HALVES (Akshil QA, 2026-09-16). The row's own

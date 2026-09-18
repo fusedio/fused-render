@@ -5017,47 +5017,12 @@ export function pulseTitle(pulse: TasksPulse): string {
  * `last_active` descending — so a session that just woke up rises to the top
  * the same way it would on the next full poll.
  */
-/**
- * Get the stable identity key for a task — task_id (T-number) for real tasks,
- * else the row's own key. Used to track task identity across key changes
- * (e.g., pending:entry → session_id when a task starts).
- * Draft rows always use their key since they don't have stable task_ids.
- */
-export function getTaskIdentity(task: Task): string {
-  // Drafts don't have stable task_ids, so use their key
-  if (task.kind === "draft") {
-    return task.key;
-  }
-  return task.task_id || task.key;
-}
-
 export function mergeTaskChanges(tasks: Task[], upserts: Task[], gone: string[]): Task[] {
   const drop = new Set(gone);
-  const byIdentity = new Map<string, Task>();
-
-  // Track dropped tasks by their identity so we can match replacements
-  const droppedByIdentity = new Map<string, Task>();
-  for (const t of tasks) {
-    if (drop.has(t.key)) {
-      droppedByIdentity.set(getTaskIdentity(t), t);
-    }
-  }
-
-  // Add existing tasks to the map
-  for (const t of tasks) {
-    if (!drop.has(t.key)) {
-      byIdentity.set(getTaskIdentity(t), t);
-    }
-  }
-
-  // Merge in upserts
-  for (const t of upserts) {
-    if (!drop.has(t.key)) {
-      byIdentity.set(getTaskIdentity(t), t);
-    }
-  }
-
-  return [...byIdentity.values()].sort((a, b) => b.last_active - a.last_active);
+  const byKey = new Map<string, Task>();
+  for (const t of tasks) if (!drop.has(t.key)) byKey.set(t.key, t);
+  for (const t of upserts) if (!drop.has(t.key)) byKey.set(t.key, t);
+  return [...byKey.values()].sort((a, b) => b.last_active - a.last_active);
 }
 
 // ---- painting a queue verb before the poll agrees ----------------------------
