@@ -2777,3 +2777,34 @@ marker (`skipif sys.platform != "linux"`, mirroring `test_app_relaunch.py`'s
 `mac_only`) and applied it to only that one test — the rest of the module
 exercises `UpdateManager`'s state machine and stamp-file logic, which holds
 on any OS.
+
+## Task 13 — Linux download naming must never take a released-artifact shape
+
+`linux.UpdateManager`'s `_DOWNLOAD_PREFIX`/`_DOWNLOAD_SUFFIX` were
+`"FusedRender-"`/`".AppImage"` — exactly the shape of the released artifact's
+own filename, `FusedRender-<version>-x86_64.AppImage`. `_updates_dir()` on
+Linux is the running AppImage's own parent directory, a directory the USER
+owns and may keep other files in (a rollback copy of the previous version, a
+newer build not yet switched to), and `_sweep_stale_downloads()` deletes
+every entry matching that prefix/suffix on every boot, sparing only the
+manager's own bundle by realpath. A second AppImage sitting there with a
+real release name matched the sweep pattern exactly as well as a stale
+partial download did, so it got silently `os.unlink`ed on the next boot —
+destruction of a file the updater never downloaded and does not own.
+
+Fixed at the root: changed `_DOWNLOAD_PREFIX` to `".fused-render-update-"`
+(kept `_DOWNLOAD_SUFFIX` as `".AppImage"`), a shape a released artifact's
+filename can never take — `FusedRender-*` never starts with a dot. The sweep
+now matches only the manager's own partials and cannot match a release name
+at all; the realpath exclusion of the running bundle stays as a second line
+of defence, not the only thing standing between the sweep and a user's file.
+The leading dot is also a Linux convention for "hidden, in progress" — a
+partial download no longer shows up in the user's file manager while it's
+still downloading. mac's `_DOWNLOAD_PREFIX`/`_DOWNLOAD_SUFFIX`
+(`"FusedRender-"`/`".dmg"`) were left unchanged: mac's `_updates_dir()` is a
+dedicated `…/fused-render/updates` directory the app owns outright, never
+shared with a user's own files, so the same collision cannot occur there.
+
+The rule going forward: a platform's download naming must be a shape its own
+released artifact's filename can never take, whenever `_updates_dir()` is a
+directory the app does not own outright.
