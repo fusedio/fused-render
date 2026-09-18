@@ -37,14 +37,17 @@ def _clear_head_cache():
     tasks_store.reset_cache()
 
 
-def _transcript(projects_dir, encoded, session_id, cwd, first_ts, prompt="hi"):
+def _transcript(projects_dir, encoded, session_id, cwd, first_ts, prompt="hi", entrypoint=None):
     d = projects_dir / encoded
     d.mkdir(parents=True, exist_ok=True)
     path = d / f"{session_id}.jsonl"
-    path.write_text(json.dumps({
+    record = {
         "type": "user", "cwd": cwd, "timestamp": first_ts, "uuid": "u1",
         "message": {"role": "user", "content": [{"type": "text", "text": prompt}]},
-    }) + "\n")
+    }
+    if entrypoint is not None:
+        record["entrypoint"] = entrypoint
+    path.write_text(json.dumps(record) + "\n")
     return path
 
 
@@ -552,7 +555,7 @@ def test_the_head_is_cached_against_the_file_size(projects_dir):
                             "timestamp": "2026-08-16T10:00:00Z",
                             "message": {"role": "user",
                                         "content": "later"}}) + "\n")
-    cwd, first_ts, prompt, _pane = tasks_store.head(str(path))
+    cwd, first_ts, prompt, _pane, _entrypoint = tasks_store.head(str(path))
     assert cwd == "/home/a"
     assert prompt == "first thing"
     assert first_ts == pytest.approx(
@@ -630,7 +633,7 @@ def test_the_head_finds_the_pane_even_when_the_words_come_later(projects_dir):
                     "timestamp": "2026-08-16T09:01:00Z", "uuid": "u2",
                     "message": {"role": "user",
                                 "content": "actual words"}}) + "\n")
-    cwd, _ts, prompt, pane = tasks_store.head(str(path))
+    cwd, _ts, prompt, pane, _entrypoint = tasks_store.head(str(path))
     assert cwd == "/home/a"
     assert prompt == "actual words"
     assert pane == "/home/a/index.html"
@@ -644,7 +647,47 @@ def test_the_project_of_a_cwd_is_the_folder_itself():
 
 def test_an_unreadable_transcript_costs_only_itself(tmp_path):
     assert tasks_store.head(str(tmp_path / "nope.jsonl")) == \
-        (None, None, "", "")
+        (None, None, "", "", None)
+
+
+# ------------------------------------------------------------- entrypoint
+
+
+def test_the_head_reads_entrypoint_off_the_first_user_record(projects_dir):
+    path = _transcript(projects_dir, "-home-a", "s-cli", "/home/a",
+                        "2026-08-16T09:00:00Z", prompt="hi", entrypoint="cli")
+    assert tasks_store.head(str(path))[4] == "cli"
+
+
+def test_the_head_reads_sdk_cli_entrypoint(projects_dir):
+    path = _transcript(projects_dir, "-home-a", "s-sdk", "/home/a",
+                        "2026-08-16T09:00:00Z", prompt="hi", entrypoint="sdk-cli")
+    assert tasks_store.head(str(path))[4] == "sdk-cli"
+
+
+def test_a_transcript_with_no_entrypoint_field_answers_none(projects_dir):
+    # Older transcripts, predating the field, must never be defaulted to a
+    # made-up value — the notification gate downstream (task-status-notify.ts)
+    # treats "unknown" as "not cli" and must be able to tell the two apart.
+    path = _transcript(projects_dir, "-home-a", "s-none", "/home/a",
+                        "2026-08-16T09:00:00Z", prompt="hi")
+    assert tasks_store.head(str(path))[4] is None
+
+
+def test_entrypoint_is_cached_alongside_the_rest_of_the_head(projects_dir):
+    path = _transcript(projects_dir, "-home-a", "s-cache", "/home/a",
+                        "2026-08-16T09:00:00Z", prompt="first thing",
+                        entrypoint="cli")
+    assert tasks_store.head(str(path))[4] == "cli"
+    # A resolved head is cached against file size — appending must not force
+    # a re-read that could (incorrectly) change the already-resolved answer.
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "user", "cwd": "/home/a",
+                            "timestamp": "2026-08-16T10:00:00Z",
+                            "entrypoint": "sdk-cli",
+                            "message": {"role": "user",
+                                        "content": "later"}}) + "\n")
+    assert tasks_store.head(str(path))[4] == "cli"
 
 
 def test_epoch_reads_z_and_naive_stamps_as_utc():

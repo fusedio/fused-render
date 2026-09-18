@@ -2522,8 +2522,19 @@ def _place(task: dict) -> None:
     first_ts = None
     prompt = ""
     pane = ""
+    entrypoint = None
     if task["path"]:
-        cwd, first_ts, prompt, pane = tasks_store.head(task["path"])
+        cwd, first_ts, prompt, pane, entrypoint = tasks_store.head(task["path"])
+    # ENTRYPOINT (2026-09-18): "cli" (interactive terminal) vs "sdk-cli"
+    # (headless/programmatic, what templates/claude/agent.py's spawn
+    # produces) off the same head-parsed record `cwd`/`prompt`/`pane` already
+    # come from — see tasks_store.head's own doc comment. Stored UNDEFINED,
+    # never a placeholder default, when the transcript has none (an older
+    # session, or the head read failed): task-status-notify.ts's gate must
+    # treat "unknown" the same as "not cli" (fail open), and a fabricated
+    # default here would make that distinction impossible to draw correctly
+    # downstream.
+    task["entrypoint"] = entrypoint
     entries = task["entries"]
     target = str(entries[-1].get("target") or "") if entries else ""
     # A GUESSED project mints no number (`_numbers`). The directory-name
@@ -3292,6 +3303,12 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # conversation's own next line and never blocks it (Akshil,
         # 2026-09-12). See `_queue_summary`.
         "queue_blocking": blocking,
+        # "cli" / "sdk-cli" / `None` — see `_place`'s own comment and
+        # `_PULSE_FIELDS`'s. `.get`, not `[...]`: a draft row (built by the
+        # separate draft-row function, never through `_place`) never gets an
+        # `"entrypoint"` key set on `task` at all, and this must not KeyError
+        # on one.
+        "entrypoint": task.get("entrypoint"),
         # Newest first, which is how every list in this feature reads.
         "messages": list(reversed(tail)),
     }
@@ -4476,6 +4493,14 @@ _PULSE_FIELDS = (
     # how much work it is holding made a task with three queued sends look like
     # one. A single integer on a row that is already being built.
     "queue_waiting",
+    # "cli" (interactive terminal) / "sdk-cli" (headless — what
+    # templates/claude/agent.py's spawn produces) / `None` (unknown, e.g. no
+    # transcript yet) — see `_place`'s own comment. task-status-notify.ts's
+    # finished-task notice gates on this: only an exact "cli" is treated as
+    # "started outside our own template", and anything else, including
+    # `None`, still notifies. A row missing this key entirely would be a
+    # `KeyError` here, so `_place`/`_row` always set it, even to `None`.
+    "entrypoint",
 )
 
 
