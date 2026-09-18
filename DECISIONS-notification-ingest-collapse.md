@@ -763,3 +763,171 @@ row); the user's own follow-up narrowed "show" to mean "popup" specifically,
 which is what shipped instead. And the brief suggested `isPopupSuppressed`
 in `jobs.ts` as the pattern to mirror for the injected-predicate shape,
 which held up exactly as described once written.
+
+# F9. Code review of F8's "already open" gate: five findings, all fixed (2026-09-18)
+
+F8 shipped with a gate that was materially wider than the user's own request
+("we never want to show notifications for tasks when the claude template /
+app is already opened") in three separate ways, plus a fragile import and a
+mis-stated doc comment. All five are fixed here.
+
+## Finding 1: `recentFsPath` was a REAL runtime import, not a type-only one
+
+F8 imported `recentFsPath` from `apps/explorer/lib/recents.ts` to normalize
+`taskDestination(task)`'s HREF down to the bare fs path presence entries
+store. `recents.ts` in turn imports `@platform/lib/router`, which reads
+`location` and calls `history.replaceState` at MODULE INIT (its
+`rewriteLegacyPath` IIFE) — not merely inside an exported function, at the
+top level, unconditionally, on import.
+
+**Premise checked, not assumed:** ran `bun test
+src/shell/task-status-notify.test.ts` standalone at both HEAD (2d8ea3949)
+and at bf3a4eb90 (the commit immediately before F8), by swapping in
+bf3a4eb90's copies of `task-status-notify.ts`/`task-status-notify.test.ts`
+via `git show bf3a4eb90:... > ...` and a plain file copy (never `git
+checkout`/`stash` against the worktree itself). Pre-F8: 24/24 pass
+standalone. At HEAD: `ReferenceError: location is not defined` at
+`router.ts:54`, exactly as the review predicted. The difference is exactly
+the import this file's own header comment traces: pre-F8 the file imported
+`NotificationInput` from `notifications.ts` as a TYPE ONLY (`import type`,
+erased at compile time — no runtime import happens at all, so
+`notifications.ts`'s own `router.ts` import, which has existed since before
+F8, never actually runs for this test file). F8's `recentFsPath` import was
+a real value import, which is what actually pulled `router.ts`'s module-init
+code into this file's dependency graph for the first time. **Verdict: newly
+introduced by F8, not pre-existing** — the directory-wide green the branch
+shipped with was order-dependent (some earlier file in the same `bun test`
+process happens to install a DOM shim first), not a real pass.
+
+Fixed by inlining the small decode `recentFsPath` performs (strip the query,
+strip a `VIEW_PREFIX`/legacy `/view/` prefix, decode + re-root what remains)
+as pure, DOM-free local functions (`normalizeDestination`/`rootedFsPath`) in
+`task-status-notify.ts` itself, rather than importing it. Deliberately does
+NOT import even `rootedFsPath` alone from `router.ts` — importing ANY export
+from that module, however pure, still runs its module-init code; the two
+lines it needed are duplicated instead. Standalone `bun test
+src/shell/task-status-notify.test.ts` now passes without any other file's
+help: 33/33 (32 pre-existing/extended + 1 new for Finding 4, below).
+
+## Finding 2: `matchesSource`'s bidirectional prefix rule was far too wide for this gate
+
+`isDestinationOpen` was `snapshotIsOpenAnywhere()`, which uses
+`matchesSource`'s general rule: an ancestor OR descendant path counts as
+"open" (right for `jobs.ts`'s `isPopupSuppressed` — a job running somewhere
+under an open folder tab IS "being watched"). Applied to F8's gate, a single
+browser tab sitting on `/Fused/sandbox` would suppress the popup for EVERY
+task nested anywhere beneath it — far wider than "this task's own app/chat
+is open".
+
+`matchesSource` itself is untouched — `jobs.ts` and other callers depend on
+the wider rule, and the brief was explicit not to narrow it globally.
+Instead, a new, separate snapshot function, `snapshotIsOpenExact`
+(`platform/lib/presence.ts`), does an EXACT canonical-string match only (no
+prefix logic at all) and is the one `useTaskStatusNotify.ts` now passes as
+`isDestinationOpen`. Verified directly: `presence.test.ts` now asserts a tab
+on the ancestor `/Fused/sandbox` does NOT mark a task at
+`/Fused/sandbox/app/index.html` open under `snapshotIsOpenExact`, while
+`matchesSource` on the same two strings (the OLD rule) still returns `true`
+— proving the narrowing is real, not incidental.
+
+## Finding 3: embed/preview iframes publish presence too, and nothing distinguished them
+
+Verified empirically, per the brief's own instruction, rather than guessed:
+`installHeartbeat()` (presence.ts) self-installs at MODULE LOAD in every
+document that imports the module — unconditionally, including an
+`/explorer/embed/<path>` document loaded inside a hidden preview `<iframe>`
+(`BookmarkCards.tsx`'s `LivePreview src={embedUrlForFsPath(peekPath)}`,
+`AppPreviewCard.tsx`'s embed shell). That document's `currentPresencePage()`
+returns the real fs path it's rendering, so hovering an app card publishes a
+presence entry for that path — indistinguishable, before this fix, from a
+real open window, and it stays on record for up to `PRESENCE_STALE_MS`
+(15s) after the hover ends if `pagehide` never fires (it often won't for a
+component just unmounted, not a real navigation).
+
+Checked whether any existing field already discriminates this: `IS_EMBED`
+was already computed at `writeSelf` time (used for the `topLevel` flag,
+which is `false` for a nested iframe regardless — that flag conflates a real
+standalone embed tab with a nested preview iframe just as much as no field
+does), but never stored on the `PresenceEntry` itself. **No existing field
+distinguishes them** — so this proposes the smallest addition rather than
+guessing further: a new `embed: boolean` field on `PresenceEntry`, set from
+`IS_EMBED` at `writeSelf`. `snapshotIsOpenExact` filters out any entry with
+`embed: true` before matching. This can't distinguish a genuine standalone
+`/explorer/embed/...` tab from a transient hover preview either (both set
+`IS_EMBED` true, and no signal in this codebase currently tells them apart)
+— but for THIS gate that distinction doesn't matter: `taskDestination()`
+always points at a `/explorer/view/...` shell URL, never an `/embed/...`
+one, and an embed document has no chat panel to "already be showing" a
+finished task's chat in the first place. Excluding every embed presence
+entry from this one gate is therefore correct, not merely a compromise.
+`isOpenAnywhere`/`snapshotIsOpenAnywhere` are unchanged and keep counting
+embed entries for every other caller — this exclusion is scoped to
+`snapshotIsOpenExact` alone.
+
+## Finding 4: the `/tasks` carve-out missed the OTHER degenerate destination
+
+`taskDestination(task)` is `taskHref(task) ?? folderHref(task) ?? "/tasks"`.
+`taskHref` returns non-null the moment a `session_id` exists, regardless of
+whether `target`/`project` are populated — a task with a session id but
+BOTH empty produces `chatUrl("", sessionId)` =
+`/explorer/view/?_side=claude&session_id=<id>`, which
+`normalizeDestination` strips down to bare `"/"` (query stripped, prefix
+stripped, empty remainder rooted to `/`). The original `destination !==
+"/tasks"` carve-out only excluded the OTHER degenerate case
+(`folderHref`/`taskHref` both null), missing this one entirely — any window
+sitting on the explorer root would have suppressed the popup for every task
+shaped like this.
+
+Fixed by also excluding `normalizedDestination !== "/"` from the `quiet`
+computation. TDD: added a test with a task carrying `session_id: "s1"` and
+empty `target`/`project`, confirmed it reproduces
+`taskDestination(t) === "/explorer/view/?_side=claude&session_id=s1"`,
+confirmed the test fails (`quiet` was `true`) with only the original
+`/tasks` exclusion in place, then added the `"/"` exclusion and confirmed
+green.
+
+## Finding 5: `quiet`'s doc comment overclaimed "retain the row exactly as normal"
+
+`notify()` checks `input.quiet` AFTER `retainAndCollapse()`, which only ever
+keeps a row per `isRetained`'s own, unrelated rule (`"attention"` tone, or a
+carried `action`/`page`). A `quiet` input with none of those — no
+`page`/`action`, non-error tone — resolves to `transient`, which
+`isRetained` never keeps, `quiet` or not. Such an input is therefore neither
+popped (that's what `quiet` says to skip) nor retained (nothing about
+`quiet` makes `isRetained` say yes) — the returned id names nothing kept
+anywhere, which contradicts the field's own prior doc comment.
+
+**Decision: correct the doc comment, do not force retention.** Making
+`quiet` guarantee retention would mean a caller can turn a message with
+NOTHING to click on into a permanently-pinned row purely by setting one
+unrelated flag — inventing actionability the input never had, and
+inconsistent with `isRetained`'s own stated shape (every other route to
+retention requires either an error or a destination). `quiet`'s actual,
+narrower job — "skip the popup for whatever this would otherwise resolve
+to" — already composes correctly with a message that has nothing to keep:
+there is genuinely nothing worth pinning in the panel forever for a
+non-actionable, non-error notice, `quiet` or not. Today's only caller
+(`task-status-notify.ts`'s `in_progress -> done` branch) always sets `page`,
+so this was always latent for it and remains so; the doc comment on
+`NotificationInput.quiet` now states the actual constraint (checked after
+`retainAndCollapse`, not a retention override) instead of the stronger,
+incorrect guarantee. A test (`notifications.test.ts`) pins the actual
+(documented) behavior directly: `notify({ title: "just a note", quiet:
+true })` pops nothing and retains nothing.
+
+## An unrelated, out-of-scope observation: `notifications.test.ts` cannot run standalone either, for a different reason
+
+While checking Finding 1's premise, noticed `bun test
+src/platform/lib/notifications.test.ts` also fails standalone with the same
+`location is not defined` error — but for an UNRELATED, pre-existing reason
+that predates F8 by a wide margin and this round does not touch: the file's
+own `installDomShim()` call (line 17) is placed after its dynamic `await
+import("@platform/lib/notifications")` in the SOURCE but BEFORE it is
+actually reached, because a separate STATIC import two lines below it
+(`import { JOB_POPUP_VISIBLE_MS } from "@platform/lib/jobs"`) is hoisted
+ahead of every top-level statement per ES module semantics — including
+`installDomShim()` itself — and `jobs.ts` -> `api.ts` -> `presence.ts` ->
+`router.ts` pulls in the same module-init `location` read. Confirmed
+identical at bf3a4eb90 via `git show`, so this is not a regression from this
+round or from F8; flagging it here rather than fixing it since it is a
+different file, a different root cause, and out of this review's scope.
