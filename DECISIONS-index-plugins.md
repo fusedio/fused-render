@@ -205,3 +205,49 @@ incremental rescan, and both read back through `/api/index/rank`) on the
 backend; `IndexProposalsDock.test.tsx`, `index-proposals-lib.test.ts`,
 `GlobalSearchOverlay.test.tsx`, `StatusBar.test.tsx`,
 `exclusiveSection.test.tsx` on the frontend.
+
+## Fix round: bugbot findings
+
+Four Cursor Bugbot findings against the merge-base commit (`a7aef9472`),
+all genuine (no false positives):
+
+- **(a) Index manager never refreshes scan status.** `IndexManager.tsx`'s
+  `KindCard` fetched `/api/index/status` once on mount and once more after
+  a button click, but a scan the card itself started left it on
+  "Scanning…" forever until the whole page remounted — its effect's
+  `[kind, nonce]` dependency array never re-fired on its own. Replaced
+  with a self-rescheduling poll (fast while scanning, slow idle),
+  reusing `index-status.ts`'s own `INDEX_POLL_MS`/`INDEX_IDLE_POLL_MS`
+  constants rather than inventing new ones. Covered by
+  `IndexManager.test.tsx`.
+- **(b) Confirmed plugins never register or scan.** Nothing in the
+  propose/confirm flow ever imported a confirmed folder's module or
+  called its `register` — `manifest.py`'s own docstring had always
+  deferred that to "the caller", but no caller ever existed. Added
+  `manifest.register_confirmed_kinds()` (best-effort, never raises: an
+  import/register failure degrades that one folder to "confirmed but not
+  yet scannable", never takes another confirmed kind down with it) and
+  wired it into the same three sites `apps_kind.register_builtin`
+  already needed: the confirm route (`routers/index_manifest.py`), the
+  router's own module import (`routers/index.py`), and the detached
+  worker's module import (`worker.py`) — the worker subprocess never
+  imports the router, so it needs its own call. Covered by new tests in
+  `test_index_manifest.py` and `test_index_manifest_api.py`.
+- **(c) Indexing off leaves other kinds scanning.** `cancel_all_scans()`
+  only ever loaded the default "files" `IndexConfig`, so a live scan of
+  any OTHER registered kind (each with its own `runs_dir`) kept running
+  right through the toggle. Now folds `"files"` plus `kinds.registered()`
+  and cancels a running scan under each one's own `runs_dir`. Covered by
+  a new test in `test_shell_prefs.py` using the built-in "apps" kind
+  (needs no manifest/confirm setup).
+- **(d) Malformed extract rows still abort scans.** `scan.py`'s own
+  `extract()` call site only guards against an exception or a `None`
+  return — a plugin returning some other non-dict, non-`None` value (a
+  bare string, a list, an int) sailed through unchanged and reached
+  `Sink.add`'s generic branch, whose `fr.get(name)` raised
+  `AttributeError`, uncaught anywhere between there and the scan's own
+  top-level handler, aborting the whole run over one malformed row.
+  `Sink.add` now treats a non-dict `fr` the same as a dict missing every
+  declared key: an all-null cell per column for that one row, degrading
+  it rather than raising. Covered by a new test in `test_index_store.py`,
+  confirmed red (the exact predicted `AttributeError`) before the fix.
