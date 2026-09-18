@@ -341,7 +341,12 @@ export function ShareAppModal({
   };
 
   const doExport = async () => {
-    if (busy) return;
+    // The file route needs no account, so a sign-in in flight (a browser
+    // round-trip the user may never finish) must not block it — only another
+    // screen-shooting action does. Same predicate as the button's `disabled`
+    // (`working`), so the click never lands on a button that then does
+    // nothing (Bugbot, #1207).
+    if (busy !== null && busy !== "login") return;
     setFileErr("");
     setBusy("export");
     try {
@@ -394,8 +399,10 @@ export function ShareAppModal({
       </p>
     );
   } else if (status && !signedIn) {
+    // Disabled while ANY action runs, matching onLogin's own guard: a browser
+    // window opening mid-export could cover the rect being shot.
     linkAction = (
-      <Button size="sm" onClick={onLogin} disabled={busy === "login"}>
+      <Button size="sm" onClick={onLogin} disabled={busy !== null}>
         {busy === "login" && <Loader2 data-icon="inline-start" className="animate-spin" />}
         {busy === "login" ? "Waiting for sign-in…" : "Sign in to Fused"}
       </Button>
