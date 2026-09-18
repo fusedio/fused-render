@@ -154,7 +154,12 @@ class UpdateManager(_base.UpdateManager):
         # same directory installs actually use, instead of an unrelated,
         # never-populated macOS path.
         if self._bundle is not None:
-            return os.path.dirname(self._bundle)
+            # realpath, not the stored path: see `_install_appimage` for why
+            # the swap itself resolves the symlink first — the updates dir
+            # has to be the REAL parent, the one `os.replace()` actually
+            # lands in, or a download staged next to a symlink could end up
+            # on a different filesystem than the swap target.
+            return os.path.dirname(os.path.realpath(self._bundle))
         # The check-only dev manager (DEV_MANAGER_ENV) has no AppImage at
         # all — nothing to swap, nothing to sweep, but _check_disk_space
         # still needs a real directory to statvfs.
@@ -166,7 +171,15 @@ class UpdateManager(_base.UpdateManager):
     def _install_appimage(self, manifest: dict) -> None:
         if self._bundle is None:
             raise RuntimeError("not running from an AppImage")
-        appimage = self._bundle
+        # realpath, not the stored path: `$APPIMAGE`/`startup.appimage_path()`
+        # can in principle name a symlink (today's type-2 runtime resolves
+        # `/proc/self/exe` itself, so it never does — but nothing here should
+        # depend on that). Swapping onto the LINK's own path would replace the
+        # link with a plain file and orphan the real artifact it pointed at;
+        # resolving first means `os.replace()` lands on the real file, and the
+        # link — if there is one — keeps resolving to it, same as mac's
+        # `_install_dmg` resolving `self._bundle` before renaming.
+        appimage = os.path.realpath(self._bundle)
         parent = os.path.dirname(appimage)
         # The common Linux case: an AppImage in /opt or on a read-only mount.
         if not os.access(parent, os.W_OK):

@@ -2694,3 +2694,27 @@ exactly as it would for any other exit reason — covered by
 which asserts both `release`/`respawn` happened AND that the error still
 raises.
 
+
+## Task 10 — Resolving `$APPIMAGE` through `realpath` before swapping, matching mac's `_install_dmg`
+
+`_install_appimage` swapped `$APPIMAGE`'s path verbatim, unlike mac's
+`_install_dmg`, which deliberately resolves `self._bundle` through
+`os.path.realpath()` first (with a comment explaining why: swapping onto a
+symlink's own path would replace the link with a plain file and orphan the
+real artifact it used to point at). This is latent today — the type-2
+AppImage runtime resolves `/proc/self/exe` itself before setting
+`$APPIMAGE`, so it is never actually a symlink in production — but nothing
+in `_install_appimage` should depend on that being true forever, and the fix
+is one line. Reproduced as a failing test
+(`test_install_resolves_a_symlinked_appimage_before_swapping` in
+`tests/test_linux_update.py`) that points `_bundle` at a symlink to a real
+file in a different directory and asserts the download lands next to the
+REAL file, not the link; it failed against the unfixed code with the staged
+download's `dir` argument matching the symlink's parent instead of the real
+file's parent.
+
+Fixed by resolving `appimage = os.path.realpath(self._bundle)` before
+deriving `parent = os.path.dirname(appimage)`, both in `_install_appimage`
+and in `_updates_dir()` (which needs to agree with the swap target's actual
+filesystem for the same `os.replace()`-atomicity reason `_install_appimage`
+does) — mirroring mac's existing pattern rather than inventing a new one.
