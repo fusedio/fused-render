@@ -2473,6 +2473,12 @@ function ChatBody(props: ChatBodyProps) {
           // session during that await must count as leaving this send's chat.
           const epochAtSend = paneEpoch.current;
           await queueFlagReady();
+          // THE PER-SEND CLAIM ADMIT MINTED, if it did — carried past the
+          // `if (queueEnabled())` block below (`verdict` is scoped to it) and
+          // onto the wire that actually spawns or sends (Bugbot, PR #1194):
+          // proof this exact send is the one the queue already counted, so
+          // the server gate looks rather than claiming it a second time.
+          let queueClaim: string | undefined;
           if (queueEnabled()) {
             // READ ONCE, and read HERE: the session can arrive while the copies
             // below are uploading, and a body whose `session_id` and
@@ -2703,6 +2709,14 @@ function ChatBody(props: ChatBodyProps) {
             // price of asking before spending (see `carryForQueue`). The round
             // of notes is put down the same way: still pending, still chipped,
             // and `beginSend` below takes it the ordinary way.
+            //
+            // …and the claim this admission minted, read off the wire rather
+            // than the type for the same reason `run` was above: an older
+            // server answers `{run: true}` with nothing to read.
+            queueClaim =
+              typeof (verdict as { claim?: unknown } | null)?.claim === "string"
+                ? (verdict as { claim?: string }).claim
+                : undefined;
             putDownQueuedShot();
           }
           const { merged, done } = await beginSend(opts);
@@ -2710,6 +2724,7 @@ function ChatBody(props: ChatBodyProps) {
             ...merged,
             sendId,
             ...(optimisticKey ? { optimisticKey } : {}),
+            ...(queueClaim ? { queueClaim } : {}),
           };
           let ok = true;
           try {
@@ -4188,6 +4203,14 @@ function ChatBody(props: ChatBodyProps) {
                 // (platform/lib/usage-limit). Read off this chat's own row, which
                 // is the same field the Tasks page draws the red ring from.
                 status={limitWord}
+                // …AND THE QUEUE'S OWN STATE, off this conversation's LIVE row
+                // (`useSchedule.row`, the tasks change feed). The Tasks list has
+                // always shown a queued chat as a dashed ring and "1st in line ·
+                // behind TASK-046"; this header said nothing, so a reader whose
+                // send was behind somebody else's run could not tell it from an
+                // idle chat (Akshil, 2026-09-17). `Topbar` draws it only while
+                // the row says `queued`.
+                queue={queueOn ? sched.row : null}
               />
             ) : null}
             <Transcript

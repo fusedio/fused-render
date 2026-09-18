@@ -164,12 +164,13 @@ describe("the row's name and state", () => {
       { key: "pending:e1" },
       { key: "s1" },
     ];
-    // The two KEY hits are equals and the listing's own order decides between
-    // them (T:16985 returns on the first of either) — what the ordering rule
-    // buys is that neither is ever beaten by the scan.
+    // The pending key has priority over the session key (Bugbot, 2026-09-17):
+    // when a message is sent to a different folder's task, the entry gets a
+    // pending:<entry_id> key, not the session key. Without this, schedFindTask
+    // returns an old done task with the same sessionId.
     expect(schedFindTask(tasks, entry(), "s1")?.key).toBe("pending:e1");
     expect(schedFindTask([{ key: "s1" }, { key: "pending:e1" }], entry(), "s1")?.key).toBe(
-      "s1",
+      "pending:e1",
     );
     // Keyed by the entry when it has no session yet.
     expect(schedFindTask(tasks, entry(), "")?.key).toBe("pending:e1");

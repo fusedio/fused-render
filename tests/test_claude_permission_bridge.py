@@ -1254,12 +1254,13 @@ def test_the_two_spellings_of_the_held_store_are_one_file(agent, tmp_path,
     """THE PATH IS SPELLED TWICE ON PURPOSE and nothing in either module can
     notice the two drifting apart.
 
-    `fused_render/project_queue.py` writes it as `HELD_ANSWERS_FILE` under
+    `fused_render/project_queue.py` spells it as `HELD_ANSWERS_FILE` under
     `tasks_store.STATE_DIR`; agent.py re-derives it from `$FUSED_RENDER_HOME`
     because a TEMPLATE may not import fused_render (SPEC PY-15). So this writes
-    through the one and reads through the other, which is the only test that
-    fails when one of them moves. The version stamp is the same pin at the level
-    of the file's shape."""
+    at the one spelling and reads through BOTH readers — agent.py's badge and
+    `read_legacy_held_answers`, all that is left of the store on the server side
+    (PR 2, 2026-09-17) — which is the only test that fails when one of them
+    moves. The version stamp is the same pin at the level of the file's shape."""
     from fused_render import project_queue, tasks_store
 
     house = tmp_path / "fused-render"
@@ -1278,8 +1279,16 @@ def test_the_two_spellings_of_the_held_store_are_one_file(agent, tmp_path,
                                tool_input={"command": "ls"})
     assert agent._permissions(run_dir)[0]["held"] is False
 
-    assert project_queue.hold_answer("/work", "sess-a", "run", "req-q",
-                                     {"raw": {}}) is not None
+    os.makedirs(tasks_store.STATE_DIR, exist_ok=True)
+    with open(os.path.join(tasks_store.STATE_DIR,
+                           project_queue.HELD_ANSWERS_FILE), "w",
+              encoding="utf-8") as fh:
+        json.dump({"version": project_queue.STORE_VERSION,
+                   "answers": [{"queue_key": "/work", "session_id": "sess-a",
+                                "run_id": "run", "request_id": "req-q",
+                                "payload": {"raw": {}}, "at": 1.0}]}, fh)
+    assert [a["request_id"]
+            for a in project_queue.read_legacy_held_answers()] == ["req-q"]
     perm = agent._permissions(run_dir)[0]
     assert perm["held"] is True
     # …and nothing was written to the run dir: held is answered-and-waiting.

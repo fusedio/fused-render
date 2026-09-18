@@ -22,6 +22,8 @@ Five more preferences are persisted: **reader_enabled** (whether the Reader
 listen-to-files accessibility mode is offered — opt-in, default off; see
 ``reader_enabled``), **canvases_enabled** (whether the Canvases feature is
 offered at all — opt-in, default off; see ``canvases_enabled``),
+**app_sharing_enabled** (whether the unified Share sheet replaces the plain
+Export action — opt-in, default off; see ``app_sharing_enabled``),
 **default_model** (the preferred Claude model as a short
 name, unset by default; see ``default_model``), **indexing_enabled** (whether
 background file-index scanning may run — default ON, see ``indexing_enabled``),
@@ -162,6 +164,27 @@ def canvases_enabled() -> bool:
     reads as off, so an existing install — signed in or not — has to opt in.
     """
     return read_prefs().get("canvases_enabled") is True
+
+
+def app_sharing_enabled() -> bool:
+    """Whether the unified Share sheet is offered (default off — opt-in).
+
+    ON, every surface that lets a reader take an app out of this machine — the
+    /apps card's hover chip and right-click menu, the app page header, the
+    explorer kebab, the explorer folder row — shows ONE "Share" entry, and the
+    sheet behind it holds both routes: a public link on the reader's Fused
+    account (share_app.py) and the `.fused` file download (SPEC §43). OFF, the
+    same five surfaces show the plain Export / Download action they carried
+    before the sheet existed: the `.fused` file lands in Downloads and a toast
+    says where. The link route is not reachable at all while this is off — the
+    sheet is the only thing that opens it, and nothing opens the sheet.
+
+    A SWITCH OVER THE ENTRY POINTS, like `canvases_enabled`: the /api/share/*
+    routes keep answering, so a script or a page that already talks to them is
+    not what a reader turning this off asked to lose. Any non-`true` stored
+    value (missing/legacy) reads as off, so every install has to opt in.
+    """
+    return read_prefs().get("app_sharing_enabled") is True
 
 
 NATIVE_CHAT_ENV = "FUSED_RENDER_NATIVE_CHAT"
@@ -577,6 +600,10 @@ def _prefs_response() -> dict:
         # its Settings menu entry (opt-in, D427). Not a route guard; see
         # `canvases_enabled`.
         "canvases": {"enabled": canvases_enabled()},
+        # Whether the unified Share sheet (public link + .fused file) is offered
+        # in place of the plain Export / Download action (opt-in, default off).
+        # Not a route guard; see `app_sharing_enabled`.
+        "app_sharing": {"enabled": app_sharing_enabled()},
         # Whether chat embeds render the native React chat (beta) instead of the
         # legacy template iframe. The EFFECTIVE value, plus `forced_by` — the
         # same shape `engine_state()` above uses for the same problem: with the
@@ -783,6 +810,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'canvases_enabled' must be a boolean"}, status_code=400)
         prefs["canvases_enabled"] = value
         changed = True
+    if "app_sharing_enabled" in body:
+        value = body.get("app_sharing_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'app_sharing_enabled' must be a boolean"}, status_code=400)
+        prefs["app_sharing_enabled"] = value
+        changed = True
     if "native_chat_enabled" in body:
         value = body.get("native_chat_enabled")
         if not isinstance(value, bool):
@@ -923,7 +956,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     if not changed:
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
-                      "'engines', 'reader_enabled', 'canvases_enabled', 'native_chat_enabled', "
+                      "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'native_chat_enabled', "
                       "'chat_recap_enabled', 'task_peek_enabled', "
                       "'task_card_last_message', 'task_notify_terminal_sessions', "
                       "'project_queue_enabled', "

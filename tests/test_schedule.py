@@ -120,6 +120,53 @@ def test_create_rejects_what_a_caller_can_get_wrong(target):
                         permission_mode="bypassPermissions")
 
 
+def test_a_new_folder_must_say_where_it_goes(target, monkeypatch):
+    """A BARE NAME IS NOT A PLACE (Akshil, 2026-09-18), and this one made a
+    folder in the wrong one.
+
+    Typing `123` into the New task card's folder field offered to create it, and
+    saving did — inside whatever directory the SERVER process happened to be
+    started in, because `abspath` resolves a relative name against this process's
+    cwd and a name says nothing about where it lives. He got
+    `…/fused-render-wt/agent-20260918-tasks-and-new-task/123`.
+
+    The card has its own rule about when to OFFER (`isPathShapedQuery`), and that
+    is UX. THIS is the one that can be relied on: it holds for the calendar, for
+    the API, and for a page built against a future client.
+    """
+    # The cwd is a real, writable directory, so the old behaviour would have
+    # succeeded here and left a folder behind — which is the whole bug.
+    monkeypatch.chdir(target)
+    with pytest.raises(ValueError, match="needs a full path"):
+        schedule.create("newfold1", "hi", _in(600), create_target=True)
+    assert not (target / "newfold1").exists()
+    with pytest.raises(ValueError, match="needs a full path"):
+        schedule.create("123", "hi", _in(600), create_target=True)
+    assert not (target / "123").exists()
+
+    # …and every shape that DOES say where still works: absolute, `~`-rooted,
+    # and the explicitly-relative `./` a CLI caller can legitimately mean.
+    schedule.create(str(target / "abs-ok"), "hi", _in(600), create_target=True)
+    assert (target / "abs-ok").is_dir()
+    monkeypatch.setenv("HOME", str(target))
+    monkeypatch.setenv("USERPROFILE", str(target))
+    schedule.create("~/tilde-ok", "hi", _in(600), create_target=True)
+    assert (target / "tilde-ok").is_dir()
+    schedule.create("./dot-ok", "hi", _in(600), create_target=True)
+    assert (target / "dot-ok").is_dir()
+
+
+def test_a_bare_name_that_ALREADY_EXISTS_is_still_resolved(target, monkeypatch):
+    """The refusal is only for a CREATE. A relative target that names something
+    already on disk has resolved against the process cwd for as long as this
+    function has existed, and taking that away would refuse folders that work
+    today — a different change, and not one anybody asked for."""
+    monkeypatch.chdir(target)
+    (target / "already").mkdir()
+    entry = schedule.create("already", "hi", _in(600))
+    assert entry["target"] == str(target / "already")
+
+
 def test_create_target_makes_one_folder_and_only_one(target):
     """`create_target` is opt-in, and one level deep. Off, a missing target is
     the same refusal it always was — which is what the re-send path relies on:

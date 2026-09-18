@@ -432,6 +432,32 @@ describe("start → poll → done", () => {
     expect("draft_key" in started).toBe(false);
   });
 
+  // ---- the admitted claim (`queue_claim`, Bugbot PR #1194) ------------------
+  //
+  // `/api/tasks/queue/admit`'s `run: true` answer carries a fresh per-send
+  // claim token when the project queue admitted this send (`QueueAdmission.
+  // claim`). ClaudeChat reads it off the verdict and hands it down as
+  // `SendOptions.queueClaim`; the run loop's job is only to forward it
+  // verbatim onto the request the server gate reads it back off.
+
+  test("a send carrying an admitted claim forwards it as `queue_claim`", async () => {
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true }),
+    });
+    await controller.sendMessage("hi", { queueClaim: "tok-1" });
+    expect(agent.of("start")[0].fields.queue_claim).toBe("tok-1");
+  });
+
+  test("a send with no admitted claim sends no `queue_claim` at all", async () => {
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true }),
+    });
+    await controller.sendMessage("hi");
+    expect("queue_claim" in agent.of("start")[0].fields).toBe(false);
+  });
+
   test("`start` refusing rolls the bubble back and reports the failure", async () => {
     const { controller, params } = makeController({
       start: () => ({ error: "(empty message)" }),

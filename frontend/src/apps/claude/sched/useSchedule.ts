@@ -9,6 +9,13 @@ import {
   getSchedule,
   getTasks,
 } from "@platform/lib/api";
+// THE ONE `/api/tasks` + `/api/tasks/changes` LOOP THIS DOCUMENT RUNS
+// (`shell/tasksPulse`, one of the four shell modules an app may import —
+// scripts/check-boundaries.mjs). Subscribed rather than polled: the server rings
+// that long-poll the instant the queue manager moves anything
+// (`tasks_watch.notify`), which is how the Tasks page repaints a queued row in
+// ~100ms while this pane sat on a 3-15s schedule lap and a 5s row-read floor.
+import { subscribeListing } from "@shell/tasksPulse";
 import type { ChatController } from "../protocol/controller-api";
 import { useProjectQueueEnabled } from "../feature-flag";
 import { waitingFor } from "./waiting";
@@ -93,6 +100,14 @@ export interface UseScheduleOptions {
     setInterval(fn: () => void, ms: number): unknown;
     clearInterval(handle: unknown): void;
   };
+  /**
+   * THE TASKS CHANGE FEED, injectable for the three endpoint calls' reason: the
+   * real one is a module-global long-poll shared by the whole document, and a
+   * suite that drove it would be driving it for every suite loaded after it.
+   * Omitted, it is `shell/tasksPulse.subscribeListing` — the feed the Tasks page
+   * and Recent chats already read, refcounted to one socket per document.
+   */
+  subscribeRows?(cb: (rows: SchedTask[]) => void): () => void;
 }
 
 export interface ScheduleApi {
@@ -128,6 +143,51 @@ const PLATFORM_API: ScheduleApi = {
   getTasks: () => getTasks() as unknown as Promise<{ tasks?: SchedTask[] }>,
   cancelScheduledMessage: (id) => cancelScheduledMessage(id),
 };
+
+/**
+ * THE DOCUMENT'S ONE LISTING FEED, narrowed to "here are the rows".
+ *
+ * A FAILED READ IS DROPPED ON THE FLOOR rather than published as "no rows", for
+ * `protocol/sessions`' reason: the feed answers a dead `GET /api/tasks` with
+ * `{rows: [], failed: true}` because it has forgotten its listing, and folding
+ * that in would take this chat's queue caption down over a read that failed
+ * rather than over a queue that moved.
+ */
+function platformRows(cb: (rows: SchedTask[]) => void): () => void {
+  return subscribeListing((ev) => {
+    if (ev.failed) return;
+    cb(ev.rows as unknown as SchedTask[]);
+  });
+}
+
+/**
+ * IS THIS THE SAME ANSWER ABOUT THIS CHAT? The feed fires for every row on the
+ * machine — a `claude` typed in a terminal three folders away is a listing
+ * event — so a blind `setState` per answer would re-render the whole chat
+ * several times a second on a busy box, and bump `recGen`, which Run next's
+ * optimistic claim is measured against.
+ *
+ * Compared on THE FIELDS THIS PANE DRAWS and nothing else: the key (a queued
+ * chat rekeys from `pending:<leader>` onto its session the moment it runs), the
+ * status word, every queue field and the number. A title edit, a
+ * new message on the row, an unread count — none of those are this hook's.
+ */
+export function sameQueueRow(a: SchedTask | null, b: SchedTask | null): boolean {
+  if (!a || !b) return a === b;
+  return (
+    a.key === b.key &&
+    a.status === b.status &&
+    a.task_id === b.task_id &&
+    a.queue_position === b.queue_position &&
+    a.queue_ahead === b.queue_ahead &&
+    a.queue_ahead_title === b.queue_ahead_title &&
+    a.queue_ahead_session === b.queue_ahead_session &&
+    a.queue_ahead_target === b.queue_ahead_target &&
+    a.queue_priority === b.queue_priority &&
+    a.queue_waiting === b.queue_waiting &&
+    a.queue_blocking === b.queue_blocking
+  );
+}
 
 export interface ScheduleState {
   /**
@@ -175,6 +235,19 @@ export interface ScheduleState {
   /** The calendar button is off for the block OR for the mode's lock. */
   schedDisabled: boolean;
   rec: SchedTask | null;
+  /**
+   * THIS CHAT'S OWN `/api/tasks` ROW, LIVE — off the change feed rather than off
+   * a lap (`shell/tasksPulse`), and NOT gated on there being a waiting entry the
+   * way `rec` is.
+   *
+   * `rec` answers "what is in front of the message at the head of this chat's
+   * line", so it is published only while the row still belongs to that entry
+   * (T:16997-16999) and it goes null the instant the entry does. The HEADER is
+   * asking a different question — "how is this conversation doing" — and it has
+   * to be able to say `in_progress` in the same paint the queued word leaves in.
+   * Null until the feed has answered, and on every flag-off chat.
+   */
+  row: SchedTask | null;
   /** HOW MANY ROWS HAVE BEEN READ, counting from mount — the clock an optimistic
    *  claim is measured against. A caller that painted something the row in hand
    *  cannot know yet (Run next) remembers this number and holds its claim until
@@ -227,6 +300,8 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
    *  memo below keeps its one honest dependency. A fixed seam: handed in once
    *  by a suite, never swapped mid-life. */
   const timers = useRef(opts.timers);
+  /** …and the change feed, read at build time for the same reason. */
+  const rowsFeed = useRef(opts.subscribeRows ?? platformRows);
 
   /** THE POLL'S OWN ANSWER, unfiltered — every pending message aimed at this
    *  conversation. What the block DRAWS is derived from it below. */
@@ -646,6 +721,96 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     // effect for a chat with no session (whose `tick` is never stamped), while
     // the clock above decides whether the run actually spends a read.
   }, [hasCard, nextId, tick, lap, recRow.id, recRow.at, queueOn]);
+  // ── the live row (the tasks change feed) ──────────────────────────────────
+  //
+  // THE QUEUE MOVES ON EVENTS AND THIS PANE WAS THE ONLY SURFACE STILL ASKING ON
+  // A LAP (Akshil, 2026-09-17). `/api/schedule` runs at 15s for a chat with
+  // nothing pending in its own session — which is exactly the brand-new queued
+  // chat, whose entries name no session — and the `/api/tasks` re-read above is
+  // floored at `REC_REFRESH_MS` on top of it. So "behind TASK-046" lingered for
+  // seconds after the folder freed, the "1 message waiting" pill outlived the
+  // message, and the pane only learned its turn had started when the schedule
+  // lap finally came round, which for a short reply is after the reply.
+  //
+  // The server already rings a long-poll the moment the manager moves anything
+  // (`tasks_watch.notify`, design.md "Event transport"), and the Tasks page and
+  // Recent chats repaint off it in ~100ms. This subscribes the chat to the SAME
+  // feed — not a second poller: `subscribeListing` is refcounted to one
+  // `GET /api/tasks` and one `/api/tasks/changes` per document however many
+  // surfaces read it.
+  //
+  // THE POLL STAYS as the floor under it: a feed that has not started, a browser
+  // that dropped the socket, or a server too old to ring still get their answer
+  // a lap later. Nothing here replaces a read; it only arrives first.
+  const [liveRow, setLiveRow] = useState<SchedTask | null>(null);
+  /** The status word the last feed answer carried, so the schedule is asked
+   *  again on a CHANGE and not on every listing event the machine produces. */
+  const liveStatus = useRef("");
+  useEffect(() => {
+    // Flag off is main byte for byte, and the landing subscribes to nothing.
+    if (!queueOn || !inChat || (!sessionId && !leaderId)) return;
+    liveStatus.current = "";
+    setLiveRow(null);
+    return rowsFeed.current((rows) => {
+      // THE SAME THREE WAYS IN the lap's own read spends (`schedFindTask`): this
+      // session's key, `pending:<entry>`, the leader's key, and failing those a
+      // scan for the message. One finder, so the feed and the poll cannot
+      // disagree about which row is this conversation's.
+      const task = schedFindTask(
+        rows,
+        nextRef.current,
+        live.current.sessionId,
+        live.current.leaderId,
+      );
+      if (!task) {
+        // NOT A DELTA THAT DIDN'T MENTION US — THE ROW IS GONE. `subscribeListing`
+        // (`shell/tasksPulse.emitListing`) always hands `platformRows` the FULL
+        // merged listing, never a bare delta: a change-poll's own `rows`/`gone`
+        // pair is folded into `held` before it goes out, and a failed read is
+        // dropped before it ever reaches this callback (`platformRows` above).
+        // So an answer that reaches here and has nothing for this chat's
+        // session/leader/message key is the manager saying the entry left the
+        // queue — cancelled, or run and gone — and holding the last-known task
+        // would leave the header's dashed "queued · …" caption on screen for a
+        // message that is no longer waiting on anything (Bugbot review).
+        setLiveRow((cur) => (cur === null ? cur : null));
+        const goneId = nextRef.current ? String(nextRef.current.id || "") : "";
+        if (goneId) {
+          setRecRow((cur) =>
+            cur.id === goneId && cur.task !== null
+              ? { id: goneId, task: null, at: nowRef.current(), gen: cur.gen + 1 }
+              : cur,
+          );
+        }
+        return;
+      }
+      setLiveRow((cur) => (sameQueueRow(cur, task) ? cur : task));
+      // …AND IT IS ALSO THE ROW `rec` PUBLISHES, because every caption in this
+      // pane reads that one — the per-message "queued · behind TASK-046", the
+      // card over the composer and its count. Stamped `at` as a read, so the
+      // floor above counts this as the read it just saved.
+      const id = nextRef.current ? String(nextRef.current.id || "") : "";
+      if (id) {
+        setRecRow((cur) =>
+          cur.id === id && sameQueueRow(cur.task, task)
+            ? cur
+            : { id, task, at: nowRef.current(), gen: cur.gen + 1 },
+        );
+      }
+      // AND THE SCHEDULE IS ASKED AGAIN THE MOMENT THE WORD CHANGES. The row is
+      // the fast half of the picture; the other half — whether the entry is
+      // still pending, and which session its run opened (`ranSessions`, the one
+      // road a queued new chat has to its own transcript) — only `/api/schedule`
+      // knows, and waiting out its lap is what left a started message drawn as a
+      // dashed queued bubble for the length of the reply.
+      const word = String(task.status || "");
+      if (word !== liveStatus.current) {
+        liveStatus.current = word;
+        void watcher.tick();
+      }
+    });
+  }, [queueOn, inChat, sessionId, leaderId, watcher]);
+
   /** T:16997-16999 — the row is null the moment it stops being THIS entry's. */
   const rec = recRow.id && recRow.id === nextId ? recRow.task : null;
 
@@ -838,6 +1003,7 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     placeholder: BLOCKED_PLACEHOLDER,
     schedDisabled: blocked || locked,
     rec,
+    row: liveRow,
     recGen: recRow.gen,
     armed: !!nextId && armedId === nextId,
     refused: !!nextId && refusedId === nextId,

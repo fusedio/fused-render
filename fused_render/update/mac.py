@@ -25,7 +25,7 @@ nothing about what an install does, and nothing in the UI mentions Homebrew.
 - "dmg": download the signed DMG, verify, and swap the .app bundle in place.
   Replacing the bundle under a running process is the SUPPORTED existing flow
   (a manual DMG drag does exactly this): installed.installed_version() then
-  drifts from __version__, ServerStatusBanner shows the restart card, and
+  drifts from __version__, ServerStatusBanner raises the restart dialog, and
   fused-render://relaunch (app.begin_relaunch) respawns from disk. That
   relaunch guard REQUIRES the drift, which is why the swap happens on install
   rather than being deferred to quit.
@@ -594,14 +594,34 @@ class UpdateManager:
                 self._state = "error"
                 self._error = str(error)
             return
-        # The terminal row is also the completion NOTICE: `ActivityDock`'s
-        # `onJobsReported` -> `terminalNotifications` already carries every
-        # terminal job into Notifications, so saying it once here is the whole
-        # announcement — no second mechanism, and no client-side transition to
-        # watch for. `detail` as well as `message`: `jobStatusLine` reads
-        # `detail` for a `done` row and `message` for an `error` one.
+        # SILENT ON SUCCESS (2026-09-18). This row used to land on the default
+        # `trail` tier, which pops a card in the floating column
+        # (`popupJobs`, frontend/src/platform/lib/jobs.ts) — and a toast saying
+        # "Installed — restart to finish" now arrives at the same instant as
+        # the blocking dialog that says the same thing and offers the button,
+        # because the install reaching "installed" is what raises that dialog
+        # (`UpdateDialog`'s restart mode, D2). Two announcements of one event,
+        # one of them dismissible and useless.
+        #
+        # `silent` is the tier for exactly that — "finishing is not news"
+        # (jobs.py's TIERS) — and the ONE lever that suppresses the pop.
+        # It is a property of SUCCESS only: `effective_tier` still promotes an
+        # `error`/`cancelled` row to `attention`, so a failed install is as loud
+        # as it ever was, and the RUNNING row (its own reports, above, which do
+        # not restate tier and so stay `trail`) is untouched — the download's
+        # bytes, phase and ✕ all still draw.
+        #
+        # NOTE that `silent` also means NOT RETAINED: `jobRows` drops a
+        # silent+done row from the Notifications panel and `_sweep` ages it out
+        # of the registry. There is no tier that pops nothing yet keeps a row,
+        # and inventing one for this would be a fifth tier for a row nobody
+        # reads after the restart it is announcing.
+        #
+        # `detail` as well as `message`: `jobStatusLine` reads `detail` for a
+        # `done` row and `message` for an `error` one.
         self._job_report(state="done", detail=DONE_MESSAGE, message=DONE_MESSAGE,
-                         done=None, total=None, cancellable=False)
+                         done=None, total=None, cancellable=False,
+                         tier=jobs.SILENT)
         with self._lock:
             self._state = "installed"
             self._progress = None
@@ -632,8 +652,9 @@ class UpdateManager:
             return
         try:
             # No dedicated update page or Preferences tab exists — the
-            # update surface is sidebar chrome (UpdateBadge.tsx's badge,
-            # ServerStatusBanner.tsx's restart card) present on every route
+            # update surface is sidebar chrome (UpdateBadge.tsx's badge) and
+            # the blocking restart dialog ServerStatusBanner.tsx raises —
+            # present on every route
             # rather than a page of its own. /preferences is the same
             # fallback the gh-CLI-install job uses for the same reason.
             result = jobs.upsert({"id": job_id, **fields},

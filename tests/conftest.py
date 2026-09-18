@@ -269,6 +269,28 @@ _APPENV_VARS = ("FUSED_RENDER_HOME_DIR", "FUSED_RENDER_MOUNTS_DIR",
 
 
 @pytest.fixture(autouse=True)
+def _no_queue_manager_across_tests():
+    """No test inherits another test's queue index.
+
+    `queue_manager.get()` builds ONE manager per process and caches it, and that
+    manager holds the state dir and the scheduler store it was built against —
+    both of which are this test's `tmp_path`. Left standing, the next case in the
+    same xdist worker would read back a line filed under a directory that no
+    longer exists, and a folder would still be "owned" by a session from a test
+    that finished minutes ago.
+
+    Cleared on BOTH sides: before, because a module-scoped fixture may have built
+    one before this test's dirs were in place, and after, because the suite must
+    not leak one either way. A case that wants a manager installs it
+    (`reset_for_tests(fake)`) or lets a door build it."""
+    from fused_render import queue_manager
+
+    queue_manager.reset_for_tests(None)
+    yield
+    queue_manager.reset_for_tests(None)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_appenv_contract_vars():
     """Every test starts with the contract vars UNSET and cannot leak them.
 

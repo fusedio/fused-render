@@ -77,6 +77,7 @@ import os
 import sys
 import threading
 import time
+import urllib.request
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "fused_approvals"
@@ -198,6 +199,83 @@ def _write_atomic(path: str, data: dict) -> None:
     os.replace(tmp, path)  # a poll must never read a half-written request
 
 
+# ------------------------------------------------------- telling the queue
+#
+# A card on screen is the moment a task STOPS being the one running in its
+# folder: it is waiting on a human, and the project queue wants to hand the
+# folder to whoever is next in line rather than leave it parked behind a
+# question nobody is looking at (design.md, `card_raised`). Nothing else in
+# the system sees that moment as early as this process does — the card exists
+# the instant the file below is written, and the page only learns about it on
+# its next poll.
+#
+# Same posture as session_host.py's own posts, for the same reasons: stdlib
+# `urllib.request` (this file may not import `fused_render`), its own daemon
+# thread so the approval round trip is never slowed by a server hiccup, a 2 s
+# timeout, every exception swallowed, and silence when no origin is exported.
+# The endpoint is a no-op while the flag is off, so a post that never lands
+# costs nothing.
+
+_EVENT_PATH = "/api/tasks/queue/event"
+_EVENT_TIMEOUT = 2.0
+
+
+def _post_card(kind: str, req_id: str) -> None:
+    """Announce what just happened to the card `req_id` in PERM_DIR.
+
+    The run id is PERM_DIR's parent directory name: `agent._perm_dir` is
+    `<run_dir>/perm` and the run dir's own basename IS the run id everywhere
+    else (`agent.RUNS/<run_id>`). Read off the global at call time, not at
+    import, because that is what a test redirects."""
+    try:
+        origin = (os.environ.get("FUSED_RENDER_ORIGIN") or "").rstrip("/")
+        if not origin or not PERM_DIR:
+            return
+        body = {"kind": kind,
+                "run_id": os.path.basename(os.path.dirname(PERM_DIR)),
+                "request_id": req_id}
+        threading.Thread(target=_send_event, args=(origin + _EVENT_PATH, body),
+                         daemon=True).start()
+    except Exception:
+        pass  # a queue that never hears about this still shows the card
+
+
+def _post_card_raised(req_id: str) -> None:
+    """The card went up: this task is waiting on a human and holds nothing."""
+    _post_card("card_raised", req_id)
+
+
+def _post_card_cleared(req_id: str) -> None:
+    """The card came down: the decision is in, and this task is about to be a
+    RUNNING task again.
+
+    **THIS PROCESS IS THE ONLY ONE THAT SEES EVERY ANSWER** (2026-09-17). A card
+    can be answered from the page, from the terminal the CLI is attached to, or
+    by a file dropped next to the request — and the queue has to hear about all
+    three, or a task that was un-blocked hours ago still counts as blocked and
+    its folder is handed to somebody else while it works. Routing the decide
+    ENDPOINT through the manager would only cover the first of those. The wait
+    below is downstream of all of them: whatever wrote the answer, this is the
+    line that reads it.
+
+    Posted for the timeout fallback too. A card that timed out is not on screen
+    any more either, and the deny it produced is a verdict the CLI is already
+    acting on."""
+    _post_card("card_cleared", req_id)
+
+
+def _send_event(url: str, body: dict) -> None:
+    try:
+        req = urllib.request.Request(
+            url, data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-Fused": "1"},
+            method="POST")
+        with urllib.request.urlopen(req, timeout=_EVENT_TIMEOUT) as resp:
+            resp.read()
+    except Exception:
+        pass
+
+
 def _read_decision(res_path: str) -> dict:
     try:
         with open(res_path, encoding="utf-8") as fh:
@@ -265,9 +343,17 @@ def _await_answer(res_path: str, timeout: float, fallback: dict) -> dict:
 
 
 def _await_decision(req_id: str) -> dict:
-    """Block until agent.py writes the decision file, or we give up."""
-    return _await_answer(os.path.join(PERM_DIR, req_id + ".res.json"),
-                         WAIT_TIMEOUT, {"decision": "deny", "reason": "timeout"})
+    """Block until agent.py writes the decision file, or we give up — then tell
+    the queue the card is gone (`_post_card_cleared`).
+
+    ONE POST PER CARD, and here rather than at the three places a decision can
+    come from: every one of them ends up as the `<id>.res.json` this loop is
+    already watching for."""
+    decision = _await_answer(os.path.join(PERM_DIR, req_id + ".res.json"),
+                             WAIT_TIMEOUT,
+                             {"decision": "deny", "reason": "timeout"})
+    _post_card_cleared(req_id)
+    return decision
 
 
 def _multi_answer_ok(value: str, labels: list) -> bool:
@@ -519,6 +605,10 @@ def _handle_approve(args: dict) -> dict:
         "tool_use_id": args.get("tool_use_id") or "",
         "created_at": time.time(),
     })
+    # The card exists now; the wait below can last an hour. Announce it BEFORE
+    # blocking, or the queue hears "this task is waiting on a human" only once
+    # the human has already answered.
+    _post_card_raised(req_id)
     return _text(_permission_result(tool_name, tool_input,
                                     _await_decision(req_id)))
 

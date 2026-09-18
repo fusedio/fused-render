@@ -75,6 +75,7 @@ from fused_render.server.routers.search import router as search_router
 from fused_render.server.routers.shell import router as shell_router
 from fused_render.server.routers.current_apps import router as current_apps_router
 from fused_render.server.routers.drafts import router as drafts_router
+from fused_render.server.routers.queue_events import router as queue_events_router
 from fused_render.server.routers.tasks import router as tasks_router
 from fused_render.server.routers.update import router as update_router
 # The MODULE, not `from … import TEMPLATES_DIR`: that constant is a live seam
@@ -462,6 +463,46 @@ def create_app(start_dir: str) -> FastAPI:
 
         user_plugin.start()
 
+    # The project queue's dispatcher (queue_manager.py), wired EXPLICITLY.
+    #
+    # `routers/tasks._wire_manager()` registers the factory, and importing that
+    # router at the top of this file already ran it once — but the scheduler,
+    # the event transport, the doors and `/api/run`'s gate all reach the manager,
+    # and which of them happens to be first must not decide whether this process
+    # has one at all. `schedule._qm()` still self-wires as a FALLBACK (and the
+    # scheduler's tests rely on that path); this is the rule, said once, at the
+    # moment the process is brought up.
+    #
+    # Then, and ONLY with the flag on, build the manager and reconcile once so a
+    # restart resumes every folder's line immediately rather than on whatever
+    # event happens to arrive first. That is deliberate work: building reconciles
+    # and reconciling PUMPS, which SPAWNS (see `queue_manager.peek`) — which is
+    # exactly why it is a startup event and not the create_app body (tests build
+    # apps without lifespan and must never start a turn), and why it runs on a
+    # daemon thread like `_startup_tasks_warm`: resuming a line can spawn several
+    # Claude processes and must not hold up the first page paint.
+    @on_startup
+    async def _startup_queue_manager():
+        from fused_render import project_queue, queue_manager
+        from fused_render.server.routers import tasks as tasks_router_mod
+
+        tasks_router_mod._wire_manager()
+        if not project_queue.enabled():
+            return
+
+        def resume():
+            try:
+                queue_manager.get().reconcile()
+            except Exception:  # noqa: BLE001 — a queue that cannot resume must
+                # not take the server down with it; the next tick tries again.
+                logger.exception("could not resume the project queue at startup")
+
+        thread = threading.Thread(target=resume, daemon=True,
+                                  name="fused-queue-resume")
+        thread.start()
+        # For tests, the same seam `_startup_tasks_warm` leaves.
+        app.state.queue_resume = thread
+
     # Scheduled Claude messages (schedule.py). A startup event and emphatically
     # NOT the create_app body: this loop SENDS things, and its first tick fires
     # everything already overdue. Tests build the app without running lifespan,
@@ -741,6 +782,12 @@ def create_app(start_dir: str) -> FastAPI:
     # message that entered it, typed or scheduled. Reads are unguarded; the one
     # POST marks a message read, the same weight of change as the triage POST.
     app.include_router(tasks_router)
+    # The queue's event transport (routers/queue_events.py): one POST that the
+    # session host and the permission server call when a turn ends, a session
+    # exits or a card goes up. Its own router because the callers are TEMPLATE
+    # processes on the far side of an HTTP hop, and because it is a no-op
+    # whenever `project_queue_enabled` is off.
+    app.include_router(queue_events_router)
     # Drafts (routers/drafts.py): the composer's unsent text and the New task
     # modal's half-filled form, kept server-side so the `✎ Draft` chip the
     # listing above paints can be a JOIN rather than a second store the client

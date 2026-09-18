@@ -1218,6 +1218,10 @@ export interface Prefs {
   // the shell's entry points to it (the sidebar row and the Settings menu
   // entry), not the /canvases routes, which keep answering a deep link.
   canvases: { enabled: boolean };
+  // Whether the unified Share sheet (public link + .fused file) is OFFERED in
+  // place of the plain Export / Download action (opt-in, default off). Gates
+  // the five share surfaces, not the /api/share routes.
+  app_sharing: { enabled: boolean };
   // Whether chat embeds render the native React chat (default ON) instead of the
   // legacy template iframe. The EFFECTIVE value, and `forced_by` is the env
   // string deciding it when `FUSED_RENDER_NATIVE_CHAT` is in force — the stored
@@ -1481,6 +1485,10 @@ export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
+}
+
+export function putAppSharingEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { app_sharing_enabled: enabled });
 }
 
 export function putNativeChatEnabled(enabled: boolean): Promise<Prefs> {
@@ -3512,7 +3520,20 @@ export function getTasksPulse(): Promise<{ tasks: TaskPulseTask[] }> {
  *  has already created the pending entry: the words are safe, nothing spawned,
  *  and the composer shows where in the line they landed. */
 export type QueueAdmission =
-  | { run: true }
+  | {
+      run: true;
+      /**
+       * THE PER-SEND CLAIM TOKEN this admission minted on the folder's owner
+       * (Bugbot, PR #1194) — a one-time proof that THIS send is the one
+       * `queue_manager.claim_took` already counted. Forwarded on the run
+       * request as `queue_claim` so `routers/run.py::_folder_busy` can tell an
+       * admitted send (look only) from one that skipped admission (claim the
+       * folder itself). Absent with the flag off, and on an older server with
+       * nothing to mint one — the gate then falls back to claiming, exactly
+       * as a tokenless send always could.
+       */
+      claim?: string;
+    }
   | {
       run: false;
       entry: ScheduledMessage;
