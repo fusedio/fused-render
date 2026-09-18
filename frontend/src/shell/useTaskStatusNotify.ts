@@ -33,6 +33,21 @@
 // plain, unconditional hook call per the rules of hooks) is what actually
 // enforces "only the top-level shell raises task-status notices" now.
 //
+// NARROWED TO `IS_EMBED && !IS_TOP_EMBED` (F3, 2026-09-18 fix, code review
+// round): a bare `if (IS_EMBED) return;` also silences a standalone TOP-EMBED
+// window — a Finder double-click on a `.fused` file, a CLI/deeplink
+// `/explorer/embed/` URL (router.ts's `IS_TOP_EMBED` comment) — which is a
+// WHOLE window with no parent pane to forward a notice on its behalf
+// (`notifications.ts`'s pane->shell forwarding only exists for a non-top
+// embed in the first place; there is nothing above a top embed to forward
+// to). A task finishing while the user sits in one of those windows
+// previously produced no notice at all where it did before this hook grew an
+// embed guard — the guard was too wide, not merely unnecessary. Every other
+// embed rule in `notifications.ts` already uses this exact
+// `IS_EMBED && !IS_TOP_EMBED` pairing for the identical reason (see its
+// `neverExpiresHere`/`effectiveIsTopEmbed()` uses) — this hook now matches
+// that convention instead of standing apart from it.
+//
 // ONE MAP OF "the status this task was in last time this document looked",
 // keyed by the pulse row's own key — not state, so it survives re-renders
 // without re-running the effect, and prunes entries for tasks no longer
@@ -58,7 +73,7 @@
 // fresh tab with a popup for every one of its already-done rows.
 import { useEffect, useRef } from "react";
 import { notify } from "@platform/lib/notifications";
-import { IS_EMBED } from "@platform/lib/router";
+import { IS_EMBED, IS_TOP_EMBED } from "@platform/lib/router";
 import { useTasksPulseRows } from "@shell/tasksPulse";
 import { taskColumn } from "@shell/tasks-lib";
 import { notificationForTransition } from "@shell/task-status-notify";
@@ -69,7 +84,7 @@ export function useTaskStatusNotify(): void {
   const watchStartS = useRef<number | null>(null);
 
   useEffect(() => {
-    if (IS_EMBED) return;
+    if (IS_EMBED && !IS_TOP_EMBED) return;
     if (watchStartS.current === null) watchStartS.current = Date.now() / 1000;
     const prev = previous.current;
     const liveKeys = new Set<string>();

@@ -126,13 +126,34 @@ beforeEach(() => {
 // main.tsx's own `if (IS_EMBED) return;` boot-path guard.
 test("useTaskStatusNotify guards its own effect against IS_EMBED before it can raise anything", () => {
   const src = readFileSync(join(import.meta.dir, "useTaskStatusNotify.ts"), "utf8");
-  expect(src).toContain('import { IS_EMBED } from "@platform/lib/router";');
-  const guard = src.indexOf("if (IS_EMBED) return;");
+  expect(src).toContain('import { IS_EMBED, IS_TOP_EMBED } from "@platform/lib/router";');
+  const guard = src.indexOf("if (IS_EMBED && !IS_TOP_EMBED) return;");
   expect(guard).toBeGreaterThan(-1);
   // Guards the whole effect BODY, not the `useEffect(...)` call itself — a
   // conditional hook call would break the rules of hooks.
   expect(src.indexOf("useEffect(() => {")).toBeLessThan(guard);
   expect(guard).toBeLessThan(src.indexOf("notify(input)"));
+});
+
+// F3 (2026-09-18 fix, code review round): a bare `if (IS_EMBED) return;` also
+// silenced a standalone TOP-EMBED window — a Finder double-click on a
+// `.fused` file, a CLI/deeplink `/explorer/embed/` URL — which has no parent
+// pane to forward a notice on its behalf, so a task finishing while the user
+// sits in one produced no notice at all. The fix narrows the guard to
+// `IS_EMBED && !IS_TOP_EMBED`, matching every other embed rule in
+// `notifications.ts` (e.g. its own `neverExpiresHere` check). `IS_TOP_EMBED`
+// is, like `IS_EMBED`, a module-scope constant this test file cannot flip at
+// runtime (see the test above's own comment) — asserted as source structure
+// for the same reason.
+test("the IS_EMBED guard is narrowed to exclude IS_TOP_EMBED, so a standalone top-embed window still notifies", () => {
+  const src = readFileSync(join(import.meta.dir, "useTaskStatusNotify.ts"), "utf8");
+  const effectStart = src.indexOf("useEffect(() => {");
+  const effectBody = src.slice(effectStart, src.indexOf("notify(input)"));
+  // Must not regress to the too-wide bare guard inside the effect body
+  // itself (the header comment's own prose mentions the old spelling while
+  // explaining the fix, so the check is scoped past it).
+  expect(effectBody).not.toContain("if (IS_EMBED) return;");
+  expect(effectBody).toContain("if (IS_EMBED && !IS_TOP_EMBED) return;");
 });
 
 describe("useTaskStatusNotify", () => {
