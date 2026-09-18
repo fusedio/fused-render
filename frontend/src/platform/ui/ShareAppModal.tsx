@@ -32,18 +32,18 @@
 //     one line under the link says so, because "anyone with the link" is
 //     the fact a reader needs before pasting it somewhere.
 //
-//   • App file: the same `.fused` saved to Downloads (appShot.exportAppFile,
-//     with the same native screen shot baked in as preview.png when the folder
-//     has no authored one). The result lands INLINE in the card — the path,
-//     Reveal folder, Open file — rather than as a toast, because the reader is
-//     looking at the card that did it.
+//   • App file: the same `.fused` saved to Downloads (api.saveAppFileToDisk).
+//     The result lands INLINE in the card — the path, Reveal folder, Open
+//     file — rather than as a toast, because the reader is looking at the
+//     card that did it.
 //
-// While either route is exporting the dialog refuses to close (a native shot
-// mid-flight with the sheet dismissed would photograph whatever replaced it).
-// And while the shot is being taken the sheet itself must not be in the
-// pixels: appShot marks `body[data-capture-shooting]` and dialogs.css hides
-// the shadcn overlay and popup for that frame — with the card thumb as the
-// crop source the sheet sits directly over the rect being photographed.
+// NEITHER ROUTE PHOTOGRAPHS THE SCREEN. The .fused and the public link carry
+// the folder's authored preview.png or none; a missing thumbnail is App
+// Doctor's `preview` check to surface, not this sheet's to paper over with a
+// native screen shot (retired 2026-09-18 — appShot.ts has the why).
+//
+// While either route is in flight the dialog refuses to close, so the inline
+// result has a card to land in.
 //
 // Shared by the shell and the explorer, so it spells the two canvases routes it
 // touches rather than importing either app's helpers.
@@ -58,7 +58,7 @@ import {
   Package,
   XIcon,
 } from "lucide-react";
-import { getJson, postJson, revealPath } from "@platform/lib/api";
+import { getJson, postJson, revealPath, saveAppFileToDisk } from "@platform/lib/api";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { timeAgo } from "@platform/lib/format";
 import { notify } from "@platform/lib/notifications";
@@ -75,7 +75,6 @@ import {
   type ShareStatus,
   type SharedAppRecord,
 } from "@platform/lib/share-app";
-import { exportAppFile } from "@platform/lib/appShot";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -110,8 +109,8 @@ interface CanvasesStatusLite {
   login_in_flight: boolean;
 }
 
-// The four actions that photograph the screen or mutate the share — at most
-// one runs at a time. Sign-in is NOT one of them: it is a browser round-trip
+// The four actions that write something (a .fused, a published share) — at
+// most one runs at a time. Sign-in is NOT one of them: it is a browser round-trip
 // the user may take minutes over (or never finish), and the file route needs
 // no account, so it has its own flag (`loggingIn`) and may overlap an export.
 // One shared flag for both was the bug: an export started mid-login and the
@@ -166,7 +165,7 @@ export function ShareAppModal({
   request: ShareAppRequest;
   onClose: () => void;
 }) {
-  const { app, captureEl, file, link: linkEligible, versionLabel } = request;
+  const { app, file, link: linkEligible, versionLabel } = request;
   const [status, setStatus] = useState<ShareStatus | null>(null);
   const [shared, setShared] = useState<SharedAppRecord | null>(null);
   const [handle, setHandle] = useState<string | null>(null);
@@ -275,9 +274,9 @@ export function ShareAppModal({
   );
 
   const onLogin = async () => {
-    // Not while a shot is being taken: the browser window this opens could
-    // land over the rect being photographed. Not twice, either — a second
-    // poll would run alongside the first.
+    // Not while another action runs (same predicate as its button's
+    // `disabled`). Not twice, either — a second poll would run alongside the
+    // first.
     if (loggingIn || busy !== null) return;
     setLinkErr("");
     setLoggingIn(true);
@@ -318,7 +317,7 @@ export function ShareAppModal({
     setLinkErr("");
     setBusy(kind);
     try {
-      const rec = await publishShare(app, captureEl);
+      const rec = await publishShare(app);
       setShared(rec);
       notify({ title: kind === "update" ? "Link updated" : "Link ready", tone: "info" });
     } catch (e) {
@@ -352,14 +351,14 @@ export function ShareAppModal({
 
   const doExport = async () => {
     // The file route needs no account, so a sign-in in flight (its own flag)
-    // does not block it — only another screen-shooting action does. Same
+    // does not block it — only another running action does. Same
     // predicate as the button's `disabled` (`working`), so the click never
     // lands on a button that then does nothing (Bugbot, #1207).
     if (busy !== null) return;
     setFileErr("");
     setBusy("export");
     try {
-      const realPath = await exportAppFile(file, captureEl);
+      const realPath = await saveAppFileToDisk(file.path, file.name);
       setSaved({ name: file.name, path: realPath });
     } catch (e) {
       setFileErr((e as Error).message);
@@ -377,8 +376,8 @@ export function ShareAppModal({
     }
   };
 
-  // Publishing and exporting both photograph the screen; a sheet dismissed
-  // mid-shot would leave the capture pointed at whatever replaced it.
+  // Publishing and exporting both land a result in the sheet; a sheet
+  // dismissed mid-flight would have nowhere to put it.
   const working = busy !== null;
   const linkBusy = busy === "publish" || busy === "update" || busy === "remove";
   const isLiveFile = !versionLabel || versionLabel === "Live";
@@ -407,8 +406,7 @@ export function ShareAppModal({
       </p>
     );
   } else if (status && !signedIn) {
-    // Disabled while ANY action runs, matching onLogin's own guard: a browser
-    // window opening mid-export could cover the rect being shot.
+    // Disabled while ANY action runs, matching onLogin's own guard.
     linkAction = (
       <Button size="sm" onClick={onLogin} disabled={loggingIn || working}>
         {loggingIn && <Loader2 data-icon="inline-start" className="animate-spin" />}
@@ -580,7 +578,7 @@ export function ShareAppModal({
     </div>
   ) : busy === "export" ? (
     <p className="m-0 text-[13px] leading-5 text-muted-foreground">
-      Bundling the app — a screenshot is taken for the file&rsquo;s thumbnail.
+      Bundling the app…
     </p>
   ) : null;
 

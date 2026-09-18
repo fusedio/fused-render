@@ -141,17 +141,6 @@ export function AppPreviewCard({
   // mid-boot. Mouseleave unmounts the iframe and the png is back instantly.
   const [hovered, setHovered] = useState(false);
   const [liveReady, setLiveReady] = useState(false);
-  // The card BODY's live iframe has loaded — i.e. the thumb is a picture of the
-  // app and not an empty box. Separate state from `liveReady`, which is the
-  // hover crossfade's and is deliberately reset on every enter AND leave: the
-  // share chip is only reachable while hovering, so gating a capture on
-  // `liveReady` would gate it on a flag the hover just cleared. One-way for the
-  // life of the mount, which is exact — the body iframe is never torn down and
-  // re-created for the same card, and cards are keyed by path, so a different
-  // app is a different mount. It CAN stay true after the iframe unmounts by
-  // scrolling far out of `nearViewport`, and that is harmless: appShot's
-  // cropRect refuses an off-viewport element anyway.
-  const [bodyLive, setBodyLive] = useState(false);
   // What the live branch renders. An ordinary app live-renders its entry
   // page. An exported .fused card (kind "appfile") has no page to point
   // /render at — its live look is its own fusedapp view under `_preview=1`,
@@ -185,16 +174,12 @@ export function AppPreviewCard({
     wantsLive,
     hoverPriority || onScreen,
   );
-  // Whether the CURRENTLY MOUNTED body iframe has painted — separate from
-  // `bodyLive` above on purpose. `bodyLive` is deliberately one-way for the
-  // export capture's sake (see its comment); reusing it here would mean a
-  // card that once painted, then scrolled out of view and back in, shows its
-  // brand-new, not-yet-loaded iframe at FULL opacity — a blank/booting frame
-  // presented as finished, the same bug `loaded` in BookmarkCards.tsx's
-  // LivePreview has this same fix for. `bodyPainted` resets whenever the
+  // Whether the CURRENTLY MOUNTED body iframe has painted. Resets whenever the
   // iframe itself is torn down and remounted (`liveStarted` or `liveSrc`
-  // changing) and drives the fade/shimmer instead; `bodyLive` keeps its
-  // existing one-way contract untouched.
+  // changing): a card that once painted, then scrolled out of view and back
+  // in, must not show its brand-new, not-yet-loaded iframe at FULL opacity —
+  // a blank/booting frame presented as finished, the same bug `loaded` in
+  // BookmarkCards.tsx's LivePreview has this same fix for.
   const [bodyPainted, setBodyPainted] = useState(false);
   useEffect(() => {
     setBodyPainted(false);
@@ -277,20 +262,7 @@ export function AppPreviewCard({
           </span>
         </span>
       </span>
-      {/* `data-capture-ready` marks the thumb as a picture of the APP — the
-          export capture's crop-source contract (appShot.exportAppFile). The
-          card's own chip below reads `bodyLive` directly; the context menu is
-          opened by Apps.tsx, which has no access to this component's state and
-          finds the element by this attribute instead. Same posture as the
-          preview pane's `data-fused-annotate-target`: one attribute naming the
-          element that is showing what the reader is looking at. Absent, not
-          "0", so the selector is a plain presence test. */}
-      <span
-        className="app-pcard-thumb"
-        aria-hidden="true"
-        ref={thumbRef}
-        data-capture-ready={bodyLive ? "" : undefined}
-      >
+      <span className="app-pcard-thumb" aria-hidden="true" ref={thumbRef}>
         {/* Shimmer while something is actually COMING: an authored still not
             yet decoded, or a live iframe the card wants but has not painted.
             Never for the "nothing to show" case (D365, the module comment) —
@@ -383,31 +355,23 @@ export function AppPreviewCard({
                 height: `${100 / PREVIEW_SCALE}%`,
                 transform: `scale(${PREVIEW_SCALE})`,
                 // Fades in over the skeleton above rather than popping in
-                // mid-boot. Gated on `bodyPainted`, NOT `bodyLive`: `bodyLive`
-                // is one-way for the export capture's sake (see its
-                // declaration) and stays true across a scroll-away/back
-                // remount, which would otherwise show the freshly-mounted,
-                // not-yet-loaded iframe at full opacity.
+                // mid-boot.
                 opacity: bodyPainted ? 1 : 0,
                 transition: "opacity 0.15s ease",
               }}
-              // `bodyLive` as well as the queue's release: settling frees the
-              // NEXT card's start slot, which says nothing about whether this
-              // frame painted, and the export capture needs the latter.
+              // `bodyPainted` as well as the queue's release: settling frees
+              // the NEXT card's start slot, which says nothing about whether
+              // this frame painted.
               onLoad={() => {
                 liveSettled();
-                setBodyLive(true);
                 setBodyPainted(true);
               }}
               // An error is still a painted result (the frame shows the app's
               // own error page) — `onError={liveSettled}` alone freed the
-              // scheduler slot but left `bodyLive`/`bodyPainted` false
-              // forever, so the shimmer never cleared, the frame never faded
-              // in, and `data-capture-ready` was never set (silently breaking
-              // export-from-card for an app whose live render errors).
+              // scheduler slot but left `bodyPainted` false forever, so the
+              // shimmer never cleared and the frame never faded in.
               onError={() => {
                 liveSettled();
-                setBodyLive(true);
                 setBodyPainted(true);
               }}
             />
@@ -432,15 +396,7 @@ export function AppPreviewCard({
           preventDefault (or the card link opens the app) and stopPropagation
           (or the click ALSO bubbles to onAppCardClick). Not rendered on an
           exported .fused card (kind "appfile", D396): its path is the file
-          itself and the export route only takes app folders.
-
-          The thumb element rides along as the capture crop source (appShot,
-          D396): a card without a preview.png is already showing the live app
-          there, so nothing has to flash — but ONLY once that frame has loaded
-          (`bodyLive`). Two card previews start at a time, so an unstarted
-          card's thumb is an empty box, and cropping it would bake the empty
-          box in as the artifact's permanent thumbnail. Offer nothing instead
-          and appShot stages the app full-screen for the shot. */}
+          itself and the export route only takes app folders. */}
       {app.kind !== "appfile" && (
       <button
         type="button"
@@ -450,7 +406,7 @@ export function AppPreviewCard({
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          openShareApp(app, bodyLive ? thumbRef.current : null);
+          openShareApp(app);
         }}
       >
         {MenuIcons.share}

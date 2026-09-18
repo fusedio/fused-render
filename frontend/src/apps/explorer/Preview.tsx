@@ -544,23 +544,19 @@ function usePreviewFileMenu(
   }, [fsPath, parent, stat.is_dir]);
 
   // "Set Current View as Preview" (Akshil, 2026-08-27): photograph what the
-  // frame is showing and write it as the folder's preview.png. Same capture
-  // the .fused export bakes in (appShot.captureAppPreview, tab capture cropped
-  // to the shown frame), so the same one-time share prompt.
+  // frame is showing and write it as the folder's preview.png — the ONE
+  // place a preview is photographed (appShot.captureAppPreview; Share no
+  // longer shoots implicitly). A native screen shot, so on macOS the first
+  // one raises the Screen Recording prompt and comes back empty.
   //
-  // ORDER: the share prompt needs the click's own transient activation, which
-  // Chrome expires a few seconds out. The one thing awaited before it is a stat
-  // of preview.png (milliseconds) — and when that says a still already exists,
-  // the capture moves to the CONFIRM's click instead (Akshil: confirm before
-  // overwriting), which is a fresh activation of its own. Nothing is written
-  // until a frame is in hand: a dismissed prompt leaves the old file alone.
+  // ORDER: when a still already exists the capture moves to the CONFIRM's
+  // click (Akshil: confirm before overwriting). Nothing is written until a
+  // frame is in hand: a refused shot leaves the old file alone.
   const shootPreview = async (replacing: boolean) => {
     const name = basename(parent);
-    // THE CURRENT VIEW OR NOTHING. appShot's export path falls back to a fresh
-    // full-viewport reload of the entry when the frame can't be cropped; that
-    // is not the view the user is looking at, so here it is refused up front
-    // (and `stage: false` refuses it again inside) rather than saved under a
-    // "Preview saved" toast (Bugbot, 2026-08-27).
+    // THE CURRENT VIEW OR NOTHING: a frame that can't be cropped is refused
+    // up front rather than saved under a "Preview saved" toast (Bugbot,
+    // 2026-08-27).
     const frame = document.querySelector(".preview-frame.is-shown");
     if (!cropRect(frame)) {
       notify({
@@ -569,7 +565,7 @@ function usePreviewFileMenu(
       });
       return;
     }
-    const blob = await captureAppPreview(fsPath, frame, { stage: false });
+    const blob = await captureAppPreview(frame);
     if (!blob) {
       notify({ title: "Preview not captured — nothing was changed", tone: "info" });
       return;

@@ -317,14 +317,6 @@
   color: var(--fg);
   box-shadow: 0 2px 8px var(--shadow-sm);
 }
-/* While appShot photographs the screen, the chip must not be in the pixels:
-   clicking it does not end the hover, so it would sit in the baked
-   preview.png forever. No transition, so it is gone by the next frame. */
-body[data-capture-shooting] .app-pcard-share {
-  opacity: 0 !important;
-  transition: none;
-}
-
 /* A ROW: the app's mark as a column of its own, then the two text lines
    stacked beside it (`.app-pcard-lines`). The head's height is still the
    lines' — the icon is sized to span them, never to set the height — so a

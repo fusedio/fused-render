@@ -13,10 +13,14 @@
 // MENUS (the /apps card's right-click menu is a plain function of the AppInfo;
 // the explorer's kebab is a list of entries) that cannot own a dialog. So every
 // entry — menu item, hover chip, header button — calls `openShareApp(app,
-// captureEl, opts)`, and ONE `ShareAppHost` mounted in the shell renders the
-// dialog for whichever request is current. The `ExportableApp` slice is all
-// the dialog needs, and `captureEl` is the no-flash screenshot source appShot
-// documents (pixels that ARE the app now).
+// opts)`, and ONE `ShareAppHost` mounted in the shell renders the dialog for
+// whichever request is current. The `ExportableApp` slice is all the dialog
+// needs.
+//
+// NO SCREENSHOT. Both routes ship the folder's authored `preview.png` or none
+// (the server bakes it in). Until 2026-09-18 a folder without one got a native
+// screen shot at share time (appShot.ts's header has the why-not); App
+// Doctor's `preview` check is where a missing thumbnail surfaces now.
 //
 // `opts.file` is the FILE route's target when it differs from `app`: the app
 // page and the explorer kebab export "at the selected version" — a resolved
@@ -27,8 +31,14 @@
 // `link: false` and the dialog's link card explains itself instead of acting.
 import { useEffect, useState } from "react";
 import { getJson, postJson } from "./api";
-import type { ExportableApp } from "./appShot";
-import { captureAppPreview } from "./appShot";
+
+// The slice of AppInfo the share routes read — structural, so the app page
+// header (which has a folder + entry page but no listing row) can open the
+// sheet without inventing a fake AppInfo.
+export interface ExportableApp {
+  path: string;
+  name: string;
+}
 
 export interface SharedAppRecord {
   app_id: string;
@@ -91,22 +101,12 @@ export const removeShare = (path: string) =>
   );
 
 /**
- * Publish (or update) the share. Multipart like the export POST: the optional
- * screenshot becomes the file's `preview.png`, which the shared landing page
- * shows above the README — so it is worth the capture here even more than for
- * a download. A capture that fails publishes plain, same contract as export.
+ * Publish (or update) the share. The server reads the folder's own
+ * `preview.png` (if any) for the landing page's still above the README.
  */
-export async function publishShare(
-  app: ExportableApp,
-  captureEl?: Element | null,
-): Promise<SharedAppRecord> {
-  const preview =
-    !app.preview_image && app.entry_html
-      ? await captureAppPreview(app.entry_html, captureEl)
-      : undefined;
+export async function publishShare(app: ExportableApp): Promise<SharedAppRecord> {
   const form = new FormData();
   form.set("path", app.path);
-  if (preview) form.set("preview", preview, "preview.png");
   const res = await fetch("/api/share/publish", {
     method: "POST",
     headers: { "X-Fused": "1" },
@@ -140,7 +140,6 @@ export interface ShareAppOptions {
 
 export interface ShareAppRequest {
   app: ExportableApp;
-  captureEl: Element | null;
   file: ExportableApp;
   link: boolean;
   versionLabel: string | null;
@@ -156,17 +155,11 @@ function emit() {
   for (const l of listeners) l(current);
 }
 
-/** Open the share dialog for `app`. `captureEl` follows appShot's contract:
- *  an element whose pixels ARE the app right now, or nothing. */
-export function openShareApp(
-  app: ExportableApp,
-  captureEl?: Element | null,
-  opts: ShareAppOptions = {},
-): void {
+/** Open the share dialog for `app`. */
+export function openShareApp(app: ExportableApp, opts: ShareAppOptions = {}): void {
   seq += 1;
   current = {
     app,
-    captureEl: captureEl ?? null,
     file: opts.file ?? app,
     link: opts.link ?? true,
     versionLabel: opts.versionLabel ?? null,

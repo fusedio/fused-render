@@ -2270,12 +2270,10 @@ export async function saveAppFileToDisk(
   // beside a live export in Downloads is never ambiguous. Falls back to the
   // app folder's own name server-side when omitted or blank.
   name?: string,
-  preview?: Blob,
 ): Promise<string> {
   const form = new FormData();
   form.set("path", path);
   if (name) form.set("name", name);
-  if (preview) form.set("preview", preview, "preview.png");
   const res = await fetch("/api/appfile/export/save", {
     method: "POST",
     headers: { "X-Fused": "1" },

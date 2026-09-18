@@ -34,12 +34,7 @@ function containingDir(path: string): string {
   return cut > 0 ? path.slice(0, cut) : "/";
 }
 
-export function appCardMenu(
-  app: AppInfo,
-  // The card's thumb element, when the opener has one: the share sheet's
-  // no-flash capture crop source (appShot, D396).
-  captureEl?: Element | null,
-): MenuEntry[] {
+export function appCardMenu(app: AppInfo): MenuEntry[] {
   const isAppFile = app.kind === "appfile";
   return [
     { label: "Open", icon: MenuIcons.open, onClick: () => openApp(app) },
@@ -66,17 +61,16 @@ export function appCardMenu(
     },
     // Share: ONE entry for both ways out — the sheet behind it (ShareAppModal)
     // offers a public link on the user's Fused account (share_app.py) and the
-    // whole app as one double-clickable `.fused` file (SPEC §43, D385), with
-    // a native screen shot baked in as the file's preview.png when the folder
-    // has no authored one (D396). Not offered on a card that already IS a
-    // .fused file (the export route would 400 on a non-folder).
+    // whole app as one double-clickable `.fused` file (SPEC §43, D385). Not
+    // offered on a card that already IS a .fused file (the export route would
+    // 400 on a non-folder).
     ...(isAppFile
       ? []
       : ([
           {
             label: "Share…",
             icon: MenuIcons.share,
-            onClick: () => openShareApp(app, captureEl),
+            onClick: () => openShareApp(app),
           },
         ] satisfies MenuEntry[])),
     {
