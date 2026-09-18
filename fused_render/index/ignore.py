@@ -246,33 +246,40 @@ def default_ignore() -> list[str]:
     one pattern per home also covers every branch-nested checkout's own mounts
     folder.
 
-    Also names the OS user's `~/Library` (macOS only in practice — the path
-    simply never exists elsewhere, so the pattern is inert there). This is a
-    PATH pattern, not a bare `DEFAULT_IGNORE_NAMES` entry, and deliberately
-    keyed off the real OS home (`os.path.expanduser("~")`) rather than
-    `default_home_dirs()` (this app's OWN state homes, `~/.fused-render` and
-    `FUSED_RENDER_HOME` — unaffected by either): a bare name would ALSO ban
-    every unrelated directory anywhere on disk that happens to be named
-    `Library` (an Arduino sketch folder, a Java project). `~/Library` churns
-    constantly (Safari/Mail caches, saved app state, Spotlight, ...) and none
-    of it is content a user searches home for — same rationale as `.cache`/
-    `.fused` above, just system- not app-owned. Added here (2026-09,
-    SPEC-focus-change-detection.md's review) because
-    `index/detect.py`'s home-focus trigger collapses `fsevents.hint`'s raw,
-    unfiltered journal output to a boolean, and this directory's constant
-    churn made that boolean true on nearly every check of a real `~` root —
-    see `detect._filter_hint`, which is what actually needs this list to be
-    complete, not the walk (the walk was already fine either way)."""
+    Also names the OS user's `~/Library/Caches` (macOS only in practice — the
+    path simply never exists elsewhere, so the pattern is inert there). This
+    is a PATH pattern, not a bare `DEFAULT_IGNORE_NAMES` entry, and
+    deliberately keyed off the real OS home (`os.path.expanduser("~")`)
+    rather than `default_home_dirs()` (this app's OWN state homes,
+    `~/.fused-render` and `FUSED_RENDER_HOME` — unaffected by either): a bare
+    name would ALSO ban every unrelated directory anywhere on disk that
+    happens to be named `Caches` (an Xcode project, a random tool's cache
+    dir). `~/Library/Caches` is never searchable content — same rationale as
+    `.cache` above, just system- not app-owned. Added 2026-09 at the user's
+    request, DISTINCT from the fix round that follows.
+
+    Do NOT widen this back to the whole `~/Library` tree. That was tried
+    (2026-09, SPEC-focus-change-detection.md's review) to fix a real bug —
+    `index/detect.py`'s home-focus trigger collapsing `fsevents.hint`'s raw,
+    unfiltered journal output to a boolean, with `~/Library`'s constant churn
+    (Safari/Mail caches, saved app state, Spotlight) making that boolean true
+    on nearly every check of a real `~` root — and then reverted in the same
+    round's follow-up: `~/Library` as a DEFAULT is too broad (it also holds
+    Application Support, Mail, Fonts — content a user may legitimately
+    search), and this ignore list is USER-EDITABLE, so it is the wrong place
+    for a correctness fix a trigger cannot afford to lose to an edited
+    preference anyway. `detect.py` now carries its own non-editable noise
+    filter for that — see `detect._filter_hint` and DECISIONS.md."""
     seen, out = set(), []
     for base in default_home_dirs():
         pattern = norm(os.path.join(base, "**", "mounts"))
         if pattern not in seen:
             seen.add(pattern)
             out.append(pattern)
-    library = norm(os.path.expanduser("~/Library"))
-    if library not in seen:
-        seen.add(library)
-        out.append(library)
+    caches = norm(os.path.expanduser("~/Library/Caches"))
+    if caches not in seen:
+        seen.add(caches)
+        out.append(caches)
     return DEFAULT_IGNORE_NAMES + out
 
 
