@@ -47,6 +47,17 @@ describe("storedOptionLabel", () => {
     expect(storedOptionLabel(MODEL_ENTRY, "fable[1m]")).toBe("Fable [1m]");
   });
 
+  it("says Fable for a settings.json still on the retired pinned id, qualified or not", () => {
+    // The pinned `claude-fable-5-1` left the catalog on 2026-09-18; a file
+    // written before that still names it. Every other picker folds it onto
+    // `fable` — this one used to mark the user's own setting "(not in catalog)"
+    // beside the row that means it.
+    expect(storedOptionLabel(MODEL_ENTRY, "claude-fable-5-1")).toBe("Fable");
+    expect(storedOptionLabel(MODEL_ENTRY, "claude-fable-5-1[1m]")).toBe("Fable [1m]");
+    // …and nothing else is folded: an unknown id still reads as unknown.
+    expect(storedOptionLabel(MODEL_ENTRY, "claude-opus-9")).toBe("claude-opus-9 (not in catalog)");
+  });
+
   it("a directly-listed qualifier permutation (opus[1m]) is just a listed option", () => {
     expect(storedOptionLabel(MODEL_ENTRY, "opus[1m]")).toBe("opus[1m]");
   });

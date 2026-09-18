@@ -20,12 +20,17 @@
 // The chat TEMPLATE (templates/claude/template.html) carries its own copy for
 // the reason it carries its own MODELS: it is vanilla JS served off disk and
 // cannot import this bundle.
-const FABLE_ID = /^claude-fable(?:[-.].*)?$/i;
+// The id, then optionally the CLI's context qualifier (`[1m]`), which is a
+// modifier on a model rather than a different one — so it is kept, and only
+// the id in front of it is folded.
+const FABLE_ID = /^claude-fable(?:[-.][^[\]]*)?(\[[^\]]*\])?$/i;
 
-/** Any Fable spelling — the retired pinned id, a dated full id — said the one
- *  way the pickers offer it now. Anything else is returned untouched, including
- *  "" (which every caller reads as "nothing chosen"). */
+/** Any Fable spelling — the retired pinned id, a dated full id, either with a
+ *  `[1m]` qualifier — said the one way the pickers offer it now, qualifier
+ *  kept. Anything else is returned untouched, including "" (which every caller
+ *  reads as "nothing chosen"). */
 export function normalizeModel(value: string | null | undefined): string {
   const v = (value || "").trim();
-  return FABLE_ID.test(v) ? "fable" : v;
+  const m = FABLE_ID.exec(v);
+  return m ? `fable${m[1] ?? ""}` : v;
 }

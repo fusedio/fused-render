@@ -3,6 +3,7 @@
 // (../bits → the shell's router, which touches `location` at module init and
 // has no place in a plain `bun:test` run). Pure functions, no side effects.
 import type { PrefEntry } from "./api";
+import { normalizeModel } from "@platform/lib/model-vocab";
 
 // How one catalog OPTION is said: its curated label if the entry has one, else
 // the option's own spelling. See `optionLabels` in api.ts for why that map is
@@ -35,10 +36,21 @@ const QUALIFIER = /^(.+?)(\[[^\]]*\])$/;
 // In every branch the OPTION'S VALUE stays the raw string off disk, so choosing
 // the row the user is already on is a no-op rather than a silent rewrite that
 // drops their qualifier.
+//
+// The value is read through `normalizeModel` first: a settings.json written
+// before 2026-09-18 may still say the retired pinned id `claude-fable-5-1`,
+// which every other picker folds onto `fable`. Left raw here it fails the
+// listed check and marks the user's own setting unknown, beside the very row
+// that means it. `normalizeModel` touches nothing but Fable spellings, so
+// every other entry passes through unchanged.
 export function storedOptionLabel(d: PrefEntry, val: string): string {
   const listed = (o: string) => (d.options || []).includes(o);
-  if (listed(val)) return optionLabel(d, val);
+  const said = normalizeModel(val);
+  if (listed(said)) return optionLabel(d, said);
   const m = QUALIFIER.exec(val);
-  if (m && listed(m[1])) return `${optionLabel(d, m[1])} ${m[2]}`;
+  if (m) {
+    const base = normalizeModel(m[1]);
+    if (listed(base)) return `${optionLabel(d, base)} ${m[2]}`;
+  }
   return `${val} (not in catalog)`;
 }
