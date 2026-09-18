@@ -2749,3 +2749,31 @@ into `_manager.py._job_report`. `mac.py`'s own docstring line already read
 `test_the_running_download_row_is_untouched_by_the_silent_finish`) pass
 unmodified against the refactor, since they only observe `mac.jobs` /
 `mac.DONE_MESSAGE` / the job registry, not which module owns the code.
+
+## Task 12 — Windows-only CI fixes: the tray fake's update contract, and gating the symlink-resolution test to Linux
+
+CI's first Windows run turned up three test-only failures, none touching
+production behaviour.
+
+`tests/test_supervisor_core.py`'s two relaunch tests failed with
+`AttributeError: '_FakeTrayHandle' object has no attribute
+'set_update_available'`. `core.run()` calls
+`update.start_auto_checks(paths, tray_handle.set_update_available)`
+whenever the backend supplies an `update` module — true on Windows, `None`
+on Linux, so the two tests' `_FakeTrayHandle` (tray-only, no update method)
+never hit that line on Linux and only broke where a real backend `update`
+module exists. Rather than skip past the branch, gave `_FakeTrayHandle`
+`set_update_available` (recording each call) and installed a fake `update`
+module in `_patch_run_up_to_the_event_loop` so the branch runs here on
+Linux too — both tests now assert the tray handle actually received the
+"9.9.9" notification, so the fake's contract is exercised, not merely
+satisfied.
+
+`tests/test_linux_update.py::test_install_resolves_a_symlinked_appimage_before_swapping`
+asserts `os.path.realpath()` returns the plain resolved path; on Windows
+that call prepends the `\\?\` extended-length marker, so the assertion is
+inherently POSIX-only, not a bug in the swap logic. Added a `linux_only`
+marker (`skipif sys.platform != "linux"`, mirroring `test_app_relaunch.py`'s
+`mac_only`) and applied it to only that one test — the rest of the module
+exercises `UpdateManager`'s state machine and stamp-file logic, which holds
+on any OS.
