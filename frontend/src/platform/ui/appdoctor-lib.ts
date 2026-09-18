@@ -249,15 +249,22 @@ export function readinessCount(checks: AppCheck[]): string {
 
 export function readinessSentence(checks: AppCheck[]): string {
   const failing = checks.filter((c) => c.state === "fail").length;
-  const notChecked = checks.filter((c) => c.state === "skip" || c.state === "unrun").length;
+  const skipped = checks.filter((c) => c.state === "skip").length;
+  const unrun = checks.filter((c) => c.state === "unrun").length;
+  // A skip could not be answered here; an unrun row is one nobody has asked
+  // yet (an on-demand model check) — two different facts, two clauses.
+  const rest = [
+    skipped > 0 ? `${skipped} could not be answered here` : "",
+    unrun > 0 ? `${unrun} ${unrun === 1 ? "waits" : "wait"} for Check` : "",
+  ]
+    .filter(Boolean)
+    .join(" and ");
   if (failing > 0) {
-    return notChecked > 0
-      ? `checks need attention before this app is worth sharing, and ${notChecked} could not be answered here.`
+    return rest
+      ? `checks need attention before this app is worth sharing, and ${rest}.`
       : "checks need attention before this app is worth sharing.";
   }
-  return notChecked > 0
-    ? "checks passed and the rest could not be answered here — nothing to fix."
-    : "checks passed. This app is ready to share.";
+  return rest ? `checks passed and ${rest} — nothing to fix.` : "checks passed. This app is ready to share.";
 }
 
 /** The footer's own note, for the one thing its button cannot promise: a

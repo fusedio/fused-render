@@ -14,8 +14,16 @@
 // `__pycache__` swept along and an uncommitted working tree are all invisible
 // from the outside and all worth knowing before you send someone a folder.
 //
-// EVERY ROW IS DETERMINISTIC (fused_render/app_doctor.py, which is the
-// authority on what each check means): a row passed, failed, or could not run.
+// EVERY ROW BUT ONE IS DETERMINISTIC (fused_render/app_doctor.py, which is
+// the authority on what each check means): a row passed, failed, or could not
+// run, answered afresh on every GET. The exception is an ON-DEMAND row
+// (`check.ondemand`, today `cross-browser`, fused_render/app_doctor_ai.py): a
+// Sonnet read of the view files that spends tokens, so it runs only when its
+// own Check button is pressed (`useAppDoctorReport`'s `runCheck`), and its
+// verdict is cached server-side on a checksum of those files — a GET draws
+// the cached verdict for free, and reads `unrun` ("Not run yet") once the app
+// has changed under it. A settled on-demand row keeps a Re-check for the
+// case the cache cannot see: the rubric itself moved on.
 // A FAILING row is not all the same kind of finding, though — `kind: "fact"`
 // (a file exists or it does not) is a settled failure with a Fix button;
 // `kind: "candidate"` (`secrets`, `device-paths`: a pattern match that only
@@ -80,6 +88,7 @@ import {
   getAppDoctor,
   runAppDoctorAll,
   runAppDoctorCheck,
+  runAppDoctorOnDemand,
   type AppCheck,
   type AppCheckState,
   type AppDoctorReport,
@@ -115,7 +124,7 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { appLandingUrl } from "@platform/lib/appLanding";
 import { navigateUrl } from "@platform/lib/router";
-import { announceTasksChanged } from "@platform/lib/tasksChanged";
+import { announceAppDoctorChanged, announceTasksChanged } from "@platform/lib/tasksChanged";
 
 // A FAILING state draws by severity, not just by colour: a critical failure
 // is an alert circle, a warning is a triangle (the shape everyone already
@@ -143,7 +152,10 @@ function CheckRow({
   check,
   busy,
   otherTaskLive,
+  checking,
+  anyChecking,
   onFix,
+  onCheck,
 }: {
   check: AppCheck;
   busy: boolean;
@@ -151,15 +163,26 @@ function CheckRow({
    *  allows exactly one at a time, so pressing this row's own button would
    *  just 409. Disabled rather than hidden, with a title saying why. */
   otherTaskLive: boolean;
+  /** THIS on-demand row's model call is in flight. */
+  checking: boolean;
+  /** Some on-demand row's model call is in flight — one at a time, so the
+   *  server's per-folder single-flight never has a second press to queue. */
+  anyChecking: boolean;
   onFix: (check: AppCheck) => void;
+  /** `force` is Re-check: run again although the cached verdict still matches. */
+  onCheck: (check: AppCheck, force?: boolean) => void;
 }) {
   const { shown, hidden } = splitFindings(check.findings);
   const failing = check.state === "fail";
+  // An on-demand row always has something to press — Check when it has not
+  // been run on this content, Re-check once it has — so it takes the fuller
+  // box a row with an action wears, even when it passed.
+  const hasAction = failing || check.ondemand;
   return (
     <li
       className={cn(
         ROW_BOX,
-        failing ? "py-[9px]" : "py-[5px]",
+        hasAction ? "py-[9px]" : "py-[5px]",
         "appdoc-row appdoc-" + check.state,
         failing && "appdoc-row-sev-" + check.severity,
       )}
@@ -174,11 +197,20 @@ function CheckRow({
       </span>
       <div className="appdoc-text">
         <span className="appdoc-label">{check.label}</span>
-        {rowVisibleDetailText(check) !== "" && (
-          <span className="appdoc-detail">{rowVisibleDetailText(check)}</span>
+        {checking ? (
+          <span className="appdoc-detail">Asking Claude (Sonnet) to read the app's view files…</span>
+        ) : (
+          rowVisibleDetailText(check) !== "" && (
+            <span className="appdoc-detail">{rowVisibleDetailText(check)}</span>
+          )
         )}
         {shown.length > 0 && (
-          <ul className="appdoc-findings">
+          // A deterministic row's findings are source lines: one nowrap
+          // monospace line each. A model-backed row's are SENTENCES written
+          // for the author — what a visitor would see go wrong, then what to
+          // change — so they wrap, in the body face, with the fix as a
+          // quieter second line (`.appdoc-findings-prose`, app-doctor.css).
+          <ul className={cn("appdoc-findings", check.ondemand && "appdoc-findings-prose")}>
             {shown.map((f, i) => (
               <li key={f.rule + f.path + f.line + i}>
                 {/* Some rules excerpt the path itself (`git`'s porcelain
@@ -189,6 +221,7 @@ function CheckRow({
                     are safe to draw. */}
                 {!f.excerpt.includes(f.path) && <code>{findingWhere(f)}</code>}
                 <span className="appdoc-excerpt">{f.excerpt}</span>
+                {f.fix && <span className="appdoc-fix">Fix: {f.fix}</span>}
               </li>
             ))}
             {hidden > 0 && (
@@ -211,31 +244,74 @@ function CheckRow({
           (flex: 1 1 auto, the one element that absorbs width pressure and
           wraps instead — see `.appdoc-label`). A row with no action reserves
           none of this width: `.appdoc-text` simply grows to fill it. */}
-      {failing && (
+      {hasAction && (
         <div className="appdoc-row-actions">
-          {check.task ? (
+          {/* An on-demand row that has no verdict for the app as it is now:
+              the only thing to do is run it. Nothing to fix yet, so no
+              Fix/Review beside it. */}
+          {check.ondemand && check.state === "unrun" ? (
             <Button
               variant="secondary"
               size="sm"
-              title="An App Doctor task for this row is already running — listed under the app's Tasks tab"
-              onClick={() => onFix(check)}
+              disabled={anyChecking}
+              title="Asks Claude (Sonnet, low effort) to read this app's .html/.css/.js against the cross-browser rubric — cached until the files change"
+              onClick={() => onCheck(check)}
             >
-              Fix in progress
+              {checking ? "Checking…" : "Check"}
             </Button>
           ) : (
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={busy || otherTaskLive}
-              title={
-                otherTaskLive
-                  ? "An App Doctor task for this app is already running on another row — listed under the app's Tasks tab"
-                  : undefined
-              }
-              onClick={() => onFix(check)}
-            >
-              {rowActionLabel(check)}
-            </Button>
+            <>
+              {failing &&
+                (check.task ? (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    title="An App Doctor task for this row is already running — listed under the app's Tasks tab"
+                    onClick={() => onFix(check)}
+                  >
+                    Fix in progress
+                  </Button>
+                ) : (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={busy || otherTaskLive || checking}
+                    title={
+                      otherTaskLive
+                        ? "An App Doctor task for this app is already running on another row — listed under the app's Tasks tab"
+                        : undefined
+                    }
+                    onClick={() => onFix(check)}
+                  >
+                    {rowActionLabel(check)}
+                  </Button>
+                ))}
+              {/* A settled on-demand row: the cache invalidates itself when
+                  the files change, so this exists for what it cannot see —
+                  a rubric that moved on, or a verdict worth a second
+                  opinion. Icon-only, so it never competes with Fix. */}
+              {check.ondemand && (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  // Not while a fix session is live on this app: it is about
+                  // to change the very files a re-check would read, so the
+                  // verdict would be stale the moment it landed.
+                  disabled={anyChecking || busy || !!check.task || otherTaskLive}
+                  title={
+                    checking
+                      ? "Checking…"
+                      : check.task || otherTaskLive
+                        ? "An App Doctor task is editing this app — re-check once it has finished"
+                        : "Re-check with Claude (Sonnet)"
+                  }
+                  aria-label="Re-check"
+                  onClick={() => onCheck(check, true)}
+                >
+                  <RotateCw aria-hidden className={checking ? "animate-spin" : undefined} />
+                </Button>
+              )}
+            </>
           )}
         </div>
       )}
@@ -324,7 +400,46 @@ export function useAppDoctorReport(dir: string, onDone?: () => void) {
     onDone?.();
   };
 
-  return { report, error, busy, liveTask, load, fixRow, fixAll, followLive };
+  // The on-demand row's model call. The id of the row in flight, or null —
+  // one at a time (the server single-flights per folder anyway; this just
+  // keeps a second press from queueing behind the first). On return the
+  // fresh row is swapped into the report in place — everything else on the
+  // checklist is as true as it was a moment ago, so no full re-run.
+  const [checking, setChecking] = useState<string | null>(null);
+  const runCheck = async (check: AppCheck, force = false) => {
+    if (checking) return;
+    setChecking(check.id);
+    setError(null);
+    try {
+      const res = await runAppDoctorOnDemand(dir, check.id, force);
+      // The header dot (useAppDoctorChecks) fetched once at open and would
+      // otherwise stay clean over a row that just went red; the verdict is
+      // cached now, so its refetch is free.
+      announceAppDoctorChanged(dir);
+      if (alive.current) {
+        setReport((r) =>
+          r
+            ? {
+                ...r,
+                // The run endpoint knows nothing about fix sessions and
+                // returns `task: null`; the row's live task — its own, or a
+                // Fix-all's — is still running, so it is kept from the row
+                // being replaced rather than dropped with it.
+                checks: r.checks.map((c) =>
+                  c.id === res.check.id ? { ...res.check, task: c.task } : c,
+                ),
+              }
+            : r,
+        );
+      }
+    } catch (e) {
+      if (alive.current) setError((e as Error).message);
+    } finally {
+      if (alive.current) setChecking(null);
+    }
+  };
+
+  return { report, error, busy, liveTask, load, fixRow, fixAll, followLive, checking, runCheck };
 }
 
 type Report = ReturnType<typeof useAppDoctorReport>;
@@ -342,7 +457,7 @@ function SummaryText({ report }: { report: AppDoctorReport }) {
 }
 
 // The grouped checklist, skeleton while loading, error banner above.
-function AppDoctorChecklist({ report, error, busy, liveTask, fixRow }: Report) {
+function AppDoctorChecklist({ report, error, busy, liveTask, fixRow, checking, runCheck }: Report) {
   return (
     <>
       <ErrorBanner>{error}</ErrorBanner>
@@ -365,7 +480,10 @@ function AppDoctorChecklist({ report, error, busy, liveTask, fixRow }: Report) {
                   check={c}
                   busy={busy}
                   otherTaskLive={!!liveTask && !c.task}
+                  checking={checking === c.id}
+                  anyChecking={checking !== null}
                   onFix={fixRow}
+                  onCheck={(check, force) => void runCheck(check, force)}
                 />
               ))}
             </ul>

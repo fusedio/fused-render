@@ -2663,8 +2663,12 @@ export interface AppCheckFinding {
   path: string;
   /** 0 for a finding about the folder rather than a line. */
   line: number;
-  /** Already masked server-side when it came off a secret — safe to render. */
+  /** Already masked server-side when it came off a secret — safe to render.
+   *  For a model-backed row (`cross-browser`) this is a plain-language
+   *  sentence saying what a visitor will see go wrong, not a source line. */
   excerpt: string;
+  /** Model-backed rows only: one plain sentence saying what to change. */
+  fix?: string;
 }
 
 export interface AppDoctorTask {
@@ -2687,6 +2691,12 @@ export interface AppCheck {
    *  row (or, for "Fix all", one covering every failing row at once, still
    *  attached the same way a stored prompt is: by which check id it names). */
   task: AppDoctorTask | null;
+  /** A row a person runs by pressing its own Check button (`runAppDoctorOnDemand`)
+   *  rather than one the doctor answers on every GET — today `cross-browser`,
+   *  a Sonnet read of the view files cached on their checksum
+   *  (fused_render/app_doctor_ai.py). `state: "unrun"` only ever appears on
+   *  one of these: never run, or the app changed since. */
+  ondemand: boolean;
 }
 
 export interface AppDoctorReport {
@@ -2711,6 +2721,24 @@ export function getAppDoctor(path: string): Promise<AppDoctorReport> {
 
 export interface AppDoctorFixResult extends NewAppResult {
   check: string;
+}
+
+/** RUN one on-demand row now (`check.ondemand`) and get the refreshed row
+ *  back — the server caches the verdict on the app's content, so until the
+ *  view files change the next GET draws this same row for free. Blocks for
+ *  the model call (seconds). 502 with one sentence when the model could not
+ *  answer; the previous verdict, if any, stays. */
+export function runAppDoctorOnDemand(
+  path: string,
+  check: string,
+  /** Re-check: ask again although the cached verdict still matches the files. */
+  force = false,
+): Promise<{ path: string; check: AppCheck }> {
+  return postJson<{ path: string; check: AppCheck }>("/api/apps/doctor/run", {
+    path,
+    check,
+    force,
+  });
 }
 
 // Create the App Doctor FIX task for ONE row — its prompt invokes the

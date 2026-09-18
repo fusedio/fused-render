@@ -65,6 +65,7 @@ const check = (
   detail: "",
   findings: [],
   task: null,
+  ondemand: false,
   ...extra,
 });
 
@@ -85,7 +86,7 @@ test("the strip's reading counts what wants an answer, and says so only when not
   const skipped = [check("a", "pass"), check("b", "pass"), check("c", "skip")];
   expect(readinessCount(skipped)).toBe("2 of 3");
   expect(readinessSentence(skipped)).toBe(
-    "checks passed and the rest could not be answered here — nothing to fix.",
+    "checks passed and 1 could not be answered here — nothing to fix.",
   );
 
   const failing = [
@@ -96,7 +97,7 @@ test("the strip's reading counts what wants an answer, and says so only when not
   ];
   expect(readinessCount(failing)).toBe("2 of 4");
   expect(readinessSentence(failing)).toBe(
-    "checks need attention before this app is worth sharing, and 1 could not be answered here.",
+    "checks need attention before this app is worth sharing, and 1 waits for Check.",
   );
   expect(failingCount(failing)).toBe(2);
 });
