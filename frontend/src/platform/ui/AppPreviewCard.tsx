@@ -36,9 +36,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
 import { appIconUrl, appfilePreviewUrl, rawUrl } from "@platform/lib/api";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
-import { exportAppFile, notifyExportSaved } from "@platform/lib/appShot";
 import { openShareApp } from "@platform/lib/share-app";
-import { notify } from "@platform/lib/notifications";
 import { AppStar } from "@platform/ui/AppStar";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { thumbFrame } from "@platform/lib/thumb-frame";
@@ -146,7 +144,7 @@ export function AppPreviewCard({
   // The card BODY's live iframe has loaded — i.e. the thumb is a picture of the
   // app and not an empty box. Separate state from `liveReady`, which is the
   // hover crossfade's and is deliberately reset on every enter AND leave: the
-  // export chip is only reachable while hovering, so gating a capture on
+  // share chip is only reachable while hovering, so gating a capture on
   // `liveReady` would gate it on a flag the hover just cleared. One-way for the
   // life of the mount, which is exact — the body iframe is never torn down and
   // re-created for the same card, and cards are keyed by path, so a different
@@ -422,61 +420,32 @@ export function AppPreviewCard({
           </>
         ) : null}
       </span>
-      {/* Hover-revealed export (SPEC §43 AF-4, D391): the same action as the
-          right-click menu's "Export App File", surfaced so it is one visible
-          click. A SIBLING of the thumb, not a child: the thumb span is
-          aria-hidden (it is decoration), and a focusable button inside an
-          aria-hidden subtree is announced as nothing by assistive tech while
-          still taking tab focus. Positioned over the thumb via the card's own
-          positioning context. A <button> inside the card's <a>: it must both
+      {/* Hover-revealed Share (SPEC §43 AF-4, D391): the same action as the
+          right-click menu's "Share…", surfaced so it is one visible click.
+          The sheet behind it (ShareAppModal) holds both ways out — the public
+          link and the .fused download — so this is the ONE chip on the card.
+          A SIBLING of the thumb, not a child: the thumb span is aria-hidden
+          (it is decoration), and a focusable button inside an aria-hidden
+          subtree is announced as nothing by assistive tech while still taking
+          tab focus. Positioned over the thumb via the card's own positioning
+          context. A <button> inside the card's <a>: it must both
           preventDefault (or the card link opens the app) and stopPropagation
           (or the click ALSO bubbles to onAppCardClick). Not rendered on an
           exported .fused card (kind "appfile", D396): its path is the file
-          itself and the export route only takes app folders. */}
-      {app.kind !== "appfile" && (
-      <button
-        type="button"
-        className="app-pcard-export"
-        title={"Export " + (app.title || app.name) + " as a .fused app file"}
-        aria-label="Export app file"
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          // Also bakes a native screen shot in as the file's preview.png when
-          // the folder has no authored one (appShot, D396). The thumb element
-          // rides along as the crop source: a card without a preview.png is
-          // already showing the live app there, so nothing has to flash —
-          // but ONLY once that frame has loaded (`bodyLive`). Two card
-          // previews start at a time, so an unstarted card's thumb is an
-          // empty box, and cropping it would bake the empty box in as the
-          // artifact's permanent thumbnail. Offer nothing instead and
-          // appShot stages the app full-screen for the shot.
-          exportAppFile(app, bodyLive ? thumbRef.current : null).then(
-            (realPath) => {
-              notifyExportSaved(app.name, realPath);
-            },
-            (err: Error) => {
-              notify({
-                title: "Could not export " + app.name + ": " + err.message,
-                tone: "error",
-              });
-            },
-          );
-        }}
-      >
-        {MenuIcons.download}
-      </button>
-      )}
-      {/* Share: the export chip's sibling, one slot to its left (apps.css
-          `.app-pcard-share`). Same .fused, published to the user's Fused
-          account as a public page instead of downloaded (share_app.py); the
-          dialog owns sign-in, the link and removal. Same crop-source rule as
-          Export: the thumb only once its frame has loaded. */}
+          itself and the export route only takes app folders.
+
+          The thumb element rides along as the capture crop source (appShot,
+          D396): a card without a preview.png is already showing the live app
+          there, so nothing has to flash — but ONLY once that frame has loaded
+          (`bodyLive`). Two card previews start at a time, so an unstarted
+          card's thumb is an empty box, and cropping it would bake the empty
+          box in as the artifact's permanent thumbnail. Offer nothing instead
+          and appShot stages the app full-screen for the shot. */}
       {app.kind !== "appfile" && (
       <button
         type="button"
         className="app-pcard-share"
-        title={"Share " + (app.title || app.name) + " as a public link"}
+        title={"Share " + (app.title || app.name) + " — public link or .fused file"}
         aria-label="Share app"
         onClick={(e) => {
           e.preventDefault();

@@ -1,6 +1,6 @@
 // One real-pixels screenshot of an app, for the export path (D396): when a
 // folder without an authored preview.png is exported, this captures what the
-// app actually looks like and downloadAppFile bakes it into the .fused as
+// app actually looks like and the export route bakes it into the .fused as
 // `files/preview.png`.
 //
 // The mechanism is a NATIVE SCREEN SHOT — `POST /api/capture/shot-region`, the
@@ -42,9 +42,7 @@
 // On macOS the first shot on a machine that has not granted Screen Recording
 // raises the TCC dialog (capture._darwin: "the prompt rides the first real
 // capture"), and THAT export ships plain; the ones after it carry a preview.
-import { revealPath, saveAppFileToDisk } from "./api";
-import { notify } from "./notifications";
-import { navigate } from "./router";
+import { saveAppFileToDisk } from "./api";
 import { thumbUrl } from "./thumb-frame";
 
 // The slice of AppInfo the export path reads — structural, so the preview
@@ -82,10 +80,11 @@ function shotUrl(entryHtml: string): string {
   return thumbUrl(`/render?path=${encodeURIComponent(entryHtml)}`);
 }
 
-// The one export entry every card surface calls (the hover chip and the
-// context menu): capture only when there is something to gain — a renderable
-// page and no authored preview.png — then the ordinary download. A capture
-// that comes back undefined (unsupported, refused, blank) exports plain.
+// The one export entry — the share sheet's "App file" card (ShareAppModal),
+// which every surface's Share reaches: capture only when there is something
+// to gain — a renderable page and no authored preview.png — then the ordinary
+// download. A capture that comes back undefined (unsupported, refused, blank)
+// exports plain.
 //
 // `captureEl` is the no-flash source above, and the CALLER'S CONTRACT on it is
 // narrow: an element whose pixels ARE the app *right now*. Not "the box the
@@ -98,39 +97,13 @@ function shotUrl(entryHtml: string): string {
 // painted pixels passes nothing and gets the stage, which is the whole reason
 // the stage exists. `cropRect` can only check geometry, so it cannot enforce
 // this — the promise is made where the state lives.
-// The one export-succeeded notification every call site raises, so a caller
-// never has to hand-assemble the two-action wiring itself. `name` is the
-// caller's own display name for the file — AppPage.tsx and
-// EntryActionsMenu.tsx both build a version-suffixed name distinct from the
-// live app's own, and the notification has to name the same thing the file
-// on disk is actually called, not the app's bare name.
 //
-// `action` = "Reveal folder" (revealPath already handles being given a file
-// path — it reveals/selects it inside its parent folder, no dirname needed);
-// `extraAction` = "Open file" (navigate, not navigateToJobPage — that
-// helper's extension allowlist would misclassify a `.fused` path as a
-// directory).
-export function notifyExportSaved(name: string, realPath: string): void {
-  notify({
-    title: "Exported " + name + " to " + realPath,
-    tone: "info",
-    action: {
-      label: "Reveal folder",
-      onClick: () => {
-        revealPath(realPath).catch(() => {});
-      },
-    },
-    extraAction: {
-      label: "Open file",
-      onClick: () => navigate(realPath, { isDir: false }),
-    },
-  });
-}
-
 // Returns the real absolute path the `.fused` landed at on disk (Downloads),
-// so a caller can raise a notification pointing at it — the whole reason the
-// export writes server-side now instead of handing the browser a blob it
-// saves wherever its own download settings land it.
+// so the sheet can show it with Reveal folder / Open file — the whole reason
+// the export writes server-side now instead of handing the browser a blob it
+// saves wherever its own download settings land it. (Open goes through
+// `navigate`, not navigateToJobPage — that helper's extension allowlist would
+// misclassify a `.fused` path as a directory.)
 export async function exportAppFile(
   app: ExportableApp,
   captureEl?: Element | null,
@@ -209,7 +182,8 @@ function nextPaint(): Promise<void> {
 
 // While a shot is being taken the body carries this attribute, and the
 // stylesheet hides the overlay UI that sits ON the thumb — the card's hover
-// export chip (`.app-pcard-export`, apps.css). Clicking that chip does not end
+// Share chip (`.app-pcard-share`, apps.css) and the share sheet itself
+// (dialogs.css). Clicking that chip does not end
 // the hover, so without this the chip is in the pixels and becomes part of
 // the artifact's permanent thumbnail. An attribute rather than a class on
 // the card so any surface with overlay UI over its capture source can join

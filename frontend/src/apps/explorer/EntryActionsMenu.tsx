@@ -20,8 +20,10 @@
 // so the two agree.
 //
 // The bodies are the deleted buttons' bodies, verbatim where it matters:
-//   * Export keeps its `busy || snapshotPending || snapshotError` guard and its
-//     `.preview-frame.is-shown` capture source (see the row's comments);
+//   * Share (which absorbed the Download row — the sheet behind it holds both
+//     the public link and the .fused file) keeps Export's
+//     `snapshotPending || snapshotError` guard and its `.preview-frame.is-shown`
+//     capture source (see `doShare`);
 //   * Open as project puts the folder on the sidebar's desk first, then
 //     navigates in THIS tab, spelled by hand since an app may not import
 //     shell/current-apps-lib;
@@ -37,7 +39,6 @@
 import { useEffect, useState } from "react";
 import { Plug, Stethoscope } from "lucide-react";
 import { addCurrentApp, getAppEntry, statPath } from "@platform/lib/api";
-import { exportAppFile, notifyExportSaved } from "@platform/lib/appShot";
 import { openShareApp } from "@platform/lib/share-app";
 import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
 import { AppDoctorStatusDot } from "@platform/ui/AppDoctorStatusDot";
@@ -45,20 +46,10 @@ import { useAppDoctorChecks } from "@platform/ui/useAppDoctorChecks";
 import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { navigateUrl, encodeFsPathSegments } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
-import { notify } from "@platform/lib/notifications";
 import { useAppVersionLabel } from "@platform/lib/appVersionLabel";
 import type { ResolvedSnapshot } from "@platform/lib/snapshot-param";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { OverflowMenu, type OverflowEntry } from "@apps/explorer/BarMenu";
-
-// Whether the app folder ships an authored preview.png (a stat failure reads
-// as "no" — worst case is one redundant capture, never a lost action).
-function statePathAuthoredPreview(dir: string): Promise<boolean> {
-  return statPath(dir + "/preview.png").then(
-    (s) => !s.is_dir,
-    () => false,
-  );
-}
 
 // lucide at MenuIcons' own weight (1.5 on a 24 grid, 16px) so the two rows that
 // have no MenuIcons glyph sit in the list at the same stroke as the rest.
@@ -133,7 +124,6 @@ export function EntryActionsMenu({
   const [isEntryProbed, setIsEntry] = useState(false);
   const isEntry = isEntryKnown ?? isEntryProbed;
   const [doctorOpen, setDoctorOpen] = useState(false);
-  const [exporting, setExporting] = useState(false);
   useEffect(() => {
     let alive = true;
     setIsEntry(false);
@@ -156,61 +146,72 @@ export function EntryActionsMenu({
   const doctorChecks = useAppDoctorChecks(isEntry ? dir : null);
   const versionLabel = useAppVersionLabel(dir, snapshotSha);
 
-  // Mirrors AppPage.tsx's `exportDisabled`: a click landing mid-resolve, before
+  // Mirrors AppPage.tsx's `shareDisabled`: a click landing mid-resolve, before
   // `snapshotResolved.dir` exists, must not fall through to exporting the LIVE
   // folder while the pane still shows the version being resolved.
-  const exportDisabled = exporting || snapshotPending || snapshotError;
-  const doExport = async () => {
-    if (exportDisabled) return;
-    setExporting(true);
-    try {
-      const isLive = snapshotSha === null;
-      // The snapshot's OWN extracted tree (`snap.dir`), never `snap.app_dir`
-      // (the LIVE folder the sha resolved from) — exporting that would silently
-      // ship the live app labelled as the picked commit.
-      const exportPath = snapshotResolved ? snapshotResolved.dir : dir;
-      // The filename carries the version so a v7 export sitting beside a live
-      // export in Downloads is never ambiguous about which is which.
-      const exportName = isLive ? name : `${name}-${versionLabel}`;
-      // Same capture-on-export as the /apps card (appShot, D396): the shown
-      // preview frame IS the app rendering, so it is the crop source — no
-      // navigation, no flash. exportAppFile itself skips capture when the folder
-      // carries an authored preview.png; the probe below is only so a pointless
-      // native shot (and, on a Mac that has not granted Screen Recording, its
-      // permission dialog) isn't taken for a capture the server would discard
-      // anyway (stat failure reads as "no authored still" — worst case is that
-      // redundant shot, never a lost export).
-      //
-      // `.is-shown` satisfies appShot's crop-source contract (pixels that ARE
-      // the app, not a box it may fill): the class rides `shown`, which the
-      // frame swap only sets once that frame paints. Only checked for a LIVE
-      // export: a snapshot's preview.png (if any) lives under the extracted
-      // tree, and `entry_html` is omitted below for a snapshot anyway.
-      const authored = isLive
-        ? await statPath(dir + "/preview.png").then(
-            (s) => !s.is_dir,
-            () => false,
-          )
-        : false;
-      const realPath = await exportAppFile(
-        {
-          path: exportPath,
-          name: exportName,
-          // Omitted for a snapshot export: with no on-screen capture element
-          // threaded to this target folder, `exportAppFile`'s stage fallback
-          // would reload the ENTRY PAGE'S LIVE copy to shoot it — a present-day
-          // screenshot baked into a file labelled as the old commit.
-          entry_html: isLive ? fsPath : undefined,
-          preview_image: isLive && authored ? dir + "/preview.png" : null,
-        },
-        isLive ? document.querySelector(".preview-frame.is-shown") : null,
-      );
-      notifyExportSaved(exportName, realPath);
-    } catch (e) {
-      notify({ title: "Could not export " + name + ": " + (e as Error).message, tone: "error" });
-    } finally {
-      setExporting(false);
-    }
+  const shareDisabled = snapshotPending || snapshotError;
+  // One Share entry opens the unified sheet (ShareAppModal): the public link
+  // and the `.fused` download as two cards. This is the one place that turns
+  // "which version is previewed" into "which folder the FILE card exports".
+  const doShare = async () => {
+    if (shareDisabled) return;
+    const isLive = snapshotSha === null;
+    // The snapshot's OWN extracted tree (`snap.dir`), never `snap.app_dir`
+    // (the LIVE folder the sha resolved from) — exporting that would silently
+    // ship the live app labelled as the picked commit.
+    const exportPath = snapshotResolved ? snapshotResolved.dir : dir;
+    // The filename carries the version so a v7 export sitting beside a live
+    // export in Downloads is never ambiguous about which is which.
+    const exportName = isLive ? name : `${name}-${versionLabel}`;
+    // Same capture-on-export as the /apps card (appShot, D396): the shown
+    // preview frame IS the app rendering, so it is the crop source — no
+    // navigation, no flash. exportAppFile itself skips capture when the folder
+    // carries an authored preview.png; the probe below is only so a pointless
+    // native shot (and, on a Mac that has not granted Screen Recording, its
+    // permission dialog) isn't taken for a capture the server would discard
+    // anyway (stat failure reads as "no authored still" — worst case is that
+    // redundant shot, never a lost export).
+    //
+    // `.is-shown` satisfies appShot's crop-source contract (pixels that ARE
+    // the app, not a box it may fill): the class rides `shown`, which the
+    // frame swap only sets once that frame paints. Only checked for a LIVE
+    // export: a snapshot's preview.png (if any) lives under the extracted
+    // tree, and `entry_html` is omitted below for a snapshot anyway.
+    const authored = isLive
+      ? await statPath(dir + "/preview.png").then(
+          (s) => !s.is_dir,
+          () => false,
+        )
+      : false;
+    const live = {
+      path: dir,
+      name,
+      entry_html: fsPath,
+      preview_image: authored ? dir + "/preview.png" : null,
+    };
+    openShareApp(
+      live,
+      isLive ? document.querySelector(".preview-frame.is-shown") : null,
+      {
+        file: isLive
+          ? live
+          : {
+              path: exportPath,
+              name: exportName,
+              // Omitted for a snapshot export: with no on-screen capture
+              // element threaded to this target folder, `exportAppFile`'s
+              // stage fallback would reload the ENTRY PAGE'S LIVE copy to
+              // shoot it — a present-day screenshot baked into a file
+              // labelled as the old commit.
+              entry_html: undefined,
+            },
+        // Live only — the shared canvas is named after the app's id and
+        // always carries "the app", so a snapshot published under it would
+        // downgrade every link out there. The sheet says so instead.
+        link: isLive,
+        versionLabel,
+      },
+    );
   };
 
   // Put the folder on the sidebar's desk (POST /api/current-apps/add, a no-op
@@ -238,45 +239,18 @@ export function EntryActionsMenu({
           trailing: <AppDoctorStatusDot checks={doctorChecks} />,
           onClick: () => setDoctorOpen(true),
         },
+        // The one Share entry: the sheet behind it offers the public link
+        // (share_app.py) and the `.fused` download together (see `doShare`).
         {
-          label: exporting ? "Exporting…" : "Download app",
-          icon: exporting ? <span className="mode-icon-spinner" /> : MenuIcons.download,
-          title: "Export " + name + " as a single .fused app file",
-          disabled: exportDisabled,
-          onClick: () => void doExport(),
+          label: "Share…",
+          icon: MenuIcons.share,
+          title:
+            snapshotSha === null
+              ? "Share " + name + " — public link or .fused file"
+              : "Share " + name + " as of " + versionLabel + " as a .fused file",
+          disabled: shareDisabled,
+          onClick: () => void doShare(),
         },
-        // Download's sibling: the same .fused, published to the user's Fused
-        // account as a public page (share_app.py). Live only — the shared
-        // canvas is named after the app's id and always carries "the app", so
-        // a snapshot published under it would downgrade every link out there.
-        // The shown preview frame is the capture source under Download's rule.
-        ...(snapshotSha === null
-          ? [
-              {
-                label: "Share…",
-                icon: MenuIcons.share,
-                title: "Share " + name + " as a public link",
-                onClick: () => {
-                  // Same authored-still probe as Download (above): a folder
-                  // that ships its own preview.png must not cost a redundant
-                  // native shot — or, on a Mac without Screen Recording
-                  // granted, its permission dialog — for a capture the server
-                  // would discard anyway.
-                  void statePathAuthoredPreview(dir).then((authored) =>
-                    openShareApp(
-                      {
-                        path: dir,
-                        name,
-                        entry_html: fsPath,
-                        preview_image: authored ? dir + "/preview.png" : null,
-                      },
-                      document.querySelector(".preview-frame.is-shown"),
-                    ),
-                  );
-                },
-              } satisfies OverflowEntry,
-            ]
-          : []),
         {
           label: "Open as project",
           icon: MenuIcons.open,

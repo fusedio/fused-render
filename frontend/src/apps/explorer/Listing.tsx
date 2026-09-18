@@ -1975,7 +1975,7 @@ export default function Listing({
                   is the bar (it portals into it — search-slot.ts), and this is the
                   folder's own chrome, beside the folder's own search box. */}
               {/* THE KEBAB (EntryActionsMenu), the folder's app-level one-shots:
-                  App Doctor, Download app, Open as project — gated on the folder
+                  App Doctor, Share, Open as project — gated on the folder
                   having an entry page (`appEntryPath`: it IS an app) — and MCP
                   config, gated on the folder publishing a manifest. Whether or not
                   the pane is open: this row is the folder's own chrome, and the
