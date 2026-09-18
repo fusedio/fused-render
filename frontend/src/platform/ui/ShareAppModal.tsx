@@ -544,13 +544,16 @@ export function ShareAppModal({
     </Button>
   );
   const fileBody = saved ? (
-    <div className="flex items-center gap-2 rounded-lg bg-muted/50 px-3 py-2">
-      <Check className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-      <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={saved.path}>
-        Saved <span className="text-foreground">{saved.name}.fused</span>
-        <span className="mx-1.5 opacity-50">·</span>
-        {saved.path}
-      </span>
+    <div className="flex min-w-0 items-start gap-2 rounded-lg bg-muted/50 px-3 py-2">
+      <Check className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+      {/* Path on its own line under the name: a Downloads path is longer than
+          the card, so on one line it pushed Reveal/Open past the edge. */}
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5 text-xs text-muted-foreground">
+        <span className="truncate">
+          Saved <span className="text-foreground">{saved.name}.fused</span>
+        </span>
+        <span className="break-all text-[11px] leading-4 opacity-80">{saved.path}</span>
+      </div>
       {/* `bg-transparent` on both: no preflight, so a ghost button would
           otherwise show the UA's grey buttonface fill. */}
       <Button
