@@ -546,3 +546,220 @@ source of truth for a Task row's project/target/entrypoint is
 landed, and doing it there (rather than at the brief's literal pointer) is
 what keeps this at ONE entrypoint reader instead of a third, independently-
 drifting one.
+
+# F8. Popup-only suppression for a finished task whose own app/chat is already open (2026-09-18)
+
+## The bug, restated from a screenshot
+
+The shell open on `/Fused/sandbox/Akshil/virtual-office/index.html`, the
+Claude side panel showing that exact session (T001 "Virtual office"), and
+"Notifications 2" lit in the status bar — the user staring straight at the
+finished run and still being told about it. Verbatim: "we never want to
+show notifications for tasks when the claude template / app is already
+opened."
+
+## The THIRD position this file has taken on presence suppression, and why the answer keeps changing
+
+F7's own header (above) already documents two earlier reversals on this
+exact question. Restated so this round's answer reads as a continuation,
+not a contradiction:
+
+1. Originally: presence-suppress the finished-task notice (`source:
+   taskSource(task)`), the same lever every other message uses.
+2. 2026-09-17, first reversal: dropped presence suppression entirely — "a
+   finished run is exactly the moment someone wants to jump back into it,"
+   the run has ENDED so "already looking at the chat" no longer means
+   "already knows it's done" for a job that's still running.
+3. This round, second reversal: the user's screenshot is a case position 2
+   didn't anticipate — not "already looking at the chat mid-run," but
+   *the chat is open at the exact moment the finish notice fires*, so the
+   user genuinely does already know. What changed the answer is that
+   specific: presence at the moment of completion, not presence generically.
+   Position 2's own reasoning ("the run has ended, so already-looking no
+   longer means already-knows") is still correct for the general case — a
+   window left open on that folder an hour ago, long since abandoned, tells
+   you nothing about whether the user saw THIS run finish. It just doesn't
+   cover the live-panel-open-right-now case the screenshot shows, which is
+   `isOpenAnywhere`'s ordinary, current-and-non-stale presence check, not a
+   memory of "this page was ever open."
+
+Nothing about F7's `source`/`origin` split is touched: this branch still
+sets `origin`, never `source`, for the caption. The suppression check below
+is a wholly separate lever (`quiet`), consulted independently.
+
+## Why popup-only, not full suppression
+
+The brief's first draft (mine, before the user corrected it) suppressed the
+notice outright — no popup, no retained row — on the theory that "the chat
+itself is the notification." The user's correction: "by show I mean
+popup, if that is not simple enough to do just dont have a notification."
+Popup-only turned out simple (a handful of lines in `notify()`), so that's
+what shipped: a finished task whose destination is already open still gets
+a retained Notifications-panel row (the user may navigate away before
+dismissing it, and the row is what lets them find their way back later —
+exactly the reasoning F7's own second reversal already established for why
+this branch carries a `page` at all), it just never interrupts with a card
+for something already on screen.
+
+## `quiet` as an explicit opt-in field, not a tier
+
+`isRetained()`/`resolveTier()` already have a `tier` vocabulary
+(`"silent"`, `"attention"`, `"transient"`) inherited from `jobs.ts`'s
+`JobTier`. Reusing one of those was rejected: `"silent"` also kills
+retention (`isRetained` returns false for it) — wrong, we want the row kept.
+Inventing a new tier value would mean threading a whole new case through
+`resolveTier`, `isRetained`, and every switch over `JobTier` in `jobs.ts`
+that this module shares that type with, for a distinction (`pops` vs.
+`doesn't pop`) that is orthogonal to retention, not another point on the
+same axis. A plain boolean (`NotificationInput.quiet`) checked once, after
+`retainAndCollapse()` in `notify()`, keeps the two axes (retained vs. not;
+pops vs. not) independent instead of conflating them into a bigger tier
+enum.
+
+`notify()`'s fresh-item path now branches on `input.quiet` immediately
+after `retainAndCollapse()`: quiet returns the same `id` after only
+`refreshSnapshot()`/`emit()` (mirrors `ingestNotification`'s own
+retain-without-pop shape for the pane→shell forwarding case — the same
+"retain but don't pop" need, reached from a different boundary). Non-quiet
+falls through to the existing "latest wins" popup-arming code unchanged.
+`retainAndCollapse()` itself is untouched — a quiet notice still competes
+for the same `familyKey`/count-collapse as a normal one (asserted directly:
+a quiet second finished-task notice in the same folder still updates the
+existing row's count, and does not disturb whatever the FIRST notify()
+already popped).
+
+## Where the check lives, and why it stays out of `notificationForTransition`'s purity
+
+`notificationForTransition` (task-status-notify.ts) stays pure, per its own
+header comment and per F7's already-established pattern: `notifyTerminalSessions`
+is threaded in as a plain argument rather than read off a live subscription
+inside the function. This round adds a second injected predicate,
+`isDestinationOpen: (page: string) => boolean`, the same shape (and the
+same reasoning) `jobs.ts`'s `isPopupSuppressed(job, isOpenAnywhere)` already
+uses. `useTaskStatusNotify.ts` calls `snapshotIsOpenAnywhere()` ONCE per
+poll tick (not once per task inside the loop — `snapshotIsOpenAnywhere`'s
+own doc comment names exactly this N-calls-per-tick cost) and passes the
+resulting closure in on every `notificationForTransition` call that tick.
+
+Scoped to ONLY the `in_progress -> done` branch, and only after the F7
+terminal-session gate has already had its say (a `cli`-entrypoint task with
+the preference off returns `null` before the `isDestinationOpen` check is
+even reached — the two gates compose, they don't race). `needs_attention`
+and `in_progress -> blocked` are untouched, matching the brief: a task that
+fails or parks on a question must still speak up even with its app open —
+"already looking at the folder" is not "already knows it just failed" the
+way it is for a finished run whose chat panel is showing the finish.
+
+## The `/tasks` fallback exclusion
+
+`taskDestination(task)` is `taskHref(task) ?? folderHref(task) ?? "/tasks"`
+— the last-resort route for a task with no session AND no project/target.
+Suppressing the popup whenever `isDestinationOpen("/tasks")` is true would
+go quiet for EVERY such task the instant anyone has the Tasks page open,
+which has no relation to that specific task at all — the exact over-wide
+suppression the brief warned against. The check is skipped outright
+(`destination !== "/tasks" && ...`) rather than relying on `isDestinationOpen`
+to somehow answer "false" for that case.
+
+## The normalization gap: `taskDestination()` and presence entries do not share a string shape
+
+This was the single largest risk named in the brief, and it is real — verified
+empirically, not assumed:
+
+- `taskDestination(task)` (via `taskHref`/`folderHref` → `explorerUrl` →
+  `queue.chatUrl`) returns a full shell HREF: `/explorer/view/<encoded fs
+  path>?_side=claude&session_id=<id>` (or `&session_id=` empty for the
+  folder-only fallback). Printed for a real session-backed task in an app
+  folder: `/explorer/view/Fused/sandbox/Akshil/virtual-office/index.html?_side=claude&session_id=sess-abc123`.
+- `currentPresencePage()` (presence.ts) — what a live window actually
+  publishes into the shared registry when it has that page open — is
+  `fsPathFromLocation()`: a BARE fs path, prefix and query both stripped.
+  For a window sitting on the same page: `/Fused/sandbox/Akshil/virtual-office/index.html`.
+- `matchesSource(published, raw)` between those two strings, confirmed by a
+  throwaway test run against the real functions (not a hand-built fixture):
+  **`false`**. The row's own destination would never have matched anything,
+  ever — exactly the "silently no-ops" failure mode the brief was most
+  worried about, and it would have shipped invisibly since nothing else
+  exercises this pairing.
+- `recentFsPath(url)` (`apps/explorer/lib/recents.ts`, already used by
+  `Home.tsx`/`FilesHome.tsx` to turn a recorded recent-file URL back into a
+  stable fs-path identity) does exactly the decode `fsPathFromLocation()`
+  does, but as a pure function of a STRING instead of `location`: strips the
+  query, strips a `VIEW_PREFIX`/legacy `/view/` prefix if present
+  (`rootedFsPath` + decode), and falls through to the bare pathname
+  unchanged when there's no such prefix — which is what makes `/tasks`
+  round-trip as `/tasks` rather than being mishandled. Run against the same
+  real `taskDestination()` output: `recentFsPath(raw)` =
+  `/Fused/sandbox/Akshil/virtual-office/index.html` — an EXACT match for
+  `currentPresencePage()`'s own output for that same window, and
+  `matchesSource(published, normalized)` confirmed `true`. `taskDestination()`
+  is now always run through `recentFsPath()` before being handed to
+  `isDestinationOpen`, both at the shell (VIEW_PREFIX) and embed cases —
+  presence entries are always written in bare-fs-path form regardless of
+  which prefix the writing window itself loaded under, so normalizing only
+  the READ side (the destination string) is sufficient; nothing on the
+  write side needed to change.
+- No boundary violation: `recentFsPath` lives under `apps/explorer/lib/`,
+  and `shell/**` (where `task-status-notify.ts` lives) may import anything
+  (`scripts/check-boundaries.mjs`'s own stated rule) — confirmed by running
+  `bun run check:boundaries` clean after the import. Reusing it also keeps
+  this at ONE decoder for "HREF with a VIEW_PREFIX/query -> bare fs path"
+  instead of writing a second copy of `fsPathFromLocation()`'s own decode
+  logic a third time in this codebase.
+
+## Tests
+
+Full TDD, confirmed red before each fix (not merely written and left to
+pass): `notify()`'s `input.quiet` branch was stubbed out with `if (false &&
+input.quiet)` and the run showed exactly the 2 quiet-specific tests failing
+(the "false pops normally" test stayed green, correctly, since it exercises
+the unaffected default path) before being restored. `task-status-notify.ts`'s
+`const quiet = ...` line was hardcoded to `const quiet = false` and the run
+showed exactly the 2 tests asserting `quiet: true` failing, while the
+`/tasks`-fallback, blocked/needs_attention, and F7-composition tests stayed
+green (as they should — they assert `quiet` is falsy, or that the branch
+returns `null` before `quiet` is even computed).
+
+`notifications.test.ts`: quiet retains without popping; quiet omitted/false
+pops as before (unaffected-path regression guard); a quiet notice still
+collapses into an existing `familyKey` row and increments `count`, without
+disturbing whatever the first, non-quiet `notify()` call already popped.
+
+`task-status-notify.test.ts`: a finished task with its destination open
+sets `quiet: true` and is otherwise a completely normal retained/clickable
+row; the injected predicate receives the `recentFsPath`-normalized
+destination, not the raw querystring-bearing href (asserted directly, with
+a companion assertion that the raw destination actually differs from what
+the predicate saw — proving the normalization step does real work rather
+than happening to be a no-op for this fixture); the same task pops normally
+when nothing is open; a blocked task and a needs-attention task are
+unaffected even when the predicate reports "open"; a task whose destination
+falls through to `/tasks` still pops even with `/tasks` reported open; no
+predicate passed at all defaults to "nothing open" (existing lower-arity
+call sites keep compiling and behaving as before); the F7 terminal-session
+gate and this gate compose (a `cli`-entrypoint task with the preference off
+stays fully silent regardless of what the presence predicate says).
+
+Ran `bun test src/platform/lib src/shell` from `frontend/`: 2771 pass, 0
+fail, 9893 expect() calls across 90 files (up from the pre-round 2760/9819
+by the 11 new tests above). `bun run typecheck`: clean. `bun run
+check:boundaries`: clean (846 files) — checked explicitly given the new
+`shell -> apps/explorer/lib/recents` import this round adds.
+
+## What the brief got right / where it needed correcting
+
+Right: open-anywhere (not merely focused-here) via `isOpenAnywhere`/
+`snapshotIsOpenAnywhere`; keeping `notificationForTransition` pure with an
+injected predicate, mirroring `jobs.ts`'s `isPopupSuppressed` shape;
+scoping to the finished transition only; excluding the `/tasks` fallback;
+and — the brief's own explicit warning — that the destination/presence
+string-shape mismatch was the one thing most likely to make this silently
+no-op. It was real, and the brief was right to gate the whole task on
+checking it empirically rather than trusting a hand-built test fixture.
+
+Needed correcting, both from the user directly rather than found by
+inspection: the brief's original ask was full suppression (no popup, no
+row); the user's own follow-up narrowed "show" to mean "popup" specifically,
+which is what shipped instead. And the brief suggested `isPopupSuppressed`
+in `jobs.ts` as the pattern to mirror for the injected-predicate shape,
+which held up exactly as described once written.
