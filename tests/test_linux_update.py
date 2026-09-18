@@ -123,6 +123,32 @@ def test_updates_dir_is_the_appimages_own_parent(tmp_path):
     assert manager._updates_dir() == str(appimage.parent)
 
 
+def test_sweep_spares_the_running_appimage_and_an_unrelated_sibling(tmp_path):
+    # `_updates_dir()` on Linux IS the AppImage's own parent — a directory
+    # the user owns, not a dedicated one this app controls — so the sweep
+    # must touch only what a stale download of its own could plausibly have
+    # left behind, never the whole directory. The released AppImage's own
+    # name ("FusedRender-<version>-x86_64.AppImage") matches
+    # `_DOWNLOAD_PREFIX`/`_DOWNLOAD_SUFFIX` just as well as a stale download
+    # would, so name-matching alone is not enough: the manager's own bundle
+    # path has to be excluded explicitly.
+    parent = tmp_path / "Applications"
+    parent.mkdir()
+    appimage = parent / "FusedRender-9.9.9-x86_64.AppImage"
+    appimage.write_bytes(b"the-running-appimage")
+    sibling = parent / "some-users-unrelated-file.txt"
+    sibling.write_bytes(b"not ours")
+    stale = parent / "FusedRender-staged.AppImage"
+    stale.write_bytes(b"a leftover from a previous session")
+
+    manager = linux.UpdateManager(bundle=str(appimage), method="appimage")
+    manager._sweep_stale_downloads()
+
+    assert appimage.read_bytes() == b"the-running-appimage"
+    assert sibling.read_bytes() == b"not ours"
+    assert not stale.exists()  # the one thing actually worth sweeping
+
+
 def test_install_refuses_when_the_parent_dir_is_not_writable(monkeypatch, tmp_path):
     manager, appimage = _appimage_manager(monkeypatch, tmp_path)
     monkeypatch.setattr(os, "access", lambda path, mode: False)

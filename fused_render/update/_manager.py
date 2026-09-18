@@ -624,13 +624,39 @@ class UpdateManager:
         return path
 
     def _sweep_stale_downloads(self) -> None:
-        """Best-effort cleanup of DMGs and staged bundles a previous session
-        left behind (install failed, or the process died mid-download)."""
+        """Best-effort cleanup of downloads a previous session left behind
+        (install failed, or the process died mid-download).
+
+        Scoped to entries whose name matches THIS manager's own
+        `_DOWNLOAD_PREFIX`/`_DOWNLOAD_SUFFIX` — never the whole directory.
+        On mac `_updates_dir()` is a dedicated `…/fused-render/updates`
+        directory the app owns outright, so an unscoped sweep only ever hit
+        the app's own leftovers; on Linux it is the AppImage's own parent
+        directory (`_updates_dir()` there deliberately downloads next to the
+        running AppImage, since `os.replace()` needs the same filesystem), a
+        directory the USER owns (`~/Applications`, `~/Downloads`, …) and
+        shares with whatever else they keep there. An unscoped sweep would
+        delete every sibling file on every boot; scoping it to the download
+        naming pattern is what makes this safe on both platforms.
+
+        Name-matching alone is not enough to spare the running artifact
+        itself, though: the released AppImage is named
+        `FusedRender-<version>-x86_64.AppImage`, which matches
+        `FusedRender-`/`.AppImage` the same way a stale download would — so
+        the manager's own target path is excluded explicitly, by real path,
+        on top of the name match."""
         import shutil
+        prefix = self._DOWNLOAD_PREFIX
+        suffix = self._DOWNLOAD_SUFFIX
+        running = os.path.realpath(self._bundle) if self._bundle is not None else None
         try:
             updates = self._updates_dir()
             for name in os.listdir(updates):
+                if not (name.startswith(prefix) and name.endswith(suffix)):
+                    continue
                 full = os.path.join(updates, name)
+                if running is not None and os.path.realpath(full) == running:
+                    continue
                 try:
                     if os.path.isdir(full):
                         shutil.rmtree(full)

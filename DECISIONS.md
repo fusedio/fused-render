@@ -2555,3 +2555,67 @@ No test file covers this workflow step (nothing in the spec's Tests section
 calls for one, and there is no CI-yaml test harness in this repo to hook a
 new test into) — verification here is the yaml-parse check above plus the
 diff-against-mac-job comparison recorded here.
+
+## Task 7 — Scoping `_sweep_stale_downloads()` to the download naming pattern
+
+On mac, `_updates_dir()` is a dedicated `…/fused-render/updates` directory the
+app owns outright, so an unscoped `os.listdir()` + delete-everything sweep
+only ever hit the app's own leftovers. On Linux, `_updates_dir()` is
+deliberately the AppImage's own parent directory (`os.replace()` is only
+atomic within one filesystem, so the download has to land next to the
+artifact it will replace) — a directory the USER owns (`~/Applications`,
+`~/Downloads`, …) and shares with whatever else they keep there. Run
+unscoped, `start_auto_checks()`'s sweep (which runs ~1s after boot for every
+non-`check_only` manager) deleted every sibling file in that directory on
+every boot, including the running AppImage itself — reproduced first as a
+failing test (`test_sweep_spares_the_running_appimage_and_an_unrelated_sibling`
+in `tests/test_linux_update.py`), which raised `FileNotFoundError` against
+the running AppImage before the fix.
+
+The fix stays in the shared base class (`_manager.py`), not overridden per
+platform: it scopes the sweep to entries whose name matches the manager's own
+`_DOWNLOAD_PREFIX`/`_DOWNLOAD_SUFFIX`, which is a no-op change in behavior on
+mac (the dedicated updates dir never held anything else) but is the whole fix
+on Linux.
+
+Name-matching alone is not sufficient, though: the released artifact is named
+`FusedRender-<version>-x86_64.AppImage`, which matches
+`FusedRender-`/`.AppImage` exactly as well as a stale download would. The
+sweep therefore also resolves its own bundle path with `os.path.realpath()`
+and excludes any listing entry whose realpath equals it, on top of the name
+match — this is what actually keeps the running AppImage (referenced by a
+symlink, a relative path, or a bind mount, not just the literal listed name)
+out of the deletion set.
+
+
+## Task 7 — Scoping `_sweep_stale_downloads()` to the download naming pattern
+
+On mac, `_updates_dir()` is a dedicated `…/fused-render/updates` directory the
+app owns outright, so an unscoped `os.listdir()` + delete-everything sweep
+only ever hit the app's own leftovers. On Linux, `_updates_dir()` is
+deliberately the AppImage's own parent directory (`os.replace()` is only
+atomic within one filesystem, so the download has to land next to the
+artifact it will replace) — a directory the USER owns (`~/Applications`,
+`~/Downloads`, …) and shares with whatever else they keep there. Run
+unscoped, `start_auto_checks()`'s sweep (which runs ~1s after boot for every
+non-`check_only` manager) deleted every sibling file in that directory on
+every boot, including the running AppImage itself — reproduced first as a
+failing test (`test_sweep_spares_the_running_appimage_and_an_unrelated_sibling`
+in `tests/test_linux_update.py`), which raised `FileNotFoundError` against
+the running AppImage before the fix.
+
+The fix stays in the shared base class (`_manager.py`), not overridden per
+platform: it scopes the sweep to entries whose name matches the manager's own
+`_DOWNLOAD_PREFIX`/`_DOWNLOAD_SUFFIX`, which is a no-op change in behavior on
+mac (the dedicated updates dir never held anything else) but is the whole fix
+on Linux.
+
+Name-matching alone is not sufficient, though: the released artifact is named
+`FusedRender-<version>-x86_64.AppImage`, which matches
+`FusedRender-`/`.AppImage` exactly as well as a stale download would. The
+sweep therefore also resolves its own bundle path with `os.path.realpath()`
+and excludes any listing entry whose realpath equals it, on top of the name
+match — this is what actually keeps the running AppImage (referenced by a
+symlink, a relative path, or a bind mount, not just the literal listed name)
+out of the deletion set.
+
