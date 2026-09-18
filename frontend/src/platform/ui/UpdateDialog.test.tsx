@@ -28,7 +28,7 @@ import { afterEach, expect, test } from "bun:test";
 import { act, create, type ReactTestInstance } from "react-test-renderer";
 
 const { UpdateDialog } = await import("@platform/ui/UpdateDialog");
-const { RESTART_SLOW_MS, RESTART_STAGES, restartStageLabel } = await import(
+const { RESTART_SLOW_MS, RESTART_STAGES, RESTART_STEP_STAGES, restartStageLabel } = await import(
   "@platform/lib/restart-flow"
 );
 
@@ -80,7 +80,10 @@ function steps(r: ReturnType<typeof create>): Array<{ state: string; word: strin
   return byClass(r, "update-dialog-step").map((n) => {
     const cls = String(n.props.className).split(" ");
     const state = cls.find((c) => c.startsWith("is-"))?.slice(3) ?? "";
-    return { state, word: text(byClass_in(n, "update-dialog-step-word")[0]!) };
+    // The VISIBLE text only: the word slot also holds a hidden ghost of the
+    // live label that sizes it (see notifications.css), and a reader never
+    // sees that one.
+    return { state, word: text(byClass_in(n, "update-dialog-step-text")[0]!) };
   });
 }
 const byClass_in = (node: ReactTestInstance, cls: string) =>
@@ -170,12 +173,41 @@ test("the strip REPLACES the button, so the press has no second meaning", async 
     expect(r.root.findAllByType("button").length).toBe(0);
     const strip = byClass(r, "update-dialog-steps");
     expect(strip.length).toBe(1);
-    // Announced as text rather than as a whole dialog re-read: only the strip
-    // changes between stages, and one region for all three steps means one
-    // announcement per transition rather than three.
-    expect(strip[0].props["aria-live"]).toBe("polite");
-    expect(strip[0].props.role).toBe("status");
+    // The strip is NOT the live region — the body is (next test). Two regions
+    // would read every transition twice.
+    expect(strip[0].props["aria-live"]).toBeUndefined();
+    expect(strip[0].props.role).toBeUndefined();
   }
+});
+
+test("the body sentence is the dialog's one live region, so the 25s flip is heard", async () => {
+  // The story lives in the body — versions, the estimate, its withdrawal,
+  // "reloading…", the menu-bar way out — and at 25s the strip does not change
+  // at all. So the body is what assistive tech must be listening to, and it is
+  // the ONLY region: one announcement per change.
+  for (const stage of RESTART_STAGES) {
+    const r = await mount(restartAt(stage));
+    const p = r.root.findByType("p");
+    expect(p.props["aria-live"]).toBe("polite");
+    expect(p.props.role).toBe("status");
+    expect(p.props.className).toBe("update-dialog-body");
+    expect(r.root.findAll((n) => n.props?.["aria-live"] !== undefined).length).toBe(1);
+  }
+});
+
+test("every step word carries a hidden ghost of its live label, so the strip never changes width", async () => {
+  // The ghost is what sizes the slot ("Restarting…" is wider than "Restart");
+  // it is hidden from readers and from assistive tech, and the visible text
+  // beside it is the label the stage actually chose.
+  const r = await mount(restartAt("quitting"));
+  const words = byClass(r, "update-dialog-step-word");
+  expect(words.length).toBe(3);
+  for (const [i, w] of words.entries()) {
+    const ghost = byClass_in(w, "update-dialog-step-ghost")[0]!;
+    expect(ghost.props["aria-hidden"]).toBe("true");
+    expect(text(ghost)).toBe(restartStageLabel(RESTART_STEP_STAGES[i]!));
+  }
+  expect(steps(r).map((s) => s.word)).toEqual(["Quitting…", "Restart", "Reconnect"]);
 });
 
 test("each in-flight stage ticks what is done, spins what is live and leaves the rest hollow", async () => {

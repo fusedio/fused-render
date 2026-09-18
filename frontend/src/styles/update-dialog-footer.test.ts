@@ -115,3 +115,24 @@ test("the success tint is the app's own token, not a colour invented here", () =
   expect(back).not.toMatch(/#[0-9a-fA-F]{3,8}/);
   expect(back).not.toMatch(/\brgb a?\(/);
 });
+
+test("the word slot is sized by a hidden ghost, and the joiner is fixed, so no mark slides", () => {
+  // The strip is shrink-to-fit with its slack OUTSIDE it (`margin-right: auto`),
+  // so a flexible connector could never absorb a label growing from "Restart"
+  // to "Restarting…". What holds the geometry is the word slot: ghost and text
+  // stacked in one grid cell, the ghost invisible but still taking width.
+  const word = block(NOTIFICATIONS, ".update-dialog-step-word");
+  expect(word).toContain("display: inline-grid");
+  expect(block(NOTIFICATIONS, ".update-dialog-step-word > *")).toContain("grid-area: 1 / 1");
+  expect(block(NOTIFICATIONS, ".update-dialog-step-ghost")).toContain("visibility: hidden");
+  const link = block(NOTIFICATIONS, ".update-dialog-steps-link");
+  expect(link).toMatch(/flex: 0 0 \d+px/);
+  expect(link).not.toContain("flex: 1");
+});
+
+test("the body reserves two lines, so the shorter sentences do not lift the footer", () => {
+  // The in-flight sentence wraps to two lines at the modal's width; the 25s
+  // withdrawal, `back` and `ready` are one. Without the floor the footer jumps
+  // up by a line at the 25s mark, under a reader who cannot dismiss the dialog.
+  expect(block(NOTIFICATIONS, ".update-dialog-body")).toContain("min-height: 2lh");
+});

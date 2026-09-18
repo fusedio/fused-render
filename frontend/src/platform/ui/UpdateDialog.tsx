@@ -47,6 +47,7 @@ import { Modal } from "@platform/ui/modal/Modal";
 import {
   restartInFlight,
   restartIsSlow,
+  restartStageLabel,
   restartSteps,
   type RestartStage,
   type RestartStep,
@@ -149,15 +150,26 @@ function RestartSteps({ stage }: { stage: RestartStage }) {
         // The moment before the reload. See the tint in notifications.css.
         (stage === "back" ? " is-back" : "")
       }
-      role="status"
-      aria-live="polite"
+      // NOT a live region. The body sentence below the title is (see
+      // UpdateDialog): one region per dialog, one announcement per transition —
+      // a second one here would read every stage change twice.
     >
       {steps.map((step, i) => (
         <Fragment key={step.stage}>
           {i > 0 && <span className="update-dialog-steps-link" aria-hidden="true" />}
           <span className={"update-dialog-step is-" + step.state}>
             <RestartStepMark state={step.state} />
-            <span className="update-dialog-step-word">{step.label}</span>
+            {/* THE WORD IS SIZED FOR ITS LONGEST FORM whichever form shows: a
+                hidden ghost of the live label ("Restarting…") sits under the
+                visible word ("Restart") in the same grid cell, so the strip is
+                the same width in every stage and no mark slides when a step
+                goes live or completes. */}
+            <span className="update-dialog-step-word">
+              <span className="update-dialog-step-ghost" aria-hidden="true">
+                {restartStageLabel(step.stage)}
+              </span>
+              <span className="update-dialog-step-text">{step.label}</span>
+            </span>
           </span>
         </Fragment>
       ))}
@@ -188,8 +200,9 @@ function restartBody(
   }
   // THE ESTIMATE IS WITHDRAWN RATHER THAN REPEATED. "about 15 seconds" that has
   // visibly run out is worse than no number at all, so past `RESTART_SLOW_MS`
-  // the same slot says so plainly instead — same one sentence, same two lines,
-  // no layout move under a reader who is already waiting.
+  // the same slot says so plainly instead. It is shorter than the sentence it
+  // replaces; `.update-dialog-body` holds the two lines so nothing moves under
+  // a reader who is already waiting.
   if (slow) return "Taking a little longer than usual — still working on it.";
   return (
     `Closing v${props.version} and starting v${props.installedVersion}. ` +
@@ -281,7 +294,15 @@ export function UpdateDialog(props: UpdateDialogProps) {
         </>
       }
     >
-      <p>{restartBody(props, slow)}</p>
+      {/* THE ONE LIVE REGION of the dialog. The story lives here — versions, the
+          estimate, its 25s withdrawal, "reloading…", the menu-bar way out — so
+          this is what assistive tech must hear on every change, including the
+          25s flip, where the strip does not move at all. `.update-dialog-body`
+          reserves two lines so the shorter sentences (the 25s one, `back`) do
+          not let the footer jump up under a reader who cannot dismiss this. */}
+      <p className="update-dialog-body" role="status" aria-live="polite">
+        {restartBody(props, slow)}
+      </p>
     </Modal>
   );
 }
