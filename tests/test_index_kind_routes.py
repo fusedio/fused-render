@@ -156,6 +156,36 @@ def test_rank_for_the_apps_kind_does_not_require_a_root(home, tmp_path):
     assert resp.json()["hits"][0]["rel"] == "/apps/solo/index.html"
 
 
+def test_rank_for_the_apps_kind_honors_a_glob_query(home, tmp_path):
+    """Bugbot MEDIUM finding: `_rank_flat_kind_worker` never forwarded
+    `glob`/computed `mode` from `q` — it always called `search_apps_ranked`
+    with `glob=False` (the default) and hardcoded `mode="substring"`, even
+    though `search_apps_ranked` itself supports `glob=True`
+    (specs/index-plugins.md §8, "Glob mode inherits `_glob_to_regex`'s
+    existing single-segment semantics unchanged") and `_rank_body`'s own
+    "files" path decides `mode` from the query exactly the way
+    `resolve_query` does (`"*" in raw`).
+
+    A literal `*` in `q` is never a valid substring match (`_rank_sql`'s
+    `WHERE lrel LIKE '%q%'` treats it as a literal character), so before
+    this fix a glob-shaped query against a flat kind always answered zero
+    hits. `_glob_to_regex`/`_glob_sql` full-match the identity column
+    (`**` crosses `/`, a bare `*` does not — index-plugins.md §8), so
+    `**editor**index.html` matches the editor app's path and nothing
+    else."""
+    _seed_apps_store(rows=[
+        ("editor", "/apps/editor/index.html", 100.0),
+        ("other", "/apps/other/index.html", 200.0),
+    ])
+    resp = _client(tmp_path).get(
+        "/api/index/rank",
+        params={"kind": "apps", "q": "**editor**index.html"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "glob"
+    assert [h["rel"] for h in body["hits"]] == ["/apps/editor/index.html"]
+
+
 # -- scan_roots' per-kind default -------------------------------------------
 
 def test_scan_roots_defaults_the_apps_kind_to_the_app_workspace(home, tmp_path, monkeypatch):

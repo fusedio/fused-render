@@ -695,14 +695,27 @@ def _rank_flat_kind_worker(cfg: IndexConfig, q: str, limit: int,
     (`base`/`mode`/`pattern`) are answered with flat stand-ins instead of
     omitted, so `api_index_rank`'s response shape — and the `_WIRE_DROP`
     trimming that runs on it afterwards — stays identical for every kind:
-    `base` is "" (there is no box root to caption), `mode` is "substring"
-    (a flat kind's rows are never glob-matched), and `pattern` is `q` itself
-    (nothing peeled a base off it). `reason` is "" — always answered outright,
-    never "mount"/"uncovered"/"scanning", since a flat kind's default root is
-    the one fixed workspace it always scans, not a folder the caller typed."""
-    out = search_apps_ranked(cfg, q, limit=limit, token=token, ranked=ranked)
+    `base` is "" (there is no box root to caption), and `pattern` is `q`
+    itself (nothing peeled a base off it, unlike `resolve_query`'s own
+    prefix-splitting for the "files" tree). `reason` is "" — always
+    answered outright, never "mount"/"uncovered"/"scanning", since a flat
+    kind's default root is the one fixed workspace it always scans, not a
+    folder the caller typed.
+
+    `mode`/`glob` ARE forwarded, though: `search_apps_ranked` (index/
+    query.py) implements a full glob branch of its own (specs/
+    index-plugins.md §8, "Glob mode inherits `_glob_to_regex`'s existing
+    single-segment semantics unchanged") and a literal `*` is never a valid
+    plain-substring match (`_rank_sql`'s `WHERE lrel LIKE '%q%'` treats it
+    as an ordinary character) — so a caller who types a glob-shaped query
+    against a flat kind must reach that branch the same way `resolve_query`
+    decides "glob" vs "substring" for the "files" tree (`"*" in raw`), not
+    always get zero hits back."""
+    is_glob = "*" in (q or "")
+    out = search_apps_ranked(cfg, q, limit=limit, token=token, ranked=ranked,
+                             glob=is_glob)
     out["base"] = ""
-    out["mode"] = "substring"
+    out["mode"] = "glob" if is_glob else "substring"
     out["pattern"] = q
     out["reason"] = ""
     return out
