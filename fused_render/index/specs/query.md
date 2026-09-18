@@ -421,6 +421,32 @@ now, not just `files` (which previously only probed for `_name_col` — `dirs`
 has no `name` column to reuse). Measured on a real 745k-file index: 100ms ->
 27ms over a large matched set (see DECISIONS.md).
 
+**The glob WHERE clause runs a cheap LIKE-chain prefilter ahead of the real
+regex.** `_glob_sql`'s `WHERE` clause is `{like_guard}regexp_matches(lrel,
+'{regex}'){hidden}` in both its scored and unscored branches, where
+`like_guard` (default `""`, a no-op) is `_glob_like_guard`'s output: `lrel
+LIKE '%lit0%lit1%...%litN%' ESCAPE '\\' AND `, built from `_glob_literal_runs`
+run on the WHOLE resolved pattern (not `_final_segment_pattern`'s narrower
+slice, which is what the scoring predicates above read instead — a
+path-shaped pattern's directory-segment literals can never match `nm`, a
+slash-free basename, but they ARE exactly the text this WHERE-clause guard
+needs, since it filters `lrel`, the full relative path). Every literal run a
+glob pattern's compiled regex requires is text the LIKE chain also requires,
+in the same order, so the chain is a strict SUPERSET of the regex match — it
+can prune rows the regex would reject, never a row the regex would still
+accept — and DuckDB's `AND` short-circuits left to right, so the cheap LIKE
+scan prunes the corpus before the pricier regex ever runs on the survivors.
+Each run is escaped with `like_literal` (LIKE-metachar escaping: `\`, `%`,
+`_`), not `re.escape`, and the whole joined chain is wrapped in one SQL
+`lower(...)` call rather than lowering each run in Python first, for the same
+DuckDB/Python Unicode-folding-agreement reason the rest of this file lowers
+in SQL. `_glob_like_guard` returns `""` — no guard at all — when the literal
+runs' summed length is below `_GLOB_LIKE_GUARD_MIN_LEN = 2`: a degenerate
+pattern whose only literal content is a single character (`**/**e**`) prunes
+almost nothing with the extra LIKE scan and measured WORSE with the guard
+forced on than without it. Measured on a real 745k-file index: `icon copy`
+109->82ms, `**fused*render**` 147->96ms, `**/*.js` 150->94ms, `**/*.png`
+147->88ms, all with byte-identical hit lists before/after (see DECISIONS.md).
 
 ## 4. Partition pruning
 

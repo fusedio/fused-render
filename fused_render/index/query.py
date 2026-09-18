@@ -1717,9 +1717,73 @@ def _final_segment_pattern(pattern: str) -> str:
     return pattern[boundary:]
 
 
+# Below this summed length (across every literal run in the WHOLE pattern),
+# `_glob_like_guard`'s prefilter is skipped entirely. A degenerate pattern
+# whose literal runs are all trivial (`**/**e**` -> `["e"]`, one
+# one-character run) prunes almost nothing with the extra LIKE scan, so it is
+# pure overhead ahead of the regex rather than a real prune — measured WORSE
+# with the guard on that shape (344 -> 384ms) than without it. 2 is the
+# smallest threshold that still keeps every combination this round measured a
+# real win on above the cutoff (`icon copy` total_len 9, `fused render`
+# total_len 11, `**/*.js` -> final-segment literal `[".js"]` total_len 3, but
+# the guard is built from the WHOLE pattern's runs, not the final segment's —
+# see `_glob_like_guard`'s own docstring).
+_GLOB_LIKE_GUARD_MIN_LEN = 2
+
+
+def _glob_like_guard(literals: list) -> str:
+    """A `WHERE`-clause PREFIX (its own trailing `AND `, or `""`) that cheaply
+    prunes `lrel` ahead of `_glob_sql`'s real `regexp_matches` filter.
+
+    `literals` must be `_glob_literal_runs` run on the WHOLE resolved
+    pattern — NOT `_final_segment_pattern`'s narrower final-segment slice,
+    which is what `_glob_sql`'s own scoring predicates read instead (see
+    `search_ranked`'s docstring on why those differ: a path-shaped pattern's
+    directory-segment literals can never match `nm`, a slash-free basename,
+    but they are exactly the text this WHERE-clause guard needs, since it
+    filters `lrel`, the full relative path, not a basename).
+
+    Every literal run in a glob pattern, in order, is text the compiled
+    regex REQUIRES verbatim somewhere in a match — directory segments
+    included — so `lrel LIKE '%lit0%lit1%...%litN%'` is a STRICT SUPERSET of
+    `regexp_matches(lrel, <that same pattern's regex>)`: anything the regex
+    matches necessarily contains every one of those runs, in that order,
+    with anything (including nothing) between them, the exact same
+    "in-order, anything-between" reading `_name_predicate_sql`'s `contains`
+    predicate already gives literal runs elsewhere in this file — never a
+    narrower test that could exclude a row the regex would still match.
+    DuckDB's `AND` short-circuits left to right, so the cheap LIKE scan
+    prunes the bulk of the corpus before the pricier regex ever runs on the
+    survivors (measured on a real 745k-file index: `icon copy` 195->87ms,
+    `fused render` 199->96ms, `**/*.js` 200->97ms).
+
+    Each run is escaped with `like_literal` (LIKE-metachar escaping — `\\`,
+    `%`, `_`), NOT `re.escape`: this builds a `LIKE` pattern, not a
+    `regexp_matches` one, and the two escaping schemes guard against
+    different metacharacters entirely. The whole chain is wrapped in a
+    single `lower(...)` call, the same way `_name_predicate_sql`'s own
+    `contains` chain is, to compare case-insensitively against `lrel`
+    (already lowercased) without lowering each run in Python first — see
+    `_rank_sql`'s docstring on why both sides folding through the SAME
+    `lower()` call matters (a handful of Unicode characters fold
+    differently between Python's `str.lower()` and DuckDB's `lower()`).
+
+    Returns `""` — no guard at all, never a guard that matches everything —
+    both when `literals` is empty (a pattern with no literal content
+    anywhere, e.g. the bare `**/*` a lone `*` resolves to) and when the
+    runs' summed length is below `_GLOB_LIKE_GUARD_MIN_LEN`; see that
+    constant's own comment for the measured, degenerate-pattern case this
+    guards against."""
+    total_len = sum(len(lit) for lit in literals)
+    if total_len < _GLOB_LIKE_GUARD_MIN_LEN:
+        return ""
+    chain = "%".join(like_literal(lit) for lit in literals)
+    return f"lrel LIKE '%' || lower('{chain}') || '%' ESCAPE '\\' AND "
+
+
 def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
               literals: list = (), nm_regex: str = None,
-              score: bool = None) -> str:
+              score: bool = None, like_guard: str = "") -> str:
     """Glob mode's whole query: a full-match regex filter, plus — when
     `literals` is non-empty — the scoring `_name_predicate_sql`/
     `_lex_order_and_score` build from those literal runs, the SAME two
@@ -1854,7 +1918,16 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
     the same text would have hidden, purely because of which mode the query
     happened to land in. `query_wants_hidden` already reads intent off `qs`
     itself (a dot-leading query, `.env`/`*/.git`, still opts back in), so
-    applying it here needs no separate rule — the same one both modes share."""
+    applying it here needs no separate rule — the same one both modes share.
+
+    `like_guard` (default `""`) is `_glob_like_guard`'s output — a
+    `WHERE`-clause prefix, already carrying its own trailing `AND ` (or
+    empty) — spliced in front of `regexp_matches` in BOTH branches below, so
+    every glob query pays for the cheap LIKE prune before the expensive
+    regex whether or not it also scores. See `_glob_like_guard`'s own
+    docstring for the superset proof and the gate; `_glob_sql` itself does
+    not decide whether to guard, it only places whatever its caller
+    computed."""
     if score is None:
         score = bool(literals)
     assert not (literals and nm_regex is None), (
@@ -1867,7 +1940,7 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
         unscored_order = "depth ASC, lower(rel) ASC, rel ASC"
         return (
             f"SELECT rel, size, mtime, is_dir, depth FROM ({inner}) "
-            f"WHERE regexp_matches(lrel, '{regex}'){hidden} "
+            f"WHERE {like_guard}regexp_matches(lrel, '{regex}'){hidden} "
             f"{_qualify_basename_cap(unscored_order)}"
             f"ORDER BY {unscored_order} "
             f"LIMIT {limit}")
@@ -1912,7 +1985,7 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
     return (
         f"SELECT rel, size, mtime, is_dir, depth, ({score_expr}) AS score, "
         f"({tier}) AS tier FROM ({inner}) "
-        f"WHERE regexp_matches(lrel, '{regex}'){hidden} "
+        f"WHERE {like_guard}regexp_matches(lrel, '{regex}'){hidden} "
         f"{_qualify_basename_cap(order_by)}"
         f"ORDER BY {order_by} "
         f"LIMIT {limit}")
@@ -2192,15 +2265,25 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
             literals = _glob_literal_runs(final_pattern) if ranked else []
             nm_regex = (_q(_glob_to_regex(final_pattern.lower()))
                         if literals else None)
+            # The LIKE-chain prefilter reads the WHOLE pattern's literal
+            # runs, not the final segment's — it's a WHERE-clause guard on
+            # `lrel` (the full relative path), unlike `literals`/`nm_regex`
+            # above which score against `nm` (the basename only) and are
+            # correctly scoped to the final segment. Computed once and
+            # reused below for `score`, which asks the same question
+            # (does the whole pattern carry any literal text at all).
+            whole_literals = _glob_literal_runs(qs)
+            like_guard = _glob_like_guard(whole_literals)
             # An ancestor-only pattern (`**/alpha/*`: literal content
             # ("alpha") exists in the WHOLE pattern but not in its final
             # segment, a bare `*`) still gets a real, computed tier 3, not
             # the unscored placeholder `0` — `_glob_sql`'s docstring on why
             # `score` is passed explicitly rather than left to follow
             # `literals` (which is correctly `[]` here either way).
-            score = bool(_glob_literal_runs(qs)) if ranked else False
+            score = bool(whole_literals) if ranked else False
             sql = _glob_sql(inner, regex, hidden, limit + 1,
-                             literals=literals, nm_regex=nm_regex, score=score)
+                             literals=literals, nm_regex=nm_regex, score=score,
+                             like_guard=like_guard)
         else:
             # NOT `.lower()`'d here — `_rank_sql` lowers `ql`/`qq` itself,
             # with the same `lower()` call that produces `lrel`, so the query

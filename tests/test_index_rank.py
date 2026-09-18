@@ -1054,6 +1054,82 @@ def test_glob_pattern_with_no_literal_runs_uses_the_unscored_order(tmp_path):
         assert h["score"] == 0
 
 
+def test_glob_like_guard_is_a_strict_superset_of_the_regex_it_prefilters(
+        tmp_path, monkeypatch):
+    """Perf fix: `_glob_sql` now runs a cheap `lrel LIKE '%lit0%lit1%...%'`
+    prefilter (`_glob_like_guard`, built from `_glob_literal_runs` run on the
+    WHOLE pattern) ahead of the real `regexp_matches(lrel, regex)` filter, in
+    BOTH the scored and unscored branches. That guard is only a valid
+    optimization if it can NEVER exclude a row the regex would still have
+    matched — every literal run the regex requires is, by construction, text
+    the guard also requires, in the same order, so it is a strict superset,
+    never a narrower test.
+
+    This is proven empirically here rather than merely argued: for a battery
+    of adversarial patterns/filenames, `search_ranked` (glob mode) is run
+    twice — once with the real, gated guard, once with `_glob_like_guard`
+    monkeypatched to always return `""` (i.e. the pre-fix, unguarded
+    behavior) — and the FULL hit list (not just counts) must come back
+    byte-for-byte identical both times, for both `ranked=True` and
+    `ranked=False`. Adversarial coverage, one fixture file/pattern pair per
+    class:
+
+    - regex metacharacters in the query (`.` in a literal run, which the
+      WHOLE-pattern regex escapes via `re.escape` but which the LIKE guard
+      must also treat as a literal dot, not "any character")
+    - LIKE metacharacters (`%`, `_`) in both the query's literal text and in
+      decoy filenames that would match if the guard leaked them as wildcards
+    - a literal backslash in both the query and a filename
+    - case variation between the query and the filename (glob mode is
+      case-insensitive throughout)
+    - unicode text in both the query and the filename
+    - a literal run that occurs MULTIPLE times in the same filename
+    - two literal runs whose required occurrences in the filename OVERLAP
+      character-for-character
+    """
+    files = [
+        "/r/a.b.txt",       # regex-metachar literal: pattern "**a.b**"
+        "/r/aXb.txt",       # decoy: only matches if "." leaked as "any char"
+        "/r/100%done.txt",  # LIKE-metachar literal: pattern "**100%done**"
+        "/r/100xdone.txt",  # decoy: only matches if "%" leaked as wildcard
+        "/r/a_b.txt",       # LIKE-metachar literal: pattern "**a_b**"
+        "/r/aQb.txt",       # decoy: only matches if "_" leaked as wildcard
+        "/r/back\\slash.txt",     # literal backslash: pattern "**back\\slash**"
+        "/r/backXslash.txt",     # decoy: only matches if "\\" mishandled
+        "/r/ICON.txt",      # case variation: pattern "**icon**"
+        "/r/café.txt",      # unicode: pattern "**café**"
+        "/r/abcabcabc.txt",  # repeated literal: pattern "**abc**abc**"
+        "/r/aaaa.txt",      # overlapping runs: pattern "**aa**aa**"
+    ]
+    cfg = _index(tmp_path, "/r", files, dirs=["/r/sub"])
+
+    patterns = [
+        "**a.b**", "**100%done**", "**a_b**", "**back\\slash**",
+        "**icon**", "**café**", "**abc**abc**", "**aa**aa**",
+    ]
+
+    import fused_render.index.query as query_module
+
+    for pattern in patterns:
+        for ranked in (True, False):
+            guarded = search_ranked(cfg, "/r", pattern, glob=True,
+                                     ranked=ranked)
+            monkeypatch.setattr(query_module, "_glob_like_guard",
+                                 lambda literals: "")
+            try:
+                unguarded = search_ranked(cfg, "/r", pattern, glob=True,
+                                           ranked=ranked)
+            finally:
+                monkeypatch.undo()
+            assert guarded["hits"] == unguarded["hits"], (
+                pattern, ranked, guarded["hits"], unguarded["hits"])
+            # Sanity: the fixture is only doing its job if at least the
+            # patterns designed to actually hit something return rows —
+            # an accidentally-empty comparison would pass vacuously.
+            if pattern not in ("**back\\slash**",):
+                assert guarded["hits"], (pattern, ranked)
+
+
 def test_like_metacharacters_in_the_query_match_only_the_literal_filename(tmp_path):
     """`_rank_sql`'s `WHERE lrel LIKE '%' || lower(ql) || '%' ESCAPE '\\'` is
     built from `like_literal(qs)` (store.py), which escapes `\\`, `%` and `_`
