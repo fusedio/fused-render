@@ -39,6 +39,7 @@ import {
 } from "@platform/lib/api";
 import { useIndexProposals } from "./IndexProposalsDock";
 import { proposalRows } from "./index-proposals-lib";
+import { INDEX_IDLE_POLL_MS, INDEX_POLL_MS } from "@platform/lib/index-status";
 import { formatMtimeFull } from "@platform/lib/format";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -123,18 +124,38 @@ function KindCard({ kind }: { kind: string }) {
 
   useEffect(() => {
     let alive = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const ctrl = new AbortController();
-    indexStatus(ctrl.signal, kind === "files" ? undefined : kind).then(
-      (s) => alive && setStatus(s),
-      (e: Error) => alive && e.name !== "AbortError" && setError(e.message),
-    );
+    // Self-rescheduling, like `index-status.ts`'s `useIndexStatus`: while a
+    // scan is running the card polls fast so "Scanning…" (and the disabled
+    // Re-index/Full scan buttons) actually clears when the worker finishes,
+    // instead of only ever refetching on mount or right after a button click
+    // — which left the card stuck on "Scanning…" until the whole page was
+    // remounted (bugbot finding against a7aef9472).
+    const tick = () => {
+      indexStatus(ctrl.signal, kind === "files" ? undefined : kind).then(
+        (s) => {
+          if (!alive) return;
+          setStatus(s);
+          setError(null);
+          timer = setTimeout(tick, s.scanning ? INDEX_POLL_MS : INDEX_IDLE_POLL_MS);
+        },
+        (e: Error) => {
+          if (!alive || e.name === "AbortError") return;
+          setError(e.message);
+          timer = setTimeout(tick, INDEX_IDLE_POLL_MS);
+        },
+      );
+    };
+    tick();
     return () => {
       alive = false;
+      if (timer !== null) clearTimeout(timer);
       ctrl.abort();
     };
-    // `nonce` re-runs the fetch right after an action, same as Indexing.tsx's
+    // `nonce` restarts the chain right after an action, same as Indexing.tsx's
     // own status poll — a scan/delete just fired should be reflected without
-    // waiting for whatever poll interval a future revisit adds.
+    // waiting for the idle interval to come back around.
   }, [kind, nonce]);
 
   const act = async (what: () => Promise<string>) => {
