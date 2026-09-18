@@ -213,16 +213,30 @@ export function bannerSurface({ banner, mode, updateState, stage }: SurfaceInput
   // the dialog POP ON ITS OWN the moment the install lands (D2) rather than
   // whenever the next probe happens to be.
   const installedReady = banner === "update-restart" || updateState === "installed";
-  // A restart already in flight holds the dialog on its own: from the first
-  // failed probe onwards there is no /api/config left to ask, so neither door
-  // above can stay open — and this is also what SUPPRESSES THE DOWN CARD
-  // (step 5), because the dialog is returned before it.
+
+  // THE CAP'S FALL-THROUGH (D4), and it is the FIRST thing asked. `gave-up`
+  // means the stage machine stopped promising; what the page shows from then on
+  // is whatever the SERVER says, with no stage attached. While the server is
+  // still not answering that is the ordinary down card — the case the cap
+  // exists for — and it has to outrank both doors below, because both stay open
+  // through an outage: `update-restart` is the last thing the banner knew, and
+  // the update store keeps its last value when its poll fails. Without this the
+  // dialog would outlive the promise it made.
   //
-  // `gave-up` is the one stage that overrides both doors. Its whole job (D4) is
-  // to stop promising, and both doors stay open through an outage — the update
-  // store keeps its last value when the poll fails — so without this the modal
-  // would outlive the promise it made and the down card would never come back.
-  if (stage !== "gave-up" && (restartInFlight(stage) || installedReady)) return "restart-dialog";
+  // WITH THE SERVER ANSWERING IT IS NOT THE DOWN CARD, and that is deliberate
+  // (bugbot, PR #1214): a restart that did not take leaves the app demonstrably
+  // running with the disk still ahead, so "fused-render isn't running" would be
+  // a lie and the only way back to the button would be a page reload. The
+  // ordinary doors below take it instead, and the dialog draws its button again
+  // for `gave-up` exactly as it does for `ready` — a restart is worth offering
+  // a second time.
+  if (stage === "gave-up" && banner === "down") return "down";
+
+  // A restart in flight holds the dialog on its own: from the first failed
+  // probe onwards there is no /api/config left to ask, so neither door below
+  // can stay open — and this is also what SUPPRESSES THE DOWN CARD (step 5),
+  // because the dialog is returned before it.
+  if (restartInFlight(stage) || installedReady) return "restart-dialog";
   if (banner === "hidden") return "none";
   if (banner === "reconnected") return "reconnected";
   if (banner === "update-refresh") return mode === "off" ? "none" : "refresh-dialog";

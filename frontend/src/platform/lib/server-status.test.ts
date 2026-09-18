@@ -229,16 +229,26 @@ test("the down card is suppressed for every in-flight stage", () => {
   }
 });
 
-test("the cap gives the down card back, and takes the dialog away for good", () => {
-  // D4. Both doors into the dialog stay open through an outage — the update
-  // store keeps its last value when its poll fails, and `update-restart` is the
-  // last thing the banner knew — so `gave-up` has to override both or the modal
-  // outlives the promise it made.
+test("the cap gives the down card back while the server is still gone", () => {
+  // D4, and the case the cap exists for. Both doors into the dialog stay open
+  // through an outage — the update store keeps its last value when its poll
+  // fails, and `update-restart` is the last thing the banner knew — so
+  // `gave-up` has to outrank both or the modal outlives the promise it made.
   expect(surface({ banner: "down", stage: "gave-up" })).toBe("down");
-  // `update-restart` with the cap blown means the restart never landed and the
-  // disk is still ahead — the down card is the honest surface for that.
-  expect(surface({ banner: "update-restart", stage: "gave-up" })).toBe("down");
   expect(surface({ banner: "down", updateState: "installed", stage: "gave-up" })).toBe("down");
+});
+
+test("the cap does NOT show the down card over a server that is answering", () => {
+  // bugbot, PR #1214. A restart that did not take leaves the app demonstrably
+  // running with the disk still ahead: "fused-render isn't running" would be a
+  // lie, and with the dialog gone the only way back to the button is a page
+  // reload. The ordinary doors take it instead — and `UpdateDialog` draws the
+  // button for `gave-up` exactly as it does for `ready`.
+  expect(surface({ banner: "update-restart", stage: "gave-up" })).toBe("restart-dialog");
+  expect(surface({ updateState: "installed", stage: "gave-up" })).toBe("restart-dialog");
+  // Nothing to say at all is still nothing to say.
+  expect(surface({ banner: "hidden", stage: "gave-up" })).toBe("none");
+  expect(surface({ banner: "reconnected", stage: "gave-up" })).toBe("reconnected");
 });
 
 test("a restart in flight outranks every other card too", () => {

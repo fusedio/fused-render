@@ -17,12 +17,18 @@
 //   restarting   — the first probe failed; the process is gone.
 //   reconnecting — it is still gone after a second failure; the respawn is
 //                  what we are waiting on now.
-//   back         — a probe answered again, on a different version than the one
-//                  that was running when the button was pressed.
+//   back         — a probe answered again on a DIFFERENT version than the one
+//                  that was running when the button was pressed. Nothing else
+//                  counts: a healthy answer on the same version is the old
+//                  process still up, and a body with no version in it says
+//                  nothing about which process answered.
 //   gave-up      — RESTART_GIVE_UP_MS passed without it coming back. The
-//                  restart story ends here and the ordinary "down" card takes
-//                  over: a stage label held forever is a promise the page
-//                  cannot keep.
+//                  restart story ends here: a stage label held forever is a
+//                  promise the page cannot keep, and every stage draws a dialog
+//                  with no ✕, no Esc and no backdrop. What replaces it is
+//                  whatever the SERVER says — the ordinary "down" card while it
+//                  is still not answering, the dialog with its button live
+//                  again if it is (see `bannerSurface`).
 //
 // `back` does NOT reload the page from here. `reduceProbe` (server-status.ts)
 // already returns `reload: true` for exactly this transition — a version that
@@ -96,39 +102,73 @@ export function reduceRestart(state: RestartState, event: RestartEvent, now: num
     return { stage: "quitting", requestedAt: event.at, fails: 0, before: event.served ?? null };
   }
 
-  // Nothing in flight, or a story that has already ended: both terminal stages
-  // LATCH. `gave-up` in particular must not be undone by a late probe, or the
-  // modal would reappear over the down card the cap just handed the page to.
+  // Nothing in flight, or a story that has already ended.
   if (state.requestedAt === null) return state;
-  if (state.stage === "ready" || state.stage === "back" || state.stage === "gave-up") return state;
+  if (state.stage === "ready" || state.stage === "gave-up") return state;
 
-  const expired = now - state.requestedAt > RESTART_GIVE_UP_MS;
+  // THE CAP WINS FROM EVERY STAGE, `back` INCLUDED, and it is checked before
+  // anything else so that is a property of the reducer rather than a promise
+  // repeated on five branches. No stage may outlive `RESTART_GIVE_UP_MS`: every
+  // one of them draws a dialog with no ✕, no Esc and no backdrop, so a stage
+  // that cannot expire is a page with no way out. `back` is terminal against
+  // PROBES (below) but not against the clock — it is normally a beat away from
+  // `reduceProbe`'s own reload, and if that reload does not come (a second
+  // update landing while the first was restarting leaves the disk still ahead,
+  // so `reduceProbe` returns `update-restart` and no reload at all) the cap is
+  // the only thing left to unstick it.
+  if (now - state.requestedAt > RESTART_GIVE_UP_MS) return { ...state, stage: "gave-up" };
+
+  // Reached `back` inside the window: the restart is over, and nothing a later
+  // probe says re-opens the wait.
+  if (state.stage === "back") return state;
 
   if (event.type === "probe" && event.ok) {
-    // TWO WAYS TO KNOW IT CAME BACK, and the page needs both. The version
-    // moving is the strong one (the process is provably not the one that was
-    // running). The weak one — any answer at all after the server had stopped
-    // answering — is what covers a probe body with no version in it and a
-    // press made before any healthy probe had recorded one; without it a
-    // restart that worked perfectly would sit on "Reconnecting…" until the cap.
-    const versionMoved = !!event.version && !!state.before && event.version !== state.before;
-    const wasGone = state.stage === "restarting" || state.stage === "reconnecting";
-    if (versionMoved || wasGone) return { ...state, stage: "back", fails: 0 };
-    // Still the same process answering: the teardown has not reached the
-    // socket yet. Stay on "Quitting…" — and still honour the cap, because a
-    // press the app never acted on looks exactly like this forever.
-    if (expired) return { ...state, stage: "gave-up", fails: 0 };
-    return { ...state, fails: 0 };
+    // A VERSION THAT MOVED IS THE ONLY PROOF THE PROCESS SWAPPED, and this used
+    // to also accept "any answer at all after the server had stopped
+    // answering". That second rule was wrong in the exact case this flow is
+    // about: a teardown takes seconds, so ONE probe can time out while the
+    // socket is still open (a blip, a slow quit, a machine under load) and the
+    // NEXT one answers — from the OLD process, which has not gone anywhere. The
+    // weak rule read that as success and latched `back`, a terminal stage, on a
+    // dialog with no button and no way to close it (bugbot, PR #1214, HIGH).
+    //
+    // So: the version, or nothing. `before` is what the server was serving when
+    // the button was pressed; a different one can only come from a different
+    // process.
+    const moved =
+      typeof event.version === "string" &&
+      event.version !== "" &&
+      state.before !== null &&
+      event.version !== state.before;
+    if (moved) return { ...state, stage: "back", fails: 0 };
+
+    // A healthy answer with NO version in it is INCONCLUSIVE — it says the
+    // socket is open, not which process owns it. Nothing moves, including the
+    // failure count: resetting that would be a claim this probe cannot make.
+    // The cap above still runs, so an endless run of these ends in `gave-up`
+    // rather than in a stage held forever.
+    if (typeof event.version !== "string" || event.version === "" || state.before === null) {
+      return state;
+    }
+
+    // A healthy answer on the SAME version: the old process is still up, which
+    // is what "Quitting…" means — so the stage goes BACK to it rather than
+    // forward. Honest in both directions: a wait that had reached
+    // "Reconnecting…" on a blip is not allowed to keep claiming the app is gone
+    // when it is demonstrably answering, and the failure count resets so a real
+    // outage after this re-walks the stages from the start. The cap is
+    // untouched by any of it, so a press the app never acted on — which looks
+    // exactly like this, forever — still ends.
+    return { ...state, stage: "quitting", fails: 0 };
   }
 
   if (event.type === "probe") {
     const fails = state.fails + 1;
-    if (expired) return { ...state, stage: "gave-up", fails };
     const stage: RestartStage = fails >= RESTART_RECONNECTING_FAILS ? "reconnecting" : "restarting";
     return { ...state, stage, fails };
   }
 
-  return expired ? { ...state, stage: "gave-up" } : state;
+  return state;
 }
 
 /** ONE WORD AND AN ELLIPSIS for the three waits (Akshil, 2026-09-08: "no

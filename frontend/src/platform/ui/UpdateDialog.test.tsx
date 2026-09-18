@@ -136,14 +136,37 @@ test("the stage word REPLACES the button, so the press has no second meaning", a
   }
 });
 
+test("the cap leaves a button, not an empty footer", async () => {
+  // bugbot, PR #1214. `gave-up` can be on screen — a restart that did not take
+  // leaves the server answering with the disk still ahead, so the dialog stays
+  // up (see `bannerSurface`) — and it is the stage a reader most needs a
+  // control on. Drawing the (empty) stage line there left a page-blocking
+  // dialog with no control at all.
+  const presses: number[] = [];
+  const r = await mount(
+    <UpdateDialog
+      kind="restart"
+      version="0.5.50"
+      installedVersion="0.5.51"
+      stage="gave-up"
+      onRestart={() => presses.push(1)}
+    />,
+  );
+  const buttons = r.root.findAllByType("button");
+  expect(buttons.length).toBe(1);
+  expect(text(buttons[0])).toBe("Restart fused-render");
+  expect(byClass(r, "update-dialog-stage").length).toBe(0);
+  await act(async () => {
+    buttons[0].props.onClick();
+  });
+  expect(presses.length).toBe(1);
+});
+
 test("every stage the machine can reach renders something a reader can act on", async () => {
   // A stage added to `RESTART_STAGES` without a face here is a dialog with an
-  // empty footer, which is the failure this guards: `gave-up` is the only stage
-  // that legitimately has no footer content, because the dialog is not on
-  // screen for it at all (ServerStatusBanner hands the page back to the down
-  // card).
+  // empty footer — a page-blocking dialog with nothing in it, which is the
+  // failure this guards. No exceptions any more: `gave-up` used to be one.
   for (const stage of RESTART_STAGES) {
-    if (stage === "gave-up") continue;
     const r = await mount(
       <UpdateDialog
         kind="restart"

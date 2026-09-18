@@ -94,7 +94,14 @@ export function UpdateDialog(props: UpdateDialogProps) {
       busy
       onClose={() => {}}
       footer={
-        props.stage === "ready" ? (
+        // THE BUTTON IS DRAWN FOR `gave-up` AS WELL AS `ready`. Both are
+        // stages with nothing in flight to narrate, and `gave-up` is the one
+        // the reader most needs a control on: the restart did not take, the
+        // dialog is still blocking the page, and `reduceRestart` re-arms from
+        // any stage — so offering the press again is both possible and the only
+        // way out that is not a page reload. Drawing the (empty) stage line
+        // there instead left a blocking dialog with no control at all.
+        props.stage === "ready" || props.stage === "gave-up" ? (
           <button type="button" className="btn btn-primary" onClick={props.onRestart}>
             Restart fused-render
           </button>

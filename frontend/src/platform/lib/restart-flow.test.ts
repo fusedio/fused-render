@@ -85,14 +85,65 @@ test("a healthy probe on a NEW version is back", () => {
   expect(restartInFlight(state.stage)).toBe(true);
 });
 
-test("a version that never moved is still back once the server had gone away", () => {
-  // The weak signal, and the page needs it: a probe body with no `version` in
-  // it, or a press made before any healthy probe recorded one, would otherwise
-  // sit on "Reconnecting…" through a restart that worked perfectly.
-  const noVersion = run([[press(T0, null), T0], [fail(), T0 + 5_000], [ok(null), T0 + 12_000]]);
-  expect(noVersion.stage).toBe("back");
-  const sameVersion = run([[press(), T0], [fail(), T0 + 5_000], [ok(OLD), T0 + 12_000]]);
-  expect(sameVersion.stage).toBe("back");
+// ---- the false-completion latch (bugbot, PR #1214, HIGH) ------------------
+//
+// A teardown takes seconds, so ONE probe can time out while the socket is still
+// open and the NEXT one answers — from the OLD process, which has not gone
+// anywhere. The reducer used to read that as "it came back" and latch `back`, a
+// terminal stage, on a dialog with no button, no ✕ and Escape swallowed. The
+// only proof a process swapped is a version that moved.
+
+test("a healthy probe on the SAME version after a failure is NOT back", () => {
+  const state = run([[press(), T0], [fail(), T0 + 5_000], [ok(OLD), T0 + 10_000]]);
+  expect(state.stage).not.toBe("back");
+  // It goes BACK to "Quitting…", not forward: the old process is answering, so
+  // claiming the app is gone would be the same lie the other way round.
+  expect(state.stage).toBe("quitting");
+  // And the streak resets, so a real outage after this re-walks the stages.
+  expect(state.fails).toBe(0);
+  // The clock is untouched by any of it — the cap is still coming.
+  expect(state.requestedAt).toBe(T0);
+});
+
+test("a blip and a recovery can repeat without ever reaching back", () => {
+  const state = run([
+    [press(), T0],
+    [fail(), T0 + 5_000],
+    [ok(OLD), T0 + 10_000],
+    [fail(), T0 + 15_000],
+    [fail(), T0 + 20_000],
+    [ok(OLD), T0 + 25_000],
+  ]);
+  expect(state.stage).toBe("quitting");
+});
+
+test("a healthy probe with NO version is inconclusive, never back", () => {
+  // The body says the socket is open, not which process owns it. Nothing moves
+  // — including the failure count, which resetting would be a claim this probe
+  // cannot make.
+  const after = run([[press(), T0], [fail(), T0 + 5_000], [ok(null), T0 + 10_000]]);
+  expect(after.stage).toBe("restarting");
+  expect(after.fails).toBe(1);
+  // Same when there was no recorded version to compare against at all.
+  const noBefore = run([[press(T0, null), T0], [fail(), T0 + 5_000], [ok(NEW), T0 + 10_000]]);
+  expect(noBefore.stage).not.toBe("back");
+});
+
+test("a run of same-version answers ends in gave-up, not in a held stage", () => {
+  // The whole failure mode, end to end: the app never quit, /api/config keeps
+  // answering on the old version, and the page must stop promising rather than
+  // sit on a word forever.
+  let state = run([[press(), T0], [fail(), T0 + 3_000]]);
+  for (let t = 8_000; t <= RESTART_GIVE_UP_MS; t += 5_000) {
+    state = reduceRestart(state, ok(OLD), T0 + t);
+    expect(state.stage).not.toBe("back");
+    expect(state.stage).not.toBe("gave-up");
+  }
+  state = reduceRestart(state, ok(OLD), T0 + RESTART_GIVE_UP_MS + 1);
+  expect(state.stage).toBe("gave-up");
+  // …and with the story over, nothing is in flight, so the banner is free to
+  // show whatever the server actually says.
+  expect(restartInFlight(state.stage)).toBe(false);
 });
 
 test("a version move alone is back, with no outage seen at all", () => {
@@ -101,10 +152,30 @@ test("a version move alone is back, with no outage seen at all", () => {
   expect(run([[press(), T0], [ok(NEW), T0 + 5_000]]).stage).toBe("back");
 });
 
-test("back latches — a later failure does not reopen the wait", () => {
+test("back latches against probes, but not against the clock", () => {
   const back = run([[press(), T0], [fail(), T0 + 5_000], [ok(NEW), T0 + 12_000]]);
+  // Inside the window nothing a later probe says re-opens the wait.
   expect(reduceRestart(back, fail(), T0 + 17_000).stage).toBe("back");
-  expect(reduceRestart(back, tick(), T0 + 90_000).stage).toBe("back");
+  expect(reduceRestart(back, ok(OLD), T0 + 17_000).stage).toBe("back");
+  // Past it the cap still fires. `back` is normally a beat away from
+  // `reduceProbe`'s own reload — but if that reload never comes (a second
+  // update landing mid-restart leaves the disk ahead, so `reduceProbe` returns
+  // `update-restart` and no reload), the cap is the only thing that can unstick
+  // a dialog with no ✕ and no Esc.
+  expect(reduceRestart(back, tick(), T0 + 90_000).stage).toBe("gave-up");
+});
+
+test("the cap can fire from every stage the dialog is on screen for", () => {
+  // Stated as a sweep, because "no stage outlives the cap" is the invariant
+  // that keeps an undismissable dialog from becoming a dead end.
+  for (const stage of RESTART_STAGES) {
+    if (stage === "ready" || stage === "gave-up") continue;
+    const state: RestartState = { stage, requestedAt: T0, fails: 1, before: OLD };
+    expect(reduceRestart(state, tick(), T0 + RESTART_GIVE_UP_MS + 1).stage).toBe("gave-up");
+    expect(reduceRestart(state, fail(), T0 + RESTART_GIVE_UP_MS + 1).stage).toBe("gave-up");
+    expect(reduceRestart(state, ok(OLD), T0 + RESTART_GIVE_UP_MS + 1).stage).toBe("gave-up");
+    expect(reduceRestart(state, ok(NEW), T0 + RESTART_GIVE_UP_MS + 1).stage).toBe("gave-up");
+  }
 });
 
 test("the cap gives up after RESTART_GIVE_UP_MS of failures", () => {
