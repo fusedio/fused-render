@@ -14,11 +14,12 @@ import {
   applyQueueOverrides,
   expireQueueOverrides,
   NO_QUEUE_OVERRIDES,
+  skipLineOverrides,
   sortForList,
-  withQueueOverride,
+  withQueueOverrides,
 } from "@shell/tasks-lib";
 import type { QueueOverride, QueueOverrides } from "@shell/tasks-lib";
-import { refreshListing } from "@shell/tasksPulse";
+import { readListing, refreshListing } from "@shell/tasksPulse";
 import { subscribeTasks } from "../protocol/sessions";
 import { taskInPane } from "./list-rows";
 
@@ -52,10 +53,32 @@ function publishClaims(next: QueueOverrides): void {
   for (const fn of [...claimWatchers]) fn();
 }
 
-/** Record what a skip on a Recent row claimed. Handed straight to
- *  `TaskRowItem`'s `onQueued`, which is `TaskNode.skip`'s own answer. */
+/**
+ * THE LAST WHOLE LISTING THIS HOOK WAS HANDED, beside the claims and for the
+ * claims: a skip is a claim about a LINE, and a line is every queued row in one
+ * folder — which the press itself does not carry (`onQueued` is handed one
+ * override, about one key). `readListing()` is the same answer and is the
+ * fallback for a press made before this hook has painted anything; this copy is
+ * what makes the rule testable, since a test drives the subscription directly
+ * and never fills the document's feed.
+ */
+let seen: readonly Task[] = [];
+
+/**
+ * Record what a skip on a Recent row claimed. Handed straight to
+ * `TaskRowItem`'s `onQueued`, which is `TaskNode.skip`'s own answer.
+ *
+ * …AND THE REST OF THE LINE WITH IT (Akshil, 2026-09-18). The press promoted its
+ * own row and said nothing about the row it went past, so both read "1st in
+ * line" until the server's listing landed — two rows claiming one spot, for long
+ * enough to read. `skipLineOverrides` turns the one answer into the whole
+ * folder's new order, and all of it is painted in ONE publish so no frame ever
+ * shows half of it. Same lifetime as before: every key in the set is a key the
+ * next listing speaks about, so they expire together.
+ */
 export function noteQueueClaim(override: QueueOverride): void {
-  publishClaims(withQueueOverride(claims, override));
+  const rows = seen.length > 0 ? seen : (readListing() ?? []);
+  publishClaims(withQueueOverrides(claims, skipLineOverrides(rows, override)));
 }
 
 /** "Re-read the listing NOW" — `TaskRowItem`'s `onReload`. The feed collapses
@@ -69,6 +92,7 @@ export function reloadRecentTasks(): void {
  *  exactly as `resetSessionSeeds` below does. */
 export function resetQueueClaims(): void {
   claims = NO_QUEUE_OVERRIDES;
+  seen = [];
 }
 
 /**
@@ -136,6 +160,11 @@ export function useRecentTasks(
         }
         painted.current = true;
         setRows(next);
+        // …and the same answer is what the NEXT press reads its folder's line
+        // off (`seen`, above): the whole listing, before this hook narrows it to
+        // one pane, because a line is every queued row in a folder and the pane
+        // is not the folder.
+        seen = next;
         // THE SERVER HAS SPOKEN about every key this listing holds, so every
         // claim about one of them is over — right or wrong
         // (tasks-lib.expireQueueOverrides, and the Tasks page's own note at

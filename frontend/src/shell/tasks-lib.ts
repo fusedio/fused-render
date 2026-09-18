@@ -5054,6 +5054,16 @@ export interface QueueOverride {
   queue_position?: number;
   queue_ahead?: string;
   queue_ahead_title?: string;
+  /** …AND WHERE THAT NAME GOES, which a claim has to carry now that a claim can
+   *  change WHO is in front (`skipLineOverrides`). The row it is painted over
+   *  already holds the pair for the OLD holder, so leaving these out left the
+   *  demoted row printing one task's id under another task's link — a pointer to
+   *  the wrong conversation, which is worse than no pointer at all. A claim that
+   *  cannot name them leaves them "" and the id goes back to plain text for the
+   *  moment the claim lives (platform/lib/queue.queueAheadHref). */
+  queue_ahead_session?: string;
+  queue_ahead_target?: string;
+  queue_ahead_key?: string;
   queue_priority?: boolean;
 }
 
@@ -5069,6 +5079,20 @@ export function withQueueOverride(
   next: QueueOverride,
 ): QueueOverrides {
   return { ...cur, [next.key]: next };
+}
+
+/** …and a WHOLE LINE of them at once (`skipLineOverrides`). One press moves
+ *  several rows, and folding them in one at a time would paint the intermediate
+ *  states — which is the "two rows both reading 1st" frame this exists to end.
+ *  Same rule per key: the later claim about a key replaces the earlier one. */
+export function withQueueOverrides(
+  cur: QueueOverrides,
+  next: readonly QueueOverride[],
+): QueueOverrides {
+  if (next.length === 0) return cur;
+  const out: Record<string, QueueOverride> = { ...cur };
+  for (const claim of next) out[claim.key] = claim;
+  return out;
 }
 
 /**
@@ -5123,6 +5147,12 @@ export function applyQueueOverrides(
       queue_position: claim.queue_position ?? 0,
       queue_ahead: claim.queue_ahead ?? "",
       queue_ahead_title: claim.queue_ahead_title ?? "",
+      // THE WHOLE "who is in front" ANSWER COMES FROM THE CLAIM, never half of
+      // it from the row underneath: a claim that moved the line named a new
+      // task, and the row's own pair still points at the old one.
+      queue_ahead_session: claim.queue_ahead_session ?? "",
+      queue_ahead_target: claim.queue_ahead_target ?? "",
+      queue_ahead_key: claim.queue_ahead_key ?? "",
       queue_priority: claim.queue_priority ?? false,
     };
   });
@@ -5131,16 +5161,136 @@ export function applyQueueOverrides(
 /** The claim a SKIP makes: head of the line, and nothing about the run in
  *  flight, which skipping never touches. The holder it names is whatever the row
  *  already said — the folder did not change hands because somebody jumped the
- *  queue. */
+ *  queue, so the link the id wears is carried over with it. */
 export function skippedOverride(task: Task): QueueOverride {
   return {
     key: task.key,
     status: "queued",
     queue_position: 1,
-    queue_ahead: task.queue_ahead ?? "",
-    queue_ahead_title: task.queue_ahead_title ?? "",
+    ...aheadOfRow(task),
     queue_priority: true,
   };
+}
+
+/** The four fields that say WHO IS IN FRONT, copied off a row that already
+ *  holds the answer. */
+function aheadOfRow(task: Task): Pick<
+  QueueOverride,
+  "queue_ahead" | "queue_ahead_title" | "queue_ahead_session" | "queue_ahead_target" | "queue_ahead_key"
+> {
+  return {
+    queue_ahead: task.queue_ahead ?? "",
+    queue_ahead_title: task.queue_ahead_title ?? "",
+    queue_ahead_session: task.queue_ahead_session ?? "",
+    queue_ahead_target: task.queue_ahead_target ?? "",
+    queue_ahead_key: task.queue_ahead_key ?? "",
+  };
+}
+
+/** …and the same four naming A ROW ITSELF — what the task behind it should say
+ *  it is behind. `queue_ahead_key` is that row's own listing key, which is the
+ *  door the id opens while its run has no session yet (`pending:<entry>`,
+ *  platform/lib/queue.queueAheadHref). */
+function aheadIsRow(task: Task): Pick<
+  QueueOverride,
+  "queue_ahead" | "queue_ahead_title" | "queue_ahead_session" | "queue_ahead_target" | "queue_ahead_key"
+> {
+  return {
+    queue_ahead: task.task_id ?? "",
+    queue_ahead_title: task.title ?? "",
+    queue_ahead_session: task.session_id ?? "",
+    queue_ahead_target: task.target ?? "",
+    queue_ahead_key: task.key,
+  };
+}
+
+/** The folder a task's work happens in — the server's own `queue_key`, and the
+ *  project for a row (or a server) that carries none. It is what a LINE is a
+ *  line of: two tasks share a queue when they share this. */
+function queueFolderOf(task: Task): string {
+  return (task.queue_key || task.project || "").trim();
+}
+
+/**
+ * ONE PRESS, THE WHOLE LINE REPAINTED — the claims a skip makes about every row
+ * in the folder, not only about the row that was pressed.
+ *
+ * THE BUG THIS ENDS (Akshil, 2026-09-18): pressing ⤒ on the 2nd row promoted it
+ * to "1st in line" and said nothing about the row that was already 1st, so for
+ * the 0.3-0.6 s before the server's listing landed TWO rows read "1st in line"
+ * and the reader could not tell which of them was going to run. A queue is one
+ * order, and a claim about one row's place is a claim about everybody else's:
+ * the whole line has to move in the same paint or it is not a line.
+ *
+ * WHAT MOVES, and nothing else:
+ *
+ *   * the pressed row takes `head` exactly as the caller built it — position 1,
+ *     `queue_priority`, and whatever the server said is still in front of it
+ *     (the RUN holding the folder, which a skip never touches);
+ *   * every row the press jumped OVER — the ones standing between the pressed
+ *     row's new place and its old one — shifts one place back;
+ *   * the row that was standing where the pressed row now stands is the only one
+ *     whose "behind X" changes, because it is the only one whose neighbour
+ *     changed: it is now behind the pressed task, id, title and link;
+ *   * every other queued row in the folder keeps its number and its sentence,
+ *     and only loses `queue_priority` if it was wearing it — the ⤒ glyph is a
+ *     claim on the one spot at the head, and after this press that spot is the
+ *     pressed row's.
+ *
+ * Rows in OTHER folders are never touched: a line is per folder, and a skip in
+ * one says nothing about another. Rows that need no change get no claim, so the
+ * common press on a two-deep line leaves two claims and not twenty.
+ *
+ * PURELY LOCAL AND SHORT-LIVED, exactly as the single claim was: every key here
+ * is a key the next `/api/tasks` answer speaks about, so `expireQueueOverrides`
+ * retires the whole set together and the server's order wins unconditionally.
+ */
+export function skipLineOverrides(
+  tasks: readonly Task[],
+  head: QueueOverride,
+): QueueOverride[] {
+  const out: QueueOverride[] = [head];
+  const pressed = tasks.find((t) => t.key === head.key);
+  if (!pressed) return out;
+  const folder = queueFolderOf(pressed);
+  /** Where the press PUT it (the server's own answer, 1 for an ordinary skip)
+   *  and where it STOOD. A `was` of 0 is "the server never placed it", and the
+   *  honest reading of a row arriving at the head from nowhere is that it is now
+   *  in front of everybody. */
+  const to = Math.max(1, head.queue_position ?? 1);
+  const was = pressed.queue_position ?? 0;
+  const behind = aheadIsRow(pressed);
+  for (const task of tasks) {
+    if (task.key === head.key) continue;
+    if (task.status !== "queued") continue;
+    if (queueFolderOf(task) !== folder) continue;
+    const at = task.queue_position ?? 0;
+    const jumped = at >= to && (was <= 0 || at < was);
+    if (!jumped) {
+      // Untouched — unless it is still wearing the head's claim, which is now
+      // the pressed row's and may not be worn twice.
+      if (task.queue_priority) {
+        out.push({
+          key: task.key,
+          status: "queued",
+          queue_position: at,
+          ...aheadOfRow(task),
+          queue_priority: false,
+        });
+      }
+      continue;
+    }
+    out.push({
+      key: task.key,
+      status: "queued",
+      queue_position: at + 1,
+      // Only the row the pressed one displaced has a new neighbour; the rest
+      // are still behind whatever they were behind.
+      ...(at === to ? behind : aheadOfRow(task)),
+      queue_priority: false,
+    });
+  }
+  return out;
 }
 
 /**

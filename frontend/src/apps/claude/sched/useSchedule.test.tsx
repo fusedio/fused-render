@@ -19,6 +19,10 @@ import type { SchedEntry, SchedTask } from "./scheduled";
 import type { ChatController } from "../protocol/controller-api";
 
 const { useSchedule } = await import("./useSchedule");
+// The caption builder itself, so "the header's row carries the link's fields" is
+// asserted as the sentence a reader actually gets rather than as a field name.
+const { queueCaption } = await import("@platform/lib/queue");
+type QueueFacts = import("@platform/lib/queue").QueueFacts;
 
 type Api = ScheduleApi;
 type State = ScheduleState;
@@ -920,6 +924,36 @@ test("a chat with no session reads its row through the leader key", async () => 
   ]);
   expect(h.state().row?.task_id).toBe("TASK-048");
   expect(h.state().row?.queue_ahead).toBe("TASK-046");
+});
+
+test("the holder getting a door is news: the header's row carries `queue_ahead_key`", async () => {
+  // THE BUG (Akshil, 2026-09-18): the Tasks row drew "behind TASK-046" as a link
+  // and the chat header three pixels away drew the same words as plain text.
+  // `queue_ahead_key` is the holder's own listing key — the door the id opens
+  // while that run has no session yet (`pending:<entry>`,
+  // platform/lib/queue.queueAheadHref) — and `sameQueueRow` did not compare it,
+  // so the listing that finally named it read as "the same answer" and was
+  // thrown away. The header kept the doorless row for as long as nothing else
+  // about the line moved.
+  const h = await mount(
+    [{ ...pending("a", "2026-09-09T14:00:00+00:00"), origin: "chat" }],
+    "s1",
+    [],
+    true,
+  );
+  await h.feed([
+    { key: "s1", status: "queued", queue_position: 2, queue_ahead: "TASK-046",
+      queue_ahead_target: "/repo/news.py" },
+  ]);
+  expect(h.state().row?.queue_ahead_key ?? "").toBe("");
+  // The holder is still starting, so its SESSION never arrives — only its key.
+  await h.feed([
+    { key: "s1", status: "queued", queue_position: 2, queue_ahead: "TASK-046",
+      queue_ahead_target: "/repo/news.py", queue_ahead_key: "pending:e-9" },
+  ]);
+  expect(h.state().row?.queue_ahead_key).toBe("pending:e-9");
+  // …and that is exactly the field the caption turns into a link.
+  expect(queueCaption(h.state().row as QueueFacts)?.aheadHref).toContain("queued=e-9");
 });
 
 test("a listing without our row clears it; a failed read leaves it (Bugbot)", async () => {

@@ -57,8 +57,10 @@ import {
   expireQueueOverrides,
   isQueued,
   NO_QUEUE_OVERRIDES,
+  skipLineOverrides,
   skippedOverride,
   withQueueOverride,
+  withQueueOverrides,
   hasActiveFilters,
   hasDraft,
   isChatDraftTask,
@@ -10889,15 +10891,105 @@ describe("the optimistic queue claim", () => {
 
   it("claims the head of the line for a skip, and leaves the holder alone", () => {
     // Skipping never touches the run in flight, so the row still names whatever
-    // it was already behind.
-    const before = row({ status: "queued", queue_position: 5, queue_ahead: "TASK-041", queue_ahead_title: "News" });
+    // it was already behind — the LINK it wore included, which the claim has to
+    // carry now that it may also be asked to name a different holder.
+    const before = row({
+      status: "queued",
+      queue_position: 5,
+      queue_ahead: "TASK-041",
+      queue_ahead_title: "News",
+      queue_ahead_session: "sess-41",
+      queue_ahead_target: "/repo/news.py",
+      queue_ahead_key: "sess-41",
+    });
     expect(skippedOverride(before)).toEqual({
       key: "k1",
       status: "queued",
       queue_position: 1,
       queue_ahead: "TASK-041",
       queue_ahead_title: "News",
+      queue_ahead_session: "sess-41",
+      queue_ahead_target: "/repo/news.py",
+      queue_ahead_key: "sess-41",
       queue_priority: true,
     });
+  });
+
+  it("repaints the WHOLE line on a skip, so no two rows read 1st", () => {
+    // THE DOUBLE-1st FRAME (Akshil, 2026-09-18). Three waiting rows in one
+    // folder; ⤒ on the 2nd. The press answers for its own row, and the line the
+    // press just changed answers for the rest — in one set of claims, so the
+    // paint that promotes one row is the paint that demotes the other.
+    const line = [
+      row({
+        key: "a",
+        task_id: "TASK-001",
+        title: "first",
+        session_id: "sess-a",
+        status: "queued",
+        queue_key: "/repo",
+        queue_position: 1,
+        queue_ahead: "TASK-000",
+        queue_ahead_title: "the run",
+        queue_ahead_session: "sess-run",
+        queue_ahead_target: "/repo/run.py",
+        queue_priority: true,
+      }),
+      row({
+        key: "b",
+        task_id: "TASK-002",
+        title: "second",
+        session_id: "sess-b",
+        target: "/repo/b.py",
+        status: "queued",
+        queue_key: "/repo",
+        queue_position: 2,
+        queue_ahead: "TASK-001",
+        queue_ahead_title: "first",
+      }),
+      row({
+        key: "c",
+        task_id: "TASK-003",
+        status: "queued",
+        queue_key: "/repo",
+        queue_position: 3,
+        queue_ahead: "TASK-002",
+        queue_ahead_title: "second",
+      }),
+      // Another folder entirely: a line is per folder and this one did not move.
+      row({ key: "z", status: "queued", queue_key: "/other", queue_position: 1, queue_priority: true }),
+    ];
+    const pressed = line[1] as Task;
+    const painted = applyQueueOverrides(
+      line as Task[],
+      withQueueOverrides(NO_QUEUE_OVERRIDES, skipLineOverrides(line as Task[], skippedOverride(pressed))),
+    );
+    const by = (key: string) => painted.find((t) => t.key === key) as Task;
+    // The pressed row is the head, and the only thing wearing the ⤒ claim.
+    expect(by("b").queue_position).toBe(1);
+    expect(by("b").queue_priority).toBe(true);
+    expect(painted.filter((t) => t.queue_priority && t.queue_key === "/repo")).toHaveLength(1);
+    // The row it went past is 2nd, and it is behind the pressed row now — id,
+    // title and the pair that makes the id a link.
+    expect(by("a").queue_position).toBe(2);
+    expect(by("a").queue_ahead).toBe("TASK-002");
+    expect(by("a").queue_ahead_title).toBe("second");
+    expect(by("a").queue_ahead_session).toBe("sess-b");
+    expect(by("a").queue_ahead_target).toBe("/repo/b.py");
+    expect(by("a").queue_priority).toBe(false);
+    // Nobody behind the press moved: the press jumped over one row, not three.
+    expect(by("c").queue_position).toBe(3);
+    expect(by("c").queue_ahead).toBe("TASK-002");
+    // …and the other folder is untouched, ⤒ and all.
+    expect(by("z").queue_position).toBe(1);
+    expect(by("z").queue_priority).toBe(true);
+  });
+
+  it("claims nothing about a folder the pressed row is not in the listing for", () => {
+    // A key this listing has no row for is a task that has left; the press still
+    // paints its own claim and invents nothing about anybody else.
+    const line = [row({ key: "a", status: "queued", queue_key: "/repo", queue_position: 1 })];
+    const claims = skipLineOverrides(line as Task[], { key: "gone", status: "queued", queue_position: 1 });
+    expect(claims.map((c) => c.key)).toEqual(["gone"]);
   });
 });

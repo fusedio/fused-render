@@ -137,6 +137,45 @@ test("a queued chat reads in the Tasks row's order: ring, number, title, caption
   expect(has(r, "is-queued")).toBe(true);
 });
 
+test("the id in `behind TASK-x` is a DOOR, exactly as the Tasks row's is", async () => {
+  // The header said the same words as the Tasks row and gave the reader nothing
+  // to press (Akshil, 2026-09-18). The one question a person has about the thing
+  // in their way is what it is doing, and the answer is the holder's own
+  // conversation — so the id is an `<a>` wherever the row carries the pair the
+  // link is built from (`queue_ahead_session` + `queue_ahead_target`,
+  // platform/lib/queue.queueAheadHref).
+  const r = render(
+    {
+      status: "queued",
+      queue_position: 2,
+      queue_ahead: "TASK-046",
+      queue_ahead_title: "Nightly deploy",
+      queue_ahead_session: "sess-46",
+      queue_ahead_target: "/repo/alpha/deploy.py",
+    },
+    { task: task() },
+  );
+  const link = r.root.findAll(
+    (n) => n.type === "a" && String(n.props.className || "").includes("tasks-queue-ahead"),
+  );
+  expect(link).toHaveLength(1);
+  expect(String(link[0].props.href)).toContain("session_id=sess-46");
+  expect(String(link[0].props.href)).toContain("deploy.py");
+  expect(link[0].props.title).toBe("Nightly deploy");
+  expect(text(r)).toContain("2nd in line · behind TASK-046");
+});
+
+test("…and it stays plain text when there is nowhere for it to go", async () => {
+  // An older server sends neither field, and a link to nothing is worse than a
+  // name: the id keeps its words and loses its underline.
+  const r = render(
+    { status: "queued", queue_position: 2, queue_ahead: "TASK-046" },
+    { task: task() },
+  );
+  expect(r.root.findAll((n) => n.type === "a")).toHaveLength(0);
+  expect(text(r)).toContain("behind TASK-046");
+});
+
 test("a queued chat with no task row still reads ring, Claude, caption", async () => {
   const r = render({ status: "queued", queue_position: 1, queue_ahead: "TASK-046" });
   expect(ringClasses(r).some((c) => c.includes("schedule-ring--queued"))).toBe(true);
