@@ -41,12 +41,13 @@ consumes journal state — it always measures from the last successful scan of
 that root, same as if a scan itself had just checked.
 """
 import logging
+import os
 import threading
 import time
 
 from fused_render.index import freshness, fsevents, runner
 from fused_render.index.config import IndexConfig
-from fused_render.index.ignore import MountGuard, ignored_for_index, is_inside_leaf_dir
+from fused_render.index.ignore import MountGuard, ignored_for_index, is_inside_leaf_dir, norm
 from fused_render.shell import index_gate
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,52 @@ MIN_HIDDEN_S = 30.0
 # it becoming a background cost anyone would notice.
 DETECT_INTERVAL_S = 30.0
 
+# OS-level noise this trigger must never treat as a "change", kept in THIS
+# module rather than in `index/ignore.py`'s user-editable `default_ignore()`.
+#
+# The two lists answer different questions and must not be conflated: the
+# user's ignore list decides what gets a `dirs.parquet` ROW, a decision the
+# user gets to make and revise; this list decides whether a journal entry is
+# noise a home-focus check should just ignore, a decision this trigger's own
+# correctness depends on and that a user must not be able to break by
+# editing a preference. They used to be the same list — `default_ignore()`
+# briefly grew a `~/Library` entry (2026-09,
+# SPEC-focus-change-detection.md's review) specifically so this trigger's
+# `_filter_hint` would drop macOS's constant `~/Library` churn — but that
+# degenerates the moment a user has ever pressed Save in the Indexing
+# preferences panel (`frontend/src/shell/Indexing.tsx`): `IndexConfig.ignore`
+# (`index/config.py`) is a dataclass default consulted ONLY when the
+# persisted config has no `ignore` key, so a saved config freezes whatever
+# `default_ignore()` returned at save time — including, for anyone who saved
+# BEFORE this list existed, a snapshot with no `~/Library` entry at all.
+# `default_ignore()` is then never consulted for that user again, and this
+# trigger silently reverts to firing on nearly every home-focus event. See
+# DECISIONS.md ("the trigger's correctness must not depend on a
+# user-editable preference").
+#
+# Kept short and hardcoded on purpose: this is not a place for a user's
+# `.cache`/`node_modules`-style preferences, only for OS noise this trigger
+# itself needs to see through no matter what the user's ignore list says.
+_NOISE_HOME_SUFFIXES = (
+    # macOS: Safari/Mail caches, saved app state, Spotlight metadata — none
+    # of it is content a user searches home for, and it churns on nearly
+    # every focus check on a real `~` root.
+    "Library",
+)
+
+
+def _os_noise_roots() -> list[str]:
+    """The noise roots for THIS machine, resolved at call time (not at
+    import time) so a test's `HOME`/`expanduser` redirection is honoured the
+    same way `default_home_dirs()` and `IgnoreRules` already require."""
+    home = norm(os.path.expanduser("~"))
+    return [f"{home}/{suffix}" for suffix in _NOISE_HOME_SUFFIXES]
+
+
+def _is_os_noise(path: str) -> bool:
+    return any(path == r or path.startswith(r + "/") for r in _os_noise_roots())
+
+
 # root -> when it was last checked by this trigger. Bounded by the number of
 # configured scan roots (a handful); no eviction needed, same shape as
 # `routers/index._freshness_checked`.
@@ -117,16 +164,18 @@ def _hint(cfg: IndexConfig, root: str):
 
 def _filter_hint(cfg: IndexConfig, guard: MountGuard, forced: set, subtrees: list):
     """Drop everything from a raw hint that a real scan would never index
-    anyway, or that is this app's own doing — the exact per-path filter
-    `scan._run_fsevents` applies to these same two collections
+    anyway, or that is this app's own doing, or that is OS noise this
+    trigger refuses to act on regardless of the user's ignore list — the
+    per-path filter `scan._run_fsevents` applies
     (`ignored_for_index(..., tree=True) or guard.blocks(...) or
-    is_inside_leaf_dir(...)`), reused here rather than re-derived because
-    `fsevents.hint` itself applies none of it: it only prefix-filters by
-    root (fsevents.py), so its raw output includes every write anywhere
-    under `root` — including this app's own state home and whatever the
-    user's ignore list (or the built-in defaults — `.cache`, `.fused`, and,
-    as of SPEC-focus-change-detection.md's review, `~/Library`) already
-    excludes from the index.
+    is_inside_leaf_dir(...)`), reused here rather than re-derived, PLUS this
+    module's own `_is_os_noise` (see its definition for why that one is not
+    just another `default_ignore()` entry). `fsevents.hint` itself applies
+    none of this: it only prefix-filters by root (fsevents.py), so its raw
+    output includes every write anywhere under `root` — including this
+    app's own state home and whatever the user's ignore list (or the
+    built-in defaults — `.cache`, `.fused`, ...) already excludes from the
+    index.
 
     Load-bearing, not cosmetic: on a real `~` root, skipping this step made
     `hinted` non-empty on nearly every check — the scan's own writes under
@@ -135,10 +184,22 @@ def _filter_hint(cfg: IndexConfig, guard: MountGuard, forced: set, subtrees: lis
     made the design's stated quiet case (`(set(), [])`, no scan) effectively
     unreachable despite `_check_root` handling it correctly once reached.
     `tree=True` because, same as the journal-driven call in scan.py, a
-    hinted path arrives without its ancestors having been checked."""
+    hinted path arrives without its ancestors having been checked.
+
+    Every path is `norm`ed before any of these checks. `fsevents.hint` only
+    ever returns non-None on darwin, where its paths are already forward-
+    slashed (the FSEvents API), so this never matters in production — but
+    `ignored_for_index`/`is_inside_leaf_dir`/`IgnoreRules` all split and
+    match on `/` and assume the `norm`ed form (ignore.py's own docstring:
+    "normalizing at the edges is enough"), and a caller that skips it is
+    silently wrong wherever that assumption doesn't hold as an incoming
+    shape — a directly-injected hint in a test, or a future non-macOS
+    accelerator. Cheap and correct on every platform beats correct on one."""
     def _keep(p: str) -> bool:
+        p = norm(p)
         return not (ignored_for_index(cfg.rules, p, tree=True)
-                    or guard.blocks(p) or is_inside_leaf_dir(p))
+                    or guard.blocks(p) or is_inside_leaf_dir(p)
+                    or _is_os_noise(p))
     return {p for p in forced if _keep(p)}, [p for p in subtrees if _keep(p)]
 
 
