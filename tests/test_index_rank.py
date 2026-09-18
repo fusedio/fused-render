@@ -1314,6 +1314,59 @@ def test_starvation_fallback_recovers_the_milder_reported_shape(
     assert len(names) >= 25
 
 
+# Code-review finding (Bugbot, this round): the fallback's own trigger
+# (`search_ranked`: `if len(rows) < limit: rerun unbounded`) compares the
+# BOUNDED run's row count against the caller's raw `limit`, but the query
+# underneath is issued with `LIMIT limit + 1` (the same one-extra-row trick
+# `truncated` is computed from everywhere else in this function). A bounded
+# run that comes back with EXACTLY `limit` rows — one short of `limit + 1`,
+# not merely "a short page" — reads as a FULL page under `len(rows) < limit`
+# (false, since `limit` is not less than itself) and never reruns, even
+# though the pool boundary can still be hiding a genuinely different,
+# better-ranked basename that the unbounded query would pull in as the
+# `(limit + 1)`th row. That row is exactly what turns `truncated` from
+# False to True and would appear on an unbounded page — silently dropped
+# here, not merely "left for a future page" (the caller has no way to know
+# it exists at all). This differs from the already-closed starvation shapes
+# above, which all leave the bounded run SHORT OF `limit` outright; this one
+# is the off-by-one at the boundary between "short" and "full".
+def test_starvation_fallback_misses_a_page_short_by_exactly_one_row(tmp_path):
+    """Engineered so the bounded pool's QUALIFY survivors land at EXACTLY
+    `limit` (6), one short of the `limit + 1` (7) the underlying query is
+    actually run with: 137 copies of the dominant `dup.txt` (ranks first via
+    `edge`) plus 3 copies of `dup0.txt` exactly fill the `limit=6` ->
+    `pool=140` boundary (137 + 3 = 140), so the bounded run's QUALIFY sees
+    only those two names and caps out at 3 + 3 = 6 survivors. A further,
+    distinct basename `dup1.txt` (3 more copies) ranks immediately after —
+    entirely past position 140, invisible to the bounded pool — but the
+    unbounded rerun's own `(limit + 1)`th row lands on one of its copies,
+    which is exactly what flips `truncated` to True (`search_ranked` never
+    returns more than `limit` hits — the `+1` row is only ever used to
+    detect "there was more", per this function's own docstring — so the
+    hit LIST is unaffected here; `truncated` is the one field this bug
+    actually corrupts).
+    The current (pre-fix) trigger (`len(rows) < limit`) sees a 6-row bounded
+    result, calls it a full page, and never reruns: this pins the wrong,
+    under-reported `truncated: False` the bug produces today."""
+    files = (
+        [f"/r/dom{i}/dup.txt" for i in range(137)]
+        + [f"/r/d0_{j}/dup0.txt" for j in range(3)]
+        + [f"/r/d1_{j}/dup1.txt" for j in range(3)]
+    )
+    cfg = _index(tmp_path, "/r", files)
+    result = search_ranked(cfg, "/r", "dup", limit=6)
+    hits = [h for h in result["hits"] if not h["is_dir"]]
+    names = Counter(h["rel"].rsplit("/", 1)[-1] for h in hits)
+    # The 6-row page itself (dup.txt x3, dup0.txt x3) is unchanged by the
+    # fix — `dup1.txt` never displaces it, since it only ever supplies the
+    # (limit + 1)th, never-returned row. The bug is entirely in `truncated`:
+    # a real 7th match exists (`dup1.txt`), so this MUST read True, not the
+    # False the unfixed `len(rows) < limit` trigger produces.
+    assert len(hits) == 6
+    assert names == {"dup.txt": 3, "dup0.txt": 3}
+    assert result["truncated"] is True
+
+
 def test_glob_unranked_reproduces_the_old_depth_then_alpha_order(tmp_path):
     """`ranked=False` for a glob query must still answer `depth ASC,
     lower(rel) ASC, rel ASC` — the exact order glob mode always used before

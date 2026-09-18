@@ -1537,11 +1537,14 @@ def _bounded_or_full_candidates(base_select: str, order_by: str, limit: int,
     the unbounded shape here is exactly what an infinitely large pool would
     have produced, not merely a similar query.
 
-    A caller that gets fewer than `limit` rows back from the bounded query
-    reruns with `bounded=False` (`search_ranked`) — a short page is the only
-    case where the pool could have starved a fillable page, and it is also
-    the case where the corpus is small enough (or the pool starved it, either
-    way) that the extra scan is affordable; see DECISIONS.md and
+    A caller that gets fewer than `limit + 1` rows back from the bounded
+    query (the same one-extra-row `limit` the caller itself passes in here —
+    `search_ranked` always calls with its own `limit + 1`, for the identical
+    truncation-detection trick `truncated` is computed from) reruns with
+    `bounded=False` (`search_ranked`) — a short page is the only case where
+    the pool could have starved a fillable page, and it is also the case
+    where the corpus is small enough (or the pool starved it, either way)
+    that the extra scan is affordable; see DECISIONS.md and
     `specs/query.md` §3 for the reasoning and the measured cost."""
     if not bounded:
         return f"({base_select})"
@@ -2543,20 +2546,30 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
             token.check()
         # Starvation fallback (`13ff8332a`'s bounded candidate pool ahead of
         # the basename cap, DECISIONS.md/specs/query.md §3): a bounded run
-        # that comes back with a FULL page (`limit` rows or more) is provably
-        # not starved — a basename large enough to fill the whole pool and
-        # outrank every other matching name would still have left every OTHER
-        # basename capped at `_MAX_PER_BASENAME`, so a full page can only mean
-        # the pool held enough distinct names to fill it. Fewer than `limit`
-        # is the ONLY signal available without a second query, and it is also
-        # exactly the case where the extra query is cheap either way: either
-        # the corpus genuinely has few matches (the unbounded rerun re-scans a
-        # small WHERE-matched set) or the pool actually starved a fillable
-        # page (and correctness is worth the extra query). Rerunning replaces
-        # `rows` wholesale — `truncated`/`total` below are computed from
-        # whichever query actually ran, so a fallback's row count is never
-        # mixed with the bounded query's.
-        if len(rows) < limit:
+        # that comes back with a FULL page — `limit + 1` rows, the same
+        # one-extra-row `truncated` is computed from everywhere else in this
+        # function, NOT merely `limit` rows — is provably not starved: a
+        # basename large enough to fill the whole pool and outrank every
+        # other matching name would still have left every OTHER basename
+        # capped at `_MAX_PER_BASENAME`, so a full `limit + 1`-row page can
+        # only mean the pool held enough distinct names to fill it AND leave
+        # one more over. **Code-review correction**: an earlier version of
+        # this fallback compared against `limit` rather than `limit + 1` — a
+        # bounded run landing at EXACTLY `limit` rows (one short of the
+        # query's own `limit + 1`) read as "full" and skipped the rerun, even
+        # though the pool boundary could still be hiding a better-ranked,
+        # distinct basename that the unbounded query's `(limit + 1)`th row
+        # would have surfaced — silently under-reporting both the page and
+        # `truncated`. Fewer than `limit + 1` is the ONLY signal available
+        # without a second query, and it is also exactly the case where the
+        # extra query is cheap either way: either the corpus genuinely has
+        # few matches (the unbounded rerun re-scans a small WHERE-matched
+        # set) or the pool actually starved a fillable page (and correctness
+        # is worth the extra query). Rerunning replaces `rows` wholesale —
+        # `truncated`/`total` below are computed from whichever query
+        # actually ran, so a fallback's row count is never mixed with the
+        # bounded query's.
+        if len(rows) < limit + 1:
             rows = con.execute(_build_sql(bounded=False)).fetchall()
             if token is not None:
                 token.check()
