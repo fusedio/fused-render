@@ -134,16 +134,34 @@ export interface NotificationInput {
    *  already accepts it: `count` carries "how many", the row's job is to
    *  point at what's most likely to matter now (the newest one). */
   familyKey?: string;
-  /** POPUP-ONLY SUPPRESSION (F8, 2026-09-18) — retain the row exactly as
-   *  normal, but never arm/show its popup card. Distinct from both
-   *  `isSuppressed` (drops the message ENTIRELY, popup and row alike) and
-   *  from simply not calling `notify()` at all: a caller that already knows
-   *  "the user is looking straight at this" still wants the row to exist for
-   *  later (they may navigate away before dismissing it), it just should not
-   *  interrupt them with a card for something already on their screen.
-   *  `task-status-notify.ts`'s `in_progress -> done` branch is the first (and
-   *  so far only) caller — see its own comment for why a finished task whose
-   *  destination is already open sets this instead of returning `null`. */
+  /** POPUP-ONLY SUPPRESSION (F8, 2026-09-18) — never arm/show a popup card
+   *  for this input, but do not change whether it is retained: `quiet` is
+   *  read ONLY after `retainAndCollapse()` has already decided that with its
+   *  own ordinary rule (`isRetained` — "attention" tone, or a carried
+   *  `action`/`page`). Distinct from both `isSuppressed` (drops the message
+   *  ENTIRELY, popup and row alike) and from simply not calling `notify()`
+   *  at all: a caller that already knows "the user is looking straight at
+   *  this" still wants a row that WOULD be retained to exist for later (they
+   *  may navigate away before dismissing it), it just should not interrupt
+   *  them with a card for something already on their screen.
+   *
+   *  `quiet` DOES NOT ITSELF MAKE AN INPUT RETAINED (F9 correction, code
+   *  review): an earlier version of this comment said "retain the row
+   *  exactly as normal", which overclaimed — a `quiet` input with no
+   *  `page`/`action` and a non-error tone resolves to `transient`, which
+   *  `isRetained` does not keep, exactly as it wouldn't without `quiet` set.
+   *  Such an input still returns an id (from `retainAndCollapse`) but that id
+   *  names nothing kept anywhere — no popup (suppressed by `quiet`) and no
+   *  row (never retained in the first place). That is consistent with
+   *  `quiet`'s actual job — "skip the popup for whatever this would
+   *  otherwise become" — not a bug to route around: a message with nothing
+   *  to click on has nothing worth pinning in the panel forever either,
+   *  `quiet` or not, and forcing retention here would special-case `quiet`
+   *  into inventing actionability the input never had. `task-status-
+   *  notify.ts`'s `in_progress -> done` branch is the first (and so far
+   *  only) caller, and it always sets `page`, so this is latent for it today
+   *  — documented precisely here so the next caller doesn't assume the
+   *  stronger, incorrect guarantee. */
   quiet?: boolean;
 }
 

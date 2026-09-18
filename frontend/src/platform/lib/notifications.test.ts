@@ -867,6 +867,26 @@ test("quiet: true still collapses into the same familyKey row and increments cou
   expect(getPopupNotification()?.title).toBe("hi");
 });
 
+// F9 (code review of F8): `quiet` is checked AFTER `retainAndCollapse`, which
+// only ever keeps a row when `isRetained` already says so on its OWN terms
+// ("attention" tone, or a carried `action`/`page`) — `quiet` never overrides
+// that, it only skips the pop for whatever `retainAndCollapse` decided. A
+// `quiet` input with none of those (no `page`/`action`, non-error tone)
+// resolves to `transient`, which is never retained, `quiet` or not — so it
+// is neither popped (quiet says so) nor retained (isRetained says so): the
+// returned id names nothing kept anywhere. This documents that precisely
+// (the `quiet` field's own doc comment used to overclaim "retain the row
+// exactly as normal") rather than treating it as a bug to route around: a
+// message with nothing to click on has nothing worth pinning in the panel
+// forever either way. Today's only caller (task-status-notify.ts) always
+// sets `page`, so this is latent for it.
+test("quiet: true with no page/action and a non-error tone is neither popped nor retained", () => {
+  const id = notify({ title: "just a note", quiet: true });
+  expect(id).toBeGreaterThan(0);
+  expect(getPopupNotification()).toBeNull();
+  expect(getRetainedNotifications()).toHaveLength(0);
+});
+
 // Same title, different captions — two different sources doing the same
 // kind of work must not be conflated into one row.
 test("same title but different captions stay as two separate rows", () => {
