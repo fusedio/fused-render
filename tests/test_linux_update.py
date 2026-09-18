@@ -8,6 +8,7 @@ during download, a checksum mismatch leaving the original untouched, the
 version-stamp write, and `_disk_version` reading it back.
 """
 import os
+import sys
 import time
 
 import pytest
@@ -15,6 +16,12 @@ import pytest
 from fused_render import jobs
 from fused_render.update import common, linux
 from fused_render import installed
+
+# `os.path.realpath()` returns a `\\?\`-prefixed extended-length path on
+# Windows, so a test that asserts the resolved path equals a plain string
+# only holds on POSIX.
+linux_only = pytest.mark.skipif(sys.platform != "linux",
+                                reason="os.path.realpath()'s Windows \\\\?\\ prefix")
 
 
 # ---- method() -----------------------------------------------------------
@@ -209,6 +216,7 @@ def test_a_successful_install_swaps_the_appimage_and_writes_the_stamp(monkeypatc
     assert disk_version == "9.9.9"
 
 
+@linux_only
 def test_install_resolves_a_symlinked_appimage_before_swapping(monkeypatch, tmp_path):
     # `$APPIMAGE`/`startup.appimage_path()` could in principle name a symlink
     # (today's type-2 runtime happens to resolve `/proc/self/exe` itself, so
