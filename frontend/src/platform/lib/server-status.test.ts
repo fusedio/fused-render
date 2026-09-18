@@ -10,13 +10,15 @@ import {
   bannerSurface,
   FAIL_THRESHOLD,
   initialStatus,
+  previewInstalledVersion,
+  previewRequestedAt,
   reduceProbe,
   updateDialogMode,
   updateDialogPreview,
   type StatusState,
   type SurfaceInput,
 } from "@platform/lib/server-status";
-import { RESTART_STAGES } from "@platform/lib/restart-flow";
+import { restartIsSlow, RESTART_SLOW_MS, RESTART_STAGES } from "@platform/lib/restart-flow";
 
 const BUILD = "0.4.8";
 
@@ -271,20 +273,27 @@ test("the preview flag says WHICH dialog, and the restart one says which stage",
   expect(updateDialogPreview("?update_modal=restart&stage=reconnecting", null)).toEqual({
     kind: "restart",
     stage: "reconnecting",
+    slow: false,
   });
   for (const stage of RESTART_STAGES) {
     expect(updateDialogPreview(`?update_modal=restart&stage=${stage}`, null)).toEqual({
       kind: "restart",
       stage,
+      slow: false,
     });
   }
 });
 
 test("an unknown or missing stage previews the face a real restart starts on", () => {
-  expect(updateDialogPreview("?update_modal=restart", null)).toEqual({ kind: "restart", stage: "ready" });
+  expect(updateDialogPreview("?update_modal=restart", null)).toEqual({
+    kind: "restart",
+    stage: "ready",
+    slow: false,
+  });
   expect(updateDialogPreview("?update_modal=restart&stage=melting", null)).toEqual({
     kind: "restart",
     stage: "ready",
+    slow: false,
   });
 });
 
@@ -293,5 +302,53 @@ test("no flag, no preview — and the restart flag is a preview like the refresh
   expect(updateDialogPreview("?update_modal=0", "0")).toBeNull();
   expect(updateDialogMode(true, "?update_modal=restart", null)).toBe("preview");
   // Storage carries it across page loads, exactly as "1" always has.
-  expect(updateDialogPreview("", "restart")).toEqual({ kind: "restart", stage: "ready" });
+  expect(updateDialogPreview("", "restart")).toEqual({ kind: "restart", stage: "ready", slow: false });
+});
+
+test("`slow=1` previews the overlong wait, which is not a stage and cannot be named as one", () => {
+  // The machine is still in `restarting` past 25s — the sentence changes, the
+  // stage does not — so the seventh face has to be reachable by a flag or not
+  // at all.
+  expect(updateDialogPreview("?update_modal=restart&stage=restarting&slow=1", null)).toEqual({
+    kind: "restart",
+    stage: "restarting",
+    slow: true,
+  });
+  // Anything but "1" is off, the way the dialog flag itself reads its own value.
+  expect(updateDialogPreview("?update_modal=restart&stage=restarting&slow=yes", null)).toEqual({
+    kind: "restart",
+    stage: "restarting",
+    slow: false,
+  });
+  expect(updateDialogPreview("?update_modal=restart&stage=restarting", null)).toEqual({
+    kind: "restart",
+    stage: "restarting",
+    slow: false,
+  });
+});
+
+test("the pretend press is placed past the sentence's own estimate, or at the instant itself", () => {
+  const now = 1_700_000_000_000;
+  // Far enough back that the dialog reads the wait as overlong on the FIRST
+  // paint — a preview you have to wait 25 seconds for is not a preview.
+  expect(previewRequestedAt(true, now)).toBeLessThanOrEqual(now - RESTART_SLOW_MS);
+  expect(restartIsSlow(previewRequestedAt(true, now), now)).toBe(true);
+  // And a plain preview freezes the ordinary sentence: the press is NOW, so
+  // nothing crosses the mark while the page is being looked at.
+  expect(previewRequestedAt(false, now)).toBe(now);
+  expect(restartIsSlow(previewRequestedAt(false, now), now)).toBe(false);
+});
+
+test("the preview invents the one disagreement a dev server cannot supply", () => {
+  // Nothing newer on disk — the dev case — so the sentence would otherwise read
+  // "Closing v0.5.53 and starting v0.5.53", which no reader will ever see.
+  expect(previewInstalledVersion("0.5.53", "0.5.53")).toBe("0.5.54");
+  expect(previewInstalledVersion("0.5.53", "")).toBe("0.5.54");
+  // A REAL pending update wins: the preview shows the number actually waiting
+  // rather than a made-up one.
+  expect(previewInstalledVersion("0.5.53", "0.6.0")).toBe("0.6.0");
+  // A version it cannot parse is left exactly as it is — inventing a successor
+  // for it would put a string on screen that is not a version at all.
+  expect(previewInstalledVersion("nightly", "nightly")).toBe("nightly");
+  expect(previewInstalledVersion("0.5.x", "0.5.x")).toBe("0.5.x");
 });

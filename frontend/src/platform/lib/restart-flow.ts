@@ -185,3 +185,86 @@ export function restartStageLabel(stage: RestartStage): string {
   if (stage === "back") return "Reconnected — fused-render is back.";
   return "";
 }
+
+// ---- the three-step strip --------------------------------------------------
+// WHAT THE WAIT LOOKS LIKE, not just what it is called. One word replacing
+// another said nothing about how far along the restart was: "Restarting…" on
+// its own could be the first second or the fiftieth, and the one question a
+// reader of a page-blocking dialog has is "is this getting anywhere". Three
+// named steps with a position in them answer it without a progress bar, which
+// would have to invent a percentage nothing here knows.
+//
+// The strip is derived from the stage rather than accumulated, so a REGRESSION
+// is free: `reduceRestart` sends `reconnecting` back to `quitting` when the old
+// process answers on the same version (the blip), and the strip simply un-ticks
+// — there is no "furthest reached" to unwind and nothing animates backwards.
+//
+// `back` and `gave-up` are not steps. `back` is every step done; `gave-up` is
+// the strip with no claim left to make, which is why it shows no live step at
+// all rather than freezing a spinner on the one it died in — a spinner held
+// forever is the promise the cap exists to stop making.
+
+/** The three waits, in order. Deliberately the STAGE names: the strip cannot
+ *  drift from the machine if it is indexed by it. */
+export const RESTART_STEP_STAGES = ["quitting", "restarting", "reconnecting"] as const;
+
+export type RestartStepStage = (typeof RESTART_STEP_STAGES)[number];
+
+/** ONE WORD, no ellipsis — the step's NAME, which is a thing rather than an
+ *  action in progress (the ellipsis belongs to `restartStageLabel`, which is
+ *  what the LIVE step says instead). Same vocabulary either way: the live word
+ *  is visibly the tense of the name next to it. */
+export function restartStepWord(stage: RestartStepStage): string {
+  if (stage === "quitting") return "Quit";
+  if (stage === "restarting") return "Restart";
+  return "Reconnect";
+}
+
+export type RestartStepState = "done" | "live" | "upcoming";
+
+export interface RestartStep {
+  stage: RestartStepStage;
+  /** The name when the step is done or still to come; the `…` label while it
+   *  is the one being waited on. */
+  label: string;
+  state: RestartStepState;
+}
+
+/**
+ * The strip for a stage. Total, so every stage has a strip even where nothing
+ * draws one (`ready`) — a partial function here would be a crash on a stage
+ * added later, in a dialog that cannot be closed.
+ *
+ *   quitting/restarting/reconnecting — everything before it done, it live,
+ *                                      everything after it upcoming;
+ *   back                            — all three done;
+ *   gave-up / ready                 — none done, none live. `gave-up` draws
+ *                                     that greyed (the restart did not take,
+ *                                     so no step may claim it did) and `ready`
+ *                                     draws no strip at all.
+ */
+export function restartSteps(stage: RestartStage): RestartStep[] {
+  const at = (RESTART_STEP_STAGES as readonly string[]).indexOf(stage);
+  return RESTART_STEP_STAGES.map((step, i) => {
+    let state: RestartStepState = "upcoming";
+    if (stage === "back") state = "done";
+    else if (at >= 0 && i < at) state = "done";
+    else if (at >= 0 && i === at) state = "live";
+    return { stage: step, label: state === "live" ? restartStageLabel(step) : restartStepWord(step), state };
+  });
+}
+
+/** WHEN "about 15 seconds" STOPS BEING TRUE. The body promises a number, and a
+ *  promise that has visibly run out is worse than no promise at all — so at 25s
+ *  the sentence stops repeating it and says so. Comfortably past the honest
+ *  case (a teardown plus a cold start of a signed bundle) and comfortably short
+ *  of `RESTART_GIVE_UP_MS`, so the reader is told twice before the cap fires. */
+export const RESTART_SLOW_MS = 25_000;
+
+/** Whether the wait has outrun the sentence's own estimate. `requestedAt` is
+ *  the press (shared verbatim across windows), so every window flips at the
+ *  same instant rather than at its own. */
+export function restartIsSlow(requestedAt: number | null, now: number): boolean {
+  if (requestedAt === null) return false;
+  return now - requestedAt >= RESTART_SLOW_MS;
+}

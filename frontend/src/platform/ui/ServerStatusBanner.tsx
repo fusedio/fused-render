@@ -44,6 +44,8 @@ import {
   bannerSurface,
   initialStatus,
   reduceProbe,
+  previewInstalledVersion,
+  previewRequestedAt,
   updateDialogMode,
   updateDialogPreview,
   UPDATE_DIALOG_KEY,
@@ -246,8 +248,13 @@ export default function ServerStatusBanner() {
         <UpdateDialog
           kind="restart"
           version={version}
-          installedVersion={installedVersion || version}
+          // A dev server has nothing newer on disk, so the preview invents the
+          // one disagreement the dialog is about — see `previewInstalledVersion`.
+          installedVersion={previewInstalledVersion(version, installedVersion)}
           stage={preview.stage}
+          // A pretend press, placed so the frozen face includes the one the
+          // stage name cannot reach — the overlong wait (`&slow=1`).
+          requestedAt={previewRequestedAt(preview.slow, Date.now())}
           onRestart={requestRestart}
         />
       );
@@ -266,6 +273,10 @@ export default function ServerStatusBanner() {
         installedVersion={installedVersion || update?.latest_version || version}
         stage={flow.stage}
         verifying={flow.verifying}
+        // The press instant, not this window's own clock: a window that LATCHED
+        // someone else's press must say "taking longer" at the same moment the
+        // window that made it does (D3).
+        requestedAt={flow.requestedAt}
         onRestart={requestRestart}
       />
     );

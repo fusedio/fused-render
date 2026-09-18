@@ -15,7 +15,12 @@
 // that component, and `restart-flow.ts` for the stages it shows once the button
 // is pressed. This table is unchanged by that: what a probe MEANS is the same
 // fact either way.
-import { restartInFlight, RESTART_STAGES, type RestartStage } from "@platform/lib/restart-flow";
+import {
+  restartInFlight,
+  RESTART_SLOW_MS,
+  RESTART_STAGES,
+  type RestartStage,
+} from "@platform/lib/restart-flow";
 
 export type ServerBanner =
   | "hidden"
@@ -51,6 +56,11 @@ export const UPDATE_DIALOG_KEY = "fused_update_modal";
 /** Which stage the RESTART preview is frozen at — `?update_modal=restart&
  *  stage=reconnecting`. Ignored by the refresh preview, which has no stages. */
 export const UPDATE_STAGE_PARAM = "stage";
+/** Freeze the restart preview PAST the 25s mark, so the "taking a little longer
+ *  than usual" sentence can be looked at without sitting through the wait —
+ *  `?update_modal=restart&stage=restarting&slow=1`. Dev-only, like the rest of
+ *  the preview: it only says how far back to place the pretend press. */
+export const UPDATE_SLOW_PARAM = "slow";
 
 /** The two things the preview flag can ask for. `"1"` is the original refresh
  *  preview and keeps its spelling so a bookmarked dev URL still works. */
@@ -120,17 +130,57 @@ export function updateDialogMode(
  *
  * An unknown or missing `stage` is `ready` — the face a real restart starts on,
  * so a typo shows the dialog rather than nothing.
+ *
+ * `slow` is the SEVENTH face: the in-flight body after `RESTART_SLOW_MS`, which
+ * is not a stage (the machine is still in `restarting`) and so cannot be reached
+ * by naming one. It is carried as a flag rather than as a stage for exactly that
+ * reason — inventing a stage for it here would put a face in the preview that
+ * the real machine can never be in.
  */
 export function updateDialogPreview(
   search: string,
   stored: string | null,
-): { kind: "refresh" } | { kind: "restart"; stage: RestartStage } | null {
+): { kind: "refresh" } | { kind: "restart"; stage: RestartStage; slow: boolean } | null {
   const value = previewValue(search, stored);
   if (value === null) return null;
   if (value === "1") return { kind: "refresh" };
-  const raw = new URLSearchParams(search).get(UPDATE_STAGE_PARAM);
+  const params = new URLSearchParams(search);
+  const raw = params.get(UPDATE_STAGE_PARAM);
   const known = (RESTART_STAGES as readonly string[]).includes(raw ?? "");
-  return { kind: "restart", stage: known ? (raw as RestartStage) : "ready" };
+  return {
+    kind: "restart",
+    stage: known ? (raw as RestartStage) : "ready",
+    slow: params.get(UPDATE_SLOW_PARAM) === "1",
+  };
+}
+
+/**
+ * THE VERSION THE PREVIEW PRETENDS IS WAITING. A dev server is serving the
+ * checkout's own version and has nothing newer on disk, so the restart dialog
+ * previewed there says "Closing v0.5.53 and starting v0.5.53" — which is not
+ * what any reader will ever see, and is the one sentence the whole flow turns
+ * on. So the preview invents the DISAGREEMENT, exactly as the refresh preview
+ * does and for the same reason: it is the only thing a dev machine cannot
+ * supply, and everything else on the dialog stays real.
+ *
+ * A genuine pending update wins outright — if the disk really is ahead, the
+ * preview shows the real number rather than a made-up one.
+ */
+export function previewInstalledVersion(version: string, installed: string): string {
+  if (installed && installed !== version) return installed;
+  const parts = version.split(".");
+  const patch = Number(parts[parts.length - 1]);
+  if (parts.length < 2 || !Number.isFinite(patch)) return version;
+  return [...parts.slice(0, -1), String(patch + 1)].join(".");
+}
+
+/** The pretend press instant a preview hands the dialog. `slow` places it far
+ *  enough back that the dialog's own clock reads the wait as overlong on the
+ *  FIRST paint — the preview shows a face, it does not make you wait 25s for
+ *  one — and a plain preview places it now, which freezes the ordinary
+ *  sentence for as long as the page is left open. */
+export function previewRequestedAt(slow: boolean, now: number): number {
+  return slow ? now - RESTART_SLOW_MS - 1_000 : now;
 }
 
 export function initialStatus(): StatusState {
