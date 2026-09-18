@@ -670,6 +670,51 @@ def test_an_index_written_without_a_depth_column_still_reads(tmp_path):
     assert sorted(e["rel"] for e in out["entries"]) == ["a", "top.txt"]
 
 
+def test_rel_depth_sql_stored_and_fallback_paths_agree(tmp_path):
+    """Fix 2 ("use the stored depth column" perf fix): `_rel_depth_sql`
+    computes `search_ranked`'s root-RELATIVE depth two ways — from the
+    branch's stored, ABSOLUTE `depth` column when `_src_cols` reports one
+    (`stored_depth - prefix_slashes + 1`), or the pre-existing
+    `length(rel) - length(replace(rel, '/', '')) + 1` slash-count expression
+    over `rel` itself for an index predating the column. Both expressions
+    must return the IDENTICAL relative depth for every row shape
+    `search_ranked` can produce: the root itself (`rel == ""`), a top-level
+    file, a deeply nested file, and a directory row — pinning both the `+1`
+    semantics and the constant-offset arithmetic against each other directly,
+    independent of `search_ranked`'s own row-inclusion policy (which never
+    actually surfaces the root as a hit)."""
+    import duckdb
+
+    from fused_render.index.query import _rel_depth_sql
+
+    root = canonical_root("/r")
+    prefix = root + "/"
+    prefix_slashes = prefix.count("/")
+
+    cases = [
+        ("", "root itself"),
+        ("top.txt", "top-level file"),
+        ("a/b/deep.txt", "deeply nested file"),
+        ("a", "directory row"),
+    ]
+    stored_expr = _rel_depth_sql({"depth"}, "rel_col", prefix_slashes)
+    fallback_expr = _rel_depth_sql(set(), "rel_col", prefix_slashes)
+    assert stored_expr != fallback_expr, "test would be vacuous otherwise"
+
+    con = duckdb.connect()
+    for rel, label in cases:
+        abs_path = prefix + rel
+        stored_depth = abs_path.count("/")
+        expected = rel.count("/") + 1
+        rel_escaped = rel.replace("'", "''")
+        d1, d2 = con.execute(
+            f"SELECT {stored_expr} AS d1, {fallback_expr} AS d2 FROM "
+            f"(SELECT '{rel_escaped}' AS rel_col, {stored_depth} AS depth)"
+        ).fetchone()
+        assert d1 == expected, (label, "stored path", d1, expected)
+        assert d2 == expected, (label, "fallback path", d2, expected)
+
+
 # -- search_ranked: filtering AND ranking, server-side -------------------------
 #
 # The home page used to fetch the whole corpus (20 MB, 164k rows, silently
@@ -785,13 +830,15 @@ def test_search_ranked_describes_the_files_source_only_once(tmp_path, monkeypatc
     `_depth_col` (used elsewhere, not by `search_ranked` any more — see the
     CORRECTION on D707 in DECISIONS.md) would have populated.
 
-    **CORRECTS D707's exact count for `search_ranked`**: this used to assert
-    2 DESCRIBEs (files, dirs). Since the depth `search_ranked` scores against
-    is now root-RELATIVE (computed straight from `rel`, not the stored
-    absolute `depth` column — see `search_ranked`'s `rel_depth` comment), the
-    dirs branch has no reason left to call `_src_cols`/`_depth_col` at all: it
-    has no `name` column to reuse either, so nothing about it is ever
-    DESCRIBEd. Only the files branch (for `_name_col`) still pays for one."""
+    **CORRECTS D707's exact count for `search_ranked`, then updated again**:
+    this originally asserted 2 DESCRIBEs (files, dirs), was corrected to 1
+    when relative depth moved to being computed straight from `rel` (so the
+    dirs branch had no column to probe for at all), and is back to 2 now that
+    `search_ranked` reads the stored, absolute `depth` column on BOTH sources
+    (the "use the stored depth column" perf fix — `_rel_depth_sql`) rather
+    than recomputing it from `rel`/`dir` on every row: the dirs branch still
+    has no `name` column to reuse, but it does now have a `depth` column
+    worth asking about, so each source pays for exactly one DESCRIBE."""
     cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/beta.txt"],
                  dirs=["/r/sub"])
     describes = []
@@ -816,7 +863,7 @@ def test_search_ranked_describes_the_files_source_only_once(tmp_path, monkeypatc
     monkeypatch.setattr(real_duckdb, "connect", spying_connect)
     out = search_ranked(cfg, "/r", "alpha")
     assert out["hits"], out
-    assert len(describes) == 1, describes
+    assert len(describes) == 2, describes
 
 
 def test_search_ranked_schema_lookup_is_cached_across_calls_until_compaction(
@@ -852,12 +899,12 @@ def test_search_ranked_schema_lookup_is_cached_across_calls_until_compaction(
 
     out1 = search_ranked(cfg, "/r", "alpha")
     assert out1["hits"], out1
-    assert len(describes) == 1, describes
+    assert len(describes) == 2, describes
 
     # A second call, different query, SAME generation: no new DESCRIBE.
     out2 = search_ranked(cfg, "/r", "beta")
     assert out2["hits"], out2
-    assert len(describes) == 1, describes
+    assert len(describes) == 2, describes
 
     # A third call via search_under: its files branch reuses the same cache
     # entry `search_ranked` already populated (no new DESCRIBE for it), but
@@ -879,9 +926,14 @@ def test_search_ranked_schema_lookup_is_cached_across_calls_until_compaction(
     sink2.close()
     compact(cfg, root, shards2, pa, pq)
 
+    # Both sources now get probed by `search_ranked` itself (the "use the
+    # stored depth column" perf fix — `_rel_depth_sql` — reads `dcols` too,
+    # not just `fcols`), so a new generation costs one fresh DESCRIBE per
+    # source: 2 already paid (files, dirs) + 2 more here (files-gen2,
+    # dirs-gen2) = 4.
     out3 = search_ranked(cfg, "/r", "gamma")
     assert out3["hits"], out3
-    assert len(describes) == 3, describes
+    assert len(describes) == 4, describes
 
 
 # -- cancellation: a `token` handed to search_ranked -------------------------

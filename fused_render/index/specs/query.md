@@ -397,7 +397,30 @@ When `ranked=False`, or the pattern reduces to zero literal runs, `_glob_sql`
 computes no scoring apparatus at all — not "score then discard", and that
 includes no `tier` either — and results come back in the original `depth ASC,
 lower(rel) ASC, rel ASC` order, matching `search_under`'s own unranked branch
-exactly.
+exactly. (`_rank_sql`'s own unscored branch orders `depth ASC, rel ASC` —
+without the `lower(rel)` step — and this divergence from `_glob_sql` is
+deliberate, not an oversight: `test_glob_unranked_reproduces_the_old_depth_then_alpha_order`
+and `test_glob_unranked_sql_has_no_scoring_apparatus` pin `_glob_sql`'s
+current order as the exact byte-for-byte behavior glob mode always had.)
+
+**`depth` itself is read from the stored, ABSOLUTE `depth` column when
+available, not recomputed per row.** Both the `files` and `dirs` schemas store
+`depth` as the full path/dir string's own slash count at scan time
+(store.py's `schemas()`) — never relative to any search root. `search_ranked`
+needs a ROOT-RELATIVE depth per row, which `_rel_depth_sql(cols, rel_expr,
+prefix_slashes)` derives as a constant offset, `stored_depth - prefix_slashes
++ 1` (`prefix_slashes = prefix.count("/")`, computed once per request in
+Python), rather than the per-row `length(rel) - length(replace(rel, '/', ''))
++ 1` slash-count expression it replaces — a fixed-arithmetic column read
+instead of a string walk over every candidate row. Falls back to that same
+slash-count expression, run over the branch's own `rel`-producing SQL text,
+for an index predating the `depth` column (the same `_name_col`/`_depth_col`
+capability-probe pattern used elsewhere in this file). Both the `files` and
+`dirs` branches of `inner`'s UNION probe their own source's columns for this
+now, not just `files` (which previously only probed for `_name_col` — `dirs`
+has no `name` column to reuse). Measured on a real 745k-file index: 100ms ->
+27ms over a large matched set (see DECISIONS.md).
+
 
 ## 4. Partition pruning
 
