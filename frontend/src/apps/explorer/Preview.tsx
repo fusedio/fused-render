@@ -25,7 +25,7 @@ import {
 } from "@platform/lib/api";
 import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
 import { captureAppPreview, cropRect } from "@platform/lib/appShot";
-import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, embedUrlForFsPath, replaceSearch, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
+import { confirmLeave, navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, embedUrlForFsPath, replaceSearch, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import {
@@ -544,23 +544,19 @@ function usePreviewFileMenu(
   }, [fsPath, parent, stat.is_dir]);
 
   // "Set Current View as Preview" (Akshil, 2026-08-27): photograph what the
-  // frame is showing and write it as the folder's preview.png. Same capture
-  // the .fused export bakes in (appShot.captureAppPreview, tab capture cropped
-  // to the shown frame), so the same one-time share prompt.
+  // frame is showing and write it as the folder's preview.png — the ONE
+  // place a preview is photographed (appShot.captureAppPreview; Share no
+  // longer shoots implicitly). A native screen shot, so on macOS the first
+  // one raises the Screen Recording prompt and comes back empty.
   //
-  // ORDER: the share prompt needs the click's own transient activation, which
-  // Chrome expires a few seconds out. The one thing awaited before it is a stat
-  // of preview.png (milliseconds) — and when that says a still already exists,
-  // the capture moves to the CONFIRM's click instead (Akshil: confirm before
-  // overwriting), which is a fresh activation of its own. Nothing is written
-  // until a frame is in hand: a dismissed prompt leaves the old file alone.
+  // ORDER: when a still already exists the capture moves to the CONFIRM's
+  // click (Akshil: confirm before overwriting). Nothing is written until a
+  // frame is in hand: a refused shot leaves the old file alone.
   const shootPreview = async (replacing: boolean) => {
     const name = basename(parent);
-    // THE CURRENT VIEW OR NOTHING. appShot's export path falls back to a fresh
-    // full-viewport reload of the entry when the frame can't be cropped; that
-    // is not the view the user is looking at, so here it is refused up front
-    // (and `stage: false` refuses it again inside) rather than saved under a
-    // "Preview saved" toast (Bugbot, 2026-08-27).
+    // THE CURRENT VIEW OR NOTHING: a frame that can't be cropped is refused
+    // up front rather than saved under a "Preview saved" toast (Bugbot,
+    // 2026-08-27).
     const frame = document.querySelector(".preview-frame.is-shown");
     if (!cropRect(frame)) {
       notify({
@@ -569,7 +565,7 @@ function usePreviewFileMenu(
       });
       return;
     }
-    const blob = await captureAppPreview(fsPath, frame, { stage: false });
+    const blob = await captureAppPreview(frame);
     if (!blob) {
       notify({ title: "Preview not captured — nothing was changed", tone: "info" });
       return;
@@ -1137,7 +1133,7 @@ function TemplatePreview({
   // Also the one place that records a close/reopen into the session's shared
   // hidden flag (`lib/side-hidden-store.ts`) — a close here must be visible to
   // the folder pane's later mounts too, same store either surface writes.
-  const setSide = (next: string | null) => {
+  const applySide = (next: string | null) => {
     setSideHidden(next === null);
     // A user click is always real, URL-worthy state now, whichever way it
     // went — the flag-only closed state `sideFromHiddenFlag` guards against
@@ -1153,6 +1149,30 @@ function TemplatePreview({
     );
     replaceSearch(location.pathname + (search ? "?" + search : ""));
     setSideReq({ open: next !== null, mode: next });
+  };
+  /**
+   * …AND TAKING THE CLAUDE PANEL OFF SCREEN ASKS FIRST (Bugbot review of
+   * caef75eb1, MED-3).
+   *
+   * The panel's ✕ and a switch to another companion both REPLACE what is on
+   * screen without a navigation — `replaceSearch` is deliberately unguarded, it
+   * is the in-place param sync — so the composer inside simply unmounted, and an
+   * unsent message was saved without anybody being told. That is the one door
+   * this design hands the reader: the same `confirmLeave()` the chat's own Back
+   * and session-switch ask (platform/lib/router.ts), and a "stay" leaves the
+   * panel exactly where it was.
+   *
+   * Only when CLAUDE is what is going away: every other companion has nothing to
+   * lose, and a question in front of a git panel's ✕ is a dialog nobody earned.
+   */
+  const setSide = (next: string | null) => {
+    if (activeSide !== "claude" || next === "claude") {
+      applySide(next);
+      return;
+    }
+    void confirmLeave().then((ok) => {
+      if (ok) applySide(next);
+    });
   };
   const toggleSide = () => {
     if (activeSide) setSide(null);
@@ -1942,7 +1962,7 @@ function TemplatePreview({
       {!stat.is_dir && fsPath.toLowerCase().endsWith(".fused") && (
         <CloneAppFileButton fsPath={fsPath} />
       )}
-      {/* The app-level actions — App Doctor, Download app (the .fused export,
+      {/* The app-level actions — App Doctor, Share (public link or .fused file,
           SPEC §43 AF-4), Open as project, Open in embed, MCP config — are the
           kebab AFTER the mode control (EntryActionsMenu, below). They stood here
           as bordered buttons of their own for a while; the argument for the
@@ -2432,15 +2452,6 @@ function TemplatePreview({
                    (ChatMount's `recap`). */
                 {...(IS_PREVIEW ? { preview: true, noFocus: true } : { recap: true })}
                 {...(nativeAsk && claudeAskRoute !== "content" ? { initialAsk: nativeAsk } : {})}
-                /* THE EXPLORER SIDE PANEL'S OWN CUT: this sidebar is a
-                   companion beside a file the reader is already looking at,
-                   not a place to browse unstarted work — so its "Recent
-                   chats" drops the Upcoming lane (drafts and scheduled-for-
-                   later tasks alike, ChatMount's `hideUpcoming`). The content
-                   pane's OWN `_mode=claude` render (above, the full-page
-                   chat) does not carry this: it is the primary chat the
-                   reader opened onto this file, exactly like the landing. */
-                hideUpcoming
               />
             }
             onSelect={setSide}

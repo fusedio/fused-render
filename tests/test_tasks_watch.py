@@ -289,12 +289,18 @@ def test_changes_endpoint_returns_only_the_moved_rows(claude_home):
         assert r["generation"] == gen + 1
         assert [t["key"] for t in r["rows"]] == [SID]
         assert r["gone"] == []
+        # ...and the drafts half of the same answer: the key that moved holds
+        # no draft, so it is reported gone rather than left unmentioned (see
+        # `routers/tasks._draft_changes` — this list is noisy by construction).
+        assert r["drafts"] == {"changed": [], "gone": [SID]}
         # Nothing since: an empty answer, same generation.
+        empty = {"generation": gen + 1, "rows": [], "gone": [],
+                 "drafts": {"changed": [], "gone": []}}
         r = client.get(f"/api/tasks/changes?since={gen + 1}&wait=0").json()
-        assert r == {"generation": gen + 1, "rows": [], "gone": []}
+        assert r == empty
         # Handshake: the generation, nothing else, no wait.
         r = client.get("/api/tasks/changes?since=-1&wait=0").json()
-        assert r == {"generation": gen + 1, "rows": [], "gone": []}
+        assert r == empty
 
 
 def test_changes_endpoint_reports_a_deleted_task_as_gone(claude_home):

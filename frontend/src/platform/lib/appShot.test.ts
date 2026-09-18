@@ -1,15 +1,13 @@
-// The one thing about the export capture that no screenshot and no unit call
-// can show, because it is a promise made across files: the crop source must
-// be PAINTED pixels. (The capture is a native screen shot now — an earlier
-// tab-capture version also pinned prompt ORDER here, against the click's
-// transient user activation; a native shot raises no prompt, so that
-// constraint and its tests are gone.)
+// The promises around the app preview capture that no unit call can show,
+// because they are made across files. `bun test` has no DOM, so there is no
+// screen to shoot and no iframe to load — source assertions, like
+// ClaudeHealthStrip's in claude-health.test.ts, pin what a refactor has to
+// walk past.
 //
-// Source assertions, like ClaudeHealthStrip's in claude-health.test.ts and the
-// card's in tests/test_pane_no_autofocus.py: `bun test` has no DOM, so there is
-// no screen to shoot and no iframe to load — but the failure below is silent
-// in the product (a thumbnail that is a grey box) and permanent in the
-// artifact, so it is worth pinning where a refactor has to walk past it.
+// The capture is EXPLICIT ONLY: the explorer's "Set Current View as Preview".
+// Share used to shoot implicitly for a folder without a preview.png (D396)
+// and that is retired — appShot.ts's header has the why. The failures pinned
+// here are silent in the product and permanent in the artifact.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -18,70 +16,53 @@ import { expect, test } from "bun:test";
 const read = (...p: string[]) => readFileSync(join(import.meta.dir, ...p), "utf8");
 
 const SHOT = read("appShot.ts");
-// platform/ui, not apps/builder: the card moved there when a third app began
-// drawing it (#765) and this path did not move with it, so the read threw
-// ENOENT and took the whole file down with it before a single test ran.
-const CARD = read("..", "ui", "AppPreviewCard.tsx");
-const APPS = read("..", "..", "apps", "builder", "Apps.tsx");
+const SHARE = read("share-app.ts");
+const MODAL = read("..", "ui", "ShareAppModal.tsx");
 const PREVIEW = read("..", "..", "apps", "explorer", "Preview.tsx");
+
+// -- share never photographs the screen -------------------------------------
+
+// A screen shot at share time depended on the Screen Recording grant, the
+// window sitting on one display, zoom at 100% and overlay UI hiding in time;
+// each failed at least once and baked a wrong picture into a .fused or a
+// public link's landing page. App Doctor's `preview` check owns the missing
+// thumbnail now. Neither share route may reach for the capture again.
+test("neither share route captures a preview", () => {
+  expect(SHARE).not.toContain("captureAppPreview");
+  expect(SHARE).not.toContain("captureEl");
+  expect(MODAL).not.toContain("captureAppPreview");
+  expect(MODAL).not.toContain('from "@platform/lib/appShot"');
+  // The file route is the plain disk write — with the caller's own display
+  // name, which AppPage.tsx and EntryActionsMenu.tsx version-suffix so a v7
+  // export never collides with a live export in Downloads.
+  expect(MODAL).toContain("saveAppFileToDisk(file.path, file.name)");
+  // publishShare sends the path alone; the server reads the folder's still.
+  const publish = SHARE.slice(SHARE.indexOf("export async function publishShare("));
+  expect(publish.slice(0, publish.indexOf("\n}"))).not.toContain("preview");
+});
 
 // -- the crop source must be painted pixels ---------------------------------
 
-// A card thumb whose live iframe has not loaded is an empty grey box, and the
-// grid starts only two previews at a time (createPreviewStartQueue(2)), so that
-// is the COMMON state of a card rather than a rare one. Cropping it bakes the
-// empty box into the .fused as its permanent thumbnail — a valid PNG, so
-// nothing server-side can catch it. cropRect only knows geometry, so each
-// caller promises paintedness instead.
+// cropRect only knows geometry; whether the element shows the app is the
+// caller's promise. No readiness guess of its own: a check here that looked
+// like one would let a caller stop making the promise.
 test("cropRect judges geometry only — paintedness is the caller's promise", () => {
   const fn = SHOT.slice(SHOT.indexOf("function cropRect("));
   const body = fn.slice(0, fn.indexOf("\n}"));
   expect(body).toContain("getBoundingClientRect()");
-  // No readiness guess of its own: a rect cannot answer it, and a check here
-  // that looked like one would let a caller stop making the promise.
-  expect(body).not.toContain("data-capture-ready");
   expect(body).not.toContain("complete");
 });
 
-test("the card offers its thumb only once the body iframe has loaded", () => {
-  // `bodyLive`, not `liveReady`: liveReady is the hover crossfade's flag and is
-  // reset on every mouseenter, and the export chip is only reachable while
-  // hovering — gating on it would gate on a flag the hover just cleared.
-  expect(CARD).toContain("exportAppFile(app, bodyLive ? thumbRef.current : null)");
-  expect(CARD).toContain("setBodyLive(true)");
-  // Set on the BODY branch's load (the branch that renders when there is no
-  // still), which is the only frame the capture ever crops.
-  const bodyBranch = CARD.slice(CARD.indexOf(") : liveSrc && nearViewport && liveStarted ? ("));
-  expect(bodyBranch).toContain("setBodyLive(true)");
-});
-
-test("the context menu finds the thumb by the card's paintedness attribute", () => {
-  // Apps.tsx opens the menu and has no access to the card's state, so the
-  // promise crosses as one attribute — same posture as the preview pane's
-  // data-fused-annotate-target.
-  expect(CARD).toContain('data-capture-ready={bodyLive ? "" : undefined}');
-  expect(APPS).toContain('".app-pcard-thumb[data-capture-ready]"');
-  // Never the bare selector: that is the version that crops empty boxes.
-  expect(APPS).not.toContain('querySelector(".app-pcard-thumb")');
+test("captureAppPreview photographs the offered element or nothing — no stage", () => {
+  const fn = SHOT.slice(SHOT.indexOf("export async function captureAppPreview("));
+  const body = fn.slice(0, fn.indexOf("\n}"));
+  expect(body).toContain("cropRect(captureEl)");
+  expect(body).not.toContain("createElement(\"iframe\")");
+  expect(body).not.toContain("appendChild");
 });
 
 test("the preview header crops the SHOWN frame, which is the painted one", () => {
   // `.is-shown` rides `shown`, which the frame swap sets only once that frame
-  // paints (see the data-fused-annotate-target comment beside it) — so it
-  // satisfies the same contract without needing the card's attribute.
+  // paints (see the data-fused-annotate-target comment beside it).
   expect(PREVIEW).toContain('document.querySelector(".preview-frame.is-shown")');
-});
-
-// -- the export's own display name must reach the disk write ----------------
-
-// AppPage.tsx and EntryActionsMenu.tsx both compute a version-suffixed
-// `exportName` (`${name}-${versionLabel}`) specifically so a v7 snapshot
-// export never collides with a live export in Downloads. That name has
-// nowhere to go once it leaves this function's own call to
-// saveAppFileToDisk — losing it here silently makes every export land under
-// the app folder's own basename instead.
-test("exportAppFile threads the caller's own display name into the disk write", () => {
-  const fn = SHOT.slice(SHOT.indexOf("export async function exportAppFile("));
-  const body = fn.slice(0, fn.indexOf("\n}"));
-  expect(body).toContain("saveAppFileToDisk(app.path, app.name, preview)");
 });

@@ -1,5 +1,5 @@
-// The small status dot beside the "App Doctor" button on both surfaces
-// (shell/AppPage.tsx header, apps/explorer/Preview.tsx topbar): coloured by
+// The small status dot beside "App Doctor" on both surfaces (the shell
+// AppPage.tsx tab trigger, the explorer EntryActionsMenu.tsx button): coloured by
 // the worst FAILING severity in the report (appdoctor-lib.ts's
 // `worstSeverity` — the one reduction, not reimplemented here), muted/neutral
 // while unknown or clean. Colour is never the only carrier: `title` and

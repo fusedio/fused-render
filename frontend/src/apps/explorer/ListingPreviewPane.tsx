@@ -196,14 +196,6 @@ export default function ListingPreviewPane({
             // site like Preview's two. `noFocus` is about the keyboard staying
             // on the listing, not about the chat being display-only.
             recap
-            // THE EXPLORER SIDE PANEL'S OWN CUT (ChatMount `hideUpcoming`):
-            // this pane is a companion beside the folder's own listing, not a
-            // place to browse unstarted work, so its "Recent chats" drops the
-            // Upcoming lane — drafts and scheduled-for-later tasks alike. Same
-            // rule Preview.tsx's `?_side=claude` sidebar takes, for the same
-            // reason; the pair is what "the explorer's Claude side panel"
-            // means everywhere else this design talks about one host.
-            hideUpcoming
             {...(initialAsk ? { initialAsk } : {})}
           />
         ) : (

@@ -2245,10 +2245,6 @@ export async function downloadTemplatesExport(names: string[]): Promise<void> {
   }
 }
 
-// Download an app folder as a single `.fused` app file (SPEC §43, D385).
-// fetch + blob rather than a bare <a download>, same reason as the templates
-// export above: a non-2xx JSON error (not an app, over
-// budget) surfaces to the caller instead of saving as a corrupt file.
 // The exported card's thumbnail: the preview.png INSIDE the .fused at `path`,
 // served as bytes by a single-member zip read (never an extraction). 404s when
 // the file ships without one — the card's onError fallback owns that case.
@@ -2256,50 +2252,11 @@ export function appfilePreviewUrl(path: string): string {
   return "/api/appfile/preview?path=" + encodeURIComponent(path);
 }
 
-export async function downloadAppFile(
-  path: string,
-  name: string,
-  // Optional capture of the app to bake into the .fused as its preview.png
-  // (D396). The server only uses it when the folder has no authored one.
-  preview?: Blob,
-): Promise<void> {
-  let res: Response;
-  if (preview) {
-    const form = new FormData();
-    form.set("path", path);
-    form.set("preview", preview, "preview.png");
-    res = await fetch("/api/appfile/export", {
-      method: "POST",
-      headers: { "X-Fused": "1" },
-      body: form,
-    });
-  } else {
-    res = await fetch("/api/appfile/export?path=" + encodeURIComponent(path));
-  }
-  if (!res.ok) {
-    let message = `export failed (${res.status})`;
-    try {
-      const body = await res.json();
-      if (body && typeof body.error === "string") message = body.error;
-    } catch {
-      /* non-JSON error body — keep the status-based message */
-    }
-    throw new Error(message);
-  }
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  try {
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = name + ".fused";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  } finally {
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
-  }
-}
-
+// The `.fused` app file export (SPEC §43, D385). Once a browser blob download
+// (`downloadAppFile`, GET /api/appfile/export); every caller now goes through
+// the share sheet, and the sheet needs the real path back, so the server-side
+// save below is the one client of the export route left.
+//
 // Writes the `.fused` straight to the platform Downloads folder — server
 // side, not a browser blob download — and answers the real absolute path it
 // landed at. This is what makes the export immediately searchable: the
@@ -2313,12 +2270,10 @@ export async function saveAppFileToDisk(
   // beside a live export in Downloads is never ambiguous. Falls back to the
   // app folder's own name server-side when omitted or blank.
   name?: string,
-  preview?: Blob,
 ): Promise<string> {
   const form = new FormData();
   form.set("path", path);
   if (name) form.set("name", name);
-  if (preview) form.set("preview", preview, "preview.png");
   const res = await fetch("/api/appfile/export/save", {
     method: "POST",
     headers: { "X-Fused": "1" },
@@ -2706,8 +2661,12 @@ export interface AppCheckFinding {
   path: string;
   /** 0 for a finding about the folder rather than a line. */
   line: number;
-  /** Already masked server-side when it came off a secret — safe to render. */
+  /** Already masked server-side when it came off a secret — safe to render.
+   *  For a model-backed row (`cross-browser`) this is a plain-language
+   *  sentence saying what a visitor will see go wrong, not a source line. */
   excerpt: string;
+  /** Model-backed rows only: one plain sentence saying what to change. */
+  fix?: string;
 }
 
 export interface AppDoctorTask {
@@ -2730,6 +2689,12 @@ export interface AppCheck {
    *  row (or, for "Fix all", one covering every failing row at once, still
    *  attached the same way a stored prompt is: by which check id it names). */
   task: AppDoctorTask | null;
+  /** A row a person runs by pressing its own Check button (`runAppDoctorOnDemand`)
+   *  rather than one the doctor answers on every GET — today `cross-browser`,
+   *  a Sonnet read of the view files cached on their checksum
+   *  (fused_render/app_doctor_ai.py). `state: "unrun"` only ever appears on
+   *  one of these: never run, or the app changed since. */
+  ondemand: boolean;
 }
 
 export interface AppDoctorReport {
@@ -2754,6 +2719,24 @@ export function getAppDoctor(path: string): Promise<AppDoctorReport> {
 
 export interface AppDoctorFixResult extends NewAppResult {
   check: string;
+}
+
+/** RUN one on-demand row now (`check.ondemand`) and get the refreshed row
+ *  back — the server caches the verdict on the app's content, so until the
+ *  view files change the next GET draws this same row for free. Blocks for
+ *  the model call (seconds). 502 with one sentence when the model could not
+ *  answer; the previous verdict, if any, stays. */
+export function runAppDoctorOnDemand(
+  path: string,
+  check: string,
+  /** Re-check: ask again although the cached verdict still matches the files. */
+  force = false,
+): Promise<{ path: string; check: AppCheck }> {
+  return postJson<{ path: string; check: AppCheck }>("/api/apps/doctor/run", {
+    path,
+    check,
+    force,
+  });
 }
 
 // Create the App Doctor FIX task for ONE row — its prompt invokes the
@@ -5480,17 +5463,14 @@ export function scheduleMessage(body: {
   // delete the client made separately could be the half that failed, leaving a
   // draft row beside the task it had already become.
   draft_id?: string;
-  // THE CHAT DRAFT THIS TASK WAS TYPED IN, when the card was opened from the
-  // composer's Schedule button (`new:<file>` for a chat with no session yet, a
-  // session id otherwise). The server deletes it as part of creating the task.
+  // THE CHAT RECORD THIS TASK IS, when the card was editing one (`new:<file>`
+  // for a chat with no session yet, a session id otherwise). The server deletes
+  // it as part of creating the task and moves its TASK number onto the entry —
+  // `draft_id`'s twin for the other kind of record (contract §5).
   //
-  // NOT THE SAME THING AS `draft_id`, and not covered by `session_id` either:
-  // the hop's first autosave normally moves the chat draft onto the task draft,
-  // but Schedule pressed inside that 600 ms debounce mints no task draft at all
-  // — and a brand-new chat has no session id to travel in the other field. So
-  // the origin key rides here, and the composer's copy goes wherever this task
-  // came from (Bugbot, PR #1118).
-  from_chat_key?: string;
+  // NOT covered by `session_id`: a brand-new chat has no session id at all, and
+  // its record is keyed `new:<file>` precisely because of it.
+  draft_key?: string;
 }): Promise<{ entry: ScheduledMessage }> {
   return postJson<{ entry: ScheduledMessage }>("/api/schedule", body);
 }

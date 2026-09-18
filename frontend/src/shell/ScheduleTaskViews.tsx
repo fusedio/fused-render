@@ -49,6 +49,14 @@ import { useNow } from "@platform/lib/clock";
 import { EraseTaskModal } from "./EraseTaskModal";
 import { cardTitleLine, useTaskCardTitleMode } from "./task-card-title-flag";
 import { canRunDraft, runDraftNow, runRowDraftNow } from "./draft-run";
+import {
+  deleteChatDraft,
+  deleteTaskDraft,
+  peekDraftSyncer,
+  taskDraftKey,
+} from "@platform/lib/drafts";
+import { announceTasksChanged } from "@platform/lib/tasksChanged";
+import { announceDraftsGone, dropListingKeys, restoreListingRows } from "./tasksPulse";
 import type { Task, TaskMessage } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { useMarginWheel } from "./useMarginWheel";
@@ -64,6 +72,7 @@ import {
   cancelIntent,
   carryMarkToHeld,
   draftRing,
+  draftHeldByPeek,
   draftTag,
   dropAction,
   dropLanes,
@@ -73,6 +82,8 @@ import {
   firstLine,
   groupByColumn,
   heldMessages,
+  hasDraft,
+  isChatDraftTask,
   isDraftTask,
   peekOpenable,
   isDraggable,
@@ -1524,6 +1535,97 @@ async function performSkip(task: Task): Promise<QueueOverride> {
 }
 
 /**
+ * DISCARD ONE DRAFT — the trash on a draft row, in every view. True if the
+ * draft is actually gone.
+ *
+ * A draft is text nobody has sent, so there is no confirm step: the New task
+ * modal's own Discard has never had one either, and a dialog over an unfinished
+ * sentence is a ceremony about nothing (design.md, PR C).
+ *
+ * IT IS THREE LINES NOW, and the two mechanisms it used to need are gone with
+ * the design that made them necessary (design "one record", §2). It used to have
+ * to reach whatever else on the page was WRITING this draft — a composer mounted
+ * on the same key, the New task modal open on this very form — stand its autosave
+ * down, wait for its in-flight PUT to settle, and undo all of that if the DELETE
+ * then failed. A version does the ordering instead: the DELETE states the version
+ * it read, and a write still in the air states an older one, so it is refused
+ * rather than landing after and putting the row back. Nothing has to be told, so
+ * nothing has to be untold.
+ *
+ * `dropListingKeys` takes the row off every surface at once — the List, the
+ * Board, the Cards wall and the chat's Recent list all read one held listing —
+ * and `restoreListingRows` puts it back when the server refuses. The other
+ * writer, if there is one, hears the delete through the change feed
+ * (`tasksPulse.onDraftChange`) within a second.
+ *
+ * EXPORTED because four surfaces press it — the List row, the Board card, the
+ * Cards wall and the chat's Recent list — so "the draft is gone" cannot come to
+ * mean four different sequences.
+ */
+export async function discardDraft(task: Task): Promise<boolean> {
+  // THE CHIP CASE, and it is the one that does NOT drop a row (design §5). An
+  // ordinary task whose composer is holding unsent words wears the Draft on the
+  // List, the Board and the Cards wall — and on the wall it is the ONLY way a
+  // draft is ever drawn, because a card is a transcript and a draft row has no
+  // session (tasks-lib.cardsForTasks). Discarding it throws the words away and
+  // leaves the task exactly where it is, so the optimistic drop below would be
+  // a lie: the row stays and loses its chip on the next listing.
+  if (!isDraftTask(task)) {
+    if (!task.draft || !task.session_id) return false;
+    const out = await dropDraft(task.session_id, "");
+    if (out) announceDraftsGone([task.session_id]);
+    announceTasksChanged();
+    return out;
+  }
+  const chat = isChatDraftTask(task);
+  // A chat draft's row key IS the key it is filed under (`new:<file>`); a task
+  // draft's row is `draft:<id>` and the id is what the routes take.
+  const id = chat ? "" : task.draft_id;
+  dropListingKeys([task.key]);
+  // A task row with no `draft_id` is a row this build cannot delete — nothing is
+  // sent, and the row goes back rather than silently vanishing.
+  const out = chat || id ? await dropDraft(chat ? task.key : "", chat ? "" : id ?? "") : false;
+  if (out) announceDraftsGone([chat ? task.key : taskDraftKey(id ?? "")]);
+  else restoreListingRows([task]);
+  announceTasksChanged();
+  return out;
+}
+
+/**
+ * THE DELETE ITSELF, and WHO makes it.
+ *
+ * A draft this document is WRITING has one writer — the syncer for its key —
+ * and the trash has to go through it rather than around it: a DELETE fired
+ * beside a composer's pending PUT is the pair that ordering by hand never got
+ * right, and saying "this record should not exist" to the thing that owns the
+ * order is the whole of the fix. `handoff` then waits for the server to agree,
+ * so the row is restored on a refusal exactly as it was before.
+ *
+ * A draft NOBODY on this page is writing — the ordinary case for the List, a
+ * row for a chat in another window — has no syncer, and the plain conditional
+ * DELETE this has always made is right for it.
+ */
+async function dropDraft(chatKey: string, taskId: string): Promise<boolean> {
+  const key = chatKey || (taskId ? taskDraftKey(taskId) : "");
+  if (!key) return false;
+  const sync = peekDraftSyncer(key);
+  if (sync) {
+    sync.markDeleted();
+    // …AND THE ANSWER IS THE DELETE'S, NOT THE DESIRED STATE'S (`removed`).
+    // `ok` asks "does the server hold what this page last asked for", and a
+    // keystroke arriving in the editor behind this list while the DELETE is on
+    // the wire moves that state on to a PUT — so `ok` could say the trash had
+    // failed although the record the reader pressed it on was gone, and the row
+    // came back.
+    return (await sync.handoff()).removed;
+  }
+  const out = chatKey
+    ? await deleteChatDraft(chatKey)
+    : await deleteTaskDraft(taskId);
+  return out.ok;
+}
+
+/**
  * Take one task back out of Archive, and return the sentence to show for it.
  *
  * THE SENTENCE IS THE POINT, and it is why this is a function rather than a call.
@@ -2586,7 +2688,9 @@ function TaskNode({
   const outcome = outcomeTag(task);
   // The `Draft` chip — this task's unsent composer text, or the row's own
   // unfinished form. tasks-lib.draftTag owns both cases and the tooltip.
-  const draft = draftTag(task);
+  // Hidden while the side peek holds this row's draft (tasks-lib.draftHeldByPeek).
+  const heldInPeek = draftHeldByPeek(task, peeked);
+  const draft = heldInPeek ? null : draftTag(task);
   // Run now / Re-run. tasks-lib decides all of it — whether it is offered,
   // which message it acts on, and WHICH CALL that is. The run-now half comes
   // from the same function the drag asks (runNowIntent), so the button and the
@@ -2645,6 +2749,10 @@ function TaskNode({
   // holds that task, and lifting the state to the List would hand every row a
   // prop it spends once.
   const [erasing, setErasing] = useState(false);
+  // The discard in flight. Only to disarm a second press — the row itself is
+  // already off the page by then (`dropListingKeys`), so there is nothing here
+  // to spin or grey out for longer than the press.
+  const [discarding, setDiscarding] = useState(false);
   // WHETHER THE STRIP HIDES THE SUFFIX MARKS (Akshil, 2026-09-16: "show the
   // icon only when the overlay hides it"). Measured, never guessed from a
   // width (see responsive-collision rule): on pointer-enter, the inline
@@ -3256,7 +3364,7 @@ function TaskNode({
             failed={ringFailed(task)}
             unread={unread > 0}
             count={unread}
-            draftHeld={draftRing(task)}
+            draftHeld={draftRing(task) && !heldInPeek}
           />
           {/* The Board's drag onto Archive — or out of it — as a press. ONE
               button in this slot, never two: a task is either put away or it is
@@ -3738,6 +3846,41 @@ function TaskNode({
             at and reachable by keyboard (tasks.css), and `--delete` is the only
             thing that reddens it. The press stops here: the row's own activate
             would raise the missing-folder toast over the dialog. */}
+        {/* DISCARD — the one action a draft row has (design.md, PR C).
+            Until now an Upcoming draft could only be got rid of by opening the
+            form it stands for and pressing Discard inside it, which is a modal
+            round trip to throw away a sentence; and a never-sent chat could not
+            be got rid of at all, because its row opens a composer rather than a
+            form. So the row grows the gesture it was missing.
+
+            THE SAME BUTTON AS THE MISSING-FOLDER TRASH BELOW, deliberately and
+            to the class: same glyph, same size, same silence until the row is
+            pointed at, same red family (`.tasks-act--delete`, tasks.css). Two
+            trashes on one page that looked even slightly different would be two
+            things to learn; they are one thing — "this row goes" — under two
+            conditions that cannot both be true at once, which is why this one
+            stands down when the folder is gone (that row's trash is the
+            stronger claim, and it opens a dialog).
+
+            NO CONFIRM. A draft is unsent text and the modal's own Discard has
+            never asked either; see `discardDraft`. */}
+        {hasDraft(task) && !folderMissing && !heldInPeek && (
+          <button
+            type="button"
+            className="tasks-act tasks-act--delete"
+            aria-label={`Discard draft ${task.task_id}`}
+            title="Discard draft"
+            data-hint="Discard draft"
+            disabled={discarding}
+            onClick={(e) => {
+              e.stopPropagation();
+              setDiscarding(true);
+              void discardDraft(task).finally(() => setDiscarding(false));
+            }}
+          >
+            {ICON_TRASH}
+          </button>
+        )}
         {folderMissing && (
           <button
             type="button"
@@ -3934,7 +4077,7 @@ function TaskNode({
               conversation whose composer is holding something — or a New task
               form bound to it, which is the same question to the reader and a
               different place to send them (`pressDraftLine`). */}
-          {task.draft && (
+          {task.draft && !heldInPeek && (
             <div
               className="tasks-msg"
               role="button"
@@ -5121,7 +5264,9 @@ function TaskCard({
   const outcome = outcomeTag(task);
   // …and the `Draft` chip: a chat draft joined onto this task's session, or
   // — on a draft row — the unfinished form itself (tasks-lib.draftTag).
-  const draft = draftTag(task);
+  // Hidden while the side peek holds this row's draft (tasks-lib.draftHeldByPeek).
+  const heldInPeek = draftHeldByPeek(task, peeked);
+  const draft = heldInPeek ? null : draftTag(task);
   // The lane this card is IN — the COLUMN it is drawn under, which is why it is
   // `laneOf` and not the status alone: a waiting card sits in Blocked, and the
   // header above it says Blocked. Not passed down either way: `groupByColumn`
@@ -5155,6 +5300,8 @@ function TaskCard({
   const [busy, setBusy] = useState(false);
   // The Board's own copy of the List row's erase confirm; see the foot.
   const [erasing, setErasing] = useState(false);
+  // …and of its discard, for the same reason: one press, not two.
+  const [discarding, setDiscarding] = useState(false);
   const refile = async (intent: FilingIntent) => {
     setBusy(true);
     try {
@@ -5449,8 +5596,30 @@ function TaskCard({
           while the List shows it is exactly the divergence the shared flag exists
           to prevent (§1 — same element, same behaviour in every view). The strip
           itself is drawn whenever either survives its guard. */}
-      {((peekOn && page) || file || folderMissing || queue || (SHOW_ROW_ACTIONS && run)) && (
+      {((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek) || queue
+        || (SHOW_ROW_ACTIONS && run)) && (
         <span className="tasks-card-acts">
+          {/* DISCARD, the List row's own act in the card's hover strip — same
+              glyph, same class, same caption, same silence at rest (design.md,
+              PR C; §1 — one element, one behaviour in every view). Stands down
+              on a card whose folder is gone, where the trash beside it is the
+              stronger claim. */}
+          {hasDraft(task) && !folderMissing && !heldInPeek && (
+            <button
+              type="button"
+              className="tasks-act tasks-card-act tasks-act--delete"
+              aria-label={`Discard draft ${task.task_id}`}
+              title="Discard draft"
+              data-hint="Discard draft"
+              disabled={busy || discarding}
+              onClick={() => {
+                setDiscarding(true);
+                void discardDraft(task).finally(() => setDiscarding(false));
+              }}
+            >
+              {ICON_TRASH}
+            </button>
+          )}
           {/* DELETE FOR GOOD, only on a card whose folder is gone, and LEFT of
               Archive (Akshil, 2026-09-07: a trash in the foot "looks odd here …
               move the delete icon to the top right, leftside of archive"). Same

@@ -30,8 +30,14 @@ import {
   type MutableRefObject,
 } from "react";
 
-import { currentUrl, navigateUrl } from "@platform/lib/router";
-import { chatDraftKey, moveChatDraft } from "@platform/lib/drafts";
+import { confirmLeave, currentUrl, navigateUrl } from "@platform/lib/router";
+import {
+  chatDraftKey,
+  newTaskDraftId,
+  taskDraftKey,
+  type TaskDraftForm,
+} from "@platform/lib/drafts";
+import { draftUpdatedAt, isDraftTask } from "@shell/tasks-lib";
 
 import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
@@ -101,7 +107,7 @@ import {
   CardPolicyProvider,
   Composer,
   createCardPolicy,
-  draftTextOf,
+  draftHref,
   Home,
   openCardIds,
   resetCardPolicy,
@@ -140,7 +146,7 @@ import {
 } from "./feature-flag";
 import { WaitingCard, WaitingRow } from "./ui/Waiting";
 import { copyToTaskShots } from "./ui/SchedButton";
-import type { SchedAttachment } from "./ui/sched-draft";
+import type { DraftAttachment } from "@platform/lib/drafts";
 import { troubleFromError } from "./protocol/trouble";
 import { useSchedule } from "./sched/useSchedule";
 import type { QueueFacts } from "@platform/lib/queue";
@@ -258,15 +264,6 @@ export interface ClaudeChatProps {
    * how this bug arrived. (.claude-design/session-recap.md, "Trigger".)
    */
   recap?: boolean;
-  /**
-   * DROP THE UPCOMING LANE FROM THE LANDING'S "Recent chats" — `Lists`' own
-   * prop (ui/Lists.tsx), carried through untouched. Set by exactly one host:
-   * the explorer's Claude side panel (`ChatMount`'s own `hideUpcoming`,
-   * Preview.tsx's `?_side=claude` sidebar and ListingPreviewPane's folder
-   * pane) — never inferred here from `file`/`remote`/anything else, so a
-   * second host cannot pick it up by accident of sharing some other fact.
-   */
-  hideUpcoming?: boolean;
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -1968,21 +1965,126 @@ function ChatBody(props: ChatBodyProps) {
    * declared with the other gestures further down.
    */
   const [leftLive, setLeftLive] = useState(false);
-  /** Bumped by a gesture that has asked for the composer — today only the
-   *  never-sent chat's row (`onOpenChatDraft`). Handed to the CHAT's composer
-   *  alone: the landing's box is the one the reader is leaving. */
-  const [focusReq, setFocusReq] = useState(0);
-  /** The words a pressed draft row put in the LANDING's composer — the same
-   *  `{text, seq}` seat a stranded follow-up comes back on, kept apart from
-   *  `stranded` because that one is about a turn that was running and this one
-   *  is about a row the reader pointed at (`onFillDraft`). */
-  const [landingFill, setLandingFill] = useState<{ text: string; seq: number } | null>(null);
   const recent = useRecentTasks(
     inChat ? null : agentDir,
     file,
     undefined,
     leftLive,
   );
+  /**
+   * THE DRAFT THE LANDING COMPOSER HOLDS (Akshil, 2026-09-17).
+   *
+   * On landing, the folder's NEWEST Upcoming draft (by its own clock) goes into
+   * the box and out of the list; with none, a fresh key is held so whatever is
+   * typed has a record to be saved under on blur. Pressing another draft row
+   * swaps: the box's current draft is saved (its row comes back) and the pressed
+   * one is held. Leaving the landing forgets the choice, so coming Back picks
+   * again from what is there then — a Send leaves the box empty (the sent draft
+   * is deleted), and the next landing starts from the list, not from memory.
+   */
+  const freshHeld = () => ({ key: taskDraftKey(newTaskDraftId()), form: null as TaskDraftForm | null });
+  // A KEY FROM THE FIRST RENDER (Bugbot 4039383069): words typed while the
+  // listing is still loading have a record to be saved under, and are never
+  // attached to somebody else's row — the newest draft is taken only onto a
+  // box that is still empty when the listing lands.
+  const [held, setHeld] = useState<{ key: string; form: TaskDraftForm | null } | null>(
+    () => (inChat ? null : freshHeld()),
+  );
+  const pickedHeld = useRef(false);
+  // A NEW FOLDER IS A NEW LANDING (Bugbot 4040029407). This component survives
+  // the Explorer switching targets, so the held key has to be let go by hand:
+  // the composer saves the old folder's draft on its way out (key change) and
+  // the next listing picks this folder's newest.
+  const heldFile = useRef(file);
+  /** A folder switch is in progress: the box still shows the OLD folder's
+   *  draft for a render, so its words are not "typed" (Bugbot 4040204492). */
+  const switching = useRef<string | null>(null);
+  const switchSeenFresh = useRef(false);
+  useEffect(() => {
+    if (heldFile.current === file) return;
+    heldFile.current = file;
+    if (inChat) return;
+    pickedHeld.current = false;
+    const fresh = freshHeld();
+    switching.current = fresh.key;
+    switchSeenFresh.current = false; // a new switch starts with a first look (Bugbot 4040391987)
+    setHeld(fresh);
+  }, [file, inChat]);
+  useEffect(() => {
+    if (inChat) {
+      setHeld(null);
+      pickedHeld.current = false;
+      return;
+    }
+    if (!held) {
+      setHeld(freshHeld());
+      return;
+    }
+    if (pickedHeld.current || recent === null) return;
+    // AFTER A FOLDER SWITCH THE PICK WAITS FOR THE FRESH KEY (Bugbot
+    // 4040204492): in the commit that changed `file`, `held` is still the old
+    // folder's and the box still holds its words. Latching here would read
+    // those words as typed and skip the new folder's newest for good.
+    const here = (t: Task): boolean =>
+      !file || t.target === file || (t.target ?? "").startsWith(file + "/") || t.project === file;
+    if (switching.current) {
+      if (held.key !== switching.current) return; // the old key — the fresh one lands next render
+      // THE FIRST LOOK AT THE FRESH KEY trusts the composer's reset over the
+      // DOM (the box may still paint the old folder's words this render); EVERY
+      // LATER LOOK asks the box, because by then anything in it was typed here
+      // (Bugbot 4040301152). A folder with no rows yet keeps asking until one
+      // arrives or the reader types.
+      const first = !switchSeenFresh.current;
+      switchSeenFresh.current = true;
+      if (!first) {
+        const typed = !!boxRef.current?.value.trim() || attach.items.length > 0;
+        if (typed) {
+          switching.current = null;
+          switchSeenFresh.current = false;
+          pickedHeld.current = true;
+          return;
+        }
+      }
+      // …and the LISTING has to be this folder's too: the previous folder's rows
+      // can still be on hand for a beat. No row of this folder yet = ask again.
+      if (!recent.some(here)) return;
+      switching.current = null;
+      switchSeenFresh.current = false;
+      pickedHeld.current = true;
+    } else {
+      pickedHeld.current = true;
+      const typed = !!boxRef.current?.value.trim() || attach.items.length > 0;
+      if (typed) return;
+    }
+    // ONLY THIS FOLDER'S DRAFTS (`here`): a draft aimed elsewhere must not land
+    // in this box.
+    const newest = recent
+      .filter((t) => isDraftTask(t) && t.draft_kind === "task" && !!t.draft_id && here(t))
+      .sort((a, b) => draftUpdatedAt(b) - draftUpdatedAt(a))[0];
+    if (newest && newest.draft_id) {
+      setHeld({ key: taskDraftKey(newest.draft_id), form: (newest.form ?? null) as TaskDraftForm | null });
+    }
+  }, [inChat, held, recent, boxRef, attach.items.length, file]);
+  /** The held row as the feed keeps it — the composer adopts a newer version. */
+  const heldRow = useMemo(
+    () => (held && recent ? recent.find((t) => t.key === held.key) ?? null : null),
+    [held, recent],
+  );
+  // THE SNAPSHOT TAKEN AT THE PRESS IS SPENT ONCE THE FEED HAS SHOWN THE ROW
+  // (bug report, 2026-09-17: an emptied draft came back into the box). The
+  // row is the record's current state; when it goes — the reader emptied the
+  // box and blurred — falling back to the older snapshot re-seeded the words
+  // that had just been deleted. Past that point there is no form to seed from.
+  const heldRowSeen = useRef<string | null>(null);
+  if (heldRow && held) heldRowSeen.current = held.key;
+  const heldForm = (heldRow?.form
+    ?? (held && heldRowSeen.current !== held.key ? held.form : null)
+    ?? null) as (TaskDraftForm & { version?: number }) | null;
+  const onHeldGone = useCallback(() => {
+    setHeld({ key: taskDraftKey(newTaskDraftId()), form: null });
+  }, []);
+  const heldRef = useRef(held);
+  heldRef.current = held;
   // …AND THE CHATS IN THIS FOLDER THAT HAVE NOT RUN YET are in the same list
   // for free: `/api/tasks` lists a chat whose first message queued as a row
   // keyed `pending:<leader id>` (the project queue), in this folder, and the
@@ -2195,7 +2297,7 @@ function ChatBody(props: ChatBodyProps) {
    * one that never travelled.
    */
   const carryForQueue = useCallback(
-    async (lead: readonly Attachment[] = []): Promise<SchedAttachment[]> => {
+    async (lead: readonly Attachment[] = []): Promise<DraftAttachment[]> => {
       const tray = [...lead, ...attach.items];
       // Pending chips have no bytes yet, and an empty carry must not buy a round
       // trip in front of every send.
@@ -2498,7 +2600,7 @@ function ChatBody(props: ChatBodyProps) {
                 // autosaves under, spelled by the same function, and sent only
                 // while there is no session: a chat that has one is numbered
                 // under it and has nothing to carry forward.
-                ...(sid ? {} : { draft_key: chatDraftKey(null, file || "") }),
+                ...(sid ? {} : { draft_key: heldRef.current?.key ?? chatDraftKey(null, file || "") }),
               });
             } catch (err) {
               putDownQueuedShot();
@@ -2697,7 +2799,21 @@ function ChatBody(props: ChatBodyProps) {
    * they read it when pressed and neither needs re-binding for a new identity.
    */
   const schedReset = useRef<() => void>(() => {});
-  const onBack = useCallback(() => {
+  /**
+   * THE TWO HOPS THAT REPLACE WHAT IS ON SCREEN WITHOUT PUSHING A URL.
+   *
+   * Back to the landing and opening another session both swap the conversation
+   * inside this pane, so `navigate` never runs and the composer's leave guard is
+   * never consulted — and the composer does not autosave, so its unsent text
+   * would simply be gone. They ask the same question the router asks
+   * (`confirmLeave`, platform/lib/router.ts): the dialog is the composer's own,
+   * and a `false` is the reader saying "stay".
+   *
+   * THE HOP IS A SEPARATE FUNCTION (`backNow`, `openSessionNow`) rather than a
+   * branch inside the handler: a question answered with Cancel must leave the
+   * chat exactly as it was, so nothing the hop does may run before the answer.
+   */
+  const backNow = useCallback(() => {
     // A fresh transcript is a fresh card policy: an override from the
     // conversation that WAS on screen must not leak a card open in one the user
     // has never touched (ui/cardPolicy.ts).
@@ -2756,22 +2872,18 @@ function ChatBody(props: ChatBodyProps) {
     // is being left; carried into the next one it would re-adopt the leader the
     // line above just forgot, on the first render after it.
     params.set({ [QUEUED_PARAM]: null }, { history: "replace" });
-    // …and so do the words a draft row put in the LANDING's box. `Home` unmounts
-    // on the way into the chat, so the composer that comes back on Back is a NEW
-    // instance with an empty delivery ledger — a fill left standing would be
-    // handed to it a second time (the trap `stranded` fell into, one seat over).
-    setLandingFill(null);
-    // …AND SO DOES THE CARET REQUEST (Bugbot, PR #1145). `focusReq` is a
-    // COUNTER, so once a draft press has bumped it it is truthy for the rest of
-    // the page's life — and the prop is handed to every chat composer that
-    // mounts after it. Left standing, the next ordinary session opened from the
-    // explorer's folder pane took the keyboard off the listing, which is the
-    // exact case `focusRequest` exists to stay OUT of (`autoFocus` is the
-    // ambient policy; this is one gesture's request). Back is the funnel out of
-    // the chat, so the request is spent here.
-    setFocusReq(0);
+    // (#1124 also cleared a LANDING FILL and a CARET REQUEST here. Neither
+    // exists on this branch: a draft row's press opens the Tasks card on its
+    // own record rather than pouring the words into the landing's composer
+    // (design-drafts-one-record.md §1), so there is no fill to strand and no
+    // one-gesture focus counter to spend.)
   }, [controller, cardPolicy, leader, params]);
-  const onOpenSession = useCallback(
+  const onBack = useCallback(() => {
+    void confirmLeave().then((ok) => {
+      if (ok) backNow();
+    });
+  }, [backNow]);
+  const openSessionNow = useCallback(
     (sessionId: string) => {
       resetCardPolicy(cardPolicy);
       setEntered(true);
@@ -2791,14 +2903,17 @@ function ChatBody(props: ChatBodyProps) {
       // transcript until something else re-rendered (Bugbot, d9f041e11).
       leader.forget();
       params.set({ [QUEUED_PARAM]: null }, { history: "replace" });
-      setLandingFill(null);
-      // And this session was opened by a press on a CONVERSATION, which asks for
-      // nothing but to be read — belt and braces beside the clear in `onBack`,
-      // the same way `setStranded(null)` is spelled in both.
-      setFocusReq(0);
       void controller.openSession(sessionId);
     },
     [controller, cardPolicy, leader, params],
+  );
+  const onOpenSession = useCallback(
+    (sessionId: string) => {
+      void confirmLeave().then((ok) => {
+        if (ok) openSessionNow(sessionId);
+      });
+    },
+    [openSessionNow],
   );
   /**
    * A DRAFT ROW PRESSED — THE WORDS COME TO THE BOX (Akshil, 2026-09-15).
@@ -2810,37 +2925,59 @@ function ChatBody(props: ChatBodyProps) {
    * reader is looking straight at it — so nothing navigates, nothing enters,
    * and no URL moves. The text lands in the box with the caret after it.
    *
-   * THROUGH THE SAME SEAT STRANDED WORDS COME BACK ON (`restore`): it appends
-   * rather than replaces, which is the right way round for a box that may
-   * already hold something the reader typed — a press must never eat words.
-   * Its own counter, because the landing's composer and the chat's are two
-   * instances with two delivery ledgers and a hand-back is not a draft press.
+   * THROUGH THE SAME SEAT STRANDED WORDS COME BACK ON (`restore`), with
+   * `replace: true` (bug report, 2026-09-15): a row's whole content REPLACES
+   * whatever the box held, it does not join onto it — "make sure text before
+   * it in composer is cleaned and only draft text is there". Its own counter,
+   * because the landing's composer and the chat's are two instances with two
+   * delivery ledgers and a hand-back is not a draft press.
    *
-   * ALREADY IN THE BOX IS NOT FILLED AGAIN. The landing composer seeds itself
-   * from this folder's own `new:<file>` draft, so the row for THIS folder names
-   * words that are already on screen; filling would print them twice. That case
-   * is a focus request and nothing more, which is also exactly what it should
-   * be — the reader is asking for the box.
+   * THIS COMPOSER'S OWN ROW IS A FOCUS REQUEST AND NOTHING ELSE, checked
+   * BEFORE anything is read (bug report, 2026-09-15). It is drawn as a row
+   * only because it names the key this very box already autosaves under, so
+   * pressing it is not a fill at all — replacing from a stale GET would throw
+   * away anything typed since the box's own last write, which a request for
+   * the keyboard must never do.
+   *
+   * A SECOND PRESS ON A ROW ALREADY MOVING IS IGNORED, not a second draft
+   * (bug report, 2026-09-15: pressing the same row two or three times used to
+   * mint a fresh `new:<file>` draft under the same words each time, because
+   * nothing here waited for the first move to land or for the list to catch
+   * up and drop the row). `movingKeys` guards the SOURCE key — this composer
+   * has exactly one destination, so the source is the only side two presses
+   * in flight together could disagree about.
    */
-  const fillSeq = useRef(0);
+  const attachRef = useRef(attach);
+  attachRef.current = attach;
+  /**
+   * PRESSING A DRAFT ROW OPENS THE NEW TASK CARD ON IT (Akshil, 2026-09-16).
+   *
+   * ONE OUTCOME NOW, and no writes at all: every draft row anywhere opens the
+   * same card on the record it is listed under (`draftHref`). The row in THIS
+   * composer's own folder used to be the exception — a request for the keyboard
+   * rather than a navigation — which made one affordance mean two things
+   * depending on where the reader happened to be standing. It is the same
+   * record and the same card; the composer keeps autosaving the same key
+   * behind it, so nothing is copied and nothing is minted.
+   *
+   * A SECOND PRESS IS THE SAME PRESS. There is nothing in flight to guard
+   * against: two presses on one row are two requests for the same URL, and the
+   * modal already keys itself on the draft it opens (shell/Scheduled), so the
+   * second press finds the card it is asking for already up.
+   */
   const onFillDraft = useCallback((task: Task) => {
-    void draftTextOf(task).then((text) => {
-      const box = boxRef.current;
-      if (text && !(box && box.value.includes(text))) {
-        fillSeq.current += 1;
-        setLandingFill({ text, seq: fillSeq.current });
-      }
-      // …AND THE PRESS ASKS FOR THE BOX, which `autoFocus` cannot answer for it.
-      // That prop is ambient policy — "may this composer take the keyboard merely
-      // by appearing" — and the explorer's folder pane says no on purpose
-      // (`apps/explorer/ListingPreviewPane` mounts the chat `noFocus` so the
-      // listing keeps the keyboard). A row whose whole content is an unsent
-      // sentence is a request, not an arrival: the caret belongs in the box the
-      // words are in, or the promise the row makes (press Enter and this sends)
-      // is one the reader has to click to collect (Akshil QA, 2026-09-14).
-      setFocusReq((n) => n + 1);
-    });
-  }, [boxRef]);
+    // AN UPCOMING TASK DRAFT IN THIS FOLDER IS HELD, NOT OPENED (Akshil,
+    // 2026-09-17): it swaps into the composer, and the one that was there is
+    // saved back to the list by the composer's own key change.
+    if (isDraftTask(task) && task.draft_kind === "task" && task.draft_id) {
+      const key = taskDraftKey(task.draft_id);
+      if (heldRef.current?.key === key) return;
+      setHeld({ key, form: (task.form ?? null) as TaskDraftForm | null });
+      return;
+    }
+    const href = draftHref(task);
+    if (href) onNavigate(href);
+  }, [onNavigate]);
 
   // T:16714 — one `scrollBottom()` after the turn has settled, which T runs
   // after the awaited pollLoop. `status` leaving "running" is that moment.
@@ -3370,22 +3507,27 @@ function ChatBody(props: ChatBodyProps) {
     // leaving `?queued=` beside it would re-remember a leader this chat has just
     // outgrown on any later render (see `queuedParam`).
     params.set({ [QUEUED_PARAM]: null }, { history: "replace" });
-    // AND THE UNSENT WORDS COME WITH IT. The composer keys its draft on the
-    // session, or on `new:<file>` while there is none — so the line below
-    // silently moves the box's key, and a sentence typed while this chat was
-    // waiting would be autosaved again under the session while the `new:<file>`
-    // record stood: one unsent message, two drafts, and a draft ROW on the
-    // Tasks page beside the conversation it belongs to (review, PR #1124).
+    // AND THE UNSENT WORDS COME WITH IT — BY THE COMPOSER'S OWN DOOR, not by a
+    // move here (merge of PR #1124 into design-drafts-one-record, 2026-09-17).
     //
-    // Here and not in the composer, because THIS is the event: a key that flips
-    // because the reader opened some other conversation is not an adoption, and
-    // moving words on it would carry a folder's unsent draft onto a thread it
-    // was never typed into (the failure four rounds of Bugbot found in the old
-    // client-side rekey, PR #1118). A send's own draft is never moved either:
-    // it is spent, and `moveChatDraft` answers nothing for a spent key.
-    void moveChatDraft(chatDraftKey(null, file || ""), adoptSession);
+    // #1124 copied the `new:<file>` record onto the session and deleted it
+    // (`moveChatDraft`), because a chat with no session autosaved under
+    // `new:<file>` and the flip would otherwise have left that record standing
+    // beside the session's: one unsent message, two drafts, and a draft ROW on
+    // the Tasks page beside the conversation it belongs to (review, PR #1124).
+    //
+    // THERE IS NO SUCH RECORD ANY MORE. A session-less composer never
+    // autosaves (§4 — the words are in the box and nowhere else until the
+    // reader says otherwise, through the leave guard or Schedule), so there is
+    // nothing under `new:<file>` to carry and nothing to delete. What the flip
+    // needs is what it has always needed one seat over: the WORDS, stated once
+    // on the session's own syncer. `Composer`'s `hasSession` layout effect is
+    // exactly that statement and it fires on this adoption like any other — the
+    // session lands as a prop, the key changes, and the box's text is handed to
+    // `draftSyncer(<session>).setText(...)`. One record, minted by the flip that
+    // needs it, with no second key to reconcile.
     void controller.openSession(adoptSession);
-  }, [adoptSession, controller, cardPolicy, params, file]);
+  }, [adoptSession, controller, cardPolicy, params]);
 
   /**
    * T:16776/18000 — the block and both attach sets belong to the conversation
@@ -3534,10 +3676,25 @@ function ChatBody(props: ChatBodyProps) {
       // "Back to chat" (task-shots copies, registered as real paths — no
       // upload, `useAttachments.addPaths`).
       attachments: () => attach.items,
-      onRestoreAttachments: (paths: string[]) => void attach.addPaths(paths),
-      // A spend heard from the Board (the row's draft dragged into In Progress)
-      // empties the tray for good: the files already went with the message,
-      // off the server's copy (`useAttachments.discard`).
+      // A SESSION'S COMPOSER SEEDS ITS TRAY FROM THE RECORD, the same way it
+      // seeds its words: that draft is this conversation's unsent message, and
+      // half of one is not it. Task-shots copies, registered as real paths — no
+      // upload (`useAttachments.addPaths`).
+      //
+      // A SESSION-LESS COMPOSER NEVER CALLS IT (Akshil, 2026-09-16): its record
+      // is an Upcoming row, "Back to chat" from that card lands on a CLEAN box,
+      // and a tray re-filled from a row nobody opened would be the same
+      // disagreement in files.
+      //
+      // AND THE PROMISE IS HANDED BACK, not swallowed (Bugbot 4027549715).
+      // `addPaths` commits the chips PAST AN AWAIT, so the render that paints
+      // the restored words still has an empty tray — and the composer's
+      // autosave, told the record already held these files, pushed that empty
+      // tray over them. It holds its writes until this resolves.
+      onRestoreAttachments: (paths: string[]) => attach.addPaths(paths),
+      // Emptying the tray is the other half: an adopted record, an answered
+      // unsent-message question, and the Schedule hop once the files are on the
+      // card (`useAttachments.discard`).
       onDiscardAttachments: attach.discard,
       hasAttachments:
         attach.items.length > 0 ||
@@ -4147,7 +4304,6 @@ function ChatBody(props: ChatBodyProps) {
             {!compact ? (
               <Composer
                 {...card}
-                {...(focusReq ? { focusRequest: focusReq } : {})}
                 artStrip={<ArtStrip items={art.items} />}
               />
             ) : (
@@ -4165,10 +4321,10 @@ function ChatBody(props: ChatBodyProps) {
             recent={recent}
             onOpenSession={onOpenSession}
             onFillDraft={onFillDraft}
-            {...(landingFill ? { restore: landingFill } : {})}
-            {...(focusReq ? { focusRequest: focusReq } : {})}
             listsDisabled={ann.locked}
-            {...(props.hideUpcoming ? { hideUpcoming: true } : {})}
+            heldKey={held?.key ?? null}
+            heldForm={heldForm}
+            onHeldGone={onHeldGone}
           />
         )}
         {/* THE NOTE COMPOSER'S IDLE HOME (T:7291): ONE node, parked in the chat

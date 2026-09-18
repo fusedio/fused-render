@@ -473,7 +473,48 @@ interface ChangesResponse {
   rows?: Task[];
   gone?: string[];
   full?: boolean;
+  drafts?: DraftsDelta;
 }
+
+/**
+ * THE DRAFT HALF OF ONE CHANGE (design "one record", §3; contract §3).
+ *
+ * The listing has always said which ROWS moved; it now says which DRAFT RECORDS
+ * moved too, with the version each is at. That is what lets an open composer or
+ * task card take another tab's save within a second instead of finding out on
+ * its next reload — and it is what let a whole coordination layer go: a `spent`
+ * set, an in-flight map, and a listener a sender had to await.
+ *
+ * `key` is the DRAFT key, which is the listing's key for chat drafts (a session
+ * id, or `new:<file>`) and `draft:<id>` for a task draft.
+ *
+ * `gone` IS NOISY BY CONSTRUCTION and the contract says so in as many words: the
+ * announced key set covers ordinary task activity, so most of what turns up here
+ * is a key that never had a draft. A subscriber must ignore `gone` for a key it
+ * holds no version for, and must never discard unsaved words on one.
+ */
+export interface DraftsDelta {
+  changed: { key: string; version: number }[];
+  gone: string[];
+}
+
+/**
+ * WHAT A DRAFT SUBSCRIBER IS HANDED, and the third argument is the one worth
+ * naming: WHOSE `gone` this is.
+ *
+ * `false` — the change FEED said so, and its `gone` is the noisy set described
+ * above: ignore it for a key you hold no version for.
+ *
+ * `true` — THIS DOCUMENT said so (`announceDraftsGone`), after watching its own
+ * DELETE land. There is no noise in that: the record named is gone, and the
+ * subscriber holding it must let it go even though the delete has already
+ * forgotten the version that would otherwise vouch for the key.
+ */
+export type DraftChangeListener = (
+  changed: { key: string; version: number }[],
+  gone: string[],
+  certain: boolean,
+) => void;
 
 /** Only what the feed needs off `fetch`, so a bun test can hand over a
  *  three-line stub instead of the whole DOM signature. */
@@ -530,6 +571,7 @@ export interface ListingEvent {
 
 const listingSubs = new Set<(ev: ListingEvent) => void>();
 const goneSubs = new Set<(keys: string[]) => void>();
+const draftSubs = new Set<DraftChangeListener>();
 /** The newest server generation folded into `listing` — the guard that stops a
  *  full read which left BEFORE a delta from rolling the rows back when it
  *  lands after it (bugbot #892, the rule Scheduled.tsx used to keep itself). */
@@ -545,6 +587,16 @@ let feedLoad: (() => void) | null = null;
  *  below already makes overlapping reads harmless — this only has to collapse
  *  the burst, not rate-limit the endpoint. */
 let refreshQueued = false;
+
+function emitDrafts(delta: DraftsDelta | undefined) {
+  if (!delta) return;
+  const changed = Array.isArray(delta.changed) ? delta.changed : [];
+  const gone = Array.isArray(delta.gone) ? delta.gone : [];
+  if (!changed.length && !gone.length) return;
+  // NOT certain: this is the feed's announced key set, which is noisy by
+  // construction (contract §3) — see `DraftChangeListener`.
+  for (const sub of draftSubs) sub(changed, gone, false);
+}
 
 function emitListing(ev: ListingEvent) {
   for (const sub of listingSubs) sub(ev);
@@ -699,6 +751,11 @@ function startFeed(env: ListingEnv) {
       }
       const rows = r.rows || [];
       const gone = r.gone || [];
+      // THE DRAFT DELTA IS ANNOUNCED FIRST AND UNCONDITIONALLY. It rides the
+      // same answer as the rows but it is not about them: an answer whose rows
+      // and `gone` are both empty can still carry a version bump for a record
+      // two tabs are open on, and the fold below would `continue` past it.
+      emitDrafts(r.drafts);
       if (!rows.length && !gone.length) continue;
       // A DELTA IS ABOUT ROWS WE NO LONGER TRUST. Dropped rather than queued: the
       // listing on its way is read AFTER this change was recorded, so it already
@@ -825,6 +882,61 @@ export function subscribeListing(
   };
 }
 
+/**
+ * WHICH DRAFT RECORDS MOVED, and to what version (design §3).
+ *
+ * Subscribed by the two editors a draft can be open in — the chat composer and
+ * the New task card — each for its OWN key. `gone` clears or closes; a
+ * `changed` whose version is newer than the one the subscriber holds is re-read
+ * and adopted, unless the reader is mid-sentence, in which case the next save's
+ * own 409 settles it (`platform/lib/drafts`, `AutosaveOptions.conflict`).
+ *
+ * Does not start the feed on its own — a side channel on a listing somebody else
+ * is already following, exactly like `onGone`.
+ *
+ * WHAT THIS REPLACED: `App.tsx` used to hear `onGone`, re-read the WHOLE drafts
+ * store and mark keys spent — one `GET /api/drafts` per announcement, which a
+ * server re-announcing one key turned into hundreds of requests a second on a
+ * real machine (the incident `coalesceLatest` was written for). The server now
+ * says which keys and at which versions, so there is nothing to look up and
+ * nothing to coalesce.
+ */
+/**
+ * THIS RECORD IS GONE — say so NOW, before the server has been asked.
+ *
+ * `dropListingKeys`' twin, for the draft channel, and it exists for the same
+ * reason: the trash on a draft row has to take effect under the pointer. The
+ * ROW leaves through that function; this is what reaches the EDITOR that record
+ * may also be open in — the composer behind the List, the New task card on top
+ * of it — which would otherwise go on showing words the reader has just thrown
+ * away until the next long-poll caught up.
+ *
+ * Optimistic, like its twin: the server's own announcement follows and says the
+ * same thing, and a DELETE that failed leaves the record on the server for the
+ * next read to find.
+ */
+export function announceDraftsGone(keys: readonly string[]): void {
+  const gone = keys.filter((key) => !!key);
+  if (!gone.length) return;
+  // CERTAIN, and that is the whole difference between this and the feed's own
+  // `gone`. This document just deleted these records and watched the DELETE
+  // land, so a subscriber must act on its key WHETHER OR NOT it is holding a
+  // version for it — which is exactly the case the trash in Recent chats hits:
+  // `deleteChatDraft` forgets the version as the record goes (contract §2), so
+  // by the time this runs the composer's `draftVersion(key)` is already
+  // `undefined` and the noisy-`gone` guard would swallow the one announcement
+  // that was never noise (Akshil, 2026-09-16: trashing the row left the box
+  // full, and the next keystroke wrote the record straight back at v1).
+  for (const sub of draftSubs) sub([], [...gone], true);
+}
+
+export function onDraftChange(cb: DraftChangeListener): () => void {
+  draftSubs.add(cb);
+  return () => {
+    draftSubs.delete(cb);
+  };
+}
+
 /** The keys the server said LEFT, for a reader that has something to clean up
  *  behind a task that is gone (PR C: a composer still holding a deleted
  *  draft's words). Does not start the feed on its own — it is a side channel on
@@ -834,6 +946,77 @@ export function onGone(cb: (keys: string[]) => void): () => void {
   return () => {
     goneSubs.delete(cb);
   };
+}
+
+/**
+ * THESE ROWS ARE GONE — say so NOW, before the server has been asked.
+ *
+ * The optimistic half of a discard (PR C: the trash on a draft row). The row
+ * the reader just pressed has to leave under the pointer, not after a DELETE
+ * and a re-read; and it has to leave EVERYWHERE, because the same draft is a
+ * row in the List, a card on the Board and a line in the chat's Recent list,
+ * and three surfaces dropping it at three different moments is the flicker the
+ * one feed exists to prevent.
+ *
+ * The held listing is the one place all three read from, so the drop happens
+ * there and every subscriber hears one event. It is announced as a `gone`
+ * DELTA, exactly as the long-poll would have announced it — so `onGone` fires
+ * and the cleanup behind a vanished draft (a composer still holding its words)
+ * runs the same way whoever pressed the button.
+ *
+ * NOT A SUBSTITUTE FOR THE REQUEST. The caller still deletes and still pokes;
+ * this only decides what the page shows in between. If the delete fails, the
+ * next read puts the row back, which is the right answer — the draft is still
+ * there.
+ *
+ * `listingGen` is deliberately NOT bumped: this is not news from the server and
+ * must not make the server's next answer look stale.
+ */
+export function dropListingKeys(keys: readonly string[]): void {
+  const gone = keys.filter((key) => !!key);
+  if (!gone.length) return;
+  const held = readListing();
+  if (held === null) {
+    // Nothing on screen to take it off. The cleanup behind the key still has to
+    // run, so the event goes out with no rows of its own.
+    for (const sub of goneSubs) sub([...gone]);
+    return;
+  }
+  const merged = mergeTaskChanges(held, [], [...gone]);
+  if (merged.length === held.length) {
+    for (const sub of goneSubs) sub([...gone]);
+    return;
+  }
+  rememberListing(merged);
+  publishTasks(merged);
+  emitListing({ rows: merged, failed: false, delta: { rows: [], gone: [...gone] } });
+}
+
+/**
+ * …AND BACK, when the write the drop was optimistic about FAILED.
+ *
+ * `dropListingKeys` takes a row off the page before the server has been asked.
+ * If the DELETE then does not land, the draft is still there — and leaving the
+ * page saying otherwise until the next floor refresh is the page lying about
+ * what the reader still has (Bugbot #1166). The rows go back into the held
+ * listing through the same merge a change-poll uses, so they land in the right
+ * order rather than at the end.
+ *
+ * `listingGen` is untouched for `dropListingKeys`' reason: neither of these is
+ * news from the server, and neither may make the server's next answer look
+ * stale.
+ */
+export function restoreListingRows(rows: readonly Task[]): void {
+  const back = rows.filter((row) => !!row && !!row.key);
+  if (!back.length) return;
+  const held = readListing();
+  // Nothing is being held, so there is nothing to put a row back INTO — the
+  // next read answers with it anyway, which is the state a failed drop wanted.
+  if (held === null) return;
+  const merged = mergeTaskChanges(held, [...back], []);
+  rememberListing(merged);
+  publishTasks(merged);
+  emitListing({ rows: merged, failed: false, delta: { rows: [...back], gone: [] } });
 }
 
 /** "Something just changed — re-read the listing NOW." Collapsed to one read

@@ -36,15 +36,26 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { navigateUrl } from "@platform/lib/router";
 import { ENTER_LABEL, isMod, MOD_LABEL } from "@platform/lib/platform";
 import {
-  deleteTaskDraft,
+  chatKeySession,
+  draftSyncer,
+  draftVersion,
+  forgetDraftVersion,
+  joinDraft,
   newChatFile,
   NEW_CHAT_PREFIX,
   newTaskDraftId,
-  saveChatDraft,
-  saveTaskDraft,
+  splitDraft,
+  taskDraftKey,
   useAutosave,
+  type DraftConflictRule,
   type TaskDraftForm,
 } from "@platform/lib/drafts";
+
+// THE PROSE CONVENTION, RE-EXPORTED FROM WHERE IT USED TO LIVE. It moved to
+// `platform/lib/drafts` so the chat composer can use the same cut (an app may
+// not import the shell); every reader who learnt it here still finds it here.
+export { joinDraft, splitDraft } from "@platform/lib/drafts";
+import { notify } from "@platform/lib/notifications";
 import {
   TASK_EFFORTS,
   TASK_MODELS,
@@ -57,6 +68,7 @@ import {
   taskRunOptions,
 } from "./schedule-lib";
 import { ICON_CLOCK, ICON_FOLDER, ICON_PLUS } from "./ScheduleCalendar";
+import { onDraftChange } from "./tasksPulse";
 // This card's own rules live in styles/new-task.css, imported from the
 // shell.css barrel like every other section — no shell component imports its
 // own CSS (tests/test_theme.py pins the barrel against the styles/ directory).
@@ -1524,42 +1536,6 @@ export function shortTitle(text: string, max = TITLE_MAX): string {
   return (boundary > 0 ? line.slice(0, boundary) : line.slice(0, max)).trimEnd();
 }
 
-// -- The chat handoff fills BOTH fields ---------------------------------------
-// A draft arriving from the chat composer's Schedule button
-// (`?new=1&message=…`) is one block of prose written for Claude, and the form
-// now has two places to put it. It is SPLIT rather than dropped whole into the
-// description (Akshil, 2026-08-18): the first line is what the draft is about,
-// which is exactly what a title is, and the rest is the body.
-//
-// This is NOT the bug of 2026-08-17 coming back. That one prefilled Title with
-// `firstLine(ask)` while the SAME text also filled the description — the message
-// arrived duplicated into both fields, and the task ended up named after its own
-// body. Here the two fields PARTITION the draft: what goes in the first field is
-// removed from the second, and composeTaskMessage puts it back together on Save,
-// so nothing is said twice and nothing is lost.
-//
-// THE LINE BREAK IS THE ONLY CUT (Akshil, 2026-08-18). A long first line is kept
-// whole rather than clamped to a name: the field asks "What should Claude do?",
-// and a clamp answers that question with two thirds of a sentence. The clamp
-// that was here also had to keep the draft ENTIRE in the description to avoid
-// losing the tail, so a long draft arrived with its opening said twice — worse
-// than the long value it was avoiding. TITLE_MAX still governs a name DERIVED
-// from a session's first message (shortTitle), which is a different job: that is
-// the app naming a thread nobody named, where a clamp is all there is. Here the
-// user wrote the line, and the field is theirs to shorten.
-export function splitDraft(draft?: string | null): {
-  title: string;
-  description: string;
-} {
-  const text = (draft ?? "").trim();
-  if (!text) return { title: "", description: "" };
-  const brk = text.indexOf("\n");
-  return {
-    title: (brk < 0 ? text : text.slice(0, brk)).trim(),
-    description: brk < 0 ? "" : text.slice(brk + 1).trim(),
-  };
-}
-
 /**
  * WHERE "BACK TO CHAT" LANDS A REOPENED DRAFT, out of the chat key the hop
  * stored on it (design.md, Round 2: "A draft moves, never duplicates").
@@ -1590,29 +1566,6 @@ export function backChatHref(key: string, target: string): string {
     return file ? chatPaneUrl(file) : "";
   }
   return target ? explorerUrl(target, key) : "";
-}
-
-/**
- * `splitDraft` RUN BACKWARDS — the card's two fields put back into the one
- * block of prose the composer was holding (design.md, Round 2: "'Back to chat'
- * reverses it").
- *
- * The hop split a sentence across Title and the description; going back has to
- * hand the composer one string again. Title line, blank line, body — the same
- * shape the composer's own text had when it left, so `splitDraft` on the way
- * out again lands on the same two fields.
- *
- * EITHER HALF ALONE IS JUST THAT HALF, with no separator to show for the one
- * that is missing: a card whose title was cleared must not come back as a
- * message opening on two blank lines, and one with nothing but a title must not
- * come back with a trailing gap (Akshil, 2026-09-11).
- */
-export function joinDraft(title?: string | null, description?: string | null): string {
-  const head = (title ?? "").trim();
-  const body = (description ?? "").trim();
-  if (!head) return body;
-  if (!body) return head;
-  return `${head}\n\n${body}`;
 }
 
 // A prefill this field must refuse, whichever source produced it: a transcript
@@ -2097,19 +2050,15 @@ export function buildSchedulePayload(form: {
   // same request that creates the task: two round trips could half-fail and
   // leave a draft row sitting beside the task it had already become.
   draftId?: string;
-  // THE CHAT DRAFT THESE WORDS WERE TYPED IN, for a card opened from the
-  // composer's Schedule button — or re-opened from a draft that remembers one
-  // (`form.from_chat_key`). Sent so the server drops the chat's copy in the same
-  // request that creates the task.
+  // THE CHAT RECORD THIS FORM IS, for a card opened from the composer's
+  // Schedule button or from the Draft chip — the same key the card has been
+  // autosaving onto. Sent so the server deletes that record in the same request
+  // that creates the task, and moves its TASK number onto the new entry, exactly
+  // as `draft_id` does for a task draft (contract §5, `draft_key`).
   //
-  // IT IS NOT REDUNDANT WITH `draftId`, which is the bug it fixes (Bugbot, PR
-  // #1118): the hop's first autosave is what normally moves the chat draft onto
-  // the task draft, and pressing Schedule inside that 600 ms debounce means
-  // there IS no task draft — no id, no move, and the chat draft (with its row
-  // and its TASK number) outlives the task it just became. Nor is it covered by
-  // `sessionId`: a chat that has never sent anything has no session at all, and
-  // its draft is keyed `new:<file>`.
-  fromChatKey?: string;
+  // THE TWO ARE ALTERNATIVES, not a pair: a card edits one record, and which
+  // kind it is decides which key names it.
+  draftKey?: string;
   // DID ANYONE PICK THIS TIME? False when the card was opened from the List or
   // the Board — where the when-row starts folded away — and the user never
   // touched it, so `when` is only the form's own default of "now". The task
@@ -2195,7 +2144,7 @@ export function buildSchedulePayload(form: {
     // same reason `title` is.
     ...(form.replacesEntryId ? { replaces: form.replacesEntryId } : {}),
     ...(form.draftId ? { draft_id: form.draftId } : {}),
-    ...(form.fromChatKey ? { from_chat_key: form.fromChatKey } : {}),
+    ...(form.draftKey ? { draft_key: form.draftKey } : {}),
     ...(form.images && form.images.length ? { images: form.images } : {}),
     ...(form.attachments && form.attachments.length
       ? { attachments: form.attachments } : {}),
@@ -2359,6 +2308,9 @@ export function saveBlockedReason(f: Parameters<typeof saveEnabled>[0] & {
  * there is a card that will not open at all.
  */
 export interface DraftSeed {
+  /** The task draft this card is reopening, or `""` for a seed that carries no
+   *  draft at all — a chat hop's record, or a folder to open a blank card on.
+   *  `""` is NOT a minted form: see `draftId` (Bugbot 4028344040). */
   id: string;
   form?: Record<string, unknown> | null;
 }
@@ -2375,24 +2327,13 @@ export interface SeededDraftForm {
   attachments: { path: string; name: string; kind: "image" | "file" }[] | null;
   newTaskEachRun: boolean | null;
   /**
-   * THE CONVERSATION THESE WORDS WERE TYPED IN, when the draft came from one.
-   *
-   * Stored server-side by the hop's first save (`drafts.TASK_FIELDS`), so it is
-   * still here when the modal is REOPENED from the draft's row — the one
-   * opening with no `?back=` in the URL and nothing left in sessionStorage.
-   * It is what "Back to chat" aims at on that card (`backToChat`).
-   */
-  fromChatKey: string | null;
-  /**
    * THE CONVERSATION THIS DRAFT IS A MESSAGE TO (Akshil, 2026-09-12).
    *
-   * `fromChatKey` above is where the words were TYPED and is spent the moment
-   * the chat's own copy is deleted; this is where the task is GOING, and it has
-   * to survive the card being closed. A hop out of a session that has already
-   * run schedules into that session — same thread, same TASK number — and the
-   * page knew that only while it stayed open: exit the card, reopen the draft
-   * from its row and press Schedule, and the message started a new conversation
-   * under a new number instead.
+   * Where the task is GOING, and it has to survive the card being closed. A hop
+   * out of a session that has already run schedules into that session — same
+   * thread, same TASK number — and the page knew that only while it stayed
+   * open: exit the card, reopen the draft from its row and press Schedule, and
+   * the message started a new conversation under a new number instead.
    *
    * It is what `sessionId` on the Schedule payload falls back to, and it is
    * what the server's listing reads to give this draft the session's own row
@@ -2461,7 +2402,6 @@ export function seededDraftForm(seed?: DraftSeed | null): SeededDraftForm {
     permission: str("permission"),
     attachments: attachments && attachments.length ? attachments : null,
     newTaskEachRun: typeof f.new_task_each_run === "boolean" ? f.new_task_each_run : null,
-    fromChatKey: str("from_chat_key"),
     sessionId: str("session_id"),
     customRule: parseCustomRule(f.custom_rule),
   };
@@ -2475,7 +2415,7 @@ export default function NewJobModal({
   initialDraft,
   chatSessionId,
   chatBack,
-  fromChatKey,
+  chatKey,
   lockTarget = false,
   sourceTask = null,
   editing,
@@ -2523,19 +2463,19 @@ export default function NewJobModal({
   // point is a round trip (chat → schedule → back → adjust → again).
   chatBack?: string | null;
   /**
-   * THE CHAT DRAFT THIS CARD'S WORDS CAME FROM (design.md, Round 2: "A draft
-   * moves, never duplicates").
+   * THE CHAT RECORD THIS CARD IS EDITING (design "one record", §1).
    *
-   * Only on the Schedule hop, and it is the key the composer's own autosave was
-   * writing under — `<session_id>`, or `new:<file>` for a chat that has none.
-   * The FIRST task-draft save names it, and the server deletes that chat draft
-   * as it stores this one: the sentence exists in exactly one place at every
-   * instant, so the List never shows it twice and the TASK number moves rather
-   * than being allocated a second time.
+   * The key the composer's own autosave writes under — `<session_id>`, or
+   * `new:<file>` for a chat that has none — and, when it is set, the record THIS
+   * card autosaves onto as well. Not a key to supersede: there is no second
+   * record to mint and none to delete, so the sentence is in exactly one place
+   * at every instant by construction rather than by a delete racing a write.
    *
-   * It is also what "Back to chat" reverses — see `backToChat` below.
+   * Set by the Schedule hop, by the Draft chip's press, and by nothing else. `""`
+   * (or absent) is a card with no chat behind it, which autosaves to a
+   * `draft:<id>` task record exactly as it always has.
    */
-  fromChatKey?: string | null;
+  chatKey?: string | null;
   /**
    * THE PATH IS NOT A QUESTION HERE (design.md §2, 2026-09-14).
    *
@@ -2555,7 +2495,7 @@ export default function NewJobModal({
    * THE TASK THESE WORDS CAME OUT OF, when the card was opened from one
    * (design.md B, Option 1).
    *
-   * Scheduling from a task flows through `chatSessionId` / `fromChatKey`, which
+   * Scheduling from a task flows through `chatSessionId` / `chatKey`, which
    * name a SESSION — nothing on the card said which task that session is, so a
    * reader mid-form had no way to check what they were continuing. The header
    * says it as a chip beside the title, and pressing it opens that task.
@@ -2806,7 +2746,11 @@ export default function NewJobModal({
   //
   // Held in consts for the same reason `initialAsk` is: the BASELINE (`initial`)
   // has to be the identical value or an untouched Edit reads as dirty.
-  const nameSession = (editing?.session_id || chatSessionId) ?? "";
+  // …AND THE SAME THREE SOURCES NAME IT (`boundSessionId`, below): a hop's key
+  // IS the session when the chat has run, which is what lets the title field
+  // fill itself from the conversation instead of opening blank.
+  const nameSession =
+    (editing?.session_id || chatKeySession(chatKey ?? "") || chatSessionId) ?? "";
   const { title: derivedTitle, lookupSession: titleLookup } =
     initialTitleStateOf(editing, nameSession, draft.title);
   const [title, setTitle] = useState(saved.title ?? derivedTitle);
@@ -2873,7 +2817,7 @@ export default function NewJobModal({
   );
   const [customRule, setCustomRule] = useState<RecurrenceRule | null>(() => {
     // A REOPENED DRAFT'S OWN RULE OUTRANKS `editing` — the two are mutually
-    // exclusive (a draft never carries `editing`, per `hopSeeded`'s comment
+    // exclusive (a draft never carries `editing`, per `draftBody`'s comment
     // above), and reading it here is the other half of the fix `custom_rule`
     // exists for: storing it was pointless if nothing ever seeded it back
     // (Bugbot, PR #1118).
@@ -3231,7 +3175,16 @@ export default function NewJobModal({
   // abandoning one is a cancel rather than a draft (design.md, Not in scope) —
   // so `editing` writes nothing here and keeps the close-twice guard it has
   // always had.
-  const [draftId, setDraftId] = useState<string | null>(initialDraft?.id ?? null);
+  //
+  // `""` IS NOT AN ID (Bugbot 4028344040). Two doors seed this card with a
+  // DraftSeed that carries no id at all and only exists to state a folder or a
+  // stored form — the chat hop (`chatHopSeed`, whose record is a chat key, not
+  // a task draft) and the empty never-sent hop, which opens a blank card on the
+  // folder its chat was mounted on. An empty string is not null, so the card
+  // read both as "already minted" and autosaved a settings-only change — a time,
+  // a model, a folder — into the Untitled draft it refuses to mint everywhere
+  // else. A seed says "no draft yet" by saying nothing, however it spells it.
+  const [draftId, setDraftId] = useState<string | null>(initialDraft?.id || null);
   const draftIdRef = useRef(draftId);
   draftIdRef.current = draftId;
   // The form as the store holds it. `when` / `repeat` / `new_task_each_run` are
@@ -3239,60 +3192,27 @@ export default function NewJobModal({
   // the same distinction `timePicked` draws on the card: "never opened the
   // when-row" is not the same answer as "chose now".
   /**
-   * THE HOP'S WORDS ARE ALREADY A DRAFT (design.md, Round 2: "the task draft is
-   * minted at once from the hop content").
+   * THE RECORD THIS CARD WRITES INTO — a chat key, or nothing (design "one
+   * record", §1 and §4).
    *
-   * `dirty` above is the ✕ guard's question — "has the user changed anything
-   * here" — and on a card opened from the chat's Schedule button the honest
-   * answer is no: the prefill moved the baseline with it, exactly as an Edit's
-   * does, so that a close needs one click and not two. But the DRAFT's question
-   * is a different one: are there words here that would be lost. The hop's words
-   * were typed, a moment ago, in the composer — and the composer's own copy of
-   * them is about to be deleted in favour of this one (`fromChatKey`). Waiting
-   * for a keystroke here would be waiting to lose them.
+   * When it is set, the card is a second door onto a CHAT record: the composer's
+   * own, edited in place. There is no mint, no origin key to spend, no delete of
+   * a copy, and no write-at-mount — all four existed because a hop used to create
+   * a task draft over words that already lived somewhere, and the window between
+   * "words exist here" and "words exist there" was the whole bug.
    *
-   * So the two questions are asked apart, and the ✕ keeps the behaviour it has
-   * always had. This one is answered once, at mount, off the props: a chat
-   * handoff with something in it, on a card that is not an Edit (an Edit is a
-   * stored entry, not a draft at all).
-   *
-   * A RE-OPENED DRAFT IS INCLUDED WHEN THE HOP BROUGHT WORDS (Akshil,
-   * 2026-09-12). Reopening a draft from its row carries no hop, so nothing
-   * changes there. But a hop out of a chat that already has a bound form
-   * reopens THAT form (shell/Scheduled `boundDraftSeed`) with the composer's
-   * newer words merged into it — and those words are in exactly the position
-   * this flag exists for: typed a moment ago, about to have the composer's own
-   * copy deleted, and not yet anywhere else. Writing at mount is what stops a
-   * close from losing them; the id is the draft's own, so it is one more save
-   * of the same form rather than a second draft.
+   * AN EDIT-TASK CARD JOINS THEM (design §4). An Edit used to autosave nowhere
+   * at all — `draftBody` was null whenever `editing` was set — so ✕ on a card
+   * with ten minutes of changes in it dropped every one of them silently. A task
+   * that has run has a session, and that session has a chat record, so the Edit
+   * writes into it exactly as the Draft chip's card does. A task with no session has
+   * no record to write into and keeps the old behaviour, which is the honest
+   * answer rather than a `draft:<id>` invented for it.
    */
-  // …and a hop can arrive as FILES with no words at all — a picture dropped into
-  // an empty composer is a chat draft (`drafts.put_chat`), so it is a task draft
-  // the moment it lands here, or the composer's copy would sit beside this card
-  // as a second row (Akshil, 2026-09-12).
-  const hopSeeded = !editing
-    && (!!(initialMessage ?? "").trim() || !!initialAttachments?.length);
-  /**
-   * THE CHAT THIS CARD'S WORDS CAME OUT OF, whichever way the card was opened —
-   * and the thing `POST /api/schedule` is told so it can drop that draft (Bugbot,
-   * PR #1118).
-   *
-   * The move is normally made by the first autosave (`from_chat_key` on the
-   * task-draft PUT, below). But Schedule pressed inside the 600 ms debounce
-   * never gets there: no id is minted, no PUT goes out, and the composer's draft
-   * — its row and its TASK number with it — sits beside the task it just became.
-   * `session_id` on the payload does not cover it either: a chat with no session
-   * yet is keyed `new:<file>`, which is not a session id.
-   *
-   * Two sources, same answer. The FRESH hop is handed the key as a prop; a card
-   * REOPENED from its draft row has only what the server stored on the draft
-   * (`form.from_chat_key`) — the same fact `backToChat` aims at below, for the
-   * same reason it exists at all.
-   */
-  const originChatKey = (fromChatKey ?? "") || (saved.fromChatKey ?? "");
+  const recordKey = (chatKey ?? "") || (editing?.session_id ?? "");
   /**
    * THE CONVERSATION THIS CARD'S TASK IS A MESSAGE TO — the destination, where
-   * `originChatKey` is the provenance (Akshil, 2026-09-12).
+   * `recordKey` is the record being edited (Akshil, 2026-09-12).
    *
    * A hop out of a chat that HAS ALREADY RUN is a message into that thread:
    * `POST /api/schedule` is given the session, the entry is filed under it, and
@@ -3302,17 +3222,35 @@ export default function NewJobModal({
    * pressing Schedule opened a SECOND session with a SECOND task number and the
    * TASK-nnn the reader had been watching was gone.
    *
-   * Two sources, same answer, and the same shape as `originChatKey` one line
-   * up: the fresh hop is handed the id as a prop, and a card reopened from its
-   * draft row has only what the server stored on the draft. It rides the
-   * autosave body (below) and the Schedule payload (`sessionId`), so the
-   * binding is written down the first time the card saves and read back every
-   * time it opens.
+   * THREE SOURCES, ONE ANSWER, and the FIRST of them is the record's own key
+   * (`chatKeySession`, Akshil, 2026-09-17). A hop out of a chat that has run
+   * opens this card on that conversation's record, and a session's record is
+   * filed under the session id itself — so the key the card is editing IS the
+   * thread, and nothing has to be told it separately. It used to be told:
+   * `?session_id=` rode the hop's URL and arrived here as `chatSessionId`. The
+   * param went when the hop stopped carrying copies of what the server already
+   * holds (design "one record", §1) and this const was left reading a prop
+   * nobody passes any more.
    *
-   * "" for a hop out of a chat with no session yet: there is no thread to
-   * continue, and that draft is keyed `new:<file>` precisely because of it.
+   * WHAT THAT COST, because it is the bug and not a tidiness point: with no
+   * session the Schedule payload named none, so `POST /api/schedule` filed the
+   * message as a task of its OWN — a fresh `pending:<entry>` row with a fresh
+   * TASK number, sitting beside the conversation it was supposed to be the next
+   * message of. One booking, two rows, and the reader's report was exactly that:
+   * "scheduling a task creates double entries". `chatHopSeed` restates the same
+   * id into the stored form, which is why the everyday hop (a composer with
+   * words in it, a record already on the server) still worked — and why the
+   * empty-composer hop, whose record does not exist yet, did not.
+   *
+   * So: the key when the key is a session, else what the stored record said,
+   * else the prop for any caller that still hands one over. "" for a hop out of
+   * a chat with no session yet — there is no thread to continue, and that draft
+   * is keyed `new:<file>` precisely because of it.
    */
-  const boundSessionId = (chatSessionId ?? "") || (saved.sessionId ?? "");
+  const boundSessionId =
+    chatKeySession(chatKey ?? "")
+    || (chatSessionId ?? "")
+    || (saved.sessionId ?? "");
   /**
    * IS THERE ANYTHING IN THIS CARD WORTH KEEPING — words, or files. Nothing
    * else (Akshil, 2026-09-12).
@@ -3330,15 +3268,26 @@ export default function NewJobModal({
     || images.some((i) => i.path);
   /**
    * …AND ONCE A DRAFT EXISTS, EMPTYING IT IS A WRITE, not a silence. The body
-   * keeps being produced while `draftId` is set, so clearing the last words
+   * keeps being produced while the card HAS a record, so clearing the last words
    * sends the empty form and the server turns that PUT into a delete
-   * (`drafts._empty_task`). Without it the card went quiet at exactly the
+   * (`drafts._empty_task`; for a chat record, into "clear the words, keep the
+   * settings" — contract §2). Without it the card went quiet at exactly the
    * moment it had something to say, and the reported shape of that was: clear
    * the text and the row reads "Untitled draft", then remove the attachment and
    * the row never goes away at all.
+   *
+   * NOTHING IS WRITTEN UNTIL SOMEBODY CHANGES SOMETHING (design §4). `dirty` is
+   * the whole gate now: there is no write-at-mount arm any more, because a hop
+   * no longer arrives holding words that exist nowhere else — they are already
+   * on the record this card is about to edit. Open the card, press ✕, and
+   * nothing at all has happened.
+   *
+   * AN EDIT WRITES TOO, when it has a record to write into (`recordKey`) — see
+   * that constant. An Edit on a task with no session still writes nothing: it is
+   * a stored entry, not a draft.
    */
-  const draftBody: TaskDraftForm | null = !editing && (dirty || hopSeeded)
-    && (draftContent || draftId !== null)
+  const draftBody: TaskDraftForm | null = (!editing || !!recordKey) && dirty
+    && (draftContent || draftId !== null || !!recordKey)
     ? {
       title,
       description: message,
@@ -3354,10 +3303,7 @@ export default function NewJobModal({
         .filter((i) => i.path)
         .map((i) => ({ path: i.path, name: i.name, kind: i.kind })),
       new_task_each_run: repeatOn ? newTaskEachRun : null,
-      // WHERE THIS TASK IS GOING, restated on every save — see
-      // `boundSessionId`. Unlike `from_chat_key` (spent once, because it makes
-      // the server delete something) this is plain state, and a card that
-      // restates it cannot lose the binding to a merge.
+      // WHERE THIS TASK IS GOING, restated on every save — see `boundSessionId`.
       session_id: boundSessionId,
       // THE RULE `repeat` POINTS AT, when the choice is Custom — null the same
       // moment `repeat` itself goes null, so a draft can never say "custom"
@@ -3365,83 +3311,197 @@ export default function NewJobModal({
       custom_rule: repeatOn && repeat === "custom" ? customRule : null,
     }
     : null;
-  // NULL UNTIL THE FORM IS DIRTY, and that is what "nothing minted for an
-  // untouched modal" is made of: the autosave writes when its value CHANGES, so
-  // a card nobody has touched — including one whose prefill effects have since
-  // fired, since those move the baseline too — never leaves null and never
-  // writes. The mint happens inside the write, so the id and the first save are
-  // one event and a card cannot end up with an id and no stored draft.
-  //
-  // …and on a HOP-SEEDED card it writes once with nobody having typed at all
-  // (`writeInitial`): the value it mounts on is already a draft, so the opening
-  // value counts as unwritten and the first debounce mints it.
-  //
-  // THE CHAT KEY RIDES THAT FIRST WRITE AND ONLY THAT ONE. It tells the server
-  // to delete the composer's copy of these words as it stores this one, so the
-  // sentence is in exactly one place at every instant (design.md, Round 2: "A
-  // draft moves, never duplicates"). Latched on a ref rather than re-read from
-  // the prop: the second PUT is an ordinary keystroke save, and repeating a
-  // delete for a key that is already gone can only be a no-op or a surprise
-  // (Akshil, 2026-09-11).
-  const chatKeySpent = useRef(false);
-  const autosave = useAutosave(draftBody, (value, opts) => {
+  /**
+   * ONE HOOK, TWO RECORDS. `recordKey` decides which store the same form goes
+   * into, and the two calls differ only in shape:
+   *
+   *   * a CHAT record takes the prose as ONE string — `joinDraft(title,
+   *     description)`, the composer's own box put back together — plus the
+   *     settings as a `form` patch. That is what makes the round trip lossless:
+   *     the composer reads `text`, the card reads `splitDraft(text)`, and
+   *     neither has a second copy of the other's half (contract §1);
+   *   * a TASK record takes the form as it always has, under a uuid this card
+   *     mints inside the write, so the id and the first save are one event and a
+   *     card cannot end up with an id and no stored draft.
+   *
+   * THE CONFLICT RULE IS THE COMPOSER'S (design §2). A 409 means the record
+   * moved under this card — the other tab, or the composer this hop came out of,
+   * still open behind it. Nothing focused in this form means the server's copy
+   * is simply newer, and the card closes onto it rather than showing a form that
+   * no longer exists; a reader mid-field keeps what they are typing, once, with
+   * the same soft toast the composer raises.
+   */
+  /**
+   * THE KEY THIS CARD IS THE EDITOR OF — the chat record it was opened on, or
+   * the task draft it has minted. `""` while it is neither, which is a card
+   * nobody has typed in yet.
+   */
+  const syncKey = recordKey || (draftId ? taskDraftKey(draftId) : "");
+  const autosave = useAutosave(draftBody, (value) => {
     if (!value) return;
+    // ONE SYNCER, TWO SHAPES. `recordKey` decides which store the same form goes
+    // into, and the two statements differ only in shape:
+    //
+    //   * a CHAT record takes the prose as ONE string — `joinDraft(title,
+    //     description)`, the composer's own box put back together — plus the
+    //     settings as a `form` patch. That is what makes the round trip
+    //     lossless: the composer reads `text`, the card reads `splitDraft(text)`,
+    //     and neither has a second copy of the other's half (contract §1);
+    //   * a TASK record takes the form as it always has, under a uuid this card
+    //     mints at the first statement, so the id and the first save are one
+    //     event and a card cannot end up with an id and no stored draft.
+    if (recordKey) {
+      draftSyncer(recordKey).setText(
+        joinDraft(value.title, value.description),
+        value.attachments,
+        {
+          when: value.when,
+          repeat: value.repeat,
+          custom_rule: value.custom_rule,
+          model: value.model,
+          effort: value.effort,
+          permission: value.permission,
+          target: value.target,
+          new_task_each_run: value.new_task_each_run,
+        },
+        { defer: true },
+      );
+      return;
+    }
     let id = draftIdRef.current;
     if (!id) {
       id = newTaskDraftId();
       draftIdRef.current = id;
       setDraftId(id);
     }
-    const moving = chatKeySpent.current ? "" : (fromChatKey ?? "");
-    chatKeySpent.current = true;
-    // Returned (not `void`-discarded) so `autosave.settle()` — Discard and
-    // Schedule both call it before their own delete — can tell when this
-    // particular write actually lands (Akshil, 2026-09-11).
-    //
-    // …AND THE ID COMES BACK, because the write may not have landed on the id
-    // it named (Bugbot, PR #1126, 2026-09-12). A card opened by the Schedule
-    // hop whose `GET /api/drafts` failed cannot see the form already bound to
-    // this conversation, so it mints a new id and saves under it; the server
-    // folds that write into the bound draft rather than evicting it, and
-    // answers the id it actually landed on. Adopting it here is what keeps the
-    // rest of this card pointing at the same record — the next autosave, the
-    // Discard, and the `draft_id` Schedule hands the server so it can drop the
-    // draft as the task is created. Keeping the minted id instead would leave
-    // every one of those three aimed at a record that does not exist. `""` is a
-    // write that failed and says nothing about anything.
-    return saveTaskDraft(id, value, opts, moving || undefined).then((landed) => {
-      if (landed && landed !== draftIdRef.current) {
-        draftIdRef.current = landed;
-        setDraftId(landed);
-      }
-      return !!landed;
-    });
-  }, { writeInitial: hopSeeded });
+    // STATED, NOT SENT (Akshil, 2026-09-17): the card writes when the window
+    // loses focus, when the page goes, when it closes — not 600 ms after every
+    // keystroke. Same rule as the composers.
+    draftSyncer(taskDraftKey(id)).setTask(value, { defer: true });
+  }, { key: syncKey });
   const autosaveRef = useRef(autosave);
   autosaveRef.current = autosave;
-  // Discard: the draft goes, and so does the card. `stop` first — a write still
-  // in the debounce would otherwise land after the DELETE and put it back.
-  // `stop` alone only disarms the NEXT write, though: a PUT already sent to
-  // the server cannot be cancelled, so `settle` waits for that one write
-  // (whichever is running) before the delete goes out — otherwise it can
-  // land after the delete and resurrect the draft this button just asked to
-  // throw away (Akshil, 2026-09-11).
-  //
-  // AND THE ID IS READ AFTER `settle`, NOT BEFORE IT (Bugbot, PR #1126,
-  // 2026-09-12). The write being waited out is also the write that can CHANGE
-  // the id: a card whose `GET /api/drafts` failed saves under a freshly minted
-  // one, the server folds that write into the draft already bound to this
-  // conversation, and the autosave adopts the id it answers with — inside the
-  // promise `settle` waits on (see the save above), so by the line below the
-  // adoption has happened. Reading the id first aimed the DELETE at the minted
-  // id the server had already dropped: the request succeeded against nothing
-  // and the bound draft lived on holding the very words this button was pressed
-  // to be rid of.
-  const discard = async () => {
-    autosaveRef.current.stop();
-    await autosaveRef.current.settle();
+  // CLOSING THE CARD IS A SAVE MOMENT. Discard and Schedule have already said
+  // their piece (`reset(null)` + delete / forget), so this finds nothing to send
+  // on those roads; on a plain ✕ it carries the last edits.
+  useEffect(() => () => autosaveRef.current.flush(), []);
+  /**
+   * WHAT THIS CARD ANSWERS WHEN THE RECORD MOVED UNDER IT (design §2), read
+   * through a ref because the rule is registered with the KEY and the fields it
+   * asks about change on every keystroke.
+   *
+   * A 409 means somebody else wrote first — the other tab, or the composer this
+   * hop came out of, still open behind it. Nothing focused in this form means
+   * the server's copy is simply newer, and the card closes onto it rather than
+   * showing a form that no longer exists; a reader mid-field keeps what they are
+   * typing, once, with the same soft toast the composer raises.
+   */
+  const ruleRef = useRef<DraftConflictRule | null>(null);
+  ruleRef.current = {
+    // The card is a modal, so anything focused in a field IS this card's —
+    // there is nothing else on the page a caret can be in while it is open.
+    focused: () => {
+      const el = typeof document === "undefined" ? null : document.activeElement;
+      return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
+    },
+    localText: () => `${title}\u0000${message}`,
+    adopt: () => {
+      // A CARD CANNOT REPAINT ITSELF FROM A RECORD: every field is seeded in a
+      // `useState` initialiser, which is what makes a re-opened draft a fresh
+      // mount (shell/Scheduled's `key`). So adopting is closing — the record on
+      // the server is the newer one, and the card that was showing the older
+      // one has nothing left to say. Nobody typed anything here, by the rule
+      // that got us into this branch, so there is nothing to lose by it.
+      notify({ title: "That draft changed elsewhere", tone: "info" });
+      onClose();
+    },
+    onKept: () =>
+      notify({ title: "Updated elsewhere, kept your text", tone: "info" }),
+    // THE ID THE WRITE LANDED ON, when the store folded this form into a draft
+    // that already held this conversation (Bugbot, PR #1126). Adopting it keeps
+    // the Discard and the `draft_id` Schedule hands over pointing at the record
+    // that exists.
+    onTaskId: (id: string) => {
+      if (!id || id === draftIdRef.current) return;
+      draftIdRef.current = id;
+      setDraftId(id);
+    },
+  };
+  useEffect(() => {
+    if (!syncKey) return;
+    return draftSyncer(syncKey).watch({
+      focused: () => !!ruleRef.current?.focused(),
+      localText: () => ruleRef.current?.localText() ?? "",
+      adopt: (record) => ruleRef.current?.adopt(record),
+      onKept: () => ruleRef.current?.onKept?.(),
+      onTaskId: (id) => ruleRef.current?.onTaskId?.(id),
+    });
+  }, [syncKey]);
+  const recordKeyRef = useRef(recordKey);
+  recordKeyRef.current = recordKey;
+  /**
+   * THE RECORD THIS CARD IS EDITING CHANGED SOMEWHERE ELSE (design §3).
+   *
+   * Two things can happen to it while the card is open: the trash on its row is
+   * pressed (from the List behind it, the Board, the Cards wall, another window
+   * entirely), or somebody saves it — the composer this hop came out of, still
+   * mounted on the same key, or a second tab. Both arrive here the same way, on
+   * the change feed, with the key and the version.
+   *
+   * GONE CLOSES THE CARD, with the toast, because the form it is showing no
+   * longer stands for anything: leaving it up would let the reader go on editing
+   * a record that would be re-created by their next keystroke — which is the
+   * resurrection this whole design exists to make impossible.
+   *
+   * CHANGED IS LEFT TO THE NEXT SAVE. Every field here is seeded in a `useState`
+   * initialiser, so this card cannot repaint itself from a record; what it can
+   * do is refuse to overwrite one, and the 409 rule above does exactly that —
+   * the write is refused, and either the card closes onto the newer record or
+   * the reader's own words win with a toast.
+   *
+   * ONLY FOR A KEY THIS CLIENT HOLDS A VERSION FOR (contract §3) — WHEN THE FEED
+   * IS THE ONE SAYING IT: the announced key set is noisy, and closing a card on
+   * a `gone` for a record that never existed would be the worst possible
+   * reading of it. A discard made on THIS page carries `certain` and is acted on
+   * regardless, because the delete it came out of has already forgotten the very
+   * version the guard asks for (tasksPulse `announceDraftsGone`).
+   */
+  useEffect(() => onDraftChange((_changed, gone, certain) => {
+    const key = recordKeyRef.current;
     const id = draftIdRef.current;
-    if (id) void deleteTaskDraft(id);
+    const mine = key || (id ? taskDraftKey(id) : "");
+    if (!mine) return;
+    if (!certain && draftVersion(mine) === undefined) return;
+    if (!gone.includes(mine)) return;
+    forgetDraftVersion(mine);
+    notify({ title: "Discarded elsewhere", tone: "info" });
+    onClose();
+  }), [onClose]);
+  /**
+   * DISCARD — the draft goes, and so does the card.
+   *
+   * THREE LINES, where it used to be six. `stop()` then `await settle()` before
+   * the DELETE was an ordering protocol against this card's own in-flight PUT;
+   * the version does that now, so a write still on the wire is refused by the
+   * server instead of landing after the delete and putting the row back. And
+   * `reset` is what stops the unmount flush from writing on the way out.
+   *
+   * WHICH RECORD depends on which one this card has been writing into — the
+   * chat record it was opened on, or the task draft it minted. One card, one
+   * record, so there is never a second one left standing.
+   */
+  const discard = async () => {
+    autosaveRef.current.reset(null);
+    // ONE STATEMENT TO THE ONE WRITER: this record should not exist. `handoff`
+    // waits for the server to agree, so the card closes on a fact rather than on
+    // a hope — and a write of this card's own that was still on the wire cannot
+    // land afterwards and put the row back, because the syncer is what it was
+    // waiting on.
+    if (syncKey) {
+      const sync = draftSyncer(syncKey);
+      sync.markDeleted();
+      await sync.handoff();
+    }
     onClose();
   };
 
@@ -3538,33 +3598,23 @@ export default function NewJobModal({
     [],
   );
   //
-  // AND IT REVERSES THE MOVE (design.md, Round 2: "'Back to chat' reverses it").
-  // The hop deleted the chat draft and minted a task draft in its place; going
-  // back deletes the task draft, and the composer's own autosave re-creates the
-  // chat one from the sessionStorage stash it re-seeds from. Exactly one draft
-  // exists at every instant, and it is the one belonging to whichever surface
-  // the reader is actually looking at — leaving the task draft behind would put
-  // a row on the List for a card the user just walked out of.
+  // AND IT REVERSES NOTHING, because there is nothing to reverse (design "one
+  // record", §1). The hop used to delete the chat draft and mint a task draft in
+  // its place, so walking back had to undo that in three ordered steps — flush,
+  // settle, write the words onto the chat key, delete the task draft, navigate —
+  // with a separate arm for the bound case where the two "records" were secretly
+  // one. The card now edits the composer's own record, so Back to chat is a
+  // FLUSH and a navigation: the record is untouched, and the composer on the
+  // other side seeds from the very thing this card was writing into.
   //
-  // `stop` then `settle` before the delete, for Discard's reason and it is the
-  // same hazard: a debounced PUT still in the pipe (or one already sent) would
-  // land after the DELETE and resurrect exactly the draft this is disposing of.
-  // The navigation waits on that — it is one round trip, and leaving without it
-  // is how the row comes back (Akshil, 2026-09-11).
+  // FLUSH AND NOT `stop`: the last 600 ms of typing are still in the debounce,
+  // and the box being walked back to is where those keystrokes belong.
   //
-  // THE WAY BACK OUTLIVES THE HOP'S URL (Akshil, 2026-09-11 — the bug). The two
-  // paragraphs above describe the FRESH hop: `?back=…` names where to land, and
-  // the composer re-seeds itself from the sessionStorage stash the hop left. A
-  // draft REOPENED from its row on the List has neither — the URL is `/tasks`
-  // and the stash was spent on read — so for that card the round trip has to be
-  // rebuilt out of the one thing that survived, `form.from_chat_key`, which the
-  // server now stores. Same three steps in the same order, with the chat draft
-  // written BY HAND where the fresh hop had a stash to do it: stop autosaving,
-  // settle whatever is in flight, PUT the words back onto the chat key, delete
-  // the task draft, then navigate. Exactly one draft exists at every instant,
-  // which is the whole rule.
-  const backChatKey = chatBack ? "" : (saved.fromChatKey ?? "");
-  const canGoBack = !!chatBack || !!backChatKey;
+  // WHERE IT LANDS is `?from=` when the hop carried one, and otherwise the
+  // record's own key turned into a route (`backChatHref`) — which is what the Draft
+  // chip's card has, since that press starts on this page and names no route.
+  const backHref = chatBack || backChatHref(recordKey, target);
+  const canGoBack = !!backHref;
   const backToChat = async () => {
     if (!canGoBack) return;
     if (dirty && !backConfirm) {
@@ -3573,48 +3623,8 @@ export default function NewJobModal({
       backTimer.current = window.setTimeout(() => setBackConfirm(false), 2000);
       return;
     }
-    // FLUSH FIRST, on the bound arm's account (Bugbot, PR #1126, 2026-09-12):
-    // the last 600 ms of typing are still in the debounce, and the composer
-    // this hands off to seeds from the FORM — so those keystrokes have to land
-    // in the form before the walk, and `stop` would otherwise also silence the
-    // unmount flush that used to catch them. The unbound arm re-saves the live
-    // words by hand below, so the flush is harmless there (one write, same
-    // value, then the delete).
     autosaveRef.current.flush();
-    autosaveRef.current.stop();
-    await autosaveRef.current.settle();
-    // AFTER `settle`, for Discard's reason (Bugbot, PR #1126, 2026-09-12): the
-    // write this just waited out is the one that can rename the draft, when the
-    // server folds it into a form already bound to this conversation. Read
-    // before, the DELETE below names an id the server has already dropped and
-    // the bound draft outlives the words being handed back to the composer —
-    // which is the duplicate the whole move exists to prevent.
-    const id = draftIdRef.current;
-    // ONE RECORD, TWO DOORS (Bugbot, PR #1126, 2026-09-12). A draft bound to a
-    // session IS the chat draft: the server's chat view reads the form's words
-    // off the same record the autosave just wrote (`put_chat` writes the bound
-    // form when the key is that session). Re-saving the chat draft here would
-    // only update that record, and the delete that follows would remove it —
-    // the composer then seeds from nothing. So on the bound arm the record must
-    // survive: stop, settle, walk through the other door. Only the unbound
-    // draft (`new:<file>`, no session) is two records, and only it re-seeds by
-    // hand and deletes.
-    if (boundSessionId) {
-      navigateUrl(chatBack || backChatHref(backChatKey, target));
-      return;
-    }
-    if (backChatKey) {
-      // The inverse of the split the hop made — `joinDraft` puts the title line
-      // and the body back into the one block of prose the composer holds. The
-      // attachments ride along as the same three fields the task draft stored
-      // them as; a chip whose upload has not answered names no file yet and is
-      // dropped, exactly as the task draft drops it.
-      await saveChatDraft(backChatKey, joinDraft(title, message),
-        images.filter((i) => i.path)
-          .map((i) => ({ path: i.path, name: i.name, kind: i.kind })));
-    }
-    if (id) await deleteTaskDraft(id);
-    navigateUrl(chatBack || backChatHref(backChatKey, target));
+    navigateUrl(backHref);
   };
 
   // The replacement was created but the original could not be withdrawn: the
@@ -3750,24 +3760,23 @@ export default function NewJobModal({
       // 2026-08-16; Bugbot, PR #548), and the task's OWN thread is carried
       // through the re-create an edit really is.
       // THE DRAFT STOPS HERE. The server deletes it as part of creating the
-      // task (it is handed `draft_id` below), so the only thing left to do is
-      // make sure nothing this card has queued can write it back — a debounced
-      // save from the keystroke before Schedule would otherwise resurrect a
-      // draft for a task that now exists (Akshil, 2026-09-11). `stop` disarms
-      // the NEXT write; it cannot cancel one already sent to the server, so
-      // `settle` waits that one out too, BEFORE the request below goes out —
-      // the server-side delete must be ordered after the last PUT, not merely
-      // after the last one this client could still call off.
+      // task (it is handed `draft_id` or `draft_key` below), so the only thing
+      // left to do is make sure nothing this card has queued writes it back.
+      // `reset(null)` is the whole of that now: it forgets the pending debounce
+      // AND leaves the unmount flush with nothing to say. A PUT already on the
+      // wire needs no handling — it states the version it read, the create bumps
+      // past it, and the server refuses it.
       //
-      // `flush` FIRST, and it is load-bearing on a HOP-SEEDED card: `writeInitial`
-      // only arms the 600 ms debounce, so a Schedule pressed within that window
-      // (the whole point of a hop is that the card opens ready to send) would
-      // otherwise reach `stop` before a single write ever went out — no id
-      // minted, no `from_chat_key`, and the chat draft this hop was supposed to
-      // retire outlives the task it became (Bugbot, this batch).
-      autosaveRef.current.flush();
-      autosaveRef.current.stop();
-      await autosaveRef.current.settle();
+      // A HOP-SEEDED CARD NEEDS NO FLUSH FIRST any more either. There is no
+      // first write to force out: the words were already on the record before
+      // this card opened, so `draft_key` below names something that exists
+      // whether or not anybody has typed since (the bug that flush was added
+      // for cannot occur).
+      autosaveRef.current.reset(null);
+      // …AND THE SYNCER FORGETS IT. The debounce belongs to the KEY now, not to
+      // this card, so a keystroke 300 ms before Save would otherwise fire after
+      // the create and write the draft the server has just deleted straight back.
+      if (syncKey) draftSyncer(syncKey).forget();
       await scheduleMessage(
         buildSchedulePayload({
           target,
@@ -3805,9 +3814,11 @@ export default function NewJobModal({
           // to chat now take). Naming the minted id instead left the bound
           // draft standing beside the task it had just become.
           draftId: draftIdRef.current ?? "",
-          // …and the chat draft this card was composed out of, for the case the
-          // autosave never got to move it. See originChatKey.
-          fromChatKey: originChatKey,
+          // …and the CHAT record this card was editing, so the server deletes
+          // it and moves its TASK number onto the entry — `draftId`'s twin for
+          // the other kind of record (contract §5). Never both: a card edits one
+          // record.
+          draftKey: recordKey,
           // Whether anybody chose this time, which is what decides if the task
           // is a plan or a thing to run. See `timePicked`.
           timePicked,
@@ -3994,7 +4005,7 @@ export default function NewJobModal({
               depending on what you opened. The LABEL still differs, because the
               verbs do: one withdraws a running task, one drops an unfinished
               form. No arming step here — there is nothing scheduled to undo. */}
-          {draftId && (
+          {(draftId || (recordKey && !editing)) && (
             <button
               type="button"
               className="btn btn-danger-text new-task-delete"
@@ -4007,11 +4018,10 @@ export default function NewJobModal({
             </button>
           )}
           {/* The way back completes the chat's round trip: chat → schedule →
-              adjust the draft → schedule again. Only shown when a chat sent us
-              here — from anywhere else there is no "back". Two ways it can have:
-              the hop's own `?back=` URL, and a REOPENED draft's stored
-              `from_chat_key`, which is the only trace left once the hop's URL
-              is gone (see `backToChat`). */}
+              adjust the draft → schedule again. Only shown when there is a chat
+              record behind this card — from anywhere else there is no "back".
+              Two ways it can have: the hop's own `?from=` route, and the record's
+              own key turned into one (see `backToChat`). */}
           {canGoBack && (
             <button type="button" className="btn btn-secondary schedule-back-chat"
                     disabled={busy}

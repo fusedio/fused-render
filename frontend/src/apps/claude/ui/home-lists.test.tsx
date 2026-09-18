@@ -8,6 +8,8 @@
 // own — `artLabel`'s fallback chain, `snapDeltaLabel`'s two shapes, the
 // per-session run grouping that stops a second chain's "v2" reading as a
 // duplicate row.
+import { readFileSync } from "node:fs";
+
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterEach, expect, test } from "bun:test";
@@ -34,9 +36,8 @@ type ListsProps = import("./Lists").ListsProps;
 const { listTabKey, nextTab, rememberedTab, resetRememberedTab } = await import(
   "./lists-visibility"
 );
-const { draftTextOf, sessionTitle: rowsSessionTitle, taskInPane, taskPane } = await import(
-  "./list-rows"
-);
+const { sessionTitle: rowsSessionTitle, taskInPane, taskPane } =
+  await import("./list-rows");
 const { resetSessionSeeds, sessionSeed } = await import("./useRecentTasks");
 const { sessionTitle: protoSessionTitle } = await import("../protocol/history");
 const { MARKER_JOIN } = await import("../protocol/wire");
@@ -968,11 +969,13 @@ function pressDraft(recent: Task[], over: Record<string, unknown> = {}) {
   return { r, pressed, hops };
 }
 
-test("A DRAFT ROW FILLS THE COMPOSER AND GOES NOWHERE (Akshil, 2026-09-15)", () => {
-  // The words are unsent words and the landing's own composer is directly above
-  // this list. Both draft kinds used to navigate — a chat draft about another
-  // file hopped the host, a task draft left the app for `/tasks?draft=` — and
-  // neither does now: no href, so not even a ⌘-click has anywhere to go.
+test("A DRAFT ROW HANDS THE ROW TO THE HOST, and draws no link of its own", () => {
+  // The list's whole job is handing the ROW over untouched — no read, no write,
+  // and no URL of its own. Where it goes is the host's one answer
+  // (`ClaudeChat.onFillDraft` → `list-rows.draftHref`), so the press cannot mean
+  // one thing on the landing and another on the Tasks page. No href either: a
+  // draft press is a callback, so there is nothing for a ⌘-click to open in a
+  // tab that would arrive without it.
   const { r, pressed, hops } = pressDraft([chatDraft()]);
   const row = taskRow(r);
   expect(String((row.props as { className?: string }).className)).not.toContain(
@@ -984,11 +987,9 @@ test("A DRAFT ROW FILLS THE COMPOSER AND GOES NOWHERE (Akshil, 2026-09-15)", () 
   expect(r.root.findAll((n) => n.type === "a").length).toBe(0);
 });
 
-test("…and a chat draft about ANOTHER file stays here too", () => {
-  // THE ONE THAT USED TO HOP. Its words go into the box the reader is looking
-  // at; which folder they were typed in is the host's problem, not a reason to
-  // move the page (the landing's autosave then keeps them under `new:<file>`
-  // for THIS folder, which is the accepted cost of not navigating).
+test("…and a chat draft about ANOTHER file is the same press", () => {
+  // Which folder the words were typed in decides what the CARD opens on, not
+  // whether the row is a door: the list hands over the row either way.
   const other = chatDraft({
     key: "new:/repo/other.py",
     target: "/repo/other.py",
@@ -1001,7 +1002,7 @@ test("…and a chat draft about ANOTHER file stays here too", () => {
   expect(r.root.findAll((n) => n.type === "a").length).toBe(0);
 });
 
-test("A TASK DRAFT is the same press — it does not leave for the Tasks modal", () => {
+test("A TASK DRAFT is the same press — one gesture, both kinds", () => {
   const form = chatDraft({
     key: "draft:d-7",
     draft_kind: "task",
@@ -1025,16 +1026,210 @@ test("a LOCKED block still refuses every draft row", () => {
   expect(r.root.findAll((n) => n.type === "a").length).toBe(0);
 });
 
-test("a TASK draft's words come off the form already on the row", async () => {
-  // No fetch for this kind: the whole stored form rides on the row (it is what
-  // the modal used to reopen on), so the description is read straight off it
-  // and the title stands in for a title-only form.
-  const form = (f: Record<string, unknown>) =>
-    chatDraft({ draft_kind: "task", draft_id: "d-1", draft: null, form: f } as Partial<Task>);
-  expect(await draftTextOf(form({ title: "Ship it", description: "and run the tests" })))
-    .toBe("and run the tests");
-  expect(await draftTextOf(form({ title: "Ship it" }))).toBe("Ship it");
-  expect(await draftTextOf(form({ title: "Ship it", description: "   " }))).toBe("Ship it");
+// ---- a press OPENS the record where it is; it never moves it ---------------
+//
+// design "one record", §1. The press used to be a MOVE: it read the source
+// record whole, wrote the words into whichever composer the reader happened to
+// be looking at, and deleted the source. That needed five mechanisms —
+// read-whole-or-refuse, a guard against a second press landing mid-move, an
+// ordering against the destination's own autosave, a join rule both sides had
+// to predict, and an undo for every step that could fail. All five are gone,
+// because the one thing the move existed to prevent (one sentence, two rows,
+// two TASK numbers) cannot happen if nothing is ever copied.
+
+test("a chat draft's press is the row, handed over whole", () => {
+  const { r, pressed } = pressDraft([chatDraft({ key: "new:/repo/other.py" })]);
+  expect(pressed.map((t) => t.key)).toEqual([]);
+  act(() => (taskRow(r).props as { onClick(): void }).onClick());
+  expect(pressed.map((t) => t.key)).toEqual(["new:/repo/other.py"]);
+  // The host decides where that goes (`ClaudeChat.onFillDraft` → `draftHref`);
+  // what the LIST owes is handing the row over untouched, with no read and no
+  // write of its own on the way.
+});
+
+test("A SCHEDULED-LATER ROW OPENS ITS CARD, and it is a real link", () => {
+  // Akshil, 2026-09-16: every Upcoming row opens a card. A message waiting to go
+  // out has no thread to show and is not a draft, so the card that can change or
+  // stop it is the only thing its press could mean — and unlike a draft's, this
+  // press IS a URL, so it stretches a real href a ⌘-click can take.
+  const waiting = chatDraft({
+    key: "pending:e-4",
+    kind: "task",
+    state: "upcoming",
+    status: "upcoming",
+    draft_kind: "",
+    draft_id: "",
+    draft: null,
+    session_id: "",
+    messages: [{ entry_id: "e-4", state: "pending", at: 1, message_id: "m-4" }],
+  } as unknown as Partial<Task>);
+  const { r, hops } = pressDraft([waiting]);
+  // A real href, so the press rides the stretched link the row already draws —
+  // which is also what makes ⌘-click open the card in a tab.
+  const link = r.root.findAll((n) => n.type === "a")[0];
+  expect(link.props.href).toBe("/tasks?edit=e-4");
+  act(() => (link.props as { onClick(ev: unknown): void })
+    .onClick({ preventDefault() {}, metaKey: false, ctrlKey: false, button: 0 }));
+  expect(hops).toEqual(["/tasks?edit=e-4"]);
+});
+
+test("…AND A SCHEDULED FOLLOW-UP ON AN EXISTING THREAD OPENS THE SAME CARD", () => {
+  // Bugbot, PR #1180: Edit was wired only for upcoming rows with NO session, so
+  // a message scheduled into a conversation that already exists fell through to
+  // the transcript — and Recent chats became the one list where an Upcoming
+  // press means something different. `upcomingEditEntry` has never asked about
+  // a session (the Tasks List and Board both open the card for this row), so
+  // neither does this.
+  const later = chatDraft({
+    key: "sess-7",
+    kind: "task",
+    state: "upcoming",
+    status: "upcoming",
+    draft_kind: "",
+    draft_id: "",
+    draft: null,
+    session_id: "sess-7",
+    messages: [{ entry_id: "e-8", state: "pending", at: 1, message_id: "m-8" }],
+  } as unknown as Partial<Task>);
+  const { r, hops } = pressDraft([later]);
+  const link = r.root.findAll((n) => n.type === "a")[0];
+  expect(link.props.href).toBe("/tasks?edit=e-8");
+  act(() => (link.props as { onClick(ev: unknown): void })
+    .onClick({ preventDefault() {}, metaKey: false, ctrlKey: false, button: 0 }));
+  // The card, not the thread: `onOpen` is what a transcript press would call.
+  expect(hops).toEqual(["/tasks?edit=e-8"]);
+});
+
+test("…BUT A QUEUED CHAT OPENS ITS CHAT, NOT A CARD", () => {
+  // The merge of the project queue (PR #1124) into one-record (PR #1180),
+  // 2026-09-17. A message a reader typed into a composer and that is waiting
+  // behind somebody else's run in the same folder lands in the `queued` lane
+  // with exactly one message pending — so `upcomingEditEntry` answers for it
+  // and would send the press to the Edit card, taking the conversation away
+  // from the one row whose entire content IS a conversation. `taskHref` is the
+  // narrower question (queued, chat-origin, names a folder) and is therefore
+  // asked first, which is the order the Tasks page reads these two in as well.
+  const queued = chatDraft({
+    key: "pending:e-9",
+    kind: "task",
+    state: "queued",
+    status: "queued",
+    entry_origin: "chat",
+    draft_kind: "",
+    draft_id: "",
+    draft: null,
+    session_id: "",
+    messages: [{ entry_id: "e-9", state: "pending", at: 1, message_id: "m-9" }],
+  } as unknown as Partial<Task>);
+  const { r, hops } = pressDraft([queued]);
+  const link = r.root.findAll((n) => n.type === "a")[0];
+  expect(link.props.href).toBe(
+    "/explorer/view/repo/x.py?_side=claude&session_id=&queued=e-9",
+  );
+  act(() => (link.props as { onClick(ev: unknown): void })
+    .onClick({ preventDefault() {}, metaKey: false, ctrlKey: false, button: 0 }));
+  expect(hops).toEqual(["/explorer/view/repo/x.py?_side=claude&session_id=&queued=e-9"]);
+});
+
+test("…and a queued FORM still opens its card, because it has one", () => {
+  // The other half of the same rule: an entry the New task modal or the
+  // calendar composed is also keyed `pending:<entry>` and can also be `queued`,
+  // and its content is an instruction that has not run. `taskHref` refuses it
+  // (`entry_origin`), so it falls through to the card — the same answer the
+  // Tasks List and Board give it.
+  const form = chatDraft({
+    key: "pending:e-10",
+    kind: "task",
+    state: "queued",
+    status: "queued",
+    entry_origin: "form",
+    draft_kind: "",
+    draft_id: "",
+    draft: null,
+    session_id: "",
+    messages: [{ entry_id: "e-10", state: "pending", at: 1, message_id: "m-10" }],
+  } as unknown as Partial<Task>);
+  const { r, hops } = pressDraft([form]);
+  const link = r.root.findAll((n) => n.type === "a")[0];
+  expect(link.props.href).toBe("/tasks?edit=e-10");
+  act(() => (link.props as { onClick(ev: unknown): void })
+    .onClick({ preventDefault() {}, metaKey: false, ctrlKey: false, button: 0 }));
+  expect(hops).toEqual(["/tasks?edit=e-10"]);
+});
+
+test("the move's machinery is gone from the row module, not merely unused", () => {
+  const src = readFileSync(new URL("./list-rows.ts", import.meta.url), "utf8");
+  for (const gone of ["draftContentOf", "draftMovesOut", "joinIntoBox", "readChatDraft"]) {
+    expect(src).not.toContain(`export function ${gone}`);
+    expect(src).not.toContain(`export async function ${gone}`);
+  }
+  // …and what replaced them is one function that answers a URL — the SAME URL
+  // the composer's Schedule button builds, which is what makes the row's press
+  // and the hop one behaviour (`sched/scheduled.schedulerUrl`).
+  expect(src).toContain("export function draftHref(task: Task): string | null {");
+  expect(src).toContain("return schedulerUrl(task.key, draftChatUrl(task), at);");
+});
+
+test("A DRAFT ROW CARRIES THE DISCARD, and no other row does", () => {
+  // design.md, PR C: the one action a draft row has. Same class as the List's
+  // missing-folder trash, so it is the same button under the same hover rule.
+  const { r } = pressDraft([chatDraft()]);
+  const trash = r.root.findAll(
+    (n) => typeof n.type === "string"
+      && String((n.props as { className?: string }).className ?? "")
+        .split(/\s+/).includes("tasks-act--delete"),
+  );
+  expect(trash.length).toBe(1);
+  expect((trash[0].props as { title?: string }).title).toBe("Discard draft");
+
+  const plain = mount(
+    <Lists {...TABBED} recent={[chat("s1")]} onOpen={() => {}} onFillDraft={() => {}} />,
+  );
+  expect(plain.root.findAll(
+    (n) => typeof n.type === "string"
+      && String((n.props as { className?: string }).className ?? "")
+        .split(/\s+/).includes("tasks-act--delete"),
+  ).length).toBe(0);
+});
+
+test("pressing it deletes the draft, and never presses the row", async () => {
+  // ONE REQUEST. The composer holding these words is no longer told anything
+  // before the DELETE: the delete states the version it read, so a write still
+  // on the wire from that box is refused rather than landing after it and
+  // putting the draft back (design "one record", §2).
+  const calls: Array<{ method: string; url: string }> = [];
+  const realFetch = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = async (input: unknown, init?: { method?: string }) => {
+    calls.push({ method: init?.method ?? "GET", url: String(input) });
+    return { ok: true, status: 200, json: async () => ({ ok: true }) } as unknown as Response;
+  };
+  try {
+    const { r, pressed } = pressDraft([chatDraft()]);
+    const trash = r.root.find(
+      (n) => typeof n.type === "string"
+        && String((n.props as { className?: string }).className ?? "")
+          .split(/\s+/).includes("tasks-act--delete"),
+    );
+    let stopped = false;
+    await act(async () => {
+      (trash.props as { onClick(e: unknown): void }).onClick({
+        stopPropagation: () => {
+          stopped = true;
+        },
+      });
+      // A macrotask, not a microtask drain: the handler's own `finally` lands
+      // after the stubbed fetch resolves, and it sets state — so it has to be
+      // inside this `act` or React says so.
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(stopped).toBe(true);
+    expect(pressed).toEqual([]);
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      "DELETE /api/drafts/chat/new%3A/repo/x.py",
+    ]);
+  } finally {
+    (globalThis as { fetch: unknown }).fetch = realFetch;
+  }
 });
 
 test("a host that offers no fill leaves the row inert rather than lit and dead", () => {
@@ -1083,61 +1278,41 @@ test("EVERY press seeds the header's identity — the hop as much as the in-plac
   resetSessionSeeds();
 });
 
-// ---- THE EXPLORER'S CLAUDE SIDE PANEL HIDES UPCOMING (Akshil, 2026-09-16) --
+// ---- EVERY HOST SHOWS UPCOMING, THE EXPLORER PANEL INCLUDED (design
+// "drafts: one record", §6 — #1168 reverted) --------------------------------
 //
-// One host — the explorer's `?_side=claude` sidebar and its folder-pane
-// counterpart — opened this list to talk about the file or folder already on
-// screen, not to browse a queue of unstarted work sitting beside it. So its
-// "Recent chats" drops the Upcoming lane: a scheduled-for-later task and
-// either kind of draft, the same bucket `sortForList`/`groupByColumn`
-// (shell/tasks-lib.isUpcomingLane) files them under. Every other host of this
-// list — the landing this suite otherwise tests, the Tasks page cards wall,
-// side peek, full-page chat — never sets `hideUpcoming` and keeps showing
-// every lane exactly as before.
+// A draft is a task row with a TASK number on it, and a reader who opens the
+// explorer's `?_side=claude` sidebar to talk about the file on screen is the
+// reader most likely to have left half a sentence in that very folder's
+// composer. Hiding the lane there hid the one row they could act on and made
+// the panel disagree with List, Board and Cards about what exists. So there is
+// no per-host filter left at all: `Lists` draws what it is given, and no host
+// passes an opinion about lanes.
 
-test("hideUpcoming drops the Upcoming lane; unset, every other host still shows it", () => {
+test("every host draws the Upcoming lane; no host can filter it out", () => {
   const rows = [
     chat("done1", { status: "done" }),
     chat("later1", { key: "later1", session_id: "later1", status: "upcoming" }),
     chatDraft(),
   ];
-
-  // UNSET — the landing and every other host. All three lanes render, drafts
-  // included, exactly as they do today.
   const shown = mount(
     <Lists file="/repo/x.py" recent={rows} artifacts={[]} onOpen={() => {}} />,
   );
   expect(taskRows(shown).length).toBe(3);
 
-  // SET — the explorer's Claude side panel alone. The settled chat stays; the
-  // scheduled task and the draft both go, and neither leaves so much as a
-  // dimmed row or a chip behind — they are not drawn at all.
-  const hidden = mount(
-    <Lists
-      file="/repo/x.py"
-      recent={rows}
-      artifacts={[]}
-      onOpen={() => {}}
-      hideUpcoming
-    />,
-  );
-  const remaining = taskRows(hidden);
-  expect(remaining.length).toBe(1);
-  expect(text(all(hidden.toJSON() as Json, "tasks-title")[0])).not.toContain(
-    "ship the thing",
-  );
-
-  // Nothing left once Upcoming is the whole list: the section disappears
-  // entirely — no heading, no dot, no ghost of a filtered-out row — the same
-  // honest-empty rule an unfiltered `[]` already gets (T:18452-18477).
-  const allUpcoming = mount(
-    <Lists
-      file="/repo/x.py"
-      recent={[rows[1], rows[2]]}
-      artifacts={[]}
-      onOpen={() => {}}
-      hideUpcoming
-    />,
-  );
-  expect(all(allUpcoming.toJSON() as Json, "c-list-panel").length).toBe(0);
+  // The prop is GONE rather than merely unset by these hosts: the two explorer
+  // panels and the two components between them carry no trace of it, so a
+  // future embed cannot re-acquire the cut by copying a neighbour.
+  for (const f of [
+    "../ChatMount.tsx",
+    "../ClaudeChat.tsx",
+    "./Home.tsx",
+    "./Lists.tsx",
+    "../../explorer/Preview.tsx",
+    "../../explorer/ListingPreviewPane.tsx",
+  ]) {
+    expect(readFileSync(new URL(f, import.meta.url), "utf8")).not.toContain(
+      "hideUpcoming",
+    );
+  }
 });

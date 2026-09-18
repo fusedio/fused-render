@@ -16,7 +16,6 @@
 // `entry` case alone; it has its own job back.
 import { revealPath, type AppInfo } from "./api";
 import { openApp } from "./appEntry";
-import { exportAppFile, notifyExportSaved } from "./appShot";
 import { openShareApp } from "./share-app";
 import { copyToClipboard } from "./clipboard";
 import { navigate } from "./router";
@@ -26,7 +25,7 @@ import type { MenuEntry } from "@platform/ui/ContextMenu";
 
 // An exported `.fused` card's path is the FILE, not a folder (kind
 // "appfile", D396): "Open in Explorer" lands on its CONTAINING folder — the
-// files around it, same promise as the folder case — and "Export App File"
+// files around it, same promise as the folder case — and "Share…"
 // is not offered (the card already IS the export). Canonical paths are
 // forward-slashed on every platform (server's canonical_fs_path), so string
 // dirname is exact here.
@@ -35,12 +34,7 @@ function containingDir(path: string): string {
   return cut > 0 ? path.slice(0, cut) : "/";
 }
 
-export function appCardMenu(
-  app: AppInfo,
-  // The card's thumb element, when the opener has one: the export entry's
-  // no-flash capture crop source (appShot, D396).
-  captureEl?: Element | null,
-): MenuEntry[] {
+export function appCardMenu(app: AppInfo): MenuEntry[] {
   const isAppFile = app.kind === "appfile";
   return [
     { label: "Open", icon: MenuIcons.open, onClick: () => openApp(app) },
@@ -65,36 +59,18 @@ export function appCardMenu(
         );
       },
     },
-    // The whole app as one double-clickable `.fused` file (SPEC §43, D385).
-    // Errors (not an app, over budget) come back as a toast rather than a
-    // corrupt download — downloadAppFile throws. Not offered on a card that
-    // already IS a .fused file (the export route would 400 on a non-folder).
+    // Share: ONE entry for both ways out — the sheet behind it (ShareAppModal)
+    // offers a public link on the user's Fused account (share_app.py) and the
+    // whole app as one double-clickable `.fused` file (SPEC §43, D385). Not
+    // offered on a card that already IS a .fused file (the export route would
+    // 400 on a non-folder).
     ...(isAppFile
       ? []
       : ([
           {
-            label: "Export App File",
-            icon: MenuIcons.download,
-            onClick: () => {
-              // exportAppFile also bakes a native screen shot in as the
-              // file's preview.png when the folder has no authored one (D396).
-              exportAppFile(app, captureEl).then(
-                (realPath) => notifyExportSaved(app.name, realPath),
-                (e: Error) =>
-                  notify({
-                    title: "Could not export " + app.name + ": " + e.message,
-                    tone: "error",
-                  }),
-              );
-            },
-          },
-          // The export's sibling: the same .fused, published to the user's
-          // Fused account as a public page instead of downloaded
-          // (share_app.py). The dialog owns sign-in, the link and removal.
-          {
             label: "Share…",
             icon: MenuIcons.share,
-            onClick: () => openShareApp(app, captureEl),
+            onClick: () => openShareApp(app),
           },
         ] satisfies MenuEntry[])),
     {

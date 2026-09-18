@@ -299,7 +299,7 @@ export type OverflowEntry = OverflowItem | "separator";
 // `OverflowMenu` below stays: the panel pane bars use it for their own one-shot
 // ("Open in a new tab"), and the file preview's crumb bar uses it as THE kebab
 // for the app-level actions that used to stand in that bar as bordered buttons
-// (EntryActionsMenu.tsx: App Doctor, Download app, Open as project, Open in
+// (EntryActionsMenu.tsx: App Doctor, Share, Open as project, Open in
 // embed, MCP config).
 
 // `⋮` menu for the bars. Renders nothing when it has no items, so a caller can

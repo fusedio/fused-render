@@ -81,6 +81,7 @@ _EXPECTED_META = {
     "pushed": ("sharing", "warning", "fact"),
     "generated": ("sharing", "warning", "fact"),
     "preview": ("sharing", "warning", "fact"),
+    "cross-browser": ("sharing", "warning", "candidate"),
 }
 
 
@@ -145,8 +146,9 @@ def test_a_clean_app_passes_every_check_it_can_answer(workspace):
     rows = _rows(report)
     assert report["ok"] is True
     assert report["entry"] == str(d / "index.html")
-    # Every row is one of the three states, and none of them failed.
-    assert {c["state"] for c in report["checks"]} <= {"pass", "fail", "skip"}
+    # Every row is one of the four states (`unrun` is the on-demand
+    # cross-browser row before anyone asked for it), and none of them failed.
+    assert {c["state"] for c in report["checks"]} <= {"pass", "fail", "skip", "unrun"}
     assert [c["id"] for c in report["checks"] if c["state"] == "fail"] == []
     # The two optional files are absent, which is not a finding.
     assert rows["pyproject"]["state"] == "skip"

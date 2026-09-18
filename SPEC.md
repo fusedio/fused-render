@@ -10845,39 +10845,22 @@ else: no editor, no Claude, no explorer chrome.
   never extract fresh, never rebuild, never record recency; the entry iframe
   carries `_preview=1&_nofocus=1`). A never-opened file stays the empty
   thumb — a peek must not be the first run of a stranger's pages.
-  Export can BAKE one in: `exportAppFile` takes a NATIVE screen shot of
-  the app's on-screen rect (`POST /api/capture/shot-region`, the §45 still
-  behind `fused.capture.screenshot()` pointed at a browser-measured rect,
-  PNG bytes back and no file in `<home>/recordings`; chosen over DOM
-  serialization because canvas/WebGL apps rasterize blank) when and only
-  when the folder has no authored `preview.png`. The crop
-  source is the card's own thumbnail when it is on screen AND HAS PAINTED
-  the app — a card without a preview.png renders the live app there, so
-  nothing navigates or flashes, but only two card previews start at a time
-  (`createPreviewStartQueue(2)`), so an unpainted thumb is the ordinary
-  state of a card and cropping one would bake an empty box in as the
-  artifact's permanent thumbnail. The card states paintedness on the thumb
-  (`data-capture-ready`, set on the body iframe's load) because the surface
-  that opens the context menu is not the one holding that state; the
-  full-viewport stage is the fallback for a missing, off-screen or unpainted
-  thumb, sized so its shot lands under the width cap at this DPR (so nothing
-  downscales). The browser reports the rect in its screen units
-  (`screenX` + chrome + the element's box) plus `devicePixelRatio`; the
-  backend's `locate` hook maps that onto ONE display in its own units
-  (points on macOS, physical pixels on Windows/Linux) and REFUSES a rect that
-  is not entirely on one display rather than clipping it — a sliver baked
-  in is a valid PNG nothing later can catch. No share prompt and nothing
-  hinging on the click's transient user activation (the earlier tab-capture
-  version's whole ordering problem); on a Mac without Screen Recording
-  granted the first shot raises the TCC dialog and that export ships plain.
-  The
-  X-Fused `POST /api/appfile/export` variant writes it as
-  `files/preview.png` (PNG magic + 8 MiB cap; the authored still always
-  wins; every capture failure — unsupported, permission denied, off-display,
-  blank, over-cap — exports plain: the route drops a too-big screenshot rather than
-  failing the download, where `export_app_file` itself still raises for a
-  caller that meant to supply a still). An injected preview extracts as a
-  real file in the app's read-only extract dir like any other member.
+  The payload's `preview.png` is the folder's AUTHORED one or none. Share
+  never photographs the screen (retired 2026-09-18): from D396 until then a
+  folder without a still got a native screen shot baked in at export time —
+  `POST /api/capture/shot-region` on the /apps card thumb or a full-viewport
+  stage — and each of its preconditions (Screen Recording granted, window on
+  one display, page zoom 100%, a pointer-learned viewport origin, overlay UI
+  hidden before the frame was read) failed at least once, baking a WRONG
+  picture into a permanent artifact that no downstream check can catch. App
+  Doctor's `preview` check surfaces the missing thumbnail as a fact the
+  owner fixes on purpose; the one capture left is the explorer's explicit
+  "Set Current View as Preview" (`appShot.captureAppPreview`, the shown
+  frame or nothing), which writes the folder's preview.png via
+  `POST /api/apps/preview`. The export and publish routes still accept an
+  optional `preview` upload (PNG magic + 8 MiB cap; the authored still
+  always wins; an over-cap upload is dropped rather than failing the
+  download) — no shell caller sends one any more.
 - **AF-9** `.fused` is an owned file type on all three platforms: macOS
   Owner-rank document type + exported UTI `io.fused.render.app` (conforms to
   `public.data`, not the zip UTI, so archive tools don't claim it); Windows
@@ -11794,10 +11777,11 @@ per-row fix.
   row is critical or warning, so a candidate still counts at its own severity
   for this one flag, though never in the modal's own presentation of it
   (AD-4).
-- **AD-3** Eleven checks, essentials then sharing, exactly:
+- **AD-3** Twelve checks, essentials then sharing, exactly:
   `secrets` (critical, candidate), `entry` (critical, fact), `api-version`
   (critical, fact), `pyproject` (warning, fact), `readme` (warning, fact),
-  `icon` (warning, fact) — then `device-paths` (warning, candidate), `git`
+  `icon` (warning, fact) — then `device-paths` (warning, candidate),
+  `cross-browser` (warning, candidate, ON DEMAND — AD-8), `git`
   (warning, fact), `pushed` (warning, fact), `generated` (warning, fact),
   `preview` (warning, fact). `pushed` (new, D767) reads ahead-of-upstream
   commits via `git rev-list --count @{upstream}..HEAD` — no network call,
@@ -11863,3 +11847,40 @@ per-row fix.
   0, the exact inverted urgency AD-2's severity table exists to prevent.
   Every finding still prints regardless of whether it blocks — only the exit
   code changes.
+- **AD-8** One row is MODEL-BACKED and ON DEMAND: `cross-browser`
+  (`fused_render/app_doctor_ai.py`), a one-shot `claude -p` at **Sonnet, low
+  effort** — fixed, not the user's pickers — over the app's `.html`/`.css`/
+  `.js`/`.svg` files (the `.fused` exporter's own gitignore-aware walk,
+  bounded to 40 files / 256 KB, numbered lines) with
+  `skills/fused-render-cross-browser/SKILL.md` read from disk as the rubric,
+  `--json-schema` for a structured verdict, prompt over stdin (newlines vs.
+  the Windows `.cmd` shim), `--no-session-persistence`, `--tools=`. It NEVER
+  runs on a GET: `report()`/`report_one()` only read the cache at
+  `.fused/cache/app-doctor/cross-browser.json`, whose `checksum` is a sha256
+  of exactly the bytes the model was shown. Cache matches → the stored
+  verdict (pass, or fail with `{rule, path, line, excerpt}` findings); no
+  cache, or the view files changed since → `state: "unrun"` ("Not run yet"),
+  which counts toward neither `ok` nor the header dot. `POST
+  /api/apps/doctor/run` `{path, check, force?}` (`X-Fused` required, 400 for
+  a row not in `app_doctor.ON_DEMAND`, 502 with one sentence when the model
+  could not answer, previous verdict kept, single-flighted per folder) runs
+  it and returns the refreshed row; the panel draws **Check** on an unrun
+  row, swaps the returned row in place, and keeps an icon-only **Re-check**
+  (`force: true` — ask again although the cache still matches) on a settled
+  one for what the checksum cannot see (a rubric that moved on). THE VERDICT
+  IS WRITTEN FOR THE AUTHOR: the schema's own `description`s cap `summary`
+  at one plain sentence and give every finding a `what` (what a visitor sees
+  go wrong, in which browser, no code) and a `fix` (one sentence) — the
+  panel draws those as wrapping prose, never the source line, and the fix
+  prompt carries `fix` as "suggested fix". No free text rides in argv
+  (system prompt via `--system-prompt-file`, `_popen_cmd` for the `.cmd`
+  shim, and on that shim the schema goes into the prompt instead of
+  `--json-schema`, whose quotes `_cmd_quote` refuses).
+  Every row carries `ondemand: bool` so the panel never keeps its own list.
+  The row is a `candidate` (a model's reading earns a second look), so its
+  fix task is the ordinary per-row task with the triage-first prompt, routed
+  by the app-doctor skill's `cross-browser` section to
+  `fused-render-cross-browser`; `POST /api/apps/doctor` 409s a fix on an
+  unrun on-demand row, since its findings would describe a folder that no
+  longer exists. Verified live 2026-09-18: ~4 s on a two-line fixture, both
+  findings real.
