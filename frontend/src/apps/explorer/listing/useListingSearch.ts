@@ -214,10 +214,11 @@ export function useListingSearch(
   // asks a different question and would regress if it changed meaning.
   //
   // `q` is passed RAW here, same as everywhere else in this hook (A1) —
-  // `escapesFsPath` trims its own input before comparing base segments
-  // (FINDING 1, code review, worktree-search-trailing-space; query-base.ts),
-  // so this call site needs no trim of its own to stay consistent with
-  // `isPathShapedQuery` above, which trims internally for the same reason.
+  // `escapesFsPath` normalizes its own input (`normalizeQueryForResolution`,
+  // query-base.ts — round 3, not a bare trim) before comparing base
+  // segments, so this call site needs no normalization of its own to stay
+  // consistent with `isPathShapedQuery` above, which runs the same shared
+  // normalization for the same reason.
   const escapes = escapesFsPath(q, fsPath, home);
   // The specific query text Enter was last pressed for. A ref, not state: it
   // must not itself cause a render, only unlock the fetch effect below (which

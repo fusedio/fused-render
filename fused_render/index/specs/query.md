@@ -159,6 +159,19 @@ whitespace rule, same as any other whitespace run. A TRAILING run of
 whitespace is never touched by this — the settled rule (point 1 above) is that
 a trailing space counts, and this fix does not reopen that.
 
+**Frontend mirror (worktree-search-trailing-space, round 3)**: the explorer's
+listing box has TWO independent client-side predicates that read this same
+grammar to decide "is this query address-shaped" — `escapesFsPath` (the Enter
+gate) and `isPathShapedQuery` (the path chip, and whether a rank request is
+even sent). Both now normalize a raw query through the identical two-step
+mirror of this section (`normalizeQueryForResolution`, `frontend/src/apps/
+explorer/listing/query-base.ts`) before doing their own shape check, so a
+trailing (or leading) space that turns a folder path into a glob on the
+parent, or turns `"~ "` into a current-folder glob rather than a home escape,
+reads the same way in both places and in the actual `/api/index/rank`
+request. A prior round trimmed one of the two and not the other, twice, in
+opposite directions — see `DECISIONS.md` for the history.
+
 `search_ranked` (`server-api.md §7`) **does** score a `mode == "glob"` result when
 its own `ranked` param is true (the default) — `_glob_literal_runs` splits the
 FINAL SEGMENT of the resolved pattern (`_final_segment_pattern`, below — not the
