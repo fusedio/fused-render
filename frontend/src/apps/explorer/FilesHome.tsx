@@ -485,18 +485,47 @@ export function FilesSearch({
   // made on the NEXT visibility change, and a ref lets the listener close over
   // a mutable value without becoming a dependency that would tear the effect
   // down and rebuild it on every transition.
+  //
+  // Two independent event sources feed the SAME "away" state machine rather
+  // than each running its own fire-once logic (code review, D...): the
+  // documented motivating case — "a Finder move", "the user went away and
+  // did something else" — is, on the packaged desktop app, someone switching
+  // to a DIFFERENT application while this window stays visible. That fires
+  // neither a `visibilitychange` (the document never becomes hidden) nor a
+  // page-level blur; it only ever shows up as `document.hasFocus()` going
+  // false, which `window`'s own `blur`/`focus` pair tracks and
+  // `visibilitychange` cannot. Conversely, a real tab switch (occlusion,
+  // minimize) fires `visibilitychange` but not always a `blur`. Neither
+  // event alone covers both cases, so both are wired, and `isAway()` — not
+  // "which event fired" — is what decides state: whichever of the three
+  // events happens to fire first on the way out sets `hiddenSince` once
+  // (guarded by the `=== null` check so a `blur` immediately followed by a
+  // `visibilitychange` hidden, or vice versa, does not restart the clock),
+  // and whichever fires first on the way back consumes it once (guarded the
+  // same way) — so one away/back transition fires exactly one request no
+  // matter how many of the three events it triggers along the way.
   const hiddenSince = useRef<number | null>(null);
   useEffect(() => {
-    const onVisibilityChange = () => {
-      if (document.hidden) {
-        hiddenSince.current = Date.now();
+    const isAway = () => document.hidden || !document.hasFocus();
+    const onTransition = () => {
+      if (isAway()) {
+        // Only the FIRST event of a transition sets this — see comment
+        // above. `hiddenSince.current` is already null on the very first
+        // "away" this listener ever sees for a page that loaded already
+        // hidden/unfocused (rare, but the same null-means-"nothing to
+        // consume" contract as the return path below), so this simply
+        // starts the clock rather than doing anything visible.
+        if (hiddenSince.current === null) {
+          hiddenSince.current = Date.now();
+        }
         return;
       }
-      // Becoming visible. `hiddenSince.current` is null on the very first
-      // "visible" this listener ever sees — attached while already visible,
+      // Back. `hiddenSince.current` is null on the very first "back" this
+      // listener ever sees — attached while already focused and visible,
       // the overwhelmingly common case of a normal page load, so this never
       // fires on mount — and again after every fire below, which is what
-      // stops one hidden/visible pair from firing twice.
+      // stops one away/back transition from firing twice regardless of how
+      // many of the three events it raised.
       const since = hiddenSince.current;
       hiddenSince.current = null;
       if (since === null) return;
@@ -507,8 +536,14 @@ export function FilesSearch({
       // check is never something the user can act on.
       noteHomeFocused(hiddenSeconds(hiddenForMs)).catch(() => {});
     };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+    document.addEventListener("visibilitychange", onTransition);
+    window.addEventListener("blur", onTransition);
+    window.addEventListener("focus", onTransition);
+    return () => {
+      document.removeEventListener("visibilitychange", onTransition);
+      window.removeEventListener("blur", onTransition);
+      window.removeEventListener("focus", onTransition);
+    };
   }, []);
 
   // -- a query that is really an address --------------------------------------
