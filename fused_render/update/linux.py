@@ -42,7 +42,7 @@ import logging
 import os
 import threading
 
-from fused_render import __version__, installed, jobs
+from fused_render import __version__, installed
 from fused_render.supervisor._linux import startup
 from fused_render.update import common
 # The shared state machine lives in its own module, `_manager.py`, named
