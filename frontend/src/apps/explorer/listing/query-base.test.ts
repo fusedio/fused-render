@@ -79,4 +79,52 @@ describe("escapesFsPath", () => {
   test("a tilde query gates while home is still unresolved — nothing to compare against yet", () => {
     expect(escapesFsPath("~/*/*.json", FS_PATH, undefined)).toBe(true);
   });
+
+  // FINDING (code review round 2, worktree-search-trailing-space): a plain
+  // `.trim()` (the prior fix, once asserted here) is itself wrong. A
+  // trailing space is not edge noise to the server — `expand_whitespace_
+  // query` (fused_render/index/query.py) turns it into a wildcard on the
+  // FINAL segment, which can peel that segment off the walked base
+  // entirely. Verified live against `/api/index/rank`: `q=/Users/iamsdas%20`
+  // (root `/Users/iamsdas`) answers `base: "/Users"`, not
+  // `/Users/iamsdas` — a genuinely different (parent) subtree, so this
+  // MUST gate, not stay silent.
+  test("a trailing space on the exact open folder peels the last segment into a glob — gates (server walks only to the parent)", () => {
+    expect(escapesFsPath("/Users/iamsdas ", FS_PATH, HOME)).toBe(true);
+  });
+
+  // A trailing slash (no space) carries no whitespace at all, so it is
+  // untouched by `expand_whitespace_query` and stays exactly the same
+  // folder — unaffected by the fix above.
+  test.each([["/Users/iamsdas/"], [" /Users/iamsdas"]])(
+    "%j (a trailing slash, or a leading space in front of the escape form) is still not an escape",
+    (query) => {
+      expect(escapesFsPath(query, FS_PATH, HOME)).toBe(false);
+    },
+  );
+
+  test("a trailing space still gates a genuinely different subtree", () => {
+    expect(escapesFsPath("/Users/iamsdas2 ", FS_PATH, HOME)).toBe(true);
+  });
+
+  // Verified live: `q=~%20` (root `/Users/iamsdas`) answers
+  // `base: "/Users/iamsdas", pattern: "**/**~**"` — the box's own root, not
+  // `home` — because the trailing space turns the whole "~" into a glob
+  // token that no longer starts with a literal "~" at all. When `home` and
+  // `fsPath` happen to be equal (as in every other test in this file) the
+  // old trim-based code coincidentally answered `false` for the wrong
+  // reason (it resolved "~" as a home path that happened to equal fsPath);
+  // this fixture pins the case that tells the two apart.
+  test('"~ " (tilde plus trailing space) is a current-folder glob, not a home escape — even when home is a different folder', () => {
+    expect(escapesFsPath("~ ", "/Users/iamsdas/work", "/Users/iamsdas")).toBe(false);
+  });
+
+  test('"~ " (tilde plus trailing space) is not an escape when home equals fsPath either', () => {
+    expect(escapesFsPath("~ ", FS_PATH, HOME)).toBe(false);
+  });
+
+  test("a plain in-folder query with no whitespace or glob is unaffected", () => {
+    expect(escapesFsPath("report", FS_PATH, HOME)).toBe(false);
+    expect(escapesFsPath("/Users/iamsdas/report", FS_PATH, HOME)).toBe(false);
+  });
 });

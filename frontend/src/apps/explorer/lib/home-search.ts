@@ -170,39 +170,162 @@ export function patternTail(query: string): string {
  * `resolve_query` and `search_under` run a raw typed string through before
  * deciding `mode`. Kept here, not re-derived at each call site, so every
  * caller that needs to know whether a query WOULD settle in glob mode
- * before a response has come back agrees with the server by construction:
- * trim; a no-op when the trimmed string has no internal whitespace; else
- * collapse every whitespace run to a single `*` (never `**`, a different,
- * cross-directory token) and wrap the FINAL `/`-separated segment in a
- * leading/trailing `*`, but only when that segment has no user-typed `*`
- * of its own.
+ * before a response has come back agrees with the server by construction.
  *
- * A whitespace run directly beside a literal `*` the user already typed
- * (`report *.pdf`) must not stack a SECOND `*` next to it — that would
- * collapse into `**`, the cross-directory token, silently crossing a
- * folder boundary this query never asked to cross. The existing star
- * already does the whitespace run's job, so the run is dropped instead of
- * replaced whenever it borders one. Mirrors the identical fix in
- * `expand_whitespace_query` (`fused_render/index/query.py`) — see
- * DECISIONS.md for why the earlier "accepted edge case" note on this was
- * reversed.
+ * Byte-equivalent with `expand_whitespace_query` (`fused_render/index/
+ * query.py`) — a follow-up to the original whitespace-as-wildcard rule that
+ * fixes three disagreements (DECISIONS.md, worktree-search-trailing-space):
+ *
+ *  1. A TRAILING space used to be trimmed away (`*.js ` searched for `*.js`,
+ *     silently dropping the space the user just typed). Trimming is gone:
+ *     leading/trailing whitespace is now as meaningful as any other run.
+ *  2. `icon copy` (found `icon copy.png`) and `icon*copy` (found nothing —
+ *     the typed `*` produced an anchored pattern requiring the name to END
+ *     in "copy") used to disagree; a since-reversed fix made them agree
+ *     (DECISIONS.md, worktree-search-trailing-space). They are DELIBERATELY
+ *     back to disagreeing again: a mid-segment user-typed `*` now
+ *     suppresses the trailing wrap (see rule 5), so `icon*copy` stays
+ *     anchored and `icon copy` does not. Reversed because results are
+ *     capped (top ~20 of 200+) — a loose filter does not just rank a
+ *     correct answer lower, it consumes a slot and can push the correct
+ *     answer out of the window entirely, and ranking cannot enlarge the
+ *     window. `icon*copy*` (a user-typed trailing `*`) still opts back into
+ *     the old, loose behavior.
+ *  3. A trailing space used to NARROW rather than widen: the wildcard it
+ *     inserted was a single-segment `*`, which cannot cross a `/`, so
+ *     `"src "` lost `srcdir/file.txt` even though `"src"` (substring mode)
+ *     matched it. Every wildcard THIS function inserts — the whitespace
+ *     collapse and the final-segment end wrap alike — is now the
+ *     cross-directory `**` token, never a bare `*`: a space only ever
+ *     widens. A whitespace-only query (`"   "`) has no literal character
+ *     left to search for at all, so it resolves to `""`, matching how an
+ *     empty query already behaves (it used to become the "match anything"
+ *     glob `"*"`).
+ *
+ * One documented exception to "byte-equivalent": "whitespace" here means
+ * whatever `expand_whitespace_query`'s Python `\s` matches, NOT whatever
+ * JS's native `\s`/`String.trim()` matches — the two disagree in two
+ * places. First, U+FEFF (ZERO WIDTH NO-BREAK SPACE, a leading BOM some
+ * editors/OSes prepend): Python's `\s` does not treat it as whitespace
+ * (Unicode category Cf, not a whitespace category) but JS's does. Second
+ * (code review finding 7(b)), the four C0 "information separator" control
+ * characters U+001C-U+001F and U+0085 (NEL): Python's `\s` DOES treat these
+ * as whitespace (via CPython's Unicode bidirectional-class tables) but JS's
+ * does not (JS follows the `White_Space` property, which excludes all
+ * five). Every place below that would naively reach for `\s` uses
+ * `NON_BOM_WS` instead, which is defined to match exactly what Python's
+ * `\s` matches on both counts, so a BOM-prefixed or C0-separator-containing
+ * literal takes the same path on both sides of the wire (pinned by
+ * `test_expand_whitespace_query_does_not_treat_a_bom_as_whitespace` in
+ * tests/test_index_query.py and this file's own "does not treat a leading
+ * BOM" and "treats the C0 separators" tests) rather than silently
+ * resolving to different modes in the two languages.
+ *
+ * The rule:
+ *  1. Whitespace-only (`raw` made ONLY of `NON_BOM_WS` characters,
+ *     including the truly empty string) resolves to `""` — no wildcard,
+ *     nothing to search for.
+ *  2. Otherwise, no trimming.
+ *  3. The ONE no-op besides rule 1: a string with NEITHER whitespace NOR
+ *     `*` anywhere (`report`) is returned unchanged — still substring mode,
+ *     still ranked.
+ *  4. Collapse every whitespace run to `**` — dropped, not replaced,
+ *     whenever a run directly borders a literal `*` the user already typed
+ *     (`report *.pdf` must not stack a THIRD star beside it).
+ *  5. On the FINAL `/`-separated segment only, wrap each END independently,
+ *     with DIFFERENT tokens (code review finding — an earlier version used
+ *     `**` on both ends, which let a folder-anchored query like `/*.pdf`
+ *     leak into a differently-named subtree, e.g. matching
+ *     `x.pdf/inner/deep.bin`): prepend `**` unless it already starts with
+ *     `*` (crosses directories, same as the whitespace collapse, and this
+ *     leading half is UNCONDITIONAL otherwise — an earlier segment's `*`
+ *     never suppresses it); append a single `*` unless it already ends with
+ *     `*` OR the final segment contains a user-typed `*` ANYWHERE in it
+ *     (confined to one segment — its only job is letting an unanchored
+ *     fragment also match a longer name in the SAME folder, which one `*`
+ *     already gives in full). REVERSED (DECISIONS.md,
+ *     worktree-search-trailing-space): a mid-segment `*` used to still get
+ *     the trailing wrap (`icon*copy` -> `**icon*copy*`, agreeing with
+ *     `icon copy` -> `**icon**copy*`); it no longer does — a user-typed `*`
+ *     anywhere in the final segment is now read as an opt-in to precision,
+ *     so `icon*copy` -> `**icon*copy` (anchored, does not match `icon
+ *     copy.png`) and `*.parquet` -> `*.parquet` (anchored, does not match
+ *     `report.parquet.bak`). Earlier segments get the whitespace collapse
+ *     but no wrap.
+ *
+ * The invariant that survives (A4): the function never manufactures a run
+ * of THREE OR MORE consecutive `*` unless the input already had one — it is
+ * allowed to concatenate two adjacent user-typed single stars into `**`
+ * once the whitespace between them is dropped (`"* *"` -> `"**"`), which is
+ * accepted, not invented.
+ *
+ * Known, accepted consequence (do not special-case around it): a
+ * whitespace-free glob like `*.pdf` still gains the leading `**` (it
+ * already starts with `*`, so that guard is moot, but the rule is
+ * unconditional otherwise) and now ALSO keeps no trailing wrap — it already
+ * carries a `*`, so it means exactly "ends with .pdf" and no longer matches
+ * `notes.pdfx` or `report.pdf.bak`. See DECISIONS.md.
  */
+// "Whitespace, but not a BOM": JS's `\s` (and therefore `String.trim()`)
+// treats U+FEFF (ZERO WIDTH NO-BREAK SPACE, a leading BOM some editors/OSes
+// prepend) as whitespace; Python's `\s` (and `str.strip()`) does not — it is
+// Unicode category Cf (format), not a whitespace category. `[^\S\uFEFF]` is
+// the standard JS idiom for this: inside a negated class, `\S` and `\uFEFF`
+// are unioned before the negation, so the class matches exactly the
+// characters that are whitespace AND not U+FEFF — i.e. Python's `\s`. Used
+// everywhere this function would otherwise reach for a bare `\s`, so a
+// BOM-prefixed literal takes the same no-op path `expand_whitespace_query`
+// (query.py) takes for it, keeping the documented byte-equivalence between
+// the two (see `test_expand_whitespace_query_...bom...` in both test files).
+//
+// Gap 2 (the other direction \u2014 code review finding 7(b)): Python's `\s`
+// (and `str.isspace()`) ALSO matches five characters JS's `\s` does not:
+// the four C0 "information separator" control characters U+001C-U+001F
+// (FS/GS/RS/US) and U+0085 (NEL, NEXT LINE). This is because CPython's
+// Unicode tables classify these by bidirectional class (a paragraph/segment
+// separator), not by the `White_Space` property JS's `\s` follows exactly \u2014
+// `White_Space` excludes all five. `[-\u0085]` adds them back
+// in, alternated alongside the BOM-excluding class above, so this fragment
+// matches exactly what Python's `\s` matches: JS-whitespace-minus-BOM, plus
+// the five characters Python additionally treats as whitespace that JS does
+// not (pinned by this file's "treats the C0 separators" test).
+const NON_BOM_WS = /(?:[^\S\uFEFF]|[-\u0085])/;
+
+const ALL_NON_BOM_WS = new RegExp(`^${NON_BOM_WS.source}*$`);
+
 export function expandWhitespaceQuery(raw: string): string {
-  const trimmed = (raw ?? "").trim();
-  if (!trimmed || !/\s/.test(trimmed)) return trimmed;
-  const rawSegments = trimmed.split("/");
-  const last = rawSegments.length - 1;
-  const wrapLast = !rawSegments[last]!.includes("*");
+  const value = raw ?? "";
+  if (ALL_NON_BOM_WS.test(value)) return "";
+  if (!NON_BOM_WS.test(value) && !value.includes("*")) return value;
+  const segments = value.split("/");
+  const last = segments.length - 1;
+  // Captured BEFORE whitespace collapse, same as query.py: the collapse
+  // step below only ever inserts `**`, never a bare `*`, so a `*` found
+  // here is always one the user typed themselves. Scope is the FINAL
+  // segment only — an earlier segment's `*` is a directory wildcard and
+  // says nothing about the filename (`src/*/index` must still trailing-wrap
+  // `index`).
+  const finalHasUserStar = segments[last]!.includes("*");
+  const wsRun = new RegExp(NON_BOM_WS.source + "+", "g");
   const collapseWs = (segment: string): string =>
-    segment.replace(/\s+/g, (match, offset: number) => {
+    segment.replace(wsRun, (match, offset: number) => {
       const before = offset > 0 && segment[offset - 1] === "*";
       const after =
         offset + match.length < segment.length && segment[offset + match.length] === "*";
-      return before || after ? "" : "*";
+      return before || after ? "" : "**";
     });
-  const segments = rawSegments.map(collapseWs);
-  if (wrapLast) segments[last] = `*${segments[last]}*`;
-  return segments.join("/");
+  const collapsed = segments.map(collapseWs);
+  let final = collapsed[last]!;
+  if (!final.startsWith("*")) final = `**${final}`;
+  // Reversal (DECISIONS.md, worktree-search-trailing-space): the trailing
+  // append is now ALSO suppressed when the final segment carries a
+  // user-typed `*` anywhere in it, not only at its very end. `icon*copy` no
+  // longer agrees with `icon copy` — a mid-segment `*` is read as an opt-in
+  // to precision, and `icon*copy*` (a user-typed trailing `*`) still
+  // reproduces the old behavior.
+  if (!(final.endsWith("*") || finalHasUserStar)) final = `${final}*`;
+  collapsed[last] = final;
+  return collapsed.join("/");
 }
 
 /**
@@ -314,9 +437,9 @@ export function answerFrom(
  * off `q` itself; reproducing that walk locally is exactly the "no local
  * test can reproduce the server's semantics" case below, so it still
  * bails). For that narrow shape, `expand_whitespace_query`'s own transform
- * (fused_render/index/query.py) is fully reproducible client-side: trim,
- * collapse whitespace runs to a single `*`, then wrap the whole (single-
- * segment) query in a leading/trailing `*`. Every multi-word home query
+ * (fused_render/index/query.py) is fully reproducible client-side: no
+ * trimming, collapse whitespace runs to `**`, then wrap the whole (single-
+ * segment) query in a leading/trailing `**`. Every multi-word home query
  * hits this path on every keystroke while the user is still typing inside
  * or adding a word — SPEC-search-space-wildcard.md's whole motivating case
  * — so bailing to `[]` here blanked the result list between keystrokes for
@@ -336,18 +459,41 @@ export function answerFrom(
  * is never used as a stand-in here even in the narrowed case above —
  * `globMatch` against the rebuilt pattern is the only test that agrees with
  * the server for glob mode.
+ *
+ * A SUBSTRING-mode held answer (`answer.mode === "substring"`) whose query,
+ * extended by THIS keystroke, would now resolve to glob mode server-side
+ * (`willResolveToGlobMode(q)`) takes the SAME glob-narrowing path above,
+ * not the plain substring branch below (code review finding). The classic
+ * case is the space that turns "report" into "report ": every held hit
+ * already satisfies "contains 'report' as a substring", and
+ * `expandWhitespaceQuery` wraps that same literal text in a leading/
+ * trailing `**` with nothing else changed, so `globMatch` against the
+ * rebuilt pattern reduces to the exact same "contains 'report'" test —
+ * every held hit that matched still matches, none blank out. Running the
+ * substring branch instead (`substringMatch` against a query that now
+ * literally ends in a space) matched nothing, since no `rel` ends with a
+ * space character, and blanked the whole list for a full debounce + round
+ * trip on the very keystroke `narrowAnswer` exists to smooth over. The
+ * reverse direction (a glob-mode held answer whose query stops being
+ * multi-word) is NOT symmetric and does not get this treatment: that case
+ * stays inside the `answer.mode === "glob"` branch above and bails to `[]`
+ * (a glob answer's hits were matched by a wildcard pattern, not a plain
+ * substring test, so they are not provably a subset of a fresh substring
+ * answer without a round trip).
  */
 export function narrowAnswer(answer: HomeAnswer, q: string): HomeHit[] {
-  if (answer.mode === "glob") {
+  if (answer.mode === "glob" || willResolveToGlobMode(q)) {
     // A path-shaped query walks `resolve_query`'s base off `q` itself — out
     // of scope, same as a literal "*" (see the doc comment above). Both
     // rule this out before the pattern is even built.
     if (q.includes("*") || q.includes("/")) return [];
     const pattern = expandWhitespaceQuery(q);
-    // No internal whitespace left in the trimmed query: the server would
-    // resolve this back to SUBSTRING mode, not glob (`willResolveToGlobMode`
-    // would be false) — `expandWhitespaceQuery` returns it unchanged in that
-    // case, which is not a glob pattern this branch can safely match with.
+    // `q` already has no `*` of its own (ruled out above), so the only way
+    // `expandWhitespaceQuery` can still produce a `*`-free `pattern` here is
+    // the one no-op case: no whitespace anywhere in `q` either. That means
+    // the server would resolve `q` back to SUBSTRING mode, not glob
+    // (`willResolveToGlobMode` would be false) — not a glob pattern this
+    // branch can safely match with.
     if (!pattern.includes("*")) return [];
     const out: HomeHit[] = [];
     for (const hit of answer.hits) {

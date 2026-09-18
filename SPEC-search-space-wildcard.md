@@ -210,8 +210,16 @@ Existing tests that pin current behavior (expect to update some):
 - `frontend/src/apps/explorer/lib/home-search.test.ts`
 - `frontend/src/apps/explorer/FilesHome.render.test.tsx`
 - `frontend/src/apps/explorer/listing/rank-parity.test.ts` +
-  `tests/fixtures/rank-parity.json` — cross-language SQL-vs-`fuzzy.ts` parity
-  fixture. Keep the two rankers in sync.
+  `tests/fixtures/rank-parity.json` — DELETED (search-ranking rework,
+  worktree-search-trailing-space): the cross-language SQL-vs-`fuzzy.ts`
+  parity fixture this pinned no longer applies now that `_rank_sql` is a
+  position-free lexicographic `ORDER BY` vector deliberately diverging from
+  `fuzzy.ts` on several of the dimensions the fixture checked (dropped
+  camelCase-hump bonus, 2-value not 3-value tier, no wildcard-swallow
+  penalty). `tests/test_index_rank.py`'s hand-reasoned golden corpus is the
+  current authority for `_rank_sql`/`_glob_sql`'s own scoring correctness;
+  `fuzzy.ts` is unchanged and still covered by its own JS tests for the
+  live-walk ranking path this SQL rewrite never touches. See DECISIONS.md.
 
 ## Traps (learned the hard way in this repo)
 

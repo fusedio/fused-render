@@ -28,6 +28,7 @@ import {
   type RowModel,
 } from "./home-search";
 import type { IndexRankHit, IndexRankResult } from "@platform/lib/api";
+import { globMatch } from "@platform/lib/fuzzy";
 
 const HOME = "/Users/me";
 
@@ -71,27 +72,220 @@ function answer(over: Partial<HomeAnswer> = {}): HomeAnswer {
 }
 
 describe("expandWhitespaceQuery / willResolveToGlobMode", () => {
-  it("is a no-op for a whitespace-free query, glob or not", () => {
+  it("is a no-op ONLY without whitespace or '*'", () => {
     expect(expandWhitespaceQuery("report")).toBe("report");
-    expect(expandWhitespaceQuery("*.pdf")).toBe("*.pdf");
-    expect(expandWhitespaceQuery("src/**/*.ts")).toBe("src/**/*.ts");
+    expect(expandWhitespaceQuery("")).toBe("");
     expect(willResolveToGlobMode("report")).toBe(false);
+  });
+
+  it("whitespace-only has nothing to search for (A2)", () => {
+    // A whitespace-only query used to collapse into "*" (match everything);
+    // there is no literal character left to narrow on, so it now resolves
+    // to "", same as an empty query.
+    expect(expandWhitespaceQuery("   ")).toBe("");
+    expect(expandWhitespaceQuery(" ")).toBe("");
+  });
+
+  it("wraps a whitespace-free glob's LEADING end, but suppresses the trailing wrap once a user '*' is anywhere in the final segment (reversed: icon*copy no longer agrees with icon copy)", () => {
+    expect(expandWhitespaceQuery("*.pdf")).toBe("*.pdf");
+    expect(expandWhitespaceQuery("icon*copy")).toBe("**icon*copy");
+    expect(expandWhitespaceQuery("src/**/*.ts")).toBe("src/**/*.ts");
     expect(willResolveToGlobMode("*.pdf")).toBe(true);
   });
 
-  it("collapses whitespace runs to a single '*' and wraps the final segment", () => {
-    expect(expandWhitespaceQuery("hello world")).toBe("*hello*world*");
-    expect(expandWhitespaceQuery("hello  world")).toBe("*hello*world*");
-    expect(expandWhitespaceQuery("  hello world  ")).toBe("*hello*world*");
+  it("does not trim leading/trailing whitespace", () => {
+    // "icon " and " icon" are NOT symmetric: the trailing space's own
+    // collapse (rule 4) already produces a cross-directory "**" at that
+    // end, so rule 5's append never fires for it — but the LEADING space
+    // collapses to a "**" at the START, leaving the END untouched, so rule
+    // 5's single-"*" append still fires there (code review finding: the
+    // trailing case used to also get "**", leaking across a "/").
+    expect(expandWhitespaceQuery("icon ")).toBe("**icon**");
+    expect(expandWhitespaceQuery(" icon")).toBe("**icon*");
+    expect(expandWhitespaceQuery("*.js ")).toBe("*.js**");
+    expect(expandWhitespaceQuery("hello world ")).toBe("**hello**world**");
+    expect(expandWhitespaceQuery(" hello world")).toBe("**hello**world*");
+  });
+
+  it("the motivating trailing-space case: a space only ever widens (A3)", () => {
+    // "src" (substring mode) already matches "srcdir/file.txt"; "src " must
+    // keep matching it, which requires the inserted wildcard to cross a
+    // directory boundary.
+    expect(expandWhitespaceQuery("src ")).toBe("**src**");
+  });
+
+  it("collapses whitespace runs to '**' and wraps the final segment", () => {
+    expect(expandWhitespaceQuery("hello world")).toBe("**hello**world*");
+    expect(expandWhitespaceQuery("hello  world")).toBe("**hello**world*");
+    expect(expandWhitespaceQuery("  hello world  ")).toBe("**hello**world**");
     expect(willResolveToGlobMode("hello world")).toBe(true);
   });
 
   it("wraps only the final segment, not earlier ones", () => {
-    expect(expandWhitespaceQuery("~/My Documents/report")).toBe("~/My*Documents/*report*");
+    expect(expandWhitespaceQuery("~/My Documents/report")).toBe("~/My**Documents/**report*");
   });
 
-  it("does not add a wrap when the final segment already carries a user '*'", () => {
-    expect(expandWhitespaceQuery("report *.pdf")).toBe("report*.pdf");
+  it("wraps only the end that needs it (trailing end now also skipped when a '*' is ANYWHERE in the segment)", () => {
+    expect(expandWhitespaceQuery("*.pdf")).toBe("*.pdf");
+    expect(expandWhitespaceQuery("report*")).toBe("**report*");
+    expect(expandWhitespaceQuery("*.pdf*")).toBe("*.pdf*");
+  });
+
+  it("never stacks a star beside a user star, and now suppresses the trailing wrap entirely once a user star is anywhere in the segment", () => {
+    expect(expandWhitespaceQuery("report *.pdf")).toBe("**report*.pdf");
+    expect(expandWhitespaceQuery("*.pdf report")).toBe("*.pdf**report");
+    expect(expandWhitespaceQuery("a * b")).toBe("**a*b");
+  });
+
+  it("trailing wrap does not cross a directory (code review finding) — demonstrated with a whitespace-only wrap, since a user '*' anywhere now suppresses the trailing wrap entirely", () => {
+    // An earlier version appended "**" (the same cross-directory token as
+    // the leading wrap), which let a folder-anchored query leak into a
+    // differently-named subtree. The trailing wrap's job is only to let an
+    // unanchored fragment also match a longer name in the SAME folder,
+    // which a single "*" already gives in full. `/*.pdf` no longer
+    // exercises this (a user '*' anywhere now suppresses the trailing wrap
+    // outright, see the test above), so this uses a query whose final
+    // segment has neither whitespace nor '*' of its own but still gets
+    // wrapped because an EARLIER segment has whitespace.
+    const pattern = expandWhitespaceQuery("My Documents/report");
+    expect(pattern).toBe("My**Documents/**report*");
+  });
+
+  // Code review finding: JS's `\s` (and `String.trim()`) treat U+FEFF
+  // (ZERO WIDTH NO-BREAK SPACE / a leading BOM) as whitespace; Python's `\s`
+  // (and `str.strip()`) do not — U+FEFF is Unicode category Cf (format), not
+  // a whitespace category. `expand_whitespace_query` in query.py therefore
+  // takes rule 2's no-op branch for a BOM-prefixed literal (no real
+  // whitespace, no "*") and leaves it byte-for-byte unchanged, still
+  // substring mode. This mirror is written to agree with that — a BOM is
+  // never treated as a query-widening whitespace run here either — rather
+  // than with JS's native notion of "whitespace", so the documented
+  // byte-equivalence with query.py holds for this input too.
+  it("does not treat a leading BOM (U+FEFF) as whitespace (matches Python's \\s)", () => {
+    const bom = "﻿";
+    expect(expandWhitespaceQuery(bom + "abc")).toBe(bom + "abc");
+    expect(willResolveToGlobMode(bom + "abc")).toBe(false);
+    // A BOM alone has a real (non-whitespace) character in it as far as
+    // this grammar is concerned, so it is not the "nothing to search for"
+    // case either — matching Python's `chr(0xFEFF).strip() != ""`.
+    expect(expandWhitespaceQuery(bom)).toBe(bom);
+  });
+
+  // Code review finding 7(b): the BOM fix above closed ONE gap between
+  // Python's `\s` and JS's native `\s`, but not the only one. Python's `\s`
+  // (and `str.isspace()`) also matches the four C0 "information separator"
+  // control characters U+001C-U+001F (FS/GS/RS/US) and U+0085 (NEL, NEXT
+  // LINE) — both because CPython's Unicode tables mark their bidirectional
+  // class as a whitespace-like separator, not because of Unicode's
+  // `White_Space` property (which excludes them). JS's `\s` follows
+  // `White_Space` exactly and treats all five as ordinary non-whitespace
+  // characters. `NON_BOM_WS` is therefore extended with an explicit
+  // `[-]` alternative so a query containing one of these
+  // (vanishingly rare in practice — they are non-printing control
+  // characters no user is likely to type — but reachable via paste or a
+  // scripted client) still collapses the same way on both sides of the
+  // wire, rather than silently being treated as literal, non-widening
+  // characters here while `expand_whitespace_query` (query.py) widens on
+  // them.
+  it("treats the C0 separators (U+001C-U+001F) and NEL (U+0085) as whitespace (matches Python's \\s)", () => {
+    for (const cp of [0x1c, 0x1d, 0x1e, 0x1f, 0x85]) {
+      const ch = String.fromCodePoint(cp);
+      expect(expandWhitespaceQuery(`icon${ch}copy`)).toBe("**icon**copy*");
+      expect(expandWhitespaceQuery(ch)).toBe("");
+    }
+  });
+
+  // Required behavior table — mirrors tests/test_index_query.py's
+  // test_expand_whitespace_query_required_behavior_table row for row.
+  it.each([
+    ["report", "report"],
+    ["icon ", "**icon**"],
+    [" icon", "**icon*"],
+    ["*.js ", "*.js**"],
+    ["icon*copy", "**icon*copy"],
+    ["*.pdf", "*.pdf"],
+    ["src/**/*.ts", "src/**/*.ts"],
+    ["icon copy", "**icon**copy*"],
+    ["hello  world", "**hello**world*"],
+    ["report *.pdf", "**report*.pdf"],
+    ["~/My Documents/report", "~/My**Documents/**report*"],
+    ["/*.pdf", "/*.pdf"],
+    ["   ", ""],
+    ["src ", "**src**"],
+  ])("required behavior: %j -> %j", (query, expected) => {
+    expect(expandWhitespaceQuery(query)).toBe(expected);
+  });
+
+  // Property (A4): the function may deliberately insert "**", so the old
+  // "never invents a double star" claim no longer holds — what survives is
+  // that it never manufactures a run of THREE OR MORE consecutive "*"
+  // unless the input already had one.
+  it.each([
+    "report", "icon ", " icon", "*.js ", "icon*copy", "*.pdf",
+    "src/**/*.ts", "icon copy", "hello  world", "report *.pdf",
+    "~/My Documents/report", "/*.pdf", "a * b", "*.pdf report",
+    "report*", "*.pdf*", " ", "", "*", "**", "a* *", "* *",
+  ])("never invents a run of three or more stars: %j", (query) => {
+    const out = expandWhitespaceQuery(query);
+    const maxRun = (s: string) => Math.max(0, ...(s.match(/\*+/g) ?? []).map((r) => r.length));
+    if (maxRun(query) < 3) {
+      expect(maxRun(out)).toBeLessThan(3);
+    }
+  });
+});
+
+// Mirrors tests/test_index_query.py's concrete-filename regression table for
+// the reversal, using globMatch (fuzzy.ts) as the match/no-match oracle
+// instead of Python's `_glob_to_regex` + `re.fullmatch`.
+describe("the icon*copy reversal, matched against concrete filenames", () => {
+  it.each([
+    ["icon copy.png", true],
+    ["my icon copy.png", true],
+    ["iconcopy.png", true],
+    ["icon.png", false],
+  ])("icon copy vs %j is unchanged by the reversal: %j", (name, expected) => {
+    const pattern = expandWhitespaceQuery("icon copy");
+    expect(globMatch(pattern, name as string) !== null).toBe(expected);
+  });
+
+  it.each([
+    ["icon copy", true],
+    ["iconcopy", true],
+    ["icon copy.png", false],
+    ["icon copy extra", false],
+  ])("icon*copy is now anchored (the reversal itself) vs %j: %j", (name, expected) => {
+    const pattern = expandWhitespaceQuery("icon*copy");
+    expect(pattern).toBe("**icon*copy");
+    expect(globMatch(pattern, name as string) !== null).toBe(expected);
+  });
+
+  it("icon*copy* (user-typed trailing *) reproduces pre-reversal loose matching", () => {
+    const pattern = expandWhitespaceQuery("icon*copy*");
+    expect(pattern).toBe("**icon*copy*");
+    expect(globMatch(pattern, "icon copy.png")).not.toBeNull();
+    expect(globMatch(pattern, "icon copy extra")).not.toBeNull();
+  });
+
+  it.each([
+    ["report.parquet", true],
+    ["report.parquet.bak", false],
+    ["my_report.parquet", true],
+    ["report.parquetx", false],
+  ])("*.parquet means exactly ends-with-.parquet vs %j: %j", (name, expected) => {
+    const pattern = expandWhitespaceQuery("*.parquet");
+    expect(pattern).toBe("*.parquet");
+    expect(globMatch(pattern, name as string) !== null).toBe(expected);
+  });
+
+  it("src/*/index still finds src/app/index.ts (GUARD: final-segment-only scoping)", () => {
+    // The `*` in `src/*/index` sits in the MIDDLE segment — a directory
+    // wildcard, not a statement about the filename — so it must not
+    // suppress `index`'s own trailing wrap. If this ever regresses to a
+    // whole-path "does this query contain a `*` anywhere" check, `index`
+    // would stop trailing-wrapping and this match would break.
+    const pattern = expandWhitespaceQuery("src/*/index");
+    expect(pattern).toBe("src/*/**index*");
+    expect(globMatch(pattern, "src/app/index.ts")).not.toBeNull();
   });
 });
 
@@ -251,14 +445,14 @@ describe("answerFrom", () => {
   });
 
   it("highlights a glob hit's literal pieces via the server's resolved pattern (§4)", () => {
-    // "hello world" -> "**/*hello*world*" (expand_whitespace_query,
+    // "hello world" -> "**/**hello**world**" (expand_whitespace_query,
     // fused_render/index/query.py) — the resolved pattern the server sends
     // back on `res.pattern`, NOT the raw typed query, is what `globMatch`
     // needs to find the literal pieces.
     const out = answerFrom(
       rankResult({
         mode: "glob",
-        pattern: "**/*hello*world*",
+        pattern: "**/**hello**world**",
         hits: [rankHit("my_hello_big_world.py")],
       }),
       "hello world",
@@ -731,6 +925,24 @@ describe("narrowAnswer", () => {
       hits: [homeHit("hello-world.txt")],
     });
     expect(narrowAnswer(held, "hello")).toEqual([]);
+  });
+
+  it("does not blank on the keystroke that types the first space (substring -> glob transition)", () => {
+    // `behind` is true for "report" -> "report " (D-new: a trailing space is
+    // now meaningful, not trimmed), and the HELD answer's mode is still
+    // "substring" (that is what the server answered for "report"). Without
+    // special-casing this transition, `narrowAnswer` ran the substring
+    // branch against a query that now HAS a trailing space, matched
+    // nothing, and blanked the list for a full debounce + round trip —
+    // exactly the failure mode `narrowAnswer`'s own doc comment says it
+    // exists to prevent (code review finding).
+    const held = answer({
+      query: "report",
+      mode: "substring",
+      hits: [homeHit("report.csv"), homeHit("other.txt")],
+    });
+    const narrowed = narrowAnswer(held, "report ");
+    expect(narrowed.map((h) => h.rel)).toEqual(["report.csv"]);
   });
 
   it("narrows against the trailing segment for a query that walked past the box root", () => {

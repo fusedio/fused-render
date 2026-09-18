@@ -22,9 +22,8 @@ still tests `fuzzy.ts` in full, subsequence pass included.
 `query.py` itself (its only importer) — covered here since they still gate
 which rows `search_ranked` can return.
 """
-import json
 import os
-from pathlib import Path
+from collections import Counter
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -34,48 +33,11 @@ from fused_render.index.config import IndexConfig
 from fused_render.index.query import (
     MAX_GLOB_RANK_LIMIT,
     MAX_RANK_LIMIT,
-    is_hidden_rel,
-    query_wants_hidden,
+    _glob_sql,
     search_ranked,
 )
 from fused_render.index.runner import canonical_root
 from fused_render.index.store import Sink, compact
-
-FIXTURE = json.loads(
-    (Path(__file__).resolve().parent / "fixtures" / "rank-parity.json")
-    .read_text(encoding="utf-8"))
-
-
-def _group_case_only_ties(rels):
-    """`rels` with any run of CONSECUTIVE entries that are equal under
-    `.lower()` collapsed into a sorted tuple.
-
-    The deleted index/rank.py's own docstring flagged this as a KNOWN,
-    deliberate divergence: the JS ranker's final tie-break is
-    `Intl.Collator(sensitivity: "base")`, and both the old Python ranker and
-    this SQL rewrite use plain `rel ASC` (byte/ASCII comparison) instead —
-    every OTHER tie-break (tier, score, depth, `lower(rel)`) still has to
-    agree exactly, but a pair that is equal under all of them AND differs
-    only in case (e.g. "file.txt" vs "FILE.TXT") is not guaranteed to land in
-    the SAME order a locale-aware collator would pick. This is now purely a
-    CROSS-LANGUAGE divergence, not a within-SQL nondeterminism one: `rel ASC`
-    (query.py's `_rank_sql`) makes the SQL side's own order for such a pair
-    deterministic and repeatable run to run — the physical-row-order
-    dependency this helper originally existed to paper over is gone — but
-    that deterministic order can still legitimately differ from what
-    `Intl.Collator` would produce for the same pair, which is what this
-    helper still exists to tolerate. Grouping same-tie runs into an
-    order-independent tuple keeps the comparison strict about everything
-    else."""
-    out = []
-    i = 0
-    while i < len(rels):
-        j = i
-        while j + 1 < len(rels) and rels[j + 1].lower() == rels[i].lower():
-            j += 1
-        out.append(tuple(sorted(rels[i:j + 1])))
-        i = j + 1
-    return out
 
 
 def _index(tmp_path, root, files, dirs=()):
@@ -102,46 +64,142 @@ def _index(tmp_path, root, files, dirs=()):
     return cfg
 
 
-def _index_from_fixture(tmp_path):
-    """The fixture's own 64 entries, loaded into a real index under `/r`."""
-    files = [f"/r/{e['rel']}" for e in FIXTURE["entries"] if not e["is_dir"]]
-    dirs = [f"/r/{e['rel']}" for e in FIXTURE["entries"] if e["is_dir"]]
-    return _index(tmp_path, "/r", files, dirs=dirs)
+# -- the golden corpus (replaces tests/fixtures/rank-parity.json) ----------
+#
+# `tests/fixtures/rank-parity.json` (a flat 64-entry corpus + 25 queries,
+# generated FROM `frontend/src/platform/lib/fuzzy.ts` by
+# `bun scripts/gen-rank-fixture.ts`) and its consuming test
+# (`test_sql_ranking_matches_the_js_ranker_on_substring_hits`) are DELETED,
+# not merely unused. Two independent reasons, either alone sufficient:
+#
+# 1. `scripts/gen-rank-fixture.ts` imports a module that no longer exists
+#    (the JS-side rank-parity harness was cut along with the pieces of
+#    `fuzzy.ts` this round's SQL rewrite has no equivalent for), so the
+#    fixture can never be regenerated — keeping the stale JSON around would
+#    make it a silently-frozen snapshot of a ranker `query.py` no longer
+#    implements, not a living contract.
+# 2. Even if it could still be regenerated, comparing SQL's order against
+#    `fuzzy.ts`'s is no longer the right authority for the SUBSET of
+#    behavior this round changed. `fuzzy.ts` never had a `_TAIL_BONUS`, a
+#    2-vs-3-tier collapse, or a dropped camelCase-hump bonus — that parity
+#    test was already only checking `_rank_sql`'s PORTED pieces
+#    (`_is_segment_start`, `_name_tier`, `_sort_key`'s run/depth terms)
+#    against their JS originals, and this round intentionally diverges from
+#    several of those originals (see `_lex_order_and_score`'s docstring).
+#    Continuing to grade `query.py` against `fuzzy.ts` on the exact
+#    dimensions this round deliberately changed would fail by design, not
+#    by regression. See DECISIONS.md.
+#
+# The golden queries below replace it: HAND-REASONED (not captured from
+# whatever the implementation happens to emit) expected top orders, derived
+# directly from `_lex_order_and_score`'s documented column vector
+# (`nm_exact`, `prefix`, `suffix`, `contains`, `boundary`, `depth`,
+# `length(nm)`, `lower(rel)`, `rel`) rather than from any other ranker's
+# output. Each
+# query's assertion is filtered to an explicit ALLOWLIST of the paths that
+# query is about (the same technique the deleted fixture test used via its
+# own `fixture_rels` filter) rather than asserting on the full result set,
+# because a real on-disk index — unlike a flat list — structurally creates a
+# dirs-table row for every ANCESTOR directory a stored file implies
+# (`index/store.py`'s `Sink.add`, one call per directory that holds files),
+# and some of those implied rows are themselves real, correctly-ranked
+# matches for a query (a directory literally named `js` is a legitimate
+# EXACT match for query "js") that would make a full-result-set comparison
+# fragile and beside the point of what each query below is testing.
+_NOISE = [f"noise/d{i}/f{i}.dat" for i in range(280)]
+_GROUPS = {
+    # The `js`/`json` extension-vs-substring probe (search-architecture-
+    # review.md's own worked example, §10.1): a bare `js` query used to grade
+    # `lib/app.js`, `js/lib/app.js` and `json/script.js` off whichever
+    # occurrence `strpos` found FIRST, tying two of them at the same score
+    # purely because their first "js" happens to sit in a directory segment.
+    "js": [
+        "g_ext/src/app.js",
+        "g_ext/node_modules/react.js/dist/bundle.js",
+        "g_probe/lib/app.js",
+        "g_probe/js/lib/app.js",
+        "g_probe/json/script.js",
+    ],
+    "config": ["g_config/config.json", "g_config/app-config"],
+    "readme": ["g_readme/README.md", "g_readme/docs/README.md",
+               "g_readme/a/b/c/README.md"],
+    "index": ["g_index/index", "g_index/sub/index.md", "g_index/sub2/index.js"],
+    "alpha": ["g_alpha/alpha.txt", "g_alpha/a/b/c/d/e/f/alpha-deep.txt"],
+}
+_GOLDEN_EXPECTED = {
+    # query -> expected order, filtered to _GROUPS[query]
+    #
+    # "js": all five basenames end with "js" (suffix=True) and contain it
+    # (contains=True) — none is a prefix or exact match — so every row ties
+    # on the four leading predicate columns and `depth ASC` decides first:
+    # the three depth-3 files (`app.js` x2, `script.js`) sort before the
+    # depth-4 `js/lib/app.js` before the depth-5 `node_modules` bundle. The
+    # depth-3 trio then breaks on `length(nm) ASC` ("app.js" — 6 chars —
+    # before "script.js" — 9 chars), and the app.js/app.js tie breaks on
+    # `lower(rel) ASC` ("g_ext/..." sorts before "g_probe/..."). This is the
+    # exact reordering search-architecture-review.md's probe called out as
+    # missing: the shallow `lib/app.js` files now correctly outrank both the
+    # `.json`-lookalike-named directory hit AND the ancestor-named `js/`
+    # decoy, instead of tying with them.
+    "js": ["g_ext/src/app.js", "g_probe/lib/app.js", "g_probe/json/script.js",
+           "g_probe/js/lib/app.js",
+           "g_ext/node_modules/react.js/dist/bundle.js"],
+    # "config": `config.json` is a basename PREFIX match (+500); `app-config`
+    # is a basename SUFFIX match only (+250) — the reported regression this
+    # round exists to fix (`3622523ad`'s `_TAIL_BONUS` tied these at the same
+    # score because it weighted a tail match exactly as heavily as a prefix
+    # one).
+    "config": ["g_config/config.json", "g_config/app-config"],
+    # "readme": all three are basename-prefix matches with an identical `nm`
+    # LENGTH ("README.md" folds to the same 9-character `nm` regardless of
+    # depth), so `depth ASC` alone orders them shallowest first.
+    "readme": ["g_readme/README.md", "g_readme/docs/README.md",
+               "g_readme/a/b/c/README.md"],
+    # "index": `g_index/index` is an EXACT basename match (nm == "index"),
+    # the one predicate column no other candidate here can share — it wins
+    # regardless of depth. The remaining two tie on prefix/contains and on
+    # `length(nm)` ("index.md"/"index.js" are both 8 characters), so
+    # `lower(rel) ASC` decides: "g_index/sub/index.md" sorts before
+    # "g_index/sub2/index.js" because `/` (0x2F) sorts before `2` (0x32) at
+    # the first differing byte.
+    "index": ["g_index/index", "g_index/sub/index.md", "g_index/sub2/index.js"],
+    # "alpha": both are basename-prefix matches with the same predicate
+    # profile, so `depth ASC` alone separates the shallow file from the one
+    # nested six directories deeper.
+    "alpha": ["g_alpha/alpha.txt", "g_alpha/a/b/c/d/e/f/alpha-deep.txt"],
+}
 
 
-@pytest.mark.parametrize("query", FIXTURE["queries"])
-def test_sql_ranking_matches_the_js_ranker_on_substring_hits(tmp_path, query):
-    """The fixture's expected order, RESTRICTED to substring matches — the
-    part of `fuzzy.ts`'s answer index-backed search can still reach. `str.find`
-    (Python) and `String.prototype.includes` (JS, via fuzzy.ts's own substring
-    branch) and SQL's `LIKE '%q%'`/`strpos` all agree on "is `query` a
-    substring", so filtering the JS-authoritative order down to substring
-    rows and comparing it to the SQL order is a same-language-independent
-    check that dropping the fuzzy pass didn't also reorder the tier-1/2/3
-    rows that remain."""
-    cfg = _index_from_fixture(tmp_path)
-    ql = query.lower()
-    show_hidden = query_wants_hidden(query)
-    expected = [rel for rel in FIXTURE["expected"][query]
-                if ql in rel.lower() and (show_hidden or not is_hidden_rel(rel))]
+def _golden_index(tmp_path):
+    files = list(_NOISE)
+    for group in _GROUPS.values():
+        files.extend(group)
+    return _index(tmp_path, "/r", [f"/r/{f}" for f in files])
+
+
+@pytest.mark.parametrize("query", sorted(_GROUPS))
+def test_golden_corpus_pins_the_hand_reasoned_top_order(tmp_path, query):
+    cfg = _golden_index(tmp_path)
+    allowed = set(_GROUPS[query])
     out = search_ranked(cfg, "/r", query, limit=200)
-    # A real on-disk index (unlike the flat fixture list) structurally must
-    # hold a dirs-table row for every ANCESTOR directory a stored file
-    # implies (index/store.py's `Sink.add`, one call per directory that
-    # holds files) — e.g. `fused_render/index/query.py` forces a row for
-    # `fused_render/index` even though the fixture never lists that
-    # directory as its own entry. Those implied-ancestor rows are real
-    # candidates the SQL side legitimately sees and the flat JS fixture
-    # never modeled, so they are filtered back out here rather than
-    # asserted on — this test is about ORDER, not about re-deriving which
-    # ancestor directories a real filesystem has.
-    fixture_rels = {e["rel"] for e in FIXTURE["entries"]}
-    got = [h["rel"] for h in out["hits"] if h["rel"] in fixture_rels]
-    assert _group_case_only_ties(got) == _group_case_only_ties(expected)
+    got = [h["rel"] for h in out["hits"] if h["rel"] in allowed]
+    assert got == _GOLDEN_EXPECTED[query]
+
+
+def test_golden_corpus_noise_never_leaks_into_a_targeted_query(tmp_path):
+    """None of the 280 noise paths (`noise/dN/fN.dat`) contain any of the
+    golden queries' substrings — a sanity check on the corpus itself, so a
+    query's allowlist-filtered assertion above is provably not silently
+    passing because unrelated noise rows swamped the real candidates."""
+    cfg = _golden_index(tmp_path)
+    for query in _GROUPS:
+        out = search_ranked(cfg, "/r", query, limit=1000)
+        noisy = [h["rel"] for h in out["hits"] if h["rel"].startswith("noise/")]
+        assert noisy == []
 
 
 def test_an_empty_query_ranks_nothing(tmp_path):
-    cfg = _index_from_fixture(tmp_path)
+    cfg = _golden_index(tmp_path)
     assert search_ranked(cfg, "/r", "")["hits"] == []
     assert search_ranked(cfg, "/r", "   ")["hits"] == []
 
@@ -240,13 +298,18 @@ def test_a_shallow_name_match_beats_a_deep_ancestor_only_match(tmp_path):
     assert out["hits"][0]["rel"] == "cfg-manager.txt"
 
 
-def test_the_depth_penalty_breaks_a_same_tier_same_score_tie_by_shallowness(
-    tmp_path,
-):
-    """Two ancestor-only (tier 3) hits with the IDENTICAL matched window (the
-    query matches the first path segment of both, at position 0, so raw
-    `score` before the depth term is identical) — DEPTH_PENALTY is what stops
-    the deeper one from winning purely by having accumulated more path."""
+def test_depth_breaks_a_same_predicate_tie_by_shallowness(tmp_path):
+    """Two ancestor-only (tier 3) hits whose basenames neither start with,
+    end with, nor contain "xxxxxxxx" at all — every `_name_predicate_sql`
+    column is `false` for both, so every ORDER BY column ahead of `depth`
+    ties. `depth ASC` is what stops the deeper one from winning purely by
+    having accumulated more path — the position-free redesign's replacement
+    for the deleted `_DEPTH_PENALTY` arithmetic (search-architecture-
+    review.md §6): a plain ordering column, not a subtracted constant, so
+    there is no formula left to pin an exact number against — only the
+    ORDER, and that `score` (a display-only weighted sum with no depth
+    term stronger than `- depth`) is strictly higher for the shallower row
+    purely because `depth` is smaller, not because of any predicate."""
     deep = "xxxxxxxx/xxxxxxxx/xxxxxxxx/xxxxxxxx/xxxxxxxx/deep.txt"  # depth 6
     shallow = "xxxxxxxx/shallow.txt"  # depth 2
     cfg = _index(tmp_path, "/r", [f"/r/{deep}", f"/r/{shallow}"])
@@ -258,14 +321,47 @@ def test_the_depth_penalty_breaks_a_same_tier_same_score_tie_by_shallowness(
     files = [h for h in out["hits"] if not h["is_dir"]]
     assert [h["rel"] for h in files] == [shallow, deep]
     assert files[0]["tier"] == files[1]["tier"] == 3
-    # The un-penalised (pre-`depth`) score IS identical — same matched
-    # window, same segment-start count — so the ordering above is entirely
-    # DEPTH_PENALTY's doing, not a difference in what matched.
-    n = len("xxxxxxxx")
-    bare = n + 3 * (n - 1) + 5  # one segment start (position 0)
     by_rel = {h["rel"]: h for h in out["hits"]}
-    assert by_rel[shallow]["score"] == bare  # depth 2, no penalty (<= SHALLOW_FREE)
-    assert by_rel[deep]["score"] == bare - 4 * (6 - 3)  # DEPTH_PENALTY * (depth - 3)
+    # No predicate is true for either file's basename ("shallow.txt" / "
+    # deep.txt" neither start with, end with, nor contain "xxxxxxxx"), so
+    # `score` is exactly `-depth` for both.
+    assert by_rel[shallow]["score"] == -2
+    assert by_rel[deep]["score"] == -6
+
+
+def test_score_never_inverts_the_real_order_at_depth(tmp_path):
+    """Finding 4: `score` (the debug/display weighted sum) used to subtract
+    `depth` UNBOUNDED, so at a large enough depth it could invert the real
+    order — a `contains`-only basename match at depth 601 scored
+    `100 - 601 = -501`, BELOW a same-tier ancestor-only match at depth 2
+    scoring `0 - 2 = -2`, even though the real `ORDER BY` vector (`tier`/
+    `contains` alone) ranks the basename match first. `_lex_order_and_score`
+    now caps the subtracted term at `_SCORE_DEPTH_CAP` (99, strictly less
+    than the smallest gap between adjacent score levels — 100, between "no
+    predicate holds" (0) and `contains` alone (100), not 150 as an earlier
+    version of this comment claimed reading only the four named weights;
+    see code review finding 4, query.py's own comment), so `score`
+    can no longer invert the true order this way, though it remains a
+    coarse display value, not a second ranking mechanism (see its
+    docstring)."""
+    deep_name = "/".join(["d"] * 601) + "/xxxconfigxxx.txt"  # depth 601,
+                                                              # "config" mid-word
+    shallow_ancestor = "config/unrelated.txt"                # depth 2,
+                                                              # ancestor-only
+    cfg = _index(tmp_path, "/r", [f"/r/{deep_name}", f"/r/{shallow_ancestor}"])
+    hits = search_ranked(cfg, "/r", "config")["hits"]
+    files = [h for h in hits if not h["is_dir"] and h["rel"] in
+             (deep_name, shallow_ancestor)]
+    by_rel = {h["rel"]: h for h in files}
+    # Real order: the basename match (tier 1) outranks the ancestor-only
+    # match (tier 3) regardless of depth.
+    assert by_rel[deep_name]["tier"] == 1
+    assert by_rel[shallow_ancestor]["tier"] == 3
+    rels_in_order = [h["rel"] for h in hits if h["rel"] in
+                     (deep_name, shallow_ancestor)]
+    assert rels_in_order == [deep_name, shallow_ancestor]
+    # The display `score` must agree with that real order, not invert it.
+    assert by_rel[deep_name]["score"] > by_rel[shallow_ancestor]["score"]
 
 
 def test_the_exact_name_bonus_survives_the_depth_penalty(tmp_path):
@@ -285,47 +381,203 @@ def test_the_prefix_name_bonus(tmp_path):
     assert out["hits"][0]["score"] > 25  # base score plus the prefix bonus
 
 
-def test_tier_1_2_3_boundaries_including_a_match_straddling_the_basename(
+def test_the_basename_suffix_bonus_ranks_a_tail_match_above_an_interior_one(
     tmp_path,
 ):
-    """tier 1: query is a substring of the basename. tier 3: the match ends
-    strictly before the basename starts (ancestor-only). tier 2: everything
-    else — including a match that STRADDLES the boundary. A straddling match
-    is only possible when the matched substring literally contains the "/"
-    separator itself (the match is a run of CONSECUTIVE characters of `rel`),
-    so the query has to spell across it: "oo/ba" against "foo/bar.txt" starts
-    inside the directory segment "foo" and ends inside the basename "bar.txt"."""
+    """Substring-mode counterpart to the reported `*.js`-vs-`.json` bug
+    (glob mode, see the two glob tests below): a match that reaches the END
+    of the basename is exactly as good a signal as one that reaches its
+    START (the existing +25 `name_bonus` prefix case) and deserves the same
+    kind of credit, but nothing awarded it before this. Every OTHER term is
+    made IDENTICAL between the two candidates on purpose (same run length,
+    same zero segment-start count, same zero depth penalty since both are
+    <= SHALLOW_FREE) so the only thing that can separate them is the new
+    suffix bonus."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/xxxjsxxx.txt",       # "js" interior, not at the basename's end
+        "/r/d1/d2/d3/xxxjs",     # "js" is the LAST two chars of the basename
+    ])
+    files = search_ranked(cfg, "/r", "js")["hits"]
+    rels = [h["rel"] for h in files]
+    assert rels[0] == "d1/d2/d3/xxxjs"
+    by_rel = {h["rel"]: h for h in files}
+    assert by_rel["d1/d2/d3/xxxjs"]["score"] > by_rel["xxxjsxxx.txt"]["score"]
+
+
+def test_the_basename_suffix_bonus_does_not_reorder_an_exact_match_below_a_tail_match(
+    tmp_path,
+):
+    """The new suffix bonus must not be large enough to put a mere tail
+    match ahead of a TRUE exact-basename match (+100) at the same depth —
+    guards against picking a bonus so large it "swamps" the existing name
+    bonuses the way the brief warns against."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/config",           # exact basename match: gets +100 AND the new
+                                # suffix bonus (an exact match also reaches
+                                # the basename's end, by construction)
+        "/r/app-config",       # tail match only: ends with "config" but is
+                                # not equal to it
+    ])
+    out = search_ranked(cfg, "/r", "config")["hits"]
+    assert [h["rel"] for h in out] == ["config", "app-config"]
+
+
+def test_tier_1_and_3_boundaries_including_a_match_straddling_the_basename(
+    tmp_path,
+):
+    """tier 1: the query is fully explainable within the basename alone
+    (`_name_predicate_sql`'s `contains`). tier 3: everything else, including
+    both an ancestor-only match AND a match that STRADDLES the `/` boundary.
+
+    The old 3-tier scheme (1/2/3, `_name_tier` in the deleted rank.py) had a
+    dedicated tier 2 for the straddle case ("oo/ba" against "foo/bar.txt",
+    which starts inside "foo" and ends inside "bar.txt") because it read a
+    single contiguous match window (`p0..p0+n`) and could ask "does this
+    window cross the boundary". The position-free redesign has no window to
+    ask that question of — `contains` is a pure existence test against `nm`
+    alone, so a straddling match (which by definition needs characters
+    OUTSIDE the basename) can never satisfy it, landing it in tier 3 with
+    every other non-name match. This is a deliberate collapse, not a gap:
+    `tier` is no longer a primary sort key (the lexicographic predicate
+    vector ahead of it already separates match quality more finely — see
+    `_lex_order_and_score`'s docstring), so the 3-way split had nothing left
+    to buy that `contains` alone doesn't already provide. Recorded in
+    DECISIONS.md."""
     cfg = _index(tmp_path, "/r", ["/r/name-has-alpha.txt",  # tier 1: "alpha" in name-has-alpha.txt
                                   "/r/alpha/unrelated.txt",  # tier 3: match ends before "unrelated.txt"
-                                  "/r/foo/bar.txt"])         # tier 2: "oo/ba" straddles the "/"
+                                  "/r/foo/bar.txt"])         # tier 3: "oo/ba" straddles the "/"
     by_rel = {h["rel"]: h for h in search_ranked(cfg, "/r", "alpha")["hits"]}
     assert by_rel["name-has-alpha.txt"]["tier"] == 1
     assert by_rel["alpha/unrelated.txt"]["tier"] == 3
     straddle = search_ranked(cfg, "/r", "oo/ba")["hits"]
     assert [h["rel"] for h in straddle] == ["foo/bar.txt"]
-    assert straddle[0]["tier"] == 2
+    assert straddle[0]["tier"] == 3
 
 
-def test_the_camelcase_hump_counts_as_a_segment_start(tmp_path):
-    """`_is_segment_start`'s camelCase test runs against the ORIGINAL-case
-    path, not the lowercased one — an upper-case letter preceded by a
-    lower-case one scores like a word boundary. Pinned by comparing a query
-    that lands ONLY on humps against a same-length query that lands on none:
-    the hump-aligned one must score higher."""
-    cfg = _index(tmp_path, "/r", ["/r/MyRenderTarget.ts"])
-    humps = search_ranked(cfg, "/r", "MRT")
-    assert humps["hits"] == []  # "MRT" is not a substring at all — sanity
-    # Compare two REAL substrings of the same file: one starting on a hump
-    # ("Render", right after the lowercase "y"), one starting mid-word
-    # ("ender", one character later, off any boundary).
-    on_hump = search_ranked(cfg, "/r", "render")["hits"][0]
-    off_hump = search_ranked(cfg, "/r", "ender")["hits"][0]
-    # Equalize for the different query length by comparing the SEGMENT-START
-    # contribution alone: score minus the "n + 3*(n-1)" run term and any name
-    # bonus (neither query is the whole basename or a prefix of it).
-    def bare(hit, n):
-        return hit["score"] - (n + 3 * (n - 1))
-    assert bare(on_hump, 6) > bare(off_hump, 5)
+def test_boundary_bonus_ranks_a_word_boundary_match_above_a_mid_word_one(
+    tmp_path,
+):
+    """Finding 3: the old word-boundary/segment-start bonus was dropped
+    without replacement, so two ties (same `contains`, same depth, same
+    `length(nm)`) fell through to `lower(rel) ASC` — pure alphabetical
+    order, not match quality. Reproduced exactly: `aaaconfig.py` (12 chars,
+    "config" mid-word, right after another letter) sorted ahead of
+    `zz_config.py` (12 chars, "config" right after a `_` separator) purely
+    because `'a' < 'z'`. The new `boundary` predicate (a word/segment-start
+    existence test, position-free) fixes this without reintroducing a
+    position read."""
+    cfg = _index(tmp_path, "/r", ["/r/aaaconfig.py", "/r/zz_config.py"])
+    hits = search_ranked(cfg, "/r", "config")["hits"]
+    assert [h["rel"] for h in hits] == ["zz_config.py", "aaaconfig.py"]
+
+
+def test_boundary_predicate_escapes_regex_metacharacters(tmp_path):
+    """The `boundary` predicate is regex-escaped (`re.escape`), not
+    LIKE-escaped, because it is embedded in a `regexp_matches` pattern. A
+    query containing a regex metacharacter (here `.`) must not have that
+    character read back as "any character" — if it were, a DECOY substring
+    elsewhere in a basename (one that only coincidentally resembles the
+    boundary pattern once `.` is treated as a wildcard) could make an
+    otherwise mid-word match look boundary-true.
+
+    `xa.b_azb.txt` (basename, query "a.b"): the real, literal "a.b" occurs
+    at "x[a.b]_azb.txt" — mid-word, preceded by "x", correctly
+    boundary-false. But it also contains a decoy "_azb" — preceded by a
+    real separator "_", then "a", then "z", then "b" — which an UNESCAPED
+    "." (matching "any character") would misread as a boundary-true
+    occurrence of "a.b". Compared against `_a.b_extra_padding_here.txt`
+    (a genuine boundary-true match, deliberately made LONGER so that
+    `length(nm) ASC` — the next tie-break after `boundary` — would favor
+    the WRONG (decoy) candidate if `boundary` failed to separate them; only
+    a correctly-escaped `boundary` predicate produces the right order here)."""
+    decoy = "xa.b_azb.txt"                        # boundary-false (12 chars)
+    genuine = "_a.b_extra_padding_here.txt"        # boundary-true (27 chars)
+    cfg = _index(tmp_path, "/r", [f"/r/{decoy}", f"/r/{genuine}"])
+    hits = search_ranked(cfg, "/r", "a.b")["hits"]
+    rels = [h["rel"] for h in hits if h["rel"] in (decoy, genuine)]
+    assert rels == [genuine, decoy]
+
+
+def test_boundary_predicate_is_not_dead_for_a_leading_punctuation_literal():
+    """Code review finding 6: `boundary`'s regex demands a separator (or the
+    string start) immediately BEFORE the literal — but an extension-glob
+    literal like ".pdf" (what `*.pdf`'s final segment resolves to) or ".ts"
+    already STARTS with a non-alphanumeric character, so the old regex
+    effectively required TWO separators in a row (one before the literal's
+    own leading punctuation, which is itself supposed to be doing that job).
+    For an ordinary file the character before an extension's dot is a plain
+    alnum basename character (`report.pdf`'s "t"), so this was true for
+    essentially no real file — `boundary` was dead for every extension glob.
+    Fixed by stripping the literal's own leading non-alphanumeric run before
+    building the boundary regex, so the check becomes "is there a separator
+    (the dot itself counts) right before the alphanumeric CORE of the
+    literal" — which a normal extension match always satisfies.
+
+    Evaluated directly against `_name_predicate_sql`'s own generated SQL
+    (rather than through a full ranking scenario) because, once fixed, an
+    extension literal's boundary is true for essentially every real hit —
+    there is no ranking tie left for it to break, which is exactly the
+    point: the predicate went from structurally dead (always false) to
+    structurally live (true for the case it exists to recognize), and a
+    ranking-only test could not distinguish "always false" from "coincidentally
+    tied so it never mattered"."""
+    import duckdb
+
+    from fused_render.index.query import _name_predicate_sql
+
+    preds = _name_predicate_sql("nm", [".pdf"])
+    con = duckdb.connect()
+    for nm, expected in [("report.pdf", True), ("readme.txt", False)]:
+        row = con.execute(
+            f"SELECT ({preds['boundary']}) FROM (SELECT '{nm}' AS nm)"
+        ).fetchone()
+        assert bool(row[0]) is expected, (nm, preds["boundary"])
+
+
+def test_glob_final_segment_tier_fix_for_path_shaped_patterns(tmp_path):
+    """Finding 2: `**/src/*.ts` used to be tier 3 for EVERY hit, no matter
+    how good the basename match, because `_glob_literal_runs` ran on the
+    WHOLE pattern produced `["src/", ".ts"]` — `"src/"` is a directory-
+    segment literal that can never appear in `nm`, a slash-free basename,
+    so `contains` (built by chaining every literal run) was false for every
+    row (search-architecture-review.md §10.3). `_final_segment_pattern`
+    fixes this by scoring only the pattern's FINAL segment (`.ts` here, from
+    `*.ts`) against `nm`. Both a directly-matching file (`src/main.ts`) and
+    one where "src" is merely an ANCESTOR directory several levels up
+    (`a/b/src/deep.ts`) must come back tier 1: the fix is about what's
+    tested against `nm`, not about requiring "src" to be the immediate
+    parent."""
+    cfg = _index(tmp_path, "/r", ["/r/src/main.ts", "/r/a/b/src/deep.ts"])
+    hits = search_ranked(cfg, "/r", "**/src/*.ts**", glob=True)["hits"]
+    by_rel = {h["rel"]: h for h in hits}
+    assert by_rel["src/main.ts"]["tier"] == 1
+    assert by_rel["a/b/src/deep.ts"]["tier"] == 1
+
+
+def test_glob_final_segment_tier_ancestor_only_stays_tier_3(tmp_path):
+    """Regression guard for the fix above: an ancestor-only glob whose FINAL
+    segment is a bare `*` (`**/alpha/*`, matching "everything directly
+    inside an `alpha` directory") has zero literal runs once confined to its
+    final segment — there is nothing left to test against `nm` at all, so
+    it must stay tier 3 (the unscored/no-literal-runs branch), not be
+    accidentally promoted to tier 1 by the final-segment fix."""
+    cfg = _index(tmp_path, "/r", ["/r/alpha/unrelated.txt"])
+    hits = search_ranked(cfg, "/r", "**/alpha/*", glob=True)["hits"]
+    by_rel = {h["rel"]: h for h in hits}
+    assert by_rel["alpha/unrelated.txt"]["tier"] == 3
+
+
+# The old camelCase-hump segment-start bonus (`_is_segment_start`, ported
+# from the deleted rank.py) has no test here any more — it was DROPPED, not
+# reimplemented in occurrence-independent form. It read the matched window's
+# position against the ORIGINAL-case `rel` (`substr(rel, i, 1)` at the
+# match's own start/end), which is exactly the "which occurrence" question
+# this round's redesign exists to eliminate, and `nm` — the only column
+# every remaining predicate is built from — is stored already-lowercased, so
+# recovering case information for a hump test would need a brand new
+# original-case basename column. Left out as an explicit, reported
+# deviation from the old ranker's feature set rather than reintroduced as
+# another positional read. See DECISIONS.md and this round's report.
 
 
 def test_no_more_than_limit_rows_come_back_from_the_database(tmp_path):
@@ -348,6 +600,924 @@ def test_glob_mode_clamps_to_its_own_wider_ceiling(tmp_path):
     out = search_ranked(cfg, "/r", "*.txt", limit=MAX_GLOB_RANK_LIMIT, glob=True)
     assert len(out["hits"]) == 50
     assert out["truncated"] is False
+
+
+# -- glob mode is ranked too (Part B) --------------------------------------
+
+def test_glob_ranking_a_tight_match_beats_a_long_wildcard_swallow(tmp_path):
+    """`icon copy.png` (a `**icon**copy**` glob's stars swallowing almost
+    nothing) must outrank `icon-a-very-long-thing-copy.png` (the same two
+    literal runs, `icon` and `copy`, both present, but with the stars
+    swallowing 18 extra characters between them). Every OTHER scoring term
+    (the two runs' own `n + 3*(n-1)`, their segment-start count — both
+    filenames start a run right at position 0 and right after a separator —
+    and the basename-prefix name bonus for `icon`) is IDENTICAL between the
+    two candidates, so this only passes if the wildcard-swallow penalty is
+    actually doing something: without it, this pair would tie and the tie-
+    break (`rel ASC`) would put the LONGER name first, which is backwards."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/icon copy.png", "/r/icon-a-very-long-thing-copy.png"])
+    hits = search_ranked(cfg, "/r", "**/**icon**copy**", glob=True)["hits"]
+    assert [h["rel"] for h in hits] == [
+        "icon copy.png", "icon-a-very-long-thing-copy.png"]
+
+
+def test_glob_ranked_hits_carry_the_wire_fields_and_order_by_length(tmp_path):
+    """Ranked glob hits carry the same key set (`rel`, `is_dir`, `size`,
+    `mtime`, `score`, `longest_run`, `tier`, `depth`) the other two modes'
+    hits do, and `tier` is no longer a fixed `0` placeholder — both basenames
+    here contain both literal runs (`icon`, `copy`), so both are tier 1, same
+    rule `_rank_sql` uses (query is fully explainable within the basename).
+
+    `icon copy.png` and `icon-a-very-long-thing-copy.png` tie on every
+    `_name_predicate_sql` column (both start with "icon", neither ends with
+    "copy", both contain the literal chain) — under the position-free
+    redesign there is no wildcard-swallow penalty left to break that tie on
+    `score` (deliberately: matched length/span is not a quality signal for a
+    glob, per the deleted `_glob_score_sql`'s own reasoning, which this
+    round keeps but implements as an absence of a term rather than a
+    penalty), so the two DO legitimately share a `score` now. The order
+    still comes out right — `icon copy.png` first — via `length(nm) ASC`,
+    the next column in `_lex_order_and_score`'s vector after the tied
+    predicates: this is the load-bearing proof that ORDER is decided by the
+    vector, not by `score DESC`, exactly as `_lex_order_and_score`'s
+    docstring warns a caller not to assume."""
+    cfg = _index(tmp_path, "/r", ["/r/icon copy.png",
+                                  "/r/icon-a-very-long-thing-copy.png"])
+    hits = search_ranked(cfg, "/r", "**/**icon**copy**", glob=True)["hits"]
+    assert len(hits) == 2
+    assert [h["rel"] for h in hits] == [
+        "icon copy.png", "icon-a-very-long-thing-copy.png"]
+    assert hits[0]["score"] == hits[1]["score"]  # tied on every predicate
+    for h in hits:
+        assert set(h) == {"rel", "is_dir", "size", "mtime",
+                          "score", "longest_run", "tier", "depth"}
+        assert h["tier"] == 1
+
+
+def test_glob_single_literal_run_score_matches_rank_sql_substring_score(tmp_path):
+    """The whole point of confining the swallow penalty to INTERIOR gaps: a
+    pattern with exactly ONE literal run has no interior gap at all (the
+    leading/trailing `**` cross no other literal), so its glob score must be
+    IDENTICAL to `_rank_sql`'s score for the equivalent substring query on
+    the very same rows — not merely close. Includes a folder-name collision
+    (`icons/` itself is a candidate row since every folder holding files gets
+    its own dirs-table row — the fixture gotcha) which is excluded, since its
+    own exact-name +100 bonus would dominate both real rows if left in."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/icon.png",
+        "/r/src/icon.png",
+        "/r/icons/scratch/tmpfile-zzzz.txt",
+        "/r/Projects/website/assets/images/branding/icon.png",
+    ])
+    substring_hits = {h["rel"]: h["score"]
+                      for h in search_ranked(cfg, "/r", "icon")["hits"]}
+    glob_hits = {h["rel"]: h["score"]
+                 for h in search_ranked(cfg, "/r", "**icon**", glob=True)["hits"]
+                 if h["rel"] != "icons"}
+    assert glob_hits  # sanity: rows actually matched
+    assert glob_hits.keys() == substring_hits.keys()
+    for rel, score in glob_hits.items():
+        assert score == substring_hits[rel], rel
+
+
+def test_glob_reported_bug_extension_match_beats_a_json_file_that_merely_contains_js(
+    tmp_path,
+):
+    """The reported bug: typing `*.js` (which resolves to the glob pattern
+    `**/*.js**`, a SINGLE literal run `[".js"]`) used to rank `.json` files
+    above real `.js` files. `.json` starts with the literal ".js", so it is
+    an equally good match for that one literal run as an actual `.js`
+    extension is — same run length, same tier (both are substrings of their
+    own basename) — and with only one literal run the interior-swallow
+    penalty is always 0 (nothing is "between" a single run), so nothing
+    differentiated them except the depth tie-break, which favored the
+    shallower `.json` files. A bonus for the run reaching the actual END of
+    the basename (true only for the real `.js` file, never for `.json`,
+    since `.json` has two more characters after the matched `.js`) fixes
+    it."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/Downloads.json",
+        "/r/Work.json",
+        "/r/Downloads/canvas_39.json",
+        "/r/Downloads/Archive/script.js",
+    ])
+    hits = search_ranked(cfg, "/r", "**/*.js**", glob=True)["hits"]
+    files = [h["rel"] for h in hits if not h["is_dir"]]
+    assert files[0] == "Downloads/Archive/script.js"
+
+
+def test_glob_suffix_bonus_does_not_reorder_an_exact_match_below_a_tail_match(
+    tmp_path,
+):
+    """Glob-mode counterpart of the substring-mode guard test above: the
+    bonus must not swamp a true exact-basename match even when both
+    candidates satisfy the new suffix condition."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/config",       # exact basename match for "config"
+        "/r/app-config",   # tail match only
+    ])
+    hits = search_ranked(cfg, "/r", "**config**", glob=True)["hits"]
+    assert [h["rel"] for h in hits] == ["config", "app-config"]
+
+
+def test_glob_tier_restores_correct_order_over_the_swallow_penalty(tmp_path):
+    """Before the interior-only fix, the swallow penalty was charged over the
+    WHOLE root-relative path, so a shallow, non-exact match
+    (`xreport.txt`) could outrank a deep, EXACT basename match
+    (`deeply/nested/path/report`) purely because the deep one's path is
+    longer. With the penalty confined to interior gaps (zero here — one
+    literal run), the exact-basename `name_bonus` decides it correctly."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/xreport.txt",
+        "/r/deeply/nested/path/report",
+    ])
+    hits = search_ranked(cfg, "/r", "**report**", glob=True)["hits"]
+    assert [h["rel"] for h in hits] == [
+        "deeply/nested/path/report", "xreport.txt"]
+
+
+def test_glob_tier_generalization_ancestor_only_ranks_below_a_name_match(tmp_path):
+    """`tier` is restored as the PRIMARY sort key for glob hits too, computed
+    by running the resolved pattern's regex against `nm` (the basename)
+    instead of `lrel`: a match there is tier 1, else tier 3 — same two
+    values `_rank_sql` uses for "in the name" vs "ancestor only". A tier-3
+    ancestor-only hit must never outrank a tier-1 name match, however the raw
+    score compares. `alpha/` itself is excluded from the result: it holds a
+    file, so it gets its own row in the dirs table (`Sink.add`), and its own
+    exact-name +100 bonus (tier 1 too) would otherwise sit in the results
+    without being the pair this test means to compare."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/name-has-alpha.txt",   # tier 1: "alpha" is in the basename
+        "/r/alpha/unrelated.txt",  # tier 3: match is ancestor-only
+    ])
+    all_hits = search_ranked(cfg, "/r", "**alpha**", glob=True)["hits"]
+    hits = [h for h in all_hits if h["rel"] != "alpha"]
+    by_rel = {h["rel"]: h for h in hits}
+    assert by_rel["name-has-alpha.txt"]["tier"] == 1
+    assert by_rel["alpha/unrelated.txt"]["tier"] == 3
+    assert [h["rel"] for h in hits] == [
+        "name-has-alpha.txt", "alpha/unrelated.txt"]
+
+
+# -- Fix: multi-literal `nm_exact` is separator-tolerant --------------------
+#
+# Reported defect: `fused render` (home search) resolves to the glob pattern
+# `**fused**render*`, whose final segment has TWO literal runs,
+# `["fused", "render"]`. The pre-fix `nm_exact` (`length(nm) == total_len`,
+# `total_len == 11`) only credited the ZERO-separator spelling
+# (`"fusedrender"`, 11 characters) as exact — `~/Work/fused-render` (`nm ==
+# "fused-render"`, 12 characters) never qualified, so `~/ios/FusedRender` and
+# two `.../rclone/vfs/Volumes/FusedRender*` cache directories (all
+# `nm == "fusedrender"`) outranked the obviously-wanted
+# `~/Work/fused-render`, since `nm_exact` is the FIRST `ORDER BY` column and
+# the tie never reached `depth`.
+
+def test_glob_multi_literal_exact_is_separator_tolerant_fused_render_defect(
+    tmp_path,
+):
+    """The exact reported defect: `fused render` must rank the shallow
+    `Work/fused-render` above a deeper `Work/fused-render/ios/FusedRender`
+    duplicate AND above a GENUINELY same-depth, genuinely-exact
+    `Work/FusedRender` sibling — not merely a deeper, differently-spelled
+    directory that `depth` alone would already separate. `Work/FusedRender`
+    sits directly under `Work/`, exactly like `Work/fused-render`, so
+    `depth` cannot break this tie at all; only `nm_exact_natural` (Defect B:
+    a spelling with a separator at every literal-run gap beats the
+    zero-separator spelling when both are otherwise tied) can. Before that
+    fix, `length(nm) ASC` would have picked the SHORTER zero-separator
+    `FusedRender` (11 characters) over `fused-render` (12) here, reproducing
+    the original bug's flavor in the one case `depth` cannot already fix.
+
+    (An earlier version of this test used `FusedRender1`/`FusedRender2`
+    cache directories at a DIFFERENT, deeper depth as the "same-depth"
+    competitor its docstring claimed to test — those aren't `nm_exact` at
+    all, since the trailing digit after "render" blocks the `^...$` anchor,
+    so the test passed on `depth` alone and never exercised the
+    equal-depth tie this test now does.)"""
+    cfg = _index(tmp_path, "/r", [
+        "/r/Work/fused-render/README.md",
+        "/r/Work/FusedRender/README.md",
+        "/r/Work/fused-render/ios/FusedRender/app.txt",
+        "/r/rclone/vfs/Volumes/FusedRender1/x.txt",
+        "/r/rclone/vfs/Volumes/FusedRender2/x.txt",
+    ])
+    hits = search_ranked(cfg, "/r", "**fused**render*", glob=True)["hits"]
+    dirs = [h["rel"] for h in hits if h["is_dir"]]
+    assert dirs[0] == "Work/fused-render"
+
+
+def test_glob_multi_literal_exact_all_four_spellings_tie_above_a_non_exact_hit(
+    tmp_path,
+):
+    """All four natural spellings of "fused render" — no separator, `-`,
+    `_`, and a literal space — must satisfy the new separator-tolerant
+    `nm_exact`, and therefore all four must outrank a same-tier `contains`
+    only match (a basename that has "fused" and "render" in order but not as
+    a clean, separator-joined pair, and not at a word boundary either)."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/fusedrender.txt",
+        "/r/fused-render.txt",
+        "/r/fused_render.txt",
+        "/r/fused render.txt",
+        "/r/xfusedrenderx.txt",  # contains-only: no boundary, not exact
+    ])
+    hits = search_ranked(cfg, "/r", "**fused**render*", glob=True)["hits"]
+    files = [h["rel"] for h in hits if not h["is_dir"]]
+    exact_spellings = {
+        "fusedrender.txt", "fused-render.txt",
+        "fused_render.txt", "fused render.txt",
+    }
+    assert set(files[:4]) == exact_spellings
+    assert files[4] == "xfusedrenderx.txt"
+
+
+def test_glob_single_literal_nm_exact_sql_is_unchanged(tmp_path):
+    """Hard constraint from the fix: the single-literal path (what
+    `_rank_sql` always hits, and what a single-literal-run glob like `*.js`
+    hits too) must stay BIT-IDENTICAL to its pre-existing `nm_exact` SQL —
+    the new separator-tolerant branch is keyed strictly on
+    `len(literals) > 1` and must never fire for one literal run."""
+    inner = "SELECT rel, nm, lrel, depth, size, mtime, is_dir FROM t"
+    sql = _glob_sql(
+        inner, "^.*icon.*$", "", 20,
+        literals=["icon"], nm_regex="^.*icon.*$")
+    assert "(regexp_matches(nm, '^.*icon.*$') AND length(nm) = 4)" in sql
+    assert "[^a-z0-9]*" not in sql
+
+
+def test_glob_multi_literal_exact_escapes_regex_metacharacters():
+    """A literal containing a regex metacharacter (`.`) must not be read as
+    "any character" once it is embedded in the `nm_exact` `regexp_matches`
+    pattern this fix adds — a user typing `a.b c` must not get `.` read as
+    "any character". Tested directly against `_glob_sql`'s generated
+    `nm_exact` expression (bypassing the outer WHERE-clause regex, which
+    already escapes independently and is unchanged by this fix) so this
+    specifically exercises the new expression's own escaping, not the
+    pre-existing full-pattern filter."""
+    import duckdb
+
+    inner = "SELECT rel, nm, lrel, depth, size, mtime, is_dir FROM t"
+    sql = _glob_sql(
+        inner, "^.*a\\.b.*c.*$", "", 20,
+        literals=["a.b", "c"], nm_regex="^.*a\\.b.*c.*$")
+    # Pull just the `nm_exact` fragment (the first ORDER BY column) and run
+    # it standalone against synthetic `nm` values.
+    con = duckdb.connect()
+    start = sql.index("ORDER BY (") + len("ORDER BY (")
+    end = sql.index(") DESC", start)
+    nm_exact_expr = sql[start:end]
+    for nm, expected in [
+        ("a.b c", True),       # literal dot, literal (non-alnum) separator
+        ("a.b-c", True),       # literal dot, a different non-alnum separator
+        ("a.bxc", False),      # "x" is alnum, not a separator: not exact
+        ("axbxc", False),      # "." read as a literal, not "any character"
+        ("xa.bxcx", False),    # extra characters outside the two runs
+    ]:
+        row = con.execute(
+            f"SELECT {nm_exact_expr} FROM (SELECT ? AS nm)", [nm]
+        ).fetchone()
+        assert row[0] is expected, (nm, row[0])
+
+
+# -- Fix 1: a candidate-side EDGE predicate ranks a whole-segment prefix or --
+# -- suffix match above a fragment match on either side ---------------------
+#
+# Reported defect: searching `.js` in the home search box returned fifteen
+# `.jshintrc` files ABOVE the one real `script.js`. `.jshintrc` is a basename
+# PREFIX match for the literal `.js` (`nm LIKE '.js%'`), while `script.js` is
+# a basename SUFFIX match (`nm LIKE '%.js'`) — prefix is checked first in the
+# unmodified `_lex_order_and_score` vector, so the accidental dotfile prefix
+# wins.
+#
+# An earlier version of this fix swapped `prefix`/`suffix` wholesale whenever
+# the QUERY's literal began with ".". That broke a second, later-reported
+# defect on `.env`: it made `database.env` (a SUFFIX match) outrank
+# `.envrc`/`.env.local` (PREFIX matches) — for THIS query text, users want
+# prefix to win, the opposite of `.js`. No rule keyed on the query string
+# alone can resolve both reports, since they are the identical shape of
+# query (`.` + short token) wanting opposite outcomes. `edge` (see
+# `_name_predicate_sql`'s docstring) instead asks a CANDIDATE-side question —
+# does the matched literal account for a whole leading/trailing segment of
+# `nm`, or just a fragment continuing into more text — and is spliced ahead
+# of `prefix`/`suffix` (which are never swapped now, always prefix-first) in
+# `order_by`.
+
+def test_extension_query_ranks_suffix_above_prefix(tmp_path):
+    cfg = _index(tmp_path, "/r", [
+        "/r/a/.jshintrc",
+        "/r/b/.jshintrc",
+        "/r/c/.jshintrc",
+        "/r/script.js",
+    ])
+    hits = [h["rel"] for h in search_ranked(cfg, "/r", ".js")["hits"]]
+    files = [r for r in hits if r.endswith(".jshintrc") or r == "script.js"]
+    assert files[0] == "script.js"
+
+
+def test_extension_glob_query_ranks_suffix_above_prefix(tmp_path):
+    """Glob-mode counterpart: `*.js` resolves (`resolve_query`) to the
+    pattern `**/*.js*`, whose final segment is `*.js*` — `_glob_literal_runs`
+    on that final segment yields the single literal run `['.js']`, the same
+    last-element check `_rank_sql`'s single-element `[qs]` triggers on.
+
+    A plain `**/*.js*` can never actually surface this bug end-to-end: its
+    query text neither starts with "." nor contains "/.", so
+    `query_wants_hidden` hides every dotfile candidate outright (including
+    `.jshintrc`) before ranking ever runs — a separate, pre-existing,
+    documented behavior (glob-mode dot-intent does not survive
+    `resolve_query`), not part of either fix here. To exercise the
+    prefix/suffix predicate conflict itself, the query below adds a `.d`
+    directory segment (`**/.d/**/*.js*`) purely to satisfy
+    `query_wants_hidden` (it contains "/."), while keeping the FINAL segment
+    identical (`*.js*`, literal run `['.js']`) — both files live under that
+    `.d` directory so the directory-segment requirement doesn't itself
+    exclude either one."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/.d/a/.jshintrc",
+        "/r/.d/script.js",
+    ])
+    hits = search_ranked(cfg, "/r", "**/.d/**/*.js*", glob=True)["hits"]
+    files = [h["rel"] for h in hits if not h["is_dir"]]
+    assert files[0] == ".d/script.js"
+
+
+def test_non_dot_query_keeps_prefix_before_suffix(tmp_path):
+    """Regression guard: the candidate-side `edge` predicate above must not
+    reorder an ordinary (non-dot) query — prefix still outranks suffix
+    (both `config.json`'s prefix match and `app-config`'s suffix match are
+    `edge` here — `config.json` is followed by `.`, `app-config` is
+    preceded by `-` — so they tie on `edge` and fall through to the
+    unswapped `prefix DESC` column, which still picks `config.json`)."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/config.json",   # prefix match for "config"
+        "/r/app-config",    # suffix match only
+    ])
+    hits = [h["rel"] for h in search_ranked(cfg, "/r", "config")["hits"]]
+    assert hits.index("config.json") < hits.index("app-config")
+
+
+def test_dotfile_extension_query_ranks_prefix_matches_above_a_suffix_match(
+    tmp_path,
+):
+    """Second acceptance case for the `edge` redesign: `.env` must rank
+    `.envrc` and `.env.local` (basename PREFIX matches) above
+    `database.env` (a basename SUFFIX match), the mirror image of the `.js`
+    case above and the reason the old wholesale prefix/suffix swap (keyed on
+    the query alone) was wrong — for `.js` the SUFFIX match should win, for
+    `.env` the PREFIX matches should win, and both queries have the
+    identical "a literal starting with a dot" shape.
+
+    `.env.local`'s prefix match is `edge` (followed by another `.`), tying
+    with `database.env`'s suffix match (also `edge` — self-anchored via its
+    own leading dot) and then winning on the unswapped `prefix DESC` column.
+    `.envrc`'s prefix match is NOT `edge` (followed by the alnum `r`, a
+    fragment) — see `test_dotfile_prefix_fragment_still_loses_to_a_suffix_
+    edge_match_known_gap` immediately below for why this specific candidate
+    still cannot be resolved as a fragment, and why it does not need to be
+    for THIS test: `.envrc` only has to beat `database.env` here because
+    nothing else FORCES the fragment case to win — but empirically, per the
+    known gap below, it still does not. This test therefore only pins the
+    half of the acceptance case the `edge` design actually delivers:
+    `.env.local` above `database.env`."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/.env.local",
+        "/r/database.env",
+    ])
+    hits = [h["rel"] for h in search_ranked(cfg, "/r", ".env")["hits"]]
+    assert hits.index(".env.local") < hits.index("database.env")
+
+
+def test_dotfile_prefix_fragment_still_loses_to_a_suffix_edge_match_known_gap(
+    tmp_path,
+):
+    """Documents a KNOWN, deliberately unresolved gap rather than hiding it:
+    `.envrc` (a basename PREFIX match, but a FRAGMENT — the character after
+    the `.env` match, `r`, is alnum, not a separator) is, structurally,
+    indistinguishable from `.jshintrc` (also a PREFIX fragment — the
+    character after `.js`, `h`, is alnum too). Yet the informally reported
+    preference is `.envrc` > `database.env` (a SUFFIX match that IS `edge`,
+    self-anchored via its own leading dot) while the accepted, tested
+    preference above is `script.js` (a SUFFIX `edge` match) > `.jshintrc`
+    (a PREFIX fragment) — the identical shape of comparison (`edge` suffix
+    vs. fragment prefix) is wanted to resolve oppositely for these two
+    candidate pairs. No feature of `.envrc`/`database.env` ALONE (without
+    also reading which literal — "env" vs "js" — the query happens to be)
+    can tell them apart; resolving it would require exactly the
+    query-text-shape classifier this redesign was asked not to reintroduce.
+
+    This is UNCHANGED from the pre-fix behavior — the old wholesale
+    prefix/suffix swap already ranked `database.env` above `.envrc` too, for
+    the same underlying reason (a dot-leading query always favored the
+    basename SUFFIX). The `edge` redesign is a pure improvement elsewhere
+    (`.js`, `.env.local` above) with this one pre-existing case left
+    exactly as it was, not worsened."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/.envrc",
+        "/r/database.env",
+    ])
+    hits = [h["rel"] for h in search_ranked(cfg, "/r", ".env")["hits"]]
+    assert hits.index("database.env") < hits.index(".envrc")
+
+
+# -- Fix 3: a same-depth tie between separator-tolerant `nm_exact` spellings -
+# -- is broken by preferring the naturally-separated spelling, not length ---
+#
+# Residual case of the `nm_exact` separator-tolerance fix above: at EQUAL
+# depth, a zero-separator spelling (`FusedRender`) and a naturally-separated
+# one (`fused-render`) are now BOTH exact, so `depth` cannot break the tie
+# and it falls to `length(nm) ASC`, which picks the SHORTER (zero-separator)
+# spelling — reintroducing the original bug's flavor in the one case depth
+# does not already resolve. `nm_exact_natural` (a candidate-side predicate:
+# does EVERY gap between the literal runs contain a separator, not merely
+# zero-or-more) breaks the tie in the other direction instead.
+
+def test_multi_literal_exact_tie_at_equal_depth_prefers_the_separated_spelling(
+    tmp_path,
+):
+    cfg = _index(tmp_path, "/r", [
+        "/r/Work/fused-render",
+        "/r/Work/FusedRender",
+    ])
+    hits = [h["rel"] for h in
+            search_ranked(cfg, "/r", "**fused**render*", glob=True)["hits"]]
+    assert hits.index("Work/fused-render") < hits.index("Work/FusedRender")
+
+
+# -- Fix 2: at most 3 rows may share one basename `nm` in a single response --
+#
+# Reported defect: once fifteen `.jshintrc` files tied on every predicate,
+# the remaining tie-breaks (depth, length(nm), path) clustered identical
+# basenames together instead of spreading them — one machine-generated tree
+# filled the whole visible window with the same filename. Capped via SQL
+# `QUALIFY row_number() OVER (PARTITION BY nm ORDER BY <same vector>) <= 3`,
+# applied BEFORE the statement's own `ORDER BY ... LIMIT` so a capped
+# basename never silently shrinks how many rows a caller's `limit` asked for.
+
+def test_basename_cap_limits_to_top_3_per_name(tmp_path):
+    files = [f"/r/d{i}/dup.txt" for i in range(6)]
+    cfg = _index(tmp_path, "/r", files)
+    hits = [h for h in search_ranked(cfg, "/r", "dup")["hits"] if not h["is_dir"]]
+    assert len(hits) == 3
+    # Every row ties on every predicate column and on depth/length(nm) — the
+    # tie breaks on `lower(rel)`/`rel ASC`, so the three alphabetically-first
+    # paths are the "top 3 by the ordering" that must survive.
+    assert [h["rel"] for h in hits] == [
+        "d0/dup.txt", "d1/dup.txt", "d2/dup.txt"]
+
+
+def test_basename_cap_does_not_shrink_the_limit_or_break_truncation(tmp_path):
+    """The cap must be applied in SQL before `LIMIT`, not after: with 10
+    distinctly-named matches plus 6 more sharing one basename (capped to 3
+    survivors) and a `limit` comfortably above 13, every survivor must come
+    back and `truncated` must stay False."""
+    files = ([f"/r/single{i}.dup" for i in range(10)]
+             + [f"/r/d{i}/dup.txt" for i in range(6)])
+    cfg = _index(tmp_path, "/r", files)
+    result = search_ranked(cfg, "/r", "dup", limit=50)
+    hits = [h for h in result["hits"] if not h["is_dir"]]
+    assert len(hits) == 13
+    assert result["truncated"] is False
+    assert result["total"] == 13
+
+
+def test_glob_basename_cap_limits_to_top_3_per_name(tmp_path):
+    """Same cap, glob mode: `_glob_sql` needs the identical QUALIFY clause,
+    keyed off the same ordering vector its own ORDER BY uses."""
+    files = [f"/r/d{i}/dup.txt" for i in range(6)]
+    cfg = _index(tmp_path, "/r", files)
+    hits = [h["rel"] for h in
+            search_ranked(cfg, "/r", "**dup**", glob=True)["hits"]
+            if not h["is_dir"]]
+    assert len(hits) == 3
+
+
+# -- Fix 2b: the cap's own QUALIFY must not starve a page that COULD be
+# full --
+#
+# `_qualify_basename_cap`'s `QUALIFY` is spliced ahead of each branch's own
+# `ORDER BY ... LIMIT`, so — left unbounded — it runs the
+# `row_number() OVER (PARTITION BY nm ...)` window function over the ENTIRE
+# WHERE-matched set before the final `LIMIT` ever applies. That is correct
+# but, for a broad query against a large index, means walking every matching
+# row (documented elsewhere in this file as up to 353k rows) just to hand
+# back a `limit`-sized page. `_basename_candidate_pool(limit)` bounds an
+# intermediate `ORDER BY <same vector> LIMIT <pool>` stage ahead of the
+# QUALIFY, so the window function only ever scans `pool` rows, not the whole
+# match set — a real cost win on a broad query, verified not to regress the
+# ordinary "many distinct basenames" case a caller's `limit` should still
+# fill completely.
+#
+# CLOSED, not merely documented: a SINGLE basename's duplicate count
+# exceeding `pool` AND every one of its copies ranking ahead of every other
+# matching basename in the shared ordering vector used to squeeze out every
+# other (distinct, legitimately-matching) basename before the cap ever ran —
+# a shape the old, unbounded QUALIFY never starved, and this pool-bounded
+# version regressed. Rather than accept it, `search_ranked` now reruns the
+# identical query UNBOUNDED (`_bounded_or_full_candidates`'s `bounded=False`
+# — the pre-`13ff8332a` shape, `QUALIFY` over the whole WHERE-matched set)
+# whenever the bounded run comes back short of `limit`: a short page is the
+# only observable symptom starvation can produce (a basename large enough to
+# fill the pool and outrank everything else still leaves every OTHER
+# basename capped at 3, so a FULL page is proof nothing was starved), and
+# it's also exactly the condition where the extra scan is cheap — either the
+# corpus genuinely has few matches, or the pool actually starved a fillable
+# page and correctness is worth the rerun. See `_basename_candidate_pool`'s
+# and `_bounded_or_full_candidates`'s own docstrings, DECISIONS.md, and
+# `specs/query.md` §3 for the full reasoning and the measured cost of always
+# firing the extra query on a genuinely-small result.
+
+def test_basename_cap_pool_still_fills_a_full_page_with_many_distinct_names(
+        tmp_path):
+    """Core regression check for the overfetch fix: a query whose matches
+    span many distinct basenames — comfortably more than `limit // 3` — must
+    still come back as a full, `limit`-sized page. Before the fix this
+    already worked because QUALIFY ran unbounded; the pool-bounded version
+    must not regress it for an ordinary (non-adversarially-skewed) spread."""
+    files = [f"/r/d{i}_{j}/dup{i}.txt" for i in range(30) for j in range(4)]
+    cfg = _index(tmp_path, "/r", files)
+    result = search_ranked(cfg, "/r", "dup", limit=21)
+    hits = [h for h in result["hits"] if not h["is_dir"]]
+    assert len(hits) == 21
+    assert result["truncated"] is True
+    names = Counter(h["rel"].rsplit("/", 1)[-1] for h in hits)
+    assert all(count <= 3 for count in names.values())
+
+
+def test_basename_cap_pool_still_fills_a_full_page_unranked(tmp_path):
+    files = [f"/r/d{i}_{j}/dup{i}.txt" for i in range(30) for j in range(4)]
+    cfg = _index(tmp_path, "/r", files)
+    result = search_ranked(cfg, "/r", "dup", limit=21, ranked=False)
+    hits = [h for h in result["hits"] if not h["is_dir"]]
+    assert len(hits) == 21
+    assert result["truncated"] is True
+
+
+def test_glob_basename_cap_pool_still_fills_a_full_page_scored(tmp_path):
+    files = [f"/r/d{i}_{j}/dup{i}.txt" for i in range(30) for j in range(4)]
+    cfg = _index(tmp_path, "/r", files)
+    result = search_ranked(cfg, "/r", "**dup**", glob=True, limit=21)
+    hits = [h for h in result["hits"] if not h["is_dir"]]
+    assert len(hits) == 21
+    assert result["truncated"] is True
+
+
+def test_glob_basename_cap_pool_still_fills_a_full_page_unscored(tmp_path):
+    files = [f"/r/d{i}_{j}/dup{i}.txt" for i in range(30) for j in range(4)]
+    cfg = _index(tmp_path, "/r", files)
+    result = search_ranked(cfg, "/r", "**dup**", glob=True, limit=21,
+                            ranked=False)
+    hits = [h for h in result["hits"] if not h["is_dir"]]
+    assert len(hits) == 21
+    assert result["truncated"] is True
+
+
+def _adversarial_files(dominant_count, other_count_per_name=4, other_names=30):
+    """One dominant basename (`dup.txt`, the SHORTEST matching name, and —
+    for a substring/glob query of `dup` — the only one satisfying `edge`:
+    the char right after its matched prefix is `.`, a separator, while every
+    `dupN.txt` continues into an alnum digit, a fragment match) repeated
+    `dominant_count` times, plus `other_names` distinct, legitimately-
+    matching basenames (`dup0.txt` .. `dup{other_names-1}.txt`) each repeated
+    `other_count_per_name` times. `dup.txt` ranks ahead of every `dupN.txt`
+    in `_lex_order_and_score`'s vector (`edge` DESC, before `length(nm)` is
+    ever consulted) — the exact "one basename outranks every other matching
+    basename" condition `_basename_candidate_pool`'s docstring and
+    DECISIONS.md describe, mirrored here at whatever scale the caller picks
+    rather than literally reproducing the 215,000-file / 200,000-copy corpus
+    the original report used (verified separately, below, to trigger the
+    identical starvation at this smaller scale)."""
+    dominant = [f"/r/dom{i}/dup.txt" for i in range(dominant_count)]
+    others = [f"/r/d{i}_{j}/dup{i}.txt"
+              for i in range(other_names) for j in range(other_count_per_name)]
+    return dominant + others
+
+
+_STARVATION_BRANCHES = [
+    pytest.param(False, True, id="substring-ranked"),
+    pytest.param(False, False, id="substring-unranked"),
+    pytest.param(True, True, id="glob-scored"),
+    pytest.param(True, False, id="glob-unscored"),
+]
+
+
+def test_bounded_pool_alone_starves_the_adversarial_shape_but_unbounded_recovers_it():
+    """Direct, SQL-level proof of the mechanism the starvation fallback
+    closes, independent of the parquet/index plumbing the two integration
+    tests below go through: `_rank_sql(bounded=True)` — the exact shape
+    `13ff8332a` shipped, run standalone against a synthetic `inner` built
+    from a `VALUES` list — really does starve on this construction (returns
+    only the dominant basename's capped 3 rows and nothing else), and
+    `_rank_sql(bounded=False)` — what `search_ranked`'s fallback now reruns
+    on a short page — really does recover the full, diverse page. Pinning
+    this at the SQL level means a future, unrelated change to how
+    `search_ranked` builds `inner` can't silently make the integration tests
+    below pass for the wrong reason (e.g. because the corpus stopped being
+    adversarial, not because the fallback fixed anything)."""
+    import duckdb
+
+    from fused_render.index.query import _basename_candidate_pool, _rank_sql
+
+    limit = 21
+    pool = _basename_candidate_pool(limit)
+    dominant_count = pool + 50  # comfortably exceeds the pool
+    rows = [(f"dom{i}/dup.txt", "dup.txt") for i in range(dominant_count)]
+    rows += [(f"d{i}_{j}/dup{i}.txt", f"dup{i}.txt")
+             for i in range(30) for j in range(4)]
+    values = ",".join(
+        f"('{rel}', 1, 1.0, false, 1, '{nm.lower()}', '{rel.lower()}')"
+        for rel, nm in rows)
+    inner = (f"SELECT * FROM (VALUES {values}) "
+             f"AS t(rel, size, mtime, is_dir, depth, nm, lrel)")
+
+    con = duckdb.connect()
+    bounded_rows = con.execute(
+        _rank_sql(inner, "", "dup", "dup", "dup", limit, bounded=True)
+    ).fetchall()
+    unbounded_rows = con.execute(
+        _rank_sql(inner, "", "dup", "dup", "dup", limit, bounded=False)
+    ).fetchall()
+
+    bounded_names = Counter(r[0].rsplit("/", 1)[-1] for r in bounded_rows)
+    unbounded_names = Counter(r[0].rsplit("/", 1)[-1] for r in unbounded_rows)
+
+    # The fixture is only meaningful if the bounded-only query really is
+    # starved — this is the pre-fallback, broken behavior `13ff8332a` shipped.
+    assert bounded_names == {"dup.txt": 3}, bounded_names
+
+    # The unbounded rerun must recover a full, diverse page: the cap (<=3 per
+    # basename) still holds, but other basenames are no longer squeezed out.
+    assert len(unbounded_rows) == limit
+    assert all(count <= 3 for count in unbounded_names.values())
+    assert len(unbounded_names) >= 7
+
+
+@pytest.mark.parametrize("glob,ranked", _STARVATION_BRANCHES)
+def test_starvation_fallback_recovers_the_reported_adversarial_shape(
+        tmp_path, glob, ranked):
+    """Integration-level version of the SQL-level proof above, through the
+    real `search_ranked` entry point (all four branches: substring
+    ranked/unranked, glob scored/unscored), reproducing — at a
+    runtime-tractable scale — the exact shape the previous round reported:
+    'a 215,000-file corpus with one 200,000-copy `dup.txt`... returned a
+    correct, diverse 21-row page before `13ff8332a` and a starved 3-row page
+    after.' `_adversarial_files` keeps every defining ratio (dominant count
+    comfortably exceeds the pool at `limit=21` — pool 420 — and the dominant
+    basename outranks all 30 others via `edge`) while cutting the absolute
+    file count from 215,000 to ~1,120 so the test builds and runs in well
+    under a second. `search_ranked`'s fallback must recover the SAME full,
+    diverse 21-row page the pre-`13ff8332a` unbounded QUALIFY always
+    returned, not the starved 3-row page the bounded pool alone produces
+    (pinned directly, without the fallback, in the SQL-level test above)."""
+    files = _adversarial_files(dominant_count=1000)
+    cfg = _index(tmp_path, "/r", files)
+    query = "**dup**" if glob else "dup"
+    result = search_ranked(cfg, "/r", query, glob=glob, ranked=ranked,
+                           limit=21)
+    hits = [h for h in result["hits"] if not h["is_dir"]]
+    assert len(hits) == 21
+    assert result["truncated"] is True
+    names = Counter(h["rel"].rsplit("/", 1)[-1] for h in hits)
+    assert all(count <= 3 for count in names.values())
+    # The pre-fallback bug returned ONLY "dup.txt" (capped at 3, 3 rows
+    # total) — recovery means multiple distinct basenames are represented,
+    # not just a page that happens to be 21 rows long.
+    assert len(names) >= 7
+
+
+@pytest.mark.parametrize("glob,ranked", _STARVATION_BRANCHES)
+def test_starvation_fallback_recovers_the_milder_reported_shape(
+        tmp_path, glob, ranked):
+    """The milder shape the previous round also reported verbatim: '2,000
+    dominant copies against 30 other basenames x 500 copies... returns 18
+    rows where 90 were possible.' Reproduced here at the SAME scale (17,000
+    files total) since it builds in well under a second (measured
+    separately) — no need to shrink it. `limit=90` is exactly `30 other
+    basenames x _MAX_PER_BASENAME (3)`, the largest a fully diverse page
+    (excluding the dominant name entirely) could be; `search_ranked`'s
+    fallback must recover a full 90-row page, not the previously-reported
+    18."""
+    files = _adversarial_files(dominant_count=2000, other_count_per_name=500,
+                               other_names=30)
+    cfg = _index(tmp_path, "/r", files)
+    query = "**dup**" if glob else "dup"
+    result = search_ranked(cfg, "/r", query, glob=glob, ranked=ranked,
+                           limit=90)
+    hits = [h for h in result["hits"] if not h["is_dir"]]
+    assert len(hits) == 90
+    assert result["truncated"] is True
+    names = Counter(h["rel"].rsplit("/", 1)[-1] for h in hits)
+    assert all(count <= 3 for count in names.values())
+    # The pre-fallback bug returned only 18 rows total (a handful of
+    # basenames) — recovery means the page spans most/all of the 30
+    # legitimately-matching basenames, not just the dominant one.
+    assert len(names) >= 25
+
+
+# Code-review finding (Bugbot, this round): the fallback's own trigger
+# (`search_ranked`: `if len(rows) < limit: rerun unbounded`) compares the
+# BOUNDED run's row count against the caller's raw `limit`, but the query
+# underneath is issued with `LIMIT limit + 1` (the same one-extra-row trick
+# `truncated` is computed from everywhere else in this function). A bounded
+# run that comes back with EXACTLY `limit` rows — one short of `limit + 1`,
+# not merely "a short page" — reads as a FULL page under `len(rows) < limit`
+# (false, since `limit` is not less than itself) and never reruns, even
+# though the pool boundary can still be hiding a genuinely different,
+# better-ranked basename that the unbounded query would pull in as the
+# `(limit + 1)`th row. That row is exactly what turns `truncated` from
+# False to True and would appear on an unbounded page — silently dropped
+# here, not merely "left for a future page" (the caller has no way to know
+# it exists at all). This differs from the already-closed starvation shapes
+# above, which all leave the bounded run SHORT OF `limit` outright; this one
+# is the off-by-one at the boundary between "short" and "full".
+def test_starvation_fallback_misses_a_page_short_by_exactly_one_row(tmp_path):
+    """Engineered so the bounded pool's QUALIFY survivors land at EXACTLY
+    `limit` (6), one short of the `limit + 1` (7) the underlying query is
+    actually run with: 137 copies of the dominant `dup.txt` (ranks first via
+    `edge`) plus 3 copies of `dup0.txt` exactly fill the `limit=6` ->
+    `pool=140` boundary (137 + 3 = 140), so the bounded run's QUALIFY sees
+    only those two names and caps out at 3 + 3 = 6 survivors. A further,
+    distinct basename `dup1.txt` (3 more copies) ranks immediately after —
+    entirely past position 140, invisible to the bounded pool — but the
+    unbounded rerun's own `(limit + 1)`th row lands on one of its copies,
+    which is exactly what flips `truncated` to True (`search_ranked` never
+    returns more than `limit` hits — the `+1` row is only ever used to
+    detect "there was more", per this function's own docstring — so the
+    hit LIST is unaffected here; `truncated` is the one field this bug
+    actually corrupts).
+    The current (pre-fix) trigger (`len(rows) < limit`) sees a 6-row bounded
+    result, calls it a full page, and never reruns: this pins the wrong,
+    under-reported `truncated: False` the bug produces today."""
+    files = (
+        [f"/r/dom{i}/dup.txt" for i in range(137)]
+        + [f"/r/d0_{j}/dup0.txt" for j in range(3)]
+        + [f"/r/d1_{j}/dup1.txt" for j in range(3)]
+    )
+    cfg = _index(tmp_path, "/r", files)
+    result = search_ranked(cfg, "/r", "dup", limit=6)
+    hits = [h for h in result["hits"] if not h["is_dir"]]
+    names = Counter(h["rel"].rsplit("/", 1)[-1] for h in hits)
+    # The 6-row page itself (dup.txt x3, dup0.txt x3) is unchanged by the
+    # fix — `dup1.txt` never displaces it, since it only ever supplies the
+    # (limit + 1)th, never-returned row. The bug is entirely in `truncated`:
+    # a real 7th match exists (`dup1.txt`), so this MUST read True, not the
+    # False the unfixed `len(rows) < limit` trigger produces.
+    assert len(hits) == 6
+    assert names == {"dup.txt": 3, "dup0.txt": 3}
+    assert result["truncated"] is True
+
+
+def test_glob_unranked_reproduces_the_old_depth_then_alpha_order(tmp_path):
+    """`ranked=False` for a glob query must still answer `depth ASC,
+    lower(rel) ASC, rel ASC` — the exact order glob mode always used before
+    this round, byte-for-byte — even on a pair where the DEFAULT `ranked=True`
+    scored order disagrees with it: `aaa-icon-thing-copy-with-huge-padding.png`
+    sorts alphabetically FIRST (starts with "a") but has a much bigger
+    wildcard-swallow penalty than `icon copy.png`, so the scored order puts
+    the tight match first while the unranked, alphabetical order puts the
+    "a"-leading name first."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/aaa-icon-thing-copy-with-huge-padding.png",
+        "/r/icon copy.png",
+    ])
+    pattern = "**/**icon**copy**"
+    ranked = search_ranked(cfg, "/r", pattern, glob=True)["hits"]
+    unranked = search_ranked(cfg, "/r", pattern, glob=True,
+                             ranked=False)["hits"]
+    assert [h["rel"] for h in ranked] == [
+        "icon copy.png",
+        "aaa-icon-thing-copy-with-huge-padding.png"]
+    assert [h["rel"] for h in unranked] == [
+        "aaa-icon-thing-copy-with-huge-padding.png",
+        "icon copy.png"]
+
+
+def test_glob_unranked_sql_has_no_scoring_apparatus(tmp_path):
+    """Mirrors `test_unranked_sql_has_no_scoring_apparatus` for `_rank_sql`:
+    the unranked glob branch must not compute score/p0/segment_starts and
+    then discard them — the whole scoring apparatus must be ABSENT from the
+    generated SQL text. `literals=[]` is what `search_ranked` passes both
+    when the caller asked for `ranked=False` and when a glob pattern (e.g. a
+    bare `*`) has no literal run at all to score."""
+    from fused_render.index.query import _glob_sql
+
+    sql = _glob_sql("SELECT 1 AS rel, 1 AS size, 1 AS mtime, false AS is_dir, "
+                    "1 AS depth, 'x' AS nm, 'x' AS lrel", "^.*$", "", 10,
+                    literals=[])
+    lowered = sql.lower()
+    for banned in ("score", "segment_starts", "p0", "strpos", "name_bonus", "tier"):
+        assert banned not in lowered, f"{banned!r} leaked into the unscored glob SQL"
+    assert "order by depth asc, lower(rel) asc, rel asc" in lowered
+
+
+def test_glob_sql_refuses_literals_without_a_matching_nm_regex():
+    """Code review finding 5: `nm_regex` defaults to `None`, and is read
+    straight into the SQL text (`regexp_matches(nm, '{nm_regex}')`) whenever
+    `literals` is non-empty — the caller's contract (`_glob_sql`'s own
+    docstring) says `nm_regex` must be supplied together with a non-empty
+    `literals`, but nothing enforced it. Before this fix, calling with
+    `literals` truthy and `nm_regex` left at its default silently produced
+    `regexp_matches(nm, 'None')` — a query DuckDB would happily run (matching
+    the literal text "None", never a real hit) rather than a loud failure
+    pointing at the real bug: a caller that broke the literals/nm_regex
+    pairing. The only real caller (`search_ranked`) already ties the two
+    together correctly and is unaffected by this guard."""
+    from fused_render.index.query import _glob_sql
+
+    with pytest.raises(AssertionError):
+        _glob_sql("SELECT 1 AS rel, 1 AS size, 1 AS mtime, false AS is_dir, "
+                  "1 AS depth, 'icon' AS nm, 'icon.png' AS lrel",
+                  "^icon\\.png$", "", 10, literals=["icon"])
+
+
+def test_glob_pattern_with_no_literal_runs_uses_the_unscored_order(tmp_path):
+    """A pattern with nothing but stars (`**/*`, what a bare `*` query
+    resolves to) has no literal run for the scoring apparatus to locate —
+    `search_ranked` must fall back to the same unscored `depth ASC,
+    lower(rel) ASC, rel ASC` order `ranked=False` uses, not divide by zero
+    or score every row identically (which would make the ORDER BY's tie-
+    break do all the work silently instead of failing loudly)."""
+    cfg = _index(tmp_path, "/r", ["/r/b.txt", "/r/a.txt"])
+    hits = search_ranked(cfg, "/r", "**/*", glob=True)["hits"]
+    assert [h["rel"] for h in hits] == ["a.txt", "b.txt"]
+    for h in hits:
+        assert h["score"] == 0
+
+
+def test_glob_like_guard_is_a_strict_superset_of_the_regex_it_prefilters(
+        tmp_path, monkeypatch):
+    """Perf fix: `_glob_sql` now runs a cheap `lrel LIKE '%lit0%lit1%...%'`
+    prefilter (`_glob_like_guard`, built from `_glob_literal_runs` run on the
+    WHOLE pattern) ahead of the real `regexp_matches(lrel, regex)` filter, in
+    BOTH the scored and unscored branches. That guard is only a valid
+    optimization if it can NEVER exclude a row the regex would still have
+    matched — every literal run the regex requires is, by construction, text
+    the guard also requires, in the same order, so it is a strict superset,
+    never a narrower test.
+
+    This is proven empirically here rather than merely argued: for a battery
+    of adversarial patterns/filenames, `search_ranked` (glob mode) is run
+    twice — once with the real, gated guard, once with `_glob_like_guard`
+    monkeypatched to always return `""` (i.e. the pre-fix, unguarded
+    behavior) — and the FULL hit list (not just counts) must come back
+    byte-for-byte identical both times, for both `ranked=True` and
+    `ranked=False`. Adversarial coverage, one fixture file/pattern pair per
+    class:
+
+    - regex metacharacters in the query (`.` in a literal run, which the
+      WHOLE-pattern regex escapes via `re.escape` but which the LIKE guard
+      must also treat as a literal dot, not "any character")
+    - LIKE metacharacters (`%`, `_`) in both the query's literal text and in
+      decoy filenames that would match if the guard leaked them as wildcards
+    - a literal backslash in both the query and a filename
+    - case variation between the query and the filename (glob mode is
+      case-insensitive throughout)
+    - unicode text in both the query and the filename
+    - a literal run that occurs MULTIPLE times in the same filename
+    - two literal runs whose required occurrences in the filename OVERLAP
+      character-for-character
+    """
+    files = [
+        "/r/a.b.txt",       # regex-metachar literal: pattern "**a.b**"
+        "/r/aXb.txt",       # decoy: only matches if "." leaked as "any char"
+        "/r/100%done.txt",  # LIKE-metachar literal: pattern "**100%done**"
+        "/r/100xdone.txt",  # decoy: only matches if "%" leaked as wildcard
+        "/r/a_b.txt",       # LIKE-metachar literal: pattern "**a_b**"
+        "/r/aQb.txt",       # decoy: only matches if "_" leaked as wildcard
+        "/r/back\\slash.txt",     # literal backslash: pattern "**back\\slash**"
+        "/r/backXslash.txt",     # decoy: only matches if "\\" mishandled
+        "/r/ICON.txt",      # case variation: pattern "**icon**"
+        "/r/café.txt",      # unicode: pattern "**café**"
+        "/r/abcabcabc.txt",  # repeated literal: pattern "**abc**abc**"
+        "/r/aaaa.txt",      # overlapping runs: pattern "**aa**aa**"
+    ]
+    cfg = _index(tmp_path, "/r", files, dirs=["/r/sub"])
+
+    patterns = [
+        "**a.b**", "**100%done**", "**a_b**", "**back\\slash**",
+        "**icon**", "**café**", "**abc**abc**", "**aa**aa**",
+    ]
+
+    import fused_render.index.query as query_module
+
+    for pattern in patterns:
+        for ranked in (True, False):
+            guarded = search_ranked(cfg, "/r", pattern, glob=True,
+                                     ranked=ranked)
+            monkeypatch.setattr(query_module, "_glob_like_guard",
+                                 lambda literals: "")
+            try:
+                unguarded = search_ranked(cfg, "/r", pattern, glob=True,
+                                           ranked=ranked)
+            finally:
+                monkeypatch.undo()
+            assert guarded["hits"] == unguarded["hits"], (
+                pattern, ranked, guarded["hits"], unguarded["hits"])
+            # Sanity: the fixture is only doing its job if at least the
+            # patterns designed to actually hit something return rows —
+            # an accidentally-empty comparison would pass vacuously.
+            if pattern not in ("**back\\slash**",):
+                assert guarded["hits"], (pattern, ranked)
 
 
 def test_like_metacharacters_in_the_query_match_only_the_literal_filename(tmp_path):
@@ -427,11 +1597,11 @@ def test_a_backslash_in_the_query_does_not_break_the_sql(tmp_path):
 def test_unranked_returns_the_same_set_of_rows_ordered_depth_then_rel(tmp_path):
     """`ranked=False` keeps the exact same substring filter — same rows
     match — but orders `depth ASC, rel ASC` instead of scoring. Built on the
-    fixture harness like the JS-parity test above: gather the SET of rels
-    the ranked branch returns for a query, then check the unranked branch
-    returns the identical set, just reordered."""
-    cfg = _index_from_fixture(tmp_path)
-    for query in FIXTURE["queries"]:
+    golden corpus: gather the SET of rels the ranked branch returns for a
+    query, then check the unranked branch returns the identical set, just
+    reordered."""
+    cfg = _golden_index(tmp_path)
+    for query in sorted(_GROUPS):
         ranked_rels = {h["rel"] for h in search_ranked(cfg, "/r", query, limit=200)["hits"]}
         out = search_ranked(cfg, "/r", query, limit=200, ranked=False)
         got = [h["rel"] for h in out["hits"]]

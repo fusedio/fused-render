@@ -61,4 +61,23 @@ describe("isPathShapedQuery", () => {
   test("a Windows drive-letter path is path-shaped", () => {
     expect(isPathShapedQuery("C:\\Users\\a", OPEN, HOME)).toBe(true);
   });
+
+  // FINDING (Bugbot, code review round 3, worktree-search-trailing-space):
+  // this predicate used to trim before checking shape, missing that
+  // `expand_whitespace_query` (server-side; `expandWhitespaceQuery` here)
+  // turns a trailing space into a wildcard on the final segment. Verified
+  // live against `/api/index/rank`: a folder path plus trailing space
+  // resolves to a glob search of the PARENT, never a stat of the exact
+  // folder — so this must not read as "Path" (which would suppress search
+  // entirely, per `useListingSearch.ts`'s `runsSearch`).
+  test("a folder path plus a trailing space is NOT path-shaped — it resolves to a glob search of the parent, not this exact folder", () => {
+    expect(isPathShapedQuery(`${OPEN} `, OPEN, HOME)).toBe(false);
+  });
+
+  // Symmetrically, `"~ "` never resolves to a home escape at all (the
+  // trailing space wraps the whole `~` into a glob token) — verified live:
+  // `q=~%20` answers `base` at the box's own root, never `home`.
+  test('"~ " is NOT path-shaped — it is a current-folder glob, never a home escape', () => {
+    expect(isPathShapedQuery("~ ", OPEN, HOME)).toBe(false);
+  });
 });
