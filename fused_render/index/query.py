@@ -1454,6 +1454,70 @@ def _qualify_basename_cap(order_by: str) -> str:
             f"(PARTITION BY nm ORDER BY {order_by}) <= {_MAX_PER_BASENAME} ")
 
 
+# Result-starvation fix (reported defect, worktree-search-trailing-space): a
+# naive `QUALIFY row_number() OVER (PARTITION BY nm ORDER BY <order_by>) <=
+# _MAX_PER_BASENAME` applied directly to a `LIMIT`-bounded candidate set caps
+# the cap's OWN input to an already-truncated page — the cap then trims a
+# slice that never had a chance to hold `limit` distinct-enough survivors in
+# the first place, so the page comes back short even when the FULL match set
+# has plenty of other basenames to offer. Applying the cap to the entire
+# WHERE-matched set instead (no candidate limit ahead of QUALIFY) fixes that,
+# but "entire" is unbounded: a broad query (`search_ranked`'s own docstring
+# measures `q="e"` matching 353k rows on a 300k-file index) would make
+# QUALIFY's per-partition sort walk every one of those rows just to answer a
+# request for `limit` (typically 200).
+#
+# The fix here is a bounded CANDIDATE POOL ahead of the cap: an `ORDER BY
+# <same order_by> LIMIT <pool>` stage, `pool` well above `limit`, feeds
+# QUALIFY instead of the raw unbounded match set. DuckDB can satisfy that
+# inner `ORDER BY ... LIMIT` with a heap-based Top-N scan (bounded by `pool`,
+# not the full match count) rather than a full O(n log n) sort of every
+# matching row purely to feed the cap's window function — the same
+# optimization the statement's own OUTER `ORDER BY ... LIMIT {limit}` already
+# relies on, just applied one stage earlier. The candidate pool is drawn by
+# the SAME ordering the cap's own QUALIFY and the statement's final `ORDER
+# BY` both use (`order_by`, passed straight through — never a cheaper or
+# different one), so nothing in the pool can outrank a row the unbounded
+# approach would have kept, and nothing that belongs on the final page is
+# ever ranked below the pool's own cutoff by a different criterion than the
+# one that decides the final page.
+#
+# `_BASENAME_POOL_FACTOR` (20) and `_BASENAME_POOL_MAX` (20,000) pick `pool`:
+# generous enough that a page whose matches span enough distinct basenames to
+# fill it will, in practice, find those basenames within the pool (a search
+# corpus overwhelmingly has at most a handful of basenames appearing more
+# than a few times each — `__init__.py`, `README.md`, `index.ts` and the
+# like — so the top `limit * 20` matches by the statement's own ordering
+# almost never come from fewer than `limit / _MAX_PER_BASENAME` distinct
+# names), while `_BASENAME_POOL_MAX` keeps the ABSOLUTE cost bounded even for
+# a caller-requested `limit` near `MAX_GLOB_RANK_LIMIT` (5,000): without it,
+# `5,000 * 20 == 100,000` candidate rows would erase most of the win this
+# fix exists to buy back.
+#
+# This is NOT a guarantee, and cannot be one — see `_basename_candidate_pool`
+# below and this round's own report for the exact adversarial shape that
+# still starves (a single basename whose duplicate count exceeds the pool
+# size AND whose every copy ranks ahead of every other matching basename by
+# the statement's own ordering). No finite factor closes that gap: widening
+# it only requires a proportionally larger adversarial duplicate run to
+# reproduce the same starvation, at the cost of scanning that much more of
+# the match set on every broad query, most of which will never hit it.
+_BASENAME_POOL_FACTOR = 20
+_BASENAME_POOL_MAX = 20_000
+
+
+def _basename_candidate_pool(limit: int) -> int:
+    """The candidate-pool size (`_qualify_basename_cap`'s own docstring, and
+    the block comment above `_BASENAME_POOL_FACTOR`) that feeds the basename
+    cap's `QUALIFY`, for a statement whose OWN final `LIMIT` is `limit`.
+
+    Always at least `limit` (so the pool can never be smaller than the page
+    itself, which would make the cap strictly worse than not bounding the
+    pool at all), and at most `_BASENAME_POOL_MAX` regardless of how large
+    `limit` is."""
+    return max(limit, min(limit * _BASENAME_POOL_FACTOR, _BASENAME_POOL_MAX))
+
+
 def _lex_order_and_score(nm_exact: str, preds: dict,
                          nm_exact_natural: str = "true") -> tuple:
     """The shared tail of both `_rank_sql` and `_glob_sql`: given `nm_exact`
@@ -1676,18 +1740,24 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, qs: str, limit: int,
         # below is never built for this branch, not built and then left out
         # of the SELECT list.
         unranked_order = "depth ASC, rel ASC"
+        pool = _basename_candidate_pool(limit)
         return (
-            f"SELECT rel, size, mtime, is_dir, depth FROM ({inner}) "
+            f"SELECT rel, size, mtime, is_dir, depth FROM ("
+            f"SELECT rel, size, mtime, is_dir, depth, nm FROM ({inner}) "
             f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden} "
+            f"ORDER BY {unranked_order} LIMIT {pool}) "
             f"{_qualify_basename_cap(unranked_order)}"
             f"ORDER BY {unranked_order} "
             f"LIMIT {limit}")
     preds = _name_predicate_sql("nm", [qs])
     order_by, score, tier = _lex_order_and_score(f"nm = lower('{qq}')", preds)
+    pool = _basename_candidate_pool(limit)
     return (
-        f"SELECT rel, size, mtime, is_dir, depth, ({score}) AS score, "
+        f"SELECT rel, size, mtime, is_dir, depth, score, tier FROM ("
+        f"SELECT rel, size, mtime, is_dir, depth, nm, ({score}) AS score, "
         f"({tier}) AS tier FROM ({inner}) "
         f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden} "
+        f"ORDER BY {order_by} LIMIT {pool}) "
         f"{_qualify_basename_cap(order_by)}"
         f"ORDER BY {order_by} "
         f"LIMIT {limit}")
@@ -2032,9 +2102,12 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
         "rather than raising")
     if not score:
         unscored_order = "depth ASC, lower(rel) ASC, rel ASC"
+        pool = _basename_candidate_pool(limit)
         return (
-            f"SELECT rel, size, mtime, is_dir, depth FROM ({inner}) "
+            f"SELECT rel, size, mtime, is_dir, depth FROM ("
+            f"SELECT rel, size, mtime, is_dir, depth, nm FROM ({inner}) "
             f"WHERE {like_guard}regexp_matches(lrel, '{regex}'){hidden} "
+            f"ORDER BY {unscored_order} LIMIT {pool}) "
             f"{_qualify_basename_cap(unscored_order)}"
             f"ORDER BY {unscored_order} "
             f"LIMIT {limit}")
@@ -2096,10 +2169,13 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
         nm_exact = "false"
     order_by, score_expr, tier = _lex_order_and_score(
         nm_exact, preds, nm_exact_natural)
+    pool = _basename_candidate_pool(limit)
     return (
-        f"SELECT rel, size, mtime, is_dir, depth, ({score_expr}) AS score, "
+        f"SELECT rel, size, mtime, is_dir, depth, score, tier FROM ("
+        f"SELECT rel, size, mtime, is_dir, depth, nm, ({score_expr}) AS score, "
         f"({tier}) AS tier FROM ({inner}) "
         f"WHERE {like_guard}regexp_matches(lrel, '{regex}'){hidden} "
+        f"ORDER BY {order_by} LIMIT {pool}) "
         f"{_qualify_basename_cap(order_by)}"
         f"ORDER BY {order_by} "
         f"LIMIT {limit}")

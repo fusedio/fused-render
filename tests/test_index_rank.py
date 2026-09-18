@@ -23,6 +23,7 @@ still tests `fuzzy.ts` in full, subsequence pass included.
 which rows `search_ranked` can return.
 """
 import os
+from collections import Counter
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -1089,6 +1090,76 @@ def test_glob_basename_cap_limits_to_top_3_per_name(tmp_path):
             search_ranked(cfg, "/r", "**dup**", glob=True)["hits"]
             if not h["is_dir"]]
     assert len(hits) == 3
+
+
+# -- Fix 2b: the cap's own QUALIFY must not starve a page that COULD be
+# full --
+#
+# `_qualify_basename_cap`'s `QUALIFY` is spliced ahead of each branch's own
+# `ORDER BY ... LIMIT`, so — left unbounded — it runs the
+# `row_number() OVER (PARTITION BY nm ...)` window function over the ENTIRE
+# WHERE-matched set before the final `LIMIT` ever applies. That is correct
+# but, for a broad query against a large index, means walking every matching
+# row (documented elsewhere in this file as up to 353k rows) just to hand
+# back a `limit`-sized page. `_basename_candidate_pool(limit)` bounds an
+# intermediate `ORDER BY <same vector> LIMIT <pool>` stage ahead of the
+# QUALIFY, so the window function only ever scans `pool` rows, not the whole
+# match set — a real cost win on a broad query, verified not to regress the
+# ordinary "many distinct basenames" case a caller's `limit` should still
+# fill completely.
+#
+# Known, accepted residual: if a SINGLE basename's duplicate count exceeds
+# `pool` AND every one of its copies ranks ahead of every other matching
+# basename in the shared ordering vector, that basename alone can fill the
+# whole pool and squeeze out every other (distinct, legitimately-matching)
+# basename before the cap ever runs — a shape the old, unbounded QUALIFY did
+# not starve. No finite pool eliminates this (an arbitrarily larger
+# dominant-duplicate count always exists), so this is a documented trade-off,
+# not a bug: see `_basename_candidate_pool`'s own docstring and DECISIONS.md.
+
+def test_basename_cap_pool_still_fills_a_full_page_with_many_distinct_names(
+        tmp_path):
+    """Core regression check for the overfetch fix: a query whose matches
+    span many distinct basenames — comfortably more than `limit // 3` — must
+    still come back as a full, `limit`-sized page. Before the fix this
+    already worked because QUALIFY ran unbounded; the pool-bounded version
+    must not regress it for an ordinary (non-adversarially-skewed) spread."""
+    files = [f"/r/d{i}_{j}/dup{i}.txt" for i in range(30) for j in range(4)]
+    cfg = _index(tmp_path, "/r", files)
+    result = search_ranked(cfg, "/r", "dup", limit=21)
+    hits = [h for h in result["hits"] if not h["is_dir"]]
+    assert len(hits) == 21
+    assert result["truncated"] is True
+    names = Counter(h["rel"].rsplit("/", 1)[-1] for h in hits)
+    assert all(count <= 3 for count in names.values())
+
+
+def test_basename_cap_pool_still_fills_a_full_page_unranked(tmp_path):
+    files = [f"/r/d{i}_{j}/dup{i}.txt" for i in range(30) for j in range(4)]
+    cfg = _index(tmp_path, "/r", files)
+    result = search_ranked(cfg, "/r", "dup", limit=21, ranked=False)
+    hits = [h for h in result["hits"] if not h["is_dir"]]
+    assert len(hits) == 21
+    assert result["truncated"] is True
+
+
+def test_glob_basename_cap_pool_still_fills_a_full_page_scored(tmp_path):
+    files = [f"/r/d{i}_{j}/dup{i}.txt" for i in range(30) for j in range(4)]
+    cfg = _index(tmp_path, "/r", files)
+    result = search_ranked(cfg, "/r", "**dup**", glob=True, limit=21)
+    hits = [h for h in result["hits"] if not h["is_dir"]]
+    assert len(hits) == 21
+    assert result["truncated"] is True
+
+
+def test_glob_basename_cap_pool_still_fills_a_full_page_unscored(tmp_path):
+    files = [f"/r/d{i}_{j}/dup{i}.txt" for i in range(30) for j in range(4)]
+    cfg = _index(tmp_path, "/r", files)
+    result = search_ranked(cfg, "/r", "**dup**", glob=True, limit=21,
+                            ranked=False)
+    hits = [h for h in result["hits"] if not h["is_dir"]]
+    assert len(hits) == 21
+    assert result["truncated"] is True
 
 
 def test_glob_unranked_reproduces_the_old_depth_then_alpha_order(tmp_path):

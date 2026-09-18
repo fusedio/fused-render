@@ -335,6 +335,37 @@ with no separate accounting needed, and the existing `limit + 1` overfetch
 needs no separate COUNT query) is unaffected — it still overfetches from,
 and slices, the already-capped set.
 
+**The cap's own `QUALIFY` runs over a BOUNDED candidate pool, not the whole
+match set.** Left as originally implemented, `QUALIFY row_number() OVER
+(PARTITION BY nm ...)` runs after `WHERE`/window functions but before the
+statement's own `ORDER BY`/`LIMIT` — correct, but on a broad query it means
+scanning the ENTIRE `WHERE`-matched set (up to hundreds of thousands of rows
+on a large index) just to hand back a `limit`-sized page, on top of filtering
+already being the dominant query cost (§3). All four branches now wrap their
+filtered `(inner)` subquery in an intermediate `ORDER BY <order_by> LIMIT
+<pool>` stage — `pool = _basename_candidate_pool(limit) =
+max(limit, min(limit * 20, 20_000))` — placed BEFORE `_qualify_basename_cap`,
+using the SAME `order_by` vector the cap's own window and the statement's
+final `ORDER BY` both use, so nothing in the pool can outrank a row the old
+unbounded approach would have kept. This is a performance fix, not a
+correctness fix for the cap itself: a query whose matches span enough
+distinct basenames to fill a page already returned a full page before this
+change (verified directly at multiple scales) — the bound exists to keep the
+window function from scanning the full match set on broad queries.
+
+The bound is NOT a guarantee and cannot be one: a single basename whose
+duplicate count exceeds `pool`, AND whose every copy ranks ahead of every
+OTHER matching basename by the statement's own ordering, can fill the whole
+pool by itself, and the cap then reduces that pool to 3 — starving out every
+other, legitimately-matching basename, a shape the old unbounded `QUALIFY`
+did not starve. No finite pool closes this; a larger factor only requires a
+proportionally larger adversarial duplicate run to reproduce it, at
+proportionally higher cost on every broad query. `truncated`/`total`
+inherit this: in that same adversarial shape they can report "no more
+results" when the corpus genuinely has many more — an accepted trade-off of
+bounding the pool at all, not a separate bug. See DECISIONS.md for the
+factor's derivation and measurements.
+
 `_lex_order_and_score` also still returns a `score` — kept ONLY for the wire
 contract and `explain`/debugging display (`server-api.md`'s hit dict keeps `score`,
 `tier`, `depth`, `longest_run`, `positions` on every hit). **`score` is a display
