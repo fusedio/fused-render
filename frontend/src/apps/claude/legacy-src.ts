@@ -37,13 +37,21 @@ export function peekFrameSrc(
    *  the very messages this names (`tasks-lib.messageHref`). Absent for an
    *  ordinary open, which lands at the end of the conversation. */
   msgAnchor?: string,
+  /** WHAT THIS TASK IS SET TO — the same two the native branch seeds into its
+   *  params store (`ChatMount`'s `model`/`effort`), so the flag-off frame opens
+   *  on the task's own settings rather than on the model last used in that
+   *  folder. Appended only when there is one, so every existing caller's URL is
+   *  byte-for-byte what it was (`legacy-src.test.ts` pins them). */
+  runSettings?: { model?: string; effort?: string },
 ): string {
   return (
     `/render?path=${encodeURIComponent(template)}` +
     `&_file=${encodeURIComponent(target)}` +
     `&chat_only=1&peek=1` +
     `&session_id=${encodeURIComponent(sessionId)}` +
-    (msgAnchor ? `&msg=${encodeURIComponent(msgAnchor)}` : "")
+    (msgAnchor ? `&msg=${encodeURIComponent(msgAnchor)}` : "") +
+    (runSettings?.model ? `&model=${encodeURIComponent(runSettings.model)}` : "") +
+    (runSettings?.effort ? `&effort=${encodeURIComponent(runSettings.effort)}` : "")
   );
 }
 

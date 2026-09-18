@@ -1996,6 +1996,65 @@ def test_the_same_chat_reads_done_once_the_run_has_stopped(
     assert task["status"] == "done"
 
 
+# ---- the run settings a task carries (Akshil, 2026-09-18) --------------------
+#
+# "When we change model and effort from the new task modal it doesn't get
+# reflected" — and the surface was the SIDE PEEK, whose composer pills showed
+# something else entirely. They showed `agent._defaults`: the model last used in
+# that FOLDER, scanned off its newest transcripts, which is the right answer for
+# a chat opened on a folder and the wrong one for a task that was set up with a
+# model of its own.
+#
+# The peek could not have shown the task's model, because the row it is drawn
+# from did not carry one. It does now — and the entry's value is the truth
+# rather than a second opinion about it: `schedule._send` passes exactly
+# `entry["model"]` / `entry["effort"]` to `spawn_helper`, which passes them to
+# `claude --model` / `--effort`. Stored IS what the run uses.
+
+
+def test_a_task_carries_the_model_and_effort_its_runs_use(client, projects_dir):
+    """The two fields the New task card set, on the row every surface reads."""
+    _seed_schedule([_entry("e1", "nightly sweep", T12,
+                           model="claude-fable-5-1", effort="max")])
+    task = _tasks(client)[0]
+    assert task["model"] == "claude-fable-5-1"
+    assert task["effort"] == "max"
+
+
+def test_a_task_that_chose_neither_says_nothing_about_them(client, projects_dir):
+    """"" IS THE ANSWER, and it is the load-bearing one: it means "this task has
+    no opinion", which is what lets the chat's own detection keep speaking for
+    every conversation that never went through the New task card. A row that
+    invented "sonnet" here would pin every hand-typed chat to a model nobody
+    chose."""
+    _seed_schedule([_entry("e1", "no opinion", T12)])
+    assert [_tasks(client)[0][k] for k in ("model", "effort")] == ["", ""]
+
+
+def test_a_plain_chat_has_no_run_settings_either(client, projects_dir):
+    """No schedule anywhere near it — a session the user typed into. Same
+    answer, for the same reason."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hello", T9)])
+    assert [_tasks(client)[0][k] for k in ("model", "effort")] == ["", ""]
+
+
+def test_the_newest_entry_that_named_one_speaks(client, projects_dir):
+    """A task is a THREAD, and a thread can hold several scheduled messages. The
+    newest that names a setting is the one a reader is about to act on, which is
+    the same rule `_description` takes over the same list — and it is asked per
+    FIELD, so an entry that pinned only the effort does not wipe the model an
+    earlier one pinned."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    _seed_schedule([
+        _entry("e1", "first", T9, state=schedule.SENT, fired=T9,
+               claude_session_id="sess-a", model="opus", effort="low"),
+        _entry("e2", "second", T12, claude_session_id="sess-a", effort="max"),
+    ])
+    task = _by_key(client)["sess-a"]
+    assert task["model"] == "opus", "the newest entry that named one"
+    assert task["effort"] == "max", "…asked per field"
+
+
 def test_a_freshly_resolved_turn_outvotes_the_transcripts_liveness(
         client, projects_dir):
     """The popover/tasks-page split, closed on the server's side.
