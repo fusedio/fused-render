@@ -78,13 +78,24 @@ async def api_index_propose(body: dict = Body(...),
 async def api_index_confirm(body: dict = Body(...),
                             x_fused: str | None = Header(default=None)):
     """The user approves a pending proposal — the only act that grants a
-    plugin's declared root (decision #8)."""
+    plugin's declared root (decision #8). This is also the "caller"
+    `manifest.py`'s own module docstring always deferred importing the
+    module to: a bare `confirm_index` only ever rewrote the JSON proposal
+    store, so nothing ever imported the folder's module or registered its
+    `IndexKind` — a confirmed kind never appeared in `kinds.registered()`
+    (and so never in `GET /api/index/kinds`) and could never be scanned.
+    `register_confirmed_kinds()` is best-effort and never raises: a folder
+    whose module fails to import still ends up `ok: True` here (it IS
+    confirmed — the JSON store says so), it just will not appear as a
+    scannable kind until its manifest/module is fixed and re-confirmed."""
     if (guard := _require_fused(x_fused)) is not None:
         return guard
     folder = body.get("folder")
     if not isinstance(folder, str) or not folder:
         return _error("request body must include 'folder'")
     ok = await asyncio.to_thread(manifest.confirm_index, folder)
+    if ok:
+        await asyncio.to_thread(manifest.register_confirmed_kinds)
     return {"ok": ok}
 
 

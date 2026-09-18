@@ -33,7 +33,7 @@ from fastapi import APIRouter, Body, Header, Query, Request
 from fastapi.responses import JSONResponse, Response
 
 from fused_render import jobs
-from fused_render.index import apps_kind, freshness, kinds, runner
+from fused_render.index import apps_kind, freshness, kinds, manifest, runner
 from fused_render.index.cancel import CancelToken, Cancelled, cancellable
 from fused_render.index.freshness import enclosing_root
 from fused_render.index.config import IndexConfig, load_config, save_config
@@ -70,6 +70,15 @@ from fused_render.shell.seed import fused_dir
 # re-importing this module (as pytest's test collection across files can) must
 # not raise "already registered" the second time.
 apps_kind.register_builtin(replace=True)
+
+# Same reasoning, for every THIRD-PARTY kind a user had already confirmed
+# before this process started (a server restart with an existing
+# `index_proposals.json`): without this, `kinds.registered()` — and so
+# `GET /api/index/kinds` — would silently forget a confirmed kind until the
+# next confirm anywhere in the running process, even though the user never
+# revoked it. `routers/index_manifest.py`'s confirm route makes the same
+# call for a kind confirmed WHILE this process is already running.
+manifest.register_confirmed_kinds()
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

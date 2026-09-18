@@ -15,7 +15,7 @@ import os
 import platform
 import sys
 
-from fused_render.index import apps_kind
+from fused_render.index import apps_kind, manifest
 from fused_render.index.scan import run_scan
 
 # The detached worker process (`python -m fused_render.index.worker`) and
@@ -32,6 +32,17 @@ from fused_render.index.scan import run_scan
 # child re-importing it) must re-register cleanly, not raise on a name
 # collision.
 apps_kind.register_builtin(replace=True)
+
+# Same reasoning, for every THIRD-PARTY kind a user has confirmed
+# (manifest.py's "import + register" half of decision #8): this process
+# never imports `routers/index_manifest.py` either, so without its own call
+# here, a confirmed kind's scan would raise the identical `KeyError` — the
+# spec.json this worker was spawned with names a `kind`, but nothing would
+# ever have registered it in a bare `python -m fused_render.index.worker`
+# process. Unconditional (not "only the kind this run needs") because it is
+# no more expensive than the single call above and does not require this
+# module to first parse `spec.json` just to decide whether to bother.
+manifest.register_confirmed_kinds()
 
 # How far below the server this process (and every pool child and stat thread
 # it goes on to spawn, since niceness is inherited) runs. The invariant it

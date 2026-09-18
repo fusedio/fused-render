@@ -152,6 +152,106 @@ def test_refuse_index_revokes_an_already_confirmed_folder(tmp_path):
     assert manifest_mod.confirmed_folders() == []
 
 
+# -- import + register (bugbot finding against a7aef9472: confirming a
+# proposal only ever rewrote this file's own JSON store — nothing imported
+# the folder's module or called `register`, so a confirmed kind never
+# appeared in `kinds.registered()` and could never be scanned) ------------
+
+
+def _registering_app_folder(tmp_path, name="widget_app", kind="_test_widgets"):
+    """A folder whose module actually calls `kinds.register` — unlike
+    `_app_folder`'s bare `def register(): pass`, which proves parsing/store
+    behavior but never registers anything, this one proves the import half
+    works too."""
+    folder = tmp_path / name
+    _write_module(
+        str(folder),
+        body=(
+            "from fused_render.index.kinds import Column, IndexKind, register\n"
+            "\n"
+            "def _extract(path, st):\n"
+            "    return None\n"
+            "\n"
+            "KIND = IndexKind(\n"
+            f"    name={kind!r}, columns=(Column('name', 'string'),),\n"
+            "    extract=_extract, text_column='name',\n"
+            ")\n"
+            "\n"
+            "def register(replace=False):\n"
+            "    from fused_render.index import kinds as _kinds\n"
+            "    _kinds.register(KIND, replace=replace)\n"
+        ),
+    )
+    _write_pyproject(
+        str(folder),
+        f'[tool.fused-render.index]\nmodule = "indexer.py"\nkind = "{kind}"\n',
+    )
+    return str(folder)
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_test_kinds():
+    """`kinds.py` has no `unregister` (nothing else needs one) — pop this
+    suite's own throwaway kind names directly off the module-level registry
+    so a passing test here does not leak a registration into another test
+    file's `kinds.registered()` (test_index_kinds.py asserts on that list)."""
+    from fused_render.index import kinds as kinds_mod
+    yield
+    for name in list(kinds_mod._REGISTRY):
+        if name.startswith("_test_"):
+            del kinds_mod._REGISTRY[name]
+
+
+def test_confirming_a_folder_makes_its_declared_kind_registered(tmp_path):
+    from fused_render.index import kinds as kinds_mod
+
+    folder = _registering_app_folder(tmp_path, kind="_test_widgets_confirm")
+    manifest_mod.propose_index(folder)
+    manifest_mod.confirm_index(folder)
+    assert "_test_widgets_confirm" not in kinds_mod.registered()
+
+    manifest_mod.register_confirmed_kinds()
+
+    assert "_test_widgets_confirm" in kinds_mod.registered()
+
+
+def test_register_confirmed_kinds_is_a_repeatable_noop_once_registered(tmp_path):
+    from fused_render.index import kinds as kinds_mod
+
+    folder = _registering_app_folder(tmp_path, kind="_test_widgets_idem")
+    manifest_mod.propose_index(folder)
+    manifest_mod.confirm_index(folder)
+
+    manifest_mod.register_confirmed_kinds()
+    manifest_mod.register_confirmed_kinds()  # must not raise a second time
+
+    assert "_test_widgets_idem" in kinds_mod.registered()
+
+
+def test_a_pending_but_unconfirmed_folder_is_never_imported(tmp_path):
+    from fused_render.index import kinds as kinds_mod
+
+    folder = _registering_app_folder(tmp_path, kind="_test_widgets_pending")
+    manifest_mod.propose_index(folder)  # proposed, never confirmed
+
+    manifest_mod.register_confirmed_kinds()
+
+    assert "_test_widgets_pending" not in kinds_mod.registered()
+
+
+def test_a_confirmed_folder_whose_manifest_went_missing_is_skipped_not_raised(tmp_path):
+    """A confirmed folder can outlive its own manifest (the app was deleted,
+    or its pyproject.toml edited to drop the table) — `register_confirmed_
+    kinds` must degrade to "nothing to register" for it, never raise and
+    take every OTHER confirmed folder's registration down with it."""
+    folder = _registering_app_folder(tmp_path, kind="_test_widgets_gone")
+    manifest_mod.propose_index(folder)
+    manifest_mod.confirm_index(folder)
+    os.remove(os.path.join(folder, "pyproject.toml"))
+
+    manifest_mod.register_confirmed_kinds()  # must not raise
+
+
 def test_reproposing_an_already_confirmed_folder_is_a_silent_no_op(tmp_path):
     """Confirmation is sticky: a folder the user already approved does not
     fall back to "pending" (and thus reprompt) just because the app called

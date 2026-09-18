@@ -107,6 +107,49 @@ def test_confirm_moves_a_pending_folder_to_confirmed(client, tmp_path):
     assert listing["confirmed"][0]["kind"] == "widgets"
 
 
+def test_confirming_a_proposal_registers_its_kind_for_api_index_kinds(client, tmp_path):
+    """Bugbot finding against a7aef9472: confirming a proposal used to only
+    rewrite `index_proposals.json` — nothing imported the folder's module or
+    called `register`, so a confirmed third-party kind never showed up in
+    `GET /api/index/kinds` (and could never be scanned) until the process
+    happened to restart. The confirm route must actually import+register."""
+    from fused_render.index import kinds as kinds_mod
+
+    kind_name = "_test_api_widgets"
+    folder = tmp_path / "widget_app2"
+    folder.mkdir()
+    (folder / "pyproject.toml").write_text(
+        f'[tool.fused-render.index]\nmodule = "indexer.py"\nkind = "{kind_name}"\n',
+        encoding="utf-8")
+    (folder / "indexer.py").write_text(
+        "from fused_render.index.kinds import Column, IndexKind, register\n"
+        "\n"
+        "def _extract(path, st):\n"
+        "    return None\n"
+        "\n"
+        f"KIND = IndexKind(name={kind_name!r}, columns=(Column('name', 'string'),),\n"
+        "                  extract=_extract, text_column='name')\n"
+        "\n"
+        "def register(replace=False):\n"
+        "    from fused_render.index import kinds as _kinds\n"
+        "    _kinds.register(KIND, replace=replace)\n",
+        encoding="utf-8")
+    html = folder / "index.html"
+    html.write_text("<html></html>", encoding="utf-8")
+
+    try:
+        client.post("/api/index/proposals/propose",
+                    json={"html": str(html)}, headers=HDRS)
+        assert kind_name not in client.get("/api/index/kinds").json()["kinds"]
+
+        client.post("/api/index/proposals/confirm",
+                    json={"folder": str(folder)}, headers=HDRS)
+
+        assert kind_name in client.get("/api/index/kinds").json()["kinds"]
+    finally:
+        kinds_mod._REGISTRY.pop(kind_name, None)
+
+
 # ------------------------------------------------------------------- refuse
 
 

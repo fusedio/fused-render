@@ -25,10 +25,13 @@ well-formed declaration here", never "run it".
 """
 from __future__ import annotations
 
+import importlib.util
+import inspect
 import logging
 import os
 from dataclasses import dataclass
 
+from fused_render.index import kinds
 from fused_render.shell import storage
 
 logger = logging.getLogger(__name__)
@@ -179,3 +182,95 @@ def refuse_index(folder: str) -> None:
     pending = [p for p in state["pending"] if p != real]
     confirmed = [p for p in state["confirmed"] if p != real]
     _write(pending, confirmed)
+
+
+# ------------------------------------------------------- import + register
+#
+# The other half of decision #8: `confirmed_folders()` names the folders a
+# user has granted, but nothing was actually IMPORTING and registering their
+# `IndexKind` — a confirmed proposal only ever rewrote this file's own JSON
+# store, so a confirmed kind never appeared in `kinds.registered()` (and so
+# never in `GET /api/index/kinds`) and could never be scanned. This is the
+# "caller" the module docstring above always deferred to: called once from
+# `routers/index_manifest.py`'s confirm route (so the server process that
+# just handled the confirm sees the kind immediately), once at
+# `routers/index.py` import time (so a server that restarts with an
+# already-confirmed folder still has it), and once from `worker.py` (the
+# detached scan subprocess never imports either of those, so it has to do
+# its own registration the same way it already does for the built-in "apps"
+# kind).
+
+
+def _call_register(fn) -> None:
+    """Call a plugin module's registration entrypoint. `replace=True` when
+    it accepts one — a server/worker restart, or re-confirming an
+    already-confirmed folder, must re-register cleanly rather than raise on
+    a name collision, the same reason `apps_kind.register_builtin` and
+    `worker.py`'s own call both pass it — falling back to a bare call for a
+    simpler `register()` with no such parameter (the shape
+    tests/test_index_manifest.py's own fixtures use)."""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if "replace" in params:
+        fn(replace=True)
+    else:
+        fn()
+
+
+def _import_and_register(folder: str) -> bool:
+    """Import *folder*'s declared module and register its `IndexKind`.
+    Returns whether `manifest.kind` ended up in `kinds.registered()`
+    afterward. Best-effort and never raises: a confirmed folder whose
+    manifest has since gone missing or invalid, whose module fails to
+    import, whose `register` raises, or that simply never calls
+    `kinds.register` despite declaring a `kind` name, is logged and skipped
+    — the same "a plugin must never take the host down" rule `extract()`
+    itself follows, applied to import time instead of scan time."""
+    m = load_manifest(folder)
+    if m is None:
+        logger.warning(
+            "confirmed folder %s no longer has a valid index manifest; "
+            "not registering", folder)
+        return False
+    if m.kind in kinds.registered():
+        return True  # already registered in this process — nothing to do
+    # A unique, never-reused module name per folder: two confirmed folders
+    # could otherwise declare a `module` with the same basename (both named
+    # `indexer.py`), and `importlib`'s own module cache is keyed by name, not
+    # by path — reusing one would silently serve the wrong folder's module on
+    # a second confirm. Never a package-style `import`, since a third
+    # party's folder is never on `sys.path` (specs/index-plugins.md §5).
+    mod_name = "_fused_render_index_plugin_" + str(abs(hash(m.module)))
+    try:
+        spec = importlib.util.spec_from_file_location(mod_name, m.module)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"no loader for {m.module}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        register_fn = getattr(module, "register", None)
+        if callable(register_fn):
+            _call_register(register_fn)
+    except Exception:
+        logger.exception(
+            "failed to import/register confirmed index module %s "
+            "(folder %s)", m.module, folder)
+        return False
+    if m.kind not in kinds.registered():
+        logger.warning(
+            "confirmed folder %s declared kind %r but importing %s did not "
+            "register it", folder, m.kind, m.module)
+        return False
+    return True
+
+
+def register_confirmed_kinds() -> None:
+    """Import and register every confirmed folder's declared `IndexKind`,
+    in THIS process. Safe to call repeatedly (a no-op past the first
+    successful import of a given kind) and safe to call with nothing
+    confirmed (a no-op entirely) — the same "cheap to call at import time"
+    posture `apps_kind.register_builtin` already has for the built-in
+    kind."""
+    for folder in confirmed_folders():
+        _import_and_register(folder)
