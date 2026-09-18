@@ -24,12 +24,21 @@ import { createElement } from "react";
 const realFetch = globalThis.fetch;
 const doc = globalThis.document as unknown as { body?: unknown };
 
+/** Every `scrollIntoView` any element in the tree was asked for, in order.
+ *  `createNodeMock` hands out a fresh stand-in per element, so the record is
+ *  shared rather than per-node — what is being pinned is that the card ASKS. */
+const scrolled: string[] = [];
+
 function node() {
   return {
-    focus() {}, blur() {}, select() {}, setSelectionRange() {}, scrollIntoView() {},
+    focus() {}, blur() {}, select() {}, setSelectionRange() {},
+    scrollIntoView(o: unknown) { scrolled.push(JSON.stringify(o)); },
     addEventListener() {}, removeEventListener() {},
     contains: () => false, closest: () => null,
-    querySelector: () => null, querySelectorAll: () => [] as unknown[],
+    // A panel asked for its active row gets one — the stand-in above, which
+    // records what it was asked to do.
+    querySelector: (q: string) => (q === ".is-active" ? node() : null),
+    querySelectorAll: () => [] as unknown[],
     children: [] as unknown[], style: {} as Record<string, string>, value: "",
     getBoundingClientRect: () => ({
       top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0,
@@ -42,6 +51,16 @@ const inert = class {
   takeRecords() { return [] as unknown[]; }
 };
 const g = globalThis as Record<string, unknown>;
+// A VIEWPORT. `popStyle` caps the panel by the room under the field, which is
+// arithmetic on `window.innerHeight` — absent from the shim, and `undefined`
+// there makes every measurement `NaN` rather than failing loudly. Stated here
+// for the same reason the observers below are: what this suite needs, said by
+// this suite.
+const win = globalThis.window as unknown as Record<string, unknown>;
+if (typeof win?.innerHeight !== "number") {
+  win.innerHeight = 900;
+  win.innerWidth = 1400;
+}
 g.ResizeObserver = inert;
 g.MutationObserver = inert;
 g.getComputedStyle = () => new Proxy(
@@ -95,6 +114,7 @@ afterEach(async () => {
   }
   globalThis.fetch = realFetch;
   removeWindowTimers();
+  scrolled.length = 0;
   delete doc.body;
 });
 
@@ -996,4 +1016,83 @@ test("`~/…` and an absolute path both earn one", async () => {
   });
   await settle();
   expect(newFolderRow(abs).length).toBe(1);
+});
+
+// ---- a long folder scrolls, it does not cut off -------------------------------
+//
+// Akshil, 2026-09-18: typing `/Users/akshilthumar/` "lists ~8 dirs and cuts
+// off". Two faults. The list itself stopped at 8 (`FOLDER_COMPLETIONS_SHOWN`,
+// capped on the argument that a longer one would push Browse and New folder off
+// the bottom of the card). And the panel had no cap and no scroller, so what it
+// did draw ran past the card — the ~89px overhang from the round before.
+//
+// The answer is the Tasks page's, which fixed this exact bug on the project
+// menu: height is never SET, only capped by the room actually under the field,
+// and the panel is the scroller.
+
+/** Forty folders, which is what a real home directory looks like. */
+const BIG = {
+  "/Users/me/big": Array.from({ length: 40 }, (_, i) => ({
+    name: `folder-${String(i).padStart(2, "0")}`, is_dir: true, size: null,
+  })),
+};
+
+test("every entry is offered, not the first eight", async () => {
+  const b = await openCard([], [], "", BIG);
+  await typePath(b, "/Users/me/big/folder");
+  expect(pathRowLabels(b).length).toBe(40);
+});
+
+test("the panel is capped by the room under the field, and scrolls", async () => {
+  const b = await openCard([], [], "", BIG);
+  await typePath(b, "/Users/me/big/folder");
+
+  const panel = b.root.findAll(
+    (n) => String(n.props?.className ?? "").startsWith("schedule-recents")
+      && n.props?.role === "listbox")[0];
+  const style = panel.props.style as { maxHeight?: number; top?: number };
+  // Capped — never "however tall forty rows are".
+  expect(typeof style.maxHeight).toBe("number");
+  expect(style.maxHeight).toBeLessThanOrEqual(320);
+  // …and bounded by the window, not just by the constant: the stand-in field
+  // measures at 0,0,0,0 (see `node`), so the room below it is the whole
+  // viewport less the gap and the edge, and the cap must not exceed it.
+  expect(style.maxHeight!).toBeLessThanOrEqual(window.innerHeight);
+});
+
+test("arrowing past the visible edge keeps the highlight in view", async () => {
+  // The panel scrolls, so a highlight can be arrowed off the bottom of it. The
+  // same one line the card's other dropdowns use (`block: "nearest"`).
+  const b = await openCard([], [], "", BIG);
+  await typePath(b, "/Users/me/big/folder");
+  scrolled.length = 0;
+
+  for (let i = 0; i < 30; i += 1) await press(b, "ArrowDown");
+
+  // The highlight really did walk thirty rows…
+  const rows = b.root.findAll((n) => n.type === "button" && n.props.role === "option");
+  expect(rows[29].props["aria-selected"]).toBe(true);
+  // …and every step asked for it to be brought into view, "nearest" so the page
+  // behind the panel never moves with it.
+  expect(scrolled.length).toBeGreaterThanOrEqual(30);
+  expect(scrolled[0]).toBe(JSON.stringify({ block: "nearest" }));
+});
+
+test("a panel that opens upward is not squeezed between two edges", async () => {
+  // Measured on `/Users/akshilthumar/`: a 50-row list 10px tall with 1473px of
+  // scroll inside it. The panel had flipped UP, so the inline style set
+  // `bottom` — and the stylesheet still said `top: calc(100% + 4px)`, which a
+  // `position: fixed` box resolves too. Two resolved edges do not mean "prefer
+  // the inline one"; they mean the height is the distance between them.
+  //
+  // So both edges are always stated and one of them is always `auto`.
+  const b = await openCard([], [], "", BIG);
+  await typePath(b, "/Users/me/big/folder");
+  const panel = b.root.findAll(
+    (n) => String(n.props?.className ?? "").startsWith("schedule-recents")
+      && n.props?.role === "listbox")[0];
+  const style = panel.props.style as { top?: unknown; bottom?: unknown };
+  expect("top" in style && "bottom" in style).toBe(true);
+  expect(style.top === "auto" || style.bottom === "auto").toBe(true);
+  expect(style.top === "auto" && style.bottom === "auto").toBe(false);
 });

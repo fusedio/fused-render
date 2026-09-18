@@ -1421,6 +1421,31 @@
   box-shadow: 0 8px 24px var(--shadow-sm);
   transform-origin: top;
   animation: schedule-pop-in 0.1s ease-out;
+  /* THE PANEL IS THE SCROLLER (Akshil, 2026-09-18: typing
+     `/Users/akshilthumar/` "lists ~8 dirs and cuts off"). The cap is the INLINE
+     `max-height` `popStyle` measures off the room under the field, exactly as
+     the Tasks page's filter popovers are capped (tasks.css
+     `.schedule-tv-pop.tasks-pop`, which fixed this same bug on the project
+     menu) — so no height is set here and a two-row list is still two rows tall.
+
+     `min-height: 0` because a flex column only shrinks below its content when
+     it is allowed to; without it the cap is ignored and the panel runs off the
+     card, which is the ~89px overhang this also closes. */
+  overflow-y: auto;
+  min-height: 0;
+}
+
+/* Rows keep their own height inside that scroller — a constrained flex column
+   otherwise squeezes them all to fit, which turns fifty folders into fifty
+   slivers. The same rule, for the same reason, as tasks.css gives
+   `.schedule-tv-pop-item`; the separator, the verbs and the two notices are
+   named too, because a scroller squeezes everything it holds. */
+.schedule-recents > .schedule-picker-row,
+.schedule-form .schedule-recents > .schedule-picker-row,
+.schedule-recents > .schedule-recents-sep,
+.schedule-recents > .schedule-recents-empty,
+.schedule-recents > .schedule-recents-wait {
+  flex: 0 0 auto;
 }
 
 .schedule-recents-path {

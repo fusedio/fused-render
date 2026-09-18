@@ -172,11 +172,13 @@ const RECENTS_SHOWN = 5;
  */
 export const FOLDER_SEARCH_MIN = 2;
 export const FOLDER_SEARCH_SHOWN = 6;
-//: How many completions one segment offers. The Explorer caps at 50 and lets
-//: its panel scroll; this list lives under a form field with a folder picker and
-//: two verbs beneath it, so it takes the shorter cap the recents row already
-//: uses rather than pushing them off the bottom of the card.
-export const FOLDER_COMPLETIONS_SHOWN = 8;
+//: How many completions one segment offers — the Explorer's own `MAX_ITEMS`,
+//: now that this panel scrolls like the Explorer's does. It was 8, on the
+//: argument that a longer list would push Browse and New folder off the bottom
+//: of the card; the panel is capped and scrollable now, so the argument is gone
+//: and what is left is a folder the reader can see in Finder and not here
+//: (Akshil, 2026-09-18: `/Users/akshilthumar/` "lists ~8 dirs and cuts off").
+export const FOLDER_COMPLETIONS_SHOWN = 50;
 
 export function folderSearchSpec(
   typed: string,
@@ -927,18 +929,103 @@ function ExplorerPanel({
 // shipped cut off mid-row (Akshil, 2026-08-16 screenshot). Fixed escapes the
 // clip; when the viewport below the trigger is shorter than the panel, it
 // opens upward instead.
+/**
+ * HOW TALL A LIST-SHAPED PANEL MAY GET, and the gap it keeps off the window's
+ * edges. The Tasks page's own popovers already answer this — `POP_MAX_HEIGHT`
+ * in ScheduleTaskViews, with the same reasoning: a column of twenty-eight is
+ * not a menu, it is a page. Same number, so the two lists in this app cap alike.
+ */
+const POP_MAX_HEIGHT = 320;
+const POP_EDGE = 8;
+
+/**
+ * WHAT `position: fixed` IS ACTUALLY MEASURED FROM — the viewport, unless some
+ * ancestor is transformed, and in this card one always is.
+ *
+ * `.modal-dialog.deploy-dialog` carries `transform: scale(.98)` from the open
+ * animation, and a transformed element becomes the containing block for every
+ * `fixed` descendant. So `top`/`left`/`bottom` are resolved against the CARD
+ * while `getBoundingClientRect` answers in VIEWPORT coordinates, and the two
+ * have been quietly disagreeing for as long as this function has existed. It
+ * went unnoticed because every other menu here is short and opens downward, so
+ * the error was a few pixels; a 50-row folder list opening upward put the panel
+ * 150px off the top of the window (measured, 2026-09-18).
+ *
+ * Returns the origin to subtract and the box to fit inside. No transformed
+ * ancestor — every other host of this card — answers the viewport, which is what
+ * the arithmetic below has always assumed.
+ */
+function fixedBox(el: HTMLElement | null): { x: number; y: number; h: number } {
+  for (let node = el?.parentElement ?? null; node; node = node.parentElement) {
+    const cs = getComputedStyle(node);
+    // `""` is what a stand-in stylesheet answers, and it is not a transform —
+    // testing truthiness first keeps a test DOM from naming every ancestor.
+    const transformed = (cs.transform && cs.transform !== "none")
+      || (cs.filter && cs.filter !== "none")
+      || (cs.perspective && cs.perspective !== "none");
+    if (transformed) {
+      const r = node.getBoundingClientRect();
+      return { x: r.left, y: r.top, h: r.height };
+    }
+  }
+  return { x: 0, y: 0, h: window.innerHeight };
+}
+
 function popStyle(
   el: HTMLElement | null,
   estHeight: number,
   matchWidth = false,
+  /**
+   * CAP THE HEIGHT AND LET IT SCROLL, for a panel whose length is the disk's
+   * business rather than the form's (Akshil, 2026-09-18: typing
+   * `/Users/akshilthumar/` listed eight folders and cut off).
+   *
+   * Off by default, because it must be: the date grid, the time list and the
+   * repeat menu are all fixed-length things this function has always placed by
+   * their own height, and capping them would be a change nobody asked for. The
+   * folder list is the one whose content is unbounded.
+   *
+   * The arithmetic is `ScheduleTaskViews.popStyle`'s, which fixed this exact
+   * bug on the project menu ("sliced off at the bottom with a handful of its 28
+   * folders showing"): height is never SET — a two-row list is two rows tall —
+   * only capped, and capped by the room actually there so the panel can never
+   * run off the card or the viewport.
+   */
+  scrolls = false,
 ): React.CSSProperties {
   const r = el?.getBoundingClientRect();
   if (!r) return {};
-  const s: React.CSSProperties = { position: "fixed", left: r.left, right: "auto" };
-  if (r.bottom + 4 + estHeight > window.innerHeight && r.top - 4 - estHeight > 0) {
-    s.bottom = window.innerHeight - r.top + 4;
+  // BOTH EDGES ARE ALWAYS STATED, and one of them is always `auto`. A panel that
+  // flips up sets `bottom` — and the stylesheet that placed it before this
+  // function existed still says `top: calc(100% + 4px)`, which a `position:
+  // fixed` box resolves too. Two resolved edges do not mean "prefer the inline
+  // one": they mean the height is the distance BETWEEN them, and for a panel
+  // opening upward that distance is negative, so it collapsed to its padding.
+  // Measured on `/Users/akshilthumar/`: a 50-row list 10px tall with 1473px of
+  // scroll inside it. `tasks.css` fixes the same collision on the Tasks
+  // popovers from the stylesheet's side (`top: auto`); doing it here fixes it
+  // for every menu this function places, including the date, time and repeat
+  // menus, which have had the same latent flip-up bug all along.
+  // The box the offsets are resolved against — see `fixedBox`. The ROOM is still
+  // reckoned in viewport terms, because what the reader cares about is whether
+  // the panel is on their screen; only the offsets are converted.
+  const o = fixedBox(el);
+  const s: React.CSSProperties = {
+    position: "fixed", left: r.left - o.x, right: "auto", top: "auto", bottom: "auto",
+  };
+  if (scrolls) {
+    const below = window.innerHeight - r.bottom - 4 - POP_EDGE;
+    const above = r.top - 4 - POP_EDGE;
+    // Flip only when up is genuinely roomier — a panel that jumps above its
+    // trigger to gain twenty pixels is a panel that moved for nothing.
+    const up = above > below && below < POP_MAX_HEIGHT;
+    s.maxHeight = Math.max(120, Math.min(POP_MAX_HEIGHT, up ? above : below));
+    if (up) s.bottom = o.y + o.h - r.top + 4;
+    else s.top = r.bottom + 4 - o.y;
+  } else if (r.bottom + 4 + estHeight > window.innerHeight && r.top - 4 - estHeight > 0) {
+    s.bottom = o.y + o.h - r.top + 4;
   } else {
-    s.top = r.bottom + 4;
+    s.top = r.bottom + 4 - o.y;
   }
   // A menu is as wide as the control that opened it — the CSS floor of 180px
   // made the repeat menu wider than its chip and the recurrence units menu
@@ -3552,6 +3639,9 @@ export default function NewJobModal({
   //: without being rebuilt on every keystroke.
   const pathRowsRef = useRef(pathRows);
   pathRowsRef.current = pathRows;
+  //: The panel itself, for the keyboard to scroll the highlighted row back into
+  //: view — a capped list is a list you can arrow off the bottom of.
+  const recentsRef = useRef<HTMLDivElement | null>(null);
   /**
    * WHICH ROW THE ARROWS ARE ON — held as the row's own PATH, not its index
    * (Bugbot, PR #1213: "stale highlight after async rows").
@@ -3594,6 +3684,20 @@ export default function NewJobModal({
     setPathMark("");
     pathRef.current?.focus();
   }, []);
+  // KEEP THE HIGHLIGHTED ROW IN VIEW. The same one line the `Dropdown` at the
+  // top of this file uses and the task peek uses (`block: "nearest"`), and the
+  // reason it is needed here now: the panel is capped and scrolls, so arrowing
+  // past its edge would otherwise move a highlight the reader cannot see.
+  //
+  // Keyed on the MARK rather than on an index, like everything else about this
+  // highlight — a row that arrives while the mark is on it is still the row to
+  // scroll to.
+  useEffect(() => {
+    if (!recentsOpen || !pathMark) return;
+    recentsRef.current
+      ?.querySelector<HTMLElement>(".is-active")
+      ?.scrollIntoView({ block: "nearest" });
+  }, [pathMark, recentsOpen, pathRows]);
   const pickPath = useCallback((row: FolderRow) => {
     setTarget(row.path.replace(/\/+$/, ""));
     setRecentsOpen(false);
@@ -5025,11 +5129,12 @@ export default function NewJobModal({
               // blur handler's relatedTarget is null there and the list would
               // unmount before its click fired (Bugbot, PR #541).
               <div
+                ref={recentsRef}
                 className={"schedule-recents" + (searchPending ? " is-loading" : "")}
                 id={recentsId}
                 role="listbox"
                 aria-label="Folders"
-                style={popStyle(pathRef.current, 240, true)}
+                style={popStyle(pathRef.current, 240, true, true)}
                 onMouseDown={(e) => e.preventDefault()}
                 // The pointer leaving takes the highlight with it — the same
                 // rule the dropdowns at the top of this file keep, so a row left

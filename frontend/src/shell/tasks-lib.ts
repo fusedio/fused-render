@@ -3042,6 +3042,10 @@ export function projectOptions(tasks: Task[]): string[] {
  * rule, and two rules that both call themselves "search" is the thing to avoid.
  *
  * An empty query is not a filter: every folder answers it.
+ *
+ * TODO: follow the Explorer's search ORDERING — match name and path as now, but
+ * rank name matches first and path-only matches after, the way the Explorer's
+ * search ranks its results. The matching is right; only the order is flat.
  */
 export function projectMatches(path: string, query: string): boolean {
   const q = query.trim().toLowerCase();
@@ -3051,6 +3055,8 @@ export function projectMatches(path: string, query: string): boolean {
 }
 
 
+// TODO: follow the Explorer's search ORDERING here too — a title match and a
+// path-only match rank the same today, and the Explorer ranks the name first.
 export function taskMatches(task: Task, filters: TaskFilters): boolean {
   // By LANE (schedule-lib.laneOf): the Status menu offers the Board's lanes,
   // and a Blocked tick means everything the Blocked lane holds — the run that

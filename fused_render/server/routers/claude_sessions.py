@@ -243,7 +243,7 @@ _HEAD_CHARS = 256 * 1024
 _HEAD_LINES = 2000
 
 # path -> (size_at_parse, cwd, first_ts, first_prompt)
-_HEAD_CACHE: dict[str, tuple[int, str | None, str | None, str]] = {}
+_HEAD_CACHE: dict[str, tuple[int, str | None, str | None, str, bool]] = {}
 
 
 def _load_state(filename: str) -> dict:

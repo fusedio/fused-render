@@ -775,7 +775,7 @@ def forget_session(session_id: str) -> dict:
 
 # path -> (size_at_parse, cwd, first_ts, first_prompt, pane_file). Same cache
 # shape, and the same append-only reasoning, as claude_sessions._HEAD_CACHE.
-_HEAD_CACHE: dict[str, tuple[int, str | None, float | None, str, str]] = {}
+_HEAD_CACHE: dict[str, tuple[int, str | None, float | None, str, str, bool]] = {}
 
 _HEAD_CHARS = 256 * 1024
 _HEAD_LINES = 2000
