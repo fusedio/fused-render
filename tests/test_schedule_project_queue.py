@@ -1,33 +1,30 @@
 """One task in progress per FOLDER, from the scheduler's side.
 
-`project_queue.py` answers which folder a task edits and who is holding it;
-tests/test_project_queue.py pins those answers. This file pins what
-`schedule.py` does with them — the second gate in front of the same dispatch:
+`project_queue.py` answers which folder a task edits; `queue_manager.py` owns
+who is holding it and what order the line moves in. This file pins what
+`schedule.py` does around those two:
 
-* **the order** — `priority` is stored flag-agnostically and read only with the
-  flag on, so `_claim_due` and `queue()` list and send in the same order;
-* **the hold** — a due entry whose working tree another conversation is editing
-  is left `pending` and untouched, and one claim marks that folder taken for
-  the rest of the pass;
-* **held answers** — a card decision parked while the folder was busy is
-  delivered (through `agent._decide`, which owns the validation) BEFORE any
-  message, and holds the folder for that pass;
+* **the sweep** — `_claim_due` and `queue()` list and send in the same order,
+  and that order is the due time with the flag on or off: `priority` is a flag
+  the page draws, not a place in a line (PR 2, 2026-09-17);
+* **the doors** — cancel, restore, run-now and the tick all speak to the
+  manager, and with the flag off none of them do (see "the manager's doors");
+* **the session rules**, which the folder rule never replaced — one send at a
+  time per conversation, and no send into a turn the user is typing;
+* **the follow chain** — a message typed behind another resolves its
+  conversation from its leader at dispatch (`_follow_session`);
 * **run-now on a busy folder** is a Skip, not a refusal;
 * **the wake** — a turn ending, and the watcher seeing a session stop, ring the
   loop so the next queued message goes in about a second rather than thirty.
 
-**Flag off is the control.** Every ordering and hold case is parametrized
-across both values of the pref: with it off nothing here may change what the
-rest of tests/test_schedule*.py already pins.
+**Flag off is the control.** With it off nothing here may change what the rest
+of tests/test_schedule*.py already pins.
 
-`project_queue.holders` is monkeypatched in most cases — the derivation is
-tested against real run dirs, a real registry and real transcripts in
-tests/test_project_queue.py, and repeating that here would test that file
-twice and this one not at all.
+The manager itself is tests/test_queue_manager.py's subject; the cases below
+that need one let a door build the real thing, or install a recording fake.
 """
 import json
 import os
-import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -84,10 +81,14 @@ def fresh_process():
     schedule._watched.clear()
     schedule._wake.clear()
     schedule._cancel_rearm()
+    # The lazy-resume latch (M6) is per process, and a process here is the whole
+    # session: cleared either side so no case inherits another's first build.
+    schedule._RESUMED = False
     yield
     schedule._watched.clear()
     schedule._wake.clear()
     schedule._cancel_rearm()
+    schedule._RESUMED = False
 
 
 @pytest.fixture(autouse=True)
@@ -158,45 +159,6 @@ def _ago(seconds: float) -> datetime:
     return datetime.now(timezone.utc) - timedelta(seconds=seconds)
 
 
-def _held(key, session_id=SID, run_id="r-1", request_id="p1", decision="allow"):
-    """One held answer in the shape the decide path stores: the ORIGINAL
-    `_decide` arguments, so delivery is a replay and not a second copy of that
-    function's validation."""
-    return pq.hold_answer(key, session_id, run_id, request_id,
-                          {"raw": {"run_id": run_id, "request_id": request_id,
-                                   "decision": decision, "scope": "once"}})
-
-
-class FakeAgent:
-    """The three things the delivery path touches. `RUNS` and `_alive` are what
-    `validate_held_answers` reads; `_decide` is the delivery itself."""
-
-    def __init__(self, runs, alive=True):
-        self.RUNS = str(runs)
-        self.alive = alive
-        self.decided = []
-
-    def _alive(self, run_dir):
-        return self.alive
-
-    def _permissions(self, run_dir):
-        return []
-
-    def _perm_dir(self, run_dir):
-        return os.path.join(run_dir, "perm")
-
-    def _write_decision(self, perm_dir, request_id, payload):
-        os.makedirs(perm_dir, exist_ok=True)
-        with open(os.path.join(perm_dir, request_id + ".res.json"), "w",
-                  encoding="utf-8") as fh:
-            json.dump(payload, fh)
-        return True
-
-    def _decide(self, **kw):
-        self.decided.append(kw)
-        return {"ok": True}
-
-
 # ==================================================================== priority
 
 
@@ -230,28 +192,19 @@ def test_due_order_is_the_same_with_the_flag_either_way(folders, flag):
 
 
 @pytest.mark.parametrize("flag", [False, True], indirect=True)
-def test_priority_jumps_the_line_only_with_the_flag_on(folders, flag):
+def test_priority_does_not_reorder_the_sweep(folders, flag):
+    """`priority` is a flag the page DRAWS, not the order (PR 2, 2026-09-17).
+    What a skip actually moves is the queue manager's line; the sweep offers
+    every due entry in due order, with the flag on or off."""
     older = schedule.create(str(folders["alpha"]), "one", _ago(60))
     skipped = schedule.create(str(folders["alpha"]), "two", _ago(30),
                               priority=True)
 
-    wanted = [skipped["id"], older["id"]] if flag else [older["id"], skipped["id"]]
+    wanted = [older["id"], skipped["id"]]
     assert schedule._claim_due(schedule._now()) == wanted
     # the LIST and the RUN order are one key: a queue listed in one order and
     # sent in another is worse than no queue at all
     assert [e["id"] for e in schedule.queue()["queued"]] == wanted
-
-
-def test_two_skips_keep_their_own_order(folders, home):
-    """Priority ties fall to the older `due`, so skipping two things does not
-    reshuffle them."""
-    _on(home)
-    older = schedule.create(str(folders["alpha"]), "one", _ago(60), priority=True)
-    newer = schedule.create(str(folders["alpha"]), "two", _ago(30), priority=True)
-    plain = schedule.create(str(folders["alpha"]), "three", _ago(90))
-
-    assert schedule._claim_due(schedule._now()) == [older["id"], newer["id"],
-                                                    plain["id"]]
 
 
 # ================================================================ set_priority
@@ -303,97 +256,11 @@ def test_set_priority_un_skips_too(folders):
     assert "priority_at" not in stored
 
 
-def test_run_next_stamps_the_moment_and_the_newest_click_goes_first(folders):
-    """B, THEN C, THEN D RUN D, C, B (Akshil, 2026-09-12). `priority` alone only
-    says "ahead of the un-promoted"; the stamp is what makes the button mean
-    play-next instead of join-the-promoted-pile."""
-    b = schedule.create(str(folders["alpha"]), "b", _ago(300), session_id=SID)
-    c = schedule.create(str(folders["alpha"]), "c", _ago(200), session_id=SID)
-    d = schedule.create(str(folders["alpha"]), "d", _ago(100), session_id=SID)
-    for entry in (b, c, d):
-        schedule.set_priority([entry["id"]], True)
-
-    key = _key(folders["alpha"])
-    now = schedule._now()
-    stored = {e["id"]: e for e in schedule.list_entries()}
-    assert all(e["priority_at"] > 0 for e in stored.values())
-    assert [schedule._queue_position(stored[e["id"]], key, now)
-            for e in (d, c, b)] == [1, 2, 3]
-
-    # …and pressing it again on B takes the head straight back.
-    schedule.set_priority([b["id"]], True)
-    stored = {e["id"]: e for e in schedule.list_entries()}
-    assert [schedule._queue_position(stored[e["id"]], key, now)
-            for e in (b, d, c)] == [1, 2, 3]
-
-
-def test_run_next_on_a_task_with_two_due_messages_keeps_them_in_order(folders):
-    """🔴 review, 2026-09-12. One press promotes EVERY due message the task
-    has waiting in that folder (`api_queue_skip`), and the stamp sorts newest
-    first — so a clock read inside the loop stamped the second message a few
-    microseconds after the first and put it in FRONT of it. One press is one
-    gesture and one instant: the entries tie, and a tie falls through to `due`,
-    which is the order they were typed in."""
-    first = schedule.create(str(folders["alpha"]), "one", _ago(300),
-                            session_id=SID)
-    second = schedule.create(str(folders["alpha"]), "two", _ago(200),
-                             session_id=SID)
-
-    schedule.set_priority([first["id"], second["id"]], True)
-
-    stored = {e["id"]: e for e in schedule.list_entries()}
-    assert stored[first["id"]]["priority_at"] == stored[second["id"]]["priority_at"]
-    key = _key(folders["alpha"])
-    now = schedule._now()
-    assert [schedule._queue_position(stored[e["id"]], key, now)
-            for e in (first, second)] == [1, 2]
-
-
 # ============================================================== the folder hold
 
 
 def _key(folder):
     return pq.queue_key(str(folder))
-
-
-def _holder(session_id, kind="run", run_id="run-1", task_key=None):
-    return {"session_id": session_id, "run_id": run_id,
-            "task_key": task_key if task_key is not None else session_id,
-            "kind": kind}
-
-
-@pytest.mark.parametrize("flag", [False, True], indirect=True)
-def test_a_busy_folder_holds_only_with_the_flag_on(folders, spawned, flag,
-                                                   monkeypatch):
-    """Another conversation is editing this tree. Flag on: left pending,
-    untouched — a wait, never a verdict. Flag off: today's behaviour, which
-    knows nothing about folders."""
-    monkeypatch.setattr(pq, "holders",
-                        lambda now=None: {_key(folders["alpha"]): _holder(SID2)})
-    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
-
-    sent = schedule.tick()
-
-    if flag:
-        assert sent == []
-        stored = schedule.list_entries()[0]
-        assert stored["state"] == schedule.PENDING
-        assert stored["fired"] == ""
-        assert spawned == []
-    else:
-        assert [e["id"] for e in sent] == [entry["id"]]
-
-
-def test_a_folder_frees_and_the_held_entry_goes_next_pass(folders, spawned,
-                                                          home, monkeypatch):
-    _on(home)
-    busy = {_key(folders["alpha"]): _holder(SID2)}
-    monkeypatch.setattr(pq, "holders", lambda now=None: dict(busy))
-    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
-    assert schedule.tick() == []
-
-    busy.clear()
-    assert [e["id"] for e in schedule.tick()] == [entry["id"]]
 
 
 def test_one_claim_takes_the_folder_for_the_rest_of_the_pass(folders, spawned,
@@ -402,7 +269,6 @@ def test_one_claim_takes_the_folder_for_the_rest_of_the_pass(folders, spawned,
     same way `busy.add(session)` marks the session, so the second waits. Both
     have no session id, which is exactly the pair a session hold cannot see."""
     _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
     first = schedule.create(str(folders["alpha"]), "one", _ago(60))
     second = schedule.create(str(folders["alpha"]), "two", _ago(30))
 
@@ -418,7 +284,6 @@ def test_two_folders_run_side_by_side(folders, spawned, home, monkeypatch):
     """No cap across folders — worktrees are the whole reason the key is the
     working tree and not the machine."""
     _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
     a = schedule.create(str(folders["alpha"]), "one", _ago(60))
     b = schedule.create(str(folders["beta"]), "two", _ago(30))
 
@@ -431,8 +296,6 @@ def test_an_entry_into_its_own_holder_follows_the_session_rules(folders, spawned
     holding — and then the per-session rules, unchanged, decide. Live turn:
     held. Quiet: sent."""
     _on(home)
-    monkeypatch.setattr(pq, "holders",
-                        lambda now=None: {_key(folders["alpha"]): _holder(SID)})
     entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
 
     monkeypatch.setattr(schedule, "_session_live",
@@ -444,29 +307,12 @@ def test_an_entry_into_its_own_holder_follows_the_session_rules(folders, spawned
     assert [e["id"] for e in schedule.tick()] == [entry["id"]]
 
 
-def test_a_claimed_but_unspawned_entry_holds_its_folder(folders, spawned, home):
-    """A `sending` entry is a folder about to be busy, and `holders` is NOT
-    stubbed here: this is the one case where the derivation and the scheduler
-    have to agree, because the scheduler is where the fact comes from."""
-    _on(home)
-    first = schedule.create(str(folders["alpha"]), "one", _ago(60))
-    second = schedule.create(str(folders["alpha"]), "two", _ago(30), session_id=SID)
-    # Claimed by hand and left there — the window between claim and spawn.
-    assert schedule._claim(first["id"], schedule._now()) is not None
-    assert pq.holders()[_key(folders["alpha"])]["kind"] == "sending"
-
-    assert schedule.tick() == []
-    assert {e["id"]: e["state"] for e in schedule.list_entries()}[
-        second["id"]] == schedule.PENDING
-
-
 def test_an_entry_with_no_folder_is_never_held(folders, spawned, home,
                                                monkeypatch):
     """`queue_key` answers "" for a path it will not gate ($HOME, `/`). "" is
     "no folder", and no folder is never busy — a task the server cannot place
     runs rather than queueing behind something it cannot name."""
     _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {"": _holder(SID2)})
     monkeypatch.setattr(pq, "queue_key", lambda project: "")
     entry = schedule.create(str(folders["alpha"]), "go", _ago(1))
 
@@ -481,7 +327,6 @@ def test_an_entry_held_by_its_own_session_still_takes_the_folder(
     no session for the session gates to see, walked into the same working tree.
     A hold owns the folder for the pass just as a claim does."""
     _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
     monkeypatch.setattr(schedule, "_session_live",
                         lambda session, now, seen=None: session == SID)
     monkeypatch.setattr(schedule, "_verdict_echo",
@@ -497,441 +342,10 @@ def test_an_entry_held_by_its_own_session_still_takes_the_folder(
     assert spawned == []
 
 
-def test_a_folder_taken_between_the_sweep_and_the_claim_is_not_claimed(
-        folders, spawned, home, monkeypatch):
-    """The snapshot said free; disk says otherwise by the time we claim. A chat
-    send admitted in between (a reservation taken, a run dir appearing) is a
-    process in the tree this pass never saw, so the claim takes one last look
-    (Akshil's QA, 2026-09-16: two skipped tasks ran together)."""
-    _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
-    monkeypatch.setattr(pq, "holder_for",
-                        lambda key, now=None: _holder(SID2) if key else None)
-    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
-
-    assert schedule.tick() == []
-    stored = schedule.list_entries()[0]
-    assert stored["id"] == entry["id"]
-    assert stored["state"] == schedule.PENDING
-    assert stored["fired"] == ""
-    assert spawned == []
-
-
-def test_the_last_look_arms_the_timer_for_a_clock_bound_holder(
-        folders, spawned, home, monkeypatch):
-    """A `reserved` or `starting` holder found at the last look lapses on a
-    clock nothing rings, exactly like one found at the first look — so the pass
-    asks to be woken when it does (Bugbot, 2026-09-16)."""
-    _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
-    monkeypatch.setattr(pq, "holder_for",
-                        lambda key, now=None: _holder(SID2, kind="reserved")
-                        if key else None)
-    monkeypatch.setattr(pq, "holder_expires_in",
-                        lambda key, holder, now=None: 7.0)
-    armed = []
-    monkeypatch.setattr(schedule, "_rearm", lambda soon: armed.append(list(soon)))
-    schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
-
-    assert schedule.tick() == []
-    assert spawned == []
-    assert armed and 7.0 in armed[-1]
-
-
-
-class _CardAgent:
-    """A runs tree whose permission cards are read OFF DISK every time they are
-    asked for — the one thing `tests/test_project_queue.py`'s stand-in flattens
-    into a static list, and the thing this case is about. Everything else is
-    the same shape: `meta.json`, a `session` file, an `alive` marker."""
-
-    def __init__(self, runs):
-        self.RUNS = str(runs)
-        os.makedirs(self.RUNS, exist_ok=True)
-
-    def stage(self, run_id, file, session_id):
-        run_dir = os.path.join(self.RUNS, run_id)
-        os.makedirs(os.path.join(run_dir, "perm"), exist_ok=True)
-        with open(os.path.join(run_dir, "meta.json"), "w", encoding="utf-8") as fh:
-            json.dump({"file": file, "resumed_from": "", "message": "go"}, fh)
-        with open(os.path.join(run_dir, "session"), "w", encoding="utf-8") as fh:
-            fh.write(session_id)
-        with open(os.path.join(run_dir, "alive"), "w", encoding="utf-8") as fh:
-            fh.write("1")
-        return run_dir
-
-    def card(self, run_dir, request_id="p1"):
-        """One request nobody has decided — a run parked on a permission."""
-        with open(os.path.join(run_dir, "perm", request_id + ".json"), "w",
-                  encoding="utf-8") as fh:
-            json.dump({"request_id": request_id}, fh)
-
-    def _alive(self, run_dir):
-        return os.path.exists(os.path.join(run_dir, "alive"))
-
-    def _session_from_out(self, run_dir):
-        return ""
-
-    def _perm_dir(self, run_dir):
-        return os.path.join(run_dir, "perm")
-
-    def _permissions(self, run_dir):
-        out = []
-        try:
-            names = sorted(os.listdir(self._perm_dir(run_dir)))
-        except OSError:
-            return out
-        for name in names:
-            if not name.endswith(".json") or name.endswith(".res.json"):
-                continue
-            request_id = name[: -len(".json")]
-            decision = ""
-            try:
-                with open(os.path.join(self._perm_dir(run_dir),
-                                       request_id + ".res.json"),
-                          encoding="utf-8") as fh:
-                    decision = json.load(fh).get("decision") or ""
-            except (OSError, ValueError):
-                decision = ""
-            out.append({"request_id": request_id, "decision": decision})
-        return out
-
-
-def test_a_card_raised_inside_the_scan_memo_does_not_hold_the_folder(
-        folders, spawned, home, tmp_path, monkeypatch):
-    """Akshil's QA, 2026-09-16: a task blocked on a permission card frees its
-    folder and the watcher rings within a second, but the tick that follows read
-    the holder map through `scan_runs`'s memo — populated by a listing a moment
-    BEFORE the card file appeared, with each record's permission list cached on
-    it. So the parked run still read as the holder, everything queued behind it
-    waited, and a `run` holder has no clock: nothing rang again until the
-    registry row flipped seconds later, while the listing (deriving fresh) said
-    no holder and flipped the rows queued->upcoming->queued.
-
-    `holders` is NOT stubbed here — the staleness is the subject, so the
-    derivation has to be the real one over a real runs tree."""
-    _on(home)
-    agent = _CardAgent(tmp_path / "card-runs")
-    monkeypatch.setattr(pq, "agent_module", lambda: agent)
-    # The registry's opinion, and only that: the run is alive and mid-turn, so
-    # with no card it is a `run` holder — the kind with no clock behind it.
-    monkeypatch.setattr(tasks_watch, "live_from_registry",
-                        lambda session_id: (session_id == SID2, 0.0))
-    run_dir = agent.stage("20260916-120000-aaaa",
-                          str(folders["alpha"] / "index.html"), SID2)
-
-    key = _key(folders["alpha"])
-    assert pq.holders()[key]["kind"] == "run"  # ...and the memo now says so
-
-    # The card lands INSIDE the window that read populated, and nobody tells the
-    # memo. Pinned wide rather than raced against `SCAN_TTL`: the real window is
-    # under a second and a test that slept inside it would be flaky either way.
-    agent.card(run_dir)
-    with pq._scan_lock:
-        slot, _expiry, runs = pq._scan_memo
-        pq._scan_memo = (slot, time.monotonic() + 600.0, runs)
-    assert pq.holders()[key]["kind"] == "run"  # the stale answer, on purpose
-
-    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
-
-    assert [e["id"] for e in schedule.tick()] == [entry["id"]]
-    assert len(spawned) == 1
-
-
-# ============================================================== held answers
-
-
-@pytest.fixture()
-def agent(tmp_path, monkeypatch):
-    fake = FakeAgent(tmp_path / "runs")
-    monkeypatch.setattr(pq, "agent_module", lambda: fake)
-    return fake
-
-
-def test_a_held_answer_is_delivered_and_holds_the_folder(folders, spawned,
-                                                         home, agent, rung,
-                                                         monkeypatch):
-    """The answer goes first and the message waits: the run the user answered
-    is already open in that tree, and it is older than anything queued."""
-    _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
-    key = _key(folders["alpha"])
-    _held(key)
-    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID2)
-
-    assert schedule.tick() == []
-    # replayed through `_decide`, which owns the validation — not a decision
-    # file written from the scheduler
-    assert agent.decided == [{"run_id": "r-1", "request_id": "p1",
-                              "decision": "allow", "scope": "once"}]
-    assert pq.held_answers() == []
-    assert {e["id"]: e["state"] for e in schedule.list_entries()}[
-        entry["id"]] == schedule.PENDING
-    assert {SID} in rung
-
-    # next pass, nothing held: the message goes
-    assert [e["id"] for e in schedule.tick()] == [entry["id"]]
-
-
-def test_a_held_answer_waits_while_the_folder_is_still_busy(folders, home,
-                                                            agent, monkeypatch):
-    _on(home)
-    key = _key(folders["alpha"])
-    monkeypatch.setattr(pq, "holders", lambda now=None: {key: _holder(SID2)})
-    _held(key)
-
-    schedule.tick()
-
-    assert agent.decided == []
-    assert len(pq.held_answers()) == 1
-
-
-def _stamp_priority(entry_id: str, at: float) -> None:
-    """Run next, at a moment of the test's choosing — the stamp is the whole
-    comparison, so it cannot be left to the clock."""
-    schedule.set_priority([entry_id], True)
-    with schedule._lock:
-        entries = schedule._read()
-        for entry in entries:
-            if entry["id"] == entry_id:
-                entry["priority_at"] = at
-        schedule._write(entries)
-
-
-@pytest.mark.parametrize("promoted_at,answer_first", [(200.0, False),
-                                                      (50.0, True)])
-def test_a_newer_run_next_outranks_a_held_answer(folders, spawned, home, agent,
-                                                 monkeypatch, promoted_at,
-                                                 answer_first):
-    """Akshil, 2026-09-16: an answered blocked task is next in line by default,
-    but a Run next clicked AFTER the answer is a later instruction and wins.
-    The loser only waits a pass — the answer stays held, nothing is dropped."""
-    _on(home)
-    key = _key(folders["alpha"])
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
-    pq.hold_answer(key, SID, "r-1", "p1",
-                   {"raw": {"run_id": "r-1", "request_id": "p1",
-                            "decision": "allow", "scope": "once"}}, at=100.0)
-    entry = schedule.create(str(folders["alpha"]), "go", _ago(1),
-                            session_id=SID2)
-    _stamp_priority(entry["id"], promoted_at)
-
-    sent = [e["id"] for e in schedule.tick()]
-
-    if answer_first:
-        assert agent.decided == [{"run_id": "r-1", "request_id": "p1",
-                                  "decision": "allow", "scope": "once"}]
-        assert pq.held_answers() == []
-        assert sent == []
-        assert {e["id"]: e["state"] for e in schedule.list_entries()}[
-            entry["id"]] == schedule.PENDING
-    else:
-        assert agent.decided == []
-        assert [a["at"] for a in pq.held_answers()] == [100.0]
-        assert sent == [entry["id"]]
-
-
-def test_every_answer_for_one_run_goes_but_never_two_sessions(folders, home,
-                                                              agent, monkeypatch):
-    """A run can have several cards open at once, so they all go. A DIFFERENT
-    parked session in the same folder is put straight back — resuming two runs
-    into one working tree is what this feature exists to prevent."""
-    _on(home)
-    key = _key(folders["alpha"])
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
-    _held(key, SID, "r-1", "p1")
-    _held(key, SID, "r-1", "p2")
-    _held(key, SID2, "r-2", "p3")
-
-    schedule.tick()
-
-    assert [d["request_id"] for d in agent.decided] == ["p1", "p2"]
-    assert [(a["session_id"], a["request_id"]) for a in pq.held_answers()] == [
-        (SID2, "p3")]
-
-
-def test_a_re_held_answer_keeps_the_place_it_had_in_the_line(
-        folders, spawned, home, agent, monkeypatch):
-    """Every answer for a folder comes out at once and the ones for other
-    sessions go back — and going back used to restamp `at`, sending a record to
-    the BACK of a line it was at the front of, once per pass, for as long as the
-    other conversation kept the folder (round-3 review, 2026-09-12)."""
-    _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
-    key = _key(folders["alpha"])
-    _held(key, session_id=SID, run_id="r-1", request_id="p1")
-    second = _held(key, session_id=SID2, run_id="r-2", request_id="p2")
-
-    schedule.tick()          # SID resumes; SID2's answer goes back
-
-    waiting = pq.held_answers()
-    assert [a["request_id"] for a in waiting] == ["p2"]
-    assert waiting[0]["at"] == second["at"]
-
-    # …and its place is real: an answer held AFTER it does not overtake it.
-    _held(key, session_id=SID3, run_id="r-3", request_id="p3")
-    schedule.tick()
-    assert [call["request_id"] for call in agent.decided] == ["p1", "p2"]
-    assert [a["request_id"] for a in pq.held_answers()] == ["p3"]
-
-
-def test_an_answer_whose_delivery_raises_is_held_again_and_goes_next_pass(
-        folders, spawned, home, agent, monkeypatch):
-    """The pop is the latch that stops two ticks delivering one answer, so it
-    happens BEFORE `_decide` — which means a `_decide` that raises used to take
-    the user's decision with it and leave the card asking for ever (round-3
-    review, 2026-09-12). Put back with the `at` it had; the folder is held for
-    this pass anyway, so the next one simply tries again."""
-    _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
-    key = _key(folders["alpha"])
-    record = _held(key)
-    boom = [True]
-
-    def once(**kw):
-        if boom:
-            boom.pop()
-            raise RuntimeError("the run dir went out from under it")
-        return agent.__class__._decide(agent, **kw)
-
-    monkeypatch.setattr(agent, "_decide", once)
-
-    schedule.tick()
-    waiting = pq.held_answers()
-    assert [a["request_id"] for a in waiting] == ["p1"]
-    assert waiting[0]["at"] == record["at"]
-    assert agent.decided == []
-
-    schedule.tick()
-    assert pq.held_answers() == []
-    assert [call["request_id"] for call in agent.decided] == ["p1"]
-
-
-def test_a_held_answer_for_a_dead_run_expires_and_frees_the_folder(
-        folders, spawned, home, agent, monkeypatch):
-    """`validate_held_answers` writes the decision out as `expired` — the same
-    verdict `_decide` gives a dead run — and the message behind it goes."""
-    _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
-    agent.alive = False
-    key = _key(folders["alpha"])
-    _held(key)
-    entry = schedule.create(str(folders["alpha"]), "go", _ago(1))
-
-    assert [e["id"] for e in schedule.tick()] == [entry["id"]]
-    assert agent.decided == []
-    assert pq.held_answers() == []
-    expired = os.path.join(agent.RUNS, "r-1", "perm", "p1.res.json")
-    with open(expired, encoding="utf-8") as fh:
-        assert json.load(fh) == {"decision": "expired"}
-
-
-def test_one_bad_answer_does_not_cost_the_tick_its_messages(folders, spawned,
-                                                            home, agent,
-                                                            monkeypatch):
-    _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
-    monkeypatch.setattr(agent, "_decide",
-                        lambda **kw: (_ for _ in ()).throw(RuntimeError("boom")))
-    _held(_key(folders["alpha"]))
-    other = schedule.create(str(folders["beta"]), "go", _ago(1))
-
-    assert [e["id"] for e in schedule.tick()] == [other["id"]]
-
-
-def test_held_answers_are_delivered_with_nothing_due(folders, home, agent,
-                                                     monkeypatch):
-    """The delivery is not a side effect of having messages to send: a user who
-    answered a card while the folder was busy is owed it either way."""
-    _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
-    _held(_key(folders["alpha"]))
-
-    assert schedule.tick() == []
-    assert len(agent.decided) == 1
-
-
-def test_the_flag_off_never_touches_a_held_answer(folders, spawned, agent,
-                                                  monkeypatch):
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
-    _held(_key(folders["alpha"]))
-    entry = schedule.create(str(folders["alpha"]), "go", _ago(1))
-
-    assert [e["id"] for e in schedule.tick()] == [entry["id"]]
-    assert agent.decided == []
-    assert len(pq.held_answers()) == 1
-
-
 # ==================================================================== run-now
 
 
-def test_run_now_on_a_busy_folder_is_a_skip(folders, spawned, home, monkeypatch):
-    """The gesture still means something exact — it is the Skip verb — so the
-    row can read `#1 in line · behind …` instead of an error."""
-    _on(home)
-    holder = _holder(SID2, kind="run", run_id="run-9")
-    monkeypatch.setattr(pq, "holders",
-                        lambda now=None: {_key(folders["alpha"]): holder})
-    ahead = schedule.create(str(folders["alpha"]), "ahead", _ago(90))
-    entry = schedule.create(str(folders["alpha"]), "go", _ago(1))
-
-    out = schedule.run_now(entry["id"])
-
-    assert out["ok"] is False
-    assert out["found"] is True
-    assert out["reason"] == "queued"
-    assert out["queued"] is True
-    assert out["ahead_session"] == SID2
-    assert out["ahead_run"] == "run-9"
-    # skipped to the head of its folder's line, past an older entry
-    assert out["entry"]["priority"] is True
-    assert out["position"] == 1
-    # …and nothing was claimed
-    assert out["entry"]["state"] == schedule.PENDING
-    assert spawned == []
-    # RUN NEXT IS PLAY NEXT: the most recent promotion goes first. Promoting
-    # `ahead` (the older message) puts IT at the head and this one at #2 —
-    # and promoting this one again takes the head straight back.
-    assert schedule.run_now(ahead["id"])["position"] == 1
-    stored = {e["id"]: e for e in schedule.list_entries()}
-    assert schedule._queue_position(
-        stored[entry["id"]], _key(folders["alpha"]), schedule._now()) == 2
-    assert schedule.run_now(entry["id"])["position"] == 1
-
-
-def test_run_now_names_the_holder_by_its_task_and_not_by_its_session(
-        folders, home, monkeypatch):
-    """A `sending` holder — claimed, not yet spawned — has no conversation to
-    its name, and the row still has to say who it is waiting behind. The TASK
-    key is what the Tasks page can turn into a number ("behind TASK-041");
-    `ahead_session` stays beside it for a caller that wants the conversation."""
-    _on(home)
-    key = _key(folders["alpha"])
-    holder = _holder("", kind="sending", run_id="", task_key="pending:e-x")
-    monkeypatch.setattr(pq, "holders", lambda now=None: {key: holder})
-    entry = schedule.create(str(folders["alpha"]), "go", _ago(1))
-
-    out = schedule.run_now(entry["id"])
-
-    assert out["ahead_task_key"] == "pending:e-x"
-    assert out["ahead_session"] == ""
-
-
-def test_a_queued_position_counts_held_answers_first(folders, home, monkeypatch):
-    """A held answer outranks every message in its folder, so it is counted
-    ahead even of a skip."""
-    _on(home)
-    key = _key(folders["alpha"])
-    monkeypatch.setattr(pq, "holders", lambda now=None: {key: _holder(SID2)})
-    _held(key)
-    entry = schedule.create(str(folders["alpha"]), "go", _ago(1))
-
-    assert schedule.run_now(entry["id"])["position"] == 2
-
-
 def test_run_now_is_unchanged_with_the_flag_off(folders, spawned, monkeypatch):
-    monkeypatch.setattr(pq, "holders",
-                        lambda now=None: {_key(folders["alpha"]): _holder(SID2)})
     entry = schedule.create(str(folders["alpha"]), "go", _ago(1))
 
     out = schedule.run_now(entry["id"])
@@ -944,11 +358,28 @@ def test_run_now_is_unchanged_with_the_flag_off(folders, spawned, monkeypatch):
 def test_run_now_into_its_own_folder_still_runs(folders, spawned, home,
                                                 monkeypatch):
     _on(home)
-    monkeypatch.setattr(pq, "holders",
-                        lambda now=None: {_key(folders["alpha"]): _holder(SID)})
     entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
 
     assert schedule.run_now(entry["id"])["ok"] is True
+
+
+def test_run_now_leaves_exactly_one_turn(folders, spawned, home, monkeypatch):
+    """Bugbot, PR #1194: `_claim_folder` claims the folder once, and the
+    post-send call in `run_now` must be `started` (a refile) — not a second
+    claim — or `turn_ended`'s one decrement never brings `turns` back to zero
+    and the folder never frees."""
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+
+    assert schedule.run_now(entry["id"])["ok"] is True
+
+    manager = schedule._qm()
+    owner = manager.owner(_key(folders["alpha"]))
+    assert owner is not None
+    assert owner["turns"] == 1
+
+    manager.turn_ended(owner["task"], owner["run_id"])
+    assert manager.owner(_key(folders["alpha"])) is None
 
 
 # ================================================== priority is never inherited
@@ -1192,7 +623,6 @@ def test_a_follower_waits_for_the_chat_its_leader_is_opening(folders, spawned,
     """The folder is free — the leader is away and holds nothing this pass can
     see — and the follower still must not go: the two messages are one
     conversation, and the second cannot open it."""
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
     leader, follower = _pair(folders["alpha"])
     # The leader is sent with its turn still open and no session reported yet,
     # and watched, so the sweep leaves it alone.
@@ -1215,7 +645,6 @@ def test_a_leader_goes_first_and_its_follower_resumes_what_it_opened(
     """The whole point of the field, in two passes: one message at a time, the
     second into the conversation the first opened."""
     _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
     leader, follower = _pair(folders["alpha"])
 
     assert [e["id"] for e in schedule.tick()] == [leader["id"]]
@@ -1239,7 +668,6 @@ def test_a_cancelled_leader_does_not_orphan_its_follower(folders, spawned, home,
     """The message is still owed and there is no thread to continue, so it opens
     one. Waiting for ever would be this feature losing the user's words."""
     _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
     leader, follower = _pair(folders["alpha"])
     schedule.cancel(leader["id"])
 
@@ -1252,7 +680,6 @@ def test_an_erased_leader_leaves_its_follower_standing_alone(folders, spawned,
     """A hand-edited store, or a delete that took the leader's row. The follower
     is what it was before the field existed: an ordinary fresh-session message."""
     _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
     leader, follower = _pair(folders["alpha"])
     schedule._write([e for e in schedule.list_entries()
                      if e["id"] != leader["id"]])
@@ -1262,16 +689,20 @@ def test_an_erased_leader_leaves_its_follower_standing_alone(folders, spawned,
 
 
 @pytest.mark.parametrize("flag", [False, True], indirect=True)
-def test_a_follower_never_sorts_before_its_leader(folders, flag):
-    """Even due EARLIER — a clock that moved, an edit that back-dated it. With
-    the flag on the line reads the chain; with it off this is the old sort,
-    which is exactly what makes every existing case still true."""
+def test_the_sweep_is_due_ordered_whatever_the_chain_says(folders, flag):
+    """A follower due EARLIER than its leader — a clock that moved, an edit that
+    back-dated it — still comes out of the sweep in DUE order, flag or no flag.
+
+    THE CHAIN IS NOT AN ORDERING RULE HERE ANY MORE (PR 2, 2026-09-17). What
+    keeps a follower behind the message it was typed behind is the queue
+    manager's line and `dispatch_entry`'s own hold (`_follow_session`), both
+    downstream of this sweep; the sweep offers what is due and the list shows
+    the same thing, which is the one property this pins."""
     leader = schedule.create(str(folders["alpha"]), "first", _ago(60))
     follower = schedule.create(str(folders["alpha"]), "second", _ago(90),
                                follow_of=leader["id"])
 
-    wanted = ([leader["id"], follower["id"]] if flag
-              else [follower["id"], leader["id"]])
+    wanted = [follower["id"], leader["id"]]
     assert schedule._claim_due(schedule._now()) == wanted
     assert [e["id"] for e in schedule.queue()["queued"]] == wanted
 
@@ -1325,7 +756,6 @@ def test_a_follow_chain_past_the_bound_stands_alone(folders, home, monkeypatch):
     erased leader already gives, and dispatch has to agree with the filing or
     the message would wait on a leader whose row it is not even on."""
     _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
     chain = [schedule.create(str(folders["alpha"]), "m0", _ago(100))]
     for n in range(1, schedule.FOLLOW_HOPS + 2):
         chain.append(schedule.create(str(folders["alpha"]), f"m{n}",
@@ -1343,7 +773,6 @@ def test_a_follow_chain_past_the_bound_stands_alone(folders, home, monkeypatch):
     assert schedule.leader_of(beyond, by_id) is None
     assert schedule._task_key(beyond) == tasks_store.pending_key(beyond["id"])
     assert schedule._follow_session(beyond, by_id) == ("", True)
-    assert pq.order_key(beyond, by_id) == pq.order_key(beyond)
 
 
 # ====================================== the finished turn's own closing echo
@@ -1411,7 +840,6 @@ def test_a_follower_goes_the_moment_its_leaders_turn_ends(
     closing rows as a live turn, so the per-session hold held the follower
     against the very turn that had just ended."""
     _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
     leader, follower = _pair(folders["alpha"])
     _finished_leader(leader, 5)
     _transcript(live_reads_the_transcript, SID, 5)
@@ -1426,7 +854,6 @@ def test_a_session_still_working_past_the_echo_keeps_the_hold(
     after the stamp is new work — the user typing into the same chat — and two
     processes on one transcript is what the hold exists to stop."""
     _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
     leader, follower = _pair(folders["alpha"])
     _finished_leader(leader, 60)
     _transcript(live_reads_the_transcript, SID, 2)
@@ -1442,7 +869,6 @@ def test_the_echo_is_silenced_flag_or_no_flag(
     2026-09-16 (Akshil) NOT kept to the queue: the flag guards the
     one-task-per-folder rule, and a follow-up waiting on the finished turn's own
     closing rows is a sync defect the queue merely made visible."""
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
     done = schedule.create(str(folders["alpha"]), "first", _ago(60))
     schedule._update(done["id"], state=schedule.SENT, claude_session_id=SID,
                      turn="ok", turn_at=_ago(5).isoformat())
@@ -1466,7 +892,6 @@ def test_a_verdict_nobody_watched_land_never_echoes(
     word read as a verdict calls a live transcript's own pulse an echo and puts
     a second `claude --resume` on it."""
     _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
     leader, follower = _pair(folders["alpha"])
     schedule._update(leader["id"], state=schedule.SENT, run_id="r-1",
                      fired=_ago(35).isoformat(), claude_session_id=SID,
@@ -1485,7 +910,6 @@ def test_a_turn_opened_inside_the_echo_window_still_holds(
     own echo — two processes on one transcript, arriving through the rule meant
     to stop them. A `user` row as the last word is a turn somebody has open."""
     _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
     leader, follower = _pair(folders["alpha"])
     _finished_leader(leader, 5)
     _typed_into(live_reads_the_transcript, SID, 3)
@@ -1500,7 +924,6 @@ def test_a_verdict_with_no_stamp_keeps_the_old_rule(
     against, so the window decides — the honest answer, and the same one the
     Tasks router gives the same entry."""
     _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
     done = schedule.create(str(folders["alpha"]), "first", _ago(60))
     schedule._update(done["id"], state=schedule.SENT, claude_session_id=SID,
                      turn="ok", turn_at="")
@@ -1510,60 +933,8 @@ def test_a_verdict_with_no_stamp_keeps_the_old_rule(
     assert schedule.tick() == []
 
 
-def test_a_hold_on_a_reservation_is_woken_when_the_reservation_ends(
-        folders, spawned, home):
-    """`_turn_ended` rings when a verdict lands, which covers every hold that
-    ends on an EVENT. A reservation — an admitted send whose process has not
-    appeared — ends on a clock and rings nothing, so the pass that held for it
-    arms a timer for the moment it actually runs out (round-3 review,
-    2026-09-12: it used to ring two seconds in, which is not when any of these
-    clocks expire, and then never again while the hold stood)."""
-    _on(home)
-    pq.reserve(_key(folders["alpha"]), SID2, ttl=pq.RESERVATION_TTL)
-    schedule.create(str(folders["alpha"]), "behind it", _ago(30),
-                    session_id=SID)
-
-    assert schedule.tick() == []
-    timer = schedule._rearm_timer
-    assert timer is not None
-    assert pq.RESERVATION_TTL - 5 < timer.interval <= pq.RESERVATION_TTL
-
-
-def test_a_clock_longer_than_the_poll_is_capped_to_it(
-        folders, spawned, home, monkeypatch, live_reads_the_transcript):
-    """The 45-second transcript window outlasts the poll that is the floor under
-    all of this, so the timer is capped: waking later than the ordinary pass
-    would is a bell that rings after the thing it was for."""
-    _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
-    _transcript(live_reads_the_transcript, SID, 2)
-    schedule.create(str(folders["alpha"]), "held", _ago(30), session_id=SID)
-
-    assert schedule.tick() == []
-    assert schedule._rearm_timer.interval == float(schedule.POLL_INTERVAL_S)
-
-
-def test_a_second_pass_re_arms_the_same_hold(folders, spawned, home):
-    """One timer at a time, re-armed as the clock runs down — not one per tick
-    piling up, and not one for the whole episode fired far too early."""
-    _on(home)
-    pq.reserve(_key(folders["alpha"]), SID2, ttl=pq.RESERVATION_TTL)
-    schedule.create(str(folders["alpha"]), "behind it", _ago(30),
-                    session_id=SID)
-
-    assert schedule.tick() == []
-    first = schedule._rearm_timer
-    assert schedule.tick() == []
-    second = schedule._rearm_timer
-
-    assert second is not None and second is not first
-    assert first.finished.is_set()          # the old one was cancelled, not left
-    assert second.interval <= first.interval
-
-
 def test_nothing_held_re_arms_nothing(folders, spawned, home, monkeypatch):
     _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
     schedule.create(str(folders["alpha"]), "go", _ago(30))
 
     assert len(schedule.tick()) == 1
@@ -1580,41 +951,12 @@ def test_a_hold_whose_clock_has_already_run_out_does_not_spin(home):
 # ================================ run now on a message whose time is not yet
 
 
-def test_run_now_on_a_far_future_message_really_joins_the_line(
-        folders, spawned, home, monkeypatch):
-    """`due` is the ask and never moves — so a message due TOMORROW, skipped to
-    the head of a busy folder's line, was in a line nothing could see it in
-    (browser QA, 2026-09-12). `run_now_at` is the second stamp that puts it
-    there, and the tick reads it the moment the folder frees."""
-    _on(home)
-    key = _key(folders["alpha"])
-    live = {key: _holder(SID2)}
-    monkeypatch.setattr(pq, "holders", lambda now=None: dict(live))
-    entry = schedule.create(str(folders["alpha"]), "tomorrow", _ago(-86400))
-
-    out = schedule.run_now(entry["id"])
-
-    assert out["reason"] == "queued"
-    assert out["position"] == 1
-    stored = _stored(entry["id"])
-    # The ask is untouched: the calendar still draws the chip on tomorrow.
-    assert stored["due"] == entry["due"]
-    assert stored["run_now_at"]
-    # It is really IN the line now — listed, and claimable.
-    assert [e["id"] for e in schedule.queue()["queued"]] == [entry["id"]]
-    assert schedule.tick() == []          # …behind the holder, which is the ask
-
-    live.clear()
-    assert [e["id"] for e in schedule.tick()] == [entry["id"]]
-
-
 def test_a_far_future_message_nobody_asked_for_stays_out_of_the_line(
         folders, spawned, home, monkeypatch):
     """The control. Without the gesture the entry is waiting on the CLOCK, and
     calling it queued would move tomorrow's work into a lane that reads as
     about to run."""
     _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
     schedule.create(str(folders["alpha"]), "tomorrow", _ago(-86400))
 
     assert schedule.queue()["queued"] == []
@@ -1627,7 +969,6 @@ def test_a_deferred_run_now_stamps_a_busy_session_too(
     as soon as that turn ends" — and for a message due next week it was not
     true until this stamp existed."""
     _on(home)
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
     _transcript(live_reads_the_transcript, SID, 2)
     entry = schedule.create(str(folders["alpha"]), "next week", _ago(-604800),
                             session_id=SID)
@@ -2171,24 +1512,428 @@ def test_a_resend_of_a_chats_message_is_still_the_chats_message(folders,
     assert "origin" not in schedule.resend(plain["id"])["entry"]
 
 
-def test_a_run_now_stamp_is_not_read_once_the_flag_is_off(folders, home, spawned,
-                                                          monkeypatch):
-    """Flag-off audit (2026-09-12): a message asked for now while its folder was
-    busy carries `run_now_at`; if the queue is then turned OFF, that stamp must
-    not fire a message due next Tuesday on the first flag-off tick. Off, an
-    entry is due when `due` says."""
-    (home / "prefs.json").write_text(json.dumps({"project_queue_enabled": True}))
-    live = {pq.queue_key(str(folders["alpha"])): {"session_id": "other",
-                                                  "run_id": "r-x",
-                                                  "task_key": "other",
-                                                  "kind": "run"}}
-    monkeypatch.setattr(pq, "holders", lambda now=None: dict(live))
-    entry = schedule.create(str(folders["alpha"]), "tomorrow", _ago(-86400))
-    assert schedule.run_now(entry["id"])["reason"] == "queued"
-    assert _stored(entry["id"])["run_now_at"]
+# ====================================================== the scheduler's doors
+#
+# WHAT THE SCHEDULER SAYS TO THE MANAGER, as opposed to what it does with the
+# answer (which every case above pins, through the real manager). The tick is
+# not the dispatcher any more: it hands the manager what came due and the
+# manager decides what runs, through `dispatch_entry` — the one spawn site,
+# which still carries the session gates.
 
-    (home / "prefs.json").write_text(json.dumps({"project_queue_enabled": False}))
-    monkeypatch.setattr(pq, "holders", lambda now=None: {})
-    assert schedule.queue()["queued"] == []          # not in the line any more
-    assert schedule.tick() == []                     # and not sent
-    assert _stored(entry["id"])["state"] == schedule.PENDING
+
+class RecordingManager:
+    """Every event, in order, and nothing started. The manager's own behaviour
+    is tests/test_queue_manager.py's subject; what is under test here is that
+    the scheduler reaches it, with the folder and the task key the rest of the
+    app files this message under."""
+
+    def __init__(self, owner=None):
+        self.events: list[tuple] = []
+        self.owners: dict[str, dict] = dict(owner or {})
+
+    def reconcile(self):
+        self.events.append(("reconcile",))
+
+    def enqueue(self, folder, task_key, entry_id=""):
+        self.events.append(("enqueue", folder, task_key, entry_id))
+        return {"position": 1, "ahead_key": ""}
+
+    def skip(self, task_key):
+        self.events.append(("skip", task_key))
+        return {"position": 1, "ahead_key": ""}
+
+    def remove(self, task_key):
+        self.events.append(("remove", task_key))
+
+    def forget_entry(self, entry_id):
+        self.events.append(("forget_entry", entry_id))
+
+    def turn_ended(self, task_key, run_id=""):
+        self.events.append(("turn_ended", task_key))
+        self.owners = {f: o for f, o in self.owners.items()
+                       if str(o.get("task") or "") != task_key}
+
+    def claim(self, folder, task_key, run_id="", session_id=""):
+        """Atomic check-and-own: the ONE call the doors make where they used to
+        look and act later."""
+        self.events.append(("claim", folder, task_key))
+        if not self.is_free(folder, task_key):
+            return False
+        # The same conversation under a BETTER name, as the real one does: a
+        # claim by the owner fills in blanks and never blanks what is there.
+        prior = self.owners.get(folder) or {}
+        self.owners[folder] = {
+            "task": task_key,
+            "session_id": session_id or str(prior.get("session_id") or ""),
+            "run_id": run_id or str(prior.get("run_id") or "")}
+        return True
+
+    def claim_took(self, folder, task_key, run_id="", session_id=""):
+        """`(ok, took)` — the tri-state the doors read. `took` is False when
+        this task ALREADY owned the tree, which is the case run-now must not
+        hand back."""
+        prior = self.owners.get(folder)
+        own = prior is not None and str(prior.get("task") or "") == task_key
+        ok = self.claim(folder, task_key, run_id, session_id)
+        return ok, bool(ok and not own)
+
+    def pump(self, folder):
+        self.events.append(("pump", folder))
+
+    def started(self, folder, task_key, run_id="", session_id=""):
+        self.events.append(("started", folder, task_key, run_id, session_id))
+
+    def owner(self, folder):
+        return self.owners.get(folder)
+
+    def is_free(self, folder, task_key=""):
+        owner = self.owners.get(folder)
+        return owner is None or str(owner.get("task") or "") == task_key
+
+
+@pytest.fixture()
+def recorder():
+    from fused_render import queue_manager
+
+    fake = RecordingManager()
+    queue_manager.reset_for_tests(fake)
+    yield fake
+    queue_manager.reset_for_tests(None)
+
+
+def _events(recorder, *names):
+    return [event for event in recorder.events if event[0] in names]
+
+
+def test_the_tick_hands_a_due_message_to_the_manager(folders, spawned, home,
+                                                     recorder):
+    """No folder gate, no holder map, no held-answer delivery: the pass
+    reconciles the index and enqueues what came due. Nothing spawned here —
+    the manager is what pumps."""
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+
+    assert schedule.tick() == []
+    assert _events(recorder, "reconcile") == [("reconcile",)]
+    assert _events(recorder, "enqueue") == [
+        ("enqueue", _key(folders["alpha"]), SID, entry["id"])]
+    assert spawned == []
+
+
+def test_a_message_with_no_folder_goes_straight_and_never_into_a_line(
+        folders, spawned, home, recorder, monkeypatch):
+    """`queue_key` answers "" for a target this app will not gate, and "" is
+    "no folder" everywhere. Putting those in a line would queue every ungated
+    message on the machine behind one another."""
+    _on(home)
+    monkeypatch.setattr(pq, "queue_key", lambda target: "")
+    schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+
+    assert [e["message"] for e in schedule.tick()] == ["go"]
+    assert _events(recorder, "enqueue") == []
+    assert len(spawned) == 1
+
+
+def test_a_cancel_drops_the_task_from_its_line(folders, home, recorder):
+    """**By ENTRY, not by task key** (C4, 2026-09-17). A key is a conversation
+    and an entry is one message in it, so `remove(task_key)` was the wrong verb
+    for a Cancel: see the case below for what it cost."""
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+    schedule.cancel(entry["id"])
+    assert _events(recorder, "forget_entry", "remove") == [
+        ("forget_entry", entry["id"])]
+
+
+def test_cancelling_a_queued_message_never_releases_a_running_turn(
+        folders, home, recorder):
+    """C4. Two messages for one conversation: the first is away and OWNS the
+    working tree, the second is still waiting. Cancelling the second used to
+    call `remove(SID)` — which found that key as the folder's owner, released a
+    live turn's tree and pumped the next task straight into it."""
+    _on(home)
+    key = _key(folders["alpha"])
+    recorder.owners[key] = {"task": SID, "session_id": SID, "run_id": "r-1"}
+    queued = schedule.create(str(folders["alpha"]), "and then this", _ago(1),
+                             session_id=SID)
+
+    schedule.cancel(queued["id"])
+
+    assert _events(recorder, "remove") == [], \
+        "a cancel named the whole conversation and evicted its live turn"
+    assert _events(recorder, "forget_entry") == [("forget_entry", queued["id"])]
+    assert recorder.owners[key]["task"] == SID
+
+
+def test_cancel_all_takes_every_message_out_of_its_line_too(folders, home,
+                                                            recorder):
+    """M5. The single `cancel` next door has always told the manager; the Tasks
+    page's "cancel all" wrote `cancelled` into the store and left the keys
+    standing in their folders' lines, holding the tree in front of them for
+    messages the user had just cancelled."""
+    _on(home)
+    first = schedule.create(str(folders["alpha"]), "one", _ago(60))
+    second = schedule.create(str(folders["beta"]), "two", _ago(30))
+
+    out = schedule.cancel_queued(all_queued=True)
+
+    assert sorted(out["cancelled"]) == sorted([first["id"], second["id"]])
+    assert sorted(_events(recorder, "forget_entry")) == sorted(
+        [("forget_entry", first["id"]), ("forget_entry", second["id"])])
+
+
+def test_a_refused_cancel_forgets_nothing(folders, home, recorder, spawned):
+    """An entry the tick has already claimed is away; cancel refuses it, and a
+    refusal must not take it out of a line it is the head of."""
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1))
+    schedule._claim(entry["id"], schedule._now())
+
+    out = schedule.cancel_queued([entry["id"]])
+
+    assert out["cancelled"] == [] and out["refused"] == [entry["id"]]
+    assert _events(recorder, "forget_entry", "remove") == []
+
+
+def test_run_now_on_an_owned_folder_is_a_skip_and_a_pump(folders, home,
+                                                         recorder):
+    """Run now on a queued task IS the Skip verb — it never interrupts the run
+    in flight, and the answer is the place the manager gives back."""
+    _on(home)
+    key = _key(folders["alpha"])
+    recorder.owners[key] = {"task": SID2, "session_id": SID2, "run_id": "r-x"}
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+
+    out = schedule.run_now(entry["id"])
+    assert out["ok"] is False and out["reason"] == "queued"
+    assert out["position"] == 1
+    assert out["ahead_task_key"] == SID2 and out["ahead_session"] == SID2
+    assert _events(recorder, "enqueue", "skip", "pump") == [
+        ("enqueue", key, SID, entry["id"]), ("skip", SID), ("pump", key)]
+
+
+def test_run_now_into_a_free_folder_tells_the_manager_who_owns_it(
+        folders, spawned, home, recorder):
+    """The send went out through run-now's own gates rather than through a
+    pump, so nothing else would have set an owner and the next message due in
+    this tree would have been started straight into it."""
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+
+    assert schedule.run_now(entry["id"])["ok"] is True
+    assert len(spawned) == 1
+    assert _events(recorder, "started") == [
+        ("started", _key(folders["alpha"]), SID, "r-1", SID)]
+
+
+def test_dispatch_entry_refuses_a_session_that_is_mid_turn(folders, spawned,
+                                                           home, monkeypatch):
+    """`SpawnBusy`, not None: the two mean opposite things to the manager. None
+    is "there is nothing here to start" and the item leaves the line; this is
+    "not yet" and it keeps the head of the line."""
+    _on(home)
+    monkeypatch.setattr(schedule, "_session_live",
+                        lambda session, now, seen=None: True)
+    monkeypatch.setattr(schedule, "_verdict_echo",
+                        lambda session, entries, now, seen=None: False)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+
+    with pytest.raises(schedule.SpawnBusy):
+        schedule.dispatch_entry(entry["id"])
+    assert spawned == []
+    stored = {e["id"]: e for e in schedule.list_entries()}
+    assert stored[entry["id"]]["state"] == schedule.PENDING
+
+
+def test_dispatch_entry_answers_none_for_an_entry_that_is_gone(folders, home):
+    """Nothing to start: the manager drops the item rather than holding the
+    folder for a ghost."""
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+    schedule.cancel(entry["id"])
+    assert schedule.dispatch_entry(entry["id"]) is None
+    assert schedule.dispatch_entry("no-such-entry") is None
+
+
+def test_dispatch_entry_reports_the_run_and_the_session_it_landed_in(
+        folders, spawned, home):
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+    assert schedule.dispatch_entry(entry["id"]) == {"run_id": "r-1",
+                                                    "session_id": SID}
+    assert len(spawned) == 1
+
+
+def test_with_the_flag_off_the_tick_says_nothing_to_the_manager(
+        folders, spawned, home, recorder):
+    """The control. Off, the pass is the one that shipped and the manager is
+    not consulted at all."""
+    _on(home, False)
+    schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+    assert [e["message"] for e in schedule.tick()] == ["go"]
+    assert recorder.events == []
+
+
+# ============================================ H3: run-now looks and acts once
+#
+# Run-now asked `is_free`, then sent, then filed `started` — and `_send` can be
+# a process spawn, so up to a minute could pass between the question and the
+# answer being acted on with the tree reading FREE to every other door for all
+# of it. Two run-nows, or a run-now and a tick, both saw a free folder and both
+# sent into it (Akshil's QA, 2026-09-16). One `claim` closes it: the gate that
+# decides is the gate that owns.
+
+
+def test_run_now_claims_the_folder_before_it_sends(folders, home, recorder,
+                                                   spawned):
+    """The order is the fix. Nothing may be on the wire before the tree is
+    ours."""
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+    seen = []
+    taken = recorder.claim
+
+    def watching_claim(folder, task_key, run_id="", session_id=""):
+        seen.append(("claim", len(spawned)))
+        return taken(folder, task_key, run_id, session_id)
+
+    recorder.claim = watching_claim
+
+    assert schedule.run_now(entry["id"])["ok"] is True
+
+    assert seen == [("claim", 0)], "the folder was taken after the send, or not at all"
+    assert len(spawned) == 1
+    assert recorder.owners[_key(folders["alpha"])]["task"] == SID
+
+
+def test_run_now_that_loses_the_claim_is_a_skip_not_a_send(folders, home,
+                                                           recorder, spawned):
+    """The refusal arm of the same call: another task has the tree, so this is
+    the Skip verb and nothing is sent."""
+    _on(home)
+    key = _key(folders["alpha"])
+    recorder.owners[key] = {"task": SID2, "session_id": SID2, "run_id": "r-x"}
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+
+    out = schedule.run_now(entry["id"])
+
+    assert out["ok"] is False and out["reason"] == "queued"
+    assert ("claim", key, SID) in recorder.events
+    assert spawned == []
+    assert recorder.owners[key]["task"] == SID2
+
+
+def test_a_claimed_folder_is_given_back_when_the_conversation_is_busy(
+        folders, home, recorder, spawned, monkeypatch):
+    """The claim happens before the SESSION gates, so the arm that refuses on a
+    live turn has to hand the tree back. A folder owned for a turn that never
+    started is a folder parked until the next reconcile."""
+    _on(home)
+    monkeypatch.setattr(schedule, "_session_live",
+                        lambda session, now, seen=None: True)
+    monkeypatch.setattr(schedule, "_verdict_echo",
+                        lambda session, entries, now, seen=None: False)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+
+    out = schedule.run_now(entry["id"])
+
+    assert out["ok"] is False and "turn running right now" in out["reason"]
+    assert spawned == []
+    assert _events(recorder, "turn_ended") == [("turn_ended", SID)]
+    assert recorder.owners == {}
+
+
+def test_run_now_on_a_follow_up_never_releases_the_turn_it_follows(
+        folders, home, recorder, spawned, monkeypatch):
+    """The other half of the same rule (Bugbot, #1194). `claim` answered True
+    both when it TOOK the tree and when this very conversation already held it
+    — and the busy-session arm released either one, so Run now on a follow-up
+    ended the live turn it was following and pumped the next task into the same
+    tree. Only the call that took the folder may hand it back."""
+    _on(home)
+    key = _key(folders["alpha"])
+    recorder.owners[key] = {"task": SID, "session_id": SID, "run_id": "r-1"}
+    monkeypatch.setattr(schedule, "_session_live",
+                        lambda session, now, seen=None: True)
+    monkeypatch.setattr(schedule, "_verdict_echo",
+                        lambda session, entries, now, seen=None: False)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+
+    out = schedule.run_now(entry["id"])
+
+    assert out["ok"] is False and "turn running right now" in out["reason"]
+    assert spawned == []
+    assert _events(recorder, "turn_ended") == [], "the live turn was released"
+    assert recorder.owners[key] == {"task": SID, "session_id": SID,
+                                    "run_id": "r-1"}
+
+
+def test_a_folder_claimed_for_a_send_that_lost_the_race_is_given_back(
+        folders, home, recorder, spawned, monkeypatch):
+    """Same rule for the other early return: the tick claimed the entry between
+    our read and our `_claim`, so nothing is sent from here."""
+    _on(home)
+    entry = schedule.create(str(folders["alpha"]), "go", _ago(1), session_id=SID)
+    monkeypatch.setattr(schedule, "_claim", lambda entry_id, now: None)
+
+    out = schedule.run_now(entry["id"])
+
+    assert out["ok"] is False and "already claimed" in out["reason"]
+    assert spawned == []
+    assert _events(recorder, "turn_ended") == [("turn_ended", SID)]
+
+
+# ================================= M6: the flag can be flipped on at runtime
+
+
+def test_the_first_manager_this_process_builds_rings_the_loop(home, monkeypatch):
+    """Startup registers the factory and, with the queue off, builds nothing —
+    building loads the index and reconciling it pumps. Flip the pref at 11am
+    and this process has no index: the listing reads through `peek()`, which
+    never builds, so every row draws un-queued until something reconciles — a
+    whole poll away.
+
+    So the first build RINGS THE LOOP. Not a reconcile from here: that sweep
+    spawns, and a spawn must never be the side effect of a cancel or a gate
+    check — the tick is the one place where starting work is the point, and it
+    is one second away once the doorbell goes."""
+    from fused_render import queue_manager
+
+    _on(home)
+    fake = RecordingManager()
+    before = queue_manager._factory
+    queue_manager.reset_for_tests(None)
+    queue_manager.set_factory(lambda: fake)
+    schedule._wake.clear()
+    try:
+        assert schedule._qm() is fake
+        assert schedule._wake.is_set(), "the new index waits out a whole poll"
+        schedule._wake.clear()
+        assert schedule._qm() is fake
+        assert schedule._qm() is fake
+    finally:
+        queue_manager.reset_for_tests(None)
+        queue_manager.set_factory(before)
+
+    assert not schedule._wake.is_set(), "rung on every ask, not on the build"
+    assert fake.events == [], "a door reconciled — and a reconcile spawns"
+
+
+def test_a_manager_built_with_the_queue_off_rings_nothing(home, monkeypatch):
+    """A switched-off queue must start nothing and wake nobody."""
+    from fused_render import queue_manager
+
+    _on(home, False)
+    fake = RecordingManager()
+    before = queue_manager._factory
+    queue_manager.reset_for_tests(None)
+    queue_manager.set_factory(lambda: fake)
+    schedule._wake.clear()
+    try:
+        assert schedule._qm() is fake
+    finally:
+        queue_manager.reset_for_tests(None)
+        queue_manager.set_factory(before)
+
+    assert not schedule._wake.is_set()
+    assert fake.events == []

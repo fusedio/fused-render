@@ -90,6 +90,11 @@ interface Harness {
   /** Move the injected wall clock, which is what paces the row's own re-read
    *  (`REC_REFRESH_MS`) — the poll's rate no longer decides it. */
   advance(ms: number): void;
+  /** Push a tasks-change-feed answer, the way the server's long-poll does the
+   *  instant the queue manager moves anything. */
+  feed(rows: SchedTask[]): Promise<void>;
+  /** Is anything subscribed to the feed right now? */
+  feeding(): boolean;
 }
 
 async function mount(
@@ -142,6 +147,17 @@ async function mount(
     clearInterval: () => {},
   };
 
+  /** THE TASKS CHANGE FEED, injected. One subscriber at a time is all the hook
+   *  ever takes, which is also what makes `feeding()` a real assertion. */
+  const feeds: Array<(rows: SchedTask[]) => void> = [];
+  const subscribeRows = (cb: (rows: SchedTask[]) => void) => {
+    feeds.push(cb);
+    return () => {
+      const at = feeds.indexOf(cb);
+      if (at >= 0) feeds.splice(at, 1);
+    };
+  };
+
   let out: State | null = null;
   function Probe(props: { sessionId: string; leaderId: string }) {
     out = useSchedule({
@@ -149,10 +165,14 @@ async function mount(
       file: "/w/app",
       sessionId: props.sessionId,
       leaderId: props.leaderId,
-      inChat: !!props.sessionId,
+      // A QUEUED NEW CHAT IS IN A CHAT (`ClaudeChat`: the `queued=` param sets
+      // `inChat` before any session exists) — it has a leader and no session,
+      // which is the one shape the live row matters most on.
+      inChat: !!props.sessionId || !!props.leaderId,
       setRunParam: () => {},
       api,
       timers,
+      subscribeRows,
       now: () => clock,
       ...(queueEnabled === undefined ? {} : { queueEnabled }),
     });
@@ -197,6 +217,12 @@ async function mount(
     advance(ms: number) {
       clock += ms;
     },
+    async feed(rows: SchedTask[]) {
+      await act(async () => {
+        for (const cb of [...feeds]) cb(rows);
+      });
+    },
+    feeding: () => feeds.length > 0,
     tasksReads: () => tasksReads,
     serveTasks(tasks: SchedTask[]) {
       servedTasks = tasks;
@@ -809,4 +835,167 @@ test("refresh() asks the schedule NOW, rather than at the end of the lap", async
   });
   expect(h.state().waitingHere).toEqual([]);
   expect([...(h.state().pendingIds ?? [])]).toEqual([]);
+});
+
+// ── the live row (the tasks change feed) ─────────────────────────────────────
+
+test("a feed answer moves this chat's row without waiting for a lap", async () => {
+  // The bug (Akshil, 2026-09-17): the queue moves on EVENTS and this pane was
+  // the only surface still asking on a lap. A chat with nothing pending in its
+  // own session polls `/api/schedule` at 15s and floors its `/api/tasks` re-read
+  // at 5s on top of it, so "behind TASK-046" lingered seconds after the folder
+  // freed while the Tasks page repainted in ~100ms off the long-poll.
+  const h = await mount(
+    [{ ...pending("a", "2026-09-09T14:00:00+00:00"), origin: "chat" }],
+    "s1",
+    [{ key: "s1", status: "queued", queue_position: 3, queue_ahead: "TASK-046" }],
+    true,
+  );
+  expect(h.state().rec?.queue_position).toBe(3);
+  const reads = h.tasksReads();
+  await h.feed([
+    { key: "s1", status: "queued", queue_position: 2, queue_ahead: "TASK-046" },
+  ]);
+  // No lap, no clock, no second listing — and the caption has already moved.
+  expect(h.state().rec?.queue_position).toBe(2);
+  expect(h.state().row?.queue_position).toBe(2);
+  expect(h.tasksReads()).toBe(reads);
+});
+
+test("the same answer twice is not a re-render", async () => {
+  // The feed fires for every row on the machine, so a blind write per answer
+  // would bump `recGen` — which Run next's optimistic claim is measured against
+  // — several times a second on a busy box.
+  const h = await mount(
+    [{ ...pending("a", "2026-09-09T14:00:00+00:00"), origin: "chat" }],
+    "s1",
+    [],
+    true,
+  );
+  const row: SchedTask = { key: "s1", status: "queued", queue_position: 1 };
+  await h.feed([row]);
+  const gen = h.state().recGen;
+  await h.feed([{ ...row }]);
+  expect(h.state().recGen).toBe(gen);
+  expect(h.state().row?.queue_position).toBe(1);
+});
+
+test("queued → in_progress asks the schedule again in the same beat", async () => {
+  // The row is the fast half of the picture. Whether the entry is still pending
+  // — and which session its run opened, the one road a queued new chat has to
+  // its own transcript — only `/api/schedule` knows, and waiting out its lap is
+  // what left a started message drawn as a dashed queued bubble for the length
+  // of the reply.
+  const h = await mount(
+    [{ ...pending("a", "2026-09-09T14:00:00+00:00"), origin: "chat" }],
+    "s1",
+    [{ key: "s1", status: "queued", queue_position: 1, queue_waiting: 1 }],
+    true,
+  );
+  expect(h.state().waitingHere.map((e) => e.id)).toEqual(["a"]);
+  // The manager popped it: the entry is away and the row is running.
+  h.serve([]);
+  await h.feed([{ key: "s1", status: "in_progress", queue_waiting: 0 }]);
+  expect(h.state().row?.status).toBe("in_progress");
+  // …and the dashed bubble is retired in the same beat, off the schedule read
+  // the status change went and asked for rather than off the next lap.
+  expect(h.state().waitingHere).toEqual([]);
+  expect(h.state().rec?.queue_waiting ?? 0).toBe(0);
+});
+
+test("a chat with no session reads its row through the leader key", async () => {
+  // The brand-new chat whose first message queued is the one this matters most
+  // on: it has no session for the schedule's own filter to find, so its poll
+  // never goes fast and its row is named `pending:<leader>`.
+  const h = await mount(
+    [{ ...pending("lead", "2026-09-09T14:00:00+00:00"), session_id: "", origin: "chat" }],
+    "",
+    [],
+    true,
+    "lead",
+  );
+  await h.feed([
+    { key: "pending:lead", task_id: "TASK-048", status: "queued", queue_position: 2,
+      queue_ahead: "TASK-046" },
+  ]);
+  expect(h.state().row?.task_id).toBe("TASK-048");
+  expect(h.state().row?.queue_ahead).toBe("TASK-046");
+});
+
+test("a listing without our row clears it; a failed read leaves it (Bugbot)", async () => {
+  // `subscribeListing` (`shell/tasksPulse.emitListing`) always hands `platformRows`
+  // the FULL merged listing — a change-poll's own rows/gone pair is folded into
+  // `held` before it goes out, never a bare delta — and a failed read is dropped
+  // before it ever reaches this hook (`platformRows`'s `if (ev.failed) return`).
+  // So a listing that reaches here with nothing for this chat means the row is
+  // GONE (cancelled, or run and off the board), not merely unmentioned.
+  const h = await mount(
+    [{ ...pending("a", "2026-09-09T14:00:00+00:00"), origin: "chat" }],
+    "s1",
+    [],
+    true,
+  );
+  await h.feed([
+    { key: "s1", status: "queued", queue_position: 3, queue_ahead: "TASK-046" },
+  ]);
+  expect(h.state().row?.queue_position).toBe(3);
+  expect(h.state().rec?.queue_position).toBe(3);
+
+  // A full listing with no row for this chat: the header must drop the stale
+  // "queued · …" caption rather than keep the last-known facts.
+  await h.feed([{ key: "s2", status: "queued", queue_position: 1 }]);
+  expect(h.state().row).toBe(null);
+  expect(h.state().rec).toBe(null);
+
+  // A failed read never calls back at all (dropped in `platformRows`), so it
+  // leaves whatever the pane already has rather than clearing it further.
+  const rowBefore = h.state().row;
+  const recBefore = h.state().rec;
+  expect(rowBefore).toBe(null);
+  expect(recBefore).toBe(null);
+});
+
+test("flag OFF nothing subscribes to the feed", async () => {
+  const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")], "s1", [], false);
+  expect(h.feeding()).toBe(false);
+});
+
+test("a done chat's row updates when its session's new message is queued in another task", async () => {
+  // The bug (Akshil, 2026-09-17): a chat ALREADY OPEN with a session (done ring)
+  // sends a message into a folder that another task owns. The feed delivers
+  // status:"queued" but the header keeps the done ring until reload. Trace:
+  // schedFindTask prioritizes the sessionId key before the pending key, so it
+  // returns the old done task instead of the new queued entry's task.
+  const h = await mount(
+    // Initial: first message pending for session s1
+    [{ ...pending("a", "2026-09-09T14:00:00+00:00"), session_id: "s1", origin: "chat" }],
+    "s1",
+    // The task for this session (done, so entry "a" finished)
+    [{ key: "s1", status: "done", task_id: "TASK-001" }],
+    true,
+  );
+  expect(h.state().rec?.status).toBe("done");
+
+  // Simulate entry "a" finishing: remove it from pending (it's no longer "pending" state).
+  // Then add a new pending entry "b"
+  h.serve([
+    { ...pending("a", "2026-09-09T14:00:00+00:00"), session_id: "s1", origin: "chat", state: "sent" },
+    { ...pending("b", "2026-09-09T15:00:00+00:00"), session_id: "s1", origin: "chat" },
+  ]);
+  await h.poll();
+  expect(h.state().waitingHere.length).toBe(1); // Only "b" is pending (entry "a" is sent)
+
+  // The feed delivers tasks: the old done task PLUS the new queued task for entry "b"
+  await h.feed([
+    // The old done task is still in the listing (for entry "a")
+    { key: "s1", status: "done", task_id: "TASK-001" },
+    // The new queued entry is under a different task (for entry "b")
+    { key: "pending:b", status: "queued", task_id: "TASK-002", queue_position: 2, queue_ahead: "TASK-046" },
+  ]);
+
+  // The header should show the FIRST PENDING ENTRY'S TASK, which is "b" (queued).
+  // Before the fix, schedFindTask would return the "s1" (done) task instead of
+  // the "pending:b" (queued) task, because it checked sessionId before pending key.
+  expect(h.state().row?.status).toBe("queued");
+  expect(h.state().row?.queue_position).toBe(2);
 });

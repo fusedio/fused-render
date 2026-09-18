@@ -154,6 +154,41 @@
   white-space: nowrap;
   color: var(--status-failed);
 }
+
+/* ---- the header of a chat that is WAITING IN ITS FOLDER'S LINE -------------
+   One row, read left to right, and it is the Tasks row's order: ring, TASK-nnn,
+   title, "1st in line · behind TASK-046", then the project at the far end
+   (Akshil, 2026-09-18). The markup is the peek's block plus the row's caption
+   (ui/Topbar, shell/TaskPeekWho, styles/tasks.css) — nothing is drawn here; what
+   is stated here is only where the caption sits, which is the one thing the two
+   borrowed blocks cannot know about each other.
+
+   WHY THE OVERRIDES ARE GATED ON `.is-queued`: the peek's identity block takes
+   all the free width (`flex: 1 1 auto`, task-peek.css) so that its title may run
+   long and the project lands on the right. That is exactly right with nothing
+   after the title — and it is why a caption placed after the block got shoved
+   against the right-hand edge, half a header away from the title it is a caption
+   for. On a queued header the block shrinks to its content, the sentence follows
+   the title, and the auto margin moves to the project so the right end of the
+   row looks identical to every other chat's. A header with no queue is byte for
+   byte the rule it always was. */
+.c-topbar.is-queued .task-side-peek-who {
+  flex: 0 1 auto;
+}
+.c-topbar.is-queued .task-side-peek-project {
+  margin-left: auto;
+}
+/* The Tasks row's caption in a header rather than in a row: it keeps the row's
+   size, ink and ellipsis and loses only the negative margin, which exists over
+   there to pull the sentence back under a title that sits in a wider gap
+   (`--tasks-row-gap`, tasks.css) — a gap this line does not have. `align-self`
+   is stated rather than inherited: the caption is the shortest box on the line,
+   and the one thing the reader must not see is it riding low against the title's
+   baseline. */
+.c-topbar .tasks-row-queue {
+  margin-left: 0;
+  align-self: center;
+}
 @keyframes c-running-shimmer {
   from {
     background-position: 100% 0;
