@@ -394,3 +394,155 @@ folder, and sets no `familyKey` at all when there's no caption to key on.
 The brief's read of the bug (caption+title family key, title differs across
 finished runs, never collapses) matched the code exactly on inspection — no
 correction needed here, unlike some earlier rounds' DECISIONS entries.
+
+# F7. Scope finished-task notices to fused-render's own sessions (2026-09-18)
+
+## The bug
+
+`useTaskStatusNotify` watches every session `~/.claude/projects` holds — the
+whole machine-wide pool, including a `claude` session someone starts by hand
+in a plain terminal, unrelated to fused-render entirely. Every one of those
+now raises a fused-render "Finished" notice too, because the poll behind it
+(`/api/tasks/pulse`, tasks.py) has never distinguished "a chat opened from
+our own Claude template" from "any transcript this machine happens to have."
+
+## The signal, and why it can only ever be a proxy
+
+Every Claude Code transcript's `type: "user"` records carry an `entrypoint`
+field — `"cli"` for an interactive terminal, `"sdk-cli"` for a headless or
+programmatic spawn, which is what `templates/claude/agent.py`'s own spawn
+produces. That is the entire signal available: there is no field that says
+"opened from fused-render" directly. An unrelated SDK-driven session (some
+other tool's own headless Claude spawn) also reports `"sdk-cli"`, so this
+can never be tightened into "only notify on our own template's sessions" —
+only into "also notify on the ones we're fairly confident are someone's own
+terminal, unless they've said they want those too." That imprecision is
+exactly why this round adds an opt-in preference rather than trying to make
+the classifier exact.
+
+## Server placement: `tasks_store.py`, not `claude_sessions.py`
+
+The brief pointed at `fused_render/server/routers/claude_sessions.py`'s
+`_parse_head`/`_head`/`_HEAD_CACHE` as the starting point, and at
+`tasks.py` around line 439. Neither was quite right, and the brief itself
+warned this file has two independent, near-duplicate head-parsers with a
+documented history of drifting apart — exactly the trap it named.
+
+Tracing what actually builds a `Task` row: `tasks.py`'s `_place()` (the
+function `_row()`'s caller feeds project/target/order into) calls
+`tasks_store.head(task["path"])` — `fused_render/tasks_store.py`'s OWN
+`head()`/`_parse_head()`, a separate implementation from
+`claude_sessions.py`'s. `claude_sessions.py`'s pair only feeds the unrelated
+`/api/claude-sessions/summaries` endpoint (the session picker), never the
+Task/TaskPulseTask row the notification pipeline reads. Extending
+`claude_sessions.py` would have created a THIRD independent entrypoint
+reader alongside the two already-diverging head-parsers, the opposite of
+"one source of truth." Extended `tasks_store.py`'s `_parse_head()`/`head()`
+instead: `entrypoint` is read off the exact same `type: "user"` record
+`cwd`/`first_ts`/`prompt` already come from, at no extra IO, appended as a
+5th tuple element (`_HEAD_CACHE`'s cache-tuple shape grew to match). Two
+production call sites needed their unpacking updated
+(`tasks_store.backfill()`, `tasks.py`'s `_place()`); three existing
+`test_tasks_store.py` tests that unpack the tuple directly needed a 5th
+target added.
+
+`_place()` sets `task["entrypoint"]` (never defaulted — `None` when the
+transcript has none or predates the field). `_row()`'s return dict adds
+`"entrypoint": task.get("entrypoint")` (`.get`, not `[...]`, since a draft
+row is built by a separate function that never calls `_place()`).
+`_PULSE_FIELDS` adds `"entrypoint"` so `/api/tasks/pulse` carries it too —
+that dict comprehension indexes with `row[field]`, not `.get`, so every row
+`_row()` builds must always carry the key, even as `None`.
+
+## Frontend gate: exact `"cli"`, fails open on everything else
+
+`task.entrypoint === "cli"` is the ONLY value the gate treats as
+"interactive terminal, unless the preference says otherwise" — not
+"anything that isn't `sdk-cli`". `undefined`/`None` (no transcript yet, an
+older session, a head read that raced the write) fails OPEN and still
+notifies, exactly as every task did before this branch. Narrower-than-
+"not sdk-cli" deliberately: the whole premise of the preference is that
+`"sdk-cli"` is a guess, not proof, so treating every unlabeled case as
+"probably interactive" would silence sessions this signal was never
+confident about.
+
+`notificationForTransition` stays pure (its whole point, per this file's
+own header) — the preference is threaded in as a 4th argument
+(`notifyTerminalSessions = false`), not read off a module inside the
+function. `useTaskStatusNotify.ts` owns the one live subscription
+(`useTaskNotifyTerminalSessions`, a new `task-notify-terminal-flag.ts`
+module cloned from `task-card-title-flag.ts`'s tri-state idiom: shared GET,
+generation guard, fails to `false` on any read failure) and passes the
+current value in on every tick, added to the effect's own dependency array
+so flipping the Preferences toggle takes effect without a reload.
+
+Scoped to ONLY the `in_progress -> done` branch, both the direct-transition
+path and the first-sighting-but-after-watch-start synthesized path (both
+flow through the same branch) — `needs_attention` and
+`in_progress -> blocked` are untouched, matching the brief.
+
+## Preference: `task_notify_terminal_sessions`, default off
+
+New `fused_render/shell/prefs.py` getter `notify_terminal_sessions_enabled()`,
+same off-by-default idiom as `task_card_last_message()` (only a stored
+`true` is on). Wired into `_prefs_response()`'s new `"task_notify"`
+namespace and `put_prefs()`'s body handling, with the key added to the
+"no known preference" error's list. Frontend: `Prefs.task_notify?.{
+terminal_sessions: boolean }`, `putTaskNotifyTerminalSessionsEnabled()` in
+`api.ts`, and a new `TaskNotifyTerminalSection` in `Preferences.tsx`
+("Tasks: notify when terminal sessions finish") right after
+`TaskCardTitleSection`, cloned down to the busy/error/toggle shape. The
+label and one-line explanation say plainly that fused-render can't tell
+every headless session apart from its own.
+
+## Tests (TDD, confirmed red before the fix)
+
+Python: `tests/test_tasks_store.py` — extended `_transcript()`'s helper
+with an optional `entrypoint` param; fixed the 3 tests broken by `head()`'s
+tuple growing from 4 to 5 elements; added 4 new tests (`"cli"` and
+`"sdk-cli"` read correctly, an absent field answers `None`, and the answer
+is cached alongside the rest of the head so a later append with a
+DIFFERENT entrypoint value doesn't retroactively change an already-resolved
+read). `tests/test_tasks_api.py` — extended `_user()` with an optional
+`entrypoint` param; added 3 new tests asserting `entrypoint` on both
+`/api/tasks` and `/api/tasks/pulse` for a `"cli"` session, an `"sdk-cli"`
+session, and a session with none; updated the pre-existing
+`test_sidebar_pulse_is_the_compact_projection_of_the_task_rows`'s own local
+`pulse_fields` tuple to include `"entrypoint"` (it independently rebuilds
+`_PULSE_FIELDS`' field list and broke the moment the real one grew).
+`tests/test_shell_prefs.py` — 3 new tests cloned from the
+`task_card_last_message` trio (defaults off and toggles both ways; a junk
+stored value reads as off; a non-boolean PUT is rejected with no write).
+Ran `pytest tests/test_tasks_api.py tests/test_tasks_store.py
+tests/test_claude_sessions_api.py tests/test_claude_sessions_merged.py -q`:
+400 passed. Ran `pytest tests/test_shell_prefs.py -q`: 87 passed.
+
+Frontend: `task-status-notify.test.ts` — 4 new tests (a `"cli"` task
+notifies nothing with the preference off, and does with it on; an
+`"sdk-cli"` task notifies either way; a task with no `entrypoint` notifies
+either way — fails open; `needs_attention`/`in_progress -> blocked` are
+unaffected by `entrypoint`). New `task-notify-terminal-flag.test.ts` (cloned
+from `task-card-title-flag.test.ts`'s "the flag module" describe block,
+plus a subscribe/publish round-trip). Confirmed each of these red first
+against the pre-implementation code (the gate didn't exist; the flag module
+didn't exist) before writing the corresponding implementation. Ran
+`bun test src/platform/lib src/shell` from `frontend/`: 2638 pass, 0 fail,
+9444 expect() calls across 85 files (up from the pre-change file/test
+counts by the 2 new files and their tests). `bun run typecheck`: clean.
+
+## What the brief got right / where it needed correcting
+
+Right: the signal itself (`entrypoint`, `"cli"` vs `"sdk-cli"`, imperfect by
+construction), the fail-open requirement, scoping to only the finished
+transition, the pure-function-with-threaded-argument shape, the
+Preferences pattern to clone, and the overall TDD/testing bar.
+
+Needed correcting: the specific starting-point pointer
+(`claude_sessions.py`'s `_parse_head`/`_head`/`_HEAD_CACHE`, and `tasks.py`
+line ~439) named the wrong one of the two existing head-parsers. The single
+source of truth for a Task row's project/target/entrypoint is
+`tasks_store.py`'s own `head()`/`_parse_head()`, called from `tasks.py`'s
+`_place()` — that is where this round's server-side change actually
+landed, and doing it there (rather than at the brief's literal pointer) is
+what keeps this at ONE entrypoint reader instead of a third, independently-
+drifting one.
