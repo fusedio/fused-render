@@ -2271,3 +2271,30 @@ def test_the_real_spawn_keeps_the_placeholders_other_claim_tokens():
     assert owner["turns"] == 2
     assert manager.consume_claim(F1, second) is True
     assert manager.consume_claim(F1, second) is False
+
+
+def test_restore_claim_puts_a_spent_token_back_once():
+    """Bugbot PR #1194 (eighth round): the run gate gives a token back when
+    the send it was spent on did not stick, so the fallback start reads as the
+    admitted send. Only an owner that consumed a claim takes one back."""
+    m = idle_world().manager()
+    _ok, _took, token = m.claim_for_send(F1, "a", "run-a", "sess-a")
+    assert m.restore_claim(F1, token) is False, "nothing consumed yet"
+    assert m.consume_claim(F1, token) is True
+    assert m.restore_claim(F1, token) is True
+    assert m.restore_claim(F1, token) is True, "idempotent"
+    assert m.owner(F1)["claims"].count(token) == 1
+    assert m.consume_claim(F1, token) is True
+    assert m.consume_claim(F1, token) is False
+    assert m.restore_claim(F1, "") is False
+    assert m.restore_claim("/nowhere", token) is False
+
+
+def test_restore_claim_refuses_a_folder_whose_owner_changed():
+    m = idle_world().manager()
+    _ok, _took, token = m.claim_for_send(F1, "a", "run-a", "sess-a")
+    m.consume_claim(F1, token)
+    m.exited("a", "run-a")
+    m.claim_took(F1, "b", "run-b", "sess-b")
+    assert m.restore_claim(F1, token) is False
+    assert m.consume_claim(F1, token) is False

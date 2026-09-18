@@ -76,6 +76,18 @@ def _file_owner(resolved: str, params: dict, result: dict,
         if not key:
             return
         payload = result.get("result") if isinstance(result, dict) else None
+        if action == "send" and not (isinstance(payload, dict)
+                                     and payload.get("sent")):
+            # THE SEND DID NOT STICK — `{error}` on a dead host, `{respawn}`
+            # when the live session cannot take the message as-is, or no
+            # answer at all — and the page falls through to `start` WITH THE
+            # SAME `queue_claim` (run-controller.ts, both send paths). The
+            # gate already spent that token on this send, so the start would
+            # look tokenless and `claim_took` would count the message a second
+            # time: `turns` 2 for one turn, one `turn_ended`, a folder that
+            # never frees (Bugbot, PR #1194, eighth round). Give the token
+            # back so the start reads as the admitted send it is.
+            _restore_claim(key, params, body)
         if not isinstance(payload, dict) or payload.get("error"):
             # THE START FAILED (or answered nothing): a placeholder this gate
             # minted for it must not hold the folder for `PLACEHOLDER_TTL`
@@ -114,6 +126,22 @@ def _file_owner(resolved: str, params: dict, result: dict,
         manager.started(key, session_id or run_id, run_id, session_id)
     except Exception:  # noqa: BLE001 — a filing that fails is not a failed run
         logger.debug("queue: could not file the owner of a start", exc_info=True)
+
+
+def _restore_claim(key: str, params: dict, body: dict | None) -> None:
+    """Re-file the `queue_claim` a failed `send` consumed, so the `start` the
+    page falls through to — carrying the same token — is looked at, not
+    counted again. Best-effort; a token nothing consumed is a no-op."""
+    token = str((body or {}).get("queue_claim")
+                or params.get("queue_claim") or "")
+    if not token:
+        return
+    try:
+        from fused_render import queue_manager
+
+        queue_manager.get().restore_claim(key, token)
+    except Exception:  # best effort, same posture as the gate
+        logger.debug("queue: could not restore a claim", exc_info=True)
 
 
 def _drop_placeholder(key: str, body: dict | None) -> None:

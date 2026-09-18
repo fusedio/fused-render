@@ -1214,6 +1214,39 @@ class QueueManager:
                 owner["consumed"] = True
             return True
 
+    def restore_claim(self, folder: str, token: str) -> bool:
+        """Put a consumed `token` BACK on `folder`'s owner, so the retry of a
+        send that did not stick still reads as the admitted one (2026-09-18,
+        Bugbot PR #1194, eighth round).
+
+        The page pins ONE token to a message and presents it twice when the
+        live host cannot take the `send` — `{error}`, `{respawn}`, `sent:
+        false` — and it falls through to `start` with the same words. The
+        gate spent the token on the send, so the start looked tokenless and
+        `claim_took` counted the message a second time: `turns` at 2 for one
+        turn, and one `turn_ended` never freed the folder. Only the run gate
+        can see that a send failed AFTER it consumed, and this is what it
+        calls then.
+
+        True when the token was re-filed; False for an empty token, a folder
+        nobody owns, or an owner that never consumed a claim — a stranger's
+        token must not be granted onto an owner it never belonged to."""
+        text_token = _text(token)
+        if not folder or not text_token:
+            return False
+        with self._txn():
+            rec = self._state["folders"].get(folder)
+            owner = rec["owner"] if rec else None
+            if owner is None or not owner.get("consumed"):
+                return False
+            claims = owner.get("claims")
+            if not isinstance(claims, list):
+                claims = owner["claims"] = []
+            if text_token not in claims:
+                claims.append(text_token)
+                del claims[:-CLAIM_CAP]
+            return True
+
     def started(self, folder: str, task_key: str, run_id: str = "",
                 session_id: str = "") -> None:
         """The send that was already claimed has spawned; here are its names.

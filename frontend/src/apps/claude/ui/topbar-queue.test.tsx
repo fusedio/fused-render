@@ -191,3 +191,29 @@ test("the usage limit keeps its own red seat", async () => {
   expect(has(r, "c-tb-paused")).toBe(true);
   expect(text(r)).toContain("paused · resumes 4:00 AM");
 });
+
+test("a done session row beside a queued live row wears the queued row's ring, number and title", async () => {
+  // Bugbot, PR #1194: the identity came from the SESSION's row (done, old
+  // title) and the caption from the live `pending:<entry>` row (queued). The
+  // header must be one row: dashed ring, the waiting message's number and
+  // title, the caption — and the session row's project at the far end.
+  const r = render(
+    {
+      key: "pending:e-9",
+      task_id: "TASK-052",
+      title: "say B",
+      status: "queued",
+      queue_position: 2,
+      queue_ahead: "TASK-046",
+    } as QueueFacts,
+    { task: task({ status: "done", title: "the old question", task_id: "TASK-048" }), running: true },
+  );
+  expect(ringClasses(r).some((c) => c.includes("schedule-ring--queued"))).toBe(true);
+  expect(ringClasses(r).some((c) => c.includes("schedule-ring--in_progress"))).toBe(false);
+  const said = text(r);
+  expect(said).toContain("T052");
+  expect(said).toContain("say B");
+  expect(said).not.toContain("the old question");
+  expect(said).toContain("2nd in line · behind TASK-046");
+  expect(has(r, "task-side-peek-project")).toBe(true);
+});

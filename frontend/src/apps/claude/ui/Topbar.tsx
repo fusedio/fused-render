@@ -138,7 +138,19 @@ export function Topbar({
 }: TopbarProps) {
   // Null on every row that is not waiting in a line, which is the common case.
   const line = queue ? queueCaption(queue) : null;
-  if (task) {
+  // ONE ROW FOR THE RING AND THE WORDS (Bugbot, PR #1194, eighth round). The
+  // identity block came from the SESSION's row (`useSessionTask`) and the
+  // caption from the chat's LIVE row (`useSchedule.row`, pending key first) —
+  // two rows once a done chat's next send queued under `pending:<entry>`: a
+  // done ring and the old title beside "2nd in line". While the line says
+  // queued, the identity is the queued row's own — its status draws the dashed
+  // ring, its number and title are the message that is waiting — over the
+  // session row's project and target, which the queued row does not carry.
+  const who: Task | null =
+    task && line && queue
+      ? ({ ...task, ...(queue as Partial<Task>), status: "queued" } as Task)
+      : (task ?? null);
+  if (who) {
     return (
       // THE FULL SESSION ID STAYS REACHABLE. The peek's identity block prints
       // TASK-nnn and the title, which is the reader's question — but the hash is
@@ -154,11 +166,11 @@ export function Topbar({
             `status: "queued"` is what draws it dashed (taskColumn → StatusIcon).
             Nothing queued-specific is passed: the peek block already says what
             this task is doing, and this header only has to stop hiding it. */}
-        <TaskPeekWho task={task} running={running} />
+        <TaskPeekWho task={who} running={line ? false : running} />
         {/* …AND THE PLACE IN THE LINE TRAILS THE TITLE, exactly where a Tasks
             row puts it, rather than at the far end of the header. */}
         {line ? <QueuedCaption line={line} /> : null}
-        <TaskPeekProject task={task} {...(home ? { home } : {})} />
+        <TaskPeekProject task={who} {...(home ? { home } : {})} />
         {/* THE PAUSED WORD STILL LANDS HERE (`status`, platform/lib/usage-limit):
             the ring says running or not, and "resumes 4:00 AM" is the one fact
             about this conversation the ring cannot carry. */}

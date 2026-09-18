@@ -97,6 +97,15 @@ class _Manager:
         toks.remove(token)
         return True
 
+    def restore_claim(self, folder, token):
+        """`QueueManager.restore_claim`, mirrored: a spent token goes back."""
+        if not token or folder not in self.owners:
+            return False
+        toks = self.tokens.setdefault(folder, [])
+        if token not in toks:
+            toks.append(token)
+        return True
+
     def started(self, folder, task_key, run_id="", session_id=""):
         self.own(folder, task_key, session_id=session_id, run_id=run_id)
 
@@ -594,3 +603,55 @@ def test_an_empty_start_result_gives_its_placeholder_back_too(real_gate):
     assert real_gate.owner("/w/alpha") is not None
     run_router._file_owner(AGENT, _params(), {"ok": True, "result": {}}, body)
     assert real_gate.owner("/w/alpha") is None
+
+
+def test_a_send_that_does_not_stick_hands_its_token_to_the_fallback_start(real_gate):
+    """Bugbot PR #1194 (eighth round): the page pins ONE `queue_claim` to a
+    message and presents it on the live-host `send` and again on the `start`
+    it falls through to when that send does not stick. The gate spent the
+    token on the send, so the start looked tokenless and `claim_took` counted
+    the message twice — one `turn_ended` could not free the folder. A send
+    that answers anything but `sent: true` now gives the token back."""
+    _ok, _took, token = real_gate.claim_for_send(
+        "/w/alpha", "sess-1", "r-1", "sess-1")  # what admit did
+    assert real_gate.owner("/w/alpha")["turns"] == 1
+
+    run = "r-1"
+    for n, answer in enumerate(({"respawn": True}, {"error": "host gone"}, {}), 2):
+        send = _params(action="send", session_id="sess-1", run_id=run,
+                       queue_claim=token)
+        body: dict = {}
+        assert run_router._folder_busy(AGENT, send, body) == ""
+        run_router._file_owner(AGENT, send, {"ok": True, "result": answer}, body)
+
+        run = f"r-{n}"
+        start = _params(action="start", session_id="sess-1", queue_claim=token)
+        body = {}
+        assert run_router._folder_busy(AGENT, start, body) == ""
+        run_router._file_owner(AGENT, start, _started(run, "sess-1"), body)
+        assert real_gate.owner("/w/alpha")["turns"] == 1, answer
+        assert real_gate.owner("/w/alpha")["run_id"] == run
+        # The start spent the token for good; each later round is a send the
+        # PAGE re-admitted, so hand it a fresh one.
+        _ok, _took, token = real_gate.claim_for_send(
+            "/w/alpha", "sess-1", run, "sess-1")
+        real_gate.turn_ended("sess-1", run)  # …after the prior turn ended
+        assert real_gate.owner("/w/alpha")["turns"] == 1
+
+    real_gate.turn_ended("sess-1", run)
+    assert real_gate.owner("/w/alpha") is None
+
+
+def test_a_send_that_stuck_keeps_its_token_spent(real_gate):
+    """The mirror: `sent: true` is the send that was counted, and a second
+    request waving the same token afterwards is a stranger's retry — it is
+    counted on its own (`claim_took`), exactly as before."""
+    _ok, _took, token = real_gate.claim_for_send(
+        "/w/alpha", "sess-1", "r-1", "sess-1")
+    send = _params(action="send", session_id="sess-1", run_id="r-1",
+                   queue_claim=token)
+    body: dict = {}
+    assert run_router._folder_busy(AGENT, send, body) == ""
+    run_router._file_owner(AGENT, send, {"ok": True, "result": {"sent": True}}, body)
+    assert real_gate.consume_claim("/w/alpha", token) is False
+    assert real_gate.owner("/w/alpha")["turns"] == 1
