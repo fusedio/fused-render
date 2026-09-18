@@ -246,3 +246,136 @@ def test_uninstall_and_exit_both_confirmed_still_deintegrates(monkeypatch):
 
     assert reason is core._ExitReason.TRAY_EXIT
     assert deintegrated == [paths]  # cleanup ran despite exit also being confirmed
+
+
+# ---- fused-render://relaunch (Task 5, Linux) ----------------------------------
+
+
+class _FakeStartupWithAppImage:
+    """Stand-in for the Linux `startup` module: has `appimage_path()`, the
+    capability probe both `_open_command` and `_respawn_after_relaunch` use to
+    tell the Linux backend (has the hook) from win32 (doesn't)."""
+
+    def __init__(self, path="/opt/FusedRender/FusedRender.AppImage"):
+        self._path = path
+
+    def appimage_path(self):
+        return self._path
+
+
+class _FakeStartupNoAppImage:
+    """Stand-in for the win32 `startup` module: `enabled()`/`set_enabled()`
+    only, no `appimage_path` attribute at all — matching the real win32
+    backend, which never had a reason to grow one."""
+
+    def enabled(self):
+        return False
+
+
+def test_open_command_signals_relaunch_on_linux_backend(monkeypatch):
+    # The Linux capability probe (appimage_path present) + a relaunch queue:
+    # a bare fused-render://relaunch link puts on the queue and opens no tab,
+    # instead of tearing the process down from this call's own thread.
+    monkeypatch.setattr(core, "startup", _FakeStartupWithAppImage())
+    opened = []
+    monkeypatch.setattr(core, "_open_browser", opened.append)
+    relaunch = queue.Queue()
+
+    core._open_command(9000, protocol.Open("fused-render://relaunch"), relaunch)
+
+    assert relaunch.get_nowait() is None
+    assert opened == []
+
+
+def test_open_command_relaunch_is_noop_without_appimage_path_hook(monkeypatch):
+    # No appimage_path hook (e.g. the win32 backend): a relaunch link
+    # degrades to exactly the same no-tab no-op as fused-render://launch —
+    # the queue is never signalled, so run() never attempts a respawn.
+    monkeypatch.setattr(core, "startup", _FakeStartupNoAppImage())
+    opened = []
+    monkeypatch.setattr(core, "_open_browser", opened.append)
+    relaunch = queue.Queue()
+
+    core._open_command(9000, protocol.Open("fused-render://relaunch"), relaunch)
+
+    assert relaunch.empty()
+    assert opened == []
+
+
+def test_open_command_leaves_fda_relaunch_untouched(monkeypatch):
+    # ?reason=fda (is_fda_relaunch_url) is a DIFFERENT, disjoint URL form from
+    # the bare relaunch link (is_relaunch_url) — it must never signal the
+    # queue, matching "leave ?reason=fda alone" (it falls through to the
+    # is_launch_url branch below it, same as before Task 5).
+    monkeypatch.setattr(core, "startup", _FakeStartupWithAppImage())
+    opened = []
+    monkeypatch.setattr(core, "_open_browser", opened.append)
+    relaunch = queue.Queue()
+
+    core._open_command(
+        9000, protocol.Open("fused-render://relaunch?reason=fda"), relaunch
+    )
+
+    assert relaunch.empty()
+
+
+def test_event_loop_returns_relaunch_reason_for_forwarded_relaunch_link(monkeypatch):
+    # A relaunch link forwarded over the pipe (the realistic path: a
+    # secondary instance relays the OS-delivered deep link to the primary) —
+    # the loop must return _ExitReason.RELAUNCH once _open_command's worker
+    # thread signals the queue it owns, without teardown running from that
+    # worker thread.
+    monkeypatch.setattr(core, "startup", _FakeStartupWithAppImage())
+    monkeypatch.setattr(core, "_open_browser", lambda url: None)
+
+    paths = _Paths()
+    tray_actions = queue.Queue()
+    pipe_requests = queue.Queue()
+    response = queue.Queue()
+    pipe_requests.put(
+        core.instance.Request(protocol.Open("fused-render://relaunch"), response)
+    )
+
+    reason, upgrade = core._event_loop(
+        9000, _FakeProcess(), paths, tray_actions, pipe_requests
+    )
+
+    assert reason is core._ExitReason.RELAUNCH
+    assert upgrade is None
+
+
+def test_respawn_after_relaunch_spawns_the_appimage(monkeypatch):
+    monkeypatch.setattr(core, "startup", _FakeStartupWithAppImage("/x/FusedRender.AppImage"))
+    spawned = []
+    monkeypatch.setattr(core.subprocess, "Popen", lambda *a, **kw: spawned.append((a, kw)))
+
+    core._respawn_after_relaunch(_Paths())
+
+    assert len(spawned) == 1
+    args, kwargs = spawned[0]
+    assert args == (["/x/FusedRender.AppImage"],)
+    assert kwargs == {"start_new_session": True, "close_fds": True}
+
+
+def test_respawn_after_relaunch_exits_quietly_without_an_appimage(monkeypatch):
+    # Not running from an AppImage at all (an unpackaged dev supervisor) —
+    # appimage_path() itself returns None: nothing to Popen, no error either.
+    monkeypatch.setattr(core, "startup", _FakeStartupWithAppImage(path=None))
+    spawned = []
+    monkeypatch.setattr(core.subprocess, "Popen", lambda *a, **kw: spawned.append((a, kw)))
+
+    core._respawn_after_relaunch(_Paths())  # must not raise
+
+    assert spawned == []
+
+
+def test_respawn_after_relaunch_exits_quietly_without_the_hook(monkeypatch):
+    # No appimage_path hook at all (e.g. the win32 backend) — same "nothing to
+    # respawn, just exit" outcome as the no-AppImage case above.
+    monkeypatch.setattr(core, "startup", _FakeStartupNoAppImage())
+    spawned = []
+    monkeypatch.setattr(core.subprocess, "Popen", lambda *a, **kw: spawned.append((a, kw)))
+
+    core._respawn_after_relaunch(_Paths())  # must not raise
+
+    assert spawned == []

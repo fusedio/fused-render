@@ -13,6 +13,7 @@ import os
 import queue
 import secrets
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -56,6 +57,10 @@ class _ExitReason(Enum):
     TRAY_EXIT = auto()      # user confirmed Exit in the tray dialog
     UPGRADE = auto()        # installer sent ShutdownForUpgrade over the pipe
     SERVER_DIED = auto()    # the Python server exited on its own
+    RELAUNCH = auto()       # fused-render://relaunch: quit, then respawn the
+                             # AppImage on disk (Linux only — see
+                             # _open_command's appimage_path() capability
+                             # probe and _respawn_after_relaunch)
 
 
 def run(initial: protocol.Command) -> None:
@@ -141,6 +146,11 @@ def run(initial: protocol.Command) -> None:
         pipe_thread=pipe_thread,
         tray_handle=tray_handle,
     )
+    if reason is _ExitReason.RELAUNCH:
+        # After _teardown above: the tray, pipe, and supervised server are
+        # already stopped, exactly as for TRAY_EXIT — this is the one extra
+        # step relaunch needs on top of that shared path.
+        _respawn_after_relaunch(paths)
 
 
 def _event_loop(
@@ -158,9 +168,17 @@ def _event_loop(
     Ordering is load-bearing: pipe requests are polled even while an exit
     dialog is unanswered, so a ShutdownForUpgrade pre-empts it; forwarded
     opens are dispatched via _spawn_open, never awaited, so a hung open can't
-    stall answering a concurrent ShutdownForUpgrade in its 20s window."""
+    stall answering a concurrent ShutdownForUpgrade in its 20s window.
+
+    `relaunch_requested` follows the same queue idiom as `exit_confirm`/
+    `uninstall_confirm` (created here, not passed in): `_open_command` — run
+    off this loop, on one of `_spawn_open`'s worker threads, for a forwarded
+    `fused-render://relaunch` deep link — puts onto it instead of tearing the
+    process down itself, so the actual teardown still happens here, on the
+    loop thread that owns it."""
     exit_confirm: "queue.Queue[bool]" = queue.Queue()
     uninstall_confirm: "queue.Queue[bool]" = queue.Queue()
+    relaunch_requested: "queue.Queue[None]" = queue.Queue()
     while True:
         while True:
             try:
@@ -168,9 +186,9 @@ def _event_loop(
             except queue.Empty:
                 break
             if action is tray.TrayAction.OPEN:
-                _spawn_open(port, protocol.OpenHome(), paths)
+                _spawn_open(port, protocol.OpenHome(), paths, relaunch=relaunch_requested)
             elif action is tray.TrayAction.OPEN_FILE:
-                _spawn_file_dialog(port, paths)
+                _spawn_file_dialog(port, paths, relaunch=relaunch_requested)
             elif action is tray.TrayAction.OPEN_LOGS:
                 _spawn_call(paths, lambda: ui.open_path(paths.logs))
             elif action is tray.TrayAction.DEFAULT_APPS:
@@ -210,6 +228,12 @@ def _event_loop(
             pass
 
         try:
+            relaunch_requested.get_nowait()
+            return _ExitReason.RELAUNCH, None
+        except queue.Empty:
+            pass
+
+        try:
             request = pipe_requests.get(timeout=0.25)
         except queue.Empty:
             request = None
@@ -217,7 +241,8 @@ def _event_loop(
         if request is not None:
             if isinstance(request.command, protocol.ShutdownForUpgrade):
                 return _ExitReason.UPGRADE, request.response
-            _spawn_open(port, request.command, paths, request.response)
+            _spawn_open(port, request.command, paths, request.response,
+                       relaunch=relaunch_requested)
         elif process.wait(0):
             return _ExitReason.SERVER_DIED, None
 
@@ -293,9 +318,14 @@ def _stop_pipe(
     pipe_thread.join(timeout=max(0.0, deadline - time.monotonic()))
 
 
-def _safe_open(port: int, command: protocol.Command, paths: DesktopPaths) -> bool:
+def _safe_open(
+    port: int,
+    command: protocol.Command,
+    paths: DesktopPaths,
+    relaunch: "queue.Queue[None] | None" = None,
+) -> bool:
     try:
-        _open_command(port, command)
+        _open_command(port, command, relaunch)
         return True
     except OSError as error:
         paths.log(f"open failed: {error}")
@@ -325,15 +355,20 @@ def _spawn_open(
     command: protocol.Command,
     paths: DesktopPaths,
     response: "queue.Queue[int] | None" = None,
+    relaunch: "queue.Queue[None] | None" = None,
 ) -> None:
     """Open on a dedicated thread: `_open_command` can hang (Path.exists on a
     disconnected UNC path, os.startfile on a stuck association) and the loop
     must stay free to answer a concurrent ShutdownForUpgrade. A forwarded
     command's response is put from this worker once the open finishes, so a
-    hung open times out that client, not the loop."""
+    hung open times out that client, not the loop. `relaunch` — the
+    `_event_loop`-owned signal queue for `fused-render://relaunch` — is
+    threaded straight through to `_open_command`; the initial-launch caller in
+    `run()` (before `_event_loop` exists) leaves it None, which just degrades
+    that one call site to the pre-Task-5 no-op for a relaunch link."""
 
     def worker():
-        ok = _safe_open(port, command, paths)
+        ok = _safe_open(port, command, paths, relaunch)
         if response is not None:
             response.put(0 if ok else 1)
 
@@ -368,13 +403,20 @@ def _spawn_call(paths: DesktopPaths, action) -> None:
     ).start()
 
 
-def _spawn_file_dialog(port: int, paths: DesktopPaths) -> None:
+def _spawn_file_dialog(
+    port: int,
+    paths: DesktopPaths,
+    relaunch: "queue.Queue[None] | None" = None,
+) -> None:
     """Open-file dialog on a dedicated thread (bugbot #2): the supervisor's
     main loop has no message pump, but the backend's file dialog pumps its own
     internally — it just must not run on a thread another blocking call owns.
     The thread + lock idiom lives here (platform-neutral); the actual native
     dialog is `ui.pick_file()`. The lock drops a second click while one dialog
-    is already open rather than stacking dialogs."""
+    is already open rather than stacking dialogs. `relaunch` is threaded
+    through to `_safe_open` only for signature symmetry with `_spawn_open` —
+    a user-picked file path is never a `fused-render:` deep link, so it never
+    actually reaches the relaunch branch in `_open_command`."""
     if not _dialog_lock.acquire(blocking=False):
         return
 
@@ -384,7 +426,7 @@ def _spawn_file_dialog(port: int, paths: DesktopPaths) -> None:
         finally:
             _dialog_lock.release()
         if path:
-            _safe_open(port, protocol.Open(path), paths)
+            _safe_open(port, protocol.Open(path), paths, relaunch)
 
     threading.Thread(target=worker, daemon=True, name="fused-render-open-file").start()
 
@@ -427,7 +469,11 @@ def _spawn_uninstall_confirm(results: "queue.Queue[bool]") -> None:
     ).start()
 
 
-def _open_command(port: int, command: protocol.Command) -> None:
+def _open_command(
+    port: int,
+    command: protocol.Command,
+    relaunch: "queue.Queue[None] | None" = None,
+) -> None:
     if isinstance(command, protocol.Open):
         if command.path.lower().startswith("fused-render:"):
             # Lazy import: deeplink pulls in fastapi, which the supervisor must
@@ -437,14 +483,29 @@ def _open_command(port: int, command: protocol.Command) -> None:
             # _view_url_codec.is_launch_url below, which matches any URL.
             from fused_render import deeplink
 
-            if deeplink.is_launch_url(command.path) or deeplink.is_relaunch_url(command.path):
+            if deeplink.is_relaunch_url(command.path):
+                # fused-render://relaunch (D273), Linux only: signal the
+                # event loop rather than tearing the process down HERE — this
+                # runs on one of `_spawn_open`'s worker threads, and
+                # `_teardown` (tray -> pipe -> graceful shutdown -> job.close)
+                # must run on the loop thread that owns those queues/handles.
+                # `hasattr(startup, "appimage_path")` is the same capability
+                # probe `_respawn_after_relaunch` uses for the actual respawn:
+                # present on the Linux backend, absent on win32 — where this
+                # degrades to the untouched pre-Task-5 behaviour below (no
+                # tab, no relaunch; same as is_launch_url). `?reason=fda`
+                # (deeplink.is_fda_relaunch_url) never reaches this branch —
+                # the two match disjoint, mutually exclusive URL forms — so it
+                # keeps falling through exactly as before.
+                if relaunch is not None and hasattr(startup, "appimage_path"):
+                    relaunch.put(None)
+                return
+            if deeplink.is_launch_url(command.path):
                 # D128 launch: by this point in the primary the server is up
                 # (and a forwarded Open reaches here only after startup). The
                 # server-down banner just needs the app running — the page that
                 # linked here reconnects on its own, so open NO tab (matching
-                # macOS app.py and Windows winopen._open). relaunch (D273)
-                # degrades to the same: the quit-and-respawn is macOS-only
-                # machinery, and /clone would just error on the link.
+                # macOS app.py and Windows winopen._open).
                 return
         if is_launch_url(command.path):
             # A `fused-render:` deep link or a `file:`/scheme:// URL: there is
@@ -473,6 +534,29 @@ def _open_browser(url: str) -> None:
     if "FUSED_RENDER_SUPERVISOR_NO_BROWSER" in os.environ:
         return
     ui.open_url(url)
+
+
+def _respawn_after_relaunch(paths: DesktopPaths) -> None:
+    """fused-render://relaunch, after `run()`'s call to `_teardown` above has
+    already stopped the tray, pipe, and supervised server exactly as for
+    TRAY_EXIT: spawn the AppImage on disk in its own session so it outlives
+    this process, then let `run()` return — there is no parent process left
+    to park behind (unlike mac's relauncher script, D273, which does have
+    one). `getattr(startup, "appimage_path", None)` is the same capability
+    probe `_open_command` used to decide whether to signal RELAUNCH at all —
+    None here would mean a backend swap raced this between the signal and
+    teardown, which should not happen in practice, but costs nothing to
+    guard. `appimage_path()` itself returning None means this Linux process
+    isn't running from an AppImage at all (an unpackaged dev supervisor) —
+    nothing to Popen, so the process just exits."""
+    appimage_path = getattr(startup, "appimage_path", None)
+    appimage = appimage_path() if appimage_path is not None else None
+    if appimage is None:
+        return
+    try:
+        subprocess.Popen([str(appimage)], start_new_session=True, close_fds=True)
+    except OSError as error:
+        paths.log(f"relaunch respawn failed: {error}")
 
 
 def _launch_token() -> str:
