@@ -280,9 +280,78 @@ def create_entry(target: str, body: dict, due, *, repeats: str = "",
         create_target=create_target)
 
 
+def spend_task_draft(ident, entry: dict) -> bool:
+    """The TASK DRAFT this message came out of: its number moves onto the entry
+    and the record goes. True if the record was there to drop.
+
+    THE NUMBER SURVIVES THE DRAFT, exactly as it survives an edit (`replaces`)
+    and as a pending row's survives its first run. A draft is listed under
+    `draft:<id>` with a TASK number of its own (round 2 of design.md), and
+    scheduling it is the same event for that row that a first run is for a
+    `pending:` one: the thing keeps going, under a new key. Without this the
+    user would watch the TASK-118 they had been typing into become TASK-119 the
+    moment they pressed Schedule — the renumber `replaces` exists to prevent,
+    one stage earlier (Akshil, 2026-09-11).
+
+    Rekey BEFORE the delete, and in that order for a reason: `rekey` reads
+    `task_ids.json`, not the draft store, so the order does not actually matter
+    to it — but a failure between the two must leave the draft, which is
+    recoverable, rather than a numberless task, which is not.
+
+    NOT FOR A DRAFT THAT BELONGS TO A SESSION (Akshil, 2026-09-12). Such a
+    draft never had a number of its own — the listing skips it precisely
+    because the session it is bound to holds the task's number already
+    (`routers/tasks.py::_draft_numbers`) — and this message is landing IN that
+    session, which is where the number stays. Moving anything onto
+    `pending:<entry-id>` here would be inventing a second identity for a task
+    that has one; the entry naming a session is the whole test, since that is
+    the key the listing will file it under (`_collect`).
+
+    TWO DOORS, ONE FUNCTION. The New task modal hands over `draft_id` when it
+    schedules (`api_schedule_create`), and the composer's session-less send
+    hands the same draft over as a KEY — `draft:<id>` in `draft_key` — when that
+    send is queued instead of run (`spend_chat_draft`, `POST
+    /api/tasks/queue/admit`). Those are one event said on two surfaces, and two
+    copies of "carry the number, then drop the record" is the kind of pair that
+    drifts on the first fix applied to one of them.
+
+    Best-effort and silent, like every other clean-up on this road: the message
+    IS scheduled, and a read-only state dir must not turn that into a 500. A
+    draft that could not be dropped costs one stale row, never the task. An
+    absent or malformed id does nothing at all — every client written before
+    drafts existed sends none, and neither does the `?new=1` hop.
+    """
+    draft = drafts.draft_id(ident)
+    if not draft:
+        return False
+    try:
+        if not str(entry.get("session_id") or ""):
+            tasks_store.rekey(drafts.task_key(draft),
+                              tasks_store.pending_key(str(entry.get("id") or "")))
+        if not drafts.delete_task(draft):
+            return False
+        # BOTH KEYS ARE ANNOUNCED, but only one of them was ever a row. The
+        # draft's key repaints as `gone` — for an unbound draft because the row
+        # just left the listing outright, for a session-bound one because it was
+        # never a row to begin with (`_draft_rows` skips it; the session's own
+        # row wore the chip instead). The session's key repaints because THAT
+        # row just lost the chip it was wearing (`bound_draft`, `_bound_chips`)
+        # — nothing about the row underneath ever moved.
+        tasks_watch.notify(
+            {drafts.task_key(draft), str(entry.get("session_id") or "")} - {""})
+        return True
+    except OSError:
+        return False
+
+
 def spend_chat_draft(key, entry: dict, sent: str = "") -> bool:
-    """The chat draft a QUEUED SEND spent: its TASK number moves onto the entry
-    that message became, and the record goes. True if anything moved.
+    """The draft a QUEUED SEND spent: its TASK number moves onto the entry that
+    message became, and the record goes. True if anything moved.
+
+    Takes either shape the composer can be holding: a chat key (`new:<file>`,
+    or a session id once the conversation exists) or a TASK draft's listing key
+    (`draft:<id>`), which is handed straight to `spend_task_draft` — the same
+    move `POST /api/schedule` makes for a `draft_id`.
 
     THE SAME TWO MOVES `api_schedule_create` MAKES FOR A FORM, one surface over.
     A New task card that is scheduled hands over its `draft_id`, and the number
@@ -314,36 +383,80 @@ def spend_chat_draft(key, entry: dict, sent: str = "") -> bool:
     the entry's now either way. Without `sent` (a form draft's road) the record
     goes as before.
 
+    ONE IMPLEMENTATION, TWO DOORS (merge of PR #1124 into
+    design-drafts-one-record, 2026-09-17). `api_schedule_create` spends the chat
+    draft a scheduled message was written in (`draft_key`) and the queue admit
+    spends the one a queued send came out of, and those are the same event said
+    twice — so they are the same function, and the guards below are the union of
+    what each had. The form's road passes no `sent` (the create IS the spend, and
+    there is no later keystroke to protect) and the queue's passes the message it
+    admitted.
+
     Best-effort like every other draft write on this road, and for the same
     reason: the message IS queued, and a read-only state dir must not turn that
     into a 500. A draft that could not be dropped costs one stale row, never the
     task. `""` — an absent or malformed key, which is what every client written
     before the queue sends — does nothing at all.
     """
+    # A TASK DRAFT IS THE SAME SPEND, SAID WITH THE OTHER KEY. A composer that
+    # has no session yet can be typing into a task draft rather than a
+    # `new:<file>` chat draft, and then the key its send carries is that form's
+    # own listing key (`draft:<id>`, `drafts.task_key`). What that key needs is
+    # what `draft_id` gets on `POST /api/schedule` — carry the number onto
+    # `pending:<entry-id>`, drop the record — so it is handed to the function
+    # that does it rather than to the chat store, which does not know the shape
+    # (`drafts.chat_key` refuses it) and holds no record under it.
+    #
+    # No `sent` guard on this branch: the form's words live in title and
+    # description, not in a `text` field, and the scheduling road has never
+    # compared them. Same delete either way.
+    ident = drafts.task_draft_id(key)
+    if ident:
+        return spend_task_draft(ident, entry)
     key = drafts.chat_key(key)
     if not key:
         return False
+    session = str(entry.get("session_id") or "")
     moved = False
+    spent: set[str] = set()
     try:
-        if drafts.is_new_chat_key(key):
-            tasks_store.rekey(
+        if drafts.is_new_chat_key(key) and not session:
+            # `rekey_moved` and not `rekey`, because on THIS branch the common
+            # case is nothing to move: a session-less composer autosaves
+            # nothing, so a `new:<file>` key normally carries no record and
+            # therefore no number, and every ordinary new-chat send names a key
+            # that is not in `task_ids.json` at all. Reading whether the number
+            # actually changed hands is what keeps that send a true no-op
+            # instead of an announcement about a key nobody is watching.
+            moved = tasks_store.rekey_moved(
                 key, tasks_store.pending_key(str(entry.get("id") or "")))
-            moved = True
         stale = False
         if sent:
             record = drafts.get_chat(key) or {}
             held = str(record.get("text") or "").strip()
             stale = bool(held) and held != sent.strip()
-        if not stale and drafts.delete_chat(key):
-            moved = True
+        if not stale:
+            # BOTH HALVES OF THAT ONE RECORD. A chat key whose words live in a
+            # form bound to the session is the same "one record, two doors" the
+            # composer's own send spends whole (`DELETE /api/drafts/chat/<key>`):
+            # leaving the form behind would put the sentence back on the row as
+            # unsent the moment the listing repainted, on the very task it just
+            # became.
+            spent |= set(drafts.delete_bound(key))
+            if drafts.delete_chat(key):
+                spent.add(key)
+            moved = moved or bool(spent)
     except OSError:
         return moved
     if moved:
         # A `new:<file>` draft IS a row (`routers/tasks.py::_new_chat_draft_row`),
         # and it has just stopped being one — a page holding the changes
         # long-poll should hear that in the same breath as the queued row it
-        # turned into, not on its next full listing.
-        tasks_watch.notify({key})
+        # turned into, not on its next full listing. The session rides along
+        # because THAT row has just lost the `✎ Draft` chip it was wearing
+        # (`_bound_chips`), and the bound keys because they were rows of their
+        # own until this call.
+        tasks_watch.notify((spent | {key, session}) - {""})
     return moved
 
 
@@ -458,60 +571,47 @@ def api_schedule_create(body: dict = Body(...),
     # entry, so the draft must go in the SAME request — a client that deleted
     # it afterwards would leave the task listed twice through any failure
     # between the two calls, which is the one outcome a draft must never
-    # produce. Optional and silently ignored when absent: every client written
-    # before drafts existed sends no `draft_id`, and so does the `?new=1` hop.
+    # produce. The number it was wearing rides along; see `spend_task_draft`,
+    # which is also the door a QUEUED send comes through.
+    spend_task_draft(body.get("draft_id"), entry)
+
+    # ...AND SO IS THE CHAT DRAFT THIS ONE WAS WRITTEN IN — `draft_key`, the
+    # other half of `draft_id` (design-drafts-one-record.md, §5).
     #
-    # Best-effort, like the rekey above and for the same reason: the message IS
-    # scheduled, and a read-only state dir must not turn that into a 500. A
-    # draft that could not be dropped costs one stale row, never the task.
-    draft = drafts.draft_id(body.get("draft_id"))
-    if draft:
-        try:
-            # THE NUMBER SURVIVES THE DRAFT, exactly as it survives an edit
-            # above and as a pending row's survives its first run. A draft is
-            # listed under `draft:<id>` with a TASK number of its own (round 2
-            # of design.md), and scheduling it is the same event for that row
-            # that a first run is for a `pending:` one: the thing keeps going,
-            # under a new key. Without this the user would watch the TASK-118
-            # they had been typing into become TASK-119 the moment they
-            # pressed Schedule — the renumber `replaces` exists to prevent,
-            # one stage earlier (Akshil, 2026-09-11).
-            #
-            # Before the delete, and in that order for a reason: `rekey` reads
-            # `task_ids.json`, not the draft store, so the order does not
-            # actually matter to it — but a failure between the two must leave
-            # the draft, which is recoverable, rather than a numberless task,
-            # which is not.
-            #
-            # NOT FOR A DRAFT THAT BELONGS TO A SESSION (Akshil, 2026-09-12).
-            # Such a draft never had a number of its own — the listing skips it
-            # precisely because the session it is bound to holds the task's
-            # number already (`routers/tasks.py::_draft_numbers`) — and this
-            # message is landing IN that session, which is where the number
-            # stays. Moving anything onto `pending:<entry-id>` here would be
-            # inventing a second identity for a task that has one; the entry
-            # naming a session is the whole test, since that is the key the
-            # listing will file it under (`_collect`).
-            if not str(entry.get("session_id") or ""):
-                tasks_store.rekey(drafts.task_key(draft),
-                                  tasks_store.pending_key(str(entry.get("id") or "")))
-            if drafts.delete_task(draft):
-                # BOTH KEYS ARE ANNOUNCED, but only one of them was ever a row.
-                # The draft's key repaints as `gone` — for an unbound draft
-                # because the row just left the listing outright, for a
-                # session-bound one because it was never a row to begin with
-                # (`_draft_rows` skips it; the session's own row wore the chip
-                # instead). The session's key repaints because THAT row just
-                # lost the chip it was wearing (`bound_draft`, `_bound_chips`) —
-                # nothing about the row underneath ever moved. `session` below
-                # is the same key and is announced there anyway, but only when
-                # the composer left a chat draft behind; this is the
-                # announcement scheduling itself owes.
-                tasks_watch.notify(
-                    {drafts.task_key(draft), str(entry.get("session_id") or "")}
-                    - {""})
-        except OSError:
-            pass
+    # The Schedule hop no longer mints a `draft:<id>`: the New task modal it
+    # opens edits the chat record the words were typed in, under that record's
+    # own key (`new:<file>` before the conversation exists, the session id
+    # after). So the draft this create is spending may be a CHAT draft, and the
+    # two moves it needs are the two `draft_id` already makes — carry the TASK
+    # number forward, then drop the record — for exactly the same reasons:
+    # without the rekey the reader watches the TASK-118 they were typing into
+    # become TASK-119 the moment they press Schedule, and without the delete the
+    # task they just booked is listed twice.
+    #
+    # NOT FOR A KEY THAT NAMES A SESSION, on the same guard `draft_id` takes: a
+    # chat draft on a real session borrows that conversation's number
+    # (`_draft_numbers` mints none for it), and this message is landing IN that
+    # conversation, which is where the number stays. Only `new:<file>` — the
+    # shape that IS a row with a number of its own — has anything to move.
+    #
+    # Best-effort and optional like every other clean-up here: the message IS
+    # scheduled, and a draft that could not be dropped costs one stale row.
+    #
+    # THROUGH `spend_chat_draft`, WHICH IS THAT PARAGRAPH AS A FUNCTION. The
+    # queue admit (`routers/tasks.py`) spends a chat draft on exactly the same
+    # terms one door over — a queued send is this create said from the composer
+    # — and two copies of "carry the number, then drop both halves of the
+    # record" is the kind of pair that drifts on the first fix applied to one of
+    # them. No `sent` here: the create IS the spend, so there is no later
+    # keystroke in that box to protect (merge, 2026-09-17).
+    # HANDED OVER RAW, because `draft_key` has three shapes and only two of them
+    # are chat keys: a `draft:<id>` is a TASK draft (a composer sending out of a
+    # form it never finished) and `drafts.chat_key` refuses it. `spend_chat_draft`
+    # is the one place that tells them apart; normalising here first is what made
+    # that third shape a silent no-op. `chat_draft` below is still the CHAT
+    # reading of the key, and only for the "not twice" test.
+    chat_draft = drafts.chat_key(body.get("draft_key"))
+    spend_chat_draft(body.get("draft_key"), entry)
 
     # ...AND SO IS THE CHAT DRAFT THIS CAME FROM. Scheduling into a session is
     # the composer's other exit: the words in the box are now a booked message,
@@ -519,38 +619,24 @@ def api_schedule_create(body: dict = Body(...),
     # just consumed it. Same request as the create for the same reason the
     # `draft_id` delete is, and best-effort for the same one (Akshil,
     # 2026-09-11).
+    #
+    # NOT TWICE. `draft_key` above may name this very session — the composer
+    # sends the key it is spending, and on a conversation that already exists
+    # that key IS the session id — and the delete has already happened then.
     session = drafts.chat_key(body.get("session_id"))
-    if session:
+    if session and session != chat_draft:
         try:
             if drafts.delete_chat(session):
                 tasks_watch.notify({session})
         except OSError:
             pass
 
-    # ...AND THE CHAT THE COMPOSER HOP CAME FROM, WHICH `session_id` CANNOT NAME
-    # (Bugbot, PR #1118).
-    #
-    # The Schedule button carries what is in the composer into the New task card,
-    # and the card's FIRST autosave is what tells the server to drop the chat's
-    # copy (`from_chat_key` on `PUT /api/drafts/task/<id>`). Press Schedule
-    # inside the 600 ms debounce and that write never happens: no draft id is
-    # minted, none is sent here, and the chat draft — row, TASK number and all —
-    # survives beside the task it just became. `session_id` above covers a chat
-    # that HAS a session; a brand-new one is keyed `new:<file>`, which is not a
-    # session id and never rides in that field.
-    #
-    # So the card names its origin here too. Validated through `chat_key` (both
-    # shapes), optional, and silently ignored when absent — every client that
-    # predates drafts sends none. Best-effort like the two deletes above: the
-    # task IS scheduled, and a draft that could not be dropped costs one stale
-    # row, never the task.
-    origin = drafts.chat_key(body.get("from_chat_key"))
-    if origin and origin != session:
-        try:
-            if drafts.delete_chat(origin):
-                tasks_watch.notify({origin})
-        except OSError:
-            pass
+    # (`from_chat_key` used to be a third key here, naming the chat a hop had
+    # copied out of when the copy's own autosave had not run yet. There is no
+    # copy any more — the hop edits the chat record itself — so the key it is
+    # spending is `draft_key` above, sent by the card that was editing it, and a
+    # body that still carries `from_chat_key` is simply ignored rather than
+    # refused: design-drafts-one-record.md, §1.)
     return {"entry": entry}
 
 

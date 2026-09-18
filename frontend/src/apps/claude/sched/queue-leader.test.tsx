@@ -324,17 +324,18 @@ describe("the session the leader's run opened", () => {
     expect(effect).toContain("void controller.openSession(adoptSession);");
     // NO GUARD REF: `openSession` emits the id, the rule answers "" from then
     // on, and the effect's own dependency is what closes it.
-    expect(effect).toContain("}, [adoptSession, controller, cardPolicy, params, file]);");
-    // …AND THE UNSENT WORDS COME WITH THE SESSION. The composer keys its draft on
-    // `new:<file>` while there is none, so the flip would leave that record
-    // standing and the next keystroke would autosave the same sentence under the
-    // session — one message, two drafts, and a draft ROW beside the conversation
-    // (review, PR #1124). Moved HERE and not on any key change: a key that flips
-    // because the reader opened some other chat is not an adoption.
-    expect(effect).toContain(
-      'void moveChatDraft(chatDraftKey(null, file || ""), adoptSession);',
-    );
-    expect(CHAT).not.toContain("moveChatDraft(draftKey");
+    expect(effect).toContain("}, [adoptSession, controller, cardPolicy, params]);");
+    // …AND THE UNSENT WORDS COME WITH THE SESSION, BY THE COMPOSER'S OWN DOOR.
+    // #1124 copied the `new:<file>` record onto the session here, because a
+    // session-less composer autosaved under that key and the flip would have
+    // left it standing beside the session's — one message, two drafts, and a
+    // draft ROW beside the conversation. Under one-record there is no such
+    // record to copy (a session-less composer never autosaves), and the words
+    // are stated once on the session's syncer by `Composer`'s `hasSession`
+    // layout effect, which this flip fires like any other. So no move, no key
+    // to reconcile, and nothing in this file may reach for the drafts store.
+    expect(CHAT).not.toContain("moveChatDraft(");
+    expect(effect).not.toContain("chatDraftKey");
     // …AND THE DOOR THE PANE CAME IN BY IS SHUT. A chat opened on `?queued=<id>`
     // takes that entry as its leader on every render (see `queuedParam`), so
     // leaving the param standing beside the session just adopted would keep
@@ -345,14 +346,19 @@ describe("the session the leader's run opened", () => {
     // (The ROWS themselves are the server's and come back on the next poll for
     // whatever conversation is on screen — what is cleared here is this page's
     // memory of what IT admitted.)
-    const back = CHAT.slice(CHAT.indexOf("const onBack = useCallback("), CHAT.indexOf("const onOpenSession ="));
+    // READ OFF `backNow`, NOT `onBack`: both hops ask the composer's leave
+    // guard first (`confirmLeave`), so `onBack` is the question and `backNow`
+    // is everything that happens once it is answered yes — a Cancel must leave
+    // the chat exactly as it was, which is why nothing the hop does lives in
+    // the handler.
+    const back = CHAT.slice(CHAT.indexOf("const backNow = useCallback("), CHAT.indexOf("const onBack ="));
     expect(back).toContain("setWaitingSeeds([]);");
     expect(back).toContain("setAdmitAhead(null);");
     expect(back).toContain("leader.forget();");
     // …and OPENING ANOTHER SESSION from a queued chat forgets it too: `leaderId`
     // reads `leader.peek()` first, so a leader left behind would keep drawing
     // the previous chat's waiting rows under the new transcript (Bugbot).
-    const open = CHAT.slice(CHAT.indexOf("const onOpenSession = useCallback("));
+    const open = CHAT.slice(CHAT.indexOf("const openSessionNow = useCallback("));
     const openBody = open.slice(0, open.indexOf("void controller.openSession(sessionId);"));
     expect(openBody).toContain("leader.forget();");
   });

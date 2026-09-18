@@ -3573,11 +3573,22 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
     composer already holding the text (design.md, "Round 2").
 
     THE SAME FIELD SET as `_draft_row` and `_row`, with a draft's answers: no
-    session (there is none until the first send — and the run that send starts
-    is what carries this number forward, `_settle_new_chats`),
-    no messages, nothing that has happened. `form` is null rather than a dict:
-    a chat draft is text and attachments, which is what `draft` already
-    carries, and there is no form to reopen.
+    session (there is none until the first send — and a send does not take this
+    row's number with it either: a saved draft outlives every send made from
+    the same folder, `_settle_new_chats`), no messages, nothing that has
+    happened.
+
+    `form` IS THE HOP'S SETTINGS WHEN THERE ARE ANY, and null when there are
+    none. It used to be null always, on the reasoning that a chat draft is text
+    and attachments and there is no form to reopen — true until the Schedule hop
+    stopped minting a `draft:<id>` and started editing THIS record
+    (design-drafts-one-record.md, §1). A person who pressed Schedule on an
+    unsent chat, set it for Friday and went back is looking at this row, and
+    without the time on it the row reads as an ordinary half-written message
+    rather than as something booked for Friday. Same field as `_draft_row`
+    carries and read the same way (`row.form.when`, `row.form.repeat`); `when`
+    on the row itself stays null on both, which is how the List knows to print
+    `Draft` in its when-column.
     """
     raw = drafts.new_chat_file(key)
     folder = _workdir(raw)
@@ -3585,6 +3596,7 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
     updated = float(record.get("updated_at") or 0.0)
     line = drafts.preview(record.get("text"))
     rows = record.get("attachments") or []
+    form = record.get("form") or {}
     return {
         "key": key,
         "task_id": number,
@@ -3634,8 +3646,10 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
         "next_run_entry": "",
         "next_run_repeats": False,
         "messages": [],
-        # Nothing to reopen a modal on — see the docstring.
-        "form": None,
+        # The hop's settings, or null — see the docstring. `updated_at` rides
+        # along inside it for the same reason it does on a task draft's form:
+        # `tasks-lib.draftUpdatedAt` reads it as one of its three sources.
+        "form": dict(form, updated_at=updated) if form else None,
     }
 
 
@@ -3734,6 +3748,16 @@ def _bound_chips(task_drafts: dict) -> dict[str, dict]:
         session = str(record.get("session_id") or "")
         if not session:
             continue
+        # A WORDLESS FORM IS NOT A DRAFT (2026-09-15). Emptying the composer on a
+        # bound session now clears the words and KEEPS the form's settings
+        # (`drafts._put_bound`), so a record here can hold a time and a model and
+        # nothing anybody typed — and a `✎ Draft` chip over that would point at a
+        # composer the reader would find empty. Same answer `drafts.chat_view`
+        # gives through the other door.
+        if not (str(record.get("title") or "").strip()
+                or str(record.get("description") or "").strip()
+                or record.get("attachments")):
+            continue
         updated = float(record.get("updated_at") or 0.0)
         if session in out and out[session]["updated_at"] >= updated:
             continue
@@ -3752,15 +3776,41 @@ def _bound_chips(task_drafts: dict) -> dict[str, dict]:
 _NEW_CHAT_SCAN_LIMIT = 60
 
 
-def _settle_new_chats(chat_drafts: dict) -> bool:
-    """Walk a `new:<file>` key's TASK number onto the session the send that
-    SPENT it created, and drop the draft that send spent. True if anything
-    moved.
+def _settle_new_chats(chat_drafts: dict, task_drafts: dict) -> bool:
+    """Walk a STRANDED draft TASK number onto the session the send that SPENT
+    it created. True if anything moved.
+
+    TWO KEY SHAPES, one rule. A session-less composer used to draft only under
+    `new:<file>`; it can also send out of a TASK DRAFT now, and the key it tags
+    that run with is then the draft's own `draft:<id>` (`drafts.task_key`).
+    Both shapes are rows with a number of their own, both stop being a row when
+    the send spends them, and in both the number has to follow the session the
+    send makes — so both are read here, under the same hands-off rule: a key
+    whose RECORD still exists (a saved chat draft, a task draft still in the
+    drafts store) is not this function's to touch. The composer DELETEs the
+    task draft's record as it sends, so the number moves on the first build
+    after that delete has landed; a build that gets there first just asks
+    again.
+
+    A SEND NEVER TOUCHES A SAVED DRAFT (blocker, 2026-09-16). This used to
+    `delete_chat` the record too, and that was the truth while the composer
+    autosaved on every keystroke: the record WAS the message going out, and the
+    transcript took the words over in the same tick. The composer autosaves
+    nothing now (caef75eb1, `ui/Composer.tsx` — "a send just sends"), so a
+    `new:<file>` record exists only because the reader ASKED for one — "Save as
+    draft" in the leave guard, or Schedule → Continue — and a send is not an
+    answer to that question. Type, leave, save as draft, come back, type
+    something else, send: the saved Upcoming row and its number both stand, and
+    the session the send makes gets a number of its own. So a key that still
+    HAS a record is not settled here at all. What is left for this to settle is
+    the NUMBER ALONE — a `new:<file>` key that carries one in `task_ids` with
+    no record behind it, the row the reader was watching left on a key nothing
+    reads again.
 
     THE SEND NAMES ITS OWN DRAFT, and nothing here infers it. A chat with no
     session drafts under `new:<file>` and is numbered under that key; the first
-    send creates the session, and the number has to follow it or the row the
-    user has been watching is stranded on a key nothing reads again. So the
+    send creates the session, and a number with no record left to hold it has
+    to follow that session or it is stranded for good. So the
     composer's session-less send puts the key it is spending in the start
     request (`protocol/run-controller.ts`, `draft_key`), `agent._start` writes
     it into `meta.json` verbatim before it spawns anything, and this reads it
@@ -3773,9 +3823,9 @@ def _settle_new_chats(chat_drafts: dict) -> bool:
     two guards: a scheduled task's first fire (`schedule.py::_send` →
     `claude_spawn.spawn_helper` → `agent._start`), a `new_task_each_run` entry,
     canvases.py's own spawn. Any of them would have taken the number off a chat
-    the reader was still typing into and `delete_chat` would have destroyed the
-    unsent words with it (review, 2026-09-12). None of them sends a
-    `draft_key`, so none of them can claim a draft now.
+    the reader was still typing into — and, in the build that still deleted,
+    the unsent words with it (review, 2026-09-12). None of them sends a
+    `draft_key`, so none of them can claim a number now.
 
     (The four rounds before that asked the CLIENT which session its own send
     created, and each answer was an inference with a gap — a send that threw, a
@@ -3796,28 +3846,42 @@ def _settle_new_chats(chat_drafts: dict) -> bool:
 
     TWO GUARDS BESIDES THE KEY:
 
+    * **A record, and this key is not ours.** A `new:<file>` key with a saved
+      draft behind it — or a `draft:<id>` key whose task draft is still in the
+      store — is a row the reader put there on purpose; its number is that
+      row's, not the send's. Excluded before the tree is read at all, so no
+      tagged run can claim it however old or new the save is.
     * **A session id, or nothing happens.** A run that never got one (`_start`
       failed, the CLI died before its first row) has nothing to carry the
-      number to, and the draft is still the only copy of what was typed. Asked
-      again on the next build.
-    * **Nothing newer than the run.** A draft whose last save is AFTER this run
-      started is not the message it sent — it is words typed into the same box
-      while the session id was still on its way — so the key is left whole,
-      number and text both. Everything else under the key predates the send and
-      IS what was sent, which is why the draft is deleted and its text is never
-      copied forward: the words are in the transcript already.
+      number to. Asked again on the next build.
     """
-    records = {key: rec for key, rec in chat_drafts.items()
-               if drafts.is_new_chat_key(key)}
-    # The ordinary case has no record at all — the composer deletes the draft
-    # on send, in the same tick as the send — so the NUMBER alone is what is
-    # usually left to move, and the numbers store is the only place it is. That
-    # is why this read is not gated on `records` being non-empty (review perf
-    # note, 2026-09-12): gating it there would skip exactly the common case and
-    # strand the number the send was supposed to carry. One small json file,
-    # read before anything decides to touch the runs tree.
-    waiting = set(records) | {key for key in tasks_store.task_ids()
-                              if drafts.is_new_chat_key(key)}
+    records = {key for key in chat_drafts if drafts.is_new_chat_key(key)}
+    # …AND THE TASK DRAFTS UNDER THE KEY THE LISTING FILES THEM BY. A record in
+    # the task store means the row is still there to wear its own number, on
+    # exactly the reasoning the chat half is read for. `list_all()` keys the
+    # task section by id, so it is spelled back into a listing key here rather
+    # than each candidate being spelled the other way round.
+    records |= {drafts.task_key(ident) for ident in task_drafts}
+    # A RECORD MEANS HANDS OFF, and the records are read here only to say which
+    # keys this must not touch. Nothing under a key the reader saved moves: not
+    # the words, not the number, not on any later build. What is left is the
+    # number with no record behind it, and the numbers store is the only place
+    # that is written down — which is why this read is not gated on `records`
+    # being non-empty (review perf note, 2026-09-12): gating it there would
+    # skip exactly the case this function exists for. One small json file, read
+    # before anything decides to touch the runs tree.
+    # A key stamped SPENT (`tasks_store._apply_rekey`) has already been settled
+    # by an earlier build — its send landed in a session that was already
+    # numbered some other way, so there is nothing left to move — and must not
+    # be asked again: `task_ids()` never drops a spent record (it is the
+    # high-water mark), so without this exclusion every later build would
+    # re-find it, re-run the loop below, and re-notify forever (bugbot / live
+    # repro, 2026-09-15 — the `gone` key that pinned a composer shut).
+    waiting = {
+        key for key, rec in tasks_store.task_ids().items()
+        if (drafts.is_new_chat_key(key) or drafts.task_draft_id(key))
+        and not rec.get("spent") and key not in records
+    }
     if not waiting:
         return False  # nothing unsent is numbered: no reason to read the tree
     agent = _agent_module()
@@ -3835,9 +3899,6 @@ def _settle_new_chats(chat_drafts: dict) -> bool:
         run_dir = os.path.join(runs, name)
         meta_path = os.path.join(run_dir, "meta.json")
         try:
-            # The mtime of the file `_start` writes once, before it spawns: when
-            # this run began, which is the floor the second guard reads.
-            started = os.path.getmtime(meta_path)
             with open(meta_path, encoding="utf-8") as fh:
                 meta = json.load(fh)
         except (OSError, ValueError):
@@ -3862,23 +3923,30 @@ def _settle_new_chats(chat_drafts: dict) -> bool:
         if not ids:
             continue  # no id minted yet (or ever): ask again next build
         session_id = sorted(ids)[0]
-        record = records.get(key)
-        if record and float(record.get("updated_at") or 0.0) > started:
-            continue  # typed into again since: not this send's draft
         try:
-            tasks_store.rekey(key, session_id)
-            drafts.delete_chat(key)
+            number_moved = tasks_store.rekey_moved(key, session_id)
         except OSError:
             # A read-only state dir costs the number's continuity and nothing
             # else. Same posture as `_numbers` and the schedule router's own
             # rekey: the listing still answers.
             continue
         waiting.discard(key)
-        moved = True
-        # Both rows moved: the draft row is gone and the session wears its
-        # number. The chat holding the changes long-poll hears it now rather
-        # than on its next full pass.
-        tasks_watch.notify({key, session_id})
+        # NOTIFY ONLY ON A REAL CHANGE. `rekey_moved` stamps a no-op key spent
+        # the first time it is seen (so `waiting`, above, excludes it from
+        # then on) but that stamp alone is not news to any client — the
+        # session already had its number, and nothing in the listing reads
+        # differently than it did a moment ago. Without this check every build
+        # that still found the key (before the `waiting` exclusion took effect
+        # on the NEXT build) called notify unconditionally, and the changes
+        # long-poll it wakes rebuilt the listing, re-ran this same settle, and
+        # notified again — the loop that pinned a composer shut (bugbot / live
+        # repro, 2026-09-15).
+        if number_moved:
+            moved = True
+            # The number changed hands: the old key stops answering to it and
+            # the session wears it. The chat holding the changes long-poll
+            # hears it now rather than on its next full pass.
+            tasks_watch.notify({key, session_id})
     return moved
 
 
@@ -3950,11 +4018,12 @@ def _draft_rows(only: frozenset | set | None = None,
         # number, it stamps the mapping `erased` and keeps it as a reservation,
         # and the row it belonged to is off the page for good — so a draft still
         # naming it has nothing left to wear its chip and would be invisible,
-        # with its words unreachable. The erase itself cuts the binding
-        # (`drafts.unbind_session`), and this is the same answer read off the
-        # store for the draft written between that gesture's two writes and for
-        # any older store left bound: an ordinary row again, blank-numbered
-        # until `_draft_numbers` can mint it one (review, 2026-09-12).
+        # with its words unreachable. The erase itself drops such a draft
+        # (`drafts.delete_bound`), so this is the answer for the two stores that
+        # can still hold one: a draft written between that gesture's two writes,
+        # and any older store left bound by a build that only unbound. An
+        # ordinary row again, blank-numbered until `_draft_numbers` can mint it
+        # one (review, 2026-09-12).
         bound = drafts.bound_session(record.get("session_id"))
         if bound:
             if erased is None:
@@ -4135,13 +4204,15 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # `read` and `busy` are read once: it is one small file, the join below
     # asks it per session, and `_draft_rows` asks it again.
     task_drafts, chat_drafts = drafts.list_all()
-    # A FIRST SEND'S SESSION IS SETTLED HERE, before a number is allocated
-    # below: `new:<file>` hands its number to the session that send created and
-    # the spent draft goes (`_settle_new_chats` — and see its docstring for why
-    # this is the server's job and not the composer's). A settle rewrites the
-    # store this build has already read, so the read is taken again; it is one
-    # small file, and it only happens on the build a send is settled in.
-    if _settle_new_chats(chat_drafts):
+    # A STRANDED DRAFT NUMBER IS SETTLED HERE (`new:<file>` or `draft:<id>`,
+    # whichever key the send tagged its run with), before a number is
+    # allocated below: a key with no record left behind it hands its number to
+    # the session the send created (`_settle_new_chats` — and see its docstring
+    # for why this is the server's job, and why a key that still HAS a record
+    # is never touched). A settle rewrites the store this build has already
+    # read, so the read is taken again; it is one small file, and it only
+    # happens on the build a number is settled in.
+    if _settle_new_chats(chat_drafts, task_drafts):
         task_drafts, chat_drafts = drafts.list_all()
     # …and the same read, asked the session's way round: which conversation has
     # a New task form being written into it. Off the STORE and not off the rows
@@ -4248,6 +4319,42 @@ def api_tasks():
     return {"tasks": rows, "generation": tasks_watch.generation()}
 
 
+def _draft_changes(keys) -> dict:
+    """What the DRAFTS under these keys are at now: `{changed: [{key, version}],
+    gone: [key]}`.
+
+    THE PUSH HALF OF VERSIONED WRITES (design-drafts-one-record.md, §3). A
+    composer and a New task modal open on one key in two windows have to hear
+    about each other, and the rows this endpoint already sends cannot say it: a
+    row carries a preview, not the record, and a draft edited in another tab
+    changes nothing about the row's shape. So the keys the watcher announced are
+    looked up in the drafts store and reported as a version apiece — enough for
+    a client to know whether what it holds is stale without asking for it.
+
+    ONE READ AND NO ROW BUILDING. `list_all` is a single json read, which is
+    what makes this cheap enough to ride on every long-poll answer;
+    `_task_rows` is not asked anything, and no number is allocated.
+
+    `gone` IS NOISY BY CONSTRUCTION and is documented as such for the client
+    (drafts-api-contract.md): these keys are announced for every reason a row
+    moves, so most of them never had a draft and "there is no draft under this
+    key" is simply true of them. What a client may do with it is bounded by
+    that — clear an editor it has already adopted a server version for, and
+    never discard words it has not saved yet (the same care #1171's cheap `gone`
+    for rows is read with)."""
+    task_drafts, chat_drafts = drafts.list_all()
+    changed: list[dict] = []
+    gone: list[str] = []
+    for key in sorted(keys):
+        ident = drafts.task_draft_id(key)
+        record = task_drafts.get(ident) if ident else chat_drafts.get(key)
+        if record is None:
+            gone.append(key)
+        else:
+            changed.append({"key": key, "version": int(record.get("version") or 0)})
+    return {"changed": changed, "gone": gone}
+
+
 @router.get("/api/tasks/changes")
 def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MAX_WAIT_SEC)):
     """What moved since generation `since` — the Tasks page's fast lane.
@@ -4266,7 +4373,8 @@ def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MA
     if keys is None:
         return {"generation": gen, "full": True}
     if not keys:
-        return {"generation": gen, "rows": [], "gone": []}
+        return {"generation": gen, "rows": [], "gone": [],
+                "drafts": {"changed": [], "gone": []}}
     # Translate before diffing: a rung `pending:<id>` whose entry the listing
     # now files under its run's session is not a task that went away, it is a
     # row that changed its name (`_rekeyed_pendings`, 2026-09-16).
@@ -4300,7 +4408,14 @@ def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MA
             pending = tasks_store.pending_key(str(entry.get("id") or ""))
             if pending != key:
                 gone.add(pending)
-    return {"generation": gen, "rows": rows, "gone": sorted(gone)}
+    # `drafts` rides alongside the rows: the same keys the watcher announced,
+    # answered out of the drafts store with a version apiece, so a composer or a
+    # New task card open on one of them learns that another window has written
+    # it (`_draft_changes`, design-drafts-one-record.md §3). The announced keys
+    # and not `listed`: a draft that has just been discarded is exactly the news
+    # an editor needs and is by then no row at all.
+    return {"generation": gen, "rows": rows, "gone": sorted(gone),
+            "drafts": _draft_changes(keys)}
 
 
 # `project` rides along for the sidebar's Current apps section (D487): the
@@ -4773,12 +4888,18 @@ def api_task_archive(patch: ArchivePatch):
     if task is None:
         raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
     cancelled, filed = archive_task(task)
-    # AND THE UNSENT TEXT GOES WITH IT. A draft is a promise that the composer
-    # will still hold it when you come back; filing the task away is saying you
-    # are not coming back, and a `✎ Draft` chip on an archived row would be a
-    # badge pointing at a conversation the user just put down (design.md,
-    # "Joins": archive/delete/erase drop the chat draft).
-    drafts.delete_chat(task["session_id"])
+    # THE UNSENT TEXT IS NOT TOUCHED (Akshil, 2026-09-15; design.md, PR C:
+    # "Archive/unarchive touch NO drafts").
+    #
+    # This route used to `delete_chat` the session's draft, on the reading that
+    # filing a task away says you are not coming back. That reading belongs to
+    # DELETE, not to archive: archive is the reversible verb — its whole
+    # affordance is the Unarchive button beside it — and a reversible gesture
+    # that destroys text is a gesture nobody can undo. An archived task's drafts
+    # (the chat's and any form bound to it) simply hide with the row and are
+    # there again the moment it comes back, which is what every OTHER fact about
+    # an archived task already does. Delete and erase, which are the verbs that
+    # mean it, drop both halves — see `api_task_delete` and `api_task_erase`.
     tasks_watch.notify({key})
     return {"ok": True, "key": key, "cancelled": cancelled, "filed": filed}
 
@@ -4945,11 +5066,19 @@ def api_task_delete(patch: DeletePatch):
             cancelled += 1
 
     tasks_store.mark_deleted(key)
-    # The chat draft goes with the row, for archive's reason and one more: the
-    # row is the only place the chip could have been drawn, so a draft left
-    # behind is bytes nothing can ever show or reach.
+    # BOTH HALVES OF THIS SESSION'S UNSENT TEXT GO WITH THE ROW (design.md,
+    # PR C). The row is the only place either could ever have been drawn — the
+    # composer's own draft as the `✎ Draft` chip, a bound New task form as the
+    # same chip off `_bound_chips` — so a draft left behind is bytes nothing can
+    # show and nobody can reach. Unlike archive above, this verb is the one that
+    # means it.
+    #
+    # The bound form's row key is announced with the task's: it was never a row
+    # of its own, but a page holding a stale one (from before the binding, or
+    # from an older build) has to be told to drop it.
+    dropped = drafts.delete_bound(task["session_id"])
     drafts.delete_chat(task["session_id"])
-    tasks_watch.notify({key})
+    tasks_watch.notify({key} | set(dropped))
     return {"ok": True, "key": key, "cancelled": cancelled,
             "erased_transcript": False}
 
@@ -4992,11 +5121,11 @@ def api_task_erase(patch: ErasePatch):
 
     WHAT COMES OUT OF STATE: the triage record WHOLE (`forget_triage`, not
     `clear_triage` — there is no session left for a note or a tag to be about),
-    and the read marks (`tasks_store.forget_session`), and a task draft bound to
-    this session is cut loose from it (`drafts.unbind_session`) — the words
-    stay, the binding does not, and that draft's own key is announced beside
-    this task's, because the row has just changed its number, its folder and
-    the thread its Schedule would reach. The task's NUMBER is the
+    and the read marks (`tasks_store.forget_session`), and BOTH shapes of this
+    session's unsent text — its chat draft and any task draft bound to it
+    (`drafts.delete_bound`, 2026-09-15) — with the bound draft's own key
+    announced beside this task's, so a page holding a row under it drops it.
+    The task's NUMBER is the
     one thing kept: allocation is "max seen plus one" read straight off
     task_ids.json, so the mapping stays as a reservation and a reused TASK-007
     can never point at somebody else's work. See `forget_session`.
@@ -5038,10 +5167,10 @@ def api_task_erase(patch: ErasePatch):
             cancelled += 1
 
     removed, erased, failed, refused = 0, False, 0, 0
-    # The draft rows this erase renumbers, announced beside the task's own key
+    # The draft rows this erase takes away, announced beside the task's own key
     # at the end. Empty for a task with no session and for the ordinary erase
     # with nothing bound to it, which is nearly all of them.
-    unbound: list[str] = []
+    dropped: list[str] = []
     session_id = task["session_id"]
     if session_id:
         removed, erased, failed, refused = _erase_session_files(session_id, task["path"])
@@ -5068,26 +5197,25 @@ def api_task_erase(patch: ErasePatch):
         # emphatically something about it — there is no conversation left for
         # it to be typed into.
         drafts.delete_chat(session_id)
-        # A TASK draft bound to it is the other shape, and it is NOT deleted
-        # (review, 2026-09-12): a task draft is a form somebody is still filling
-        # in, and the conversation is only where they had meant to send it. What
-        # goes is the binding — the number this erase has just turned into a
-        # reservation (`forget_session`), and the standing-in for a row that no
-        # longer exists. The draft is an ordinary `draft:<id>` from the next
-        # listing on, numbered in its own folder.
+        # A TASK DRAFT BOUND TO IT GOES TOO (Akshil, 2026-09-15; design.md,
+        # PR C: "Delete + erase drop BOTH"). It used to be UNBOUND instead —
+        # words kept, binding cut, the form coming back as an ordinary
+        # `draft:<id>` row in its own folder — on the reading that a form
+        # somebody is still filling in outlives the conversation it was aimed
+        # at. What that actually produced was half a message addressed to a
+        # thread this gesture had just destroyed, reappearing in a lane the
+        # reader had cleared, with a Schedule button that could no longer do
+        # what it said. Both shapes of "this session's unsent text" now answer
+        # to the same two verbs, which is the one thing delete and erase could
+        # never previously agree on.
         #
-        # AND THOSE ROWS ARE NEWS (bugbot, PR #1126). Unbinding renumbers the
-        # draft, moves it into its own folder and drops its session — and the
-        # page is still drawing it with the erased session's TASK number, still
-        # holding that `session_id` in the form it would reopen, so pressing
-        # Schedule sent the message back into the conversation this gesture just
-        # destroyed. Announcing only the session's key fixed nothing: the draft
-        # is a different row. So the keys the store hands back are announced
-        # with it, below.
-        unbound = drafts.unbind_session(session_id)
+        # AND THOSE ROWS ARE NEWS (bugbot, PR #1126): a page holding one — from
+        # before the binding, or from an older build — has to be told to drop
+        # it, so the keys the store hands back are announced with the task's.
+        dropped = drafts.delete_bound(session_id)
 
     tasks_store.mark_deleted(key)
-    tasks_watch.notify({key} | set(unbound))
+    tasks_watch.notify({key} | set(dropped))
     return {"ok": True, "key": key, "cancelled": cancelled,
             "erased_transcript": erased, "removed": removed}
 

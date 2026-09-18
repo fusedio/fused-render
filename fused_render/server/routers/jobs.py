@@ -55,6 +55,7 @@ def api_jobs_list():
 @router.post("/api/jobs")
 def api_jobs_report(body: dict = Body(...), x_fused: str | None = Header(default=None),
                     x_fused_page: str | None = Header(default=None),
+                    x_fused_source: str | None = Header(default=None),
                     x_fused_worker: str | None = Header(default=None)):
     """One progress report. Creates the record on the first tick, updates it after.
 
@@ -111,8 +112,19 @@ def api_jobs_report(body: dict = Body(...), x_fused: str | None = Header(default
     # `transcribe_row_fields`) and is trusted the same way the rest of its
     # body is (`server=True` below), so it is not derived a second time here.
     origin = "" if is_worker else jobs_mod.origin_for_page(page)
+    # `source` (Job.source, SPEC-quiet-notifications.md bug 1): who RAISED
+    # this report, for presence suppression — as opposed to `page`, where a
+    # click on the row goes. For this endpoint the two are the same value
+    # for the overwhelming majority of reports (an ordinary page's own
+    # progress tick), so `source` defaults to whatever `page` already
+    # resolved to above. `X-Fused-Source` exists only for a caller that
+    # deliberately wants the two to diverge (a render, see
+    # `ai/supervisor.py`'s `_start_render` and `routers/ai_runtime.py`) —
+    # read the same spoof-proof way as `X-Fused-Page`: from the header only,
+    # never the body.
+    source = unquote(x_fused_source) if x_fused_source else page
     try:
-        return jobs_mod.upsert(body, page=page, origin=origin, server=is_worker)
+        return jobs_mod.upsert(body, page=page, source=source, origin=origin, server=is_worker)
     except jobs_mod.JobError as e:
         return _error(str(e))
 

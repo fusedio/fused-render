@@ -746,6 +746,13 @@ def api_app_doctor_fix(body: dict = Body(...),
             entry_html, app_doctor.report(folder)["checks"])
     else:
         row = app_doctor.report_one(folder, check_id)
+        if row and row["ondemand"] and row["state"] == app_doctor.UNRUN:
+            # An on-demand row's findings live in a cache keyed on the app's
+            # content. UNRUN here means either nobody has run it or the app
+            # changed since — either way the findings a session would be
+            # handed describe a folder that no longer exists. Re-run first.
+            return _error("this check has not been run on the app as it is now — "
+                          "press Check first", status=409)
         findings = row["findings"] if row else []
         detail = row["detail"] if row else ""
         prompt = app_doctor.doctor_prompt(entry_html, check_id, findings, detail)
@@ -759,6 +766,46 @@ def api_app_doctor_fix(body: dict = Body(...),
         "task": task,
         "task_error": task_error,
     }
+
+
+@router.post("/api/apps/doctor/run")
+def api_app_doctor_run(body: dict = Body(...),
+                       x_fused: str | None = Header(default=None)):
+    """RUN one on-demand row now — today only `cross-browser`
+    (`app_doctor_ai.run`): a one-shot Sonnet call over the app's view files
+    against the cross-browser skill's rubric, its verdict cached under
+    `.fused/cache/` on a checksum of exactly what the model saw, so the next
+    GET draws it without spending anything until the app changes.
+
+    Blocks for the run (seconds, capped by `app_doctor_ai.TIMEOUT`) and
+    returns the refreshed ROW in the same shape `GET /api/apps/doctor` emits,
+    `task: null` — the client swaps it into the report it already has rather
+    than re-running the whole checklist. `_require_fused`, because this
+    spends the user's tokens; 400 for a row that is not on demand (the
+    deterministic rows re-run on every GET already); 502 with one sentence
+    when the model could not answer, leaving any previous verdict in place.
+    Single-flighted per folder inside `run`."""
+    from fused_render import app_doctor, app_doctor_ai
+
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    folder, err = _doctor_folder(body.get("path"))
+    if err is not None:
+        return err
+    check_id = body.get("check")
+    if not isinstance(check_id, str) or check_id not in app_doctor.ON_DEMAND:
+        return _error("'check' must be one of: " + ", ".join(sorted(app_doctor.ON_DEMAND)))
+
+    # `force` is the Re-check button: run again although the cache still
+    # matches. A plain Check reuses a matching verdict.
+    outcome, run_error = app_doctor_ai.run(folder, force=bool(body.get("force")))
+    if run_error is not None:
+        return _error(run_error, status=502)
+    state, detail, findings = outcome
+    row = app_doctor._check(check_id, app_doctor_ai.LABEL, state, detail, findings)
+    row["task"] = None
+    return {"path": folder, "check": row}
 
 
 # The authored thumbnail's cap and signature — the same two the .fused

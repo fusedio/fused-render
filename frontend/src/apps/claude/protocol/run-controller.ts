@@ -1895,16 +1895,25 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // starts stays up across every follow-up it sends (T:16657-16668).
             read_dirs: JSON.stringify(opts.readDirs || []),
             // THE DRAFT THIS SEND SPENDS, and only when there is no session to
-            // send into — which is exactly the send that CREATES one. The chat
-            // has been drafting (and carrying its TASK number) under
-            // `new:<file>`, and the number has to follow the session this start
-            // mints. Nothing here can tell afterwards which id that was, so the
-            // run is tagged on the way out and the server reads the tag back off
+            // send into — which is exactly the send that CREATES one. A chat
+            // that had been drafting (and carrying its TASK number) under
+            // `new:<file>` hands that number to the session this start mints.
+            // Nothing here can tell afterwards which id that was, so the run is
+            // tagged on the way out and the server reads the tag back off
             // `meta.json` (`routers/tasks.py::_settle_new_chats`; four earlier
             // rounds of asking the page instead are in `platform/lib/drafts.ts`).
             // Omitted on a send into an existing session: that send creates
             // nothing, and a tag it could not spend would be a claim on a draft
             // still being typed.
+            //
+            // NO PAGE WRITES `new:<file>` ANY MORE (Akshil, 2026-09-16): a
+            // never-sent chat's Save and its Schedule mint a `draft:<id>` task
+            // draft apiece, because one record per folder meant the second draft
+            // replaced the first. The tag is kept because the shape is still
+            // READ everywhere it was — records written by older builds are still
+            // on disk, still listed, still on their 14-day TTL — and a send that
+            // settles one of those is the only thing that can hand its number
+            // on. It costs one short string on a send that has nothing to spend.
             ...(sessionId ? {} : { draft_key: chatDraftKey(null, FILE) }),
           },
           { key: null },

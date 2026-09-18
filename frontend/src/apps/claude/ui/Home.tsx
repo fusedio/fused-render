@@ -1,6 +1,7 @@
 // The landing view: the headline, the big composer card and the three lists
 // (T:4215-4331, inventory 05 §B). `#chat.home` hides the topbar, the transcript,
 // the chat composer, Back and the footnote; this is what stands in their place.
+import { useMemo } from "react";
 import "../styles/home.css";
 import type { Task } from "@platform/lib/api";
 import { HomeCard, type HomeCardProps } from "./HomeCard";
@@ -24,9 +25,10 @@ export interface HomeProps extends HomeCardProps {
    *  turn that edited the file leaves a stale checkpoint chain behind it rather
    *  than a cached one (`useSnapshots`'s third argument). */
   snapInvalidation?: unknown;
-  /** `Lists`' own prop, carried straight through: the explorer's Claude side
-   *  panel is the one host that sets it. */
-  hideUpcoming?: boolean;
+  /** The key of the Upcoming draft the composer holds — that row is not drawn
+   *  in the list under it (Akshil, 2026-09-17: "never create a list item for a
+   *  draft I already have in the composer"). */
+  heldKey?: string | null;
 }
 
 export function Home({
@@ -36,9 +38,13 @@ export function Home({
   listsDisabled,
   agentDir,
   snapInvalidation,
-  hideUpcoming,
+  heldKey,
   ...cardProps
 }: HomeProps) {
+  const shown = useMemo(
+    () => (recent && heldKey ? recent.filter((t) => t.key !== heldKey) : recent),
+    [recent, heldKey],
+  );
   // BOTH READS LIVE HERE, not threaded down from the chat: they are the landing
   // view's own facts, T makes them on every path ONTO this view (`loadArtifacts`
   // / `mountSnapshots` are called from boot AND from Back), and a mount of this
@@ -70,18 +76,17 @@ export function Home({
         {/* One 32px of air at the bottom of the column, one margin per block
             inside it (T:3245-3252). */}
         <div className="c-home-inner">
-          <HomeCard {...cardProps} />
+          <HomeCard {...cardProps} heldKey={heldKey ?? null} />
           <Lists
             file={cardProps.file}
             agentDir={agentDir ?? null}
-            recent={recent}
+            recent={shown}
             artifacts={artifacts}
             snaps={snaps}
             onOpen={onOpenSession}
             {...(onFillDraft ? { onFillDraft } : {})}
             onNavigate={cardProps.onNavigate}
             disabled={listsDisabled}
-            {...(hideUpcoming ? { hideUpcoming } : {})}
           />
         </div>
       </div>

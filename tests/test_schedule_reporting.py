@@ -127,13 +127,15 @@ def test_a_spawn_failure_reports_everywhere_at_once(target, monkeypatch):
     assert _kinds() == [schedule.EVENT_FAILED]
 
 
-def test_a_send_alone_announces_nothing(target, sent):
-    """Starting is not news — the toast is for how it TURNED OUT. A message that
-    is merely on its way would otherwise notify twice for one outcome."""
+def test_a_send_alone_announces_itself_and_nothing_more(target, sent):
+    """SPEC-quiet-notifications.md §5 reverses the old rule here: starting IS
+    now news (suppressible if the run's own chat is open, never lost if it
+    isn't) — but only starting. A send that hasn't finished must not also
+    claim an outcome it doesn't have yet."""
     _overdue(target)
     schedule.tick()
 
-    assert _kinds() == []
+    assert _kinds() == [schedule.EVENT_STARTED]
 
 
 # ------------------------------------------------------------- the live turn
@@ -234,7 +236,7 @@ def test_a_finished_turn_lands_ok_on_all_three_surfaces(target, sent):
     assert abs(schedule.parse_due(stored["turn_at"]).timestamp()
                - time.time()) < 30
     assert jobs.list_jobs()[0]["state"] == "done"
-    assert _kinds() == [schedule.EVENT_DONE]
+    assert _kinds() == [schedule.EVENT_STARTED, schedule.EVENT_DONE]
 
 
 def test_a_turn_that_fails_after_a_clean_send_is_reported_as_the_TURN_failing(target, sent):
@@ -252,7 +254,7 @@ def test_a_turn_that_fails_after_a_clean_send_is_reported_as_the_TURN_failing(ta
     assert stored["turn"] == "failed"            # the turn was not
     assert "the model gave up" in stored["error"]
     assert jobs.list_jobs()[0]["state"] == "error"
-    assert _kinds() == [schedule.EVENT_FAILED]
+    assert _kinds() == [schedule.EVENT_STARTED, schedule.EVENT_FAILED]
 
 
 def test_the_managers_cancel_really_stops_the_run(target, sent):
@@ -326,7 +328,7 @@ def test_event_ids_are_monotonic_so_a_poller_can_track_a_high_water_mark(target,
 
     ids = [e["id"] for e in schedule.event_log()]
     assert ids == sorted(ids)
-    assert len(set(ids)) == 3
+    assert len(set(ids)) == 6  # started + done per iteration
 
 
 def test_the_log_is_bounded(target, sent, monkeypatch):
@@ -366,7 +368,7 @@ def test_a_watch_that_ends_without_a_verdict_closes_the_row(target, monkeypatch)
     assert stored["run_id"] == "r-1"          # and this is how to go and read it
     assert "stopped reporting" in stored["error"]
     assert jobs.list_jobs()[0]["state"] == "error"
-    assert _kinds() == [schedule.EVENT_FAILED]
+    assert _kinds() == [schedule.EVENT_STARTED, schedule.EVENT_FAILED]
 
 
 def test_closing_an_unwatched_row_never_overwrites_a_real_outcome(target, sent):
@@ -380,7 +382,7 @@ def test_closing_an_unwatched_row_never_overwrites_a_real_outcome(target, sent):
     schedule._close_unwatched(entry, "stopped reporting")
 
     assert schedule.list_entries()[0]["turn"] == "ok"   # not clobbered to unknown
-    assert _kinds() == [schedule.EVENT_DONE]            # and no second toast
+    assert _kinds() == [schedule.EVENT_STARTED, schedule.EVENT_DONE]  # no second DONE toast
 
 
 def test_a_load_agent_failure_still_closes_the_row(target, monkeypatch):
@@ -394,7 +396,7 @@ def test_a_load_agent_failure_still_closes_the_row(target, monkeypatch):
     watch(entry, "r-2")
 
     assert schedule.list_entries()[0]["turn"] == "unknown"
-    assert _kinds() == [schedule.EVENT_FAILED]
+    assert _kinds() == [schedule.EVENT_STARTED, schedule.EVENT_FAILED]
 
 
 def test_startup_events_survive_until_a_shell_actually_narrates_them(target, sent,
@@ -447,7 +449,7 @@ def test_a_read_alone_never_consumes_a_notification(target, sent):
     schedule._turn_tick(entry, "r-1", FakeAgent(), {"done": True, "error": ""})
 
     first = schedule.undelivered_events()
-    assert len(first) == 1
+    assert len(first) == 2  # started, then done
     assert schedule.undelivered_events() == first
     assert schedule.undelivered_events() == first
 

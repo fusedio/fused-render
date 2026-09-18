@@ -1544,7 +1544,8 @@ def api_ai_cancel(body: dict = Body(...), x_fused: str | None = Header(default=N
 
 @router.post("/api/ai/image")
 def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=None),
-                 x_fused_page: str | None = Header(default=None)):
+                 x_fused_page: str | None = Header(default=None),
+                 x_fused_source: str | None = Header(default=None)):
     """Render one image. Returns everything about it except the pixels.
 
     **Job-backed, like a download, and for the same reason**: this runs for
@@ -1562,11 +1563,28 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     `X-Fused-Page` names the calling page, the same channel `routers/jobs.py`
     and `routers/capture.py` read it from — threaded into `start_image` below
     so the row this call opens knows where a click on it should go.
+
+    `X-Fused-Source` is a SEPARATE header for WHO RAISED this render, read
+    the same spoof-proof way (header only, never the body) — see
+    `Job.source`'s own comment for why this has to be distinct from `page`
+    for a render specifically. It defaults to `page` when absent, which is
+    correct for the ordinary case (a user app's own page calling
+    `fused.ai.image()` — the same page is both the click destination and the
+    raiser). The AI Models Playground is the one caller that needs the two to
+    diverge: it sends NO `X-Fused-Page` at all (so `page`'s existing
+    output-path fallback below is untouched — a click still opens the
+    rendered file), but it DOES send `X-Fused-Source` (its own shell route),
+    so a suppression check can tell whether the user is already looking at
+    the Playground when this render lands (SPEC-quiet-notifications.md bug 1).
     """
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
     page = unquote(x_fused_page) if x_fused_page else ""
+    # See the docstring above: defaults to `page` (the ordinary case), but a
+    # caller that sends a distinct `X-Fused-Source` (the Playground) can make
+    # the two diverge on purpose.
+    source = unquote(x_fused_source) if x_fused_source else page
 
     # Checked first, so an unknown option is reported even when another field
     # is also wrong — see `_reject_unknown`. The wider, SERVER set: `base` is
@@ -1784,7 +1802,7 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         # tell those two apart because this route always sent one.
         request["image"] = image_path
     try:
-        supervisor.start_image(model, request, job, page=page)
+        supervisor.start_image(model, request, job, page=page, source=source)
     except supervisor.SupervisorError as e:
         # 409 for the same reason a load does: the request was well-formed and
         # the answer is a fact about this machine, not a server fault.
@@ -1831,7 +1849,8 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
 
 @router.post("/api/ai/video")
 def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=None),
-                 x_fused_page: str | None = Header(default=None)):
+                 x_fused_page: str | None = Header(default=None),
+                 x_fused_source: str | None = Header(default=None)):
     """Render one video (with audio). Returns everything about it except the
     bytes. `api_ai_image`'s twin — job-backed for the same reason, minus
     `guidance` (the engine is CFG-distilled) and `previewPath` (no live
@@ -1843,12 +1862,15 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
     `registry.unavailable_reason` rather than ever reaching a default model.
 
     `X-Fused-Page` is read the same way `api_ai_image` reads it, and threaded
-    into `start_video` for the same reason.
+    into `start_video` for the same reason. `X-Fused-Source` is `api_ai_image`'s
+    twin too — see that route's docstring for why a render's raiser can
+    diverge from its click destination.
     """
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
     page = unquote(x_fused_page) if x_fused_page else ""
+    source = unquote(x_fused_source) if x_fused_source else page
 
     # Checked first, so an unknown option (`guidance`, say) is reported even
     # when another field is also wrong — see `_reject_unknown`. The wider,
@@ -2008,7 +2030,7 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
         # `image=` to `generate_and_save` at all.
         request["image"] = image_path
     try:
-        supervisor.start_video(model, request, job, page=page)
+        supervisor.start_video(model, request, job, page=page, source=source)
     except supervisor.SupervisorError as e:
         # 409 for the same reason a load does: the request was well-formed and
         # the answer is a fact about this machine, not a server fault.

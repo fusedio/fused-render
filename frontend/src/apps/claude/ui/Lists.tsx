@@ -20,7 +20,7 @@ import {
 } from "@platform/shadcn/ui/tabs";
 import type { Task } from "@platform/lib/api";
 import { TaskRowItem } from "@shell/ScheduleTaskViews";
-import { isDraftTask, isUpcomingLane, taskHref } from "@shell/tasks-lib";
+import { isDraftTask, taskHref, upcomingEditEntry } from "@shell/tasks-lib";
 import type { Artifact } from "../protocol/artifacts";
 import { ArtifactRow } from "./ArtifactRow";
 import {
@@ -33,6 +33,7 @@ import {
   rememberedTab,
 } from "./lists-visibility";
 import { paneChatUrl, taskPane } from "./list-rows";
+import { SCHEDULE_URL } from "../sched/scheduled";
 import { noteQueueClaim, reloadRecentTasks, seedSessionTask } from "./useRecentTasks";
 import { Snapshots } from "./Snapshots";
 import type { SnapshotsState } from "./useSnapshots";
@@ -100,24 +101,6 @@ export interface ListsProps {
   onFillDraft?(task: Task): void;
   onNavigate?(url: string): void;
   disabled?: boolean;
-  /**
-   * DROP THE UPCOMING LANE FROM "Recent chats" — drafts (`kind: "draft"`) and
-   * scheduled-for-later tasks alike, the same bucket `sortForList`/
-   * `groupByColumn` (shell/tasks-lib) file them under.
-   *
-   * ONE HOST ASKS FOR THIS: the explorer's Claude side panel (a file's
-   * `?_side=claude` sidebar and a folder's own preview pane) — the reader
-   * opened it to talk about the thing already on screen, not to be shown a
-   * queue of unstarted work sitting beside it. Every other host of this list
-   * (the landing, Tasks page cards wall, side peek, full-page chat) leaves the
-   * prop unset and keeps showing every lane exactly as before.
-   *
-   * Filtered here, not upstream in `useRecentTasks`, because it is a
-   * PRESENTATION choice about which host this is, not a fact about what the
-   * server sent — the same rows are still the right answer for a header, a
-   * seed or a title map built off them.
-   */
-  hideUpcoming?: boolean;
 }
 
 export function Lists({
@@ -130,7 +113,6 @@ export function Lists({
   onFillDraft,
   onNavigate,
   disabled,
-  hideUpcoming,
 }: ListsProps) {
   /**
    * Which list is showing is the BLOCK's state rather than the page's: leaving
@@ -163,16 +145,6 @@ export function Lists({
   );
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  /** The rows this host actually shows — `recent` itself, unless the host
-   *  asked to drop the Upcoming lane (`hideUpcoming`). Kept apart from `recent`
-   *  so a title map or a header built off the full read is unaffected by what
-   *  this ONE list happens to be hiding, and null passes straight through: a
-   *  filter has nothing to do to a skeleton. */
-  const shownRecent = useMemo(
-    () => (hideUpcoming && recent ? recent.filter((t) => !isUpcomingLane(t)) : recent),
-    [recent, hideUpcoming],
-  );
-
   const timeline = snaps?.timeline;
   const snapsFailed = !!snaps?.failed;
   // `undefined` is "this target has no panel" (a folder) and reads as zero;
@@ -188,7 +160,7 @@ export function Lists({
           : 0;
 
   const counts: ListCounts = {
-    recent: shownRecent === null ? null : shownRecent.length,
+    recent: recent === null ? null : recent.length,
     artifacts: artifacts === null ? null : artifacts.length,
     snaps: snapCount,
     snapsFailed,
@@ -251,22 +223,33 @@ export function Lists({
    * A LOCKED BLOCK REFUSES EVERY ROW (P4-23): no press and no href, so the
    * stretched link cannot navigate either.
    *
-   * AND A DRAFT ROW GOES NOWHERE AT ALL (Akshil, 2026-09-15). Both kinds used
-   * to be doors: a chat draft about another file hopped the HOST to that file's
-   * chat, and a task draft left the app for `/tasks?draft=<id>` and the modal
-   * there. Round 1 was right that a draft is not inert and wrong about what to
-   * do with it — a press on a list that sits directly under the landing's own
-   * composer should not move the page, least of all out of the app. The words
-   * are unsent words; the box they belong in is the one already on screen.
+   * AND AN UPCOMING ROW OPENS ITS CARD (Akshil, 2026-09-16). A DRAFT goes to the
+   * New task card on its own record, through the host — `onFillDraft` is handed
+   * the ROW and `list-rows.draftHref` decides the URL, so the press is the same
+   * one the Tasks page makes and there is exactly one of it to learn. A
+   * SCHEDULED-LATER row — not a draft, one message waiting — opens the Edit task
+   * card on that message, which is the same card the Tasks page opens for it,
+   * SESSION OR NO SESSION: a scheduled follow-up on a thread is still a message
+   * that has not gone out, and its row's press is still the card (Bugbot,
+   * PR #1180).
    *
-   * So every draft row is one gesture now: fill the composer, caret after the
-   * text, no URL change, no view change. `onFillDraft` is handed the ROW, and
-   * the host does the resolving — a chat draft's body has to be fetched, and a
-   * task draft's is already on the row (`list-rows.draftTextOf`).
+   * The two intervening rounds are worth naming so neither comes back. Round 1
+   * made a draft a door out of the app; round 2 made it no door at all ("fill
+   * the composer, caret after the text") — which read as the row doing nothing
+   * from any host but the landing, and left the row in the composer's OWN
+   * folder behaving differently from its neighbours. One record, one card, one
+   * press.
    *
-   * Neither `isChatDraftTask` nor `draft_id` is consulted here any more: the
-   * two kinds differ only in where their words come from, which is a question
-   * this list does not ask.
+   * Neither `isChatDraftTask` nor `draft_id` is consulted here: the two kinds of
+   * draft differ only in how their record is addressed, which is a question this
+   * list does not ask.
+   *
+   * …AND A QUEUED CHAT OPENS ITS CHAT (PR #1124, merged 2026-09-17). A message
+   * a reader typed into a composer and that is waiting behind somebody else's
+   * run in the same folder is not a draft and not a form: it has no record to
+   * edit and no card to edit it in, and the conversation IS the row. It is the
+   * one row with no session that still has a door, and `taskHref` is the whole
+   * test for it.
    */
   const pressFor = (task: Task): { href: string | null; onPress?: () => void } => {
     if (disabled) return { href: null };
@@ -274,30 +257,60 @@ export function Lists({
       if (!onFillDraft) return { href: null };
       return { href: null, onPress: () => onFillDraft(task) };
     }
-    // A CHAT THAT HAS NEVER RUN (the project queue). It has no session id, so
-    // neither door below can open it: it is opened by the ENTRY it is waiting
-    // as, through `chatUrl`'s `queued` param, and always as a navigation — there
-    // is no transcript to swap into place, and the pane has to mount knowing its
-    // leader (`ClaudeChat`'s `QUEUED_PARAM`). Its row is the ordinary row: same
-    // height, same columns, same place in the sort, with `queued` on its ring.
+    // A CHAT THAT HAS NEVER RUN (the project queue, PR #1124). It has no
+    // session id, so neither door below can open it: it is opened by the ENTRY
+    // it is waiting as, through `chatUrl`'s `queued` param, and always as a
+    // navigation — there is no transcript to swap into place, and the pane has
+    // to mount knowing its leader (`ClaudeChat`'s `QUEUED_PARAM`). Its row is
+    // the ordinary row: same height, same columns, same place in the sort, with
+    // `queued` on its ring.
+    //
+    // ASKED BEFORE THE CARD BELOW, and that order is the whole reconciliation
+    // of the two branches (merge, 2026-09-17). Such a row IS in the `queued`
+    // lane with one message waiting, so `upcomingEditEntry` would answer for it
+    // and send the press to the Edit card — taking the conversation away from
+    // the one row whose entire content is a conversation. `taskHref` is the
+    // narrower question and therefore the earlier one; it is also the order the
+    // Tasks page itself reads these two in (`activate`'s thread arm before its
+    // edit arm, tasks-lib `taskHref`).
     if (!task.session_id) {
       // ONE DOOR PER TASK, and it is `taskHref`'s (shell/tasks-lib): a row is a
       // chat to open only when it is `queued`, was put in the line by a CHAT
       // (`entry_origin`), and names a folder — an Upcoming one-off and a
-      // scheduled FORM are also `pending:<entry>` rows and must stay inert
-      // here, as they are on the Tasks page (merge audit, 2026-09-16).
-      const href = taskHref(task);
-      if (!href) return { href: null };
-      return {
-        href,
-        onPress: () => {
-          // Seeded like every other navigating arm below, so the header on
-          // the pane that opens does not wait out the whole listing.
-          seedSessionTask(task);
-          onNavigate?.(href);
-        },
-      };
+      // scheduled FORM are also `pending:<entry>` rows and fall through to the
+      // card below, as they do on the Tasks page.
+      const queued = taskHref(task);
+      if (queued) {
+        return {
+          href: queued,
+          onPress: () => {
+            // Seeded like every other navigating arm below, so the header on
+            // the pane that opens does not wait out the whole listing.
+            seedSessionTask(task);
+            onNavigate?.(queued);
+          },
+        };
+      }
     }
+    // A MESSAGE WAITING TO GO OUT — WHETHER OR NOT IT HAS A THREAD BEHIND IT
+    // (Bugbot, PR #1180). The interesting content of such a row is the
+    // instruction that has NOT run, and the card that can change or stop it is
+    // the only thing its press could mean; a transcript answers a different
+    // question. `upcomingEditEntry` owns all three conditions — the lane,
+    // exactly one message, which entry — and it has never asked about a
+    // session, which is why the Tasks List and Board open the card for a
+    // scheduled follow-up on an existing thread. Asking here as well is what
+    // keeps Recent chats from being the one list that disagrees.
+    //
+    // NULL FALLS THROUGH, and on a row with a session that means the
+    // transcript: a repeating task with past runs, or a row the schedule names
+    // no pending entry for, is a thread to read rather than a message to edit.
+    const entry = onNavigate ? upcomingEditEntry(task) : null;
+    if (entry) {
+      const href = `${SCHEDULE_URL}?edit=${encodeURIComponent(entry)}`;
+      return { href, onPress: () => onNavigate?.(href) };
+    }
+    if (!task.session_id) return { href: null };
     const pane = taskPane(task, file);
     if (!pane) {
       return {
@@ -333,7 +346,7 @@ export function Lists({
 
   const recentPanel = (
     <div ref={listRef} onKeyDown={onRowKeys}>
-      {shownRecent === null ? (
+      {recent === null ? (
         <RecentSkeleton />
       ) : (
         // The Tasks page's own frame around the Tasks page's own rows: the
@@ -341,7 +354,7 @@ export function Lists({
         // off it (styles/tasks.css), and without it the rows read as a column
         // of floating lines rather than as one list.
         <div className="tasks-list-frame">
-          {shownRecent.map((task) => (
+          {recent.map((task) => (
             <TaskRowItem
               key={task.key}
               task={task}

@@ -325,6 +325,8 @@ def test_stuck_sending_is_reported_not_retried(target, spawned):
     assert entry["state"] == schedule.ERROR
     assert "interrupted" in entry["error"]
     assert spawned == []  # never re-sent
+    # Never reached `_send` (the claim died before the spawn), so there is no
+    # `started` to see either — only the failure the sweep manufactured.
     assert [e["kind"] for e in schedule.event_log()] == [schedule.EVENT_FAILED]
 
 
@@ -357,6 +359,8 @@ def test_spawn_failure_agrees_everywhere(client, target, monkeypatch):
     assert stored["error"] == "no claude installed"
     job = _job(entry["id"])
     assert job["state"] == "error"
+    # `spawn_helper` itself failed, so `_send` never reached the `started`
+    # emission — only the failure this test is named for.
     assert [e["kind"] for e in schedule.event_log()] == [schedule.EVENT_FAILED]
     key = tasks_store.pending_key(entry["id"])
     row = {t["key"]: t for t in _board(client)}[key]
@@ -383,7 +387,7 @@ def test_turn_done_ok_all_surfaces(client, target, spawned):
     assert stored["claude_session_id"] == "sess-ok"
     job = _job(entry["id"])
     assert job["state"] == "done" and job["detail"] == "finished"
-    assert [e["kind"] for e in schedule.event_log()] == [schedule.EVENT_DONE]
+    assert [e["kind"] for e in schedule.event_log()] == [schedule.EVENT_STARTED, schedule.EVENT_DONE]
     q = schedule.queue()
     assert q["queued"] == [] and q["running"] == []
     assert _board_status(client, "sess-ok") == "done"
@@ -398,7 +402,7 @@ def test_turn_done_error_all_surfaces(client, target, spawned):
     stored = _entry()
     assert stored["turn"] == "failed" and stored["error"] == "tool exploded"
     assert _job(entry["id"])["state"] == "error"
-    assert [e["kind"] for e in schedule.event_log()] == [schedule.EVENT_FAILED]
+    assert [e["kind"] for e in schedule.event_log()] == [schedule.EVENT_STARTED, schedule.EVENT_FAILED]
     row = {t["key"]: t for t in _board(client)}["sess-bad"]
     assert row["status"] == "blocked" and row["failed"] is True
 
@@ -710,7 +714,7 @@ def test_events_emitted_once_and_ack_is_monotonic(target, spawned):
     schedule._turn_tick(dict(_entry()), "r-1", DummyAgent(),
                         {"session_id": "s", "done": True})
     events = schedule.undelivered_events()
-    assert [e["kind"] for e in events] == [schedule.EVENT_DONE]
+    assert [e["kind"] for e in events] == [schedule.EVENT_STARTED, schedule.EVENT_DONE]
     schedule.ack_events(events[-1]["id"])
     assert schedule.undelivered_events() == []
     schedule.ack_events(0)  # replayed / out-of-order ack cannot re-arm

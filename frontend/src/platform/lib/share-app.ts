@@ -1,18 +1,44 @@
-// Share an app as a public link — the client half of fused_render/share_app.py,
-// plus the one-request store the ShareAppModal host reads.
+// Share an app — the client half of fused_render/share_app.py, plus the
+// one-request store the ShareAppModal host reads.
+//
+// ONE entry, two ways out. Every surface that used to offer "Export App
+// File" and "Share…" side by side now offers Share alone, and the dialog
+// behind it holds both routes as two cards: a public link on the user's Fused
+// account, and the `.fused` file download (SPEC §43). The two produce the
+// SAME artifact — the link route uploads what the file route saves — so
+// they belong on one sheet, the way Figma/Notion put "copy link" and
+// "export" behind one Share button.
 //
 // The store exists because two of the four places a Share entry lives are
 // MENUS (the /apps card's right-click menu is a plain function of the AppInfo;
 // the explorer's kebab is a list of entries) that cannot own a dialog. So every
 // entry — menu item, hover chip, header button — calls `openShareApp(app,
-// captureEl)`, and ONE `ShareAppHost` mounted in the shell renders the dialog
-// for whichever request is current. Same shape as the export entry: the
-// `ExportableApp` slice is all the dialog needs, and `captureEl` is the
-// no-flash screenshot source appShot documents (pixels that ARE the app now).
+// opts)`, and ONE `ShareAppHost` mounted in the shell renders the dialog for
+// whichever request is current. The `ExportableApp` slice is all the dialog
+// needs.
+//
+// NO SCREENSHOT. Both routes ship the folder's authored `preview.png` or none
+// (the server bakes it in). Until 2026-09-18 a folder without one got a native
+// screen shot at share time (appShot.ts's header has the why-not); App
+// Doctor's `preview` check is where a missing thumbnail surfaces now.
+//
+// `opts.file` is the FILE route's target when it differs from `app`: the app
+// page and the explorer kebab export "at the selected version" — a resolved
+// snapshot's own extracted tree under a version-suffixed name — while the link
+// route is LIVE ONLY (the shared canvas is named after the app's id and always
+// carries "the app"; publishing an old commit under it would silently downgrade
+// every link already sent). A request for a snapshot therefore passes
+// `link: false` and the dialog's link card explains itself instead of acting.
 import { useEffect, useState } from "react";
 import { getJson, postJson } from "./api";
-import type { ExportableApp } from "./appShot";
-import { captureAppPreview } from "./appShot";
+
+// The slice of AppInfo the share routes read — structural, so the app page
+// header (which has a folder + entry page but no listing row) can open the
+// sheet without inventing a fake AppInfo.
+export interface ExportableApp {
+  path: string;
+  name: string;
+}
 
 export interface SharedAppRecord {
   app_id: string;
@@ -75,22 +101,12 @@ export const removeShare = (path: string) =>
   );
 
 /**
- * Publish (or update) the share. Multipart like the export POST: the optional
- * screenshot becomes the file's `preview.png`, which the shared landing page
- * shows above the README — so it is worth the capture here even more than for
- * a download. A capture that fails publishes plain, same contract as export.
+ * Publish (or update) the share. The server reads the folder's own
+ * `preview.png` (if any) for the landing page's still above the README.
  */
-export async function publishShare(
-  app: ExportableApp,
-  captureEl?: Element | null,
-): Promise<SharedAppRecord> {
-  const preview =
-    !app.preview_image && app.entry_html
-      ? await captureAppPreview(app.entry_html, captureEl)
-      : undefined;
+export async function publishShare(app: ExportableApp): Promise<SharedAppRecord> {
   const form = new FormData();
   form.set("path", app.path);
-  if (preview) form.set("preview", preview, "preview.png");
   const res = await fetch("/api/share/publish", {
     method: "POST",
     headers: { "X-Fused": "1" },
@@ -110,9 +126,23 @@ export async function publishShare(
 
 // -- the open-request store ------------------------------------------------------
 
+export interface ShareAppOptions {
+  /** The `.fused` download's target when it is not `app` itself (a snapshot's
+   *  extracted tree under a version-suffixed name). Defaults to `app`. */
+  file?: ExportableApp;
+  /** Whether the public-link route applies. False for a snapshot: links
+   *  always publish the live app. Defaults to true. */
+  link?: boolean;
+  /** The version the file route exports ("Live", "v7", a short sha) — named
+   *  on the Download button when it is not the live app. */
+  versionLabel?: string;
+}
+
 export interface ShareAppRequest {
   app: ExportableApp;
-  captureEl: Element | null;
+  file: ExportableApp;
+  link: boolean;
+  versionLabel: string | null;
   /** Bumped per request so opening the same app twice remounts the dialog. */
   seq: number;
 }
@@ -125,11 +155,16 @@ function emit() {
   for (const l of listeners) l(current);
 }
 
-/** Open the share dialog for `app`. `captureEl` follows appShot's contract:
- *  an element whose pixels ARE the app right now, or nothing. */
-export function openShareApp(app: ExportableApp, captureEl?: Element | null): void {
+/** Open the share dialog for `app`. */
+export function openShareApp(app: ExportableApp, opts: ShareAppOptions = {}): void {
   seq += 1;
-  current = { app, captureEl: captureEl ?? null, seq };
+  current = {
+    app,
+    file: opts.file ?? app,
+    link: opts.link ?? true,
+    versionLabel: opts.versionLabel ?? null,
+    seq,
+  };
   emit();
 }
 

@@ -44,6 +44,7 @@ DESIRED
 - **Failures persist until dismissed.** An `error` or `cancelled` row is never cleared on a clock regardless of whether it has a target.
 - A 5s auto-clear on job rows would fire the permanent server-side `dismiss()`, and `fused.watchJob` gives up the moment a row disappears — so a timer would break a page still watching its own job, not merely tidy the panel.
 - **`page`'s spoof-proofing is preserved.** A page-raised job's value continues to come from the `X-Fused-Page` header rather than the request body (`server/routers/jobs.py:61-64`), so a reporter still cannot claim a destination it does not own.
+- **D663's no-timer rule is untouched, and presence-based suppression (SPEC-quiet-notifications.md §2b) is not a second version of it.** A terminal job whose `state` is `done`, whose `effectiveTier` is not `attention`, and whose `page` is open somewhere (`platform/lib/presence.ts`'s `isOpenAnywhere`) is excluded from `jobRows`/`popupJobs`/`popupTick`/`terminalNotifications` (`isRecentOnly` in `platform/lib/jobs.ts`) — but this fires once, at read time, from a live fact about where the user already is, not from a clock counting down after the row was shown. Nothing is dismissed server-side; the row stays exactly as `fused.watchJob` left it, and the very next read (a page navigation, the presence entry going stale) can put it back in view. `error`/`cancelled` rows are excluded from this check entirely via `effectiveTier`'s existing promotion, so "failures persist until dismissed" above is unaffected.
 - Existing action buttons and the per-row ✕ keep working as nested controls inside a now-clickable row body; a keydown on a nested control must not activate the row (the guard already in `NotificationCard`).
 - `TERMINAL_VISIBLE_CAP`'s fold, the chip's count and tone, and the localStorage dismissal keys keep their current behavior.
 
@@ -54,7 +55,7 @@ DESIRED
 - **Native OS notifications.** None exist in the codebase, and `fused_render/app.py:362-363` records that as a deliberate decision.
 - **Whole-row clicks on repo rows.** Their buttons already satisfy the actionability rule.
 - **Per-producer changes to what a job's title or status text says** — only its destination is in scope.
-- **`sys:schedule:*` rows**, which never reach the panel and keep their existing read-gated `FINISHED_TTL_S` age-out.
+- **`sys:schedule:*` rows**, which never reach the panel and keep their existing read-gated `FINISHED_TTL_S` age-out. **This is unchanged by SPEC-quiet-notifications.md §5** — §5 does not route a task/schedule job into `jobRows`/Activity (D661's `SCHEDULE_JOB_PREFIX` exclusion stays exactly as written); it gives a task's lifecycle a wholly separate notification path (`schedule-toast.ts`/`scheduleEvents.ts` and `task-status-notify.ts`/`useTaskStatusNotify.ts`) that calls `notify()` directly rather than going through a job row at all. See DECISIONS-actionable-notifications.md's "D661 partially reversed" entry.
 ## Producers and their destinations (settled)
 
 `fused_render/shell/onboarding.py` only calls `jobs.list_jobs()`; it never

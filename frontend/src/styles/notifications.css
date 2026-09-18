@@ -796,6 +796,19 @@
   opacity: 0.62;
 }
 
+/* §3 (SPEC-quiet-notifications.md): a multi-member group row with at least
+   one failing/cancelled member — the group-level twin of the per-job
+   TerminalGlyph's error coloring, but on the row itself (a group row's own
+   "N of M done" subline has no per-row glyph slot to carry it otherwise, and
+   a failing member elsewhere in the group must never be findable only by
+   reading every member's own status). Left border only, `--error` token
+   (never a literal hex — see `tests/test_theme.py`), so it composes with
+   `.dl-row-open`'s existing hover/focus treatment rather than fighting it. */
+.dl-row.dl-row-group-attention {
+  border-left: 3px solid var(--error);
+  padding-left: 7px;
+}
+
 .dl-row-head {
   display: flex;
   align-items: baseline;
@@ -896,12 +909,20 @@
 }
 
 /* Who raised this row (`Job.origin`, JobRow's `.dl-origin`) — "Playground",
-   "Local models", "Benchmark". Same treatment as `.dl-model` right above
+   "Local models", "Benchmark". Same base treatment `.dl-model` above uses
    (11px, `--fg-muted`, one line, ellipsised) since both are dimmed
    attribution captions on their own line, never competing with the head or
    the status line for width. Absent entirely when `job.origin` is "" —
    `NotificationCard` renders no element for it at all, so this rule never
-   needs to account for an empty line taking up the margin below. */
+   needs to account for an empty line taking up the margin below.
+   DEFECT 3(a) (2026-09-17): this element MOVED, in `NotificationCard.tsx`,
+   from below `.dl-model` (a card used to read title, then model, then the
+   page name buried on a third line) to ABOVE `.dl-row-head` — an eyebrow
+   naming the emitting page BEFORE the title, per the user's own ask ("a top
+   row/section for the emitting page context"). `.dl-eyebrow` (right below)
+   is the additive class this moved instance also carries; `.dl-origin`'s own
+   rule is untouched so nothing else that reads this class name (there is no
+   other caller) has to change. */
 .dl-origin {
   margin-bottom: 5px;
   overflow: hidden;
@@ -909,6 +930,19 @@
   white-space: nowrap;
   font-size: 11px;
   color: var(--fg-muted);
+}
+
+/* The eyebrow position specifically: it is now the FIRST thing in the row,
+   sitting directly above `.dl-row-head`'s title line rather than below the
+   model line, so it needs no extra top margin (the row's own `.dl-row`
+   padding already provides the gap to the card edge) — only the bottom
+   margin `.dl-origin` already declares, which is what separates it from the
+   title below. No font-size/colour override here: an eyebrow this dim and
+   this small already matches `.dl-model`'s own attribution treatment, and a
+   second distinct caption style beside it would read as two different kinds
+   of dimmed text for no reason. */
+.dl-eyebrow {
+  margin-top: 0;
 }
 
 /* THE MODEL ROW'S FIGURES, ON THEIR OWN LINE — the same device D596 used for

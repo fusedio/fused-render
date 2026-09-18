@@ -302,6 +302,26 @@ def api_appfile_clone(body: dict = Body(...), x_fused: str | None = Header(defau
         return _error(str(exc))
 
 
+@router.post("/api/appfile/overwrite")
+def api_appfile_overwrite(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Re-copy the ``.fused`` at ``file`` OVER its existing local copy — the
+    preview header's "Clone & overwrite", shown only once a copy exists and
+    only after the user confirmed. Merge semantics: payload files replace
+    their counterparts, everything else in the copy (``.venv``, ``.fused``,
+    ``.git``, anything the export left home) stays. Answers the clone shape
+    plus ``overwritten``. X-Fused-guarded: it writes over the user's edits."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    file = str(body.get("file") or "")
+    if not file or not os.path.isabs(file):
+        return _error("file must be an absolute .fused file path")
+    try:
+        return appfile.overwrite_app_file(file)
+    except appfile.AppFileError as exc:
+        return _error(str(exc))
+
+
 @router.post("/api/appfile/open")
 def api_appfile_open(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """Extract the ``.fused`` at ``file`` (or re-use its cached extract) and

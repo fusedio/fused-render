@@ -2388,6 +2388,48 @@ def test_a_queued_send_carries_the_chat_drafts_name_and_takes_the_draft_with_it(
             if drafts.is_new_chat_key(k)] == []
 
 
+def test_a_queued_send_from_a_task_draft_carries_its_name_and_takes_the_form(
+        client, projects_dir, folders, monkeypatch, flag):
+    """THE SAME SPEND, FOR THE OTHER DRAFT SHAPE. A session-less composer can be
+    typing into a TASK draft rather than a `new:<file>` chat draft, and then the
+    key its send carries is that form's own listing key (`draft:<id>`). Queueing
+    it is the same event scheduling the form is — the row keeps going under
+    `pending:<entry-id>` — so it goes through the same spend
+    (`schedule_api.spend_task_draft`) and mints no second number. Before that
+    branch the key fell through `drafts.chat_key`, which refuses the shape: the
+    number stayed on a row nobody would ever read again and the entry got a
+    fresh one."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    _holders(monkeypatch, {alpha: "sess-holder"})
+
+    record, _canonical = drafts.put_task(
+        "draft-00000001", {"title": "half a thought", "target": alpha})
+    assert record is not None
+    key = drafts.task_key("draft-00000001")
+    named = _rows(client)[key]
+    assert named["kind"] == "draft"
+    number = named["task_id"]
+    assert number.startswith("TASK-")
+
+    r = _post(client, "/api/tasks/queue/admit",
+              {"project": alpha, "message": "half a thought", "draft_key": key})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["run"] is False
+    assert body["task_id"] == number, "the name the form wore, in the answer"
+    pending = tasks_store.pending_key(body["entry"]["id"])
+    assert body["key"] == pending
+    rows = _rows(client)
+    assert rows[pending]["task_id"] == number
+    assert rows[pending]["status"] == "queued"
+    # THE FORM IS OVER: no row, no record, and no number left on its key.
+    assert key not in rows
+    assert drafts.get_task("draft-00000001") is None
+    assert [k for k in tasks_store.task_ids() if drafts.task_draft_id(k)] == []
+
+
 def test_a_queued_send_from_a_chat_that_has_a_session_moves_no_number(
         client, projects_dir, folders, monkeypatch, flag):
     """A chat that HAS a session is numbered under that session, and this

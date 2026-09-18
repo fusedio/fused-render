@@ -1,8 +1,8 @@
 // The app page — `/apps/<folder path>` (D488, widened 2026-08-26): one app
 // folder — a workspace app under any shelf, or a linked app anywhere on disk —
 // as a place rather than as a folder. Five tabs, named by the `_tab` query
-// param (absent = overview; `?_tab=tasks`, `?_tab=files`, `?_tab=api` —
-// current-apps-lib):
+// param (absent = overview; `?_tab=tasks`, `?_tab=files`, `?_tab=api`,
+// `?_tab=doctor` — current-apps-lib):
 //
 //   Overview  the app itself, live in a frame — USE it here, the way the
 //             explorer's file view runs an entry page (`/render?path=`, with no
@@ -17,6 +17,10 @@
 //   API       every .py in the folder as an endpoint, Swagger-style
 //             (shell/AppApi.tsx): entrypoint, parameters as a form, Execute,
 //             response — the api template's view, for the whole app at once.
+//   App Doctor the share-readiness checklist (platform/ui/AppDoctorModal.tsx's
+//             `AppDoctorPanel`) — used to be a header button opening a
+//             dialog; it is a place on this page now, and the trigger carries
+//             the header dot it used to.
 //
 // A VERSION PICKER (AppVersionPicker.tsx), not a sixth Git tab: this page used
 // to frame the folder's `git` template as a Git tab, offered only inside a
@@ -24,8 +28,9 @@
 // staging, committing, branches and push/pull are not this page's job; they
 // stay in the explorer's folder view, where the `git` template still lives.
 // What replaces it is read-only and page-wide: a dropdown beside the tab
-// strip puts ALL THREE tabs above (Overview/Files/API — Tasks is unaffected,
-// it has no notion of a commit) on a past commit of the app folder, via the
+// strip puts THREE tabs above (Overview/Files/API — Tasks is unaffected, it
+// has no notion of a commit, and App Doctor always checks the live folder,
+// see AppDoctorPanel) on a past commit of the app folder, via the
 // same `_snapshot` shell URL param and extraction machinery
 // (`fused_render/server/routers/git_snapshot.py`) the explorer's own snapshot
 // preview already uses. `useAppPageSnapshot.ts` holds this page's own
@@ -70,13 +75,12 @@ import { snapshotFrameSrc } from "@platform/lib/snapshot-param";
 import {
   AppWindow,
   Files,
-  Download,
   ListTodo,
   Share2,
+  Stethoscope,
   Webhook,
   type LucideIcon,
 } from "lucide-react";
-import { exportAppFile, notifyExportSaved } from "@platform/lib/appShot";
 import { openShareApp } from "@platform/lib/share-app";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppStar } from "@platform/ui/AppStar";
@@ -84,7 +88,7 @@ import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
 import { applyIconPick } from "@platform/lib/app-icon";
 import { notify } from "@platform/lib/notifications";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
-import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
+import { AppDoctorPanel } from "@platform/ui/AppDoctorModal";
 import { AppDoctorStatusDot } from "@platform/ui/AppDoctorStatusDot";
 import { useAppDoctorChecks } from "@platform/ui/useAppDoctorChecks";
 import { Button } from "@platform/shadcn/ui/button";
@@ -189,20 +193,12 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
       return frameSrc ? (
         <div className="app-page-frame-wrap">
           <iframe
-            // Keyed on the src: a snapshot -> Live switch must mount a NEW
-            // element, or the `loaded` mark below survives from the old
-            // document and the export shoots a frame mid-navigation.
+            // Keyed on the src: a snapshot -> Live switch mounts a NEW
+            // element rather than navigating the old one in place.
             key={frameSrc}
             className="app-page-frame"
             src={frameSrc}
             title={`App: ${slug}`}
-            // The export's capture-source contract (appShot.exportAppFile) is
-            // "pixels that ARE the app right now", which a bounding rect
-            // cannot tell; this mark is how handleExport knows the frame has
-            // a document painted in it rather than an empty box.
-            onLoad={(e) => {
-              e.currentTarget.dataset.loaded = "1";
-            }}
           />
         </div>
       ) : entryPath ? (
@@ -242,6 +238,14 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     // Not keepMounted: the open row is in the URL (`?ep=`), and a return costs
     // one folder inspection — form values and responses are session scratch.
     render: ({ dir, snapshot }) => <AppApi dir={dir} snapshot={snapshot} />,
+  },
+  doctor: {
+    label: "App Doctor",
+    Icon: Stethoscope,
+    // Not keepMounted: the report is fetched fresh on every mount, so coming
+    // back to the tab IS the re-run (the panel also offers one in place).
+    // Ignores the version picker on purpose — see AppDoctorPanel.
+    render: ({ dir }) => <AppDoctorPanel dir={dir} />,
   },
 };
 
@@ -345,6 +349,13 @@ export default function AppPage({
       notify({
         title: "Could not change the icon: " + (e as Error).message,
         tone: "error",
+        // Opt-in only (SPEC-quiet-notifications.md §2a) — this app's own
+        // page already shows the icon that didn't change, so a suppression
+        // check is meaningful here. A no-op today (this is always
+        // tone:"error", which `isSuppressed` never suppresses), but it keeps
+        // the two "raised on this app's own page" call sites the spec
+        // named consistent with each other.
+        source: dir,
       });
     }
     loadIcon();
@@ -433,31 +444,27 @@ export default function AppPage({
   const home = config.home.replace(/\\/g, "/");
   const entry = resolved?.kind === "app" ? resolved.entry : null;
 
-  // App Doctor: the share-readiness checklist for this folder, opened from the
-  // header beside "Open in explorer". It stands where the fused-API "Migrate" button
-  // stood, and subsumes it — a stale `fused-api-version` tag is one row of the
-  // checklist now, beside the things migrate never covered (a leaked key, a
-  // path tied to one machine, stray generated files, an uncommitted tree). The
-  // dialog owns the whole flow: it runs the checks, and its "Explain and fix"
-  // creates the one task that hands the report to a session
-  // (platform/ui/AppDoctorModal).
-  const [doctorOpen, setDoctorOpen] = useState(false);
-  useEffect(() => {
-    setDoctorOpen(false);
-  }, [dir]);
+  // App Doctor: the share-readiness checklist is the `doctor` tab. This copy
+  // of the checks only colours the dot on that tab's trigger; the panel
+  // fetches its own report when it mounts (platform/ui/AppDoctorModal). It
+  // stands where the fused-API "Migrate" button stood, and subsumes it — a
+  // stale `fused-api-version` tag is one row of the checklist now.
   // Fetched after first paint, never blocking it — see useAppDoctorChecks.
-  // Opening the modal re-fetches its own copy; this one is only for the
-  // header dot and is never reused to seed the dialog.
   const doctorChecks = useAppDoctorChecks(entry ? dir : null);
 
-  // ---- export "at the selected version" -------------------------------------
+  // ---- share "at the selected version" --------------------------------------
   //
-  // The picker only ever writes/reads `_snapshot`; this is the one place that
-  // turns "which version is selected" into "which folder to export" — a
-  // resolved snapshot's OWN extracted tree (`snap.dir`, never `snap.app_dir`:
-  // that is the LIVE folder the sha resolved FROM, and exporting it would
-  // silently ship the live app labelled as the picked commit) when one is
-  // picked, the live app folder otherwise.
+  // One Share button opens the unified sheet (ShareAppModal): the public link
+  // and the `.fused` download as two cards. The picker only ever writes/reads
+  // `_snapshot`; this is the one place that turns "which version is selected"
+  // into "which folder the FILE card exports" — a resolved snapshot's OWN
+  // extracted tree (`snap.dir`, never `snap.app_dir`: that is the LIVE folder
+  // the sha resolved FROM, and exporting it would silently ship the live app
+  // labelled as the picked commit) when one is picked, the live app folder
+  // otherwise. The LINK card is live only — the shared canvas is named after
+  // the app's id and always carries "the app", so publishing an old commit
+  // under it would silently downgrade every link already sent — and the sheet
+  // says so for a snapshot rather than hiding the route.
   //
   // Gated on `snapshot.pending`/`snapshot.error` (not just disabled — the
   // click handler also refuses) for the same reason every frame/fetch on this
@@ -467,52 +474,19 @@ export default function AppPage({
   // version being resolved — that is exactly the class of bug this branch
   // has already had several of.
   const versionLabel = useAppVersionLabel(dir, snapshot.sha);
-  const [exporting, setExporting] = useState(false);
-  const exportDisabled = exporting || snapshot.pending || snapshot.error;
-  const handleExport = async () => {
-    if (exportDisabled) return;
-    setExporting(true);
-    try {
-      const isLive = snapshot.sha === null;
-      const exportPath = snapshot.snap ? snapshot.snap.dir : dir;
-      // The filename carries the version so an exported v7 sitting beside a
-      // live export in Downloads is never ambiguous about which is which.
-      const exportName = isLive ? slug : `${slug}-${versionLabel}`;
-      // The Overview frame IS the running app, so when it is the visible tab
-      // and has a document loaded it is the capture source: the export shoots
-      // the pixels already on screen, nothing navigates, nothing flashes.
-      // Without it `exportAppFile` builds its stage — a full-viewport scrim
-      // plus a fresh reload of the entry for ~1.5s — which is exactly the
-      // flash this avoids. Any other tab, or a frame still loading, still
-      // falls through to the stage (any picture beats no thumbnail).
-      const frame = document.querySelector<HTMLIFrameElement>(
-        ".app-page-overview:not(.is-hidden) .app-page-frame",
-      );
-      const captureEl = isLive && frame?.dataset.loaded === "1" ? frame : null;
-      const realPath = await exportAppFile(
-        {
-          path: exportPath,
-          name: exportName,
-          // A preview capture is only attempted for a LIVE export. For a
-          // snapshot, `exportAppFile`'s stage fallback would reload the ENTRY
-          // PAGE'S LIVE copy to shoot it — a screenshot of the wrong era baked
-          // into a file labelled as the old commit. Omitting `entry_html` here
-          // skips preview capture entirely rather than risk that; the
-          // snapshot export ships with no preview.png, which
-          // `downloadAppFile` already handles.
-          entry_html: isLive ? entry ?? undefined : undefined,
-        },
-        captureEl,
-      );
-      notifyExportSaved(exportName, realPath);
-    } catch (e) {
-      notify({
-        title: "Could not export " + slug + ": " + (e as Error).message,
-        tone: "error",
-      });
-    } finally {
-      setExporting(false);
-    }
+  const shareDisabled = snapshot.pending || snapshot.error;
+  const handleShare = () => {
+    if (shareDisabled) return;
+    const isLive = snapshot.sha === null;
+    const exportPath = snapshot.snap ? snapshot.snap.dir : dir;
+    // The filename carries the version so an exported v7 sitting beside a
+    // live export in Downloads is never ambiguous about which is which.
+    const exportName = isLive ? slug : `${slug}-${versionLabel}`;
+    openShareApp({ path: dir, name: slug }, {
+      file: { path: exportPath, name: exportName },
+      link: isLive,
+      versionLabel,
+    });
   };
 
   return (
@@ -565,18 +539,6 @@ export default function AppPage({
         </div>
         {entry && (
           <div className="app-page-actions">
-            {/* Every app gets this, current or not: what an app about to be
-                shared needs checked is never only its API version. */}
-            <Button
-              size="sm"
-              className="app-page-doctor"
-              variant="outline"
-              title="Check this app before you share it: leaked credentials, paths tied to this machine, stray generated files, uncommitted work, a stale fused API version"
-              onClick={() => setDoctorOpen(true)}
-            >
-              App Doctor
-              <AppDoctorStatusDot checks={doctorChecks} />
-            </Button>
             {/* The app's entry page in the EXPLORER — sidebar, crumb, header
                 and all. This button used to open the chrome-free embed in a
                 new tab; the explorer's own header now carries a fullscreen
@@ -591,58 +553,30 @@ export default function AppPage({
             >
               Open in explorer
             </Button>
-            {/* Exports the folder AT THE PICKER'S SELECTED VERSION — the live
-                folder for "Live", the resolved snapshot's own extracted tree
-                for a commit (see the `handleExport` comment above). Disabled
-                through the same pending/error window every other read on
-                this page already gates on, so a click mid-resolve can never
-                silently export the wrong era. */}
+            {/* ONE Share: the sheet behind it holds both the public link and
+                the .fused download (see the `handleShare` comment above).
+                Disabled through the same pending/error window every other
+                read on this page already gates on, so a click mid-resolve
+                can never silently export the wrong era. */}
             <Button
               size="sm"
               variant="outline"
-              className="app-page-export"
-              disabled={exportDisabled}
+              className="app-page-share"
+              disabled={shareDisabled}
               title={
                 snapshot.pending
                   ? "Waiting for this version to finish loading"
                   : snapshot.error
                     ? "This version failed to load; retry it from the version picker"
                     : versionLabel === "Live"
-                      ? "Export the live app as a .fused file"
-                      : `Export the app as of ${versionLabel} as a .fused file`
+                      ? "Share the app — public link or .fused file"
+                      : `Share the app as of ${versionLabel} as a .fused file`
               }
-              onClick={handleExport}
+              onClick={handleShare}
             >
-              {exporting ? "Exporting…" : "Export"}
-              <Download data-icon="inline-end" />
+              Share
+              <Share2 data-icon="inline-end" />
             </Button>
-            {/* Export's sibling: the same .fused, published to the user's
-                Fused account as a public page (share_app.py). LIVE ONLY —
-                the shared canvas is named after the app's id and always
-                carries "the app", so publishing an old commit under it would
-                silently downgrade every link already sent. The Overview
-                frame is the capture source under the same rule as Export. */}
-            {versionLabel === "Live" && (
-              <Button
-                size="sm"
-                variant="outline"
-                className="app-page-share"
-                disabled={snapshot.pending || snapshot.error}
-                title="Share the live app as a public link"
-                onClick={() => {
-                  const frame = document.querySelector<HTMLIFrameElement>(
-                    ".app-page-overview:not(.is-hidden) .app-page-frame",
-                  );
-                  openShareApp(
-                    { path: dir, name: slug, entry_html: entry ?? undefined },
-                    frame?.dataset.loaded === "1" ? frame : null,
-                  );
-                }}
-              >
-                Share
-                <Share2 data-icon="inline-end" />
-              </Button>
-            )}
           </div>
         )}
       </header>
@@ -655,13 +589,6 @@ export default function AppPage({
           onClose={() => setIconAnchor(null)}
         />
       )}
-      {/* The checklist, and the task that fixes it. It reports its own errors
-          inside the dialog — a failure to create the fix task is about the
-          dialog you are standing in, not about this page. */}
-      {doctorOpen && (
-        <AppDoctorModal dir={dir} onClose={() => setDoctorOpen(false)} />
-      )}
-
       <div className="app-page-body">
         {/* The tab strip and the version picker share one row: the picker is
             page-wide state (task 3 puts all three visible tabs on the
@@ -696,7 +623,18 @@ export default function AppPage({
                       />
                     }
                   >
-                    <Icon data-icon="inline-start" />
+                    {id === "doctor" ? (
+                      // The at-a-glance signal the old header button carried:
+                      // worst failing severity, neutral while unknown. It sits
+                      // as a badge on the icon's top-right corner (owner's
+                      // brief), not after the label.
+                      <span className="app-page-doctor-mark">
+                        <Icon data-icon="inline-start" />
+                        <AppDoctorStatusDot checks={doctorChecks} />
+                      </span>
+                    ) : (
+                      <Icon data-icon="inline-start" />
+                    )}
                     {label}
                   </TabsTrigger>
                 );

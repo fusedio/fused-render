@@ -36,6 +36,7 @@
 // status is re-derived, no lane membership is re-decided (taskColumn still asks
 // the server), and every key is a time the server itself sent.
 import type { Task, TaskMessage, TaskPulseTask } from "@platform/lib/api";
+import { labelForSource } from "@platform/lib/format";
 // Imported as well as re-exported below: `sortLane` reads it, and a bare
 // `export ... from` binds nothing in this module's own scope.
 import {
@@ -680,6 +681,22 @@ export const DRAFT_CHIP = "Draft";
  * border, sized to the id beside it). No new CSS primitive: a second chip shape
  * for a second kind of note is how a row grows marks nobody can tell apart.
  */
+/**
+ * IS THIS ROW'S DRAFT IN THE READER'S HANDS RIGHT NOW (Akshil, 2026-09-17,
+ * item 7)? The side peek opens a task's chat, and that chat's composer LOADS
+ * the task's unsent message — so while the peek is open on this row, the ✎
+ * Draft chip, the draft line and the ring's dot say something the reader is
+ * already looking at, one pane to the right. Same rule as the Explorer
+ * landing: never list what the composer holds. Only a row with a session can
+ * be peeked, and only a row with a draft has anything to hide.
+ */
+export function draftHeldByPeek(
+  task: Pick<Task, "session_id" | "draft">,
+  peeked: boolean,
+): boolean {
+  return peeked && !!task.session_id && !!task.draft;
+}
+
 export function draftTag(task: Task): OutcomeTag | null {
   // Both tooltips show the WORDS, not a description of the chip: the row's
   // title already says it is a draft, and what a reader hovering wants is a
@@ -3857,20 +3874,6 @@ export function sortForList(tasks: Task[], now: number = Date.now()): Task[] {
   return BOARD_LANES.flatMap((col) => byLane.get(col.key) ?? []);
 }
 
-/**
- * IS THIS ROW THE ONE `groupByColumn` FILES UNDER UPCOMING — a scheduled-for-
- * later task or either kind of draft (`kind: "draft"`, hoisted to that lane's
- * head rather than given one of its own, see `laneOf`). One test, so a host
- * that hides the whole lane (the explorer's Claude side panel — a folder or
- * file's `?_side=claude` companion — asks the reader to look at a chat about
- * the thing on screen, not a queue of unstarted work) filters against exactly
- * the bucket `sortForList` itself would have put the row in, rather than a
- * second opinion that could drift from it.
- */
-export function isUpcomingLane(task: Pick<Task, "status" | "kind">): boolean {
-  return laneOf(taskColumn(task)) === "upcoming";
-}
-
 /** One lane, drafts first, everything in the order it arrived in. Applied by
  *  `groupByColumn`, which every view's order now comes out of: a row carrying
  *  unsent words is at the top of its lane wherever it is drawn, so it is inside
@@ -4823,6 +4826,12 @@ export interface AttentionRow {
   title: string;
   /** Where clicking the row lands — always a real destination (see below). */
   href: string;
+  /** Who raised this row — the row-level counterpart to `Job.origin`/a
+   *  message's `origin` (notifications.ts), reusing that same
+   *  `labelForSource` helper rather than a third labeller: a waiting task's
+   *  own `source` for this purpose is its target/project folder. "" (no
+   *  project/target at all) draws no caption. */
+  origin: string;
 }
 
 /**
@@ -4854,6 +4863,15 @@ export function attentionRows(tasks: TaskPulseTask[]): AttentionRow[] {
       taskId: task.task_id,
       title: task.title,
       href: taskHref(task) ?? folderHref(task) ?? "/tasks",
+      // ADDITION 1 (live testing, 2026-09-17): `project` FIRST, matching
+      // `folderHref`'s (schedule-lib.ts) own established order — do NOT swap
+      // this back to `target || project`. A task made from inside an app
+      // targets the app's ENTRY PAGE (".../index.html" — see folderHref's own
+      // comment), so target-first here produced the caption "index" for a
+      // Transcripto task ("Transcripto YouTube transcriber finished" / "index").
+      // `project` names the containing app/folder, which is what a caption is
+      // for; `target` is only a fallback for a task with no project at all.
+      origin: labelForSource(task.project || task.target),
     });
   }
   return rows;

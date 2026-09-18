@@ -44,6 +44,7 @@ import {
   carryMarkToHeld,
   dayLabel,
   DRAFT_CHIP,
+  draftHeldByPeek,
   draftRing,
   draftTag,
   dropAction,
@@ -1326,9 +1327,11 @@ describe("dropLanes", () => {
     expect(SCHEDULE_CSS.indexOf(".schedule-ring--unread::after"))
       .toBeLessThan(SCHEDULE_CSS.indexOf(".schedule-ring--draft-held::after"));
     // Drawn by the two surfaces a settled task is SCANNED on, from one rule.
-    expect(VIEWS).toContain("draftHeld={draftRing(task)}");
+    // …and the List's stands down while the side peek holds that row's draft
+    // (tasks-lib.draftHeldByPeek): the composer one pane over is showing it.
+    expect(VIEWS).toContain("draftHeld={draftRing(task) && !heldInPeek}");
     expect(readFileSync(join(SHELL, "TaskCards.tsx"), "utf8"))
-      .toContain("draftHeld={draftRing(task)}");
+      .toContain("draftHeld={draftRing(task) && !heldInPeek}");
   });
 
   it("leaves an archived row with nothing unsent exactly as it was", () => {
@@ -2328,7 +2331,7 @@ describe("the unread mark", () => {
     // held thread), so the ring hollows on the row's own press rather than on the
     // next poll — the same number that used to feed the dot.
     expect(ROW).toMatch(
-      /<StatusIcon\s+status=\{taskColumn\(task\)\}\s+failed=\{ringFailed\(task\)\}\s+unread=\{unread > 0\}\s+count=\{unread\}\s+draftHeld=\{draftRing\(task\)\}\s*\/>/,
+      /<StatusIcon\s+status=\{taskColumn\(task\)\}\s+failed=\{ringFailed\(task\)\}\s+unread=\{unread > 0\}\s+count=\{unread\}\s+draftHeld=\{draftRing\(task\) && !heldInPeek\}\s*\/>/,
     );
     // Nothing trails the title any more: the ring leads the row, the title
     // follows, and the next thing is the live ping.
@@ -4224,13 +4227,16 @@ describe("the archive action", () => {
     // whenever EITHER survives its own guard, and its one-pin arrangement is
     // what the flag has to come back to.
     // …and the quick door out, which is on every card that HAS a page — the
-    // fourth member of the strip since 2026-09-13. `queue` joined the guard on
-    // 2026-09-12: a queued card grows a Run next in the same strip, and (like
-    // Archive) it is NOT behind SHOW_ROW_ACTIONS — with that flag down it would
-    // otherwise be the Board's only way to reach the front of a line other than
-    // dragging a card out of a lane that is rolled up whenever it is empty.
+    // fourth member of the strip since 2026-09-13; Discard, the draft card's
+    // one action, the fifth since 2026-09-15; and `queue`, which joined the
+    // guard on 2026-09-12 because a queued card grows a Run next in the same
+    // strip and (like Archive) it is NOT behind SHOW_ROW_ACTIONS — with that
+    // flag down it would otherwise be the Board's only way to reach the front
+    // of a line other than dragging a card out of a lane that is rolled up
+    // whenever it is empty.
     expect(card).toContain(
-      "{((peekOn && page) || file || folderMissing || queue || (SHOW_ROW_ACTIONS && run)) && (",
+      "{((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek) || queue\n"
+      + "        || (SHOW_ROW_ACTIONS && run)) && (",
     );
     expect(card).toContain('className="tasks-card-acts"');
     expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*position: absolute/);
@@ -4484,14 +4490,22 @@ describe("the delete affordance", () => {
   it("is a door only on a card whose folder is gone, first in the strip, left of Archive", () => {
     const CARDS_SRC = readFileSync(join(SHELL, "TaskCards.tsx"), "utf8");
     const head = CARDS_SRC.slice(CARDS_SRC.indexOf("<header"), CARDS_SRC.indexOf("</header>"));
-    const at = head.indexOf('className="task-card-door task-card-door--danger"');
+    // TWO danger doors now, and the Delete one is the SECOND: the discard
+    // (design §5 — the List's and the Board's own trash, on this wall too) sits
+    // first, and the two cannot both be drawn (discard stands down on a folder
+    // that is gone, where the delete is the stronger claim).
+    const del = head.indexOf("{/* Delete for good");
+    const at = head.indexOf('className="task-card-door task-card-door--danger"', del);
     expect(at).toBeGreaterThan(0);
     // GATED on `gone` (Akshil, 2026-09-07): a task that still opens is archived.
-    expect(head.slice(head.indexOf("{/* Delete for good"), at)).toContain("{gone && (");
+    expect(head.slice(del, at)).toContain("{gone && (");
     expect(head).toContain("{(filing || explorer || gone) && (");
     // Trash, then Archive, then the folder (Akshil: "left-side of the archive button").
     expect(head.indexOf("ICON_TRASH")).toBeLessThan(head.indexOf("ICON_ARCHIVE"));
     expect(head.indexOf("ICON_ARCHIVE")).toBeLessThan(head.indexOf("ICON_FOLDER"));
+    // …and the discard is the strip's first member, the same seat it takes on
+    // the List row and the Board card.
+    expect(head.indexOf("Discard draft")).toBeLessThan(del);
     expect(CARDS_SRC).toContain("const blocked = eraseBlocked(task);");
     expect(head).toContain("disabled={blocked || acting}");
     expect(head.slice(at, head.indexOf("{ICON_TRASH}", at))).toContain("e.stopPropagation();");
@@ -4517,13 +4531,21 @@ describe("the delete affordance", () => {
     const VIEWS_SRC = readFileSync(join(SHELL, "ScheduleTaskViews.tsx"), "utf8");
     const start = VIEWS_SRC.indexOf('<span className="tasks-card-acts">');
     const strip = VIEWS_SRC.slice(start, VIEWS_SRC.indexOf("</span>", VIEWS_SRC.indexOf("ICON_UNARCHIVE", start)));
-    const at = strip.indexOf('className="tasks-act tasks-card-act tasks-act--delete"');
+    // TWO trashes in this strip since 2026-09-15 — Discard on a draft card,
+    // Delete forever on a card whose folder is gone — and they are one button
+    // under two conditions that cannot both be true (each stands down for the
+    // other). This test is about the second, so it reads past the first.
+    const at = strip.indexOf(
+      'className="tasks-act tasks-card-act tasks-act--delete"',
+      strip.indexOf("Discard draft"),
+    );
     expect(at).toBeGreaterThan(0);
     expect(strip.slice(0, at)).toContain("{folderMissing && (");
     expect(strip.indexOf("ICON_TRASH")).toBeLessThan(strip.indexOf("ICON_ARCHIVE"));
     // The strip is drawn for a gone folder even with nothing to file.
     expect(VIEWS_SRC).toContain(
-      "{((peekOn && page) || file || folderMissing || queue || (SHOW_ROW_ACTIONS && run)) && (",
+      "{((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek) || queue\n"
+      + "        || (SHOW_ROW_ACTIONS && run)) && (",
     );
     // And the foot is back to the sentence alone — no trash before it there.
     const foot = VIEWS_SRC.slice(
@@ -4859,7 +4881,8 @@ describe("an expanded thread leads with the draft it is carrying", () => {
 
   it("draws it as a message row, with the pencil in the ring's seat", () => {
     // Same class, same seats, same quoted body: it is about to BE a message.
-    expect(THREAD).toContain('{task.draft && (');
+    // …hidden while the side peek holds this very draft (draftHeldByPeek).
+    expect(THREAD).toContain('{task.draft && !heldInPeek && (');
     expect(THREAD).toContain('className="tasks-msg"');
     expect(THREAD).toContain('className="tasks-msg-body"');
     expect(THREAD).toContain('className="tasks-msg-time"');
@@ -4935,7 +4958,13 @@ describe("an expanded thread leads with the draft it is carrying", () => {
     // …and the handler is the composer's own hop door, so there is one lookup
     // and one seeding rule for the bound form, not two.
     expect(page).toContain("const openBoundDraft = (task: Task) => {");
-    expect(page).toContain("boundDraftSeed(all.task, session, null)");
+    // …and a session-bound form IS the session's chat record (contract §1, "one
+    // record, two doors"), so this opens the card through exactly the function
+    // the Schedule hop seeds from — one lookup, one seeding rule, one card. The
+    // folder travels with it, or the card opens on the reader's home.
+    expect(page).toContain(
+      'openChatRecord(session, draftChatUrl(task), task.project || task.file || "");',
+    );
   });
 
   it("costs the thread's arithmetic nothing", () => {
@@ -5009,6 +5038,19 @@ describe("the Draft chip says ONE word, whichever kind of draft it is", () => {
     expect(draftTag(task({ key: "plain", status: "done", draft: null }))).toBe(null);
   });
 
+  it("is HELD, not listed, while the side peek has that row's chat open", () => {
+    // The peek's composer loads the row's unsent message, so the chip, the
+    // draft line and the ring's dot would repeat what the reader is looking at
+    // one pane to the right (Akshil, 2026-09-17, item 7). Only a row with a
+    // session can be peeked, and only one with a draft has anything to hide.
+    expect(draftHeldByPeek(withChatDraft, true)).toBe(true);
+    expect(draftHeldByPeek(withChatDraft, false)).toBe(false);
+    // A never-sent task draft has no chat to peek, so nothing is ever hidden.
+    expect(draftHeldByPeek(taskDraft, true)).toBe(false);
+    // …and a peeked row with nothing unsent has nothing to hide either.
+    expect(draftHeldByPeek(task({ key: "s-quiet", status: "done" }), true)).toBe(false);
+  });
+
   it("says the same word on a server that predates the second kind", () => {
     // No `draft_kind` at all: every draft row on that server is a form, and
     // nothing about the chip depends on the distinction anyway.
@@ -5042,7 +5084,7 @@ describe("the Draft chip says ONE word, whichever kind of draft it is", () => {
   });
 });
 
-describe("a never-sent chat opens the New task modal, like every other draft", () => {
+describe("a never-sent chat's row opens the New task card, like every draft row", () => {
   const chatDraft = task({
     key: "new:/Users/me/news", kind: "draft", draft_kind: "chat",
     status: "upcoming", file: "/Users/me/news", target: "/Users/me/elsewhere",
@@ -5056,83 +5098,94 @@ describe("a never-sent chat opens the New task modal, like every other draft", (
     SCHEDULED.indexOf("const openChatDraft = (task: Task) => {"),
     SCHEDULED.indexOf("const openDraft = (task: Task) => {"),
   );
+  const ROWS = () => readFileSync(
+    join(import.meta.dir, "../apps/claude/ui/list-rows.ts"), "utf8",
+  );
 
-  it("builds a hop seed and opens the form — it does not navigate", () => {
-    // The same object the composer's Schedule button builds, spent through the
-    // same door (`openForm`), so one press and the other land on one card.
-    expect(ARM).toContain("const seed: HopSeed = {");
-    expect(ARM).toContain("openForm(new Date(Date.now() + NEW_LINK_LEAD_MS), null, seed);");
-    // NOT a navigation, and the page no longer holds the tools for one: the
-    // chat-draft href and the router hop are both gone from this file.
-    expect(SCHEDULED).not.toContain("navigateUrl");
-    expect(SCHEDULED).not.toContain("chatDraftHref");
-  });
-
-  it("carries the row's own key as `fromChatKey`, so the draft MOVES", () => {
-    // `new:<file>` is what the composer stored the words under, so naming it is
-    // what lets the first task-draft save delete that row rather than leave the
-    // sentence on the list twice (design.md, Round 2: "A draft moves, never
-    // duplicates").
-    expect(ARM).toContain("chatKey: task.key,");
-    // …and the row's key IS that spelling — `new:` plus the chat's own file,
-    // the one platform/lib/drafts.chatDraftKey writes.
-    expect(chatDraft.key).toBe("new:/Users/me/news");
-  });
-
-  it("goes BACK to the folder's chat, built out of the chat's own `file`", () => {
-    // The way back is the door a never-sent chat's composer is mounted on, and
-    // it has to be built out of `file` — the string the draft is keyed on
-    // (platform/lib/drafts.chatDraftKey) — or the composer seeds from a key
-    // nothing wrote. `target` is the fallback for a server that sent no file.
-    expect(ARM).toContain("const at = task.file || task.target || \"\";");
-    expect(ARM).toContain("back: at ? chatPaneUrl(at) : null,");
-    expect(chatPaneUrl(chatDraft.file!)).toBe("/explorer/view/Users/me/news?_side=claude");
-    // NOT `&session_id=` with nothing after it. An empty value says the
-    // question was asked and answered with nothing; a chat that has never been
-    // sent has not been asked (Akshil, 2026-09-11).
-    expect(chatPaneUrl(chatDraft.file!)).not.toContain("session_id");
-    // …and the seed names no session at all, for the same reason.
-    expect(ARM).toContain("session: null,");
-  });
-
-  it("fetches the WHOLE message first, and falls back to the preview", () => {
-    // The row carries only `draft.preview` — the first LINE — and the card
-    // splits the message across Title and description (`splitDraft`), so
-    // opening on the preview would drop every line after the first. The card
-    // seeds in `useState` initialisers, so the text has to be in hand before
-    // the modal opens.
-    expect(ARM).toContain("fetchChatDraft(task.key)");
-    expect(ARM).toContain("message: stored?.text ?? task.draft?.preview ?? null,");
-    expect(ARM).toContain("attachments: stored?.attachments ?? [],");
-    expect(ARM.indexOf("fetchChatDraft(task.key)"))
-      .toBeLessThan(ARM.indexOf("openForm("));
-  });
-
-  it("drops a fetch that a later press has overtaken", () => {
-    // Because it fetches first, this is the one opening that can arrive LATE
-    // (Bugbot on PR #1126, 2026-09-12): a second press used to be painted over
-    // when the first fetch resolved. The click's generation is taken before
-    // the fetch and compared before the open; every door (`openForm`) bumps
-    // it, so an in-flight answer for an older press is abandoned.
-    expect(ARM).toContain("const gen = ++chatDraftGen.current;");
-    expect(ARM).toContain("if (gen !== chatDraftGen.current) return;");
-    expect(ARM.indexOf("const gen = ++chatDraftGen.current;"))
-      .toBeLessThan(ARM.indexOf("fetchChatDraft(task.key)"));
-    expect(ARM.indexOf("if (gen !== chatDraftGen.current) return;"))
-      .toBeLessThan(ARM.indexOf("openForm("));
-    const door = SCHEDULED.slice(
-      SCHEDULED.indexOf("const openForm = ("),
-      SCHEDULED.indexOf("const [draftRow, setDraftRow]"),
+  it("opens the card in place, and mints nothing", () => {
+    // WHAT THIS REPLACED, twice over. First the press fetched the record, split
+    // it across Title and description, and minted a `draft:<id>` over it
+    // carrying a `from_chat_key` that told the server to delete the chat's copy
+    // — one press, two records, and a generation counter to stop a second press
+    // minting a third. Then it navigated to the folder's COMPOSER instead, which
+    // was one record but two different cards depending on which kind of draft
+    // the row was. Now it is the same card either way, opened on the record, and
+    // on THIS page it is opened in place: a navigation to `/tasks` from `/tasks`
+    // would throw the page's filters, expanded rows and scroll away to draw a
+    // dialog over it.
+    expect(ARM).toContain(
+      'openChatRecord(task.key, draftChatUrl(task), task.project || task.file || "");',
     );
-    expect(door).toContain("chatDraftGen.current++;");
+    expect(ARM).not.toContain("navigateUrl(");
+    expect(SCHEDULED).not.toContain("from_chat_key");
+    expect(SCHEDULED).not.toContain("boundDraftSeed");
+  });
+
+  it("uses the SAME rule the chat's own Recent list presses", () => {
+    // A draft row that opened two different places from two views would be two
+    // behaviours to learn (design-principles §1). One function, re-exported from
+    // the chat package, pressed by both — and both halves of it, the hop URL and
+    // the route "Back to chat" lands on, come from the one module.
+    expect(SCHEDULED).toContain('import { draftChatUrl } from "@apps/claude";');
+    const CHAT = readFileSync(join(import.meta.dir, "../apps/claude/ClaudeChat.tsx"), "utf8");
+    expect(CHAT).toContain("const href = draftHref(task);");
+    expect(CHAT).toContain("if (href) onNavigate(href);");
+  });
+
+  it("is the hop URL, folder and all", () => {
+    // The row's press and the composer's Schedule button build the SAME URL, so
+    // the card cannot open two ways. The folder is on it because a session key
+    // spells none, and the card was falling back to the reader's home.
+    //
+    // (Asserted on the source rather than by calling it: `list-rows` reaches the
+    // router, whose module init wants a `location`, and this suite runs without
+    // a DOM. The URL itself is pinned through `chatPaneUrl`, which is the
+    // function `draftChatUrl` builds it with.)
+    const FN = ROWS().slice(ROWS().indexOf("export function draftHref("));
+    expect(FN).toContain('const at = task.project || task.file || task.target || "";');
+    expect(FN).toContain("return schedulerUrl(task.key, draftChatUrl(task), at);");
+  });
+
+  it("comes back to the folder's chat, built out of the row's own `file`", () => {
+    // "Back to chat" has to be built out of `file` — the string the draft is
+    // keyed on (platform/lib/drafts.chatDraftKey) — or the composer that opens
+    // seeds from a key nothing wrote. `target` is the fallback for a server that
+    // sent none.
+    const BACK = ROWS().slice(ROWS().indexOf("export function draftChatUrl("));
+    expect(BACK).toContain('const at = task.file || task.target || "";');
+    expect(chatPaneUrl(chatDraft.file!)).toBe(
+      "/explorer/view/Users/me/news?_side=claude",
+    );
+    // A `new:<file>` row names NO session — `task.key.includes(":")` is the test,
+    // and `paneChatUrl` drops an empty one. An empty value would say the question
+    // was asked and answered with nothing; a chat that has never been sent has
+    // not been asked (Akshil, 2026-09-11).
+    expect(BACK).toContain('paneChatUrl(at, task.key.includes(":") ? "" : task.key)');
+  });
+
+  it("is the same press on this composer's OWN row (Akshil, 2026-09-16)", () => {
+    // It used to be a request for the keyboard instead: the box is on screen, so
+    // why navigate? Because a row that behaves differently depending on where
+    // the reader is standing is an affordance nobody can predict — and this was
+    // the one row in the list that did nothing visible. One record, one card,
+    // one press; the composer keeps autosaving the same key behind it.
+    const FN = ROWS().slice(ROWS().indexOf("export function draftHref("));
+    expect(FN).not.toContain("chatDraftKey(null, file)");
+    expect(ROWS()).not.toContain("chatDraftKey");
+    const CHAT = readFileSync(join(import.meta.dir, "../apps/claude/ClaudeChat.tsx"), "utf8");
+    expect(CHAT).not.toContain("focusReq");
+    // …and a TASK draft goes to the modal by id, which it always did.
+    expect(FN).toContain("`/tasks?draft=${encodeURIComponent(task.draft_id)}`");
+    // An ordinary conversation is not a draft at all.
+    expect(FN).toContain("if (!isDraftTask(task)) return null;");
   });
 
   it("is the Scheduled page's first question about a draft row's press", () => {
     // A chat draft has no form to re-open and no `draft_id` to fall through to,
-    // so the hop arm has to be asked before the stored-form arm.
+    // so the chat arm has to be asked before the stored-form arm.
     const open = SCHEDULED.slice(
       SCHEDULED.indexOf("const openDraft = (task: Task) => {"),
-      SCHEDULED.indexOf("// What a deep link named"),
+      SCHEDULED.indexOf("const openBoundDraft = (task: Task) => {"),
     );
     expect(open.indexOf("isChatDraftTask(task)"))
       .toBeLessThan(open.indexOf("if (!task.draft_id) return;"));
@@ -5159,7 +5212,10 @@ describe("a never-sent chat opens the New task modal, like every other draft", (
     // from, not whether it opens.
     expect(VIEWS).toContain("const openDraft = onOpenDraft && isDraftTask(task) ? onOpenDraft : null;");
     expect(VIEWS).toContain("if (onOpenDraft && isDraftTask(task)) onOpenDraft(task);");
-    expect(VIEWS).not.toContain("isChatDraftTask");
+    // The kind is asked in exactly ONE place in this file and it is not a press:
+    // `discardDraft`, where it decides which store the words are in. Neither row
+    // component may consult it.
+    expect(VIEWS.slice(VIEWS.indexOf("function TaskNode("))).not.toContain("isChatDraftTask");
   });
 
   it("gives a session-less row no chat link to be ⌘-clicked into either", () => {
@@ -8915,9 +8971,10 @@ describe("the Cards view's frame", () => {
     // and the <a>; a gradient on the strip's left edge; and a card whose folder
     // the server cannot stat says so instead of "Starting…" for ever.
     // The glyphs come from the List's own file — one definition per mark, wherever
-    // it is drawn. (A multi-line import since the trash joined them.)
+    // it is drawn. (A multi-line import since the trash joined them, and since
+    // design §5 put the List's `discardDraft` on this wall's cards too.)
     const glyphImport = CARDS.slice(
-      CARDS.indexOf("import {\n  ICON_ARCHIVE,"),
+      CARDS.indexOf("import {\n  discardDraft,"),
       CARDS.indexOf('} from "./ScheduleTaskViews";'),
     );
     for (const name of ["ICON_ARCHIVE", "ICON_TRASH", "ICON_UNARCHIVE", "IdentityChip", "StatusIcon"]) {
@@ -10298,6 +10355,67 @@ describe("attentionRows", () => {
              project: "" }),
     ]);
     expect(nowhere[0].href).toBe("/tasks");
+  });
+
+  // CHANGE 1 (SPEC: "every notification imo should have a top row/section
+  // for the 'emitting page' context") — the row-level counterpart to
+  // `Job.origin`, reusing `labelForSource` (notifications.ts) rather than a
+  // second labeller.
+  it("names who raised the row, from the task's own target/project", () => {
+    // ADDITION 1 (live testing, 2026-09-17): `project` now wins over `target`
+    // (see the "index" caption bug tests below), so this needs `project`
+    // explicitly cleared to exercise the target-only path — `task()`'s own
+    // default `project` would otherwise win and mask what this case tests.
+    const withTarget = attentionRows([
+      task({ key: "s", status: "needs_attention", target: "/Users/me/my-project", project: "" }),
+    ]);
+    expect(withTarget[0].origin).toBe("my-project");
+
+    const projectOnly = attentionRows([
+      task({ key: "p", status: "needs_attention", target: "", project: "/Users/me/other-project" }),
+    ]);
+    expect(projectOnly[0].origin).toBe("other-project");
+
+    const neither = attentionRows([
+      task({ key: "n", status: "needs_attention", target: "", project: "" }),
+    ]);
+    expect(neither[0].origin).toBe("");
+  });
+
+  // ADDITION 1 (live testing, 2026-09-17): a Claude-template task made from
+  // inside an app targets that app's ENTRY PAGE (folderHref's own documented
+  // convention, schedule-lib.ts) — e.g. ".../Transcripto/index.html" — while
+  // `project` names the app folder itself. `origin` used to read
+  // `target || project`, so it named the entry page first and produced the
+  // literal caption "index" for a real task ("Transcripto YouTube
+  // transcriber finished" / "index"). `project` must win here, exactly as it
+  // already does in `folderHref`.
+  it("names the row from the app folder (project), not its entry page (target) — the 'index' caption bug", () => {
+    const rows = attentionRows([
+      task({
+        key: "t",
+        status: "needs_attention",
+        title: "Transcripto YouTube transcriber finished",
+        target: "/Users/me/Apps/Transcripto/index.html",
+        project: "/Users/me/Apps/Transcripto",
+      }),
+    ]);
+    expect(rows[0].origin).toBe("Transcripto");
+  });
+
+  // The general case `labelForSource` now covers: even with NO project at
+  // all, a bare entry-page target should not caption as the uninformative
+  // "index" — it should walk up to the folder that actually varies.
+  it("falls back to the containing folder when only an entry-page target is available", () => {
+    const rows = attentionRows([
+      task({
+        key: "t2",
+        status: "needs_attention",
+        target: "/Users/me/Apps/Transcripto/index.html",
+        project: "",
+      }),
+    ]);
+    expect(rows[0].origin).toBe("Transcripto");
   });
 });
 

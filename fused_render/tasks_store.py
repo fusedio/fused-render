@@ -251,7 +251,19 @@ def _record(store: dict, key: str) -> dict | None:
     if n <= 0:
         return None
     project = rec.get("project")
-    return {"project": project if isinstance(project, str) else "", "n": n}
+    out = {"project": project if isinstance(project, str) else "", "n": n}
+    # SPENT rides along, read-only: a rekey whose target already had a number
+    # stamps the OLD key this way instead of leaving it looking exactly like a
+    # live reservation (see `_apply_rekey`). `task_ids()` is the one place that
+    # answer has to reach — a caller deciding whether a `new:<file>` key is
+    # still owed a settle pass (routers/tasks.py `_settle_new_chats`) — so it
+    # is carried through here rather than filtered out.
+    if rec.get("spent"):
+        out["spent"] = True
+        moved_to = rec.get("moved_to")
+        if isinstance(moved_to, str) and moved_to:
+            out["moved_to"] = moved_to
+    return out
 
 
 def task_ids() -> dict:
@@ -337,6 +349,43 @@ def _spend(store: dict, rec: dict) -> None:
     store[SPENT_PREFIX + "%s#%d" % (rec["project"], rec["n"])] = dict(rec)
 
 
+def _apply_rekey(store: dict, old: str, new: str) -> tuple[bool, bool]:
+    """Move `old`'s number onto `new` in `store`, in place. Returns
+    `(moved, changed)`: `moved` is whether the number's OWNER actually changed
+    hands; `changed` is whether the store was written at all (stamping a
+    no-op spent counts, even though nothing moved).
+
+    The number only MOVES onto a key that has none. Two pending occurrences of
+    one recurring message can chain into the same session, or a `new:<file>`
+    draft's send can land in a session numbered some other way first (a
+    scheduled fire, a resumed session) — either way `new` already has a
+    number, and `old`'s is simply SPENT: deleting it would drop the project's
+    high-water mark and hand the same number out again, which is the one thing
+    allocate-once forbids.
+
+    SPENT IS STAMPED, not left verbatim (bugbot / live repro, 2026-09-15): a
+    caller that reads `task_ids()` to find drafts still owed a settle pass
+    (`routers/tasks.py::_settle_new_chats`) cannot tell "still live" from
+    "already spent" off a bare `{project, n}` record, and re-finding the same
+    already-spent key on every listing is what turned one settle into an
+    unbounded notify loop. Idempotent: a key already stamped is left alone, so
+    the store is written at most once per key that ever lands here — same
+    posture as `forget_session`'s reservation stamp.
+    """
+    rec = _record(store, old)
+    if rec is None:
+        return False, False
+    if _record(store, new) is not None:
+        if rec.get("spent"):
+            return False, False
+        store[old] = {"project": rec["project"], "n": rec["n"],
+                      "spent": True, "moved_to": new}
+        return False, True
+    store.pop(old, None)
+    store[new] = rec
+    return True, True
+
+
 def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
     """Numbers for `items`, allocating any that are missing.
 
@@ -371,22 +420,8 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
     def mutate(store: dict):
         changed = False
         for old, new in rekeys:
-            rec = _record(store, old)
-            if rec is None:
-                continue
-            # The number only MOVES onto a key that has none. Two pending
-            # occurrences of one recurring message can chain into the same
-            # session; the first transfers, and the second's number is simply
-            # SPENT — the record stays put, unread by anything (the pending row
-            # is gone the moment its entry has a session), because deleting it
-            # would drop the project's high-water mark and hand the same number
-            # out again. Releasing a number is the one thing allocate-once
-            # forbids.
-            if _record(store, new) is not None:
-                continue
-            store.pop(old, None)
-            store[new] = rec
-            changed = True
+            _moved, this_changed = _apply_rekey(store, old, new)
+            changed = changed or this_changed
 
         if reproject:
             for key, project, _order in items:
@@ -450,6 +485,34 @@ def rekey(old: str, new: str) -> str:
     recurring message chaining into a session that already ran one), that number
     stands and `old`'s is dropped."""
     return ensure_ids([], rekeys=[(old, new)]).get(new, "")
+
+
+def rekey_moved(old: str, new: str) -> bool:
+    """Like `rekey`, but answers the one thing its callers have never needed:
+    did the number actually change hands, or was `new` already numbered (in
+    which case nothing about the listing changed and `old` was only stamped
+    spent)?
+
+    `_settle_new_chats` needs this to stay idempotent — a settle pass that
+    calls `notify()` every time it re-finds an already-settled key turns one
+    move into an unbounded loop (bugbot / live repro, 2026-09-15).
+    `schedule.spend_chat_draft` needs it for the mirror-image reason: the key it
+    is handed usually has no number at all (a session-less composer autosaves
+    nothing, so there is no `new:<file>` record to be numbered), and announcing
+    a move that did not happen would put a `gone` on every ordinary new-chat
+    send. The remaining rekey call sites fire and forget."""
+    old, new = str(old or ""), str(new or "")
+    if not old or not new or old == new:
+        return False
+    result = {"moved": False}
+
+    def mutate(store: dict):
+        moved, changed = _apply_rekey(store, old, new)
+        result["moved"] = moved
+        return None, changed
+
+    _update(TASK_IDS_FILE, mutate)
+    return result["moved"]
 
 
 def task_number(key: str) -> str:

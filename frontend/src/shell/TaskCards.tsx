@@ -39,6 +39,7 @@ import { ChatMount, useNativeChatEnabled, useNativeChatFlag } from "@apps/claude
 import { Modal } from "@platform/ui/modal/Modal";
 import { cardFrameSrc, folderHref, peekFrameSrc } from "./schedule-lib";
 import {
+  discardDraft,
   ICON_ARCHIVE,
   ICON_OPEN_FOLDER_PATH,
   ICON_TRASH,
@@ -55,6 +56,7 @@ import {
   shortTaskId,
   cardKey,
   cardsForTasks,
+  draftHeldByPeek,
   draftTag,
   ERASE_BLOCKED_HINT,
   emptyPaneFailed,
@@ -62,6 +64,7 @@ import {
   emptyPaneText,
   eraseBlocked,
   filingIntent,
+  hasDraft,
   opensElsewhere,
   peekOpenable,
   spansProjects,
@@ -530,7 +533,9 @@ function TaskCard({
   // Words nobody has sent, in this conversation's composer — the List row's and
   // the Board card's own chip, from the same function, so the three views
   // cannot describe one draft differently (tasks-lib.draftTag).
-  const draft = draftTag(task);
+  // Hidden while the side peek holds this card's draft (tasks-lib.draftHeldByPeek).
+  const heldInPeek = draftHeldByPeek(task, peeked);
+  const draft = heldInPeek ? null : draftTag(task);
   // Both halves have to be there before anything can be framed: no session means
   // there is no conversation yet, and no template means the folder's stat has
   // not answered (or has no chat mode at all).
@@ -575,6 +580,9 @@ function TaskCard({
   // hint says the only thing that would help. Disabled means the dialog never
   // opens, so nobody reads the refusal for the first time inside a confirmation.
   const [erasing, setErasing] = useState(false);
+  /** One discard at a time: the trash above stays down while its DELETE is out,
+   *  so a double press cannot send two. */
+  const [discarding, setDiscarding] = useState(false);
   const blocked = eraseBlocked(task);
   const refile = async () => {
     if (!filing || acting) return;
@@ -667,7 +675,7 @@ function TaskCard({
           <StatusIcon
             status={taskColumn(task)}
             failed={ringFailed(task)}
-            draftHeld={draftRing(task)}
+            draftHeld={draftRing(task) && !heldInPeek}
           />
           {/* The id keeps the List row's muted skin whatever the title row below
               shows. It was lifted to bold + full fg while that row was the
@@ -754,6 +762,35 @@ function TaskCard({
             a folder that opens, and a folder that is not gone has none). */}
         {(filing || explorer || gone) && (
         <span className="task-card-doors" data-hint="" onClick={(e) => e.stopPropagation()}>
+          {/* DISCARD THE UNSENT WORDS — the List row's and the Board card's own
+              trash, on this wall too (design "one record", §5: the same actions
+              everywhere). It is the ONE way a draft is ever drawn here: a card
+              is a transcript, so a draft ROW has no card (tasks-lib.cardsForTasks)
+              and what a wall can carry is an ordinary task whose composer is
+              holding something — the the Draft chip in the head above. The
+              gesture is the same call the other two views make (`discardDraft`),
+              and, like them, it asks nothing first: unsent text is not a
+              destructive delete, and the New task modal's own Discard has never
+              confirmed either.
+
+              Stands down on a card whose folder is gone, where the trash beside
+              it is the stronger claim — the same rule the List row keeps. */}
+          {hasDraft(task) && !gone && !heldInPeek && (
+            <button
+              type="button"
+              className="task-card-door task-card-door--danger"
+              disabled={discarding}
+              data-hint="Discard draft"
+              aria-label={`Discard draft ${shortTaskId(task.task_id)}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                setDiscarding(true);
+                void discardDraft(task).finally(() => setDiscarding(false));
+              }}
+            >
+              {ICON_TRASH}
+            </button>
+          )}
           {/* Delete for good — ONLY on a card whose folder is gone (Akshil,
               2026-09-07: "should only show up if it has a folder missing
               error"): a task that can still be opened is archived, not
