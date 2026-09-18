@@ -10,10 +10,15 @@ import {
   initialRestart,
   reduceRestart,
   restartInFlight,
+  restartIsSlow,
   restartStageLabel,
+  restartSteps,
+  restartStepWord,
   RESTART_GIVE_UP_MS,
   RESTART_RECONNECTING_FAILS,
+  RESTART_SLOW_MS,
   RESTART_STAGES,
+  RESTART_STEP_STAGES,
   type RestartEvent,
   type RestartState,
 } from "@platform/lib/restart-flow";
@@ -245,4 +250,98 @@ test("every stage has exactly the label the design asked for", () => {
 test("in-flight is exactly the four stages the dialog owns the screen for", () => {
   const inFlight = RESTART_STAGES.filter(restartInFlight);
   expect(inFlight).toEqual(["quitting", "restarting", "reconnecting", "back"]);
+});
+
+// ---- the three-step strip --------------------------------------------------
+
+/** The strip as three letters, in order: D one, L ive, · upcoming. Compact
+ *  enough that a whole restart reads as five rows. */
+const shape = (stage: (typeof RESTART_STAGES)[number]) =>
+  restartSteps(stage)
+    .map((s) => ({ done: "D", live: "L", upcoming: "·" })[s.state])
+    .join("");
+
+test("the strip walks one step per stage and never runs ahead of the machine", () => {
+  expect(shape("quitting")).toBe("L··");
+  expect(shape("restarting")).toBe("DL·");
+  expect(shape("reconnecting")).toBe("DDL");
+  // The end is every step done — no live step left, because there is no wait
+  // left.
+  expect(shape("back")).toBe("DDD");
+});
+
+test("gave-up claims nothing: no tick, and above all no spinner held forever", () => {
+  // The restart did not take. A tick would say a step finished when the flow
+  // cannot know that, and a live step would be exactly the promise
+  // RESTART_GIVE_UP_MS exists to stop making.
+  expect(shape("gave-up")).toBe("···");
+  expect(restartSteps("gave-up").some((s) => s.state === "live")).toBe(false);
+  // `ready` is the same shape for a different reason — nothing has been asked
+  // for yet — and the dialog draws no strip there at all.
+  expect(shape("ready")).toBe("···");
+});
+
+test("the strip is derived, so the same-version blip un-ticks instead of rewinding", () => {
+  // `reduceRestart` sends `reconnecting` back to `quitting` when the old process
+  // answers on the version that was already running. Nothing accumulates here,
+  // so that regression is just the earlier shape again — identical to the one
+  // the first stage produced, with no "furthest reached" left over.
+  expect(shape("quitting")).toBe(shape("quitting"));
+  expect(restartSteps("quitting")).toEqual(restartSteps("quitting"));
+  expect(shape("reconnecting")).not.toBe(shape("quitting"));
+});
+
+test("every stage has a strip, so a stage added later cannot crash the dialog", () => {
+  // The dialog cannot be closed. A partial function here would be a blank,
+  // undismissable modal the first time the machine grew a stage.
+  for (const stage of RESTART_STAGES) {
+    const steps = restartSteps(stage);
+    expect(steps.length).toBe(3);
+    expect(steps.map((s) => s.stage)).toEqual([...RESTART_STEP_STAGES]);
+    expect(steps.filter((s) => s.state === "live").length).toBeLessThanOrEqual(1);
+    for (const step of steps) expect(step.label.length).toBeGreaterThan(0);
+  }
+});
+
+test("a step's name is one word with no ellipsis; the ellipsis is the live tense", () => {
+  // The repo rule (Akshil, 2026-09-08) is about the NAMES. "Restart" is a step;
+  // "Restarting…" is that step happening, and it is the machine's own label
+  // rather than a second copy of the vocabulary.
+  expect(RESTART_STEP_STAGES.map(restartStepWord)).toEqual(["Quit", "Restart", "Reconnect"]);
+  for (const stage of RESTART_STEP_STAGES) {
+    expect(restartStepWord(stage)).toMatch(/^\S+$/);
+    expect(restartStepWord(stage)).not.toContain("…");
+    const live = restartSteps(stage).find((s) => s.state === "live");
+    expect(live?.label).toBe(restartStageLabel(stage));
+  }
+  // A done or upcoming step shows the NAME, never the tense.
+  expect(restartSteps("back").every((s) => !s.label.includes("…"))).toBe(true);
+});
+
+// ---- when "about 15 seconds" stops being true ------------------------------
+
+test("the estimate is withdrawn at the mark, and only after it", () => {
+  const at = 1_000_000;
+  expect(restartIsSlow(at, at)).toBe(false);
+  expect(restartIsSlow(at, at + RESTART_SLOW_MS - 1)).toBe(false);
+  expect(restartIsSlow(at, at + RESTART_SLOW_MS)).toBe(true);
+  expect(restartIsSlow(at, at + RESTART_SLOW_MS * 3)).toBe(true);
+});
+
+test("no press, no claim about how long it has been", () => {
+  // The window that has adopted nothing cannot know elapsed time, and guessing
+  // would print the anxious sentence over a restart that started a second ago.
+  expect(restartIsSlow(null, 1_000_000)).toBe(false);
+});
+
+test("the mark sits between the promise and the cap, with room on both sides", () => {
+  // The number itself, because every other assertion in this file reads it
+  // symbolically and would follow it anywhere. 25s is the design's own (Akshil,
+  // 2026-09-18) and the body's "about 15 seconds" is written against it.
+  expect(RESTART_SLOW_MS).toBe(25_000);
+  // Past the honest case (a teardown plus a cold start), so it is not fired at a
+  // restart that is going fine; and well short of the cap, so the reader is told
+  // the wait is long BEFORE they are told it failed.
+  expect(RESTART_SLOW_MS).toBeGreaterThan(15_000);
+  expect(RESTART_SLOW_MS).toBeLessThan(RESTART_GIVE_UP_MS);
 });
