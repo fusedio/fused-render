@@ -21,6 +21,7 @@ tmp_path.
 import json
 import os
 import time
+from unittest import mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -3205,4 +3206,21 @@ def test_a_queue_dispatched_turn_marks_its_session_running(monkeypatch):
     assert tasks_mod._queue_spawn("/w/alpha", "sess-1") == {"run_id": "r-1",
                                                             "session_id": "sess-1"}
     assert tw.is_marked_running("sess-1")
+    # …even when the mark lands in the SAME clock tick as the ended stamp,
+    # which on Windows (~15 ms `time.time()` resolution) it routinely does.
     assert not tw.is_turn_ended("sess-1")
+
+
+def test_a_running_mark_in_the_same_tick_as_the_ended_stamp_still_wins():
+    """Windows CI (2026-09-18): `time.time()` there ticks every ~15 ms, so the
+    queue's `mark_running` right after dispatch carried the SAME stamp as the
+    `turn_ended` it followed, and a strict "newer" compare read the fresh turn
+    as ended. Equal is newer here — dispatch follows the end by causality."""
+    from fused_render import tasks_watch as tw
+
+    tw.reset()
+    at = time.time()
+    tw.mark_turn_ended("sess-2", "r-0", at)
+    with mock.patch.object(tw.time, "time", return_value=at):
+        tw.mark_running("sess-2")
+    assert not tw.is_turn_ended("sess-2")
