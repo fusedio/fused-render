@@ -33,10 +33,16 @@ import sys
 import threading
 import time
 
-from fused_render import jobs
+from fused_render import __version__, jobs
 from fused_render.update import common
 
 logger = logging.getLogger("fused_render.update")
+
+# Fallback default for `_running_version()`'s `_const("__version__")` lookup:
+# every concrete subclass module (mac.py, linux.py) re-imports and re-exports
+# its own `__version__` for exactly this reason, but a base `UpdateManager`
+# used directly (there is none in production, but nothing stops a test from
+# doing so) still needs a name to fall back to in `globals()`.
 
 # Overridable for staging/E2E tests (point a test build at a test manifest).
 # Safe to expose: the manifest must still verify against the pinned ed25519
@@ -373,10 +379,16 @@ class UpdateManager:
 
     def _running_version(self) -> str:
         """The version of THIS process, for the check's "is a fetched manifest
-        newer" comparison. A thin seam (not a subclass hook) so tests can patch
-        `mac.__version__`/`linux.__version__` the same way they always have."""
-        from fused_render import __version__
-        return __version__
+        newer" comparison. Read through `_const()`, exactly like every other
+        module-level constant this class reads back from the concrete
+        subclass's own module: `mac.py`/`linux.py` each do `from fused_render
+        import __version__` at module scope, and a test that does
+        `monkeypatch.setattr(mac, "__version__", ...)` is rebinding THAT
+        module-level name, which only `sys.modules[type(self).__module__]`
+        (what `_const` looks up) ever sees — a bare `from fused_render import
+        __version__` here reads the package attribute instead, which no test
+        touches."""
+        return self._const("__version__")
 
     def _disk_version(self) -> str | None:
         """The version that would launch next time — what decides "already

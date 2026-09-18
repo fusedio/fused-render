@@ -60,6 +60,20 @@ def test_check_up_to_date(monkeypatch):
     assert status["latest_version"] is None
 
 
+def test_running_version_reads_the_patched_module_seam(monkeypatch):
+    # `monkeypatch.setattr(linux, "__version__", ...)` rebinds the name in
+    # `linux`'s own module namespace, not `fused_render.__version__` — a
+    # comparison that reads the package attribute instead would never see
+    # this patch. Picking a `current` ABOVE the manifest's version, while the
+    # real `fused_render.__version__` sits BELOW it, makes the two seams
+    # disagree on the outcome: only a manager that actually reads the
+    # patched value lands on "idle" here.
+    manager = _manager(monkeypatch, available="9.9.9", current="10.0.0")
+    status = manager.check()
+    assert status["state"] == "idle"
+    assert status["latest_version"] is None
+
+
 def test_start_noop_when_unpackaged(monkeypatch):
     monkeypatch.setattr(linux, "_manager", None)
     monkeypatch.delenv(linux.DEV_MANAGER_ENV, raising=False)

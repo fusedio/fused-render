@@ -2619,3 +2619,38 @@ match — this is what actually keeps the running AppImage (referenced by a
 symlink, a relative path, or a bind mount, not just the literal listed name)
 out of the deletion set.
 
+
+## Task 8 — Routing `_running_version()` through `_const()`, and why `tests/test_mac_update.py` needed no changes
+
+`_running_version()` read `fused_render.__version__` (the package attribute)
+directly, rather than going through `_const("__version__")` like every other
+module-level constant this class reads back from the concrete subclass's own
+module. This made the documented test seam — `monkeypatch.setattr(mac,
+"__version__", ...)` / `monkeypatch.setattr(linux, "__version__", ...)` —
+dead: rebinding `mac.__version__` or `linux.__version__` never touched
+`fused_render.__version__`, so every test using that pattern was actually
+exercising the real installed version (0.5.52) against whatever fixture
+value it was compared to, not the patched value its own docstring promised.
+Confirmed as a real defect, not a hypothetical one, with a test
+(`test_running_version_reads_the_patched_module_seam` in
+`tests/test_linux_update.py`) that picks a `current` value on the OPPOSITE
+side of the manifest's `available` version from where the real
+`fused_render.__version__` sits — a manager reading the unpatched package
+attribute lands on `"available"`; only one that actually reads the patched
+seam lands on `"idle"`. This failed against the unfixed code as designed.
+
+Fixed by routing `_running_version()` through `self._const("__version__")`,
+matching every other constant lookup in the class.
+
+`tests/test_mac_update.py`'s own eight `monkeypatch.setattr(mac, "__version__",
+...)` call sites needed no changes: every one of that file's fixture helpers
+already brackets `current` and `available` consistently on both sides of
+both the patched value (always `0.4.10`) and the real installed version
+(0.5.52) — e.g. `current="0.4.10"` against `available="9.9.9"` or
+`available="0.0.1"`, never a value that would flip outcome depending on
+which of the two versions a test happened to actually be comparing against.
+The vacuous seam was accidentally safe on mac, not incidentally correct;
+re-running the full mac suite after the fix (all 5 designated test files,
+141 passed) confirms none of its assertions were relying on the dead seam to
+land on the right answer.
+
