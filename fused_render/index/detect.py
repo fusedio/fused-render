@@ -46,6 +46,7 @@ import time
 
 from fused_render.index import freshness, fsevents, runner
 from fused_render.index.config import IndexConfig
+from fused_render.index.ignore import MountGuard, ignored_for_index, is_inside_leaf_dir
 from fused_render.shell import index_gate
 
 logger = logging.getLogger(__name__)
@@ -114,25 +115,72 @@ def _hint(cfg: IndexConfig, root: str):
         return None
 
 
+def _filter_hint(cfg: IndexConfig, guard: MountGuard, forced: set, subtrees: list):
+    """Drop everything from a raw hint that a real scan would never index
+    anyway, or that is this app's own doing — the exact per-path filter
+    `scan._run_fsevents` applies to these same two collections
+    (`ignored_for_index(..., tree=True) or guard.blocks(...) or
+    is_inside_leaf_dir(...)`), reused here rather than re-derived because
+    `fsevents.hint` itself applies none of it: it only prefix-filters by
+    root (fsevents.py), so its raw output includes every write anywhere
+    under `root` — including this app's own state home and whatever the
+    user's ignore list (or the built-in defaults — `.cache`, `.fused`, and,
+    as of SPEC-focus-change-detection.md's review, `~/Library`) already
+    excludes from the index.
+
+    Load-bearing, not cosmetic: on a real `~` root, skipping this step made
+    `hinted` non-empty on nearly every check — the scan's own writes under
+    `~/.fused-render` and macOS's constant `~/Library` churn (Safari/Mail
+    caches, saved app state, Spotlight) both land in the raw hint — which
+    made the design's stated quiet case (`(set(), [])`, no scan) effectively
+    unreachable despite `_check_root` handling it correctly once reached.
+    `tree=True` because, same as the journal-driven call in scan.py, a
+    hinted path arrives without its ancestors having been checked."""
+    def _keep(p: str) -> bool:
+        return not (ignored_for_index(cfg.rules, p, tree=True)
+                    or guard.blocks(p) or is_inside_leaf_dir(p))
+    return {p for p in forced if _keep(p)}, [p for p in subtrees if _keep(p)]
+
+
 def _check_root(cfg: IndexConfig, root: str, now: float) -> bool:
     """Whether a scan of `root` was started. Every gate ordered cheapest
-    first, same discipline as `freshness.note_folder_opened`: the two
-    in-memory pacing checks (below) are free, so the journal replay — the
-    most expensive step here — is unreachable for a root that was already
-    going to be refused."""
+    first, same discipline as `freshness.note_folder_opened`: the in-memory
+    pacing checks and the mount/active-run checks (pure string/local-file
+    work, no syscall on `root` itself) all run before the journal replay —
+    the most expensive step here, and the only one that touches `root` at
+    all (via `fsevents.device_uuid`'s `os.stat`)."""
     if not _detect_due(root, now):
         return False
     last = runner.last_scan(cfg, root)
     if last is not None and (now - last) < freshness.MIN_INTERVAL_S:
         return False
-    hinted = _hint(cfg, root)
-    if not hinted:
-        # Covers both `None` ("cannot tell") and a hint whose two collections
-        # (forced dirs, walk subtrees) are both empty ("nothing changed") —
-        # `bool(hinted)` is false for `None`, and `any(hinted)` is false for
-        # `(set(), [])` since neither piece is truthy. Both are no-ops here.
+    # BEFORE any kernel syscall on `root` — same rule, same ordering,
+    # `freshness.note_folder_opened` follows for the identical reason:
+    # `os.stat` on a wedged rclone/NFS mount blocks the calling thread
+    # forever, and `_hint` below reaches exactly that syscall
+    # (fsevents.device_uuid). Currently latent for this caller (a mount-backed
+    # root has no saved fsevents state, so `hint` returns `None` at its own
+    # first check, before it opens anything) but the ordering must be correct
+    # regardless of whether a root has state today.
+    guard = MountGuard(mounts_dir=runner._mounts_dir())
+    if guard.blocks(root):
         return False
-    forced, subtrees = hinted
+    # A focus event must not be the thing that CANCELS an in-flight scan of
+    # this root. `runner.start` (below) treats a live run under a matching
+    # `ignore_sig` as a join, but a DIFFERENT sig — exactly the case right
+    # after an ignore-list edit, while the reconciling rescan it triggered is
+    # still walking — makes `start` supersede it: cancel the live run and
+    # spawn a new one. Losing that walk's progress to a tab-back is the same
+    # mistake `freshness.note_folder_opened` refuses for the folder-open
+    # trigger ("a triggered scan must not be the thing that discovers a
+    # mismatch"); this trigger operates at the root level already, so the
+    # same refusal applies directly rather than needing translation.
+    if runner.active_run(cfg, root) is not None:
+        return False
+    hinted = _hint(cfg, root)
+    if hinted is None:
+        return False
+    forced, subtrees = _filter_hint(cfg, guard, *hinted)
     if not forced and not subtrees:
         return False
     try:
@@ -142,8 +190,19 @@ def _check_root(cfg: IndexConfig, root: str, now: float) -> bool:
         # module does not re-derive any of them; it only needs to absorb the
         # refusal the same way `freshness.note_folder_opened`'s caller never
         # has to check them separately.
-        runner.start(cfg, root)
+        result = runner.start(cfg, root)
     except ValueError:
+        return False
+    # `start` JOINS a live run instead of spawning one when the ignore_sig
+    # matches — and the `active_run` check above is not atomic with this
+    # call, so that race window is real even though it is now rare. A joined
+    # run is not something THIS check started: it was already going to
+    # finish regardless of this focus event, so reporting it as "started"
+    # would make the caller's log ("home-page focus found changes...
+    # rescanning %s") and its `_wake_index_job_bridge()` nudge fire for a
+    # scan this trigger had no hand in — misleading exactly while a scan is
+    # already running, which a full home scan makes a common window.
+    if result.get("already_running"):
         return False
     return True
 

@@ -255,3 +255,123 @@ def test_each_configured_root_is_checked_independently(tmp_path, monkeypatch, sp
     assert detect.note_home_focused(
         _cfg(tmp_path), [quiet, changed], detect.MIN_HIDDEN_S, now=NOW) == [changed]
     assert spawned == [{"root": changed, "full": False}]
+
+
+# -- code review: the raw hint must be filtered before it is collapsed ------------
+#
+# `fsevents.hint` does no ignore-rule filtering of its own (it only
+# prefix-filters by root) — so on a real `~` root, its raw output routinely
+# includes noise no scan would ever act on: this app's own state home, and
+# (as of this review) `~/Library`'s constant macOS churn. A test that hands
+# `hint` a hand-picked `(set(), [])` proves nothing about this — it has to be
+# a REALISTIC shape, containing paths the ignore rules are actually supposed
+# to drop, or it can't catch the collapse-to-boolean bug the review found.
+
+def test_realistic_noisy_hint_on_a_real_home_root_starts_no_scan(
+        tmp_path, monkeypatch):
+    """The case the whole design exists for, made real: on the default `~`
+    root, `hint` reporting only noise (this app's own state home, plus
+    `~/Library` churn) must still take the quiet path — not "look changed"
+    just because the raw journal saw something move."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _no_recent_scan(monkeypatch)
+    calls = []
+    monkeypatch.setattr(runner, "start",
+                        lambda cfg, root, full=False: calls.append(root))
+    root = runner.canonical_root(str(tmp_path))
+    noisy = {
+        # this app's own state home — a scan's OWN writes land here
+        str(tmp_path / ".fused-render" / "index" / "runs" / "r1" / "spec.json"),
+        str(tmp_path / ".fused-render" / "index" / "dirs.parquet"),
+        # macOS home noise, never anything a user searches home for
+        str(tmp_path / "Library" / "Caches" / "com.apple.example" / "foo"),
+        str(tmp_path / "Library" / "Saved Application State" / "bar"),
+    }
+    monkeypatch.setattr(fsevents, "hint", lambda cfg, r: (noisy, []))
+    assert detect.note_home_focused(
+        _cfg(tmp_path), [root], detect.MIN_HIDDEN_S, now=NOW) == []
+    assert calls == []
+
+
+def test_realistic_noisy_hint_mixed_with_a_real_change_still_scans(
+        tmp_path, monkeypatch, spawned):
+    """The filter must not overreach: noise dropped alongside a genuine
+    change under the same root still starts the scan."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _no_recent_scan(monkeypatch)
+    root = runner.canonical_root(str(tmp_path))
+    mixed = {
+        str(tmp_path / ".fused-render" / "index" / "dirs.parquet"),
+        str(tmp_path / "Library" / "Caches" / "foo"),
+        str(tmp_path / "Downloads" / "report.pdf"),
+    }
+    monkeypatch.setattr(fsevents, "hint", lambda cfg, r: (mixed, []))
+    assert detect.note_home_focused(
+        _cfg(tmp_path), [root], detect.MIN_HIDDEN_S, now=NOW) == [root]
+    assert spawned == [{"root": root, "full": False}]
+
+
+# -- code review: must not cancel an in-flight reconciling scan -------------------
+
+def test_a_live_run_of_the_root_is_never_cancelled_by_a_focus_event(
+        tmp_path, monkeypatch):
+    """`runner.start` would SUPERSEDE (cancel + respawn) a live run under a
+    different `ignore_sig` — exactly the state right after an ignore-list
+    edit, while the reconciling rescan it triggered is still walking. A tab
+    regaining focus must never be the thing that discards that walk's
+    progress, so this trigger has to refuse outright, the same way
+    `freshness.note_folder_opened` refuses when a run is already live."""
+    _no_recent_scan(monkeypatch)
+    root = _root(tmp_path)
+    monkeypatch.setattr(fsevents, "hint", lambda cfg, r: ({root + "/x"}, []))
+    monkeypatch.setattr(runner, "active_run",
+                        lambda cfg, r: {"run_id": "live", "root": r,
+                                        "ignore_sig": "different", "full": False})
+    started_calls = []
+    monkeypatch.setattr(runner, "start",
+                        lambda cfg, root, full=False: started_calls.append(root))
+    assert detect.note_home_focused(
+        _cfg(tmp_path), [root], detect.MIN_HIDDEN_S, now=NOW) == []
+    assert started_calls == []
+
+
+# -- code review: joining a live run must not be reported as "started" -----------
+
+def test_joining_an_already_running_scan_is_not_reported_as_started(
+        tmp_path, monkeypatch):
+    """`runner.start` returns `{"already_running": True}` when it joins a
+    live run instead of spawning one (a race with the `active_run` guard
+    above, or any other caller that started it first). That is not a scan
+    THIS check started, and reporting it as such would make the router log
+    "focus found changes... rescanning" and wake the Activity card for a
+    run that would have happened regardless."""
+    _no_recent_scan(monkeypatch)
+    root = _root(tmp_path)
+    monkeypatch.setattr(fsevents, "hint", lambda cfg, r: ({root + "/x"}, []))
+    monkeypatch.setattr(runner, "start",
+                        lambda cfg, root, full=False: {
+                            "run_id": "r1", "root": root, "already_running": True})
+    assert detect.note_home_focused(
+        _cfg(tmp_path), [root], detect.MIN_HIDDEN_S, now=NOW) == []
+
+
+# -- code review: MountGuard before any syscall on `root` -------------------------
+
+def test_a_mount_backed_root_never_reaches_fsevents_hint(tmp_path, monkeypatch):
+    """`fsevents.hint` reaches `os.stat(root)` (via `device_uuid`) with no
+    guard of its own, and `os.stat` on a wedged rclone/NFS mount blocks the
+    calling thread forever. The MountGuard check must come first, the same
+    ordering `freshness.note_folder_opened` uses ahead of its own `os.stat`."""
+    _no_recent_scan(monkeypatch)
+    mounts = tmp_path / "mounts"
+    mounts.mkdir()
+    monkeypatch.setattr(runner, "_mounts_dir", lambda: str(mounts))
+    root = runner.canonical_root(str(mounts / "bucket"))
+    (mounts / "bucket").mkdir()
+
+    def boom(cfg, r):
+        raise AssertionError("fsevents.hint reached a mount-backed root")
+
+    monkeypatch.setattr(fsevents, "hint", boom)
+    assert detect.note_home_focused(
+        _cfg(tmp_path), [root], detect.MIN_HIDDEN_S, now=NOW) == []
