@@ -594,18 +594,15 @@ class QueueManager:
         turn count onto the fresh owner that takes its place. A no-op unless
         `previous` IS a live placeholder.
 
-        FACTORED OUT OF `started` AND `claim_took` (2026-09-17, Bugbot PR
-        #1194, third round): both call `_own`, which always writes a CLEAN
-        record — `claims: []`, `turns: 1` — right for a folder that was free,
-        wrong for one a placeholder was already holding. `started`'s copy
-        landed first (PR #1194, second push); `claim_took`'s NAMED-claim-
-        gives-way-to-a-placeholder branch had the exact same shape and the
-        exact same bug, just never caught by a test that checked a token
-        survived a RENAME through `claim_took` rather than through `started`.
-        Dropping the claims list there made the run gate call an
-        already-admitted send unadmitted and claim the folder a second time —
-        `turn_ended`'s single decrement never brought a doubled count back to
-        zero.
+        `started`'s ONLY caller now (2026-09-17, Bugbot PR #1194, fourth
+        round): the SAME send finally naming itself, so carrying its own
+        unspent claims and turns forward is right. `claim_took` used to call
+        this too for its NAMED-claim-gives-way-to-a-placeholder branch, but
+        every caller that reaches that branch is a DIFFERENT send (a
+        stranger) — the same admission's own naming never goes back through
+        `claim_took` — so inheriting there let the ORIGINAL admission's
+        token keep consuming after a stranger took the folder (see
+        `_claim_took`'s own comment on its now-clean replace branch).
 
         `turns` is kept AT THE PLACEHOLDER'S OWN COUNT — never reset to `_own`'s
         default of 1 (that would forget a follow-up already absorbed into it)
@@ -1157,11 +1154,23 @@ class QueueManager:
             self._take_everywhere(task_key, keys, except_folder=folder)
             fresh = self._own(rec, {"task": task_key, "entry_id": ""},
                               _text(run_id), _text(session_id))
-            # A NAME REPLACING A PLACEHOLDER INHERITS ITS CLAIMS AND TURNS
-            # (Bugbot, PR #1194, third round) — `owner` above is still the
-            # placeholder `_own` just wrote over, None-safe when the folder
-            # was free instead. See `_inherit_placeholder`.
-            self._inherit_placeholder(owner, fresh)
+            # A NAME REPLACING A PLACEHOLDER STARTS CLEAN — NO INHERITANCE
+            # (CORRECTED 2026-09-17, Bugbot PR #1194, fourth round). This
+            # branch is always a DIFFERENT send from the one the placeholder
+            # was minted for: the SAME admission naming itself goes through
+            # `started`, never back through here (see that method's own
+            # `turns` docstring). Carrying the placeholder's unspent claim
+            # tokens onto this stranger's fresh owner (the third round's fix)
+            # left the ORIGINAL nameless admission's token sitting on
+            # somebody else's record — the run gate's `consume_claim` still
+            # found it, called that nameless send `admitted`, and let it
+            # spawn into a tree this stranger now owns. Dropping the
+            # inheritance here means the token no longer consumes once a
+            # stranger takes the folder; the nameless send has to re-admit,
+            # and with nothing left to consume its gate call falls to
+            # `is_free` and is correctly refused. `started`'s own
+            # inheritance — the SAME send finally naming itself — is
+            # untouched; see `_inherit_placeholder`.
             keys.add(task_key)
             return True, True, self._mint_claim(fresh)
 

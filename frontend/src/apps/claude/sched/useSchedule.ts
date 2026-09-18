@@ -762,7 +762,28 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
         live.current.sessionId,
         live.current.leaderId,
       );
-      if (!task) return;
+      if (!task) {
+        // NOT A DELTA THAT DIDN'T MENTION US — THE ROW IS GONE. `subscribeListing`
+        // (`shell/tasksPulse.emitListing`) always hands `platformRows` the FULL
+        // merged listing, never a bare delta: a change-poll's own `rows`/`gone`
+        // pair is folded into `held` before it goes out, and a failed read is
+        // dropped before it ever reaches this callback (`platformRows` above).
+        // So an answer that reaches here and has nothing for this chat's
+        // session/leader/message key is the manager saying the entry left the
+        // queue — cancelled, or run and gone — and holding the last-known task
+        // would leave the header's dashed "queued · …" caption on screen for a
+        // message that is no longer waiting on anything (Bugbot review).
+        setLiveRow((cur) => (cur === null ? cur : null));
+        const goneId = nextRef.current ? String(nextRef.current.id || "") : "";
+        if (goneId) {
+          setRecRow((cur) =>
+            cur.id === goneId && cur.task !== null
+              ? { id: goneId, task: null, at: nowRef.current(), gen: cur.gen + 1 }
+              : cur,
+          );
+        }
+        return;
+      }
       setLiveRow((cur) => (sameQueueRow(cur, task) ? cur : task));
       // …AND IT IS ALSO THE ROW `rec` PUBLISHES, because every caption in this
       // pane reads that one — the per-message "queued · behind TASK-046", the

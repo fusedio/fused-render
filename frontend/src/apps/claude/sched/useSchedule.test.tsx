@@ -922,6 +922,39 @@ test("a chat with no session reads its row through the leader key", async () => 
   expect(h.state().row?.queue_ahead).toBe("TASK-046");
 });
 
+test("a listing without our row clears it; a failed read leaves it (Bugbot)", async () => {
+  // `subscribeListing` (`shell/tasksPulse.emitListing`) always hands `platformRows`
+  // the FULL merged listing — a change-poll's own rows/gone pair is folded into
+  // `held` before it goes out, never a bare delta — and a failed read is dropped
+  // before it ever reaches this hook (`platformRows`'s `if (ev.failed) return`).
+  // So a listing that reaches here with nothing for this chat means the row is
+  // GONE (cancelled, or run and off the board), not merely unmentioned.
+  const h = await mount(
+    [{ ...pending("a", "2026-09-09T14:00:00+00:00"), origin: "chat" }],
+    "s1",
+    [],
+    true,
+  );
+  await h.feed([
+    { key: "s1", status: "queued", queue_position: 3, queue_ahead: "TASK-046" },
+  ]);
+  expect(h.state().row?.queue_position).toBe(3);
+  expect(h.state().rec?.queue_position).toBe(3);
+
+  // A full listing with no row for this chat: the header must drop the stale
+  // "queued · …" caption rather than keep the last-known facts.
+  await h.feed([{ key: "s2", status: "queued", queue_position: 1 }]);
+  expect(h.state().row).toBe(null);
+  expect(h.state().rec).toBe(null);
+
+  // A failed read never calls back at all (dropped in `platformRows`), so it
+  // leaves whatever the pane already has rather than clearing it further.
+  const rowBefore = h.state().row;
+  const recBefore = h.state().rec;
+  expect(rowBefore).toBe(null);
+  expect(recBefore).toBe(null);
+});
+
 test("flag OFF nothing subscribes to the feed", async () => {
   const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")], "s1", [], false);
   expect(h.feeding()).toBe(false);

@@ -68,15 +68,24 @@ class _Manager:
     def claim(self, folder, task_key, run_id="", session_id=""):
         return self.claim_took(folder, task_key, run_id, session_id)[0]
 
+    def claim_for_send(self, folder, task_key, run_id="", session_id=""):
+        """`claim_took`, plus the token — mirrors
+        `QueueManager.claim_for_send`. Both admit and the gate's own
+        tokenless-nameless-free-folder claim (fix 2, PR #1194 fourth round)
+        go through this."""
+        ok, took = self.claim_took(folder, task_key, run_id, session_id)
+        if not ok:
+            return ok, took, ""
+        token = f"tok-{len(self.claims)}"
+        self.tokens.setdefault(folder, []).append(token)
+        return ok, took, token
+
     def mint_claim(self, folder, task_key, run_id="", session_id=""):
         """Test helper standing in for admit's `claim_for_send`: claims the
         folder exactly as `claim_took` does and hands back a token a case can
         present as `queue_claim`. "" when the claim failed."""
-        ok, _took = self.claim_took(folder, task_key, run_id, session_id)
-        if not ok:
-            return ""
-        token = f"tok-{len(self.claims)}"
-        self.tokens.setdefault(folder, []).append(token)
+        _ok, _took, token = self.claim_for_send(folder, task_key, run_id,
+                                                session_id)
         return token
 
     def consume_claim(self, folder, token):
@@ -136,6 +145,11 @@ def test_an_anonymous_owner_is_recognised_by_its_run(gate):
 
 def test_a_free_folder_is_always_open(gate):
     assert run_router._folder_busy(AGENT, _params()) == ""
+    # The nameless probe above now CLAIMS a placeholder (fix 2, PR #1194
+    # fourth round) rather than only looking, so a fresh manager stands in
+    # for a second, unrelated free folder here.
+    gate["manager"] = _Manager()
+    queue_manager.reset_for_tests(gate["manager"])
     assert run_router._folder_busy(AGENT, _params(session_id="sess-b")) == ""
 
 
@@ -190,9 +204,15 @@ def test_a_second_anonymous_start_is_refused_once_the_first_has_spawned(real_gat
     is where both names exist, so that is where the owner is filed (T3's
     handoff, 2026-09-17): a second nameless send into the same folder is now
     behind it, and the same chat's next message — carrying the run it started or
-    the session Claude Code minted for it — goes straight through."""
-    assert run_router._folder_busy(AGENT, _params()) == ""
-    run_router._file_owner(AGENT, _params(), _started("r-1", "sess-1"))
+    the session Claude Code minted for it — goes straight through.
+
+    `body` is threaded through both calls, the way `api_run` hands the SAME
+    dict to `_folder_busy` and then `_file_owner` within one request — the
+    carrier for the placeholder claim this gate call now mints (fix 2,
+    Bugbot PR #1194, fourth round)."""
+    body: dict = {}
+    assert run_router._folder_busy(AGENT, _params(), body) == ""
+    run_router._file_owner(AGENT, _params(), _started("r-1", "sess-1"), body)
     assert real_gate.owner("/w/alpha")["run_id"] == "r-1"
 
     assert run_router._folder_busy(AGENT, _params())
@@ -218,6 +238,60 @@ def test_a_second_nameless_tokenless_start_is_refused_against_a_live_admission(
     _ok, _took, _token = real_gate.claim_for_send(
         "/w/alpha", queue_manager.PLACEHOLDER_PREFIX + "one")
     assert run_router._folder_busy(AGENT, _params())
+
+
+def test_a_stranger_replacing_the_placeholder_voids_its_token(real_gate):
+    """FAILING-FIRST for Bugbot PR #1194, fourth round (fix 1). Admit's
+    `claim_for_send` mints a placeholder and a token for a brand-new chat's
+    first send; before that send's own `/api/run` lands, a NAMED stranger's
+    `claim_took` (a different chat's admit, or a tokenless send) replaces the
+    placeholder. `_inherit_placeholder` used to copy the placeholder's
+    unconsumed claims onto that stranger's fresh owner, so the ORIGINAL
+    nameless send's token still consumed here — `admitted` alone then let it
+    through and it spawned into a tree the stranger now owns. Once the
+    stranger's claim drops rather than inherits those claims, the token no
+    longer consumes and the nameless send's gate call must re-admit — with
+    nothing to consume it falls to `is_free` and is refused."""
+    _ok, _took, token = real_gate.claim_for_send(
+        "/w/alpha", queue_manager.PLACEHOLDER_PREFIX + "one")
+    real_gate.claim_took("/w/alpha", "sess-stranger", "r-stranger",
+                         "sess-stranger")
+    assert real_gate.consume_claim("/w/alpha", token) is False
+    assert run_router._folder_busy(AGENT, _params(queue_claim=token))
+
+
+def test_a_tokenless_nameless_start_claims_and_keeps_the_placeholder(
+        real_gate):
+    """FAILING-FIRST for Bugbot PR #1194, fourth round (fix 2). A tokenless
+    nameless start on a FREE folder used to only LOOK (`is_free`) and pass
+    without claiming anything — leaving the folder unowned while its spawn
+    was in flight. Another chat's admission then found the folder free too
+    and minted its own placeholder; when the first send's spawn came back,
+    `started` refused to clobber that LIVE placeholder (it cannot prove it
+    minted it), and the process the first send just started was left
+    unowned while the second chat spawned into the same tree. The gate must
+    now claim a placeholder itself, on the free folder, and hand its own
+    token forward on `body` so `_file_owner` can consume-proof it to
+    `started` before anybody else's admission gets a look."""
+    body: dict = {}
+    assert run_router._folder_busy(AGENT, _params(), body) == ""
+    owner = real_gate.owner("/w/alpha")
+    assert owner is not None
+    assert owner["task"].startswith(queue_manager.PLACEHOLDER_PREFIX)
+    assert body.get("_queue_admit_token")
+
+    # A concurrent admission from another chat is refused/queued against
+    # this live reservation, exactly like any other live placeholder.
+    ok, _took, _tok = real_gate.claim_for_send(
+        "/w/alpha", queue_manager.PLACEHOLDER_PREFIX + "other")
+    assert ok is False
+
+    # The spawn returns; `_file_owner` consumes the token this gate call
+    # minted and `started` replaces the placeholder it proved it minted.
+    run_router._file_owner(AGENT, _params(), _started("r-1", "sess-1"), body)
+    owner = real_gate.owner("/w/alpha")
+    assert (owner["task"], owner["run_id"], owner["session_id"]) == (
+        "sess-1", "r-1", "sess-1")
 
 
 def test_a_start_that_mints_no_session_is_still_filed_under_its_run(real_gate):
@@ -324,14 +398,22 @@ def test_an_admitted_claim_that_finds_another_owner_is_refused(gate):
     assert manager.consume_claim("/w/alpha", token) is False
 
 
-def test_an_anonymous_first_send_claims_nothing(gate):
-    """There is no name to own under — Claude Code has not minted the session
-    and `_start` has not returned the run. The look is all the gate can do, and
-    `_file_owner` files it the instant the spawn answers."""
+def test_an_anonymous_first_send_now_claims_a_placeholder(gate):
+    """CORRECTED 2026-09-17, Bugbot PR #1194, fourth round (fix 2): there is
+    no name to own under yet — Claude Code has not minted the session and
+    `_start` has not returned the run — but a tokenless nameless start on a
+    free folder must still CLAIM rather than only look, or a spawn it makes
+    can be orphaned by another chat's admission landing in the gap and
+    minting its own placeholder first. `_file_owner` consumes this gate's own
+    token and refiles the real names the instant the spawn answers."""
     manager = gate["manager"]
-    assert run_router._folder_busy(AGENT, _params()) == ""
-    assert manager.claims == []
-    assert manager.owner("/w/alpha") is None
+    body: dict = {}
+    assert run_router._folder_busy(AGENT, _params(), body) == ""
+    assert len(manager.claims) == 1
+    owner = manager.owner("/w/alpha")
+    assert owner is not None
+    assert owner["task"].startswith(queue_manager.PLACEHOLDER_PREFIX)
+    assert body.get("_queue_admit_token")
 
 
 def test_a_send_files_the_owner_when_it_lands(real_gate):

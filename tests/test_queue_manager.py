@@ -1463,13 +1463,19 @@ def test_claim_took_calls_a_placeholder_a_take():
     assert m2.claim_took(F1, qm.PLACEHOLDER_PREFIX + "two") == (False, False)
 
 
-def test_claim_took_over_a_placeholder_keeps_its_claims_and_turns():
-    """Bugbot PR #1194, third round: `claim_took`'s NAMED-claim-gives-way-to-
-    a-placeholder branch had the exact same drop-the-claims-and-turns bug
-    `started` already had fixed for its own rename — a second, unrelated
-    send absorbed into the placeholder before a real name replaced it lost
-    its own consumable token, and the run gate counted it unadmitted a
-    second time. Both are now the same helper (`_inherit_placeholder`)."""
+def test_claim_took_over_a_placeholder_drops_its_claims_and_turns():
+    """CORRECTED 2026-09-17, Bugbot PR #1194, fourth round: the third round
+    had `claim_took`'s NAMED-claim-gives-way-to-a-placeholder branch INHERIT
+    the placeholder's claims and turns, the same way `started` does for its
+    own rename. But every caller that reaches this branch is a DIFFERENT
+    send from the one the placeholder was minted for — the SAME admission
+    naming itself always goes through `started`, never back through
+    `claim_took` — so inheriting here let an admitted nameless send's token
+    keep consuming after a STRANGER took the folder: `admitted` alone then
+    proved nothing, and that nameless send spawned into a tree the stranger
+    now owned. The fix drops the claims (and, with them, the turn count)
+    instead: the fresh owner starts clean, like any other first ownership,
+    and the nameless send that lost its placeholder has to re-admit."""
     m = idle_world().manager()
     _ok, _took, first = m.claim_for_send(F1, qm.PLACEHOLDER_PREFIX + "one")
     _ok2, _took2, second = m.claim_for_send(F1, qm.PLACEHOLDER_PREFIX + "one")
@@ -1478,9 +1484,9 @@ def test_claim_took_over_a_placeholder_keeps_its_claims_and_turns():
     assert (ok, took) == (True, True)
     owner = m.owner(F1)
     assert owner["task"] == "sess-new"
-    assert owner["turns"] == 2, "the absorbed follow-up's turn must not be dropped"
-    assert m.consume_claim(F1, first) is True
-    assert m.consume_claim(F1, second) is True
+    assert owner["turns"] == 1
+    assert m.consume_claim(F1, first) is False
+    assert m.consume_claim(F1, second) is False
 
 
 # ----------------------------------------------------- the per-send claim token

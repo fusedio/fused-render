@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import uuid
 from urllib.parse import parse_qsl, urlsplit
 
 from fastapi import APIRouter, Body, Header, Request, Response
@@ -32,9 +33,15 @@ def _queue_target(params: dict) -> str:
     return project_queue.queue_key(target) or ""
 
 
-def _file_owner(resolved: str, params: dict, result: dict) -> None:
+def _file_owner(resolved: str, params: dict, result: dict,
+                body: dict | None = None) -> None:
     """Record who owns the folder the moment a `start` or a `send` actually
     spawns — a REFILE, never a claim (Bugbot, PR #1194).
+
+    `body` is the SAME dict `_folder_busy` saw a moment earlier in this
+    request (`api_run` passes both the one it built) — the carrier for a
+    claim token that gate call minted for itself; see the comment where it
+    is read, below.
 
     THIS IS THE REAL SPAWN SITE FOR A CHAT (T3's handoff, 2026-09-17). The
     composer asks `/api/tasks/queue/admit` first, and that claims the folder
@@ -81,6 +88,20 @@ def _file_owner(resolved: str, params: dict, result: dict) -> None:
         from fused_render import queue_manager
 
         manager = queue_manager.get()
+        # A CLAIM THIS GATE MINTED ITSELF, CONSUMED BEFORE THE REFILE
+        # (2026-09-17, Bugbot PR #1194, fourth round — fix 2). A tokenless
+        # nameless start on a free folder now claims a placeholder in
+        # `_folder_busy` and hands its token forward on `body` — not
+        # `params`, which reaches the running script verbatim and must stay
+        # clean. Consuming it here, before `started`, marks that placeholder
+        # `consumed`, the one proof `started` accepts for overwriting a live
+        # placeholder it did not mint by name (see `started`'s docstring). A
+        # missing or already-spent token (an admitted send, or one that lost
+        # the placeholder in the meantime) is a no-op — `started`'s own
+        # guard is the backstop either way.
+        admit_token = str((body or {}).get("_queue_admit_token") or "")
+        if admit_token:
+            manager.consume_claim(key, admit_token)
         manager.started(key, session_id or run_id, run_id, session_id)
     except Exception:  # noqa: BLE001 — a filing that fails is not a failed run
         logger.debug("queue: could not file the owner of a start", exc_info=True)
@@ -154,21 +175,47 @@ def _folder_busy(resolved: str, params: dict, body: dict | None = None) -> str:
                                                    session_id)[0])
             if passed:
                 return ""
-        elif admitted or manager.is_free(key, ""):
+        elif admitted:
             # A brand-new chat's first send has NO name to claim or look up
             # under yet — nothing here can tell it apart from a stranger's
-            # by name alone. `is_free` now refuses a live placeholder to
-            # exactly that stranger (CORRECTED 2026-09-17, Bugbot PR #1194,
-            # third round: it used to read free to everyone here, which let a
-            # second brand-new chat's nameless send pass a folder another
-            # admission had already reserved and spawn beside it). This
-            # admission's OWN first send has nothing to check `is_free`
-            # against either — it is the same nameless placeholder — so
-            # `admitted` (a token this call just consumed, proof this is the
-            # very send `claim_for_send` counted) is what lets it through
-            # instead. Neither proof, on a free folder, still passes: `_file_owner`
-            # files the real names the instant the spawn hands them back.
+            # by name alone. This admission's OWN placeholder is what
+            # `admitted` proves: a token this call just consumed, minted for
+            # THIS send by `claim_for_send` and never carried onto a
+            # stranger's owner (CORRECTED 2026-09-17, Bugbot PR #1194,
+            # fourth round — see `queue_manager._claim_took`'s
+            # placeholder-replace branch, which now drops rather than
+            # inherits a placeholder's claims for a different name).
             return ""
+        elif manager.is_free(key, ""):
+            # A TOKENLESS NAMELESS START MUST STILL CLAIM (CORRECTED
+            # 2026-09-17, Bugbot PR #1194, fourth round — fix 2). A page that
+            # skipped `/api/tasks/queue/admit` (a stale flag read) has no
+            # token to present, so this used to just LOOK (`is_free`) and let
+            # the send go — leaving the folder owned by nobody while the
+            # spawn was in flight. Another chat's admission then found it
+            # free too, minted its own placeholder, and `started` below
+            # refused to clobber that LIVE placeholder on this send's way
+            # back (it cannot prove it is the admission that minted it) —
+            # the process THIS send just spawned was left unowned, and the
+            # other chat spawned into the same tree as well.
+            #
+            # So this door now claims exactly the way admit does: mint a
+            # placeholder and hand its token forward on `body`
+            # (`_queue_admit_token`, not `params` — that reaches the running
+            # script verbatim) so `_file_owner` can consume-proof it to
+            # `started` before anybody else's admission gets a look at the
+            # folder. EVERY start owns the folder before the spawn, named or
+            # not.
+            try:
+                ok, _took, token = manager.claim_for_send(
+                    key, queue_manager.PLACEHOLDER_PREFIX + uuid.uuid4().hex,
+                    "", "")
+            except Exception:
+                ok, token = False, ""
+            if ok:
+                if body is not None:
+                    body["_queue_admit_token"] = token
+                return ""
         owner = manager.owner(key) or {}
         ahead = str(owner.get("task") or owner.get("session_id") or "another task")
         return ("This folder has another task in progress (%s) — the message was "
@@ -253,7 +300,7 @@ async def api_run(request: Request, body: dict = Body(...),
     # THE FOLDER'S OWNER IS FILED HERE, at the one place a chat's turn is
     # actually spawned — see `_file_owner`. Nothing before this call has a run
     # id or a session to file under for a brand-new chat's first send.
-    _file_owner(resolved, params, result)
+    _file_owner(resolved, params, result, body)
     # A script that ran may have written anything, anywhere — including
     # through the git template's stage/unstage/commit (templates/git/ops.py),
     # which runs on this same subprocess-per-call path and so cannot reach
