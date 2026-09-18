@@ -11,6 +11,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   EMPTY_SEED_WATCH,
+  headerQueue,
   headerTaskId,
   pruneDropped,
   reconcileSeeds,
@@ -23,6 +24,7 @@ import {
   WAITING_UNSEEN_POLLS,
   NO_DROPPED,
 } from "./waiting";
+import type { QueueFacts } from "@platform/lib/queue";
 import type { SchedEntry } from "./scheduled";
 
 const AT = Date.parse("2026-09-12T10:00:00Z");
@@ -260,6 +262,63 @@ describe("what is in front is ONE answer for the whole chat", () => {
     const after = waitingFacts({ queue_ahead: "TASK-041", queue_priority: false }, null, false);
     expect(after.queue_priority).toBe(false);
     expect(after.queue_ahead).toBe("TASK-041");
+  });
+});
+
+describe("the chat header and the card over the box say one thing", () => {
+  // THE BUG (Akshil, browser QA 2026-09-18): a pane open on a done session in a
+  // busy folder was sent a message, the server answered `queued · 1st in line ·
+  // behind TASK-046` at once, the waiting bubble and the card said so — and the
+  // header kept its done ring until the reader reloaded. The header read the
+  // LISTING FEED's row alone, and that feed's long-poll parks while the document
+  // is hidden (`shell/tasksPulse`), so in a background tab it is not a slow
+  // answer, it is no answer.
+  const card = waitingFacts(
+    { status: "done", queue_position: 1, queue_ahead: "TASK-046", queue_ahead_key: "pending:e-9" },
+    null,
+  );
+
+  it("draws the card's answer when the feed's row has not caught up", () => {
+    const stale: QueueFacts & { task_id?: string } = {
+      status: "done", task_id: "TASK-140", queue_position: 0, queue_ahead: "",
+    };
+    const drawn = headerQueue(stale, card, 1, false);
+    expect(drawn).toBe(card);
+    expect(drawn?.status).toBe("queued");
+    expect(drawn?.queue_ahead).toBe("TASK-046");
+    // …and the link the id wears, which is the other half of the caption.
+    expect(drawn?.queue_ahead_key).toBe("pending:e-9");
+  });
+
+  it("keeps the feed's own row the moment it says queued", () => {
+    // It is the only one of the three that carries this conversation's number
+    // and title, which the identity block draws.
+    const row: QueueFacts & { task_id?: string; title?: string } = {
+      status: "queued", task_id: "TASK-140", title: "say Q1b", queue_position: 2,
+    };
+    expect(headerQueue(row, card, 1, false)).toBe(row);
+  });
+
+  it("says nothing while this conversation's own turn is running", () => {
+    // A scheduled message held behind this chat's OWN run is the one case where
+    // "something of mine is waiting" and "I am in a line" are both true, and
+    // there the ring belongs to the run.
+    expect(headerQueue({ status: "in_progress" }, card, 1, true)).toBe(null);
+  });
+
+  it("says nothing when nothing of this chat's is waiting", () => {
+    expect(headerQueue({ status: "done" }, card, 0, false)).toBe(null);
+    expect(headerQueue(null, card, 0, false)).toBe(null);
+  });
+
+  it("lets go of a feed row that says queued after the line has emptied", () => {
+    // THE SAME FREEZE, POINTING THE OTHER WAY. The feed's row is the one input
+    // here that can stop arriving, so a row that said `queued` once said it for
+    // ever in a hidden tab — the header kept "1st in line · behind TASK-157"
+    // over a message that had already run and answered. What is waiting is the
+    // pane's own question and it is still being asked, so it decides.
+    const frozen = { status: "queued", queue_position: 1, queue_ahead: "TASK-157" };
+    expect(headerQueue(frozen, card, 0, false)).toBe(null);
   });
 });
 

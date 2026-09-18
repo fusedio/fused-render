@@ -545,6 +545,53 @@ export function waitingFacts(
 }
 
 /**
+ * WHAT THE CHAT HEADER DRAWS ABOUT THE LINE — the row when the server has said
+ * it, the card's own answer while it has not, and nothing at all otherwise.
+ *
+ * THE HEADER AND THE CARD OVER THE COMPOSER NOW SAY ONE THING (Akshil, browser
+ * QA 2026-09-18). The header read `useSchedule.row` and nothing else — the
+ * LISTING FEED's row, which is the fast answer when it arrives and no answer
+ * when it does not: the feed's long-poll parks while the document is hidden and
+ * its floor refresh is skipped for the same reason (`shell/tasksPulse`), so a
+ * pane left open in a background tab kept its done ring while the very same
+ * pane's waiting bubble and its "1 message waiting · behind TASK-046" card,
+ * both drawn off `waitingFacts` above, were already right. One send, two
+ * answers, three pixels apart, until the reader reloaded.
+ *
+ * So the header asks what the card asks, in the card's own order:
+ *
+ *   * IS ANYTHING OF THIS CHAT'S WAITING AT ALL — `waitCount`, the card's own
+ *     gate, so the two surfaces appear and leave together by construction. It is
+ *     the freshest thing the pane has: the schedule poll's entries and the
+ *     seeds the send itself laid down, neither of which stops while the feed
+ *     does. It gates the row as well, and that half is a bug of its own —
+ *     a frozen feed row that said `queued` once said it for ever, so a header
+ *     that finally learned it was in a line then could not learn it had left
+ *     one. A busy conversation is never in a line either: a scheduled message
+ *     held behind this chat's OWN turn is the one case where both are true, and
+ *     there the ring belongs to the run.
+ *   * THEN THE FEED'S ROW, WHEN IT SAYS `queued`. It is the only one of the
+ *     three that carries this conversation's own number and title, which the
+ *     identity block draws, and it is the server's word.
+ *   * ELSE THE CARD'S FACTS (`waitingFacts`: the polled row, else the admission
+ *     that queued the message, plus a Run next claim) — which is the whole of
+ *     what the pane knows when the feed has said nothing.
+ *
+ * Generic in the row so the caller keeps its own shape — the header wants the
+ * `task_id` and `title` a listing row has and `QueueFacts` does not.
+ */
+export function headerQueue<T extends QueueFacts>(
+  row: T | null | undefined,
+  facts: QueueFacts,
+  waitCount: number,
+  busy: boolean,
+): T | QueueFacts | null {
+  if (busy || waitCount <= 0) return null;
+  if (row && row.status === "queued") return row;
+  return facts;
+}
+
+/**
  * THE NUMBER AT THE TOP OF A CHAT — "TASK-057" — from the freshest of the three
  * places that can know it.
  *

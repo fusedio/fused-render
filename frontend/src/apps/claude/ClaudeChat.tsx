@@ -155,6 +155,7 @@ import {
   NO_DROPPED,
   pruneDropped,
   useLiveSeeds,
+  headerQueue,
   headerTaskId,
   waitingFacts,
   waitingRows,
@@ -4210,7 +4211,24 @@ function ChatBody(props: ChatBodyProps) {
                 // send was behind somebody else's run could not tell it from an
                 // idle chat (Akshil, 2026-09-17). `Topbar` draws it only while
                 // the row says `queued`.
-                queue={queueOn ? sched.row : null}
+                //
+                // …AND THE CARD'S OWN ANSWER WHEN THAT FEED HAS NOT SPOKEN
+                // (`headerQueue`, Akshil 2026-09-18). The feed's row is the fast
+                // answer and not always AN answer — its long-poll parks while the
+                // document is hidden — so a pane left open in a background tab
+                // kept a done ring over a send the server had already queued,
+                // while the waiting bubble and the card over the box, both fed by
+                // `waitFacts`, were right the whole time.
+                queue={
+                  queueOn
+                    ? headerQueue(
+                        sched.row,
+                        waitFacts,
+                        waitCount,
+                        running || sched.row?.status === "in_progress",
+                      )
+                    : null
+                }
               />
             ) : null}
             <Transcript
