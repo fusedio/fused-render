@@ -243,6 +243,30 @@ def test_turning_indexing_off_cancels_a_live_scan(tmp_path, monkeypatch):
     assert os.path.exists(os.path.join(run_dir, "cancel"))
 
 
+def test_turning_indexing_off_also_cancels_a_live_scan_of_another_kind(
+        tmp_path, monkeypatch):
+    """Bugbot finding against a7aef9472: `cancel_all_scans` only ever loaded
+    the default "files" `IndexConfig`, so a live scan of any OTHER
+    registered kind (each with its own `runs_dir`) kept running right
+    through the toggle. "apps" is used here because it is a built-in kind
+    that `routers/index.py`'s own module import always registers, so this
+    needs no manifest/confirm setup of its own."""
+    client, home = _client(tmp_path, monkeypatch)
+    from fused_render.index import runner
+    from fused_render.index.config import load_config
+
+    cfg = load_config(kind="apps")
+    root = str(tmp_path / "proj")
+    os.makedirs(root, exist_ok=True)
+    run_id = runner.start(cfg, root)["run_id"]
+    run_dir = os.path.join(cfg.runs_dir, run_id)
+    assert not os.path.exists(os.path.join(run_dir, "cancel"))
+
+    client.put("/api/prefs", json={"indexing_enabled": False}, headers=FUSED)
+
+    assert os.path.exists(os.path.join(run_dir, "cancel"))
+
+
 def test_a_live_scan_is_cancelled_even_with_the_run_listing_already_cached(
         tmp_path, monkeypatch):
     """The test above only catches this by luck, and on CI it stopped doing so.

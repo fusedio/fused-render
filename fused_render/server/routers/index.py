@@ -1743,22 +1743,30 @@ def cancel_all_scans() -> list:
     off is a rare deliberate act; it can afford the fold a keystroke cannot.
 
     Returns the run ids actually cancelled — a run already told to stop is
-    skipped, same as `active_run`'s own liveness rule."""
-    cfg = load_config()
+    skipped, same as `active_run`'s own liveness rule.
+
+    Every registered kind ("files" plus `kinds.registered()`, "apps"
+    included) gets its own `runs_dir` (`config.index_dir(kind)`), so a
+    single-kind fold here used to leave any in-flight non-"files" scan
+    (bugbot finding against a7aef9472: toggling indexing off cancelled the
+    "files" run but left an "apps" — or third-party — scan walking right
+    through the toggle)."""
     cancelled = []
-    for r in runner.list_runs(cfg, limit=KEEP_RUNS)["runs"]:
-        if not r.get("running"):
-            continue
-        rid = r.get("run_id")
-        if not rid:
-            continue
-        if os.path.exists(os.path.join(cfg.runs_dir, str(rid), "cancel")):
-            continue
-        try:
-            runner.cancel(cfg, str(rid))
-            cancelled.append(str(rid))
-        except ValueError:
-            pass
+    for kind in ("files", *kinds.registered()):
+        cfg = load_config(kind=kind)
+        for r in runner.list_runs(cfg, limit=KEEP_RUNS)["runs"]:
+            if not r.get("running"):
+                continue
+            rid = r.get("run_id")
+            if not rid:
+                continue
+            if os.path.exists(os.path.join(cfg.runs_dir, str(rid), "cancel")):
+                continue
+            try:
+                runner.cancel(cfg, str(rid))
+                cancelled.append(str(rid))
+            except ValueError:
+                pass
     return cancelled
 
 
