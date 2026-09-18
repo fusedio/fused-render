@@ -42,6 +42,15 @@ export interface MenuItem {
   // are one level deep (no nested submenus) but may include separators —
   // Compress divides its plain zip from the git-repo-only formats.
   submenu?: () => Promise<MenuEntry[]>;
+  // The native tooltip on the row — a disabled row's reason, an action's
+  // longer explanation. The same carrier the bars' OverflowMenu rows use, so
+  // one item list can be rendered by either menu without losing it.
+  title?: string;
+  // Something small after the label — a status dot, a spinner — in the row's
+  // trailing slot. Also shared with OverflowMenu: the explorer's folder menu is
+  // one list shown by a kebab AND by a right-click, and the App Doctor's dot
+  // has to ride its row in both.
+  trailing?: ReactNode;
 }
 
 // A separator is a bare sentinel so item arrays stay trivial to build inline.
@@ -88,6 +97,7 @@ function Row({
          anything, so a role it never opted into would mis-describe it. */
       role={item.active === undefined ? undefined : "menuitemradio"}
       aria-checked={item.active === undefined ? undefined : item.active}
+      title={item.title}
       onMouseEnter={onEnter}
       onClick={(e) => {
         e.stopPropagation();
@@ -100,6 +110,7 @@ function Row({
         </span>
       )}
       <span className="context-menu-label">{item.label}</span>
+      {item.trailing && <span className="context-menu-trailing">{item.trailing}</span>}
       {item.submenu && <span className="context-menu-arrow">›</span>}
     </div>
   );

@@ -1,10 +1,19 @@
-// THE BAR'S KEBAB — the file preview's crumb bar, and the folder listing's
-// search row (which IS the bar over a folder): every app-level action that used to
-// stand in that bar as its own bordered button — App Doctor, Export App, Open in
-// project — plus the fullscreen glyph and the MCP companion, in one `⋮`
-// (BarMenu's OverflowMenu). Four labelled buttons and two glyphs in a 28px strip
-// was a toolbar competing with the mode control for the bar; the mode control is
-// what the bar is FOR, and these are things you do to the app once in a while.
+// THE APP-LEVEL ROWS — every app-level action that used to stand in the crumb
+// bar as its own bordered button — App Doctor, Export App, Open in project —
+// plus the fullscreen glyph and the MCP companion. Four labelled buttons and
+// two glyphs in a 28px strip was a toolbar competing with the mode control for
+// the bar; the mode control is what the bar is FOR, and these are things you
+// do to the app once in a while.
+//
+// Two exports. `useAppActionRows` is the hook: it owns the entry probe, the
+// App Doctor's checks and modal, the Share sheet's version logic, and returns
+// the rows as ContextMenu MenuEntry[] in two groups (`app`, `open`) plus the
+// trigger badge and the modal node. `EntryActionsMenu` is the file preview's
+// kebab built on it (BarMenu's OverflowMenu). The FOLDER LISTING does not use
+// the component: it takes the hook's groups and composes them with its own
+// folder ops into the one folder menu (bar-menus' folderMenu) that its kebab,
+// its background right-click and the crumb bar all show — so the same row is
+// never spelled twice.
 //
 // ONE ENTRY PROBE. The three buttons each asked /api/apps/entry whether the
 // previewed page is its folder's app entry (the server's own entry rule, never
@@ -36,7 +45,7 @@
 //     (McpDialog) rather than in the sidebar, whose two remaining companions are
 //     tabs now (SideChrome's SideTabs). The dialog's open state lives in
 //     Preview.tsx because Open With → MCP has to reach it too.
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Plug, Stethoscope } from "lucide-react";
 import { addCurrentApp, getAppEntry } from "@platform/lib/api";
 import { openShareApp } from "@platform/lib/share-app";
@@ -49,7 +58,8 @@ import { basename } from "@platform/lib/format";
 import { useAppVersionLabel } from "@platform/lib/appVersionLabel";
 import type { ResolvedSnapshot } from "@platform/lib/snapshot-param";
 import { MenuIcons } from "@platform/ui/MenuIcons";
-import { OverflowMenu, type OverflowEntry } from "@apps/explorer/BarMenu";
+import type { MenuEntry } from "@platform/ui/ContextMenu";
+import { OverflowMenu } from "@apps/explorer/BarMenu";
 
 // lucide at MenuIcons' own weight (1.5 on a 24 grid, 16px) so the two rows that
 // have no MenuIcons glyph sit in the list at the same stroke as the rest.
@@ -99,15 +109,23 @@ export interface EntryActionsMenuProps {
   // over a folder that may well be one.
   mcp?: { available: boolean; pending: boolean; reason?: string };
   onOpenMcp: () => void;
-  // The host surface's OWN actions, appended after the app rows under a
-  // separator. The folder listing hands in its folder menu (lib/bar-menus'
-  // folderBarMenu: rename, new file/folder, paste, refresh, reveal, copy path,
-  // the splits) so the folder has ONE kebab rather than this one in the bar and
-  // a second `⋮` on the column header.
-  extraItems?: OverflowEntry[];
 }
 
-export function EntryActionsMenu({
+// What the hook hands back. `app` is what this folder IS when it is an app
+// (App Doctor, Share…, Open as project, MCP config); `open` is "this page
+// elsewhere" (Open in embed) — the folder listing files each into the matching
+// group of its folder menu. `isEntry` is the probe's (or the caller's) answer,
+// `badge` rides the kebab trigger while the menu is shut, `modal` is the App
+// Doctor dialog to render wherever the rows are shown.
+export interface AppActionRows {
+  app: MenuEntry[];
+  open: MenuEntry[];
+  isEntry: boolean;
+  badge: ReactNode;
+  modal: ReactNode;
+}
+
+export function useAppActionRows({
   fsPath,
   isEntry: isEntryKnown,
   snapshotSha = null,
@@ -117,8 +135,7 @@ export function EntryActionsMenu({
   onOpenEmbed,
   mcp,
   onOpenMcp,
-  extraItems,
-}: EntryActionsMenuProps) {
+}: EntryActionsMenuProps): AppActionRows {
   const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
   const name = basename(dir);
   const [isEntryProbed, setIsEntry] = useState(false);
@@ -187,7 +204,7 @@ export function EntryActionsMenu({
     navigateUrl("/apps/" + encodeFsPathSegments(dir));
   };
 
-  const entryRows: OverflowEntry[] = isEntry
+  const app: MenuEntry[] = isEntry
     ? [
         {
           label: "App Doctor",
@@ -217,65 +234,66 @@ export function EntryActionsMenu({
           title: "Open " + name + " as a project",
           onClick: () => void openProject(),
         },
-        "separator",
       ]
     : [];
 
-  const items: OverflowEntry[] = [
-    ...entryRows,
-    ...(onOpenEmbed
-      ? [
-          {
-            label: "Open in embed",
-            icon: MenuIcons.newTab,
-            title: "Open this page in a new tab, without the sidebar and toolbar",
-            onClick: onOpenEmbed,
-          } satisfies OverflowEntry,
-        ]
-      : []),
-    // The MCP row is worth listing DISABLED only where its absence is news: on
-    // an app (an entry page exists, so "this app publishes no tools" says
-    // something) or while the probe is still out. A plain folder that is not an
-    // app would otherwise get a kebab that opens on one dead row — and the
-    // empty-list collapse below could never run for it.
-    ...(mcp && (mcp.available || mcp.pending || isEntry)
-      ? [
-          {
-            label: "MCP config",
-            icon: mcp.pending ? <span className="mode-icon-spinner" /> : <Plug {...LUCIDE} />,
-            title: mcp.pending
-              ? "Checking if this folder publishes MCP tools…"
-              : mcp.available
-                ? "The MCP tools " + name + " publishes"
-                : mcp.reason ?? "This folder publishes no MCP tools",
-            disabled: mcp.pending || !mcp.available,
-            onClick: onOpenMcp,
-          } satisfies OverflowEntry,
-        ]
-      : []),
-  ];
-
-  if (extraItems && extraItems.length) {
-    if (items.length) items.push("separator");
-    items.push(...extraItems);
+  // The MCP row is worth listing DISABLED only where its absence is news: on
+  // an app (an entry page exists, so "this app publishes no tools" says
+  // something) or while the probe is still out. A plain folder that is not an
+  // app would otherwise get a kebab that opens on one dead row.
+  if (mcp && (mcp.available || mcp.pending || isEntry)) {
+    app.push({
+      label: "MCP config",
+      icon: mcp.pending ? <span className="mode-icon-spinner" /> : <Plug {...LUCIDE} />,
+      title: mcp.pending
+        ? "Checking if this folder publishes MCP tools…"
+        : mcp.available
+          ? "The MCP tools " + name + " publishes"
+          : mcp.reason ?? "This folder publishes no MCP tools",
+      disabled: mcp.pending || !mcp.available,
+      onClick: onOpenMcp,
+    });
   }
-  // A trailing separator with nothing after it (an entry page over a surface
-  // with neither embed nor MCP) would draw a rule under the last row; a leading
-  // one (extras under no app rows) a rule over the first.
-  while (items.length && items[items.length - 1] === "separator") items.pop();
-  while (items.length && items[0] === "separator") items.shift();
 
-  // NOTHING QUALIFIES, NO KEBAB: OverflowMenu already renders nothing for an
-  // empty list, so a plain folder that is not an app and publishes no MCP gets
-  // no `⋮` at all rather than a menu that opens on nothing.
+  const open: MenuEntry[] = onOpenEmbed
+    ? [
+        // The fullscreen glyph the row replaced, not `newTab`: in the folder
+        // menu this row sits directly under "Open in New Tab", and two
+        // consecutive rows with one icon read as a duplicate.
+        {
+          label: "Open in embed",
+          icon: MenuIcons.fullscreen,
+          title: "Open this page in a new tab, without the sidebar and toolbar",
+          onClick: onOpenEmbed,
+        },
+      ]
+    : [];
+
+  return {
+    app,
+    open,
+    isEntry,
+    badge: isEntry ? <AppDoctorStatusDot checks={doctorChecks} /> : undefined,
+    modal: doctorOpen ? <AppDoctorModal dir={dir} onClose={() => setDoctorOpen(false)} /> : null,
+  };
+}
+
+// The FILE PREVIEW's kebab: the hook's rows in one `⋮`, the app group first and
+// the embed row under a separator. Renders nothing at all when nothing
+// qualifies (OverflowMenu on an empty list), so a plain html file that is not
+// an entry and whose folder publishes no MCP gets no `⋮` rather than a menu
+// that opens on nothing.
+export function EntryActionsMenu(props: EntryActionsMenuProps) {
+  const rows = useAppActionRows(props);
+  const items: MenuEntry[] = [
+    ...rows.app,
+    ...(rows.app.length && rows.open.length ? (["separator"] as MenuEntry[]) : []),
+    ...rows.open,
+  ];
   return (
     <>
-      <OverflowMenu
-        items={items}
-        title="App actions"
-        badge={isEntry ? <AppDoctorStatusDot checks={doctorChecks} /> : undefined}
-      />
-      {doctorOpen && <AppDoctorModal dir={dir} onClose={() => setDoctorOpen(false)} />}
+      <OverflowMenu items={items} title="App actions" badge={rows.badge} />
+      {rows.modal}
     </>
   );
 }
