@@ -842,7 +842,10 @@ export function useFileOps({
               } as MenuEntry
             : {
                 label: "Export App File",
-                icon: MenuIcons.compress,
+                // `download`, not `compress`: the Compress row sits directly
+                // above this one, and two rows with one glyph read as one
+                // action. Same glyph as the other flag-off surfaces.
+                icon: MenuIcons.download,
                 onClick: () => void exportAppFileOnly({ path: row.path, name: row.name }),
               } as MenuEntry]
         : []),
