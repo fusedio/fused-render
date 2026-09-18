@@ -411,10 +411,44 @@ class _FakeRunPaths:
         pass
 
 
+class _FakeTrayHandle:
+    """Stand-in for `tray.TrayHandle`. Carries `set_update_available` because
+    `run()` calls it unconditionally whenever a backend `update` module is
+    present (Windows today) — a fake missing it blows up with AttributeError
+    the moment that branch runs, which is exactly what happened when this
+    fake was tray-only and the tests only ever ran where `update` is None."""
+
+    actions = queue.Queue()
+
+    def __init__(self):
+        self.update_calls = []
+
+    def stop(self) -> None:
+        pass
+
+    def set_update_available(self, version: str) -> None:
+        self.update_calls.append(version)
+
+
+class _FakeUpdateModule:
+    """Stand-in for the backend's `update` module (see
+    `fused_render.supervisor._win32.update.start_auto_checks`): calls
+    `notify` synchronously so the test can see the real callable —
+    `tray_handle.set_update_available` — actually get invoked, instead of
+    merely skipping past the `update is not None` branch."""
+
+    def start_auto_checks(self, paths, notify) -> None:
+        notify("9.9.9")
+
+
 def _patch_run_up_to_the_event_loop(monkeypatch, calls, *, teardown):
     """Stub out every collaborator `run()` touches before and after
     `_event_loop` so the primary-instance branch runs for real, down to the
-    finally block under test, without spawning a real server, tray or pipe."""
+    finally block under test, without spawning a real server, tray or pipe.
+
+    Also installs a fake `update` module so `run()` takes the `update is not
+    None` branch here on Linux too, even though the real backend only
+    supplies one on Windows — that is the branch whose contract regressed."""
     inst = _FakePrimaryInstance(calls)
     monkeypatch.setattr(core.instance, "acquire", lambda names: inst)
     monkeypatch.setattr(core, "DesktopPaths", _FakeRunPaths)
@@ -424,19 +458,21 @@ def _patch_run_up_to_the_event_loop(monkeypatch, calls, *, teardown):
     monkeypatch.setattr(core, "_spawn_open", lambda *a, **kw: None)
     monkeypatch.setattr(core.startup, "enabled", lambda: False)
 
-    class _FakeTrayHandle:
-        actions = queue.Queue()
+    tray_handles = []
 
-        def stop(self) -> None:
-            pass
+    def _start_tray(*a, **kw):
+        handle = _FakeTrayHandle()
+        tray_handles.append(handle)
+        return handle
 
-    monkeypatch.setattr(core.tray, "start", lambda *a, **kw: _FakeTrayHandle())
+    monkeypatch.setattr(core.tray, "start", _start_tray)
+    monkeypatch.setattr(core, "update", _FakeUpdateModule())
     monkeypatch.setattr(core, "_event_loop",
                         lambda *a, **kw: (core._ExitReason.RELAUNCH, None))
     monkeypatch.setattr(core, "_teardown", teardown)
     monkeypatch.setattr(core, "_respawn_after_relaunch",
                         lambda paths: calls.append("respawn"))
-    return inst
+    return inst, tray_handles
 
 
 def test_relaunch_releases_the_lock_before_respawning(monkeypatch):
@@ -447,11 +483,13 @@ def test_relaunch_releases_the_lock_before_respawning(monkeypatch):
     # `_respawn_after_relaunch`/`run()` for the full story). The lock must
     # come off BEFORE the respawn is attempted, not after.
     calls = []
-    _patch_run_up_to_the_event_loop(monkeypatch, calls, teardown=lambda *a, **kw: None)
+    _inst, tray_handles = _patch_run_up_to_the_event_loop(
+        monkeypatch, calls, teardown=lambda *a, **kw: None)
 
     core.run(protocol.Open("fused-render://relaunch"))
 
     assert calls == ["release", "respawn"]
+    assert tray_handles[0].update_calls == ["9.9.9"]
 
 
 def test_relaunch_still_respawns_when_teardown_raises_supervisor_stopped_error(monkeypatch):
@@ -466,9 +504,11 @@ def test_relaunch_still_respawns_when_teardown_raises_supervisor_stopped_error(m
     def teardown(*a, **kw):
         raise core.SupervisorStoppedError("Python process tree did not stop")
 
-    _patch_run_up_to_the_event_loop(monkeypatch, calls, teardown=teardown)
+    _inst, tray_handles = _patch_run_up_to_the_event_loop(
+        monkeypatch, calls, teardown=teardown)
 
     with pytest.raises(core.SupervisorStoppedError):
         core.run(protocol.Open("fused-render://relaunch"))
 
     assert calls == ["release", "respawn"]
+    assert tray_handles[0].update_calls == ["9.9.9"]
