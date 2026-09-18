@@ -122,7 +122,7 @@ export interface TopbarProps {
    * other row, and a running conversation already has the ring in `TaskPeekWho`
    * and the composer's own clock to say so.
    */
-  queue?: QueueFacts | null;
+  queue?: (QueueFacts & Pick<Partial<Task>, "task_id" | "title">) | null;
 }
 
 export function Topbar({
@@ -146,9 +146,21 @@ export function Topbar({
   // queued, the identity is the queued row's own — its status draws the dashed
   // ring, its number and title are the message that is waiting — over the
   // session row's project and target, which the queued row does not carry.
+  //
+  // ONLY THE THREE FACTS THE IDENTITY BLOCK DRAWS come from the queued row
+  // (Bugbot, PR #1194, ninth round): its number, its title and its ring's
+  // status. The live row is a whole listing row, and a send queued into
+  // ANOTHER folder's task is keyed `pending:<entry>` with that folder as its
+  // project — spread over the session row it painted the other folder on this
+  // chat's header. Project, target and session stay the open chat's.
   const who: Task | null =
     task && line && queue
-      ? ({ ...task, ...(queue as Partial<Task>), status: "queued" } as Task)
+      ? ({
+          ...task,
+          ...(queue.task_id ? { task_id: queue.task_id } : {}),
+          ...(queue.title ? { title: queue.title } : {}),
+          status: "queued",
+        } as Task)
       : (task ?? null);
   if (who) {
     return (

@@ -256,3 +256,30 @@ test("a done session row beside a queued live row wears the queued row's ring, n
   expect(said).toContain("2nd in line · behind TASK-046");
   expect(has(r, "task-side-peek-project")).toBe(true);
 });
+
+test("a queued row from another folder lends only its number, title and ring", async () => {
+  // Bugbot, PR #1194 (low): the live row is a whole listing row, and a send
+  // queued into ANOTHER folder's task carries that folder as its project. The
+  // header keeps the open chat's project, target and session.
+  const r = render(
+    {
+      key: "pending:e-7",
+      task_id: "TASK-060",
+      title: "queued elsewhere",
+      status: "queued",
+      queue_position: 1,
+      project: "/repo/beta",
+      target: "/repo/beta/y.py",
+      session_id: "sess-other",
+    } as QueueFacts,
+    { task: task({ status: "done", project: "/repo/alpha", target: "/repo/alpha/x.py" }) },
+  );
+  const project = r.root.findAll(
+    (n) => typeof n.type === "string" && String(n.props.className || "").includes("task-side-peek-project"),
+  );
+  expect(project.length).toBeGreaterThan(0);
+  expect(JSON.stringify(r.toJSON())).toContain("alpha");
+  expect(JSON.stringify(r.toJSON())).not.toContain("beta");
+  expect(text(r)).toContain("T060");
+  expect(text(r)).toContain("queued elsewhere");
+});
