@@ -109,7 +109,7 @@ test("fileBarMenu lists rename, Claude, the path pair and the splits", () => {
     onOpenInNewTab: () => called.push("newtab"),
     onSplit: (dir) => called.push("split:" + dir),
   });
-  // The shared trio sits in the FOLDER menu's order (backgroundMenu):
+  // The shared rows sit in the FOLDER menu's order (useFileOps.folderGroups):
   // Reveal → Open in New Tab → Copy Path → Claude Code. Two bars, one surface.
   expect(labels(items)).toEqual([
     "Rename…",
@@ -190,8 +190,8 @@ test("fileBarMenu offers Set Current View as Preview only on an app entry, in it
   ]);
 });
 
-// -- canRenameBase / withFolderRename ----------------------------------------
-// The folder background menu (and, through folderBarMenu, the crumb bar over
+// -- canRenameBase -------------------------------------------------------------
+// The folder menu (kebab, background right-click, and the crumb bar over
 // the current folder) gains a "Rename…" item — this pins the guard that
 // decides when, and the shape it produces.
 

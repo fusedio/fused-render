@@ -257,9 +257,12 @@ export function useAppActionRows({
 
   const open: MenuEntry[] = onOpenEmbed
     ? [
+        // The fullscreen glyph the row replaced, not `newTab`: in the folder
+        // menu this row sits directly under "Open in New Tab", and two
+        // consecutive rows with one icon read as a duplicate.
         {
           label: "Open in embed",
-          icon: MenuIcons.newTab,
+          icon: MenuIcons.fullscreen,
           title: "Open this page in a new tab, without the sidebar and toolbar",
           onClick: onOpenEmbed,
         },
