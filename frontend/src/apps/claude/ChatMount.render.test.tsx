@@ -283,3 +283,91 @@ test("the recap is OPT-IN: absent unless the host asked for it", async () => {
   );
   expect(propsOf(on).recap).toBe(true);
 });
+
+test("a host's run settings SEED the pills and are never re-written under them",
+  async () => {
+    // THE SIDE PEEK'S BUG (Akshil, 2026-09-18: "I saw the sidebar peek — the
+    // values there were different"). The composer ranks `param > detected >
+    // pref > constant` (ui/composer-defaults), and `detected` is
+    // `agent._defaults`: the model last used in that FOLDER, scanned off its
+    // newest transcripts. Right for a chat somebody opened on a folder; wrong
+    // for a TASK that was set up with a model of its own, which is what the
+    // peek is always showing. With nothing on the param the task's own choice
+    // could not win, because it was never in the running.
+    //
+    // So a host that KNOWS the settings states them, and the existing top of
+    // that ranking does the rest.
+    publishNativeChatEnabled(true);
+    const r = await mountAsync(
+      <ChatMount
+        file="/w/p"
+        chatOnly
+        peek
+        legacySrc={SRC}
+        paramsSource="memory"
+        sessionId="s1"
+        model="opus"
+        effort="max"
+      />,
+    );
+    const params = (r.root.findByType(ClaudeChat).props as {
+      params: { getAll(): Record<string, string>; set(p: Record<string, string | null>): void };
+    }).params;
+    expect(params.getAll()).toMatchObject({ model: "opus", effort: "max" });
+
+    // AND THEY ARE A SEED, NOT A SYNC — the one way these two differ from
+    // `session_id` / `run` / `msg`, which a host may legitimately re-hand.
+    //
+    // The reader can change the pill, and the pill writes the same param. The
+    // hazard is folding these two in beside the ids in `useHostIds`, where the
+    // session-id effect re-runs on EVERY listing refresh (the tasks page
+    // re-reads every 20-30s and hands a fresh id routinely — the very bug that
+    // hook's header records for `run`). A pick made at 0s would be overwritten
+    // at 20s by a value the reader had deliberately moved off.
+    //
+    // So: the reader picks, and then the host re-renders with a NEW SESSION ID,
+    // which is the refresh that would trigger it.
+    act(() => params.set({ model: "haiku", effort: "low" }));
+    act(() => r.update(
+      <ChatMount
+        file="/w/p"
+        chatOnly
+        peek
+        legacySrc={SRC}
+        paramsSource="memory"
+        sessionId="s2"
+        model="opus"
+        effort="max"
+      />,
+    ));
+    expect(params.getAll()).toMatchObject({
+      model: "haiku", effort: "low", session_id: "s2",
+    });
+  });
+
+test("a host with no run settings leaves the chat's own detection speaking",
+  async () => {
+    // "" and absent both mean "this host has no opinion", which is every chat
+    // that is not a task. Asserted as the ABSENCE of the key, not a falsy one:
+    // an empty `model` param is a value, and `resolveModel`'s `param || detected`
+    // would still short-circuit differently from no param at all if it ever
+    // stopped being a falsy-or.
+    publishNativeChatEnabled(true);
+    const r = await mountAsync(
+      <ChatMount file="/w/p" chatOnly peek legacySrc={SRC} paramsSource="memory" />,
+    );
+    const params = (r.root.findByType(ClaudeChat).props as {
+      params: { getAll(): Record<string, string> };
+    }).params;
+    expect("model" in params.getAll()).toBe(false);
+    expect("effort" in params.getAll()).toBe(false);
+
+    const blank = await mountAsync(
+      <ChatMount file="/w/p" chatOnly peek legacySrc={SRC} paramsSource="memory"
+                 model="" effort="" />,
+    );
+    const blankParams = (blank.root.findByType(ClaudeChat).props as {
+      params: { getAll(): Record<string, string> };
+    }).params;
+    expect("model" in blankParams.getAll()).toBe(false);
+  });
