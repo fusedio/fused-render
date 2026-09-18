@@ -1218,6 +1218,10 @@ export interface Prefs {
   // the shell's entry points to it (the sidebar row and the Settings menu
   // entry), not the /canvases routes, which keep answering a deep link.
   canvases: { enabled: boolean };
+  // Whether the unified Share sheet (public link + .fused file) is OFFERED in
+  // place of the plain Export / Download action (opt-in, default off). Gates
+  // the five share surfaces, not the /api/share routes.
+  app_sharing: { enabled: boolean };
   // Whether chat embeds render the native React chat (default ON) instead of the
   // legacy template iframe. The EFFECTIVE value, and `forced_by` is the env
   // string deciding it when `FUSED_RENDER_NATIVE_CHAT` is in force — the stored
@@ -1472,6 +1476,10 @@ export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
+}
+
+export function putAppSharingEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { app_sharing_enabled: enabled });
 }
 
 export function putNativeChatEnabled(enabled: boolean): Promise<Prefs> {

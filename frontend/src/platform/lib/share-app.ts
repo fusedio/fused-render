@@ -9,6 +9,13 @@
 // they belong on one sheet, the way Figma/Notion put "copy link" and
 // "export" behind one Share button.
 //
+// BEHIND A FLAG (share-app-flag.ts, `app_sharing_enabled`, default off). Every
+// surface asks the flag first: ON it calls `openShareApp`; OFF it calls
+// `exportAppFileOnly` below — the plain Export / Download the surfaces carried
+// before the sheet (PR #1207): save the `.fused` to Downloads, toast the path
+// with Reveal / Open. The sheet is the only thing that reaches the link route,
+// so with the flag off that route has no entry point at all.
+//
 // The store exists because two of the four places a Share entry lives are
 // MENUS (the /apps card's right-click menu is a plain function of the AppInfo;
 // the explorer's kebab is a list of entries) that cannot own a dialog. So every
@@ -30,7 +37,9 @@
 // every link already sent). A request for a snapshot therefore passes
 // `link: false` and the dialog's link card explains itself instead of acting.
 import { useEffect, useState } from "react";
-import { getJson, postJson } from "./api";
+import { getJson, postJson, revealPath, saveAppFileToDisk } from "./api";
+import { notify } from "./notifications";
+import { navigate } from "./router";
 
 // The slice of AppInfo the share routes read — structural, so the app page
 // header (which has a folder + entry page but no listing row) can open the
@@ -122,6 +131,40 @@ export async function publishShare(app: ExportableApp): Promise<SharedAppRecord>
     throw err;
   }
   return body.shared as SharedAppRecord;
+}
+
+// -- the flag-off action ---------------------------------------------------------
+
+/**
+ * The plain export — what every Share surface does while `app_sharing_enabled`
+ * is off. Saves `file` as a `.fused` in Downloads (server-side, so the real
+ * path comes back) and raises a toast pointing at it: "Reveal folder"
+ * (revealPath handles a file path — it selects it inside its parent) and
+ * "Open file" (navigate, not navigateToJobPage — that helper's extension
+ * allowlist would misclassify a `.fused` path as a directory). Errors come
+ * back as an error toast; the promise resolves either way so a caller can
+ * clear its busy state without a try/catch of its own.
+ */
+export async function exportAppFileOnly(file: ExportableApp): Promise<void> {
+  try {
+    const realPath = await saveAppFileToDisk(file.path, file.name);
+    notify({
+      title: "Exported " + file.name + " to " + realPath,
+      tone: "info",
+      action: {
+        label: "Reveal folder",
+        onClick: () => {
+          revealPath(realPath).catch(() => {});
+        },
+      },
+      extraAction: {
+        label: "Open file",
+        onClick: () => navigate(realPath, { isDir: false }),
+      },
+    });
+  } catch (e) {
+    notify({ title: "Could not export " + file.name + ": " + (e as Error).message, tone: "error" });
+  }
 }
 
 // -- the open-request store ------------------------------------------------------

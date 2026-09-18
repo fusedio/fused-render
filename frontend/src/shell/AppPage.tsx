@@ -74,14 +74,17 @@ import { navigateUrl, spaLinkProps, urlForFsPath } from "@platform/lib/router";
 import { snapshotFrameSrc } from "@platform/lib/snapshot-param";
 import {
   AppWindow,
+  Download,
   Files,
   ListTodo,
+  Loader2,
   Share2,
   Stethoscope,
   Webhook,
   type LucideIcon,
 } from "lucide-react";
-import { openShareApp } from "@platform/lib/share-app";
+import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
+import { useAppSharingFeature } from "@platform/lib/share-app-flag";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppStar } from "@platform/ui/AppStar";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
@@ -474,16 +477,33 @@ export default function AppPage({
   // version being resolved — that is exactly the class of bug this branch
   // has already had several of.
   const versionLabel = useAppVersionLabel(dir, snapshot.sha);
-  const shareDisabled = snapshot.pending || snapshot.error;
-  const handleShare = () => {
+  // BEHIND THE FLAG (share-app-flag.ts, default off): ON, the button is Share
+  // and opens the sheet; OFF, it is the plain Export the header carried before
+  // the sheet existed — the same `.fused` saved straight to Downloads, with a
+  // toast saying where — and shows its own busy state, since there is no sheet
+  // to narrate the save. Same version computation either way.
+  const sharing = useAppSharingFeature();
+  const [exporting, setExporting] = useState(false);
+  const shareDisabled = snapshot.pending || snapshot.error || exporting;
+  const handleShare = async () => {
     if (shareDisabled) return;
     const isLive = snapshot.sha === null;
     const exportPath = snapshot.snap ? snapshot.snap.dir : dir;
     // The filename carries the version so an exported v7 sitting beside a
     // live export in Downloads is never ambiguous about which is which.
     const exportName = isLive ? slug : `${slug}-${versionLabel}`;
+    const file = { path: exportPath, name: exportName };
+    if (!sharing) {
+      setExporting(true);
+      try {
+        await exportAppFileOnly(file);
+      } finally {
+        setExporting(false);
+      }
+      return;
+    }
     openShareApp({ path: dir, name: slug }, {
-      file: { path: exportPath, name: exportName },
+      file,
       link: isLive,
       versionLabel,
     });
@@ -553,11 +573,12 @@ export default function AppPage({
             >
               Open in explorer
             </Button>
-            {/* ONE Share: the sheet behind it holds both the public link and
-                the .fused download (see the `handleShare` comment above).
-                Disabled through the same pending/error window every other
-                read on this page already gates on, so a click mid-resolve
-                can never silently export the wrong era. */}
+            {/* ONE button: Share (the sheet behind it holds both the public
+                link and the .fused download) with the flag on, plain Export
+                with it off — see the `handleShare` comment above. Disabled
+                through the same pending/error window every other read on
+                this page already gates on, so a click mid-resolve can never
+                silently export the wrong era. */}
             <Button
               size="sm"
               variant="outline"
@@ -568,14 +589,31 @@ export default function AppPage({
                   ? "Waiting for this version to finish loading"
                   : snapshot.error
                     ? "This version failed to load; retry it from the version picker"
-                    : versionLabel === "Live"
-                      ? "Share the app — public link or .fused file"
-                      : `Share the app as of ${versionLabel} as a .fused file`
+                    : sharing
+                      ? versionLabel === "Live"
+                        ? "Share the app — public link or .fused file"
+                        : `Share the app as of ${versionLabel} as a .fused file`
+                      : versionLabel === "Live"
+                        ? "Export the live app as a .fused file"
+                        : `Export the app as of ${versionLabel} as a .fused file`
               }
-              onClick={handleShare}
+              onClick={() => void handleShare()}
             >
-              Share
-              <Share2 data-icon="inline-end" />
+              {sharing ? (
+                <>
+                  Share
+                  <Share2 data-icon="inline-end" />
+                </>
+              ) : (
+                <>
+                  {exporting ? "Exporting…" : "Export"}
+                  {exporting ? (
+                    <Loader2 data-icon="inline-end" className="animate-spin" />
+                  ) : (
+                    <Download data-icon="inline-end" />
+                  )}
+                </>
+              )}
             </Button>
           </div>
         )}
