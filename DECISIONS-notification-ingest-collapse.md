@@ -111,3 +111,191 @@ chain that resolves `router.ts` first happens to run after DOM globals are
 already patched by an earlier file's `installDomShim()` call. Used
 `bun test src/platform/lib` and `bun test src/shell` as the actual test
 commands for this branch instead of single-file invocations.
+
+---
+
+# Code review round (2026-09-18) — F1, F2, F3 fixes; F4/F5 calls
+
+The orchestrator independently re-verified F1 against this branch's actual
+code (not against what section A above claimed) and found section A's
+decision wrong: `installIngest` really was calling `notify(input)` directly,
+which really does pop a card in the receiving document for every forwarded
+message. Section A's own reasoning rationalized this as "the fix actually
+delivering on a documented contract" — but the *brief that started this
+branch* explicitly said the opposite ("the ingest path must get
+family-collapse + retain WITHOUT popping"), and no test enforced the
+no-popup behavior either way, so this shipped as a live regression class
+(F1) that the previous round's own tests could not have caught. Section A is
+**superseded** by this section for the popping question; its reasoning about
+id-minting, no-double-forwarding and no-suppression-surprise still holds and
+is unaffected.
+
+## F1. Split `notify()` into a shared retain/collapse half and a popup half
+
+Extracted the "mint-or-reuse an id, run family-collapse, update `retained`,
+forward a genuinely-new row to the shell" logic out of `notify()` into a new
+module-private `retainAndCollapse(input)` — same code, no behavior change for
+`notify()` itself. `notify()` now calls `retainAndCollapse` and then does its
+own popup bookkeeping (latest-wins swap, exit timer) on top, exactly as
+before.
+
+`installIngest` now wires `_fusedIngestNotification` to a new
+`ingestNotification(input)` function that calls `retainAndCollapse` directly
+and stops — it never touches `popup`, `exitTimer`, or `armExitTimer`. This
+is the fix: a pane's own card (already popped by the pane's own local
+`notify()` call before it ever forwards) stays the only card for that event;
+the receiving document's Notifications panel gets the row (and any
+family-collapse/`count` increment against it), but no second popup, and no
+"latest wins" eviction of whatever the receiving document was already
+showing.
+
+`ingestNotification` still runs `isSuppressed` first, matching what a local
+`notify()` call would do at that point — even though it is a structural
+no-op today: `forwardToShell` only ever sends `origin`, never `source`, and
+`isSuppressed` returns `false` immediately whenever `input.source` is absent.
+Kept for parity/future-proofing rather than removed, since it costs nothing
+and keeps `ingestNotification`'s contract described honestly as "everything
+`notify()` does short of popping," not "everything except suppression too."
+
+Tests added (`notifications.test.ts`): an ingested message is retained
+without ever popping; an ingested message does not evict/replace a popup the
+receiving document is already showing; two ingested messages sharing a
+family still collapse into one row with `count` 2 while neither ever pops.
+Ran these against the pre-fix code path mentally (and confirmed by writing
+them before the `ingestNotification` split existed) — the "never pops"
+assertion fails immediately against `installIngest`'s old
+`notify(input)` wiring, which is what makes this a real regression test, not
+a tautology.
+
+## F2. Structural self-forward guard in `forwardToShell`
+
+Added `if (window.top === window) return undefined;` as the first line of
+`forwardToShell`'s body after its existing `effectiveIsEmbed`/
+`effectiveIsTopEmbed` guard. This is the "prefer the structural check" option
+the brief called out: `IS_TOP_EMBED` is `IS_EMBED && window === window.top &&
+!IS_PREVIEW && !IS_SNAPSHOT`, so a top-level window loaded at an embed URL
+with `_preview=1` or `snapshot=1` is `IS_EMBED` but not `IS_TOP_EMBED` — the
+existing guard does not fire for it, and `window.top` for that document IS
+the document itself. Without this check, `notify()` in that document calls
+`forwardToShell`, which calls its own `_fusedIngestNotification`
+(`ingestNotification`, post-F1), which — since `isRetained`/collapse always
+runs regardless of popping — would forward the freshly-collapsed item again
+on every non-collapsed call, recursing until a stack overflow.
+
+The check is deliberately independent of the `IS_TOP_EMBED`/`IS_PREVIEW`/
+`IS_SNAPSHOT` combination above it — it covers any future embed variant that
+reaches this function while still being its own `window.top`, not just
+today's `_preview`/`snapshot` cases.
+
+Test added: `forwardToShell` is exercised with `_setIsEmbedForTest(true)`,
+`_setIsTopEmbedForTest(false)` (modeling exactly the "top-level window at an
+embed URL with a framing param" case) and `window.top` pointed at `window`
+itself, with the module's own `_fusedIngestNotification` wrapped to count
+calls. Asserts `notify()` neither throws nor ever calls the ingest handler,
+and that the message still lands locally (popup fires) — the guard
+suppresses only the self-forward, not the notice itself.
+
+## F3. Narrowed `useTaskStatusNotify`'s embed guard
+
+This branch's own prior commit (`c6b613706`) introduced the bare
+`if (IS_EMBED) return;` guard that F3 flags as too wide — it was this
+branch's fix for a real bug (N embedded panes duplicating a task notice) but
+it over-corrected by also silencing standalone top-embed windows (a Finder
+double-click on a `.fused` file, a CLI/deeplink `/explorer/embed/` URL),
+which have no parent pane to forward a notice on their behalf and therefore
+went from "notifies" to "silently notifies nobody." Changed to
+`if (IS_EMBED && !IS_TOP_EMBED) return;`, matching the pairing every other
+embed rule in `notifications.ts` already uses (`effectiveIsEmbed() &&
+!effectiveIsTopEmbed()`, e.g. `neverExpiresHere`).
+
+Test coverage stays structural, same reasoning as the existing
+`useTaskStatusNotify.test.ts` guard test (module-scope `IS_EMBED`/
+`IS_TOP_EMBED` cannot be flipped at runtime within one `bun test` process):
+added a second structural test asserting the guard body no longer contains
+the bare `if (IS_EMBED) return;` spelling and does contain the narrowed one.
+Scoped the substring check to the effect body only (between
+`useEffect(() => {` and the first `notify(input)` call) rather than the whole
+file — this hook's own header comment quotes the OLD guard spelling verbatim
+while explaining the fix, and a naive whole-file `not.toContain` check
+against that string fails on the comment itself, not the code.
+
+## F4. Cross-pane `forwardedIds` aliasing — judged: acceptable, documented, not fixed
+
+Confirmed the mechanics: pane A and pane B are separate documents, each with
+their own module instance of `notifications.ts` (separate `retained`/
+`forwardedIds`). If both forward a message landing in the same family (e.g.
+two sub-documents watching the identical finished task), the shell's
+`retainAndCollapse` collapses them into one row and returns the SAME shell id
+to both callers. Each pane's own `forwardedIds` then maps its own local id to
+that shared shell id. A's `dismissNotification` calls
+`forwardDismissToShell(sharedId)`, which removes the shell's row — silently
+also "dismissing" B's still-live, never-actually-dismissed notice from B's
+own point of view. Worse, B's own local `retained` entry survives (nothing
+told B its shell-side copy is gone), so a subsequent local repeat of the same
+family in B hits `collapseIdx !== -1` in B's own document and does not
+re-forward — the family is now unreachable in the shell for B's remaining
+lifetime, exactly as F4 describes.
+
+**Not fixed in this round.** The brief's own suggested fix — "making the pane
+re-forward when its mapped shell id is gone" — requires the pane to *learn*
+that the shell discarded the row, which requires a NEW message direction
+(shell → pane) that does not exist today: the wire only carries pane → shell
+`_fusedIngestNotification`/`_fusedDismissNotification` calls and a bare
+return-value id at forward time. There is no channel for the shell to later
+tell a pane "the id I gave you for that forward is no longer live" (e.g.
+because a DIFFERENT pane dismissed it, or the shell's own `capRetained` cap
+evicted it). Building that channel is a real feature (a second same-origin
+global, a subscription, or polling `forwardedIds` liveness some other way),
+not a review-round bug fix, and risks its own new correctness questions
+(ordering, a pane forwarding again into a fresh collapse mid-flight, etc.)
+that deserve their own design pass rather than a patch bolted onto this
+branch.
+
+Judged acceptable to ship without it because: (1) it requires TWO separate
+panes to be showing the identical family AND to be dismissed independently
+by the user rather than together — panes showing "the same task's" notice
+are typically split views of the SAME session that close together, not
+independently dismissed by a user working two different corners of the
+screen; (2) the failure mode is a missed/stuck notification, not data
+corruption, a crash, or a security issue — the family simply stops
+reappearing in the shell for that one pane until it is remounted (a page
+reload/pane close-reopen resets its module state and `forwardedIds`); (3)
+this exact "two watchers, one shell row" collapse is the FIX this whole
+branch shipped (replacing "two watchers, two duplicate shell rows" — which
+was strictly worse, since a duplicate row could never be dismissed at all as
+one visible unit) — F4's aliasing is a secondary, narrower defect *introduced
+by fixing a worse one*, not a regression this round created from a clean
+baseline.
+
+## F5. `count` semantics under ingest-side collapse — judged: keep current behavior, documented as a known limitation
+
+`retainAndCollapse` increments `count` identically whether it is called from
+a local `notify()` or from `ingestNotification` (ingest, post-F1) — this was
+true before F1 too (both paths always shared the same collapse logic; F1 only
+split off the popup half). The question F5 raises: when N *different
+documents* each forward what is semantically the SAME single real-world event
+(the live repro this branch's `acd656d8b` commit fixed — three sub-documents
+each observing one task finish), should that count as 1 (one thing happened)
+or N (N times this family was reported to the shell)?
+
+**Decision: leave it counting N (current behavior), documented as a known
+imprecision, not fixed this round.** Reasoning: the ingest boundary has no
+way to distinguish "N documents independently observed the SAME single
+event" from "N genuinely separate repeats of this family, forwarded from one
+or more panes" — both look identical as N calls to `_fusedIngestNotification`
+sharing a family key. Telling them apart requires the sender to pass some
+kind of event-identity/idempotency key (e.g. the task's own
+`finished_at`/run id) that `NotificationInput` does not carry today, and
+`messageFamily`'s whole design is deliberately per-FAMILY (title+caption),
+not per-event, so retrofitting an event id changes the shape of the type
+every caller passes, not just the ingest path. That is a real design change,
+not a review-round fix. In the meantime: `count`'s own doc comment ("how many
+times this family has fired") is arguably now imprecise for the multi-watcher
+case, but it is not WRONG for the more common case this collapse logic
+exists for — two genuinely separate runs of the same task, forwarded once
+each — and a `count` of 3 for a triple-observed single event is a cosmetic
+overcount on a row that already merged three duplicate rows into one, which
+is strictly better than the pre-`acd656d8b` state (three separate,
+un-merged rows, i.e. an implicit "count of 3" spread across three cards
+instead of one badge). Flagged here for whoever next touches
+`NotificationInput`/`messageFamily`, rather than patched blind.
