@@ -364,15 +364,23 @@ reproduce it, at proportionally higher cost on every broad query.
 
 **This is now closed by a fallback, not left as an accepted trade-off.**
 `search_ranked` runs the bounded query first (`_bounded_or_full_candidates`,
-`bounded=True`) and, whenever it comes back with FEWER rows than the
-caller's `limit`, reruns the IDENTICAL query with `bounded=False` — the
-pre-bound shape, `QUALIFY` over the whole `WHERE`-matched set, no candidate
-pool at all — and uses that result instead. A short page is the only
-observable symptom starvation can produce: a basename large enough to fill
-the pool and outrank everything else still leaves every OTHER basename
-capped at `_MAX_PER_BASENAME` (3), so a FULL page is proof nothing was
-starved, and conversely a short page means either the corpus genuinely has
-fewer than `limit` matches (the unbounded rerun re-scans a small
+`bounded=True`) and, whenever it comes back with FEWER than `limit + 1`
+rows, reruns the IDENTICAL query with `bounded=False` — the pre-bound
+shape, `QUALIFY` over the whole `WHERE`-matched set, no candidate pool at
+all — and uses that result instead. The trigger compares against
+`limit + 1`, not `limit`, because the query underneath is always issued
+with `LIMIT limit + 1` (the same one-extra-row overfetch `truncated` is
+read from everywhere else in this function) — a bounded run landing at
+EXACTLY `limit` rows is one short of that overfetch, not a full page, and a
+prior version of this fallback that triggered on `len(rows) < limit`
+silently reported `truncated: False` on exactly that shape (code-review
+finding, worktree-search-trailing-space, closed same round). A full
+`limit + 1`-row page is the only proof nothing was starved: a basename
+large enough to fill the pool and outrank everything else still leaves
+every OTHER basename capped at `_MAX_PER_BASENAME` (3), so a full page
+means the pool held enough distinct names to fill it AND leave one more
+over. Conversely, fewer than `limit + 1` rows means either the corpus
+genuinely has few matches (the unbounded rerun re-scans a small
 `WHERE`-matched set, cheaply) or the pool actually starved a fillable page
 (and correctness is worth the rerun). `truncated`/`total` are computed from
 whichever query actually ran — never a mix of the two — so they are accurate
