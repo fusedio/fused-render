@@ -1267,7 +1267,8 @@ class QueueManager:
                 owner["consumed"] = True
             return True
 
-    def restore_claim(self, folder: str, token: str) -> bool:
+    def restore_claim(self, folder: str, token: str, run_id: str = "",
+                      session_id: str = "") -> bool:
         """Put a consumed `token` BACK on `folder`'s owner, so the retry of a
         send that did not stick still reads as the admitted one (2026-09-18,
         Bugbot PR #1194, eighth round).
@@ -1282,8 +1283,12 @@ class QueueManager:
         calls then.
 
         True when the token was re-filed; False for an empty token, a folder
-        nobody owns, or an owner that never consumed a claim — a stranger's
-        token must not be granted onto an owner it never belonged to."""
+        nobody owns, an owner that never consumed a claim, or an owner that is
+        not the conversation the send named (`run_id` / `session_id`, when
+        the caller has them) — a stranger's token must not be granted onto an
+        owner it never belonged to (review, 2026-09-18: `consumed` alone is
+        stamped by ANY consume, so it could not tell owner A's spent token
+        from owner B's)."""
         text_token = _text(token)
         if not folder or not text_token:
             return False
@@ -1291,6 +1296,10 @@ class QueueManager:
             rec = self._state["folders"].get(folder)
             owner = rec["owner"] if rec else None
             if owner is None or not owner.get("consumed"):
+                return False
+            if ((_text(run_id) or _text(session_id))
+                    and not self._owner_matches(owner, run_id=run_id,
+                                                session_id=session_id)):
                 return False
             claims = owner.get("claims")
             if not isinstance(claims, list):

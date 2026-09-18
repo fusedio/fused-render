@@ -139,7 +139,9 @@ def _restore_claim(key: str, params: dict, body: dict | None) -> None:
     try:
         from fused_render import queue_manager
 
-        queue_manager.get().restore_claim(key, token)
+        queue_manager.get().restore_claim(
+            key, token, run_id=str(params.get("run_id") or ""),
+            session_id=str(params.get("session_id") or ""))
     except Exception:  # best effort, same posture as the gate
         logger.debug("queue: could not restore a claim", exc_info=True)
 

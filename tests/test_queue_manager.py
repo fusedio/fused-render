@@ -2337,6 +2337,21 @@ def test_restore_claim_puts_a_spent_token_back_once():
     assert m.restore_claim("/nowhere", token) is False
 
 
+def test_restore_claim_refuses_a_token_for_a_conversation_the_owner_is_not():
+    """Review, 2026-09-18: `consumed` is stamped by ANY consume, so owner B
+    consuming its own token must not let owner A's spent token land on B."""
+    m = idle_world().manager()
+    _ok, _took, t_a = m.claim_for_send(F1, "a", "run-a", "sess-a")
+    m.consume_claim(F1, t_a)
+    m.exited("a", "run-a")
+    _ok, _took, t_b = m.claim_for_send(F1, "b", "run-b", "sess-b")
+    m.consume_claim(F1, t_b)
+    assert m.restore_claim(F1, t_a, run_id="run-a", session_id="sess-a") is False
+    assert m.restore_claim(F1, t_b, run_id="run-b") is True
+    assert m.restore_claim(F1, t_b, session_id="sess-b") is True
+    assert m.owner(F1)["claims"] == [t_b]
+
+
 def test_restore_claim_refuses_a_folder_whose_owner_changed():
     m = idle_world().manager()
     _ok, _took, token = m.claim_for_send(F1, "a", "run-a", "sess-a")
