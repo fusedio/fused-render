@@ -3,9 +3,11 @@
 > **Status — partial.** This file owns the **plugin contract**: how a second
 > (or third-party) index kind is declared, what it is allowed to do, and how a
 > user's approval gates it. Implementing modules: `kinds.py` (`Column`,
-> `IndexKind`, the registry), `apps_kind.py` (the built-in "apps" kind),
-> `manifest.py` (`IndexManifest`, the propose/confirm store),
-> `examples/notes_indexer/` (a fully worked third-party reference). A
+> `IndexKind`, the registry), `manifest.py` (`IndexManifest`, the
+> propose/confirm store), `examples/notes_indexer/` (a fully worked
+> third-party reference — currently the only non-"files" kind this codebase
+> registers on its own; a built-in "apps" kind was tried and then dropped,
+> see the note at the end of §3). A
 > registered kind's rows are now extracted by the live walker
 > (`scan.py`'s `sink.add()` call sites), compacted into partitions
 > (`store._compact_locked`, §6), queryable through the sandboxed
@@ -41,7 +43,8 @@ other field holding a filesystem path) must come back in canonical form —
 forward slashes, via `fused_render.index.ignore.norm()` — never the OS's
 native separator: the row becomes index storage, and on Windows a
 backslashed path would silently break every comparison and suffix check
-downstream (`apps_kind.py`'s `extract` is the reference for this).
+downstream (`examples/notes_indexer/indexer.py`'s `extract` is the reference
+for this).
 
 This is not a performance shortcut, it is the whole trust boundary
 (SPEC-index-plugins.md decision #2, "extract only, user approves root — a
@@ -63,7 +66,7 @@ line of third-party Python.
 Column(name: str, type: str)   # type in {"string", "int64", "int32", "float64"}
 
 IndexKind(
-    name: str,                                  # e.g. "apps", "notes"
+    name: str,                                  # e.g. "notes", "widgets"
     columns: tuple[Column, ...],                 # the row shape, declared up front
     extract: Callable[[str, os.stat_result], dict | None],
     text_column: str,                            # which column ranking treats as fuzzy-matchable text
@@ -91,30 +94,29 @@ intended upgrade, since registration is meant to be a rare, explicit act
 (once at import for a built-in kind, once at manifest-confirm time for a
 third-party one).
 
-## 3. The built-in "apps" kind (`apps_kind.py`)
+## 3. A dropped built-in kind: "apps"
 
-The first non-`files` kind, and the proof the contract is usable for
-something the `files`/`dirs` schema genuinely cannot answer: whether a
-folder IS an app depends on reading a candidate entry page's CONTENT for
-`<meta name="fused-app">` (`app_listing.app_entry`), not on anything a
-directory listing's name/size/mtime already carries.
+An early built-in "apps" kind (`apps_kind.py`) was the first non-`files`
+kind built against this contract, and served as its proof of usability:
+whether a folder IS an app depends on reading a candidate entry page's
+CONTENT for `<meta name="fused-app">` (`app_listing.app_entry`), not on
+anything a directory listing's name/size/mtime already carries — exactly the
+kind of question the `files`/`dirs` schema cannot answer on its own.
 
-`extract(path, st)` returns a row (built from `app_listing.app_dict`, plus
-the stable `app_id.app_id`) exactly when `path` is the CANONICAL entry of its
-folder — the same folder's OTHER `.html` files (a multi-page app's non-entry
-pages) return `None`, so one app contributes exactly one row regardless of
-how many pages sit in its folder. Mirrors `git_repos.py`'s "index a fact,
-not a live probe" posture and `exported_apps.py`'s degrade-safe one: an
-unreadable or racing folder is "not an app", never an exception that takes
-the scan down.
+It was removed. At the scale of a typical workspace (tens to low hundreds of
+apps) a DuckDB/parquet-backed index was overkill next to `GET /api/apps`'s
+own live walk, which the Apps hub already used and which this index
+duplicated rather than replaced — the two could disagree, and nothing ever
+scheduled a scan of this kind, so in practice it sat permanently empty. The
+Apps hub (`Apps.tsx`) and ⌘K's Apps search group both source from that live
+walk today; see `GlobalSearchOverlay.tsx`'s own docs for how the overlay
+does this without going through the index at all.
 
-`tag` (the Apps hub's own "Folders" facet — `Apps.tsx`'s client-side walk)
-is deliberately NOT part of this kind's row shape: `tag` is the first path
-segment under a workspace root the Apps hub's OWN walk already knows, and a
-global name index has no single such root to derive it against. This is why
-the Apps hub keeps its existing client-side walk-and-filter rather than
-reading from this index — the resulting duplication is accepted, not a bug
-to fix (SPEC-index-plugins.md, the Apps hub decision).
+The contract itself, the registry, the manifest/propose/confirm flow, the
+`files` kind, and the generic flat-kind ranker (§8) are unaffected — "apps"
+was one consumer of all of them, not a load-bearing part of any of them.
+`examples/notes_indexer/` (§5) is the reference non-"files" kind that
+remains, and demonstrates the same contract end to end.
 
 ## 4. Third-party manifests (`manifest.py`)
 
@@ -207,9 +209,10 @@ without one (again, `notes`) reports `0` rather than a query error. A kind
 that declares neither `identity_column` fails `compact()` with a clear
 `ValueError` rather than a confusing DuckDB binder error deep in the SQL.
 
-The built-in `apps` kind declares `identity_column="path"`,
-`recency_column="updated_at"`. The `notes` example declares
-`identity_column="path"` only (no recency column).
+The `notes` example declares `identity_column="path"` only (no recency
+column) — a kind that does declare a recency column ties dedup breaks to it
+instead, the way the now-removed "apps" kind (§3) used to with its own
+`updated_at`.
 
 ## 7. `guarded_query.py`'s views are schema-driven
 
@@ -230,7 +233,13 @@ The DuckDB lockdown order (`allowed_directories` →
 this only touches what the two `CREATE VIEW` statements select, run before
 the lockdown as they always were.
 
-## 8. Apps-kind search (`query.search_apps_ranked`)
+## 8. Flat-kind search (`query.search_apps_ranked`)
+
+The name is a holdover from the now-removed "apps" kind (§3) this function
+was first built for; it was kept on the removal rather than renamed, since
+it is genuinely generic — reused by "notes" and every other non-"files"
+kind — and a rename is not free of risk on its own. See
+`DECISIONS-index-plugins.md` for that call.
 
 A registered kind's rows are a flat corpus, not a directory tree, so
 `resolve_query`/`search_ranked` stay byte-identical for "files" and a
@@ -243,9 +252,9 @@ depth, nm, lrel`), not hardwired to files/dirs, so a second, differently-
 shaped `inner` reuses both unchanged.
 
 `search_apps_ranked` reads `IndexKind.identity_column`/`text_column`/
-`recency_column` off `cfg.kind`'s own registration (never hardcoded to
-"apps"), so any registered kind with an `identity_column` can be searched
-this way. `rel`/`lrel` come from the identity column (an absolute path;
+`recency_column` off `cfg.kind`'s own registration (never hardcoded to any
+one kind's names), so any registered kind with an `identity_column` can be
+searched this way. `rel`/`lrel` come from the identity column (an absolute path;
 unlike "files" there is no root, so `inner` is the kind's whole corpus,
 unpruned — no prefix/coverage concept applies). `nm` is the lowercased
 text column. `is_dir` is always false and `depth` always 0 — a flat kind

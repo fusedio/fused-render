@@ -203,16 +203,15 @@ def refuse_index(folder: str) -> None:
 # `routers/index.py` import time (so a server that restarts with an
 # already-confirmed folder still has it), and once from `worker.py` (the
 # detached scan subprocess never imports either of those, so it has to do
-# its own registration the same way it already does for the built-in "apps"
-# kind).
+# its own registration too).
 
 
 def _call_register(fn) -> None:
     """Call a plugin module's `register_kind` entrypoint. `replace=True`
     when it accepts one — a server/worker restart, or re-confirming an
     already-confirmed folder, must re-register cleanly rather than raise on
-    a name collision, the same reason `apps_kind.register_builtin` and
-    `worker.py`'s own call both pass it — falling back to a bare call for a
+    a name collision, the same reason `kinds.register`'s own `replace` flag
+    exists — falling back to a bare call for a
     simpler `register_kind()` with no such parameter (the shape
     tests/test_index_manifest.py's own fixtures use)."""
     try:
@@ -286,8 +285,7 @@ def register_confirmed_kinds() -> None:
     """Import and register every confirmed folder's declared `IndexKind`,
     in THIS process. Safe to call repeatedly (a no-op past the first
     successful import of a given kind) and safe to call with nothing
-    confirmed (a no-op entirely) — the same "cheap to call at import time"
-    posture `apps_kind.register_builtin` already has for the built-in
-    kind."""
+    confirmed (a no-op entirely) — cheap enough to call unconditionally at
+    import time in every process that needs a confirmed kind registered."""
     for folder in confirmed_folders():
         _import_and_register(folder)

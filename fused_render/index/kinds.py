@@ -119,11 +119,11 @@ class IndexKind:
     # segment off the identity value to reach "the row's containing
     # directory": for "files" (never routed through here at all — see
     # `store._dedup_keys`) and "notes", the identity value is a file and
-    # stripping the last segment gives the right answer; for "apps", the
-    # identity value IS the app's folder (`app_listing.app_dict`'s `path` is
-    # the folder's own realpath, not the entry `.html` file's), so stripping
-    # a segment would answer the folder's PARENT instead — exactly the bug
-    # that dropped every app row surviving an incremental rescan (a reused
+    # stripping the last segment gives the right answer; a kind whose
+    # identity value instead IS its own folder (rather than a file inside
+    # it) would need this set true, since stripping a segment would answer
+    # the folder's PARENT instead — the same class of bug that dropped a
+    # dir-identity kind's row surviving an incremental rescan (a reused
     # ("u") folder's `_dir_expr` never matched the folder itself).
     identity_is_dir: bool = False
 

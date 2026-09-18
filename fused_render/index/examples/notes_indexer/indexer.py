@@ -49,8 +49,10 @@ COLUMNS = (
 def _first_heading(text: str) -> str | None:
     """The text after the first Markdown `# ` heading, or None when the
     file has none — the simplest possible "read the content, not just the
-    name" rule, echoing why `apps_kind.py` reads a page's `<meta>` tag
-    rather than trusting a filename."""
+    name" rule: `extract(path, st)` (`kinds.IndexKind`'s whole contract) is
+    handed a stat result, not a promise that the name alone tells the whole
+    story, so this reads the file's own content rather than trusting its
+    filename."""
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("# "):
@@ -75,8 +77,8 @@ def extract(path: str, st) -> dict | None:
     return {
         "title": title,
         # `path` is this kind's identity_column, so it must be canonical
-        # (forward-slash) form — see apps_kind.py's extract() and
-        # specs/index-plugins.md.
+        # (forward-slash) form, never the OS's native separator — see
+        # specs/index-plugins.md §1's `extract()` contract.
         "path": norm(os.path.abspath(path)),
         "word_count": len(text.split()),
     }

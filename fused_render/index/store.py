@@ -252,19 +252,21 @@ def _dir_expr(identity_col: str, identity_is_dir: bool = False) -> str:
     compaction derives the same fact here instead, from whichever column the
     kind declared as its identity. This is only meaningful when
     `identity_column` names an absolute filesystem path, true of every
-    non-"files" kind this store compacts today (`apps_kind.py`,
-    `examples/notes_indexer/`). "files" never calls this: it already has a
-    real `dir` column, computed once at scan time.
+    non-"files" kind this store compacts today (see the `IndexKind` contract
+    in `kinds.py`, and `examples/notes_indexer/` for a worked one). "files"
+    never calls this: it already has a real `dir` column, computed once at
+    scan time.
 
     `identity_is_dir` (`kinds.IndexKind.identity_is_dir`) says the identity
     value already NAMES the containing directory rather than a file inside
-    it — true for "apps" (`path` is the app's own folder), false for "notes"
-    (`path` is the markdown file). Stripping a trailing segment off a
-    directory-shaped identity value would answer its PARENT instead of
-    itself, which is exactly what silently dropped every "apps" row under a
-    reused ("u") folder on an incremental rescan: the folder held in the
-    dirs-bookkeeping `_keep` table never matched a wrongly-stripped
-    `dir_expr`."""
+    it — false for "notes" (`path` is the markdown file itself). A kind
+    whose identity value instead names an app's or a project's own folder
+    (rather than a file inside it) would set this true, since stripping a
+    trailing segment off an already-directory-shaped identity value would
+    answer its PARENT instead of itself — the folder held in the
+    dirs-bookkeeping `_keep` table would then never match a wrongly-stripped
+    `dir_expr`, silently dropping that kind's row under a reused ("u")
+    folder on an incremental rescan."""
     if identity_is_dir:
         return identity_col
     return f"regexp_replace({identity_col}, '/[^/]*$', '')"

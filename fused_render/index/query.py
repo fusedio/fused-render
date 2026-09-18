@@ -1434,11 +1434,11 @@ def search_apps_ranked(cfg: IndexConfig, q: str = "", limit: int = RANK_LIMIT,
     lrel`) rather than hardwired to the files/dirs schema, per
     specs/index-plugins.md's "apps-kind search" section.
 
-    Built for the built-in "apps" kind (identity_column="path",
-    text_column="name") but reads `IndexKind.identity_column`/`text_column`/
-    `recency_column` off `cfg.kind`'s own registration rather than
-    hardcoding those names, so any registered kind whose rows are a flat
-    list — not a directory tree, unlike "files" — can reuse this unchanged.
+    Reads `IndexKind.identity_column`/`text_column`/`recency_column` off
+    `cfg.kind`'s own registration rather than hardcoding any one kind's
+    names, so any registered kind whose rows are a flat list — not a
+    directory tree, unlike "files" — can reuse this unchanged (the "notes"
+    example kind, and any third-party plugin).
 
     Unlike `search_ranked`, there is no root, no prefix, no partial-coverage
     semantics, and no second "dirs" branch: a registered kind's rows are
@@ -1467,9 +1467,9 @@ def search_apps_ranked(cfg: IndexConfig, q: str = "", limit: int = RANK_LIMIT,
       same "no natural signal, fall back to a constant" posture
       `store._dedup_keys` already takes for a kind with no
       `recency_column`).
-    - `mtime` is the recency column's value when the kind declares one
-      (`updated_at` for "apps"), else NULL — a kind with no recency column
-      simply reports no mtime, rather than inventing one.
+    - `mtime` is the recency column's value when the kind declares one,
+      else NULL — a kind with no recency column simply reports no mtime,
+      rather than inventing one.
     - `size` is always NULL: no registered kind today declares one, and
       unlike `mtime` there is no single "the" numeric column a kind's
       contract designates as size's analogue.

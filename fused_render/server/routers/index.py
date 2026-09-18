@@ -33,7 +33,7 @@ from fastapi import APIRouter, Body, Header, Query, Request
 from fastapi.responses import JSONResponse, Response
 
 from fused_render import jobs
-from fused_render.index import apps_kind, freshness, kinds, manifest, runner
+from fused_render.index import freshness, kinds, manifest, runner
 from fused_render.index.cancel import CancelToken, Cancelled, cancellable
 from fused_render.index.freshness import enclosing_root
 from fused_render.index.config import IndexConfig, load_config, save_config
@@ -62,16 +62,7 @@ from fused_render.shell import index_gate
 from fused_render.shell.prefs import indexing_enabled
 from fused_render.shell.seed import fused_dir
 
-# The built-in "apps" kind (index/apps_kind.py) is only ever a module
-# definition until something registers it — this is that one call, made at
-# import time so it is in effect for both the running server (app.py imports
-# this router module while wiring up routes) and any test that imports the
-# router directly without going through create_app(). `replace=True` because
-# re-importing this module (as pytest's test collection across files can) must
-# not raise "already registered" the second time.
-apps_kind.register_builtin(replace=True)
-
-# Same reasoning, for every THIRD-PARTY kind a user had already confirmed
+# Every THIRD-PARTY kind a user had already confirmed
 # before this process started (a server restart with an existing
 # `index_proposals.json`): without this, `kinds.registered()` — and so
 # `GET /api/index/kinds` — would silently forget a confirmed kind until the
@@ -354,15 +345,15 @@ def _kind_param(raw) -> tuple[str, JSONResponse | None]:
 
 def _index_search_safe(cfg, root: str, q: str, limit: int, token: CancelToken):
     """`index_search` (query.py's `search_under`), degraded to zero rows for
-    a kind whose schema it cannot answer — a flat kind like "apps" has no
-    `dir`/`depth`/`size` columns for a "corpus under this folder" query to
-    bind against, so `search_under` raises a `duckdb.BinderException`
-    reaching for them. Per SPEC-index-plugins.md's constraint ("an index
-    that cannot answer degrades to zero rows, never an error"), this is the
-    house pattern `fused_render/exported_apps.py` and
-    `fused_render/server/routers/git_repos.py` already hold for their own
-    index reads, applied here so `/api/index/search?kind=apps` is a normal
-    200 rather than a 500.
+    a kind whose schema it cannot answer — a flat kind like "notes" (or any
+    third-party plugin) has no `dir`/`depth`/`size` columns for a "corpus
+    under this folder" query to bind against, so `search_under` raises a
+    `duckdb.BinderException` reaching for them. Per SPEC-index-plugins.md's
+    constraint ("an index that cannot answer degrades to zero rows, never
+    an error"), this is the house pattern `fused_render/exported_apps.py`
+    and `fused_render/server/routers/git_repos.py` already hold for their
+    own index reads, applied here so `/api/index/search?kind=notes` is a
+    normal 200 rather than a 500.
 
     `Cancelled` is let straight through — that is `_bounded_index_read`'s own
     catch, a client giving up, not the index failing to answer, and must
@@ -383,8 +374,8 @@ def _default_root(kind: str) -> str:
     """The scan root a kind's own config falls back to when the user has
     never configured one — "~" for the "files" kind (see `scan_roots`), and
     the app workspace (`fused_dir()`, the same root `GET /api/apps` walks)
-    for any other kind, since a flat-list kind like "apps" has no tree of
-    its own to default to and its rows only ever come from that one place."""
+    for any other kind, since a flat-list kind has no tree of its own to
+    default to and its rows only ever come from that one place."""
     return "~" if kind == "files" else fused_dir()
 
 
@@ -688,8 +679,8 @@ def _rank_flat_kind_worker(cfg: IndexConfig, q: str, limit: int,
     the "files" tree has. `search_apps_ranked` (index/query.py) is the one
     reusable primitive this needs — it already reads a kind's
     identity/text/recency columns off the registry rather than hardcoding
-    "apps", which is what makes this function ten lines instead of a second
-    copy of `_rank_body`.
+    any one kind's names, which is what makes this function ten lines
+    instead of a second copy of `_rank_body`.
 
     The three companion fields `_rank_body` adds for the files tree
     (`base`/`mode`/`pattern`) are answered with flat stand-ins instead of
@@ -1758,12 +1749,12 @@ def cancel_all_scans() -> list:
     Returns the run ids actually cancelled — a run already told to stop is
     skipped, same as `active_run`'s own liveness rule.
 
-    Every registered kind ("files" plus `kinds.registered()`, "apps"
-    included) gets its own `runs_dir` (`config.index_dir(kind)`), so a
-    single-kind fold here used to leave any in-flight non-"files" scan
-    (bugbot finding against a7aef9472: toggling indexing off cancelled the
-    "files" run but left an "apps" — or third-party — scan walking right
-    through the toggle)."""
+    Every registered kind ("files" plus `kinds.registered()`) gets its own
+    `runs_dir` (`config.index_dir(kind)`), so a single-kind fold here used
+    to leave any in-flight non-"files" scan running (bugbot finding
+    against a7aef9472: toggling indexing off cancelled the "files" run but
+    left another registered — or third-party — scan walking right through
+    the toggle)."""
     cancelled = []
     for kind in ("files", *kinds.registered()):
         cfg = load_config(kind=kind)
@@ -2409,7 +2400,7 @@ def api_index_kinds():
     """Every index kind the management page can offer a control for:
     "files" first — it predates the plugin registry and is never itself in
     `kinds.registered()` (see `_kind_param`'s own docstring) — then every
-    registered plugin kind, "apps" included, sorted. Read-only and gate-free
+    other registered plugin kind, sorted. Read-only and gate-free
     (unlike `/config`'s POST twin): naming what kinds exist reveals nothing a
     client could not already learn by trying each one against `/config`."""
     return {"ok": True, "kinds": ["files", *kinds.registered()]}
@@ -2496,9 +2487,10 @@ def api_index_delete(body: dict = Body(default={}),
     would compact its shards into the store moments later and quietly undo
     it.
 
-    `kind` scopes the delete to that kind's OWN store — deleting "apps" must
-    never touch the "files" store sitting in a sibling directory
-    (index/config.py's `index_dir`), and vice versa."""
+    `kind` scopes the delete to that kind's OWN store — deleting "notes" (or
+    any other registered kind) must never touch the "files" store sitting
+    in a sibling directory (index/config.py's `index_dir`), and vice
+    versa."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
