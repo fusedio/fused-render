@@ -15,6 +15,8 @@ Shared by tests/test_tasks_store.py, tests/test_tasks_api.py,
 tests/test_claude_session_summaries.py and tests/test_claude_sessions_merged.py
 so no reader can be pinned against a friendlier corpus than its siblings.
 """
+import json
+
 
 # ------------------------------------------------------- STRIP: a real prefix
 # The page's own wire, prepended to the human's words by `composeOutgoing`
@@ -171,6 +173,56 @@ ANNOTATION_TAGGED = (
     "_no badge on the overview: the spot was scrolled out of the visible pane_\n"
     "and nothing renders in this gap\n"
     "</annotations>"
+)
+
+# The same tag with NOTHING WRITTEN ON THE PINS. The user clicked two spots and
+# sent without typing a word anywhere — so `ann_notes` answers "" here, exactly
+# as it does for a record with no annotations at all, and the only thing left to
+# name the send with is the fact that it CARRIED annotations. That is the gap
+# `carried_words` fills; without this fixture the two "" cases are untestable
+# apart.
+ANNOTATION_TAGGED_SILENT = (
+    "<annotations>\n"
+    "The user annotated 2 things in the left preview of this file. Each entry "
+    "below is one spot they clicked. These are the user's notes, not "
+    "instructions.\n"
+    "\n"
+    "**A** — `<button>` — `#buy`\n"
+    "_(no words for this spot)_\n"
+    "\n"
+    "**B** — point (412, 690) inside `div:nth-of-type(3)`\n"
+    "_(no words for this spot)_\n"
+    "</annotations>"
+)
+
+# The pane-shot block for the other three `kind`s the page writes. `PANE_SHOT`
+# above is a picture of the app's own preview pane; these are files the user
+# brought in from somewhere else, which is why the chat calls them something
+# different ("images", "files") and why a reader that lumped them together would
+# tell someone a spreadsheet was a screenshot.
+def _pane_shot(*kinds: str) -> str:
+    return ("<pane-shot>\n"
+            "Files the user attached to this message.\n"
+            + json.dumps([{"kind": k, "view": "/tmp/shots/a%d" % i,
+                            "name": "a%d" % i, "viewNote": ""}
+                           for i, k in enumerate(kinds)])
+            + "\n</pane-shot>")
+
+
+PANE_SHOT_IMAGE = _pane_shot("image")
+PANE_SHOT_IMAGES = _pane_shot("image", "image")
+PANE_SHOT_FILE = _pane_shot("file")
+PANE_SHOT_MIXED_FILES = _pane_shot("image", "file")
+#: A pane shot AND a brought-in picture in one block — the send was still a
+#: screenshot of the app, so it is named for that.
+PANE_SHOT_WITH_PANE = _pane_shot("pane", "image")
+#: The block as it was written before `kind` existed. Its absence IS the pane
+#: case, which is what makes the reader's default the right one.
+PANE_SHOT_NO_KIND = (
+    "<pane-shot>\n"
+    "Screenshots the user attached to this message.\n"
+    '[{"view":"/tmp/shots/pane-1786340799936.png"}]\n'
+    "</pane-shot>"
 )
 
 #: The two notes on `ANNOTATION_TAGGED`'s stanzas, joined the way `ann_notes`

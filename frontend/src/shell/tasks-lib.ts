@@ -3027,6 +3027,36 @@ export function projectOptions(tasks: Task[]): string[] {
   );
 }
 
+/**
+ * DOES THIS FOLDER ANSWER WHAT WAS TYPED — the project filter's own search, and
+ * a search box narrowing a list this page already holds.
+ *
+ * THE PAGE'S OWN SEARCH LANGUAGE, spelled once. `taskMatches` below answers the
+ * toolbar's box with a case-folded substring over the fields the row shows, and
+ * this is the same sentence about a folder: the NAME the menu prints
+ * (`basename`) or the PATH behind it, so "render" finds `fused-render` and
+ * `~/Desktop/fused` finds everything under it. No fuzzy matching and no glob —
+ * that is the INDEX's language (`fused_render/index/query.py`,
+ * DECISIONS-one-search-language.md), for searching a disk this page is not
+ * touching. A menu of folders the reader can already see needs the cheaper
+ * rule, and two rules that both call themselves "search" is the thing to avoid.
+ *
+ * An empty query is not a filter: every folder answers it.
+ *
+ * TODO: follow the Explorer's search ORDERING — match name and path as now, but
+ * rank name matches first and path-only matches after, the way the Explorer's
+ * search ranks its results. The matching is right; only the order is flat.
+ */
+export function projectMatches(path: string, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const p = path.toLowerCase();
+  return basename(p).includes(q) || p.includes(q);
+}
+
+
+// TODO: follow the Explorer's search ORDERING here too — a title match and a
+// path-only match rank the same today, and the Explorer ranks the name first.
 export function taskMatches(task: Task, filters: TaskFilters): boolean {
   // By LANE (schedule-lib.laneOf): the Status menu offers the Board's lanes,
   // and a Blocked tick means everything the Blocked lane holds — the run that

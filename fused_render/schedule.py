@@ -102,6 +102,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -1115,6 +1116,30 @@ def _from_local(when: datetime) -> datetime:
     return when.astimezone().astimezone(timezone.utc)
 
 
+def _names_a_place(target: str) -> bool:
+    """Does this target say WHERE it is, rather than leaving it to whoever
+    resolves it?
+
+    Absolute, `~`-rooted, or a Windows drive path. A bare name does not: it is a
+    name, and `abspath` would answer it with the server process's own cwd. The
+    same shape the card's field calls path-shaped
+    (`apps/explorer/listing/path-shaped-query`), spelled here because a template
+    may not import the shell and the shell may not be trusted to have asked.
+
+    `.`/`..`-rooted paths count: they name a place relative to the caller, which
+    is a thing a CLI caller can legitimately mean, and `abspath` resolves them
+    the way that caller expects.
+    """
+    raw = (target or "").strip()
+    if not raw:
+        return False
+    if raw.startswith(("/", "~")):
+        return True
+    if raw.startswith(("./", "../", ".\\", "..\\")) or raw in (".", ".."):
+        return True
+    return bool(re.match(r"^[A-Za-z]:[\\/]", raw))
+
+
 def create(target: str, message: str, due=None, session_id: str = "",
            permission_mode: str = "", repeats: str = "",
            rule: dict | None = None, title=None, description=None,
@@ -1232,6 +1257,28 @@ def create(target: str, message: str, due=None, session_id: str = "",
     attachments = _attachments(attachments, images)
     if not images:
         images = [a["path"] for a in attachments]
+    # A FOLDER TO CREATE MUST SAY WHERE (Akshil, 2026-09-18). `abspath` resolves
+    # anything that is not already absolute against THIS PROCESS'S cwd — which
+    # is the server's, not the reader's — so a bare `123` typed into the New
+    # task card's folder field became a folder inside the checkout the server
+    # happens to be running from. He got
+    # `…/fused-render-wt/agent-20260918-tasks-and-new-task/123`.
+    #
+    # THE SAFETY NET IS HERE, not in the card. The card has its own rule about
+    # when to OFFER the create (`isPathShapedQuery`), and that is UX: it stops
+    # the offer being made. This stops the folder being made, for every caller —
+    # the calendar, the API, a page built against a future client — and it is
+    # the one of the two that can be relied on.
+    #
+    # Only for a CREATE. An existing target that resolves relative to the server
+    # is still resolved: it names something that is already there, the caller has
+    # been getting that answer for as long as this function has existed, and
+    # taking it away now would refuse folders that work today.
+    if create_target and not _names_a_place(target):
+        raise ValueError(
+            "target: a new folder needs a full path — "
+            f"{str(target).strip()!r} names no place to create it in. "
+            "Start with / or ~/.")
     target = os.path.abspath(os.path.expanduser(target))
     # The new folder is only CHECKED here; it is made at the very bottom, right
     # before the entry is stored. Everything between this point and there can

@@ -124,6 +124,7 @@ import {
   RUN_NEXT_LABEL,
   skippedOverride,
   usageLimitCaption,
+  projectMatches,
   projectOptions,
   relativeWhen,
   shortTaskId,
@@ -1108,6 +1109,225 @@ function FilterMenu({
   );
 }
 
+/**
+ * HOW MANY FOLDERS EARN A SEARCH BOX.
+ *
+ * Below this the list IS the search: seven rows are read in one glance, and a
+ * field above them is a control that costs a press and answers a question
+ * nobody had. The number the real complaint came from is the other end — the
+ * radiogroup's own note already reckons in "28 folders" — and a machine with
+ * that many tasks is one where the reader knows the folder's name and cannot
+ * find its row.
+ */
+const PROJECT_SEARCH_MIN = 8;
+
+/**
+ * THE PROJECT FACET — every folder that has a task, one of them chosen, and
+ * (once there are enough of them) a box to find one by name.
+ *
+ * ITS OWN COMPONENT so the typed query lives exactly as long as the popover
+ * does: `FilterMenu` renders its children only while open, so opening the menu
+ * again is a fresh mount and a fresh empty box. Held on `TaskFilterControls`
+ * instead, a query would outlive the press that closed the menu and the next
+ * open would come up already filtered, with a reason four clicks in the past.
+ *
+ * THE SEARCH IS THE PAGE'S OWN, not a second one. The field is the toolbar's
+ * search field — same wrapper, same magnifier, same `field-control` — and the
+ * rule behind it is the toolbar's too (`tasks-lib.projectMatches`: case-folded
+ * substring over the name the row prints and the path behind it). Nothing here
+ * touches the file index: that is a search of the DISK, in a language of its
+ * own (globs, `~` escapes — DECISIONS-one-search-language.md), and these rows
+ * are a list this page is already holding.
+ */
+function ProjectFacet({
+  projects,
+  home,
+  chosen,
+  onPick,
+  takeFocus = false,
+}: {
+  projects: string[];
+  home: string;
+  /** The folder the filter is pinned to, or "" for All projects. */
+  chosen: string;
+  /** A row was pressed — a path, or "" for All projects. Closing the menu is
+   *  the caller's half, exactly as it was when these rows were inline. */
+  onPick: (path: string) => void;
+  /**
+   * SHOULD THE BOX TAKE THE CARET ON OPEN?
+   *
+   * True on the Project menu, where this facet IS the whole panel and a reader
+   * who opened it to find a folder can start typing. False in the MERGED menu
+   * (the toolbar's last fit rung), where Status is drawn above this and
+   * autofocusing here would silently skip the reader past it — the box is still
+   * there, one Tab away, which is where a second facet's field belongs.
+   */
+  takeFocus?: boolean;
+}) {
+  const [query, setQuery] = useState("");
+  const searching = projects.length >= PROJECT_SEARCH_MIN;
+  const shown = useMemo(
+    () => (searching ? projects.filter((p) => projectMatches(p, query)) : projects),
+    [projects, query, searching],
+  );
+  // ALL PROJECTS IS NOT A SEARCH RESULT. It is the state of having no filter,
+  // so it leads the list when the reader is reading the list — and steps aside
+  // the moment they are asking a question, where a row that answers every query
+  // is noise at the top of the answers.
+  const allRow = !query.trim();
+
+  // WALKING THE RADIOS. Up/Left and Down/Right step, Home/End jump, and the
+  // step WRAPS — a radiogroup is a ring, and the alternative is an arrow press
+  // at the end of the list that does nothing.
+  //
+  // FOCUS ONLY, not selection. A radiogroup's arrows conventionally pick as they
+  // move, and that is wrong here: every pick re-filters the page behind the
+  // popover, so arrowing past four folders would run four filters the reader
+  // never asked for. The pick stays on the press — Space and Enter, which a
+  // `<button>` gives for nothing.
+  //
+  // Sibling elements rather than a ref list: the rows ARE this handler's
+  // siblings inside the group (`currentTarget.parentElement`), and a query for
+  // the role is the same fact the markup already states.
+  const onRadioKey = (e: React.KeyboardEvent<HTMLButtonElement>) => {
+    const keys = ["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft", "Home", "End"];
+    if (!keys.includes(e.key)) return;
+    const group = e.currentTarget.parentElement;
+    if (!group) return;
+    const rows = Array.from(group.querySelectorAll<HTMLElement>('[role="radio"]'));
+    const at = rows.indexOf(e.currentTarget);
+    if (at < 0) return;
+    e.preventDefault();
+    const next = e.key === "Home" ? 0
+      : e.key === "End" ? rows.length - 1
+        : e.key === "ArrowUp" || e.key === "ArrowLeft"
+          ? (at - 1 + rows.length) % rows.length
+          : (at + 1) % rows.length;
+    rows[next]?.focus();
+  };
+
+  // TYPE, THEN ARROW DOWN INTO THE ANSWERS — the one key the box owes the list,
+  // and the same gesture the New task card's path field answers. Enter takes
+  // the only remaining folder, because by then the reader has already named it
+  // and a second press on a list of one is a press for nothing. Escape is
+  // deliberately NOT caught: it closes the menu, which is what it does
+  // everywhere else on this page (`FilterMenu`'s own listener).
+  const onSearchKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      const group = e.currentTarget.closest(".schedule-tv-pop")
+        ?.querySelector<HTMLElement>('[role="radio"]');
+      group?.focus();
+      return;
+    }
+    if (e.key === "Enter" && shown.length === 1 && query.trim()) {
+      e.preventDefault();
+      onPick(shown[0]);
+    }
+  };
+
+  return (
+    <>
+      {searching && (
+        // The toolbar's own search field, in a popover. `schedule-tv-search`
+        // carries the magnifier's positioning and `field-control` the box; the
+        // one class of its own is what stops the 260px width the toolbar wants
+        // from pushing a 190px panel open.
+        <div className="schedule-tv-search schedule-tv-pop-search">
+          <span className="schedule-tv-search-icon" aria-hidden>{ICON_SEARCH}</span>
+          <input
+            type="search"
+            className="field-control schedule-tv-search-input"
+            value={query}
+            placeholder="Find a folder…"
+            aria-label="Find a folder"
+            autoFocus={takeFocus}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={onSearchKey}
+          />
+        </div>
+      )}
+      {/* RADIOS, not checkboxes, and the roles say so: exactly one of these rows
+          is on at any moment, and `aria-pressed` would promise a reader they
+          could hold two at once.
+
+          AND A RADIOGROUP AROUND THEM, because a lone radio role is a role with
+          nothing to belong to: a screen reader announces "radio button" and can
+          say neither which set it is in nor "3 of 7". The group is what carries
+          the facet's name too, which is the half the loose rows never had.
+
+          `display: contents` ON THE WRAPPER (`.schedule-tv-pop-radiogroup`,
+          schedule.css) so it is a box in the accessibility tree and no box in
+          the layout: the panel styles its rows as its own flex children and an
+          element with a real box between the two would squeeze 28 project rows
+          into 28 slivers. It is NOT invisible to the SELECTOR, though —
+          `display` is layout and `>` is the DOM — so tasks.css's
+          `.schedule-tv-pop.tasks-pop > … > .schedule-tv-pop-item` rule names
+          this wrapper as a step on the way down.
+
+          ARROWS MOVE, because in a radiogroup they are how you move: Tab
+          reaches the group and the arrows walk it (`onRadioKey`). Roving
+          tabindex for the same reason — a group is ONE tab stop, and 28 folders
+          that each took their own would make Tab out of this popover a 28-press
+          errand. */}
+      <div className="schedule-tv-pop-radiogroup" role="radiogroup" aria-label="Project">
+        {/* ALL PROJECTS IS A ROW, not the absence of one. An empty filter is a
+            real state of this control, and a menu with no row lit reads as a
+            press that did not take — so the state gets a place in the list, at
+            the top, lit. It wears the facet's own folder glyph for the same
+            reason the status rows wear rings: the glyph column is what makes
+            the labels line up, and a row missing it reads as a different kind
+            of thing. */}
+        {allRow && (
+          <button
+            type="button"
+            className={"schedule-tv-pop-item" + (chosen ? "" : " is-on")}
+            role="radio"
+            aria-checked={!chosen}
+            tabIndex={chosen ? -1 : 0}
+            onKeyDown={onRadioKey}
+            onClick={() => onPick("")}
+          >
+            <span className="schedule-tv-folder-icon" aria-hidden>{ICON_FOLDER}</span>
+            <span className="tasks-pop-label">All projects</span>
+          </button>
+        )}
+        {shown.map((path) => {
+          const on = chosen === path;
+          return (
+            <button
+              type="button"
+              key={path}
+              className={"schedule-tv-pop-item" + (on ? " is-on" : "")}
+              role="radio"
+              aria-checked={on}
+              // ROVING TABINDEX, and the ring has to have a way in even when the
+              // chosen row is filtered out from under it: the first row takes
+              // the tab stop whenever nothing on screen is the chosen one.
+              tabIndex={on || (!shown.some((p) => p === chosen) && !allRow
+                               && path === shown[0]) ? 0 : -1}
+              onKeyDown={onRadioKey}
+              title={tildePath(path, home)}
+              onClick={() => onPick(path)}
+            >
+              <span className="schedule-tv-folder-icon" aria-hidden>{ICON_FOLDER}</span>
+              <span className="tasks-pop-label">{basename(path)}</span>
+            </button>
+          );
+        })}
+      </div>
+      {/* A QUESTION WITH NO ANSWER STILL GETS ONE. An empty panel under a box
+          somebody just typed into reads as a control that broke; this says the
+          folder is not among the ones that have tasks, which is the true and
+          useful sentence. Not a row — nothing to press. */}
+      {searching && shown.length === 0 && (
+        <p className="schedule-tv-pop-empty">No folder matches</p>
+      )}
+    </>
+  );
+}
+
+
 export function TaskFilterControls({
   filters,
   projects,
@@ -1186,36 +1406,6 @@ export function TaskFilterControls({
       projects: filters.projects[0] === path ? [] : [path],
     });
 
-  // WALKING THE RADIOS. Up/Left and Down/Right step, Home/End jump, and the
-  // step WRAPS — a radiogroup is a ring, and the alternative is an arrow press
-  // at the end of the list that does nothing.
-  //
-  // FOCUS ONLY, not selection. A radiogroup's arrows conventionally pick as they
-  // move, and that is wrong here: every pick re-filters the page behind the
-  // popover, so arrowing past four folders would run four filters the reader
-  // never asked for. The pick stays on the press — Space and Enter, which a
-  // `<button>` gives for nothing.
-  //
-  // Sibling elements rather than a ref list: the rows ARE this handler's
-  // siblings inside the group (`currentTarget.parentElement`), and a query for
-  // the role is the same fact the markup already states.
-  const onRadioKey = (e: React.KeyboardEvent<HTMLButtonElement>) => {
-    const keys = ["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft", "Home", "End"];
-    if (!keys.includes(e.key)) return;
-    const group = e.currentTarget.parentElement;
-    if (!group) return;
-    const rows = Array.from(group.querySelectorAll<HTMLElement>('[role="radio"]'));
-    const at = rows.indexOf(e.currentTarget);
-    if (at < 0) return;
-    e.preventDefault();
-    const next = e.key === "Home" ? 0
-      : e.key === "End" ? rows.length - 1
-        : e.key === "ArrowUp" || e.key === "ArrowLeft"
-          ? (at - 1 + rows.length) % rows.length
-          : (at + 1) % rows.length;
-    rows[next]?.focus();
-  };
-
   // THE ROWS, ONCE. Both shapes of this control — two triggers or one — draw
   // exactly these, so a press cannot mean something different at a narrow
   // width than it does at a wide one.
@@ -1243,74 +1433,18 @@ export function TaskFilterControls({
         </button>
       );
     });
-  // RADIOS, not checkboxes, and the roles say so: exactly one of these rows is
-  // on at any moment (`pickProject`), and `aria-pressed` would promise a reader
-  // they could hold two at once.
-  //
-  // AND A RADIOGROUP AROUND THEM, because a lone radio role is a role with
-  // nothing to belong to: a screen reader announces "radio button" and can say
-  // neither which set it is in nor "3 of 7". The group is what carries the
-  // facet's name too, which is the half the loose rows never had.
-  //
-  // `display: contents` ON THE WRAPPER (`.schedule-tv-pop-radiogroup`,
-  // schedule.css) so it is a box in the accessibility tree and no box in the
-  // layout: the panel styles its rows as its own flex children and an element
-  // with a real box between the two would squeeze 28 project rows into 28
-  // slivers. It is NOT invisible to the SELECTOR, though — `display` is layout
-  // and `>` is the DOM — so tasks.css's `flex: 0 0 auto` rule names this wrapper
-  // as a step on the way down. The two have to move together; the rule says so.
-  //
-  // ARROWS MOVE, because in a radiogroup they are how you move: Tab reaches the
-  // group and the arrows walk it (`onRadioKey`). Roving tabindex for the same
-  // reason — a group is ONE tab stop, and 28 folders that each took their own
-  // would make Tab out of this popover a 28-press errand.
-  const projectRows = (close: () => void) => (
-    <div className="schedule-tv-pop-radiogroup" role="radiogroup" aria-label="Project">
-      {/* ALL PROJECTS IS A ROW, not the absence of one. An empty filter is a
-          real state of this control, and a menu with no row lit reads as a
-          press that did not take — so the state gets a place in the list, at
-          the top, lit. It wears the facet's own folder glyph for the same
-          reason the status rows wear rings: the glyph column is what makes the
-          labels line up, and a row missing it reads as a different kind of
-          thing. */}
-      <button
-        type="button"
-        className={"schedule-tv-pop-item" + (filters.projects.length === 0 ? " is-on" : "")}
-        role="radio"
-        aria-checked={filters.projects.length === 0}
-        tabIndex={filters.projects.length === 0 ? 0 : -1}
-        onKeyDown={onRadioKey}
-        onClick={() => {
-          onChange({ ...filters, projects: [] });
-          close();
-        }}
-      >
-        <span className="schedule-tv-folder-icon" aria-hidden>{ICON_FOLDER}</span>
-        <span className="tasks-pop-label">All projects</span>
-      </button>
-      {projects.map((path) => {
-        const on = filters.projects[0] === path;
-        return (
-          <button
-            type="button"
-            key={path}
-            className={"schedule-tv-pop-item" + (on ? " is-on" : "")}
-            role="radio"
-            aria-checked={on}
-            tabIndex={on ? 0 : -1}
-            onKeyDown={onRadioKey}
-            title={tildePath(path, home)}
-            onClick={() => {
-              pickProject(path);
-              close();
-            }}
-          >
-            <span className="schedule-tv-folder-icon" aria-hidden>{ICON_FOLDER}</span>
-            <span className="tasks-pop-label">{basename(path)}</span>
-          </button>
-        );
-      })}
-    </div>
+  const projectRows = (close: () => void, takeFocus = false) => (
+    <ProjectFacet
+      projects={projects}
+      home={home}
+      takeFocus={takeFocus}
+      chosen={filters.projects[0] ?? ""}
+      onPick={(path) => {
+        if (path) pickProject(path);
+        else onChange({ ...filters, projects: [] });
+        close();
+      }}
+    />
   );
 
   return (
@@ -1381,7 +1515,11 @@ export function TaskFilterControls({
           icon={ICON_FOLDER}
           onClear={() => onChange({ ...filters, projects: [] })}
         >
-          {projectRows}
+          {/* THE CARET GOES TO THE BOX here and not in the merged menu above:
+              this panel IS the project facet, so a reader who opened it can
+              start typing. Wrapped rather than passed by name because the
+              second argument is what says so. */}
+          {(close) => projectRows(close, true)}
         </FilterMenu>
       )}
         </>

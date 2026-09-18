@@ -288,10 +288,21 @@ def _prompt(obj) -> dict | None:
     if not text or tasks_store.is_machinery(text):
         return None
     # The remainder can still be empty — annotations or a screenshot sent with no
-    # typed words. That IS something the user did, and the chat page labels it
-    # with a marker, but a listing row has no body to show for it and an empty
-    # bubble in a thread is worse than none.
-    body = tasks_store.strip_machinery(text)
+    # typed words. That IS something the user did, and until 2026-09-18 this
+    # dropped it, which is worse than an empty bubble by a long way: `_status`
+    # derives the status FROM the messages, so a chat whose every send was
+    # wordless (annotate the app, hit send, type nothing — both real sends in
+    # one reported session) had no messages to derive from, vanished from this
+    # page entirely, and read `done` in the chat list while its turn ran. The
+    # chat list disagreed because it is a different reader that already took the
+    # second step below; nothing took the third.
+    #
+    # `user_words` is the whole answer and it is spelled once, in `tasks_store`:
+    # the typed words, else the notes the user wrote on their pins, else the
+    # chat's own name for what the send carried ("pane screenshot"). "" now
+    # means a record that carried nothing a reader could name at all, which is
+    # still not a message.
+    body = tasks_store.user_words(text)
     if not body:
         return None
     anchor = obj.get("uuid")
