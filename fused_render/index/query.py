@@ -1297,28 +1297,71 @@ def _name_predicate_sql(nm_col: str, literals: list) -> dict:
     instead), but the function stays total rather than assuming its own
     caller's discipline.
 
-    A fifth, non-SQL entry, `"suffix_before_prefix"`, is a plain Python bool:
-    true when the LAST literal run starts with a non-alphanumeric extension
-    marker (`.`) — an extension-shaped query (`.js`, or `*.js` -> `.js` as
-    the final-segment literal `_glob_sql` passes). Reported defect: searching
-    `.js` returned dotfiles like `.jshintrc` ABOVE the real `script.js`,
-    because `.jshintrc` satisfies the basename PREFIX predicate
-    (`nm LIKE '.js%'`) while `script.js` only satisfies the basename SUFFIX
-    predicate (`nm LIKE '%.js'`), and prefix outranks suffix in the
-    unmodified vector — an accident of the dotfile's OWN leading dot, not a
-    better match. For a dot-leading literal the user means "this extension",
-    i.e. a suffix, so `_lex_order_and_score` swaps prefix and suffix (in both
-    `order_by` and `score`) when this flag is set. Keyed on the LAST element
-    (the one `suffix` itself is built from, `literals[-1]`) rather than the
-    first, so both callers get it right: `_rank_sql` passes the single-
-    element `[qs]` (first == last), and `_glob_sql` passes the final
-    segment's literal runs (`*.js` -> final segment `.js*`... -> `['.js']`,
-    still first == last for a single-extension pattern, but keyed on the
-    element `suffix` actually reads, not an assumption that they always
-    coincide)."""
+    A fifth column, `"edge"`, is a per-CANDIDATE (not per-query) refinement
+    of `prefix`/`suffix`: true when the matched literal accounts for a WHOLE
+    leading or trailing word/segment of `nm`, not merely a fragment that
+    happens to start or end there. Reported defect: searching `.js` returned
+    dotfiles like `.jshintrc` ABOVE the real `script.js`, because `.jshintrc`
+    satisfies the basename PREFIX predicate (`nm LIKE '.js%'`) while
+    `script.js` only satisfies the basename SUFFIX predicate
+    (`nm LIKE '%.js'`), and prefix outranks suffix in the vector — an
+    accident of the dotfile's OWN leading dot, not a better match. An
+    earlier version of this fix swapped `prefix`/`suffix` wholesale whenever
+    the QUERY's last literal started with ".", which misclassified dotfile
+    queries themselves (`.env`): it made `database.env` (a SUFFIX match)
+    outrank `.envrc`/`.env.local` (PREFIX matches), the opposite of what
+    users want for that spelling. Read literally, the two reports contradict
+    each other on identically-shaped query text (`.js` vs `.env`), so no
+    rule keyed on the query string alone can satisfy both — `edge` instead
+    asks a question about each CANDIDATE'S OWN spelling:
+
+    - `prefix` is "edge" when the character immediately after the matched
+      run is either the end of `nm` or a separator (`_boundary_core`'s same
+      `[^a-z0-9]` class) — the match consumes a complete leading segment,
+      not a fragment that continues into more alnum text. `.envrc`'s prefix
+      match on `.env` is followed by `r` (alnum): a fragment, not edge.
+      `.env.local`'s is followed by `.` (a separator): edge.
+      `config.json`'s prefix match on `config` is followed by `.`: edge.
+    - `suffix` is "edge" when either (a) the literal ITSELF starts with a
+      separator (the boundary already lives inside the literal, e.g. the
+      dot in `.js`/`.env` — an ordinary suffix match is then inherently a
+      whole trailing segment, regardless of what precedes it: `script.js`'s
+      suffix match on `.js` is edge even though the preceding `t` is alnum,
+      because the dot IS the separator), or (b), when the literal has no
+      leading separator of its own (`config`), the character immediately
+      before the match is the start of `nm` or a separator —
+      `app-config`'s suffix match on `config` is preceded by `-`: edge.
+
+    `edge` is `prefix_edge OR suffix_edge`, spliced into `order_by` right
+    after `nm_exact` (see `_lex_order_and_score`) — a genuine whole-segment
+    match, on EITHER side, outranks a fragment match on either side, before
+    `prefix`/`suffix` priority (unswapped, always prefix-first) is even
+    consulted. This resolves the `.js` case (`script.js` edge=true via (a)
+    beats `.jshintrc` edge=false, since `h` after `.js` is alnum) and half
+    of the `.env` case (`.env.local` edge=true via prefix beats
+    `database.env` edge=true via (a) — both edge, so the unswapped
+    `prefix DESC` tie-break correctly picks the prefix match) without
+    touching `config`/`app-config` (both become edge, tying, then
+    `prefix DESC` still correctly picks `config.json`).
+
+    Known, deliberate residual gap: `.envrc` (a PREFIX fragment — `r` after
+    `.env` is alnum, structurally identical in every measurable way to
+    `.jshintrc`'s PREFIX fragment `h` after `.js`) has no genuine
+    candidate-side feature distinguishing it from `.jshintrc`, yet the
+    reported preference is `.envrc` > `database.env` (a SUFFIX edge match)
+    while the reported preference is `script.js` (a SUFFIX edge match) >
+    `.jshintrc` (a PREFIX fragment) — the SAME shape of comparison (edge
+    suffix vs fragment prefix) is wanted to resolve oppositely for these two
+    candidate pairs. Distinguishing them requires knowing that "env" and
+    "js" are different literals, i.e. reading the query text again — exactly
+    what this design deliberately does not do. `.envrc` therefore still
+    loses to `database.env` under this rule, UNCHANGED from the pre-fix
+    behavior (the old swap already ranked `database.env` first too) — a
+    pure improvement (`.js`, `.env.local`) with one documented, provably
+    irreducible non-regression left in place, not a new one introduced."""
     if not literals:
         return {"prefix": "false", "suffix": "false", "contains": "false",
-                "boundary": "false", "suffix_before_prefix": False}
+                "boundary": "false", "edge": "false"}
     first_like = like_literal(literals[0])
     last_like = like_literal(literals[-1])
     chain_like = "%".join(like_literal(lit) for lit in literals)
@@ -1334,6 +1377,29 @@ def _name_predicate_sql(nm_col: str, literals: list) -> dict:
     # clause match almost anywhere.
     _boundary_core = re.sub(r"^[^A-Za-z0-9]+", "", literals[0]) or literals[0]
     first_re = _q(re.escape(_boundary_core))
+    # `edge`: see this function's docstring. `prefix_edge` reuses the FULL
+    # (un-stripped) first literal, regex-escaped — it tests what comes AFTER
+    # the match, not before it, so there is no leading-punctuation problem
+    # to strip here the way `boundary`/`suffix_edge` have.
+    first_full_re = _q(re.escape(literals[0]))
+    prefix_edge = (f"regexp_matches({nm_col}, "
+                   f"'^' || lower('{first_full_re}') || '($|[^a-z0-9])')")
+    # `suffix_edge`: strip the LAST literal's own leading separator run
+    # (same technique as `_boundary_core`, applied to the other end of the
+    # literal list). A non-empty stripped run means the literal already
+    # carries its own separator (`.js`, `.env`) — the boundary lives inside
+    # the matched text itself, so an ordinary `suffix` match is always a
+    # whole trailing segment regardless of what precedes it. Otherwise
+    # (`config`, no leading punctuation), the same explicit
+    # start-or-separator test `boundary` uses is required immediately
+    # before the match.
+    _last_core = re.sub(r"^[^A-Za-z0-9]+", "", literals[-1])
+    if _last_core and _last_core != literals[-1]:
+        suffix_edge = f"({nm_col} LIKE '%' || lower('{last_like}') ESCAPE '\\')"
+    else:
+        last_full_re = _q(re.escape(literals[-1]))
+        suffix_edge = (f"regexp_matches({nm_col}, "
+                       f"'(^|[^a-z0-9])' || lower('{last_full_re}') || '$')")
     return {
         "prefix": f"{nm_col} LIKE lower('{first_like}') || '%' ESCAPE '\\'",
         "suffix": f"{nm_col} LIKE '%' || lower('{last_like}') ESCAPE '\\'",
@@ -1341,7 +1407,7 @@ def _name_predicate_sql(nm_col: str, literals: list) -> dict:
                      f"ESCAPE '\\'"),
         "boundary": (f"regexp_matches({nm_col}, "
                      f"'(^|[^a-z0-9])' || lower('{first_re}'))"),
-        "suffix_before_prefix": literals[-1].startswith("."),
+        "edge": f"(({prefix_edge}) OR ({suffix_edge}))",
     }
 
 
@@ -1388,7 +1454,8 @@ def _qualify_basename_cap(order_by: str) -> str:
             f"(PARTITION BY nm ORDER BY {order_by}) <= {_MAX_PER_BASENAME} ")
 
 
-def _lex_order_and_score(nm_exact: str, preds: dict) -> tuple:
+def _lex_order_and_score(nm_exact: str, preds: dict,
+                         nm_exact_natural: str = "true") -> tuple:
     """The shared tail of both `_rank_sql` and `_glob_sql`: given `nm_exact`
     (a mode-specific SQL boolean — `nm = lower(q)` for a substring query,
     `regexp_matches(nm, regex)` for a glob, since only the CALLER knows how
@@ -1396,30 +1463,40 @@ def _lex_order_and_score(nm_exact: str, preds: dict) -> tuple:
     `preds` (`_name_predicate_sql`'s output), returns `(order_by, score,
     tier)`.
 
-    `order_by` is the position-free, basename-first lexicographic vector
-    search-architecture-review.md §6 recommends: exact name, then basename
-    prefix, then basename suffix, then "the query is satisfiable within the
-    basename alone", then a word/segment-BOUNDARY test (`preds['boundary']`
-    — a match right after a separator outranks the identical literal buried
-    mid-word; see `_name_predicate_sql`'s docstring on why this is still
-    position-free and does not resurrect the dropped camelCase hump), THEN
-    `depth`/`length(nm)`/`rel` as pure tie-breaks. This is what actually
-    decides the row order — `ORDER BY` reads it as a vector comparison,
-    column by column, which is exactly the field-separated ranking VS
-    Code/Zed do structurally (their power-of-two score bands ARE this same
-    lexicographic order, just encoded as one integer instead of left as a
-    column list).
+    `nm_exact_natural` (default `"true"`, a no-op) is `_glob_sql`'s
+    multi-literal "naturally spelled" tie-break — see this function's own
+    section on it below — left at its default by every other caller.
 
-    `score` is a WEIGHTED SUM of the same four leading predicates (NOT
-    `boundary` — it stays a coarse four-term summary, and `boundary` only
-    ever breaks a tie the sum already reports as equal, so adding a fifth,
-    smaller-weighted term would buy the display value nothing a reader
-    couldn't already get from `tier` alone), returned for compatibility
+    `order_by` is the position-free, basename-first lexicographic vector
+    search-architecture-review.md §6 recommends: exact name, then (among
+    exact names) a "naturally spelled" tie-break, then a candidate-side
+    EDGE test (`preds['edge']` — a whole-segment prefix or suffix match
+    outranks a fragment match on either side; see `_name_predicate_sql`'s
+    docstring), then basename prefix, then basename suffix, then "the query
+    is satisfiable within the basename alone", then a word/segment-BOUNDARY
+    test (`preds['boundary']` — a match right after a separator outranks
+    the identical literal buried mid-word; see `_name_predicate_sql`'s
+    docstring on why this is still position-free and does not resurrect the
+    dropped camelCase hump), THEN `depth`/`length(nm)`/`rel` as pure
+    tie-breaks. This is what actually decides the row order — `ORDER BY`
+    reads it as a vector comparison, column by column, which is exactly the
+    field-separated ranking VS Code/Zed do structurally (their power-of-two
+    score bands ARE this same lexicographic order, just encoded as one
+    integer instead of left as a column list).
+
+    `score` is a WEIGHTED SUM of the same four leading predicates
+    (`nm_exact`, `prefix`, `suffix`, `contains` — always in that fixed
+    identity, never `edge`-swapped; NOT `boundary`, `edge`, or
+    `nm_exact_natural` either — it stays a coarse four-term summary, and the
+    others only ever break a tie the sum already reports as equal, so
+    adding more, smaller-weighted terms would buy the display value nothing
+    a reader couldn't already get from `tier` alone), returned for compatibility
     (`search_ranked` still emits it on every hit — existing tests and probes
     read it) and for human debugging, but it is NOT what decides the order:
-    two hits can tie on `score` while the vector still orders them (a
-    `boundary`/`depth`/`length(nm)`/`rel` tie-break the scalar sum cannot
-    see), so nothing downstream may assume `ORDER BY score DESC` reproduces
+    two hits can tie on `score` while the vector still orders them (an
+    `edge`/`nm_exact_natural`/`boundary`/`depth`/`length(nm)`/`rel`
+    tie-break the scalar sum cannot see), so nothing downstream may assume
+    `ORDER BY score DESC` reproduces
     this function's actual order. The weights (1000/500/250/100) are spaced
     so each level dominates every combination of the levels below it.
 
@@ -1455,30 +1532,47 @@ def _lex_order_and_score(nm_exact: str, preds: dict) -> tuple:
     has nothing left to earn its keep for — it is kept as a coarse,
     wire-compatible summary field, not a ranking mechanism.
 
-    `preds["suffix_before_prefix"]` (see `_name_predicate_sql`'s docstring)
-    swaps `prefix` and `suffix` in BOTH `order_by` and `score` for an
-    extension-shaped literal (`.js`, ...): the predicate that would otherwise
-    rank second (`suffix`) takes the FIRST slot and its weight (500), and the
-    one that would otherwise rank first (`prefix`) takes the second slot and
-    its weight (250) — every other column (`contains`, `boundary`,
-    `depth`/`length(nm)`/`rel`) keeps its exact position, and the weight
-    SCALE (1000/500/250/100, `_SCORE_DEPTH_CAP`) is untouched, so `score`
-    stays coherent with whichever order `order_by` actually emits rather than
-    contradicting it."""
+    `preds["edge"]` (see `_name_predicate_sql`'s docstring) is spliced into
+    `order_by` right after `nm_exact_natural`, ahead of `prefix`/`suffix`
+    themselves — it never swaps which of `prefix`/`suffix` ranks higher
+    (that identity is now fixed: `prefix` always before `suffix`, in both
+    `order_by` and `score`), it only asks, per candidate, whether either
+    side's match is a whole segment rather than a fragment, before the
+    (unswapped) prefix/suffix priority is consulted at all. `edge` is
+    excluded from `score` for the same reason `boundary` is (a coarse
+    four-term summary, not a second ranking mechanism) — the weight SCALE
+    (1000/500/250/100, `_SCORE_DEPTH_CAP`) is unchanged.
+
+    `nm_exact_natural` (`_glob_sql`'s multi-literal callers only; every
+    other caller passes the default `"true"`, a no-op that never
+    distinguishes any two rows) breaks a tie the separator-tolerant
+    `nm_exact` fix (DECISIONS.md: "`fused render` outranked by a bare
+    `fusedrender`") can leave behind: at EQUAL depth, `FusedRender` (no
+    separator between the two literal runs) and `fused-render` (one) are
+    both `nm_exact`, so `depth` cannot break the tie and it falls through to
+    `length(nm) ASC` — which picks the SHORTER, zero-separator spelling
+    (`fusedrender`, 11 characters) over the naturally-spelled one
+    (`fused-render`, 12), reintroducing the original bug's flavor in the
+    one case depth cannot already fix. `nm_exact_natural` asks a
+    candidate-side, non-arbitrary question instead of leaning on raw
+    length: does EVERY gap between the literal runs in `nm` actually
+    contain a separator character, i.e. is this the naturally-word-broken
+    spelling rather than the accidentally-fused one? A spelling with an
+    explicit separator between every word is a more deliberate, more
+    specific match than the same words mashed together with nothing between
+    them, so it wins the tie instead of losing it to `length(nm)`."""
     tier = f"CASE WHEN ({preds['contains']}) THEN 1 ELSE 3 END"
-    if preds.get("suffix_before_prefix"):
-        hi_pred, lo_pred = preds["suffix"], preds["prefix"]
-    else:
-        hi_pred, lo_pred = preds["prefix"], preds["suffix"]
     # DuckDB has no BOOLEAN*INTEGER overload (unlike Python's `True == 1`) —
     # each predicate is cast to INTEGER before it can be weighted and summed.
     score = (f"1000 * CAST({nm_exact} AS INTEGER) "
-             f"+ 500 * CAST({hi_pred} AS INTEGER) "
-             f"+ 250 * CAST({lo_pred} AS INTEGER) "
+             f"+ 500 * CAST({preds['prefix']} AS INTEGER) "
+             f"+ 250 * CAST({preds['suffix']} AS INTEGER) "
              f"+ 100 * CAST({preds['contains']} AS INTEGER) "
              f"- LEAST(depth, {_SCORE_DEPTH_CAP})")
-    order_by = (f"({nm_exact}) DESC, ({hi_pred}) DESC, "
-                f"({lo_pred}) DESC, ({preds['contains']}) DESC, "
+    order_by = (f"({nm_exact}) DESC, ({nm_exact_natural}) DESC, "
+                f"({preds['edge']}) DESC, "
+                f"({preds['prefix']}) DESC, ({preds['suffix']}) DESC, "
+                f"({preds['contains']}) DESC, "
                 f"({preds['boundary']}) DESC, "
                 f"depth ASC, length(nm) ASC, lower(rel) ASC, rel ASC")
     return order_by, score, tier
@@ -1945,6 +2039,7 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
             f"ORDER BY {unscored_order} "
             f"LIMIT {limit}")
     preds = _name_predicate_sql("nm", literals)
+    nm_exact_natural = "true"
     if literals and len(literals) > 1:
         # Multi-literal "exact": `length(nm) == total_len` demands the
         # spelling with NO separators at all (`fusedrender`), so it silently
@@ -1964,6 +2059,24 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
         sep_lits = " || '[^a-z0-9]*' || ".join(
             f"lower('{_q(re.escape(lit))}')" for lit in literals)
         nm_exact = f"regexp_matches(nm, '^' || {sep_lits} || '$')"
+        # Residual defect (DECISIONS.md, "`fused render` outranked by a bare
+        # `fusedrender`", the equal-depth case): making `nm_exact`
+        # separator-TOLERANT (zero-or-more, `[^a-z0-9]*`) means the
+        # zero-separator spelling and every naturally-separated spelling are
+        # now ALL exact, and at equal depth the tie falls to
+        # `length(nm) ASC`, which picks the shortest — the zero-separator
+        # one — reintroducing the reported bug's flavor for ties depth
+        # cannot resolve. `nm_exact_natural` requires a separator (one or
+        # more, `[^a-z0-9]+`) at EVERY gap instead of zero-or-more at any —
+        # true only for a genuinely word-broken spelling (`fused-render`,
+        # `fused_render`, `fused render`), false for the fused one
+        # (`fusedrender`) — and is placed ahead of `edge`/`prefix`/`suffix`
+        # in `order_by` so it breaks the tie before `length(nm)` is ever
+        # reached, in the direction the reported defect actually wants.
+        sep_lits_plus = " || '[^a-z0-9]+' || ".join(
+            f"lower('{_q(re.escape(lit))}')" for lit in literals)
+        nm_exact_natural = (
+            f"regexp_matches(nm, '^' || {sep_lits_plus} || '$')")
     elif literals:
         # `len(literals) == 1`: bit-identical to this branch's pre-existing
         # behaviour — `_rank_sql` always passes exactly one literal, and this
@@ -1981,7 +2094,8 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
         # no `nm_regex` to test; `nm_exact` stays false alongside every
         # other predicate (`_name_predicate_sql([])`'s own "false" answer).
         nm_exact = "false"
-    order_by, score_expr, tier = _lex_order_and_score(nm_exact, preds)
+    order_by, score_expr, tier = _lex_order_and_score(
+        nm_exact, preds, nm_exact_natural)
     return (
         f"SELECT rel, size, mtime, is_dir, depth, ({score_expr}) AS score, "
         f"({tier}) AS tier FROM ({inner}) "

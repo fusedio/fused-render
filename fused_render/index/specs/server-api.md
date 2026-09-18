@@ -304,6 +304,7 @@ last directory-crossing boundary — `_final_segment_pattern`, `query.md §3`; t
 whole pattern's earlier segments can never appear in `nm`, a slash-free
 basename) is split on its wildcard tokens into literal runs, and those runs feed
 the same position-free boolean columns substring mode uses: `prefix`, `suffix`,
+`edge` (per-candidate whole-segment vs. fragment refinement — `query.md §3`),
 `contains` (an in-order, anything-between existence test — this is what fixes the
 old glob tier defect: a path-shaped pattern like `**/src/*.ts` used to be scored
 off the WHOLE pattern's literal runs, including a directory-segment literal like
@@ -329,9 +330,10 @@ substring mode's old middle tier (straddling the basename boundary) has no
 equivalent here either, for the identical reason `query.md §3` gives for
 substring mode: `contains` is a pure existence test with no positional "window"
 to ask whether it straddles anything. `tier` is NOT a primary sort key for
-either mode — the lexicographic predicate vector (`nm_exact`, `prefix`, `suffix`,
-`contains`, `boundary`, then `depth`/`length(nm)`/`rel`) already separates match
-quality more finely than a tier value ever did; `tier` is kept only as a coarse,
+either mode — the lexicographic predicate vector (`nm_exact`,
+`nm_exact_natural`, `edge`, `prefix`, `suffix`, `contains`, `boundary`, then
+`depth`/`length(nm)`/`rel` — `query.md §3`) already separates match quality
+more finely than a tier value ever did; `tier` is kept only as a coarse,
 wire-compatible summary field. Every hit — substring or glob, ranked or not —
 carries the identical key set, since the wire layer strips
 `score`/`tier`/`longest_run`/`positions` unconditionally (see below);
@@ -360,8 +362,9 @@ substring branch always set `longestRun = len(q)`, the maximum a subsequence-onl
 could reach, and `rankCompare` ordered on `longestRun` first — so every substring hit
 already outranked every subsequence-only one. With the subsequence pass gone,
 `longest_run` is constant across every surviving row and drops out of the SQL `ORDER
-BY` entirely (`(nm_exact) DESC, (prefix) DESC, (suffix) DESC, (contains) DESC,
-(boundary) DESC, depth ASC, length(nm) ASC, lower(rel) ASC, rel ASC` — `query.md §3`
+BY` entirely (`(nm_exact) DESC, (nm_exact_natural) DESC, (edge) DESC, (prefix) DESC,
+(suffix) DESC, (contains) DESC, (boundary) DESC, depth ASC, length(nm) ASC,
+lower(rel) ASC, rel ASC` — `query.md §3`
 has the full column-by-column vector and why it replaced a scalar `score DESC`/`tier
 ASC` sort entirely; the trailing `rel ASC` is a free final tie-break so a pair equal
 in every other column, including `lower(rel)`, doesn't land in an arbitrary order on

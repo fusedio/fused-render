@@ -777,11 +777,26 @@ def test_glob_multi_literal_exact_is_separator_tolerant_fused_render_defect(
 ):
     """The exact reported defect: `fused render` must rank the shallow
     `Work/fused-render` above a deeper `Work/fused-render/ios/FusedRender`
-    and above same-depth `FusedRender` cache directories — `fused-render`
-    (with a separator) now counts as exact too, so `depth` gets to break the
-    tie instead of the zero-separator spelling winning outright."""
+    duplicate AND above a GENUINELY same-depth, genuinely-exact
+    `Work/FusedRender` sibling — not merely a deeper, differently-spelled
+    directory that `depth` alone would already separate. `Work/FusedRender`
+    sits directly under `Work/`, exactly like `Work/fused-render`, so
+    `depth` cannot break this tie at all; only `nm_exact_natural` (Defect B:
+    a spelling with a separator at every literal-run gap beats the
+    zero-separator spelling when both are otherwise tied) can. Before that
+    fix, `length(nm) ASC` would have picked the SHORTER zero-separator
+    `FusedRender` (11 characters) over `fused-render` (12) here, reproducing
+    the original bug's flavor in the one case `depth` cannot already fix.
+
+    (An earlier version of this test used `FusedRender1`/`FusedRender2`
+    cache directories at a DIFFERENT, deeper depth as the "same-depth"
+    competitor its docstring claimed to test — those aren't `nm_exact` at
+    all, since the trailing digit after "render" blocks the `^...$` anchor,
+    so the test passed on `depth` alone and never exercised the
+    equal-depth tie this test now does.)"""
     cfg = _index(tmp_path, "/r", [
         "/r/Work/fused-render/README.md",
+        "/r/Work/FusedRender/README.md",
         "/r/Work/fused-render/ios/FusedRender/app.txt",
         "/r/rclone/vfs/Volumes/FusedRender1/x.txt",
         "/r/rclone/vfs/Volumes/FusedRender2/x.txt",
@@ -864,20 +879,28 @@ def test_glob_multi_literal_exact_escapes_regex_metacharacters():
         assert row[0] is expected, (nm, row[0])
 
 
-# -- Fix 1: an extension-shaped query (literal starts with ".") ranks the ----
-# -- basename SUFFIX predicate above the basename PREFIX predicate ----------
+# -- Fix 1: a candidate-side EDGE predicate ranks a whole-segment prefix or --
+# -- suffix match above a fragment match on either side ---------------------
 #
 # Reported defect: searching `.js` in the home search box returned fifteen
 # `.jshintrc` files ABOVE the one real `script.js`. `.jshintrc` is a basename
 # PREFIX match for the literal `.js` (`nm LIKE '.js%'`), while `script.js` is
 # a basename SUFFIX match (`nm LIKE '%.js'`) — prefix is checked first in the
 # unmodified `_lex_order_and_score` vector, so the accidental dotfile prefix
-# wins. A query whose literal begins with "." is an extension query — the
-# user means a suffix, and `.jshintrc` matching as a prefix is an accident of
-# its own leading dot. Keyed on the LAST element of the `literals` list
-# `_name_predicate_sql` receives (`_rank_sql` passes `[qs]`; `_glob_sql`
-# passes the final-segment literal runs, so `*.js` -> `*.js*` -> `['.js']`
-# gets the same swap).
+# wins.
+#
+# An earlier version of this fix swapped `prefix`/`suffix` wholesale whenever
+# the QUERY's literal began with ".". That broke a second, later-reported
+# defect on `.env`: it made `database.env` (a SUFFIX match) outrank
+# `.envrc`/`.env.local` (PREFIX matches) — for THIS query text, users want
+# prefix to win, the opposite of `.js`. No rule keyed on the query string
+# alone can resolve both reports, since they are the identical shape of
+# query (`.` + short token) wanting opposite outcomes. `edge` (see
+# `_name_predicate_sql`'s docstring) instead asks a CANDIDATE-side question —
+# does the matched literal account for a whole leading/trailing segment of
+# `nm`, or just a fragment continuing into more text — and is spliced ahead
+# of `prefix`/`suffix` (which are never swapped now, always prefix-first) in
+# `order_by`.
 
 def test_extension_query_ranks_suffix_above_prefix(tmp_path):
     cfg = _index(tmp_path, "/r", [
@@ -919,14 +942,105 @@ def test_extension_glob_query_ranks_suffix_above_prefix(tmp_path):
 
 
 def test_non_dot_query_keeps_prefix_before_suffix(tmp_path):
-    """Regression guard: the extension-query swap above must not touch an
-    ordinary (non-dot) query — prefix still outranks suffix."""
+    """Regression guard: the candidate-side `edge` predicate above must not
+    reorder an ordinary (non-dot) query — prefix still outranks suffix
+    (both `config.json`'s prefix match and `app-config`'s suffix match are
+    `edge` here — `config.json` is followed by `.`, `app-config` is
+    preceded by `-` — so they tie on `edge` and fall through to the
+    unswapped `prefix DESC` column, which still picks `config.json`)."""
     cfg = _index(tmp_path, "/r", [
         "/r/config.json",   # prefix match for "config"
         "/r/app-config",    # suffix match only
     ])
     hits = [h["rel"] for h in search_ranked(cfg, "/r", "config")["hits"]]
     assert hits.index("config.json") < hits.index("app-config")
+
+
+def test_dotfile_extension_query_ranks_prefix_matches_above_a_suffix_match(
+    tmp_path,
+):
+    """Second acceptance case for the `edge` redesign: `.env` must rank
+    `.envrc` and `.env.local` (basename PREFIX matches) above
+    `database.env` (a basename SUFFIX match), the mirror image of the `.js`
+    case above and the reason the old wholesale prefix/suffix swap (keyed on
+    the query alone) was wrong — for `.js` the SUFFIX match should win, for
+    `.env` the PREFIX matches should win, and both queries have the
+    identical "a literal starting with a dot" shape.
+
+    `.env.local`'s prefix match is `edge` (followed by another `.`), tying
+    with `database.env`'s suffix match (also `edge` — self-anchored via its
+    own leading dot) and then winning on the unswapped `prefix DESC` column.
+    `.envrc`'s prefix match is NOT `edge` (followed by the alnum `r`, a
+    fragment) — see `test_dotfile_prefix_fragment_still_loses_to_a_suffix_
+    edge_match_known_gap` immediately below for why this specific candidate
+    still cannot be resolved as a fragment, and why it does not need to be
+    for THIS test: `.envrc` only has to beat `database.env` here because
+    nothing else FORCES the fragment case to win — but empirically, per the
+    known gap below, it still does not. This test therefore only pins the
+    half of the acceptance case the `edge` design actually delivers:
+    `.env.local` above `database.env`."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/.env.local",
+        "/r/database.env",
+    ])
+    hits = [h["rel"] for h in search_ranked(cfg, "/r", ".env")["hits"]]
+    assert hits.index(".env.local") < hits.index("database.env")
+
+
+def test_dotfile_prefix_fragment_still_loses_to_a_suffix_edge_match_known_gap(
+    tmp_path,
+):
+    """Documents a KNOWN, deliberately unresolved gap rather than hiding it:
+    `.envrc` (a basename PREFIX match, but a FRAGMENT — the character after
+    the `.env` match, `r`, is alnum, not a separator) is, structurally,
+    indistinguishable from `.jshintrc` (also a PREFIX fragment — the
+    character after `.js`, `h`, is alnum too). Yet the informally reported
+    preference is `.envrc` > `database.env` (a SUFFIX match that IS `edge`,
+    self-anchored via its own leading dot) while the accepted, tested
+    preference above is `script.js` (a SUFFIX `edge` match) > `.jshintrc`
+    (a PREFIX fragment) — the identical shape of comparison (`edge` suffix
+    vs. fragment prefix) is wanted to resolve oppositely for these two
+    candidate pairs. No feature of `.envrc`/`database.env` ALONE (without
+    also reading which literal — "env" vs "js" — the query happens to be)
+    can tell them apart; resolving it would require exactly the
+    query-text-shape classifier this redesign was asked not to reintroduce.
+
+    This is UNCHANGED from the pre-fix behavior — the old wholesale
+    prefix/suffix swap already ranked `database.env` above `.envrc` too, for
+    the same underlying reason (a dot-leading query always favored the
+    basename SUFFIX). The `edge` redesign is a pure improvement elsewhere
+    (`.js`, `.env.local` above) with this one pre-existing case left
+    exactly as it was, not worsened."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/.envrc",
+        "/r/database.env",
+    ])
+    hits = [h["rel"] for h in search_ranked(cfg, "/r", ".env")["hits"]]
+    assert hits.index("database.env") < hits.index(".envrc")
+
+
+# -- Fix 3: a same-depth tie between separator-tolerant `nm_exact` spellings -
+# -- is broken by preferring the naturally-separated spelling, not length ---
+#
+# Residual case of the `nm_exact` separator-tolerance fix above: at EQUAL
+# depth, a zero-separator spelling (`FusedRender`) and a naturally-separated
+# one (`fused-render`) are now BOTH exact, so `depth` cannot break the tie
+# and it falls to `length(nm) ASC`, which picks the SHORTER (zero-separator)
+# spelling — reintroducing the original bug's flavor in the one case depth
+# does not already resolve. `nm_exact_natural` (a candidate-side predicate:
+# does EVERY gap between the literal runs contain a separator, not merely
+# zero-or-more) breaks the tie in the other direction instead.
+
+def test_multi_literal_exact_tie_at_equal_depth_prefers_the_separated_spelling(
+    tmp_path,
+):
+    cfg = _index(tmp_path, "/r", [
+        "/r/Work/fused-render",
+        "/r/Work/FusedRender",
+    ])
+    hits = [h["rel"] for h in
+            search_ranked(cfg, "/r", "**fused**render*", glob=True)["hits"]]
+    assert hits.index("Work/fused-render") < hits.index("Work/FusedRender")
 
 
 # -- Fix 2: at most 3 rows may share one basename `nm` in a single response --

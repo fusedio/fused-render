@@ -231,34 +231,78 @@ three boolean columns off the basename (`nm`) alone —
   boundary-true. A literal with no leading punctuation (`config`) is
   unaffected — nothing to strip, same regex as before.
 
-— plus an `nm_exact` predicate computed by the caller (substring mode:
-`nm = lower(q)`; glob mode: see below), and `_lex_order_and_score(nm_exact, preds)`
-turns those five booleans plus `depth` into an **`ORDER BY` column list**, not a
-weighted sum:
+— plus a fifth boolean, `edge` (see below), an `nm_exact` predicate computed by
+the caller (substring mode: `nm = lower(q)`; glob mode: see below), and
+`_lex_order_and_score(nm_exact, preds, nm_exact_natural="true")` turns those
+plus `depth` into an **`ORDER BY` column list**, not a weighted sum:
 
 ```
-ORDER BY (nm_exact) DESC, (prefix) DESC, (suffix) DESC, (contains) DESC,
-          (boundary) DESC, depth ASC, length(nm) ASC, lower(rel) ASC, rel ASC
+ORDER BY (nm_exact) DESC, (nm_exact_natural) DESC, (edge) DESC,
+          (prefix) DESC, (suffix) DESC, (contains) DESC, (boundary) DESC,
+          depth ASC, length(nm) ASC, lower(rel) ASC, rel ASC
 ```
 
-**Extension-shaped queries swap `prefix` and `suffix`.** Reported defect:
-searching `.js` returned dotfiles like `.jshintrc` ABOVE the one real
-`script.js`, because `.jshintrc` satisfies `prefix` (`nm LIKE '.js%'`) while
-`script.js` only satisfies `suffix` (`nm LIKE '%.js'`), and `prefix` outranks
-`suffix` in the vector above — an accident of the dotfile's OWN leading dot,
-not a better match. `_name_predicate_sql` computes a fifth, Python-only flag,
-`suffix_before_prefix`, keyed on whether the LAST literal run (the one
-`suffix` itself is built from — `_rank_sql`'s single-element `[qs]`,
-`_glob_sql`'s final-segment literal runs, so `*.js` -> final segment `.js*`
--> `['.js']` gets it too) starts with `.`. When set, `_lex_order_and_score`
-swaps `prefix` and `suffix` in BOTH the `ORDER BY` vector and the `score`
-weighted sum (the predicate that would otherwise rank/weigh second takes the
-first slot and its weight, 500, and vice versa, 250) — every other column
-keeps its position, and the weight scale and depth cap below are unchanged,
-so `score` stays coherent with whichever order the vector actually emits.
-For `.js`: `ORDER BY (nm_exact) DESC, (suffix) DESC, (prefix) DESC, ...`. For
-an ordinary, non-dot literal like `config`: unchanged, `ORDER BY (nm_exact)
-DESC, (prefix) DESC, (suffix) DESC, ...`.
+(`nm_exact_natural` defaults to the literal SQL `true`, a no-op, for every
+caller except `_glob_sql`'s multi-literal branch — see "a same-depth tie
+between separator-tolerant spellings" below.)
+
+**A candidate-side `edge` predicate ranks a whole-segment prefix or suffix
+match above a fragment match on either side — it does not swap `prefix` and
+`suffix`.** Reported defect: searching `.js` returned dotfiles like
+`.jshintrc` ABOVE the one real `script.js`, because `.jshintrc` satisfies
+`prefix` (`nm LIKE '.js%'`) while `script.js` only satisfies `suffix`
+(`nm LIKE '%.js'`), and `prefix` outranks `suffix` in the vector above — an
+accident of the dotfile's OWN leading dot, not a better match.
+
+An earlier version of this fix computed a Python-only flag,
+`suffix_before_prefix` (true whenever the QUERY's last literal started with
+`.`), and swapped `prefix`/`suffix` wholesale in both `order_by` and `score`
+when set. That broke a second, later-reported defect on `.env`: it made
+`database.env` (a SUFFIX match) outrank `.envrc`/`.env.local` (PREFIX
+matches) — the opposite of what users want for THIS query text, even though
+`.env` and `.js` are the identical shape of query (a literal starting with
+`.`). No rule keyed on the query string alone can satisfy both reports.
+
+`edge` instead asks a per-CANDIDATE question, reusing `boundary`'s own
+`[^a-z0-9]` separator class:
+
+- a `prefix` match is `edge` when the character immediately AFTER the
+  matched run is either the end of `nm` or a separator — the match consumes
+  a whole leading segment, not a fragment continuing into more text
+  (`.env.local`'s prefix match on `.env` is `edge`, followed by `.`;
+  `.envrc`'s is NOT, followed by the alnum `r`).
+- a `suffix` match is `edge` when EITHER the literal itself starts with a
+  separator (the boundary lives inside the literal — `script.js`'s suffix
+  match on `.js` is `edge` even though the preceding `t` is alnum, because
+  the dot IS the separator) OR, when the literal has no leading separator of
+  its own (`config`), the character immediately BEFORE the match is the
+  start of `nm` or a separator (`app-config`'s suffix match on `config` is
+  `edge`, preceded by `-`).
+
+`edge` is spliced into `order_by` right after `nm_exact_natural`, ahead of
+`prefix`/`suffix` (which are now NEVER swapped — always prefix-first, in
+both `order_by` and the unchanged `score` formula below). For `.js`:
+`script.js` is `edge` (suffix, self-anchored), `.jshintrc` is not (prefix
+fragment) — `script.js` wins. For `.env`: `.env.local` is `edge` (prefix,
+followed by `.`) and ties with `database.env` (also `edge`, self-anchored
+suffix), then the unswapped `prefix DESC` column picks `.env.local`. For an
+ordinary, non-dot literal like `config`: `config.json` (prefix, followed by
+`.`) and `app-config` (suffix, preceded by `-`) both become `edge`, tying,
+and `prefix DESC` again picks `config.json` — unchanged from before this
+fix.
+
+**Known, deliberate gap:** `.envrc` (a PREFIX fragment, structurally
+identical to `.jshintrc`'s PREFIX fragment) still loses to `database.env` (a
+SUFFIX `edge` match) — the reported preference for `.env` wants `.envrc` to
+win here, the same shape of comparison the `.js` case wants to resolve the
+OPPOSITE way. No feature of the two candidates alone (without also reading
+which literal — "env" vs "js" — the query happens to be) can tell them
+apart; resolving it needs exactly the query-text classifier this redesign
+was asked not to reintroduce. This is UNCHANGED from the pre-fix behavior
+(the old swap already put `database.env` first too) — a pure improvement
+elsewhere, not a new regression. See
+`test_dotfile_prefix_fragment_still_loses_to_a_suffix_edge_match_known_gap`
+(`tests/test_index_rank.py`).
 
 This is the actual thing that decides order — a lexicographic comparison over the
 column vector, VS Code/Zed-style, not a scalar arithmetic total. `_rank_sql`
@@ -295,12 +339,13 @@ and slices, the already-capped set.
 contract and `explain`/debugging display (`server-api.md`'s hit dict keeps `score`,
 `tier`, `depth`, `longest_run`, `positions` on every hit). **`score` is a display
 value, not what decides order** — a weighted sum
-(`1000*nm_exact + 500*prefix + 250*suffix + 100*contains - LEAST(depth, 99)`, NOT
-`boundary`, which stays a pure tie-break with no weight of its own) that is
-coarser than, and NOT guaranteed monotonic with, the `ORDER BY` column vector
-above — ties in `score` are common and are broken by `boundary`/`length(nm)`/`rel`,
-which no scalar sum captures. Nothing downstream should infer order from `score`
-alone.
+(`1000*nm_exact + 500*prefix + 250*suffix + 100*contains - LEAST(depth, 99)`, ALWAYS
+in that fixed prefix/suffix identity — never swapped, and NOT `edge`,
+`nm_exact_natural`, or `boundary`, which all stay pure tie-breaks with no weight of
+their own) that is coarser than, and NOT guaranteed monotonic with, the `ORDER BY`
+column vector above — ties in `score` are common and are broken by
+`edge`/`nm_exact_natural`/`boundary`/`length(nm)`/`rel`, which no scalar sum
+captures. Nothing downstream should infer order from `score` alone.
 
 `- depth` is capped at 99, not subtracted unbounded: an earlier version subtracted
 depth without bound, which could INVERT `score`'s relative order at depth even
@@ -362,6 +407,32 @@ last. This reuses `boundary`'s own separator character class (`[^a-z0-9]`)
 rather than inventing a second, subtly different notion of "separator." So for
 `fused render`, all four of `fusedrender`, `fused-render`, `fused_render` and
 `fused render` are exact, and `depth` correctly breaks the tie among them.
+
+**A same-depth tie between separator-tolerant spellings is broken by
+preferring the naturally-separated one, not `length(nm)`.** Residual case of
+the separator-tolerance fix above: at EQUAL depth, a zero-separator spelling
+(`FusedRender`) and a naturally-separated one (`fused-render`) are now BOTH
+`nm_exact`, so `depth` cannot break the tie and it falls through to
+`length(nm) ASC`, which picks the SHORTER (zero-separator) spelling —
+reintroducing the original bug's flavor in the one case `depth` does not
+already resolve. `_glob_sql`'s multi-literal branch computes a second boolean,
+`nm_exact_natural`, passed to `_lex_order_and_score` and spliced into
+`order_by` right after `nm_exact` (ahead of `edge`/`prefix`/`suffix`, so it
+wins before `length(nm)` is ever reached): the SAME pattern as `nm_exact`
+but with `[^a-z0-9]+` (one or more) at every gap instead of `[^a-z0-9]*`
+(zero or more) — true only when EVERY literal-run gap in `nm` actually
+contains a separator, i.e. the candidate is genuinely word-broken rather than
+fused together. Every other caller (`_rank_sql`, `_glob_sql`'s single-literal
+and literal-free branches) passes the default `"true"`, a no-op that never
+distinguishes two rows, so this only ever matters for the multi-literal
+"fused render"-shaped case it was built for. See
+`test_multi_literal_exact_tie_at_equal_depth_prefers_the_separated_spelling`
+and the rewritten `test_glob_multi_literal_exact_is_separator_tolerant_
+fused_render_defect` (`tests/test_index_rank.py`) — the latter's fixture used
+to compare against a DIFFERENT-depth, non-exact competitor (a trailing digit
+blocked the `nm_exact` anchor), so it never actually exercised the
+equal-depth tie its docstring claimed to; it now includes a genuinely
+same-depth, genuinely-exact `FusedRender` sibling.
 
 A pattern with exactly one literal run produces the SAME `_name_predicate_sql`
 output, and hence the same `order_by`/`score`, as `_rank_sql`'s substring mode for
