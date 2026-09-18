@@ -210,6 +210,15 @@ function restartBody(
   );
 }
 
+/** What assistive tech hears: the live step's label ahead of the sentence, so
+ *  a stage change is audible even when the sentence did not change. Stages with
+ *  no live step (`ready`, `back`, `gave-up`) are the sentence alone — their
+ *  sentences differ, so they announce on their own. */
+export function restartAnnouncement(stage: RestartStage, body: string): string {
+  const live = restartSteps(stage).find((s) => s.state === "live");
+  return live ? `${live.label} ${body}` : body;
+}
+
 export function UpdateDialog(props: UpdateDialogProps) {
   // ESCAPE IS SWALLOWED FOR THE WHOLE PAGE, which `busy` alone does not do:
   // `busy` only stops the chassis from closing THIS dialog. The page behind the
@@ -294,15 +303,20 @@ export function UpdateDialog(props: UpdateDialogProps) {
         </>
       }
     >
-      {/* THE ONE LIVE REGION of the dialog. The story lives here — versions, the
-          estimate, its 25s withdrawal, "reloading…", the menu-bar way out — so
-          this is what assistive tech must hear on every change, including the
-          25s flip, where the strip does not move at all. `.update-dialog-body`
-          reserves two lines so the shorter sentences (the 25s one, `back`) do
-          not let the footer jump up under a reader who cannot dismiss this. */}
-      <p className="update-dialog-body" role="status" aria-live="polite">
-        {restartBody(props, slow)}
-      </p>
+      {/* `.update-dialog-body` reserves two lines so the shorter sentences (the
+          25s one, `back`) do not let the footer jump up under a reader who
+          cannot dismiss this. Not a live region: see the announcer below. */}
+      <p className="update-dialog-body">{restartBody(props, slow)}</p>
+      {/* THE ONE LIVE REGION of the dialog, and it is neither the strip nor the
+          body — each alone is silent for half the changes. The body reads the
+          same sentence for all three in-flight stages, so on it the strip
+          advancing is never heard; the strip does not change at the 25s flip
+          or say the versions, so on it the story is never heard. This hidden
+          line says BOTH — the live step, then the sentence — so every change a
+          sighted reader can see is one announcement, and only one. */}
+      <span className="sr-only" role="status" aria-live="polite">
+        {restartAnnouncement(props.stage, restartBody(props, slow))}
+      </span>
     </Modal>
   );
 }

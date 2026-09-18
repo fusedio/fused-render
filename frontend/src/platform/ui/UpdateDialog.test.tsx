@@ -180,19 +180,36 @@ test("the strip REPLACES the button, so the press has no second meaning", async 
   }
 });
 
-test("the body sentence is the dialog's one live region, so the 25s flip is heard", async () => {
-  // The story lives in the body — versions, the estimate, its withdrawal,
-  // "reloading…", the menu-bar way out — and at 25s the strip does not change
-  // at all. So the body is what assistive tech must be listening to, and it is
-  // the ONLY region: one announcement per change.
-  for (const stage of RESTART_STAGES) {
-    const r = await mount(restartAt(stage));
-    const p = r.root.findByType("p");
-    expect(p.props["aria-live"]).toBe("polite");
-    expect(p.props.role).toBe("status");
-    expect(p.props.className).toBe("update-dialog-body");
-    expect(r.root.findAll((n) => n.props?.["aria-live"] !== undefined).length).toBe(1);
-  }
+test("one hidden live region says the live step AND the sentence, so every visible change is heard once", async () => {
+  // Neither the strip nor the body alone will do: the body reads the same
+  // sentence for all three in-flight stages (the strip advancing would be
+  // silent), and the strip does not change at 25s or name the versions (the
+  // story would be silent). So exactly ONE region, off-screen, that reads both.
+  const region = (r: ReturnType<typeof create>) => {
+    const all = r.root.findAll((n) => n.props?.["aria-live"] !== undefined);
+    expect(all.length).toBe(1);
+    expect(all[0]!.props.role).toBe("status");
+    expect(all[0]!.props.className).toBe("sr-only");
+    return text(all[0]!);
+  };
+  // In flight: the live step's word leads, so quitting→restarting is audible
+  // even though the sentence under the title is the same for both.
+  const quitting = region(await mount(restartAt("quitting")));
+  const restarting = region(await mount(restartAt("restarting")));
+  expect(quitting.startsWith("Quitting… ")).toBe(true);
+  expect(restarting.startsWith("Restarting… ")).toBe(true);
+  expect(quitting.slice("Quitting… ".length)).toBe(restarting.slice("Restarting… ".length));
+  expect(quitting).toContain("about 15 seconds");
+  // The 25s flip changes the region too — the strip did not move, the sentence did.
+  const slow = region(await mount(restartAt("restarting", { elapsed: RESTART_SLOW_MS })));
+  expect(slow).toBe("Restarting… Taking a little longer than usual — still working on it.");
+  // No live step: the sentence alone, and those sentences differ per stage.
+  expect(region(await mount(restartAt("back")))).toBe("Back on v0.5.97 — reloading…");
+  expect(region(await mount(restartAt("gave-up")))).toContain("menu bar");
+  expect(region(await mount(restartAt("ready")))).toContain("Restart to finish the update.");
+  // The visible body is plain — it is what the region reads, not a second region.
+  const r = await mount(restartAt("quitting"));
+  expect(r.root.findByType("p").props["aria-live"]).toBeUndefined();
 });
 
 test("every step word carries a hidden ghost of its live label, so the strip never changes width", async () => {
