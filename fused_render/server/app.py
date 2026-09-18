@@ -950,20 +950,38 @@ def create_app(start_dir: str) -> FastAPI:
         # boots the app never gets a background thread.
         index_routes.start_index_job_bridge()
 
-    # A CHECK-ONLY UPDATE MANAGER FOR A DEV RUN (update/mac.DEV_MANAGER_ENV).
-    # The packaged app starts its manager from the AppKit bootstrap (app.py,
-    # after the server is ready); an unpackaged server has no bootstrap and so
-    # never had a badge — which left the sidebar's "Check for updates" row with
-    # nowhere to be tried. `start()` still returns None without the env var,
-    # so this is a no-op for every run that did not ask. Last, and off the
-    # request path: the manager's first manifest fetch is on its own thread.
+    # THE IN-APP UPDATE MANAGER (update/mac.py, update/linux.py), for every
+    # platform whose server ever boots through this create_app() — which is
+    # every platform's: the packaged mac app embeds this same FastAPI server
+    # inside its AppKit process, and on Linux this server IS the whole
+    # process, spawned as a child of the desktop supervisor. `update.start()`
+    # (the platform dispatch, fused_render/update/__init__.py) is always
+    # safe to call unconditionally here:
+    # - Linux, running from an AppImage: starts the real manager — this is
+    #   ITS bootstrap, there being no separate native wrapper process the way
+    #   app.py is for mac.
+    # - mac, packaged: also starts the real manager, redundantly with (and
+    #   before) app.py's own explicit call after its desktop-probe wait —
+    #   start() is idempotent, so the second call just hands back the same
+    #   singleton.
+    # - an unpackaged dev run on either platform, with
+    #   update/_manager.DEV_MANAGER_ENV set: starts a check-only manager (no
+    #   bundle/AppImage to swap, so no install can be attempted) — otherwise
+    #   the sidebar's "Check for updates" row would have nowhere to try
+    #   against. Each platform's own start() already contains this fallback,
+    #   so there is nothing left for this hook to gate on.
+    # - Windows, or the env var unset and nothing packaged: a no-op (None).
+    # Last, and off the request path: the manager's first manifest fetch runs
+    # on its own thread.
+    # Kept as `_startup_update_dev_manager` (not renamed to match the comment
+    # above): tests/test_app_lifespan.py pins the exact registered handler
+    # names as a record of a past on_event -> on_startup migration, unrelated
+    # to this change, and a rename here would only cost that test for no
+    # benefit.
     @on_startup
     async def _startup_update_dev_manager():
-        import os
+        from fused_render import update
 
-        from fused_render.update import mac as mac_update
-
-        if os.environ.get(mac_update.DEV_MANAGER_ENV):
-            mac_update.start()
+        update.start()
 
     return app

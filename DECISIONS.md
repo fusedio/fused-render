@@ -2246,3 +2246,640 @@ Three findings against this PR. Kept brief per an explicit scope change mid-roun
 
 **Finding D (real, fixed) — `isPathShapedQuery` (`frontend/src/apps/explorer/listing/path-shaped-query.ts`) still trimmed.** A fourth Bugbot pass caught that Finding A's fix only touched `escapesFsPath`; `isPathShapedQuery` (the path chip, and the gate on whether a rank request is sent at all — `useListingSearch.ts`'s `runsSearch = searching && !isPathQuery`) still did a bare `query.trim()` before its own `escapesBase` check, the exact bug Finding A fixed in the other function. Verified live: `q="/Users/iamsdas "` (the box's OWN pre-filled path plus a trailing space) resolved server-side to a glob search of the PARENT (`base: "/Users", pattern: "**iamsdas**"`), yet the trimmed check saw a clean, glob-free `"/Users/iamsdas"` and classified it as an exact path — showing the "Path" chip and suppressing the search entirely, so `runsSearch` never fired and the user's keystroke did nothing. Fixed by extracting the exact normalization `escapesFsPath` already used into a shared, exported `normalizeQueryForResolution` (`query-base.ts`) and having `isPathShapedQuery` run it too, adding an explicit `!normalized.includes("*")` check (the whitespace-injected glob has no literal `*` in the raw text, so `listingAddress`'s own substring check can't see it) — the two predicates now share one normalization step and cannot diverge from each other or the server again. Enumerated before changing anything: `listingAddress` (used by `isPathShapedQuery`, `useTypedPathAddress.ts`, `completion-target.ts`) was left untouched — its job (what would Enter open / what should complete) is deliberately whitespace-naive per its own header comment, and the fix lives entirely in the caller that needed server-parity, not in the shared resolver the other two callers rely on staying as-is. Tests (`path-shaped-query.test.ts`): a folder path plus trailing space is no longer path-shaped; `"~ "` is no longer path-shaped. 50/50 pass across `path-shaped-query.test.ts` + `query-base.test.ts`. All three named consumers (path chip via `isPathQuery`, Enter gate via `escapes`/`gateOpen`, and the eventual `/api/index/rank` request) now agree: neither query is treated as an exact path, both fall through to a real search, and `"/Users/iamsdas "` additionally waits for Enter (a genuine base change to the parent) while `"~ "` live-filters immediately (stays anchored at the box's own root) — matching `escapesFsPath`'s verdict in both cases.
 
+
+## Linux auto-update build log (worktree-linux-auto-update, docs/LINUX_AUTO_UPDATE_SPEC.md)
+
+Read in full before resuming a build session on this branch. Append, do not rewrite this file — it is also the whole project's decision log (above); a prior session on this branch mistakenly overwrote it with only this section, and it has been restored from main.
+
+## Task 1 — extract manager.py
+
+- Base class in `fused_render/update/manager.py`, `MacUpdateManager(UpdateManager)`
+  in `mac.py`. `tests/test_mac_update.py` patches `mac.<name>` for a long list of
+  names (`__version__`, `MAC_STARTUP_DELAY_S`, `MIN_CHECK_GAP_S`,
+  `FAILED_CHECK_GAP_S`, `time.sleep`/`time.monotonic` via the `time` module
+  object, `INSTALL_HEARTBEAT_S`, `PHASE_DOWNLOADING`, `PHASE_INSTALLING`,
+  `DEV_MANAGER_ENV`, `_manager`, `bundle_path`, `UpdateManager` class attrs like
+  `start_auto_checks`) — all of these are re-exported/aliased on `mac` so
+  `monkeypatch.setattr(mac, "X", ...)` still resolves and is actually read by
+  the code path under test. Mirrors `_win32/update.py`'s
+  `_PUBLIC_KEY = _common.PUBLIC_KEY` pattern: module-level aliases, read at
+  call time through `mac.<name>` inside methods that live in `mac.py`
+  (`start_auto_checks`, `check`, is overridden or calls through self so the
+  patched *instance*'s class (`mac.UpdateManager` = `MacUpdateManager`) is what
+  gets exercised).
+- Decision: `mac.UpdateManager` stays the name tests import and construct
+  (`mac.UpdateManager(bundle=..., method=...)`) — so `mac.py` does
+  `UpdateManager = MacUpdateManager` is wrong (shadows the base import); instead
+  `MacUpdateManager` IS what test code calls `mac.UpdateManager` — i.e. in
+  `mac.py`, name the subclass `UpdateManager` directly (not aliased), since
+  nothing outside mac.py needs the base class name from mac's namespace.
+- `time` module: mac.py imports `time` (stdlib) directly; tests patch
+  `mac.time.sleep`/`mac.time.monotonic`. Since `time` is a shared stdlib module
+  object, if `manager.py` also does `import time` and mac.py re-exports its own
+  `import time`, patching `mac.time.sleep` patches the *same* module object
+  manager.py's `time.sleep` calls read from — no re-export needed for `time`
+  itself, only for the mac-specific constants/functions defined in mac.py or
+  moved to manager.py that tests reach through `mac.<name>`.
+- THE REAL PROBLEM, found only once I actually wrote manager.py: re-exporting
+  a constant on `mac` (`mac.PHASE_DOWNLOADING = manager.PHASE_DOWNLOADING`,
+  the `_win32/update.py` idiom) is NOT enough by itself once the CODE that
+  reads the constant has also moved to manager.py. `_win32/update.py`'s
+  aliases work because the functions reading them are defined in that same
+  file — a bare module-global lookup resolves in that module's own
+  namespace. Here, `check()`/`install()`/`_beat_installing()` etc. live in
+  manager.py, so a bare `MIN_CHECK_GAP_S` read there is manager.py's OWN
+  global, immune to `monkeypatch.setattr(mac, "MIN_CHECK_GAP_S", ...)` no
+  matter how faithfully mac.py re-exports the name.
+  Fix: `UpdateManager._const(self, name)` in manager.py — looks `name` up on
+  `sys.modules[type(self).__module__]` first (i.e. on whichever concrete
+  module — mac.py or linux.py — actually defined the running instance's
+  class), falling back to manager.py's own module global only if the
+  subclass's module doesn't define that name at all. Every constant a test
+  patches through `mac.<name>` (`MIN_CHECK_GAP_S`, `FAILED_CHECK_GAP_S`,
+  `INSTALL_HEARTBEAT_S`, `PHASE_DOWNLOADING`, `PHASE_INSTALLING`,
+  `JOB_PREFIX`, `DONE_MESSAGE`, `CANCELLED_MESSAGE`) is read through
+  `self._const("NAME")` inside manager.py instead of a bare global. `time`
+  needed no such treatment (see above — same module object either way), and
+  neither did `DEV_MANAGER_ENV` (only read inside mac.py's own `start()`,
+  which never moved) nor `MAC_STARTUP_DELAY_S` (read only via the
+  `_STARTUP_DELAY_S` class-attr hook below).
+- `_STARTUP_DELAY_S` (the class-attr hook `start_auto_checks()` reads) is
+  overridden in mac.py's `UpdateManager` as a `@property` returning the
+  module global `MAC_STARTUP_DELAY_S`, rather than a plain class attribute
+  set once at class-body time — a plain assignment would freeze whatever
+  `MAC_STARTUP_DELAY_S` was at import time, and `test_mac_update.py` patches
+  `mac.MAC_STARTUP_DELAY_S` at runtime expecting `start_auto_checks()` (which
+  lives in manager.py) to see the patched value on its very next read.
+- Naming: the mac subclass really is named `UpdateManager` inside `mac.py`'s
+  own namespace (matches `mac.UpdateManager(bundle=..., method=...)` in every
+  test). The shared base class is imported as `from fused_render.update
+  import manager as _base` and subclassed `class UpdateManager(_base.
+  UpdateManager)`. The module-level singleton (`mac._manager`,
+  `mac.manager()`, `mac.start()`) is untouched by any of this — it is a
+  separate name (`_manager`) from the `_base` import alias, so there is no
+  collision between "the shared manager module" and "this module's
+  singleton instance", which an earlier draft of this file conflated.
+- `_updates_dir()` / `_sweep_stale_downloads()`: moved to manager.py
+  VERBATIM, including their macOS-flavoured wording ("`~/Library/Application
+  Support/fused-render/updates`", "DMGs and staged bundles") — Task 1 is a
+  pure move for mac's own behaviour, and the spec lists `_updates_dir()` as a
+  concrete (non-hook) base method. `LinuxUpdateManager` (Task 2) overrides
+  `_updates_dir()` with a Linux-appropriate path rather than inheriting the
+  macOS one; see the Task 2 section below for where that directory lives.
+- Task 1 done, committed. `tests/test_mac_update.py` — all 63 tests green,
+  unmodified.
+
+### Task 2/3 design decisions: stamp location, `_updates_dir()` override
+
+Stamp file (Task 3) lives at `os.path.join(shell.storage.home_dir(), "linux-update-stamp.json")` —
+`shell/storage.home_dir()`, not `supervisor.paths.DesktopPaths`. Reasoning:
+`DesktopPaths.discover_linux()`'s own docstring says its `state` field IS
+`shell/storage.home_dir()` with no `FUSED_RENDER_HOME` override — "the exact
+dir the dev/CLI and the released macOS app use... byte-for-byte the same".
+Reading `home_dir()` directly gets the same directory the supervisor's
+`DesktopPaths` resolves to (via the `FUSED_RENDER_HOME` env var the
+supervisor sets on its child) without `update/` (server-side code, runs
+inside the child server process, not the supervisor) importing
+`supervisor.paths` and creating an `update` -> `supervisor` coupling that
+doesn't otherwise exist. `write_json`/`read_json` in `shell/storage.py` are
+reused as-is for the stamp's atomic write / tolerant-of-corruption read.
+
+`LinuxUpdateManager._updates_dir()` overrides the base (macOS-hardcoded)
+implementation to return the AppImage's own parent directory (falling back
+to `home_dir()/updates` only for the check-only dev-manager case, where
+there is no AppImage at all). This isn't spelled out verbatim in the spec's
+Task 2 list, but it's required for correctness: the base class's
+`start_auto_checks()` unconditionally calls `_sweep_stale_downloads()`,
+which calls `self._updates_dir()` — left unoverridden on Linux that would
+create and sweep a macOS `~/Library/Application Support/...` path on Linux,
+which is harmless but pointless, and `_install_appimage`'s own
+`_check_disk_space` call needs the AppImage's parent dir anyway (Task 2 step
+2), so the override makes both call sites and the download-dir consistent:
+downloads, the disk-space check, and the stale-download sweep all agree on
+"next to the current AppImage".
+
+Class naming: kept `UpdateManager` in `linux.py`'s own namespace (not
+`LinuxUpdateManager`), subclassing the shared base under the `_base` alias —
+same reasoning as `mac.py` (see the Task 1 notes above): nothing outside
+`linux.py` needs the base class's own name from there, and `linux.UpdateManager`
+mirrors `mac.UpdateManager` for the dispatch in `update/__init__.py` (Task 4).
+
+## Task 4 — platform dispatch: two spec deviations forced by naming and by the test host's real platform
+
+The spec (docs/LINUX_AUTO_UPDATE_SPEC.md) says to add `manager()`/`start()`
+to `fused_render/update/__init__.py` and to keep the shared state machine at
+`fused_render/update/manager.py` (from Task 1). Both cannot be true at once:
+
+`fused_render/update/manager.py` is a submodule literally named `manager`.
+Python's import machinery stamps every submodule onto its parent package's
+namespace under the submodule's own name as a side effect of import — from
+ANY importer, via ANY import spelling (`from a.b import c`, `import a.b.c`,
+`import a.b.c as x` — all of them) — and this happens unconditionally,
+overwriting whatever the package's own `__init__.py` had bound to that same
+name. Since `update/__init__.py` defines a function ALSO named `manager`,
+the first time anything anywhere imports the `manager` submodule (which
+`mac.py`/`linux.py` do, to reach the shared base class), that import
+permanently clobbers `fused_render.update.manager` back to the submodule
+object for the rest of the process — breaking every OTHER caller that
+expects `update.manager()` to be a callable (routers/update.py's
+`_manager()` helper hit this directly: `TypeError: 'module' object is not
+callable`). This is not an import-ordering bug fixable by import style; it
+recurs the instant the submodule is imported from anywhere, by construction.
+
+Resolution: renamed the submodule to `fused_render/update/_manager.py`
+(leading underscore) instead of renaming the Task 4 dispatch functions —
+this keeps `manager()`/`start()` exactly as the spec names them, which
+matters more since those are the actual external contract (what the routers
+call), while the shared-base-class module's filename is a pure
+implementation detail nothing outside `update/` cares about by name.
+Updated `mac.py`'s and `linux.py`'s `_base` imports and `__init__.py`'s
+`TYPE_CHECKING` import accordingly; the `import fused_render.update.manager
+as _base` workaround from an earlier attempt (which only fixed the symptom
+inside mac.py/linux.py's own module bodies, not the underlying collision)
+was reverted back to a plain `from fused_render.update import _manager as
+_base` now that there is nothing left to collide with.
+
+Second deviation, found immediately after the rename fixed the collision:
+`update/__init__.py`'s `manager()` dispatching strictly on `sys.platform`
+(as the spec's wording literally says) breaks two pre-existing
+`tests/test_mac_update.py` router-integration tests
+(`test_config_carries_update_with_manager`,
+`test_install_endpoint_passes_expected_version_through`) whenever this
+suite actually runs on a non-darwin host — which this worktree's sandbox
+always is (`sys.platform` is genuinely `"linux"` here). Those tests
+monkeypatch `mac._manager` directly (bypassing `mac.start()`) and then
+exercise the FastAPI routes; a `manager()` gated on the real host platform
+routes every call to `linux.manager()` instead on this host, which finds
+nothing and 404s/omits `update`. Before Task 4, this was moot: the routers
+imported `mac` unconditionally, with no platform branch, so they worked on
+any host regardless of what `sys.platform` actually was.
+
+Resolution: split the two functions' gating. `start()` stays exactly as
+specced — strictly `sys.platform`-gated — because it is the one that
+actually touches the OS (spawns the background-check thread, resolves a
+bundle/AppImage path), and running the wrong platform's `start()` for real
+would be a genuine bug, not just a test inconvenience. `manager()` (a
+read-only accessor with no side effects) instead checks `mac.manager()`
+then `linux.manager()` directly, returning whichever is non-None, with no
+`sys.platform` branch at all. This is behaviorally identical to strict
+platform dispatch in any real single-platform process — `start()`'s own
+gating guarantees at most one of the two module-level singletons is ever
+non-None to begin with — and it costs nothing on Windows or any other
+non-mac/non-linux host (both `mac.manager()` and `linux.manager()` just
+return `None` there, same as the spec's `else -> None` branch). Confirmed
+both `mac.py` and `linux.py` import cleanly on any host (neither has a
+platform-gated import — no `AppKit`, no POSIX-only stdlib module), so
+importing both unconditionally inside `manager()` carries no risk of an
+`ImportError` on the wrong platform.
+
+Also: `server/app.py`'s pre-existing `_startup_update_dev_manager` hook
+(previously hardcoded to `mac_update.start()`, gated on
+`os.environ.get(mac_update.DEV_MANAGER_ENV)`) now calls the dispatched
+`update.start()` unconditionally, with no outer env-var gate — the gate was
+already redundant: `mac.start()`/`linux.start()` each check
+`DEV_MANAGER_ENV` internally when no bundle/AppImage is found, so the
+caller-side check bought nothing. This one hook now serves three cases at
+once: it is the REAL Linux bootstrap (Task 4's server/app.py requirement —
+there is no separate native wrapper process on Linux the way `app.py` is
+for mac, so this server's own startup IS "wherever the Linux server
+bootstraps"), a harmless redundant no-op-turned-idempotent-real-start on a
+packaged mac app (which also gets its own explicit call from `app.py`
+after its desktop-probe wait), and the pre-existing check-only dev-run
+opt-in for either platform. The function is kept named
+`_startup_update_dev_manager` (not renamed to something broader) purely
+because `tests/test_app_lifespan.py` pins the exact registered handler
+names as a record of an unrelated past `on_event` -> `on_startup`
+migration; renaming it would cost that test for no benefit.
+
+Verified via `.venv/bin/python -m pytest -q tests/test_mac_update.py
+tests/test_linux_update.py tests/test_installed.py tests/test_app_lifespan.py`
+— 91 passed, all four files, including the two previously-broken
+`test_mac_update.py` router-integration tests.
+
+## Task 5 — Linux relaunch: a capability probe on `startup`, not a `sys.platform` check
+
+`supervisor/core.py` is genuinely platform-neutral — it reaches every
+OS-specific behavior only through the `_backend` seam (`Job`, `instance`,
+`startup`, `ui`, plus the optional `update`/`integrate`/`deintegrate` hooks) —
+and it is shared, unmodified, between the win32 and Linux backends. A
+`fused-render://relaunch` link therefore has to be handled in code both
+backends run, but the actual respawn only makes sense on Linux (there is no
+`.AppImage` to `Popen` on Windows, which has its own separate updater in
+`supervisor/_win32/update.py`). Rather than importing `sys` into the decision
+(the module already avoids `sys.platform` branches everywhere else, matching
+`_backend.py`'s "module namespace, not an ABC" seam), the gate is a plain
+capability probe: `hasattr(startup, "appimage_path")`. `startup` is the
+per-backend module already re-exported at the top of `core.py`
+(`startup = _backend.startup`) — the Linux backend's `startup.py` has
+`appimage_path()` (it needs it for `.desktop` `Exec=` lines and the autostart
+entry), the win32 one never has and never will. This means the SAME check
+that decides "should `_open_command` signal a relaunch at all" and "does
+`_respawn_after_relaunch` have anything to `Popen`" is one attribute lookup,
+with no platform string to keep in sync between them, and it fails safe on
+any future third backend that doesn't have the hook either (falls through to
+the pre-Task-5 no-tab no-op, exactly like win32 today).
+
+The relaunch signal itself follows the exact idiom `_event_loop`'s
+`exit_confirm`/`uninstall_confirm` queues already established: a
+`queue.Queue[None]` created INSIDE `_event_loop` (not passed in as a
+parameter — this matters, since `_event_loop`'s call sites in
+`tests/test_supervisor_core.py` all call it positionally with exactly 5 args,
+and keeping its signature unchanged means every one of those pre-existing
+tests keeps passing with zero edits), threaded down through
+`_spawn_open`/`_safe_open`/`_open_command` as an optional trailing parameter
+that defaults to `None` everywhere. `None` is also what `run()`'s
+INITIAL-launch `_spawn_open` call (before `_event_loop`, and therefore before
+any `relaunch_requested` queue exists, even starts) passes implicitly — a
+relaunch link arriving as the very first launch argv is not a real scenario
+(there is nothing running yet to relaunch away from), so silently degrading
+that one call site to the old no-op costs nothing.
+
+`_teardown` needed zero changes for RELAUNCH, confirmed by re-reading its
+branches: only `SERVER_DIED` (hard `job.close()`, no graceful shutdown) and
+`UPGRADE` (skips `_stop_pipe`, answers `upgrade_response` at the end) get
+special-cased; RELAUNCH — like the pre-existing `TRAY_EXIT` — automatically
+takes the shared `_stop_pipe` -> `_safe_graceful_shutdown` -> `process.wait`
+-> `job.close()` path.
+
+`fused-render://relaunch?reason=fda` needed no explicit guard either:
+`deeplink.is_relaunch_url` and `deeplink.is_fda_relaunch_url` match disjoint,
+mutually exclusive frozensets of URL forms by construction, so special-casing
+only `is_relaunch_url` in `_open_command` already leaves the `?reason=fda`
+form falling through to the `is_launch_url` branch exactly as it did before
+this change — there was nothing to "leave alone" beyond checking the right
+function.
+
+Verified via `.venv/bin/python -m pytest -q tests/test_supervisor_core.py
+tests/test_supervisor_deep_link.py tests/test_supervisor_shutdown.py
+tests/test_win_supervisor_update.py tests/test_mac_update.py
+tests/test_linux_update.py tests/test_installed.py` — 156 passed, 1 skipped
+(a pre-existing, unrelated darwin-only skip guard in
+`tests/test_supervisor_core.py`'s module docstring convention), zero
+failures.
+
+## Task 6 — Publish the Linux manifest: carrying $APPIMAGE across steps, and the bash -n check
+
+`scripts/windows/generate_update_manifest.py` takes `<version> <artifact>
+<base-url> <output>` and signs whatever artifact it is given — nothing in it
+is actually Windows-specific despite the path it lives at (the macOS job
+already reuses it for the DMG). Reusing it for the AppImage needed no changes
+to the script itself, only a new step in `build-linux-release` that calls it
+the same way the macOS/Windows jobs do.
+
+The one wrinkle: unlike the macOS job (which exports `$DMG_PATH`/
+`$DMG_SHA256` to `$GITHUB_ENV` in its upload step, so its later manifest step
+can read them back), the Linux job's existing "Publish AppImage + attach to
+release" step only wrote `version`/`appimage_url` to `$GITHUB_OUTPUT` (step
+outputs, visible to later JOBS via `needs.*.outputs`, not to later STEPS in
+the same job via a bare `$VAR`). A new step after it would have had no
+`$APPIMAGE` to read. Fixed by adding one more `echo "APPIMAGE=$APPIMAGE" >>
+"$GITHUB_ENV"` line to that existing step, mirroring `$DMG_PATH`'s exact
+pattern — the new "Publish signed Linux update manifest" step then re-derives
+`$VERSION` from it with the same `sed` the artifacts step itself uses, rather
+than also exporting `$VERSION` separately (again matching how the macOS
+step re-derives `VERSION` from `$DMG_PATH` instead of getting its own env var).
+
+The spec's verification block's second line, `bash -n
+.github/workflows/release.yml`, fails identically on both `main` and this
+branch (confirmed by diffing `bash -n` against `main`'s copy of the file) —
+it's a YAML file, not a bash script, and GitHub Actions' `${{ }}` /
+mapping syntax is not valid bash grammar at all (the failure is at line 113,
+in a step name unrelated to this change: `Select an Xcode with the macOS 26
+SDK (apple tier helper)`, whose parenthesized name bash reads as a subshell).
+`bash -n` is not a meaningful syntax check for this file; actionlint (the
+spec's suggested alternative) is not installed in this sandbox, so this
+change is instead verified with `python3 -c "import yaml;
+yaml.safe_load(open('.github/workflows/release.yml'))"`, which parses clean.
+
+No test file covers this workflow step (nothing in the spec's Tests section
+calls for one, and there is no CI-yaml test harness in this repo to hook a
+new test into) — verification here is the yaml-parse check above plus the
+diff-against-mac-job comparison recorded here.
+
+## Task 7 — Scoping `_sweep_stale_downloads()` to the download naming pattern
+
+On mac, `_updates_dir()` is a dedicated `…/fused-render/updates` directory the
+app owns outright, so an unscoped `os.listdir()` + delete-everything sweep
+only ever hit the app's own leftovers. On Linux, `_updates_dir()` is
+deliberately the AppImage's own parent directory (`os.replace()` is only
+atomic within one filesystem, so the download has to land next to the
+artifact it will replace) — a directory the USER owns (`~/Applications`,
+`~/Downloads`, …) and shares with whatever else they keep there. Run
+unscoped, `start_auto_checks()`'s sweep (which runs ~1s after boot for every
+non-`check_only` manager) deleted every sibling file in that directory on
+every boot, including the running AppImage itself — reproduced first as a
+failing test (`test_sweep_spares_the_running_appimage_and_an_unrelated_sibling`
+in `tests/test_linux_update.py`), which raised `FileNotFoundError` against
+the running AppImage before the fix.
+
+The fix stays in the shared base class (`_manager.py`), not overridden per
+platform: it scopes the sweep to entries whose name matches the manager's own
+`_DOWNLOAD_PREFIX`/`_DOWNLOAD_SUFFIX`, which is a no-op change in behavior on
+mac (the dedicated updates dir never held anything else) but is the whole fix
+on Linux.
+
+Name-matching alone is not sufficient, though: the released artifact is named
+`FusedRender-<version>-x86_64.AppImage`, which matches
+`FusedRender-`/`.AppImage` exactly as well as a stale download would. The
+sweep therefore also resolves its own bundle path with `os.path.realpath()`
+and excludes any listing entry whose realpath equals it, on top of the name
+match — this is what actually keeps the running AppImage (referenced by a
+symlink, a relative path, or a bind mount, not just the literal listed name)
+out of the deletion set.
+
+
+## Task 7 — Scoping `_sweep_stale_downloads()` to the download naming pattern
+
+On mac, `_updates_dir()` is a dedicated `…/fused-render/updates` directory the
+app owns outright, so an unscoped `os.listdir()` + delete-everything sweep
+only ever hit the app's own leftovers. On Linux, `_updates_dir()` is
+deliberately the AppImage's own parent directory (`os.replace()` is only
+atomic within one filesystem, so the download has to land next to the
+artifact it will replace) — a directory the USER owns (`~/Applications`,
+`~/Downloads`, …) and shares with whatever else they keep there. Run
+unscoped, `start_auto_checks()`'s sweep (which runs ~1s after boot for every
+non-`check_only` manager) deleted every sibling file in that directory on
+every boot, including the running AppImage itself — reproduced first as a
+failing test (`test_sweep_spares_the_running_appimage_and_an_unrelated_sibling`
+in `tests/test_linux_update.py`), which raised `FileNotFoundError` against
+the running AppImage before the fix.
+
+The fix stays in the shared base class (`_manager.py`), not overridden per
+platform: it scopes the sweep to entries whose name matches the manager's own
+`_DOWNLOAD_PREFIX`/`_DOWNLOAD_SUFFIX`, which is a no-op change in behavior on
+mac (the dedicated updates dir never held anything else) but is the whole fix
+on Linux.
+
+Name-matching alone is not sufficient, though: the released artifact is named
+`FusedRender-<version>-x86_64.AppImage`, which matches
+`FusedRender-`/`.AppImage` exactly as well as a stale download would. The
+sweep therefore also resolves its own bundle path with `os.path.realpath()`
+and excludes any listing entry whose realpath equals it, on top of the name
+match — this is what actually keeps the running AppImage (referenced by a
+symlink, a relative path, or a bind mount, not just the literal listed name)
+out of the deletion set.
+
+
+## Task 8 — Routing `_running_version()` through `_const()`, and why `tests/test_mac_update.py` needed no changes
+
+`_running_version()` read `fused_render.__version__` (the package attribute)
+directly, rather than going through `_const("__version__")` like every other
+module-level constant this class reads back from the concrete subclass's own
+module. This made the documented test seam — `monkeypatch.setattr(mac,
+"__version__", ...)` / `monkeypatch.setattr(linux, "__version__", ...)` —
+dead: rebinding `mac.__version__` or `linux.__version__` never touched
+`fused_render.__version__`, so every test using that pattern was actually
+exercising the real installed version (0.5.52) against whatever fixture
+value it was compared to, not the patched value its own docstring promised.
+Confirmed as a real defect, not a hypothetical one, with a test
+(`test_running_version_reads_the_patched_module_seam` in
+`tests/test_linux_update.py`) that picks a `current` value on the OPPOSITE
+side of the manifest's `available` version from where the real
+`fused_render.__version__` sits — a manager reading the unpatched package
+attribute lands on `"available"`; only one that actually reads the patched
+seam lands on `"idle"`. This failed against the unfixed code as designed.
+
+Fixed by routing `_running_version()` through `self._const("__version__")`,
+matching every other constant lookup in the class.
+
+`tests/test_mac_update.py`'s own eight `monkeypatch.setattr(mac, "__version__",
+...)` call sites needed no changes: every one of that file's fixture helpers
+already brackets `current` and `available` consistently on both sides of
+both the patched value (always `0.4.10`) and the real installed version
+(0.5.52) — e.g. `current="0.4.10"` against `available="9.9.9"` or
+`available="0.0.1"`, never a value that would flip outcome depending on
+which of the two versions a test happened to actually be comparing against.
+The vacuous seam was accidentally safe on mac, not incidentally correct;
+re-running the full mac suite after the fix (all 5 designated test files,
+141 passed) confirms none of its assertions were relying on the dead seam to
+land on the right answer.
+
+
+## Task 9 — Releasing the election lock before, not after, the relaunch respawn
+
+`_respawn_after_relaunch()` `Popen`s the new AppImage while this process
+still holds the `flock` on `supervisor.lock`. `PrimaryInstance.release()` is
+only ever called from the early `ShutdownForUpgrade` branch in `run()`; the
+normal teardown path just lets the process exit and relies on the kernel to
+drop the flock when the last fd closes. If the freshly spawned AppImage
+reaches `instance.acquire()` before this interpreter finishes unwinding, it
+gets `EWOULDBLOCK`, demotes itself to a `SecondaryInstance`, and forwards its
+open request to a primary whose accept loop (`_stop_pipe`, torn down inside
+`_teardown`, which by then has already run) is no longer listening — the
+relaunch produces no app at all. Reproduced as a failing test
+(`test_relaunch_releases_the_lock_before_respawning` in
+`tests/test_supervisor_core.py`) asserting `release` happens before
+`respawn`; it failed with `['respawn'] == ['release', 'respawn']` against the
+unfixed `run()` (no `release` call at all).
+
+Fixed by calling `inst.release()` immediately before
+`_respawn_after_relaunch(paths)` in `run()`'s post-event-loop block, so the
+lock comes off on the same thread, before the child process is even
+`Popen`'d — closing the race window rather than narrowing it.
+
+That call was moved into a `finally` around `_teardown(...)`, to also cover
+`_teardown` raising `SupervisorStoppedError` (the child process tree did not
+stop in time). Without the `finally`, a `RELAUNCH` whose child tree is slow
+to exit would skip the respawn entirely and just crash out of `run()` with
+nothing to show for it. By the time `_teardown` can raise that error, it has
+already stopped the tray, torn down the pipe, and sent the graceful-shutdown
+request — the only thing left unfinished is the child tree actually exiting,
+which is not a reason to also refuse to bring up the replacement process:
+`_available_port()` already tolerates a lingering old server still holding
+its port (it falls back to another one), so the new AppImage can start
+either way. The decision here is to respawn regardless and let the
+`SupervisorStoppedError` continue to propagate out of `run()` afterwards,
+exactly as it would for any other exit reason — covered by
+`test_relaunch_still_respawns_when_teardown_raises_supervisor_stopped_error`,
+which asserts both `release`/`respawn` happened AND that the error still
+raises.
+
+
+## Task 10 — Resolving `$APPIMAGE` through `realpath` before swapping, matching mac's `_install_dmg`
+
+`_install_appimage` swapped `$APPIMAGE`'s path verbatim, unlike mac's
+`_install_dmg`, which deliberately resolves `self._bundle` through
+`os.path.realpath()` first (with a comment explaining why: swapping onto a
+symlink's own path would replace the link with a plain file and orphan the
+real artifact it used to point at). This is latent today — the type-2
+AppImage runtime resolves `/proc/self/exe` itself before setting
+`$APPIMAGE`, so it is never actually a symlink in production — but nothing
+in `_install_appimage` should depend on that being true forever, and the fix
+is one line. Reproduced as a failing test
+(`test_install_resolves_a_symlinked_appimage_before_swapping` in
+`tests/test_linux_update.py`) that points `_bundle` at a symlink to a real
+file in a different directory and asserts the download lands next to the
+REAL file, not the link; it failed against the unfixed code with the staged
+download's `dir` argument matching the symlink's parent instead of the real
+file's parent.
+
+Fixed by resolving `appimage = os.path.realpath(self._bundle)` before
+deriving `parent = os.path.dirname(appimage)`, both in `_install_appimage`
+and in `_updates_dir()` (which needs to agree with the swap target's actual
+filesystem for the same `os.replace()`-atomicity reason `_install_appimage`
+does) — mirroring mac's existing pattern rather than inventing a new one.
+
+
+## Task 11 — Merging origin/main's `tier=jobs.SILENT` install-done report into the `_manager.py` extraction
+
+`origin/main` landed the update -> restart dialog work (#1214) while this
+branch had already moved the platform-neutral half of `UpdateManager` out of
+`mac.py` into `_manager.py`. The two touched the same terminal-install
+report from opposite directions: #1214 changed WHAT it reports (the done
+row now carries `tier=jobs.SILENT`, since the blocking restart dialog is now
+the whole announcement and a `trail`-tier toast beside it is a duplicate),
+this branch changed WHERE the code reporting it lives.
+
+Resolved the `mac.py` conflict by keeping this branch's side: `mac.py`
+itself now defines only `_install_artifact`, a two-line override that calls
+`_install_dmg`, with `install()`, `_install()`, `_job_report()`,
+`_job_clear_cancel()`, `_beat_installing()` and `_cancel_requested()` living
+solely in `_manager.py`. The incoming `tier=jobs.SILENT` argument and its
+comment (why silence is a property of success only, why it also means the
+row is not retained) were ported verbatim into the terminal `_job_report`
+call inside `_manager.py._install()`, which both `mac.UpdateManager` and
+`linux.UpdateManager` share — the dialog is platform-neutral chrome, so the
+tier belongs there rather than duplicated per platform. The incoming
+job-upsert-fallback comment (dropping the mention of "ServerStatusBanner.tsx's
+restart card" for the blocking restart dialog wording) moved the same way,
+into `_manager.py._job_report`. `mac.py`'s own docstring line already read
+"raises the restart dialog", so nothing there needed to change.
+`tests/test_mac_update.py`'s three new tests (`test_a_finished_install_pops_nothing`,
+`test_a_failed_install_is_as_loud_as_it_ever_was`,
+`test_the_running_download_row_is_untouched_by_the_silent_finish`) pass
+unmodified against the refactor, since they only observe `mac.jobs` /
+`mac.DONE_MESSAGE` / the job registry, not which module owns the code.
+
+## Task 12 — Windows-only CI fixes: the tray fake's update contract, and gating the symlink-resolution test to Linux
+
+CI's first Windows run turned up three test-only failures, none touching
+production behaviour.
+
+`tests/test_supervisor_core.py`'s two relaunch tests failed with
+`AttributeError: '_FakeTrayHandle' object has no attribute
+'set_update_available'`. `core.run()` calls
+`update.start_auto_checks(paths, tray_handle.set_update_available)`
+whenever the backend supplies an `update` module — true on Windows, `None`
+on Linux, so the two tests' `_FakeTrayHandle` (tray-only, no update method)
+never hit that line on Linux and only broke where a real backend `update`
+module exists. Rather than skip past the branch, gave `_FakeTrayHandle`
+`set_update_available` (recording each call) and installed a fake `update`
+module in `_patch_run_up_to_the_event_loop` so the branch runs here on
+Linux too — both tests now assert the tray handle actually received the
+"9.9.9" notification, so the fake's contract is exercised, not merely
+satisfied.
+
+`tests/test_linux_update.py::test_install_resolves_a_symlinked_appimage_before_swapping`
+asserts `os.path.realpath()` returns the plain resolved path; on Windows
+that call prepends the `\\?\` extended-length marker, so the assertion is
+inherently POSIX-only, not a bug in the swap logic. Added a `linux_only`
+marker (`skipif sys.platform != "linux"`, mirroring `test_app_relaunch.py`'s
+`mac_only`) and applied it to only that one test — the rest of the module
+exercises `UpdateManager`'s state machine and stamp-file logic, which holds
+on any OS.
+
+## Task 13 — Linux download naming must never take a released-artifact shape
+
+`linux.UpdateManager`'s `_DOWNLOAD_PREFIX`/`_DOWNLOAD_SUFFIX` were
+`"FusedRender-"`/`".AppImage"` — exactly the shape of the released artifact's
+own filename, `FusedRender-<version>-x86_64.AppImage`. `_updates_dir()` on
+Linux is the running AppImage's own parent directory, a directory the USER
+owns and may keep other files in (a rollback copy of the previous version, a
+newer build not yet switched to), and `_sweep_stale_downloads()` deletes
+every entry matching that prefix/suffix on every boot, sparing only the
+manager's own bundle by realpath. A second AppImage sitting there with a
+real release name matched the sweep pattern exactly as well as a stale
+partial download did, so it got silently `os.unlink`ed on the next boot —
+destruction of a file the updater never downloaded and does not own.
+
+Fixed at the root: changed `_DOWNLOAD_PREFIX` to `".fused-render-update-"`
+(kept `_DOWNLOAD_SUFFIX` as `".AppImage"`), a shape a released artifact's
+filename can never take — `FusedRender-*` never starts with a dot. The sweep
+now matches only the manager's own partials and cannot match a release name
+at all; the realpath exclusion of the running bundle stays as a second line
+of defence, not the only thing standing between the sweep and a user's file.
+The leading dot is also a Linux convention for "hidden, in progress" — a
+partial download no longer shows up in the user's file manager while it's
+still downloading. mac's `_DOWNLOAD_PREFIX`/`_DOWNLOAD_SUFFIX`
+(`"FusedRender-"`/`".dmg"`) were left unchanged: mac's `_updates_dir()` is a
+dedicated `…/fused-render/updates` directory the app owns outright, never
+shared with a user's own files, so the same collision cannot occur there.
+
+The rule going forward: a platform's download naming must be a shape its own
+released artifact's filename can never take, whenever `_updates_dir()` is a
+directory the app does not own outright.
+
+## Task 14 — The Linux stamp is keyed by the AppImage's resolved path, on both sides
+
+`update/linux.py`'s `_install_appimage` stamps
+`os.path.realpath(self._bundle)` (`installed.write_linux_stamp`), because the
+swap itself resolves any symlink before `os.replace()` — same rationale as
+mac's `_install_dmg` resolving `self._bundle` first. But both readers were
+passing the UNRESOLVED path: `installed.installed_version()` used
+`startup.appimage_path()` straight (that function only wraps `$APPIMAGE`, it
+never realpaths), and `update/linux.py`'s `_disk_version()` used
+`self._bundle` straight. Whenever `$APPIMAGE` or an ancestor directory is a
+symlink — exactly the case the swap deliberately resolves — the stamp's
+`path` field never equalled what the readers compared it against,
+`_linux_installed_version()` always returned `None`, and the "restart to
+finish updating" banner never appeared after an otherwise successful
+install, silently.
+
+Fixed by resolving once, on the read side, inside
+`installed._linux_installed_version()` itself, rather than at each call
+site: `installed_version()` and `update/linux.py`'s `_disk_version()` both
+already route through it, so one `os.path.realpath()` there — documented as
+the enforced invariant "the stamp is keyed by the AppImage's resolved path"
+— fixes both readers without a `realpath` call sprinkled at every caller
+that happens to have a Linux update path in hand. Any future reader of the
+stamp inherits the correct behaviour by construction instead of needing to
+remember it.
+
+`test_install_resolves_a_symlinked_appimage_before_swapping` did not catch
+this: it only asserts `manager.status()["state"] == "installed"`, which is
+in-memory state set unconditionally at the end of a successful swap and
+never touches the stamp file at all. Added
+`test_disk_version_reads_back_through_a_symlinked_appimage`, which installs
+behind a symlinked AppImage and then reads the version back the same way
+production code does — `manager._disk_version()` and
+`installed.installed_version()` — confirmed to fail with `None` against the
+unfixed reader before the `realpath()` was added.
+
+## Task 15 — Linux manifest upload must happen before the invalidation that is supposed to cover it
+
+`release.yml`'s Linux job invalidated `/${LINUX_PREFIX}/*` in the "Publish
+AppImage + attach to release" step, then uploaded `dist/linux-latest.json`
+in a later step, with a comment claiming the earlier invalidation "already
+covers this manifest's path". It does not: a request for `latest.json`
+landing in the window between the two steps re-caches whatever manifest was
+live before this release, and CloudFront then serves that stale manifest
+until something else invalidates the path again. The macOS job in the same
+workflow already has the right shape — upload `dist/macos-latest.json`, then
+invalidate — this job just had the two steps in the other order.
+
+Reordered to match: the AppImage upload step no longer invalidates at all;
+a new "Invalidate CloudFront" step runs last, after both the AppImage and
+the manifest are on S3. `VERSION` (computed once from the built artifact's
+filename, the same rule as the DMG/installer) is now exported via
+`$GITHUB_ENV` from the upload step instead of being re-derived by a second
+`sed` in the manifest step. The comment above the invalidation step now
+says what actually holds — the ordering removes the stale-cache window; the
+manifest upload's own `--cache-control no-cache` is noted as the reason that
+window was survivable even before the reorder, not as a substitute for it.
+
+## Task 16 — Stop re-deriving VERSION from the AppImage filename with a fragile sed
+
+`release.yml`'s "Publish signed Linux update manifest" step re-derived
+`VERSION` from `$APPIMAGE`'s basename with
+`sed -E 's/^FusedRender-(.*)-x86_64\.AppImage$/\1/'`, even though the
+preceding step already computed the same `VERSION` from the same filename
+one step earlier. `sed` passes its input through unchanged when a pattern
+doesn't match, and `set -euo pipefail` does not catch that — a future
+filename change (an arch-suffix rename, say) would silently publish a
+manifest whose `version` field is the entire filename instead of failing
+the build.
+
+Removed the second parse: the "Publish AppImage + attach to release" step
+now exports `VERSION` via `$GITHUB_ENV` (Task 15) alongside `APPIMAGE`, the
+same pattern already used to carry `$APPIMAGE` across steps, so there is
+only one place the filename is ever parsed.
