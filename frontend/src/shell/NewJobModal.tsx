@@ -60,11 +60,18 @@ import { completionKeyAction, moveHighlight }
 //   `isExactSingleMatch` — one row, already typed in full: the segment is
 //     finished, so the list gets out of the way.
 import { isPathShapedQuery } from "@apps/explorer/listing/path-shaped-query";
+//   `listingAddress`   — the Explorer's own `~`/drive/relative expander: the
+//     absolute path a typed address MEANS. The field goes on showing what the
+//     reader typed; everything that touches the disk asks this first.
+import { listingAddress } from "@apps/explorer/listing/listing-address";
 import { applyQueryNotation, completionTarget, isExactSingleMatch }
   from "@apps/explorer/listing/completion-target";
 import { THUMB_SEAL } from "@platform/lib/frame-focus";
 import { thumbUrl } from "@platform/lib/thumb-frame";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+// The app's own ghost rows — the same ones the task peek holds over a booting
+// conversation. One loading vocabulary, not a second.
+import { SkeletonLines } from "@platform/ui/Skeleton";
 import { navigateUrl } from "@platform/lib/router";
 import { ENTER_LABEL, isMod, MOD_LABEL } from "@platform/lib/platform";
 import {
@@ -236,19 +243,31 @@ function leafOf(p: string): string {
  * `listDir` takes no abort signal, so a stale reply is dropped by a flag rather
  * than cancelled — `useCompletion`'s `mine` ref, for its reason.
  */
-function useFolderCompletion(query: string, open: boolean, home: string): FolderRow[] {
+function useFolderCompletion(
+  query: string, open: boolean, home: string,
+): { rows: FolderRow[]; pending: boolean } {
   const [page, setPage] = useState<{ dir: string; entries: FsEntry[] }>(
     { dir: "", entries: [] },
   );
   const target = open ? completionTarget(query, home, home || undefined) : null;
+  // `completionTarget` ALREADY EXPANDS `~` (it is handed `home`), so the dir it
+  // names is a real one — which is the half of `~` support the listing needs.
   const dir = target?.dir ?? "";
+  // IS AN ANSWER STILL COMING — the debounce's wait AND the request's, because
+  // to a reader they are one wait (Akshil, 2026-09-18: "right now for a split
+  // second it shows me create new folder, or no results — jarring").
+  const [pending, setPending] = useState(false);
   useEffect(() => {
-    if (!dir) return;
+    if (!dir) {
+      setPending(false);
+      return;
+    }
+    setPending(true);
     const mine = { current: true };
     const timer = window.setTimeout(() => {
       listDir(dir).then(
-        (r) => { if (mine.current) setPage({ dir, entries: r.entries }); },
-        () => { if (mine.current) setPage({ dir, entries: [] }); },
+        (r) => { if (mine.current) { setPage({ dir, entries: r.entries }); setPending(false); } },
+        () => { if (mine.current) { setPage({ dir, entries: [] }); setPending(false); } },
       );
     }, INSTANT_DEBOUNCE_MS);
     return () => {
@@ -256,7 +275,7 @@ function useFolderCompletion(query: string, open: boolean, home: string): Folder
       window.clearTimeout(timer);
     };
   }, [dir]);
-  return useMemo(() => {
+  const rows = useMemo(() => {
     if (!target || page.dir !== target.dir) return [];
     const partial = target.partial.toLowerCase();
     const base = target.dir.replace(/\/+$/, "");
@@ -273,6 +292,11 @@ function useFolderCompletion(query: string, open: boolean, home: string): Folder
         };
       });
   }, [target?.dir, target?.partial, page, query, home]);
+  // STILL PENDING while the page in hand is for a DIFFERENT directory: the
+  // reader typed a `/`, the rows on screen belong to the folder above, and
+  // saying "no folder matches" about them would be answering a question nobody
+  // asked yet.
+  return { rows, pending: pending || (!!dir && page.dir !== dir) };
 }
 
 /**
@@ -288,22 +312,41 @@ function useFolderCompletion(query: string, open: boolean, home: string): Folder
  * answers 503, and the honest consequence of that is a field with no
  * suggestions — never a form that cannot be filled in.
  */
-function useFolderSearch(typed: string, open: boolean): FolderRow[] {
+function useFolderSearch(
+  typed: string, open: boolean,
+): { rows: FolderRow[]; pending: boolean } {
   const [found, setFound] = useState<FolderRow[]>([]);
+  const [pending, setPending] = useState(false);
   useEffect(() => {
     const spec = open ? folderSearchSpec(typed) : null;
     if (!spec) {
       setFound([]);
+      setPending(false);
       return;
     }
+    setPending(true);
     const stop = new AbortController();
     const timer = window.setTimeout(() => {
       searchFiles(spec, stop.signal).then(
-        (r) => setFound(r.entries.filter((e) => e.is_dir).map((e) => {
-          const path = normPath(e.path);
-          return { path, name: leafOf(path), where: parentOf(path), is_dir: true };
-        })),
-        () => setFound([]),
+        (r) => {
+          setFound(r.entries.filter((e) => e.is_dir).map((e) => {
+            const path = normPath(e.path);
+            return { path, name: leafOf(path), where: parentOf(path), is_dir: true };
+          }));
+          setPending(false);
+        },
+        (err) => {
+          // AN ABORT IS NOT AN ANSWER (Bugbot, PR #1213). Every keystroke
+          // cancels the request before it, and treating that rejection as
+          // "nothing found" emptied the list and flashed "No folder matches"
+          // in the gap before the next request had even started — the jarring
+          // flicker Akshil reported. The rows already on screen are the last
+          // TRUE answer; they stay, and `pending` stays true, because one is
+          // still coming.
+          if (stop.signal.aborted) return;
+          setFound([]);
+          setPending(false);
+        },
       );
     }, INSTANT_DEBOUNCE_MS);
     return () => {
@@ -311,7 +354,7 @@ function useFolderSearch(typed: string, open: boolean): FolderRow[] {
       stop.abort();
     };
   }, [typed, open]);
-  return found;
+  return { rows: found, pending };
 }
 
 
@@ -3227,6 +3270,11 @@ export default function NewJobModal({
   // — where the whole point of the drop is to offer the OTHER folders. So the
   // list narrows only once the text has moved off what it opened with.
   const [openedWith, setOpenedWith] = useState("");
+  //: IS THE PATH CHECK STILL OUT — the 400ms verdict below (`newFolder` /
+  //: `pathError`). Declared up here because the dropdown's own loading state
+  //: folds it in with the two lookups, and a "create this folder" offer that
+  //: arrived over a list still being answered is the flicker this closes.
+  const [pathChecking, setPathChecking] = useState(false);
   const openRecents = useCallback(() => {
     setRecents(readRecentList());
     setOpenedWith(target);
@@ -3257,8 +3305,24 @@ export default function NewJobModal({
   // THE SEGMENT'S OWN COMPLETIONS (path mode) and THE INDEX'S ANSWER (search
   // mode). Both hooks are always called — hooks are not conditional — and each
   // is handed "" for the mode it is not in, which is its own idle state.
-  const completions = useFolderCompletion(pathMode ? pathQuery : "", recentsOpen, home);
-  const foundFolders = useFolderSearch(pathMode ? "" : pathQuery, recentsOpen);
+  const completing = useFolderCompletion(pathMode ? pathQuery : "", recentsOpen, home);
+  const searching = useFolderSearch(pathMode ? "" : pathQuery, recentsOpen);
+  const completions = completing.rows;
+  const foundFolders = searching.rows;
+  /**
+   * IS AN ANSWER STILL COMING (Akshil, 2026-09-18: "when I am searching show a
+   * spinner… right now for a split second it shows me create new folder, or no
+   * results — jarring").
+   *
+   * Whichever engine is live, and BOTH halves of its wait: the 200ms debounce
+   * and the request after it. To the reader they are one wait, and the gap
+   * between them is exactly where the empty state used to flash.
+   *
+   * The path CHECK counts too. `newFolder` is its verdict, and it is debounced
+   * 400ms — longer than either lookup — so "create this folder" could appear
+   * over a list that was still being answered.
+   */
+  const lookupPending = completing.pending || searching.pending || pathChecking;
   // The remembered folders, narrowed by the same rule the Tasks page narrows
   // its project menu with (`tasks-lib.projectMatches`: case-folded substring
   // over the name and the path). SEARCH MODE ONLY: a reader spelling out an
@@ -3304,8 +3368,10 @@ export default function NewJobModal({
     if (!p) {
       setPathError(null);
       setNewFolder(null);
+      setPathChecking(false);
       return;
     }
+    setPathChecking(true);
     let stale = false;
     // Neither piece of state is cleared up front: the last verdict stays on
     // screen until the next one resolves, so the note does not blink off and
@@ -3314,15 +3380,29 @@ export default function NewJobModal({
       if (stale) return;
       setPathError(v.kind === "bad" ? v.text : null);
       setNewFolder(v.kind === "new-folder" ? v.name : null);
+      setPathChecking(false);
     };
+    // `~` IS A PLACE, NOT A FOLDER NAME (Akshil, 2026-09-18 screenshot: typing
+    // `~/Desktop/` drew the red "Only one new folder can be created" line). This
+    // check reads the disk, and the disk has never heard of `~` — so it asked
+    // for a folder literally called "~", found nothing, and reported every
+    // segment under it as a folder to be created.
+    //
+    // Expanded with the EXPLORER'S OWN expander (`listingAddress`), which is
+    // what its address bar resolves `~`, a drive letter and a relative path
+    // with. The field keeps showing `~/…`: what the reader typed is what they
+    // read back, and the server expands it again on the way in
+    // (`schedule.create`: `abspath(expanduser(target))`), so the stored target
+    // is the real path either way.
+    const probe = listingAddress(p, home, home || undefined) ?? p;
     const timer = window.setTimeout(() => {
-      listDir(p).then(
+      listDir(probe).then(
         () => settle({ kind: "ok" }),
         () => {
-          const { parent } = splitTargetPath(p);
+          const { parent } = splitTargetPath(probe);
           listDir(parent).then(
-            (r) => settle(targetVerdict(p, r.entries.map((e) => e.name))),
-            () => settle(targetVerdict(p, null)),
+            (r) => settle(targetVerdict(probe, r.entries.map((e) => e.name))),
+            () => settle(targetVerdict(probe, null)),
           );
         },
       );
@@ -3337,7 +3417,11 @@ export default function NewJobModal({
   // branch (a different shape — a badge and a line about when it becomes true),
   // so "which row is that one" is asked in three places and has to be one
   // answer.
-  const newFolderShown = !pathError && !!newFolder;
+  // …and only once the answer has LANDED (Akshil, 2026-09-18). "Create this
+  // folder" is a statement about a folder that does not exist, and while a
+  // lookup is still out the app does not yet know that. Offering it in the gap
+  // is the flicker — "for a split second it shows me create new folder".
+  const newFolderShown = !pathError && !!newFolder && !lookupPending;
   // EVERY ROW THAT PICKS A PATH, in the order they are drawn — the ring the
   // arrow keys walk. Browse and New folder are VERBS: they open a panel rather
   // than answering the field, and an Enter that opened a side panel where the
@@ -3374,13 +3458,34 @@ export default function NewJobModal({
   //: offered at all. One expression, read by the markup and by
   //: `aria-activedescendant`.
   const newFolderAt = newFolderShown ? pathRows.length - 1 : -1;
-  // WHICH ROW THE ARROWS ARE ON, and -1 — nothing — is where it rests. Enter
-  // only takes a row somebody arrowed to: the list opens after a debounce, so a
-  // seeded highlight would make one Enter mean two different things depending
-  // on how fast the reader types (the property `completionKeyAction`'s header
-  // exists to guarantee). Reset whenever the rows change under it.
-  const [pathAt, setPathAt] = useState(-1);
-  useEffect(() => { setPathAt(-1); }, [pathQuery, recentsOpen]);
+  //: The rows of THIS render, for `setPathAt` to turn an index into a path
+  //: without being rebuilt on every keystroke.
+  const pathRowsRef = useRef(pathRows);
+  pathRowsRef.current = pathRows;
+  /**
+   * WHICH ROW THE ARROWS ARE ON — held as the row's own PATH, not its index
+   * (Bugbot, PR #1213: "stale highlight after async rows").
+   *
+   * An index is a promise about a list that is still arriving. The reader arrows
+   * to row 2, the index search or the directory listing answers, the rows change
+   * under the highlight — and Enter takes whatever is at index 2 now, which is a
+   * DIFFERENT FOLDER from the one they were looking at. A path cannot do that:
+   * if it is still on screen the highlight is still on it, and if it is gone the
+   * highlight is gone with it and Enter passes through to the form.
+   *
+   * "" — nothing — is where it rests, and it only ever moves on an explicit
+   * arrow: the list opens after a debounce, so a seeded highlight would make one
+   * Enter mean two different things depending on how fast the reader types (the
+   * property `completionKeyAction`'s header exists to guarantee).
+   */
+  const [pathMark, setPathMark] = useState("");
+  useEffect(() => { setPathMark(""); }, [pathQuery, recentsOpen]);
+  //: …and the index the key map wants, DERIVED. -1 the moment the marked row
+  //: leaves the list, which is exactly the clamp this replaces.
+  const pathAt = pathMark ? pathRows.findIndex((r) => r.path === pathMark) : -1;
+  const setPathAt = useCallback((i: number) => {
+    setPathMark(i >= 0 ? (pathRowsRef.current[i]?.path ?? "") : "");
+  }, []);
   /**
    * TAKING A ROW, the Explorer's two ways.
    *
@@ -3396,13 +3501,13 @@ export default function NewJobModal({
    */
   const acceptPath = useCallback((row: FolderRow) => {
     setTarget(row.path);
-    setPathAt(-1);
+    setPathMark("");
     pathRef.current?.focus();
   }, []);
   const pickPath = useCallback((row: FolderRow) => {
     setTarget(row.path.replace(/\/+$/, ""));
     setRecentsOpen(false);
-    setPathAt(-1);
+    setPathMark("");
   }, []);
 
   // The verdict row rides the dropdown and NEVER forces it open. The reveal
@@ -4826,7 +4931,7 @@ export default function NewJobModal({
               // blur handler's relatedTarget is null there and the list would
               // unmount before its click fired (Bugbot, PR #541).
               <div
-                className="schedule-recents"
+                className={"schedule-recents" + (lookupPending ? " is-loading" : "")}
                 id={recentsId}
                 role="listbox"
                 aria-label="Folders"
@@ -4897,6 +5002,18 @@ export default function NewJobModal({
                     LAST, UNDER THE MATCHES, and not first as it was for one
                     round — see `pathRows` for the ArrowDown-Enter that created
                     a folder nobody asked for. */}
+                {/* GHOST ROWS while the FIRST answer is still coming. Once
+                    there are rows the panel keeps them and dims instead (the
+                    `is-loading` wash above, which is the card's own Browse
+                    listing's rule: "the outgoing listing stays put, dimmed,
+                    until the next one lands — steady geometry, visible
+                    progress"). An empty panel is the one case that has nothing
+                    to dim. */}
+                {lookupPending && !pathRows.length && (
+                  <div className="schedule-recents-wait">
+                    <SkeletonLines rows={3} label="Looking for folders" />
+                  </div>
+                )}
                 {newFolderAt >= 0 && (
                   <button
                     type="button"
@@ -4932,7 +5049,7 @@ export default function NewJobModal({
                     a control that broke. Only while the reader is SEARCHING; a
                     machine with no recents yet has always opened on Browse
                     alone, and that is not a failed search. */}
-                {!!pathQuery && !pathRows.length && (
+                {!!pathQuery && !pathRows.length && !lookupPending && (
                   <p className="schedule-recents-empty">No folder matches</p>
                 )}
                 {/* A separator ELEMENT, not a border-top on Browse: the border

@@ -4469,6 +4469,28 @@ input.schedule-when-field {
   margin: 2px 2px 4px;
 }
 
+/* A LOOKUP IS STILL OUT (Akshil, 2026-09-18: "when I am searching show a
+   spinner… right now for a split second it shows me create new folder, or no
+   results — jarring").
+
+   THE SAME ANSWER THE BROWSE PANEL IN THIS CARD ALREADY GIVES
+   (`.schedule-picker-list.is-loading` above): the rows that are there stay put
+   and dim until the next ones land — steady geometry, visible progress. Same
+   numbers, so the two lists in one card read as one control. `pointer-events`
+   goes with it for the same reason it does there: a row that is about to be
+   replaced must not take a click meant for its successor. */
+.schedule-recents.is-loading .schedule-picker-row {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+/* …and the FIRST answer, which has nothing to dim. The app's own ghost rows
+   (`SkeletonLines`, the same the peek holds over a booting chat), padded to the
+   row rhythm so the panel does not jump when they are replaced. */
+.schedule-recents-wait {
+  padding: 8px;
+}
+
 /* A search that found nothing still answers. Not a row: there is nothing to
    press, and a pressable-looking line in a list of pressable rows is the worst
    of both.

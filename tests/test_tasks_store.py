@@ -938,6 +938,48 @@ def test_a_head_prompt_settles_for_the_marker_only_when_nothing_said_anything(
     assert tasks_store.head(str(later))[2] == "actual words"
 
 
+def test_a_marker_title_is_shown_but_never_BANKED(projects_dir):
+    """Bugbot, PR #1213: "marker titles freeze after later words".
+
+    The head cache treats a resolved prompt as final — transcripts are
+    append-only, so a head that found the first thing a human said can never be
+    outdated by a later append. A MARKER is not that: "pane screenshot" is what
+    the head shows while none of the sends so far has carried words, and the
+    very next append can carry some. Banked as final it stayed the row's title
+    for the life of the process, over everything the reader typed afterwards.
+
+    So it is shown and not banked: the read is re-done on the next append, and
+    the first real words replace it.
+    """
+    wordless = records.prefixed(records.APP_STATE, records.PANE_SHOT)
+    path = _transcript(projects_dir, "-home-a", "s1", "/home/a",
+                       "2026-08-16T09:00:00Z", prompt=wordless)
+    assert tasks_store.head(str(path))[2] == "pane screenshot"
+
+    # …and the reader types. NO `reset_cache()` here — that is the whole point:
+    # the listing runs in one long-lived process and asks again as the file
+    # grows.
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "type": "user", "cwd": "/home/a",
+            "timestamp": "2026-08-16T09:01:00Z",
+            "message": {"role": "user",
+                        "content": [{"type": "text",
+                                     "text": "make the header sticky"}]}}) + "\n")
+    assert tasks_store.head(str(path))[2] == "make the header sticky"
+
+    # A head that DID find words is still banked — the cheap path this cache
+    # exists for is untouched.
+    settled = tasks_store.head(str(path))
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "type": "user", "cwd": "/home/a",
+            "timestamp": "2026-08-16T09:02:00Z",
+            "message": {"role": "user",
+                        "content": [{"type": "text", "text": "and now green"}]}}) + "\n")
+    assert tasks_store.head(str(path))[2] == settled[2], "the FIRST words stay"
+
+
 def test_one_folder_is_one_counter_however_it_is_spelled():
     # A transcript's cwd arrives in the OS's own spelling and a scheduled
     # entry's target arrives through `os.path.abspath`; on Windows the two spell

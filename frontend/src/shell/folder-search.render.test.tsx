@@ -151,6 +151,9 @@ async function openCard(
   asked: unknown[],
   missing = "",
   listing: Record<string, { name: string; is_dir: boolean; size: number | null }[]> = {},
+  hangSearch = false,
+  slowDir = "",
+  searchDelay = 0,
 ) {
   const { default: NewJobModal } = await import("./NewJobModal");
   installWindowTimers();
@@ -170,9 +173,35 @@ async function openCard(
     const u = String(url);
     if (u.startsWith("/api/search/files")) {
       asked.push(init?.body ? JSON.parse(String(init.body)) : null);
-      return json({
+      // A search that never answers, for the tests about what is on screen
+      // WHILE one is out. `init.signal` is the real AbortController the hook
+      // made, so rejecting on its abort is exactly what `fetch` does.
+      if (hangSearch) {
+        return new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          });
+        });
+      }
+      const body = {
         entries: dirs.map((p) => ({ path: p, is_dir: true, size: null, mtime: null })),
         truncated: false,
+      };
+      if (!searchDelay) return json(body);
+      // A search with a little air in it, so a later keystroke can arrive while
+      // this one is still out — which is the only state an abort exists in.
+      return new Promise<Response>((resolve, reject) => {
+        const t = setTimeout(() => resolve({
+          ok: true, status: 200, json: () => Promise.resolve(body),
+        } as unknown as Response), searchDelay);
+        init?.signal?.addEventListener("abort", () => {
+          clearTimeout(t);
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
       });
     }
     if (u.startsWith("/api/config")) return json({ home: "/Users/me" });
@@ -188,6 +217,14 @@ async function openCard(
       // stage one directory's children and watch the field complete through
       // them; anything not staged lists empty, which is the ordinary case and
       // keeps the path check quiet.
+      if (slowDir && at === slowDir) {
+        // A listing that lands LATE, so a test can watch the rows above the
+        // highlight arrive after it was set.
+        return new Promise<Response>((r) => setTimeout(
+          () => r({ ok: true, status: 200,
+                    json: () => Promise.resolve({ entries: listing[at] ?? [] }) } as unknown as Response),
+          700));
+      }
       return json({ entries: listing[at] ?? [] });
     }
     return json({ folders: [], entries: [], tasks: [], sessions: [] });
@@ -584,3 +621,156 @@ test("taking the create-new row keeps the path, it does not become the name",
     expect(pathField(b).props.value).toBe("/Users/me/Desktop/brandnew");
     expect(pathRowLabels(b)).toEqual([]);
   });
+
+// ---- nothing is said until the answer has landed ------------------------------
+//
+// Akshil, 2026-09-18: "when I am searching show a spinner… right now for a split
+// second it shows me create new folder, or no results — jarring."
+//
+// Two causes, and Bugbot found the sharper one: every keystroke ABORTS the
+// request before it, and the hook read that rejection as "nothing found" — so
+// the list emptied and "No folder matches" flashed in the gap before the next
+// request had even started. The other is plain ordering: the path check is
+// debounced 400ms, longer than either lookup, so "create this folder" could
+// arrive over a list still being answered.
+
+/** The ghost rows the panel holds while the first answer is out. */
+function waitRows(b: ReactTestRenderer) {
+  return b.root.findAll((n) => n.props?.className === "schedule-recents-wait");
+}
+function emptyLine(b: ReactTestRenderer) {
+  return b.root.findAll((n) => n.props?.className === "schedule-recents-empty");
+}
+function panelLoading(b: ReactTestRenderer) {
+  return b.root
+    .findAll((n) => String(n.props?.className ?? "").startsWith("schedule-recents"))
+    .some((n) => String(n.props.className).includes("is-loading"));
+}
+
+test("while a lookup is out: ghosts, and NOT the empty state", async () => {
+  const b = await openCard([], [], "", DESKTOP, /* hangSearch */ true);
+  await act(async () => { pathField(b).props.onFocus({}); });
+  await act(async () => { pathField(b).props.onChange({ target: { value: "zzzz" } }); });
+  await settle();
+
+  expect(waitRows(b).length).toBe(1);
+  expect(panelLoading(b)).toBe(true);
+  // The two things that used to flash.
+  expect(emptyLine(b).length).toBe(0);
+  expect(newFolderRow(b).length).toBe(0);
+});
+
+test("an aborted search leaves the rows it already had", async () => {
+  // THE FLICKER ITSELF (Bugbot). Every keystroke cancels the request before it,
+  // and the hook read that rejection as "nothing found" — so the list emptied
+  // and "No folder matches" flashed in the gap before the next request had even
+  // started.
+  //
+  // Staged with a search that takes a moment, because an abort only exists
+  // while something is in flight: the first query answers, the second is still
+  // out when a third keystroke cancels it.
+  const b = await openCard(["/Users/me/Desktop/annfocus-repro"], [], "", DESKTOP,
+                           false, "", /* searchDelay */ 120);
+  await act(async () => { pathField(b).props.onFocus({}); });
+  await act(async () => { pathField(b).props.onChange({ target: { value: "ann" } }); });
+  await settle();
+  expect(pathRowLabels(b)).toEqual(["/Users/me/Desktop/annfocus-repro"]);
+
+  // Out…
+  await act(async () => { pathField(b).props.onChange({ target: { value: "annf" } }); });
+  await act(async () => { await new Promise((r) => setTimeout(r, 260)); });
+  // …and cancelled by the next keystroke, whose rejection lands a microtask
+  // later. Waiting for it is the whole test: the bug WAS that rejection.
+  await act(async () => { pathField(b).props.onChange({ target: { value: "annfo" } }); });
+  await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+
+  // The last TRUE answer is still on screen, and nothing claims there is none.
+  expect(pathRowLabels(b)).toEqual(["/Users/me/Desktop/annfocus-repro"]);
+  expect(emptyLine(b).length).toBe(0);
+  expect(panelLoading(b)).toBe(true);
+});
+
+test("once the answer lands, the rows and the affordances come back", async () => {
+  const b = await openCard([], [], "", DESKTOP);
+  await act(async () => { pathField(b).props.onFocus({}); });
+  await act(async () => { pathField(b).props.onChange({ target: { value: "zzzz" } }); });
+  await settle();
+  expect(waitRows(b).length).toBe(0);
+  expect(emptyLine(b).length).toBe(1);
+});
+
+// ---- the highlight follows the ROW, not its index -----------------------------
+
+test("rows arriving under the highlight never change what Enter takes", async () => {
+  // Bugbot: "stale highlight after async rows". An index is a promise about a
+  // list that is still arriving — the reader arrows to row 2, the answer lands,
+  // the rows shift, and Enter takes a different folder. A path cannot do that.
+  const b = await openCard([], [], "", DESKTOP);
+  await typePath(b, "/Users/me/Desktop/ann");
+  expect(pathRowLabels(b)).toEqual([
+    "/Users/me/Desktop/ann-demo/", "/Users/me/Desktop/annotate-pack/"]);
+
+  await press(b, "ArrowDown");
+  await press(b, "ArrowDown");   // on annotate-pack
+  const marked = "/Users/me/Desktop/annotate-pack/";
+  expect(pathRowLabels(b)[1]).toBe(marked);
+
+  await press(b, "Enter");
+  expect(pathField(b).props.value).toBe(marked);
+});
+
+// THE HIGHLIGHT IS A PATH, NOT AN INDEX (Bugbot, PR #1213: "stale highlight
+// after async rows") — and there is no failing test below for it, deliberately,
+// because the loading gate above closes the window it lived in: rows can no
+// longer arrive under a highlight while the panel is still offering anything to
+// arrow to. The path key stays as the STRUCTURAL guarantee — a list that changes
+// shape can move an index onto a different folder and can never move a path —
+// and what IS testable is its other half, which follows.
+
+test("a highlighted row that leaves the list takes the highlight with it", async () => {
+  // The other half: if the marked path is gone, the highlight is gone, and
+  // Enter passes through to the form rather than taking whatever slid into that
+  // index. Narrowing the query is what removes it.
+  const b = await openCard([], [], "", DESKTOP);
+  await typePath(b, "/Users/me/Desktop/ann");
+  await press(b, "ArrowDown");
+  await press(b, "ArrowDown");   // annotate-pack
+
+  await act(async () => { pathField(b).props.onChange({
+    target: { value: "/Users/me/Desktop/ann-" } }); });
+  await settle();
+  expect(pathRowLabels(b)).toEqual(["/Users/me/Desktop/ann-demo/"]);
+  // Nothing is highlighted, so Enter is the form's.
+  const options = b.root.findAll((n) => n.type === "button" && n.props.role === "option");
+  expect(options.every((o) => o.props["aria-selected"] === false)).toBe(true);
+});
+
+// ---- `~` is a place ----------------------------------------------------------
+
+test("`~/…` lists and never reads as a folder to create", async () => {
+  // Akshil's screenshot: `~/Desktop/` drew the red "Only one new folder can be
+  // created" line, because the check asked the disk for a folder literally
+  // named "~". The Explorer's own expander (`listingAddress`) is what the disk
+  // half now asks first; the field goes on showing `~/…`.
+  const b = await openCard([], [], "", {
+    "/Users/me/Desktop": DESKTOP["/Users/me/Desktop"],
+  });
+  await typePath(b, "~/Desktop/ann");
+
+  expect(pathField(b).props.value).toBe("~/Desktop/ann");
+  expect(pathRowLabels(b)).toEqual(["~/Desktop/ann-demo/", "~/Desktop/annotate-pack/"]);
+  // No red line, and no create-new offer: the folder is right there.
+  expect(newFolderRow(b).length).toBe(0);
+  expect(b.root.findAll(
+    (n) => String(n.props?.className ?? "").includes("schedule-form-bad")).length).toBe(0);
+});
+
+test("`~/…` still offers ONE new folder when the leaf is really absent", async () => {
+  const b = await openCard([], [], "/Users/me/Desktop/brandnew", {
+    "/Users/me/Desktop": DESKTOP["/Users/me/Desktop"],
+  });
+  await typePath(b, "~/Desktop/brandnew");
+  expect(newFolderRow(b).length).toBe(1);
+  expect(b.root.findAll(
+    (n) => String(n.props?.className ?? "").includes("schedule-form-bad")).length).toBe(0);
+});

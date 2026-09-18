@@ -1279,7 +1279,7 @@ def pane_file(text: str) -> str:
     return ""
 
 
-def _parse_head(path: str) -> tuple[str | None, float | None, str, str]:
+def _parse_head(path: str) -> tuple[str | None, float | None, str, str, bool]:
     cwd: str | None = None
     first_ts: float | None = None
     prompt = ""
@@ -1355,8 +1355,15 @@ def _parse_head(path: str) -> tuple[str | None, float | None, str, str]:
                 if cwd is not None and first_ts is not None and prompt:
                     break
     except OSError:
-        return None, None, "", ""
-    return cwd, first_ts, prompt or carried, pane
+        return None, None, "", "", False
+    # THE FIFTH VALUE IS "IS THIS PROMPT SETTLED" (Bugbot, PR #1213). A marker is
+    # what the head shows when nothing in it has said anything YET — and a
+    # transcript is append-only, so the words can still arrive. Handed back as an
+    # ordinary answer it let `head`'s cache call the read COMPLETE and keep "pane
+    # screenshot" as the row's title for the life of the process, over every
+    # later word the reader typed. The two are told apart here; the cache decides
+    # what to do about it.
+    return cwd, first_ts, prompt or carried, pane, bool(prompt)
 
 
 def head(path: str, size: int | None = None,
@@ -1368,7 +1375,16 @@ def head(path: str, size: int | None = None,
     replaced. The pane file is deliberately absent from the completeness
     test: a chat with no `<live-app-state>` block has none to find, and
     re-reading it on every append to keep looking would never pay for
-    itself."""
+    itself.
+
+    A MARKER IS NOT A SETTLED PROMPT (Bugbot, PR #1213). "pane screenshot" is
+    what the head shows for a chat whose sends so far carried no words at all —
+    and the very next append can carry some. Counting it complete froze it as the
+    row's title for the life of the process: the reader typed, the transcript
+    grew, and the listing went on calling their chat "pane screenshot". So a
+    marker-only head stays INCOMPLETE and is re-read on the next append, exactly
+    like a head that found nothing. The marker is still shown meanwhile; it is
+    just not banked."""
     if size is None:
         try:
             size = os.path.getsize(path)
@@ -1376,16 +1392,16 @@ def head(path: str, size: int | None = None,
             return None, None, "", ""
     cached = _HEAD_CACHE.get(path)
     if cached is not None:
-        cached_size, cwd, first_ts, prompt, pane = cached
-        complete = bool(prompt) and first_ts is not None and cwd is not None
+        cached_size, cwd, first_ts, prompt, pane, settled = cached
+        complete = settled and first_ts is not None and cwd is not None
         if cached_size == size or (size > cached_size and complete):
             if size != cached_size:
-                _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane)
+                _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane, settled)
             return cwd, first_ts, prompt, pane
     if len(_HEAD_CACHE) > 20000:  # unbounded only if the user has 20k sessions
         _HEAD_CACHE.clear()
-    cwd, first_ts, prompt, pane = _parse_head(path)
-    _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane)
+    cwd, first_ts, prompt, pane, settled = _parse_head(path)
+    _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane, settled)
     return cwd, first_ts, prompt, pane
 
 
