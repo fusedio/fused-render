@@ -1844,15 +1844,16 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
 
     Derived from the MESSAGES, in this order, and the order is the whole model:
 
-    0. **Running AND parked ⇒ Needs attention.** Above rule 1 rather than beside
-       it, because it is the same fact told at a finer grain: the run IS in
-       flight, and it is in flight in the one way that never ends on its own —
-       a permission card or a question card nobody has answered (`parked`, from
-       `_parked_runs`). "In Progress" is a true sentence about it and a useless
-       one: it is the sentence a reader waits out, and this run will still be
-       there tomorrow. The moment the card is answered the run is ordinary
-       again and rule 1 has it back, with nothing to undo — this reads the
-       decision files on every poll rather than remembering a verdict.
+    0. **Running AND parked ⇒ Needs attention.** Above every other rule,
+       including the queued one just below, because it is the same fact told
+       at a finer grain: the run IS in flight, and it is in flight in the one
+       way that never ends on its own — a permission card or a question card
+       nobody has answered (`parked`, from `_parked_runs`). "In Progress" is a
+       true sentence about it and a useless one: it is the sentence a reader
+       waits out, and this run will still be there tomorrow. The moment the
+       card is answered the run is ordinary again and rule 2 (running) has it
+       back, with nothing to undo — this reads the decision files on every
+       poll rather than remembering a verdict.
 
        PARKED WITHOUT RUNNING IS NOT THIS. `parked` is only ever true for a
        process that is alive (see `_parked_runs`), and the `and` below is
@@ -1860,14 +1861,47 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
        needs-attention row nobody can answer any more would be a lane that only
        fills up.
 
-       PARKED IS CHECKED ON ITS OWN, not only as a multiplier on rule 1: a
-       hand-typed chat parked on a card fails both of rule 1's tests (the live
+       PARKED IS CHECKED ON ITS OWN, not only as a multiplier on rule 2: a
+       hand-typed chat parked on a card fails both of rule 2's tests (the live
        registry reports `waiting`, not running, and the transcript has gone
        quiet), so gating on `_running_now`/`_message_running` first would file
        it `done` before parked ever got a look. `_parked_runs` already proves
        the process is alive — that is enough on its own.
 
-    1. **Anything else running ⇒ In Progress.** Activity beats recency: a task whose
+    1. **Standing in the manager's line ⇒ Queued, ABOVE running.** One task in
+       progress per folder (`project_queue`): this task has work that is DUE
+       and cannot start because another task is holding the working tree it
+       edits, or it has a card decision held for delivery when that tree
+       frees. The caller decides it (`_queue_lines` → `queue_manager.positions`,
+       one derivation per listing, the way `busy` and `parked` are) and hands
+       the answer in, because it is a fact about every OTHER task on the
+       machine and a function that sees one task's messages cannot reach it.
+
+       ABOVE RULE 2 (running), moved there in the review round of 2026-09-18:
+       an answered-blocked task the manager has just promoted to line[0] can
+       still have a session that READS live — the registry row has not caught
+       up, or the sender's mark has not expired — which is precisely what rule
+       2 below is built to trust. The manager, not a stale transcript or
+       registry read, is the source of truth for who is running a folder, and
+       standing in its line is proof this task is NOT that folder's owner: the
+       owner is never a member of `positions()` (`queue_manager.positions`
+       walks each folder's `line`, never its `owner`), so `queued` can never
+       be true for the task actually holding the folder — nothing further
+       needs to check that here.
+
+       ABOVE ARCHIVED too (an unlabelled corollary of the same move): the one
+       shape that could read both filed and queued is a filing the thread has
+       already overtaken, and by the time this is asked `filed` is already
+       False for exactly that case (see `_revived`) — so the two checks do
+       not actually compete and the order between them is inert. Above the
+       speaker, because the speaker is the last thing that HAPPENED and this
+       is the thing that is about to: a task that ran yesterday and has a
+       message due into a busy folder today is waiting, not done.
+
+       ONLY WITH THE FLAG ON. `_queue_lines` answers empty when
+       `project_queue.enabled()` is false, so nothing here derives `queued` and
+       the status is the one main computes.
+    2. **Anything else running ⇒ In Progress.** Activity beats recency: a task whose
        newest message is next Tuesday's occurrence, with a run still going in
        it, is a task that is working. Three things say a run is happening and a
        task needs only one — a message of its own that is in flight
@@ -1881,35 +1915,14 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
        entry at all. The transcript's vote is withdrawn by the caller for exactly one
        case — the tail's freshness is the finished run's own closing records —
        see `_verdict_outvotes_live`.
-    2. **Archived is a filing state.** The task the user put away is archived,
+    3. **Archived is a filing state.** The task the user put away is archived,
        and so is a task whose every message ended up filed (cancelling the last
        live message in a thread archives the task, without anybody having to say
-       so twice). Step 1 is above this on purpose: a run in flight when the task
+       so twice). Rule 2 is above this on purpose: a run in flight when the task
        was filed keeps running and the card reads In Progress until it stops.
-    2.5 **Waiting on a busy folder ⇒ Queued.** One task in progress per folder
-       (`project_queue`): this task has work that is DUE and cannot start
-       because another task is holding the working tree it edits, or it has a
-       card decision held for delivery when that tree frees. The caller decides
-       it (`_queue_lines`, one derivation per listing, the way `busy` and
-       `parked` are) and hands the answer in, because it is a fact about every
-       OTHER task on the machine and a function that sees one task's messages
-       cannot reach it.
-
-       BELOW ARCHIVED, not above it. Archiving cancels the pending work, so a
-       filed task has nothing left in any line; the one shape that could read
-       both is a filing the thread has already overtaken, and by the time this
-       is asked `filed` is False for exactly that case (see `_revived`). Above
-       the speaker, because the speaker is the last thing that HAPPENED and this
-       is the thing that is about to: a task that ran yesterday and has a
-       message due into a busy folder today is waiting, not done.
-
-       ONLY WITH THE FLAG ON. `_queue_lines` answers empty when
-       `project_queue.enabled()` is false, so nothing here derives `queued` and
-       the status is the one main computes.
-
-    3. **Otherwise the newest message that has something to say speaks** —
+    4. **Otherwise the newest message that has something to say speaks** —
        `blocked` for a run that broke, `done` for one that ended. See `_speaker`.
-    4. **Nothing said yet, but something COMING ⇒ Upcoming**, and that second
+    5. **Nothing said yet, but something COMING ⇒ Upcoming**, and that second
        half is the whole of it: the lane is what has not happened *yet*, so it
        needs a message still waiting to happen. A task with nothing coming and
        nothing to report is over, and `done` is where a spent session goes — see
@@ -1921,8 +1934,8 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
     reader) — so the stale-pin machinery that used to decide when an automatic
     `in_progress` had outlived its run is gone with the pin it guarded.
 
-    FILING SOMETHING DOES NOT STOP IT (Akshil, 2026-08-18), which is rule 1
-    standing above rule 2 and nothing more: Archive is a timeless decision and
+    FILING SOMETHING DOES NOT STOP IT (Akshil, 2026-08-18), which is rule 2
+    standing above rule 3 and nothing more: Archive is a timeless decision and
     the record is never touched here, but while a turn is genuinely in flight a
     row that says `archived` is a lie the reader can watch. The moment the run
     ends the task drops back into Archive on the next poll.
@@ -1934,6 +1947,8 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
     """
     if parked:
         return "needs_attention"
+    if queued:
+        return "queued"
     if messages and (_running_now(session_id, live, busy)
                      or any(_message_running(m) for m in messages)):
         return "in_progress"
@@ -1941,8 +1956,6 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
         return "archived"
     if messages and all(_message_archived(m, filed) for m in messages):
         return "archived"
-    if queued:
-        return "queued"
     speaker = _speaker(messages, filed)
     if speaker is not None:
         return _message_verdict(speaker) or "done"

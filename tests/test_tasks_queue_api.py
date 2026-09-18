@@ -775,6 +775,47 @@ def test_a_held_answer_reads_queued_and_not_needs_attention(
     assert row["queue_ahead"] == rows["sess-holder"]["task_id"]
 
 
+def test_a_queued_task_that_still_reads_live_is_queued_not_running(
+        client, projects_dir, folders, monkeypatch, flag, manager):
+    """The manager's line outranks a stale `live` signal (review round,
+    2026-09-18): an answered-blocked task the manager just promoted to
+    line[0] can have a session that still READS live — the registry has not
+    caught up, or the sender's own mark has not expired — and `_running_now`
+    answers True for exactly the reason `_status`'s running rule exists. But
+    standing in a line is proof this task is not the folder's owner, so
+    `queued` has to win over that stale reading. The task that actually holds
+    the folder, with the identical live facts, still reads `in_progress` —
+    only the one the manager calls a bystander flips."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    _transcript(projects_dir, "sess-a", alpha, "say c")
+    manager.line(alpha, "sess-a", holder="sess-holder", priority=("sess-a",))
+    tasks_watch.mark_running("sess-a")
+    tasks_watch.mark_running("sess-holder")
+
+    rows = _rows(client)
+    assert rows["sess-a"]["status"] == "queued"
+    assert rows["sess-a"]["queue_position"] == 1
+    assert rows["sess-a"]["queue_priority"] is True
+    assert rows["sess-holder"]["status"] == "in_progress"
+
+
+def test_a_parked_task_stays_needs_attention_even_when_the_manager_queued_it(
+        client, projects_dir, folders, monkeypatch, flag, park, manager):
+    """Parked still outranks queued after the reorder: `parked` is asked
+    first in `_status` no matter where the queued check moved to, because a
+    card nobody has answered is a stronger fact than a place in line."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    _transcript(projects_dir, "sess-a", alpha, "run the build")
+    park("r-a", "sess-a", alpha)
+    manager.line(alpha, "sess-a", holder="sess-holder")
+
+    assert _rows(client)["sess-a"]["status"] == "needs_attention"
+
+
 def test_behind_names_the_task_directly_ahead_and_not_always_the_holder(
         client, projects_dir, folders, monkeypatch, flag, manager):
     """"Behind TASK-041" ON EVERY CARD IN THE LANE SAID THE SAME THING FOUR
