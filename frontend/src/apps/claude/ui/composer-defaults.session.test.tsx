@@ -212,3 +212,54 @@ test("a chat with no session writes nothing — there is nothing to key on", asy
   // carry the pick.
   expect(box.pills!.model).toBe("haiku");
 });
+
+test("a pick made while the defaults read is in flight is not undone by its answer", async () => {
+  // THE STALE-READ RACE. The `defaults` read goes out at mount; the reader
+  // moves a pill before it comes back; the answer — composed before that pick
+  // was recorded — lands last. Left to overwrite `recorded`, it snaps the pill
+  // back to the old value, and because the record outranks the param the next
+  // send would run (and re-record) the value the reader just left.
+  const seen: Record<string, unknown>[] = [];
+  let answer: ((v: unknown) => void) | null = null;
+  globalThis.fetch = ((url: string, init?: RequestInit) => {
+    const target = String(url);
+    if (target.startsWith("/api/tasks/settings") && init?.body) {
+      seen.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return Promise.resolve({
+        ok: true, status: 200, json: () => Promise.resolve({ ok: true }),
+      } as unknown as Response);
+    }
+    if (target.startsWith("/api/run")) {
+      // Held open until the test lets it land.
+      return new Promise((resolve) => {
+        answer = resolve;
+      });
+    }
+    return Promise.resolve({
+      ok: true, status: 200, json: () => Promise.resolve({}),
+    } as unknown as Response);
+  }) as unknown as typeof fetch;
+
+  const box = await mount(createMemoryParamsStore({ session_id: "sess-a" }));
+  expect(answer).not.toBeNull();
+
+  await act(async () => { box.pills!.setEffort("low"); });
+  expect(box.pills!.effort).toBe("low");
+  expect(seen).toEqual([{ session_id: "sess-a", effort: "low" }]);
+
+  // Now the read lands, carrying the record as it was BEFORE the pick.
+  await act(async () => {
+    answer!({
+      ok: true, status: 200,
+      json: () => Promise.resolve({
+        ok: true,
+        result: { model: "opus", effort: "max",
+                  recorded: { model: "opus", effort: "max" } },
+      }),
+    });
+    await new Promise((done) => setTimeout(done, 0));
+  });
+  // The picked field holds; the field the reader did not touch takes the read.
+  expect(box.pills!.effort).toBe("low");
+  expect(box.pills!.model).toBe("opus");
+});

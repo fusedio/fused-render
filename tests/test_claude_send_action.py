@@ -229,11 +229,19 @@ def test_a_pill_moved_mid_session_is_recorded_by_the_send(
     back."""
     run_id, run_dir = _start(agent, monkeypatch, stub_cli, target, message="first")
     assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
-    with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
-        session_id = json.load(fh)["session_id"]
 
     assert agent._send(run_id, "second", "", "opus", "") == {"sent": True}
-    assert agent._session_settings(session_id) == ("opus", "")
+    # THE CONVERSATION THE RUN IS IN, resolved the way `_send` resolves it. The
+    # stub CLI answers with its own `session_id` ("sess-stub") in its result
+    # row, and whether that row or the host's own system row is at the head of
+    # out.jsonl when `_send` looks is a race the real CLI never runs (it echoes
+    # the id it was started with). Keying the assertion on meta.json alone read
+    # the wrong side of that race on CI.
+    with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+        meta = json.load(fh)
+    own = agent._run_own_session(run_dir, meta)
+    assert own, "the run must know which conversation it is in"
+    assert agent._session_settings(own) == ("opus", "")
 
 
 def test_a_send_that_asks_for_a_respawn_records_nothing_yet(

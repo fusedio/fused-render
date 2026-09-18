@@ -19,25 +19,24 @@
 // ACCESSOR rather than at the sync site: an unknown `?model=` would otherwise
 // set a value matching no option, which renders as a blank pill (fitSelect
 // returns early with no `selectedOptions[0]`) and is also what reaches the CLI.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getPrefs, recordChatSettings } from "@platform/lib/api";
+import { normalizeModel } from "@platform/lib/model-vocab";
 import { runAgent } from "../protocol/agent";
 import type { DefaultsResponse, PermissionMode } from "../protocol/types";
 import type { ParamsStore } from "../params/store";
 import { useChatParams } from "../params/useChatParams";
 
-/** `claude --model`'s vocabulary, holding BOTH shapes the flag accepts: a
- *  PINNED full id (leads — someone opening this menu is usually after a
- *  specific model) and a floating alias under it (T:11823). */
-export const MODELS = [
-  "claude-fable-5-1",
-  "fable",
-  "opus",
-  "sonnet",
-  "haiku",
-] as const;
+/** `claude --model`'s vocabulary, one entry per model (T:11823).
+ *
+ *  A pinned full id ("claude-fable-5-1") used to lead this list, above the
+ *  floating alias for the same model. It named the same thing twice, so the
+ *  menu asked a question with one answer (Akshil, 2026-09-18). Every spelling
+ *  of Fable resolves onto the alias now — see `normalizeModel`, which is what
+ *  keeps a chat, a task or a `?model=` that still carries the old id reading as
+ *  Fable instead of blanking the pill. */
+export const MODELS = ["fable", "opus", "sonnet", "haiku"] as const;
 export const MODEL_LABELS: Record<string, string> = {
-  "claude-fable-5-1": "Fable 5.1",
   fable: "Fable",
   opus: "Opus",
   sonnet: "Sonnet",
@@ -93,6 +92,23 @@ function pick(list: readonly string[], want: string, fallback: string): string {
   return list.includes(want) ? want : fallback;
 }
 
+/** `pick` for the model list, with every Fable spelling folded onto the one
+ *  option that offers it first. Normalising here rather than at each call site
+ *  is what makes a legacy `claude-fable-5-1` — in a record, a param or a
+ *  transcript — a Fable pill everywhere at once. */
+function pickModel(want: string): string {
+  return pick(MODELS, normalizeModel(want), DEFAULT_MODEL);
+}
+
+/** The same fold for an answer that is VALIDATED rather than resolved — the
+ *  `defaults` read, this chat's record, the prefs default. "" for anything this
+ *  build does not offer, which is precisely "no opinion" and leaves the rank
+ *  below it speaking. */
+function listedModel(value: string | null | undefined): string {
+  const v = normalizeModel(value);
+  return MODELS.includes(v as (typeof MODELS)[number]) ? v : "";
+}
+
 /** `curModel()` (T:11901), with the chat's own record ahead of it.
  *
  *  `recorded` is LAST in the list and FIRST in the ranking, deliberately: the
@@ -105,11 +121,7 @@ export function resolveModel(
   pref?: string,
   recorded?: string,
 ): string {
-  return pick(
-    MODELS,
-    recorded || param || detected || pref || DEFAULT_MODEL,
-    DEFAULT_MODEL,
-  );
+  return pickModel(recorded || param || detected || pref || DEFAULT_MODEL);
 }
 /** `curEffort()` (T:11905) — prefs never reach effort, only detection does.
  *  `recorded` leads, exactly as it does for the model above. */
@@ -199,9 +211,21 @@ export function useComposerDefaults(
   // server-side (`agent._start`).
   const sessionId = snapshot.session_id || "";
 
+  // PICKS MADE WHILE A `defaults` READ IS IN FLIGHT. The read is asked at mount
+  // and again when the chat learns its id; a pill moved in that window is
+  // recorded server-side by `record` below, but the answer already on the wire
+  // was composed BEFORE that write and lands after it. Let it overwrite
+  // `recorded` and the pill snaps back to the value the reader just left — and
+  // because `recorded` outranks the param, the next send would run (and
+  // re-record) that stale value. So each field picked since the read began is
+  // remembered here and wins over the read's copy of it; cleared when a new
+  // read starts, because a new read is about a new conversation.
+  const pickedSinceRead = useRef<{ model?: string; effort?: string }>({});
+
   useEffect(() => {
     if (!agentDir || !file) return;
     let live = true;
+    pickedSinceRead.current = {};
     void runAgent(agentDir, "defaults",
                   sessionId ? { file, session_id: sessionId } : { file },
                   { key: null })
@@ -209,10 +233,7 @@ export function useComposerDefaults(
         if (!live) return;
         const d = out as DefaultsResponse;
         setDetected({
-          model:
-            d && MODELS.includes(d.model as (typeof MODELS)[number])
-              ? d.model
-              : "",
+          model: d ? listedModel(d.model) : "",
           effort:
             d && EFFORTS.includes(d.effort as (typeof EFFORTS)[number])
               ? d.effort
@@ -223,15 +244,14 @@ export function useComposerDefaults(
         // pill. An agent that predates the field simply has none, which reads
         // as "no record" — exactly what it means.
         const rec = d?.recorded;
+        const picked = pickedSinceRead.current;
         setRecorded({
-          model:
-            rec && MODELS.includes(rec.model as (typeof MODELS)[number])
-              ? rec.model
-              : "",
+          model: picked.model ?? (rec ? listedModel(rec.model) : ""),
           effort:
-            rec && EFFORTS.includes(rec.effort as (typeof EFFORTS)[number])
+            picked.effort ??
+            (rec && EFFORTS.includes(rec.effort as (typeof EFFORTS)[number])
               ? rec.effort
-              : "",
+              : ""),
         });
       })
       .catch(() => {
@@ -254,9 +274,8 @@ export function useComposerDefaults(
     let live = true;
     void getPrefs()
       .then((p) => {
-        const m = p.model?.default;
-        if (live && m && MODELS.includes(m as (typeof MODELS)[number]))
-          setPref(m);
+        const m = listedModel(p.model?.default);
+        if (live && m) setPref(m);
       })
       .catch(() => {
         // Same footing as detection.
@@ -292,6 +311,7 @@ export function useComposerDefaults(
   const record = useCallback(
     (settings: { model?: string; effort?: string }) => {
       if (!sessionId) return;
+      pickedSinceRead.current = { ...pickedSinceRead.current, ...settings };
       setRecorded((prev) => ({ ...prev, ...settings }));
       void recordChatSettings(sessionId, settings).catch(() => {});
     },

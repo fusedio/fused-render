@@ -88,9 +88,10 @@ export interface PrefEntry {
   control: PrefControl;
   options?: string[];
   // How an option is SAID, where its own spelling will not do. Most options are
-  // already the word ("fable", "high", "acceptEdits"); a PINNED model id is not
-  // — "claude-fable-5-1" is what `--model` takes, "Fable 5.1" is what a person
-  // reads. Sparse by design: only the options that need words appear here, and
+  // already the word ("fable", "high", "acceptEdits") — which is why the map is
+  // currently empty and the field optional. It exists for the ids that are not:
+  // a full `--model` id is what the flag takes, not what a person reads.
+  // Sparse by design: only the options that need words appear here, and
   // an unmapped one shows itself, so the map never has to be kept exhaustive
   // against a list the docs refresh may grow.
   //

@@ -5481,8 +5481,10 @@ export function scheduleMessage(body: {
   // resume the conversation it was scheduled from.
   session_learned?: boolean;
   permission_mode?: string;
-  // The run's model (`--model`: an alias like "fable", or a pinned full id like
-  // "claude-fable-5-1") and its thinking budget (`--effort`: low…max). Omitted
+  // The run's model (`--model`: one of the CLI's family aliases, "fable" /
+  // "opus" / "sonnet" / "haiku" — an older entry may still carry a full id like
+  // "claude-fable-5-1", which the pickers read as its alias) and its thinking
+  // budget (`--effort`: low…max). Omitted
   // rather than sent empty, like everything else optional here — the server
   // stores "" for "pass no flag", so an absent key and a blank one already mean
   // the same thing and the shorter body is the honest one.

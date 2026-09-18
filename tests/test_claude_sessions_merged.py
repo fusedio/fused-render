@@ -1126,7 +1126,7 @@ def test_a_named_session_with_nothing_of_its_own_answers_NOTHING(agent, target):
     — or the task's own stored setting, seeded by the peek — is what speaks."""
     file, workdir = target
     _cli_transcript(agent, workdir, "other",
-                    [_ran("claude-fable-5-1", "xhigh", workdir)])
+                    [_ran("claude-fable-5", "xhigh", workdir)])
     answer = agent._defaults(file, "not-a-session-here")
     assert (answer["model"], answer["effort"]) == ("", "")
     assert answer["source"] == ""
@@ -1138,7 +1138,7 @@ def test_a_named_session_never_backfills_ONE_field_from_a_neighbour(agent, targe
     effort used to be filled in from whichever chat in the folder ran last."""
     file, workdir = target
     _cli_transcript(agent, workdir, "neighbour",
-                    [_ran("claude-fable-5-1", "max", workdir)], mtime=9000)
+                    [_ran("claude-fable-5", "max", workdir)], mtime=9000)
     _cli_transcript(agent, workdir, "mine", [
         {"type": "assistant", "cwd": workdir, "isSidechain": False,
          "message": {"role": "assistant", "model": "claude-haiku-4-5"}},
@@ -1164,6 +1164,24 @@ def test_the_chats_own_record_is_read_before_its_transcript(agent, target,
     # `?model=`/`?effort=` params a deep link seeded.
     assert answer["recorded"] == {"model": "haiku", "effort": "low"}
     assert recorded() == {"mine": {"model": "haiku", "effort": "low"}}
+
+
+def test_a_record_naming_the_retired_pinned_Fable_id_answers_fable(agent, target,
+                                                                   recorded):
+    """BACKWARD COMPATIBILITY, and the reason `_defaults` folds the record at
+    all. The picker offered "claude-fable-5-1" beside "fable" until 2026-09-18;
+    they were the same model, so only the alias is left. Every chat settled
+    before that still has the id written down for it — handed back raw it is a
+    value the page's MODELS list no longer holds, so the pill blanks and the
+    ranking falls through to a default nobody chose."""
+    file, workdir = target
+    agent._record_settings("mine", "claude-fable-5-1", "high")
+    answer = agent._defaults(file, "mine")
+    assert (answer["model"], answer["effort"]) == ("fable", "high")
+    assert answer["recorded"] == {"model": "fable", "effort": "high"}
+    # The FILE is untouched — this is a reading of the record, not a rewrite of
+    # it, and what the CLI is handed on an existing entry is still accepted.
+    assert recorded()["mine"]["model"] == "claude-fable-5-1"
 
 
 def test_a_record_of_ONE_field_leaves_the_other_to_the_transcript(agent, target,

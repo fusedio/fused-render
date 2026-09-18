@@ -128,8 +128,11 @@ def test_the_page_asks_and_ranks_detection_below_an_explicit_choice():
         'fused.params.get("model") || detectedModel || prefModel || DEFAULT_MODEL' in html
     )
     assert 'fused.params.get("effort") || detectedEffort || DEFAULT_EFFORT' in html
-    # detected values are validated against the selector's own lists
-    assert "MODELS.includes(d.model)" in html
+    # detected values are validated against the selector's own lists — the
+    # model through `shortModel` first, so a transcript still naming the retired
+    # pinned Fable id preselects the alias that replaced it instead of nothing.
+    assert "const dm = d && shortModel(d.model);" in html
+    assert "MODELS.includes(dm)" in html
     assert "EFFORTS.includes(d.effort)" in html
     # …and so is the preference, for the same reason: a name this build's
     # selector doesn't have cannot be shown as selected.

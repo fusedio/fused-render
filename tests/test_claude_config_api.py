@@ -514,14 +514,16 @@ def test_a_curated_addition_to_the_packaged_catalog_reaches_a_server_with_a_stal
     packaged = json.loads(open(lib.packaged_catalog_path(), encoding="utf-8").read())
     stale = json.loads(json.dumps(packaged))  # deep copy, pre-dates the new option
     model_entry = next(d for d in stale if d["key"] == "model")
-    model_entry["options"] = [o for o in model_entry["options"] if o != "claude-fable-5-1"]
-    model_entry.pop("optionLabels", None)
+    model_entry["options"] = [o for o in model_entry["options"] if o != "sonnet[1m]"]
+    model_entry["label"] = "Stale label from an old refresh"
     with open(override, "w", encoding="utf-8") as f:
         json.dump(stale, f)
 
     served = next(d for d in preferences._catalog() if d["key"] == "model")
-    assert "claude-fable-5-1" in served["options"]
-    assert served["optionLabels"]["claude-fable-5-1"] == "Fable 5.1"
+    assert "sonnet[1m]" in served["options"]
+    # …and the same rule for every other curated field, not just `options`.
+    assert served["label"] == next(
+        d for d in packaged if d["key"] == "model")["label"]
 
 
 def test_refresh_writes_the_override_and_leaves_the_package_untouched(

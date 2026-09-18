@@ -2015,9 +2015,26 @@ def test_the_same_chat_reads_done_once_the_run_has_stopped(
 def test_a_task_carries_the_model_and_effort_its_runs_use(client, projects_dir):
     """The two fields the New task card set, on the row every surface reads."""
     _seed_schedule([_entry("e1", "nightly sweep", T12,
+                           model="opus", effort="max")])
+    task = _tasks(client)[0]
+    assert task["model"] == "opus"
+    assert task["effort"] == "max"
+
+
+def test_a_task_booked_under_the_retired_pinned_Fable_id_says_fable(
+        client, projects_dir):
+    """BACKWARD COMPATIBILITY. The pickers offered "claude-fable-5-1" beside the
+    alias naming the same model until 2026-09-18; only "fable" is left. Entries
+    booked under the old id are not going anywhere, and the row is what the side
+    peek's composer OPENS on — a value no picker lists any more opens a blank
+    pill. So the row says the word the menus now use.
+
+    Display only: `schedule._send` still hands `entry["model"]` to `--model`
+    verbatim, and the CLI takes the full id exactly as it always did."""
+    _seed_schedule([_entry("e1", "nightly sweep", T12,
                            model="claude-fable-5-1", effort="max")])
     task = _tasks(client)[0]
-    assert task["model"] == "claude-fable-5-1"
+    assert task["model"] == "fable"
     assert task["effort"] == "max"
 
 

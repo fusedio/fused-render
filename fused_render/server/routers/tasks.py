@@ -3474,7 +3474,7 @@ def _draft_row(ident: str, record: dict, number: str = "") -> dict:
         # for a real task, read off the draft's own record because that is where
         # a half-filled New task form keeps them (`drafts.TASK_FORM_FIELDS`).
         # "" for a form that has not touched either picker, which is most.
-        "model": str(record.get("model") or ""),
+        "model": _display_model(str(record.get("model") or "")),
         "effort": str(record.get("effort") or ""),
         "status": _DRAFT_STATUS,
         "failed": False,
@@ -4006,6 +4006,23 @@ def _draft_rows(only: frozenset | set | None = None,
     return rows
 
 
+# ONE SPELLING OF FABLE on the way out. The chat picker and the New task card
+# used to offer a pinned full id ("claude-fable-5-1") beside the alias naming the
+# same model; the pinned row is gone (Akshil, 2026-09-18), but entries booked and
+# chats recorded under it are not. Rows carry this pair so the side peek's
+# composer can OPEN on it, and a value no picker lists any more opens a blank
+# pill — so the row says the word the menus now use. Only the display is folded:
+# what `schedule._send` hands `--model` is still the entry's own string, which
+# the CLI accepts exactly as it always did.
+_FABLE_ID = re.compile(r"^claude-fable([-.].*)?$", re.I)
+
+
+def _display_model(model: str) -> str:
+    """A stored model id said the way the pickers offer it. Anything that is not
+    a Fable spelling — including "" — comes back untouched."""
+    return "fable" if _FABLE_ID.match(model or "") else model
+
+
 def _row_settings(task: dict, settings: dict | None) -> tuple[str, str]:
     """(model, effort) for one row — THE CONVERSATION'S OWN RECORD first, the
     task entry's stored setting behind it.
@@ -4024,10 +4041,10 @@ def _row_settings(task: dict, settings: dict | None) -> tuple[str, str]:
     """
     model, effort = _run_settings(task)
     if settings is None or not task["session_id"]:
-        return model, effort
+        return _display_model(model), effort
     rec_model, rec_effort = tasks_store.session_settings(
         settings, task["session_id"])
-    return rec_model or model, rec_effort or effort
+    return _display_model(rec_model or model), rec_effort or effort
 
 
 def _run_settings(task: dict) -> tuple[str, str]:
@@ -4886,9 +4903,9 @@ def _read_whole_task(key: str) -> dict:
 
 # What `effort` may be — the claude composer's EFFORTS list, and `""` for "not
 # saying", which is how a pick of the model alone reaches this. The model is
-# NOT checked against a list here: the composer offers pinned ids
-# ("claude-fable-5-1") that no Python vocabulary in this package carries, and a
-# server list that did not know one would refuse a model the CLI runs happily.
+# NOT checked against a list here: the CLI is the authority on what `--model`
+# takes, no Python vocabulary in this package tracks it, and a server list that
+# did not know an id would refuse a model the CLI runs happily.
 # The shape is checked instead — this string is stored, read back and shown, and
 # the two readers that turn it into a selected pill validate against the list
 # THEY offer (`agent._defaults`, the composer's own `pick`).

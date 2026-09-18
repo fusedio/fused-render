@@ -12,7 +12,7 @@ export function optionLabel(d: PrefEntry, o: string): string {
 }
 
 // A CONTEXT QUALIFIER on a model id: Claude Code spells the 1M-context variant
-// of a model by suffixing it, `claude-fable-5-1[1m]`. The catalog lists a couple
+// of a model by suffixing it, `fable[1m]`. The catalog lists a couple
 // of these as options in their own right (`opus[1m]`), but it cannot list one
 // for every id — the suffix is a modifier the CLI applies, not a separate model
 // — so a value carrying one has to be understood rather than enumerated.
@@ -24,7 +24,7 @@ const QUALIFIER = /^(.+?)(\[[^\]]*\])$/;
 //
 // Three answers, narrowest first:
 //  1. a listed option — its label;
-//  2. a listed option wearing a qualifier (`claude-fable-5-1[1m]`) — the SAME
+//  2. a listed option wearing a qualifier (`fable[1m]`) — the SAME
 //     entry's label with the suffix kept, because that is one model in a wider
 //     context window, not an unknown one. It read as "(not in catalog)" before,
 //     which told the user their own setting was unrecognised when it was the

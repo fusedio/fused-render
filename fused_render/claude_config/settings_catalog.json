@@ -6,7 +6,6 @@
     "control": "select",
     "options": [
       "default",
-      "claude-fable-5-1",
       "fable",
       "opus",
       "opus[1m]",
@@ -14,9 +13,6 @@
       "sonnet[1m]",
       "haiku"
     ],
-    "optionLabels": {
-      "claude-fable-5-1": "Fable 5.1"
-    },
     "doc": "Override the default model to use for Claude Code.",
     "default": null,
     "minVersion": null

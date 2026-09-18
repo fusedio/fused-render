@@ -67,12 +67,12 @@ describe("site 2 — the tasks card popup", () => {
   // in that folder.
   it("carries the task's model and effort when it has them", () => {
     expect(peekFrameSrc(TPL, DIR, SESSION, undefined,
-                        { model: "claude-fable-5-1", effort: "max" })).toBe(
+                        { model: "fable", effort: "max" })).toBe(
       "/render?path=%2Fw%2Fproj%2F.fused%2Fclaude%2Ftemplate.html" +
         "&_file=%2Fw%2Fproj" +
         "&chat_only=1&peek=1" +
         "&session_id=0f1e2d3c-4b5a" +
-        "&model=claude-fable-5-1&effort=max",
+        "&model=fable&effort=max",
     );
     // …after `msg`, so one open with both is still one stable string.
     expect(peekFrameSrc(TPL, DIR, SESSION, "u-9", { model: "opus" })).toBe(

@@ -5401,35 +5401,27 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
 _MODEL_SHORT = ("fable", "opus", "sonnet", "haiku")
 _EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
-# The PINNED entries the picker offers beside the aliases — full `--model` ids
-# rather than a family name (template.html's MODELS). They have to be matched
-# BEFORE the short names below, and matched exactly, because every one of them
-# contains its own family name: "claude-fable-5-1-20260401" collapsed to "fable"
-# under the old loop, so a chat actually running the pinned model came back from
-# detection as the floating alias and the pill preselected the wrong option.
-#
-# Each pattern is anchored on the version and refuses a longer number, so a
-# future "fable-5-10" is NOT read as 5.1 — the whole point of a pinned entry is
-# that it names one model, and a prefix match would quietly stop being true.
-# What is not pinned still falls through to the family name, which is the right
-# answer for it: the alias is what the user would have picked.
-_MODEL_PINNED = ((re.compile(r"fable-5[.-]1(?!\d)"), "claude-fable-5-1"),)
+# The picker used to offer a PINNED full id ("claude-fable-5-1") beside the
+# family alias that names the same model, and this function had to match it
+# first and exactly — every pinned id contains its own family name, so the loop
+# below would otherwise collapse it. That entry is gone: it was the same model
+# under two spellings, so the menu asked a question with one answer (Akshil,
+# 2026-09-18). Every Fable id — dated, pinned, bare — is "fable" again, which is
+# the row the picker offers and the one the user would have chosen.
 
 
 def _short_model(raw: str) -> str:
-    """Collapse any spelling of a model — full id ('claude-fable-5'), alias
-    ('opusplan'), or already-short name — to one of the selector's values.
+    """Collapse any spelling of a model — full id ('claude-fable-5-1-20260401'),
+    alias ('opusplan'), or already-short name — to one of the selector's values.
 
-    That is a short family name ('fable') for anything the picker offers as an
-    alias, and the full pinned id ('claude-fable-5-1') for the ones it offers by
-    version. The return value is a value the <select> actually holds: the page
-    validates detection against its own MODELS list and drops anything else, so
-    a spelling that does not round-trip here is a preselect that silently never
-    happens."""
+    That is the short family name: 'fable', 'opus', 'sonnet', 'haiku'. The
+    return value is a value the <select> actually holds: the page validates
+    detection against its own MODELS list and drops anything else, so a spelling
+    that does not round-trip here is a preselect that silently never happens —
+    and a transcript or a record still naming the retired pinned id has to come
+    back as the alias, or a chat that has been running on Fable for weeks opens
+    on a blank pill."""
     raw = (raw or "").lower()
-    for pattern, value in _MODEL_PINNED:
-        if pattern.search(raw):
-            return value
     for name in _MODEL_SHORT:
         if name in raw:
             return name
@@ -5518,6 +5510,14 @@ def _defaults(file: str, session_id: str = "") -> dict:
     # this store can hold. A rejected id is treated as no id at all.
     named = bool(session_id) and not _bad_id(session_id)
     rec_model, rec_effort = _session_settings(session_id) if named else ("", "")
+    # A RECORD OUTLIVES THE PICKER'S VOCABULARY. Chats settled before the pinned
+    # Fable id was retired still have "claude-fable-5-1" written down for them;
+    # handed back raw it is a value the page's MODELS list no longer holds, so
+    # the pill blanks and the ranking falls to a default nobody chose. Folded
+    # through the same function detection uses, it comes back as the alias that
+    # now offers that model. A value the vocabulary does not know at all is left
+    # exactly as written — the page is the one that judges it.
+    rec_model = _short_model(rec_model) or rec_model
     if rec_model or rec_effort:
         model, effort, source = rec_model, rec_effort, "record"
     if named:
