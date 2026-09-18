@@ -1,6 +1,6 @@
-// Fetches the App Doctor checklist for the header status dot
-// (AppDoctorStatusDot.tsx), on BOTH surfaces that show it (shell/AppPage.tsx,
-// apps/explorer/Preview.tsx) — one fetch policy, not two.
+// Fetches the App Doctor checklist for the status dot (AppDoctorStatusDot.tsx),
+// on BOTH surfaces that show it (shell/AppPage.tsx tab trigger,
+// apps/explorer/EntryActionsMenu.tsx) — one fetch policy, not two.
 //
 // The report is a full content scan of the app folder, so it must never
 // block or delay the page it decorates: the fetch starts in an effect (after

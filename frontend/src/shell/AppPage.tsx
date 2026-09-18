@@ -1,8 +1,8 @@
 // The app page — `/apps/<folder path>` (D488, widened 2026-08-26): one app
 // folder — a workspace app under any shelf, or a linked app anywhere on disk —
 // as a place rather than as a folder. Five tabs, named by the `_tab` query
-// param (absent = overview; `?_tab=tasks`, `?_tab=files`, `?_tab=api` —
-// current-apps-lib):
+// param (absent = overview; `?_tab=tasks`, `?_tab=files`, `?_tab=api`,
+// `?_tab=doctor` — current-apps-lib):
 //
 //   Overview  the app itself, live in a frame — USE it here, the way the
 //             explorer's file view runs an entry page (`/render?path=`, with no
@@ -17,6 +17,10 @@
 //   API       every .py in the folder as an endpoint, Swagger-style
 //             (shell/AppApi.tsx): entrypoint, parameters as a form, Execute,
 //             response — the api template's view, for the whole app at once.
+//   App Doctor the share-readiness checklist (platform/ui/AppDoctorModal.tsx's
+//             `AppDoctorPanel`) — used to be a header button opening a
+//             dialog; it is a place on this page now, and the trigger carries
+//             the header dot it used to.
 //
 // A VERSION PICKER (AppVersionPicker.tsx), not a sixth Git tab: this page used
 // to frame the folder's `git` template as a Git tab, offered only inside a
@@ -24,8 +28,9 @@
 // staging, committing, branches and push/pull are not this page's job; they
 // stay in the explorer's folder view, where the `git` template still lives.
 // What replaces it is read-only and page-wide: a dropdown beside the tab
-// strip puts ALL THREE tabs above (Overview/Files/API — Tasks is unaffected,
-// it has no notion of a commit) on a past commit of the app folder, via the
+// strip puts THREE tabs above (Overview/Files/API — Tasks is unaffected, it
+// has no notion of a commit, and App Doctor always checks the live folder,
+// see AppDoctorPanel) on a past commit of the app folder, via the
 // same `_snapshot` shell URL param and extraction machinery
 // (`fused_render/server/routers/git_snapshot.py`) the explorer's own snapshot
 // preview already uses. `useAppPageSnapshot.ts` holds this page's own
@@ -72,6 +77,7 @@ import {
   Files,
   ListTodo,
   Share2,
+  Stethoscope,
   Webhook,
   type LucideIcon,
 } from "lucide-react";
@@ -82,7 +88,7 @@ import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
 import { applyIconPick } from "@platform/lib/app-icon";
 import { notify } from "@platform/lib/notifications";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
-import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
+import { AppDoctorPanel } from "@platform/ui/AppDoctorModal";
 import { AppDoctorStatusDot } from "@platform/ui/AppDoctorStatusDot";
 import { useAppDoctorChecks } from "@platform/ui/useAppDoctorChecks";
 import { Button } from "@platform/shadcn/ui/button";
@@ -240,6 +246,14 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     // Not keepMounted: the open row is in the URL (`?ep=`), and a return costs
     // one folder inspection — form values and responses are session scratch.
     render: ({ dir, snapshot }) => <AppApi dir={dir} snapshot={snapshot} />,
+  },
+  doctor: {
+    label: "App Doctor",
+    Icon: Stethoscope,
+    // Not keepMounted: the report is fetched fresh on every mount, so coming
+    // back to the tab IS the re-run (the panel also offers one in place).
+    // Ignores the version picker on purpose — see AppDoctorPanel.
+    render: ({ dir }) => <AppDoctorPanel dir={dir} />,
   },
 };
 
@@ -438,21 +452,12 @@ export default function AppPage({
   const home = config.home.replace(/\\/g, "/");
   const entry = resolved?.kind === "app" ? resolved.entry : null;
 
-  // App Doctor: the share-readiness checklist for this folder, opened from the
-  // header beside "Open in explorer". It stands where the fused-API "Migrate" button
-  // stood, and subsumes it — a stale `fused-api-version` tag is one row of the
-  // checklist now, beside the things migrate never covered (a leaked key, a
-  // path tied to one machine, stray generated files, an uncommitted tree). The
-  // dialog owns the whole flow: it runs the checks, and its "Explain and fix"
-  // creates the one task that hands the report to a session
-  // (platform/ui/AppDoctorModal).
-  const [doctorOpen, setDoctorOpen] = useState(false);
-  useEffect(() => {
-    setDoctorOpen(false);
-  }, [dir]);
+  // App Doctor: the share-readiness checklist is the `doctor` tab. This copy
+  // of the checks only colours the dot on that tab's trigger; the panel
+  // fetches its own report when it mounts (platform/ui/AppDoctorModal). It
+  // stands where the fused-API "Migrate" button stood, and subsumes it — a
+  // stale `fused-api-version` tag is one row of the checklist now.
   // Fetched after first paint, never blocking it — see useAppDoctorChecks.
-  // Opening the modal re-fetches its own copy; this one is only for the
-  // header dot and is never reused to seed the dialog.
   const doctorChecks = useAppDoctorChecks(entry ? dir : null);
 
   // ---- share "at the selected version" --------------------------------------
@@ -564,18 +569,6 @@ export default function AppPage({
         </div>
         {entry && (
           <div className="app-page-actions">
-            {/* Every app gets this, current or not: what an app about to be
-                shared needs checked is never only its API version. */}
-            <Button
-              size="sm"
-              className="app-page-doctor"
-              variant="outline"
-              title="Check this app before you share it: leaked credentials, paths tied to this machine, stray generated files, uncommitted work, a stale fused API version"
-              onClick={() => setDoctorOpen(true)}
-            >
-              App Doctor
-              <AppDoctorStatusDot checks={doctorChecks} />
-            </Button>
             {/* The app's entry page in the EXPLORER — sidebar, crumb, header
                 and all. This button used to open the chrome-free embed in a
                 new tab; the explorer's own header now carries a fullscreen
@@ -626,13 +619,6 @@ export default function AppPage({
           onClose={() => setIconAnchor(null)}
         />
       )}
-      {/* The checklist, and the task that fixes it. It reports its own errors
-          inside the dialog — a failure to create the fix task is about the
-          dialog you are standing in, not about this page. */}
-      {doctorOpen && (
-        <AppDoctorModal dir={dir} onClose={() => setDoctorOpen(false)} />
-      )}
-
       <div className="app-page-body">
         {/* The tab strip and the version picker share one row: the picker is
             page-wide state (task 3 puts all three visible tabs on the
@@ -667,7 +653,18 @@ export default function AppPage({
                       />
                     }
                   >
-                    <Icon data-icon="inline-start" />
+                    {id === "doctor" ? (
+                      // The at-a-glance signal the old header button carried:
+                      // worst failing severity, neutral while unknown. It sits
+                      // as a badge on the icon's top-right corner (owner's
+                      // brief), not after the label.
+                      <span className="app-page-doctor-mark">
+                        <Icon data-icon="inline-start" />
+                        <AppDoctorStatusDot checks={doctorChecks} />
+                      </span>
+                    ) : (
+                      <Icon data-icon="inline-start" />
+                    )}
                     {label}
                   </TabsTrigger>
                 );

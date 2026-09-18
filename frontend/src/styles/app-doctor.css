@@ -1,4 +1,4 @@
-/* App Doctor's dialog (platform/ui/AppDoctorModal.tsx). The chassis (dialog,
+/* App Doctor's dialog and tab panel (platform/ui/AppDoctorModal.tsx). The chassis (dialog,
  * badges, buttons) is shadcn's — platform/shadcn/ui/{dialog,badge,button} —
  * and the row geometry is Tailwind classes on those elements, spelled out in
  * AppDoctorModal.tsx's header comment. What is left here is the part with no
@@ -165,7 +165,7 @@
   margin: 0;
 }
 
-/* The header status dot (shell/AppPage.tsx, apps/explorer/Preview.tsx): the
+/* The status dot (shell/AppPage.tsx tab trigger, apps/explorer/EntryActionsMenu.tsx): the
  * worst FAILING severity in the report, or neutral while unknown/clean. Sits
  * beside the "App Doctor" label rather than replacing it — colour is never
  * the only carrier, and the button's own title/aria-label name the state in

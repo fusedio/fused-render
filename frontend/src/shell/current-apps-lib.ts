@@ -160,7 +160,7 @@ export const APP_PAGE_PREFIX = "/apps/";
  *  never hides a tab. A stale `?_tab=git` deep link falls back to the
  *  default tab (appPageTabFromSearch's own silent-fallback rule below), the
  *  same as any other unknown tab. */
-export const APP_PAGE_TABS = ["overview", "tasks", "files", "api"] as const;
+export const APP_PAGE_TABS = ["overview", "tasks", "files", "api", "doctor"] as const;
 export type AppPageTab = (typeof APP_PAGE_TABS)[number];
 export const DEFAULT_APP_PAGE_TAB: AppPageTab = APP_PAGE_TABS[0];
 
