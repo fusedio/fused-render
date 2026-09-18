@@ -8,11 +8,19 @@ import { expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
 
 import { installDomShim } from "@platform/lib/testDomShim";
-import IndexProposalsDock, { IndexProposalsCardView } from "@shell/IndexProposalsDock";
 import { proposalRows } from "@shell/index-proposals-lib";
 import type { IndexProposal } from "@platform/lib/api";
 
 installDomShim();
+
+// A STATIC import of IndexProposalsDock.tsx would be hoisted ahead of the
+// installDomShim() call above (ES module static imports always run before a
+// module's own top-level statements, regardless of source order) — and
+// IndexProposalsDock.tsx -> api.ts -> presence.ts -> router.ts, whose
+// module-init `rewriteLegacyPath` reads `location` at IMPORT time. A dynamic
+// import, AFTER the shim is installed, is the same workaround AppPage.test.tsx
+// and IndexManager.test.tsx already use for this exact chain.
+const { default: IndexProposalsDock, IndexProposalsCardView } = await import("@shell/IndexProposalsDock");
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
   if (node === null || typeof node === "string") return [];

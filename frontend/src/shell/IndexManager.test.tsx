@@ -9,25 +9,16 @@ import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from 
 import { installDomShim } from "@platform/lib/testDomShim";
 import type { IndexStatus } from "@platform/lib/api";
 
-installDomShim();
 // IndexManager -> IndexProposalsDock -> router.ts, whose module-init
 // `rewriteLegacyPath` reads `location` at IMPORT time (GlobalSearchOverlay.
-// test.tsx's own header documents the same requirement) — install it, and
-// the other globals router.ts's init path touches, before the dynamic import
-// below runs that module code.
-(globalThis as Record<string, unknown>).location = { pathname: "/index", search: "" };
-(globalThis as Record<string, unknown>).window = {
-  parent: undefined,
-  top: undefined,
-  dispatchEvent: () => true,
-  setTimeout: (...args: Parameters<typeof globalThis.setTimeout>) => globalThis.setTimeout(...args),
-  clearTimeout: (...args: Parameters<typeof globalThis.clearTimeout>) => globalThis.clearTimeout(...args),
-};
-(globalThis as Record<string, unknown>).history = {
-  state: null,
-  replaceState: () => {},
-  pushState: () => {},
-};
+// test.tsx's own header documents the same requirement) — the shared shim
+// installs `location`/`window`/`history` (and everything else router.ts's
+// init path and React's `act` touch) before the dynamic import below runs
+// that module code. This used to overwrite the shim with its own incomplete
+// raw stub right after calling it — the exact competing-stub bug
+// testDomShim.ts's own header warns against — which left `location` missing
+// `href`/`origin` for every file that ran afterward in the same process.
+installDomShim();
 
 const { default: IndexManager } = await import("@shell/IndexManager");
 

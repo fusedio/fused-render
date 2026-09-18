@@ -3,21 +3,15 @@
 // the same split ActivityDock.tsx's `retiredEngines` uses.
 import { expect, test } from "bun:test";
 
+import { installDomShim } from "@platform/lib/testDomShim";
+
 // GlobalSearchOverlay.tsx imports router.ts (`navigate`/`navigateUrl`), whose
 // module-init `rewriteLegacyPath` reads `location` at IMPORT time (RepoUpdates
 // Dock.test.tsx's own header documents the same requirement) — bun's test
-// runtime has no DOM, so this has to land before the import below.
-(globalThis as Record<string, unknown>).location = { pathname: "/x", search: "" };
-(globalThis as Record<string, unknown>).window = {
-  parent: undefined,
-  top: undefined,
-  dispatchEvent: () => true,
-};
-(globalThis as Record<string, unknown>).history = {
-  state: null,
-  replaceState: () => {},
-  pushState: () => {},
-};
+// runtime has no DOM, so this has to land before the import below. Every
+// suite shares one `globalThis`, so this uses the shared shim rather than a
+// competing stub (testDomShim.ts's own header warns against exactly that).
+installDomShim();
 
 // A dynamic import, AFTER the globals above are installed: a static import
 // is hoisted ahead of this file's own top-level code, which would run
