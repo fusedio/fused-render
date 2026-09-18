@@ -28,18 +28,30 @@ import type { Task } from "@platform/lib/api";
 // THE QUEUE'S WORDS, from the one builder three surfaces share — "1st in line ·
 // behind TASK-046" (platform/lib/queue). The header says the same sentence the
 // Tasks row says, because it is the same fact about the same task.
-import { queueCaption, type QueueFacts } from "@platform/lib/queue";
+import {
+  QUEUE_PRIORITY_GLYPH,
+  type QueueCaption,
+  queueCaption,
+  type QueueFacts,
+} from "@platform/lib/queue";
 // THE TASK PANEL'S OWN IDENTITY BLOCK (shell/TaskPeekWho.tsx). Imported rather
 // than restated: the side peek and this header are two windows onto one
 // conversation, and a reader who moves between them must not have to pair up
 // two different headers (Akshil, 2026-09-14). Its CSS is `styles/task-peek.css`,
 // which the shell loads for every page through `shell.css` — the chat draws
 // inside that document, so there is nothing to import here.
-// THE LIST'S OWN STATUS RING. A queued task wears a dashed ring on the Tasks
-// page (`schedule-ring--queued`, styles/schedule.css) and the chat now wears the
-// same one — reused rather than restated, so the two cannot drift into two
+// THE LIST'S OWN STATUS RING AND THE LIST'S OWN CAPTION. A queued task wears a
+// dashed ring on the Tasks page (`schedule-ring--queued`, styles/schedule.css)
+// followed by its place in the line (`QueueCaptionText`), and the chat header
+// now wears both — reused rather than restated, so the two cannot drift into two
 // vocabularies for one state (the drift this whole header was written against).
-import { StatusIcon } from "@shell/ScheduleTaskViews";
+//
+// AND IN THE SAME ORDER THE ROW READS IN: ring, number, title, caption, left to
+// right (Akshil, 2026-09-18). The first cut hung the ring and the words off the
+// RIGHT end of the header, in the usage limit's red seat — which made one state
+// look like two different objects on two surfaces three pixels apart, and made
+// waiting look like failing.
+import { QueueCaptionText, StatusIcon } from "@shell/ScheduleTaskViews";
 import { TaskPeekProject, TaskPeekWho } from "@shell/TaskPeekWho";
 import { shortTaskId } from "@shell/tasks-lib";
 import "../styles/composer.css";
@@ -134,10 +146,19 @@ export function Topbar({
       // in this branch there is no `.c-session` span left carrying it. The
       // tooltip goes on the line itself rather than on a span of its own, so the
       // header spends no width on a string nobody reads on purpose (T:12700).
-      <div className="c-topbar" title={sessionId || undefined}>
+      <div
+        className={"c-topbar" + (line ? " is-queued" : "")}
+        title={sessionId || undefined}
+      >
+        {/* THE RING IS INSIDE THIS BLOCK, at the left end, and the row's own
+            `status: "queued"` is what draws it dashed (taskColumn → StatusIcon).
+            Nothing queued-specific is passed: the peek block already says what
+            this task is doing, and this header only has to stop hiding it. */}
         <TaskPeekWho task={task} running={running} />
+        {/* …AND THE PLACE IN THE LINE TRAILS THE TITLE, exactly where a Tasks
+            row puts it, rather than at the far end of the header. */}
+        {line ? <QueuedCaption line={line} /> : null}
         <TaskPeekProject task={task} {...(home ? { home } : {})} />
-        {line ? <QueuedWord line={line.text} /> : null}
         {/* THE PAUSED WORD STILL LANDS HERE (`status`, platform/lib/usage-limit):
             the ring says running or not, and "resumes 4:00 AM" is the one fact
             about this conversation the ring cannot carry. */}
@@ -164,7 +185,11 @@ export function Topbar({
   // above (Akshil QA, 2026-09-14): `pending` is "nobody has answered", and a
   // header holding a row HAS its answer — a skeleton over it would be the
   // placeholder hiding the very thing it stands in for.
-  if (pending && !task) {
+  // …AND A QUEUED LINE OUTRANKS THE SKELETON (Akshil, 2026-09-18). A chat whose
+  // first message is still keyed `pending:<entry id>` is precisely the one with
+  // no task row to read, and it is also the one the reader most needs told: a
+  // placeholder over a KNOWN state would hide the only answer the header has.
+  if (pending && !task && !line) {
     return (
       <div className="c-topbar" title={sessionId || undefined}>
         <span className="c-tb-skel" aria-hidden="true">
@@ -183,9 +208,21 @@ export function Topbar({
     (sessionId ? sessionId.slice(0, 8) : "");
 
   return (
-    <div className="c-topbar">
-      <ClaudeMark className="c-spark" />
+    <div className={"c-topbar" + (line ? " is-queued" : "")}>
+      {/* THE RING TAKES THE MARK'S SEAT rather than sitting beside it: the line
+          keeps ONE glyph at its left end, and on a waiting chat the fact worth a
+          glyph is that it is waiting — the ✻ names the tool, which the page says
+          in three other places. Same order as the header above and as a Tasks
+          row: ring, name, caption. */}
+      {line ? (
+        <span className="task-side-peek-status" title="Queued">
+          <StatusIcon status="queued" />
+        </span>
+      ) : (
+        <ClaudeMark className="c-spark" />
+      )}
       <span className="c-tb-title">Claude</span>
+      {line ? <QueuedCaption line={line} /> : null}
       <span className="c-tb-file" title={subtitle || undefined}>
         {subtitle ?? ""}
       </span>
@@ -197,11 +234,6 @@ export function Topbar({
           {label}
         </span>
       ) : null}
-      {/* THE QUEUED RING AND ITS SENTENCE, for the conversation that has no task
-          row to draw the peek's identity block from — a brand-new chat whose
-          first message is still in its folder's line, which is precisely the one
-          this state matters most on. */}
-      {line ? <QueuedWord line={line.text} /> : null}
       {/* `aria-live="polite"`, not assertive: this is an ambient state, and a
           reader that interrupts to announce the start of every turn is worse
           than one that mentions it when it next comes up for air (T:4078). */}
@@ -221,24 +253,37 @@ export function Topbar({
 }
 
 /**
- * `⊘ queued · 1st in line · behind TASK-046` in the header's last inch.
+ * WHERE THIS CHAT STANDS IN ITS FOLDER'S LINE — "1st in line · behind TASK-046".
  *
- * THE RING IS THE LIST'S and the words are the queue's one builder; what is
- * local here is only the seat. It rides in `.c-tb-paused`, the muted span the
- * usage limit's "paused · resumes 4:00 AM" already uses — the same register for
- * the same kind of fact (this conversation is not moving, and here is why), so
- * the header grows no third way of saying a state.
+ * THE TASKS ROW'S OWN MARKUP, classes and all (`tasks-row-queue` /
+ * `tasks-queue-text`, styles/tasks.css, which `shell.css` loads for every page —
+ * the chat draws inside that document). The words are `queueCaption`'s, the
+ * pointer's title and the ⤒ are the row's, and the ink is the row's muted
+ * register: one fact, one sentence, one look, wherever a reader meets it.
  *
- * The WORD is spoken as well as ringed: the ring's own `aria-label` says
- * "Queued", and the sentence after it is the part a reader can act on.
+ * IT IS NOT THE USAGE LIMIT'S SEAT any more (`.c-tb-paused`, which keeps its one
+ * job): that span is Blocked's red at the right end of the line, and a queued
+ * chat is neither blocked nor at the end of anything — it is a task with a place
+ * in a line, and the place belongs beside the name it is a place for.
+ *
+ * `aria-live="polite"`: an ambient state, mentioned when the reader next comes up
+ * for air. The ring beside it already says "Queued" out loud.
  */
-function QueuedWord({ line }: { line: string }) {
+function QueuedCaption({ line }: { line: QueueCaption }) {
   return (
-    <span className="c-tb-paused" aria-live="polite">
-      <span className="task-side-peek-status" title="Queued">
-        <StatusIcon status="queued" />
+    <span
+      className={"tasks-row-queue" + (line.runsNext ? " is-next" : "")}
+      data-hint={line.aheadTitle || line.text}
+      aria-live="polite"
+    >
+      {line.runsNext && (
+        <span className="tasks-queue-glyph" aria-hidden="true">
+          {QUEUE_PRIORITY_GLYPH}
+        </span>
+      )}
+      <span className="tasks-queue-text">
+        <QueueCaptionText queue={line} />
       </span>
-      {" queued · " + line}
     </span>
   );
 }
