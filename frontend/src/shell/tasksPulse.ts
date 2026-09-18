@@ -25,6 +25,7 @@
 // `/api/tasks` rows live was opening its own long-poll, and a wall of twelve
 // chat cards opened twelve.
 import { useEffect, useState } from "react";
+import { queueEnabled } from "@apps/claude/feature-flag";
 import { getTasks, getTasksPulse } from "@platform/lib/api";
 import type { Task, TaskPulseTask } from "@platform/lib/api";
 import {
@@ -778,10 +779,26 @@ function startFeed(env: ListingEnv) {
       // come back either (regression review, 2026-09-16). One bad answer costs
       // one backoff; the next long-poll and the floor refresh carry on.
       try {
-        const merged = mergeTaskChanges(held, rows.filter((t) => !!t && !!t.key), gone);
+        // THE QUEUE'S REKEY IS A FOLD, NOT A DELETE AND AN INSERT (tasks-lib
+        // `mergeTaskChanges`, and the identity rule above it). A dispatched
+        // message's `pending:<entry>` row leaves in the same payload its session
+        // row arrives in, and with the flag up the merge treats the two as one
+        // task so the list never shows both and never shows neither.
+        const queueOn = queueEnabled();
+        const merged = mergeTaskChanges(
+          held, rows.filter((t) => !!t && !!t.key), gone, queueOn,
+        );
         rememberListing(merged);
         publishTasks(merged);
         emitListing({ rows: merged, failed: false, delta: { rows, gone } });
+        // …AND A ROW WE HELD OVER ITS OWN `gone` IS A CLAIM, not news. The merge
+        // keeps a dispatched pending row painted rather than leaving a hole, and
+        // the only thing that can settle it is the whole listing — asked for
+        // here, so the answer is one round trip away instead of up to 20 s (and
+        // so a `gone` that was really a CANCEL is corrected just as fast).
+        if (queueOn && gone.some((key) => merged.some((row) => row.key === key))) {
+          void load();
+        }
       } catch {
         await env.sleep(CHANGES_BACKOFF_MS);
       }
@@ -982,6 +999,10 @@ export function dropListingKeys(keys: readonly string[]): void {
     for (const sub of goneSubs) sub([...gone]);
     return;
   }
+  // FLAG-OFF MERGE ON PURPOSE, whatever the switch says: this is the page taking
+  // a row off BEFORE the server has been asked (a draft discarded, a task
+  // erased), and the queue's "hold a dispatched pending row" rule would paint
+  // the very row the reader just deleted as a run that had started.
   const merged = mergeTaskChanges(held, [], [...gone]);
   if (merged.length === held.length) {
     for (const sub of goneSubs) sub([...gone]);

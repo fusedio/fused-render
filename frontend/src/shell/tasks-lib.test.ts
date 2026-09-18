@@ -144,6 +144,8 @@ import {
   viewFromSearch,
   viewUrl,
   mergeTaskChanges,
+  taskIdentity,
+  taskListKeys,
   provisionalTasks,
   emptyPaneFailed,
   emptyPaneText,
@@ -8334,7 +8336,11 @@ describe("sortForList: the page's one order", () => {
     expect(VIEWS).toContain(
       "const rows = useMemo(() => sortForList(tasks, now), [tasks, now]);",
     );
-    expect(VIEWS).toContain("{rows.map((task) => (");
+    // The index rides along ONLY so the row can take its React key from
+    // `taskListKeys` (the queue's identity rule); the rows themselves are still
+    // drawn straight off the sorted list, in its order, with nothing between them.
+    expect(VIEWS).toContain("{rows.map((task, ix) => (");
+    expect(VIEWS).toContain("key={rowKeys[ix]}");
   });
 });
 
@@ -10278,6 +10284,140 @@ describe("mergeTaskChanges", () => {
 
   it("a key both upserted and gone is gone", () => {
     expect(mergeTaskChanges([row("a", 1)], [row("a", 5)], ["a"])).toEqual([]);
+  });
+});
+
+// ---- the dispatched row keeps its place (project queue) ----------------------
+// One task, two names: `pending:<entry>` while it waits in a folder's line and
+// its session id from the beat it runs. The rule that makes the two one row is
+// `taskIdentity`, spent on a list through `taskListKeys` and on the fold through
+// `mergeTaskChanges`'s `queueOn` — and it is the flag's, whole: with the queue
+// off, keys are `task.key` and the merge is the merge above, unchanged.
+
+describe("the identity a dispatched row keeps", () => {
+  const task = (over: Partial<Task>): Task =>
+    ({
+      key: "",
+      task_id: "",
+      session_id: "",
+      last_active: 0,
+      status: "done",
+      messages: [],
+      ...over,
+    }) as unknown as Task;
+
+  const pending = task({
+    key: "pending:e4",
+    task_id: "TASK-052",
+    status: "queued",
+    last_active: 30,
+  });
+  const started = task({
+    key: "sess-4",
+    task_id: "TASK-052",
+    session_id: "sess-4",
+    status: "in_progress",
+    last_active: 35,
+  });
+
+  it("is the number when there is one, and the key when there is not", () => {
+    expect(taskIdentity(pending)).toBe("TASK-052");
+    expect(taskIdentity(started)).toBe("TASK-052");
+    expect(taskIdentity(task({ key: "sess-9" }))).toBe("sess-9");
+    // A draft carries a number too and is still keyed on its own key: it is not
+    // a conversation and never becomes one in place.
+    expect(taskIdentity(task({ key: "draft:d1", task_id: "TASK-052", kind: "draft" })))
+      .toBe("draft:d1");
+  });
+
+  it("keys a waiting row and the run it becomes the same, flag on", () => {
+    const before = taskListKeys([pending, task({ key: "other" })], true);
+    const after = taskListKeys([started, task({ key: "other" })], true);
+    expect(before[0]).toBe("TASK-052");
+    expect(after[0]).toBe(before[0]);
+  });
+
+  it("keys every row on `task.key` with the flag off", () => {
+    expect(taskListKeys([pending, started, task({ key: "other" })], false))
+      .toEqual(["pending:e4", "sess-4", "other"]);
+  });
+
+  it("never spends one number on two rows", () => {
+    // A draft and a session sharing a number: the draft is out of the rule, so
+    // the session takes it and the draft keeps its key.
+    const draft = task({ key: "draft:d1", task_id: "TASK-052", kind: "draft" });
+    expect(taskListKeys([draft, started], true)).toEqual(["draft:d1", "TASK-052"]);
+    // Two SESSIONS sharing a respent number (tasks-lib.cardKey's incident):
+    // nobody spends it, because "the first one" is a fact about the sort and a
+    // winner that moves when the list re-sorts would remount both rows.
+    const twin = task({ key: "sess-7", task_id: "TASK-052", session_id: "sess-7" });
+    expect(taskListKeys([started, twin], true)).toEqual(["sess-4", "sess-7"]);
+    expect(taskListKeys([twin, started], true)).toEqual(["sess-7", "sess-4"]);
+    // A pending row still on screen beside the session it became: the session
+    // has the number, the pending row falls back — one row keeps its node.
+    expect(taskListKeys([pending, started], true)).toEqual(["pending:e4", "TASK-052"]);
+    // A number that is also some row's own key is nobody's.
+    const named = task({ key: "TASK-052" });
+    expect(taskListKeys([named, started], true)).toEqual(["TASK-052", "sess-4"]);
+  });
+
+  it("keeps a row without a number on its own key", () => {
+    const bare = task({ key: "sess-1", session_id: "sess-1" });
+    expect(taskListKeys([bare, pending], true)).toEqual(["sess-1", "TASK-052"]);
+  });
+
+  it("hands back one key per row, always distinct", () => {
+    const dupe = task({ key: "same" });
+    const keys = taskListKeys([dupe, dupe, dupe], true);
+    expect(keys.length).toBe(3);
+    expect(new Set(keys).size).toBe(3);
+  });
+
+  it("swaps the waiting row for its run in one pass — one row, running", () => {
+    const shown = [pending, task({ key: "other", last_active: 20 })];
+    const merged = mergeTaskChanges(shown, [started], ["pending:e4"], true);
+    expect(merged.map((t) => t.key)).toEqual(["sess-4", "other"]);
+    expect(merged[0].status).toBe("in_progress");
+    // And the key the list draws it under has not moved.
+    expect(taskListKeys(shown, true)[0]).toBe(taskListKeys(merged, true)[0]);
+  });
+
+  it("replaces rather than appends when the payload forgets the gone key", () => {
+    const merged = mergeTaskChanges([pending], [started], [], true);
+    expect(merged.map((t) => t.key)).toEqual(["sess-4"]);
+  });
+
+  it("holds a dispatched waiting row until its run lands, flag on", () => {
+    const merged = mergeTaskChanges([pending], [], ["pending:e4"], true);
+    expect(merged.map((t) => t.key)).toEqual(["pending:e4"]);
+    // Painted as what it has become — never a hole, never a stale "in line".
+    expect(merged[0].status).toBe("in_progress");
+    // …and the row it was waiting for takes its place on the next fold.
+    expect(mergeTaskChanges(merged, [started], [], true).map((t) => t.key))
+      .toEqual(["sess-4"]);
+  });
+
+  it("holds nothing with the flag off — the old merge, exactly", () => {
+    expect(mergeTaskChanges([pending], [], ["pending:e4"])).toEqual([]);
+    expect(mergeTaskChanges([pending], [started], [], false).map((t) => t.key))
+      .toEqual(["sess-4", "pending:e4"]);
+  });
+
+  it("holds only a waiting row that carries a number and was not settled", () => {
+    const numberless = task({ key: "pending:e9", status: "queued" });
+    expect(mergeTaskChanges([numberless], [], ["pending:e9"], true)).toEqual([]);
+    const settled = task({ key: "pending:e8", task_id: "TASK-060", status: "archived" });
+    expect(mergeTaskChanges([settled], [], ["pending:e8"], true)).toEqual([]);
+    // A session row told it is gone is gone: only a `pending:` key is ever held.
+    expect(mergeTaskChanges([started], [], ["sess-4"], true)).toEqual([]);
+  });
+
+  it("never evicts a twin that merely shares a respent number", () => {
+    const twin = task({
+      key: "sess-7", task_id: "TASK-052", session_id: "sess-7", last_active: 10,
+    });
+    const merged = mergeTaskChanges([twin], [started], [], true);
+    expect(merged.map((t) => t.key)).toEqual(["sess-4", "sess-7"]);
   });
 });
 

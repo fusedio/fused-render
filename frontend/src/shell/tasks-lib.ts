@@ -42,6 +42,7 @@ import { labelForSource } from "@platform/lib/format";
 import {
   CHAT_ENTRY_ORIGIN,
   chatUrl,
+  PENDING_KEY_PREFIX,
   pendingEntryId,
   queuePosition,
   runningWaitingLabel,
@@ -5010,18 +5011,182 @@ export function pulseTitle(pulse: TasksPulse): string {
   return parts.join(" · ");
 }
 
+// ---- ONE IDENTITY FOR A ROW THAT CHANGES ITS NAME ----------------------------
+// `key` is the server's row identity and it MOVES under one task exactly once:
+// a message waiting in a folder's line is listed as `pending:<entry-id>`, and
+// the beat its run gets a session the listing files it under the session id
+// instead (routers/tasks.py `_rekeyed_pendings` — the session row and the
+// pending row flagged `gone` ride in ONE payload, so the data is already a clean
+// swap). What was not clean was the PAINT: both lists key their rows on
+// `task.key`, so the swap unmounted the pending row and mounted a session row in
+// its place — the row blinked out for a beat and came back running, worst of all
+// on a task the reader had just skipped, where the blink lands on the very row
+// the press was about (Akshil QA, 2026-09-18).
+//
+// So both halves — the merge that decides replace-vs-append, and the React key —
+// ask ONE question: what is this row's identity. `task_id` is the answer when
+// there is one, because a number is allocated once per task and carried ACROSS
+// the rekey (`tasks_store.ensure_ids`), which is exactly the fact the key lacks.
+//
+// FLAG-GATED, and the gate is at the call sites rather than in here: with the
+// project queue off nothing is ever held in a line, so nothing is ever rekeyed
+// while it is on screen, and the byte-for-byte old behaviour (key by `task.key`,
+// merge by `task.key`) is what those call sites keep.
+//
+// AND `task_id` IS NOT UNIQUE — `cardKey` above carries the incident that proves
+// it: the pending row's number is respent when the rekey is refused, and a live
+// listing held four numbers naming two sessions each. A duplicate React key
+// stops a list updating, which is how the first attempt at this (reverted,
+// 63bddc24d) broke live rows. `taskListKeys` is therefore the only way this is
+// ever spent on a list: it hands back one key per row, unique by construction,
+// and it hands back `task.key` for every row it cannot vouch for.
+
+/** The `draft:<id>` rows' prefix (platform/lib/drafts.taskDraftKey). A draft
+ *  carries a number too — it is allocated at the form, not at the run — but a
+ *  draft is not a conversation and never becomes one in place, so it is left out
+ *  of the rule entirely and keyed on its own key. */
+const DRAFT_KEY_PREFIX = "draft:";
+
+/** The row's NUMBER when it is allowed to stand for the row, "" otherwise —
+ *  the whole of the rule that decides which rows may be tracked across a rekey.
+ *  Private: everything outside asks `taskIdentity` or `taskListKeys`. */
+function taskNumber(task: Pick<Task, "key" | "task_id" | "kind">): string {
+  if (task.kind === "draft" || task.key.startsWith(DRAFT_KEY_PREFIX)) return "";
+  return task.task_id || "";
+}
+
+/**
+ * WHAT THIS ROW IS, across a change of key: its number, else its key.
+ *
+ * The per-row half of the rule. It is a CANDIDATE and not yet a React key — a
+ * list has to answer for two rows claiming one number as well (`taskListKeys`),
+ * and the merge below asks a narrower question again.
+ */
+export function taskIdentity(task: Pick<Task, "key" | "task_id" | "kind">): string {
+  return taskNumber(task) || task.key;
+}
+
+/**
+ * THE REACT KEYS FOR ONE RENDERED LIST, in the rows' own order and unique by
+ * construction — the only sanctioned way to spend `taskIdentity` on a list.
+ *
+ * With the flag down this is `rows.map(t => t.key)` and nothing else.
+ *
+ * With it up, a number is spent by AT MOST ONE row per list:
+ *
+ *   * a number only one row claims is that row's key — the ordinary case, and
+ *     the one the whole fix is about: `pending:<entry>` and the session it
+ *     becomes are one number, so the row keeps its DOM node through the swap;
+ *   * a number TWO rows claim (the respent-number twins of `cardKey`, or a
+ *     pending row still on screen beside the session it became) goes to the one
+ *     with a session and to nobody at all when that is not exactly one row. Not
+ *     "the first one wins": first is a fact about the SORT, and a winner that
+ *     changes when the list re-sorts would remount both rows — the bug, twice;
+ *   * a number that is also some row's own key is nobody's, since spending it
+ *     would collide with that row.
+ *
+ * Anything left over falls back to `task.key`, and a final pass suffixes the
+ * impossible case rather than emitting a duplicate: React silently stops
+ * updating rows that share a key, which is a worse failure than an ugly key.
+ */
+export function taskListKeys(rows: readonly Task[], queueOn: boolean): string[] {
+  if (!queueOn) return rows.map((t) => t.key);
+  const ownKeys = new Set(rows.map((t) => t.key));
+  /** number -> the row indices claiming it. */
+  const claims = new Map<string, number[]>();
+  rows.forEach((t, i) => {
+    const n = taskNumber(t);
+    if (!n || ownKeys.has(n)) return;
+    const held = claims.get(n);
+    if (held) held.push(i);
+    else claims.set(n, [i]);
+  });
+  /** row index -> the number it is allowed to spend. */
+  const spends = new Map<number, string>();
+  for (const [n, ix] of claims) {
+    if (ix.length === 1) {
+      spends.set(ix[0], n);
+      continue;
+    }
+    const withSession = ix.filter((i) => !!rows[i].session_id);
+    if (withSession.length === 1) spends.set(withSession[0], n);
+  }
+  const used = new Set<string>();
+  return rows.map((t, i) => {
+    let key = spends.get(i) ?? t.key;
+    if (used.has(key)) {
+      let n = 2;
+      while (used.has(`${key}#${n}`)) n += 1;
+      key = `${key}#${n}`;
+    }
+    used.add(key);
+    return key;
+  });
+}
+
 /**
  * Fold a `/api/tasks/changes` answer into the rows on screen: rows in `upserts`
  * replace (or join) the row with the same key, keys in `gone` leave, and the
  * result keeps the one ordering promise this client makes — the server's
  * `last_active` descending — so a session that just woke up rises to the top
  * the same way it would on the next full poll.
+ *
+ * `queueOn` buys the two halves of the rekey the paint needs, and NOTHING with
+ * the flag down (the default is off, and `dropListingKeys` leaves it off on
+ * purpose — see its call):
+ *
+ *   * REPLACE, NEVER APPEND. A session row carrying the number of a
+ *     `pending:<entry>` row already on screen takes that row's place even when
+ *     the payload forgot to say the pending key is gone, so no frame ever shows
+ *     one task twice;
+ *   * AND NEVER NEITHER. A `pending:<entry>` row told it is gone whose
+ *     replacement is NOT in this payload stays, painted as the run it has just
+ *     become, instead of leaving a hole until the next row lands. Narrow on
+ *     purpose: only a `pending:` key, only one that carries a number, and only
+ *     from a status that means the work was asked for and not yet finished. The
+ *     caller pairs it with a full re-read (shell/tasksPulse), so a `gone` that
+ *     was really a CANCEL is corrected by one round trip rather than standing
+ *     until the 20 s floor.
  */
-export function mergeTaskChanges(tasks: Task[], upserts: Task[], gone: string[]): Task[] {
+export function mergeTaskChanges(
+  tasks: Task[],
+  upserts: Task[],
+  gone: string[],
+  queueOn = false,
+): Task[] {
   const drop = new Set(gone);
+  const live = upserts.filter((t) => !drop.has(t.key));
   const byKey = new Map<string, Task>();
   for (const t of tasks) if (!drop.has(t.key)) byKey.set(t.key, t);
-  for (const t of upserts) if (!drop.has(t.key)) byKey.set(t.key, t);
+  if (queueOn) {
+    /** The numbers arriving under a key that is NOT a pending one — which is
+     *  the only direction a rekey ever goes, and the only pair this may treat
+     *  as one task. (Two settled sessions sharing a respent number are not
+     *  that, and evicting one of them would be data loss.) */
+    const arriving = new Set(
+      live
+        .filter((t) => !t.key.startsWith(PENDING_KEY_PREFIX))
+        .map(taskNumber)
+        .filter((n) => !!n),
+    );
+    for (const [key, t] of [...byKey]) {
+      if (!key.startsWith(PENDING_KEY_PREFIX)) continue;
+      const n = taskNumber(t);
+      if (n && arriving.has(n)) byKey.delete(key);
+    }
+    const standing = new Set([...byKey.values()].map(taskNumber).filter((n) => !!n));
+    for (const t of tasks) {
+      if (!drop.has(t.key) || !t.key.startsWith(PENDING_KEY_PREFIX)) continue;
+      const n = taskNumber(t);
+      if (!n || arriving.has(n) || standing.has(n)) continue;
+      if (t.status !== "queued" && t.status !== "in_progress") continue;
+      // `in_progress`, because the one thing we DO know about a pending row the
+      // server has stopped listing under that name is that its wait is over.
+      byKey.set(t.key, { ...t, status: "in_progress" });
+      standing.add(n);
+    }
+  }
+  for (const t of live) byKey.set(t.key, t);
   return [...byKey.values()].sort((a, b) => b.last_active - a.last_active);
 }
 

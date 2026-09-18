@@ -94,6 +94,7 @@ import {
   laneRolledUp,
   laneUnread,
   sortForList,
+  taskListKeys,
   showsRowActions,
   statusColumn,
   markAllRead,
@@ -2071,6 +2072,19 @@ export function TaskList({
   // once a second.
   const now = useNow();
   const rows = useMemo(() => sortForList(tasks, now), [tasks, now]);
+  /**
+   * THE ROWS' REACT KEYS, and the reason they are not `task.key` any more.
+   *
+   * A message waiting in a folder's line is `pending:<entry>` and becomes its
+   * session id the moment it is dispatched — one task, two names — so a row
+   * keyed on the name unmounted and remounted at the handover and the reader
+   * watched it blink out and come back running (Akshil QA, 2026-09-18).
+   * `taskListKeys` answers with the task's NUMBER where it can vouch that one
+   * number names one row here, and with `task.key` everywhere else; with the
+   * queue off it is `task.key` for every row and nothing has changed.
+   */
+  const queueOn = useProjectQueueEnabled();
+  const rowKeys = useMemo(() => taskListKeys(rows, queueOn), [rows, queueOn]);
 
   /**
    * Open or close a task — and, on the way OPEN, fetch the rest of its thread.
@@ -2380,9 +2394,9 @@ export function TaskList({
           where a list has no frame and five headers are five interruptions in
           the one column a person is scanning. The order already says what they
           said. */}
-      {rows.map((task) => (
+      {rows.map((task, ix) => (
         <TaskNode
-          key={task.key}
+          key={rowKeys[ix]}
           task={task}
           home={home}
           showProject={showProject}
@@ -4702,6 +4716,10 @@ export function TaskBoard({
   // than per lane, because a lane that happens to hold one project is not a page
   // that holds one — the reader is looking at all five columns at once.
   const showProject = useMemo(() => spansProjects(tasks), [tasks]);
+  /** Is the project queue on — read here only so the lanes below can key their
+   *  cards on the task's identity rather than on a name that moves at dispatch
+   *  (`taskListKeys`). Off, every card is keyed on `task.key` as before. */
+  const queueOn = useProjectQueueEnabled();
 
 
   const allowed = useMemo(
@@ -5140,6 +5158,11 @@ export function TaskBoard({
            *  seam, and never below the fold's last visible card. */
           const splitAt = laneSplitAt(col.key, cards);
           const hidden = Math.max(lane.length - cards.length, 0);
+          /** The List's rule, on the Board's cards — a dispatched message is one
+           *  task under two names here too (`taskListKeys`). Per LANE, which is
+           *  all React asks: a card that crosses lanes is remounted by the move
+           *  itself and there is nothing to preserve. */
+          const cardKeys = taskListKeys(cards, queueOn);
           return (
             <div className="schedule-tv-lane" key={col.key}>
               <button
@@ -5174,7 +5197,7 @@ export function TaskBoard({
                   <p className="tasks-run-hint">{runHint}</p>
                 )}
                 {cards.map((task, ix) => (
-                  <Fragment key={task.key}>
+                  <Fragment key={cardKeys[ix]}>
                     {/* THE SEAM, drawn only where there is one: a thin dashed
                         rule between the cards that are RUNNING and the ones
                         waiting on a busy folder, with the reader's own word on
@@ -5190,7 +5213,6 @@ export function TaskBoard({
                       </p>
                     )}
                   <TaskCard
-                    key={task.key}
                     task={task}
                     home={home}
                     showProject={showProject}
