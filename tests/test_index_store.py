@@ -110,6 +110,40 @@ def test_sink_add_tolerates_a_plugin_row_missing_a_declared_column(tmp_path):
     assert t.column("extra").to_pylist() == ["x", None]
 
 
+def test_sink_add_tolerates_a_plugin_row_that_is_not_a_dict_at_all(tmp_path):
+    """Bugbot finding against a7aef9472: `scan.py`'s own `extract` call site
+    only guards against the row being an EXCEPTION or `None` — a plugin
+    that returns some other truthy, non-dict value (a bare string, a list,
+    an int) sails through that `if row is not None:` check unchanged and
+    lands here as `fr`. The generic branch's `fr.get(name)` then raised
+    `AttributeError` (a `str`/`list`/`int` has no `.get`), which is not
+    caught anywhere between here and the scan's own top-level handler, so
+    one malformed row aborted the entire run — not just degraded, unlike
+    the sibling missing-key case above."""
+    kind = IndexKind(
+        name="_test_non_dict_row",
+        columns=(Column("name", "string"), Column("extra", "string")),
+        extract=lambda path, st: None,
+        text_column="name",
+    )
+    register(kind, replace=True)
+    shards = str(tmp_path / "s")
+    os.makedirs(shards, exist_ok=True)
+    sink = Sink(shards, "t", pa, pq, IndexConfig(dir=str(tmp_path / "ix")).shard_rows,
+                kind="_test_non_dict_row")
+    # "not-a-dict-at-all" is exactly the shape a plugin bug (or a plugin
+    # written against a different `IndexKind.extract` contract) can return
+    # without ever raising — it is not `None`, so scan.py's own guard lets
+    # it through.
+    sink.add("/r", "s", ("sig", [{"name": "a", "extra": "x"}, "not-a-dict-at-all"],
+                         0, 1, 0))
+    sink._flush_files()
+    names = [n for n in os.listdir(shards) if n.startswith("shard-")]
+    t = pq.read_table(os.path.join(shards, names[0]))
+    assert t.column("name").to_pylist() == ["a", None]
+    assert t.column("extra").to_pylist() == ["x", None]
+
+
 def _register_widgets_kind():
     kind = IndexKind(
         name="_test_widgets",

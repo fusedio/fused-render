@@ -322,8 +322,21 @@ class Sink:
                 # cell) plus dropping any undeclared key keeps a malformed
                 # plugin row contained instead of raising `KeyError` here,
                 # inside the host's own writer.
+                #
+                # `scan.py`'s own guard only checks `row is not None` —  a
+                # plugin returning some OTHER non-dict, non-None value (a
+                # bare string, a list, an int) sails through that unchanged
+                # and arrives here as `fr` (bugbot finding against
+                # a7aef9472). `fr.get` would then raise `AttributeError`,
+                # uncaught between here and the scan's own top-level
+                # handler, aborting the whole run over one malformed row.
+                # `isinstance` first means a row of the wrong TYPE degrades
+                # exactly like one of the right type missing every key —
+                # an all-null cell per declared column — rather than
+                # raising.
+                row_dict = fr if isinstance(fr, dict) else {}
                 for name in self.file_schema.names:
-                    r[name].append(fr.get(name))
+                    r[name].append(row_dict.get(name))
         self.files += len(frows)
         dr = self.dir_rows
         dr["dir"].append(d); dr["sig"].append(sig)
