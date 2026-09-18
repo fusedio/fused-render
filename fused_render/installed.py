@@ -59,9 +59,19 @@ def _linux_installed_version(appimage: str | None) -> str | None:
     when `appimage` (the CURRENT $APPIMAGE, or a manager's target path) still
     matches the stamp's path/size/mtime exactly — a hand-replaced or moved
     AppImage must not keep showing a restart banner for a swap that never
-    happened to it."""
+    happened to it.
+
+    INVARIANT: the stamp is keyed by the AppImage's RESOLVED path
+    (write_linux_stamp() is always called with os.path.realpath()'s result —
+    see update/linux.py's _install_appimage). `$APPIMAGE`/a manager's `bundle`
+    can legitimately name a symlink (some ancestor directory swapped out from
+    under a stable launcher path), so `appimage` is resolved here too, once,
+    before comparing — the one place both callers (installed_version() below
+    and update/linux.py's _disk_version()) get this for free, rather than
+    each having to remember to realpath its own argument first."""
     if appimage is None:
         return None
+    appimage = os.path.realpath(appimage)
     stamp = storage.read_json(_linux_stamp_path())
     if not isinstance(stamp, dict):
         return None

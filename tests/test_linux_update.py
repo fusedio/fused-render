@@ -293,6 +293,59 @@ def test_install_resolves_a_symlinked_appimage_before_swapping(monkeypatch, tmp_
     assert os.readlink(str(link)) == str(real)
 
 
+@linux_only
+def test_disk_version_reads_back_through_a_symlinked_appimage(monkeypatch, tmp_path):
+    # The write side (_install_appimage) stamps the RESOLVED path
+    # (os.path.realpath(self._bundle)); the read side must resolve the same
+    # way or the stamp never matches — this is the actual restart-banner
+    # signal (manager._disk_version() / installed._linux_installed_version()),
+    # not the in-memory "installed" state the sibling test above already
+    # covers. Also exercises installed.installed_version()'s own Linux path,
+    # which reads through startup.appimage_path() — the OTHER unresolved
+    # reader.
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    real = real_dir / "FusedRender-0.4.10-x86_64.AppImage"
+    real.write_bytes(b"old-bytes")
+    link = tmp_path / "FusedRender.AppImage"
+    link.symlink_to(real)
+
+    manager = linux.UpdateManager(bundle=str(link), method="appimage")
+    monkeypatch.setattr(linux, "__version__", "0.4.10")
+    manifest = {"schema": 1, "version": "9.9.9",
+                "url": "https://example.invalid/FusedRender.AppImage",
+                "sha256": "s", "signature": "g"}
+    monkeypatch.setattr(common, "fetch_manifest", lambda url, **kwargs: dict(manifest))
+    monkeypatch.setattr(manager, "_check_disk_space", lambda updates: None)
+    manager.check()
+    assert manager.status()["state"] == "available"
+
+    new_bytes = b"new-appimage-bytes"
+
+    def fake_download(manifest, *, dir, prefix, suffix, progress, should_abort):
+        progress(len(new_bytes), len(new_bytes))
+        path = os.path.join(dir, prefix + "staged" + suffix)
+        with open(path, "wb") as f:
+            f.write(new_bytes)
+        return path
+
+    monkeypatch.setattr(common, "download_verified", fake_download)
+    manager.install()
+    manager._install_thread.join(timeout=5)
+    assert manager.status()["state"] == "installed"
+
+    # Read via the manager's own (unresolved, symlink) target path — the
+    # exact call update/linux.py's _disk_version() makes.
+    assert manager._disk_version() == "9.9.9"
+
+    # Read via installed.installed_version()'s own Linux path, which pulls
+    # $APPIMAGE from startup.appimage_path() — also unresolved.
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(
+        "fused_render.supervisor._linux.startup.appimage_path", lambda: link)
+    assert installed.installed_version() == "9.9.9"
+
+
 def test_disk_version_reads_the_stamp_back(monkeypatch, tmp_path):
     appimage = tmp_path / "FusedRender.AppImage"
     appimage.write_bytes(b"payload")
