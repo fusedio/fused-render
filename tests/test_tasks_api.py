@@ -547,18 +547,47 @@ def test_a_prepended_app_state_block_does_not_eat_what_the_user_typed(
     assert task["title_source"] == "message"
 
 
-def test_a_wordless_screenshot_send_is_not_a_message_either(client, projects_dir):
+def test_a_wordless_screenshot_send_is_a_message_named_for_what_it_carried(
+        client, projects_dir):
     """The one case where a STRIP tag still yields nothing: annotations or a
-    screenshot with no typed words. Real, and the client's job to label — but
-    there is no body for a listing to show, so it is not a row's message."""
+    screenshot with no typed words. Real, and until 2026-09-18 this page dropped
+    it — so a chat where every send was a comment on the app and a tap of Send
+    had no messages here at all, and therefore (`_status` derives from the
+    messages) no status either.
+
+    The body is the CHAT'S OWN LABEL for such a send, not a sentence of ours:
+    `stripBlocks` substitutes "pane screenshot" into the bubble and the row now
+    shows the same words (`tasks_store.carried_words`)."""
     _write_transcript(projects_dir, "sess-a", "/p", [
         _user(records.prefixed(records.APP_STATE, records.PANE_SHOT), T9,
               uuid="u1"),
         _user("and now make it green", T10, uuid="u2"),
     ])
     task = _tasks(client)[0]
-    assert task["message_count"] == 1
-    assert [m["body"] for m in task["messages"]] == ["and now make it green"]
+    assert task["message_count"] == 2
+    assert [m["body"] for m in task["messages"]] == [
+        "and now make it green", "pane screenshot"]
+    # …and the row is still named by the WORDS. A marker is what a send is
+    # called when it said nothing; it never outranks a message that did.
+    assert task["title"] == "and now make it green"
+
+
+def test_a_send_with_only_annotations_is_a_message_named_by_the_notes(
+        client, projects_dir):
+    """The shape the bug was reported on: comment on the app, send without
+    typing. The notes the user wrote on the pins ARE the message — the marker is
+    only for pins nobody wrote on."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user(records.prefixed(records.APP_STATE, records.PANE_SHOT,
+                               records.ANNOTATION_TAGGED), T9, uuid="u1"),
+        _user(records.prefixed(records.APP_STATE, records.PANE_SHOT,
+                               records.ANNOTATION_TAGGED_SILENT), T10,
+              uuid="u2"),
+    ])
+    task = _tasks(client)[0]
+    assert task["message_count"] == 2
+    assert [m["body"] for m in task["messages"]] == [
+        "annotations + pane screenshot", records.ANNOTATION_TAGGED_NOTES]
 
 
 def test_a_session_that_only_ran_a_slash_command_is_named_the_command(
@@ -1915,6 +1944,115 @@ def _near_now(offset_sec: float) -> str:
     clock and the fixed T9..T12 stamps are years cold by construction."""
     return time.strftime("%Y-%m-%dT%H:%M:%SZ",
                          time.gmtime(time.time() + offset_sec))
+
+
+def test_a_chat_that_only_ever_annotated_still_has_a_status(
+        client, projects_dir, state_dir):
+    """THE WHOLE BUG, END TO END (Akshil, 2026-09-18). Comment on the app, hit
+    Send without typing: the chat vanished from this page, and where it did
+    appear it read `done` with a turn still running.
+
+    Status is DERIVED from the messages (`_status`: `if messages and
+    (_running_now(...) ...)`), so both halves were the same fault — no messages
+    meant nothing to derive from and the fallthrough is `done`. This asserts the
+    derivation is whole again: the messages are here, and the status follows the
+    RUN rather than the emptiness."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-live", "/p", [
+        # (i) annotations with nothing typed anywhere, and (ii) the screenshot
+        # on its own — the two sends that had no body at all.
+        _user(records.prefixed(records.APP_STATE, records.PANE_SHOT,
+                               records.ANNOTATION_TAGGED), _near_now(-40),
+              uuid="u1"),
+        _user(records.prefixed(records.APP_STATE, records.PANE_SHOT),
+              _near_now(-30), uuid="u2"),
+        # …and a tail that says the turn is still going.
+        _assistant("still building it", _near_now(-3)),
+    ])
+    task = _by_key(client)["sess-live"]
+    assert task["message_count"] == 2, "a wordless send is still a send"
+    assert [m["body"] for m in task["messages"]] == [
+        "pane screenshot", records.ANNOTATION_TAGGED_NOTES]
+    assert task["live"] is True
+    assert task["status"] == "in_progress", "not `done` while it is running"
+
+
+def test_the_same_chat_reads_done_once_the_run_has_stopped(
+        client, projects_dir, state_dir):
+    """The other side of the derivation, and the reason `done` was never a safe
+    fallback to leave in place: it is the RIGHT answer here, and it has to be
+    reached by the messages agreeing rather than by there being none."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-cold", "/p", [
+        _user(records.prefixed(records.APP_STATE, records.PANE_SHOT,
+                               records.ANNOTATION_TAGGED), T9, uuid="u1"),
+        _user(records.prefixed(records.APP_STATE, records.PANE_SHOT), T10,
+              uuid="u2"),
+        _assistant("all done", T11),
+    ])
+    task = _by_key(client)["sess-cold"]
+    assert task["message_count"] == 2
+    assert task["live"] is False
+    assert task["status"] == "done"
+
+
+# ---- the run settings a task carries (Akshil, 2026-09-18) --------------------
+#
+# "When we change model and effort from the new task modal it doesn't get
+# reflected" — and the surface was the SIDE PEEK, whose composer pills showed
+# something else entirely. They showed `agent._defaults`: the model last used in
+# that FOLDER, scanned off its newest transcripts, which is the right answer for
+# a chat opened on a folder and the wrong one for a task that was set up with a
+# model of its own.
+#
+# The peek could not have shown the task's model, because the row it is drawn
+# from did not carry one. It does now — and the entry's value is the truth
+# rather than a second opinion about it: `schedule._send` passes exactly
+# `entry["model"]` / `entry["effort"]` to `spawn_helper`, which passes them to
+# `claude --model` / `--effort`. Stored IS what the run uses.
+
+
+def test_a_task_carries_the_model_and_effort_its_runs_use(client, projects_dir):
+    """The two fields the New task card set, on the row every surface reads."""
+    _seed_schedule([_entry("e1", "nightly sweep", T12,
+                           model="claude-fable-5-1", effort="max")])
+    task = _tasks(client)[0]
+    assert task["model"] == "claude-fable-5-1"
+    assert task["effort"] == "max"
+
+
+def test_a_task_that_chose_neither_says_nothing_about_them(client, projects_dir):
+    """"" IS THE ANSWER, and it is the load-bearing one: it means "this task has
+    no opinion", which is what lets the chat's own detection keep speaking for
+    every conversation that never went through the New task card. A row that
+    invented "sonnet" here would pin every hand-typed chat to a model nobody
+    chose."""
+    _seed_schedule([_entry("e1", "no opinion", T12)])
+    assert [_tasks(client)[0][k] for k in ("model", "effort")] == ["", ""]
+
+
+def test_a_plain_chat_has_no_run_settings_either(client, projects_dir):
+    """No schedule anywhere near it — a session the user typed into. Same
+    answer, for the same reason."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hello", T9)])
+    assert [_tasks(client)[0][k] for k in ("model", "effort")] == ["", ""]
+
+
+def test_the_newest_entry_that_named_one_speaks(client, projects_dir):
+    """A task is a THREAD, and a thread can hold several scheduled messages. The
+    newest that names a setting is the one a reader is about to act on, which is
+    the same rule `_description` takes over the same list — and it is asked per
+    FIELD, so an entry that pinned only the effort does not wipe the model an
+    earlier one pinned."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    _seed_schedule([
+        _entry("e1", "first", T9, state=schedule.SENT, fired=T9,
+               claude_session_id="sess-a", model="opus", effort="low"),
+        _entry("e2", "second", T12, claude_session_id="sess-a", effort="max"),
+    ])
+    task = _by_key(client)["sess-a"]
+    assert task["model"] == "opus", "the newest entry that named one"
+    assert task["effort"] == "max", "…asked per field"
 
 
 def test_a_freshly_resolved_turn_outvotes_the_transcripts_liveness(

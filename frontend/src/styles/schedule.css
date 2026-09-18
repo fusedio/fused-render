@@ -1424,9 +1424,54 @@
 }
 
 .schedule-recents-path {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* WHERE A ROW'S FOLDER LIVES, when the row did not come from the line the
+   reader is typing — a remembered folder, or one the index found. The Explorer's
+   completion rows print the NAME alone, because the address is already in the
+   field one line above; these two kinds did not come from the field, so they say
+   where they are, quietly, at the end of the row. Pushed right and truncated
+   from the FRONT would be better still, but a path is read from its tail and
+   `text-overflow` only cuts the tail — so it ellipsises like every other path in
+   this card. */
+.schedule-recents-where {
+  margin-left: auto;
+  padding-left: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+
+.schedule-form .schedule-picker-row.is-active .schedule-recents-where {
+  color: var(--fg-muted);
+}
+
+/* THE ROW THE ARROW KEYS ARE ON. Focus stays in the input while the list is
+   walked (`aria-activedescendant` names the row), so hover is the only thing
+   this list had that could say "here" — and a keyboard has no hover. Same wash
+   as the hover rule below, so arrowing to a row and pointing at it look
+   identical, which is the whole claim: one highlight, two ways to move it. */
+.schedule-form .schedule-picker-row.is-active {
+  background: rgba(var(--tint), 0.08);
+}
+
+/* A search that found nothing still answers — the same sentence, in the same
+   words, as the Tasks page's project menu (`.schedule-tv-pop-empty`). Not a
+   row: there is nothing to press. */
+.schedule-recents-empty {
+  margin: 0;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--fg-faint);
 }
 
 /* The line between the found paths and the verbs. Its OWN element, not a
@@ -4380,6 +4425,62 @@ input.schedule-when-field {
 
 .schedule-tv-pop-head:first-child {
   margin-top: 0;
+}
+
+/* THE PROJECT MENU'S OWN SEARCH BOX (ScheduleTaskViews `ProjectFacet`), on a
+   machine with enough folders that the list stopped being readable at a glance.
+
+   It IS the toolbar's search field — `.schedule-tv-search` carries the
+   magnifier's positioning and `.schedule-tv-search-input` the inset and the
+   type size, so the two boxes are one control in two places rather than a
+   second thing that looks nearly the same.
+
+   `flex: 0 0 auto` IS THE WHOLE OF THIS RULE, and it is not tidiness (browser
+   QA, 2026-09-18 — measured: the box stood 248px tall with the magnifier
+   floating in the middle of it and the two matching folders shoved to the
+   bottom of the panel).
+
+   THE TOOLBAR'S 260px IS A FLEX BASIS, NOT A WIDTH.
+   `.schedule-toolbar[data-fit] .schedule-tv-search { flex: 0 1 260px }` is the
+   field's designed slack in a ROW, where the basis is a width — and the popover
+   is a DOM descendant of that toolbar (fixed position is paint, not ancestry),
+   so the rule reaches this box too. Here the panel is a flex COLUMN, and in a
+   column the basis is a HEIGHT: the same declaration asked for a 260px-tall
+   search field. `width: auto` could never have undone it, because the number
+   was never in `width`.
+
+   So the basis is restated as `auto` and the box is frozen at its content
+   height. That also makes it the same answer tasks.css gives every row in this
+   panel (`flex: 0 0 auto` on `.schedule-tv-pop-item`, and for the same reason:
+   a constrained flex column squeezes and stretches its children unless each one
+   says not to). This box is not an item, so that rule never named it.
+
+   AND THE SELECTOR HAS TO OUT-SPECIFY THE TOOLBAR'S, which is the half a single
+   class could not do: `.schedule-toolbar[data-fit] .schedule-tv-search` is
+   (0,2,1) and `.schedule-tv-pop-search` alone is (0,1,0), so the fix loaded and
+   lost — measured in the browser, which listed all three matching rules and the
+   winner. Naming the panel AND both classes is (0,3,0), which wins wherever
+   this popover is drawn; scoping it to `.schedule-toolbar` instead would have
+   tied on specificity and left it depending on paint order, and would say
+   nothing about the merged menu or a popover drawn inside `.prefs-section`. */
+.schedule-tv-pop .schedule-tv-search.schedule-tv-pop-search {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 2px 2px 4px;
+}
+
+/* A search that found nothing still answers. Not a row: there is nothing to
+   press, and a pressable-looking line in a list of pressable rows is the worst
+   of both.
+
+   `flex: 0 0 auto` for the reason above — it is not a `.schedule-tv-pop-item`
+   either, so nothing else in this panel tells it to keep its own height. */
+.schedule-tv-pop-empty {
+  flex: 0 0 auto;
+  margin: 2px 0;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--fg-faint);
 }
 
 /* The project rows' radiogroup (ScheduleTaskViews `projectRows`): a box in the

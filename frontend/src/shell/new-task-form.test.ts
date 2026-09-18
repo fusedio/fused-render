@@ -48,6 +48,7 @@ let PAST_NOTE_ONE_OFF: typeof import("./NewJobModal").PAST_NOTE_ONE_OFF;
 let PAST_NOTE_CATCH_UP: typeof import("./NewJobModal").PAST_NOTE_CATCH_UP;
 let defaultTargetOf: typeof import("./NewJobModal").defaultTargetOf;
 let targetVerdict: typeof import("./NewJobModal").targetVerdict;
+let folderSearchSpec: typeof import("./NewJobModal").folderSearchSpec;
 let splitTargetPath: typeof import("./NewJobModal").splitTargetPath;
 let PATH_MISSING: typeof import("./NewJobModal").PATH_MISSING;
 let twoLevelsMissing: typeof import("./NewJobModal").twoLevelsMissing;
@@ -57,6 +58,7 @@ let seededDraftForm: typeof import("./NewJobModal").seededDraftForm;
 beforeAll(async () => {
   const mod = await import("./NewJobModal");
   initialRepeatKey = mod.initialRepeatKey;
+  folderSearchSpec = mod.folderSearchSpec;
   applyRepeatToggle = mod.applyRepeatToggle;
   buildSchedulePayload = mod.buildSchedulePayload;
   learnedSessionOf = mod.learnedSessionOf;
@@ -1706,14 +1708,22 @@ describe("where the new-folder answer is shown", () => {
   const css = () =>
     readFileSync(join(import.meta.dir, "../styles/schedule.css"), "utf8");
 
-  test("the row lives inside the recents dropdown", () => {
+  test("the row lives inside the recents dropdown, under the matches", () => {
     const s = src();
     const open = s.indexOf('className="schedule-recents"');
     const rowAt = s.indexOf("schedule-recents-new\"");
     expect(open).toBeGreaterThan(-1);
     expect(rowAt).toBeGreaterThan(open);
-    // …and BEFORE the recents rows it sorts above.
-    expect(rowAt).toBeLessThan(s.indexOf("recents.slice(0, RECENTS_SHOWN)"));
+    // …and AFTER the folder rows, which is a deliberate reversal of where it
+    // sat for one round (browser QA, 2026-09-18). Leading the list also meant
+    // leading the arrow ring, and ArrowDown-then-Enter — the commonest pair on
+    // any typeahead — therefore CREATED a folder rather than picking the match
+    // sitting right underneath it. Matches first, "create this one" last, which
+    // is where every tag and folder picker puts it. The behaviour is pinned in
+    // `folder-search.render.test.tsx`; this pins that the markup agrees, because
+    // a ring that walks one way while the list reads the other is a reader
+    // watching `aria-activedescendant` jump backwards.
+    expect(rowAt).toBeGreaterThan(s.indexOf("{pathRows.map("));
   });
 
   test("no inline note is left under the path field", () => {
@@ -1777,7 +1787,9 @@ describe("the + New folder button below Browse", () => {
     // It began as an inert role="status" div; a dead click beside five live
     // rows read as broken (Akshil, 2026-08-20). The path is already in the
     // field, so the click's whole job is the close.
-    expect(s).toContain('className="schedule-picker-row schedule-recents-new"');
+    // The class is composed now — the row also wears `is-active` when the arrow
+    // keys are on it — so the pair is asserted rather than the whole attribute.
+    expect(s).toContain('"schedule-picker-row schedule-recents-new"');
     const row = s.indexOf("schedule-recents-new\"");
     expect(s.indexOf("onClick={() => setRecentsOpen(false)}", row)).toBeGreaterThan(row);
   });
@@ -2672,5 +2684,70 @@ describe("the source-task chip", () => {
     );
     expect(MODAL).toContain('<div className="modal-head-title">');
     expect(MODAL).toContain("{titleAside}");
+  });
+});
+
+
+// ---- Finding a folder from the path field -----------------------------------
+//
+// "Add search functionality for path in new task modal path" (Akshil,
+// 2026-09-18). The field offered the folders this form remembered; it could not
+// FIND one, so a folder the reader had never scheduled against was only
+// reachable by walking to it through Browse.
+//
+// The engine is the app's own — `searchFiles` over the file index, the one
+// endpoint on the machine that answers with DIRECTORIES ALONE (`kind: "dir"`,
+// fused_render/server/routers/search.py). All that is new is the translation
+// from "what somebody has typed into a path box" to that spec, which is what
+// these pin.
+describe("what the path field asks the index for", () => {
+  test("a bare name is the name being reached for", () => {
+    expect(folderSearchSpec("render")).toEqual(
+      { kind: "dir", name_terms: ["render"], path_hints: [] });
+  });
+
+  test("the segments above it narrow WHERE to look", () => {
+    // `name_terms` matches a folder's own name and `path_hints` a segment
+    // anywhere above it — which is exactly the shape of a path being typed.
+    expect(folderSearchSpec("fused/ren")).toEqual(
+      { kind: "dir", name_terms: ["ren"], path_hints: ["fused"] });
+    // FOUR HINTS AT MOST, which is what the spec takes — and the four NEAREST
+    // the name, because those are the four that narrow hardest.
+    expect(folderSearchSpec("/a/b/Users/me/Desktop/fused/ren")).toEqual({
+      kind: "dir",
+      name_terms: ["ren"],
+      path_hints: ["Users", "me", "Desktop", "fused"],
+    });
+    // Backslashes are separators too: a Windows path typed into this field is
+    // the same sentence about the same folders.
+    expect(folderSearchSpec("fused\\ren")).toEqual(
+      { kind: "dir", name_terms: ["ren"], path_hints: ["fused"] });
+  });
+
+  test("the root and home are not hints", () => {
+    // "/" and "~" name the whole disk and the whole home. They narrow nothing,
+    // and each would cost one of the four terms the spec allows.
+    expect(folderSearchSpec("~/proj")).toEqual(
+      { kind: "dir", name_terms: ["proj"], path_hints: [] });
+    expect(folderSearchSpec("/proj")).toEqual(
+      { kind: "dir", name_terms: ["proj"], path_hints: [] });
+  });
+
+  test("nothing worth asking is answered null", () => {
+    // Empty, one character (which matches most of a machine), and a path whose
+    // last segment is finished — a trailing separator is a reader describing a
+    // PARENT, and "what is inside this folder" is Browse's question.
+    expect(folderSearchSpec("")).toBeNull();
+    expect(folderSearchSpec("   ")).toBeNull();
+    expect(folderSearchSpec("r")).toBeNull();
+    expect(folderSearchSpec("/Users/me/")).toBeNull();
+  });
+
+  test("only ever directories", () => {
+    // The field can hold a folder. An endpoint that ranked files alongside them
+    // — which is what the OTHER search box uses — would offer a `.png` here.
+    for (const typed of ["render", "fused/ren", "~/proj"]) {
+      expect(folderSearchSpec(typed)?.kind).toBe("dir");
+    }
   });
 });

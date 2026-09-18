@@ -328,6 +328,9 @@ def _parse_head(path: str) -> tuple[str | None, str | None, str]:
     cwd: str | None = None
     first_ts: str | None = None
     prompt = ""
+    # The first wordless send's marker, held back as a last resort — the same
+    # deferral `tasks_store._parse_head` makes, for its reason.
+    carried = ""
     chars = 0
     count = 0
     try:
@@ -372,11 +375,18 @@ def _parse_head(path: str) -> tuple[str | None, str | None, str]:
                         raw = _first_text(msg.get("content"))
                         prompt = (tasks_store.strip_machinery(raw)
                                   or tasks_store.ann_notes(raw))
+                        # A send that said nothing ANYWHERE — a screenshot on
+                        # its own, pins nobody wrote on — is named by what it
+                        # carried ("pane screenshot"). Kept aside, not taken:
+                        # words on a later record still win, which is why the
+                        # scan carries on.
+                        if not prompt and not carried:
+                            carried = tasks_store.carried_words(raw)
                 if cwd is not None and first_ts is not None and prompt:
                     break
     except OSError:
         return None, None, ""
-    return cwd, first_ts, prompt
+    return cwd, first_ts, prompt or carried
 
 
 def _head(path: str, size: int) -> tuple[str | None, str | None, str]:

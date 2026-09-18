@@ -827,6 +827,117 @@ def test_the_head_keeps_scanning_past_a_machinery_record(projects_dir):
     assert tasks_store.head(str(path))[2] == "fix the parser"
 
 
+# ------------------------------------------------- the send with no words at all
+
+
+@pytest.mark.parametrize("text,expected", [
+    (records.PANE_SHOT, "pane screenshot"),
+    (records.PANE_SHOT_NO_KIND, "pane screenshot"),
+    (records.PANE_SHOT_WITH_PANE, "pane screenshot"),
+    (records.PANE_SHOT_IMAGE, "images"),
+    (records.PANE_SHOT_IMAGES, "images"),
+    (records.PANE_SHOT_FILE, "files"),
+    (records.PANE_SHOT_MIXED_FILES, "files"),
+    (records.ANNOTATION_TAGGED_SILENT, "annotations"),
+    (records.ANNOTATION, "annotations"),
+    (records.PROSE, ""),
+    (records.TASK_NOTIFICATION, ""),
+    ("", ""),
+])
+def test_a_wordless_send_is_named_for_what_it_carried(text, expected):
+    """`carried_words` is `stripBlocks`' marker branch, and the words are the
+    page's own. Every case here was run through the client's copy
+    (frontend/src/apps/claude/protocol/wire.ts) and came back identical."""
+    assert tasks_store.carried_words(text) == expected
+
+
+def test_two_kinds_in_one_send_are_named_for_both():
+    """The chat joins its markers with `" + "`, annotations first. A send that
+    pinned three spots without typing on them AND attached the overview
+    screenshot is both things."""
+    assert tasks_store.carried_words(records.prefixed(
+        records.APP_STATE, records.PANE_SHOT,
+        records.ANNOTATION_TAGGED_SILENT)) == "annotations + pane screenshot"
+
+
+def test_the_marker_words_are_the_pages_own():
+    """D146 / PY-15: `wire.ts` and `tasks_store` may not import each other, so
+    the four substitute texts are spelled twice. This is the test the comment is
+    not — reword a marker in the page and a listing row starts saying something
+    the bubble beside it does not.
+
+    The page's constants carry U+2063 INVISIBLE SEPARATOR in front of the word
+    (that sigil is how it tells its own substitute text from a reader who typed
+    "files"); it is stripped for everything a human reads, and what this module
+    writes IS what a human reads."""
+    wire = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "frontend", "src", "apps", "claude", "protocol", "wire.ts")
+    page = {}
+    for line in open(wire, encoding="utf-8").read().splitlines():
+        line = line.strip()
+        for const in ("MARKER_ANN", "MARKER_VIEW", "MARKER_IMG", "MARKER_FILE"):
+            prefix = "export const %s = MARKER_SIGIL + \"" % const
+            if line.startswith(prefix):
+                page[const] = line[len(prefix):].split('"')[0]
+        if line.startswith('export const MARKER_JOIN = "'):
+            page["MARKER_JOIN"] = line.split('"')[1]
+    assert page == {"MARKER_ANN": tasks_store.MARKER_ANN,
+                    "MARKER_VIEW": tasks_store.MARKER_VIEW,
+                    "MARKER_IMG": tasks_store.MARKER_IMG,
+                    "MARKER_FILE": tasks_store.MARKER_FILE,
+                    "MARKER_JOIN": tasks_store.MARKER_JOIN}, (
+        "the page's markers and this module's have drifted")
+
+
+@pytest.mark.parametrize("text,expected", [
+    # Words win over everything, wherever the blocks sit.
+    (records.prefixed(records.APP_STATE, records.PANE_SHOT, records.PROSE),
+     records.PROSE),
+    # No words, but the user wrote on their pins — those notes are the only
+    # thing in the record a human typed.
+    (records.prefixed(records.APP_STATE, records.ANNOTATION_TAGGED),
+     records.ANNOTATION_TAGGED_NOTES),
+    # Nothing typed anywhere: the send is named for what it carried.
+    (records.prefixed(records.APP_STATE, records.ANNOTATION_TAGGED_SILENT),
+     "annotations"),
+    (records.prefixed(records.APP_STATE, records.PANE_SHOT), "pane screenshot"),
+    # …and a record that carried none of the three is still nothing to show.
+    (records.APP_STATE, ""),
+])
+def test_user_words_is_the_three_steps_in_order(text, expected):
+    """The one rule the three readers share: typed words, then the notes on the
+    pins, then the marker. Before it, `tasks.py::_prompt` took only the first
+    step and dropped every wordless send — which cost the chat its rows on the
+    Tasks page AND, because status is derived from the messages, its status."""
+    assert tasks_store.user_words(text) == expected
+
+
+def test_a_head_prompt_settles_for_the_marker_only_when_nothing_said_anything(
+        projects_dir):
+    """Both halves, and the second is why the marker is NOT simply `user_words`
+    here. A row titled "pane screenshot" while the words that could name it sit
+    one record further down is the same bug `strip_machinery`'s empty answer
+    caused, told from the other side — so the scan carries on and only a head
+    that found no words at all settles for what the first send carried."""
+    wordless = records.prefixed(records.APP_STATE, records.PANE_SHOT)
+    path = _transcript(projects_dir, "-home-a", "s1", "/home/a",
+                       "2026-08-16T09:00:00Z", prompt=wordless)
+    assert tasks_store.head(str(path))[2] == "pane screenshot"
+
+    tasks_store.reset_cache()
+    later = _transcript(projects_dir, "-home-b", "s2", "/home/b",
+                        "2026-08-16T09:00:00Z", prompt=wordless)
+    with open(later, "a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "type": "user", "cwd": "/home/b",
+            "timestamp": "2026-08-16T09:01:00Z",
+            "message": {"role": "user",
+                        "content": [{"type": "text",
+                                     "text": "actual words"}]}}) + "\n")
+    assert tasks_store.head(str(later))[2] == "actual words"
+
+
 def test_one_folder_is_one_counter_however_it_is_spelled():
     # A transcript's cwd arrives in the OS's own spelling and a scheduled
     # entry's target arrives through `os.path.abspath`; on Windows the two spell
