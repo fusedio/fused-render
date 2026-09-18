@@ -324,16 +324,15 @@ test("ArrowDown once takes the best MATCH, never the create-new row", async () =
   //
   // So it is the LAST stop, which is where every tag and folder picker puts
   // "Create '<typed>'": the matches first, the new thing after them.
-  const b = await openCard(
-    ["/Users/me/Desktop/annfocus-repro", "/Users/me/Desktop/annotate-pack"],
-    [],
-    "ann",
-  );
+  const b = await openCard([], [], "/Users/me/Desktop/ann", DESKTOP);
   await act(async () => { pathField(b).props.onFocus({}); });
-  await act(async () => { pathField(b).props.onChange({ target: { value: "ann" } }); });
+  await act(async () => {
+    pathField(b).props.onChange({ target: { value: "/Users/me/Desktop/ann" } });
+  });
   await settle();
 
-  // The suggestion IS offered — this is not a test that it went away.
+  // The suggestion IS offered — this is not a test that it went away. A PATH is
+  // what earns one; a bare word names no place to create it in (see below).
   expect(newFolderRow(b).length).toBe(1);
 
   const wrap = b.root.findAll((n) => n.props?.className === "schedule-recents-wrap")[0];
@@ -342,19 +341,18 @@ test("ArrowDown once takes the best MATCH, never the create-new row", async () =
   await press("ArrowDown");
   await press("Enter");
 
-  expect(pathField(b).props.value).toBe("/Users/me/Desktop/annfocus-repro");
+  // The first MATCH — `ann-demo`, stepped into — and not a folder called "ann".
+  expect(pathField(b).props.value).toBe("/Users/me/Desktop/ann-demo/");
 });
 
 test("arrowing past the last match still reaches the create-new row", async () => {
   // Last is not gone: the row stays in the ring, so the keyboard can still get
   // to it — it just has to be asked for.
-  const b = await openCard(
-    ["/Users/me/Desktop/annfocus-repro", "/Users/me/Desktop/annotate-pack"],
-    [],
-    "ann",
-  );
+  const b = await openCard([], [], "/Users/me/Desktop/ann", DESKTOP);
   await act(async () => { pathField(b).props.onFocus({}); });
-  await act(async () => { pathField(b).props.onChange({ target: { value: "ann" } }); });
+  await act(async () => {
+    pathField(b).props.onChange({ target: { value: "/Users/me/Desktop/ann" } });
+  });
   await settle();
 
   const wrap = b.root.findAll((n) => n.props?.className === "schedule-recents-wrap")[0];
@@ -365,21 +363,21 @@ test("arrowing past the last match still reaches the create-new row", async () =
   await press("ArrowDown");
   await press("ArrowDown");
   expect(newFolderRow(b)[0].props["aria-selected"]).toBe(true);
-  // ArrowUp from -1 lands on the LAST row, which is the same one — the ring is
-  // a ring, and the create-new row is its end.
   await press("Enter");
   // Its press keeps the path the field already holds and closes the list, which
   // is what its click has always done.
-  expect(pathField(b).props.value).toBe("ann");
+  expect(pathField(b).props.value).toBe("/Users/me/Desktop/ann");
 });
 
 test("the create-new row is drawn LAST, under the matches", async () => {
   // The ring order and the DOM order are the same order, or
   // `aria-activedescendant` walks a reader backwards through a list that looks
   // forwards.
-  const b = await openCard(["/Users/me/Desktop/annotate-pack"], [], "ann");
+  const b = await openCard([], [], "/Users/me/Desktop/ann", DESKTOP);
   await act(async () => { pathField(b).props.onFocus({}); });
-  await act(async () => { pathField(b).props.onChange({ target: { value: "ann" } }); });
+  await act(async () => {
+    pathField(b).props.onChange({ target: { value: "/Users/me/Desktop/ann" } });
+  });
   await settle();
   const options = b.root.findAll((n) => n.type === "button" && n.props.role === "option");
   expect(String(options[options.length - 1].props.className)).toContain(
@@ -906,4 +904,96 @@ test("`~/…` typed before home arrives says nothing, then answers", async () =>
   await settle();
   expect(redLine().length).toBe(0);
   expect(pathRowLabels(b)).toEqual(["~/Desktop/ann-demo/", "~/Desktop/annotate-pack/"]);
+});
+
+// ---- recents are for a field nobody has chosen in ----------------------------
+//
+// Akshil, 2026-09-18: leave the field with text in it, come back, and the drop
+// answered with RECENTS. The old rule was "the text has moved off what the list
+// opened with", which is right the first time and wrong the second — the list
+// reopens on the typed text, so the typed text is what it has not moved off.
+//
+// The question is about the TEXT, not the history: empty, or the path the card
+// opened on, means nobody has chosen; anything else is the reader's and is
+// answered, however many times they leave and come back.
+
+test("coming back to a field with text in it answers THAT text", async () => {
+  const b = await openCard(["/Users/me/Desktop/annfocus-repro"], [], "", DESKTOP);
+  await act(async () => { pathField(b).props.onFocus({}); });
+  await act(async () => { pathField(b).props.onChange({ target: { value: "ann" } }); });
+  await settle();
+  expect(pathRowLabels(b)).toEqual(["/Users/me/Desktop/annfocus-repro"]);
+
+  // Leave…
+  const wrap = b.root.findAll((n) => n.props?.className === "schedule-recents-wrap")[0];
+  await act(async () => { wrap.props.onBlur({ currentTarget: { contains: () => false } }); });
+  expect(pathRowLabels(b)).toEqual([]);
+
+  // …and come back. The text is still `ann`, so the answer is still `ann`'s.
+  await act(async () => { pathField(b).props.onFocus({}); });
+  await settle();
+  expect(pathRowLabels(b)).toEqual(["/Users/me/Desktop/annfocus-repro"]);
+});
+
+test("an EMPTY field is what recents are for", async () => {
+  const b = await openCard([], [], "", DESKTOP);
+  await act(async () => { pathField(b).props.onFocus({}); });
+  await act(async () => { pathField(b).props.onChange({ target: { value: "" } }); });
+  await settle();
+  // `recentTargets` from the fixture, unfiltered — the card is not being asked
+  // anything, it is offering.
+  expect(pathRowLabels(b)).toEqual(
+    ["/Users/me/code", "/Users/me/news", "/Users/me/aviary"]);
+});
+
+test("…and so is the path the card opened on", async () => {
+  // `initialTarget` is the card's own default. Nobody chose it, so focusing the
+  // field is still "show me the others" rather than "tell me about this one".
+  const b = await openCard([], [], "", DESKTOP);
+  expect(pathField(b).props.value).toBe("/Users/me/code");
+  await act(async () => { pathField(b).props.onFocus({}); });
+  await settle();
+  expect(pathRowLabels(b)).toEqual(
+    ["/Users/me/code", "/Users/me/news", "/Users/me/aviary"]);
+});
+
+// ---- only a path can name a folder to create ---------------------------------
+//
+// Akshil, 2026-09-18, and this one MADE A FOLDER IN THE WRONG PLACE: a bare
+// `123` offered "New folder — created when the task is saved", and saving it
+// created `…/fused-render-wt/agent-20260918-tasks-and-new-task/123` — the server
+// resolved the name against its own cwd, because a name says nothing about where
+// it lives.
+
+test("a bare word earns no create-folder offer and no red line", async () => {
+  const b = await openCard([], [], "123", DESKTOP);
+  await act(async () => { pathField(b).props.onFocus({}); });
+  await act(async () => { pathField(b).props.onChange({ target: { value: "123" } }); });
+  await settle();
+
+  expect(newFolderRow(b).length).toBe(0);
+  expect(b.root.findAll(
+    (n) => String(n.props?.className ?? "").includes("schedule-form-bad")).length).toBe(0);
+  // What a word with no matches gets is the one true sentence about it.
+  expect(emptyLine(b).length).toBe(1);
+});
+
+test("`~/…` and an absolute path both earn one", async () => {
+  // Akshil's own examples: `~/new-folder1` valid, `/Users/ask/desktop/fold1-new`
+  // valid, `newfold1` not.
+  const tilde = await openCard([], [], "/Users/me/Desktop/new-folder1", DESKTOP);
+  await act(async () => { pathField(tilde).props.onFocus({}); });
+  await act(async () => {
+    pathField(tilde).props.onChange({ target: { value: "~/Desktop/new-folder1" } });
+  });
+  await settle();
+  expect(newFolderRow(tilde).length).toBe(1);
+
+  const abs = await openCard([], [], "/Users/me/Desktop/fold1-new", DESKTOP);
+  await act(async () => { pathField(abs).props.onFocus({}); });
+  await act(async () => {
+    pathField(abs).props.onChange({ target: { value: "/Users/me/Desktop/fold1-new" } });
+  });
+  await settle();
+  expect(newFolderRow(abs).length).toBe(1);
 });

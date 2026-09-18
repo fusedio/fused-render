@@ -3277,13 +3277,28 @@ export default function NewJobModal({
       return true;
     });
   }, [recentTargets, sessionFolders]);
-  // WHAT THE FIELD HELD WHEN THE LIST OPENED. It is what tells "the reader is
-  // looking" from "the reader is typing": a card opened on a folder has that
-  // folder in the field already, and narrowing the recents against it would
-  // answer a focus with a list of one — the very list the field is standing on
-  // — where the whole point of the drop is to offer the OTHER folders. So the
-  // list narrows only once the text has moved off what it opened with.
-  const [openedWith, setOpenedWith] = useState("");
+  /**
+   * THE PATH THE CARD OPENED ON — its own default, and the one value in this
+   * field that means "nobody has chosen yet".
+   *
+   * Recents are for that state and only that state. The rule used to be "the
+   * text has moved off what the list opened with", which was right the first
+   * time and wrong the second: leave the field with `ann` typed in it, come
+   * back, and the drop answered with RECENTS — because the list was opening on
+   * `ann`, so `ann` was what it had "not moved off". The reader's own text was
+   * on screen and the list was talking about something else (Akshil,
+   * 2026-09-18).
+   *
+   * So the question is about the TEXT, not about the history: empty or the
+   * default means nobody has said anything, and anything else is something the
+   * reader typed — which is answered, every time, however many times they leave
+   * and come back.
+   *
+   * A ref, and re-stated when the async default lands (`getConfig` fills an
+   * empty field a beat after mount), because this is a fact about the card
+   * rather than a value anything renders.
+   */
+  const defaultTarget = useRef(initialTargetValue);
   //: IS THE PATH CHECK STILL OUT — the 400ms verdict below (`newFolder` /
   //: `pathError`). Declared up here because the dropdown's own loading state
   //: folds it in with the two lookups, and a "create this folder" offer that
@@ -3291,12 +3306,14 @@ export default function NewJobModal({
   const [pathChecking, setPathChecking] = useState(false);
   const openRecents = useCallback(() => {
     setRecents(readRecentList());
-    setOpenedWith(target);
     setRecentsOpen(true);
-  }, [readRecentList, target]);
-  // THE TYPED QUERY, or "" while the reader is only looking. Everything the
-  // search half does hangs off this one value.
-  const pathQuery = recentsOpen && target !== openedWith ? target : "";
+  }, [readRecentList]);
+  // THE TYPED QUERY, or "" while the field holds nothing anybody chose.
+  // Everything the search half does hangs off this one value — and it no longer
+  // forgets across a blur, which is the whole of the fix above.
+  const pathQuery = recentsOpen
+    && target.trim()
+    && target.trim() !== defaultTarget.current.trim() ? target : "";
   /**
    * AM I TYPING A PATH, OR SEARCHING? — the Explorer address bar's own question,
    * asked with the Explorer's own predicate (`isPathShapedQuery`).
@@ -3316,6 +3333,10 @@ export default function NewJobModal({
    * one place a bare relative path could honestly mean.
    */
   const pathMode = !!pathQuery && isPathShapedQuery(pathQuery, home, home || undefined);
+  //: DOES THE FIELD HOLD AN ADDRESS AT ALL — asked of the field's own text
+  //: rather than of the query, because the create-new offer is about what is in
+  //: the field and must not change just because the drop is closed.
+  const targetIsPath = isPathShapedQuery(target.trim(), home, home || undefined);
   // THE SEGMENT'S OWN COMPLETIONS (path mode) and THE INDEX'S ANSWER (search
   // mode). Both hooks are always called — hooks are not conditional — and each
   // is handed "" for the mode it is not in, which is its own idle state.
@@ -3395,6 +3416,17 @@ export default function NewJobModal({
       setPathChecking(false);
       return;
     }
+    // A BARE WORD IS NOT AN ADDRESS, so there is no address to have a verdict
+    // about. It is a search term (see `newFolderShown`), and the answer to it is
+    // the rows — or "No folder matches", which the list says for itself. The red
+    // "only one new folder can be created" line was this check reporting on a
+    // path it had invented out of a word.
+    if (!isPathShapedQuery(p, home, home || undefined)) {
+      setPathError(null);
+      setNewFolder(null);
+      setPathChecking(false);
+      return;
+    }
     // `~` WITH NO HOME YET IS NOT A VERDICT, IT IS A WAIT (Bugbot, PR #1213).
     // `home` arrives from `/api/config` a beat after mount, and a `~/…` path
     // typed or PASTED before it landed would be probed literally — the red
@@ -3457,11 +3489,29 @@ export default function NewJobModal({
   // branch (a different shape — a badge and a line about when it becomes true),
   // so "which row is that one" is asked in three places and has to be one
   // answer.
-  // …and only once the answer has LANDED (Akshil, 2026-09-18). "Create this
-  // folder" is a statement about a folder that does not exist, and while a
-  // lookup is still out the app does not yet know that. Offering it in the gap
-  // is the flicker — "for a split second it shows me create new folder".
-  const newFolderShown = !pathError && !!newFolder && !lookupPending;
+  /**
+   * ONLY A PATH CAN NAME A FOLDER TO CREATE (Akshil, 2026-09-18, and this one
+   * MADE A FOLDER IN THE WRONG PLACE). Typing a bare `123` offered "New folder
+   * — created when the task is saved", and saving it created
+   * `…/fused-render-wt/agent-20260918-tasks-and-new-task/123`: the server
+   * resolved the name against ITS OWN cwd, because a name says nothing about
+   * where it lives.
+   *
+   * A bare word in this field is a SEARCH — that is the whole of the two-engine
+   * split — and a search term is not an address. `~/new-folder1` and
+   * `/Users/ask/desktop/fold1-new` are; `newfold1` is not. Same predicate the
+   * engines are chosen with, so the field cannot offer to create something it
+   * is meanwhile treating as a query.
+   *
+   * THE CARD'S HALF IS THE OFFER; the server refuses to MAKE one either way
+   * (`schedule.create`, `_names_a_place`). This stops the reader being asked; a
+   * client that asks anyway is still refused.
+   *
+   * …and only once the answer has LANDED. "Create this folder" is a statement
+   * about a folder that does not exist, and while a lookup is still out the app
+   * does not yet know that — "for a split second it shows me create new folder".
+   */
+  const newFolderShown = !pathError && !!newFolder && !lookupPending && targetIsPath;
   // EVERY ROW THAT PICKS A PATH, in the order they are drawn — the ring the
   // arrow keys walk. Browse and New folder are VERBS: they open a panel rather
   // than answering the field, and an Enter that opened a side panel where the
@@ -3604,6 +3654,10 @@ export default function NewJobModal({
         if (!editing) {
           const fallback = defaultTargetOf(c);
           setTarget((prev) => (prev === "" ? fallback : prev));
+          // …and the card's idea of its own default moves with it, or the
+          // folder `getConfig` just filled in would read as something the
+          // reader typed and be answered with a search for itself.
+          if (!defaultTarget.current) defaultTarget.current = fallback;
           setInitial((prev) =>
             prev.target === "" ? { ...prev, target: fallback } : prev,
           );
