@@ -762,6 +762,34 @@ def test_a_failing_run_terminates_the_event_log(tmp_path):
     assert "compaction exploded" in end["error"]
 
 
+def test_a_confirmed_but_unregistered_kind_fails_the_run_with_a_run_end(tmp_path):
+    """Bugbot HIGH finding: a third-party kind can be `confirmed` (recorded
+    in manifest.py's store) without ever actually landing in
+    `kinds.registered()` — its module may fail to import, or its
+    `register_kind()` may raise, and `register_confirmed_kinds()` is
+    best-effort about exactly that. Before this fix, `_kind_obj(cfg)` ran
+    ABOVE `run_scan`'s own try/except (and above the `run_start` event
+    even being written), so this exact `KeyError` killed the detached
+    worker process outright with no `run_end` at all — the poller-based
+    `KindCard` UI would then spin on "scanning" forever. `run_scan` must
+    always end the log, per its own docstring."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_text("a", encoding="utf-8")
+    cfg = _cfg(tmp_path, kind="_test_never_registered_kind")
+    run_dir = os.path.join(cfg.runs_dir, "unregistered")
+    os.makedirs(run_dir)
+    with open(os.path.join(run_dir, "spec.json"), "w") as f:
+        json.dump({"root": str(src), "full": False, "started": 0,
+                   "config": cfg.to_dict()}, f)
+
+    run_scan(run_dir)  # must not raise
+
+    end = _summary(run_dir)
+    assert end["msg"] == "failed"
+    assert "_test_never_registered_kind" in end["error"]
+
+
 def test_threaded_scan_never_drops_entries_from_a_slow_worker(tmp_path, monkeypatch):
     """Regression: `pending` was counted per-submit, so a fast worker could
     hit 0 and latch `done` (never cleared) while later dirs were still

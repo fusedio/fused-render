@@ -383,7 +383,6 @@ def run_scan(run_dir: str) -> None:
     cfg = IndexConfig.from_dict(spec.get("config") or {})
     guard = MountGuard(mounts_dir=spec.get("mounts_dir"))
     rules = cfg.rules
-    kind_obj = _kind_obj(cfg)
     root = spec["root"]
     # The filesystem the walk stays on (scan_dir_once). Decided here, before
     # anything is scanned, and written back into the spec so every pool child
@@ -406,6 +405,18 @@ def run_scan(run_dir: str) -> None:
     _emit(ev, type="run_start", msg=root)
 
     try:
+        # A confirmed-but-not-yet-registered kind (reachable precisely
+        # because `register_confirmed_kinds()` is best-effort: a module
+        # that fails to import, or that never actually calls `kinds.
+        # register` despite declaring a `kind` name, leaves the kind
+        # missing from `kinds.registered()`) must not raise ABOVE this
+        # try — the caller (worker.py's `main`, called bare) has no
+        # handler of its own, and the docstring above promises a terminal
+        # `run_end` event no matter what. `_kind_obj` used to run before
+        # `ev`/`run_start` even existed, so this exact `KeyError` killed
+        # the process with no `run_end` at all, and the status poller
+        # (KindCard) spun on "scanning" forever.
+        kind_obj = _kind_obj(cfg)
         # A changed rule set invalidates the cache: cached dirs carry subdir
         # counts computed under the old rules, so an incremental scan would keep
         # skipping folders that are no longer ignored.
