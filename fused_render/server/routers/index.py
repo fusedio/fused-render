@@ -33,7 +33,7 @@ from fastapi import APIRouter, Body, Header, Query, Request
 from fastapi.responses import JSONResponse, Response
 
 from fused_render import jobs
-from fused_render.index import freshness, runner
+from fused_render.index import detect, freshness, runner
 from fused_render.index.cancel import CancelToken, Cancelled, cancellable
 from fused_render.index.freshness import enclosing_root
 from fused_render.index.config import IndexConfig, load_config, save_config
@@ -1467,6 +1467,82 @@ def note_folder_opened(path: str) -> bool:
         _freshness_slot.release()
         return False
     return True
+
+
+# ------------------------------------------------------- home-focus detection
+#
+# The folder-open freshness check above only ever sees the folder being
+# LISTED — home search lists no folder, so a file dropped anywhere under a
+# scan root (a browser download, say) stays invisible to it until the next
+# startup scan. `index/detect.py` holds the policy (mirroring how
+# `index/freshness.py` holds this file's other trigger's policy); this is
+# only the wiring, same split as `note_folder_opened` above.
+
+# Same shape as `_freshness_slot`: at most one check in flight, a plain
+# non-reentrant lock acquired by the request thread and released by the
+# worker. A flappy window manager can fire `visibilitychange` far more often
+# than a journal replay costs, and `detect.DETECT_INTERVAL_S` already paces
+# the per-root checks themselves — this just keeps two overlapping requests
+# (two browser tabs both regaining focus at once) from running the replay
+# twice concurrently.
+_detect_slot = threading.Lock()
+
+
+def _run_detect_change(hidden_s: float) -> None:
+    """The check itself, off the request thread. Never raises: a focus event
+    must not fail, or block, because index housekeeping did."""
+    try:
+        cfg = load_config()
+        roots = scan_roots(cfg)
+        started = detect.note_home_focused(cfg, roots, hidden_s)
+        if started:
+            _wake_index_job_bridge()
+            logger.info("index: home-page focus found changes since the last "
+                        "scan; rescanning %s", started)
+    except Exception:  # noqa: BLE001 - housekeeping must never surface
+        logger.exception("could not run focus-change detection")
+    finally:
+        if _detect_slot.locked():
+            _detect_slot.release()
+
+
+def note_home_focused(hidden_s: float) -> bool:
+    """The home page regained focus after being hidden `hidden_s` seconds:
+    check every configured root's change journal in the background.
+
+    Returns whether a check was started. Never blocks and never raises — the
+    caller pays one lock acquire, same contract as `note_folder_opened`
+    above. `hidden_s` is untrusted input from the client; `detect.py` is
+    where the `MIN_HIDDEN_S` floor is actually enforced, not here."""
+    if not index_gate.indexing_allowed():
+        return False
+    if not _detect_slot.acquire(blocking=False):
+        return False
+    try:
+        threading.Thread(target=_run_detect_change, args=(hidden_s,),
+                         daemon=True, name="index-detect").start()
+    except RuntimeError:  # interpreter shutting down
+        _detect_slot.release()
+        return False
+    return True
+
+
+@router.post("/api/index/note-home-focus")
+def api_index_note_home_focus(body: dict = Body(default={}),
+                              x_fused: str | None = Header(default=None)):
+    """The explorer's home page regained focus after being hidden a while —
+    fire-and-forget, same shape as `/api/fs/list`'s freshness hook: the
+    request never waits on the check, and a failed or skipped check is
+    silently nothing to report (this is an accelerator, not a promise)."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    try:
+        hidden_s = float(body.get("hidden_s") or 0)
+    except (TypeError, ValueError):
+        hidden_s = 0.0
+    note_home_focused(hidden_s)
+    return {"ok": True}
 
 
 # ------------------------------------------------------------------- scanning

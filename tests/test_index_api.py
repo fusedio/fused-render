@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 
 import pytest
@@ -2401,6 +2402,87 @@ def test_the_freshness_retry_does_not_chain_a_second_one(
     index_router._run_freshness_retry(str(src), str(src))
     assert scheduled == []
     assert str(src) not in index_router._freshness_retries
+
+
+# -- home-focus detection -------------------------------------------------------
+
+def test_note_home_focus_endpoint_fires_the_check_off_the_request_thread(
+        home, tmp_path, monkeypatch):
+    """Same contract as the /api/fs/list freshness hook: the endpoint must not
+    block the request on the journal replay."""
+    seen = []
+    monkeypatch.setattr(index_router, "note_home_focused",
+                        lambda hidden_s: seen.append(hidden_s) or True)
+    resp = _client(tmp_path).post(
+        "/api/index/note-home-focus", json={"hidden_s": 45},
+        headers={"X-Fused": "1"})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
+    assert seen == [45.0]
+
+
+def test_note_home_focus_endpoint_requires_the_fused_header(home, tmp_path,
+                                                             monkeypatch):
+    called = []
+    monkeypatch.setattr(index_router, "note_home_focused",
+                        lambda hidden_s: called.append(hidden_s))
+    resp = _client(tmp_path).post(
+        "/api/index/note-home-focus", json={"hidden_s": 45})
+    assert resp.status_code != 200
+    assert called == []
+
+
+def test_note_home_focus_endpoint_tolerates_a_missing_or_bogus_hidden_s(
+        home, tmp_path, monkeypatch):
+    """The client value is an input, not something the endpoint trusts to be
+    well-formed — a malformed body must not 500."""
+    seen = []
+    monkeypatch.setattr(index_router, "note_home_focused",
+                        lambda hidden_s: seen.append(hidden_s))
+    resp = _client(tmp_path).post(
+        "/api/index/note-home-focus", json={"hidden_s": "not a number"},
+        headers={"X-Fused": "1"})
+    assert resp.status_code == 200
+    assert seen == [0.0]
+
+
+def test_note_home_focused_spawns_a_background_thread_and_returns_at_once(
+        monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_note_home_focused(cfg, roots, hidden_s, now=None):
+        started.set()
+        release.wait(timeout=5)
+        return []
+
+    monkeypatch.setattr(index_router.detect, "note_home_focused",
+                        slow_note_home_focused)
+    monkeypatch.setattr(index_router, "_detect_slot", threading.Lock())
+    assert index_router.note_home_focused(45.0) is True
+    assert started.wait(timeout=5)
+    # The request-thread call above already returned — the fixture's
+    # `release` has not been set yet, so this proves the check ran on the
+    # background thread, not inline.
+    release.set()
+
+
+def test_note_home_focused_drops_an_overlapping_call(monkeypatch):
+    """One check in flight at a time, same as `_freshness_slot` above — a
+    second call while the slot is held is a no-op, not a queue."""
+    monkeypatch.setattr(index_router, "_detect_slot", threading.Lock())
+    index_router._detect_slot.acquire()
+    try:
+        assert index_router.note_home_focused(45.0) is False
+    finally:
+        index_router._detect_slot.release()
+
+
+def test_note_home_focused_is_a_no_op_while_indexing_is_disabled(monkeypatch):
+    monkeypatch.setattr(index_router.index_gate, "indexing_blocked",
+                        lambda: "disabled")
+    monkeypatch.setattr(index_router, "_detect_slot", threading.Lock())
+    assert index_router.note_home_focused(45.0) is False
 
 
 # -- guarded SQL ---------------------------------------------------------------
