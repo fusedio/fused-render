@@ -12,7 +12,13 @@ means that today.
 
     [tool.fused-render.index]
     module = "indexer.py"   # resolved inside the folder, like app.daemon/app.main
-    kind = "widgets"        # the IndexKind name this module's register() adds
+    kind = "widgets"        # the IndexKind name this module's register_kind() adds
+
+`module` is expected to expose a `register_kind(*, replace: bool = False)`
+function that calls `fused_render.index.kinds.register` — never a bare
+`register`, which the module's own `from fused_render.index.kinds import
+... register` (the shape the reference plugin uses) already binds to
+something else in the module's namespace.
 
 `module` is intentionally NOT imported by this file. Parsing a manifest is
 cheap, side-effect-free introspection — the same posture `load_manifest`
@@ -202,12 +208,12 @@ def refuse_index(folder: str) -> None:
 
 
 def _call_register(fn) -> None:
-    """Call a plugin module's registration entrypoint. `replace=True` when
-    it accepts one — a server/worker restart, or re-confirming an
+    """Call a plugin module's `register_kind` entrypoint. `replace=True`
+    when it accepts one — a server/worker restart, or re-confirming an
     already-confirmed folder, must re-register cleanly rather than raise on
     a name collision, the same reason `apps_kind.register_builtin` and
     `worker.py`'s own call both pass it — falling back to a bare call for a
-    simpler `register()` with no such parameter (the shape
+    simpler `register_kind()` with no such parameter (the shape
     tests/test_index_manifest.py's own fixtures use)."""
     try:
         params = inspect.signature(fn).parameters
@@ -224,10 +230,21 @@ def _import_and_register(folder: str) -> bool:
     Returns whether `manifest.kind` ended up in `kinds.registered()`
     afterward. Best-effort and never raises: a confirmed folder whose
     manifest has since gone missing or invalid, whose module fails to
-    import, whose `register` raises, or that simply never calls
+    import, whose `register_kind` raises, or that simply never calls
     `kinds.register` despite declaring a `kind` name, is logged and skipped
     — the same "a plugin must never take the host down" rule `extract()`
-    itself follows, applied to import time instead of scan time."""
+    itself follows, applied to import time instead of scan time.
+
+    The entry point a module must expose is `register_kind(*, replace=False)`
+    — a name deliberately DIFFERENT from `kinds.register`, the name the
+    reference plugin (and every real-shaped one) imports at module scope
+    via `from fused_render.index.kinds import ... register`. Looking up a
+    bare `register` here used to pick up that IMPORTED name whenever a
+    plugin's own entrypoint happened to be called anything else (the
+    reference plugin's own shape) — `getattr` returned `kinds.register`
+    itself, called as `fn(replace=True)`, raising `TypeError: register()
+    missing 1 required positional argument: 'kind'`, silently swallowed
+    below. `register_kind` cannot collide with that import."""
     m = load_manifest(folder)
     if m is None:
         logger.warning(
@@ -249,7 +266,7 @@ def _import_and_register(folder: str) -> bool:
             raise ImportError(f"no loader for {m.module}")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        register_fn = getattr(module, "register", None)
+        register_fn = getattr(module, "register_kind", None)
         if callable(register_fn):
             _call_register(register_fn)
     except Exception:

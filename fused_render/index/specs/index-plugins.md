@@ -126,7 +126,7 @@ kind of opt-in — it runs on every scan, not on demand:
 ```toml
 [tool.fused-render.index]
 module = "indexer.py"   # resolved inside the folder, containment-checked
-kind = "widgets"        # the IndexKind name this module's register call adds
+kind = "widgets"        # the IndexKind name this module's register_kind() adds
 ```
 
 `load_manifest(folder)` parses this defensively — same posture as
@@ -136,6 +136,16 @@ isn't a file, all read as "no manifest", never an exception. It never
 imports `module` — parsing a manifest is side-effect-free introspection,
 while importing a third party's code and calling whatever registers its
 `IndexKind` is the act decision #8 gates on explicit confirmation.
+
+The entrypoint `module` must expose is `register_kind(*, replace: bool =
+False)`, calling `fused_render.index.kinds.register` internally. The name
+is fixed and deliberately NOT `register`: the reference plugin (and any
+real-shaped one) imports `register` from `kinds` at module scope
+(`from fused_render.index.kinds import Column, IndexKind, register`), so a
+plugin's own entrypoint under that same name would either collide with or
+be shadowed by the import, depending on definition order. `manifest.
+_import_and_register` looks up `register_kind` specifically so it can
+never mistake the imported `kinds.register` for the plugin's own call.
 
 The propose/confirm store (`propose_index`, `confirm_index`, `refuse_index`,
 `pending_folders`, `confirmed_folders`) is the testable backend for

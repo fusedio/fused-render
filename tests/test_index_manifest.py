@@ -17,7 +17,7 @@ def _write_pyproject(folder, body):
         fh.write(body)
 
 
-def _write_module(folder, name="indexer.py", body="def register():\n    pass\n"):
+def _write_module(folder, name="indexer.py", body="def register_kind(*, replace=False):\n    pass\n"):
     os.makedirs(folder, exist_ok=True)
     with open(os.path.join(folder, name), "w", encoding="utf-8") as fh:
         fh.write(body)
@@ -56,7 +56,7 @@ def test_load_manifest_none_when_kind_is_missing(tmp_path):
 
 def test_load_manifest_rejects_a_module_path_escaping_the_folder(tmp_path):
     outside = tmp_path / "outside.py"
-    outside.write_text("def register():\n    pass\n", encoding="utf-8")
+    outside.write_text("def register_kind(*, replace=False):\n    pass\n", encoding="utf-8")
     folder = tmp_path / "app"
     _write_pyproject(
         str(folder),
@@ -154,20 +154,26 @@ def test_refuse_index_revokes_an_already_confirmed_folder(tmp_path):
 
 # -- import + register (bugbot finding against a7aef9472: confirming a
 # proposal only ever rewrote this file's own JSON store — nothing imported
-# the folder's module or called `register`, so a confirmed kind never
+# the folder's module or called `register_kind`, so a confirmed kind never
 # appeared in `kinds.registered()` and could never be scanned) ------------
 
 
 def _registering_app_folder(tmp_path, name="widget_app", kind="_test_widgets"):
-    """A folder whose module actually calls `kinds.register` — unlike
-    `_app_folder`'s bare `def register(): pass`, which proves parsing/store
+    """A folder whose module actually calls `kinds.register` via the
+    contract entrypoint (`register_kind`) — unlike `_app_folder`'s bare
+    `def register_kind(*, replace=False): pass`, which proves parsing/store
     behavior but never registers anything, this one proves the import half
-    works too."""
+    works too. Fully qualified `_kinds.register` here, rather than a
+    module-scope `from ... import register`, so this fixture's own
+    `register_kind` name can never collide with (or be confused for) the
+    imported one — see `_reference_shaped_app_folder` below for the
+    fixture that DOES use the reference plugin's own import shape, and the
+    exact bug that shape used to expose."""
     folder = tmp_path / name
     _write_module(
         str(folder),
         body=(
-            "from fused_render.index.kinds import Column, IndexKind, register\n"
+            "from fused_render.index.kinds import Column, IndexKind\n"
             "\n"
             "def _extract(path, st):\n"
             "    return None\n"
@@ -177,7 +183,7 @@ def _registering_app_folder(tmp_path, name="widget_app", kind="_test_widgets"):
             "    extract=_extract, text_column='name',\n"
             ")\n"
             "\n"
-            "def register(replace=False):\n"
+            "def register_kind(*, replace=False):\n"
             "    from fused_render.index import kinds as _kinds\n"
             "    _kinds.register(KIND, replace=replace)\n"
         ),
@@ -250,6 +256,64 @@ def test_a_confirmed_folder_whose_manifest_went_missing_is_skipped_not_raised(tm
     os.remove(os.path.join(folder, "pyproject.toml"))
 
     manifest_mod.register_confirmed_kinds()  # must not raise
+
+
+def _reference_shaped_app_folder(tmp_path, name="ref_widget_app", kind="_test_widgets_ref"):
+    """A folder shaped exactly like the shipped reference plugin
+    (`examples/notes_indexer/indexer.py`): `from fused_render.index.kinds
+    import Column, IndexKind, register` at module scope, with its own
+    registration entrypoint under a DIFFERENT name
+    (`register_kind`) — unlike `_registering_app_folder`'s `def
+    register(replace=False):`, which is defined AFTER the `import
+    register` line and so silently REBINDS `register` in the module's own
+    namespace to the local function, masking the exact bug a real
+    reference-shaped plugin hits: `getattr(module, "register", None)`
+    would return the imported `kinds.register` itself, called as
+    `fn(replace=True)` -> `TypeError: register() missing 1 required
+    positional argument: 'kind'`, swallowed by `_import_and_register`'s
+    broad `except Exception`."""
+    folder = tmp_path / name
+    _write_module(
+        str(folder),
+        body=(
+            "from fused_render.index.kinds import Column, IndexKind, register\n"
+            "\n"
+            "def _extract(path, st):\n"
+            "    return None\n"
+            "\n"
+            "KIND = IndexKind(\n"
+            f"    name={kind!r}, columns=(Column('name', 'string'),),\n"
+            "    extract=_extract, text_column='name',\n"
+            ")\n"
+            "\n"
+            "def register_kind(*, replace=False):\n"
+            "    register(KIND, replace=replace)\n"
+        ),
+    )
+    _write_pyproject(
+        str(folder),
+        f'[tool.fused-render.index]\nmodule = "indexer.py"\nkind = "{kind}"\n',
+    )
+    return str(folder)
+
+
+def test_a_reference_shaped_plugin_module_actually_registers(tmp_path):
+    """The entry-point contract is the fixed name `register_kind` (never a
+    bare `register`, which every plugin following the reference example's
+    own `from fused_render.index.kinds import ... register` shadows in
+    reverse — the IMPORTED name, not a local override). A module that
+    matches the reference plugin's real shape must still end up in
+    `kinds.registered()`."""
+    from fused_render.index import kinds as kinds_mod
+
+    folder = _reference_shaped_app_folder(tmp_path)
+    manifest_mod.propose_index(folder)
+    manifest_mod.confirm_index(folder)
+    assert "_test_widgets_ref" not in kinds_mod.registered()
+
+    manifest_mod.register_confirmed_kinds()
+
+    assert "_test_widgets_ref" in kinds_mod.registered()
 
 
 def test_reproposing_an_already_confirmed_folder_is_a_silent_no_op(tmp_path):

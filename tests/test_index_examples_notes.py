@@ -73,10 +73,10 @@ def test_extract_never_raises_on_an_unreadable_file():
     assert mod.extract(ghost, os.stat_result((0,) * 10)) is None
 
 
-def test_register_example_adds_the_notes_kind_to_the_registry():
+def test_register_kind_adds_the_notes_kind_to_the_registry():
     from fused_render.index.kinds import get, registered
 
     _, mod = _load_example_module()
-    mod.register_example(replace=True)
+    mod.register_kind(replace=True)
     assert "notes" in registered()
     assert get("notes") is mod.KIND

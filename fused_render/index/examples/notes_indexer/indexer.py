@@ -16,9 +16,15 @@ would carry:
 that parse round-trips (see `tests/test_index_examples_notes.py`), not a
 piece of the server's own startup path — nothing here is imported at
 server boot. A real third party would follow the same two-file shape:
-one `pyproject.toml` announcing itself, one module exposing a
-`register_example`-shaped call the (confirmed-folder-only) caller invokes
-after the user has confirmed the proposal (`manifest.confirm_index`).
+one `pyproject.toml` announcing itself, one module exposing the
+`register_kind(*, replace=False)` entrypoint the (confirmed-folder-only)
+caller invokes after the user has confirmed the proposal
+(`manifest.confirm_index`). The name is fixed and deliberately NOT
+`register` — this file's own `from fused_render.index.kinds import ...
+register` line already binds that name to something else in this
+module's namespace, and `manifest._import_and_register` looks up
+`register_kind` specifically so it can never mistake the imported
+function for the plugin's own entrypoint.
 
 Row shape is deliberately trivial — a title and a word count — chosen to
 be checkable by eye in a small test fixture, not because a real notes
@@ -86,10 +92,11 @@ KIND = IndexKind(
 )
 
 
-def register_example(*, replace: bool = False) -> None:
-    """Add the "notes" kind to the registry. A real third party's own
-    equivalent function is what a caller invokes AFTER
-    `fused_render.index.manifest.confirmed_folders()` lists its folder —
-    never automatically at import, and never before the user has
-    confirmed the proposal (SPEC-index-plugins.md decision #8)."""
+def register_kind(*, replace: bool = False) -> None:
+    """Add the "notes" kind to the registry — the fixed entrypoint name
+    `manifest._import_and_register` looks up on any confirmed folder's
+    module. A real third party's own equivalent function is what a caller
+    invokes AFTER `fused_render.index.manifest.confirmed_folders()` lists
+    its folder — never automatically at import, and never before the user
+    has confirmed the proposal (SPEC-index-plugins.md decision #8)."""
     register(KIND, replace=replace)

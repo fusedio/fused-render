@@ -39,7 +39,8 @@ def _make_manifest_app(tmp_path, name="widget_app", kind="widgets"):
     (folder / "pyproject.toml").write_text(
         f'[tool.fused-render.index]\nmodule = "indexer.py"\nkind = "{kind}"\n',
         encoding="utf-8")
-    (folder / "indexer.py").write_text("def register():\n    pass\n", encoding="utf-8")
+    (folder / "indexer.py").write_text(
+        "def register_kind(*, replace=False):\n    pass\n", encoding="utf-8")
     html = folder / "index.html"
     html.write_text("<html></html>", encoding="utf-8")
     return str(folder), str(html)
@@ -110,7 +111,7 @@ def test_confirm_moves_a_pending_folder_to_confirmed(client, tmp_path):
 def test_confirming_a_proposal_registers_its_kind_for_api_index_kinds(client, tmp_path):
     """Bugbot finding against a7aef9472: confirming a proposal used to only
     rewrite `index_proposals.json` — nothing imported the folder's module or
-    called `register`, so a confirmed third-party kind never showed up in
+    called `register_kind`, so a confirmed third-party kind never showed up in
     `GET /api/index/kinds` (and could never be scanned) until the process
     happened to restart. The confirm route must actually import+register."""
     from fused_render.index import kinds as kinds_mod
@@ -122,7 +123,7 @@ def test_confirming_a_proposal_registers_its_kind_for_api_index_kinds(client, tm
         f'[tool.fused-render.index]\nmodule = "indexer.py"\nkind = "{kind_name}"\n',
         encoding="utf-8")
     (folder / "indexer.py").write_text(
-        "from fused_render.index.kinds import Column, IndexKind, register\n"
+        "from fused_render.index.kinds import Column, IndexKind\n"
         "\n"
         "def _extract(path, st):\n"
         "    return None\n"
@@ -130,7 +131,7 @@ def test_confirming_a_proposal_registers_its_kind_for_api_index_kinds(client, tm
         f"KIND = IndexKind(name={kind_name!r}, columns=(Column('name', 'string'),),\n"
         "                  extract=_extract, text_column='name')\n"
         "\n"
-        "def register(replace=False):\n"
+        "def register_kind(*, replace=False):\n"
         "    from fused_render.index import kinds as _kinds\n"
         "    _kinds.register(KIND, replace=replace)\n",
         encoding="utf-8")
