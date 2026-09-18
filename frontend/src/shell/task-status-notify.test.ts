@@ -225,6 +225,17 @@ describe("notificationForTransition", () => {
       expect(n?.quiet).toBeFalsy();
     });
 
+    // F9 fix (Finding 4): a task WITH a session id but empty target AND
+    // empty project normalizes to the explorer root ("/") rather than
+    // "/tasks" — the SAME degenerate-destination problem under a different
+    // spelling, missed by the original `destination !== "/tasks"` carve-out.
+    test("a task whose destination normalizes to the explorer root still pops even with '/' open", () => {
+      const t = task({ status: "done", session_id: "s1", target: "", project: "" });
+      expect(taskDestination(t)).toBe("/explorer/view/?_side=claude&session_id=s1");
+      const n = notificationForTransition("in_progress", t, 0, false, () => true);
+      expect(n?.quiet).toBeFalsy();
+    });
+
     test("defaults to nothing-open (quiet falsy) when no predicate is passed", () => {
       const t = task({ status: "done", session_id: "s1", target: "/proj/index.html" });
       const n = notificationForTransition("in_progress", t, 0);

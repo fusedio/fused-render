@@ -64,7 +64,52 @@ import { labelForSource } from "@platform/lib/format";
 import { taskColumn } from "@shell/tasks-lib";
 import { taskHref } from "@shell/tasks-lib";
 import { folderHref } from "@shell/schedule-lib";
-import { recentFsPath } from "@apps/explorer/lib/recents";
+
+// F9 (code review of F8's "already open" gate): this used to import
+// `recentFsPath` from `apps/explorer/lib/recents.ts` — the right decoder
+// (see the header comment on the call site below), but a REAL runtime
+// import, not a type-only one: `recents.ts` imports `@platform/lib/router`,
+// which reads `location` and calls `history.replaceState` at MODULE INIT
+// (its `rewriteLegacyPath` IIFE). That throws `ReferenceError: location is
+// not defined` in any environment with no DOM at all — a standalone `bun
+// test src/shell/task-status-notify.test.ts` run, confirmed by running it
+// before and after this file's F8 commit: pre-F8 (bf3a4eb90) it only
+// imported `NotificationInput` as a TYPE (erased at compile time, no runtime
+// import at all) and passed standalone; post-F8 it fails standalone with
+// exactly that ReferenceError, and only "passes" in a full-directory run
+// because some earlier file in bun's single process happens to install a DOM
+// shim first — an order-dependent green, not a real one. This file's own
+// header comment promises it stays DOM-free; pulling in `router.ts`
+// transitively broke that promise even though nothing in this file touches
+// `location` itself.
+//
+// Fixed by inlining the small decode `recentFsPath` performs (strip the
+// query, strip a `VIEW_PREFIX`/legacy `/view/` prefix, decode + re-root what
+// remains) as pure, DOM-free local functions instead of importing it —
+// same output for every case that matters here, verified against
+// `recentFsPath` directly before this change shipped.
+const VIEW_PREFIX = "/explorer/view/";
+
+// Windows-drive rooting, copied from `platform/lib/router.ts`'s
+// `rootedFsPath` rather than imported — importing ANY export from
+// `router.ts`, even a pure one, still runs that module's location-reading
+// top-level code (see the comment above).
+function rootedFsPath(joined: string): string {
+  if (/^[A-Za-z]:$/.test(joined)) return joined + "/";
+  return /^[A-Za-z]:\//.test(joined) ? joined : "/" + joined;
+}
+
+// Same decode `recentFsPath` (apps/explorer/lib/recents.ts) performs, as a
+// pure function of a string.
+function normalizeDestination(url: string): string {
+  const qIdx = url.indexOf("?");
+  const pathname = qIdx !== -1 ? url.slice(0, qIdx) : url;
+  const prefix = [VIEW_PREFIX, "/view/"].find((p) => pathname.startsWith(p));
+  if (!prefix) return pathname;
+  return rootedFsPath(
+    pathname.slice(prefix.length).split("/").filter(Boolean).map(decodeURIComponent).join("/"),
+  );
+}
 
 /** Where a click on this task's own notification should land — the same
  *  fallback chain `attentionRows` already uses (a live session's chat, else
@@ -170,14 +215,15 @@ export function notificationForTransition(
   // task-finished popup still firing. Injected (not imported) for the same
   // reason `notifyTerminalSessions` above is: this function stays pure and
   // DOM-free; `useTaskStatusNotify.ts` supplies the real presence check
-  // (`snapshotIsOpenAnywhere`, platform/lib/presence.ts), batched once per
-  // poll tick rather than once per task. Takes an already-normalized fs
-  // path/route (see `taskDestination`'s call site below, which runs
-  // `taskDestination(task)` through `recentFsPath` before calling this —
-  // `taskDestination` returns an `/explorer/view/...` HREF with a query
-  // string, which is not the shape presence entries store; a bare
-  // `isOpenAnywhere(taskDestination(task))` call silently never matches
-  // anything). Defaults to "nothing is open" so the many existing
+  // (`snapshotIsOpenExact`, platform/lib/presence.ts — an EXACT match, not
+  // the wider `isOpenAnywhere`/`matchesSource` prefix rule; see F9), batched
+  // once per poll tick rather than once per task. Takes an already-
+  // normalized fs path/route (see `taskDestination`'s call site below, which
+  // runs `taskDestination(task)` through this file's own `normalizeDestination`
+  // before calling this — `taskDestination` returns an `/explorer/view/...`
+  // HREF with a query string, which is not the shape presence entries store;
+  // a bare `isOpenAnywhere(taskDestination(task))` call silently never
+  // matches anything). Defaults to "nothing is open" so the many existing
   // lower-arity call sites in task-status-notify.test.ts keep compiling
   // unchanged.
   isDestinationOpen: (page: string) => boolean = () => false,
@@ -228,6 +274,7 @@ export function notificationForTransition(
     // the whole point of the second reversal above stands.
     const caption = taskCaption(task);
     const destination = taskDestination(task);
+    const normalizedDestination = normalizeDestination(destination);
     // ALREADY-OPEN GATE (F8): only suppress the POPUP (`quiet: true` below),
     // never the retained row — the user's own correction: "by show I mean
     // popup ... if that is not simple enough to do just dont have a
@@ -237,7 +284,33 @@ export function notificationForTransition(
     // no folder, and suppressing on THAT would go quiet for every such task
     // whenever anyone merely has the Tasks page open — a page with no
     // relation to this specific task at all.
-    const quiet = destination !== "/tasks" && isDestinationOpen(recentFsPath(destination));
+    //
+    // ALSO EXCLUDES THE "/" DEGENERATE CASE (F9 fix): a task WITH a session
+    // id but empty `target` AND empty `project` produces
+    // `/explorer/view/?_side=claude&session_id=...` — `taskHref` doesn't
+    // decline (there IS a session id), but `chatUrl` is handed an empty
+    // string to encode, so the path segment comes out empty entirely.
+    // `normalizeDestination` then strips the query, strips the now-bare
+    // `VIEW_PREFIX`, and roots the empty remainder — `"/"`. That is the exact
+    // same over-wide failure mode as the `/tasks` fallback: any window
+    // sitting on the explorer root would suppress the popup for EVERY task
+    // shaped like this, which has no relation to any one of them.
+    //
+    // `isDestinationOpen` is `snapshotIsOpenExact` (useTaskStatusNotify.ts),
+    // an EXACT canonical-string match rather than `matchesSource`'s
+    // bidirectional prefix rule (F9 fix): the prefix rule marks a task
+    // "open" whenever a tab sits on ANY ancestor folder of its destination
+    // (e.g. a tab on `/Fused/sandbox` swallowing the popup for every task
+    // nested anywhere beneath it), which is much wider than "this task's own
+    // app/chat is open". It also excludes any presence entry recorded by an
+    // embed/preview iframe (`BookmarkCards.tsx`, `AppPreviewCard.tsx`
+    // publish presence too, purely to render a thumbnail) — a hovered app
+    // card must not count as "the app is open". See `snapshotIsOpenExact`'s
+    // own doc comment (platform/lib/presence.ts) for both.
+    const quiet =
+      destination !== "/tasks" &&
+      normalizedDestination !== "/" &&
+      isDestinationOpen(normalizedDestination);
     return {
       title: titleWithoutCaption(task.title || "A task", caption),
       // "Finished" moves OUT of the title and into `detail` (`.dl-model`,
