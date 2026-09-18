@@ -28,8 +28,9 @@
 // staging, committing, branches and push/pull are not this page's job; they
 // stay in the explorer's folder view, where the `git` template still lives.
 // What replaces it is read-only and page-wide: a dropdown beside the tab
-// strip puts ALL THREE tabs above (Overview/Files/API — Tasks is unaffected,
-// it has no notion of a commit) on a past commit of the app folder, via the
+// strip puts THREE tabs above (Overview/Files/API — Tasks is unaffected, it
+// has no notion of a commit, and App Doctor always checks the live folder,
+// see AppDoctorPanel) on a past commit of the app folder, via the
 // same `_snapshot` shell URL param and extraction machinery
 // (`fused_render/server/routers/git_snapshot.py`) the explorer's own snapshot
 // preview already uses. `useAppPageSnapshot.ts` holds this page's own

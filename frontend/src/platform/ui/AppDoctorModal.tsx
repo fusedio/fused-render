@@ -427,7 +427,7 @@ function AppDoctorFixAllButton({ report, busy, liveTask, fixAll, followLive }: R
 export function AppDoctorPanel({ dir }: { dir: string }) {
   const r = useAppDoctorReport(dir);
   return (
-    <div className="app-doctor-panel flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-x-hidden overflow-y-auto">
         {r.report !== null && (
           <p className="appdoc-summary">
@@ -444,7 +444,10 @@ export function AppDoctorPanel({ dir }: { dir: string }) {
           <Button
             variant="outline"
             size="sm"
-            disabled={r.report === null || r.busy}
+            // In flight = no report AND no error yet. A FAILED fetch also
+            // leaves `report` null, and that is exactly when this button
+            // is needed — so it is never gated on the report alone.
+            disabled={r.busy || (r.report === null && r.error === null)}
             title="Run the checks again"
             onClick={() => void r.load()}
           >
