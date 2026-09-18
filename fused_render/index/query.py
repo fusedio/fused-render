@@ -1518,6 +1518,37 @@ def _basename_candidate_pool(limit: int) -> int:
     return max(limit, min(limit * _BASENAME_POOL_FACTOR, _BASENAME_POOL_MAX))
 
 
+def _bounded_or_full_candidates(base_select: str, order_by: str, limit: int,
+                                bounded: bool) -> str:
+    """The subquery that feeds `_qualify_basename_cap`'s `QUALIFY`: either the
+    bounded candidate pool (`bounded=True`, the `13ff8332a` fast path — an
+    `ORDER BY <order_by> LIMIT <pool>` stage ahead of the cap, sized by
+    `_basename_candidate_pool`) or the entire `base_select` unmodified
+    (`bounded=False` — the pre-`13ff8332a` shape, `QUALIFY` over the full
+    WHERE-matched set, no candidate limit at all).
+
+    `base_select` is the filtered-but-unordered inner SELECT (already ending
+    in a trailing space after its own `WHERE ...` clause, matching every
+    caller's existing string layout); `order_by` MUST be the exact same
+    vector the cap's own `QUALIFY` window and the statement's final `ORDER
+    BY` both use — same requirement `_qualify_basename_cap` documents — so a
+    bounded pool can never outrank a row the unbounded shape would have kept,
+    and (this is the fallback's whole premise, `search_ranked`'s docstring)
+    the unbounded shape here is exactly what an infinitely large pool would
+    have produced, not merely a similar query.
+
+    A caller that gets fewer than `limit` rows back from the bounded query
+    reruns with `bounded=False` (`search_ranked`) — a short page is the only
+    case where the pool could have starved a fillable page, and it is also
+    the case where the corpus is small enough (or the pool starved it, either
+    way) that the extra scan is affordable; see DECISIONS.md and
+    `specs/query.md` §3 for the reasoning and the measured cost."""
+    if not bounded:
+        return f"({base_select})"
+    pool = _basename_candidate_pool(limit)
+    return f"({base_select}ORDER BY {order_by} LIMIT {pool})"
+
+
 def _lex_order_and_score(nm_exact: str, preds: dict,
                          nm_exact_natural: str = "true") -> tuple:
     """The shared tail of both `_rank_sql` and `_glob_sql`: given `nm_exact`
@@ -1643,7 +1674,7 @@ def _lex_order_and_score(nm_exact: str, preds: dict,
 
 
 def _rank_sql(inner: str, hidden: str, ql: str, qq: str, qs: str, limit: int,
-              ranked: bool = True) -> str:
+              ranked: bool = True, bounded: bool = True) -> str:
     """The whole rank query: substring filter, scoring, and ORDER BY ... LIMIT,
     all in SQL — no candidate cap, no Python-side pass.
 
@@ -1734,30 +1765,39 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, qs: str, limit: int,
     and does not always agree with a plain ASCII byte comparison on which of
     a case-only pair sorts first. That divergence is pre-existing and is
     unaffected by `rel ASC` here — it only fixes SQL's OWN run-to-run
-    stability, not cross-language agreement."""
+    stability, not cross-language agreement.
+
+    `bounded` (default `True`) selects which candidate set feeds the
+    basename cap's `QUALIFY` — see `_bounded_or_full_candidates`'s docstring.
+    `bounded=False` is `search_ranked`'s starvation fallback: the same
+    filter, scoring and `ORDER BY` as the bounded query, but `QUALIFY` runs
+    over the entire WHERE-matched set instead of a size-bounded pool ahead of
+    it, the pre-`13ff8332a` shape that cannot be starved by one over-large
+    basename."""
     if not ranked:
         # No predicate columns, no `score`, no `tier` — the scoring apparatus
         # below is never built for this branch, not built and then left out
         # of the SELECT list.
         unranked_order = "depth ASC, rel ASC"
-        pool = _basename_candidate_pool(limit)
-        return (
-            f"SELECT rel, size, mtime, is_dir, depth FROM ("
+        base_select = (
             f"SELECT rel, size, mtime, is_dir, depth, nm FROM ({inner}) "
-            f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden} "
-            f"ORDER BY {unranked_order} LIMIT {pool}) "
+            f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden} ")
+        candidates = _bounded_or_full_candidates(
+            base_select, unranked_order, limit, bounded)
+        return (
+            f"SELECT rel, size, mtime, is_dir, depth FROM {candidates} "
             f"{_qualify_basename_cap(unranked_order)}"
             f"ORDER BY {unranked_order} "
             f"LIMIT {limit}")
     preds = _name_predicate_sql("nm", [qs])
     order_by, score, tier = _lex_order_and_score(f"nm = lower('{qq}')", preds)
-    pool = _basename_candidate_pool(limit)
-    return (
-        f"SELECT rel, size, mtime, is_dir, depth, score, tier FROM ("
+    base_select = (
         f"SELECT rel, size, mtime, is_dir, depth, nm, ({score}) AS score, "
         f"({tier}) AS tier FROM ({inner}) "
-        f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden} "
-        f"ORDER BY {order_by} LIMIT {pool}) "
+        f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden} ")
+    candidates = _bounded_or_full_candidates(base_select, order_by, limit, bounded)
+    return (
+        f"SELECT rel, size, mtime, is_dir, depth, score, tier FROM {candidates} "
         f"{_qualify_basename_cap(order_by)}"
         f"ORDER BY {order_by} "
         f"LIMIT {limit}")
@@ -1947,7 +1987,8 @@ def _glob_like_guard(literals: list) -> str:
 
 def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
               literals: list = (), nm_regex: str = None,
-              score: bool = None, like_guard: str = "") -> str:
+              score: bool = None, like_guard: str = "",
+              bounded: bool = True) -> str:
     """Glob mode's whole query: a full-match regex filter, plus — when
     `literals` is non-empty — the scoring `_name_predicate_sql`/
     `_lex_order_and_score` build from those literal runs, the SAME two
@@ -2091,7 +2132,12 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
     regex whether or not it also scores. See `_glob_like_guard`'s own
     docstring for the superset proof and the gate; `_glob_sql` itself does
     not decide whether to guard, it only places whatever its caller
-    computed."""
+    computed.
+
+    `bounded` (default `True`) is the same switch `_rank_sql` takes — see
+    `_bounded_or_full_candidates`'s docstring — and `search_ranked` flips it
+    to `False` on exactly the same starvation-fallback condition for both
+    functions, in lockstep."""
     if score is None:
         score = bool(literals)
     assert not (literals and nm_regex is None), (
@@ -2102,12 +2148,13 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
         "rather than raising")
     if not score:
         unscored_order = "depth ASC, lower(rel) ASC, rel ASC"
-        pool = _basename_candidate_pool(limit)
-        return (
-            f"SELECT rel, size, mtime, is_dir, depth FROM ("
+        base_select = (
             f"SELECT rel, size, mtime, is_dir, depth, nm FROM ({inner}) "
-            f"WHERE {like_guard}regexp_matches(lrel, '{regex}'){hidden} "
-            f"ORDER BY {unscored_order} LIMIT {pool}) "
+            f"WHERE {like_guard}regexp_matches(lrel, '{regex}'){hidden} ")
+        candidates = _bounded_or_full_candidates(
+            base_select, unscored_order, limit, bounded)
+        return (
+            f"SELECT rel, size, mtime, is_dir, depth FROM {candidates} "
             f"{_qualify_basename_cap(unscored_order)}"
             f"ORDER BY {unscored_order} "
             f"LIMIT {limit}")
@@ -2169,13 +2216,13 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
         nm_exact = "false"
     order_by, score_expr, tier = _lex_order_and_score(
         nm_exact, preds, nm_exact_natural)
-    pool = _basename_candidate_pool(limit)
-    return (
-        f"SELECT rel, size, mtime, is_dir, depth, score, tier FROM ("
+    base_select = (
         f"SELECT rel, size, mtime, is_dir, depth, nm, ({score_expr}) AS score, "
         f"({tier}) AS tier FROM ({inner}) "
-        f"WHERE {like_guard}regexp_matches(lrel, '{regex}'){hidden} "
-        f"ORDER BY {order_by} LIMIT {pool}) "
+        f"WHERE {like_guard}regexp_matches(lrel, '{regex}'){hidden} ")
+    candidates = _bounded_or_full_candidates(base_select, order_by, limit, bounded)
+    return (
+        f"SELECT rel, size, mtime, is_dir, depth, score, tier FROM {candidates} "
         f"{_qualify_basename_cap(order_by)}"
         f"ORDER BY {order_by} "
         f"LIMIT {limit}")
@@ -2471,9 +2518,12 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
             # `score` is passed explicitly rather than left to follow
             # `literals` (which is correctly `[]` here either way).
             score = bool(whole_literals) if ranked else False
-            sql = _glob_sql(inner, regex, hidden, limit + 1,
-                             literals=literals, nm_regex=nm_regex, score=score,
-                             like_guard=like_guard)
+
+            def _build_sql(bounded: bool) -> str:
+                return _glob_sql(inner, regex, hidden, limit + 1,
+                                 literals=literals, nm_regex=nm_regex,
+                                 score=score, like_guard=like_guard,
+                                 bounded=bounded)
         else:
             # NOT `.lower()`'d here — `_rank_sql` lowers `ql`/`qq` itself,
             # with the same `lower()` call that produces `lrel`, so the query
@@ -2482,12 +2532,34 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
             # sides separately can disagree).
             ql = like_literal(qs)
             qq = _q(qs)
-            sql = _rank_sql(inner, hidden, ql, qq, qs, limit + 1, ranked=ranked)
+
+            def _build_sql(bounded: bool) -> str:
+                return _rank_sql(inner, hidden, ql, qq, qs, limit + 1,
+                                 ranked=ranked, bounded=bounded)
         # One row past `limit` so "there was more" is known without a count —
         # same trick `search_under` uses for its own LIMIT.
-        rows = con.execute(sql).fetchall()
+        rows = con.execute(_build_sql(bounded=True)).fetchall()
         if token is not None:
             token.check()
+        # Starvation fallback (`13ff8332a`'s bounded candidate pool ahead of
+        # the basename cap, DECISIONS.md/specs/query.md §3): a bounded run
+        # that comes back with a FULL page (`limit` rows or more) is provably
+        # not starved — a basename large enough to fill the whole pool and
+        # outrank every other matching name would still have left every OTHER
+        # basename capped at `_MAX_PER_BASENAME`, so a full page can only mean
+        # the pool held enough distinct names to fill it. Fewer than `limit`
+        # is the ONLY signal available without a second query, and it is also
+        # exactly the case where the extra query is cheap either way: either
+        # the corpus genuinely has few matches (the unbounded rerun re-scans a
+        # small WHERE-matched set) or the pool actually starved a fillable
+        # page (and correctness is worth the extra query). Rerunning replaces
+        # `rows` wholesale — `truncated`/`total` below are computed from
+        # whichever query actually ran, so a fallback's row count is never
+        # mixed with the bounded query's.
+        if len(rows) < limit:
+            rows = con.execute(_build_sql(bounded=False)).fetchall()
+            if token is not None:
+                token.check()
         logger.debug("index rank: %r under %s: %d row(s) in %.1fms",
                     qs, root, len(rows), (time.monotonic() - t0) * 1000)
         truncated = len(rows) > limit

@@ -1188,8 +1188,16 @@ def test_search_ranked_honours_the_limit_in_sql_not_just_in_python(tmp_path):
     assert out["hits"][0]["rel"] == "alpha.txt"
     assert len(out["hits"]) <= 3
     # One row past `limit`, same trick `search_under` uses, so "there was
-    # more" is known without a separate count.
-    assert seen_limits == [4]
+    # more" is known without a separate count. Only "alpha.txt" itself
+    # actually contains the substring "alpha" (the noise files are
+    # "a{i}-l-p-h-a.txt", hyphen-separated, never a contiguous "alpha"), so
+    # the bounded candidate pool comes back with exactly 1 row — fewer than
+    # `limit` (3) — which is the starvation-fallback's trigger
+    # (search_ranked's docstring, worktree-search-trailing-space): a second,
+    # unbounded query reruns and its result is what the response is built
+    # from. Both queries carry the same outer `LIMIT 4` (limit + 1), so
+    # `seen_limits` now has two entries, not one.
+    assert seen_limits == [4, 4]
 
 
 def test_search_ranked_logs_one_debug_line_per_request(tmp_path, caplog):

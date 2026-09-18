@@ -353,18 +353,46 @@ distinct basenames to fill a page already returned a full page before this
 change (verified directly at multiple scales) — the bound exists to keep the
 window function from scanning the full match set on broad queries.
 
-The bound is NOT a guarantee and cannot be one: a single basename whose
-duplicate count exceeds `pool`, AND whose every copy ranks ahead of every
-OTHER matching basename by the statement's own ordering, can fill the whole
-pool by itself, and the cap then reduces that pool to 3 — starving out every
-other, legitimately-matching basename, a shape the old unbounded `QUALIFY`
-did not starve. No finite pool closes this; a larger factor only requires a
-proportionally larger adversarial duplicate run to reproduce it, at
-proportionally higher cost on every broad query. `truncated`/`total`
-inherit this: in that same adversarial shape they can report "no more
-results" when the corpus genuinely has many more — an accepted trade-off of
-bounding the pool at all, not a separate bug. See DECISIONS.md for the
-factor's derivation and measurements.
+The bound alone is NOT a guarantee and cannot be one: a single basename
+whose duplicate count exceeds `pool`, AND whose every copy ranks ahead of
+every OTHER matching basename by the statement's own ordering, can fill the
+whole pool by itself, and the cap then reduces that pool to 3 — starving out
+every other, legitimately-matching basename, a shape the old unbounded
+`QUALIFY` did not starve. No finite pool closes this on its own; a larger
+factor only requires a proportionally larger adversarial duplicate run to
+reproduce it, at proportionally higher cost on every broad query.
+
+**This is now closed by a fallback, not left as an accepted trade-off.**
+`search_ranked` runs the bounded query first (`_bounded_or_full_candidates`,
+`bounded=True`) and, whenever it comes back with FEWER rows than the
+caller's `limit`, reruns the IDENTICAL query with `bounded=False` — the
+pre-bound shape, `QUALIFY` over the whole `WHERE`-matched set, no candidate
+pool at all — and uses that result instead. A short page is the only
+observable symptom starvation can produce: a basename large enough to fill
+the pool and outrank everything else still leaves every OTHER basename
+capped at `_MAX_PER_BASENAME` (3), so a FULL page is proof nothing was
+starved, and conversely a short page means either the corpus genuinely has
+fewer than `limit` matches (the unbounded rerun re-scans a small
+`WHERE`-matched set, cheaply) or the pool actually starved a fillable page
+(and correctness is worth the rerun). `truncated`/`total` are computed from
+whichever query actually ran — never a mix of the two — so they are accurate
+in both the common (bounded-only) and fallback (bounded-then-unbounded)
+paths.
+
+The cost: a genuinely-small- or zero-result query now ALWAYS pays for two
+queries instead of one, since a short bounded result is indistinguishable
+from a starved one without rerunning. Measured on the same synthetic 745k-
+file index `13ff8332a`'s own commit measured broad queries against: a
+zero-hit query went from ~38ms (bounded-only) to ~70ms (bounded, then the
+unbounded rerun) — real, but small in absolute terms, and it does not touch
+the broad-query wins at all (`e` 4462ms -> 1816ms, `**e**` 3237ms -> 2046ms,
+`render` 1729ms -> 817ms all stayed unchanged, since those queries return a
+full page from the bounded query and never trigger the rerun). See
+DECISIONS.md for the pool factor's derivation and the fallback's own
+measurements, and `tests/test_index_rank.py`'s starvation-fallback tests for
+the adversarial shapes this closes (a 21-row and a 90-row fillable page,
+both previously starved to 3 and 18 rows respectively, both now recovered
+in full, across all four SQL branches).
 
 `_lex_order_and_score` also still returns a `score` — kept ONLY for the wire
 contract and `explain`/debugging display (`server-api.md`'s hit dict keeps `score`,

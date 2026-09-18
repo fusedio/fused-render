@@ -1108,14 +1108,24 @@ def test_glob_basename_cap_limits_to_top_3_per_name(tmp_path):
 # ordinary "many distinct basenames" case a caller's `limit` should still
 # fill completely.
 #
-# Known, accepted residual: if a SINGLE basename's duplicate count exceeds
-# `pool` AND every one of its copies ranks ahead of every other matching
-# basename in the shared ordering vector, that basename alone can fill the
-# whole pool and squeeze out every other (distinct, legitimately-matching)
-# basename before the cap ever runs — a shape the old, unbounded QUALIFY did
-# not starve. No finite pool eliminates this (an arbitrarily larger
-# dominant-duplicate count always exists), so this is a documented trade-off,
-# not a bug: see `_basename_candidate_pool`'s own docstring and DECISIONS.md.
+# CLOSED, not merely documented: a SINGLE basename's duplicate count
+# exceeding `pool` AND every one of its copies ranking ahead of every other
+# matching basename in the shared ordering vector used to squeeze out every
+# other (distinct, legitimately-matching) basename before the cap ever ran —
+# a shape the old, unbounded QUALIFY never starved, and this pool-bounded
+# version regressed. Rather than accept it, `search_ranked` now reruns the
+# identical query UNBOUNDED (`_bounded_or_full_candidates`'s `bounded=False`
+# — the pre-`13ff8332a` shape, `QUALIFY` over the whole WHERE-matched set)
+# whenever the bounded run comes back short of `limit`: a short page is the
+# only observable symptom starvation can produce (a basename large enough to
+# fill the pool and outrank everything else still leaves every OTHER
+# basename capped at 3, so a FULL page is proof nothing was starved), and
+# it's also exactly the condition where the extra scan is cheap — either the
+# corpus genuinely has few matches, or the pool actually starved a fillable
+# page and correctness is worth the rerun. See `_basename_candidate_pool`'s
+# and `_bounded_or_full_candidates`'s own docstrings, DECISIONS.md, and
+# `specs/query.md` §3 for the full reasoning and the measured cost of always
+# firing the extra query on a genuinely-small result.
 
 def test_basename_cap_pool_still_fills_a_full_page_with_many_distinct_names(
         tmp_path):
@@ -1160,6 +1170,148 @@ def test_glob_basename_cap_pool_still_fills_a_full_page_unscored(tmp_path):
     hits = [h for h in result["hits"] if not h["is_dir"]]
     assert len(hits) == 21
     assert result["truncated"] is True
+
+
+def _adversarial_files(dominant_count, other_count_per_name=4, other_names=30):
+    """One dominant basename (`dup.txt`, the SHORTEST matching name, and —
+    for a substring/glob query of `dup` — the only one satisfying `edge`:
+    the char right after its matched prefix is `.`, a separator, while every
+    `dupN.txt` continues into an alnum digit, a fragment match) repeated
+    `dominant_count` times, plus `other_names` distinct, legitimately-
+    matching basenames (`dup0.txt` .. `dup{other_names-1}.txt`) each repeated
+    `other_count_per_name` times. `dup.txt` ranks ahead of every `dupN.txt`
+    in `_lex_order_and_score`'s vector (`edge` DESC, before `length(nm)` is
+    ever consulted) — the exact "one basename outranks every other matching
+    basename" condition `_basename_candidate_pool`'s docstring and
+    DECISIONS.md describe, mirrored here at whatever scale the caller picks
+    rather than literally reproducing the 215,000-file / 200,000-copy corpus
+    the original report used (verified separately, below, to trigger the
+    identical starvation at this smaller scale)."""
+    dominant = [f"/r/dom{i}/dup.txt" for i in range(dominant_count)]
+    others = [f"/r/d{i}_{j}/dup{i}.txt"
+              for i in range(other_names) for j in range(other_count_per_name)]
+    return dominant + others
+
+
+_STARVATION_BRANCHES = [
+    pytest.param(False, True, id="substring-ranked"),
+    pytest.param(False, False, id="substring-unranked"),
+    pytest.param(True, True, id="glob-scored"),
+    pytest.param(True, False, id="glob-unscored"),
+]
+
+
+def test_bounded_pool_alone_starves_the_adversarial_shape_but_unbounded_recovers_it():
+    """Direct, SQL-level proof of the mechanism the starvation fallback
+    closes, independent of the parquet/index plumbing the two integration
+    tests below go through: `_rank_sql(bounded=True)` — the exact shape
+    `13ff8332a` shipped, run standalone against a synthetic `inner` built
+    from a `VALUES` list — really does starve on this construction (returns
+    only the dominant basename's capped 3 rows and nothing else), and
+    `_rank_sql(bounded=False)` — what `search_ranked`'s fallback now reruns
+    on a short page — really does recover the full, diverse page. Pinning
+    this at the SQL level means a future, unrelated change to how
+    `search_ranked` builds `inner` can't silently make the integration tests
+    below pass for the wrong reason (e.g. because the corpus stopped being
+    adversarial, not because the fallback fixed anything)."""
+    import duckdb
+
+    from fused_render.index.query import _basename_candidate_pool, _rank_sql
+
+    limit = 21
+    pool = _basename_candidate_pool(limit)
+    dominant_count = pool + 50  # comfortably exceeds the pool
+    rows = [(f"dom{i}/dup.txt", "dup.txt") for i in range(dominant_count)]
+    rows += [(f"d{i}_{j}/dup{i}.txt", f"dup{i}.txt")
+             for i in range(30) for j in range(4)]
+    values = ",".join(
+        f"('{rel}', 1, 1.0, false, 1, '{nm.lower()}', '{rel.lower()}')"
+        for rel, nm in rows)
+    inner = (f"SELECT * FROM (VALUES {values}) "
+             f"AS t(rel, size, mtime, is_dir, depth, nm, lrel)")
+
+    con = duckdb.connect()
+    bounded_rows = con.execute(
+        _rank_sql(inner, "", "dup", "dup", "dup", limit, bounded=True)
+    ).fetchall()
+    unbounded_rows = con.execute(
+        _rank_sql(inner, "", "dup", "dup", "dup", limit, bounded=False)
+    ).fetchall()
+
+    bounded_names = Counter(r[0].rsplit("/", 1)[-1] for r in bounded_rows)
+    unbounded_names = Counter(r[0].rsplit("/", 1)[-1] for r in unbounded_rows)
+
+    # The fixture is only meaningful if the bounded-only query really is
+    # starved — this is the pre-fallback, broken behavior `13ff8332a` shipped.
+    assert bounded_names == {"dup.txt": 3}, bounded_names
+
+    # The unbounded rerun must recover a full, diverse page: the cap (<=3 per
+    # basename) still holds, but other basenames are no longer squeezed out.
+    assert len(unbounded_rows) == limit
+    assert all(count <= 3 for count in unbounded_names.values())
+    assert len(unbounded_names) >= 7
+
+
+@pytest.mark.parametrize("glob,ranked", _STARVATION_BRANCHES)
+def test_starvation_fallback_recovers_the_reported_adversarial_shape(
+        tmp_path, glob, ranked):
+    """Integration-level version of the SQL-level proof above, through the
+    real `search_ranked` entry point (all four branches: substring
+    ranked/unranked, glob scored/unscored), reproducing — at a
+    runtime-tractable scale — the exact shape the previous round reported:
+    'a 215,000-file corpus with one 200,000-copy `dup.txt`... returned a
+    correct, diverse 21-row page before `13ff8332a` and a starved 3-row page
+    after.' `_adversarial_files` keeps every defining ratio (dominant count
+    comfortably exceeds the pool at `limit=21` — pool 420 — and the dominant
+    basename outranks all 30 others via `edge`) while cutting the absolute
+    file count from 215,000 to ~1,120 so the test builds and runs in well
+    under a second. `search_ranked`'s fallback must recover the SAME full,
+    diverse 21-row page the pre-`13ff8332a` unbounded QUALIFY always
+    returned, not the starved 3-row page the bounded pool alone produces
+    (pinned directly, without the fallback, in the SQL-level test above)."""
+    files = _adversarial_files(dominant_count=1000)
+    cfg = _index(tmp_path, "/r", files)
+    query = "**dup**" if glob else "dup"
+    result = search_ranked(cfg, "/r", query, glob=glob, ranked=ranked,
+                           limit=21)
+    hits = [h for h in result["hits"] if not h["is_dir"]]
+    assert len(hits) == 21
+    assert result["truncated"] is True
+    names = Counter(h["rel"].rsplit("/", 1)[-1] for h in hits)
+    assert all(count <= 3 for count in names.values())
+    # The pre-fallback bug returned ONLY "dup.txt" (capped at 3, 3 rows
+    # total) — recovery means multiple distinct basenames are represented,
+    # not just a page that happens to be 21 rows long.
+    assert len(names) >= 7
+
+
+@pytest.mark.parametrize("glob,ranked", _STARVATION_BRANCHES)
+def test_starvation_fallback_recovers_the_milder_reported_shape(
+        tmp_path, glob, ranked):
+    """The milder shape the previous round also reported verbatim: '2,000
+    dominant copies against 30 other basenames x 500 copies... returns 18
+    rows where 90 were possible.' Reproduced here at the SAME scale (17,000
+    files total) since it builds in well under a second (measured
+    separately) — no need to shrink it. `limit=90` is exactly `30 other
+    basenames x _MAX_PER_BASENAME (3)`, the largest a fully diverse page
+    (excluding the dominant name entirely) could be; `search_ranked`'s
+    fallback must recover a full 90-row page, not the previously-reported
+    18."""
+    files = _adversarial_files(dominant_count=2000, other_count_per_name=500,
+                               other_names=30)
+    cfg = _index(tmp_path, "/r", files)
+    query = "**dup**" if glob else "dup"
+    result = search_ranked(cfg, "/r", query, glob=glob, ranked=ranked,
+                           limit=90)
+    hits = [h for h in result["hits"] if not h["is_dir"]]
+    assert len(hits) == 90
+    assert result["truncated"] is True
+    names = Counter(h["rel"].rsplit("/", 1)[-1] for h in hits)
+    assert all(count <= 3 for count in names.values())
+    # The pre-fallback bug returned only 18 rows total (a handful of
+    # basenames) — recovery means the page spans most/all of the 30
+    # legitimately-matching basenames, not just the dominant one.
+    assert len(names) >= 25
 
 
 def test_glob_unranked_reproduces_the_old_depth_then_alpha_order(tmp_path):
