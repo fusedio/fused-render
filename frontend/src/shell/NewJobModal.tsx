@@ -72,7 +72,7 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 // The app's own ghost rows — the same ones the task peek holds over a booting
 // conversation. One loading vocabulary, not a second.
 import { SkeletonLines } from "@platform/ui/Skeleton";
-import { normalizeModel } from "@platform/lib/model-vocab";
+import { listedModelIn, normalizeModel } from "@platform/lib/model-vocab";
 import { navigateUrl } from "@platform/lib/router";
 import { ENTER_LABEL, isMod, MOD_LABEL } from "@platform/lib/platform";
 import {
@@ -3226,9 +3226,10 @@ export default function NewJobModal({
   // so `taskRunOptions` carries it through as its own row and the card shows a
   // reader the CLI's spelling of a model the menu now calls Fable — and writes
   // it back on the next Save.
-  const [model, setModel] = useState(
-    normalizeModel(saved.model ?? editing?.model ?? ""),
-  );
+  const [model, setModel] = useState(() => {
+    const stored = saved.model ?? editing?.model ?? "";
+    return listedModelIn(stored, TASK_MODELS.map((o) => o.key)) || normalizeModel(stored);
+  });
   const [effort, setEffort] = useState(saved.effort ?? editing?.effort ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

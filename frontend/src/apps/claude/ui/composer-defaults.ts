@@ -21,7 +21,7 @@
 // returns early with no `selectedOptions[0]`) and is also what reaches the CLI.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getPrefs, recordChatSettings } from "@platform/lib/api";
-import { normalizeModel } from "@platform/lib/model-vocab";
+import { listedModelIn } from "@platform/lib/model-vocab";
 import { runAgent } from "../protocol/agent";
 import type { DefaultsResponse, PermissionMode } from "../protocol/types";
 import type { ParamsStore } from "../params/store";
@@ -97,7 +97,7 @@ function pick(list: readonly string[], want: string, fallback: string): string {
  *  is what makes a legacy `claude-fable-5-1` — in a record, a param or a
  *  transcript — a Fable pill everywhere at once. */
 function pickModel(want: string): string {
-  return pick(MODELS, normalizeModel(want), DEFAULT_MODEL);
+  return listedModelIn(want, MODELS) || DEFAULT_MODEL;
 }
 
 /** The same fold for an answer that is VALIDATED rather than resolved — the
@@ -105,8 +105,7 @@ function pickModel(want: string): string {
  *  build does not offer, which is precisely "no opinion" and leaves the rank
  *  below it speaking. */
 function listedModel(value: string | null | undefined): string {
-  const v = normalizeModel(value);
-  return MODELS.includes(v as (typeof MODELS)[number]) ? v : "";
+  return listedModelIn(value, MODELS);
 }
 
 /** `curModel()` (T:11901), with the chat's own record ahead of it.

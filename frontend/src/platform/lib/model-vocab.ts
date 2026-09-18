@@ -34,3 +34,21 @@ export function normalizeModel(value: string | null | undefined): string {
   const m = FABLE_ID.exec(v);
   return m ? `fable${m[1] ?? ""}` : v;
 }
+
+// A trailing `[…]` qualifier, so a value can be tried against a list without it.
+const QUALIFIER = /\[[^\]]*\]$/;
+
+/** The one entry of `list` that `value` names, or "". Tried as written (after
+ *  the Fable fold), then with its `[1m]` qualifier taken off — a picker that
+ *  offers only `fable` still means a stored `claude-fable-5-1[1m]` by that row,
+ *  which is where a reader expects to find their own setting. "" is "not on
+ *  this list", and every caller has its own answer for that. */
+export function listedModelIn(
+  value: string | null | undefined,
+  list: readonly string[],
+): string {
+  const v = normalizeModel(value);
+  if (list.includes(v)) return v;
+  const base = v.replace(QUALIFIER, "");
+  return base !== v && list.includes(base) ? base : "";
+}

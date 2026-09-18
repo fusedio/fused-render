@@ -53,6 +53,14 @@ def send(row):
     sys.stdout.write(json.dumps(row) + "\\n")
     sys.stdout.flush()
 
+# The real CLI answers with the id it was STARTED with (`--session-id`), and
+# `_run_own_session` reads that answer off the head of out.jsonl ahead of
+# meta.json. A stub that invents its own id makes the two disagree by a race.
+sid = "sess-stub"
+for flag in ("--session-id", "--resume"):
+    if flag in sys.argv:
+        sid = sys.argv[sys.argv.index(flag) + 1]
+
 for line in sys.stdin:
     line = line.strip()
     if not line:
@@ -60,7 +68,7 @@ for line in sys.stdin:
     row = json.loads(line)
     text = row["message"]["content"][0]["text"]
     send({{"type": "echo", "text": text}})
-    send({{"type": "result", "session_id": "sess-stub", "result": "ok"}})
+    send({{"type": "result", "session_id": sid, "result": "ok"}})
 '''
 
 
@@ -231,12 +239,10 @@ def test_a_pill_moved_mid_session_is_recorded_by_the_send(
     assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
 
     assert agent._send(run_id, "second", "", "opus", "") == {"sent": True}
-    # THE CONVERSATION THE RUN IS IN, resolved the way `_send` resolves it. The
-    # stub CLI answers with its own `session_id` ("sess-stub") in its result
-    # row, and whether that row or the host's own system row is at the head of
-    # out.jsonl when `_send` looks is a race the real CLI never runs (it echoes
-    # the id it was started with). Keying the assertion on meta.json alone read
-    # the wrong side of that race on CI.
+    # THE CONVERSATION THE RUN IS IN, resolved the way `_send` resolves it —
+    # and the stub echoes the id it was started with, as the real CLI does, so
+    # every reader of this run agrees on it whatever is at the head of
+    # out.jsonl when they look.
     with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
         meta = json.load(fh)
     own = agent._run_own_session(run_dir, meta)

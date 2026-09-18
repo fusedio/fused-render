@@ -81,6 +81,10 @@ test("the retired pinned Fable id still reads as Fable, wherever it comes from",
   expect(resolveModel("claude-fable-5-1")).toBe("fable");
   expect(resolveModel(undefined, "claude-fable-5-1")).toBe("fable");
   expect(resolveModel(undefined, undefined, "claude-fable-5-1")).toBe("fable");
+  // …and wearing the CLI's context qualifier, which this menu does not offer
+  // as a row of its own: still the Fable row, not the default.
+  expect(resolveModel("claude-fable-5-1[1m]")).toBe("fable");
+  expect(resolveModel(undefined, undefined, undefined, "fable[1m]")).toBe("fable");
   expect(resolveModel(undefined, undefined, undefined, "claude-fable-5-1"))
     .toBe("fable");
   // Any Fable spelling, not just that one id — a transcript names the dated
