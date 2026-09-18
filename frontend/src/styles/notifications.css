@@ -1423,7 +1423,7 @@
      so the footer does not change height on the press that swaps one for the
      other; the dialog must not resize under a reader mid-restart. This height
      is the invariant the whole strip is designed around and is asserted in
-     update-dialog-steps.test.ts. Muted and unbordered, because it is a status
+     update-dialog-footer.test.ts. Muted and unbordered, because it is a status
      line where a control used to be and must not read as a control that has
      stopped working. */
   display: flex;
