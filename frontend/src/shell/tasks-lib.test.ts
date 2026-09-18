@@ -142,6 +142,7 @@ import {
   viewFromSearch,
   viewUrl,
   mergeTaskChanges,
+  getTaskIdentity,
   provisionalTasks,
   emptyPaneFailed,
   emptyPaneText,
@@ -10257,8 +10258,8 @@ describe("the schedule mark on a List row", () => {
 });
 
 describe("mergeTaskChanges", () => {
-  const row = (key: string, last_active: number): Task =>
-    ({ key, last_active, status: "done", messages: [] }) as unknown as Task;
+  const row = (key: string, last_active: number, task_id?: string): Task =>
+    ({ key, task_id: task_id || "", last_active, status: "done", messages: [] }) as unknown as Task;
 
   it("upserts by key, drops gone, and keeps last_active descending", () => {
     const shown = [row("a", 30), row("b", 20), row("c", 10)];
@@ -10276,6 +10277,24 @@ describe("mergeTaskChanges", () => {
 
   it("a key both upserted and gone is gone", () => {
     expect(mergeTaskChanges([row("a", 1)], [row("a", 5)], ["a"])).toEqual([]);
+  });
+
+  it("when a gone key and upsert have the same task_id, they are treated as the same task", () => {
+    const shown = [row("pending:e4", 30, "T-123"), row("b", 20)];
+    const upserts = [row("sess-4", 35, "T-123")]; // same task_id, new key
+    const merged = mergeTaskChanges(shown, upserts, ["pending:e4"]);
+    // Should have one row with task_id T-123, keyed by the upsert's key
+    expect(merged.length).toBe(2);
+    const t123 = merged.find((t) => t.task_id === "T-123");
+    expect(t123?.key).toBe("sess-4");
+    expect(t123?.last_active).toBe(35);
+  });
+
+  it("getTaskIdentity returns task_id when present, else key", () => {
+    const withId = row("key1", 10, "T-456");
+    const withoutId = row("key2", 10, "");
+    expect(getTaskIdentity(withId)).toBe("T-456");
+    expect(getTaskIdentity(withoutId)).toBe("key2");
   });
 });
 
