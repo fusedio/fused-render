@@ -667,6 +667,17 @@ test("taking the create-new row keeps the path, it does not become the name",
 // debounced 400ms, longer than either lookup, so "create this folder" could
 // arrive over a list still being answered.
 
+/** THE PANEL ITSELF — the frame `popStyle` places and caps, which is now one box
+ *  OUT from the listbox: the rows scroll inside it and the two verbs are pinned
+ *  below them, so the element carrying the inline geometry is the one with no
+ *  role at all. */
+function popPanel(b: ReactTestRenderer) {
+  return b.root.findAll(
+    (n) => typeof n.type === "string"
+      && String(n.props?.className ?? "").startsWith("schedule-recents")
+      && !!(n.props?.style as { maxHeight?: unknown } | undefined)?.maxHeight)[0];
+}
+
 /** The ghost rows the panel holds while the first answer is out. */
 function waitRows(b: ReactTestRenderer) {
   return b.root.findAll((n) => n.props?.className === "schedule-recents-wait");
@@ -1047,10 +1058,7 @@ test("the panel is capped by the room under the field, and scrolls", async () =>
   const b = await openCard([], [], "", BIG);
   await typePath(b, "/Users/me/big/folder");
 
-  const panel = b.root.findAll(
-    (n) => String(n.props?.className ?? "").startsWith("schedule-recents")
-      && n.props?.role === "listbox")[0];
-  const style = panel.props.style as { maxHeight?: number; top?: number };
+  const style = popPanel(b).props.style as { maxHeight?: number; top?: number };
   // Capped — never "however tall forty rows are".
   expect(typeof style.maxHeight).toBe("number");
   expect(style.maxHeight).toBeLessThanOrEqual(320);
@@ -1088,11 +1096,38 @@ test("a panel that opens upward is not squeezed between two edges", async () => 
   // So both edges are always stated and one of them is always `auto`.
   const b = await openCard([], [], "", BIG);
   await typePath(b, "/Users/me/big/folder");
-  const panel = b.root.findAll(
-    (n) => String(n.props?.className ?? "").startsWith("schedule-recents")
-      && n.props?.role === "listbox")[0];
-  const style = panel.props.style as { top?: unknown; bottom?: unknown };
+  const style = popPanel(b).props.style as { top?: unknown; bottom?: unknown };
   expect("top" in style && "bottom" in style).toBe(true);
   expect(style.top === "auto" || style.bottom === "auto").toBe(true);
   expect(style.top === "auto" && style.bottom === "auto").toBe(false);
+});
+
+test("the two verbs are pinned outside the scroller", async () => {
+  // Akshil, 2026-09-18: "Browse… and + New folder are scrolling WITH the
+  // results. They should stay visible at all times." They are not results —
+  // they are what you reach for when the list did not have the answer — and a
+  // way out that scrolls off the bottom of fifty folders is a way out you have
+  // to go looking for.
+  const b = await openCard([], [], "", BIG);
+  await typePath(b, "/Users/me/big/folder");
+
+  const scroller = b.root.findAll((n) => n.props?.className === "schedule-recents-scroll")[0];
+  const foot = b.root.findAll((n) => n.props?.className === "schedule-recents-foot")[0];
+  expect(scroller).toBeTruthy();
+  expect(foot).toBeTruthy();
+
+  // Every option lives in the scroller…
+  expect(scroller.findAll((n) => n.props?.role === "option").length).toBe(40);
+  expect(foot.findAll((n) => n.props?.role === "option").length).toBe(0);
+  // …and both verbs live in the footer, which is NOT the scroller.
+  const verbs = foot.findAll((n) => n.type === "button").map((n) => String(n.children[n.children.length - 1]));
+  expect(verbs).toEqual(["Browse…", "New folder"]);
+  expect(scroller.findAll((n) => n.type === "button")
+    .some((n) => String(n.children[n.children.length - 1]) === "Browse…")).toBe(false);
+
+  // The listbox is the scroller, because that is where the options are — the
+  // field's `aria-controls`/`aria-activedescendant` must point at a list.
+  expect(scroller.props.role).toBe("listbox");
+  // …and the cap is still on the frame around both.
+  expect(typeof (popPanel(b).props.style as { maxHeight?: number }).maxHeight).toBe("number");
 });

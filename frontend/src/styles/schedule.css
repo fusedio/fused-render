@@ -1421,18 +1421,45 @@
   box-shadow: 0 8px 24px var(--shadow-sm);
   transform-origin: top;
   animation: schedule-pop-in 0.1s ease-out;
-  /* THE PANEL IS THE SCROLLER (Akshil, 2026-09-18: typing
-     `/Users/akshilthumar/` "lists ~8 dirs and cuts off"). The cap is the INLINE
-     `max-height` `popStyle` measures off the room under the field, exactly as
-     the Tasks page's filter popovers are capped (tasks.css
-     `.schedule-tv-pop.tasks-pop`, which fixed this same bug on the project
+  /* THE PANEL IS A FRAME; THE ROWS INSIDE IT SCROLL (Akshil, 2026-09-18, twice:
+     typing `/Users/akshilthumar/` "lists ~8 dirs and cuts off", and then
+     "Browse… and + New folder are scrolling WITH the results").
+
+     The cap is the INLINE `max-height` `popStyle` measures off the room under
+     the field, exactly as the Tasks page's filter popovers are capped (tasks.css
+     `.schedule-tv-pop.tasks-pop`, which fixed the first of those on the project
      menu) — so no height is set here and a two-row list is still two rows tall.
 
-     `min-height: 0` because a flex column only shrinks below its content when
-     it is allowed to; without it the cap is ignored and the panel runs off the
-     card, which is the ~89px overhang this also closes. */
-  overflow-y: auto;
+     `overflow: hidden` rather than `auto`: the SCROLLER is one box down now, and
+     this one only has to stop a child spilling past the rounded corner it
+     draws. `min-height: 0` because a flex column only shrinks below its content
+     when it is allowed to; without it the cap is ignored and the panel runs off
+     the card, which is the ~89px overhang this also closed. */
+  overflow: hidden;
   min-height: 0;
+}
+
+/* THE ROWS, AND ONLY THE ROWS. Takes whatever height is left under the cap once
+   the footer has had its own, which is what makes "the total never exceeds the
+   cap" a fact about the layout rather than a number to keep in step: `1 1 auto`
+   against the footer's `0 0 auto`, and `min-height: 0` so it is allowed to be
+   shorter than fifty folders. */
+.schedule-recents-scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* THE TWO WAYS OUT, pinned. They are not results — they are what you reach for
+   when the list did not have the answer — and a way out that scrolls off the
+   bottom of fifty folders is a way out you have to go looking for. Its own
+   height, never squeezed, never scrolled. */
+.schedule-recents-foot {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
 }
 
 /* Rows keep their own height inside that scroller — a constrained flex column
@@ -1440,11 +1467,13 @@
    slivers. The same rule, for the same reason, as tasks.css gives
    `.schedule-tv-pop-item`; the separator, the verbs and the two notices are
    named too, because a scroller squeezes everything it holds. */
-.schedule-recents > .schedule-picker-row,
-.schedule-form .schedule-recents > .schedule-picker-row,
-.schedule-recents > .schedule-recents-sep,
-.schedule-recents > .schedule-recents-empty,
-.schedule-recents > .schedule-recents-wait {
+.schedule-recents-scroll > .schedule-picker-row,
+.schedule-form .schedule-recents-scroll > .schedule-picker-row,
+.schedule-recents-foot > .schedule-picker-row,
+.schedule-form .schedule-recents-foot > .schedule-picker-row,
+.schedule-recents-foot > .schedule-recents-sep,
+.schedule-recents-scroll > .schedule-recents-empty,
+.schedule-recents-scroll > .schedule-recents-wait {
   flex: 0 0 auto;
 }
 
@@ -1509,6 +1538,8 @@
   height: 1px;
   flex: none;
   background: var(--border);
+  /* Full-bleed: the negative inline margins cancel the PANEL's 4px padding,
+     which the footer sits inside. */
   margin: 4px -4px;
 }
 
@@ -4504,7 +4535,7 @@ input.schedule-when-field {
    numbers, so the two lists in one card read as one control. `pointer-events`
    goes with it for the same reason it does there: a row that is about to be
    replaced must not take a click meant for its successor. */
-.schedule-recents.is-loading .schedule-picker-row {
+.schedule-recents.is-loading .schedule-recents-scroll .schedule-picker-row {
   opacity: 0.45;
 }
 

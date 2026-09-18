@@ -5131,9 +5131,6 @@ export default function NewJobModal({
               <div
                 ref={recentsRef}
                 className={"schedule-recents" + (searchPending ? " is-loading" : "")}
-                id={recentsId}
-                role="listbox"
-                aria-label="Folders"
                 style={popStyle(pathRef.current, 240, true, true)}
                 onMouseDown={(e) => e.preventDefault()}
                 // The pointer leaving takes the highlight with it — the same
@@ -5142,6 +5139,31 @@ export default function NewJobModal({
                 // would take.
                 onMouseLeave={() => setPathAt(-1)}
               >
+                {/* THE ROWS SCROLL; THE VERBS DO NOT (Akshil, 2026-09-18:
+                    "Browse… and + New folder are scrolling WITH the results").
+                    They are not results — they are the two ways out of a list
+                    that did not have the answer — and a way out that scrolls
+                    off the bottom of fifty folders is a way out you have to go
+                    looking for.
+
+                    So the panel is a FRAME now: this box takes whatever height
+                    is left under the cap and scrolls, and the footer below it is
+                    a sibling that keeps its own. No arithmetic — `flex: 1 1
+                    auto` with `min-height: 0` against a `flex: 0 0 auto` footer
+                    is what makes "the total never exceeds the cap" a fact about
+                    the layout rather than a number to keep in step.
+
+                    THE LISTBOX MOVED HERE WITH THE OPTIONS. `aria-controls` and
+                    `aria-activedescendant` on the field point at a list, and the
+                    list is the scroller — the verbs underneath are buttons, not
+                    options, and were never in the ring. */}
+                <div
+                  ref={recentsRef}
+                  id={recentsId}
+                  role="listbox"
+                  aria-label="Folders"
+                  className="schedule-recents-scroll"
+                >
                 {/* THE REMEMBERED FOLDERS, then the FOUND ones, in one run of
                     identical rows — `pathRows`' own order, which is what makes
                     `aria-activedescendant` and the arrow ring agree with what is
@@ -5251,6 +5273,10 @@ export default function NewJobModal({
                 {!!pathQuery && !pathRows.length && !lookupPending && (
                   <p className="schedule-recents-empty">No folder matches</p>
                 )}
+                </div>
+                {/* THE FOOTER — outside the scroller, so it is on screen
+                    whatever the list is doing. */}
+                <div className="schedule-recents-foot">
                 {/* A separator ELEMENT, not a border-top on Browse: the border
                     version sat flush against the row's hover wash and read as
                     part of the button rather than as the line between the
@@ -5291,6 +5317,7 @@ export default function NewJobModal({
                   {ICON_PLUS}
                   New folder
                 </button>
+                </div>
               </div>
             )}
           </div>
