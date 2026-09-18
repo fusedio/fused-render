@@ -5459,6 +5459,27 @@ export function skipLineOverrides(
 }
 
 /**
+ * A SKIP FOLDED INTO THE STANDING CLAIMS — the one entry point both lists use.
+ *
+ * THE LINE IS COMPUTED FROM THE ROWS AS PAINTED, not from the raw listing
+ * (Bugbot, PR #1228). A second ⤒ before the first one's listing lands used to
+ * read the server's old positions: the row the first press promoted still sat
+ * at its old place in `tasks`, so the second pass neither shifted it nor took
+ * its head claim away — and its standing override kept it at 1 with the glyph
+ * beside the new head. Two firsts, which is the frame this overlay exists to
+ * end. Applying the claims first makes every press see the line the reader
+ * sees, so each press's answer supersedes the last one's for every row it moves.
+ */
+export function skipLine(
+  cur: QueueOverrides,
+  tasks: readonly Task[],
+  head: QueueOverride,
+): QueueOverrides {
+  const painted = applyQueueOverrides(tasks as Task[], cur);
+  return withQueueOverrides(cur, skipLineOverrides(painted, head));
+}
+
+/**
  * PAINT BEFORE /api/tasks ANSWERS: the sidebar's compact rows, upcast into the
  * listing's own shape.
  *

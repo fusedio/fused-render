@@ -14,9 +14,8 @@ import {
   applyQueueOverrides,
   expireQueueOverrides,
   NO_QUEUE_OVERRIDES,
-  skipLineOverrides,
+  skipLine,
   sortForList,
-  withQueueOverrides,
 } from "@shell/tasks-lib";
 import type { QueueOverride, QueueOverrides } from "@shell/tasks-lib";
 import { readListing, refreshListing } from "@shell/tasksPulse";
@@ -71,14 +70,15 @@ let seen: readonly Task[] = [];
  * …AND THE REST OF THE LINE WITH IT (Akshil, 2026-09-18). The press promoted its
  * own row and said nothing about the row it went past, so both read "1st in
  * line" until the server's listing landed — two rows claiming one spot, for long
- * enough to read. `skipLineOverrides` turns the one answer into the whole
- * folder's new order, and all of it is painted in ONE publish so no frame ever
- * shows half of it. Same lifetime as before: every key in the set is a key the
+ * enough to read. `skipLine` turns the one answer into the whole folder's new
+ * order — read off the rows AS PAINTED, so a second press before the listing
+ * lands supersedes the first — and all of it is painted in ONE publish so no
+ * frame ever shows half of it. Same lifetime as before: every key in the set is a key the
  * next listing speaks about, so they expire together.
  */
 export function noteQueueClaim(override: QueueOverride): void {
   const rows = seen.length > 0 ? seen : (readListing() ?? []);
-  publishClaims(withQueueOverrides(claims, skipLineOverrides(rows, override)));
+  publishClaims(skipLine(claims, rows, override));
 }
 
 /** "Re-read the listing NOW" — `TaskRowItem`'s `onReload`. The feed collapses

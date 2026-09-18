@@ -105,10 +105,9 @@ import {
   isChatDraftTask,
   NO_QUEUE_OVERRIDES,
   provisionalTasks,
-  skipLineOverrides,
+  skipLine,
   viewFromSearch,
   viewUrl,
-  withQueueOverrides,
 } from "./tasks-lib";
 import type { QueueOverride, QueueOverrides, TaskView } from "./tasks-lib";
 import { TaskCards } from "./TaskCards";
@@ -333,8 +332,9 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // used to promote its own row and leave every other row in the folder saying
   // what it said before, so for the 0.3-0.6 s before the listing landed the
   // pressed row and the row it went past BOTH read "1st in line".
-  // `skipLineOverrides` turns the one answer into the folder's whole new order
-  // and it is folded in as one update, so no paint ever shows half of it.
+  // `skipLine` turns the one answer into the folder's whole new order, read off
+  // the rows AS PAINTED (a second press before the listing lands supersedes the
+  // first), and it is folded in as one update, so no paint ever shows half of it.
   //
   // THE ROWS THROUGH A REF: the callback's identity is handed to every row as
   // `onQueued`, and a new one on every listing would be a new prop on every row
@@ -343,9 +343,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   const tasksRef = useRef(tasks);
   tasksRef.current = tasks;
   const noteQueued = useCallback((override: QueueOverride) => {
-    setQueueOverrides((cur) =>
-      withQueueOverrides(cur, skipLineOverrides(tasksRef.current, override)),
-    );
+    setQueueOverrides((cur) => skipLine(cur, tasksRef.current, override));
   }, []);
   const [queued, setQueued] = useState<ScheduledMessage[]>([]);
   const [running, setRunning] = useState<ScheduledMessage[]>([]);

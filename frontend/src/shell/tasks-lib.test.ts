@@ -57,6 +57,7 @@ import {
   expireQueueOverrides,
   isQueued,
   NO_QUEUE_OVERRIDES,
+  skipLine,
   skipLineOverrides,
   skippedOverride,
   withQueueOverride,
@@ -11123,6 +11124,39 @@ describe("the optimistic queue claim", () => {
     // …and the other folder is untouched, ⤒ and all.
     expect(by("z").queue_position).toBe(1);
     expect(by("z").queue_priority).toBe(true);
+  });
+
+  it("a second press before the listing lands supersedes the first — never two firsts", () => {
+    // Bugbot, PR #1228: ⤒ on c, then ⤒ on b while the server has not answered
+    // for c yet. Read off the RAW listing, the second press saw c still at 3 —
+    // neither shifted nor stripped of its claim — while c's standing override
+    // kept it at 1 with the glyph beside b. Read off the rows as painted, c is
+    // the head the second press displaces.
+    const line = [
+      row({ key: "a", task_id: "TASK-001", title: "first", status: "queued", queue_key: "/repo",
+            queue_position: 1, queue_ahead: "TASK-000", queue_priority: true }),
+      row({ key: "b", task_id: "TASK-002", title: "second", session_id: "sess-b", target: "/repo/b.py",
+            status: "queued", queue_key: "/repo", queue_position: 2, queue_ahead: "TASK-001" }),
+      row({ key: "c", task_id: "TASK-003", title: "third", session_id: "sess-c", target: "/repo/c.py",
+            status: "queued", queue_key: "/repo", queue_position: 3, queue_ahead: "TASK-002" }),
+    ];
+    const first = skipLine(NO_QUEUE_OVERRIDES, line as Task[], skippedOverride(line[2] as Task));
+    const second = skipLine(first, line as Task[], skippedOverride(line[1] as Task));
+    const painted = applyQueueOverrides(line as Task[], second);
+    const by = (key: string) => painted.find((t) => t.key === key) as Task;
+    expect(painted.filter((t) => t.queue_position === 1)).toHaveLength(1);
+    expect(painted.filter((t) => t.queue_priority)).toHaveLength(1);
+    expect(by("b").queue_position).toBe(1);
+    expect(by("b").queue_priority).toBe(true);
+    // c was the head the second press went past: 2nd now, behind b, no glyph.
+    expect(by("c").queue_position).toBe(2);
+    expect(by("c").queue_ahead).toBe("TASK-002");
+    expect(by("c").queue_ahead_session).toBe("sess-b");
+    expect(by("c").queue_priority).toBe(false);
+    // a was already behind c after the first press and stays 3rd behind c.
+    expect(by("a").queue_position).toBe(3);
+    expect(by("a").queue_ahead).toBe("TASK-003");
+    expect(by("a").queue_priority).toBe(false);
   });
 
   it("claims nothing about a folder the pressed row is not in the listing for", () => {
