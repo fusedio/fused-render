@@ -73,7 +73,7 @@
 // fresh tab with a popup for every one of its already-done rows.
 import { useEffect, useRef } from "react";
 import { notify } from "@platform/lib/notifications";
-import { snapshotIsOpenAnywhere } from "@platform/lib/presence";
+import { snapshotIsOpenExact } from "@platform/lib/presence";
 import { IS_EMBED, IS_TOP_EMBED } from "@platform/lib/router";
 import { useTasksPulseRows } from "@shell/tasksPulse";
 import { taskColumn } from "@shell/tasks-lib";
@@ -100,8 +100,11 @@ export function useTaskStatusNotify(): void {
     // `snapshotIsOpenAnywhere`'s own doc comment: this loop calls
     // `notificationForTransition` once per task, and a fresh
     // `localStorage` read/parse per task per tick is exactly the pattern
-    // it exists to avoid.
-    const isOpenAnywhere = snapshotIsOpenAnywhere();
+    // it exists to avoid. `snapshotIsOpenExact`, not `snapshotIsOpenAnywhere`
+    // (F9 fix): this gate needs an EXACT destination match, never the wider
+    // ancestor/descendant prefix rule `matchesSource` applies for other
+    // callers — see `snapshotIsOpenExact`'s own doc comment.
+    const isOpenAnywhere = snapshotIsOpenExact();
     for (const task of tasks) {
       liveKeys.add(task.key);
       const was = prev.get(task.key);
