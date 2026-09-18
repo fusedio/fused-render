@@ -5,7 +5,7 @@ signed manifest and surfaces a newer version only through /api/config's
 solely on an explicit POST /api/update/install.
 
 The state machine, the throttle, the Activity-dock job mirroring, the cancel
-flag, and the shared constants all live in `update/manager.py`
+flag, and the shared constants all live in `update/_manager.py`
 (`UpdateManager`) — shared with the Linux AppImage updater (`update/linux.py`).
 This module supplies only what is actually mac-specific: bundle/brew
 detection, and the DMG download + swap.
@@ -65,7 +65,15 @@ import time
 
 from fused_render import __version__, jobs
 from fused_render.update import common
-from fused_render.update import manager as _base
+# The shared state machine lives in its own module, `_manager.py`, named
+# with a leading underscore (not `manager.py`) precisely so it cannot collide
+# with `fused_render.update`'s own package-level `manager()` dispatch
+# function (Task 4): Python's import machinery stamps every submodule onto
+# its parent package's namespace under the submodule's own name as a side
+# effect of import, from anywhere, regardless of import style — so a
+# submodule literally named `manager` would eventually clobber the
+# `manager()` function at that same attribute slot.
+from fused_render.update import _manager as _base
 
 logger = logging.getLogger("fused_render.update")
 
@@ -80,14 +88,14 @@ CASK_NAME = "fused-render"
 # (Apple Silicon, then Intel) rather than through the environment.
 BREW_PATHS = ("/opt/homebrew/bin/brew", "/usr/local/bin/brew")
 
-# Re-exported from update/manager.py so `mac.<name>` keeps resolving for every
+# Re-exported from update/_manager.py so `mac.<name>` keeps resolving for every
 # caller and every test that patches it — the shared state machine (check(),
 # install(), _job_report(), _beat_installing(), ...) lives there now, but it
 # reads every one of these back out through `UpdateManager._const()`, which
 # prefers whatever the CONCRETE subclass's own module (this one) currently
 # has bound to the name. A `monkeypatch.setattr(mac, "PHASE_DOWNLOADING",
 # ...)` therefore still changes what a running install reports, even though
-# the code doing the reporting is defined in manager.py, not here.
+# the code doing the reporting is defined in _manager.py, not here.
 JOB_PREFIX = _base.JOB_PREFIX
 PHASE_DOWNLOADING = _base.PHASE_DOWNLOADING
 PHASE_INSTALLING = _base.PHASE_INSTALLING

@@ -103,12 +103,15 @@ def api_config(
         # not of the build.
         "native_dir_picker": dirpicker.available(),
     }
-    # Self-update state (update/mac.py) — present only when the mac app
-    # started the manager; the shell shows the sidebar badge / install panel
-    # off this. Rides this endpoint so the ServerStatusBanner poll carries it.
-    from fused_render.update import mac as mac_update
+    # Self-update state (update/mac.py, update/linux.py) — present only when
+    # this platform started an in-app manager (mac, or Linux running from an
+    # AppImage); the shell shows the sidebar badge / install panel off this.
+    # Rides this endpoint so the ServerStatusBanner poll carries it. Windows
+    # has no in-app manager (its updater lives entirely in the supervisor),
+    # so this stays absent there.
+    from fused_render import update as self_update
 
-    if (update_manager := mac_update.manager()) is not None:
+    if (update_manager := self_update.manager()) is not None:
         config["update"] = update_manager.status()
     # Full Disk Access nudge state (shell/fda.py) — present only on the
     # packaged mac app when the probe is conclusive; absent = render nothing.

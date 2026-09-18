@@ -5,7 +5,7 @@ checks the signed manifest and surfaces a newer version only through
 installing happen solely on an explicit POST /api/update/install.
 
 The state machine, the throttle, the Activity-dock job mirroring, the cancel
-flag, and the shared constants all live in `update/manager.py`
+flag, and the shared constants all live in `update/_manager.py`
 (`UpdateManager`) — shared with the macOS DMG updater (`update/mac.py`). This
 module supplies only what is actually Linux-specific: resolving the running
 AppImage's path, and the AppImage download + swap.
@@ -27,7 +27,7 @@ version to the exact bytes at its sha256 — a mismatched version there would
 already have failed `download_verified`'s checksum compare.
 
 An install also mirrors itself into the Activity dock as a server-owned job
-(`sys:update:<version>`), exactly as mac's does — see manager.py's module
+(`sys:update:<version>`), exactly as mac's does — see _manager.py's module
 docstring for the shape and the cancel contract (honoured only while
 DOWNLOADING; once the swap starts there is no safe point to stop at).
 
@@ -45,7 +45,15 @@ import threading
 from fused_render import __version__, installed, jobs
 from fused_render.supervisor._linux import startup
 from fused_render.update import common
-from fused_render.update import manager as _base
+# The shared state machine lives in its own module, `_manager.py`, named
+# with a leading underscore (not `manager.py`) precisely so it cannot collide
+# with `fused_render.update`'s own package-level `manager()` dispatch
+# function (Task 4): Python's import machinery stamps every submodule onto
+# its parent package's namespace under the submodule's own name as a side
+# effect of import, from anywhere, regardless of import style — so a
+# submodule literally named `manager` would eventually clobber the
+# `manager()` function at that same attribute slot.
+from fused_render.update import _manager as _base
 
 logger = logging.getLogger("fused_render.update")
 
@@ -56,10 +64,10 @@ MANIFEST_URL = os.environ.get(
     "FUSED_RENDER_UPDATE_MANIFEST_URL",
     "https://d2ic19jpchjovp.cloudfront.net/fused-render-linux/latest.json")
 
-# Re-exported from update/manager.py so `linux.<name>` keeps resolving for
+# Re-exported from update/_manager.py so `linux.<name>` keeps resolving for
 # every caller and every test that patches it — see mac.py's identical block
 # for the full rationale (UpdateManager._const() prefers the concrete
-# subclass's own module over manager.py's).
+# subclass's own module over _manager.py's).
 JOB_PREFIX = _base.JOB_PREFIX
 PHASE_DOWNLOADING = _base.PHASE_DOWNLOADING
 PHASE_INSTALLING = _base.PHASE_INSTALLING
@@ -142,7 +150,7 @@ class UpdateManager(_base.UpdateManager):
         # (see _install_appimage): os.replace() is only atomic within one
         # filesystem, and the parent is the one place guaranteed to share it
         # with the target. Overriding the base's macOS-hardcoded path also
-        # keeps the shared _sweep_stale_downloads() (manager.py) sweeping the
+        # keeps the shared _sweep_stale_downloads() (_manager.py) sweeping the
         # same directory installs actually use, instead of an unrelated,
         # never-populated macOS path.
         if self._bundle is not None:
@@ -202,7 +210,7 @@ class UpdateManager(_base.UpdateManager):
         self._job_report(detail=PHASE_INSTALLING, message="", done=None,
                          total=None, cancellable=False)
         # …and it has to keep saying it: the swap itself reports no progress,
-        # but a silent running row goes stale (manager.py's INSTALL_HEARTBEAT_S
+        # but a silent running row goes stale (_manager.py's INSTALL_HEARTBEAT_S
         # / jobs.py's STALE_AFTER_S), same as mac's.
         beat_stop = threading.Event()
         beat = threading.Thread(target=self._beat_installing, args=(beat_stop,),
@@ -259,7 +267,7 @@ def start() -> UpdateManager | None:
             appimage = startup.appimage_path()
             if appimage is None:
                 # ...unless a dev run asked for a manager that only looks
-                # (DEV_MANAGER_ENV, see manager.py): same loop, same
+                # (DEV_MANAGER_ENV, see _manager.py): same loop, same
                 # throttle, same states, no swap.
                 if not os.environ.get(DEV_MANAGER_ENV):
                     return None

@@ -2363,3 +2363,95 @@ Class naming: kept `UpdateManager` in `linux.py`'s own namespace (not
 same reasoning as `mac.py` (see the Task 1 notes above): nothing outside
 `linux.py` needs the base class's own name from there, and `linux.UpdateManager`
 mirrors `mac.UpdateManager` for the dispatch in `update/__init__.py` (Task 4).
+
+## Task 4 — platform dispatch: two spec deviations forced by naming and by the test host's real platform
+
+The spec (docs/LINUX_AUTO_UPDATE_SPEC.md) says to add `manager()`/`start()`
+to `fused_render/update/__init__.py` and to keep the shared state machine at
+`fused_render/update/manager.py` (from Task 1). Both cannot be true at once:
+
+`fused_render/update/manager.py` is a submodule literally named `manager`.
+Python's import machinery stamps every submodule onto its parent package's
+namespace under the submodule's own name as a side effect of import — from
+ANY importer, via ANY import spelling (`from a.b import c`, `import a.b.c`,
+`import a.b.c as x` — all of them) — and this happens unconditionally,
+overwriting whatever the package's own `__init__.py` had bound to that same
+name. Since `update/__init__.py` defines a function ALSO named `manager`,
+the first time anything anywhere imports the `manager` submodule (which
+`mac.py`/`linux.py` do, to reach the shared base class), that import
+permanently clobbers `fused_render.update.manager` back to the submodule
+object for the rest of the process — breaking every OTHER caller that
+expects `update.manager()` to be a callable (routers/update.py's
+`_manager()` helper hit this directly: `TypeError: 'module' object is not
+callable`). This is not an import-ordering bug fixable by import style; it
+recurs the instant the submodule is imported from anywhere, by construction.
+
+Resolution: renamed the submodule to `fused_render/update/_manager.py`
+(leading underscore) instead of renaming the Task 4 dispatch functions —
+this keeps `manager()`/`start()` exactly as the spec names them, which
+matters more since those are the actual external contract (what the routers
+call), while the shared-base-class module's filename is a pure
+implementation detail nothing outside `update/` cares about by name.
+Updated `mac.py`'s and `linux.py`'s `_base` imports and `__init__.py`'s
+`TYPE_CHECKING` import accordingly; the `import fused_render.update.manager
+as _base` workaround from an earlier attempt (which only fixed the symptom
+inside mac.py/linux.py's own module bodies, not the underlying collision)
+was reverted back to a plain `from fused_render.update import _manager as
+_base` now that there is nothing left to collide with.
+
+Second deviation, found immediately after the rename fixed the collision:
+`update/__init__.py`'s `manager()` dispatching strictly on `sys.platform`
+(as the spec's wording literally says) breaks two pre-existing
+`tests/test_mac_update.py` router-integration tests
+(`test_config_carries_update_with_manager`,
+`test_install_endpoint_passes_expected_version_through`) whenever this
+suite actually runs on a non-darwin host — which this worktree's sandbox
+always is (`sys.platform` is genuinely `"linux"` here). Those tests
+monkeypatch `mac._manager` directly (bypassing `mac.start()`) and then
+exercise the FastAPI routes; a `manager()` gated on the real host platform
+routes every call to `linux.manager()` instead on this host, which finds
+nothing and 404s/omits `update`. Before Task 4, this was moot: the routers
+imported `mac` unconditionally, with no platform branch, so they worked on
+any host regardless of what `sys.platform` actually was.
+
+Resolution: split the two functions' gating. `start()` stays exactly as
+specced — strictly `sys.platform`-gated — because it is the one that
+actually touches the OS (spawns the background-check thread, resolves a
+bundle/AppImage path), and running the wrong platform's `start()` for real
+would be a genuine bug, not just a test inconvenience. `manager()` (a
+read-only accessor with no side effects) instead checks `mac.manager()`
+then `linux.manager()` directly, returning whichever is non-None, with no
+`sys.platform` branch at all. This is behaviorally identical to strict
+platform dispatch in any real single-platform process — `start()`'s own
+gating guarantees at most one of the two module-level singletons is ever
+non-None to begin with — and it costs nothing on Windows or any other
+non-mac/non-linux host (both `mac.manager()` and `linux.manager()` just
+return `None` there, same as the spec's `else -> None` branch). Confirmed
+both `mac.py` and `linux.py` import cleanly on any host (neither has a
+platform-gated import — no `AppKit`, no POSIX-only stdlib module), so
+importing both unconditionally inside `manager()` carries no risk of an
+`ImportError` on the wrong platform.
+
+Also: `server/app.py`'s pre-existing `_startup_update_dev_manager` hook
+(previously hardcoded to `mac_update.start()`, gated on
+`os.environ.get(mac_update.DEV_MANAGER_ENV)`) now calls the dispatched
+`update.start()` unconditionally, with no outer env-var gate — the gate was
+already redundant: `mac.start()`/`linux.start()` each check
+`DEV_MANAGER_ENV` internally when no bundle/AppImage is found, so the
+caller-side check bought nothing. This one hook now serves three cases at
+once: it is the REAL Linux bootstrap (Task 4's server/app.py requirement —
+there is no separate native wrapper process on Linux the way `app.py` is
+for mac, so this server's own startup IS "wherever the Linux server
+bootstraps"), a harmless redundant no-op-turned-idempotent-real-start on a
+packaged mac app (which also gets its own explicit call from `app.py`
+after its desktop-probe wait), and the pre-existing check-only dev-run
+opt-in for either platform. The function is kept named
+`_startup_update_dev_manager` (not renamed to something broader) purely
+because `tests/test_app_lifespan.py` pins the exact registered handler
+names as a record of an unrelated past `on_event` -> `on_startup`
+migration; renaming it would cost that test for no benefit.
+
+Verified via `.venv/bin/python -m pytest -q tests/test_mac_update.py
+tests/test_linux_update.py tests/test_installed.py tests/test_app_lifespan.py`
+— 91 passed, all four files, including the two previously-broken
+`test_mac_update.py` router-integration tests.

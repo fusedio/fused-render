@@ -1,7 +1,7 @@
 """Linux in-app updater (fused_render/update/linux.py) and its stamp file.
 
 Mirrors tests/test_mac_update.py's shape for the state machine (shared with
-mac.py through update/manager.py — that machinery is already covered there),
+mac.py through update/_manager.py — that machinery is already covered there),
 adding what's actually new on Linux: `method()`'s appimage/none decision, the
 writability refusal, the swap onto a temp "AppImage" via os.replace, a cancel
 during download, a checksum mismatch leaving the original untouched, the
