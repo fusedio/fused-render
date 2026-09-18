@@ -520,12 +520,9 @@ export function TaskPeek({
                        anchor ?? undefined,
                        // The task's own model/effort, so the FLAG-OFF frame
                        // opens on them too — the native branch seeds the same
-                       // two through `ChatMount`. Only while there is no session
-                       // (see that prop for why), and both "" for a task that
-                       // chose neither, which appends nothing either way.
-                       task.session_id
-                         ? {}
-                         : { model: task.model, effort: task.effort }),
+                       // two through `ChatMount`. Both "" for a task that chose
+                       // neither, which appends nothing.
+                       { model: task.model, effort: task.effort }),
         )
       : null;
   const resolving = !src && !gone && !!task?.session_id && template === undefined;
@@ -1351,25 +1348,23 @@ export function TaskPeek({
                 title={`${shortTaskId(task.task_id)} ${title}`}
                 file={task.target || task.project}
                 sessionId={task.session_id}
-                // WHAT THIS TASK IS SET TO, and ONLY WHILE IT HAS NO SESSION
-                // (Akshil, 2026-09-18: "I saw the sidebar peek — the values
-                // there were different", then "what I select as a user stays").
+                // WHAT THIS TASK IS SET TO (Akshil, 2026-09-18: "I saw the
+                // sidebar peek — the values there were different", then "what I
+                // select as a user stays").
                 //
-                // Once the conversation exists it answers for itself: detection
-                // now asks `agent._defaults` about THIS SESSION and reads the
-                // model and effort off its own transcript, which is the same
-                // answer through every door into the chat — the peek, its Open
-                // button, a row, the chat list, a bare URL. Seeding the param on
-                // top of that would outrank it (`param > detected`), and a pill
-                // the reader changed mid-chat would be undone on the next open:
-                // the very thing this pair was added to stop.
-                //
-                // Before the first run there is no transcript to ask, and the
-                // task's own stored setting is the only true answer — so the
-                // seed speaks for exactly that window and then stands down.
-                {...(task.session_id
-                  ? {}
-                  : { model: task.model, effort: task.effort })}
+                // A SEED, AND IT STANDS DOWN BY ITSELF. `/api/tasks` answers
+                // this pair from the conversation's own record where it has one
+                // and from the task's entry where it does not (`_row_settings`),
+                // and the composer ranks that record above the params these two
+                // become — so seeding is the right answer for the window before
+                // the first run, and is outranked the moment the chat has one of
+                // its own. Gating it on `!task.session_id` was the earlier
+                // attempt at that and was too coarse: a task whose session
+                // existed but whose transcript had not been written yet got no
+                // seed and no record, and detection answered with a neighbour
+                // chat's model.
+                model={task.model}
+                effort={task.effort}
                 // ONE TURN TO LAND ON, when the press that opened this was a
                 // message row rather than a task row (task-peek-store
                 // `PeekState.anchor`). Absent, the conversation opens where a

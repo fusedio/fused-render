@@ -844,9 +844,10 @@ describe("the stylesheet changes nothing when the feature is off", () => {
 // for a chat somebody opened on a folder and the wrong one for a task that was
 // set up with a model in the New task card.
 //
-// The composer's ranking already had a seat for the truth (`param > detected >
-// pref > constant`, apps/claude/ui/composer-defaults); nothing was sitting in
-// it. Both branches of the peek now state the task's own.
+// The composer's ranking has a seat for the truth
+// (`record > param > detected > pref > constant`, apps/claude/ui/composer-defaults)
+// and both branches of the peek now state the task's own — unconditionally,
+// because the seat above them is what retires the seed.
 describe("the peek's run settings", () => {
   const PEEK = read("TaskPeek.tsx");
 
@@ -854,23 +855,21 @@ describe("the peek's run settings", () => {
    *  WHAT the source says is not also an assertion about how it wrapped. */
   const flat = PEEK.replace(/\s+/g, " ");
 
-  it("seeds the task's model and effort ONLY while it has no session", () => {
-    // Before the first run there is no transcript to ask, and the task's own
-    // stored setting is the only true answer — so the host states it.
-    //
-    // AFTER there is one, the conversation answers for itself: detection asks
-    // `agent._defaults` about THIS SESSION. Seeding on top of that would
-    // outrank it (`param > detected`) and would undo a pill the reader changed
-    // mid-chat on the next open — the very thing this pair exists to stop.
-    expect(flat).toContain(
-      "{...(task.session_id ? {} : { model: task.model, effort: task.effort })}");
+  it("seeds the task's model and effort, and lets the record outrank them", () => {
+    // UNCONDITIONALLY, and that is the fix to the first attempt at this. Gating
+    // the seed on `!task.session_id` was too coarse: a task whose session
+    // existed but whose transcript had not been written yet got no seed AND no
+    // detection, so the composer fell through to the newest OTHER chat in the
+    // folder — fable/max for a task created with haiku/low (Akshil,
+    // 2026-09-18). The conversation's own record is what stands the seed down
+    // now, and it exists from the first spawn rather than from the first
+    // transcript row.
+    expect(flat).toContain("model={task.model} effort={task.effort}");
   });
 
   it("…and does the same to the FLAG-OFF frame's URL, so the branches agree", () => {
-    // The legacy template reads the same two params (`curModel`/`curEffort`),
-    // on the same condition.
-    expect(flat).toContain(
-      "task.session_id ? {} : { model: task.model, effort: task.effort }),");
+    // The legacy template reads the same two params (`curModel`/`curEffort`).
+    expect(flat).toContain("{ model: task.model, effort: task.effort }),");
   });
 
   it("does not DRAW them — the peek is about a task, not about the tool", () => {

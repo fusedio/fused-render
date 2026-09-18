@@ -62,7 +62,10 @@ def test_last_used_comes_from_the_newest_transcript_rows(tmp_path, monkeypatch):
         {"effort": "xhigh", "message": {"model": "claude-fable-5"}},
     ])
     out = agent.main(action="defaults", file=file)
-    assert out == {"model": "fable", "effort": "xhigh", "source": "session"}
+    # `recorded` is the app's OWN per-session record, and this chat is asked
+    # about as a folder — there is no conversation to have one.
+    assert out == {"model": "fable", "effort": "xhigh", "source": "session",
+                   "recorded": {"model": "", "effort": ""}}
 
 
 def test_settings_fill_in_when_no_transcript_speaks(tmp_path, monkeypatch):
@@ -88,7 +91,8 @@ def test_nothing_detected_returns_empty_not_a_guess(tmp_path, monkeypatch):
     agent = _agent_in(tmp_path, monkeypatch)
     file, _ = _target(tmp_path)
     out = agent.main(action="defaults", file=file)
-    assert out == {"model": "", "effort": "", "source": ""}
+    assert out == {"model": "", "effort": "", "source": "",
+                   "recorded": {"model": "", "effort": ""}}
 
 
 def test_unknown_values_never_leak_into_the_answer(tmp_path, monkeypatch):

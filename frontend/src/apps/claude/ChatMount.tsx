@@ -155,14 +155,15 @@ export interface ChatMountProps {
    * knows (the Tasks page's side peek, from the task's own row).
    *
    * A SEED, NOT A SYNC, and that is the whole of the difference from the three
-   * ids above. The composer ranks `param > detected > pref > constant`
-   * (ui/composer-defaults) and `detected` is `agent._defaults` — the model last
-   * used in that FOLDER, read off its newest transcripts. That is the right
-   * answer for a chat somebody opened on a folder and the wrong one for a TASK
-   * that was set up with a model of its own: the peek showed a reader a model
-   * and an effort they had never chosen (Akshil, 2026-09-18, "I saw the sidebar
-   * peek — the values there were different"). Stating the task's own settings
-   * puts them at the top of a ranking that already existed.
+   * ids above. The composer ranks
+   * `record > param > detected > pref > constant` (ui/composer-defaults): these
+   * two become the PARAMS, so they answer for a chat that has no record of its
+   * own yet — a task set up in the New task card and not yet run — and are
+   * outranked the moment it has one. Without them the composer fell through to
+   * `detected`, which for a chat with no transcript is the model last used by
+   * some OTHER chat in that folder: the peek showed a reader a model and an
+   * effort they had never chosen (Akshil, 2026-09-18, "I saw the sidebar peek —
+   * the values there were different").
    *
    * They are written ONCE, into the store's seed below, and never pushed again
    * — unlike `sessionId`/`runId`/`msgAnchor`, which `useHostIds` keeps in step.

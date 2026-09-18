@@ -62,6 +62,23 @@ test("model precedence: param > detected > pref > constant", () => {
   expect(resolveModel("", "", "")).toBe(DEFAULT_MODEL);
 });
 
+test("the chat's own RECORD outranks all three", () => {
+  // The params are a seed for a chat that does not exist yet (the New task
+  // card's deep link, "Fix with AI", the Tasks peek's own two). The record is
+  // what the app wrote down for a chat that does — every spawn, every send,
+  // every pick — so it leads, or reopening a task undoes a pill its reader
+  // moved mid-chat (Akshil, 2026-09-18).
+  expect(resolveModel("opus", "haiku", "fable", "sonnet")).toBe("sonnet");
+  expect(resolveEffort("max", "low", "high")).toBe("high");
+  // "" is not an answer at this rank either: a chat with no record falls
+  // straight back to the ranking it always had.
+  expect(resolveModel("opus", "haiku", "fable", "")).toBe("opus");
+  expect(resolveEffort("max", "low", "")).toBe("max");
+  // …and a record naming something this build does not offer blanks nothing.
+  expect(resolveModel(undefined, undefined, undefined, "claude-9-turbo"))
+    .toBe(DEFAULT_MODEL);
+});
+
 test("a pinned full id is an ORDINARY value and survives a reload (T:11890)", () => {
   expect(resolveModel("claude-fable-5-1")).toBe("claude-fable-5-1");
 });

@@ -3,14 +3,24 @@
 // 03 §F); the ranking is `curModel` / `curEffort` / `syncSelects`
 // (T:11901-11912, 12171-12176):
 //
-//   URL param  >  detected (`defaults` action)  >  prefs default  >  constant
+//   this chat's RECORD  >  URL param  >  detected (`defaults` action)
+//                        >  prefs default  >  constant
+//
+// The record leads and it is the one rank that is not from T. It is what the
+// app itself wrote down for THIS conversation — every spawn, every send and
+// every pill pick (`tasks_store`'s `session_settings.json`, reached through
+// `agent._defaults` and `recordChatSettings`) — and it outranks the params
+// because the params are a SEED: the New task card and "Fix with AI" build
+// deep links carrying `?model=`/`?effort=`, which answer for a chat that does
+// not exist yet and must stand down the moment it does. Left the other way
+// round, reopening a task undid a pill its reader had moved mid-chat.
 //
 // and every answer is validated against the list the pill offers, in the
 // ACCESSOR rather than at the sync site: an unknown `?model=` would otherwise
 // set a value matching no option, which renders as a blank pill (fitSelect
 // returns early with no `selectedOptions[0]`) and is also what reaches the CLI.
-import { useEffect, useMemo, useState } from "react";
-import { getPrefs } from "@platform/lib/api";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { getPrefs, recordChatSettings } from "@platform/lib/api";
 import { runAgent } from "../protocol/agent";
 import type { DefaultsResponse, PermissionMode } from "../protocol/types";
 import type { ParamsStore } from "../params/store";
@@ -83,21 +93,36 @@ function pick(list: readonly string[], want: string, fallback: string): string {
   return list.includes(want) ? want : fallback;
 }
 
-/** `curModel()` (T:11901). */
+/** `curModel()` (T:11901), with the chat's own record ahead of it.
+ *
+ *  `recorded` is LAST in the list and FIRST in the ranking, deliberately: the
+ *  three below it are T's own order and are pinned by tests that quote it, so
+ *  the new rank is appended rather than threaded through them. See the header
+ *  for why a record outranks a param. */
 export function resolveModel(
   param?: string,
   detected?: string,
   pref?: string,
+  recorded?: string,
 ): string {
   return pick(
     MODELS,
-    param || detected || pref || DEFAULT_MODEL,
+    recorded || param || detected || pref || DEFAULT_MODEL,
     DEFAULT_MODEL,
   );
 }
-/** `curEffort()` (T:11905) — prefs never reach effort, only detection does. */
-export function resolveEffort(param?: string, detected?: string): string {
-  return pick(EFFORTS, param || detected || DEFAULT_EFFORT, DEFAULT_EFFORT);
+/** `curEffort()` (T:11905) — prefs never reach effort, only detection does.
+ *  `recorded` leads, exactly as it does for the model above. */
+export function resolveEffort(
+  param?: string,
+  detected?: string,
+  recorded?: string,
+): string {
+  return pick(
+    EFFORTS,
+    recorded || param || detected || DEFAULT_EFFORT,
+    DEFAULT_EFFORT,
+  );
 }
 /** `syncSelects`'s permission branch (T:12171). */
 export function resolvePermission(param?: string): PermissionMode {
@@ -110,9 +135,15 @@ export interface ComposerDefaults {
   model: string;
   effort: string;
   permission: PermissionMode;
-  /** Persistence is the pane PARAM and nothing else — no localStorage
-   *  (03 §F). Fired even when the value is unchanged: picking the value
-   *  detection guessed is how the user PINS it (T:12542-12547). */
+  /** The pane param AND this chat's record — never localStorage (03 §F).
+   *
+   *  The param alone was the whole of it, and it is not persistence: it dies
+   *  with the address bar, so a pick was lost on the next open and detection
+   *  answered instead. The record is the durable half now
+   *  (`recordChatSettings`), written only once the chat has a session to key it
+   *  on. Fired even when the value is unchanged: picking the value detection
+   *  guessed is how the user PINS it (T:12542-12547) — and with a record behind
+   *  it, pinning finally means something. */
   setModel(value: string): void;
   setEffort(value: string): void;
   setPermission(value: PermissionMode): void;
@@ -138,20 +169,34 @@ export function useComposerDefaults(
     effort: "",
   });
   const [pref, setPref] = useState("");
+  // WHAT THE APP ITSELF WROTE DOWN for this conversation — the record that
+  // outranks everything else here (see the header). It arrives with detection,
+  // off the same `defaults` read, and is updated straight away on a pick so the
+  // pill does not flicker back to its old value while the POST is in flight.
+  const [recorded, setRecorded] = useState<{ model: string; effort: string }>({
+    model: "",
+    effort: "",
+  });
   const [detectionReady, setDetectionReady] = useState(false);
   const [prefsReady, setPrefsReady] = useState(false);
 
-  // WHICH CONVERSATION THE PILLS ARE ABOUT. Detection used to ask about the
-  // FOLDER alone, and `agent._defaults` answered with the model last used
-  // anywhere in it — so the same chat reached from the Tasks peek, from its Open
-  // button, from a row or from a bare URL could each be told a different thing,
-  // and a model the reader had picked in THIS chat lost to one some other chat
-  // in the same folder used more recently (Akshil, 2026-09-18: "what I select as
-  // a user stays"). The session names the transcript that records what this
-  // conversation actually ran with, so the answer is the same through every
-  // door. "" — a chat with no session yet — asks the folder question exactly as
-  // before, and the host's own seed (`ChatMount`'s `model`/`effort`) is what
-  // speaks for that case.
+  // WHICH CONVERSATION THE PILLS ARE ABOUT, and it is the subject of every
+  // question this hook asks. Detection used to name only the FOLDER, and
+  // `agent._defaults` answered with the model last used anywhere in it — so the
+  // same chat reached from the Tasks peek, from its Open button, from a row or
+  // from a bare URL could each be told a different thing, and a model the reader
+  // had picked in THIS chat lost to one some other chat in the same folder used
+  // more recently (Akshil, 2026-09-18: "what I select as a user stays"). Named,
+  // the agent answers from this chat's own record and then its own transcript,
+  // and from nothing else — a field neither knows comes back "" and the
+  // constants below speak, rather than a neighbour chat's value.
+  //
+  // "" — a chat with no session yet — is the one case that still asks the folder
+  // question, because there is no conversation to ask instead. It is also the
+  // case a host may seed (`ChatMount`'s `model`/`effort`, from the task's own
+  // stored setting), and the case a pick cannot record: there is nothing to key
+  // a record on until the first send mints an id, and that send records the pair
+  // server-side (`agent._start`).
   const sessionId = snapshot.session_id || "";
 
   useEffect(() => {
@@ -171,6 +216,21 @@ export function useComposerDefaults(
           effort:
             d && EFFORTS.includes(d.effort as (typeof EFFORTS)[number])
               ? d.effort
+              : "",
+        });
+        // Validated against the same two lists, and for the same reason: a
+        // record naming something this build does not offer renders as a blank
+        // pill. An agent that predates the field simply has none, which reads
+        // as "no record" — exactly what it means.
+        const rec = d?.recorded;
+        setRecorded({
+          model:
+            rec && MODELS.includes(rec.model as (typeof MODELS)[number])
+              ? rec.model
+              : "",
+          effort:
+            rec && EFFORTS.includes(rec.effort as (typeof EFFORTS)[number])
+              ? rec.effort
               : "",
         });
       })
@@ -209,21 +269,52 @@ export function useComposerDefaults(
     };
   }, []);
 
-  const model = resolveModel(snapshot.model, detected.model, pref);
-  const effort = resolveEffort(snapshot.effort, detected.effort);
+  const model = resolveModel(
+    snapshot.model,
+    detected.model,
+    pref,
+    recorded.model,
+  );
+  const effort = resolveEffort(snapshot.effort, detected.effort, recorded.effort);
   const permission = resolvePermission(snapshot.permission);
+
+  // A PICK IS A WRITE, not just a param. The param still moves — it is what the
+  // rest of the page reads this render, and what a copied URL carries — but it
+  // is the record that survives leaving the page and that every other door into
+  // this chat reads first. Written per field, so moving the effort cannot erase
+  // the model the spawn recorded.
+  //
+  // Optimistically, then over the wire: the pill has to show the new value on
+  // this render, and the record is what it now ranks by. A failed POST is left
+  // alone rather than rolled back — the param says the same thing, so the pill
+  // is right either way until the next `defaults` read settles it — and it must
+  // not be an error the user sees: nothing about this send has failed.
+  const record = useCallback(
+    (settings: { model?: string; effort?: string }) => {
+      if (!sessionId) return;
+      setRecorded((prev) => ({ ...prev, ...settings }));
+      void recordChatSettings(sessionId, settings).catch(() => {});
+    },
+    [sessionId],
+  );
 
   return useMemo(
     () => ({
       model,
       effort,
       permission,
-      setModel: (value: string) => params.set({ model: value }),
-      setEffort: (value: string) => params.set({ effort: value }),
+      setModel: (value: string) => {
+        params.set({ model: value });
+        record({ model: value });
+      },
+      setEffort: (value: string) => {
+        params.set({ effort: value });
+        record({ effort: value });
+      },
       setPermission: (value: PermissionMode) =>
         params.set({ permission: value }),
       ready: detectionReady && prefsReady,
     }),
-    [model, effort, permission, params, detectionReady, prefsReady],
+    [model, effort, permission, params, record, detectionReady, prefsReady],
   );
 }

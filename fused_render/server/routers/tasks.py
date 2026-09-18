@@ -2815,6 +2815,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
          queue: dict | None = None, queue_on: bool | None = None,
          chat_drafts: dict | None = None,
          bound_chips: dict | None = None,
+         settings: dict | None = None,
          last_message: bool = False) -> dict:
     """One listing row. The tail parse only: three messages, and a count.
 
@@ -2862,6 +2863,13 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     itself is empty — `draft`, so the row wears the chip either way. A chat
     draft WINS, because that one is literally sitting in this conversation's
     composer while the form is a message about to be scheduled into it.
+
+    `settings` is `tasks_store.settings_state()` — the per-session model/effort
+    record — read once by the caller for the same reason `read` is: it is one
+    file, and asking it per row would open it once per task on the machine.
+    None means nobody read it, and the row then answers off the task's own
+    entries alone (`_row_settings`), which is what the three single-row callers
+    below want: none of them draws a pill.
 
     `last_message` is `shell_prefs.task_card_last_message()`, read once per
     request by the caller for the same reason the joins above are: it is one
@@ -3008,9 +3016,9 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # has no run to be parked, which is what the empty key would otherwise
     # accidentally match.
     waiting = (parked or {}).get(task["session_id"]) if task["session_id"] else None
-    # The flags this task's runs are launched with — see `_run_settings`. Both
+    # The flags this task's runs are launched with — see `_row_settings`. Both
     # "" for a task that never chose, which is most of them.
-    model, effort = _run_settings(task)
+    model, effort = _row_settings(task, settings)
     # WHERE IN THE LINE, asked once here for the same reason `waiting` is: the
     # status, the position and the name of the task in front have to describe one
     # state of one folder. `{}` for a task nobody said was queued, which is every
@@ -3076,8 +3084,9 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # WHICH CLAUDE THIS TASK'S RUNS USE and how hard it thinks — "" for the
         # overwhelming majority, which chose neither. Not drawn anywhere: it is
         # what the side peek's composer opens on, so a task set up with a model
-        # shows that model instead of whatever the folder last used
-        # (`_run_settings`).
+        # shows that model instead of whatever the folder last used, and a chat
+        # whose reader has moved a pill shows what they moved it to
+        # (`_row_settings`).
         "model": model,
         "effort": effort,
         # Over the WHOLE merged thread, not the three-message tail: "is anything
@@ -3461,6 +3470,12 @@ def _draft_row(ident: str, record: dict, number: str = "") -> dict:
         "title": title or _UNTITLED_DRAFT,
         "title_source": "draft",
         "description": str(record.get("description") or ""),
+        # WHAT THIS FORM IS SET TO — the same two fields `_row_settings` carries
+        # for a real task, read off the draft's own record because that is where
+        # a half-filled New task form keeps them (`drafts.TASK_FORM_FIELDS`).
+        # "" for a form that has not touched either picker, which is most.
+        "model": str(record.get("model") or ""),
+        "effort": str(record.get("effort") or ""),
         "status": _DRAFT_STATUS,
         "failed": False,
         "blocked_reason": "",
@@ -3561,6 +3576,11 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
         "title": _draft_title(record.get("text"), _UNTITLED_CHAT),
         "title_source": "draft",
         "description": "",
+        # Present for the same one-row-shape reason as the fields above, and ""
+        # for the same honest reason: a chat nobody has sent yet has no run to
+        # have been launched with a model, and no session to have recorded one.
+        "model": "",
+        "effort": "",
         "status": _DRAFT_STATUS,
         "failed": False,
         "blocked_reason": "",
@@ -3986,16 +4006,43 @@ def _draft_rows(only: frozenset | set | None = None,
     return rows
 
 
-def _run_settings(task: dict) -> tuple[str, str]:
-    """(model, effort) — the flags this task's runs are launched with, or ""
-    for a task that never chose.
+def _row_settings(task: dict, settings: dict | None) -> tuple[str, str]:
+    """(model, effort) for one row — THE CONVERSATION'S OWN RECORD first, the
+    task entry's stored setting behind it.
 
-    THE ENTRY IS THE TRUTH, not a second opinion about it. `schedule._send`
-    hands `entry["model"]` / `entry["effort"]` straight to
+    The record (`tasks_store.session_settings`) is what the app itself wrote
+    when it launched a run or when the reader moved a pill, so it is the only
+    source that can describe a chat somebody changed mid-thread. The entry is
+    the answer for the window BEFORE that: a task created in the New task card
+    and not yet run has a model it was set up with and no conversation to have
+    recorded one (`_run_settings`).
+
+    PER FIELD, like everything else about this pair: a chat that recorded only
+    an effort keeps the model its entry named. Both "" for the overwhelming
+    majority, which chose neither — and "" is the load-bearing answer, because
+    it is what leaves the composer's own default speaking.
+    """
+    model, effort = _run_settings(task)
+    if settings is None or not task["session_id"]:
+        return model, effort
+    rec_model, rec_effort = tasks_store.session_settings(
+        settings, task["session_id"])
+    return rec_model or model, rec_effort or effort
+
+
+def _run_settings(task: dict) -> tuple[str, str]:
+    """(model, effort) the task's ENTRIES were set up with, or "" for a task
+    that never chose. `_row_settings`'s fallback half.
+
+    THE ENTRY IS THE TRUTH UNTIL THE FIRST RUN. `schedule._send` hands
+    `entry["model"]` / `entry["effort"]` straight to
     `claude_spawn.spawn_helper`, which hands them to `claude --model` /
-    `--effort` (`agent._claude_argv`). There is no gap between "what the task
-    is set to" and "what the run used", so one field answers both questions and
-    nothing has to decide between them.
+    `--effort` (`agent._claude_argv`), so for a task that has not run yet there
+    is no gap between "what the task is set to" and "what the run will use" —
+    and nothing else to ask, since the conversation does not exist. From the
+    first run on, the conversation records what it actually launched with and
+    that record leads (`_row_settings`): a reader who moves a pill mid-chat has
+    changed the chat, not the task's booked messages.
 
     WHY THE ROW CARRIES THEM AT ALL, when the design says the card asks and the
     list stays quiet (NewJobModal's own note): nothing here DRAWS them. They are
@@ -4208,6 +4255,10 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # default off). Per row it would be one file open per task on the machine,
     # per poll.
     last_message = shell_prefs.task_card_last_message()
+    # ONE READ of the per-session model/effort record for the whole listing,
+    # same reason as every join above: it is one small file, and asking it per
+    # row would open it once per task on the machine.
+    settings = tasks_store.settings_state()
     for task in listed.values():
         _place(task)
     numbers = _numbers(listed)
@@ -4225,7 +4276,7 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
         try:
             row = _row(task, numbers.get(task["key"], ""), triage, read, now,
                        busy, revived, parked, queue, queue_on,
-                       chat_drafts, bound_chips, last_message)
+                       chat_drafts, bound_chips, settings, last_message)
         except (OSError, ValueError, KeyError, TypeError):
             continue  # one unreadable task, not an unreadable page
         rows.append(row)
@@ -4816,6 +4867,86 @@ def _read_whole_task(key: str) -> dict:
     return {"ok": True, "unread": sum(1 for m in messages if m["unread"])}
 
 
+# ------------------------------------------------------- what a chat runs with
+#
+# The pill's own write. The composer ranks its two selectors
+# `record > param > detected > pref > constant` (apps/claude/ui/composer-defaults)
+# and everything left of `detected` used to be URL params alone — which meant a
+# pick was remembered by the ADDRESS BAR and nothing else. Leave the page and it
+# was gone; come back through a different door (the Tasks peek, its Open button,
+# a row, the chat list, a bare URL) and detection answered instead, off whatever
+# transcript in that folder had run most recently. That is how a task created
+# with haiku/low opened on fable/max (Akshil, 2026-09-18).
+#
+# So a pick is a WRITE now, to the same store the spawn path writes
+# (`agent._start` / `_send` record what they actually launched with), and every
+# door reads that one record. `session_id` rather than a task key because this
+# is a fact about a CONVERSATION — most chats are not tasks, and the ones that
+# are share the id anyway.
+
+# What `effort` may be — the claude composer's EFFORTS list, and `""` for "not
+# saying", which is how a pick of the model alone reaches this. The model is
+# NOT checked against a list here: the composer offers pinned ids
+# ("claude-fable-5-1") that no Python vocabulary in this package carries, and a
+# server list that did not know one would refuse a model the CLI runs happily.
+# The shape is checked instead — this string is stored, read back and shown, and
+# the two readers that turn it into a selected pill validate against the list
+# THEY offer (`agent._defaults`, the composer's own `pick`).
+_VALID_EFFORTS = ("", "low", "medium", "high", "xhigh", "max")
+_MODEL_SHAPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+class SettingsPatch(BaseModel):
+    session_id: str
+    model: str = ""
+    effort: str = ""
+
+
+@router.post("/api/tasks/settings")
+def api_task_settings(patch: SettingsPatch):
+    """Record which model this conversation runs with, and how hard it thinks.
+
+    ONLY THE FIELDS GIVEN. An empty `model` means "I am not saying anything
+    about the model", not "the model is nothing": the pills are two separate
+    picks, and one must not erase what the other — or the spawn that started
+    this chat — already knew. `tasks_store.record_settings` keeps that
+    invariant; this endpoint only checks the words.
+
+    Answers with the record as stored, so a client that wants to know what it
+    now says does not have to guess or re-read the listing.
+    """
+    session_id = patch.session_id.strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="missing session_id")
+    # The shape the readers accept (`agent._bad_id`, `_SESSION_ID_SHAPE` on the
+    # running-mark endpoint): a record filed under an id no reader will ever
+    # look up is dead weight in a file that is read on every listing.
+    if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
+        raise HTTPException(status_code=400,
+                            detail=f"invalid session_id {session_id!r}")
+    model = patch.model.strip()
+    effort = patch.effort.strip()
+    if model and not _MODEL_SHAPE.match(model):
+        raise HTTPException(status_code=400, detail=f"invalid model {model!r}")
+    if effort not in _VALID_EFFORTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid effort {effort!r}: expected one of "
+                   + ", ".join(repr(v) for v in _VALID_EFFORTS))
+    if not (model or effort):
+        raise HTTPException(status_code=400,
+                            detail="nothing to record (send model or effort)")
+    record = tasks_store.record_settings(session_id, model, effort)
+    # THE ROW CARRIES THIS PAIR (`_row_settings`), so the other windows have to
+    # be told — the same ring `POST /api/tasks/read` makes for the same reason.
+    # A session that is not a task is a key nobody is watching, and the notify
+    # costs that case nothing.
+    tasks_watch.notify({session_id})
+    return {"ok": True,
+            "model": str(record.get("model") or ""),
+            "effort": str(record.get("effort") or "")}
+
+
 # ------------------------------------------------------------------ archiving
 # Archiving is the only filing decision a person makes about a task, and it is
 # ONE gesture with two halves — which is why it is a verb here and not a triage
@@ -4961,6 +5092,10 @@ def api_task_unarchive(patch: UnarchivePatch):
     # from the same helpers, AFTER the filing is gone, so the answer is the lane
     # the very next poll will draw rather than a guess about it.
     _place(task)
+    # No `settings=` here: this single-row answer carries no pills, so the
+    # per-session record is not read for it. A caller that starts drawing
+    # model/effort off this row must pass `tasks_store.settings_state()` like
+    # the listing does, or the pair comes back from the entry alone.
     row = _row(task, "", sessions._load_state("triage.json"),
                tasks_store.read_state(), time.time(),
                schedule.busy_sessions(schedule.list_entries()), [])
@@ -5022,6 +5157,10 @@ def api_task_delete(patch: DeletePatch):
         raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
 
     _place(task)
+    # No `settings=` here: this single-row answer carries no pills, so the
+    # per-session record is not read for it. A caller that starts drawing
+    # model/effort off this row must pass `tasks_store.settings_state()` like
+    # the listing does, or the pair comes back from the entry alone.
     row = _row(task, "", sessions._load_state("triage.json"),
                tasks_store.read_state(), time.time(),
                schedule.busy_sessions(schedule.list_entries()), [])
@@ -5127,6 +5266,10 @@ def api_task_erase(patch: ErasePatch):
         raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
 
     _place(task)
+    # No `settings=` here: this single-row answer carries no pills, so the
+    # per-session record is not read for it. A caller that starts drawing
+    # model/effort off this row must pass `tasks_store.settings_state()` like
+    # the listing does, or the pair comes back from the entry alone.
     row = _row(task, "", sessions._load_state("triage.json"),
                tasks_store.read_state(), time.time(),
                schedule.busy_sessions(schedule.list_entries()), [])

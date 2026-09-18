@@ -165,3 +165,94 @@ def test_send_against_a_dead_run_id_errors_instead_of_writing(agent, tmp_path):
     result = agent._send("20260901-130000-bbb", "hello", "")
     assert "error" in result
     assert not os.path.isdir(os.path.join(run_dir, "inbox"))
+
+
+# ---- what the run was launched with, recorded (Akshil, 2026-09-18) ----------
+#
+# Every surface asks "which model is this chat on?" and the only complete answer
+# is the one the app writes down itself: Claude Code's transcript records the
+# model on every assistant row but the effort only sometimes, and neither exists
+# in the seconds between a chat getting an id and its first row landing. So the
+# two places that KNOW — the spawn and the send — record it
+# (`tasks_store.session_settings`, read back by `_defaults`).
+
+
+@pytest.fixture()
+def home(tmp_path, monkeypatch):
+    """This test's own `~/.fused-render`, so the record written below is this
+    test's and not the suite's shared one."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    return tmp_path / "home"
+
+
+def test_a_spawn_records_what_it_launched_with(agent, monkeypatch, stub_cli,
+                                               target, home):
+    """Keyed on the session `_start` MINTED, which is the conversation the turn
+    happens in — and which exists before the CLI has written a byte."""
+    monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", stub_cli)
+    res = agent._start(target, "first", "", "haiku", "low", has_pane=False)
+    assert agent._session_settings(res["session_id"]) == ("haiku", "low")
+
+
+def test_a_spawn_that_never_happens_records_nothing(agent, monkeypatch,
+                                                     stub_cli, target, home):
+    """The record is written AFTER the host is up. A Popen that raises leaves
+    no conversation to have a record about — and a record left behind would
+    answer the next chat handed the same id."""
+    monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", stub_cli)
+
+    def boom(*a, **k):
+        raise OSError("no host for you")
+    monkeypatch.setattr(agent.subprocess, "Popen", boom)
+    with pytest.raises(OSError):
+        agent._start(target, "first", "", "haiku", "low", has_pane=False)
+    state_path = agent._state_file(*agent.SESSION_SETTINGS)
+    if os.path.exists(state_path):
+        with open(state_path, encoding="utf-8") as fh:
+            assert json.load(fh) == {}, "a chat that never ran has no record"
+
+
+def test_a_resume_records_against_the_conversation_it_resumed(
+        agent, monkeypatch, stub_cli, target, home):
+    """A resume names the chat instead of minting one; the record belongs to
+    that same chat."""
+    monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", stub_cli)
+    agent._start(target, "again", "sess-old", "opus", "max", has_pane=False)
+    assert agent._session_settings("sess-old") == ("opus", "max")
+
+
+def test_a_pill_moved_mid_session_is_recorded_by_the_send(
+        agent, monkeypatch, stub_cli, target, home):
+    """The model the CLI accepts CHANGED mid-session (a `set_model` control
+    request), so the turn never passes through `_start` — and without this write
+    the change would reach the CLI and leave no trace any surface could read
+    back."""
+    run_id, run_dir = _start(agent, monkeypatch, stub_cli, target, message="first")
+    assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
+    with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+        session_id = json.load(fh)["session_id"]
+
+    assert agent._send(run_id, "second", "", "opus", "") == {"sent": True}
+    assert agent._session_settings(session_id) == ("opus", "")
+
+
+def test_a_send_that_asks_for_a_respawn_records_nothing_yet(
+        agent, monkeypatch, stub_cli, target, home):
+    """An effort change cannot be applied to a live host — there is no control
+    request for it — so the session ends and the CALLER re-sends through
+    `_start`, which is what records the new value. Recording it here would claim
+    a run that has not happened."""
+    monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", stub_cli)
+    res = agent._start(target, "first", "", "haiku", "low", has_pane=False)
+    run_dir = os.path.join(agent.RUNS, res["run_id"])
+    assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
+
+    assert agent._send(res["run_id"], "second", "", "haiku", "max") \
+        == {"respawn": True}
+    assert agent._session_settings(res["session_id"]) == ("haiku", "low")
+
+    # …and the respawn the caller makes is what moves it.
+    again = agent._start(target, "second", res["session_id"], "haiku", "max",
+                         has_pane=False)
+    assert again["session_id"] == res["session_id"]
+    assert agent._session_settings(res["session_id"]) == ("haiku", "max")

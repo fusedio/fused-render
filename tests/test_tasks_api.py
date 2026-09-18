@@ -2055,6 +2055,105 @@ def test_the_newest_entry_that_named_one_speaks(client, projects_dir):
     assert task["effort"] == "max", "…asked per field"
 
 
+# ---- the conversation's OWN record, above the entry's ------------------------
+#
+# The entry is the truth only until the first run. After it the conversation has
+# one of its own — what `agent._start`/`_send` actually launched with, and what
+# the reader's pill last said — and THAT is what every door has to read, or a
+# pill moved mid-chat is undone by the next open.
+#
+# It is also what closes the window the report lived in: a task whose session
+# existed but whose transcript had not been written yet had nothing to detect
+# from, and detection answered with the newest OTHER chat in the folder
+# (fable/max, for a task created with haiku/low — Akshil, 2026-09-18).
+
+
+def test_the_chats_own_record_outranks_the_entry(client, projects_dir):
+    """A reader who moved a pill has changed the CHAT, not the task's booked
+    messages — so the row follows them."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    _seed_schedule([_entry("e1", "nightly", T12, claude_session_id="sess-a",
+                           model="opus", effort="max")])
+    assert [_by_key(client)["sess-a"][k] for k in ("model", "effort")] \
+        == ["opus", "max"]
+    tasks_store.record_settings("sess-a", "haiku", "low")
+    assert [_by_key(client)["sess-a"][k] for k in ("model", "effort")] \
+        == ["haiku", "low"]
+
+
+def test_a_record_of_one_field_leaves_the_other_to_the_entry(client, projects_dir):
+    """Per field, the same rule the entries themselves are read by: recording an
+    effort must not wipe the model the task was set up with."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    _seed_schedule([_entry("e1", "nightly", T12, claude_session_id="sess-a",
+                           model="opus", effort="max")])
+    tasks_store.record_settings("sess-a", effort="low")
+    assert [_by_key(client)["sess-a"][k] for k in ("model", "effort")] \
+        == ["opus", "low"]
+
+
+def test_a_pill_pick_is_written_for_the_conversation(client, projects_dir):
+    """The endpoint the composer posts to on every pick. The param it also sets
+    dies with the address bar; this is the half that survives the next open."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    r = client.post("/api/tasks/settings",
+                    json={"session_id": "sess-a", "model": "haiku",
+                          "effort": "low"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "model": "haiku", "effort": "low"}
+    assert [_by_key(client)["sess-a"][k] for k in ("model", "effort")] \
+        == ["haiku", "low"]
+
+
+def test_picking_one_pill_never_erases_the_other(client, projects_dir):
+    """Two pills, two requests, one record. An absent field is "not saying",
+    never "nothing" — the spawn path writes both and a pick writes one."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    client.post("/api/tasks/settings",
+                json={"session_id": "sess-a", "model": "haiku", "effort": "low"})
+    r = client.post("/api/tasks/settings",
+                    json={"session_id": "sess-a", "effort": "max"})
+    assert r.json() == {"ok": True, "model": "haiku", "effort": "max"}
+
+
+def test_the_settings_endpoint_refuses_words_it_does_not_know(client, projects_dir):
+    """A 400 rather than a silent fallback: a caller that asked for an effort
+    this build has no name for has been answered with a different session, which
+    is worse than being told no. The MODEL is not list-checked — the composer
+    offers pinned ids no Python vocabulary here carries — so its shape is."""
+    bad = [{"session_id": "sess-a", "effort": "turbo"},
+           {"session_id": "sess-a", "model": "../../etc/passwd"},
+           {"session_id": "", "model": "haiku"},
+           {"session_id": "sess-a"}]
+    for body in bad:
+        assert client.post("/api/tasks/settings", json=body).status_code == 400, body
+
+
+def test_the_settings_endpoint_refuses_an_id_no_reader_would_look_up(client):
+    """`agent._defaults` refuses ids with separators or a leading dot before it
+    reads anything; a record filed under one would never be read back, only
+    carried by every listing. Same shape the running-mark endpoint demands."""
+    for sid in ("../../etc/passwd", ".hidden", "a/b", "a\\b", "d:x", ".", ".."):
+        r = client.post("/api/tasks/settings",
+                        json={"session_id": sid, "model": "haiku"})
+        assert r.status_code == 400, sid
+    assert client.post("/api/tasks/settings",
+                       json={"session_id": "sess-ok.1_2", "model": "haiku"}
+                       ).status_code == 200
+
+
+
+def test_a_record_for_a_chat_that_is_not_a_task_bothers_nobody(client, projects_dir):
+    """Most conversations are not tasks, and the record is keyed by SESSION.
+    Writing one must not mint a row, and must not fail."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    before = {t["key"] for t in _tasks(client)}
+    assert client.post("/api/tasks/settings",
+                       json={"session_id": "no-such-session",
+                             "model": "haiku"}).status_code == 200
+    assert {t["key"] for t in _tasks(client)} == before
+
+
 def test_a_freshly_resolved_turn_outvotes_the_transcripts_liveness(
         client, projects_dir):
     """The popover/tasks-page split, closed on the server's side.

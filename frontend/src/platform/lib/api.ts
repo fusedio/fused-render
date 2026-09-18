@@ -3143,14 +3143,19 @@ export interface Task {
   description: string;
   /**
    * WHICH CLAUDE THIS TASK'S RUNS USE and how hard it thinks — `""` on both for
-   * the overwhelming majority, which chose neither (`tasks.py::_run_settings`).
+   * the overwhelming majority, which chose neither (`tasks.py::_row_settings`).
+   *
+   * THE CONVERSATION'S OWN RECORD where it has one — what the app wrote down at
+   * the last spawn, the last send or the reader's last pill pick — and the task
+   * entry's stored setting behind it, for the window before the first run.
    *
    * NOTHING DRAWS THEM, and that is still the design ("the card asks, the list
    * stays quiet" — shell/NewJobModal). They are here for the side peek, whose
    * composer is a REAL chat: handed no opinion, it detects the model last used
    * in that folder (`agent._defaults`) and showed the reader settings they had
-   * never chosen. The peek states the task's own instead, at the top of the
-   * ranking the composer already had (`param > detected > pref > constant`).
+   * never chosen. The peek seeds these instead, and the composer's own ranking
+   * (`record > param > detected > pref > constant`) retires the seed as soon as
+   * the chat has a record of its own.
    *
    * `""` is a real answer — "this task has no opinion" — and is what leaves
    * detection speaking for every conversation that is not a task.
@@ -3777,6 +3782,32 @@ export function markWholeTaskRead(
     key,
     all: true,
   });
+}
+
+// WHAT THIS CHAT RUNS WITH, written on every pill pick.
+//
+// The composer's model/effort used to be remembered by the URL and nothing
+// else: leave the page and the pick was gone, and coming back through any
+// other door (the Tasks peek, its Open button, a row, the chat list, a bare
+// URL) fell back to DETECTION — the model last used by any chat in that folder.
+// A task created with haiku/low opened on fable/max. So a pick is a write now,
+// into the same per-session record the spawn path writes (`agent._start`), and
+// every door reads that one record first.
+//
+// Keyed by SESSION, not by task key: this is a fact about a conversation, and
+// most conversations are not tasks. A chat with no session yet sends nothing —
+// there is nothing to key on, and its first send records the pair server-side.
+//
+// Per field: send the one that changed. An omitted field is "not saying", never
+// "nothing" — the server keeps what the other pick (or the spawn) recorded.
+export function recordChatSettings(
+  sessionId: string,
+  settings: { model?: string; effort?: string },
+): Promise<{ ok: boolean; model: string; effort: string }> {
+  return postJson<{ ok: boolean; model: string; effort: string }>(
+    "/api/tasks/settings",
+    { session_id: sessionId, ...settings },
+  );
 }
 
 // Filing a task away. ONE call, because it is one gesture with two halves that
