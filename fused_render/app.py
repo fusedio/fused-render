@@ -758,8 +758,23 @@ def relauncher_log_path(pid: int) -> str:
     return os.path.join(log_dir(), f"fused-render-relaunch-{int(pid)}.log")
 
 
+# The "is a successor already running?" test, as a shell fragment that exits 0
+# when one is. `pgrep -f` sees the successor from the instant it execs, long
+# before it has a server — let alone the pidfile, which `_bootstrap_server`
+# writes only after `wait_until_ready`. The `grep -v` is not optional: this
+# shell's OWN command line carries the bundle path, so `pgrep -f` matches it too
+# and an unfiltered probe would report "alive" forever, on every run, and never
+# escalate.
+#
+# Its own constant so a test can swap in a probe it controls and assert the RULE
+# (never `-n` over a live process) without depending on the host's `pgrep`
+# semantics — which differ on Linux, where CI runs the string-level tests.
+ALIVE_PROBE = '/usr/bin/pgrep -f "$macos" 2>/dev/null | /usr/bin/grep -qv "^$$$"'
+
+
 def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
-                     log=None, pidfile=None, opener="/usr/bin/open"):
+                     log=None, pidfile=None, opener="/usr/bin/open",
+                     alive_probe=None):
     """Detached shell child that waits for `pid` to exit, then `open`s the
     bundle — and keeps watching until a successor actually answers.
 
@@ -796,6 +811,8 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
         log = relauncher_log_path(pid)
     if pidfile is None:
         pidfile = PIDFILE
+    if alive_probe is None:
+        alive_probe = ALIVE_PROBE
     boot_ticks = max(1, int(RELAUNCH_BOOT_WAIT_S / RELAUNCH_POLL_S))
     deadline_ticks = max(boot_ticks, int(RELAUNCH_DEADLINE_S / RELAUNCH_POLL_S))
     # Paths go through variables rather than being spliced into every command:
@@ -810,12 +827,10 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
         'macos="$bundle/Contents/MacOS"; '
         'say() { printf "%s relauncher[%s] %s\\n" '
         '"$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$1" >>"$log" 2>/dev/null; }; '
-        # ANY process running out of this bundle, excluding this shell — whose
-        # own command line carries the bundle path and would otherwise match
-        # itself. `pgrep -f` sees the successor from the instant it execs, long
-        # before it has a server, let alone a pidfile.
-        'alive() { /usr/bin/pgrep -f "$macos" 2>/dev/null '
-        '| /usr/bin/grep -qv "^$$$"; }; '
+        # ANY process running out of this bundle — see ALIVE_PROBE. A shell
+        # FRAGMENT, not an argument, so it is spliced rather than quoted; the
+        # only caller that passes one is a test.
+        f"alive() {{ {alive_probe}; }}; "
         f'say "parked on pid {int(pid)}; bundle=$bundle"; '
         f"while /bin/kill -0 {int(pid)} 2>/dev/null; do /bin/sleep {RELAUNCH_POLL_S}; done; "
         f'say "pid {int(pid)} has exited"; '

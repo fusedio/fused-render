@@ -10,6 +10,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 import fused_render.app as app_mod
 
 
@@ -127,6 +129,26 @@ def test_the_relauncher_never_escalates_over_a_live_process():
     assert "still booting, not asking again" in script
 
 
+def test_the_liveness_probe_is_the_pgrep_line_by_default():
+    """Injectable so a test can state "a successor is booting" as a fact instead
+    of hoping the host's `pgrep` agrees — but the DEFAULT is what ships, and it
+    has to stay the bundle-scoped, self-excluding one."""
+    calls = []
+    app_mod.spawn_relauncher("/Applications/FusedRender.app", 1,
+                             popen=lambda *a, **k: calls.append(a))
+    assert f"alive() {{ {app_mod.ALIVE_PROBE}; }}" in calls[0][0][2]
+    assert '/usr/bin/pgrep -f "$macos"' in app_mod.ALIVE_PROBE
+    # Without the self-exclusion the probe reports "alive" forever — this shell's
+    # own command line carries the bundle path — and would never escalate.
+    assert '/usr/bin/grep -qv "^$$$"' in app_mod.ALIVE_PROBE
+
+    injected = []
+    app_mod.spawn_relauncher("/Applications/FusedRender.app", 1,
+                             popen=lambda *a, **k: injected.append(a),
+                             alive_probe="false")
+    assert "alive() { false; }" in injected[0][0][2]
+
+
 def test_the_boot_wait_outlasts_the_successors_own_readiness_ceiling():
     """The number that makes the rule above hold even if `pgrep` were useless:
     `_bootstrap_server` waits up to SERVER_READY_TIMEOUT_S for its own server and
@@ -137,10 +159,21 @@ def test_the_boot_wait_outlasts_the_successors_own_readiness_ceiling():
     assert app_mod.RELAUNCH_BOOT_WAIT_S - app_mod.SERVER_READY_TIMEOUT_S >= 5
 
 
-def _run_relauncher(tmp_path, *, successor_after=None, wait_s=6.0):
+# The three tests below RUN the generated shell rather than reading it, and are
+# therefore darwin-only — the relauncher exists to drive LaunchServices
+# (`open -a`), there is no /bin/sh on the Windows runner at all, and `pgrep -f`'s
+# matching differs on Linux. Everything ABOVE this line is a string assertion on
+# the script and runs everywhere, which is where the rules themselves are
+# pinned; these add "and the shell really does that".
+mac_only = pytest.mark.skipif(sys.platform != "darwin",
+                              reason="the relauncher drives macOS LaunchServices")
+
+
+def _run_relauncher(tmp_path, *, alive_probe=None, successor_after=None,
+                    wait_s=6.0, real_successor=False):
     """Run the REAL generated shell against a throwaway pid and a stub opener,
-    with the clock scaled down so its own logic — not a fifteen-second sleep —
-    is what the test exercises. Returns (opens, log lines)."""
+    with the clock scaled down so its own logic — not a twenty-five-second sleep
+    — is what the test exercises. Returns (opens, log lines)."""
     import subprocess
     import time
 
@@ -154,15 +187,23 @@ def _run_relauncher(tmp_path, *, successor_after=None, wait_s=6.0):
 
     victim = subprocess.Popen(["/bin/sh", "-c", "sleep 0.3"])
     app_mod.spawn_relauncher(bundle, victim.pid, log=str(log),
-                             pidfile=str(pidfile), opener=str(opener))
+                             pidfile=str(pidfile), opener=str(opener),
+                             alive_probe=alive_probe)
     victim.wait()
     successor = None
     if successor_after is not None:
-        # A process whose argv sits under the bundle's MacOS dir — what `alive`
-        # looks for, and true from the instant a real successor execs.
-        successor = subprocess.Popen(
-            ["/bin/sh", "-c",
-             f"exec -a {bundle}/Contents/MacOS/FusedRender sleep {wait_s + 2}"])
+        if real_successor:
+            # A process whose argv sits under the bundle's MacOS dir — what the
+            # DEFAULT probe looks for, and true from the instant a real
+            # successor execs.
+            successor = subprocess.Popen(
+                ["/bin/sh", "-c",
+                 f"exec -a {bundle}/Contents/MacOS/FusedRender sleep {wait_s + 2}"])
+        else:
+            # The injected probe's own signal: a file, so "is a successor
+            # booting?" is a fact the test states rather than one it hopes the
+            # host's `pgrep` will agree with.
+            (tmp_path / "booting").write_text("1")
         time.sleep(successor_after)
         pidfile.write_text("999")
     deadline = time.monotonic() + wait_s
@@ -178,18 +219,30 @@ def _run_relauncher(tmp_path, *, successor_after=None, wait_s=6.0):
             log.read_text().splitlines() if log.exists() else [])
 
 
+def _fast_clock(monkeypatch, *, boot_wait, deadline):
+    monkeypatch.setattr(app_mod, "RELAUNCH_POLL_S", 0.05)
+    monkeypatch.setattr(app_mod, "RELAUNCH_SETTLE_S", 0.1)
+    monkeypatch.setattr(app_mod, "RELAUNCH_BOOT_WAIT_S", boot_wait)
+    monkeypatch.setattr(app_mod, "RELAUNCH_DEADLINE_S", deadline)
+
+
+@mac_only
 def test_a_slow_but_successful_launch_is_asked_for_exactly_once(monkeypatch, tmp_path):
     """THE REGRESSION (bugbot, PR #1214). A successor that takes longer than the
     boot wait to write its pidfile is still a successor: it is alive the whole
     time, and asking again would fork a second copy onto the port the first is
-    about to claim."""
-    monkeypatch.setattr(app_mod, "RELAUNCH_POLL_S", 0.05)
-    monkeypatch.setattr(app_mod, "RELAUNCH_SETTLE_S", 0.1)
-    monkeypatch.setattr(app_mod, "RELAUNCH_BOOT_WAIT_S", 1.0)
-    monkeypatch.setattr(app_mod, "RELAUNCH_DEADLINE_S", 6.0)
+    about to claim.
+
+    The liveness probe is INJECTED — a file the test creates — so what is pinned
+    is the RULE ("never `-n` while something is alive") rather than whether this
+    host's `pgrep` agrees about a fake process. The default probe gets its own
+    test below."""
+    _fast_clock(monkeypatch, boot_wait=1.0, deadline=6.0)
     # Pidfile at 3x the boot wait — the successor sails past several boundaries
     # at which the old code would have asked again.
-    opens, log = _run_relauncher(tmp_path, successor_after=3.2, wait_s=8.0)
+    opens, log = _run_relauncher(
+        tmp_path, alive_probe=f'[ -f {tmp_path / "booting"} ]',
+        successor_after=3.2, wait_s=8.0)
 
     assert len(opens) == 1, opens
     assert opens[0].startswith("-a "), opens
@@ -199,19 +252,32 @@ def test_a_slow_but_successful_launch_is_asked_for_exactly_once(monkeypatch, tmp
     assert "successor is up after attempt 1" in joined
 
 
+@mac_only
 def test_a_launch_that_left_nothing_running_does_escalate(monkeypatch, tmp_path):
-    """The other half: with `pgrep` finding nothing at all, the first ask
+    """The other half: with the probe finding nothing at all, the first ask
     demonstrably did nothing and `-n` is the right next move."""
-    monkeypatch.setattr(app_mod, "RELAUNCH_POLL_S", 0.05)
-    monkeypatch.setattr(app_mod, "RELAUNCH_SETTLE_S", 0.1)
-    monkeypatch.setattr(app_mod, "RELAUNCH_BOOT_WAIT_S", 1.0)
-    monkeypatch.setattr(app_mod, "RELAUNCH_DEADLINE_S", 3.5)
-    opens, log = _run_relauncher(tmp_path, wait_s=8.0)
+    _fast_clock(monkeypatch, boot_wait=1.0, deadline=3.5)
+    opens, log = _run_relauncher(tmp_path, alive_probe="false", wait_s=8.0)
 
     assert len(opens) == app_mod.RELAUNCH_OPEN_TRIES, opens
     assert opens[0].startswith("-a ")
     assert all(line.startswith("-n -a ") for line in opens[1:]), opens
     assert "giving up: the app did not come back" in "\n".join(log)
+
+
+@mac_only
+def test_the_default_probe_sees_a_real_child_of_the_bundle(monkeypatch, tmp_path):
+    """The production `pgrep` line itself, against a real process running out of
+    the bundle path — the half the injected probe above deliberately does not
+    exercise. Darwin-only because that is the only place it has to work, and the
+    only place `pgrep -f`'s matching is the one this was written against."""
+    _fast_clock(monkeypatch, boot_wait=1.0, deadline=6.0)
+    opens, log = _run_relauncher(tmp_path, successor_after=3.2, wait_s=8.0,
+                                 real_successor=True)
+
+    assert len(opens) == 1, opens
+    assert not any("-n" in line for line in opens), opens
+    assert "still booting, not asking again" in "\n".join(log)
 
 
 def test_the_relauncher_writes_its_own_timeline():
