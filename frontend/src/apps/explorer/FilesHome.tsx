@@ -20,9 +20,11 @@ import {
   getClaudeSessionFolders,
   getGitRepos,
   indexRank,
+  noteHomeFocused,
   startIndexScan,
   statPath,
 } from "@platform/lib/api";
+import { hiddenSeconds, shouldNoteFocus } from "@apps/explorer/lib/focus-detect";
 import { useUrlVersion } from "@platform/lib/hooks";
 import {
   fsMutationCount,
@@ -466,6 +468,48 @@ export function FilesSearch({
   // substring search (see MIN_QUERY_CHARS's own doc comment, lib/home-search.ts).
   const searchable = trimmedQ.length >= MIN_QUERY_CHARS;
   useEffect(() => onActiveChange(active), [active, onActiveChange]);
+
+  // -- change detection on regaining focus -------------------------------------
+  //
+  // Home search is index-backed and global, so a file dropped anywhere under a
+  // scan root while this tab was hidden (a browser download, a Finder move)
+  // stays invisible until the next scan. `noteHomeFocused` (platform/lib/api)
+  // asks the server to replay the macOS FSEvents journal and rescan only if it
+  // reports a real change — cheap on the quiet path (the whole point of
+  // SPEC-focus-change-detection.md), so this fires on every qualifying focus
+  // regain rather than rate-limiting it here; the server holds its own floor
+  // (`index/detect.py`'s `DETECT_INTERVAL_S`) regardless of what this effect
+  // does.
+  //
+  // `hiddenSince` is a ref, not state: it drives no render, only the decision
+  // made on the NEXT visibility change, and a ref lets the listener close over
+  // a mutable value without becoming a dependency that would tear the effect
+  // down and rebuild it on every transition.
+  const hiddenSince = useRef<number | null>(null);
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        hiddenSince.current = Date.now();
+        return;
+      }
+      // Becoming visible. `hiddenSince.current` is null on the very first
+      // "visible" this listener ever sees — attached while already visible,
+      // the overwhelmingly common case of a normal page load, so this never
+      // fires on mount — and again after every fire below, which is what
+      // stops one hidden/visible pair from firing twice.
+      const since = hiddenSince.current;
+      hiddenSince.current = null;
+      if (since === null) return;
+      const hiddenForMs = Date.now() - since;
+      if (!shouldNoteFocus(hiddenForMs)) return;
+      // Fire-and-forget, same as every other accelerator in this file
+      // (platform/lib/index-status.ts's poll failure): a failed or skipped
+      // check is never something the user can act on.
+      noteHomeFocused(hiddenSeconds(hiddenForMs)).catch(() => {});
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
 
   // -- a query that is really an address --------------------------------------
   //
