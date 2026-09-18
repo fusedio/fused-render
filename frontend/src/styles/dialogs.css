@@ -453,21 +453,3 @@
   color: var(--fg-muted);
   overflow-wrap: anywhere;
 }
-
-/* ---- Share app dialog (platform/ui/ShareAppModal.tsx) --------------------- */
-/* The sheet is shadcn (Tailwind classes in the component); this is the one
-   rule it cannot carry itself. Both of its routes photograph the screen
-   (appShot), and with the /apps card's thumb as the crop source the open
-   sheet sits DIRECTLY over the rect being shot — its scrim and popup would
-   bake into the artifact's permanent preview.png. appShot marks the body for
-   the shot's frame; every shadcn dialog and alert layer vanishes for it, with
-   no transition so it is gone by the next paint. `visibility`, not `opacity`:
-   an opacity-0 layer still paints a compositing hit, and this must be nothing. */
-body[data-capture-shooting] [data-slot="dialog-overlay"],
-body[data-capture-shooting] [data-slot="dialog-content"],
-body[data-capture-shooting] [data-slot="alert-dialog-overlay"],
-body[data-capture-shooting] [data-slot="alert-dialog-content"] {
-  visibility: hidden !important;
-  transition: none !important;
-  animation: none !important;
-}
