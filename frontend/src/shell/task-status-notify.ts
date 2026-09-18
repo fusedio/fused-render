@@ -65,6 +65,52 @@ import { taskColumn } from "@shell/tasks-lib";
 import { taskHref } from "@shell/tasks-lib";
 import { folderHref } from "@shell/schedule-lib";
 
+// F9 (code review of F8's "already open" gate): this used to import
+// `recentFsPath` from `apps/explorer/lib/recents.ts` — the right decoder
+// (see the header comment on the call site below), but a REAL runtime
+// import, not a type-only one: `recents.ts` imports `@platform/lib/router`,
+// which reads `location` and calls `history.replaceState` at MODULE INIT
+// (its `rewriteLegacyPath` IIFE). That throws `ReferenceError: location is
+// not defined` in any environment with no DOM at all — a standalone `bun
+// test src/shell/task-status-notify.test.ts` run, confirmed by running it
+// before and after this file's F8 commit: pre-F8 (bf3a4eb90) it only
+// imported `NotificationInput` as a TYPE (erased at compile time, no runtime
+// import at all) and passed standalone; post-F8 it fails standalone with
+// exactly that ReferenceError, and only "passes" in a full-directory run
+// because some earlier file in bun's single process happens to install a DOM
+// shim first — an order-dependent green, not a real one. This file's own
+// header comment promises it stays DOM-free; pulling in `router.ts`
+// transitively broke that promise even though nothing in this file touches
+// `location` itself.
+//
+// Fixed by inlining the small decode `recentFsPath` performs (strip the
+// query, strip a `VIEW_PREFIX`/legacy `/view/` prefix, decode + re-root what
+// remains) as pure, DOM-free local functions instead of importing it —
+// same output for every case that matters here, verified against
+// `recentFsPath` directly before this change shipped.
+const VIEW_PREFIX = "/explorer/view/";
+
+// Windows-drive rooting, copied from `platform/lib/router.ts`'s
+// `rootedFsPath` rather than imported — importing ANY export from
+// `router.ts`, even a pure one, still runs that module's location-reading
+// top-level code (see the comment above).
+function rootedFsPath(joined: string): string {
+  if (/^[A-Za-z]:$/.test(joined)) return joined + "/";
+  return /^[A-Za-z]:\//.test(joined) ? joined : "/" + joined;
+}
+
+// Same decode `recentFsPath` (apps/explorer/lib/recents.ts) performs, as a
+// pure function of a string.
+function normalizeDestination(url: string): string {
+  const qIdx = url.indexOf("?");
+  const pathname = qIdx !== -1 ? url.slice(0, qIdx) : url;
+  const prefix = [VIEW_PREFIX, "/view/"].find((p) => pathname.startsWith(p));
+  if (!prefix) return pathname;
+  return rootedFsPath(
+    pathname.slice(prefix.length).split("/").filter(Boolean).map(decodeURIComponent).join("/"),
+  );
+}
+
 /** Where a click on this task's own notification should land — the same
  *  fallback chain `attentionRows` already uses (a live session's chat, else
  *  the folder, else the Tasks page itself). */
@@ -142,6 +188,45 @@ export function notificationForTransition(
   previous: string | undefined,
   task: TaskPulseTask,
   watchStartS: number,
+  // TERMINAL-SESSION SCOPING (2026-09-18): the reported bug — a plain
+  // `claude` session started by hand in a terminal, nothing to do with
+  // fused-render at all, raising a fused-render "Finished" notice — because
+  // this hook watches EVERY session in the machine-wide `~/.claude/projects`
+  // pool, not only ones started from our own template. `task.entrypoint` is
+  // the one signal a transcript carries for this: "cli" for an interactive
+  // terminal, "sdk-cli" for a headless/programmatic spawn (what
+  // templates/claude/agent.py's own spawn produces) — see `TaskPulseTask`'s
+  // own doc comment on why this is a PROXY, not proof, and can only ever be
+  // "fairly sure", never exact.
+  //
+  // Threaded in as a plain argument, not read off a module here, because
+  // this function is deliberately pure (the header comment above: "so the
+  // rules can be tested without a DOM") — the caller (useTaskStatusNotify.ts)
+  // owns subscribing to the preference.
+  //
+  // Defaults to `false` (the pref's own shipping default) purely so the many
+  // existing 3-argument call sites in task-status-notify.test.ts keep
+  // compiling; none of them set `entrypoint: "cli"`, so the gate below never
+  // fires for them regardless of this default.
+  notifyTerminalSessions = false,
+  // ALREADY-OPEN POPUP SUPPRESSION (F8, 2026-09-18): "we never want to show
+  // notifications for tasks when the claude template / app is already
+  // opened" — a screenshot showed the exact session's own chat on screen,
+  // task-finished popup still firing. Injected (not imported) for the same
+  // reason `notifyTerminalSessions` above is: this function stays pure and
+  // DOM-free; `useTaskStatusNotify.ts` supplies the real presence check
+  // (`snapshotIsOpenExact`, platform/lib/presence.ts — an EXACT match, not
+  // the wider `isOpenAnywhere`/`matchesSource` prefix rule; see F9), batched
+  // once per poll tick rather than once per task. Takes an already-
+  // normalized fs path/route (see `taskDestination`'s call site below, which
+  // runs `taskDestination(task)` through this file's own `normalizeDestination`
+  // before calling this — `taskDestination` returns an `/explorer/view/...`
+  // HREF with a query string, which is not the shape presence entries store;
+  // a bare `isOpenAnywhere(taskDestination(task))` call silently never
+  // matches anything). Defaults to "nothing is open" so the many existing
+  // lower-arity call sites in task-status-notify.test.ts keep compiling
+  // unchanged.
+  isDestinationOpen: (page: string) => boolean = () => false,
 ): NotificationInput | null {
   const column = taskColumn(task);
   if (previous === undefined) {
@@ -164,6 +249,15 @@ export function notificationForTransition(
     };
   }
   if (previous === "in_progress" && column === "done") {
+    // TERMINAL-SESSION GATE (2026-09-18): only an EXACT "cli" counts as
+    // "started outside our own template" — a missing/unknown entrypoint
+    // (an older transcript, or a head read that hasn't resolved yet) fails
+    // OPEN and still notifies, exactly as it always has. Narrower than "not
+    // sdk-cli", deliberately: the whole point of the terminal-sessions
+    // preference is that "sdk-cli" is a proxy, not proof, so treating
+    // anything-but-sdk-cli as interactive would silence sessions this
+    // signal was never confident about in the first place.
+    if (task.entrypoint === "cli" && !notifyTerminalSessions) return null;
     // THIRD REVERSAL, 2026-09-17 — the code-review-round fix (see
     // DECISIONS-quiet-notifications.md's "notification card regression"
     // entry) restoring what the SECOND reversal above accidentally deleted.
@@ -179,6 +273,44 @@ export function notificationForTransition(
     // two `source` used to conflate). Set `origin` here, never `source` —
     // the whole point of the second reversal above stands.
     const caption = taskCaption(task);
+    const destination = taskDestination(task);
+    const normalizedDestination = normalizeDestination(destination);
+    // ALREADY-OPEN GATE (F8): only suppress the POPUP (`quiet: true` below),
+    // never the retained row — the user's own correction: "by show I mean
+    // popup ... if that is not simple enough to do just dont have a
+    // notification" (popup-only turned out simple, so that's what shipped).
+    // Excludes the bare `/tasks` fallback deliberately: `taskDestination`
+    // falls all the way through to `/tasks` for a task with no session AND
+    // no folder, and suppressing on THAT would go quiet for every such task
+    // whenever anyone merely has the Tasks page open — a page with no
+    // relation to this specific task at all.
+    //
+    // ALSO EXCLUDES THE "/" DEGENERATE CASE (F9 fix): a task WITH a session
+    // id but empty `target` AND empty `project` produces
+    // `/explorer/view/?_side=claude&session_id=...` — `taskHref` doesn't
+    // decline (there IS a session id), but `chatUrl` is handed an empty
+    // string to encode, so the path segment comes out empty entirely.
+    // `normalizeDestination` then strips the query, strips the now-bare
+    // `VIEW_PREFIX`, and roots the empty remainder — `"/"`. That is the exact
+    // same over-wide failure mode as the `/tasks` fallback: any window
+    // sitting on the explorer root would suppress the popup for EVERY task
+    // shaped like this, which has no relation to any one of them.
+    //
+    // `isDestinationOpen` is `snapshotIsOpenExact` (useTaskStatusNotify.ts),
+    // an EXACT canonical-string match rather than `matchesSource`'s
+    // bidirectional prefix rule (F9 fix): the prefix rule marks a task
+    // "open" whenever a tab sits on ANY ancestor folder of its destination
+    // (e.g. a tab on `/Fused/sandbox` swallowing the popup for every task
+    // nested anywhere beneath it), which is much wider than "this task's own
+    // app/chat is open". It also excludes any presence entry recorded by an
+    // embed/preview iframe (`BookmarkCards.tsx`, `AppPreviewCard.tsx`
+    // publish presence too, purely to render a thumbnail) — a hovered app
+    // card must not count as "the app is open". See `snapshotIsOpenExact`'s
+    // own doc comment (platform/lib/presence.ts) for both.
+    const quiet =
+      destination !== "/tasks" &&
+      normalizedDestination !== "/" &&
+      isDestinationOpen(normalizedDestination);
     return {
       title: titleWithoutCaption(task.title || "A task", caption),
       // "Finished" moves OUT of the title and into `detail` (`.dl-model`,
@@ -193,7 +325,23 @@ export function notificationForTransition(
       detail: "Finished",
       tone: "info",
       origin: caption || undefined,
-      page: taskDestination(task),
+      page: destination,
+      quiet,
+      // FAMILY-BY-FOLDER, NOT BY TITLE (2026-09-18 fix, user: "these 2
+      // fused-render notifications should have been grouped together as
+      // count"). `notifications.ts`'s default family is caption+TITLE, which
+      // is right for most messages (two unrelated notices from the same
+      // folder must stay separate rows) but wrong for two DIFFERENT finished
+      // tasks in the SAME folder ("hi", "New session") — different titles,
+      // same folder, and the user's own framing is "grouped ... as count",
+      // i.e. one row per folder, not one row per exact task name. Only set
+      // when there is a caption at all — a captionless finished task (no
+      // project, no target) has no folder identity to group by, so it falls
+      // back to `messageFamily`'s ordinary page/title chain untouched. See
+      // `familyKey`'s own doc comment on `NotificationInput` for the
+      // accepted trade-off (the newest finished task's title wins; `count`
+      // carries the rest).
+      familyKey: caption ? `task-finished:${caption}` : undefined,
     };
   }
   return null;

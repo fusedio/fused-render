@@ -1356,6 +1356,39 @@ def test_put_rejects_bad_task_card_last_message(tmp_path, monkeypatch):
     assert not (home / "prefs.json").exists()
 
 
+def test_task_notify_terminal_sessions_defaults_off_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    # Default off: a plain interactive-terminal session raises no finished-task
+    # notice until someone opts in — the reported bug was exactly the opposite
+    # of this default.
+    assert client.get("/api/prefs").json()["task_notify"]["terminal_sessions"] is False
+    body = client.put(
+        "/api/prefs", json={"task_notify_terminal_sessions": True}, headers=FUSED).json()
+    assert body["task_notify"]["terminal_sessions"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["task_notify_terminal_sessions"] is True
+    assert client.put(
+        "/api/prefs", json={"task_notify_terminal_sessions": False}, headers=FUSED,
+    ).json()["task_notify"]["terminal_sessions"] is False
+
+
+def test_task_notify_terminal_sessions_junk_value_reads_as_off(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(
+        json.dumps({"task_notify_terminal_sessions": "yes"}), encoding="utf-8")
+    assert client.get("/api/prefs").json()["task_notify"]["terminal_sessions"] is False
+    assert prefs_mod.notify_terminal_sessions_enabled() is False
+
+
+def test_put_rejects_bad_task_notify_terminal_sessions(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.put(
+        "/api/prefs", json={"task_notify_terminal_sessions": "yes"}, headers=FUSED,
+    ).status_code == 400
+    assert not (home / "prefs.json").exists()
+
+
 def test_the_two_task_page_switches_are_independent(tmp_path, monkeypatch):
     # One prefs.json, two experiments on one page, and neither turns the other
     # on: the peek is about where a task opens, this is about what a card says.

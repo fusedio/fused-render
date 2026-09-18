@@ -18,10 +18,35 @@
 // windows now means two toasts, the exact duplicate-alerting the election
 // was built to prevent — and chose it explicitly: every top-level shell
 // window now pops and retains its own copy of every task notice.
-// `useTaskStatusNotify` only mounts inside the shell's `App`, so embeds are
-// already excluded from this, same as before. `useScheduleEvents` and every
-// other narrator-gated caller are UNCHANGED — this is scoped to task status
-// notices only.
+// `useScheduleEvents` and every other narrator-gated caller are UNCHANGED —
+// this is scoped to task status notices only.
+//
+// EMBED GUARD (2026-09-18 fix): this hook used to assert above that mounting
+// only inside the shell's `App` already excluded embeds — that assertion was
+// wrong. `App.tsx` renders the same shell `App` component for an embedded
+// pane too (e.g. a split view's left pane), so "mounts inside App" does not
+// imply "never runs as an embed". A shell App rendered as an embed ran this
+// hook's poll and raised the same finished-task notice as the top shell, and
+// `notifications.ts`'s pane->shell forwarding carried it up again — N
+// documents watching one task raising N notices for it. The `IS_EMBED` check
+// in the effect body below (not around `useEffect` itself, to keep this a
+// plain, unconditional hook call per the rules of hooks) is what actually
+// enforces "only the top-level shell raises task-status notices" now.
+//
+// NARROWED TO `IS_EMBED && !IS_TOP_EMBED` (F3, 2026-09-18 fix, code review
+// round): a bare `if (IS_EMBED) return;` also silences a standalone TOP-EMBED
+// window — a Finder double-click on a `.fused` file, a CLI/deeplink
+// `/explorer/embed/` URL (router.ts's `IS_TOP_EMBED` comment) — which is a
+// WHOLE window with no parent pane to forward a notice on its behalf
+// (`notifications.ts`'s pane->shell forwarding only exists for a non-top
+// embed in the first place; there is nothing above a top embed to forward
+// to). A task finishing while the user sits in one of those windows
+// previously produced no notice at all where it did before this hook grew an
+// embed guard — the guard was too wide, not merely unnecessary. Every other
+// embed rule in `notifications.ts` already uses this exact
+// `IS_EMBED && !IS_TOP_EMBED` pairing for the identical reason (see its
+// `neverExpiresHere`/`effectiveIsTopEmbed()` uses) — this hook now matches
+// that convention instead of standing apart from it.
 //
 // ONE MAP OF "the status this task was in last time this document looked",
 // keyed by the pulse row's own key — not state, so it survives re-renders
@@ -48,29 +73,49 @@
 // fresh tab with a popup for every one of its already-done rows.
 import { useEffect, useRef } from "react";
 import { notify } from "@platform/lib/notifications";
+import { snapshotIsOpenExact } from "@platform/lib/presence";
+import { IS_EMBED, IS_TOP_EMBED } from "@platform/lib/router";
 import { useTasksPulseRows } from "@shell/tasksPulse";
 import { taskColumn } from "@shell/tasks-lib";
 import { notificationForTransition } from "@shell/task-status-notify";
+import { useTaskNotifyTerminalSessions } from "@shell/task-notify-terminal-flag";
 
 export function useTaskStatusNotify(): void {
   const tasks = useTasksPulseRows();
   const previous = useRef<Map<string, string>>(new Map());
   const watchStartS = useRef<number | null>(null);
+  // The Preferences toggle (default off — see task-notify-terminal-flag.ts's
+  // own header) for whether a finished-task notice fires for an interactive-
+  // terminal session too. Read as a live subscription, not a snapshot, so
+  // flipping it in Preferences takes effect on the very next tick without a
+  // reload.
+  const notifyTerminalSessions = useTaskNotifyTerminalSessions();
 
   useEffect(() => {
+    if (IS_EMBED && !IS_TOP_EMBED) return;
     if (watchStartS.current === null) watchStartS.current = Date.now() / 1000;
     const prev = previous.current;
     const liveKeys = new Set<string>();
+    // ONE presence snapshot for the whole tick (F8) — see
+    // `snapshotIsOpenAnywhere`'s own doc comment: this loop calls
+    // `notificationForTransition` once per task, and a fresh
+    // `localStorage` read/parse per task per tick is exactly the pattern
+    // it exists to avoid. `snapshotIsOpenExact`, not `snapshotIsOpenAnywhere`
+    // (F9 fix): this gate needs an EXACT destination match, never the wider
+    // ancestor/descendant prefix rule `matchesSource` applies for other
+    // callers — see `snapshotIsOpenExact`'s own doc comment.
+    const isOpenAnywhere = snapshotIsOpenExact();
     for (const task of tasks) {
       liveKeys.add(task.key);
       const was = prev.get(task.key);
       const column = taskColumn(task);
-      const input = notificationForTransition(was, task, watchStartS.current);
+      const input = notificationForTransition(
+        was, task, watchStartS.current, notifyTerminalSessions, isOpenAnywhere);
       prev.set(task.key, column);
       if (input) notify(input);
     }
     for (const key of Array.from(prev.keys())) {
       if (!liveKeys.has(key)) prev.delete(key);
     }
-  }, [tasks]);
+  }, [tasks, notifyTerminalSessions]);
 }

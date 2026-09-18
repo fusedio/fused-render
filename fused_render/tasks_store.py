@@ -773,9 +773,11 @@ def forget_session(session_id: str) -> dict:
 # is what makes `backfill()` cheap enough to run at startup on a machine with a
 # few thousand sessions.
 
-# path -> (size_at_parse, cwd, first_ts, first_prompt, pane_file). Same cache
-# shape, and the same append-only reasoning, as claude_sessions._HEAD_CACHE.
-_HEAD_CACHE: dict[str, tuple[int, str | None, float | None, str, str, bool]] = {}
+# path -> (size_at_parse, cwd, first_ts, first_prompt, pane_file, entrypoint,
+# settled). Same cache shape, and the same append-only reasoning, as
+# claude_sessions._HEAD_CACHE.
+_HEAD_CACHE: dict[str, tuple[int, str | None, float | None, str, str,
+                             str | None, bool]] = {}
 
 _HEAD_CHARS = 256 * 1024
 _HEAD_LINES = 2000
@@ -1279,7 +1281,8 @@ def pane_file(text: str) -> str:
     return ""
 
 
-def _parse_head(path: str) -> tuple[str | None, float | None, str, str, bool]:
+def _parse_head(path: str,
+                 ) -> tuple[str | None, float | None, str, str, str | None, bool]:
     cwd: str | None = None
     first_ts: float | None = None
     prompt = ""
@@ -1287,6 +1290,7 @@ def _parse_head(path: str) -> tuple[str | None, float | None, str, str, bool]:
     # resort — see the `carried` note in the loop below.
     carried = ""
     pane = ""
+    entrypoint: str | None = None
     chars = 0
     count = 0
     try:
@@ -1352,30 +1356,49 @@ def _parse_head(path: str) -> tuple[str | None, float | None, str, str, bool]:
                         # which is the send the row would be named after.
                         if not prompt and not carried:
                             carried = carried_words(raw)
+                # ENTRYPOINT (2026-09-18, notification scoping): every
+                # `type: "user"` record Claude Code writes carries an
+                # `entrypoint` — "cli" for an interactive terminal session,
+                # "sdk-cli" for a headless/programmatic one (what
+                # templates/claude/agent.py's print-mode spawn produces). It
+                # is a PROXY for "started by our own template", not proof —
+                # an unrelated SDK-driven session also reports "sdk-cli" — so
+                # a reader of this field must fail open on anything that
+                # isn't exactly "cli" (see task-status-notify.ts). Read off
+                # the same records the prompt loop already walks, at no extra
+                # IO cost; first one found wins, since it does not change
+                # turn to turn the way `ai-title` does.
+                if entrypoint is None and obj.get("type") == "user":
+                    val = obj.get("entrypoint")
+                    if isinstance(val, str) and val:
+                        entrypoint = val
                 if cwd is not None and first_ts is not None and prompt:
                     break
     except OSError:
-        return None, None, "", "", False
-    # THE FIFTH VALUE IS "IS THIS PROMPT SETTLED" (Bugbot, PR #1213). A marker is
+        return None, None, "", "", None, False
+    # THE SIXTH VALUE IS "IS THIS PROMPT SETTLED" (Bugbot, PR #1213). A marker is
     # what the head shows when nothing in it has said anything YET — and a
     # transcript is append-only, so the words can still arrive. Handed back as an
     # ordinary answer it let `head`'s cache call the read COMPLETE and keep "pane
     # screenshot" as the row's title for the life of the process, over every
     # later word the reader typed. The two are told apart here; the cache decides
     # what to do about it.
-    return cwd, first_ts, prompt or carried, pane, bool(prompt)
+    return cwd, first_ts, prompt or carried, pane, entrypoint, bool(prompt)
 
 
 def head(path: str, size: int | None = None,
-         ) -> tuple[str | None, float | None, str, str]:
-    """(cwd, first timestamp, first user prompt, pane file) for one
-    transcript, cached per path. Transcripts are append-only, so a head that
-    resolved fully stays valid however much the file grows; an incomplete one
-    is retried once the file has more to offer, and a file that shrank was
-    replaced. The pane file is deliberately absent from the completeness
-    test: a chat with no `<live-app-state>` block has none to find, and
-    re-reading it on every append to keep looking would never pay for
-    itself.
+         ) -> tuple[str | None, float | None, str, str, str | None]:
+    """(cwd, first timestamp, first user prompt, pane file, entrypoint) for
+    one transcript, cached per path. Transcripts are append-only, so a head
+    that resolved fully stays valid however much the file grows; an
+    incomplete one is retried once the file has more to offer, and a file
+    that shrank was replaced. The pane file and the entrypoint are
+    deliberately absent from the completeness test: a chat with no
+    `<live-app-state>` block has no pane to find, and a transcript with no
+    `entrypoint` at all (an older session, predating the field) never will —
+    re-reading either on every append to keep looking would never pay for
+    itself. In practice the entrypoint resolves at the same moment the
+    prompt does: both are read off the very first `type: "user"` record.
 
     A MARKER IS NOT A SETTLED PROMPT (Bugbot, PR #1213). "pane screenshot" is
     what the head shows for a chat whose sends so far carried no words at all —
@@ -1384,25 +1407,28 @@ def head(path: str, size: int | None = None,
     grew, and the listing went on calling their chat "pane screenshot". So a
     marker-only head stays INCOMPLETE and is re-read on the next append, exactly
     like a head that found nothing. The marker is still shown meanwhile; it is
-    just not banked."""
+    just not banked. `settled` — the sixth value `_parse_head` returns — is this
+    project's private completeness flag and is never handed to callers of
+    `head()`; only `entrypoint` is."""
     if size is None:
         try:
             size = os.path.getsize(path)
         except OSError:
-            return None, None, "", ""
+            return None, None, "", "", None
     cached = _HEAD_CACHE.get(path)
     if cached is not None:
-        cached_size, cwd, first_ts, prompt, pane, settled = cached
+        cached_size, cwd, first_ts, prompt, pane, entrypoint, settled = cached
         complete = settled and first_ts is not None and cwd is not None
         if cached_size == size or (size > cached_size and complete):
             if size != cached_size:
-                _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane, settled)
-            return cwd, first_ts, prompt, pane
+                _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane,
+                                      entrypoint, settled)
+            return cwd, first_ts, prompt, pane, entrypoint
     if len(_HEAD_CACHE) > 20000:  # unbounded only if the user has 20k sessions
         _HEAD_CACHE.clear()
-    cwd, first_ts, prompt, pane, settled = _parse_head(path)
-    _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane, settled)
-    return cwd, first_ts, prompt, pane
+    cwd, first_ts, prompt, pane, entrypoint, settled = _parse_head(path)
+    _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane, entrypoint, settled)
+    return cwd, first_ts, prompt, pane, entrypoint
 
 
 def project_of(cwd: str) -> str:
@@ -1445,7 +1471,7 @@ def backfill(projects_dir: str | None = None) -> dict[str, str]:
             size = os.path.getsize(path)
         except OSError:
             continue  # vanished mid-walk: costs that one session, not the walk
-        cwd, first_ts, _prompt, _pane = head(path, size)
+        cwd, first_ts, _prompt, _pane, _entrypoint = head(path, size)
         if not cwd:
             continue
         session_id = os.path.splitext(os.path.basename(path))[0]

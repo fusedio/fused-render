@@ -255,6 +255,29 @@ def task_card_last_message() -> bool:
     return read_prefs().get("task_card_last_message") is True
 
 
+def notify_terminal_sessions_enabled() -> bool:
+    """Whether a finished-task notification fires for a session started from
+    an INTERACTIVE TERMINAL (`claude` typed by hand) rather than only one
+    started through fused-render's own Claude template (default off).
+
+    Every `~/.claude/projects` transcript's `type: "user"` records carry an
+    `entrypoint` — "cli" for an interactive terminal, "sdk-cli" for a
+    headless/programmatic spawn (what templates/claude/agent.py produces).
+    That is the whole signal there is, and it is a PROXY, not proof: an
+    unrelated SDK-driven session also reports "sdk-cli", so this preference
+    cannot be "only notify about fused-render's own sessions" — it can only
+    be "also notify about the ones we're fairly sure are someone's own
+    terminal". Default OFF because the reported bug was exactly a plain
+    terminal session raising a fused-render notification unasked; a user who
+    wants those back opts in explicitly.
+
+    Same idiom as `task_card_last_message` above: only a stored `true` is on,
+    everything else (missing, legacy, junk) stays off. No env override — there
+    is nothing a process needs to pin about a Preferences toggle.
+    """
+    return read_prefs().get("task_notify_terminal_sessions") is True
+
+
 def _chat_forced_by() -> str | None:
     """The env string where it DECIDES `native_chat_enabled`, else `None`.
 
@@ -616,6 +639,11 @@ def _prefs_response() -> dict:
         # the card is one surface with more than one thing an experiment can
         # move, and `last_message` names which one this is.
         "task_cards": {"last_message": task_card_last_message()},
+        # Whether a finished-task notification fires for a session that
+        # entered from an interactive terminal (default off, opt-in) — see
+        # `notify_terminal_sessions_enabled`'s own doc comment for why this
+        # can only ever be a best-effort signal, not a guarantee.
+        "task_notify": {"terminal_sessions": notify_terminal_sessions_enabled()},
         # Whether one folder runs one task at a time (opt-in beta). Its own key
         # rather than a third field under `chat`: the gate governs the
         # scheduler and the Tasks board as much as it does a chat send, and
@@ -807,6 +835,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 {"error": "'task_card_last_message' must be a boolean"}, status_code=400)
         prefs["task_card_last_message"] = value
         changed = True
+    if "task_notify_terminal_sessions" in body:
+        value = body.get("task_notify_terminal_sessions")
+        if not isinstance(value, bool):
+            return JSONResponse(
+                {"error": "'task_notify_terminal_sessions' must be a boolean"}, status_code=400)
+        prefs["task_notify_terminal_sessions"] = value
+        changed = True
     if "chat_recap_enabled" in body:
         value = body.get("chat_recap_enabled")
         if not isinstance(value, bool):
@@ -923,7 +958,8 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             {"error": "no known preference in request (expected 'engine', "
                       "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'native_chat_enabled', "
                       "'chat_recap_enabled', 'task_peek_enabled', "
-                      "'task_card_last_message', 'project_queue_enabled', "
+                      "'task_card_last_message', 'task_notify_terminal_sessions', "
+                      "'project_queue_enabled', "
                       "'lan_enabled', "
                       "'default_model', 'indexing_enabled', 'ranked_search_enabled', "
                       "'calls_enabled', "

@@ -27,6 +27,21 @@ export interface PresenceEntry {
   // be eligible to narrate. Recorded per-entry rather than inferred from
   // `page` because a pane and its top-level tab can show the same page.
   topLevel: boolean;
+  // Added for F9 (code review of F8's "already open" gate): a hover-preview
+  // (`BookmarkCards.tsx`'s `LivePreview`, `AppPreviewCard.tsx`) loads the
+  // shell at `/explorer/embed/<path>` in an iframe purely to render a
+  // thumbnail, and that document runs this same heartbeat (`installHeartbeat`
+  // below is module-load, unconditional) — so a hovered card publishes
+  // presence for the path it previews, indistinguishable from a real open
+  // window until this field existed. `IS_EMBED` was already computed at
+  // write time (for `topLevel`, above) but never stored on the entry itself,
+  // which is what made this gap possible: nothing downstream could tell a
+  // genuine standalone embed tab OR a transient preview iframe apart from an
+  // ordinary shell window. This is the smallest addition that fixes it —
+  // one boolean, set once at `writeSelf` — rather than inventing a second,
+  // narrower "is this truly just a thumbnail" signal that would need a
+  // change at every embed call site to plumb through.
+  embed: boolean;
 }
 
 const STORAGE_KEY = "fused-render:presence";
@@ -329,6 +344,39 @@ export function snapshotIsOpenAnywhere(env: PresenceEnv = {}): (source: string) 
   return (source: string) => pages.some((page) => matchesSource(page, source));
 }
 
+/**
+ * F9 (code review of F8's "already open" popup gate, `task-status-notify.ts`).
+ * `matchesSource`'s bidirectional prefix rule ("an ancestor folder counts as
+ * open, and so does a descendant") is right for `isOpenAnywhere`'s existing
+ * callers (`jobs.ts`'s `isPopupSuppressed`: a job running somewhere under an
+ * open folder tab IS "already being watched"), but far too wide for "is this
+ * task's own destination open": a browser tab merely sitting on an ANCESTOR
+ * of a task's folder (e.g. `/Fused/sandbox`) would suppress the popup for
+ * EVERY task nested anywhere beneath it, which has nothing to do with that
+ * specific task's own app/chat being on screen. `matchesSource` itself is
+ * left untouched — other callers depend on the wider rule — so this is a
+ * SEPARATE snapshot function with its own, stricter comparison (exact
+ * canonical-string match only) rather than a flag threaded through the
+ * shared one.
+ *
+ * Also excludes any entry with `embed: true` — a hover-preview/peek iframe
+ * (`BookmarkCards.tsx`, `AppPreviewCard.tsx`) runs the same heartbeat purely
+ * to render a thumbnail, and a thumbnail must never count as "the app is
+ * open" (see `PresenceEntry.embed`'s own doc comment). This is the ONE
+ * caller that needs that exclusion today — `isOpenAnywhere`/
+ * `snapshotIsOpenAnywhere` keep counting embed entries, unchanged, for every
+ * other consumer.
+ */
+export function snapshotIsOpenExact(env: PresenceEnv = {}): (page: string) => boolean {
+  const now = nowOf(env);
+  const openPages = new Set(
+    Object.values(pruneStale(readAll(env), now))
+      .filter((e) => !e.embed)
+      .map((e) => e.page),
+  );
+  return (page: string) => openPages.has(page);
+}
+
 /** Only THIS document: is it showing `source`, focused, and visible right
  *  now? Deliberately does not consult the registry at all — a document
  *  always knows its own state precisely, and going through localStorage
@@ -400,6 +448,7 @@ function writeSelf(env: PresenceEnv = {}): void {
       focused: isFocusedAndVisible(),
       ts: now,
       topLevel: computeTopLevel(IS_EMBED, typeof window === "undefined" ? undefined : window),
+      embed: IS_EMBED,
     };
     return map;
   }, env);

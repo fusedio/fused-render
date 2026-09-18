@@ -7,6 +7,8 @@
 // page uses to hand the shared pulse a known-fresh answer) rather than
 // waiting out its poll timers.
 import { beforeEach, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { installDomShim } from "@platform/lib/testDomShim";
@@ -104,6 +106,54 @@ async function publish(rows: TaskPulseTask[]): Promise<void> {
 beforeEach(() => {
   presenceStore.clear();
   _resetNotificationsForTest();
+});
+
+// DEFECT (2026-09-18 fix, live repro): App.tsx calls `useTaskStatusNotify()`
+// unconditionally, and this hook's own header comment used to assert that
+// mounting only inside the shell's `App` already excluded embeds from this
+// poll — wrong, because App.tsx renders that same `App` for an embedded pane
+// too (e.g. a split view's left pane). N documents watching the same task
+// each ran this hook's poll and raised the same finished-task notice, which
+// `notifications.ts`'s pane->shell forwarding then carried up again — the
+// duplicate-row repro this branch of the fix targets.
+//
+// `IS_EMBED` is read once, at module init, off `location` (router.ts) — like
+// every other module-scope embed check in this shell, it cannot be flipped
+// mid-process for a second test file to see the opposite value (bun shares
+// one module registry across a whole `bun test` run; see notifications.ts's
+// own `effectiveIsEmbed` comment on exactly this constraint). Pinned as
+// source structure instead, the same way home-performance.test.ts asserts
+// main.tsx's own `if (IS_EMBED) return;` boot-path guard.
+test("useTaskStatusNotify guards its own effect against IS_EMBED before it can raise anything", () => {
+  const src = readFileSync(join(import.meta.dir, "useTaskStatusNotify.ts"), "utf8");
+  expect(src).toContain('import { IS_EMBED, IS_TOP_EMBED } from "@platform/lib/router";');
+  const guard = src.indexOf("if (IS_EMBED && !IS_TOP_EMBED) return;");
+  expect(guard).toBeGreaterThan(-1);
+  // Guards the whole effect BODY, not the `useEffect(...)` call itself — a
+  // conditional hook call would break the rules of hooks.
+  expect(src.indexOf("useEffect(() => {")).toBeLessThan(guard);
+  expect(guard).toBeLessThan(src.indexOf("notify(input)"));
+});
+
+// F3 (2026-09-18 fix, code review round): a bare `if (IS_EMBED) return;` also
+// silenced a standalone TOP-EMBED window — a Finder double-click on a
+// `.fused` file, a CLI/deeplink `/explorer/embed/` URL — which has no parent
+// pane to forward a notice on its behalf, so a task finishing while the user
+// sits in one produced no notice at all. The fix narrows the guard to
+// `IS_EMBED && !IS_TOP_EMBED`, matching every other embed rule in
+// `notifications.ts` (e.g. its own `neverExpiresHere` check). `IS_TOP_EMBED`
+// is, like `IS_EMBED`, a module-scope constant this test file cannot flip at
+// runtime (see the test above's own comment) — asserted as source structure
+// for the same reason.
+test("the IS_EMBED guard is narrowed to exclude IS_TOP_EMBED, so a standalone top-embed window still notifies", () => {
+  const src = readFileSync(join(import.meta.dir, "useTaskStatusNotify.ts"), "utf8");
+  const effectStart = src.indexOf("useEffect(() => {");
+  const effectBody = src.slice(effectStart, src.indexOf("notify(input)"));
+  // Must not regress to the too-wide bare guard inside the effect body
+  // itself (the header comment's own prose mentions the old spelling while
+  // explaining the fix, so the check is scoped past it).
+  expect(effectBody).not.toContain("if (IS_EMBED) return;");
+  expect(effectBody).toContain("if (IS_EMBED && !IS_TOP_EMBED) return;");
 });
 
 describe("useTaskStatusNotify", () => {

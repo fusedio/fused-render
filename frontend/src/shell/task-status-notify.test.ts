@@ -145,6 +145,150 @@ describe("notificationForTransition", () => {
     expect(n?.origin).toBe("Transcripto");
   });
 
+  // 2026-09-18 fix (user: "these 2 fused-render notifications should have
+  // been grouped together as count"): two finished tasks in the same folder
+  // usually have DIFFERENT titles ("hi", "New session"), so `notifications.
+  // ts`'s ordinary caption+title family never collapsed them. This call site
+  // is the one that opts into the coarser, per-folder `familyKey`.
+  test("in_progress -> done sets a per-folder familyKey so two different finished tasks in the same folder collapse", () => {
+    const t1 = task({ status: "done", project: "/sandbox/fused-render", title: "hi" });
+    const t2 = task({ status: "done", project: "/sandbox/fused-render", title: "New session" });
+    const n1 = notificationForTransition("in_progress", t1, 0);
+    const n2 = notificationForTransition("in_progress", t2, 0);
+    expect(n1?.familyKey).toBeTruthy();
+    expect(n1?.familyKey).toBe(n2?.familyKey);
+  });
+
+  test("in_progress -> done with no caption at all sets no familyKey, so it falls back to the ordinary page/title family", () => {
+    const t = task({ status: "done", project: "", target: "" });
+    const n = notificationForTransition("in_progress", t, 0);
+    expect(n?.familyKey).toBeUndefined();
+  });
+
+  // ALREADY-OPEN GATE (F8, 2026-09-18): "we never want to show notifications
+  // for tasks when the claude template / app is already opened" — the row
+  // itself is never dropped (unlike the F7 gate above), only its popup: a
+  // finished task whose destination the injected predicate reports as open
+  // sets `quiet: true` instead of returning `null`. The predicate receives
+  // an already fs-path-normalized string (`recentFsPath(taskDestination(t))`,
+  // never the raw `/explorer/view/...?_side=claude...` href) — asserted
+  // directly below rather than assumed.
+  describe("in_progress -> done is quiet (popup-suppressed, still retained) when its destination is already open", () => {
+    test("a finished task whose destination is open sets quiet: true", () => {
+      const t = task({ status: "done", session_id: "s1", target: "/proj/index.html" });
+      const n = notificationForTransition("in_progress", t, 0, false, () => true);
+      expect(n?.quiet).toBe(true);
+      // Still a normal, retained, clickable row — only the popup is affected.
+      expect(n?.page).toBe(taskDestination(t));
+      expect(n?.tone).toBe("info");
+    });
+
+    test("the predicate receives the destination normalized to a bare fs path, not the raw href", () => {
+      const t = task({ status: "done", session_id: "s1", target: "/proj/index.html" });
+      let seen: string | undefined;
+      notificationForTransition("in_progress", t, 0, false, (page) => {
+        seen = page;
+        return false;
+      });
+      expect(seen).toBe("/proj/index.html");
+      // Sanity: the RAW destination this normalizes from is a query-bearing
+      // /explorer/view/ href, not the bare fs path itself — proving the
+      // normalization step is doing real work, not a no-op.
+      expect(taskDestination(t)).toContain("?_side=claude");
+      expect(taskDestination(t)).not.toBe(seen);
+    });
+
+    test("the same task with nothing open pops normally (quiet is falsy)", () => {
+      const t = task({ status: "done", session_id: "s1", target: "/proj/index.html" });
+      const n = notificationForTransition("in_progress", t, 0, false, () => false);
+      expect(n?.quiet).toBeFalsy();
+    });
+
+    test("a blocked task still raises with its destination open — quiet only applies to the finished branch", () => {
+      const t = task({ status: "blocked", session_id: "s1", target: "/proj/index.html" });
+      const n = notificationForTransition("in_progress", t, 0, false, () => true);
+      expect(n?.tone).toBe("error");
+      expect((n as { quiet?: boolean })?.quiet).toBeUndefined();
+    });
+
+    test("a needs_attention task still raises with its destination open", () => {
+      const t = task({ status: "needs_attention", session_id: "s1", target: "/proj/index.html" });
+      const n = notificationForTransition("in_progress", t, 0, false, () => true);
+      expect(n?.title).toContain("needs your input");
+      expect((n as { quiet?: boolean })?.quiet).toBeUndefined();
+    });
+
+    test("a task whose destination is the /tasks fallback still pops even with /tasks open", () => {
+      const t = task({ status: "done", session_id: "", target: "", project: "" });
+      expect(taskDestination(t)).toBe("/tasks");
+      const n = notificationForTransition("in_progress", t, 0, false, () => true);
+      expect(n?.quiet).toBeFalsy();
+    });
+
+    // F9 fix (Finding 4): a task WITH a session id but empty target AND
+    // empty project normalizes to the explorer root ("/") rather than
+    // "/tasks" — the SAME degenerate-destination problem under a different
+    // spelling, missed by the original `destination !== "/tasks"` carve-out.
+    test("a task whose destination normalizes to the explorer root still pops even with '/' open", () => {
+      const t = task({ status: "done", session_id: "s1", target: "", project: "" });
+      expect(taskDestination(t)).toBe("/explorer/view/?_side=claude&session_id=s1");
+      const n = notificationForTransition("in_progress", t, 0, false, () => true);
+      expect(n?.quiet).toBeFalsy();
+    });
+
+    test("defaults to nothing-open (quiet falsy) when no predicate is passed", () => {
+      const t = task({ status: "done", session_id: "s1", target: "/proj/index.html" });
+      const n = notificationForTransition("in_progress", t, 0);
+      expect(n?.quiet).toBeFalsy();
+    });
+
+    test("composes with the F7 terminal-session gate: a cli task with its destination open still stays fully silent", () => {
+      const t = task({ status: "done", entrypoint: "cli", session_id: "s1", target: "/proj/index.html" });
+      expect(notificationForTransition("in_progress", t, 0, false, () => true)).toBeNull();
+    });
+  });
+
+  // TERMINAL-SESSION SCOPING (2026-09-18): the reported bug — a plain
+  // interactive-terminal `claude` session raising a fused-render notice —
+  // scoped by `task.entrypoint`, threaded through as a plain argument since
+  // this function stays pure. See task-status-notify.ts's own comment on the
+  // gate for why "cli" is the only value that suppresses, and why unknown
+  // fails open.
+  describe("in_progress -> done is scoped to non-terminal sessions by default", () => {
+    test("a cli-entrypoint task notifies nothing with the preference off (the default)", () => {
+      const t = task({ status: "done", entrypoint: "cli" });
+      expect(notificationForTransition("in_progress", t, 0)).toBeNull();
+      expect(notificationForTransition("in_progress", t, 0, false)).toBeNull();
+    });
+
+    test("a cli-entrypoint task notifies once the preference is on", () => {
+      const t = task({ status: "done", entrypoint: "cli" });
+      const n = notificationForTransition("in_progress", t, 0, true);
+      expect(n?.tone).toBe("info");
+      expect(n?.detail).toBe("Finished");
+    });
+
+    test("an sdk-cli-entrypoint task notifies regardless of the preference", () => {
+      const t = task({ status: "done", entrypoint: "sdk-cli" });
+      expect(notificationForTransition("in_progress", t, 0, false)?.tone).toBe("info");
+      expect(notificationForTransition("in_progress", t, 0, true)?.tone).toBe("info");
+    });
+
+    test("a task with no entrypoint at all notifies regardless of the preference (fails open)", () => {
+      const t = task({ status: "done" });
+      expect(notificationForTransition("in_progress", t, 0, false)?.tone).toBe("info");
+      expect(notificationForTransition("in_progress", t, 0, true)?.tone).toBe("info");
+    });
+
+    test("needs_attention and in_progress -> blocked are unaffected by entrypoint", () => {
+      const blocked = task({ status: "blocked", entrypoint: "cli" });
+      expect(notificationForTransition("in_progress", blocked, 0, false)?.tone).toBe("error");
+      const attention = task({ status: "needs_attention", entrypoint: "cli" });
+      expect(notificationForTransition("in_progress", attention, 0, false)?.title)
+        .toContain("needs your input");
+    });
+  });
+
   test("in_progress -> blocked is a never-suppressed, retained, actioned failure", () => {
     const n = notificationForTransition(
       "in_progress",

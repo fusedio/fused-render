@@ -10,6 +10,7 @@ const {
   currentPresencePage,
   isOpenAnywhere,
   snapshotIsOpenAnywhere,
+  snapshotIsOpenExact,
   isNarrator,
   computeTopLevel,
   PRESENCE_STALE_MS,
@@ -278,6 +279,84 @@ test("snapshotIsOpenAnywhere: reads the registry exactly once no matter how many
   isOpenAnywhere("/preferences", { storage: countingStorage, now: () => 1000 });
   isOpenAnywhere("/ai-models/local", { storage: countingStorage, now: () => 1000 });
   expect(reads).toBe(4);
+});
+
+// ---- snapshotIsOpenExact (F9 — code review of F8's "already open" gate) --
+//
+// `task-status-notify.ts`'s "is this task's own destination already open"
+// gate needs a STRICTER comparison than `isOpenAnywhere`/
+// `snapshotIsOpenAnywhere` provide: those use `matchesSource`'s bidirectional
+// prefix rule, which is right for their existing callers (a job somewhere
+// under an open folder tab counts as "being watched") but far too wide here
+// — a tab merely sitting on an ANCESTOR folder would suppress the popup for
+// every task nested anywhere beneath it. `snapshotIsOpenExact` is a
+// SEPARATE, narrower snapshot for exactly this one caller.
+
+test("snapshotIsOpenExact: an exact match counts as open", () => {
+  const storage = fakeStorage({
+    "fused-render:presence": {
+      w1: { page: "/Fused/sandbox/app/index.html", focused: true, ts: 1000, topLevel: true, embed: false },
+    },
+  });
+  const predicate = snapshotIsOpenExact({ storage, now: () => 1000 });
+  expect(predicate("/Fused/sandbox/app/index.html")).toBe(true);
+});
+
+test("snapshotIsOpenExact: an ANCESTOR folder being open does NOT count as this task's destination being open", () => {
+  // A tab sitting on `/Fused/sandbox` — an ancestor of the task's own
+  // destination — must not suppress the popup for a task nested underneath
+  // it. `matchesSource` (the general rule) WOULD count this as a match;
+  // `snapshotIsOpenExact` must not.
+  const storage = fakeStorage({
+    "fused-render:presence": {
+      w1: { page: "/Fused/sandbox", focused: true, ts: 1000, topLevel: true, embed: false },
+    },
+  });
+  expect(matchesSource("/Fused/sandbox/app/index.html", "/Fused/sandbox")).toBe(true);
+  const predicate = snapshotIsOpenExact({ storage, now: () => 1000 });
+  expect(predicate("/Fused/sandbox/app/index.html")).toBe(false);
+});
+
+test("snapshotIsOpenExact: a DESCENDANT sub-path being open does NOT count as the task's own (shorter) destination being open", () => {
+  const storage = fakeStorage({
+    "fused-render:presence": {
+      w1: { page: "/Fused/sandbox/app/sub/file.py", focused: true, ts: 1000, topLevel: true, embed: false },
+    },
+  });
+  const predicate = snapshotIsOpenExact({ storage, now: () => 1000 });
+  expect(predicate("/Fused/sandbox/app")).toBe(false);
+});
+
+test("snapshotIsOpenExact: an embed/preview presence entry (a hovered card's thumbnail) does NOT count as open", () => {
+  const storage = fakeStorage({
+    "fused-render:presence": {
+      w1: { page: "/Fused/sandbox/app/index.html", focused: false, ts: 1000, topLevel: false, embed: true },
+    },
+  });
+  const predicate = snapshotIsOpenExact({ storage, now: () => 1000 });
+  expect(predicate("/Fused/sandbox/app/index.html")).toBe(false);
+});
+
+test("snapshotIsOpenExact: a real (non-embed) window on the same page still counts as open alongside an embed one", () => {
+  const storage = fakeStorage({
+    "fused-render:presence": {
+      w1: { page: "/Fused/sandbox/app/index.html", focused: false, ts: 1000, topLevel: false, embed: true },
+      w2: { page: "/Fused/sandbox/app/index.html", focused: true, ts: 1000, topLevel: true, embed: false },
+    },
+  });
+  const predicate = snapshotIsOpenExact({ storage, now: () => 1000 });
+  expect(predicate("/Fused/sandbox/app/index.html")).toBe(true);
+});
+
+test("snapshotIsOpenExact: a stale entry is ignored, same as snapshotIsOpenAnywhere", () => {
+  const storage = fakeStorage({
+    "fused-render:presence": {
+      w1: { page: "/Fused/sandbox/app/index.html", focused: true, ts: 1000, topLevel: true, embed: false },
+    },
+  });
+  const staleNow = 1000 + PRESENCE_STALE_MS + 1;
+  const predicate = snapshotIsOpenExact({ storage, now: () => staleNow });
+  expect(predicate("/Fused/sandbox/app/index.html")).toBe(false);
 });
 
 // ---- writeSelf/removeSelf race (finding 10) -----------------------------

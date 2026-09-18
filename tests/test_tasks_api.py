@@ -89,12 +89,14 @@ def card_titles(home):
 # ------------------------------------------------------------------ fixtures
 
 
-def _user(text, ts, uuid=None):
+def _user(text, ts, uuid=None, entrypoint=None):
     record = {"type": "user", "timestamp": ts,
               "message": {"role": "user",
                           "content": [{"type": "text", "text": text}]}}
     if uuid is not None:
         record["uuid"] = uuid
+    if entrypoint is not None:
+        record["entrypoint"] = entrypoint
     return record
 
 
@@ -214,6 +216,55 @@ def test_a_chat_session_is_a_task(client, projects_dir, state_dir):
     assert message["entry_id"] == ""
     assert message["anchor"] == "sess-a-0", "the record uuid, for scroll-to"
     assert message["unread"] is True
+
+
+# --------------------------------------------------------------- entrypoint
+
+
+def test_a_cli_session_carries_its_entrypoint_on_the_row_and_the_pulse(
+        client, projects_dir, state_dir):
+    """"cli" (interactive terminal) — read off the transcript's own first
+    `type: "user"` record, the same one `cwd`/the first prompt come from.
+    Present on BOTH `/api/tasks` and `/api/tasks/pulse`, since the pulse is a
+    `Pick` of the task row and the notification hook (task-status-notify.ts)
+    reads it off the pulse, not `/api/tasks`."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-cli", "/home/me/proj", [
+        _user("pull today's news", T9, entrypoint="cli"),
+        _assistant("done", T10),
+    ])
+
+    assert _tasks(client)[0]["entrypoint"] == "cli"
+    assert _pulse(client)[0]["entrypoint"] == "cli"
+
+
+def test_an_sdk_cli_session_carries_its_entrypoint(client, projects_dir, state_dir):
+    """"sdk-cli" — what templates/claude/agent.py's headless spawn writes. A
+    proxy for "started by our own template", not proof (an unrelated
+    SDK-driven session can also report this) — see task-status-notify.ts."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-sdk", "/home/me/proj", [
+        _user("pull today's news", T9, entrypoint="sdk-cli"),
+        _assistant("done", T10),
+    ])
+
+    assert _tasks(client)[0]["entrypoint"] == "sdk-cli"
+    assert _pulse(client)[0]["entrypoint"] == "sdk-cli"
+
+
+def test_a_transcript_with_no_entrypoint_leaves_the_row_field_absent(
+        client, projects_dir, state_dir):
+    """An older transcript, predating the field, must never be defaulted to a
+    made-up value — the notification gate downstream treats "unknown" as
+    "not cli" and must be able to tell the two apart from an explicit "cli"."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-none", "/home/me/proj", [
+        _user("pull today's news", T9),
+        _assistant("done", T10),
+    ])
+
+    assert _tasks(client)[0]["entrypoint"] is None
+    assert _pulse(client)[0]["entrypoint"] is None
 
 
 def _pane_block(file_path):
@@ -398,6 +449,9 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         # messages are waiting behind it.
         "queue_position", "queue_ahead", "queue_priority",
         "queue_ahead_session", "queue_waiting",
+        # "cli"/"sdk-cli"/None (2026-09-18): the notification hook's terminal-
+        # session gate reads this off the pulse row, not `/api/tasks`.
+        "entrypoint",
     )
     assert pulse == [
         {field: row[field] for field in pulse_fields}

@@ -112,6 +112,57 @@ export interface NotificationInput {
    *  treats `""` the same as absent either way, but an explicit `undefined`
    *  reads honestly at the call site). */
   origin?: string;
+  /** OPT-IN family override (2026-09-18 fix, "these 2 fused-render
+   *  notifications should have been grouped together as count"). Default
+   *  collapse identity is caption+TITLE (`messageFamily` below) — correct
+   *  for the general case (an unrelated error and an unrelated info message
+   *  in the same folder must stay two rows), but wrong for a finished-task
+   *  notice: two finished runs in the same folder ("hi", "New session") share
+   *  a caption but never share a title, so they never collapsed, which is
+   *  the exact bug this field exists to fix. Rather than loosen the default
+   *  key for every caller (an unrelated error/info pair sharing a folder
+   *  would then wrongly merge too), a caller that wants collapse coarser
+   *  than "caption+title" sets this explicitly; `messageFamily` prefers it
+   *  outright over the caption/page/title chain when present. Only
+   *  `task-status-notify.ts`'s `in_progress -> done` branch sets it today —
+   *  see its own comment. TRADE-OFF: because the collapsed row is always
+   *  rebuilt from the LATEST input (same as the existing per-run-page
+   *  collapse above), a folder's newest finished task overwrites the title
+   *  of whatever finished task was shown before it — "hi" then "New session"
+   *  finishing in the same folder shows "New session" with `count: 2`, not
+   *  both titles. Accepted for the same reason the per-run-page collapse
+   *  already accepts it: `count` carries "how many", the row's job is to
+   *  point at what's most likely to matter now (the newest one). */
+  familyKey?: string;
+  /** POPUP-ONLY SUPPRESSION (F8, 2026-09-18) — never arm/show a popup card
+   *  for this input, but do not change whether it is retained: `quiet` is
+   *  read ONLY after `retainAndCollapse()` has already decided that with its
+   *  own ordinary rule (`isRetained` — "attention" tone, or a carried
+   *  `action`/`page`). Distinct from both `isSuppressed` (drops the message
+   *  ENTIRELY, popup and row alike) and from simply not calling `notify()`
+   *  at all: a caller that already knows "the user is looking straight at
+   *  this" still wants a row that WOULD be retained to exist for later (they
+   *  may navigate away before dismissing it), it just should not interrupt
+   *  them with a card for something already on their screen.
+   *
+   *  `quiet` DOES NOT ITSELF MAKE AN INPUT RETAINED (F9 correction, code
+   *  review): an earlier version of this comment said "retain the row
+   *  exactly as normal", which overclaimed — a `quiet` input with no
+   *  `page`/`action` and a non-error tone resolves to `transient`, which
+   *  `isRetained` does not keep, exactly as it wouldn't without `quiet` set.
+   *  Such an input still returns an id (from `retainAndCollapse`) but that id
+   *  names nothing kept anywhere — no popup (suppressed by `quiet`) and no
+   *  row (never retained in the first place). That is consistent with
+   *  `quiet`'s actual job — "skip the popup for whatever this would
+   *  otherwise become" — not a bug to route around: a message with nothing
+   *  to click on has nothing worth pinning in the panel forever either,
+   *  `quiet` or not, and forcing retention here would special-case `quiet`
+   *  into inventing actionability the input never had. `task-status-
+   *  notify.ts`'s `in_progress -> done` branch is the first (and so far
+   *  only) caller, and it always sets `page`, so this is latent for it today
+   *  — documented precisely here so the next caller doesn't assume the
+   *  stronger, incorrect guarantee. */
+  quiet?: boolean;
 }
 
 export interface StoredNotification {
@@ -290,6 +341,12 @@ function isSuppressed(input: NotificationInput, tier: JobTier): boolean {
 
 /** See `StoredNotification.family`'s own doc comment.
  *
+ * `input.familyKey`, when the caller set one, wins outright over every axis
+ * below — see its own doc comment on `NotificationInput` for why this is an
+ * explicit per-caller opt-in (a finished-task notice) rather than a change to
+ * everyone's default caption+title identity (an unrelated error and an
+ * unrelated info message in the same folder must still stay two rows).
+ *
  * DEFECT (2026-09-17, live repro): `page` was ALSO tried as the row
  * identity's other half, and that is wrong in the opposite direction from
  * the one the DEFECT-3 comment above used to warn about. `page` here is
@@ -321,6 +378,7 @@ function isSuppressed(input: NotificationInput, tier: JobTier): boolean {
  * collapse), and `title` alone remains the last resort for messages with no
  * destination and no caption at all. */
 function messageFamily(input: NotificationInput): string {
+  if (input.familyKey) return `familyKey:${input.familyKey}`;
   const caption = input.origin || labelForSource(input.source);
   if (caption) return `caption:${caption}::${input.title}`;
   return input.page ? `page:${input.page}::${input.title}` : `title:${input.title}`;
@@ -375,19 +433,56 @@ function capRetained(list: StoredNotification[]): StoredNotification[] {
 // `nextId` sequence, exactly as if `notify()` had been called locally, and
 // hands that id back to the caller so the pane can remember which shell-side
 // id its own (locally-invisible) retained copy corresponds to.
+//
+// ROUTED THROUGH `retainAndCollapse()` — the SAME family-collapse lookup
+// `notify()` itself calls — not a hand-rolled append and NOT `notify()`
+// itself. This used to skip that lookup entirely and push straight onto
+// `retained`, so N documents forwarding the SAME finished-task notice (e.g. N
+// sub-documents watching one task) stacked N byte-identical rows instead of
+// collapsing into one with `count` incremented (the live repro: three copies
+// of one finished-task notice, two of another) — `retainAndCollapse` is what
+// fixes that: family-collapse and the id it mints/returns now apply
+// identically whether a message was raised here or forwarded in.
+//
+// NOT ROUTED THROUGH `notify()` (F1, 2026-09-18 fix, code review round): a
+// pane already pops its OWN card, in the pane's own corner, for this exact
+// message (App.tsx's `!IS_EMBED` guard means only a pane's own document runs
+// `MessagePopupCard`'s upstream `notify()` call in the first place). If the
+// shell's ingest handler also called `notify()`, the receiving document would
+// pop a SECOND, identical card at the same moment — the exact double-popup
+// `NotificationHost.tsx`'s own header comment already documents its
+// `!IS_EMBED`-gating of `JobPopupCard`/`ServerStatusBanner` as guarding
+// against, just for a different card. Worse, `notify()`'s "latest wins" popup
+// swap (`clearTimer(exitTimer); popup = item`) would let a background pane's
+// forwarded notice silently evict whatever card the SHELL itself was
+// currently showing, cancelling that card's own exit timer. `ingestNotification`
+// below therefore calls `retainAndCollapse` directly and stops there — the
+// shell's retained list (and Notifications panel) still gets the row, but no
+// popup card is ever armed for it. `isSuppressed` is still checked first
+// (matching what a local `notify()` call would do), even though it can never
+// actually fire here in practice: `forwardToShell` (below) forwards `origin`,
+// never `source`, and `isSuppressed` short-circuits to `false` whenever
+// `input.source` is absent.
+//
+// Re-forwarding is still structurally impossible in the ordinary
+// (single-level pane -> top shell) case: `forwardToShell` only fires when
+// THIS document is itself an embedded, non-top pane (its own guard, PLUS the
+// F2 self-forward guard below), which the receiving (shell) document never is
+// for a message it just received.
+function ingestNotification(input: NotificationInput): number {
+  if (isSuppressed(input, resolveTier(input))) return -1;
+  const { id } = retainAndCollapse(input);
+  refreshSnapshot();
+  emit();
+  return id;
+}
+
 function installIngest(): void {
   try {
     (globalThis as unknown as {
       _fusedIngestNotification?: (input: NotificationInput) => number;
       _fusedDismissNotification?: (id: number) => void;
-    })._fusedIngestNotification = (input: NotificationInput) => {
-      const id = nextId++;
-      const item = toStored(input, id);
-      retained = capRetained([...retained, item]);
-      refreshSnapshot();
-      emit();
-      return id;
-    };
+    })._fusedIngestNotification = (input: NotificationInput) => ingestNotification(input);
     (globalThis as unknown as {
       _fusedDismissNotification?: (id: number) => void;
     })._fusedDismissNotification = (id: number) => {
@@ -410,6 +505,21 @@ const forwardedIds = new Map<number, number>();
 
 function forwardToShell(n: StoredNotification): number | undefined {
   if (!effectiveIsEmbed() || effectiveIsTopEmbed()) return undefined; // top-level window: nothing to forward to
+  // STRUCTURAL SELF-FORWARD GUARD (F2, 2026-09-18 fix): `IS_TOP_EMBED`
+  // (router.ts) is `IS_EMBED && window === window.top && !IS_PREVIEW &&
+  // !IS_SNAPSHOT` — so a TOP-LEVEL window loaded at an embed URL with
+  // `_preview=1` or `snapshot=1` is `IS_EMBED` but NOT `IS_TOP_EMBED`, and the
+  // guard above does not fire for it. For that document `window.top` IS the
+  // document itself, so without this check: notify() -> forwardToShell() ->
+  // its OWN `_fusedIngestNotification` -> notify() -> forwardToShell() -> ...
+  // forever (bounded only by a swallowed stack-overflow `RangeError`, with
+  // every unwound frame still doing its retain/pop work first). `window.top
+  // === window` is the honest, cheap structural test for "there is nothing
+  // above me to forward to" — independent of (and a superset of) the
+  // IS_TOP_EMBED/IS_PREVIEW/IS_SNAPSHOT combination above, so it also covers
+  // any future embed variant that reaches this function while still being
+  // its own top.
+  if (window.top === window) return undefined;
   try {
     const top = window.top as unknown as {
       _fusedIngestNotification?: (input: NotificationInput) => number;
@@ -466,6 +576,56 @@ let snapshot: { popup: StoredNotification | null; retained: StoredNotification[]
 };
 function refreshSnapshot(): void {
   snapshot = { popup, retained };
+}
+
+// GROUPING/UPDATION (user: "better notification grouping/updation for same
+// source") — the shared half of "raise a fresh message" that both `notify()`
+// (a local call) and `ingestNotification()` (F1, 2026-09-18 fix — see its own
+// comment) call identically: a fresh, retained-worthy message that shares its
+// family (see `messageFamily`) with an ALREADY-RETAINED row updates that row
+// IN PLACE (same id, `count` incremented) rather than stacking a second,
+// byte-identical one. NO TIME WINDOW (2026-09-17 fix, replacing an earlier
+// `GROUP_GAP_MS`-gated version): the user's own motivating case — two runs of
+// the same Claude task, finished far more than two minutes apart — is the
+// plain reading of "better notification grouping/updation for same source": a
+// row the user has not dealt with yet gets updated, not duplicated, no matter
+// how long it has been sitting there. As long as the earlier row is still in
+// `retained` (i.e. undismissed), a repeat lands on it; once it is dismissed,
+// the family is gone and the next repeat starts a fresh row.
+//
+// Deliberately does NOT touch `popup` — that is `notify()`'s own job alone
+// (see F1's comment on `installIngest`/`ingestNotification` for why the two
+// were split apart).
+//
+// `GROUP_GAP_MS`/jobs.ts is untouched — server-side job grouping still uses
+// its own burst window, unaffected by this change.
+function retainAndCollapse(input: NotificationInput): { id: number; item: StoredNotification } {
+  const tier = resolveTier(input);
+  const now = Date.now();
+  const collapseIdx = isRetained(input, tier)
+    ? retained.findIndex((n) => n.family === messageFamily(input))
+    : -1;
+
+  const id = collapseIdx !== -1 ? retained[collapseIdx].id : nextId++;
+  const base = toStored(input, id);
+  const item: StoredNotification =
+    collapseIdx !== -1 ? { ...base, count: retained[collapseIdx].count + 1, updatedAt: now } : base;
+
+  if (isRetained(input, item.tier)) {
+    if (collapseIdx !== -1) {
+      retained = retained.map((n, i) => (i === collapseIdx ? item : n));
+      // Not re-forwarded (§4 pane->shell): the shell-side copy already
+      // exists under this same id (`forwardedIds` already maps it) — a
+      // collapse only changes this document's own content/count, not
+      // whether a shell copy needs minting.
+    } else {
+      retained = capRetained([...retained, item]);
+      const shellId = forwardToShell(item);
+      if (shellId !== undefined) forwardedIds.set(id, shellId);
+    }
+  }
+
+  return { id, item };
 }
 
 /** Queue a notification. Pops a card in `.notif-host` for
@@ -547,50 +707,16 @@ export function notify(input: NotificationInput, replaceId?: number): number {
     }
   }
 
-  // GROUPING/UPDATION (user: "better notification grouping/updation for
-  // same source") — a fresh, retained-worthy message that shares its family
-  // (see `messageFamily`) with an ALREADY-RETAINED row updates that row IN
-  // PLACE (same id, `count` incremented) rather than stacking a second,
-  // byte-identical one. NO TIME WINDOW (2026-09-17 fix, replacing an earlier
-  // `GROUP_GAP_MS`-gated version): the user's own motivating case — two runs
-  // of the same Claude task, finished far more than two minutes apart — is
-  // the plain reading of "better notification grouping/updation for same
-  // source": a row the user has not dealt with yet gets updated, not
-  // duplicated, no matter how long it has been sitting there. As long as the
-  // earlier row is still in `retained` (i.e. undismissed), a repeat lands on
-  // it; once it is dismissed, the family is gone and the next repeat starts
-  // a fresh row. Checked here, not folded into `isRetained`/`resolveTier`,
-  // because it is purely about WHERE an already-decided retained item lands,
-  // exactly the same layering `isSuppressed` above keeps relative to
-  // `isRetained`. A `silent`/non-retained message is never a collapse
-  // candidate (nothing to collapse INTO — it never reaches the retained list
-  // either way), so this only runs once `isRetained` already said yes.
-  //
-  // `GROUP_GAP_MS`/jobs.ts is untouched — server-side job grouping still uses
-  // its own burst window, unaffected by this change.
-  const tier = resolveTier(input);
-  const now = Date.now();
-  const collapseIdx = isRetained(input, tier)
-    ? retained.findIndex((n) => n.family === messageFamily(input))
-    : -1;
+  const { id, item } = retainAndCollapse(input);
 
-  const id = collapseIdx !== -1 ? retained[collapseIdx].id : nextId++;
-  const base = toStored(input, id);
-  const item: StoredNotification =
-    collapseIdx !== -1 ? { ...base, count: retained[collapseIdx].count + 1, updatedAt: now } : base;
-
-  if (isRetained(input, item.tier)) {
-    if (collapseIdx !== -1) {
-      retained = retained.map((n, i) => (i === collapseIdx ? item : n));
-      // Not re-forwarded (§4 pane->shell): the shell-side copy already
-      // exists under this same id (`forwardedIds` already maps it) — a
-      // collapse only changes this document's own content/count, not
-      // whether a shell copy needs minting.
-    } else {
-      retained = capRetained([...retained, item]);
-      const shellId = forwardToShell(item);
-      if (shellId !== undefined) forwardedIds.set(id, shellId);
-    }
+  // QUIET (F8): retain without ever arming a popup — see `quiet`'s own doc
+  // comment on `NotificationInput`. Mirrors `ingestNotification`'s own
+  // retain-without-pop shape (pane->shell forwarding), just reached from a
+  // local `notify()` call instead of the cross-document ingest boundary.
+  if (input.quiet) {
+    refreshSnapshot();
+    emit();
+    return id;
   }
 
   // LATEST WINS: a fresh popup always replaces whatever is currently
