@@ -33,7 +33,12 @@
 import { useEffect, useRef, useState } from "react";
 
 import UpdateDialog from "@platform/ui/UpdateDialog";
-import { noteRestartProbe, requestRestart, useRestartFlow } from "@platform/lib/restart-store";
+import {
+  forgetRestartRecord,
+  noteRestartProbe,
+  requestRestart,
+  useRestartFlow,
+} from "@platform/lib/restart-store";
 import { useUpdateStatus } from "@platform/lib/update-status";
 import {
   bannerSurface,
@@ -133,6 +138,14 @@ function useServerStatus(): {
       if (reload) {
         // Server came back updated — the tab was blocked anyway, and views are
         // URL-synced, so swap in the new shell without asking.
+        //
+        // The durable restart record goes FIRST. This reload is the end of the
+        // restart whether or not the stage machine ever reached `back` (a press
+        // made before any healthy probe has no version to compare against, so it
+        // cannot), and the fresh document that comes up a moment from now reads
+        // that record on start — left behind, it would raise the undismissable
+        // dialog over a server that is already fine (bugbot, PR #1214).
+        forgetRestartRecord();
         window.location.reload();
         return;
       }

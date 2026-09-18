@@ -699,9 +699,18 @@ def bundle_path() -> str | None:
     return os.path.dirname(contents)
 
 
+# How long `_bootstrap_server` gives its own server to answer the desktop probe
+# before it gives up — and, because `_write_pidfile` runs AFTER that wait, the
+# ceiling on how late a perfectly healthy successor's pidfile can appear. Named
+# rather than spelled 15.0 at the call site because the relauncher below has to
+# be sized against it: a relauncher that gives up first would "retry" a launch
+# that was still booting (bugbot, PR #1214).
+SERVER_READY_TIMEOUT_S = 15.0
+
 # The relauncher's poll cadence while it waits for this process to die. Fast
 # enough that the relaunch feels immediate after the teardown (bounded by
-# QUIT_HARD_DEADLINE_S), slow enough to cost nothing.
+# QUIT_HARD_DEADLINE_S), slow enough to cost nothing. Also the cadence of its
+# watch for the successor afterwards.
 RELAUNCH_POLL_S = 0.2
 
 # How long the relauncher waits AFTER our pid disappears before it asks
@@ -714,21 +723,26 @@ RELAUNCH_POLL_S = 0.2
 # 20 s later worked first time).
 RELAUNCH_SETTLE_S = 1.0
 
-# How many times it asks. The first ask is a plain `open -a`; every later one
-# adds `-n`, which forces a NEW instance even if LaunchServices still believes
-# one is running — the escalation is deliberately second, because `-n` against a
-# genuinely live app would give the user two servers racing for one port, and by
-# the time a retry happens our pid has been gone for RELAUNCH_BOOT_WAIT_S and
-# that cannot be what is happening.
-RELAUNCH_OPEN_TRIES = 4
+# How long a successor is given to write its pidfile before the ask is counted as
+# having done nothing. STRICTLY LONGER THAN SERVER_READY_TIMEOUT_S, and that is
+# the whole point: `_bootstrap_server` waits up to that ceiling for its own
+# server and only then calls `_write_pidfile`, so a slow-but-perfectly-healthy
+# launch has no pidfile for fifteen seconds after the process starts — plus the
+# seconds a cold start of a signed bundle takes before any Python runs. A shorter
+# wait here would read a successful launch as a failed one and "retry" it, which
+# is how the retry meant to rescue a lost launch would instead create the
+# two-servers-one-port race it exists to avoid (bugbot, PR #1214).
+RELAUNCH_BOOT_WAIT_S = 25.0
 
-# How long a successor is given to write its pidfile before the ask is counted
-# as having done nothing. A cold start of a signed bundle is seconds (six, on
-# the machine this was diagnosed on), so this is generous on purpose; four tries
-# at ~11 s each lands just inside the page's own 60 s cap
-# (RESTART_GIVE_UP_MS, frontend/src/platform/lib/restart-flow.ts), so the two
-# surfaces stop promising at about the same moment.
-RELAUNCH_BOOT_WAIT_S = 10.0
+# The relauncher's own overall deadline, and it is the number that has to stay
+# under the page's 60 s cap (RESTART_GIVE_UP_MS,
+# frontend/src/platform/lib/restart-flow.ts) so the two surfaces stop promising
+# at about the same moment rather than one of them insisting after the other has
+# given the page back to the "isn't running" card.
+RELAUNCH_DEADLINE_S = 50.0
+
+# How many times it asks, the first ask included.
+RELAUNCH_OPEN_TRIES = 3
 
 
 def relauncher_log_path(pid: int) -> str:
@@ -745,9 +759,9 @@ def relauncher_log_path(pid: int) -> str:
 
 
 def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
-                     log=None, pidfile=None):
+                     log=None, pidfile=None, opener="/usr/bin/open"):
     """Detached shell child that waits for `pid` to exit, then `open`s the
-    bundle — and keeps asking until a successor actually answers.
+    bundle — and keeps watching until a successor actually answers.
 
     A dying app cannot start its own successor — `open` on a bundle that is
     still running only foregrounds it — so the wait has to happen in a process
@@ -765,12 +779,25 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
     it before this shell is ever spawned (the removal is ordered ahead of the
     `on_claim` hook, deliberately), so the file existing again can only mean a
     new instance booted.
+
+    AND IT NEVER ASKS TWICE OVER A LIVE PROCESS. The pidfile is a LATE signal —
+    `_bootstrap_server` writes it only after `wait_until_ready`, up to
+    SERVER_READY_TIMEOUT_S after the process started — so "no pidfile yet" and
+    "the launch failed" are not the same statement, and treating them as one is
+    how a retry with `-n` would fork a second copy onto a port the first is
+    still claiming (bugbot, PR #1214). Two things keep them apart: the boot wait
+    is strictly longer than that ceiling, and before any retry the shell asks
+    `pgrep` whether ANY process is running out of this bundle — an EARLY signal,
+    true from the moment the successor execs. While one is alive the answer is
+    always "keep waiting", never "ask again", and `-n` is reachable only when
+    nothing at all is running for this bundle.
     """
     if log is None:
         log = relauncher_log_path(pid)
     if pidfile is None:
         pidfile = PIDFILE
-    waits = max(1, int(RELAUNCH_BOOT_WAIT_S / RELAUNCH_POLL_S))
+    boot_ticks = max(1, int(RELAUNCH_BOOT_WAIT_S / RELAUNCH_POLL_S))
+    deadline_ticks = max(boot_ticks, int(RELAUNCH_DEADLINE_S / RELAUNCH_POLL_S))
     # Paths go through variables rather than being spliced into every command:
     # `shlex.quote` makes each one safe as an argument, and a single assignment
     # keeps a path containing a quote or a `$` from having to be re-escaped for
@@ -779,14 +806,19 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
         f"bundle={shlex.quote(bundle)}; "
         f"pidfile={shlex.quote(pidfile)}; "
         f"log={shlex.quote(log)}; "
+        f"opener={shlex.quote(opener)}; "
+        'macos="$bundle/Contents/MacOS"; '
         'say() { printf "%s relauncher[%s] %s\\n" '
         '"$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$1" >>"$log" 2>/dev/null; }; '
+        # ANY process running out of this bundle, excluding this shell — whose
+        # own command line carries the bundle path and would otherwise match
+        # itself. `pgrep -f` sees the successor from the instant it execs, long
+        # before it has a server, let alone a pidfile.
+        'alive() { /usr/bin/pgrep -f "$macos" 2>/dev/null '
+        '| /usr/bin/grep -qv "^$$$"; }; '
         f'say "parked on pid {int(pid)}; bundle=$bundle"; '
         f"while /bin/kill -0 {int(pid)} 2>/dev/null; do /bin/sleep {RELAUNCH_POLL_S}; done; "
         f'say "pid {int(pid)} has exited"; '
-        "try=0; "
-        f'while [ "$try" -lt {RELAUNCH_OPEN_TRIES} ]; do '
-        "try=$((try + 1)); "
         f"/bin/sleep {RELAUNCH_SETTLE_S}; "
         # `open -a <bundle> fused-render://launch`, not a plain `open <bundle>`:
         # a plain open is a normal launch, which boots onto a fresh home tab and
@@ -794,21 +826,27 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
         # launch action instead makes the successor's handler set state["docs"]
         # and open nothing (D128); -a pins WHICH copy launches, so the deep link
         # can't resolve to some other registered install.
-        'if [ "$try" -eq 1 ]; then '
-        '/usr/bin/open -a "$bundle" "fused-render://launch"; '
-        "else "
-        '/usr/bin/open -n -a "$bundle" "fused-render://launch"; '
-        "fi; "
-        "rc=$?; "
-        'say "open attempt $try exited $rc"; '
-        "waited=0; "
-        f'while [ "$waited" -lt {waits} ]; do '
+        '"$opener" -a "$bundle" "fused-render://launch"; rc=$?; '
+        'say "open attempt 1 exited $rc"; '
+        "try=1; waited=0; "
+        f'while [ "$waited" -lt {deadline_ticks} ]; do '
         'if [ -f "$pidfile" ]; then '
         'say "successor is up after attempt $try"; exit 0; fi; '
         "waited=$((waited + 1)); "
         f"/bin/sleep {RELAUNCH_POLL_S}; "
-        "done; "
-        f'say "no successor within {RELAUNCH_BOOT_WAIT_S}s of attempt $try"; '
+        f'if [ $((waited % {boot_ticks})) -eq 0 ]; then '
+        "if alive; then "
+        f'say "no pidfile yet, but a process for this bundle is running '
+        f'— still booting, not asking again"; '
+        f'elif [ "$try" -lt {RELAUNCH_OPEN_TRIES} ]; then '
+        "try=$((try + 1)); "
+        # `-n` ONLY here: nothing is running out of this bundle, so forcing a new
+        # instance cannot produce a second server racing the first.
+        '"$opener" -n -a "$bundle" "fused-render://launch"; rc=$?; '
+        'say "open attempt $try (-n, nothing was running) exited $rc"; '
+        "else "
+        'say "no successor and nothing running, out of attempts"; '
+        "fi; fi; "
         "done; "
         'say "giving up: the app did not come back"; '
         "exit 1"
@@ -1255,7 +1293,8 @@ def main() -> None:
         server, server_thread = _start_server_thread(port)
         state["server"] = server
         state["server_thread"] = server_thread
-        if not desktop_probe.wait_until_ready(port, desktop_token, 15.0, poll_interval=0.2):
+        if not desktop_probe.wait_until_ready(port, desktop_token,
+                                              SERVER_READY_TIMEOUT_S, poll_interval=0.2):
             # Log file, not print: Finder-launched apps have no visible stderr.
             logger.error("server did not become ready on port %s", port)
             # Through the quit ACTION, not straight to quit_application: by now

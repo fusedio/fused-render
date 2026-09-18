@@ -31,6 +31,9 @@ function origin() {
   const items = new Map<string, string>();
   let clock = 1_000_000;
   const made: Store[] = [];
+  /** What every window's `/api/config` answers. `null` = the server is not
+   *  answering at all, which is what a restart in flight looks like. */
+  let serving: string | null = "0.5.90";
 
   /** `awake: false` models a throttled/frozen background window — it holds a
    *  channel that never delivers, which is precisely what Chrome does to a
@@ -63,6 +66,8 @@ function origin() {
         removeItem: (k) => void items.delete(k),
       }),
       listen: (_type, fn) => wakers.push(fn),
+      ask: async () =>
+        serving === null ? { ok: false, version: null } : { ok: true, version: serving },
       navigate: (href) => void navigations.push(href),
       now: () => clock,
     });
@@ -78,8 +83,14 @@ function origin() {
       /** What this window's banner would actually PUT ON SCREEN. */
       surface: (banner: Parameters<typeof bannerSurface>[0]["banner"]) =>
         bannerSurface({ banner, mode: "real", stage: store.snapshot().stage }),
-      /** The user looking at this window again: every registered wake-up fires. */
-      focus: () => wakers.forEach((fn) => fn()),
+      /** The user looking at this window again: every registered wake-up fires.
+       *  Async, because adopting a record means asking the server first. */
+      focus: async () => {
+        wakers.forEach((fn) => fn());
+        await store.wake();
+      },
+      /** A fresh document reads the record on start — the same await. */
+      settle: () => store.wake(),
     };
   }
 
@@ -87,6 +98,10 @@ function origin() {
     windowFor,
     advance: (ms: number) => {
       clock += ms;
+    },
+    /** What the server answers from now on; `null` means it is down. */
+    serve: (version: string | null) => {
+      serving = version;
     },
     stored: () => items.get(RESTART_STORAGE_KEY) ?? null,
     disposeAll: () => made.forEach((s) => s.dispose()),
@@ -135,7 +150,7 @@ test("BOTH windows reach reconnecting on their own probes, and NEITHER shows the
   expect(b.surface("down")).toBe("restart-dialog");
 });
 
-test("a BACKGROUND window that missed the broadcast still joins on wake-up", () => {
+test("a BACKGROUND window that missed the broadcast still joins on wake-up", async () => {
   // The reported failure. B is frozen, so the one-shot `postMessage` lands on
   // nothing; without the durable record B would sit at `ready` and fall straight
   // through to the down card the moment its probes failed.
@@ -148,21 +163,27 @@ test("a BACKGROUND window that missed the broadcast still joins on wake-up", () 
   b.store.noteRestartProbe({ ok: false });
   expect(b.surface("down")).toBe("down");
 
+  // The app is between processes, so nothing answers — which is itself evidence
+  // the restart is still running.
+  o.serve(null);
   // The user looks at it. It reads the record, adopts A's instant, and tells the
   // same story A is telling.
-  b.focus();
+  await b.focus();
   expect(b.stage()).toBe("quitting");
   expect(b.surface("down")).toBe("restart-dialog");
 });
 
-test("a window that RELOADS mid-restart picks the story back up", () => {
+test("a window that RELOADS mid-restart picks the story back up", async () => {
   // Akshil reloaded. A fresh document has no memory at all, so without the
   // record it would show the down card over a restart that is still in flight.
   const { o, a } = twoWindows();
   a.store.requestRestart();
   const at = JSON.parse(o.stored()!).at;
   o.advance(20_000);
+  // Still the old process answering — the teardown has not finished.
+  o.serve("0.5.90");
   const reloaded = o.windowFor();
+  await reloaded.settle();
   expect(reloaded.stage()).toBe("quitting");
   expect(reloaded.store.snapshot().requestedAt).toBe(at);
   // And it inherits the ORIGINAL clock, so it gives up when A does, not 20s later.
@@ -171,7 +192,7 @@ test("a window that RELOADS mid-restart picks the story back up", () => {
   expect(reloaded.stage()).toBe("gave-up");
 });
 
-test("the record dies with the flow, so a finished restart is never re-adopted", () => {
+test("the record dies with the flow, so a finished restart is never re-adopted", async () => {
   const { o, a, b } = twoWindows();
   a.store.requestRestart();
   expect(o.stored()).not.toBeNull();
@@ -183,7 +204,9 @@ test("the record dies with the flow, so a finished restart is never re-adopted",
   expect(o.stored()).toBeNull();
   // A window opening now — the page that reloads onto the new version — must
   // NOT put a blocking dialog up for a press that has already completed.
+  o.serve("0.5.91");
   const fresh = o.windowFor();
+  await fresh.settle();
   expect(fresh.stage()).toBe("ready");
   expect(b.stage()).not.toBe("back");
 });
@@ -200,14 +223,88 @@ test("the cap clears the record too", () => {
   expect(a.surface("down")).toBe("down");
 });
 
-test("a stale record from a previous session is never adopted", () => {
+test("a stale record from a previous session is never adopted", async () => {
   const { o, a } = twoWindows();
   a.store.requestRestart();
   // Older than the cap by the time anyone looks: a press from a session that is
   // long over must not raise a blocking dialog on a healthy app.
   o.advance(RESTART_GIVE_UP_MS + 60_000);
   const fresh = o.windowFor();
+  await fresh.settle();
   expect(fresh.stage()).toBe("ready");
   // And it tidies up after itself rather than leaving the key to be re-read.
+  expect(o.stored()).toBeNull();
+});
+
+// ---- the record is evidence of a PRESS, not of a restart still running ------
+// (bugbot, PR #1214). Clearing it when the flow ends cannot be the only guard: a
+// document that reloads without ever passing through `back` — a press made
+// before any healthy probe recorded a version, a discarded tab restoring onto
+// the new server — starts from nothing and would adopt a finished press straight
+// back off disk, raising a dialog with no ✕, no Esc and no backdrop over a
+// server that is already fine.
+
+test("a record is NOT adopted once the server is already on a newer version", async () => {
+  const { o, a } = twoWindows();
+  a.store.requestRestart();
+  // The restart completed; this document is a fresh one on the new server, and
+  // the record survived because nothing here ever reached `back`.
+  o.advance(15_000);
+  o.serve("0.5.91");
+  const fresh = o.windowFor();
+  await fresh.settle();
+  expect(fresh.stage()).toBe("ready");
+  // …and it tidies up, so the next document does not pay for the same request.
+  expect(o.stored()).toBeNull();
+});
+
+test("a record IS adopted while the server is still on the old version", async () => {
+  const { o, a } = twoWindows();
+  a.store.requestRestart();
+  o.advance(15_000);
+  o.serve("0.5.90");
+  const fresh = o.windowFor();
+  await fresh.settle();
+  expect(fresh.stage()).toBe("quitting");
+  expect(o.stored()).not.toBeNull();
+});
+
+test("a server that does not answer at all counts as a restart in flight", async () => {
+  const { o, a } = twoWindows();
+  a.store.requestRestart();
+  o.advance(15_000);
+  o.serve(null);
+  const fresh = o.windowFor();
+  await fresh.settle();
+  expect(fresh.stage()).toBe("quitting");
+});
+
+test("a record with no version on it is never adopted", async () => {
+  // Nothing to compare against, so there is no way to tell a restart in flight
+  // from one that finished — and the tie goes to NOT raising a dialog the user
+  // cannot dismiss.
+  const o = origin();
+  origins.push(o);
+  const a = o.windowFor();
+  a.store.requestRestart(); // no probe ever ran, so `served` is null
+  expect(JSON.parse(o.stored()!).served).toBeNull();
+  // With the server DOWN there is nothing to compare against from either side —
+  // the case where "ask the server" cannot save us, so the record itself has to
+  // be refused. Adopting here would raise a dialog that can only ever end at the
+  // 60s cap.
+  o.serve(null);
+  const fresh = o.windowFor();
+  await fresh.settle();
+  expect(fresh.stage()).toBe("ready");
+  expect(o.stored()).toBeNull();
+});
+
+test("the reload path forgets the record on its way out", async () => {
+  // `ServerStatusBanner` calls this before `location.reload()`, which is the end
+  // of the restart whether or not the stage machine ever reached `back`.
+  const { o, a } = twoWindows();
+  a.store.requestRestart();
+  expect(o.stored()).not.toBeNull();
+  a.store.forget();
   expect(o.stored()).toBeNull();
 });

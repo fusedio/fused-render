@@ -94,6 +94,9 @@ export interface RestartStoreHost {
   listen?: (type: string, fn: () => void) => void;
   navigate?: (href: string) => void;
   now?: () => number;
+  /** What the server is serving RIGHT NOW. Only the record path uses it — see
+   *  `wake`. `null` version means "could not tell". */
+  ask?: () => Promise<{ ok: boolean; version: string | null }>;
 }
 
 export interface RestartStore {
@@ -104,8 +107,13 @@ export interface RestartStore {
   /** Deliver a message as the channel would — the seam a second window's test
    *  double posts into. */
   receive(data: unknown): void;
-  /** Re-read the durable record, as a wake-up does. */
-  wake(): void;
+  /** Re-read the durable record, as a wake-up does. Async because adopting one
+   *  means asking the server whether the restart already finished. */
+  wake(): Promise<void>;
+  /** Drop the durable record — the reload path calls this on its way out, so a
+   *  restart that has already handed the page to a new server leaves nothing
+   *  behind for the fresh document to adopt. */
+  forget(): void;
   dispose(): void;
 }
 
@@ -149,6 +157,18 @@ function defaultHost(): Required<RestartStoreHost> {
       }
     },
     now: () => Date.now(),
+    ask: async () => {
+      try {
+        const res = await fetch("/api/config", { cache: "no-store" });
+        if (!res.ok) return { ok: false, version: null };
+        const body = await res.json();
+        return { ok: true, version: typeof body.version === "string" ? body.version : null };
+      } catch {
+        // The server is not answering — which is what a restart in flight looks
+        // like, and the caller reads it that way.
+        return { ok: false, version: null };
+      }
+    },
   };
 }
 
@@ -253,14 +273,45 @@ export function createRestartStore(host: RestartStoreHost = {}): RestartStore {
    * background window is throttled and eventually frozen, so a `postMessage`
    * sent while it was asleep is simply never heard.
    *
-   * FRESHNESS-BOUNDED by the same cap the stage machine runs on. A record older
-   * than that describes a restart that has already timed out — adopting it would
-   * put a blocking dialog up for a press made in a previous session.
+   * IT ASKS THE SERVER BEFORE IT BELIEVES THE RECORD, because a record is
+   * evidence that a restart was ASKED FOR, not that one is still running — and
+   * what it would raise is a dialog with no ✕, no Esc and no backdrop. The
+   * clear-on-ending path cannot be the only guard: a document that reloads
+   * without ever passing through `back` (a press made before any healthy probe,
+   * a discarded tab restoring onto the new server) starts from nothing and would
+   * adopt a finished press straight back off disk (bugbot, PR #1214).
+   *
+   * The three answers:
+   *   • the server is serving a DIFFERENT version than the record's — the
+   *     restart already completed, so forget it and latch nothing;
+   *   • the server is serving the SAME version — the old process is still up,
+   *     which is exactly a restart in flight: latch;
+   *   • the server does not answer — also a restart in flight (the app is
+   *     between processes): latch.
+   * A record with no `served` on it cannot be compared at all, so it is treated
+   * as finished: never raise an undismissable dialog you cannot justify.
+   *
+   * FRESHNESS-BOUNDED first, by the same cap the stage machine runs on, so a
+   * record from a previous session costs no request at all.
    */
-  function wake(): void {
+  async function wake(): Promise<void> {
     const record = read();
     if (record === null) return;
     if (h.now() - record.at > RESTART_GIVE_UP_MS) {
+      write(null);
+      return;
+    }
+    // Already living this one — nothing to verify and nothing to change.
+    if (state.requestedAt === record.at && state.stage !== "ready") return;
+    if (!record.served) {
+      write(null);
+      return;
+    }
+    const seen = await h.ask();
+    // Re-read after the await: a broadcast or a press of our own may have
+    // arrived while the request was out, and it is fresher than this record.
+    if (state.requestedAt === record.at && state.stage !== "ready") return;
+    if (seen.ok && seen.version && seen.version !== record.served) {
       write(null);
       return;
     }
@@ -275,9 +326,9 @@ export function createRestartStore(host: RestartStoreHost = {}): RestartStore {
     // Both events, because neither covers the other: `focus` catches a window
     // brought forward, `visibilitychange` catches one that was occluded becoming
     // visible without ever taking focus.
-    h.listen("focus", wake);
-    h.listen("visibilitychange", wake);
-    wake();
+    h.listen("focus", () => void wake());
+    h.listen("visibilitychange", () => void wake());
+    void wake();
   }
 
   return {
@@ -313,6 +364,7 @@ export function createRestartStore(host: RestartStoreHost = {}): RestartStore {
     snapshot: () => state,
     receive,
     wake,
+    forget: () => write(null),
     dispose() {
       clearInterval(ticker);
       ticker = undefined;
@@ -366,4 +418,13 @@ export function resetRestartForTests(): void {
 /** Tests only — drive the cross-window path without a second real window. */
 export function receiveRestartBroadcastForTests(data: unknown): void {
   store.receive(data);
+}
+
+/** The page is about to reload onto whatever the server is serving now, so the
+ *  restart this record describes is over by definition. Called on
+ *  `ServerStatusBanner`'s reload path: the fresh document that comes up a moment
+ *  later must not read the press back off disk and put the dialog up over a
+ *  server that is already fine. */
+export function forgetRestartRecord(): void {
+  store.forget();
 }

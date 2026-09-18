@@ -46,7 +46,8 @@ def test_relauncher_waits_for_this_pid_then_opens_the_bundle():
     assert argv[:2] == ["/bin/sh", "-c"]
     script = argv[2]
     assert "kill -0 4242" in script          # poll THIS pid until it dies
-    assert "open -a" in script
+    assert '"$opener" -a "$bundle"' in script
+    assert "opener=/usr/bin/open;" in script
     assert "/Applications/FusedRender.app" in script
     # Launch via the launch deep link, not a plain bundle open: a plain open
     # is a normal launch, which boots onto a fresh home tab and steals focus
@@ -107,30 +108,110 @@ def test_the_relauncher_verifies_a_successor_instead_of_trusting_open():
     assert "exec /usr/bin/open" not in script
 
 
-def test_the_relauncher_retries_and_escalates_to_a_new_instance():
+def test_the_relauncher_never_escalates_over_a_live_process():
+    """`-n` forces a NEW instance even if one is already running, so it is
+    reachable only when `pgrep` says nothing is running out of this bundle. The
+    pidfile is a LATE signal — `_bootstrap_server` writes it only after
+    `wait_until_ready` — so "no pidfile yet" must never be read as "the launch
+    failed" (bugbot, PR #1214)."""
     calls = []
     app_mod.spawn_relauncher("/Applications/FusedRender.app", 1,
                              popen=lambda *a, **k: calls.append(a))
     script = calls[0][0][2]
-    assert f'-lt {app_mod.RELAUNCH_OPEN_TRIES}' in script
-    assert app_mod.RELAUNCH_OPEN_TRIES > 1
-    # The FIRST ask is a plain open; only a retry forces a second instance. `-n`
-    # against a genuinely live app would give the user two servers racing for one
-    # port, so the escalation has to come after a plain ask demonstrably did
-    # nothing.
-    assert '/usr/bin/open -a "$bundle"' in script
-    assert '/usr/bin/open -n -a "$bundle"' in script
-    assert script.index('/usr/bin/open -a "$bundle"') < script.index(
-        '/usr/bin/open -n -a "$bundle"')
+    assert 'macos="$bundle/Contents/MacOS"' in script
+    assert '/usr/bin/pgrep -f "$macos"' in script
+    # The shell's own argv carries the bundle path, so it must not match itself.
+    assert '/usr/bin/grep -qv "^$$$"' in script
+    # A live process means KEEP WAITING; the escalation is the `else` branch.
+    assert script.index("if alive; then") < script.index('-n -a "$bundle"')
+    assert "still booting, not asking again" in script
 
 
-def test_the_relauncher_gives_up_around_the_same_time_the_page_does():
-    """The page's own cap is 60s (RESTART_GIVE_UP_MS, restart-flow.ts). The
-    relauncher must not still be trying long after the dialog has stopped
-    promising — the two surfaces would be telling different stories."""
-    worst_case = app_mod.RELAUNCH_OPEN_TRIES * (
-        app_mod.RELAUNCH_SETTLE_S + app_mod.RELAUNCH_BOOT_WAIT_S)
-    assert 30 <= worst_case <= 60
+def test_the_boot_wait_outlasts_the_successors_own_readiness_ceiling():
+    """The number that makes the rule above hold even if `pgrep` were useless:
+    `_bootstrap_server` waits up to SERVER_READY_TIMEOUT_S for its own server and
+    only THEN writes the pidfile, so a healthy launch has none for that long —
+    plus the seconds a cold start of a signed bundle takes first."""
+    assert app_mod.RELAUNCH_BOOT_WAIT_S > app_mod.SERVER_READY_TIMEOUT_S
+    # Not by a hair: the launch itself is seconds before any Python runs.
+    assert app_mod.RELAUNCH_BOOT_WAIT_S - app_mod.SERVER_READY_TIMEOUT_S >= 5
+
+
+def _run_relauncher(tmp_path, *, successor_after=None, wait_s=6.0):
+    """Run the REAL generated shell against a throwaway pid and a stub opener,
+    with the clock scaled down so its own logic — not a fifteen-second sleep —
+    is what the test exercises. Returns (opens, log lines)."""
+    import subprocess
+    import time
+
+    opener = tmp_path / "opener.sh"
+    opens = tmp_path / "opens.txt"
+    opener.write_text(f'#!/bin/sh\necho "$*" >> {opens}\nexit 0\n')
+    opener.chmod(0o755)
+    log = tmp_path / "relaunch.log"
+    pidfile = tmp_path / "server.pid"
+    bundle = str(tmp_path / "Nope.app")
+
+    victim = subprocess.Popen(["/bin/sh", "-c", "sleep 0.3"])
+    app_mod.spawn_relauncher(bundle, victim.pid, log=str(log),
+                             pidfile=str(pidfile), opener=str(opener))
+    victim.wait()
+    successor = None
+    if successor_after is not None:
+        # A process whose argv sits under the bundle's MacOS dir — what `alive`
+        # looks for, and true from the instant a real successor execs.
+        successor = subprocess.Popen(
+            ["/bin/sh", "-c",
+             f"exec -a {bundle}/Contents/MacOS/FusedRender sleep {wait_s + 2}"])
+        time.sleep(successor_after)
+        pidfile.write_text("999")
+    deadline = time.monotonic() + wait_s
+    while time.monotonic() < deadline:
+        if log.exists() and ("successor is up" in log.read_text()
+                             or "giving up" in log.read_text()):
+            break
+        time.sleep(0.1)
+    if successor is not None:
+        successor.terminate()
+        successor.wait(timeout=5)
+    return (opens.read_text().splitlines() if opens.exists() else [],
+            log.read_text().splitlines() if log.exists() else [])
+
+
+def test_a_slow_but_successful_launch_is_asked_for_exactly_once(monkeypatch, tmp_path):
+    """THE REGRESSION (bugbot, PR #1214). A successor that takes longer than the
+    boot wait to write its pidfile is still a successor: it is alive the whole
+    time, and asking again would fork a second copy onto the port the first is
+    about to claim."""
+    monkeypatch.setattr(app_mod, "RELAUNCH_POLL_S", 0.05)
+    monkeypatch.setattr(app_mod, "RELAUNCH_SETTLE_S", 0.1)
+    monkeypatch.setattr(app_mod, "RELAUNCH_BOOT_WAIT_S", 1.0)
+    monkeypatch.setattr(app_mod, "RELAUNCH_DEADLINE_S", 6.0)
+    # Pidfile at 3x the boot wait — the successor sails past several boundaries
+    # at which the old code would have asked again.
+    opens, log = _run_relauncher(tmp_path, successor_after=3.2, wait_s=8.0)
+
+    assert len(opens) == 1, opens
+    assert opens[0].startswith("-a "), opens
+    assert not any("-n" in line for line in opens), opens
+    joined = "\n".join(log)
+    assert "still booting, not asking again" in joined
+    assert "successor is up after attempt 1" in joined
+
+
+def test_a_launch_that_left_nothing_running_does_escalate(monkeypatch, tmp_path):
+    """The other half: with `pgrep` finding nothing at all, the first ask
+    demonstrably did nothing and `-n` is the right next move."""
+    monkeypatch.setattr(app_mod, "RELAUNCH_POLL_S", 0.05)
+    monkeypatch.setattr(app_mod, "RELAUNCH_SETTLE_S", 0.1)
+    monkeypatch.setattr(app_mod, "RELAUNCH_BOOT_WAIT_S", 1.0)
+    monkeypatch.setattr(app_mod, "RELAUNCH_DEADLINE_S", 3.5)
+    opens, log = _run_relauncher(tmp_path, wait_s=8.0)
+
+    assert len(opens) == app_mod.RELAUNCH_OPEN_TRIES, opens
+    assert opens[0].startswith("-a ")
+    assert all(line.startswith("-n -a ") for line in opens[1:]), opens
+    assert "giving up: the app did not come back" in "\n".join(log)
 
 
 def test_the_relauncher_writes_its_own_timeline():
