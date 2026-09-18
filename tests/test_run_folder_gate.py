@@ -569,3 +569,18 @@ def test_a_tokenless_named_send_claims_a_free_folder_and_blocks_a_second(
     assert r2.status_code == 200
     assert r2.json()["result"].get("error"), \
         "a second tokenless send naming somebody else was not refused"
+
+
+def test_a_failed_nameless_start_gives_its_placeholder_back(real_gate):
+    """Bugbot PR #1194: the gate mints a placeholder for a tokenless nameless
+    start, and a start that then FAILS produced nothing to own the folder with.
+    Left standing, it locked the folder for `PLACEHOLDER_TTL` against the user's
+    own retry. The failure path releases it, so the retry is admitted."""
+    body: dict = {}
+    assert run_router._folder_busy(AGENT, _params(), body) == ""
+    assert body.get("_queue_admit_token")
+    assert real_gate.owner("/w/alpha") is not None
+    run_router._file_owner(AGENT, _params(), {"ok": True, "result": {"error": "boom"}}, body)
+    assert real_gate.owner("/w/alpha") is None
+    retry: dict = {}
+    assert run_router._folder_busy(AGENT, _params(), retry) == ""

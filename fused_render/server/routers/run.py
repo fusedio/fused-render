@@ -77,6 +77,12 @@ def _file_owner(resolved: str, params: dict, result: dict,
             return
         payload = result.get("result") if isinstance(result, dict) else None
         if not isinstance(payload, dict) or payload.get("error"):
+            # THE START FAILED (or answered nothing): a placeholder this gate
+            # minted for it must not hold the folder for `PLACEHOLDER_TTL`
+            # against the user's own retry (Bugbot, PR #1194). The token
+            # lives only on this request's body, so this is the one place
+            # that can give the folder back.
+            _drop_placeholder(key, body)
             return
         run_id = str(payload.get("run_id") or params.get("run_id") or "")
         session_id = str(payload.get("session_id") or params.get("session_id") or "")
@@ -105,6 +111,25 @@ def _file_owner(resolved: str, params: dict, result: dict,
         manager.started(key, session_id or run_id, run_id, session_id)
     except Exception:  # noqa: BLE001 — a filing that fails is not a failed run
         logger.debug("queue: could not file the owner of a start", exc_info=True)
+
+
+def _drop_placeholder(key: str, body: dict | None) -> None:
+    """Release the `admit:` placeholder this request's gate minted, if any —
+    a start that never produced a run has nothing to own the folder with."""
+    token = str((body or {}).get("_queue_admit_token") or "")
+    if not token:
+        return
+    try:
+        from fused_render import queue_manager
+
+        manager = queue_manager.get()
+        owner = manager.owner(key) or {}
+        task = str(owner.get("task") or "")
+        if (task.startswith(queue_manager.PLACEHOLDER_PREFIX)
+                and token in (owner.get("claims") or [])):
+            manager.remove(task)
+    except Exception:  # noqa: BLE001 — best-effort, like every filing here
+        pass
 
 
 def _folder_busy(resolved: str, params: dict, body: dict | None = None) -> str:
