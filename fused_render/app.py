@@ -1069,7 +1069,8 @@ def main() -> None:
                 begin_relaunch(quit_action=_do_quit, same_version=True)
                 continue
             if is_relaunch_url(raw):
-                # fused-render://relaunch (the update-restart banner's button):
+                # fused-render://relaunch (the update dialog's Restart button,
+                # through frontend platform/lib/restart-store):
                 # park a relauncher on our pid and quit through the normal
                 # teardown — the successor boots from the bundle on disk, and
                 # the page that linked here reconnects + reloads on its own

@@ -65,6 +65,8 @@ export function installDomShim(): void {
     search: "",
     href: "http://localhost/",
     origin: "http://localhost",
+    assign() {},
+    reload() {},
   };
   g.history ??= {
     state: null,
@@ -88,9 +90,72 @@ export function installDomShim(): void {
     // `isHTMLElement` tests `value instanceof getWindow(value).HTMLElement`,
     // which throws outright — "right hand side of instanceof is not an object" —
     // when the window it reaches for has no such member.
+    // The same object as the global, so a suite can stub `location.assign` on
+    // either and the code under test — which reads `window.location` — sees it.
+    location: g.location,
     Element: g.Element,
     HTMLElement: g.HTMLElement,
     requestAnimationFrame: g.requestAnimationFrame,
     cancelAnimationFrame: g.cancelAnimationFrame,
   };
+}
+
+/** A `document.body` A MODAL CAN BE PORTALED INTO — installed BY THE SUITE THAT
+ *  RENDERS ONE, and taken away again, never by `installDomShim`.
+ *
+ *  The three odd members are what a portal needs. Every dialog on the shared
+ *  chassis (`platform/ui/modal/Modal`) ends in `createPortal(...,
+ *  document.body)`, so rendering one hits react-dom's `isValidContainer` (which
+ *  wants a `nodeType`), then the test renderer's own `appendChild` (which wants
+ *  a `children` ARRAY on the container), and then — for the dialog's `ref` —
+ *  `rootContainerInstance.createNodeMock`, read off the PORTAL's container
+ *  rather than off the `create()` options, because a portal is its own root.
+ *
+ *  OPT-IN, AND PAIRED WITH `removePortalContainer`, because a body that merely
+ *  EXISTS changes what other suites do: Base UI's `FloatingPortal` (every
+ *  shadcn popover) skips portalling entirely while there is no body and tries
+ *  to portal into this stub the moment there is one, which fails on the first
+ *  DOM call the stub does not answer. `bun test` shares one `globalThis` across
+ *  every file in a run, so a body left behind here is a body every later suite
+ *  renders against. Install it around the mount, drop it after.
+ *
+ *  Re-install per mount rather than once per file: several suites REPLACE
+ *  `globalThis.document` outright with a stub of their own
+ *  (`shell/draft-run.test.ts`, `apps/claude/shots/native-capture.test.ts`), so
+ *  a body attached at import time can be gone by the time a test renders. */
+export function installPortalContainer(): void {
+  const doc = (globalThis as { document?: { body?: unknown } }).document;
+  if (!doc) return;
+  const body = doc.body as { nodeType?: number } | undefined;
+  if (body && body.nodeType === 1) return;
+  doc.body = {
+    nodeType: 1,
+    children: [],
+    createNodeMock: () => ({
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      contains: () => false,
+      focus() {},
+      addEventListener() {},
+      removeEventListener() {},
+    }),
+    // The ordinary DOM members a few modules reach for on the body (a drag
+    // class, a temporary <a> for a download). No-ops: they neither throw nor
+    // pretend to have done anything.
+    classList: { add() {}, remove() {}, contains: () => false },
+    appendChild: (child: unknown) => child,
+    removeChild: (child: unknown) => child,
+    setAttribute() {},
+    removeAttribute() {},
+    contains: () => false,
+  };
+}
+
+/** Undo `installPortalContainer` — call it once the suite's dialogs are
+ *  unmounted, so the next file in the run sees the `document` it would have
+ *  seen without this one. */
+export function removePortalContainer(): void {
+  const doc = (globalThis as { document?: { body?: unknown } }).document;
+  if (!doc) return;
+  delete doc.body;
 }

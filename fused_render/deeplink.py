@@ -75,7 +75,7 @@ _LAUNCH_FORMS = frozenset(
 )
 
 # The relaunch action: quit the running app and respawn it from the bundle on
-# disk, so a newer installed version takes over (the update-restart banner's
+# disk, so a newer installed version takes over (the update dialog's
 # button, server-status.ts). Payload-free under the same strictness rules as
 # launch above.
 _RELAUNCH_FORMS = frozenset(
