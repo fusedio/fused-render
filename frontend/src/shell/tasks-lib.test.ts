@@ -112,6 +112,7 @@ import {
   popoverPill,
   parseLaneChoices,
   parseListMemory,
+  projectMatches,
   projectOptions,
   relativeWhen,
   ranOffSchedule,
@@ -6245,6 +6246,26 @@ describe("filters", () => {
   it("offers every project that has a task, once, sorted", () => {
     expect(projectOptions(tasks)).toEqual(["/Users/me/code", "/Users/me/news"]);
     expect(projectOptions([])).toEqual([]);
+  });
+
+  // "Add search functionality for … the project filter" (Akshil, 2026-09-18).
+  // A machine with 28 folders in this menu is a machine where the reader knows
+  // the name and cannot find the row.
+  it("finds a folder by the name the row prints, or by the path behind it", () => {
+    expect(projectMatches("/Users/me/Desktop/fused-render", "render")).toBe(true);
+    // The PATH too, so a parent folder narrows to everything under it.
+    expect(projectMatches("/Users/me/Desktop/fused-render", "desktop/fu")).toBe(true);
+    // Case-folded, like the toolbar's own box.
+    expect(projectMatches("/Users/me/Desktop/Aviary", "AVIARY")).toBe(true);
+    expect(projectMatches("/Users/me/Desktop/Aviary", "aviary")).toBe(true);
+    expect(projectMatches("/Users/me/Desktop/fused-render", "lens")).toBe(false);
+  });
+
+  it("treats an empty query as no filter at all", () => {
+    // A search box nobody has typed in is not a filter — every folder answers.
+    for (const q of ["", "   "]) {
+      expect(projectMatches("/Users/me/code", q)).toBe(true);
+    }
   });
 });
 

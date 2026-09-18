@@ -75,6 +75,7 @@ from fused_render.server.routers.search import router as search_router
 from fused_render.server.routers.shell import router as shell_router
 from fused_render.server.routers.current_apps import router as current_apps_router
 from fused_render.server.routers.drafts import router as drafts_router
+from fused_render.server.routers.queue_events import router as queue_events_router
 from fused_render.server.routers.tasks import router as tasks_router
 from fused_render.server.routers.update import router as update_router
 # The MODULE, not `from … import TEMPLATES_DIR`: that constant is a live seam
@@ -462,6 +463,46 @@ def create_app(start_dir: str) -> FastAPI:
 
         user_plugin.start()
 
+    # The project queue's dispatcher (queue_manager.py), wired EXPLICITLY.
+    #
+    # `routers/tasks._wire_manager()` registers the factory, and importing that
+    # router at the top of this file already ran it once — but the scheduler,
+    # the event transport, the doors and `/api/run`'s gate all reach the manager,
+    # and which of them happens to be first must not decide whether this process
+    # has one at all. `schedule._qm()` still self-wires as a FALLBACK (and the
+    # scheduler's tests rely on that path); this is the rule, said once, at the
+    # moment the process is brought up.
+    #
+    # Then, and ONLY with the flag on, build the manager and reconcile once so a
+    # restart resumes every folder's line immediately rather than on whatever
+    # event happens to arrive first. That is deliberate work: building reconciles
+    # and reconciling PUMPS, which SPAWNS (see `queue_manager.peek`) — which is
+    # exactly why it is a startup event and not the create_app body (tests build
+    # apps without lifespan and must never start a turn), and why it runs on a
+    # daemon thread like `_startup_tasks_warm`: resuming a line can spawn several
+    # Claude processes and must not hold up the first page paint.
+    @on_startup
+    async def _startup_queue_manager():
+        from fused_render import project_queue, queue_manager
+        from fused_render.server.routers import tasks as tasks_router_mod
+
+        tasks_router_mod._wire_manager()
+        if not project_queue.enabled():
+            return
+
+        def resume():
+            try:
+                queue_manager.get().reconcile()
+            except Exception:  # noqa: BLE001 — a queue that cannot resume must
+                # not take the server down with it; the next tick tries again.
+                logger.exception("could not resume the project queue at startup")
+
+        thread = threading.Thread(target=resume, daemon=True,
+                                  name="fused-queue-resume")
+        thread.start()
+        # For tests, the same seam `_startup_tasks_warm` leaves.
+        app.state.queue_resume = thread
+
     # Scheduled Claude messages (schedule.py). A startup event and emphatically
     # NOT the create_app body: this loop SENDS things, and its first tick fires
     # everything already overdue. Tests build the app without running lifespan,
@@ -741,6 +782,12 @@ def create_app(start_dir: str) -> FastAPI:
     # message that entered it, typed or scheduled. Reads are unguarded; the one
     # POST marks a message read, the same weight of change as the triage POST.
     app.include_router(tasks_router)
+    # The queue's event transport (routers/queue_events.py): one POST that the
+    # session host and the permission server call when a turn ends, a session
+    # exits or a card goes up. Its own router because the callers are TEMPLATE
+    # processes on the far side of an HTTP hop, and because it is a no-op
+    # whenever `project_queue_enabled` is off.
+    app.include_router(queue_events_router)
     # Drafts (routers/drafts.py): the composer's unsent text and the New task
     # modal's half-filled form, kept server-side so the `✎ Draft` chip the
     # listing above paints can be a JOIN rather than a second store the client
@@ -903,20 +950,38 @@ def create_app(start_dir: str) -> FastAPI:
         # boots the app never gets a background thread.
         index_routes.start_index_job_bridge()
 
-    # A CHECK-ONLY UPDATE MANAGER FOR A DEV RUN (update/mac.DEV_MANAGER_ENV).
-    # The packaged app starts its manager from the AppKit bootstrap (app.py,
-    # after the server is ready); an unpackaged server has no bootstrap and so
-    # never had a badge — which left the sidebar's "Check for updates" row with
-    # nowhere to be tried. `start()` still returns None without the env var,
-    # so this is a no-op for every run that did not ask. Last, and off the
-    # request path: the manager's first manifest fetch is on its own thread.
+    # THE IN-APP UPDATE MANAGER (update/mac.py, update/linux.py), for every
+    # platform whose server ever boots through this create_app() — which is
+    # every platform's: the packaged mac app embeds this same FastAPI server
+    # inside its AppKit process, and on Linux this server IS the whole
+    # process, spawned as a child of the desktop supervisor. `update.start()`
+    # (the platform dispatch, fused_render/update/__init__.py) is always
+    # safe to call unconditionally here:
+    # - Linux, running from an AppImage: starts the real manager — this is
+    #   ITS bootstrap, there being no separate native wrapper process the way
+    #   app.py is for mac.
+    # - mac, packaged: also starts the real manager, redundantly with (and
+    #   before) app.py's own explicit call after its desktop-probe wait —
+    #   start() is idempotent, so the second call just hands back the same
+    #   singleton.
+    # - an unpackaged dev run on either platform, with
+    #   update/_manager.DEV_MANAGER_ENV set: starts a check-only manager (no
+    #   bundle/AppImage to swap, so no install can be attempted) — otherwise
+    #   the sidebar's "Check for updates" row would have nowhere to try
+    #   against. Each platform's own start() already contains this fallback,
+    #   so there is nothing left for this hook to gate on.
+    # - Windows, or the env var unset and nothing packaged: a no-op (None).
+    # Last, and off the request path: the manager's first manifest fetch runs
+    # on its own thread.
+    # Kept as `_startup_update_dev_manager` (not renamed to match the comment
+    # above): tests/test_app_lifespan.py pins the exact registered handler
+    # names as a record of a past on_event -> on_startup migration, unrelated
+    # to this change, and a rename here would only cost that test for no
+    # benefit.
     @on_startup
     async def _startup_update_dev_manager():
-        import os
+        from fused_render import update
 
-        from fused_render.update import mac as mac_update
-
-        if os.environ.get(mac_update.DEV_MANAGER_ENV):
-            mac_update.start()
+        update.start()
 
     return app

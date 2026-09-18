@@ -775,7 +775,7 @@ def forget_session(session_id: str) -> dict:
 
 # path -> (size_at_parse, cwd, first_ts, first_prompt, pane_file). Same cache
 # shape, and the same append-only reasoning, as claude_sessions._HEAD_CACHE.
-_HEAD_CACHE: dict[str, tuple[int, str | None, float | None, str, str]] = {}
+_HEAD_CACHE: dict[str, tuple[int, str | None, float | None, str, str, bool]] = {}
 
 _HEAD_CHARS = 256 * 1024
 _HEAD_LINES = 2000
@@ -1046,6 +1046,146 @@ def ann_notes(text: str) -> str:
     return " · ".join(notes)
 
 
+# ---------------------------------------------------------- the wordless send
+#
+# A send can carry no typed words AT ALL and still be something the user did:
+# annotations with nothing written on them, or a screenshot on its own. The
+# client already has a vocabulary for exactly this — `stripBlocks` in
+# `frontend/src/apps/claude/protocol/wire.ts` substitutes one MARKER per block
+# kind for the bubble's text — and until 2026-09-18 every Python reader answered
+# such a record "" and DROPPED it, which cost the whole chat its rows on the
+# Tasks page (both real sends in one reported annotation session) and, via
+# `tasks.py::_status`, its status too: status is derived from the messages, so no
+# messages meant nothing to derive from and the run read `done` while it ran.
+#
+# THE WORDS ARE THE CLIENT'S, NOT OURS. A fourth spelling of "screenshot" would
+# be a fourth thing to keep in step, so these are `MARKER_VIEW`/`MARKER_IMG`/
+# `MARKER_FILE`/`MARKER_ANN` — pinned to the page's own copy by
+# `tests/test_tasks_store.py` (D146: the duplicated rule gets a test, not a
+# comment).
+#
+# WITHOUT THE SIGIL. Every client marker opens with U+2063 INVISIBLE SEPARATOR
+# because the page needs to tell its own substitute text apart from a reader who
+# genuinely typed "files"; that sigil is a private token of the page's display
+# layer and is never put on the wire. What a bubble SHOWS is `markerWord`'s
+# output — the bare word — and a listing row shows the same.
+MARKER_ANN = "annotations"
+MARKER_VIEW = "pane screenshot"
+MARKER_IMG = "images"
+MARKER_FILE = "files"
+#: `MARKER_JOIN` — a send that carried two kinds is named for both.
+MARKER_JOIN = " + "
+
+_PANE_SHOT_TAG = "pane-shot"
+_PANE_SHOT_BLOCK = re.compile(
+    r"<%s>(.*?)</%s>" % (_PANE_SHOT_TAG, _PANE_SHOT_TAG), re.DOTALL)
+
+
+def _pane_shot_kinds(text: str) -> list[str]:
+    """The `kind` of every entry in the `<pane-shot>` block, in order.
+
+    The payload is the block's LAST line — a caption paragraph for the model
+    comes first, and `paneShotIn` reads it exactly this way. Both the array form
+    and the bare-object form parse, because a session on disk carries whichever
+    shape the page wrote that year. Anything that does not parse answers `[]`,
+    which is the same answer as "no `kind` field anywhere" and falls the right
+    way on its own: a block we cannot read is a picture of the pane.
+    """
+    found = _PANE_SHOT_BLOCK.search(text or "")
+    if not found:
+        return []
+    lines = [ln for ln in found.group(1).strip().splitlines() if ln.strip()]
+    if not lines:
+        return []
+    try:
+        payload = json.loads(lines[-1])
+    except ValueError:
+        return []
+    if isinstance(payload, dict):
+        payload = [payload]
+    if not isinstance(payload, list):
+        return []
+    return [entry.get("kind") for entry in payload
+            if isinstance(entry, dict) and isinstance(entry.get("kind"), str)]
+
+
+def _ann_block_present(text: str) -> bool:
+    """Did this send carry annotations at all — words on them or not?
+
+    `ann_notes` answers the narrower question (what the user WROTE on the pins)
+    and its "" covers two different sends: one with no annotations, and one whose
+    pins nobody typed a note on. Only the second is a wordless annotation send,
+    and only this tells them apart. Both shapes, for `ann_notes`' reason: the
+    tagged block is found wherever it sits, the legacy preamble only at position
+    zero once the other leading blocks are peeled off.
+    """
+    out = (text or "").strip()
+    if _ANN_BLOCK.search(out):
+        return True
+    while True:
+        match = _LEADING_BLOCK.match(out)
+        if not match:
+            break
+        out = out[match.end():].strip()
+    return out.startswith(_ANN_PREAMBLE) and _ANN_FENCE_OPEN in out
+
+
+def carried_words(text: str) -> str:
+    """What a send with NO typed words carried, named the way the chat names it
+    — "pane screenshot", "annotations", "images", "files", or two joined by
+    `" + "` — or "" for a send that carried none of them.
+
+    `stripBlocks`' marker branch, mirrored decision for decision (wire.ts:450):
+    annotations first, then the pictures, and the pictures' word depends on what
+    they ARE. A `kind` of "pane" or "overview" is a picture of this app taken at
+    send time; "image" is a picture the user brought in from somewhere else and
+    "file" is not a picture at all. So an all-"image" block is `images`, a block
+    that is all brought-in but not all pictures is `files`, and anything with a
+    screenshot of the pane in it — including a block too old or too broken to
+    carry `kind` — is `pane screenshot`. That last default is the page's too,
+    and for the same reason: `kind` postdates the pane shot, so its absence IS
+    the pane case.
+
+    Asked LAST, after the words and after the notes on the pins: a marker is a
+    label for a send that said nothing, and a send that said something is named
+    by what it said. See `user_words`.
+    """
+    carried = []
+    if _ann_block_present(text):
+        carried.append(MARKER_ANN)
+    if _PANE_SHOT_BLOCK.search(text or ""):
+        kinds = _pane_shot_kinds(text)
+        brought = bool(kinds) and all(k in ("image", "file") for k in kinds)
+        if not brought:
+            carried.append(MARKER_VIEW)
+        elif all(k == "image" for k in kinds):
+            carried.append(MARKER_IMG)
+        else:
+            carried.append(MARKER_FILE)
+    return MARKER_JOIN.join(carried)
+
+
+def user_words(text: str) -> str:
+    """The words to SHOW for one send, in the one order every reader wants them:
+    what the human typed, else the notes they wrote inside their annotations,
+    else the client's own name for what the send carried. "" only for a record
+    that carried nothing a reader could name.
+
+    ONE RULE, SPELLED ONCE, for the three readers that had drifted: this module's
+    own `_parse_head`, `claude_sessions._parse_head` and `tasks.py::_prompt`. The
+    first two already took the second step (`strip_machinery(raw) or
+    ann_notes(raw)`); none of them took the third, so a screenshot sent with no
+    words was dropped by all three.
+
+    A reader that must not put a MARKER where a real message would do asks the
+    three steps in this order but at its own precedence — the two head readers
+    keep scanning for words before settling for a marker, because a row titled
+    "pane screenshot" while the words that could name it sit two records further
+    down is the bug this fallback exists to fix, told from the other side.
+    """
+    return strip_machinery(text) or ann_notes(text) or carried_words(text)
+
+
 def is_machinery(text: str) -> bool:
     """Is this record machinery WHOLE — nothing a human contributed to it?
 
@@ -1139,10 +1279,13 @@ def pane_file(text: str) -> str:
     return ""
 
 
-def _parse_head(path: str) -> tuple[str | None, float | None, str, str]:
+def _parse_head(path: str) -> tuple[str | None, float | None, str, str, bool]:
     cwd: str | None = None
     first_ts: float | None = None
     prompt = ""
+    # The FIRST wordless send's marker ("pane screenshot"), held back as a last
+    # resort — see the `carried` note in the loop below.
+    carried = ""
     pane = ""
     chars = 0
     count = 0
@@ -1200,11 +1343,27 @@ def _parse_head(path: str) -> tuple[str | None, float | None, str, str]:
                         # annotations is named by the notes on them, which is
                         # the only text in the record a human wrote (`ann_notes`).
                         prompt = strip_machinery(raw) or ann_notes(raw)
+                        # …and, if this send said nothing anywhere, WHAT IT
+                        # CARRIED — kept aside rather than taken, because the
+                        # loop's whole point is that words two records further
+                        # down name the row better than the block on record one
+                        # does. Only a head that found no words at all settles
+                        # for this (`carried_words`), and only the first one,
+                        # which is the send the row would be named after.
+                        if not prompt and not carried:
+                            carried = carried_words(raw)
                 if cwd is not None and first_ts is not None and prompt:
                     break
     except OSError:
-        return None, None, "", ""
-    return cwd, first_ts, prompt, pane
+        return None, None, "", "", False
+    # THE FIFTH VALUE IS "IS THIS PROMPT SETTLED" (Bugbot, PR #1213). A marker is
+    # what the head shows when nothing in it has said anything YET — and a
+    # transcript is append-only, so the words can still arrive. Handed back as an
+    # ordinary answer it let `head`'s cache call the read COMPLETE and keep "pane
+    # screenshot" as the row's title for the life of the process, over every
+    # later word the reader typed. The two are told apart here; the cache decides
+    # what to do about it.
+    return cwd, first_ts, prompt or carried, pane, bool(prompt)
 
 
 def head(path: str, size: int | None = None,
@@ -1216,7 +1375,16 @@ def head(path: str, size: int | None = None,
     replaced. The pane file is deliberately absent from the completeness
     test: a chat with no `<live-app-state>` block has none to find, and
     re-reading it on every append to keep looking would never pay for
-    itself."""
+    itself.
+
+    A MARKER IS NOT A SETTLED PROMPT (Bugbot, PR #1213). "pane screenshot" is
+    what the head shows for a chat whose sends so far carried no words at all —
+    and the very next append can carry some. Counting it complete froze it as the
+    row's title for the life of the process: the reader typed, the transcript
+    grew, and the listing went on calling their chat "pane screenshot". So a
+    marker-only head stays INCOMPLETE and is re-read on the next append, exactly
+    like a head that found nothing. The marker is still shown meanwhile; it is
+    just not banked."""
     if size is None:
         try:
             size = os.path.getsize(path)
@@ -1224,16 +1392,16 @@ def head(path: str, size: int | None = None,
             return None, None, "", ""
     cached = _HEAD_CACHE.get(path)
     if cached is not None:
-        cached_size, cwd, first_ts, prompt, pane = cached
-        complete = bool(prompt) and first_ts is not None and cwd is not None
+        cached_size, cwd, first_ts, prompt, pane, settled = cached
+        complete = settled and first_ts is not None and cwd is not None
         if cached_size == size or (size > cached_size and complete):
             if size != cached_size:
-                _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane)
+                _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane, settled)
             return cwd, first_ts, prompt, pane
     if len(_HEAD_CACHE) > 20000:  # unbounded only if the user has 20k sessions
         _HEAD_CACHE.clear()
-    cwd, first_ts, prompt, pane = _parse_head(path)
-    _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane)
+    cwd, first_ts, prompt, pane, settled = _parse_head(path)
+    _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane, settled)
     return cwd, first_ts, prompt, pane
 
 

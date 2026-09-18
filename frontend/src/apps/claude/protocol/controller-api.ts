@@ -333,6 +333,17 @@ export interface SendOptions {
    * drops it (`returnSend`).
    */
   optimisticKey?: string;
+  /**
+   * ADDED (Bugbot, PR #1194): the per-send claim token `/api/tasks/queue/admit`
+   * minted for THIS send, when the project queue admitted it. Forwarded on the
+   * run request as `queue_claim` so the server gate can tell a send that was
+   * admitted (look only — `queue_manager.consume_claim`) from one that skipped
+   * admission (claim the folder itself, refusing another owner). Absent for a
+   * flag-off admission, a send that never asked admission (a follow-up
+   * dispatched into a run already live), or an older server with nothing to
+   * mint one.
+   */
+  queueClaim?: string;
 }
 
 /**

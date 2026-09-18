@@ -15,13 +15,17 @@
 //
 // The poll itself lives in platform/lib/update-status.ts, shared with the
 // collapsed rail's dot and the Settings popover's own row — see that file's
-// header for why. Once the install lands, installed_version drifts from the
-// running version and ServerStatusBanner's restart card takes over — so the
-// row drops to a plain "Ready to restart" status line with nothing to expand
-// (no chevron either), and the restart card carries the wording.
+// header for why. Once the install lands, the blocking restart dialog takes
+// over (platform/ui/UpdateDialog, raised by ServerStatusBanner the moment this
+// same store says "installed") — so the
+// row drops to a plain "Ready to restart" status line whose button hands the
+// press to `platform/lib/restart-store` — the one entry point every restart
+// goes through — and `UpdateDialog`'s restart mode carries the wording and the
+// stages from there.
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { updateInstall, type UpdateStatus } from "@platform/lib/api";
+import { requestRestart } from "@platform/lib/restart-store";
 import {
   CHECK_RESULT_HOLD_MS,
   checkForUpdates,
@@ -190,11 +194,16 @@ export default function UpdateBadge({ version = null }: { version?: string | nul
   // The installed state: a status line AND the way out, right here (Akshil,
   // 2026-09-08: "have the action button there as well so we can restart it
   // directly above the settings item"). Nothing to expand — the button is
-  // always drawn, so the row carries no chevron — and the same
-  // `fused-render://relaunch` link the ServerStatusBanner's restart card uses,
-  // so both surfaces restart the same way: the OS hands the link to the
-  // running app, which quits through its normal teardown and respawns from the
-  // bundle now on disk.
+  // always drawn, so the row carries no chevron.
+  //
+  // `requestRestart()`, NOT A LINK. It used to be an `<a
+  // href="fused-render://relaunch">`, which is a restart nothing remembers: the
+  // deep link answers the page nothing, so a press here left every window —
+  // this one included — to discover the outage as if the app had crashed. The
+  // one handler (platform/lib/restart-store) latches the press, tells the other
+  // windows, and then navigates, so the blocking dialog lights up with the same
+  // stages whichever surface the press came from. Same class: `.update-badge-action`
+  // has always styled a button and a link identically.
   if (status.state === "installed") {
     return (
       <div className="update-badge">
@@ -203,9 +212,9 @@ export default function UpdateBadge({ version = null }: { version?: string | nul
           {label}
         </div>
         <div className="update-badge-panel">
-          <a className="update-badge-action" href="fused-render://relaunch">
+          <button type="button" className="update-badge-action" onClick={requestRestart}>
             Restart fused-render
-          </a>
+          </button>
         </div>
       </div>
     );

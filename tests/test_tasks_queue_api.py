@@ -11,12 +11,9 @@ BOTH FLAG STATES, everywhere it can differ. The whole feature is behind
 flag off every path behaves exactly as it did before it existed: `queued` never
 appears, admission always says run, and nothing is stored.
 
-Who HOLDS a folder is `project_queue.holders()` — a derivation over live
-processes with its own suite (tests/test_project_queue.py). Here it is stood in
-for, because what is under test is what the router does with the answer. The one
-exception is the reservation: `admit` takes it, so the second admit in
-`test_a_second_session_queues_behind_the_first_ones_reservation` reads the real
-derivation through the real store.
+Who HOLDS a folder is `queue_manager.owner()` — an event-driven index with its
+own suite (tests/test_queue_manager.py). Here it is stood in for (`FakeManager`,
+`_holders`), because what is under test is what the router does with the answer.
 
 Nothing reads the real ~/.claude or the developer's prefs — every path is under
 tmp_path.
@@ -28,13 +25,23 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from fused_render import drafts, project_queue, schedule, tasks_store, tasks_watch
+from fused_render import (
+    drafts,
+    project_queue,
+    queue_manager,
+    schedule,
+    tasks_store,
+    tasks_watch,
+)
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server import create_app
 from fused_render.server.routers import claude_sessions as sessions_mod
 from fused_render.server.routers import tasks as tasks_mod
 
 HEADERS = {"X-Fused": "1"}
+
+# The name an admission files a NAMELESS send under (`queue_manager`).
+PLACEHOLDER = queue_manager.PLACEHOLDER_PREFIX
 
 
 # ------------------------------------------------------------------ fixtures
@@ -103,6 +110,285 @@ def no_agent(monkeypatch):
     anything, which is the state every case here starts from and then says how it
     differs."""
     monkeypatch.setattr(project_queue, "agent_module", lambda: None)
+
+
+class FakeManager:
+    """The queue manager, standing in for the real index.
+
+    WHERE A TASK STANDS IS NOT DERIVED HERE ANY MORE (PR 2, 2026-09-17): the
+    order is an event-driven table in `fused_render/queue_manager.py` with its
+    own suite (tests/test_queue_manager.py), and the router's job is to READ it.
+    So the cases below STATE the line as a fact — `manager.line(folder, "a",
+    "b", holder="c")` — and assert what the row, the status and the endpoints
+    make of it. A suite that staged stamps and held answers to provoke an order
+    would be testing the layer this PR deletes, in the file that no longer owns
+    it.
+
+    The events are here too, and they do the two things the contract says and
+    nothing else: `enqueue` appends to a folder's line, `skip` moves a task to
+    index 0 and marks it promoted. That is enough for a door to be tested end to
+    end (press, then read the row), and it is deliberately not a second
+    implementation of the manager — every rule about idempotency, blocked lists,
+    reconcile and persistence belongs to its own suite.
+    """
+
+    def __init__(self):
+        self.lines: dict[str, list[str]] = {}
+        self.owners: dict[str, dict | None] = {}
+        self.promoted: set[str] = set()
+        self.answers: dict[str, dict] = {}
+        self.events: list[tuple] = []
+
+    # -- the way a case states a line ------------------------------------
+    def line(self, folder, *task_keys, holder="", priority=()):
+        """`folder`'s line, in order: `task_keys[0]` is #1.
+
+        `holder` is the task key that OWNS the folder — what position 1 stands
+        behind, and what makes the folder busy — and `priority` the keys that
+        got where they are by a skip or an answer, which is the only thing that
+        lights `queue_priority`. No keys at all is a folder that is owned with
+        nobody waiting on it yet."""
+        self.lines[folder] = list(task_keys)
+        self.promoted.update(priority)
+        self.owners[folder] = ({"task": holder, "task_key": holder,
+                                "session_id": ("" if holder.startswith("pending:")
+                                               else holder),
+                                "run_id": "r-" + holder, "since": time.time()}
+                               if holder else None)
+        return self
+
+    def hold(self, task_key, run_id="", request_id="", raw=None):
+        """An answer the user has given that the manager is holding until the
+        folder frees — what `_parked_runs` asks about per run."""
+        self.answers[task_key] = {"run_id": run_id, "request_id": request_id,
+                                  "raw": raw or {}, "at": time.time()}
+        return self
+
+    def _folder_of(self, task_key):
+        for folder, keys in self.lines.items():
+            if task_key in keys:
+                return folder
+        return ""
+
+    # -- the reads the router makes --------------------------------------
+    def positions(self):
+        out = {}
+        for folder, keys in self.lines.items():
+            owner = self.owners.get(folder) or {}
+            ahead = str(owner.get("task") or "")
+            for position, task_key in enumerate(keys, start=1):
+                out[task_key] = {
+                    "key": folder, "position": position, "ahead_key": ahead,
+                    "priority": position == 1 and task_key in self.promoted}
+                ahead = task_key
+        return out
+
+    def place(self, task_key):
+        spot = self.positions().get(task_key)
+        if spot is None:
+            return {"position": 0, "ahead_key": ""}
+        return dict(spot)
+
+    def held_answer(self, task_key):
+        answer = self.answers.get(task_key)
+        return dict(answer) if answer else None
+
+    def owner(self, folder):
+        return self.owners.get(folder)
+
+    def is_free(self, folder, task_key=""):
+        owner = self.owners.get(folder)
+        if owner is None:
+            return True
+        if str(owner.get("task") or "").startswith(PLACEHOLDER):
+            # A placeholder is an ADMISSION, not a run: it settles a race
+            # between two nameless sends and never refuses one at the gate.
+            return True
+        return bool(self._names(owner) & ({task_key} - {""}))
+
+    @staticmethod
+    def _names(owner):
+        return {str((owner or {}).get(field) or "")
+                for field in ("task", "run_id", "session_id")} - {""}
+
+    def claim(self, folder, task_key, run_id="", session_id=""):
+        """The check and the filing under one lock — what a door that is about
+        to ACT on the answer asks instead of `is_free` then `started`."""
+        self.events.append(("claim", folder, task_key, run_id, session_id))
+        if not folder or not task_key:
+            return False
+        owner = self.owners.get(folder)
+        if owner is not None:
+            names = self._names(owner)
+            if {task_key, run_id, session_id} - {""} & names:
+                return True
+            if not (str(owner.get("task") or "").startswith(PLACEHOLDER)
+                    and not task_key.startswith(PLACEHOLDER)):
+                return False
+        self.remove_from_line(task_key)
+        self.owners[folder] = {"task": task_key, "task_key": task_key,
+                               "session_id": session_id or task_key,
+                               "run_id": run_id, "since": time.time()}
+        return True
+
+    def claim_for_send(self, folder, task_key, run_id="", session_id=""):
+        """`claim`, plus the fresh per-send claim token that call recorded on
+        the owner (Bugbot, PR #1194) — mirrors
+        `queue_manager.QueueManager.claim_for_send`. "" when `claim` refused.
+        `took` is not something admit reads (the door only checks `ok` and the
+        token), so this answers `ok` again there rather than re-deriving it."""
+        ok = self.claim(folder, task_key, run_id, session_id)
+        if not ok:
+            return False, False, ""
+        owner = self.owners.get(folder) or {}
+        token = f"claim-{len(self.events)}"
+        owner.setdefault("claims", []).append(token)
+        return True, True, token
+
+    def consume_claim(self, folder, token):
+        """Remove `token` from `folder`'s owner, once — what the run gate
+        calls to tell an admitted send from one that skipped admission."""
+        owner = self.owners.get(folder)
+        claims = owner.get("claims") if owner else None
+        if not claims or token not in claims:
+            return False
+        claims.remove(token)
+        return True
+
+    # -- the events a door fires -----------------------------------------
+    def enqueue(self, folder, task_key, entry_id=""):
+        self.events.append(("enqueue", folder, task_key, entry_id))
+        keys = self.lines.setdefault(folder, [])
+        if task_key not in keys:
+            keys.append(task_key)
+        return self.place(task_key)
+
+    def skip(self, task_key):
+        self.events.append(("skip", task_key))
+        folder = self._folder_of(task_key)
+        started = False
+        if folder:
+            keys = self.lines[folder]
+            keys.remove(task_key)
+            keys.insert(0, task_key)
+            self.promoted.add(task_key)
+            if self.owners.get(folder) is None:
+                # The folder was free: the pump handed it straight over, and
+                # this task stands in no line at all now.
+                keys.remove(task_key)
+                self.owners[folder] = {"task": task_key, "task_key": task_key,
+                                       "session_id": task_key, "run_id": "",
+                                       "since": time.time()}
+                started = True
+        return {**self.place(task_key), "started": started}
+
+    def remove(self, task_key):
+        self.events.append(("remove", task_key))
+        self.remove_from_line(task_key)
+        self.promoted.discard(task_key)
+        self.answers.pop(task_key, None)
+        self._release(task_key)
+
+    def _release(self, task_key):
+        for folder, owner in list(self.owners.items()):
+            if owner and str(owner.get("task") or "") == task_key:
+                self.owners[folder] = None
+
+    def pump(self, folder):
+        self.events.append(("pump", folder))
+
+    def started(self, folder, task_key, run_id="", session_id=""):
+        """The one spawn site says who owns the folder now — which is what makes
+        the NEXT send into it queue rather than run."""
+        self.events.append(("started", folder, task_key, run_id, session_id))
+        if not folder or not task_key:
+            # A brand-new chat's first send names neither a session nor a run,
+            # so there is no task to file — the real manager returns here too.
+            return
+        self.remove_from_line(task_key)
+        self.owners[folder] = {"task": task_key, "task_key": task_key,
+                               "session_id": session_id or task_key,
+                               "run_id": run_id, "since": time.time()}
+
+    def remove_from_line(self, task_key):
+        for keys in self.lines.values():
+            if task_key in keys:
+                keys.remove(task_key)
+
+    def card_raised(self, task_key, run_id=""):
+        self.events.append(("card_raised", task_key, run_id))
+
+    def card_answered(self, task_key, run_id, request_id, raw):
+        """Held only when somebody ELSE owns the folder — an answer to the run
+        in flight goes straight through, which is the decide door's whole
+        fork."""
+        self.events.append(("card_answered", task_key, run_id, request_id))
+        folder = self._folder_of(task_key) or self._owned_folder(task_key)
+        owner = self.owners.get(folder) if folder else None
+        if owner is None or str(owner.get("task") or "") == task_key:
+            return {"held": False, "position": 0}
+        standing = self.answers.get(task_key)
+        if (standing is not None and standing["run_id"] == run_id
+                and standing["request_id"] == request_id):
+            # First writer wins on `(run_id, request_id)`, like the real one: a
+            # double-click is two calls about one question.
+            return {"held": True, "position": max(1, self.place(task_key)["position"])}
+        self.hold(task_key, run_id=run_id, request_id=request_id, raw=raw)
+        keys = self.lines.setdefault(folder, [])
+        if task_key in keys:
+            keys.remove(task_key)
+        keys.insert(0, task_key)
+        self.promoted.add(task_key)
+        return {"held": True, "position": 1}
+
+    def _owned_folder(self, task_key):
+        for folder, owner in self.owners.items():
+            if owner and str(owner.get("task") or "") == task_key:
+                return folder
+        return ""
+
+    def turn_ended(self, task_key, run_id=""):
+        self.events.append(("turn_ended", task_key, run_id))
+        self._release(task_key)
+
+    def exited(self, task_key, run_id="", code=None):
+        self.events.append(("exited", task_key, run_id, code))
+        self._release(task_key)
+
+    def reconcile(self):
+        self.events.append(("reconcile",))
+
+    def snapshot(self):
+        return {"folders": {f: {"owner": self.owners.get(f), "line": list(k),
+                                "blocked": []}
+                            for f, k in self.lines.items()},
+                "answers": dict(self.answers)}
+
+
+@pytest.fixture(autouse=True)
+def _fresh_manager():
+    """A manager of this test's own, both ends. It is process-wide and lazily
+    built, so one left standing would hold the PREVIOUS test's tmp state dir —
+    and the index it persists would be read back by the next case."""
+    queue_manager.reset_for_tests(None)
+    yield
+    queue_manager.reset_for_tests(None)
+
+
+@pytest.fixture(autouse=True)
+def manager():
+    """The fake in place of the real index, with an empty line on every folder —
+    the state a case starts from and then says how it differs, the same posture
+    as `no_agent` above.
+
+    AUTOUSE, like `no_agent` above: the manager is process-wide and lazily
+    built, and one left standing would hold the PREVIOUS test's tmp state dir —
+    so every case gets its own either way, and this is the one that also gives
+    the case a handle on it."""
+    fake = FakeManager()
+    queue_manager.reset_for_tests(fake)
+    yield fake
+    queue_manager.reset_for_tests(None)
 
 
 @pytest.fixture()
@@ -185,11 +471,20 @@ def _transcript(projects_dir, session_id, cwd, prompt="go"):
 
 
 def _holders(monkeypatch, mapping):
-    """Stand in for the live derivation: `{folder: holder task key}`."""
+    """One folder is busy with one task: `{folder: holder task key}`.
+
+    ONE PLACE, because there is one record of it (PR 2, 2026-09-17): who owns a
+    folder is the queue manager's index and every door asks it (`is_free`,
+    `owner`). The derived-holder scan that used to answer the same question
+    beside it is gone, and with it the case where a row could be drawn as queued
+    while an admission about the same tree answered `run: true`."""
     built = {key: {"session_id": task_key, "run_id": "r-" + task_key,
                    "task_key": task_key, "kind": "run"}
              for key, task_key in mapping.items()}
-    monkeypatch.setattr(project_queue, "holders", lambda now=None: dict(built))
+    manager = queue_manager.peek()
+    if isinstance(manager, FakeManager):
+        for folder, task_key in mapping.items():
+            manager.line(folder, *manager.lines.get(folder, ()), holder=task_key)
     return built
 
 
@@ -325,6 +620,17 @@ def _post(client, path, body):
     return client.post(path, json=body, headers=HEADERS)
 
 
+def _admitted(body):
+    """An admission's `run: true` body, with the per-send CLAIM TOKEN peeled
+    off (Bugbot, PR #1194) — minted on every admitted send with the flag on,
+    it is a fresh value every call (`FakeManager.claim_for_send`) and no case
+    below asserts what it IS, only that the send ran. `routers/run.py` and its
+    own suite are what exercise the token travelling onto the run request."""
+    body = dict(body)
+    body.pop("claim", None)
+    return body
+
+
 # ======================================================== the queued status
 
 
@@ -339,12 +645,13 @@ def _waiting_pair(projects_dir, folders, monkeypatch, **entry_fields):
 
 
 def test_a_task_waiting_on_a_busy_folder_reads_queued(
-        client, projects_dir, folders, monkeypatch, flag):
+        client, projects_dir, folders, monkeypatch, flag, manager):
     """The whole feature in one row. The message is DUE — it would be running
     this second — and the only thing between it and a process is another task
     holding the same working tree."""
     flag()
     alpha = _waiting_pair(projects_dir, folders, monkeypatch)
+    manager.line(alpha, "sess-wait", holder="sess-holder")
 
     rows = _rows(client)
     row = rows["sess-wait"]
@@ -434,7 +741,7 @@ def test_a_task_waiting_on_a_free_folder_is_not_queued(
 
 
 def test_a_held_answer_reads_queued_and_not_needs_attention(
-        client, projects_dir, folders, monkeypatch, flag, park):
+        client, projects_dir, folders, monkeypatch, flag, park, manager):
     """The row the whole held-answer path exists to paint, over a REAL run dir.
 
     The user has answered, and nothing is written to the run: the decision is
@@ -453,8 +760,12 @@ def test_a_held_answer_reads_queued_and_not_needs_attention(
     # Unanswered, it IS a needs-attention row — the stub is the real thing.
     assert _rows(client)["sess-a"]["status"] == "needs_attention"
 
-    project_queue.hold_answer(alpha, "sess-a", "r-a", "req-1",
-                              {"raw": {"decision": "allow"}})
+    # THE ANSWER IS THE MANAGER'S NOW (PR 2): the decision is filed against the
+    # task key, and `_parked_runs` asks `held_answer` per run whether this very
+    # run's card has already been answered.
+    manager.hold("sess-a", run_id="r-a", request_id="req-1",
+                 raw={"decision": "allow"})
+    manager.line(alpha, "sess-a", holder="sess-holder", priority=("sess-a",))
 
     rows = _rows(client)
     row = rows["sess-a"]
@@ -464,8 +775,49 @@ def test_a_held_answer_reads_queued_and_not_needs_attention(
     assert row["queue_ahead"] == rows["sess-holder"]["task_id"]
 
 
+def test_a_queued_task_that_still_reads_live_is_queued_not_running(
+        client, projects_dir, folders, monkeypatch, flag, manager):
+    """The manager's line outranks a stale `live` signal (review round,
+    2026-09-18): an answered-blocked task the manager just promoted to
+    line[0] can have a session that still READS live — the registry has not
+    caught up, or the sender's own mark has not expired — and `_running_now`
+    answers True for exactly the reason `_status`'s running rule exists. But
+    standing in a line is proof this task is not the folder's owner, so
+    `queued` has to win over that stale reading. The task that actually holds
+    the folder, with the identical live facts, still reads `in_progress` —
+    only the one the manager calls a bystander flips."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    _transcript(projects_dir, "sess-a", alpha, "say c")
+    manager.line(alpha, "sess-a", holder="sess-holder", priority=("sess-a",))
+    tasks_watch.mark_running("sess-a")
+    tasks_watch.mark_running("sess-holder")
+
+    rows = _rows(client)
+    assert rows["sess-a"]["status"] == "queued"
+    assert rows["sess-a"]["queue_position"] == 1
+    assert rows["sess-a"]["queue_priority"] is True
+    assert rows["sess-holder"]["status"] == "in_progress"
+
+
+def test_a_parked_task_stays_needs_attention_even_when_the_manager_queued_it(
+        client, projects_dir, folders, monkeypatch, flag, park, manager):
+    """Parked still outranks queued after the reorder: `parked` is asked
+    first in `_status` no matter where the queued check moved to, because a
+    card nobody has answered is a stronger fact than a place in line."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    _transcript(projects_dir, "sess-a", alpha, "run the build")
+    park("r-a", "sess-a", alpha)
+    manager.line(alpha, "sess-a", holder="sess-holder")
+
+    assert _rows(client)["sess-a"]["status"] == "needs_attention"
+
+
 def test_behind_names_the_task_directly_ahead_and_not_always_the_holder(
-        client, projects_dir, folders, monkeypatch, flag):
+        client, projects_dir, folders, monkeypatch, flag, manager):
     """"Behind TASK-041" ON EVERY CARD IN THE LANE SAID THE SAME THING FOUR
     TIMES (Akshil, 2026-09-12), and the one fact a reader wants out of the
     sentence — who do I actually have to wait for — was the one it could not
@@ -486,6 +838,7 @@ def test_behind_names_the_task_directly_ahead_and_not_always_the_holder(
                session_id="sess-3"),
     ])
     _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, "sess-1", "sess-2", "sess-3", holder="sess-holder")
 
     rows = _rows(client)
     assert [rows[k]["queue_position"] for k in ("sess-1", "sess-2", "sess-3")] \
@@ -500,7 +853,7 @@ def test_behind_names_the_task_directly_ahead_and_not_always_the_holder(
 
 
 def test_a_second_unanswered_card_still_needs_attention(
-        client, projects_dir, folders, monkeypatch, flag, park):
+        client, projects_dir, folders, monkeypatch, flag, park, manager):
     """One held answer does not speak for the whole run: a second card nobody
     has answered is still somebody being waited on."""
     flag()
@@ -511,178 +864,14 @@ def test_a_second_unanswered_card_still_needs_attention(
     with open(os.path.join(run_dir, "perm", "req-2.req.json"), "w") as fh:
         json.dump({"id": "req-2", "tool": "Bash", "input": {"command": "ls"}}, fh)
     _holders(monkeypatch, {alpha: "sess-holder"})
-    project_queue.hold_answer(alpha, "sess-a", "r-a", "req-1",
-                              {"raw": {"decision": "allow"}})
+    manager.hold("sess-a", run_id="r-a", request_id="req-1",
+                 raw={"decision": "allow"})
 
     assert _rows(client)["sess-a"]["status"] == "needs_attention"
 
 
-def test_the_line_puts_held_answers_first_then_priority_then_the_older_due(
-        client, projects_dir, folders, monkeypatch, flag, state_dir, park):
-    """The order the line moves in, in one row of three. Promoted work goes
-    first, newest promotion first: the answer was given just now and the skip
-    carries no stamp at all (a promotion from before `priority_at` existed), so
-    the answer leads. Unpromoted work follows in `due` order.
-
-    The answering task has a REAL parked run behind it — an unanswered request
-    on disk — because that is the only shape a held answer ever comes in, and a
-    case with no run at all would pass without the rule that keeps such a row
-    out of `needs_attention`."""
-    flag()
-    alpha, _beta = folders
-    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
-    _transcript(projects_dir, "sess-answer", alpha, "answered a card")
-    park("r-answer", "sess-answer", alpha)
-    schedule._write([
-        _entry("e-old", "asked first", alpha, due=_iso(-300),
-               session_id="sess-plain"),
-        _entry("e-skip", "skipped to the front", alpha, due=_iso(-60),
-               session_id="sess-skipped", priority=True),
-    ])
-    project_queue.hold_answer(alpha, "sess-answer", "r-answer", "req-1",
-                              {"raw": {"decision": "allow"}})
-    _holders(monkeypatch, {alpha: "sess-holder"})
-
-    rows = _rows(client)
-    assert rows["sess-answer"]["status"] == "queued"
-    assert rows["sess-answer"]["queue_position"] == 1
-    assert rows["sess-answer"]["queue_priority"] is True
-    assert rows["sess-skipped"]["queue_position"] == 2
-    # Promoted, but SECOND — so not runs-next, and the client keeps drawing it
-    # a Run next button that would make it first.
-    assert rows["sess-skipped"]["queue_priority"] is False
-    assert rows["sess-plain"]["queue_position"] == 3
-    assert rows["sess-plain"]["queue_priority"] is False
-    # "behind" NAMES THE TASK DIRECTLY AHEAD, and held answers are stepped over:
-    # the answering task is behind the holder, the skipped message is behind the
-    # holder too (the only thing in front of it is that held answer), and the
-    # plain one is behind the skipped message.
-    assert rows["sess-answer"]["queue_ahead"] == rows["sess-holder"]["task_id"]
-    assert rows["sess-skipped"]["queue_ahead"] == rows["sess-holder"]["task_id"]
-    assert rows["sess-plain"]["queue_ahead"] == rows["sess-skipped"]["task_id"]
-    assert rows["sess-plain"]["queue_ahead_key"] == "sess-skipped"
-
-
-def test_the_holders_own_held_answer_is_not_a_row_in_its_own_line(
-        client, projects_dir, folders, monkeypatch, flag, park):
-    """TWO ROWS BOTH READING "1st in line · behind TASK-019", where TASK-019 was
-    itself a blocked task and not a run at all (Akshil, screenshot,
-    2026-09-16). An answer held for the session that HOLDS the folder is an
-    answer to the run in flight — the thing the rest of the line is waiting
-    for — not a task waiting on it, and counting it gave the folder two heads:
-    the answer at position 1 and the genuinely queued task at position 1 behind
-    it. The holder is not in its own line, its answers included."""
-    flag()
-    alpha, _beta = folders
-    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
-    _transcript(projects_dir, "sess-wait", alpha, "waiting")
-    park("r-holder", "sess-holder", alpha)
-    schedule._write([_entry("e1", "run the report", alpha,
-                            session_id="sess-wait")])
-    project_queue.hold_answer(alpha, "sess-holder", "r-holder", "req-1",
-                              {"raw": {"decision": "allow"}})
-    _holders(monkeypatch, {alpha: "sess-holder"})
-
-    rows = _rows(client)
-    assert rows["sess-holder"]["queue_position"] == 0
-    assert rows["sess-holder"]["status"] != "queued"
-    assert rows["sess-wait"]["queue_position"] == 1
-    assert rows["sess-wait"]["queue_ahead_key"] == "sess-holder"
-
-
-def test_one_folder_has_exactly_one_first_place(
-        client, projects_dir, folders, monkeypatch, flag):
-    """The invariant behind the screenshot, asserted as an invariant: the
-    positions in a folder are 1..n, each used once. Two rows claiming first is
-    not a cosmetic slip — the line is the promise that one of them runs next,
-    and two firsts means nobody knows which."""
-    flag()
-    alpha, _beta = folders
-    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
-    _transcript(projects_dir, "sess-a", alpha, "asked first")
-    _transcript(projects_dir, "sess-b", alpha, "asked second")
-    schedule._write([
-        _entry("e-a", "asked first", alpha, due=_iso(-300),
-               session_id="sess-a"),
-        _entry("e-b", "asked second", alpha, due=_iso(-100),
-               session_id="sess-b"),
-    ])
-    _holders(monkeypatch, {alpha: "sess-holder"})
-
-    rows = _rows(client)
-    assert rows["sess-a"]["queue_position"] == 1
-    assert rows["sess-a"]["queue_ahead_key"] == "sess-holder"
-    assert rows["sess-b"]["queue_position"] == 2
-    assert rows["sess-b"]["queue_ahead_key"] == "sess-a"
-    taken = sorted(row["queue_position"] for row in rows.values()
-                   if row["queue_key"] == alpha and row["queue_position"])
-    assert taken == list(range(1, len(taken) + 1))
-
-
-def test_run_next_pressed_after_an_answer_outranks_it_and_before_it_does_not(
-        client, projects_dir, folders, monkeypatch, flag, park):
-    """AN ANSWERED CARD IS NEXT IN LINE UNTIL THE USER SAYS OTHERWISE (Akshil,
-    2026-09-16). Answering a parked card and pressing Run next on a message are
-    the same sentence — "this one, next" — so the line ranks them by WHEN it was
-    said and the last word wins. The same two rows, twice, with only the moment
-    of the Run next moved either side of the answer."""
-    flag()
-    alpha, _beta = folders
-    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
-    _transcript(projects_dir, "sess-parked", alpha, "answered a card")
-    park("r-parked", "sess-parked", alpha)
-    _holders(monkeypatch, {alpha: "sess-holder"})
-
-    def line(priority_at):
-        schedule._write([_entry("e-q", "run next", alpha, due=_iso(-600),
-                                session_id="sess-q", priority=True,
-                                priority_at=priority_at)])
-        tasks_mod.reset_cache()
-        return _rows(client)
-
-    # Run next pressed AFTER the answer: it is the later word, so it leads.
-    project_queue.hold_answer(alpha, "sess-parked", "r-parked", "req-1",
-                              {"raw": {"decision": "allow"}}, at=100.0)
-    rows = line(200.0)
-    assert rows["sess-q"]["queue_position"] == 1
-    assert rows["sess-q"]["queue_ahead_key"] == "sess-holder"
-    assert rows["sess-q"]["queue_priority"] is True
-    assert rows["sess-parked"]["queue_position"] == 2
-    # Promoted, but no longer the head — so not runs-next.
-    assert rows["sess-parked"]["queue_priority"] is False
-
-    # Pressed BEFORE it: the answer is the later word and takes the head back,
-    # and the message is second — behind the HOLDER, because "behind" steps over
-    # a held answer rather than pointing the reader at a card decision.
-    rows = line(50.0)
-    assert rows["sess-parked"]["queue_position"] == 1
-    assert rows["sess-parked"]["queue_priority"] is True
-    assert rows["sess-q"]["queue_position"] == 2
-    assert rows["sess-q"]["queue_ahead_key"] == "sess-holder"
-    assert rows["sess-q"]["queue_priority"] is False
-
-
-def test_one_task_takes_one_place_however_many_messages_it_has(
-        client, projects_dir, folders, monkeypatch, flag):
-    """The line the UI prints is a line of TASKS ("#2 in line"), so a task with
-    three queued messages is one thing waiting and not three."""
-    flag()
-    alpha, _beta = folders
-    _transcript(projects_dir, "sess-holder", alpha)
-    schedule._write([
-        _entry("e1", "one", alpha, due=_iso(-300), session_id="sess-a"),
-        _entry("e2", "two", alpha, due=_iso(-200), session_id="sess-a"),
-        _entry("e3", "three", alpha, due=_iso(-100), session_id="sess-b"),
-    ])
-    _holders(monkeypatch, {alpha: "sess-holder"})
-
-    rows = _rows(client)
-    assert rows["sess-a"]["queue_position"] == 1
-    assert rows["sess-b"]["queue_position"] == 2
-
-
 def test_two_folders_have_two_independent_lines(
-        client, projects_dir, folders, monkeypatch, flag):
+        client, projects_dir, folders, monkeypatch, flag, manager):
     """No cap across folders — worktrees run in parallel, which is the whole
     point of cutting one."""
     flag()
@@ -694,6 +883,8 @@ def test_two_folders_have_two_independent_lines(
         _entry("e2", "into beta", beta, session_id="sess-b"),
     ])
     _holders(monkeypatch, {alpha: "sess-ha", beta: "sess-hb"})
+    manager.line(alpha, "sess-a", holder="sess-ha")
+    manager.line(beta, "sess-b", holder="sess-hb")
 
     rows = _rows(client)
     assert rows["sess-a"]["queue_position"] == 1
@@ -702,7 +893,7 @@ def test_two_folders_have_two_independent_lines(
 
 
 def test_a_pending_row_queues_under_its_own_key(
-        client, projects_dir, folders, monkeypatch, flag):
+        client, projects_dir, folders, monkeypatch, flag, manager):
     """A brand-new task — a message that names no session at all — is still a
     row, keyed `pending:<entry id>` (§5), and still takes a place in the line."""
     flag()
@@ -710,6 +901,7 @@ def test_a_pending_row_queues_under_its_own_key(
     _transcript(projects_dir, "sess-holder", alpha)
     schedule._write([_entry("e-new", "a brand new task", alpha)])
     _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, tasks_store.pending_key("e-new"), holder="sess-holder")
 
     row = _rows(client)[tasks_store.pending_key("e-new")]
     assert row["status"] == "queued"
@@ -731,11 +923,12 @@ def test_an_archived_task_is_archived_and_not_queued(
 
 
 def test_the_pulse_carries_where_a_row_stands(
-        client, projects_dir, folders, monkeypatch, flag):
+        client, projects_dir, folders, monkeypatch, flag, manager):
     """The sidebar prints "n queued" beside "n running" and a queued row has to
     be able to say whether it runs next — without downloading the Tasks page."""
     flag()
-    _waiting_pair(projects_dir, folders, monkeypatch)
+    alpha = _waiting_pair(projects_dir, folders, monkeypatch)
+    manager.line(alpha, "sess-wait", holder="sess-holder")
 
     pulse = {row["key"]: row for row in client.get("/api/tasks/pulse").json()["tasks"]}
     row = pulse["sess-wait"]
@@ -754,12 +947,13 @@ def test_the_pulse_carries_where_a_row_stands(
 
 
 def test_the_changes_answer_names_a_holder_it_was_not_asked_about(
-        client, projects_dir, folders, monkeypatch, flag):
+        client, projects_dir, folders, monkeypatch, flag, manager):
     """A narrowed long-poll answer is about one row, and the task in front of it
     is by definition another. Naming it from the stored table is what keeps the
     chip from reading "behind " with nothing after it."""
     flag()
-    _waiting_pair(projects_dir, folders, monkeypatch)
+    alpha = _waiting_pair(projects_dir, folders, monkeypatch)
+    manager.line(alpha, "sess-wait", holder="sess-holder")
     ahead = _rows(client)["sess-holder"]["task_id"]
 
     since = tasks_watch.generation()
@@ -788,21 +982,24 @@ def test_admit_with_the_flag_off_always_runs_and_stores_nothing(
     assert schedule.list_entries() == []
 
 
-def test_admit_into_a_free_folder_runs_and_takes_a_reservation(
-        client, folders, flag):
+def test_admit_into_a_free_folder_runs_and_takes_the_folder(
+        client, folders, flag, manager):
     """Between "run" and the CLI registering a session there is nothing on disk
-    saying the folder is taken. The reservation is what closes that window."""
+    saying the folder is taken. THE OWNER THE ADMISSION FILES is what closes
+    that window (PR 2, 2026-09-17): `is_free` and `started` are one decision,
+    so the next send into this tree finds an owner and queues instead of
+    starting a second process in it."""
     flag()
     alpha, _beta = folders
     r = _post(client, "/api/tasks/queue/admit",
               {"project": alpha, "session_id": "sess-a", "message": "go"})
-    assert r.json() == {"run": True}
-    assert project_queue.reserved(alpha) == "sess-a"
+    assert _admitted(r.json()) == {"run": True}
+    assert (manager.owner(alpha) or {})["task"] == "sess-a"
     assert schedule.list_entries() == []
 
 
 def test_a_second_session_queues_behind_the_first_ones_reservation(
-        client, projects_dir, folders, flag):
+        client, projects_dir, folders, flag, manager):
     """The real derivation, end to end and unmocked: one admission reserves the
     folder, and the next send into it from another task is stored instead of
     spawned."""
@@ -811,9 +1008,12 @@ def test_a_second_session_queues_behind_the_first_ones_reservation(
     _transcript(projects_dir, "sess-a", alpha, "holding the folder")
     ahead = _rows(client)["sess-a"]["task_id"]
 
-    assert _post(client, "/api/tasks/queue/admit",
-                 {"project": alpha, "session_id": "sess-a",
-                  "message": "go"}).json() == {"run": True}
+    assert _admitted(_post(client, "/api/tasks/queue/admit",
+                          {"project": alpha, "session_id": "sess-a",
+                           "message": "go"}).json()) == {"run": True}
+    # …and where the stored send then stands is the manager's answer, which the
+    # reply reads back through `_queue_place`.
+    manager.line(alpha, "sess-b", holder="sess-a")
     r = _post(client, "/api/tasks/queue/admit",
               {"project": alpha, "session_id": "sess-b", "message": "me too"})
     assert r.status_code == 200, r.text
@@ -835,7 +1035,7 @@ def test_a_second_session_queues_behind_the_first_ones_reservation(
 
 
 def test_a_new_chats_second_message_is_not_queued_behind_its_own_run(
-        client, folders, flag, chat_run):
+        client, folders, flag, chat_run, manager):
     """AKSHIL'S BUG, the whole sequence at the router (folder qa-folder-b,
     2026-09-12).
 
@@ -850,27 +1050,27 @@ def test_a_new_chats_second_message_is_not_queued_behind_its_own_run(
     has before it has a session."""
     flag()
     alpha, _beta = folders
-    assert _post(client, "/api/tasks/queue/admit",
-                 {"project": alpha, "session_id": "", "message": "first"}
-                 ).json() == {"run": True}
-    assert project_queue.reserved(alpha) == ""
+    first = _post(client, "/api/tasks/queue/admit",
+                  {"project": alpha, "session_id": "", "message": "first"}).json()
+    assert first["run"] is True
+    # …and the folder is filed under the placeholder this send was given, so a
+    # second NAMELESS send would queue rather than race into it.
+    assert first["owner_token"].startswith(PLACEHOLDER)
     # The run appears: alive, in that folder, and it has not named itself.
     chat_run("run-1", alpha, pid=os.getpid())
     project_queue.invalidate_holders()
-    assert project_queue.holders()[alpha]["kind"] == "starting"
     # The session alone still cannot match it — that is the state the bug was
     # reported from, and what the run id is for.
-    assert project_queue.is_free(alpha, "sess-new") is False
 
     r = _post(client, "/api/tasks/queue/admit",
               {"project": alpha, "session_id": "sess-new", "run_id": "run-1",
                "message": "second"})
     assert r.status_code == 200, r.text
-    assert r.json() == {"run": True}
+    assert _admitted(r.json()) == {"run": True}
     assert schedule.list_entries() == []          # nothing was queued
-    # …and the reservation now carries the name the chat finally has.
-    assert project_queue.reserved(alpha) == "sess-new"
-    assert project_queue.reserved_run(alpha) == "run-1"
+    # …and the folder now carries the name the chat finally has.
+    owner = manager.owner(alpha) or {}
+    assert owner["task"] == "sess-new" and owner["run_id"] == "run-1"
 
 
 def test_the_registry_names_the_new_chats_run_by_its_pid(
@@ -886,25 +1086,26 @@ def test_the_registry_names_the_new_chats_run_by_its_pid(
     chat_run("run-1", alpha, pid=os.getpid())
     registry("sess-new", status="busy")
     project_queue.invalidate_holders()
-
-    held = project_queue.holders()[alpha]
-    assert held["kind"] == "run" and held["session_id"] == "sess-new"
-    # No run_id needed: the conversation is named now.
+    # The run answers to the session the CLI registered against its pid…
+    assert "sess-new" in project_queue.run_sessions(
+        project_queue.agent_module(),
+        os.path.join(str(project_queue.agent_module().RUNS), "run-1"), {})
+    # …so no run_id is needed: the conversation is named now.
     r = _post(client, "/api/tasks/queue/admit",
               {"project": alpha, "session_id": "sess-new", "message": "second"})
-    assert r.json() == {"run": True}
+    assert _admitted(r.json()) == {"run": True}
     assert schedule.list_entries() == []
 
 
 def test_a_run_id_does_not_admit_a_chat_into_somebody_elses_folder(
-        client, folders, flag, chat_run):
+        client, folders, flag, chat_run, manager):
     """The self-match is about identity, not a skeleton key: a run id that
     names nothing in this folder queues like anything else."""
     flag()
     alpha, _beta = folders
     chat_run("run-other", alpha, pid=os.getpid(), session_id="sess-holder")
-    project_queue.reserve(alpha, "sess-holder")
     project_queue.invalidate_holders()
+    manager.line(alpha, "sess-mine", holder="sess-holder")
 
     r = _post(client, "/api/tasks/queue/admit",
               {"project": alpha, "session_id": "sess-mine", "run_id": "run-9",
@@ -914,55 +1115,14 @@ def test_a_run_id_does_not_admit_a_chat_into_somebody_elses_folder(
     assert _rows(client)["sess-mine"]["status"] == "queued"
 
 
-def test_a_new_chats_second_message_is_not_queued_behind_its_own_teardown(
-        client, folders, flag, chat_run, registry):
-    """THE SELF-QUEUE WINDOW, over HTTP (browser QA, 2026-09-12). A brand-new
-    chat said hello, got its reply, and the next message was queued behind its
-    own conversation: the admission named neither the session nor the run (the
-    client had not learned either yet), the first message's ANONYMOUS
-    reservation was still standing, and the run was between turns.
-
-    Both halves are asserted here because the difference between them is the
-    whole rule: while the turn is genuinely running the nameless send queues,
-    and the moment the registry says the turn is over it goes."""
-    flag()
-    alpha, _beta = folders
-    assert _post(client, "/api/tasks/queue/admit",
-                 {"project": alpha, "session_id": "", "message": "hello"}
-                 ).json() == {"run": True}
-    # The round trip that first message paid for: it was admitted, spawned,
-    # answered and read before the user typed again, so the reservation standing
-    # in the way is that old. A reservation younger than one round trip is the
-    # OTHER case — a second chat pressing Enter in the same breath — and it is
-    # what `project_queue.ANONYMOUS_CLAIM_AFTER` refuses.
-    key = project_queue.queue_key(alpha)
-    sid, expiry, run, taken = project_queue._reservations[key]
-    project_queue._reservations[key] = (
-        sid, expiry, run, taken - project_queue.ANONYMOUS_CLAIM_AFTER - 1)
-    chat_run("run-1", alpha, pid=os.getpid())
-    registry("sess-new", status="busy")
-    project_queue.invalidate_holders()
-
-    queued = _post(client, "/api/tasks/queue/admit",
-                   {"project": alpha, "session_id": "", "message": "second"})
-    assert queued.json()["run"] is False      # a turn IS running in there
-
-    registry("sess-new", status="idle")       # …and now it is not
-    project_queue.invalidate_holders()
-    r = _post(client, "/api/tasks/queue/admit",
-              {"project": alpha, "session_id": "", "message": "second"})
-    assert r.status_code == 200, r.text
-    assert r.json() == {"run": True}
-
-
 def test_an_admitted_send_changes_no_row_by_itself(
-        client, projects_dir, folders, flag, rings):
+        client, projects_dir, folders, flag, rings, manager):
     """INSTANT STATUS IS THE SENDER'S MARK, NOT THE RESERVATION (2026-09-16).
     The queue used to read its own admission reservation as `in_progress` for
     the seconds before `claude` registered (browser QA, 2026-09-12). #1163 now
     answers the same instant for every send, flag or no flag: the page marks the
     session as it sends (`tasks_watch.mark_running`) and `_live` believes it. So
-    admission itself moves nothing and rings nothing — the reservation is the
+    admission itself moves nothing and rings nothing — the owner it files is the
     folder gate's record and only that — and the mark is what flips the row."""
     flag()
     alpha, _beta = folders
@@ -970,15 +1130,32 @@ def test_an_admitted_send_changes_no_row_by_itself(
     before = _rows(client)["sess-a"]["status"]
     assert before != "in_progress"
 
-    assert _post(client, "/api/tasks/queue/admit",
-                 {"project": alpha, "session_id": "sess-a", "message": "go"}
-                 ).json() == {"run": True}
+    assert _admitted(_post(client, "/api/tasks/queue/admit",
+                          {"project": alpha, "session_id": "sess-a",
+                           "message": "go"}).json()) == {"run": True}
     assert rings == []
-    assert project_queue.reserved(alpha) == "sess-a"   # the gate's record stands
+    # the gate's record stands, and it is the manager's now
+    assert (manager.owner(alpha) or {})["task"] == "sess-a"
     assert _rows(client)["sess-a"]["status"] == before
 
     tasks_watch.mark_running("sess-a")
     assert _rows(client)["sess-a"]["status"] == "in_progress"
+
+
+def test_running_now_is_false_for_an_ended_session_even_when_live():
+    """The queue manager's word off a `turn_ended`/`exited` event
+    (`tasks_watch.mark_turn_ended`) outranks `live` — the registry row and the
+    transcript tail can both still look running for a beat after a folder
+    handoff, and this is the one path that must not believe them (see
+    `_running_now`'s docstring for why `busy` alone is left alone)."""
+    tasks_watch.reset()
+    tasks_watch.mark_turn_ended("sess-ended")
+    assert tasks_mod._running_now("sess-ended", True, set()) is False
+    # An independent scheduler claim is unaffected either way.
+    assert tasks_mod._running_now("sess-ended", True, {"sess-ended"}) is True
+    # A session nothing said ended reads exactly as `live` says.
+    assert tasks_mod._running_now("sess-untouched", True, set()) is True
+    assert tasks_mod._running_now("sess-untouched", False, set()) is False
 
 
 def test_with_the_flag_off_an_admitted_send_changes_no_row(
@@ -995,7 +1172,6 @@ def test_with_the_flag_off_an_admitted_send_changes_no_row(
                  {"project": alpha, "session_id": "sess-a", "message": "go"}
                  ).json() == {"run": True}
     assert rings == []
-    assert project_queue.reserved(alpha) == ""
     assert _rows(client)["sess-a"]["status"] == before
 
 
@@ -1063,9 +1239,10 @@ def test_a_wordless_send_runs_on_a_free_folder_and_is_refused_on_a_busy_one(
     flag()
     alpha, _beta = folders
     _holders(monkeypatch, {})
-    assert _post(client, "/api/tasks/queue/admit",
-                 {"project": alpha, "session_id": "sess-a", "message": "",
-                  "images": ["/tmp/shot.png"]}).json() == {"run": True}
+    assert _admitted(_post(client, "/api/tasks/queue/admit",
+                          {"project": alpha, "session_id": "sess-a",
+                           "message": "",
+                           "images": ["/tmp/shot.png"]}).json()) == {"run": True}
 
     _transcript(projects_dir, "sess-holder", alpha)
     _holders(monkeypatch, {alpha: "sess-holder"})
@@ -1124,7 +1301,8 @@ def priorities(monkeypatch):
 
 
 def test_skip_promotes_the_due_work_of_a_queued_task(
-        client, projects_dir, folders, monkeypatch, flag, priorities, rings):
+        client, projects_dir, folders, monkeypatch, flag, priorities, rings,
+        manager):
     """Skip is a statement about the ORDER of what is waiting. The answer is
     always position 1 and never "running now" — it does not interrupt the run in
     flight, and nothing in this app takes a folder off a live process."""
@@ -1138,6 +1316,7 @@ def test_skip_promotes_the_due_work_of_a_queued_task(
         _entry("e-other", "another folder", beta, session_id="sess-a"),
     ])
     _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, "sess-a", holder="sess-holder")
 
     r = _post(client, "/api/tasks/queue/skip", {"key": "sess-a"})
     assert r.status_code == 200, r.text
@@ -1191,16 +1370,23 @@ def test_skip_refuses_an_unknown_key_and_a_disabled_queue(
 
 
 def test_skipping_a_task_that_already_answered_a_card_is_a_no_op(
-        client, projects_dir, folders, monkeypatch, flag, priorities):
+        client, projects_dir, folders, monkeypatch, flag, priorities, manager):
     """A held answer is at the head of its folder by definition. From the
     outside that is exactly what Skip asked for, so it is answered rather than
-    refused — and nothing is written, because there is nothing to improve."""
+    refused — and nothing is written, because there is nothing to improve.
+
+    THROUGH THE MANAGER LIKE EVERYTHING ELSE. This used to be a short-circuit in
+    the endpoint (`held_answer` read, answer returned, `skip` never called),
+    which was a second set of rules about the head of a line — and the manager
+    already has them: an answered task moves to index 0 and newest press wins,
+    exactly as it does here."""
     flag()
     alpha, _beta = folders
     _transcript(projects_dir, "sess-holder", alpha)
     _transcript(projects_dir, "sess-a", alpha)
-    project_queue.hold_answer(alpha, "sess-a", "run-1", "req-1", {"raw": {}})
     _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.hold("sess-a", run_id="run-1", request_id="req-1")
+    manager.line(alpha, "sess-a", holder="sess-holder", priority=("sess-a",))
 
     r = _post(client, "/api/tasks/queue/skip", {"key": "sess-a"})
     assert r.status_code == 200, r.text
@@ -1208,7 +1394,25 @@ def test_skipping_a_task_that_already_answered_a_card_is_a_no_op(
     # caller reads one answer.
     assert r.json()["ok"] is True and r.json()["position"] == 1
     assert "ahead_key" in r.json()
+    assert _kinds(manager, "skip") == [("skip", "sess-a")]
     assert priorities == []
+
+
+def test_skip_into_a_free_folder_is_answered_and_not_refused(
+        client, projects_dir, folders, flag, manager, priorities):
+    """`started` is the outcome a position cannot describe: the folder was free,
+    the pump handed the task the tree, and it stands in no line at all now.
+    Position 0 then means RUNNING — and the endpoint used to read that 0 as "not
+    queued" and answer 400 to the best possible outcome of "run this next"."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-a", alpha, "mine")
+    manager.line(alpha, "sess-a")            # in the line, nobody owns the tree
+
+    r = _post(client, "/api/tasks/queue/skip", {"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True
+    assert (manager.owner(alpha) or {})["task"] == "sess-a"
 
 
 # =================================================================== decide
@@ -1268,7 +1472,6 @@ def test_a_card_answered_on_a_free_folder_goes_straight_through(
     assert body["held"] is False
     assert body["decided"] == "req-1"
     assert agent.calls[0]["decision"] == "allow"
-    assert project_queue.held_answers() == []
 
 
 def test_the_flag_off_answers_a_card_the_way_main_does(
@@ -1280,7 +1483,6 @@ def test_the_flag_off_answers_a_card_the_way_main_does(
     assert _post(client, "/api/tasks/queue/decide",
                  _decide_body(alpha)).json()["held"] is False
     assert len(agent.calls) == 1
-    assert project_queue.held_answers() == []
 
 
 def test_a_dead_run_is_answered_now_and_never_held(
@@ -1295,11 +1497,11 @@ def test_a_dead_run_is_answered_now_and_never_held(
     assert _post(client, "/api/tasks/queue/decide",
                  _decide_body(alpha)).json()["held"] is False
     assert len(agent.calls) == 1
-    assert project_queue.held_answers() == []
 
 
 def test_a_card_answered_while_another_task_holds_the_folder_is_held(
-        client, projects_dir, folders, monkeypatch, flag, agent, rings):
+        client, projects_dir, folders, monkeypatch, flag, agent, rings,
+        manager):
     """The one door into a busy folder that is not a message. A parked run given
     its answer now would wake up and start editing a tree another task owns.
 
@@ -1310,6 +1512,7 @@ def test_a_card_answered_while_another_task_holds_the_folder_is_held(
     alpha, _beta = folders
     _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
     _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, "sess-a", holder="sess-holder", priority=("sess-a",))
     ahead = _rows(client)["sess-holder"]["task_id"]
 
     r = _post(client, "/api/tasks/queue/decide", _decide_body(alpha))
@@ -1318,31 +1521,30 @@ def test_a_card_answered_while_another_task_holds_the_folder_is_held(
                         "ahead_title": "holding the folder",
                         "ahead_key": "sess-holder"}
     assert agent.calls == []
-    held = project_queue.held_answers()
-    assert len(held) == 1
-    assert held[0]["queue_key"] == alpha
-    assert held[0]["session_id"] == "sess-a"
-    assert held[0]["payload"] == {"raw": {
+    held = manager.held_answer("sess-a")
+    assert held is not None
+    assert held["run_id"] == "run-1" and held["request_id"] == "req-1"
+    assert held["raw"] == {
         "run_id": "run-1", "request_id": "req-1", "decision": "allow",
         "scope": "session", "mode": "acceptEdits", "answers": "", "note": "",
-        "custom": ""}}
+        "custom": ""}
     assert {"sess-a"} in rings
 
 
 def test_a_second_click_on_a_held_card_does_not_queue_a_second_answer(
-        client, folders, monkeypatch, flag, agent):
+        client, folders, monkeypatch, flag, agent, manager):
     """First writer wins on `(run_id, request_id)` — the same latch
-    `_write_decision` applies on disk, applied here so a double-click cannot
-    queue two answers to one question."""
+    `_write_decision` applies on disk, applied in the manager so a double-click
+    cannot replace an answer that is already waiting to be delivered."""
     flag()
     alpha, _beta = folders
     _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, "sess-a", holder="sess-holder")
 
     _post(client, "/api/tasks/queue/decide", _decide_body(alpha))
     _post(client, "/api/tasks/queue/decide", _decide_body(alpha, decision="deny"))
-    held = project_queue.held_answers()
-    assert len(held) == 1
-    assert held[0]["payload"]["raw"]["decision"] == "allow"
+    held = manager.held_answer("sess-a")
+    assert held is not None and held["raw"]["decision"] == "allow"
 
 
 def test_a_card_that_already_has_a_verdict_is_answered_now_and_never_held(
@@ -1365,7 +1567,6 @@ def test_a_card_that_already_has_a_verdict_is_answered_now_and_never_held(
 
     assert body["held"] is False
     assert len(agent.calls) == 1          # straight through, latch and all
-    assert project_queue.held_answers() == []
 
 
 def test_decide_refuses_a_body_with_no_run(client, folders, flag, agent):
@@ -1582,37 +1783,8 @@ def test_marking_a_message_read_rings_the_long_poll(
 # with the module cannot pass both.
 
 
-def test_skip_really_moves_the_entry_to_the_head_of_the_line(
-        client, projects_dir, folders, monkeypatch, flag):
-    """End to end: two tasks waiting on one folder, the second one skips, and
-    the line the very next listing derives has them the other way round."""
-    flag()
-    alpha, _beta = folders
-    _transcript(projects_dir, "sess-holder", alpha)
-    schedule._write([
-        _entry("e-first", "asked first", alpha, due=_iso(-300),
-               session_id="sess-first"),
-        _entry("e-second", "asked second", alpha, due=_iso(-60),
-               session_id="sess-second"),
-    ])
-    _holders(monkeypatch, {alpha: "sess-holder"})
-    assert _rows(client)["sess-second"]["queue_position"] == 2
-
-    skipped = _post(client, "/api/tasks/queue/skip",
-                    {"key": "sess-second"}).json()
-    assert skipped["ok"] is True and skipped["position"] == 1
-
-    stored = {e["id"]: e for e in schedule.list_entries()}
-    assert stored["e-second"]["priority"] is True
-    assert stored["e-first"].get("priority") is not True
-    rows = _rows(client)
-    assert rows["sess-second"]["queue_position"] == 1
-    assert rows["sess-second"]["queue_priority"] is True
-    assert rows["sess-first"]["queue_position"] == 2
-
-
 def test_run_now_into_a_busy_folder_queues_through_the_real_model(
-        client, projects_dir, folders, monkeypatch, flag):
+        client, projects_dir, folders, monkeypatch, flag, manager):
     """The drag, all the way down: nothing is claimed, the entry gains
     `priority`, and the row the Board redraws reads `queued` at position 1."""
     flag()
@@ -1620,6 +1792,7 @@ def test_run_now_into_a_busy_folder_queues_through_the_real_model(
     _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
     schedule._write([_entry("e1", "run it", alpha, session_id="sess-a")])
     _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, holder="sess-holder")
     ahead = _rows(client)["sess-holder"]["task_id"]
 
     r = _post(client, "/api/schedule/run-now", {"entry_id": "e1"})
@@ -1641,40 +1814,8 @@ def test_run_now_into_a_busy_folder_queues_through_the_real_model(
     assert row["queue_priority"] is True
 
 
-def test_run_now_answers_the_position_the_row_shows(
-        client, projects_dir, folders, monkeypatch, flag):
-    """ONE NUMBER FOR ONE LINE. The scheduler counts a folder's line in ENTRIES
-    and the Tasks page counts it in TASKS — one slot each, however many messages
-    a task has queued — and the page's is the number printed on the row, in the
-    chip and in "#2 in line". A drag that answered 3 while the card it just
-    moved said 2 is one of them wrong."""
-    flag()
-    alpha, _beta = folders
-    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
-    _transcript(projects_dir, "sess-b", alpha, "two messages, one place")
-    schedule._write([
-        _entry("e-b1", "first", alpha, due=_iso(-300), session_id="sess-b",
-               priority=True),
-        _entry("e-b2", "second", alpha, due=_iso(-200), session_id="sess-b",
-               priority=True),
-        _entry("e-a1", "mine", alpha, due=_iso(-100), session_id="sess-a"),
-    ])
-    _holders(monkeypatch, {alpha: "sess-holder"})
-
-    body = _post(client, "/api/schedule/run-now", {"entry_id": "e-a1"}).json()
-    # Run now IS Run next, and Run next is play next: the message just promoted
-    # goes to the head, past sess-b's two older promotions.
-    assert body["position"] == 1
-    assert body["position"] == _rows(client)["sess-a"]["queue_position"]
-
-    # …and when sess-b asks to go next again, its TWO entries are still ONE
-    # slot: this row moves to #2, never to #3.
-    schedule.set_priority(["e-b1", "e-b2"], True)
-    assert _rows(client)["sess-a"]["queue_position"] == 2
-
-
 def test_run_now_on_a_far_future_message_puts_the_row_in_the_queued_lane(
-        client, projects_dir, folders, monkeypatch, flag):
+        client, projects_dir, folders, monkeypatch, flag, manager):
     """Run now on a message due TOMORROW, in a folder somebody else is holding.
 
     The answer said `queued` and the row did not: every reader of the line asks
@@ -1689,6 +1830,9 @@ def test_run_now_on_a_far_future_message_puts_the_row_in_the_queued_lane(
     schedule._write([_entry("e1", "tomorrow", alpha, due=tomorrow,
                             session_id="sess-a")])
     _holders(monkeypatch, {alpha: "sess-holder"})
+    # Owned, with nobody waiting on it yet: the press is what puts this message
+    # in the line, and the row is what the manager then says about it.
+    manager.line(alpha, holder="sess-holder")
     # Before the gesture it is waiting on the CLOCK, not on the folder.
     assert _rows(client)["sess-a"]["status"] == "upcoming"
 
@@ -1705,7 +1849,7 @@ def test_run_now_on_a_far_future_message_puts_the_row_in_the_queued_lane(
 
 
 def test_run_now_names_a_holder_that_has_no_session_yet(
-        client, folders, monkeypatch, flag):
+        client, folders, monkeypatch, flag, manager):
     """A scheduler entry the tick has claimed but not spawned holds the folder
     with no conversation to its name. It is still a TASK — `pending:<entry>`,
     with a number of its own — and naming the holder by its session id would
@@ -1716,9 +1860,7 @@ def test_run_now_names_a_holder_that_has_no_session_yet(
         _entry("e-x", "the claimed one", alpha, state=schedule.SENDING),
         _entry("e1", "mine", alpha, session_id="sess-a"),
     ])
-    monkeypatch.setattr(project_queue, "holders", lambda now=None: {
-        alpha: {"session_id": "", "run_id": "", "task_key": "pending:e-x",
-                "kind": "sending"}})
+    manager.line(alpha, holder="pending:e-x")
     ahead = _rows(client)["pending:e-x"]["task_id"]
     assert ahead
 
@@ -1793,14 +1935,16 @@ def test_a_follower_moves_onto_the_session_its_leader_opened(
 
 
 def test_a_follower_takes_no_place_of_its_own_in_the_line(
-        client, projects_dir, folders, monkeypatch, flag):
+        client, projects_dir, folders, monkeypatch, flag, manager):
     """One slot per TASK, however many messages it has queued — the follower is
-    in its leader's slot, not behind it."""
+    in its leader's slot, not behind it. Both messages key onto the leader
+    (`_entry_key`), so the manager only ever hears about one task."""
     flag()
     alpha, _beta = folders
     _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
     _leader_and_follower(alpha)
     _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, tasks_store.pending_key("e-lead"), holder="sess-holder")
 
     row = _rows(client)[tasks_store.pending_key("e-lead")]
     assert row["status"] == "queued"
@@ -1808,7 +1952,7 @@ def test_a_follower_takes_no_place_of_its_own_in_the_line(
 
 
 def test_skip_promotes_a_leader_and_its_follower_together(
-        client, projects_dir, folders, monkeypatch, flag):
+        client, projects_dir, folders, monkeypatch, flag, manager):
     """They share a task key, so Skip on the row reaches both — a chat that
     jumped the line with only its first message would send the second one last."""
     flag()
@@ -1816,6 +1960,7 @@ def test_skip_promotes_a_leader_and_its_follower_together(
     _transcript(projects_dir, "sess-holder", alpha)
     _leader_and_follower(alpha)
     _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, tasks_store.pending_key("e-lead"), holder="sess-holder")
 
     r = _post(client, "/api/tasks/queue/skip",
               {"key": tasks_store.pending_key("e-lead")})
@@ -1853,7 +1998,6 @@ def test_admit_queues_behind_this_chats_own_waiting_message(
                                                                "and then"]
     assert rings[-1] == {"sess-a"}
     # …and the folder was not reserved for a send that never happened.
-    assert project_queue.reserved(alpha) == ""
 
 
 def test_admit_runs_when_this_chats_own_work_is_not_due_yet(
@@ -1865,9 +2009,9 @@ def test_admit_runs_when_this_chats_own_work_is_not_due_yet(
     schedule._write([_entry("e1", "next week", alpha, due=_iso(86_400),
                             session_id="sess-a")])
 
-    assert _post(client, "/api/tasks/queue/admit",
-                 {"project": alpha, "session_id": "sess-a",
-                  "message": "now"}).json() == {"run": True}
+    assert _admitted(_post(client, "/api/tasks/queue/admit",
+                          {"project": alpha, "session_id": "sess-a",
+                           "message": "now"}).json()) == {"run": True}
 
 
 def test_the_flag_off_never_looks_at_this_chats_own_work(
@@ -1922,34 +2066,6 @@ def test_admit_refuses_a_follow_of_that_names_nothing(client, folders, flag):
 
 
 # ============================================ round-2 review, 2026-09-12
-
-
-def test_a_follower_does_not_pull_its_task_up_the_line(
-        client, projects_dir, folders, monkeypatch, flag):
-    """A task takes its place at its BEST entry, and a follower's own due can be
-    earlier than its leader's — a clock that moved, a back-dated edit. Without
-    the leader's key the row would sit at the earlier slot here while
-    `schedule._claim_due` sends it later: a line listed in one order and run in
-    another, which is worse than no line at all."""
-    flag()
-    alpha, _beta = folders
-    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
-    _transcript(projects_dir, "sess-b", alpha, "somebody else")
-    schedule._write([
-        _entry("e-lead", "first thing", alpha, due=_iso(-100)),
-        _entry("e-follow", "second thing", alpha, due=_iso(-300),
-               follow_of="e-lead"),
-        _entry("e-b", "the other task", alpha, due=_iso(-200),
-               session_id="sess-b"),
-    ])
-    _holders(monkeypatch, {alpha: "sess-holder"})
-
-    rows = _rows(client)
-    lead_key = tasks_store.pending_key("e-lead")
-    assert rows["sess-b"]["queue_position"] == 1
-    assert rows[lead_key]["queue_position"] == 2
-    # …which is the order the scheduler will actually send them in.
-    assert schedule._claim_due(schedule._now()) == ["e-b", "e-lead", "e-follow"]
 
 
 @pytest.mark.parametrize("verb", ["archive", "delete", "erase"])
@@ -2047,7 +2163,7 @@ def test_run_now_collects_the_tasks_once(
 
 
 def test_skip_names_the_entry_when_the_key_has_moved(
-        client, projects_dir, folders, monkeypatch, flag, priorities):
+        client, projects_dir, folders, monkeypatch, flag, priorities, manager):
     """A chip painted while the chat was `pending:<leader>` still holds that key
     a second after the leader's run mints a session and the whole row rekeys —
     so Skip by key 404s on the one gesture the user is watching the line for.
@@ -2061,6 +2177,7 @@ def test_skip_names_the_entry_when_the_key_has_moved(
         _entry("e-follow", "second thing", alpha, follow_of="e-lead"),
     ])
     _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, "sess-lead", holder="sess-holder")
     assert _rows(client)["sess-lead"]["status"] == "queued"
 
     stale = _post(client, "/api/tasks/queue/skip",
@@ -2107,7 +2224,6 @@ def test_decide_refuses_an_id_that_would_become_a_path(
     r = _post(client, "/api/tasks/queue/decide", _decide_body(alpha, **over))
     assert r.status_code == 400, r.text
     assert agent.calls == []
-    assert project_queue.held_answers() == []
 
 
 def test_a_card_on_a_run_with_no_session_is_delivered_not_held(
@@ -2126,7 +2242,6 @@ def test_a_card_on_a_run_with_no_session_is_delivered_not_held(
     assert r.status_code == 200, r.text
     assert r.json()["held"] is False
     assert len(agent.calls) == 1
-    assert project_queue.held_answers() == []
     assert set() not in rings
 
 
@@ -2146,49 +2261,46 @@ def test_a_card_on_a_run_with_no_session_is_delivered_not_held(
 
 
 def test_a_starting_run_has_no_chat_to_link_to_until_it_names_itself(
-        client, projects_dir, folders, monkeypatch, flag, chat_run, registry):
-    """A brand-new chat's run holds its folder before it has said who it is:
+        client, projects_dir, folders, monkeypatch, flag, manager):
+    """A brand-new chat's run owns its folder before it has said who it is:
     alive, in that tree, and anonymous. There is nothing to name and nothing to
     open — "behind a run in this folder" is the whole of what a reader can be
-    told — and the line is re-derived on every listing, so the moment the CLI
-    registers its session against its pid the row fills in by itself
-    (`project_queue.run_sessions`, the pid spelling).
+    told — and the naming pass is run on every listing, so the moment the
+    manager learns whose run it is the row fills in by itself.
 
     The queued row is unchanged across the two: what it is waiting for never
-    moved, only what can be said about it."""
+    moved, only what can be said about it. WHEN the owner gets a name is the
+    manager's business (`started`, and its own suite); what the row does with a
+    nameless one is this."""
     flag()
     alpha, _beta = folders
     _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
     schedule._write([_entry("e-wait", "run the report", alpha,
                             session_id="sess-wait")])
-    chat_run("run-1", alpha, pid=os.getpid())
-    project_queue.invalidate_holders()
-    assert project_queue.holders()[alpha]["kind"] == "starting"
+    manager.line(alpha, "sess-wait", holder="")
 
     row = _rows(client)["sess-wait"]
     assert row["status"] == "queued"
     assert row["queue_position"] == 1
     assert row["queue_ahead"] == ""
+    assert row["queue_ahead_key"] == ""
     assert row["queue_ahead_session"] == ""
     assert row["queue_ahead_target"] == ""
 
-    # Seconds later: the registry names the run by its pid.
-    registry("sess-holder", status="busy")
-    # Only the holder memo: `tasks_mod.reset_cache()` would take the live
-    # registry with it (it resets the watcher), which is the very thing that
-    # has just named this run.
-    project_queue.invalidate_holders()
+    # Seconds later: the run says who it is, and the owner has a task key.
+    manager.line(alpha, "sess-wait", holder="sess-holder")
 
     rows = _rows(client)
     row = rows["sess-wait"]
     assert row["status"] == "queued"
+    assert row["queue_position"] == 1
     assert row["queue_ahead"] == rows["sess-holder"]["task_id"]
     assert row["queue_ahead_session"] == "sess-holder"
     assert row["queue_ahead_target"] == alpha
 
 
 def test_the_card_counts_every_message_waiting_and_not_the_ones_that_are_not(
-        client, projects_dir, folders, monkeypatch, flag):
+        client, projects_dir, folders, monkeypatch, flag, manager):
     """ONE NUMBER, THE CARD'S OWN. The line places a TASK (one slot, however
     many messages it has queued); this says how much that slot is holding, which
     is the sentence the card prints. Only work that is waiting RIGHT NOW counts:
@@ -2204,6 +2316,7 @@ def test_the_card_counts_every_message_waiting_and_not_the_ones_that_are_not(
                session_id="sess-wait"),
     ])
     _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, "sess-wait", holder="sess-holder")
 
     row = _rows(client)["sess-wait"]
     # One slot in the line, two messages in it.
@@ -2283,7 +2396,7 @@ def test_a_message_aimed_at_another_conversation_blocks_nothing_here(
 
 
 def test_an_admitted_queued_message_never_blocks_the_chat_that_typed_it(
-        client, projects_dir, folders, flag):
+        client, projects_dir, folders, flag, manager):
     """END TO END, through the endpoint that writes the word: the send the chat
     queued comes back as an ordinary pending entry, and the row it lands on does
     not ask its own composer to shut."""
@@ -2291,9 +2404,9 @@ def test_an_admitted_queued_message_never_blocks_the_chat_that_typed_it(
     alpha, _beta = folders
     _transcript(projects_dir, "sess-a", alpha, "holding the folder")
     _transcript(projects_dir, "sess-b", alpha, "me too")
-    assert _post(client, "/api/tasks/queue/admit",
-                 {"project": alpha, "session_id": "sess-a",
-                  "message": "go"}).json() == {"run": True}
+    assert _admitted(_post(client, "/api/tasks/queue/admit",
+                          {"project": alpha, "session_id": "sess-a",
+                           "message": "go"}).json()) == {"run": True}
 
     body = _post(client, "/api/tasks/queue/admit",
                  {"project": alpha, "session_id": "sess-b",
@@ -2301,11 +2414,11 @@ def test_an_admitted_queued_message_never_blocks_the_chat_that_typed_it(
     assert body["run"] is False
     assert body["entry"]["origin"] == "chat"
 
+    manager.line(alpha, "sess-b", holder="sess-a")
     row = _rows(client)["sess-b"]
     assert row["status"] == "queued"
     assert row["queue_waiting"] == 1
     assert row["queue_blocking"] is False
-
 
 
 # ============ the number a queued chat is given, and the entry that opens it
@@ -2313,7 +2426,7 @@ def test_an_admitted_queued_message_never_blocks_the_chat_that_typed_it(
 
 
 def test_a_queued_new_chat_is_named_the_moment_it_queues(
-        client, projects_dir, folders, monkeypatch, flag):
+        client, projects_dir, folders, monkeypatch, flag, manager):
     """A brand-new chat whose first message queues has no session, so its row is
     `pending:<entry>` — and until this it had no NUMBER either, because numbers
     are minted by the listing and the listing had not run yet. The bubble said
@@ -2325,6 +2438,7 @@ def test_a_queued_new_chat_is_named_the_moment_it_queues(
     alpha, _beta = folders
     _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
     _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, holder="sess-holder")
 
     r = _post(client, "/api/tasks/queue/admit",
               {"project": alpha, "message": "brand new chat"})
@@ -2337,6 +2451,7 @@ def test_a_queued_new_chat_is_named_the_moment_it_queues(
 
     key = tasks_store.pending_key(body["entry"]["id"])
     assert body["key"] == key
+    manager.line(alpha, key, holder="sess-holder")
     rows = _rows(client)
     assert rows[key]["task_id"] == number
     assert rows[key]["status"] == "queued"
@@ -2346,7 +2461,7 @@ def test_a_queued_new_chat_is_named_the_moment_it_queues(
 
 
 def test_a_queued_send_carries_the_chat_drafts_name_and_takes_the_draft_with_it(
-        client, projects_dir, folders, monkeypatch, flag):
+        client, projects_dir, folders, monkeypatch, flag, manager):
     """THE NAME SURVIVES THE QUEUE. A composer with no session autosaves under
     `new:<file>` and the listing numbers that key, so the reader is watching
     TASK-001 before a word of it has gone anywhere. Queueing the send is the
@@ -2358,6 +2473,7 @@ def test_a_queued_send_carries_the_chat_drafts_name_and_takes_the_draft_with_it(
     alpha, _beta = folders
     _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
     _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, holder="sess-holder")
 
     key = drafts.NEW_CHAT_PREFIX + alpha + "/app.py"
     assert drafts.put_chat(key, "half a thought") is not None
@@ -2376,6 +2492,7 @@ def test_a_queued_send_carries_the_chat_drafts_name_and_takes_the_draft_with_it(
     pending = tasks_store.pending_key(body["entry"]["id"])
     assert body["key"] == pending
     # ...and on every listing after it.
+    manager.line(alpha, pending, holder="sess-holder")
     rows = _rows(client)
     assert rows[pending]["task_id"] == number
     assert rows[pending]["status"] == "queued"
@@ -2471,9 +2588,12 @@ def test_an_admitted_send_leaves_its_chat_draft_alone(
     alpha, _beta = folders
     key = drafts.NEW_CHAT_PREFIX + alpha + "/app.py"
     drafts.put_chat(key, "half a thought")
-    assert _post(client, "/api/tasks/queue/admit",
-                 {"project": alpha, "message": "half a thought",
-                  "draft_key": key}).json() == {"run": True}
+    # The draft key is the name a session-less composer already has, so the
+    # placeholder is filed under it rather than under a fresh uuid.
+    assert _admitted(_post(client, "/api/tasks/queue/admit",
+                          {"project": alpha, "message": "half a thought",
+                           "draft_key": key}).json()) == {
+        "run": True, "owner_token": PLACEHOLDER + key}
     assert drafts.get_chat(key) is not None
 
 
@@ -2548,14 +2668,14 @@ def test_an_admitted_send_that_runs_answers_no_number_and_mints_none(
     pass, which is the behaviour with the flag off too."""
     flag()
     alpha, _beta = folders
-    assert _post(client, "/api/tasks/queue/admit",
-                 {"project": alpha, "session_id": "sess-a",
-                  "message": "go"}).json() == {"run": True}
+    assert _admitted(_post(client, "/api/tasks/queue/admit",
+                          {"project": alpha, "session_id": "sess-a",
+                           "message": "go"}).json()) == {"run": True}
     assert tasks_store.task_ids() == {}
 
 
 def test_a_pending_row_carries_the_entry_that_opens_it(
-        client, projects_dir, folders, monkeypatch, flag):
+        client, projects_dir, folders, monkeypatch, flag, manager):
     """`entry_id` on the row: the leader entry a waiting chat is re-entered by.
 
     A `pending:<entry>` task has no session and no transcript, so the entry id
@@ -2569,6 +2689,7 @@ def test_a_pending_row_carries_the_entry_that_opens_it(
         _entry("e-follow", "second thing", alpha, follow_of="e-lead"),
     ])
     _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, tasks_store.pending_key("e-lead"), holder="sess-holder")
 
     rows = _rows(client)
     key = tasks_store.pending_key("e-lead")
@@ -2729,3 +2850,264 @@ def test_a_follower_joins_the_session_its_leaders_run_named(
     rows = _rows(client)
     assert set(rows) == {"sess-new"}
     assert rows["sess-new"]["task_id"] == number
+
+
+# ================================================ the doors fire the events
+#
+# WHAT EACH ENDPOINT SAYS TO THE MANAGER, as opposed to what it answers the
+# client (which every case above pins). The two are separate promises and the
+# second is worthless without the first: a skip that returned position 1 and
+# moved nothing would satisfy the reply's contract exactly once, and then the
+# line would run in the order it had before the press.
+#
+# `FakeManager.events` is the tape. Nothing here asserts an ORDER inside the
+# manager — that is tests/test_queue_manager.py's whole subject — only that the
+# door reached it, with the keys the rest of the app files this task under.
+
+
+def _kinds(manager, *names):
+    return [event for event in manager.events if event[0] in names]
+
+
+def test_admit_takes_the_folder_through_the_manager(
+        client, folders, flag, manager):
+    """ONE CALL, not a look and then a write: the folder was free, so this send
+    runs and the same call that asked is the one that filed it.
+
+    `is_free` then `started` was two acquisitions of the manager's lock with a
+    gap in between, and two sends into one free folder arriving on two request
+    threads both heard "free" and both spawned."""
+    flag()
+    alpha, _beta = folders
+    assert _admitted(_post(client, "/api/tasks/queue/admit",
+                          {"project": alpha, "session_id": "sess-a",
+                           "message": "go"}).json()) == {"run": True}
+    assert _kinds(manager, "claim") == [("claim", alpha, "sess-a", "", "sess-a")]
+    assert _kinds(manager, "started", "enqueue") == []
+    assert (manager.owner(alpha) or {})["task"] == "sess-a"
+
+
+def test_a_second_nameless_send_queues_behind_the_first_ones_placeholder(
+        client, folders, flag, manager):
+    """A brand-new chat's first send names neither a session nor a run — the
+    spawn has not happened, because this is the call that says it may — so the
+    admission used to file NOBODY and the folder went on reading free. The
+    second nameless send was let straight into it.
+
+    The placeholder is that missing name. It is not a run (`is_free` never
+    refuses a send for one) and it expires on its own, because no process exists
+    yet to send the event that would free it."""
+    flag()
+    alpha, _beta = folders
+    first = _post(client, "/api/tasks/queue/admit",
+                  {"project": alpha, "message": "first"}).json()
+    assert first["run"] is True
+    assert (manager.owner(alpha) or {})["task"] == first["owner_token"]
+
+    second = _post(client, "/api/tasks/queue/admit",
+                   {"project": alpha, "message": "second"}).json()
+    assert second["run"] is False
+    assert second["entry"]["message"] == "second"
+
+
+def test_the_real_spawn_replaces_the_placeholder(
+        client, folders, flag, manager):
+    """`routers/run._file_owner` files the owner the moment `_start` returns,
+    with both names — which is the event that retires the placeholder."""
+    flag()
+    alpha, _beta = folders
+    token = _post(client, "/api/tasks/queue/admit",
+                  {"project": alpha, "message": "first"}).json()["owner_token"]
+    assert (manager.owner(alpha) or {})["task"] == token
+
+    manager.started(alpha, "sess-new", "run-1", "sess-new")
+    owner = manager.owner(alpha) or {}
+    assert (owner["task"], owner["run_id"]) == ("sess-new", "run-1")
+
+
+def test_admit_enqueues_the_entry_it_stored(
+        client, projects_dir, folders, monkeypatch, flag, manager):
+    """The other road: the folder is owned, so the message is written to the
+    store AND put in the line. A message that was only written would sit there
+    until some later pass happened to notice it."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding it")
+    _holders(monkeypatch, {alpha: "sess-holder"})
+
+    body = _post(client, "/api/tasks/queue/admit",
+                 {"project": alpha, "session_id": "sess-b", "message": "me too"}
+                 ).json()
+    assert body["run"] is False
+    assert _kinds(manager, "enqueue") == [
+        ("enqueue", alpha, "sess-b", body["entry"]["id"])]
+    assert _kinds(manager, "started") == []
+
+
+def test_a_follow_up_into_a_queued_chat_adds_no_second_slot(
+        client, folders, monkeypatch, flag, manager):
+    """A follow-up is a MESSAGE ON A TASK, not another task in the line. The
+    entry still carries `follow_of` — the store files the row by it — but the
+    manager keys by task, so the second admission names the key that is already
+    standing there and the line does not grow."""
+    flag()
+    alpha, _beta = folders
+    _holders(monkeypatch, {alpha: "sess-holder"})
+    leader = _post(client, "/api/tasks/queue/admit",
+                   {"project": alpha, "message": "first"}).json()
+    follower = _post(client, "/api/tasks/queue/admit",
+                     {"project": alpha, "message": "second",
+                      "follow_of": leader["entry"]["id"]}).json()
+
+    assert follower["key"] == leader["key"]
+    assert [event[2] for event in _kinds(manager, "enqueue")] == [
+        leader["key"], leader["key"]]
+    assert manager.lines[alpha] == [leader["key"]]
+
+
+def test_skip_presses_the_manager_and_reads_the_place_back(
+        client, projects_dir, folders, monkeypatch, flag, manager):
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-a", alpha, "mine")
+    _transcript(projects_dir, "sess-holder", alpha, "holding it")
+    _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, "sess-b", "sess-a", holder="sess-holder")
+
+    body = _post(client, "/api/tasks/queue/skip", {"key": "sess-a"}).json()
+    assert body["ok"] is True and body["position"] == 1
+    assert _kinds(manager, "skip") == [("skip", "sess-a")]
+    assert manager.lines[alpha] == ["sess-a", "sess-b"]
+
+
+def test_skip_on_a_task_in_no_line_is_refused_and_presses_nothing_else(
+        client, projects_dir, folders, flag, manager):
+    """The manager answering position 0 IS "not queued" — one read, and the 400
+    the client needs to refetch on."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-a", alpha, "mine")
+
+    r = _post(client, "/api/tasks/queue/skip", {"key": "sess-a"})
+    assert r.status_code == 400
+    assert r.json()["error"] == "not queued"
+
+
+# --------------------------------------- what the manager asks this process
+#
+# `running`/`blocked` are injected into the manager and they are asked with the
+# OWNER RECORD, not a task key: half the index knows a conversation by a name
+# the registry never heard.
+
+
+def test_the_running_read_answers_to_a_run_id_when_that_is_all_there_is(
+        folders, chat_run):
+    """THE BUG: every scheduled message the pump starts owns its folder under
+    `pending:<entry id>` — no session, no registry row, no mark — so the status
+    read answered "dead" and `reconcile` dropped a LIVE owner on the next tick.
+    The record carries the run the spawn returned, and the run dir has a pid."""
+    alpha, _beta = folders
+    chat_run("run-1", alpha, pid=os.getpid())
+    assert tasks_mod._queue_running(
+        {"task": "pending:e1", "run_id": "run-1", "session_id": ""}) is True
+    assert tasks_mod._queue_running(
+        {"task": "pending:e1", "run_id": "run-9", "session_id": ""}) is False
+    # …and the bare key, which is all an older caller has, still answers.
+    assert tasks_mod._queue_running("pending:e1") is False
+    assert tasks_mod._queue_running("run-1") is True
+
+
+def test_a_placeholder_owner_is_never_asked_about(folders, chat_run):
+    """`admit:<token>` names no process — that is why it exists — so it answers
+    to nothing but its own expiry inside the manager."""
+    alpha, _beta = folders
+    chat_run("run-1", alpha, pid=os.getpid())
+    assert tasks_mod._queue_running(
+        {"task": PLACEHOLDER + "one", "run_id": "", "session_id": ""}) is False
+
+
+def test_the_parked_read_answers_to_a_run_id_too(folders, park):
+    """The cards belong to the RUN. An owner the index knows only by its run id
+    would otherwise read as "not parked" the moment it put a card up, and get
+    its folder taken away while a human was looking at the card."""
+    alpha, _beta = folders
+    park("run-1", "sess-1", alpha)
+    assert tasks_mod._queue_blocked(
+        {"task": "pending:e1", "run_id": "run-1", "session_id": ""}) is True
+    assert tasks_mod._queue_blocked(
+        {"task": "pending:e1", "run_id": "run-2", "session_id": ""}) is False
+    # …and the session half, unchanged.
+    assert tasks_mod._queue_blocked(
+        {"task": "pending:e1", "run_id": "", "session_id": "sess-1"}) is True
+
+
+def test_decide_hands_the_card_to_the_manager(
+        client, projects_dir, folders, monkeypatch, flag, agent, manager):
+    """`card_answered` is the fork: it knows who owns the folder, so the
+    endpoint does not re-derive it."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding it")
+    _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, "sess-a", holder="sess-holder")
+
+    body = _post(client, "/api/tasks/queue/decide", _decide_body(alpha)).json()
+    assert body["held"] is True
+    assert _kinds(manager, "card_answered") == [
+        ("card_answered", "sess-a", "run-1", "req-1")]
+    assert agent.calls == []          # nothing written to the run yet
+
+
+def test_decide_on_a_free_folder_delivers_and_holds_nothing(
+        client, folders, monkeypatch, flag, agent, manager):
+    """The manager says not-held, and the endpoint is what delivers — a human
+    pressing Allow must not wait on a pump."""
+    flag()
+    alpha, _beta = folders
+    _holders(monkeypatch, {})
+
+    body = _post(client, "/api/tasks/queue/decide", _decide_body(alpha)).json()
+    assert body["held"] is False and body["decided"] == "req-1"
+    assert _kinds(manager, "card_answered") == [
+        ("card_answered", "sess-a", "run-1", "req-1")]
+    assert agent.calls[0]["decision"] == "allow"
+    assert manager.held_answer("sess-a") is None
+
+
+def test_with_the_flag_off_no_door_touches_the_manager(
+        client, projects_dir, folders, flag, agent, manager):
+    """The promise the whole feature is behind. Off, admission is a constant,
+    skip is a 409 before anything is read, and a card goes straight through —
+    and the manager hears about none of it."""
+    flag(False)
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-a", alpha, "mine")
+
+    assert _post(client, "/api/tasks/queue/admit",
+                 {"project": alpha, "session_id": "sess-a", "message": "go"}
+                 ).json() == {"run": True}
+    assert _post(client, "/api/tasks/queue/skip",
+                 {"key": "sess-a"}).status_code == 409
+    assert _post(client, "/api/tasks/queue/decide",
+                 _decide_body(alpha)).json()["held"] is False
+    assert manager.events == []
+
+
+def test_a_queue_dispatched_turn_marks_its_session_running(monkeypatch):
+    """Akshil's list audit (2026-09-18): the watcher may still hold the previous
+    turn's `turn_ended` stamp for this session, and a hand-off inside the same
+    second cleared nothing — the row read done while the next turn ran. The
+    queue is the one caller that knows a turn just began, so it marks it."""
+    from fused_render import tasks_watch as tw
+
+    tw.reset()
+    monkeypatch.setattr(tasks_mod, "_oldest_due_entry", lambda key: "e-1")
+    monkeypatch.setattr(tasks_mod.schedule, "dispatch_entry",
+                        lambda entry_id, now=None: {"run_id": "r-1",
+                                                    "session_id": "sess-1"})
+    tw.mark_turn_ended("sess-1", "r-0", time.time())
+    assert tw.is_turn_ended("sess-1")
+    assert tasks_mod._queue_spawn("/w/alpha", "sess-1") == {"run_id": "r-1",
+                                                            "session_id": "sess-1"}
+    assert tw.is_marked_running("sess-1")
+    assert not tw.is_turn_ended("sess-1")

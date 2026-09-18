@@ -544,6 +544,158 @@ def test_stale_idle_does_not_retire_a_newer_turns_mark(claude_home):
         assert (row["live"], row["status"]) == (False, "done")
 
 
+# --------------------------------- the manager's own word: the TURN has ended
+
+def test_mark_turn_ended_retires_the_mark_and_outranks_a_stale_busy_row(claude_home):
+    """The queue manager's word off `turn_ended`/`exited` (a `result` row it
+    tailed) is sooner and more certain than anything this module infers on its
+    own: a registry row already sitting at `busy` from BEFORE this call has
+    nothing to say about a turn that has already ended."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    tasks_watch.mark_running(SID, ttl_sec=60)
+    _registry(claude_home, SID, status="busy")
+    tasks_watch.tick()
+    assert tasks_watch.is_marked_running(SID)
+    assert tasks_watch.live_from_registry(SID) == (True, 1787824059.664)
+
+    gen = tasks_watch.generation()
+    tasks_watch.mark_turn_ended(SID, "run-1")
+    assert not tasks_watch.is_marked_running(SID)
+    # Announced at once, like every other write here — no tick in between.
+    assert tasks_watch.wait(gen, 0) == (gen + 1, frozenset({SID}))
+
+    # `_registry()` above deliberately stamps its files ahead of real time (see
+    # its own comment — it is dodging the clock's granularity across rapid
+    # successive writes, not modelling a real clock), so the real
+    # `mark_turn_ended` call just above almost certainly landed at a `time.time()`
+    # BEFORE that stamp. Pin the ended stamp to what it would be on a real
+    # machine — strictly after the row it must outrank — so this test is about
+    # the ordering rule and not a race against that fixture's own trick.
+    tasks_watch._ended[SID] = tasks_watch._registry_mtime[SID] + 1.0
+    assert tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID) == (False, 1787824059.664)
+
+
+def test_a_registry_row_rewritten_busy_after_the_end_stamp_re_enables(claude_home):
+    """Only a REWRITE after the manager's word counts as new information — a
+    genuinely later turn started on the same session."""
+    tasks_watch.reset()
+    tasks_watch._registry[SID] = {"pid": 1, "sessionId": SID, "status": "busy",
+                                  "updatedAt": 1787824059664}
+    tasks_watch._registry_mtime[SID] = 1000.0
+    tasks_watch.mark_turn_ended(SID)
+    assert tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is False
+
+    ended_at = tasks_watch._ended[SID]
+    tasks_watch._registry_mtime[SID] = ended_at + 5.0
+    assert not tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID) == (True, 1787824059.664)
+
+
+def test_an_older_or_equal_registry_mtime_does_not_re_enable(claude_home):
+    """The SAME turn's row, re-read unchanged or re-asserting the same status
+    with no fresh write behind it, must not resurrect the ended stamp."""
+    tasks_watch.reset()
+    tasks_watch._registry[SID] = {"pid": 1, "sessionId": SID, "status": "busy",
+                                  "updatedAt": 1787824059664}
+    tasks_watch._registry_mtime[SID] = 1000.0
+    tasks_watch.mark_turn_ended(SID)
+    ended_at = tasks_watch._ended[SID]
+
+    tasks_watch._registry_mtime[SID] = ended_at  # equal: not a rewrite
+    assert tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is False
+
+    tasks_watch._registry_mtime[SID] = ended_at - 1.0  # older still
+    assert tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is False
+
+
+# ------------------------- bugbot: ended mark clobbers overlapping turns
+
+
+def test_a_newer_marks_own_turn_survives_an_older_turns_ended_event(claude_home):
+    """A follow-up's `mark_running` (a NEWER turn) can land before an OLDER
+    turn's `turn_ended` event does — the two are independent HTTP deliveries
+    with no shared clock beyond the `at` each one carries. The newer mark must
+    not be popped by news that, in truth, describes a turn before it."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    t0 = time.time()
+    tasks_watch.mark_running(SID, ttl_sec=60)  # the newer turn's own mark
+    assert tasks_watch.is_marked_running(SID)
+
+    # The OLDER turn's ended event, timestamped well before the mark above,
+    # arrives late.
+    gen = tasks_watch.generation()
+    tasks_watch.mark_turn_ended(SID, "run-1", at=t0 - 5.0)
+    assert tasks_watch.is_marked_running(SID), "the newer mark must survive"
+    assert not tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.generation() == gen + 1, "still announced: `_ended` moved"
+
+
+def test_a_registry_row_rewritten_busy_before_a_slow_ended_event_lands(claude_home):
+    """The other overlap the bugbot named: the registry file itself was
+    rewritten `busy` again — a genuinely later turn — strictly AFTER the
+    moment the `turn_ended` event describes but before that (slower) HTTP
+    request reaches this process. `is_turn_ended`'s own mtime check already
+    guards this once `_ended` is stamped to the EVENT's `at` instead of
+    arrival time; this pins the ordering down end to end."""
+    tasks_watch.reset()
+    tasks_watch._registry[SID] = {"pid": 1, "sessionId": SID, "status": "busy",
+                                  "updatedAt": 1787824059664}
+    t0 = time.time()
+    tasks_watch._registry_mtime[SID] = t0 + 0.5  # rewritten AFTER the turn ended
+    tasks_watch.mark_turn_ended(SID, at=t0)
+    assert not tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID) == (True, 1787824059.664)
+
+
+def test_the_plain_case_still_ends(claude_home):
+    """No overlap at all: the mark predates the ended event, no fresher
+    registry row exists, and the turn reads ended, same as ever."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    tasks_watch.mark_running(SID, ttl_sec=60)
+    assert tasks_watch.is_marked_running(SID)
+
+    tasks_watch.mark_turn_ended(SID, at=time.time() + 1.0)
+    assert not tasks_watch.is_marked_running(SID)
+    assert tasks_watch.is_turn_ended(SID)
+
+
+def test_an_older_or_duplicate_turn_ended_event_never_moves_ended_backwards(
+        claude_home):
+    """Idempotent: a retried POST, or an `exited` describing the same edge a
+    `turn_ended` already reported, must change nothing — not the stamp, not
+    the generation."""
+    tasks_watch.reset()
+    t0 = time.time()
+    tasks_watch.mark_turn_ended(SID, at=t0)
+    assert tasks_watch._ended[SID] == t0
+
+    gen = tasks_watch.generation()
+    tasks_watch.mark_turn_ended(SID, at=t0 - 5.0)  # an older duplicate/retry
+    assert tasks_watch._ended[SID] == t0, "must not move backwards"
+    assert tasks_watch.generation() == gen, "an ignored event must not bump"
+
+    tasks_watch.mark_turn_ended(SID, at=t0)  # an exact duplicate
+    assert tasks_watch._ended[SID] == t0
+    assert tasks_watch.generation() == gen
+
+
+def test_mark_turn_ended_with_no_at_falls_back_to_arrival_time(claude_home):
+    """A caller with nothing better — an old host, or a plain unit test —
+    keeps the pre-`at` behaviour: the call's own `time.time()`."""
+    tasks_watch.reset()
+    before = time.time()
+    tasks_watch.mark_turn_ended(SID)
+    after = time.time()
+    assert before <= tasks_watch._ended[SID] <= after
+
+
 # --------------------------------------------- the card rings the queue
 
 

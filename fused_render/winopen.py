@@ -531,7 +531,7 @@ def _open(path: str | None, requested_port: int | None) -> None:
             # its own, so opening a tab would just duplicate it.
             # relaunch (D273) degrades to the same thing here: the macOS
             # quit-and-respawn doesn't apply (installed_version is None on
-            # Windows, the restart card never shows), and falling through
+            # Windows, the restart dialog never shows), and falling through
             # would error on the /clone page.
             port = _ensure_server(requested_port)
             logger.info("launch deep link: server ready on port %s, no tab opened", port)

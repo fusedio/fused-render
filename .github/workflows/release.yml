@@ -391,12 +391,45 @@ jobs:
           # there must not withhold an otherwise-good link).
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "appimage_url=https://${CDN_DOMAIN}/${LINUX_PREFIX}/$(basename "$APPIMAGE")" >> "$GITHUB_OUTPUT"
+          # Consumed by the "Publish signed Linux update manifest" step below,
+          # the same way $DMG_PATH carries across into the macOS manifest step.
+          echo "APPIMAGE=$APPIMAGE" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          gh release upload "$RELEASE_TAG" "$APPIMAGE" --clobber
+
+      - name: Publish signed Linux update manifest
+        # The in-app updater (fused_render/update/linux.py) polls this fixed
+        # name — same signing scheme and script as the macOS/Windows
+        # manifests (docs/PYTHON_SUPERVISOR_SPEC.md "Software updates"). The
+        # manifest URL points at the already-uploaded AppImage, so this runs
+        # strictly after the S3 upload above.
+        env:
+          FUSED_RENDER_UPDATE_SIGNING_KEY: ${{ secrets.FUSED_RENDER_UPDATE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          uv run --no-project --with cryptography \
+            scripts/windows/generate_update_manifest.py \
+            "$VERSION" "$APPIMAGE" "https://${CDN_DOMAIN}/${LINUX_PREFIX}" \
+            dist/linux-latest.json
+          # no-cache: the updater polls this fixed name; a stale CDN copy
+          # would mask a release.
+          aws s3 cp dist/linux-latest.json "s3://${S3_BUCKET}/${LINUX_PREFIX}/latest.json" \
+            --cache-control no-cache
+
+      - name: Invalidate CloudFront
+        # Runs after BOTH uploads above (the AppImage and the manifest that
+        # points at it), same shape as the macOS job's "Invalidate
+        # CloudFront" step: an invalidation issued before the manifest is
+        # live would only cover the AppImage path, leaving a window where a
+        # request for latest.json could re-cache the previous release's
+        # manifest. The manifest upload's own --cache-control no-cache means
+        # that window is already survivable without this ordering, but the
+        # ordering removes it rather than merely surviving it.
+        run: |
+          set -euo pipefail
           aws cloudfront create-invalidation \
             --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
             --paths "/${LINUX_PREFIX}/*"
-          # No latest.json manifest: Linux has no auto-updater yet — the
-          # supervisor _linux backend exposes no `update` module (unlike _win32).
-          gh release upload "$RELEASE_TAG" "$APPIMAGE" --clobber
 
   publish-download-page:
     # Runs once, after all three OS builds, so the manifest can carry every

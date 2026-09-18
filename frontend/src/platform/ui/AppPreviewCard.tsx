@@ -36,7 +36,8 @@ import { useEffect, useRef, useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
 import { appIconUrl, appfilePreviewUrl, rawUrl } from "@platform/lib/api";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
-import { openShareApp } from "@platform/lib/share-app";
+import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
+import { useAppSharingFeature } from "@platform/lib/share-app-flag";
 import { AppStar } from "@platform/ui/AppStar";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { thumbFrame } from "@platform/lib/thumb-frame";
@@ -170,6 +171,9 @@ export function AppPreviewCard({
   // rather than a dependency because usePreviewStart's effect restarts the
   // iframe whenever its deps change: promoting a waiting card through the deps
   // would tear down a running one.
+  // Whether the hover chip is Share (the sheet) or plain Export — see
+  // share-app-flag.ts; default off.
+  const sharing = useAppSharingFeature();
   const { started: liveStarted, settled: liveSettled } = usePreviewStart(
     wantsLive,
     hoverPriority || onScreen,
@@ -401,15 +405,22 @@ export function AppPreviewCard({
       <button
         type="button"
         className="app-pcard-share"
-        title={"Share " + (app.title || app.name) + " — public link or .fused file"}
-        aria-label="Share app"
+        title={
+          sharing
+            ? "Share " + (app.title || app.name) + " — public link or .fused file"
+            : "Export " + (app.title || app.name) + " as a .fused app file"
+        }
+        aria-label={sharing ? "Share app" : "Export app file"}
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          openShareApp(app);
+          // Flag off (share-app-flag.ts, the default): the chip is the plain
+          // Export it was before the sheet — straight to Downloads + a toast.
+          if (sharing) openShareApp(app);
+          else void exportAppFileOnly(app);
         }}
       >
-        {MenuIcons.share}
+        {sharing ? MenuIcons.share : MenuIcons.download}
       </button>
       )}
     </a>

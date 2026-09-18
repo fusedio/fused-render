@@ -1240,3 +1240,73 @@ def test_status_says_which_half_of_the_install_is_running(monkeypatch, tmp_path)
     manager._install_thread.join(timeout=5)
     assert seen == ["downloading", "installing"]
     assert manager.status()["phase"] is None
+
+
+def _record(job_id):
+    """The stored `jobs.Job`, not the wire dict: `effective_tier` is DERIVED and
+    never serialised, so the only way to ask it is to hold the record."""
+    with jobs._lock:
+        return jobs._jobs[job_id]
+
+
+def test_a_finished_install_pops_nothing(monkeypatch, tmp_path):
+    """SILENT ON SUCCESS. "Installed — restart to finish" used to arrive as a
+    pop-up card in the floating column at the same instant as the blocking
+    dialog that says the same thing AND offers the button (`UpdateDialog`'s
+    restart mode, which the install reaching "installed" is what raises) — two
+    announcements of one event, one of them dismissible and useless.
+
+    `silent` is the one tier `popupJobs` (frontend/src/platform/lib/jobs.ts)
+    reads to pop nothing, gated on `state == "done"` there exactly as
+    `effective_tier` gates it here."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: None)
+    manager.install()
+    manager._install_thread.join(timeout=5)
+
+    assert manager.status()["state"] == "installed"
+    row = _row()
+    assert row["state"] == "done"
+    assert row["detail"] == mac.DONE_MESSAGE
+    assert row["tier"] == jobs.SILENT
+    # The DERIVED tier is what a reader acts on, and on a clean finish it is the
+    # declared one — nothing promotes this row back into a card.
+    assert jobs.effective_tier(_record(row["id"])) == jobs.SILENT
+
+
+def test_a_failed_install_is_as_loud_as_it_ever_was(monkeypatch, tmp_path):
+    """Silence is a property of SUCCESS only. The failure path never restates
+    the tier, so the row keeps the default `trail` it was created with — and
+    `effective_tier` promotes an errored row to `attention` regardless — so a
+    failed update still pops and still keeps its row."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+
+    def boom(manifest):
+        raise RuntimeError("no disk")
+
+    monkeypatch.setattr(manager, "_install_dmg", boom)
+    manager.install()
+    manager._install_thread.join(timeout=5)
+
+    row = _row()
+    assert row["state"] == "error"
+    assert row["tier"] == jobs.TRAIL
+    assert jobs.effective_tier(_record(row["id"])) == jobs.ATTENTION
+
+
+def test_the_running_download_row_is_untouched_by_the_silent_finish(monkeypatch, tmp_path):
+    """Only the terminal report declares `silent`; the download's own ticks do
+    not, so the row that shows the bytes, the phase and the ✕ while the update
+    runs is exactly the `trail` row it has always been."""
+    import threading
+
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    gate = threading.Event()
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: gate.wait(5))
+    manager.install()
+    running = _row()
+    assert running["state"] == "running"
+    assert running["tier"] == jobs.TRAIL
+    gate.set()
+    manager._install_thread.join(timeout=5)
+    assert _row()["tier"] == jobs.SILENT

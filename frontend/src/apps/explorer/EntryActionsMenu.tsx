@@ -39,7 +39,8 @@
 import { useEffect, useState } from "react";
 import { Plug, Stethoscope } from "lucide-react";
 import { addCurrentApp, getAppEntry } from "@platform/lib/api";
-import { openShareApp } from "@platform/lib/share-app";
+import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
+import { useAppSharingFeature } from "@platform/lib/share-app-flag";
 import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
 import { AppDoctorStatusDot } from "@platform/ui/AppDoctorStatusDot";
 import { useAppDoctorChecks } from "@platform/ui/useAppDoctorChecks";
@@ -149,7 +150,13 @@ export function EntryActionsMenu({
   // Mirrors AppPage.tsx's `shareDisabled`: a click landing mid-resolve, before
   // `snapshotResolved.dir` exists, must not fall through to exporting the LIVE
   // folder while the pane still shows the version being resolved.
-  const shareDisabled = snapshotPending || snapshotError;
+  // BEHIND THE FLAG (share-app-flag.ts, default off): ON, the row is Share and
+  // opens the sheet; OFF, it is the "Download app" row this menu carried
+  // before the sheet — the same `.fused` straight to Downloads, a toast saying
+  // where — with its own spinner, since there is no sheet to narrate the save.
+  const sharing = useAppSharingFeature();
+  const [exporting, setExporting] = useState(false);
+  const shareDisabled = snapshotPending || snapshotError || exporting;
   // One Share entry opens the unified sheet (ShareAppModal): the public link
   // and the `.fused` download as two cards. This is the one place that turns
   // "which version is previewed" into "which folder the FILE card exports".
@@ -164,8 +171,18 @@ export function EntryActionsMenu({
     // export in Downloads is never ambiguous about which is which.
     const exportName = isLive ? name : `${name}-${versionLabel}`;
     const live = { path: dir, name };
+    const file = isLive ? live : { path: exportPath, name: exportName };
+    if (!sharing) {
+      setExporting(true);
+      try {
+        await exportAppFileOnly(file);
+      } finally {
+        setExporting(false);
+      }
+      return;
+    }
     openShareApp(live, {
-      file: isLive ? live : { path: exportPath, name: exportName },
+      file,
       // Live only — the shared canvas is named after the app's id and
       // always carries "the app", so a snapshot published under it would
       // downgrade every link out there. The sheet says so instead.
@@ -201,16 +218,28 @@ export function EntryActionsMenu({
         },
         // The one Share entry: the sheet behind it offers the public link
         // (share_app.py) and the `.fused` download together (see `doShare`).
-        {
-          label: "Share…",
-          icon: MenuIcons.share,
-          title:
-            snapshotSha === null
-              ? "Share " + name + " — public link or .fused file"
-              : "Share " + name + " as of " + versionLabel + " as a .fused file",
-          disabled: shareDisabled,
-          onClick: () => void doShare(),
-        },
+        // Flag off: the plain "Download app" row instead.
+        sharing
+          ? {
+              label: "Share…",
+              icon: MenuIcons.share,
+              title:
+                snapshotSha === null
+                  ? "Share " + name + " — public link or .fused file"
+                  : "Share " + name + " as of " + versionLabel + " as a .fused file",
+              disabled: shareDisabled,
+              onClick: () => void doShare(),
+            }
+          : {
+              label: exporting ? "Exporting…" : "Download app",
+              icon: exporting ? <span className="mode-icon-spinner" /> : MenuIcons.download,
+              title:
+                snapshotSha === null
+                  ? "Export " + name + " as a single .fused app file"
+                  : "Export " + name + " as of " + versionLabel + " as a .fused file",
+              disabled: shareDisabled,
+              onClick: () => void doShare(),
+            },
         {
           label: "Open as project",
           icon: MenuIcons.open,

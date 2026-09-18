@@ -558,16 +558,28 @@ export function schedFindTask(
   // finds nothing. Without this the card and the rows of a queued new chat had
   // no server row to read their queue facts off at all (Bugbot PR #1124).
   const byLeader = leader ? "pending:" + leader : "";
+  let byPending: SchedTask | null = null;
+  let bySession: SchedTask | null = null;
   let byMessage: SchedTask | null = null;
   for (const task of tasks || []) {
     if (!task) continue;
-    if ((mine && task.key === mine) || task.key === pending) return task;
-    if (byLeader && task.key === byLeader) return task;
+    // PRIORITIZE the pending key: when a message is sent to a different
+    // folder's task, the entry gets a new pending:<entry_id> key, not the
+    // session key. Without this, schedFindTask returns an old done task with the
+    // same sessionId, so the header keeps the done ring when it should show
+    // queued (Bugbot, 2026-09-17).
+    if (!byPending && (task.key === pending || task.key === byLeader)) {
+      byPending = task;
+    }
+    if (!bySession && mine && task.key === mine) {
+      bySession = task;
+    }
     if (!byMessage && (task.messages || []).some((m) => m && m.entry_id === id)) {
       byMessage = task;
     }
   }
-  return byMessage;
+  // Return in priority order: pending/leader key, then session key, then message scan.
+  return byPending || bySession || byMessage;
 }
 
 /**

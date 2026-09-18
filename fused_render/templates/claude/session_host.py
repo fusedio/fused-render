@@ -48,7 +48,9 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
+import urllib.request
 
 # Both overridable by environment variable — not by editing this file at
 # import time — so a test can shrink them to run fast without needing to
@@ -182,6 +184,108 @@ def _turn_state_if_grown(agent, run_dir: str, cache: dict) -> tuple:
     return cache["state"]
 
 
+# ----------------------------------------------------------- the queue's news
+#
+# The project queue moves on EVENTS, never on a poll (design.md, "No polls in
+# queue logic"): the server cannot watch this session's transcript without
+# re-growing the very poll the queue was built to delete, and this process is
+# already reading `out.jsonl` every tick for its own reap timer. So the two
+# moments the queue needs — "this turn is over" and "this session is gone" —
+# are announced from here, where they are already known, as one small POST each.
+#
+# FIRE AND FORGET, ALWAYS. This host owns the CLI's stdin for a whole chat
+# session; a server that is slow, restarting or simply not listening must not
+# cost the user a message. Every post runs on its own daemon thread, carries a
+# 2 s timeout, and swallows every exception — the endpoint on the other side is
+# a no-op whenever the flag is off, so a lost one costs nothing the queue can
+# feel. No origin in the environment (this host started standalone, or from an
+# older server) means there is nobody to tell, and we skip it silently.
+#
+# Stdlib only, like the rest of this directory (`urllib.request`, not httpx):
+# this module never imports `fused_render` and has to keep working from a copy
+# of the template tree.
+
+_EVENT_PATH = "/api/tasks/queue/event"
+# FIVE SECONDS, AND ONE RETRY (2026-09-17). Two was a guess, and the moment it
+# is wrong is exactly the moment it matters: a spawn storm — several sessions
+# starting at once — is when the server is slowest to answer AND when the
+# queue most needs to hear that a folder came free. A dropped `exited` parks a
+# working tree until the next reconcile. The cost of being generous is a daemon
+# thread living a few seconds longer, which nothing waits on but the one joined
+# post on the way out.
+_EVENT_TIMEOUT = 5.0
+# A connection failure is the retryable one: the server restarting, or a listen
+# backlog that was full for an instant. One retry, a second later.
+_EVENT_RETRY_SECONDS = 1.0
+
+
+def _meta_session_id(run_dir: str) -> str:
+    """The session id `_start` wrote beside this run, or `""`.
+
+    `meta["session_id"]` is the id MINTED for a new chat (`--session-id`) and
+    `meta["resumed_from"]` the one a resume was asked to continue; either is
+    the Tasks page's key for this run, and one of them exists from the instant
+    the run dir does. The endpoint re-derives this itself when we send nothing
+    — this is the cheap path, not the authority."""
+    try:
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+            meta = json.load(fh)
+    except Exception:  # unreadable, half-written, or simply not there yet
+        return ""
+    if not isinstance(meta, dict):
+        return ""
+    return str(meta.get("session_id") or meta.get("resumed_from") or "")
+
+
+def _post_event(run_dir: str, kind: str, **extra):
+    """Tell the server one queue event happened. Returns the thread doing it
+    (or None when there is nobody to tell), so a caller that is about to let
+    this process die can wait a moment for the last one to land."""
+    try:
+        origin = (os.environ.get("FUSED_RENDER_ORIGIN") or "").rstrip("/")
+        if not origin:
+            return None
+        body = {
+            "kind": kind,
+            "run_id": os.path.basename(os.path.normpath(run_dir)),
+            "session_id": _meta_session_id(run_dir),
+        }
+        body.update(extra)
+        t = threading.Thread(target=_send_event, args=(origin + _EVENT_PATH, body),
+                             daemon=True)
+        t.start()
+        return t
+    except Exception:
+        return None  # the queue is never worth failing a session over
+
+
+def _send_event(url: str, body: dict) -> None:
+    """POST it, and on a failure try once more a second later.
+
+    Still fire-and-forget: both attempts swallow everything. The retry is for
+    the one failure that is usually over by the time you look — the server
+    bouncing, or refusing a connection for an instant under a spawn storm —
+    and it is one retry, not a loop, because a queue event has a shelf life and
+    `reconcile` is the real backstop."""
+    data = json.dumps(body).encode("utf-8")
+    for attempt in (0, 1):
+        try:
+            req = urllib.request.Request(
+                url, data=data,
+                headers={"Content-Type": "application/json", "X-Fused": "1"},
+                method="POST")
+            with urllib.request.urlopen(req, timeout=_EVENT_TIMEOUT) as resp:
+                resp.read()
+            return
+        except Exception:
+            if attempt:
+                return
+        try:
+            time.sleep(_EVENT_RETRY_SECONDS)
+        except Exception:
+            return
+
+
 def main() -> None:
     req = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     agent = _load_agent(req["agent"])
@@ -265,11 +369,28 @@ def _reap_loop(agent, run_dir: str, cli, host_json: str) -> None:
     ever drain again."""
     idle_since = None
     turn_state_cache = {}
+    # A fresh run reads as turn-OPEN (`_turn_state`: no rows yet is open), and
+    # that is also what we assume before the first read — so the first `result`
+    # row the CLI writes is a True->False EDGE and announces itself, while a
+    # session that goes on to open another turn on the same held-open stdin
+    # announces that one too. Edge, not level: the loop sees the same closed
+    # state 5x a second for the rest of an idle session, and the queue needs
+    # the transition, once.
+    was_open = True
     try:
         while cli.poll() is None:
             _drain_inbox(agent, run_dir, cli.stdin)
             turn_open, tasks_pending = _turn_state_if_grown(
                 agent, run_dir, turn_state_cache)
+            if was_open and not turn_open:
+                # `at` is THIS INSTANT — the moment this loop saw the `result`
+                # row's edge — not whenever the HTTP POST actually lands on
+                # the server. `mark_turn_ended`'s ordering runs off this, not
+                # request-arrival order, which is what lets an overlapping
+                # follow-up's own (earlier-arriving) mark survive a slow
+                # delivery of this event (bugbot, 2026-09-17).
+                _post_event(run_dir, "turn_ended", at=time.time())
+            was_open = turn_open
             if turn_open or tasks_pending:
                 idle_since = None
             else:
@@ -308,6 +429,27 @@ def _reap_loop(agent, run_dir: str, cli, host_json: str) -> None:
             try:
                 cli.wait(timeout=5)
             except subprocess.TimeoutExpired:
+                pass
+        # THE MOMENT THIS LOOP SAW THE CHILD GONE — cli.poll() is now
+        # guaranteed final (the wait above only returns once it is, or gives
+        # up after 5s with the process still refusing to reap, its own
+        # separate problem). Not `time.time()` taken later, after the event
+        # is built and threaded off: `mark_turn_ended`'s ordering is by this
+        # stamp, and the whole point is that it must not drift with how long
+        # the HTTP POST itself takes to land (bugbot, 2026-09-17).
+        exited_at = time.time()
+        # The session is over — the CLI exited on its own, the idle timer
+        # reaped it, or a read in the loop above threw. All three are the same
+        # news to the queue (this folder's owner is gone), so it is announced
+        # once, here, after every way out of the loop. JOINED, unlike the
+        # turn_ended posts: this process is about to return out of `main` and
+        # a daemon thread dies with it, so the last word has to be waited for
+        # — briefly, and never longer than the post's own timeout.
+        last = _post_event(run_dir, "exited", code=cli.poll(), at=exited_at)
+        if last is not None:
+            try:
+                last.join(_EVENT_TIMEOUT + 1.0)
+            except Exception:
                 pass
 
 
