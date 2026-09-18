@@ -407,14 +407,7 @@ class UpdateManager:
             disk = self._disk_version()
             with self._lock:
                 if self._state == during:
-                    self._error = None
-                    if self._latest and disk is not None and not common.is_newer(
-                            self._latest["version"], disk):
-                        self._state = "installed"
-                    elif self._latest:
-                        self._state = "available"
-                    else:
-                        self._state = "idle"
+                    self._settle(self._latest, disk)
             return self.status()
         # The bundle on disk, not the running __version__, decides "already
         # installed": after a successful swap (ours, brew's, or a manual one
@@ -428,18 +421,39 @@ class UpdateManager:
             # out — an install that began from "available" (the one case that
             # used to be impossible, since the state was "checking").
             if self._state == during:
-                self._error = None
-                if newer and disk is not None and not common.is_newer(
-                        manifest["version"], disk):
-                    self._latest = manifest
-                    self._state = "installed"
-                elif newer:
-                    self._latest = manifest
-                    self._state = "available"
-                else:
-                    self._latest = None
-                    self._state = "idle"
+                self._settle(manifest if newer else None, disk)
         return self.status()
+
+    def _settle(self, latest: dict | None, disk: str | None) -> None:
+        """Set `_latest` and the resting state after a check, given what the
+        manifest offers (`latest`, None when nothing newer) and what is on
+        disk. Under the lock; shared by the failure and success tails of
+        `check()` so a network blip and a clean fetch derive the state the
+        same way.
+
+        An install's "error" is HELD, not cleared (bugbot,
+        fusedio/fused-render-lite#26, on the copy of this module there): the
+        auto loop re-checks every five minutes, and a failed install's reason
+        and its "Try again" must survive those ticks — the user has not seen
+        them yet. Only two things end it: the bundle on disk is now the
+        version we failed on (someone installed it another way), or the
+        manifest no longer offers that version (a pulled release, or a newer
+        one — the retry would be a different install, so it starts clean).
+        `install()` still accepts a retry from "error" throughout."""
+        previous = self._latest["version"] if self._latest else None
+        self._latest = latest
+        if self._state == "error" and latest is not None and latest["version"] == previous:
+            if disk is not None and not common.is_newer(latest["version"], disk):
+                self._state, self._error = "installed", None
+            return
+        self._error = None
+        if latest is not None and disk is not None and not common.is_newer(
+                latest["version"], disk):
+            self._state = "installed"
+        elif latest is not None:
+            self._state = "available"
+        else:
+            self._state = "idle"
 
     def _disk_version(self) -> str | None:
         """CFBundleShortVersionString of the bundle on disk — what would launch
@@ -815,8 +829,18 @@ class UpdateManager:
                 raise
         finally:
             if mount is not None:
-                subprocess.run(["/usr/bin/hdiutil", "detach", mount, "-quiet"],
-                               check=False, capture_output=True, timeout=60)
+                # Best-effort: by the time this runs the swap is DONE (or has
+                # already raised its own error). A detach that hangs or dies
+                # (`hdiutil` timing out on a busy volume, say) must not turn a
+                # finished install into "error", and must not skip the cleanup
+                # below (bugbot, fusedio/fused-render-lite#26). The stale
+                # volume is the whole cost, and the OS reclaims it on logout.
+                try:
+                    subprocess.run(["/usr/bin/hdiutil", "detach", mount, "-quiet"],
+                                   check=False, capture_output=True, timeout=60)
+                except (OSError, subprocess.SubprocessError):
+                    logger.warning("could not detach update image at %s", mount,
+                                   exc_info=True)
             common.discard(dmg)
             if os.path.exists(swap_in):
                 shutil.rmtree(swap_in, ignore_errors=True)
@@ -841,16 +865,56 @@ class UpdateManager:
             raise RuntimeError("not enough free disk space to download the update")
 
     def _attach(self, dmg: str) -> str:
-        result = subprocess.run(
-            ["/usr/bin/hdiutil", "attach", dmg, "-nobrowse", "-readonly",
-             "-plist", "-mountrandom", tempfile.gettempdir()],
-            capture_output=True, timeout=120)
-        if result.returncode != 0:
+        """Mount the DMG and return its mount point. Every failure path after
+        `hdiutil attach` may have done its work (a timeout, an unparsable
+        plist, a non-zero status with a mount already made, a mount with no
+        volume) detaches whatever got attached for this image before raising,
+        so `_install_dmg`'s cleanup — which only knows the mount point this
+        returns — never has to guess (bugbot, fusedio/fused-render-lite#26)."""
+        try:
+            result = subprocess.run(
+                ["/usr/bin/hdiutil", "attach", dmg, "-nobrowse", "-readonly",
+                 "-plist", "-mountrandom", tempfile.gettempdir()],
+                capture_output=True, timeout=120)
+        except subprocess.SubprocessError:
+            self._detach_image(dmg)
             raise RuntimeError("could not open the downloaded update image")
-        for entity in plistlib.loads(result.stdout).get("system-entities", []):
-            if entity.get("mount-point"):
-                return entity["mount-point"]
-        raise RuntimeError("update image mounted with no volume")
+        try:
+            if result.returncode != 0:
+                raise RuntimeError("could not open the downloaded update image")
+            for entity in plistlib.loads(result.stdout).get("system-entities", []):
+                if entity.get("mount-point"):
+                    return entity["mount-point"]
+            raise RuntimeError("update image mounted with no volume")
+        except (plistlib.InvalidFileException, ValueError, TypeError) as error:
+            raise RuntimeError("could not read the update image's mount table") from error
+        finally:
+            # Only reached without a mount point to hand back.
+            if sys.exc_info()[0] is not None:
+                self._detach_image(dmg)
+
+    def _detach_image(self, dmg: str) -> None:
+        """Best-effort: detach any attached image whose backing file is `dmg`
+        (`hdiutil info -plist` lists them by image-path), so a failed attach
+        leaves no stale volume behind and the DMG can be deleted."""
+        try:
+            info = subprocess.run(["/usr/bin/hdiutil", "info", "-plist"],
+                                  capture_output=True, timeout=60)
+            if info.returncode != 0:
+                return
+            target = os.path.realpath(dmg)
+            for image in plistlib.loads(info.stdout).get("images", []):
+                if os.path.realpath(str(image.get("image-path", ""))) != target:
+                    continue
+                for entity in image.get("system-entities", []):
+                    dev = entity.get("dev-entry")
+                    if dev:
+                        subprocess.run(["/usr/bin/hdiutil", "detach", dev, "-force", "-quiet"],
+                                       check=False, capture_output=True, timeout=60)
+                        break
+        except (OSError, subprocess.SubprocessError, plistlib.InvalidFileException,
+                ValueError, TypeError):
+            logger.warning("could not detach stale update image %s", dmg, exc_info=True)
 
     def _find_app(self, mount: str) -> str:
         for name in sorted(os.listdir(mount)):

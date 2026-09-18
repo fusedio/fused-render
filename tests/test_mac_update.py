@@ -1240,3 +1240,209 @@ def test_status_says_which_half_of_the_install_is_running(monkeypatch, tmp_path)
     manager._install_thread.join(timeout=5)
     assert seen == ["downloading", "installing"]
     assert manager.status()["phase"] is None
+
+
+# ---- edge cases found by Bugbot on fusedio/fused-render-lite#26 -----------------
+# (that repo's updater is a copy of fused_render/update/mac.py)
+
+
+def _mount_with_bundle(mount, version: str) -> str:
+    """A fake mounted DMG: a directory holding FusedRender.app at `version`."""
+    import plistlib
+
+    app = mount / "FusedRender.app"
+    (app / "Contents").mkdir(parents=True)
+    with open(app / "Contents" / "Info.plist", "wb") as f:
+        plistlib.dump({"CFBundleShortVersionString": version}, f)
+    return str(app)
+
+
+def test_swap_survives_a_detach_failure(monkeypatch, tmp_path):
+    """Cleanup after the swap is best-effort: a hung `hdiutil detach` must not
+    report a finished install as an error, and must not skip the rest of the
+    cleanup (the DMG is still discarded)."""
+    import shutil
+
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    mount = tmp_path / "mount"
+    _mount_with_bundle(mount, "9.9.9")
+    dmg = tmp_path / "updates" / "dl.dmg"
+    dmg.write_bytes(b"x")
+    monkeypatch.setattr(common, "download_verified", lambda *a, **k: str(dmg))
+    monkeypatch.setattr(manager, "_attach", lambda d: str(mount))
+    ran = []
+
+    def fake_run(argv, **kw):
+        ran.append(argv[1])
+        if argv[1] == "detach":
+            raise subprocess.TimeoutExpired(argv, 60)
+        assert argv[0] == "/usr/bin/ditto"
+        shutil.copytree(argv[1], argv[2])
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(mac.subprocess, "run", fake_run)
+
+    manager.install(expected_version="9.9.9")
+    manager._install_thread.join(timeout=5)
+    assert manager.status()["state"] == "installed"
+    assert manager.status()["error"] is None
+    assert manager._disk_version() == "9.9.9"
+    assert "detach" in ran and not dmg.exists()
+
+
+def test_attach_failures_detach_what_got_mounted(monkeypatch, tmp_path):
+    """`hdiutil attach` can succeed and still leave us without a mount point;
+    every such path detaches the image before raising."""
+    import plistlib
+
+    dmg = str(tmp_path / "u.dmg")
+    with open(dmg, "wb") as f:
+        f.write(b"x")
+    info = plistlib.dumps({"images": [{"image-path": dmg, "system-entities": [
+        {"dev-entry": "/dev/disk9"},
+        {"dev-entry": "/dev/disk9s1", "mount-point": "/Volumes/X"}]}]})
+    calls = []
+    attach_result = {}
+
+    def fake_run(argv, **kw):
+        calls.append(argv[:3])
+        if argv[1] == "attach":
+            if "raise" in attach_result:
+                raise attach_result["raise"]
+            return subprocess.CompletedProcess(argv, attach_result["rc"],
+                                               stdout=attach_result["out"])
+        if argv[1] == "info":
+            return subprocess.CompletedProcess(argv, 0, stdout=info)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(mac.subprocess, "run", fake_run)
+    manager = mac.UpdateManager(bundle="/x.app", method="dmg")
+
+    def detached():
+        return [c for c in calls if c[1] == "detach"]
+
+    # Mounted with no volume.
+    attach_result.update(rc=0, out=plistlib.dumps(
+        {"system-entities": [{"dev-entry": "/dev/disk9"}]}))
+    with pytest.raises(RuntimeError, match="no volume"):
+        manager._attach(dmg)
+    assert detached() == [["/usr/bin/hdiutil", "detach", "/dev/disk9"]]
+    # Non-zero status (a mount may still have been made).
+    calls.clear()
+    attach_result.update(rc=1, out=b"")
+    with pytest.raises(RuntimeError, match="could not open"):
+        manager._attach(dmg)
+    assert len(detached()) == 1
+    # Unparsable plist.
+    calls.clear()
+    attach_result.update(rc=0, out=b"garbage")
+    with pytest.raises(RuntimeError, match="mount table"):
+        manager._attach(dmg)
+    assert len(detached()) == 1
+    # Timeout.
+    calls.clear()
+    attach_result["raise"] = subprocess.TimeoutExpired(["hdiutil"], 120)
+    with pytest.raises(RuntimeError, match="could not open"):
+        manager._attach(dmg)
+    assert len(detached()) == 1
+    # Happy path: no detach.
+    calls.clear()
+    attach_result.clear()
+    attach_result.update(rc=0, out=plistlib.dumps(
+        {"system-entities": [{"mount-point": "/Volumes/X"}]}))
+    assert manager._attach(dmg) == "/Volumes/X"
+    assert detached() == []
+
+
+def test_check_holds_an_install_error(monkeypatch):
+    """The five-minute tick must not wipe a failed install's reason and Try
+    again — whether the tick succeeds or fails itself."""
+    manager = _manager(monkeypatch, available="9.9.9")
+    manager.check(force=True)
+    attempts = []
+
+    def failing_install(manifest):
+        attempts.append(manifest["version"])
+        raise RuntimeError("no disk")
+
+    monkeypatch.setattr(manager, "_install_dmg", failing_install)
+    manager.install()
+    manager._install_thread.join(timeout=5)
+    assert manager.status()["state"] == "error"
+
+    st = manager.check(force=True)
+    assert st["state"] == "error" and st["error"] == "no disk"
+
+    def boom(url, **kwargs):
+        raise OSError("offline")
+
+    monkeypatch.setattr(common, "fetch_manifest", boom)
+    st = manager.check(force=True)
+    assert st["state"] == "error" and st["error"] == "no disk"
+    # A retry is still allowed from the held error.
+    manager.install()
+    manager._install_thread.join(timeout=5)
+    assert attempts == ["9.9.9", "9.9.9"]
+    assert manager.status()["state"] == "error"
+    # A different version on offer is a different install: starts clean.
+    newer = {"schema": 1, "version": "9.9.10", "url": "https://x/y.dmg",
+             "sha256": "s", "signature": "g"}
+    monkeypatch.setattr(common, "fetch_manifest", lambda url, **kwargs: dict(newer))
+    st = manager.check(force=True)
+    assert st["state"] == "available" and st["error"] is None
+    assert st["latest_version"] == "9.9.10"
+    # ...and so does the version landing on disk by other means.
+    manager._state, manager._error = "error", "no disk"
+    monkeypatch.setattr(manager, "_disk_version", lambda: "9.9.10")
+    st = manager.check(force=True)
+    assert st["state"] == "installed" and st["error"] is None
+    # The manifest going quiet (a pulled release) ends the hold too.
+    manager._state, manager._error = "error", "no disk"
+    monkeypatch.setattr(manager, "_disk_version", lambda: None)
+    pulled = dict(newer, version="0.0.1")
+    monkeypatch.setattr(common, "fetch_manifest", lambda url, **kwargs: dict(pulled))
+    st = manager.check(force=True)
+    assert st["state"] == "idle" and st["error"] is None
+
+
+def test_manifest_newer_than_guard(monkeypatch):
+    """Release CI's `newer-than` refuses to move latest.json backwards, and
+    only a manifest the app itself would accept can hold a release back."""
+    import base64
+    import importlib.util
+    import json
+    import pathlib
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    spec = importlib.util.spec_from_file_location(
+        "gen_update_manifest",
+        pathlib.Path(__file__).resolve().parent.parent / "scripts" / "windows"
+        / "generate_update_manifest.py")
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+
+    key = Ed25519PrivateKey.generate()
+    public = key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
+    monkeypatch.setattr(common, "PUBLIC_KEY", public)
+
+    def signed(version, *, key=key):
+        sha = "0" * 64
+        sig = base64.b64encode(key.sign(gen._signing_message(version, sha))).decode()
+        return json.dumps({"schema": 1, "version": version, "url": "https://x/y",
+                           "sha256": sha, "signature": sig})
+
+    assert gen.not_behind("0.8.14", "")                       # nothing live yet
+    assert gen.not_behind("0.8.14", "not json")
+    assert gen.not_behind("0.8.14", signed("0.8.14"))
+    assert gen.not_behind("0.8.14", signed("0.8.13"))
+    assert not gen.not_behind("0.8.13", signed("0.8.14"))     # a rebuilt old tag
+    # A live manifest the app would reject cannot block a release: unsigned,
+    # signed by another key, or with a tampered version.
+    assert gen.not_behind("0.8.13", json.dumps({"version": "99.0.0"}))
+    assert gen.not_behind("0.8.13", signed("99.0.0", key=Ed25519PrivateKey.generate()))
+    tampered = json.loads(signed("0.8.14"))
+    tampered["version"] = "99.0.0"
+    assert gen.not_behind("0.8.13", json.dumps(tampered))
