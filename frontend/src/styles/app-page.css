@@ -309,11 +309,48 @@
    (schedule.css); inside the gutter frame both would be a second gutter. */
 .app-page-tasks .schedule-page {
   padding-inline: 0;
+  /* THE GUTTER THE PEEK'S ARITHMETIC READS (shell/task-peek-store.ts
+     `measureTasksBaseline`): on `/tasks` it is the 44px of padding above; here
+     the padding is gone and the 48px is the app page's own gutter frame
+     (`.app-page-body`'s `calc(100% - 48px)`), so the var says that instead.
+     Declared here and NOT under the tight rule below, for the reason
+     styles/task-peek.css gives: the frozen baseline's gutter must not move. */
+  --tasks-page-gutter: 48px;
 }
 
 .app-page-tasks .prefs-page.schedule-page > *,
 .app-page-tasks .schedule-page > .prefs-section {
   max-width: none;
+}
+
+/* …except the column's cap, which the peek's baseline reads off this very
+   element (`.tasks-frame .schedule-main`'s computed max-width). The body is
+   already capped at the same 1050px, so nothing on screen changes; what
+   changes is that the measurement counts the cap the way `/tasks` does instead
+   of taking the whole window as the column. */
+.app-page-tasks .schedule-page > .prefs-section.schedule-main {
+  max-width: 1050px;
+}
+
+/* THE APP PAGE UNDER A TIGHT PEEK (styles/task-peek.css, `data-tight`): once
+   the frame is narrower than the column plus its gutters, the 24px either
+   side of the header and the body are two dark bands. The BODY goes to the
+   full width and no further: the Tasks section inside it already takes the
+   4px inset the tight rule gives `.schedule-page > .prefs-section`, and an
+   inset on the body as well would put the app page's rows 4px further in
+   than `/tasks`'s at the same width (reviewer, 2026-09-20). The header and
+   the tab strip have no such section under them, so they keep their own 4px
+   here. */
+.tasks-frame[data-tight="1"] .app-page-body {
+  width: 100%;
+}
+
+.tasks-frame[data-tight="1"] .app-page-head {
+  width: calc(100% - 8px);
+}
+
+.tasks-frame[data-tight="1"] .app-page-tabbar {
+  padding-inline: 4px;
 }
 
 .app-page-empty {

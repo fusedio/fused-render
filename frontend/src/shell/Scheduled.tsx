@@ -50,7 +50,7 @@
 //
 // Section layout and per-action busy/error state follow shell/Mounts.tsx.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import {
   getConfig,
   getSchedule,
@@ -116,13 +116,8 @@ import { useMissingFolders } from "./useMissingFolders";
 import { TOOLBAR_MERGE_LEVEL, useToolbarFit } from "./row-fit";
 import { useTaskPeekEnabled } from "./task-peek-flag";
 import { TaskPeek, useTaskPeekHost, useTaskPeekLayout } from "./TaskPeek";
-import {
-  closePeek,
-  frameClickCloses,
-  openPeek,
-  peekGutter,
-  refreshPeekBaseline,
-} from "./task-peek-store";
+import { TaskPeekFrame, useTaskPeekSlot } from "./TaskPeekFrame";
+import { openPeek } from "./task-peek-store";
 import { isUnderDir } from "./current-apps-lib";
 
 /** The app page's Tasks tab (shell/AppPage.tsx, D488) mounts this SAME page
@@ -908,9 +903,18 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // The toolbar folds its words before it clips them (shell/row-fit.ts) — and
   // only while the feature is on, since the ladder arrived with it.
   const [toolbar, toolbarRef] = useToolbarFit(peekOn);
-  const peekable = !scope && peekOn;
+  // SCOPED OR NOT, THE SAME PEEK (2026-09-20). Until then the app page's Tasks
+  // tab stayed disarmed and every press there navigated; now that tab hosts
+  // the very same panel, portalled into the frame the app page draws around
+  // itself (TaskPeekFrame.tsx `useTaskPeekSlot`). The sidebar's task list and
+  // the notifications are still outside any frame and still navigate.
+  const peekable = peekOn;
   useTaskPeekHost(peekable);
   const peek = useTaskPeekLayout(peekable);
+  // Where a Scheduled mounted inside SOMEONE ELSE'S frame puts its panel: the
+  // app page draws the row (header, tab strip and all) and this page only
+  // supplies the panel. Null on `/tasks`, where the frame is this page's own.
+  const slot = useTaskPeekSlot();
   // SCROLL, DON'T FOLD (Akshil, 2026-09-15). `data-floored` used to switch on
   // at the middle pane's floor only, and the row ladder folded marks on the way
   // down to it. With the floor at a flat 500 that meant hiding meta across the
@@ -919,32 +923,6 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // and the pane scrolls sideways. Floored is a subset of tight (500 < any
   // baseline), so nothing the floor did is lost.
   const scrolls = peek.open && peek.tight;
-  // THE MIDDLE PANE'S BASELINE (design.md, Widths v2). What is kept here is the
-  // WATCH; the measurement itself is the store's (`measureTasksBaseline`), for
-  // a reason worth stating where a reader would come looking for it: this
-  // effect is passive, and `useTaskPeekHost`'s adoption of a `?peek=` deep link
-  // is a LAYOUT effect — it runs first, so a link-opened visit would freeze a
-  // baseline this observer had never had a chance to take. The store reads the
-  // page itself when it is asked for a number it does not have, and this watch
-  // is only the cheap path for the ordinary case.
-  const frameRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!peekable) return;
-    const frame = frameRef.current;
-    if (!frame) return;
-    const read = () => refreshPeekBaseline();
-    read();
-    const ro = new ResizeObserver(read);
-    ro.observe(frame);
-    // The page's own sections arrive after the first fetch, so the element the
-    // measurement needs may not exist on the first tick.
-    const mo = new MutationObserver(read);
-    mo.observe(frame, { childList: true, subtree: true });
-    return () => {
-      ro.disconnect();
-      mo.disconnect();
-    };
-  }, [peekable]);
   // ONE sentence for "there is nothing here", handed to all four views, so a
   // reader flipping List → Board → Cards → Calendar over the same empty set
   // reads the same words in the same place (Akshil, 2026-09-09). Which sentence
@@ -1409,67 +1387,48 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
 
   if (!peekable) return page;
 
-  // THE PAIR (design.md, Layout model): one flex row holding the frame and the
-  // peek as DOM siblings, the peek lifted out of flow over the row's right edge
-  // so its slide never reflows the frame under it. ONE number drives both
-  // halves of the 200ms — the frame's width is `100% − <what the peek takes>`,
-  // and the peek's own transform runs off the same value.
+  /* THE UNFILTERED SET, not `shown`: a filter is a lens on the page, not a
+     statement about which conversation may be open, and narrowing the list
+     under an open panel must not close it (or, worse, make its task look
+     deleted to `settlePeek`). `loaded` is what turns "no such task" from a
+     wait into an answer. */
+  const panel = (
+    <TaskPeek
+      tasks={inScope}
+      loaded={tasksLoaded}
+      home={home}
+      missing={missing}
+      onReload={reload}
+    />
+  );
+
+  // INSIDE ANOTHER FRAME (the app page's Tasks tab): the page is drawn bare and
+  // the panel goes to the row the app page holds, as the frame's sibling — the
+  // same DOM shape `/tasks` builds below, arrived at from the other side.
   //
-  // In COVER mode the frame takes nothing off its width (rule 4): there is no
-  // usable frame left at that size, so the panel is laid over it whole rather
-  // than squeezing the view to a sliver.
-  const taken = peek.open && !peek.cover ? peek.width : 0;
-  // THE FLOOR, handed to the stylesheet as a length (design.md, Widths v2).
-  // `peek.floor` is a FRAME width — three quarters of a baseline that counts
-  // the page's gutters — and what the views need is the width of the content
-  // inside those gutters, so the gutters come back off here rather than being
-  // guessed at in CSS.
-  const contentFloor = Math.max(0, Math.round(peek.floor - peekGutter()));
-  return (
-    <div className="tasks-peek-host">
-      <div
-        ref={frameRef}
-        className={"tasks-frame" + (peek.instant ? " is-instant" : "")}
-        // `data-floored` is the switch and `--tasks-floor` the number: below the
-        // floor the views stop reflowing and scroll sideways inside the frame
-        // instead (styles/task-peek.css). The toolbar is deliberately NOT under
-        // it — it stays one line at every width and folds its own way.
-        data-floored={scrolls ? "1" : undefined}
-        // …and `data-tight` a little earlier: once the frame is narrower than
-        // the column plus its gutters there are no centred margins left to give
-        // and the page's side padding is just two dark bands (design.md, Polish
-        // batch 3). Written off the same baseline the floor is.
-        data-tight={peek.open && peek.tight ? "1" : undefined}
-        style={
-          {
-            width: `calc(100% - ${taken}px)`,
-            "--tasks-floor": `${contentFloor}px`,
-          } as CSSProperties
-        }
-        // CLICKING BLANK FRAME CLOSES (design.md, Close triggers — and Akshil's
-        // decision to keep Notion's behaviour). Everything that is a control or
-        // an item does its own thing: rows and cards carry the walk's own
-        // attribute, the toolbar's chips are buttons, and a menu or a dialog
-        // portalled over the page is neither. What is left is page background.
-        onClick={(e) => {
-          if (!peek.open) return;
-          if (frameClickCloses(e.target as Element | null)) closePeek();
-        }}
-      >
+  // KEYED ON THE SCOPE, NOT ON THE SLOT. The row element reaches this page
+  // through a ref-fed state one commit after the app page first draws it, so
+  // on that first render the slot is still null — and a page that drew its
+  // own frame whenever the slot was missing would mount a second
+  // `.tasks-frame` INSIDE the app page's for one commit (two baselines
+  // measured, two observers) before tearing it down. Scoped, this page never
+  // draws a frame: a missing slot is a panel that waits one paint, nothing
+  // more.
+  if (scope) {
+    if (!slot) return page;
+    return (
+      <>
         {page}
-      </div>
-      {/* THE UNFILTERED SET, not `shown`: a filter is a lens on the page, not a
-          statement about which conversation may be open, and narrowing the list
-          under an open panel must not close it (or, worse, make its task look
-          deleted to `settlePeek`). `loaded` is what turns "no such task" from a
-          wait into an answer. */}
-      <TaskPeek
-        tasks={inScope}
-        loaded={tasksLoaded}
-        home={home}
-        missing={missing}
-        onReload={reload}
-      />
-    </div>
+        {createPortal(panel, slot)}
+      </>
+    );
+  }
+
+  // THE PAIR (design.md, Layout model): one flex row holding the frame and the
+  // peek as DOM siblings — TaskPeekFrame.tsx has the arithmetic.
+  return (
+    <TaskPeekFrame peekable peek={panel}>
+      {page}
+    </TaskPeekFrame>
   );
 }
