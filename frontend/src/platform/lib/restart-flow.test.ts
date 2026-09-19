@@ -167,7 +167,7 @@ test("back latches against probes, but not against the clock", () => {
   // update landing mid-restart leaves the disk ahead, so `reduceProbe` returns
   // `update-restart` and no reload), the cap is the only thing that can unstick
   // a dialog with no ✕ and no Esc.
-  expect(reduceRestart(back, tick(), T0 + 90_000).stage).toBe("gave-up");
+  expect(reduceRestart(back, tick(), T0 + RESTART_GIVE_UP_MS + 30_000).stage).toBe("gave-up");
 });
 
 test("the cap can fire from every stage the dialog is on screen for", () => {
@@ -225,11 +225,11 @@ test("a second press re-arms from any stage, cap and all", () => {
 
 test("the cap runs off the press instant, not off this window's clock", () => {
   // D3: a window that LATCHED someone else's press must expire with it. Here
-  // the press happened 59 s ago as far as this window is concerned, and the
-  // event carries that instant rather than "now".
-  const latched = reduceRestart(initialRestart(), press(T0, OLD), T0 + 59_000);
+  // the press happened a second short of the cap ago as far as this window is
+  // concerned, and the event carries that instant rather than "now".
+  const latched = reduceRestart(initialRestart(), press(T0, OLD), T0 + RESTART_GIVE_UP_MS - 1_000);
   expect(latched.requestedAt).toBe(T0);
-  expect(reduceRestart(latched, fail(), T0 + 61_000).stage).toBe("gave-up");
+  expect(reduceRestart(latched, fail(), T0 + RESTART_GIVE_UP_MS + 1_000).stage).toBe("gave-up");
 });
 
 test("every stage has exactly the label the design asked for", () => {
@@ -318,7 +318,7 @@ test("a step's name is one word with no ellipsis; the ellipsis is the live tense
   expect(restartSteps("back").every((s) => !s.label.includes("…"))).toBe(true);
 });
 
-// ---- when "about 15 seconds" stops being true ------------------------------
+// ---- when "about a minute" stops being true ------------------------------
 
 test("the estimate is withdrawn at the mark, and only after it", () => {
   const at = 1_000_000;
@@ -336,12 +336,13 @@ test("no press, no claim about how long it has been", () => {
 
 test("the mark sits between the promise and the cap, with room on both sides", () => {
   // The number itself, because every other assertion in this file reads it
-  // symbolically and would follow it anywhere. 25s is the design's own (Akshil,
-  // 2026-09-18) and the body's "about 15 seconds" is written against it.
-  expect(RESTART_SLOW_MS).toBe(25_000);
+  // symbolically and would follow it anywhere. 90s is the design's own (Akshil,
+  // 2026-09-19: "this takes about 60 seconds") and the body's "about a minute"
+  // is written against it.
+  expect(RESTART_SLOW_MS).toBe(90_000);
   // Past the honest case (a teardown plus a cold start), so it is not fired at a
   // restart that is going fine; and well short of the cap, so the reader is told
   // the wait is long BEFORE they are told it failed.
-  expect(RESTART_SLOW_MS).toBeGreaterThan(15_000);
+  expect(RESTART_SLOW_MS).toBeGreaterThan(60_000);
   expect(RESTART_SLOW_MS).toBeLessThan(RESTART_GIVE_UP_MS);
 });

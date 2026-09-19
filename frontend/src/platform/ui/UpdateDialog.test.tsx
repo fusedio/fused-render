@@ -14,7 +14,7 @@
 //     button is the only way out;
 //   * which step is ticked, which is live and which is still to come, for every
 //     stage the machine can reach, plus the sentence each stage puts under the
-//     title — including the one that withdraws the "15 seconds" estimate once
+//     title — including the one that withdraws the "about a minute" estimate once
 //     the wait has outrun it;
 //   * `busy` on both, which is the chassis' "this cannot be closed from the
 //     chrome" lever: no ✕ is rendered at all, and Esc/backdrop are refused.
@@ -199,7 +199,7 @@ test("one hidden live region says the live step AND the sentence, so every visib
   expect(quitting.startsWith("Quitting… ")).toBe(true);
   expect(restarting.startsWith("Restarting… ")).toBe(true);
   expect(quitting.slice("Quitting… ".length)).toBe(restarting.slice("Restarting… ".length));
-  expect(quitting).toContain("about 15 seconds");
+  expect(quitting).toContain("about a minute");
   // The 25s flip changes the region too — the strip did not move, the sentence did.
   const slow = region(await mount(restartAt("restarting", { elapsed: RESTART_SLOW_MS })));
   expect(slow).toBe("Restarting… Taking a little longer than usual — still working on it.");
@@ -418,13 +418,13 @@ test("the body names which version is closing and which is starting", async () =
   // the dialog is up about.
   const r = await mount(restartAt("restarting"));
   expect(body(r)).toBe(
-    "Closing v0.5.96 and starting v0.5.97. This page comes back on its own — usually in about 15 seconds.",
+    "Closing v0.5.96 and starting v0.5.97. This page comes back on its own — usually in about a minute.",
   );
 });
 
 test("the estimate is withdrawn once the wait has outrun it, in the same slot", async () => {
   const justUnder = await mount(restartAt("restarting", { elapsed: RESTART_SLOW_MS - 1 }));
-  expect(body(justUnder)).toContain("about 15 seconds");
+  expect(body(justUnder)).toContain("about a minute");
 
   const atTheMark = await mount(restartAt("restarting", { elapsed: RESTART_SLOW_MS }));
   expect(body(atTheMark)).toBe("Taking a little longer than usual — still working on it.");
@@ -450,7 +450,7 @@ test("a wait with no press behind it never reads as overlong", async () => {
       onRestart={() => {}}
     />,
   );
-  expect(body(r)).toContain("about 15 seconds");
+  expect(body(r)).toContain("about a minute");
 });
 
 test("back and gave-up each say what happened, not what is happening", async () => {

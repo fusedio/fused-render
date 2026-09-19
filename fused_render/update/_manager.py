@@ -425,19 +425,20 @@ class UpdateManager:
         skipped from "idle"/"checking"/"installing", which refuse below
         regardless of what a re-check would say.
 
-        If `_latest` (after that recheck) does not match `expected_version`,
-        do not install it out from under the click: the button the user
-        pressed said "Update to v<expected>", and quietly swapping in a
-        different version — even a newer one — is its own kind of dishonest
-        wire status, the same family of bug the manager otherwise goes out
-        of its way to avoid (`_check_error`, `check_only`, etc. all exist so
-        this state machine never tells the UI something that isn't true).
-        Instead this leaves `_latest`/state exactly as they are ("available"
-        with whatever is actually current) and returns without installing —
-        the badge now shows that version, and a second click commits to it.
-        `expected_version=None` (an older client with no such field, or a
-        direct caller) skips this check entirely and trusts `_latest`
-        as-is, same as before this parameter existed."""
+        If `_latest` (after that recheck) is NEWER than `expected_version`,
+        install `_latest` (Akshil, 2026-09-19: "before downloading the
+        version we show, check if there is new version available and then
+        download the newer version instead"). The click meant "get me the
+        update", and the newest release is the one every later check would
+        offer anyway; the reply's `latest_version` names what actually went,
+        so the badge and the Activity row show that version from the first
+        poll. Only a `_latest` that is NOT newer than what was on screen
+        (the manifest moved backwards, or names something unrelated) is
+        deferred: state and `_latest` are left as they are and nothing is
+        installed — the badge shows the refreshed version and a second
+        click commits to it. `expected_version=None` (an older client with
+        no such field, or a direct caller) skips this check entirely and
+        trusts `_latest` as-is."""
         with self._lock:
             worth_rechecking = (self._latest is not None
                                and self._state in ("available", "error"))
@@ -450,11 +451,25 @@ class UpdateManager:
                 return self.status()
             if (expected_version is not None
                     and self._latest["version"] != expected_version):
-                logger.info(
-                    "update install deferred: v%s is current, not the v%s "
-                    "the caller had on screen",
-                    self._latest["version"], expected_version)
-                return self.status()
+                # `is_newer` parses dotted ints; `expected_version` is what
+                # the client sent, so a malformed string is a deferral, not a
+                # 500 — the reply names the version that is really current.
+                try:
+                    newer = common.is_newer(self._latest["version"], expected_version)
+                except ValueError:
+                    newer = False
+                if newer:
+                    logger.info(
+                        "update install: v%s is out, newer than the v%s on "
+                        "screen — installing v%s",
+                        self._latest["version"], expected_version,
+                        self._latest["version"])
+                else:
+                    logger.info(
+                        "update install deferred: v%s is current, not the v%s "
+                        "the caller had on screen",
+                        self._latest["version"], expected_version)
+                    return self.status()
             # The dev-run manager (DEV_MANAGER_ENV) has no artifact to swap.
             # Refused here rather than left to fail inside the worker thread,
             # so the state stays "available" and honest instead of "error".

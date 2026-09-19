@@ -169,15 +169,16 @@ def test_install_retry_allowed_from_error(monkeypatch):
     assert manager.status()["state"] == "installed"
 
 
-def test_install_defers_when_a_newer_version_appears_during_the_recheck(monkeypatch):
+def test_install_takes_a_newer_version_found_by_the_recheck(monkeypatch):
     """`_latest` is set by whichever periodic check last ran and can be up to
     CHECK_INTERVAL_S (5 min) stale. If a newer release was published in that
-    window, silently installing it instead of the version that was on
-    screen when Install was clicked would retarget the button out from
-    under the user — its own kind of dishonest wire status. install() must
-    instead surface the refreshed version and wait for a fresh click before
-    starting anything. `expected_version` is what the caller (the client)
-    had on screen — here, "9.9.9", the version found by the check() below."""
+    window, install() must fetch THAT one rather than the version that was
+    on screen when Install was clicked (Akshil, 2026-09-19: "before
+    downloading the version we show, check if there is new version available
+    and then download the newer version instead"). `expected_version` is what
+    the caller (the client) had on screen — here, "9.9.9", the version found
+    by the check() below — and the reply names the version that actually
+    went, so the client's next paint says v9.9.10."""
     manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
     monkeypatch.setattr(mac, "__version__", "0.4.10")
     versions = iter(["9.9.9", "9.9.10", "9.9.10"])
@@ -193,14 +194,10 @@ def test_install_defers_when_a_newer_version_appears_during_the_recheck(monkeypa
     done = []
     monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
     status = manager.install(expected_version="9.9.9")
-    assert manager._install_thread is None
-    assert done == []
-    assert status["state"] == "available"
+    # The stubbed swap can finish before install() returns, so either half
+    # of "it went" is fine — what matters is that it is not "available".
+    assert status["state"] in ("installing", "installed")
     assert status["latest_version"] == "9.9.10"
-
-    # The refreshed version is what a second click (now expecting "9.9.10")
-    # commits to — it matches what the recheck now finds, so this proceeds.
-    manager.install(expected_version="9.9.10")
     manager._install_thread.join(timeout=5)
     assert done and done[0]["version"] == "9.9.10"
 
@@ -228,25 +225,25 @@ def test_install_rechecks_even_when_the_next_auto_tick_is_long_overdue(monkeypat
     # well past both gaps so a non-forced check would have refused to fetch.
     manager._last_check_at = time.monotonic() - 10 * common.CHECK_INTERVAL_S
 
-    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: None)
+    done = []
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
     status = manager.install(expected_version="9.9.9")
-    # The overdue recheck still ran and found a newer version — surfaced,
-    # not installed outright, same as the deferred case above.
-    assert manager._install_thread is None
+    # The overdue recheck still ran, found a newer version, and that is what
+    # goes — same rule as the test above.
     assert status["latest_version"] == "9.9.10"
+    manager._install_thread.join(timeout=5)
+    assert done and done[0]["version"] == "9.9.10"
 
 
-def test_install_defers_when_the_background_loop_already_moved_past_what_the_client_saw(
-        monkeypatch):
+def test_install_takes_the_newer_version_the_background_loop_already_found(monkeypatch):
     """The background loop force-checks on its own five-minute cadence,
     independent of any click. If it already advanced `_latest` to a newer
     version before the client's last poll caught up, the screen the user
     clicked on still names the OLD version — and install()'s own recheck
     finds nothing new, because the server had already moved before this
-    call even started. A snapshot of `_latest` taken at call-start would
-    equal the post-recheck value in this case (both already "9.9.10") and
-    miss the mismatch entirely; only comparing against what the CLIENT says
-    it saw (`expected_version`) catches it."""
+    call even started. The newer version is still what gets installed: the
+    comparison is against what the CLIENT says it saw (`expected_version`),
+    and `_latest` is newer than that."""
     manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
     monkeypatch.setattr(mac, "__version__", "0.4.10")
     manifest_version = {"v": "9.9.9"}
@@ -268,9 +265,61 @@ def test_install_defers_when_the_background_loop_already_moved_past_what_the_cli
     done = []
     monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
     status = manager.install(expected_version="9.9.9")  # what the client's screen said
+    # The stubbed swap can finish before install() returns, so either half
+    # of "it went" is fine — what matters is that it is not "available".
+    assert status["state"] in ("installing", "installed")
+    assert status["latest_version"] == "9.9.10"
+    manager._install_thread.join(timeout=5)
+    assert done and done[0]["version"] == "9.9.10"
+
+
+def test_install_defers_when_the_manifest_moved_to_something_not_newer(monkeypatch):
+    """The one case that still waits for a second click: the recheck finds a
+    version that is NOT newer than the one on screen (a manifest rolled back,
+    or pointing somewhere unrelated). Installing that under a button that
+    said "Update to v9.9.10" would be a downgrade nobody asked for, so the
+    state is left "available" with the refreshed version and nothing runs."""
+    manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
+    monkeypatch.setattr(mac, "__version__", "0.4.10")
+    versions = iter(["9.9.10", "9.9.9", "9.9.9"])
+
+    def fetch(url, **kwargs):
+        return {"schema": 1, "version": next(versions), "url": "https://x/y.dmg",
+                "sha256": "s", "signature": "g"}
+
+    monkeypatch.setattr(common, "fetch_manifest", fetch)
+    manager.check()
+    assert manager.status()["latest_version"] == "9.9.10"
+
+    done = []
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
+    status = manager.install(expected_version="9.9.10")
     assert manager._install_thread is None
     assert done == []
-    assert status["latest_version"] == "9.9.10"
+    assert status["state"] == "available"
+    assert status["latest_version"] == "9.9.9"
+
+
+def test_install_defers_on_a_malformed_expected_version(monkeypatch):
+    """`expected_version` is client input. A string `is_newer` cannot parse
+    must not blow up the endpoint — it is treated as "not newer": nothing is
+    installed and the reply names the version that is really current."""
+    manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
+    monkeypatch.setattr(mac, "__version__", "0.4.10")
+
+    def fetch(url, **kwargs):
+        return {"schema": 1, "version": "9.9.9", "url": "https://x/y.dmg",
+                "sha256": "s", "signature": "g"}
+
+    monkeypatch.setattr(common, "fetch_manifest", fetch)
+    manager.check()
+    done = []
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
+    status = manager.install(expected_version="9.9.9-beta")
+    assert manager._install_thread is None
+    assert done == []
+    assert status["state"] == "available"
+    assert status["latest_version"] == "9.9.9"
 
 
 def test_install_does_not_hit_the_network_when_there_is_nothing_to_install(monkeypatch):

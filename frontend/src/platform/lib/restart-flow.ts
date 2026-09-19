@@ -60,10 +60,12 @@ export interface RestartState {
   before: string | null;
 }
 
-/** The cap (D4). One minute is long enough for a teardown plus a cold start of
- *  a signed bundle, and short enough that a restart that is never coming back
- *  hands the page to the "down" card while the reader is still watching. */
-export const RESTART_GIVE_UP_MS = 60_000;
+/** The cap (D4). Two minutes: a teardown plus a cold start of a signed bundle
+ *  runs about a minute in practice (Akshil, 2026-09-19), so the cap sits at
+ *  double that — long enough never to fire on a restart that is going fine,
+ *  short enough that one that is never coming back hands the page to the
+ *  "down" card while the reader is still watching. */
+export const RESTART_GIVE_UP_MS = 120_000;
 
 /** How many failed probes in a row read as "still gone" rather than "just
  *  went". Deliberately the same shape as `FAIL_THRESHOLD` next door, and
@@ -254,12 +256,14 @@ export function restartSteps(stage: RestartStage): RestartStep[] {
   });
 }
 
-/** WHEN "about 15 seconds" STOPS BEING TRUE. The body promises a number, and a
- *  promise that has visibly run out is worse than no promise at all — so at 25s
+/** WHEN "about a minute" STOPS BEING TRUE. The body promises a number, and a
+ *  promise that has visibly run out is worse than no promise at all — so at 90s
+ *  (Akshil, 2026-09-19: the restart is nearer a minute than 15 seconds, so the
+ *  promise, the flip and the cap all moved together)
  *  the sentence stops repeating it and says so. Comfortably past the honest
  *  case (a teardown plus a cold start of a signed bundle) and comfortably short
  *  of `RESTART_GIVE_UP_MS`, so the reader is told twice before the cap fires. */
-export const RESTART_SLOW_MS = 25_000;
+export const RESTART_SLOW_MS = 90_000;
 
 /** Whether the wait has outrun the sentence's own estimate. `requestedAt` is
  *  the press (shared verbatim across windows), so every window flips at the

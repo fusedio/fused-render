@@ -556,6 +556,11 @@ export default function App({ config }: { config: Config }) {
   // poll snapshot, and `NotificationHost` is the one column that draws it.
   const [popupJob, setPopupJob] = useState<Job | null>(null);
 
+  // THE SELF-UPDATE'S PROGRESS CARD (Akshil, 2026-09-19): the running
+  // `sys:update:<version>` row, bottom right, until the user closes it or the
+  // install stops. Same wiring shape as `popupJob` for the same reason.
+  const [updateJob, setUpdateJob] = useState<Job | null>(null);
+
   // Background mount-health poll → global disconnect/reconnect toasts. Mounted
   // once here for the page's lifetime (no-ops in embed); renders via NotificationHost.
   useMountHealth();
@@ -1128,6 +1133,7 @@ export default function App({ config }: { config: Config }) {
               <ActivityDock
                 onTerminalJobs={setTerminalJobs}
                 onJobPopup={setPopupJob}
+                onUpdateJob={setUpdateJob}
               />
             }
             repoUpdates={
@@ -1139,7 +1145,7 @@ export default function App({ config }: { config: Config }) {
           />
         )}
       </div>
-      <NotificationHost jobPopup={popupJob} onJobPopupGone={() => setPopupJob(null)} />
+      <NotificationHost jobPopup={popupJob} onJobPopupGone={() => setPopupJob(null)} updateJob={updateJob} />
       {/* One dialog for every "Share" entry (card chip, card menu, app page,
           explorer kebab): the menu entries cannot own a dialog, so they post
           a request to platform/lib/share-app and this host renders it. */}

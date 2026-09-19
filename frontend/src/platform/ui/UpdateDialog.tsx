@@ -200,7 +200,7 @@ function restartBody(
   if (props.stage === "back") {
     return `Back on v${props.installedVersion} — reloading…`;
   }
-  // THE ESTIMATE IS WITHDRAWN RATHER THAN REPEATED. "about 15 seconds" that has
+  // THE ESTIMATE IS WITHDRAWN RATHER THAN REPEATED. "about a minute" that has
   // visibly run out is worse than no number at all, so past `RESTART_SLOW_MS`
   // the same slot says so plainly instead. It is shorter than the sentence it
   // replaces; `.update-dialog-body` holds the two lines so nothing moves under
@@ -208,7 +208,7 @@ function restartBody(
   if (slow) return "Taking a little longer than usual — still working on it.";
   return (
     `Closing v${props.version} and starting v${props.installedVersion}. ` +
-    "This page comes back on its own — usually in about 15 seconds."
+    "This page comes back on its own — usually in about a minute."
   );
 }
 
