@@ -3305,6 +3305,9 @@ export interface Task {
    * behaviour it has always had.
    */
   last_message?: { role: "user" | "assistant"; text: string; at: number } | null;
+  /** First line of Claude's newest reply in this conversation, "" when none.
+   *  The List row prints it after the title; nothing else reads it. */
+  last_reply?: string;
   /**
    * THE UNSENT NEW TASK FORM BOUND TO THIS CONVERSATION — its draft id, or ""
    * (or absent, on an older server) when there is none.
