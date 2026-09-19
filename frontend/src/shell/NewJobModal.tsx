@@ -90,7 +90,18 @@ import {
 import { ICON_CLOCK, ICON_FOLDER, ICON_PLUS } from "./ScheduleCalendar";
 // `~/…` for a path under home — the one way this app shortens a folder, shared
 // with the Tasks page rather than written a second time here.
-import { tildePath } from "./tasks-lib";
+// …and `projectMatches`, which is the Tasks toolbar's Project filter's OWN
+// search: name-only, case-folded substring (PR #1229). The folder field
+// searches the same folders with the same rule, because a reader who has
+// learnt one of the two controls has learnt both — a field that found
+// `~/Desktop` for "desktop" while the filter beside it did not would be two
+// searches wearing one word.
+import { projectMatches, tildePath } from "./tasks-lib";
+// THE PATH HALF OF A ROW: as much of it as fits, cut out of the MIDDLE, and the
+// whole of it on hover. See PathTip.tsx for why neither `text-overflow` (it
+// only ever cuts the tail, and the tail is the half that names the folder) nor
+// `title` (held back a second, drawn by the OS, unstylable) could do it.
+import { FitPath, usePathTip } from "./PathTip";
 import { onDraftChange } from "./tasksPulse";
 // This card's own rules live in styles/new-task.css, imported from the
 // shell.css barrel like every other section — no shell component imports its
@@ -119,17 +130,27 @@ export const defaultTargetOf = (c: Pick<Config, "home" | "fused_dir">) =>
 const RECENTS_KEY = "fused-render:recent-paths";
 const RECENTS_SHOWN = 5;
 
-/** One row the folder field can offer: a path to take, and how to say it. */
-interface FolderRow {
+/** The `projects` prop's default, hoisted so it is the SAME array every render
+ *  — a fresh `[]` in the signature would rebuild the rows memo on every
+ *  keystroke of a card that was handed no listing. */
+const NO_PROJECTS: string[] = [];
+
+/** One row the folder field can offer: a path to take, and how to say it.
+ *
+ *  Every row this list builds is a FOLDER — a remembered target, a project, or
+ *  one about to be created — so there is no `is_dir` to branch on any more.
+ *  (There was, and both arms drew the same folder glyph.) */
+export interface FolderRow {
   /** What goes IN THE FIELD when this row is taken — the whole path. */
   path: string;
   /** The basename, which is all a row PRINTS — the Explorer shows the name and
    *  never the address, because the address is already in the field. */
   name: string;
-  /** The folder it sits in, muted, so a row the reader did not type their way
-   *  to says where it is. "" when there is nothing to add. */
+  /** The address, muted, at the end of the row: where a remembered folder
+   *  SITS (its parent — the name beside it is the folder itself), or, for a
+   *  project, the whole path, because a search answers with places the reader
+   *  has not typed their way to. "" when there is nothing to add. */
   where: string;
-  is_dir: boolean;
 }
 
 /** `dirname`, for the muted half of a row. */
@@ -142,6 +163,95 @@ function parentOf(p: string): string {
 function leafOf(p: string): string {
   const trimmed = p.replace(/\/+$/, "");
   return trimmed.slice(trimmed.lastIndexOf("/") + 1) || trimmed;
+}
+
+
+/**
+ * WHAT THE FOLDER FIELD'S DROP OFFERS, and it is one of two lists.
+ *
+ * THE FIELD IS AN ADDRESS BEING EDITED, nearly always: the card opens
+ * pre-filled with a path, so a keystroke in it is an edit of something the
+ * reader can already see. Nothing narrows then — the drop shows the handful of
+ * folders this form has been pointed at before, newest first, and typing does
+ * not touch them. That is the whole of what #1239 restored, and it is still the
+ * default.
+ *
+ * CLEAR IT AND TYPE A WORD AND IT IS A SEARCH (Akshil, 2026-09-19: "when I
+ * clear the path and search, it should search from projects — the same project
+ * options I have in the filter beside the New task button"). The folders
+ * searched are the Tasks page's OWN projects, handed down as a prop, matched
+ * with the toolbar filter's own `projectMatches` — name only. Not the file
+ * index: this list is small, already in memory, and is the vocabulary the page
+ * uses for "project" everywhere else. No cap, because the panel scrolls.
+ *
+ * WHICH OF THE TWO, in three tests, all about the TEXT rather than about the
+ * history:
+ *   · the drop has to be OPEN — a closed list answers nothing;
+ *   · the text must be something SOMEBODY TYPED. Empty, or still the value the
+ *     card opened on, means nobody has said anything yet, and a field answering
+ *     a search for its own default would be the card searching for itself. It
+ *     is the text that decides, not a "has been edited" flag, so leaving the
+ *     field and coming back answers the same way it did before;
+ *   · and it must NOT NAME A PLACE (`isPathShapedQuery`): a leading `/`, `~`, a
+ *     drive letter or a `..` segment is an address, and an address is the case
+ *     above — recents, unchanged.
+ *
+ * Pure, and exported, because that decision is the whole feature and it is
+ * worth asserting without a DOM (new-task-form.test.ts).
+ */
+export function folderFieldRows({
+  target,
+  defaultTarget,
+  open,
+  recents,
+  projects,
+  home,
+}: {
+  /** What is in the field, as typed. */
+  target: string;
+  /** The text the card OPENED on — the default nobody chose. */
+  defaultTarget: string;
+  /** Is the drop open at all. */
+  open: boolean;
+  /** The folders this form remembers, newest first. */
+  recents: string[];
+  /** Every folder the Tasks page knows, in its own order. */
+  projects: string[];
+  /** Home, for the address test — "" until `/api/config` answers. */
+  home: string;
+}): { rows: FolderRow[]; searching: boolean } {
+  const q = target.trim();
+  const searching =
+    open
+    && q !== ""
+    && q !== defaultTarget.trim()
+    && !isPathShapedQuery(q, home, home || undefined);
+  if (!searching) {
+    return {
+      searching: false,
+      rows: recents
+        .slice(0, RECENTS_SHOWN)
+        .map((r) => ({ path: r, name: leafOf(r), where: parentOf(r) })),
+    };
+  }
+  return {
+    searching: true,
+    // The projects' OWN order — the one the filter menu prints, which is
+    // alphabetical by the name it shows (tasks-lib `projectOptions`). A second
+    // ranking here would put the same folders in two orders in two controls.
+    //
+    // `where` is the WHOLE path, not the parent: a searched folder is one the
+    // reader has not typed their way to, so the row says where it is in full
+    // — `[project-name]   ~/Desktop/…/project-name` — and `FitPath` decides how
+    // much of that fits.
+    rows: projects
+      .filter((project) => projectMatches(project, q))
+      .map((project) => ({
+        path: project,
+        name: leafOf(project),
+        where: project,
+      })),
+  };
 }
 
 
@@ -2555,6 +2665,7 @@ export default function NewJobModal({
   editing,
   permissionModes,
   recentTargets,
+  projects = NO_PROJECTS,
   planning = false,
   onClose,
   onCreated,
@@ -2625,6 +2736,18 @@ export default function NewJobModal({
    * but one takes the reader out of the app they are standing in.
    */
   lockTarget?: boolean;
+  /**
+   * THE FOLDERS THIS PAGE CALLS PROJECTS — the very array the toolbar's Project
+   * filter offers (Scheduled.tsx `projectOptions`), handed down rather than
+   * re-derived (Akshil, 2026-09-19: "the same project options I have in the
+   * filter beside the New task button").
+   *
+   * It is what the folder field SEARCHES once the address is cleared and a bare
+   * word is typed; while the field holds an address it is not consulted at all.
+   * Empty on every opening that has no listing behind it (the app page's scoped
+   * card, a deep link), and an empty list simply means a search finds nothing.
+   */
+  projects?: string[];
   /**
    * THE TASK THESE WORDS CAME OUT OF, when the card was opened from one
    * (design.md B, Option 1).
@@ -3156,15 +3279,21 @@ export default function NewJobModal({
   //: DOES THE FIELD HOLD AN ADDRESS AT ALL. The create-new offer is a statement
   //: about a path, and a bare word names no place for a folder to be made in.
   const targetIsPath = isPathShapedQuery(target.trim(), home, home || undefined);
-  // THE REMEMBERED FOLDERS — the last few this form was pointed at, newest
-  // first, and the whole of what the list offers. Typing does not narrow them:
-  // the field is an address being edited, and these rows are what the card
-  // remembers rather than an answer to what is in it.
-  const shownRecents = useMemo<FolderRow[]>(
-    () => recents
-      .slice(0, RECENTS_SHOWN)
-      .map((p) => ({ path: p, name: leafOf(p), where: parentOf(p), is_dir: true })),
-    [recents],
+  // WHAT THE DROP OFFERS — the remembered folders, or the page's projects when
+  // the address has been cleared and a word typed in its place. One pure
+  // function decides which (`folderFieldRows`, top of this file), so the rule
+  // can be read and asserted in one place instead of inferred from four
+  // conditions spread through the render.
+  const { rows: folderRows, searching: pathSearching } = useMemo(
+    () => folderFieldRows({
+      target,
+      defaultTarget: initialTargetValue,
+      open: recentsOpen,
+      recents,
+      projects,
+      home,
+    }),
+    [target, initialTargetValue, recentsOpen, recents, projects, home],
   );
   // Early path validation (Akshil, 2026-08-16 — "detect it before me
   // scanning the input"): a beat after typing stops, ask the server whether
@@ -3302,12 +3431,12 @@ export default function NewJobModal({
   // it joins the ring on exactly the condition the ROW is drawn on, or the
   // indices here and the ones in the markup would part company.
   const pathRows = useMemo<FolderRow[]>(
-    () => [...shownRecents,
+    () => [...folderRows,
            ...(newFolderShown && newFolder
              ? [{ path: newFolder, name: leafOf(newFolder),
-                  where: parentOf(newFolder), is_dir: true }]
+                  where: parentOf(newFolder) }]
              : [])],
-    [newFolderShown, newFolder, shownRecents],
+    [newFolderShown, newFolder, folderRows],
   );
   //: Where that suggestion sits in the ring — the end — or -1 when it is not
   //: offered at all. One expression, read by the markup and by
@@ -3320,6 +3449,9 @@ export default function NewJobModal({
   //: The panel itself, for the keyboard to scroll the highlighted row back into
   //: view — a capped list is a list you can arrow off the bottom of.
   const recentsRef = useRef<HTMLDivElement | null>(null);
+  //: THE WHOLE PATH, ON HOVER. One portalled element for the list — see
+  //: PathTip.tsx for why it is not a `title` and not drawn inside the panel.
+  const pathTip = usePathTip();
   /**
    * WHICH ROW THE ARROWS ARE ON — held as the row's own PATH, not its index
    * (Bugbot, PR #1213: "stale highlight after async rows").
@@ -3374,7 +3506,13 @@ export default function NewJobModal({
       ?.scrollIntoView({ block: "nearest" });
   }, [pathMark, recentsOpen, pathRows]);
   const pickPath = useCallback((row: FolderRow) => {
-    setTarget(row.path.replace(/\/+$/, ""));
+    const path = row.path.replace(/\/+$/, "");
+    setTarget(path);
+    // …AND THE CARD REMEMBERS IT, whichever list it came off. A project picked
+    // out of a search is a folder this form has now been pointed at, so the
+    // next opening offers it without being asked — the same thing Browse's own
+    // pick and a saved task already do.
+    rememberRecent(path);
     setRecentsOpen(false);
     setPathMark("");
   }, []);
@@ -4694,12 +4832,17 @@ export default function NewJobModal({
               // everywhere else Tab is untouched and moves focus, because
               // `completionKeyAction` answers `none` when the list is shut.
               //
-              // WHAT TAB TAKES with nothing arrowed to is the FIRST row
-              // (`tabDefaultIndex` 0) — shell-completion convention, and the one
-              // place Tab and Enter deliberately differ: Enter with nothing
-              // highlighted passes through to the form.
+              // …BUT ONLY ONTO A ROW THE READER ARROWED TO (review, 2026-09-19).
+              // `completionKeyAction` answers Tab with row 0 when nothing is
+              // highlighted (`tabDefaultIndex`), which is right for the
+              // Explorer — there row 0 completes the segment being typed — and
+              // wrong here: row 0 is a folder from LAST WEEK, and Tab out of a
+              // freshly typed path replaced it with that folder. Tab with
+              // nothing arrowed to is left alone, so it does what Tab does and
+              // moves on.
               const act = completionKeyAction(
                 e.key, recentsOpen, pathAt, pathRows.length);
+              if (act.type === "tab-accept" && pathAt < 0) return;
               if (act.type === "move") {
                 e.preventDefault();
                 setPathAt(moveHighlight(pathAt, act.delta, pathRows.length));
@@ -4722,11 +4865,9 @@ export default function NewJobModal({
                 }
                 // TAB PUTS IT IN THE FIELD, ENTER ANSWERS WITH IT. Tab leaves
                 // the list open on a path the reader can go on editing; Enter
-                // settles, because a remembered folder is a whole address
+                // settles, because a folder on this list is a whole address
                 // rather than a way towards one.
-                const stepping = row.is_dir
-                  && (act.type === "tab-accept" || !row.where);
-                if (stepping) acceptPath(row);
+                if (act.type === "tab-accept") acceptPath(row);
                 else pickPath(row);
               }
             }}
@@ -4807,7 +4948,10 @@ export default function NewJobModal({
                 // rule the dropdowns at the top of this file keep, so a row left
                 // lit under a pointer that has gone is never the row an Enter
                 // would take.
-                onMouseLeave={() => setPathAt(-1)}
+                onMouseLeave={() => {
+                  setPathAt(-1);
+                  pathTip.hide();
+                }}
               >
                 {/* THE ROWS SCROLL; THE VERBS DO NOT (Akshil, 2026-09-18:
                     "Browse… and + New folder are scrolling WITH the results").
@@ -4852,25 +4996,48 @@ export default function NewJobModal({
                       aria-selected={pathAt === i}
                       className={"schedule-picker-row" + (pathAt === i ? " is-active" : "")}
                       onMouseEnter={() => setPathAt(i)}
+                      // THE WHOLE PATH WHILE THE POINTER IS ON THE ROW, with no
+                      // delay — pointing at a row IS the question. On focus
+                      // too, so a row reached by Tab is told the same thing.
+                      onPointerEnter={(e) => pathTip.show(e.currentTarget, p.path)}
+                      onPointerLeave={pathTip.hide}
+                      onFocus={(e) => pathTip.show(e.currentTarget, p.path)}
+                      onBlur={pathTip.hide}
                       onClick={() => pickPath(p)}
                     >
-                      {p.is_dir ? ICON_FOLDER : ICON_FILE}
-                      {/* THE NAME, and the folder it is in beside it, muted.
-                          The Explorer's rows print `item.name` and never the
+                      {ICON_FOLDER}
+                      {/* THE NAME, and the address beside it, muted. The
+                          Explorer's rows print `item.name` and never the
                           address, because the address is in the field one line
-                          above; a remembered folder did not come from that line,
-                          so it says where it is, quietly. */}
-                      <span className="schedule-recents-path" title={p.path}>
-                        {p.name}
-                      </span>
+                          above; a row on THIS list did not come from that line
+                          — it is remembered, or it was searched for — so it says
+                          where it is, quietly.
+
+                          MIDDLE-TRUNCATED, and only as far as it has to be
+                          (`FitPath`, which measures this row): the start says
+                          which part of the machine, the end says which folder,
+                          and the segments in between are the ones every path
+                          here shares. The hover tooltip carries the whole of
+                          it, and so does the span's `aria-label`. */}
+                      <span className="schedule-recents-path">{p.name}</span>
                       {p.where && (
-                        <span className="schedule-recents-where" title={p.path}>
-                          {tildePath(p.where, home)}
-                        </span>
+                        <FitPath
+                          className="schedule-recents-where"
+                          path={tildePath(p.where, home)}
+                          fullPath={p.path}
+                        />
                       )}
                     </button>
                   );
                 })}
+                {/* A SEARCH THAT FOUND NOTHING STILL ANSWERS. Only ever while
+                    SEARCHING: an empty recents list is a card nobody has used
+                    yet, and "No project matches" would be a wrong answer to a
+                    question nobody asked. Same sentence and same shape as the
+                    Tasks page's own project menu. */}
+                {pathSearching && !pathRows.length && (
+                  <p className="schedule-recents-empty">No project matches</p>
+                )}
                 {/* What the typed path IS, answered where the other answers
                     about folders are — in the dropdown, in the same row shape
                     as them (Akshil, 2026-08-20: "this UI should be in
@@ -4962,6 +5129,11 @@ export default function NewJobModal({
                   New folder
                 </button>
                 </div>
+                {/* THE HOVER TOOLTIP, portalled to `<body>` from here —
+                    rendered inside the panel so the list closing takes it with
+                    it, drawn outside every stacking context this modal makes so
+                    nothing can cover it. */}
+                {pathTip.host}
               </div>
             )}
           </div>

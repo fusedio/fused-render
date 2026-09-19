@@ -448,8 +448,11 @@ def test_the_link_beats_the_guess_and_an_edit_beats_the_link(modal):
     assert modal.count('const initialTargetValue = ') == 1
     assert 'editing?.target ?? initialTarget ?? ""' in modal, \
         "Edit beats the link beats the guess"
-    assert modal.count("initialTargetValue") == 3, \
-        "the const, the state seed, and the dirty baseline"
+    assert modal.count("initialTargetValue") == 5, \
+        ("the const, the state seed, the dirty baseline, and the folder field's "
+         "own default (`folderFieldRows`' `defaultTarget` argument and its dep, "
+         "which decide whether typing in the field searches the page's projects "
+         "or leaves the remembered folders alone)")
     # the async default only fills a still-EMPTY field, which is what keeps it
     # from clobbering the link's target when getConfig resolves
     effect = modal[modal.index("getConfig().then("):]

@@ -974,6 +974,7 @@ function FilterMenu({
   slot,
   count,
   badge = true,
+  name,
   icon: glyph,
   onClear,
   children,
@@ -995,6 +996,13 @@ function FilterMenu({
    *  "1" after a name is the same fact said twice. `count` still decides whether
    *  the ✕ half is live, so the split control is unchanged. */
   badge?: boolean;
+  /** WHAT THE FACET IS CALLED, for the two accessible names — "Clear the
+   *  project filter" and "Filter by Project". Defaults to `label`, which is
+   *  right while the label is the facet's name; the Project menu prints the
+   *  chosen FOLDER's name as its label once one is chosen, and a ✕ announced as
+   *  "Clear the fused-render filter" has lost the word that says what kind of
+   *  filter it is. */
+  name?: string;
   /** The trigger's glyph. Defaults to the ring, which is the STATUS menu's own
    *  mark — that is the vocabulary this page states a status in, so on that menu
    *  the ring is the label said twice and it belongs there.
@@ -1107,8 +1115,8 @@ function FilterMenu({
             /* Says WHICH filter it drops. "Clear" on its own was the ambiguity
                this replaces, and a bare ✕ beside a label is read as belonging
                to it only if the accessible name agrees. */
-            title={`Clear the ${label.toLowerCase()} filter`}
-            aria-label={`Clear the ${label.toLowerCase()} filter`}
+            title={`Clear the ${(name ?? label).toLowerCase()} filter`}
+            aria-label={`Clear the ${(name ?? label).toLowerCase()} filter`}
             onClick={onClear}
           >
             ✕
@@ -1119,7 +1127,7 @@ function FilterMenu({
         <div
           className="schedule-tv-pop tasks-pop"
           role="group"
-          aria-label={`Filter by ${label}`}
+          aria-label={`Filter by ${name ?? label}`}
           style={style}
         >
           {children(() => setOpen(false))}
@@ -1536,6 +1544,7 @@ export function TaskFilterControls({
              while the trigger moves (the 2026-09-14 shifting fix holds). */
           label={filters.projects.length === 1 ? basename(filters.projects[0]) : "Project"}
           badge={filters.projects.length !== 1}
+          name="Project"
           slot="project"
           count={filters.projects.length}
           /* A FOLDER, because a project on this page IS a folder — it is

@@ -7915,25 +7915,35 @@ describe("the two filter menus", () => {
   // Akshil, 2026-09-14, after a round where the Project trigger printed the
   // chosen folder's NAME and the rows carried ticks.
 
-  it("scrolls the project rows under a search box that stays put", () => {
+  it("keeps the search box put while the project rows scroll under it", () => {
     // Akshil, 2026-09-19: "search should be fixed in place, it shouldn't
     // scroll with the projects list. overflow should be only on the options."
-    // The radiogroup used to be `display: contents` and the PANEL scrolled,
-    // taking the search box along. Now the panel is the frame and the group
-    // is the scroller — the New-task card's recents shape, for the same
-    // complaint.
+    //
+    // STICKY, and the PANEL goes on being the scroller. A round of this made
+    // the radiogroup the scroller instead — which meant giving it a real box,
+    // and a real box between the panel and its rows is the 28-slivers bug that
+    // `display: contents` exists to prevent. The box rides the panel's top
+    // edge instead: one property, and nothing else about the panel moves.
     const group = block(SCHEDULE_CSS, ".schedule-tv-pop-radiogroup");
-    expect(group).not.toContain("display: contents");
-    expect(group).toContain("flex: 1 1 auto");
-    expect(group).toContain("min-height: 0");
-    expect(group).toContain("overflow-y: auto");
+    expect(group).toContain("display: contents");
     const panel = block(TASKS_CSS, ".schedule-tv-pop.tasks-pop");
-    expect(panel).toContain("overflow: hidden");
-    expect(panel).not.toContain("overflow-y: auto");
-    // The search box and the heads keep their own height above the scroller.
-    expect(block(SCHEDULE_CSS, ".schedule-tv-pop .schedule-tv-search.schedule-tv-pop-search"))
-      .toContain("flex: 0 0 auto");
-    // The rows inside still keep theirs — the selector walks through the group.
+    expect(panel).toContain("overflow-y: auto");
+    const search = block(
+      SCHEDULE_CSS, ".schedule-tv-pop .schedule-tv-search.schedule-tv-pop-search");
+    expect(search).toContain("position: sticky");
+    expect(search).toContain("top: 0");
+    // It keeps its own height, and it is PAINTED — a transparent sticky box
+    // shows the rows sliding under it, and a `z-index` is what keeps it over
+    // their hover wash.
+    expect(search).toContain("flex: 0 0 auto");
+    expect(search).toContain("background: var(--bg-popover)");
+    expect(search).toContain("z-index: 1");
+    // …and the 2px above it is PADDING, not margin: a margin over a sticky box
+    // is a 2px window at `top: 0` for a hairline of the row under it.
+    expect(search).toContain("padding-top: 2px");
+    expect(search).not.toContain("margin: 2px");
+    // The rows inside still keep their own height — the selector walks through
+    // the group, which is still there in the DOM whatever `display` says.
     expect(TASKS_CSS).toContain(
       ".schedule-tv-pop.tasks-pop > .schedule-tv-pop-radiogroup > .schedule-tv-pop-item");
   });
@@ -7956,6 +7966,11 @@ describe("the two filter menus", () => {
     expect(VIEWS).toContain(
       'label={filters.projects.length === 1 ? basename(filters.projects[0]) : "Project"}');
     expect(VIEWS).toContain("badge={filters.projects.length !== 1}");
+    // …and the accessible names keep saying WHAT KIND of filter it is: the ✕
+    // is "Clear the project filter", never "Clear the fused-render filter".
+    expect(VIEWS).toContain('name="Project"');
+    expect(VIEWS).toContain("`Clear the ${(name ?? label).toLowerCase()} filter`");
+    expect(VIEWS).toContain("`Filter by ${name ?? label}`");
     const statusMenu = VIEWS.slice(VIEWS.indexOf('label="Status"'));
     expect(statusMenu.slice(0, statusMenu.indexOf("onClear"))).not.toContain("badge=");
     expect(VIEWS).toContain("{splittable && (");
