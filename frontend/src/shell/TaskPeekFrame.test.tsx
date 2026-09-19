@@ -164,6 +164,11 @@ describe("the two hosts", () => {
     expect(APP).toContain("href={tabUrl(id)}");
     expect(APP).toContain("if (next !== tab) navigateUrl(tabUrl(next));");
     expect(APP).not.toContain("appPageUrl(dir, id, location.search)");
+    // …and the arrow keys take the same address as a click (Bugbot, PR #1249).
+    expect(APP).toContain(
+      "navigateUrl(appPageUrl(dir, APP_PAGE_TABS[i], peekSearch(location.search, null)));",
+    );
+    expect(APP).not.toContain("APP_PAGE_TABS[i], location.search)");
   });
 
   it("clicking the app page's icon, or inside its picker, is not a click on blank frame", () => {

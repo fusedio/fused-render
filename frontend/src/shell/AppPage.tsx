@@ -431,7 +431,10 @@ export default function AppPage({
       const i = APP_PAGE_TABS.indexOf(cur) + (e.key === "ArrowRight" ? 1 : -1);
       e.preventDefault();
       if (i < 0 || i >= APP_PAGE_TABS.length) return;
-      navigateUrl(appPageUrl(dir, APP_PAGE_TABS[i], location.search));
+      // The same address a click would take (`tabUrl`): `?peek=` stays behind
+      // here too, or an arrow-key switch would carry a dead param to Overview
+      // and re-open the panel on the way back (Bugbot, PR #1249).
+      navigateUrl(appPageUrl(dir, APP_PAGE_TABS[i], peekSearch(location.search, null)));
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
