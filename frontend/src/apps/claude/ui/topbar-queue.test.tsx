@@ -126,9 +126,12 @@ test("a queued chat reads in the Tasks row's order: ring, number, title, caption
   expect(has(r, "tasks-queue-text")).toBe(true);
   // The project keeps the far end of the line.
   expect(at(r, "tasks-row-queue")).toBeLessThan(at(r, "task-side-peek-project"));
-  // The words are the queue's one builder's, and the header adds none of its own
-  // — "queued" is the ring's word now, not ink.
-  expect(text(r)).toContain("1st in line · behind TASK-046");
+  // The words are the queue's one builder's, and the header adds none of its own.
+  expect(text(r)).toContain("after TASK-046 | 1st");
+  // NO ⤒ AND NO SECOND COLOUR, for the reason the row and the card dropped them
+  // (Akshil, 2026-09-19): a skip changes the ORDER, and the order is the words.
+  expect(has(r, "tasks-queue-glyph")).toBe(false);
+  expect(has(r, "is-next")).toBe(false);
   // AND NOT THE USAGE LIMIT'S RED SEAT (`.c-tb-paused`), which was the first
   // cut's mistake: that span is Blocked's red, and waiting is not failing.
   expect(has(r, "c-tb-paused")).toBe(false);
@@ -137,7 +140,7 @@ test("a queued chat reads in the Tasks row's order: ring, number, title, caption
   expect(has(r, "is-queued")).toBe(true);
 });
 
-test("the id in `behind TASK-x` is a DOOR, exactly as the Tasks row's is", async () => {
+test("the id in `after TASK-x` is a DOOR, exactly as the Tasks row's is", async () => {
   // The header said the same words as the Tasks row and gave the reader nothing
   // to press (Akshil, 2026-09-18). The one question a person has about the thing
   // in their way is what it is doing, and the answer is the holder's own
@@ -162,7 +165,7 @@ test("the id in `behind TASK-x` is a DOOR, exactly as the Tasks row's is", async
   expect(String(link[0].props.href)).toContain("session_id=sess-46");
   expect(String(link[0].props.href)).toContain("deploy.py");
   expect(link[0].props.title).toBe("Nightly deploy");
-  expect(text(r)).toContain("2nd in line · behind TASK-046");
+  expect(text(r)).toContain("after TASK-046 | 2nd");
 });
 
 test("…and it stays plain text when there is nowhere for it to go", async () => {
@@ -173,7 +176,7 @@ test("…and it stays plain text when there is nowhere for it to go", async () =
     { task: task() },
   );
   expect(r.root.findAll((n) => n.type === "a")).toHaveLength(0);
-  expect(text(r)).toContain("behind TASK-046");
+  expect(text(r)).toContain("after TASK-046");
 });
 
 test("a queued chat with no task row still reads ring, Claude, caption", async () => {
@@ -182,7 +185,7 @@ test("a queued chat with no task row still reads ring, Claude, caption", async (
   expect(at(r, "schedule-ring--queued")).toBeLessThan(at(r, "c-tb-title"));
   expect(at(r, "c-tb-title")).toBeLessThan(at(r, "tasks-row-queue"));
   expect(text(r)).toContain("Claude");
-  expect(text(r)).toContain("1st in line · behind TASK-046");
+  expect(text(r)).toContain("after TASK-046 | 1st");
   expect(has(r, "c-tb-paused")).toBe(false);
   // The ring takes the ✻'s seat rather than sitting beside it — one glyph at the
   // left end of the line, and on a waiting chat it is the waiting one.
@@ -195,18 +198,17 @@ test("a queued chat nobody has answered for beats the skeleton", async () => {
   // placeholder over a KNOWN state would hide the only answer the header has.
   const r = render({ status: "queued", queue_position: 2 }, { pending: true });
   expect(has(r, "c-tb-skel")).toBe(false);
-  expect(text(r)).toContain("2nd in line");
+  expect(text(r)).toContain("2nd");
 });
 
-test("the placeless answer is still a sentence", async () => {
+test("the placeless answer is the status word, not a half-sentence", async () => {
   // The server could not place it — an honest answer, and NOT the head. It reads
-  // "in line" rather than "0th in line" (platform/lib/queue).
-  expect(text(render({ status: "queued" }))).toContain("in line");
+  // "queued" rather than "0th" or the old "in line" (platform/lib/queue).
+  expect(text(render({ status: "queued" }))).toContain("queued");
 });
 
 test("a running row draws no queued state at all", async () => {
   const r = render({ status: "in_progress", queue_position: 2 }, { task: task({ status: "in_progress" }) });
-  expect(text(r)).not.toContain("in line");
   expect(has(r, "tasks-row-queue")).toBe(false);
   expect(has(r, "is-queued")).toBe(false);
   expect(ringClasses(r).some((c) => c.includes("schedule-ring--queued"))).toBe(false);
@@ -218,7 +220,7 @@ test("no row is the header main has always drawn", async () => {
   expect(said).toContain("Claude");
   expect(said).toContain("alpha");
   expect(said).toContain("T048");
-  expect(said).not.toContain("in line");
+  expect(has(r, "tasks-row-queue")).toBe(false);
   expect(ringClasses(r)).toEqual([]);
   expect(has(r, "c-spark")).toBe(true);
 });
@@ -253,7 +255,7 @@ test("a done session row beside a queued live row wears the queued row's ring, n
   expect(said).toContain("T052");
   expect(said).toContain("say B");
   expect(said).not.toContain("the old question");
-  expect(said).toContain("2nd in line · behind TASK-046");
+  expect(said).toContain("after TASK-046 | 2nd");
   expect(has(r, "task-side-peek-project")).toBe(true);
 });
 

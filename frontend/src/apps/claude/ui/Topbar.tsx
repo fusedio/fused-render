@@ -25,11 +25,10 @@
 // that, so the chat borrows the peek's own component rather than growing a
 // second header that must be kept looking like it.
 import type { Task } from "@platform/lib/api";
-// THE QUEUE'S WORDS, from the one builder three surfaces share — "1st in line ·
-// behind TASK-046" (platform/lib/queue). The header says the same sentence the
-// Tasks row says, because it is the same fact about the same task.
+// THE QUEUE'S WORDS, from the one builder four surfaces share — "after TASK-046
+// | 2nd" (platform/lib/queue). The header says the same sentence the Tasks row
+// says, because it is the same fact about the same task.
 import {
-  QUEUE_PRIORITY_GLYPH,
   type QueueCaption,
   queueCaption,
   type QueueFacts,
@@ -142,7 +141,7 @@ export function Topbar({
   // identity block came from the SESSION's row (`useSessionTask`) and the
   // caption from the chat's LIVE row (`useSchedule.row`, pending key first) —
   // two rows once a done chat's next send queued under `pending:<entry>`: a
-  // done ring and the old title beside "2nd in line". While the line says
+  // done ring and the old title beside "2nd". While the line says
   // queued, the identity is the queued row's own — its status draws the dashed
   // ring, its number and title are the message that is waiting — over the
   // session row's project and target, which the queued row does not carry.
@@ -277,13 +276,20 @@ export function Topbar({
 }
 
 /**
- * WHERE THIS CHAT STANDS IN ITS FOLDER'S LINE — "1st in line · behind TASK-046".
+ * WHERE THIS CHAT STANDS IN ITS FOLDER'S LINE — "after TASK-046 | 2nd".
  *
  * THE TASKS ROW'S OWN MARKUP, classes and all (`tasks-row-queue` /
  * `tasks-queue-text`, styles/tasks.css, which `shell.css` loads for every page —
  * the chat draws inside that document). The words are `queueCaption`'s, the
- * pointer's title and the ⤒ are the row's, and the ink is the row's muted
- * register: one fact, one sentence, one look, wherever a reader meets it.
+ * pointer's title is the row's, and the ink is the row's muted register: one
+ * fact, one sentence, one look, wherever a reader meets it.
+ *
+ * NO ⤒ AND NO SECOND COLOUR, for the reason the row and the card dropped them
+ * (Akshil, 2026-09-19): a skip changes the ORDER, which this sentence prints,
+ * and nothing about it is a highlight.
+ *
+ * THE HEADER IS NOT A ROW, so there is nothing for a press on the words to open
+ * — only the id is a door, and it is the same `<a>` the list draws.
  *
  * IT IS NOT THE USAGE LIMIT'S SEAT any more (`.c-tb-paused`, which keeps its one
  * job): that span is Blocked's red at the right end of the line, and a queued
@@ -296,15 +302,10 @@ export function Topbar({
 function QueuedCaption({ line }: { line: QueueCaption }) {
   return (
     <span
-      className={"tasks-row-queue" + (line.runsNext ? " is-next" : "")}
+      className="tasks-row-queue"
       data-hint={line.aheadTitle || line.text}
       aria-live="polite"
     >
-      {line.runsNext && (
-        <span className="tasks-queue-glyph" aria-hidden="true">
-          {QUEUE_PRIORITY_GLYPH}
-        </span>
-      )}
       <span className="tasks-queue-text">
         <QueueCaptionText queue={line} />
       </span>

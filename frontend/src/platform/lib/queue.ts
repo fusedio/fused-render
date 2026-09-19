@@ -1,4 +1,4 @@
-// THE PROJECT QUEUE'S WORDS, in one place — "1st in line · behind TASK-038".
+// THE PROJECT QUEUE'S WORDS, in one place — "after TASK-038 | 2nd".
 //
 // Three surfaces say it: the Tasks List row, the Tasks Board card and the native
 // chat (its waiting rows and the card over the composer). Two of those are shell
@@ -32,6 +32,22 @@
 //   * `queued` stays the STATUS WORD in code and on a row; `waiting` is the word
 //     a count is said in ("2 waiting"), because a person reading a sidebar wants
 //     the state described, not the enum named.
+//
+// AND AGAIN ON 2026-09-19 (Akshil), for the caption alone — "3rd in line ·
+// behind TASK-046" became "after TASK-046 | 3rd":
+//
+//   * THE HOLDER LEADS. What a reader wants from a waiting row is what is in
+//     the way, and the id is also the only token on the line they can press. It
+//     used to arrive last, after a clause that had already eaten the width a
+//     narrow row had to give (`.tasks-row-queue` ellipsises), so the one
+//     actionable word was the first to be cut.
+//   * `behind` → `after`. "Behind" says the row is losing; "after" says when it
+//     goes. Same fact, and the second one is the order rather than a verdict.
+//   * `3rd in line` → `3rd`. "In line" is what the whole caption is about, and
+//     a phrase repeated on every queued row on the page is a phrase nobody
+//     reads. The bare ordinal after a pipe is a place, unmistakably.
+//   * NO PLACE AND NO HOLDER is `queued` — the status word, said plainly, in
+//     place of the old half-sentence "in line".
 
 /** The queue facts a caption is built from — the subset of a task row that says
  *  where it stands, so a caller holding an admission answer rather than a row
@@ -68,11 +84,13 @@ export interface QueueFacts {
 }
 
 export interface QueueCaption {
-  /** "1st in line", or a bare "in line" when the server could not place it. */
+  /** "3rd" — the bare ordinal, or "" when the server could not place it. */
   place: string;
-  /** "behind TASK-038", or "" when nothing has a name to give. */
-  behind: string;
-  /** The two, joined — what the ink actually says. */
+  /** "after TASK-038", or "" when nothing has a name to give. */
+  after: string;
+  /** The two, joined — what the ink actually says: "after TASK-038 | 3rd",
+   *  "1st" with no holder, "after TASK-038" with no place, and `QUEUED_WORD`
+   *  when the server could say neither. */
   text: string;
   /** The holder's task id, for the link. "" when there is none. */
   ahead: string;
@@ -80,8 +98,15 @@ export interface QueueCaption {
   aheadTitle: string;
   /** Where the id points, or null when the holder has no session to open. */
   aheadHref: string | null;
-  /** Whether this is the one that goes out next — `queue_priority` alone. The
-   *  ⤒ glyph's condition, and the condition a surface kills Run next on. */
+  /** Whether this is the one that goes out next — `queue_priority` alone.
+   *
+   *  NOTHING DRAWS IT ANY MORE (Akshil, 2026-09-19). It used to lead the caption
+   *  with a ⤒ and repaint the whole sentence yellow, which made a skipped row
+   *  look like a different KIND of row in a column whose only subject is order —
+   *  the skip changes where this stands and nothing else, and the new place is
+   *  already printed. It survives as DATA because the Run next button reads it
+   *  (`canRunNext`, and the disabled draw at the head) and the optimistic
+   *  overlay claims it. */
   runsNext: boolean;
 }
 
@@ -134,7 +159,12 @@ export function queueOrdinal(n: number): string {
 }
 
 /**
- * "behind TASK-038" — ONLY when a DIFFERENT task is holding the folder.
+ * "after TASK-038" — ONLY when a DIFFERENT task is holding the folder.
+ *
+ * THE CAPTION'S OWN HALF (Akshil, 2026-09-19), and the first thing it says: the
+ * holder is what the reader wants from a waiting row and the id is the only
+ * token on it they can press, so it leads rather than trailing a clause that
+ * had already spent the row's width.
  *
  * An empty `queue_ahead` is a real answer and it gets NO words. It used to read
  * "behind a run in this folder", which is a sentence with a hole in it: there is
@@ -143,6 +173,21 @@ export function queueOrdinal(n: number): string {
  * not exist. The folder can be perfectly free — a second message waits behind
  * the first one this chat sent, which is the conversation keeping its own order
  * — and the honest rendering of that is that it is waiting, full stop.
+ */
+export function queueAfter(facts: QueueFacts): string {
+  const ahead = (facts.queue_ahead || "").trim();
+  return ahead ? `after ${ahead}` : "";
+}
+
+/**
+ * THE OLD WORD, STILL SPOKEN IN ONE PLACE — the chat's waiting rows and the card
+ * over the composer (`apps/claude/ui/Waiting.tsx`), which write "behind " as ink
+ * of their own and only ask this whether there is a name at all.
+ *
+ * It is NOT the caption's builder any more (`queueAfter` is) and nothing new may
+ * reach for it: the moment those two surfaces say "after" like everywhere else
+ * this goes, and `waitingCardText` with it. Kept rather than renamed under them
+ * so one vocabulary change does not leave the composer saying half of each.
  */
 export function queueBehind(facts: QueueFacts): string {
   const ahead = (facts.queue_ahead || "").trim();
@@ -235,25 +280,35 @@ export function chatUrl(target: string, sessionId: string, queuedEntryId = ""): 
   return `/explorer/view/${encoded}?_side=claude&session_id=${encodeURIComponent(sessionId)}${queued}`;
 }
 
+/** WHAT JOINS THE TWO HALVES. A pipe and not a `·`: the middot is this page's
+ *  separator between peers ("1 running · 2 waiting"), and these are not peers —
+ *  the holder is the fact and the ordinal is a qualifier on it. It also survives
+ *  the ellipsis better, because it is unmistakable at the point a row cuts. */
+export const QUEUE_CAPTION_SEP = " | ";
+
+/** WHAT A QUEUED ROW SAYS WHEN THE SERVER COULD NAME NEITHER a holder nor a
+ *  place — the status word itself, and nothing dressed up. It replaces the old
+ *  bare "in line", which was a sentence with its subject missing. */
+export const QUEUED_WORD = "queued";
+
 /**
  * The caption a Tasks row or Board card wears, or null when this is not queued.
  *
- * "1st in line · behind TASK-038", and a bare "1st in line" when nothing else
- * holds the folder. The status test is a plain `!== "queued"` rather than the
+ * "after TASK-038 | 3rd" — the holder first, then the place. Either half alone
+ * when the server could only answer one of them, and `QUEUED_WORD` when it could
+ * answer neither. The status test is a plain `!== "queued"` rather than the
  * shell's `statusColumn` narrowing, which is not importable from here. The two
  * agree on the only value this asks about: an unknown status is not `"queued"`
  * either way.
  */
 export function queueCaption(facts: QueueFacts): QueueCaption | null {
   if (facts.status !== "queued") return null;
-  const at = queuePosition(facts);
-  const ord = queueOrdinal(at);
-  const place = ord ? `${ord} in line` : "in line";
-  const behind = queueBehind(facts);
+  const place = queueOrdinal(queuePosition(facts));
+  const after = queueAfter(facts);
   return {
     place,
-    behind,
-    text: behind ? `${place} · ${behind}` : place,
+    after,
+    text: [after, place].filter(Boolean).join(QUEUE_CAPTION_SEP) || QUEUED_WORD,
     ahead: (facts.queue_ahead || "").trim(),
     aheadTitle: (facts.queue_ahead_title || "").trim(),
     aheadHref: queueAheadHref(facts),
@@ -340,11 +395,17 @@ export const RUN_NEXT_HINT = "Run next — nothing is interrupted";
 export const RUN_NEXT_DONE_HINT = "Already next in this folder";
 
 /**
- * The mark a row or card wears when its work is the next out of its folder.
+ * THE RUN NEXT BUTTON'S FACE — and, since 2026-09-19, nothing else's.
  *
  * AN ARROW TO A BAR, and not a star or a bolt. It means "to the top of this",
  * which is exactly what Run next does and is the only thing it does: the run
  * holding the folder keeps running. A lightning glyph would promise the one
  * thing this feature must never be read as offering.
+ *
+ * IT USED TO LEAD THE CAPTION TOO, on a row whose `queue_priority` was set, with
+ * the sentence beside it repainted yellow. That was a HIGHLIGHT on a state, and
+ * a skip does not produce a state — it produces an ORDER, which the caption
+ * already prints. So the glyph is an action's face and nothing is decorated
+ * with it (Akshil, 2026-09-19).
  */
 export const QUEUE_PRIORITY_GLYPH = "⤒";

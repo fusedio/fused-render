@@ -2,9 +2,9 @@
 //
 // Every string three surfaces say about one waiting task is built here, so this
 // is where the wording is held still. The vocabulary was replaced wholesale on
-// 2026-09-12 (Akshil) and each test below names the sentence it retired, because
-// a caption that reads fine in isolation is exactly the kind of thing that drifts
-// back.
+// 2026-09-12 and the caption's half again on 2026-09-19 (Akshil), and each test
+// below names the sentence it retired, because a caption that reads fine in
+// isolation is exactly the kind of thing that drifts back.
 import { describe, expect, it } from "bun:test";
 import {
   canRunNext,
@@ -13,7 +13,10 @@ import {
   pendingEntryId,
   QUEUED_PARAM,
   NEXT_IN_FOLDER,
+  QUEUE_CAPTION_SEP,
   QUEUE_PRIORITY_GLYPH,
+  QUEUED_WORD,
+  queueAfter,
   queueAheadHref,
   queueBehind,
   queueCaption,
@@ -32,12 +35,18 @@ import {
 const queued = (extra: Record<string, unknown> = {}) => ({ status: "queued", ...extra });
 
 describe("a place in the line", () => {
-  it("is an ORDINAL, the way a person says it out loud", () => {
-    // "#2 in line" was the shipped wording and it is a database row number.
-    expect(queueCaption(queued({ queue_position: 1 }))?.text).toBe("1st in line");
-    expect(queueCaption(queued({ queue_position: 2 }))?.text).toBe("2nd in line");
-    expect(queueCaption(queued({ queue_position: 3 }))?.text).toBe("3rd in line");
-    expect(queueCaption(queued({ queue_position: 4 }))?.text).toBe("4th in line");
+  it("is a BARE ORDINAL, the way a person says it out loud", () => {
+    // "#2 in line" was the first shipped wording and it is a database row
+    // number; "2nd in line" was the second, and "in line" is what the whole
+    // caption is about — a phrase on every queued row on the page is a phrase
+    // nobody reads (Akshil, 2026-09-19).
+    expect(queueCaption(queued({ queue_position: 1 }))?.text).toBe("1st");
+    expect(queueCaption(queued({ queue_position: 2 }))?.text).toBe("2nd");
+    expect(queueCaption(queued({ queue_position: 3 }))?.text).toBe("3rd");
+    expect(queueCaption(queued({ queue_position: 4 }))?.text).toBe("4th");
+    // …and that is the whole caption when nothing else holds the folder.
+    expect(queueCaption(queued({ queue_position: 1 }))?.place).toBe("1st");
+    expect(queueCaption(queued({ queue_position: 1 }))?.after).toBe("");
   });
 
   it("gets the teens right, which is the only reason it is a function", () => {
@@ -52,12 +61,20 @@ describe("a place in the line", () => {
     expect(queueOrdinal(112)).toBe("112th");
   });
 
-  it("says a bare 'in line' when the server could not place it, never '0th'", () => {
+  it("says the STATUS WORD when the server could place nothing, never '0th'", () => {
+    // "in line" was the old placeless answer and it is a sentence with its
+    // subject missing. `queued` is the word the ring, the filter and the lane
+    // already use, and it is the honest whole of what is known.
     expect(queueOrdinal(0)).toBe("");
     expect(queueOrdinal(-3)).toBe("");
     expect(queuePosition({ queue_position: 0 })).toBe(0);
-    expect(queueCaption(queued())?.text).toBe("in line");
-    expect(queueCaption(queued({ queue_position: 0 }))?.text).toBe("in line");
+    expect(QUEUED_WORD).toBe("queued");
+    expect(queueCaption(queued())?.text).toBe("queued");
+    expect(queueCaption(queued({ queue_position: 0 }))?.text).toBe("queued");
+    expect(queueCaption(queued())?.place).toBe("");
+    // A holder with no place is still the holder — the id is the half worth
+    // printing, so it is not swallowed by the placeless case.
+    expect(queueCaption(queued({ queue_ahead: "TASK-038" }))?.text).toBe("after TASK-038");
   });
 
   it("has nothing to say about a row that is not queued", () => {
@@ -67,11 +84,29 @@ describe("a place in the line", () => {
 });
 
 describe("what is in front", () => {
-  it("names a task ONLY when a different one is holding the folder", () => {
-    expect(queueBehind({ queue_ahead: "TASK-038" })).toBe("behind TASK-038");
+  it("LEADS the caption, because it is the half a reader can press", () => {
+    // "3rd in line · behind TASK-046" put the one actionable token last, where
+    // a narrow row's ellipsis eats it first (Akshil, 2026-09-19).
+    expect(QUEUE_CAPTION_SEP).toBe(" | ");
+    expect(queueAfter({ queue_ahead: "TASK-038" })).toBe("after TASK-038");
     expect(queueCaption(queued({ queue_position: 1, queue_ahead: "TASK-038" }))?.text).toBe(
-      "1st in line · behind TASK-038",
+      "after TASK-038 | 1st",
     );
+    expect(queueCaption(queued({ queue_position: 3, queue_ahead: "TASK-046" }))?.text).toBe(
+      "after TASK-046 | 3rd",
+    );
+    // "behind" is a verdict; "after" is an order. Same fact, and nowhere on a
+    // caption does the first word appear any more.
+    expect(queueCaption(queued({ queue_position: 3, queue_ahead: "TASK-046" }))?.text)
+      .not.toContain("behind");
+  });
+
+  it("keeps the OLD word alive for the composer's card, and only there", () => {
+    // `apps/claude/ui/Waiting.tsx` writes "behind " as ink of its own and asks
+    // this only whether there is a name at all. It is not the caption's builder
+    // and nothing new may reach for it.
+    expect(queueBehind({ queue_ahead: "TASK-038" })).toBe("behind TASK-038");
+    expect(queueBehind({})).toBe("");
   });
 
   it("says NOTHING at all when there is no name to give", () => {
@@ -79,11 +114,12 @@ describe("what is in front", () => {
     // sentence with a hole in it: nothing to look at, nothing to press, and a
     // reader who has just typed into their own chat being told about a stranger
     // who may not exist. The folder is often simply free.
-    expect(queueBehind({ queue_ahead: "" })).toBe("");
-    expect(queueBehind({})).toBe("");
+    expect(queueAfter({ queue_ahead: "" })).toBe("");
+    expect(queueAfter({})).toBe("");
     const line = queueCaption(queued({ queue_position: 2 }));
-    expect(line?.text).toBe("2nd in line");
-    expect(line?.text).not.toContain("behind");
+    expect(line?.text).toBe("2nd");
+    expect(line?.after).toBe("");
+    expect(line?.text).not.toContain("after");
   });
 
   it("keeps the holder's title OFF the caption and ON the pointer", () => {
@@ -93,7 +129,7 @@ describe("what is in front", () => {
     const line = queueCaption(
       queued({ queue_position: 1, queue_ahead: "TASK-038", queue_ahead_title: "Pull the news" }),
     );
-    expect(line?.text).toBe("1st in line · behind TASK-038");
+    expect(line?.text).toBe("after TASK-038 | 1st");
     expect(line?.text).not.toContain("Pull the news");
     expect(line?.aheadTitle).toBe("Pull the news");
   });
@@ -245,8 +281,13 @@ describe("runs next", () => {
     expect(RUN_NEXT_HINT).not.toContain("Skip");
     expect(RUN_NEXT_DONE_HINT).toBe("Already next in this folder");
     // The mark means "to the top of this" and not "faster" — a bolt would promise
-    // the one thing this feature must never be read as offering.
+    // the one thing this feature must never be read as offering. It is the
+    // BUTTON's face and nothing else's since 2026-09-19: the caption draws no
+    // glyph, because a skip changes the order and the order is the sentence.
     expect(QUEUE_PRIORITY_GLYPH).toBe("⤒");
+    const skipped = queueCaption(queued({ queue_position: 1, queue_priority: true }));
+    expect(skipped?.text).toBe("1st");
+    expect(skipped?.text).not.toContain(QUEUE_PRIORITY_GLYPH);
   });
 });
 
