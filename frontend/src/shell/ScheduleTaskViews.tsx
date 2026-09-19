@@ -3629,11 +3629,21 @@ function TaskNode({
              untruncated message when the row is showing one, the title when it
              is not — because what a caption is for is the text the clamp hides. */
           data-hint={line.said ? task.last_message?.text : task.title}
+          /* Hovering either the title or the reply shows BOTH lines whole, in
+             the row's own styles (hints.ts `renderTaskHint`, Akshil,
+             2026-09-19): what the row clamps is what the reader is missing. */
+          data-hint-title={line.said ? task.last_message?.text : task.title}
+          data-hint-reply={task.last_reply || ""}
         >
           {label}
         </span>
         {task.last_reply ? (
-          <span className="tasks-title-reply" data-hint={task.last_reply}>
+          <span
+            className="tasks-title-reply"
+            data-hint={task.last_reply}
+            data-hint-title={line.said ? task.last_message?.text : task.title}
+            data-hint-reply={task.last_reply}
+          >
             {task.last_reply}
           </span>
         ) : null}

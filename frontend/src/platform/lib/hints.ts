@@ -152,9 +152,36 @@ function renderHint(p: HTMLDivElement, text: string): void {
   p.replaceChildren(grid);
 }
 
-function show(text: string, x: number, y: number): void {
+/** THE TASK ROW'S OWN FORM (Akshil, 2026-09-19): hovering the title or the
+ *  reply shows BOTH, untruncated, in the styles the row prints them in — the
+ *  title's line, then the reply's. Opted into with `data-hint-title` (and an
+ *  optional `data-hint-reply`) beside `data-hint`; `data-hint` stays as the
+ *  plain-text fallback so `hintAt` resolves the element the same way. */
+function renderTaskHint(p: HTMLDivElement, el: Element): boolean {
+  const title = (el.getAttribute("data-hint-title") || "").trim();
+  if (!title) return false;
+  const reply = (el.getAttribute("data-hint-reply") || "").trim();
+  const wrap = document.createElement("div");
+  wrap.className = "hint-task";
+  const t = document.createElement("div");
+  t.className = "hint-task-title";
+  t.textContent = title;
+  wrap.append(t);
+  if (reply) {
+    const r = document.createElement("div");
+    r.className = "hint-task-reply";
+    r.textContent = reply;
+    wrap.append(r);
+  }
+  p.replaceChildren(wrap);
+  return true;
+}
+
+function show(el: Element, x: number, y: number): void {
   const p = ensurePanel();
-  renderHint(p, text);
+  const task = renderTaskHint(p, el);
+  if (!task) renderHint(p, el.getAttribute("data-hint") || "");
+  p.classList.toggle("is-task", task);
   p.classList.add("is-on");
   place(x, y);
 }
@@ -176,7 +203,7 @@ function onOver(e: PointerEvent): void {
     return;
   }
   host = el;
-  show(el.getAttribute("data-hint") || "", e.clientX, e.clientY);
+  show(el, e.clientX, e.clientY);
 }
 
 function onMove(e: PointerEvent): void {
@@ -192,7 +219,7 @@ function onMove(e: PointerEvent): void {
   }
   if (el !== host) {
     host = el;
-    show(el.getAttribute("data-hint") || "", e.clientX, e.clientY);
+    show(el, e.clientX, e.clientY);
     return;
   }
   place(e.clientX, e.clientY);
@@ -215,7 +242,7 @@ function onFocus(e: FocusEvent): void {
   if (!el) return;
   const r = el.getBoundingClientRect();
   host = el;
-  show(el.getAttribute("data-hint") || "", r.left + r.width / 2 - OFFSET_X, r.bottom - OFFSET_Y + 6);
+  show(el, r.left + r.width / 2 - OFFSET_X, r.bottom - OFFSET_Y + 6);
 }
 
 /** Install the one listener set. Idempotent, so a re-render or a second caller

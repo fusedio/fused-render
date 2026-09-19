@@ -437,6 +437,36 @@ button.tasks-caret,
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* THE ROW'S HOVER CAPTION (hints.ts `renderTaskHint`): the title line and the
+   reply line whole, each in the style the row prints it in — same size, same
+   weight, same ink, same box — only allowed to wrap instead of clamp. The
+   panel widens for it: a full first line is longer than a 46ch caption. */
+.hint-panel.is-task {
+  max-width: min(90ch, 80vw);
+  font-size: 13px;
+  line-height: 16px;
+  padding: 6px 8px;
+}
+.hint-task {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  white-space: normal;
+}
+.hint-task-title {
+  font-weight: 500;
+  color: var(--fg);
+}
+.hint-task-reply {
+  color: var(--fg-muted);
+  font-style: italic;
+  font-weight: 100;
+  border: 0.5px solid rgba(0, 0, 0, 0.25);
+  border-radius: 4px;
+  padding: 0 6px;
+}
+
 /* With a reply in the row, the row's one spacer stops growing: the reply is the
    element that takes the free width, the spacer keeps only its minimum. */
 .tasks-row:has(.tasks-title-reply) .tasks-grow {
