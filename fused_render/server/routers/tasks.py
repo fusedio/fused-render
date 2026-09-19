@@ -359,8 +359,8 @@ _TEXT_HINTS = ('"type":"text"', '"type": "text"')
 _USER_HINTS = ('"type":"user"', '"type": "user"')
 # A subagent's rows — its brief AND its replies — ride the same transcript
 # with `isSidechain: true`. `_prompt` refuses the brief; this screen refuses
-# the reply, so a subagent's prose is never the row's `last_message` and its
-# API error is never pinned on the user's own prompt.
+# the reply, so a subagent's API error is never pinned on the user's own
+# prompt.
 _SIDECHAIN_HINTS = ('"isSidechain":true', '"isSidechain": true')
 
 
@@ -433,21 +433,9 @@ def _absorb(rec: dict, line: str) -> None:
     fate = _reply_fate(line)
     if fate is not None:
         _mark_fate(rec["tail"], fate, line)
-        # ...and an ORDINARY reply is also the newest thing Claude has said, so
-        # the line is KEPT — as the raw string, still unparsed. That is the
-        # whole of how `last_message` stays on the cheap side of the screen
-        # above: the candidate is overwritten by every later reply and only the
-        # survivor is ever handed to `json.loads` (`_condense_reply`), so a
-        # transcript of a thousand assistant turns costs one parse, not a
-        # thousand. An API-error row (`fate is True`) is not kept: its text is
-        # the failure report, which the row already says in `blocked_reason`.
-        #
-        # The raw line lives no longer than the scan that read it — `_scan`
-        # condenses it to the one-line row before returning, and nothing that
-        # wide is ever parked in `_SCAN` between polls. See `_condense_reply`.
-        if fate is False:
-            rec["reply_line"] = line
-            rec["reply_last"] = True
+        # That is ALL an assistant line contributes. Its words are never kept:
+        # `last_message` is the newest thing the USER said (see `_last_message`),
+        # so no assistant row is ever handed to `json.loads` here.
         return
     if '"user"' not in line and sessions.AI_TITLE_HINT not in line:
         return
@@ -472,15 +460,6 @@ def _absorb(rec: dict, line: str) -> None:
             rec["command"] = _command(obj)
         return
     prompt["body"] = prompt["body"][:_BODY_MAX]
-    # A prompt read AFTER the kept reply is the later turn, whatever the two
-    # timestamps say — the file is append-only. So the reply is DROPPED, not
-    # merely outranked: it answered an older prompt and can never again be the
-    # newest thing said. Deciding that by timestamp instead let a reply with a
-    # real `at` beat a prompt whose timestamp did not parse (read as 0.0), and
-    # a row wore a days-old reply as its title (Akshil, 2026-09-15).
-    rec["reply"] = None
-    rec["reply_line"] = ""
-    rec["reply_last"] = False
     rec["count"] += 1
     rec["tail"].append(prompt)
     if len(rec["tail"]) > _LISTING_MESSAGES:
@@ -490,13 +469,11 @@ def _absorb(rec: dict, line: str) -> None:
 def _new_scan() -> dict:
     # Every reader of `command` uses `.get`, so a record built before this key
     # existed — one already in `_SCAN` when the module is hot-reloaded under the
-    # dev server — degrades to "no command" instead of raising.
-    # `reply_line`/`reply`/`reply_last` are read with `.get` for the same
-    # reason — a record built before they existed degrades to "nothing said
-    # yet" (and, for `reply_last`, to the stricter timestamp rule) rather than
-    # raising under the dev server's hot reload.
+    # dev server — degrades to "no command" instead of raising. A record from
+    # before the assistant-reply keys were REMOVED may still carry them; nothing
+    # reads them any more, so they are inert.
     return {"offset": 0, "size": -1, "count": 0, "tail": [], "title": "",
-            "command": "", "reply_line": "", "reply": None, "reply_last": False}
+            "command": ""}
 
 
 def _scan(path: str) -> dict | None:
@@ -534,7 +511,6 @@ def _scan(path: str) -> dict | None:
         for line in text.split("\n"):
             if line.strip():
                 _absorb(rec, line)
-        _condense_reply(rec)
     rec["size"] = size
     _SCAN[path] = rec
     return rec
@@ -553,112 +529,32 @@ def _one_line(text: str) -> str:
     return ""
 
 
-def _reply_said(line: str) -> dict | None:
-    """One kept assistant line as `{role, text, at}`, or None when there is
-    nothing a row could show for it.
-
-    The ONLY `json.loads` this feature adds, and it runs at most once per scan
-    (see `_condense_reply`). A row with no text block — a turn that was pure
-    tool_use — is None: the substring screen lets one through whenever the LINE
-    holds a text hint anywhere, and "Claude ran a tool" is not something Claude
-    said.
-    """
-    try:
-        obj = json.loads(line)
-    except ValueError:
-        return None  # truncated line: the next scan re-reads it whole
-    if not isinstance(obj, dict) or obj.get("type") != "assistant":
-        return None
-    message = obj.get("message")
-    if not isinstance(message, dict):
-        return None
-    text = _one_line(tasks_store.first_text(message.get("content")))
-    if not text:
-        return None
-    return {"role": "assistant", "text": text,
-            "at": tasks_store.epoch(obj.get("timestamp")) or 0.0}
-
-
-def _condense_reply(rec: dict) -> None:
-    """Boil the kept assistant line down to the one-line `{role, text, at}` the
-    row is emitted as, and drop the raw bytes. Called once per scan that read
-    new bytes, from `_scan`.
-
-    ONE `json.loads` PER SCAN, not one per assistant turn — the promise
-    `_absorb` makes — and now also one per scan rather than one per emitted
-    row, which is what keeps `_SCAN` small: the raw line is a whole transcript
-    record wide (a turn with a big tool payload is kilobytes), and parked on
-    the record it stayed that wide for the life of the process for every
-    transcript whose `last_message` nobody ever asked for — a listing narrowed
-    past the task, or the `task_card_last_message` pref simply off. Condensed
-    here it is a few hundred bytes per transcript, bounded by
-    `_LAST_MESSAGE_MAX`, whoever reads it. Parsing back in `_absorb` would
-    bound it too and cost a parse per assistant turn instead of per scan, which
-    is the cost this screen exists to avoid.
-
-    A line that would not parse leaves the previous answer standing rather than
-    blanking the row: the scan's offset only ever advances to a newline, so the
-    line comes back whole on the next call.
-
-    So does a turn that said NOTHING — a pure tool_use row that passed the
-    substring screen — and deliberately: "Claude ran a tool" does not un-say
-    the words before it, so the newest thing said is still the reply it stands
-    on, and blanking that would hand the row back to a prompt Claude has
-    already answered. What keeps THAT honest is `reply_last`: a line with no
-    words in it is not the newest thing said, so the standing reply stops
-    winning ties it can no longer claim (`_last_message`), and a prompt read
-    after it wins outright. (One reply per scan is all the candidate slot
-    holds, so a wordless turn that arrives in the SAME scan as the reply before
-    it does take that reply's place — the row falls back to the prompt for a
-    poll. That is the screen's standing trade: one parse, the survivor's.)
-    """
-    line = rec.get("reply_line") or ""
-    if not line:
-        return
-    rec["reply_line"] = ""
-    said = _reply_said(line)
-    if said is not None:
-        rec["reply"] = said
-    else:
-        rec["reply_last"] = False
-
-
 def _last_message(rec: dict | None) -> dict | None:
-    """THE NEWEST THING SAID IN THIS CONVERSATION — `{role, text, at}` — or
-    None for a task nobody has said anything in yet.
+    """THE NEWEST THING THE USER SAID IN THIS CONVERSATION — `{role, text, at}`
+    with `role` always `"user"` — or None for a task nobody has said anything
+    in yet.
 
-    Both halves come from the incremental scan and neither is a second read:
-    the newest prompt is the last of the three the row already carries, and the
-    reply is the line `_absorb` kept. Whichever is newer wins, which is the
-    whole claim the field makes — a card titled by it is showing the last turn
-    of the conversation, whoever took it.
+    It is the last of the three prompts the row already carries, so it costs no
+    read of its own. Claude's replies are deliberately NOT candidates: a card
+    titled by the reader's own words says what the task IS ("run the
+    migration"), where a card titled by the answer said what Claude had just
+    done about it — a title that changed under the reader with every turn and
+    read as a wall of status lines rather than a wall of tasks (Akshil,
+    2026-09-19). The row's `blocked_reason` already carries the one reply that
+    matters to a listing, the failure.
 
-    A prompt read AFTER the reply DROPS it in `_absorb` — the file is
-    append-only, so the later line is the later turn and no clock is asked —
-    which is why the comparison below never sees that case. What it still
-    settles is the other way a kept reply stops being newest: a later turn
-    with NO words in it (`_condense_reply` clears `reply_last`, keeps `reply`).
-    `>=` while `reply_last` holds, so a reply with no usable timestamp (0.0,
-    beside a prompt with the same) still beats the prompt it answers; `>` once
-    it is gone, so the tie goes to the prompt. A record from before the key
-    existed reads as False and takes the stricter test, which loses nothing a
-    timestamp can settle.
+    `role` stays on the shape so a client that predates this rule keeps
+    reading the field the same way; it is simply never `"assistant"` now.
     """
     if rec is None:
         return None
-    said = None
     tail = rec.get("tail") or []
-    if tail:
-        text = _one_line(tail[-1].get("body"))
-        if text:
-            said = {"role": "user", "text": text, "at": tail[-1].get("at") or 0.0}
-    reply = rec.get("reply")
-    if reply is not None and (
-            said is None
-            or (reply["at"] >= said["at"] if rec.get("reply_last")
-                else reply["at"] > said["at"])):
-        said = reply
-    return said
+    if not tail:
+        return None
+    text = _one_line(tail[-1].get("body"))
+    if not text:
+        return None
+    return {"role": "user", "text": text, "at": tail[-1].get("at") or 0.0}
 
 
 def _full_prompts(path: str) -> list[dict]:
@@ -3326,15 +3222,12 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         "messages": list(reversed(tail)),
     }
     if last_message:
-        # THE LAST TURN OF THE CONVERSATION, whoever took it — one line of it,
-        # with `role` saying which — or None for a task nothing has been said
-        # in. `messages` above carries PROMPTS only, so this is the one field on
-        # the row that can carry a reply, and it is what the Cards wall titles a
-        # card by while `task_card_last_message` is on (shell/prefs.py). Off,
-        # the key is absent — which the client reads as "nothing said" — and
-        # every row on the machine stops carrying a field no surface draws.
-        # It costs no read either way: the reply was condensed by the scan that
-        # was already reading the bytes (`_condense_reply`).
+        # THE NEWEST PROMPT THE USER SENT — one line of it — or None for a task
+        # nothing has been said in. It is what the Tasks page titles a row by
+        # while `task_card_last_message` is on (shell/prefs.py). Off, the key is
+        # absent — which the client reads as "nothing said" — and every row on
+        # the machine stops carrying a field no surface draws. It costs no read
+        # either way: it is the last of the prompts the scan already kept.
         row["last_message"] = _last_message(rec)
     return row
 

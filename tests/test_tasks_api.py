@@ -703,33 +703,31 @@ def test_only_the_three_newest_messages_ride_along(client, projects_dir):
         "message 5", "message 4", "message 3"]
 
 
-# ------------------------------------------------- the last turn of the thread
+# -------------------------------------------- the newest thing the user said
 #
-# `last_message` is the one field on a row that can carry CLAUDE's words:
-# `messages` above is prompts only. It is what the Cards wall titles a card by
-# while `task_card_last_message` is on (shell/prefs.py) — which is why every
-# test here takes the `card_titles` fixture — and the rule is simply "the
-# newest turn, whoever took it".
+# `last_message` is what the Tasks page titles a row by while
+# `task_card_last_message` is on (shell/prefs.py) — which is why every test
+# here takes the `card_titles` fixture — and the rule is "the newest PROMPT".
+# Claude's replies are never candidates (Akshil, 2026-09-19): a title that
+# tracked the answer changed under the reader every turn.
 
 
-def test_the_last_message_is_the_reply_when_claude_answered_last(
+def test_the_last_message_is_the_prompt_even_when_claude_answered_last(
         client, projects_dir, card_titles):
     _write_transcript(projects_dir, "sess-a", "/p", [
-        _user("run the migration", T9),
-        _assistant("Ran the migration, 3 tables updated\nand nothing else", T10),
+        _user("run the migration\nand then tidy up", T9),
+        _assistant("Ran the migration, 3 tables updated", T10),
     ])
 
     said = _tasks(client)[0]["last_message"]
-    assert said["role"] == "assistant"
+    assert said["role"] == "user"
     # ONE LINE of it, which is all a card's title row can draw.
-    assert said["text"] == "Ran the migration, 3 tables updated"
-    assert said["at"] == tasks_store.epoch(T10)
+    assert said["text"] == "run the migration"
+    assert said["at"] == tasks_store.epoch(T9)
 
 
 def test_the_last_message_is_the_prompt_while_the_answer_is_still_coming(
         client, projects_dir, card_titles):
-    # The usual state of a running task: the reader has said something and
-    # nothing has come back yet. The card shows what was asked.
     _write_transcript(projects_dir, "sess-a", "/p", [
         _assistant("older answer", T9),
         _user("now do the other one", T10),
@@ -740,13 +738,11 @@ def test_the_last_message_is_the_prompt_while_the_answer_is_still_coming(
     assert said["text"] == "now do the other one"
 
 
-def test_a_newer_prompt_drops_the_reply_whatever_the_timestamps_say(
+def test_a_prompt_without_a_timestamp_still_titles_the_row(
         client, projects_dir, card_titles):
-    """The file is append-only, so a prompt read after a reply is the newer
-    turn. That used to be settled by comparing timestamps, and a prompt whose
-    timestamp did not parse (read as 0.0) lost to a days-old reply — a row
-    titled by something Claude said long ago (Akshil, 2026-09-15). The reply
-    is dropped outright now; no clock is consulted."""
+    """A prompt whose timestamp did not parse used to lose to a days-old reply
+    (Akshil, 2026-09-15). No clock is consulted now: the newest prompt in the
+    file is the newest prompt."""
     prompt = _user("now the newest thing", None)
     del prompt["timestamp"]
     _write_transcript(projects_dir, "sess-a", "/p", [
@@ -756,6 +752,7 @@ def test_a_newer_prompt_drops_the_reply_whatever_the_timestamps_say(
     said = _tasks(client)[0]["last_message"]
     assert said["role"] == "user"
     assert said["text"] == "now the newest thing"
+    assert said["at"] == 0.0
 
 
 def test_a_subagent_brief_is_not_a_prompt(client, projects_dir, card_titles):
@@ -774,29 +771,8 @@ def test_a_subagent_brief_is_not_a_prompt(client, projects_dir, card_titles):
     assert row["last_message"]["text"] == "look into the cache"
 
 
-def test_a_tool_only_turn_is_not_something_claude_said(
+def test_an_api_error_leaves_the_prompt_as_the_last_message(
         client, projects_dir, card_titles):
-    # A row whose content is pure tool_use has no words in it. The substring
-    # screen lets the LINE through (it holds an assistant hint); the parse is
-    # what refuses it, and the prompt stays the newest thing said.
-    record = {"type": "assistant", "timestamp": T10,
-              "message": {"role": "assistant",
-                          "content": [{"type": "tool_use", "id": "t1",
-                                       "name": "Bash", "input": {}}]}}
-    _write_transcript(projects_dir, "sess-a", "/p", [
-        _user("list the files", T9), record,
-    ])
-
-    said = _tasks(client)[0]["last_message"]
-    assert said["role"] == "user"
-    assert said["text"] == "list the files"
-
-
-def test_an_api_error_is_not_the_last_message_either(
-        client, projects_dir, card_titles):
-    # Its text is the failure report ("You've hit your session limit"), which
-    # the row already says in `blocked_reason` — a card titled by it would be
-    # a card titled by an outage.
     _write_transcript(projects_dir, "sess-a", "/p", [
         _user("run the migration", T9),
         _api_error("You've hit your session limit", T10),
@@ -804,8 +780,7 @@ def test_an_api_error_is_not_the_last_message_either(
 
     task = _tasks(client)[0]
     # "session limit" is the plan's usage limit, which the row names as its own
-    # kind of failure (`_LIMIT_HINTS`, the project queue's Blocked-with-a-clock);
-    # still a failure, and still not something Claude SAID.
+    # kind of failure (`_LIMIT_HINTS`, the project queue's Blocked-with-a-clock).
     assert task["blocked_reason"] == "usage_limit"
     assert task["last_message"]["role"] == "user"
     assert task["last_message"]["text"] == "run the migration"
@@ -820,70 +795,39 @@ def test_a_task_with_nothing_said_in_it_has_no_last_message(
     assert _tasks(client)[0]["last_message"] is None
 
 
+def test_a_task_claude_has_only_replied_in_has_no_last_message(
+        client, projects_dir, card_titles):
+    # Nothing the USER said: the field is null and the card keeps its title.
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _assistant("Hello, how can I help?", T9),
+    ])
+    assert _tasks(client)[0]["last_message"] is None
+
+
 def test_the_last_message_survives_an_incremental_re_read(
         client, projects_dir, card_titles):
-    # The scan is incremental and the reply is parsed lazily off the line it
-    # kept, so the SECOND poll — which reads no new bytes at all — must answer
-    # the same as the first rather than blanking the field.
+    # The scan is incremental, so the SECOND poll — which reads no new bytes at
+    # all — must answer the same as the first rather than blanking the field.
     path = _write_transcript(projects_dir, "sess-a", "/p", [
         _user("run the migration", T9),
         _assistant("Ran it", T10),
     ])
-    assert _tasks(client)[0]["last_message"]["text"] == "Ran it"
-    assert _tasks(client)[0]["last_message"]["text"] == "Ran it"
+    assert _tasks(client)[0]["last_message"]["text"] == "run the migration"
+    assert _tasks(client)[0]["last_message"]["text"] == "run the migration"
 
-    # …and a turn appended after it wins, which is what makes the field track
-    # the conversation rather than freeze on its first answer.
+    # …a reply appended after it changes nothing…
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps({**_assistant("Then tidied up", T11),
                             "cwd": "/p", "sessionId": "sess-a",
                             "uuid": "sess-a-2"}) + "\n")
-    assert _tasks(client)[0]["last_message"]["text"] == "Then tidied up"
+    assert _tasks(client)[0]["last_message"]["text"] == "run the migration"
 
-
-def test_a_tool_turn_after_a_reply_does_not_un_say_the_reply(
-        client, projects_dir, card_titles):
-    # A tool_use row whose INPUT carries text blocks passes the substring
-    # screen, so the line is kept and the parse finds no words in it. Claude
-    # running a tool does not un-say the answer before it: the newest thing
-    # said is still "Ran it", and a card that dropped back to the prompt would
-    # be showing a question that has already been answered.
-    path = _write_transcript(projects_dir, "sess-a", "/p", [
-        _user("run the migration", T9),
-        _assistant("Ran it", T10),
-    ])
-    assert _tasks(client)[0]["last_message"]["text"] == "Ran it"
-
-    record = {"type": "assistant", "timestamp": T11, "cwd": "/p",
-              "sessionId": "sess-a", "uuid": "sess-a-2",
-              "message": {"role": "assistant",
-                          "content": [{"type": "tool_use", "id": "t1",
-                                       "name": "Write",
-                                       "input": {"blocks": [
-                                           {"type": "text", "text": "x"}]}}]}}
+    # …and a prompt appended after THAT wins, which is what makes the field
+    # track the conversation rather than freeze on its first prompt.
     with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record) + "\n")
-
-    said = _tasks(client)[0]["last_message"]
-    assert said["role"] == "assistant"
-    assert said["text"] == "Ran it"
-
-
-def test_a_prompt_after_a_reply_wins_even_on_the_same_timestamp(
-        client, projects_dir, card_titles):
-    # The tie-break is "the later LINE is the later turn", and it only holds
-    # while the reply IS the later line. Here the reader asked again in the
-    # same second the answer landed, so the prompt is the newest turn and the
-    # reply is the answer to the one before it.
-    _write_transcript(projects_dir, "sess-a", "/p", [
-        _user("run the migration", T9),
-        _assistant("Ran it", T10),
-        _user("now the other one", T10, uuid="u3"),
-    ])
-
-    said = _tasks(client)[0]["last_message"]
-    assert said["role"] == "user"
-    assert said["text"] == "now the other one"
+        f.write(json.dumps({**_user("now the other one", T11, uuid="u3"),
+                            "cwd": "/p", "sessionId": "sess-a"}) + "\n")
+    assert _tasks(client)[0]["last_message"]["text"] == "now the other one"
 
 
 def test_the_row_carries_no_last_message_while_the_pref_is_off(
