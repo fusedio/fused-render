@@ -18,7 +18,6 @@ import {
   QUEUED_WORD,
   queueAfter,
   queueAheadHref,
-  queueBehind,
   queueCaption,
   queueOrdinal,
   queuePosition,
@@ -105,8 +104,8 @@ describe("what is in front", () => {
     // `apps/claude/ui/Waiting.tsx` writes "behind " as ink of its own and asks
     // this only whether there is a name at all. It is not the caption's builder
     // and nothing new may reach for it.
-    expect(queueBehind({ queue_ahead: "TASK-038" })).toBe("behind TASK-038");
-    expect(queueBehind({})).toBe("");
+    expect(queueAfter({ queue_ahead: "TASK-038" })).toBe("after TASK-038");
+    expect(queueAfter({})).toBe("");
   });
 
   it("says NOTHING at all when there is no name to give", () => {
@@ -244,7 +243,7 @@ describe("runs next", () => {
     // BUTTON is what goes.
     expect(canRunNext({ queue_position: 1, queue_ahead: "TASK-056" })).toBe(false);
     expect(waitingCardText(1, queued({ queue_position: 1, queue_ahead: "TASK-056" }))).toBe(
-      "1 message waiting · behind TASK-056",
+      "1 message waiting · after TASK-056",
     );
     // A server that placed nothing (0, or absent) is not CLAIMING anything is
     // ahead, so it offers no button either — even when it named a holder.
@@ -311,7 +310,7 @@ describe("counting what is waiting", () => {
 
   it("builds the chat card's whole sentence, in its three states", () => {
     expect(waitingCardText(1, { queue_ahead: "TASK-038" })).toBe(
-      "1 message waiting · behind TASK-038",
+      "1 message waiting · after TASK-038",
     );
     // After Run next: the spot is claimed, so nothing is in front any more even
     // though TASK-038 is still holding the folder.

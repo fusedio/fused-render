@@ -2181,7 +2181,6 @@ export {
   QUEUED_WORD,
   queueAfter,
   queueAheadHref,
-  queueBehind,
   queueCaption,
   QUEUE_CAPTION_SEP,
   queueOrdinal,

@@ -62,7 +62,7 @@ export interface QueueFacts {
   queue_position?: number;
   /** The holder's task id ("TASK-038"), or "" when the server could not name
    *  what is in front — which is also what a FREE folder answers. Empty means
-   *  the caption says nothing about being behind anything: see `queueBehind`. */
+   *  the caption says nothing about what is in front: see `queueAfter`. */
   queue_ahead?: string;
   /** …and that holder's title. NEVER ink any more — it is the pointer's text
    *  and nothing else. A row's one actionable token is the id. */
@@ -177,21 +177,6 @@ export function queueOrdinal(n: number): string {
 export function queueAfter(facts: QueueFacts): string {
   const ahead = (facts.queue_ahead || "").trim();
   return ahead ? `after ${ahead}` : "";
-}
-
-/**
- * THE OLD WORD, STILL SPOKEN IN ONE PLACE — the chat's waiting rows and the card
- * over the composer (`apps/claude/ui/Waiting.tsx`), which write "behind " as ink
- * of their own and only ask this whether there is a name at all.
- *
- * It is NOT the caption's builder any more (`queueAfter` is) and nothing new may
- * reach for it: the moment those two surfaces say "after" like everywhere else
- * this goes, and `waitingCardText` with it. Kept rather than renamed under them
- * so one vocabulary change does not leave the composer saying half of each.
- */
-export function queueBehind(facts: QueueFacts): string {
-  const ahead = (facts.queue_ahead || "").trim();
-  return ahead ? `behind ${ahead}` : "";
 }
 
 /**
@@ -355,8 +340,8 @@ export function runningWaitingLabel(running: number, waiting: number): string {
 export const NEXT_IN_FOLDER = "next in this folder";
 
 export function waitingCardText(count: number, facts: QueueFacts): string {
-  const behind = queueRunsNext(facts) ? "" : queueBehind(facts);
-  return `${waitingCount(count)} · ${behind || NEXT_IN_FOLDER}`;
+  const after = queueRunsNext(facts) ? "" : queueAfter(facts);
+  return `${waitingCount(count)} · ${after || NEXT_IN_FOLDER}`;
 }
 
 /**

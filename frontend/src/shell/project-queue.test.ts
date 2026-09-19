@@ -248,7 +248,7 @@ describe("the List's waiting row", () => {
     // THE CAPTION IS NOT GATED ON IT. `1 message waiting · behind TASK-056` is
     // true at the head of the line and stays printed; only the button goes.
     expect(waitingCardText(1, { status: "queued", queue_position: 1, queue_ahead: "TASK-056" })).toBe(
-      "1 message waiting · behind TASK-056",
+      "1 message waiting · after TASK-056",
     );
   });
 

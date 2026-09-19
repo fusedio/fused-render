@@ -116,7 +116,7 @@ describe("a waiting message is a bubble, not a card", () => {
 });
 
 describe("the one line under it", () => {
-  it("reads `queued · behind TASK-038 · delete`, with the id as a link", () => {
+  it("reads `queued · after TASK-038 · delete`, with the id as a link", () => {
     const r = render(
       <WaitingRow
         row={row()}
@@ -131,7 +131,7 @@ describe("the one line under it", () => {
     );
     const out = textOf(r);
     expect(out).toContain("queued");
-    expect(out).toContain("behind ");
+    expect(out).toContain("after ");
     expect(out).toContain("TASK-038");
     expect(out).toContain("delete");
     // THE ID IS THE PRESS, into the conversation that is in the way — the one
@@ -280,7 +280,7 @@ describe("the card over the composer", () => {
     );
     expect(head.root.findAllByType("button")).toHaveLength(0);
     expect(textOf(head)).toContain("1 message waiting");
-    expect(textOf(head)).toContain("behind ");
+    expect(textOf(head)).toContain("after ");
     expect(textOf(head)).toContain("TASK-056");
     expect(textOf(head)).not.toContain("next in this folder");
     act(() => head.unmount());
@@ -352,7 +352,7 @@ describe("the card over the composer", () => {
       );
     });
     expect(r.root.findAllByType("button")).toHaveLength(1);
-    expect(textOf(r)).toContain("behind ");
+    expect(textOf(r)).toContain("after ");
     expect(textOf(r)).toContain("TASK-041");
     act(() => r.unmount());
   });
@@ -368,7 +368,7 @@ describe("the card over the composer", () => {
         onRunNext={() => {}}
       />,
     );
-    expect(textOf(r)).toContain("behind ");
+    expect(textOf(r)).toContain("after ");
     act(() => {
       r.update(
         <WaitingCard
@@ -380,7 +380,7 @@ describe("the card over the composer", () => {
     });
     expect(textOf(r)).toContain("2 messages waiting");
     expect(textOf(r)).toContain("next in this folder");
-    expect(textOf(r)).not.toContain("behind ");
+    expect(textOf(r)).not.toContain("after ");
     expect(r.root.findAllByType("button")).toHaveLength(0);
     act(() => r.unmount());
   });
