@@ -563,7 +563,12 @@ export function JobRow({
   // cancel request, and the row is the app admitting it has stopped knowing —
   // so letting the user close it hides nothing the app could otherwise say.
   const canCancel = running && job.cancellable && !job.cancel_requested && !job.stalled;
-  const canDismiss = !running || job.stalled;
+  // A caller that OVERRIDES the ✕ (`onDismissClick`) is hiding its own card,
+  // not dismissing the server's row — that is allowed on a running job too
+  // (Bugbot, PR #1241: `UpdateProgressCard` draws a live download and its ✕
+  // must exist for "until the user closes it" to mean anything). Without the
+  // override the rule stands: a running row has Cancel, not Dismiss.
+  const canDismiss = onDismissClick !== undefined || !running || job.stalled;
 
   const cancel = async () => {
     setBusy(true);
