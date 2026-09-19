@@ -75,7 +75,6 @@ INSTALL_HEARTBEAT_S = _base.INSTALL_HEARTBEAT_S
 DEV_MANAGER_ENV = _base.DEV_MANAGER_ENV
 MIN_CHECK_GAP_S = _base.MIN_CHECK_GAP_S
 FAILED_CHECK_GAP_S = _base.FAILED_CHECK_GAP_S
-DONE_MESSAGE = _base.DONE_MESSAGE
 CANCELLED_MESSAGE = _base.CANCELLED_MESSAGE
 _DISK_SPACE_FACTOR = _base._DISK_SPACE_FACTOR
 # The first check runs right after boot; kept separate from mac's
@@ -260,9 +259,11 @@ class UpdateManager(_base.UpdateManager):
             # still the right cleanup on any failure before that point.
             common.discard(downloaded)
             # Last, so the row is kept alive through the chmod/replace/stamp
-            # above — _install()'s terminal report comes next, and only once
-            # the beat has actually stopped: a beat mid-report could
-            # otherwise overwrite the finished row with "Installing".
+            # above — _install() deals with the row next (removing it on
+            # success, a terminal report on a failure), and only once the beat
+            # has actually stopped: a beat still mid-report could otherwise
+            # re-create the row it just took, or overwrite a failed one with
+            # "Installing".
             beat_stop.set()
             beat.join(timeout=INSTALL_HEARTBEAT_S + 5)
 

@@ -920,6 +920,37 @@ def test_a_waiting_row_can_be_dismissed_like_a_finished_one(client):
     assert listing(client) == []
 
 
+def test_forget_takes_a_running_row_a_dismiss_would_refuse(client):
+    """`jobs.forget` is the PRODUCER's "nothing left to say", not a user's ✕:
+    it is allowed to take a row that is still `RUNNING`, which `dismiss`
+    refuses by design. Its one caller today is a self-update that installed
+    cleanly (`update/_manager.py`) — success announces itself through the
+    restart dialog, so the row is removed rather than finished."""
+    jobs.upsert({"id": "sys:update:9.9.9", "title": "Update to v9.9.9",
+                 "state": jobs.RUNNING}, server=True)
+    assert jobs.dismiss("sys:update:9.9.9") is False
+    assert jobs.forget("sys:update:9.9.9") is True
+    assert listing(client) == []
+    # And it is idempotent — a second call has nothing to take.
+    assert jobs.forget("sys:update:9.9.9") is False
+
+
+def test_a_forgotten_row_refuses_late_ticks_but_not_a_fresh_start(client):
+    """Same `_forget` a dismiss uses, so the id carries the same protection:
+    a trailing tick is answered without re-creating the record, while an
+    opening report (`state: "running"`) reopens it."""
+    jobs.upsert({"id": "sys:update:9.9.9", "title": "Update to v9.9.9",
+                 "state": jobs.RUNNING}, server=True)
+    jobs.forget("sys:update:9.9.9")
+
+    jobs.upsert({"id": "sys:update:9.9.9", "detail": "Installing"}, server=True)
+    assert listing(client) == []
+
+    jobs.upsert({"id": "sys:update:9.9.9", "title": "Update to v9.9.9",
+                 "state": jobs.RUNNING}, server=True)
+    assert [row["id"] for row in listing(client)] == ["sys:update:9.9.9"]
+
+
 # `test_an_internal_caller_listing_jobs_does_not_start_the_retention_clock` is
 # deleted rather than rewritten (D662): its whole premise was that a `done`
 # row's retention clock (`first_read_at` / `FINISHED_TTL_S`) must not be

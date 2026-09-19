@@ -292,3 +292,26 @@ export function bannerSurface({ banner, mode, updateState, stage }: SurfaceInput
   if (banner === "update-refresh") return mode === "off" ? "none" : "refresh-dialog";
   return "down";
 }
+
+/**
+ * WHETHER A HIDDEN TAB KEEPS PROBING. Normally it does not: a tab nobody is
+ * looking at has no banner to keep honest, and the probe on `visibilitychange`
+ * catches it up. During a RESTART it must: the reader presses Restart, sees
+ * the app come back in the Dock 20s later and clicks it — the tab goes hidden
+ * at exactly the moment the new server starts answering. A tab that stops
+ * probing there never sees the version move, never reaches `back`, never
+ * reloads, and sits on "Reconnecting…" until the reader comes back and
+ * reloads it by hand (Akshil, 2026-09-19). The stage is the restart store's,
+ * so the rule holds for a press made in another window too.
+ */
+export function probeWhileHidden(stage: RestartStage): boolean {
+  return restartInFlight(stage);
+}
+
+/** THE POLL TICK'S WHOLE DECISION, so it can be tested without a 5s timer: a
+ *  visible tab always probes; a hidden one only during a restart. `visibility`
+ *  is `document.visibilityState`, which a DOM shim may leave undefined — that
+ *  is not "hidden", so it probes as a visible tab would. */
+export function probeOnTick(visibility: string | undefined, stage: RestartStage): boolean {
+  return visibility !== "hidden" || probeWhileHidden(stage);
+}

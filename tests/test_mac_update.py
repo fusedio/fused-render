@@ -880,20 +880,23 @@ def test_install_opens_a_cancellable_download_row_for_the_version(monkeypatch, t
     manager._install_thread.join(timeout=5)
 
 
-def test_a_successful_install_finishes_the_row_with_the_restart_line(monkeypatch,
-                                                                    tmp_path):
+def test_a_successful_install_leaves_no_row_behind(monkeypatch, tmp_path):
+    """NO TERMINAL ROW ON SUCCESS (Akshil, 2026-09-19). The row used to end on
+    "Installed — restart to finish" — the same sentence the blocking restart
+    dialog already carries, on a card whose only click navigated to
+    `/preferences`, a lazy chunk the swap had just deleted from disk. The
+    registry is empty instead: not a `done` row on a quiet tier (any stored
+    row is a row some surface can decide to draw), the record itself gone."""
     manager = _dmg_manager(monkeypatch, tmp_path)
     monkeypatch.setattr(manager, "_install_dmg", lambda manifest: None)
     manager.install()
     manager._install_thread.join(timeout=5)
     assert manager.status()["state"] == "installed"
-    row = _row()
-    assert row["state"] == "done"
-    # `detail` as well as `message`: jobStatusLine reads `detail` for a done
-    # row, and this line is also the completion NOTICE (terminalNotifications).
-    assert row["detail"] == "Installed — restart to finish"
-    assert row["message"] == "Installed — restart to finish"
-    assert row["cancellable"] is False
+    assert jobs.list_jobs() == []
+    # And it is REMOVED, not merely hidden: nothing is left in the registry
+    # under the update's id for a later reader to find.
+    with jobs._lock:
+        assert "sys:update:9.9.9" not in jobs._jobs
 
 
 def test_a_failed_install_fails_the_row_with_the_error_text(monkeypatch, tmp_path):
@@ -1249,29 +1252,28 @@ def _record(job_id):
         return jobs._jobs[job_id]
 
 
-def test_a_finished_install_pops_nothing(monkeypatch, tmp_path):
-    """SILENT ON SUCCESS. "Installed — restart to finish" used to arrive as a
-    pop-up card in the floating column at the same instant as the blocking
-    dialog that says the same thing AND offers the button (`UpdateDialog`'s
-    restart mode, which the install reaching "installed" is what raises) — two
-    announcements of one event, one of them dismissible and useless.
-
-    `silent` is the one tier `popupJobs` (frontend/src/platform/lib/jobs.ts)
-    reads to pop nothing, gated on `state == "done"` there exactly as
-    `effective_tier` gates it here."""
+def test_a_removed_row_cannot_be_resurrected_by_a_late_tick(monkeypatch, tmp_path):
+    """Removal goes through the same `_forget` a dismiss does, so the id is
+    remembered: a straggling report from a beat that woke at the wrong moment
+    is answered without re-creating the record. A genuinely FRESH attempt on
+    the same per-version id still gets its row — an opening report states
+    `state: "running"` outright, which is the one thing that clears a
+    dismissal (`jobs.upsert`)."""
     manager = _dmg_manager(monkeypatch, tmp_path)
     monkeypatch.setattr(manager, "_install_dmg", lambda manifest: None)
     manager.install()
     manager._install_thread.join(timeout=5)
+    assert jobs.list_jobs() == []
 
-    assert manager.status()["state"] == "installed"
-    row = _row()
-    assert row["state"] == "done"
-    assert row["detail"] == mac.DONE_MESSAGE
-    assert row["tier"] == jobs.SILENT
-    # The DERIVED tier is what a reader acts on, and on a clean finish it is the
-    # declared one — nothing promotes this row back into a card.
-    assert jobs.effective_tier(_record(row["id"])) == jobs.SILENT
+    # A late tick — no `state`, exactly what `_beat_installing` sends.
+    jobs.upsert({"id": "sys:update:9.9.9", "detail": mac.PHASE_INSTALLING},
+                page="/preferences", server=True)
+    assert jobs.list_jobs() == []
+
+    # A new attempt on the same id opens the row again.
+    jobs.upsert({"id": "sys:update:9.9.9", "title": "Update to v9.9.9",
+                 "state": "running"}, page="/preferences", server=True)
+    assert [row["id"] for row in jobs.list_jobs()] == ["sys:update:9.9.9"]
 
 
 def test_a_failed_install_is_as_loud_as_it_ever_was(monkeypatch, tmp_path):
@@ -1294,10 +1296,11 @@ def test_a_failed_install_is_as_loud_as_it_ever_was(monkeypatch, tmp_path):
     assert jobs.effective_tier(_record(row["id"])) == jobs.ATTENTION
 
 
-def test_the_running_download_row_is_untouched_by_the_silent_finish(monkeypatch, tmp_path):
-    """Only the terminal report declares `silent`; the download's own ticks do
-    not, so the row that shows the bytes, the phase and the ✕ while the update
-    runs is exactly the `trail` row it has always been."""
+def test_the_running_download_row_is_untouched_by_the_removal(monkeypatch, tmp_path):
+    """What disappears is only the line AFTER the last one. While the update
+    runs, the row that shows the bytes, the phase and the ✕ is exactly the
+    `trail` row it has always been — the removal happens once the swap is
+    done."""
     import threading
 
     manager = _dmg_manager(monkeypatch, tmp_path)
@@ -1307,6 +1310,7 @@ def test_the_running_download_row_is_untouched_by_the_silent_finish(monkeypatch,
     running = _row()
     assert running["state"] == "running"
     assert running["tier"] == jobs.TRAIL
+    assert running["cancellable"] is True
     gate.set()
     manager._install_thread.join(timeout=5)
-    assert _row()["tier"] == jobs.SILENT
+    assert jobs.list_jobs() == []

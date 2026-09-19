@@ -239,8 +239,10 @@ def test_a_successful_install_swaps_the_appimage_and_writes_the_stamp(monkeypatc
     assert os.access(str(appimage), os.X_OK)
     status = manager.status()
     assert status["state"] == "installed"
-    row = _row()
-    assert row["state"] == "done"
+    # NO ROW SURVIVES A CLEAN INSTALL (2026-09-19) — the same rule mac's
+    # `_install` applies, because both run it: the removal lives in the shared
+    # `_manager.UpdateManager`, not in either platform's swap.
+    assert jobs.list_jobs() == []
 
     disk_version = manager._disk_version()
     assert disk_version == "9.9.9"

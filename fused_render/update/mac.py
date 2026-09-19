@@ -103,7 +103,6 @@ INSTALL_HEARTBEAT_S = _base.INSTALL_HEARTBEAT_S
 DEV_MANAGER_ENV = _base.DEV_MANAGER_ENV
 MIN_CHECK_GAP_S = _base.MIN_CHECK_GAP_S
 FAILED_CHECK_GAP_S = _base.FAILED_CHECK_GAP_S
-DONE_MESSAGE = _base.DONE_MESSAGE
 CANCELLED_MESSAGE = _base.CANCELLED_MESSAGE
 _DISK_SPACE_FACTOR = _base._DISK_SPACE_FACTOR
 # The first check runs right after boot, so the sidebar badge (UpdateBadge,
@@ -361,10 +360,12 @@ class UpdateManager(_base.UpdateManager):
             common.discard(dmg)
             if os.path.exists(swap_in):
                 shutil.rmtree(swap_in, ignore_errors=True)
-            # Last, so the row is still being kept alive through the detach and
-            # the cleanup above — `_install`'s terminal report comes next, and
-            # only once the beat has actually stopped: a beat mid-report could
-            # otherwise overwrite the finished row with "Installing".
+            # Last, so the row is still being kept alive through the detach
+            # and the cleanup above — `_install` deals with the row next
+            # (removing it on success, a terminal report on a failure), and
+            # only once the beat has actually stopped: a beat still mid-report
+            # could otherwise re-create the row it just took, or overwrite a
+            # failed one with "Installing".
             beat_stop.set()
             beat.join(timeout=INSTALL_HEARTBEAT_S + 5)
         # Old bundle: best-effort removal on a worker; open files keep working
