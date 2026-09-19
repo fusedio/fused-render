@@ -973,6 +973,7 @@ function FilterMenu({
   label,
   slot,
   count,
+  badge = true,
   icon: glyph,
   onClear,
   children,
@@ -988,6 +989,12 @@ function FilterMenu({
    *  happened to be painted last rather than the one it meant. */
   slot: string;
   count: number;
+  /** DRAW THE COUNT BADGE. False when the label already says what is chosen:
+   *  the Project menu prints the chosen folder's NAME as its label (Akshil,
+   *  2026-09-19: "show the project name in that instead of 'Project 1'"), and a
+   *  "1" after a name is the same fact said twice. `count` still decides whether
+   *  the ✕ half is live, so the split control is unchanged. */
+  badge?: boolean;
   /** The trigger's glyph. Defaults to the ring, which is the STATUS menu's own
    *  mark — that is the vocabulary this page states a status in, so on that menu
    *  the ring is the label said twice and it belongs there.
@@ -1091,7 +1098,7 @@ function FilterMenu({
               trigger where it now stands. The observers above still cover a
               reflow under an open menu. */}
           {glyph ?? ICON_CIRCLE_DOT} <span className="schedule-fit-lbl">{label}</span>
-          {count > 0 && <span className="schedule-tv-filter-count">{count}</span>}
+          {badge && count > 0 && <span className="schedule-tv-filter-count">{count}</span>}
         </button>
         {splittable && (
           <button
@@ -1519,7 +1526,16 @@ export function TaskFilterControls({
           a control with one choice is not a choice. */}
       {projects.length > 1 && (
         <FilterMenu
-          label="Project"
+          /* THE CHOSEN FOLDER'S NAME, when one is chosen (Akshil, 2026-09-19:
+             "when we have an item selected in that filter, let's show the
+             project name in that instead of 'Project 1'"). One folder is the
+             only count this radio facet can reach, so the name says everything
+             the badge did and the badge stands down (`badge={false}` below).
+             The trigger widens to fit the name and the toolbar's fit ladder
+             re-measures — a press CLOSES the menu, so the panel is never open
+             while the trigger moves (the 2026-09-14 shifting fix holds). */
+          label={filters.projects.length === 1 ? basename(filters.projects[0]) : "Project"}
+          badge={filters.projects.length !== 1}
           slot="project"
           count={filters.projects.length}
           /* A FOLDER, because a project on this page IS a folder — it is

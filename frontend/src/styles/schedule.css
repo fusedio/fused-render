@@ -1465,15 +1465,13 @@
 /* Rows keep their own height inside that scroller — a constrained flex column
    otherwise squeezes them all to fit, which turns fifty folders into fifty
    slivers. The same rule, for the same reason, as tasks.css gives
-   `.schedule-tv-pop-item`; the separator, the verbs and the two notices are
-   named too, because a scroller squeezes everything it holds. */
+   `.schedule-tv-pop-item`; the separator and the verbs are named too, because a
+   scroller squeezes everything it holds. */
 .schedule-recents-scroll > .schedule-picker-row,
 .schedule-form .schedule-recents-scroll > .schedule-picker-row,
 .schedule-recents-foot > .schedule-picker-row,
 .schedule-form .schedule-recents-foot > .schedule-picker-row,
-.schedule-recents-foot > .schedule-recents-sep,
-.schedule-recents-scroll > .schedule-recents-empty,
-.schedule-recents-scroll > .schedule-recents-wait {
+.schedule-recents-foot > .schedule-recents-sep {
   flex: 0 0 auto;
 }
 
@@ -1516,16 +1514,6 @@
    identical, which is the whole claim: one highlight, two ways to move it. */
 .schedule-form .schedule-picker-row.is-active {
   background: rgba(var(--tint), 0.08);
-}
-
-/* A search that found nothing still answers — the same sentence, in the same
-   words, as the Tasks page's project menu (`.schedule-tv-pop-empty`). Not a
-   row: there is nothing to press. */
-.schedule-recents-empty {
-  margin: 0;
-  padding: 6px 8px;
-  font-size: 12px;
-  color: var(--fg-faint);
 }
 
 /* The line between the found paths and the verbs. Its OWN element, not a
@@ -4359,9 +4347,17 @@ input.schedule-when-field {
     [data-fit="8"],
     [data-fit="9"]
   )
-  .schedule-tv-search {
+  .schedule-tv-search:not(.schedule-tv-pop-search) {
   display: none;
 }
+
+/* …BUT NOT THE ONE INSIDE THE PROJECT MENU. The facet's "Find a folder…" box
+   wears `.schedule-tv-search` for the magnifier's positioning and is drawn
+   inside the toolbar's DOM, so this ladder rung was folding it away with the
+   toolbar's own field: a project menu with 87 folders and no box to find one
+   in, on any pane narrower than rung 3 (seen 2026-09-19 at 734px). The panel
+   is fixed-positioned and outside the row's width problem entirely, so it
+   keeps its box at every rung. */
 
 /* -- and then CONTROLS GO, lowest priority first ------------------------------
    The ladder's second half (design.md, Widths v2, reordered by Polish batch 4).
@@ -4525,34 +4521,6 @@ input.schedule-when-field {
   margin: 2px 2px 4px;
 }
 
-/* A LOOKUP IS STILL OUT (Akshil, 2026-09-18: "when I am searching show a
-   spinner… right now for a split second it shows me create new folder, or no
-   results — jarring").
-
-   THE SAME ANSWER THE BROWSE PANEL IN THIS CARD ALREADY GIVES
-   (`.schedule-picker-list.is-loading` above): the rows that are there stay put
-   and dim until the next ones land — steady geometry, visible progress. Same
-   numbers, so the two lists in one card read as one control. `pointer-events`
-   goes with it for the same reason it does there: a row that is about to be
-   replaced must not take a click meant for its successor. */
-.schedule-recents.is-loading .schedule-recents-scroll .schedule-picker-row {
-  opacity: 0.45;
-}
-
-/* NO `pointer-events: none` HERE, unlike the Browse panel this borrows from
-   (Bugbot, PR #1213). There the whole listing is being REPLACED, so a row about
-   to vanish must not take a click meant for its successor. Here the rows on
-   screen are the last true answer and they stay — a reader who can see the
-   folder they want must be able to press it, whatever else is still arriving.
-   Dim says "more is coming"; it must not also say "and you may not act". */
-
-/* …and the FIRST answer, which has nothing to dim. The app's own ghost rows
-   (`SkeletonLines`, the same the peek holds over a booting chat), padded to the
-   row rhythm so the panel does not jump when they are replaced. */
-.schedule-recents-wait {
-  padding: 8px;
-}
-
 /* A search that found nothing still answers. Not a row: there is nothing to
    press, and a pressable-looking line in a list of pressable rows is the worst
    of both.
@@ -4567,14 +4535,40 @@ input.schedule-when-field {
   color: var(--fg-faint);
 }
 
-/* The project rows' radiogroup (ScheduleTaskViews `projectRows`): a box in the
-   accessibility tree and no box in the layout, so the rows stay the panel's own
-   flex children and 28 folders are 28 rows rather than 28 slivers.
+/* The project rows' radiogroup (ScheduleTaskViews `ProjectFacet`) IS THE
+   SCROLLER (Akshil, 2026-09-19: "search should be fixed in place, it shouldn't
+   scroll with the projects list; overflow should be only on the options").
 
-   `display: contents` REMOVES THE BOX, NOT THE ELEMENT: the DOM is unchanged, so
-   every `>` selector aimed at these rows has to name this wrapper as a step on
-   the way down. tasks.css's `.schedule-tv-pop.tasks-pop > … > .schedule-tv-pop-item`
-   does; the two move together. */
+   It was `display: contents` — a box in the accessibility tree and none in the
+   layout — so the rows were the panel's own flex children and the PANEL
+   scrolled, taking the search box and the Status rows above it along. Now the
+   panel is a frame (tasks.css `.schedule-tv-pop.tasks-pop` is `overflow: hidden`)
+   and this group takes whatever height is left under the cap and scrolls only
+   the folders: the same shape as the New-task card's `.schedule-recents-scroll`
+   inside its `.schedule-recents` frame, for the same complaint.
+
+   `min-height: 0` so a flex column may be shorter than 28 folders; `flex: 1 1
+   auto` against the search box's and the heads' `0 0 auto`, so the total never
+   passes the inline `max-height` `popStyle` measures. The rows keep their own
+   height by tasks.css's `> .schedule-tv-pop-radiogroup > .schedule-tv-pop-item`
+   rule, which still walks through this wrapper. `gap` matches the panel's so a
+   row in here sits exactly as a row outside it does. */
 .schedule-tv-pop-radiogroup {
-  display: contents;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* The chosen folder's name stands in for the word "Project" on the filter
+   trigger; a long one is ellipsised rather than pushing Status and + New task
+   off the bar. Wide enough for most repo names, narrow enough that the ladder
+   still has a bar to fold. */
+.schedule-tv-pop-wrap[data-filter="project"] .schedule-fit-lbl {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

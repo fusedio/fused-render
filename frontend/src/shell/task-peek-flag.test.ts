@@ -806,13 +806,19 @@ describe("the stylesheet changes nothing when the feature is off", () => {
   });
 
   it("folds no label without the attribute", () => {
-    // Every fold rule names `data-fit`; a `.schedule-fit-lbl` in an off page is
-    // a span with no rule pointing at it.
+    // Every rule that TAKES A LABEL AWAY names `data-fit`; a `.schedule-fit-lbl`
+    // in an off page keeps its words because nothing hides it.
     // Per RULE, not per line: the selectors are multi-line, and the attribute
     // is on the first of them.
+    //
+    // `display: none` is what folding is here, and what this guards. A rule that
+    // merely SHAPES the label — the Project trigger's `max-width`/ellipsis, which
+    // keeps a long folder name from pushing the rest of the bar off — is not a
+    // fold, holds at every rung and on an off page alike, and is meant to.
     const rules = SCHEDULE_CSS.split("}")
       .map((chunk) => chunk.slice(chunk.lastIndexOf("*/") + 1))
-      .filter((chunk) => chunk.includes(".schedule-fit-lbl"));
+      .filter((chunk) =>
+        chunk.includes(".schedule-fit-lbl") && chunk.includes("display: none"));
     expect(rules.length).toBeGreaterThan(0);
     for (const rule of rules) {
       expect(rule).toContain("data-fit");

@@ -5674,7 +5674,7 @@ describe("the Project filter's glyph", () => {
     // The FilterMenu's own prop — not the `aria-label="Project"` on the rows'
     // radiogroup, which is a different control naming the same facet and comes
     // first in the file. The indent is what tells the two apart.
-    const project = VIEWS.slice(VIEWS.indexOf('\n          label="Project"'));
+    const project = VIEWS.slice(VIEWS.indexOf('\n          label={filters.projects.length === 1'));
     expect(project.slice(0, project.indexOf("onClear"))).toContain("icon={ICON_FOLDER}");
     // A prop with the ring as its default, so the Status menu is untouched — there
     // the ring IS the vocabulary a status is stated in.
@@ -7915,6 +7915,29 @@ describe("the two filter menus", () => {
   // Akshil, 2026-09-14, after a round where the Project trigger printed the
   // chosen folder's NAME and the rows carried ticks.
 
+  it("scrolls the project rows under a search box that stays put", () => {
+    // Akshil, 2026-09-19: "search should be fixed in place, it shouldn't
+    // scroll with the projects list. overflow should be only on the options."
+    // The radiogroup used to be `display: contents` and the PANEL scrolled,
+    // taking the search box along. Now the panel is the frame and the group
+    // is the scroller — the New-task card's recents shape, for the same
+    // complaint.
+    const group = block(SCHEDULE_CSS, ".schedule-tv-pop-radiogroup");
+    expect(group).not.toContain("display: contents");
+    expect(group).toContain("flex: 1 1 auto");
+    expect(group).toContain("min-height: 0");
+    expect(group).toContain("overflow-y: auto");
+    const panel = block(TASKS_CSS, ".schedule-tv-pop.tasks-pop");
+    expect(panel).toContain("overflow: hidden");
+    expect(panel).not.toContain("overflow-y: auto");
+    // The search box and the heads keep their own height above the scroller.
+    expect(block(SCHEDULE_CSS, ".schedule-tv-pop .schedule-tv-search.schedule-tv-pop-search"))
+      .toContain("flex: 0 0 auto");
+    // The rows inside still keep theirs — the selector walks through the group.
+    expect(TASKS_CSS).toContain(
+      ".schedule-tv-pop.tasks-pop > .schedule-tv-pop-radiogroup > .schedule-tv-pop-item");
+  });
+
   it("shows the badge and the ✕ only with something to count, and closes on every press", () => {
     // Akshil, 2026-09-14, twice. Round one printed the chosen folder's NAME on
     // the trigger; round two RESERVED an empty badge and an empty ✕ slot so the
@@ -7923,8 +7946,18 @@ describe("the two filter menus", () => {
     // stayed is the cheap one: the menu CLOSES on the press ("if on click you
     // close the dropdown then it solves the shifting"), so a trigger that grows
     // does so under no menu at all, and the next open measures it fresh.
+    //
+    // Akshil, 2026-09-19: the NAME is back on the Project trigger ("show the
+    // project name in that instead of 'Project 1'") — safe now that the press
+    // closes the menu — and the badge stands down there, because a "1" after a
+    // name is the same fact twice. Status is untouched: its badge still counts.
     expect(VIEWS).toContain(
-      '{count > 0 && <span className="schedule-tv-filter-count">{count}</span>}');
+      '{badge && count > 0 && <span className="schedule-tv-filter-count">{count}</span>}');
+    expect(VIEWS).toContain(
+      'label={filters.projects.length === 1 ? basename(filters.projects[0]) : "Project"}');
+    expect(VIEWS).toContain("badge={filters.projects.length !== 1}");
+    const statusMenu = VIEWS.slice(VIEWS.indexOf('label="Status"'));
+    expect(statusMenu.slice(0, statusMenu.indexOf("onClear"))).not.toContain("badge=");
     expect(VIEWS).toContain("{splittable && (");
     expect(VIEWS).not.toContain("is-empty");
     expect(SCHEDULE_CSS).not.toContain(".schedule-tv-filter-count.is-empty");

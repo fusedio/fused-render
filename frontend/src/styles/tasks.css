@@ -1865,21 +1865,24 @@ button.tasks-caret,
   position: fixed;
   top: auto;
   left: auto;
-  overflow-y: auto;
-  /* The panel is the scroller; a flex column only shrinks below its content
-     when it is allowed to. */
+  /* THE PANEL IS A FRAME; THE PROJECT ROWS INSIDE IT SCROLL (Akshil,
+     2026-09-19: the search box was scrolling away with the folders). The
+     scroller is the radiogroup one box down (schedule.css
+     `.schedule-tv-pop-radiogroup`); this box only stops a child spilling past
+     the rounded corner. Status rows have no scroller of their own — five rows
+     never reach the cap. A flex column only shrinks below its content when it
+     is allowed to, hence `min-height: 0`. */
+  overflow: hidden;
   min-height: 0;
 }
 
-/* Items keep their own height inside that scroller — a constrained flex column
+/* Items keep their own height inside a scroller — a constrained flex column
    otherwise squeezes them all to fit, which turns 28 rows into 28 slivers.
 
-   THE SECOND PAIR IS THE PROJECT ROWS, which sit inside a `role="radiogroup"`
-   wrapper (schedule.css `.schedule-tv-pop-radiogroup`). That wrapper is
-   `display: contents`, so the rows really are flex children of the panel and
-   this rule really does have to reach them — but `display` is layout and `>` is
-   the DOM, so the selector has to walk through it. Left un-named, the project
-   menu is the sliver bug the comment above describes. */
+   THE SECOND PAIR IS THE PROJECT ROWS, which sit inside the `role="radiogroup"`
+   wrapper (schedule.css `.schedule-tv-pop-radiogroup`) — a real flex column
+   now, and the scroller — so the selector walks through it. Left un-named, the
+   project menu is the sliver bug the comment above describes. */
 .schedule-tv-pop.tasks-pop > .schedule-tv-pop-item,
 .prefs-section .schedule-tv-pop.tasks-pop > .schedule-tv-pop-item,
 .schedule-tv-pop.tasks-pop > .schedule-tv-pop-radiogroup > .schedule-tv-pop-item,
