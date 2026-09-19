@@ -105,8 +105,31 @@ function hintAt(x: number, y: number, target: EventTarget | null): Element | nul
   return null;
 }
 
+/** THE TASK FORM IS ANCHORED TO ITS ELEMENT, NOT THE POINTER (Akshil,
+ *  2026-09-19: "center-aligned… don't want it to jump"). Centred under the
+ *  hovered span and CLAMPED to the viewport, never flipped: a 90ch panel that
+ *  followed the cursor swung its whole width to the other side on one pixel of
+ *  travel near the right edge. Anchored, it does not move while the pointer is
+ *  on the span at all, and near an edge it slides up to the edge and stops. */
+function placeTask(el: Element): void {
+  const p = ensurePanel();
+  const w = p.offsetWidth;
+  const h = p.offsetHeight;
+  const r = el.getBoundingClientRect();
+  const maxLeft = Math.max(EDGE, window.innerWidth - EDGE - w);
+  const left = Math.min(maxLeft, Math.max(EDGE, r.left + r.width / 2 - w / 2));
+  let top = r.bottom + 6;
+  if (top + h > window.innerHeight - EDGE) top = Math.max(EDGE, r.top - 6 - h);
+  p.style.left = `${Math.round(left)}px`;
+  p.style.top = `${Math.round(top)}px`;
+}
+
 function place(x: number, y: number): void {
   const p = ensurePanel();
+  if (host && p.classList.contains("is-task")) {
+    placeTask(host);
+    return;
+  }
   // Measured after the text is in, because the flip depends on the width.
   const w = p.offsetWidth;
   const h = p.offsetHeight;
