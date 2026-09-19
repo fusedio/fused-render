@@ -3158,3 +3158,145 @@ in this environment); the fix for item 1 was derived by reading
 `test_index_mount_safe.py`'s own prior fix for the identical gap, not by
 reproducing the CI failure locally. No frontend files changed this round,
 so no `bun test` run was needed.
+
+## 2026-09-19 — standalone replay removed; scan-on-stale replaces it
+
+Measured on this machine's real `~` (the scan root), the standalone-replay
+design's core premise does not hold: `fsevents._replay` (`index/fsevents.py`)
+gives up and returns `None` — "cannot tell" — past a 20s timeout or a
+200,000-event cap. Right after a scan, a check cost 48ms for 123 events.
+7.2 hours after the last scan it cost 11.9s for 199,943 events (sitting on
+the cap), and a call in the same minute returned `None` at 5.8s having
+answered nothing. `~` generates roughly 28,000 FSEvents/hour, so the replay
+stops being able to answer at all after about 7 hours without a scan — which
+is exactly the situation (a long-idle root) where a new download is most
+likely to be missing. `None` must be a no-op (every prior round of this
+feature's errata insists on this, correctly), so the design's actual
+behaviour on a real home root inverted: the longer since the last scan, the
+more certain the feature was to burn 6-12s of background work and do
+nothing. Neither prior fix round (the noise filter, the MountGuard/
+active-run ordering) touches this — both are about what a SUCCESSFUL replay
+means, and this is about the replay not completing at all.
+
+**Step 1 measurement (required before implementing).** How long does the
+non-journal fallback (`run_scan`'s "scanning (incremental)" phase, taken
+when `fsevents.hint` answers `None` but a dir cache exists) actually cost
+against a real root? Forced honestly: copied `dirs.parquet` from this
+worktree's own live production index
+(`~/.fused-render/branches/worktree-foc/index/dirs.parquet`, scanned earlier
+the same day) into a scratch `IndexConfig` directory with no `fsevents.json`
+alongside it (so `fsevents.hint` legitimately answers `None` — no saved
+journal position — rather than being patched to return `None`), then called
+the real `fused_render.index.scan.run_scan` in-process against a scratch
+`run_dir` with `root=/Users/iamsdas`. Did NOT touch the live worktree's own
+index (no `runner.start`, no subprocess, no write to the running dev
+server's `scans.json`/`runs/`), so nothing here could race the dev server
+already running on port 2678 for this worktree.
+
+Result: 4.37s wall-clock, `78,717` directories visited (`77,316` unchanged,
+`849` changed, `51` added, `10` removed), `126,096` file rows, phase log
+`checking for changes -> scanning (incremental) -> writing index -> ...`
+confirming the journal-fast-path was correctly bypassed. This matches
+`freshness.py`'s own independent measurement in its `MIN_INTERVAL_S`
+comment ("a whole-root incremental scan is ~4.5s" on a 588k-file index) —
+consistent, not a coincidence, since both are the same walk-with-cache-
+shortcut code path. **Conclusion: a full incremental walk is cheap and,
+crucially, its cost is bounded by directory count, not by how long it has
+been since the last scan or how many FSEvents fired in that window** —
+unlike the standalone replay, whose cost (and failure rate) scales with
+exactly that window. No guard against "the walk is too expensive" is
+needed; starting the ordinary scan unconditionally (once past the existing
+floors) is a strict improvement over the old design in every case, not a
+trade.
+
+**The redesign.** `index/detect.py` no longer calls `fsevents.hint` at all.
+`_check_root` now: (1) the `DETECT_INTERVAL_S` in-memory pacing floor, (2)
+`freshness.MIN_INTERVAL_S` read via `runner.last_scan` — now the actual
+"stale enough to be worth it" answer, since there is no longer a second,
+content-based check layered on top of it, (3) a `MountGuard.blocks(root)`
+pre-check (pure string comparison, no syscall on `root`) as a cheap
+short-circuit ahead of `runner.start`'s own guarded checks, (4)
+`runner.active_run(cfg, root) is not None` refusal (unchanged — a focus
+event must never supersede a live run), (5) `runner.start(cfg, root)` in a
+`try/except ValueError`, and (6) refusing to report `already_running` as
+"started" (unchanged). Removed entirely: `_hint`, `_filter_hint`,
+`_NOISE_HOME_SUFFIXES`/`_os_noise_roots`/`_is_os_noise` — all of that
+machinery existed only to make a raw `fsevents.hint()` result trustworthy
+enough to collapse to a boolean, and there is no raw hint result in this
+module any more to filter. `index/ignore.py`'s `default_ignore()` docstring
+(the `~/Library/Caches` entry, and the note about why `~/Library` itself
+was tried and reverted) is updated to point at this history rather than at
+the now-deleted `detect._filter_hint`; the `~/Library/Caches` entry itself
+is untouched (added for an unrelated, still-valid reason — never
+searchable content — not because of anything in `detect.py`).
+
+**DETECT_INTERVAL_S (30.0s) kept, justification changed.** It used to pace
+a standalone journal replay (0.1-2.9s on a fresh root, far more once
+stale). It no longer paces anything expensive: every check `_check_root`
+performs before `runner.start` is in-memory or a small local-file read, so
+today this floor only collapses redundant checks from a flappy focus
+source (two tabs, a window manager) — comfortably below
+`freshness.MIN_INTERVAL_S` (60s), which is what actually decides whether a
+scan starts. `MIN_HIDDEN_S` (30.0s, server-side floor on the client's
+`hidden_s`) is unchanged — it answers a different question ("did the user
+actually go away") that this redesign does not touch.
+
+**Staleness threshold chosen: `freshness.MIN_INTERVAL_S` (60s), unchanged
+from before.** The brief asked for a chosen-and-justified threshold; this
+redesign does not introduce a new one because one already existed and
+already does the job — `freshness.MIN_INTERVAL_S` is the shared "don't scan
+a root that was scanned this recently" floor every trigger (startup
+scheduler, manual buttons, folder-open freshness) already respects, and
+`freshness.py`'s own comment already justifies 60s as cheap given a whole-
+root incremental scan is ~4.5s (independently reconfirmed by this round's
+4.37s measurement). Introducing a SECOND, focus-specific staleness number
+on top would only re-litigate a question `freshness.py` already answered
+for every other trigger, for no reason specific to focus events.
+
+**Rewrote `tests/test_index_detect.py`** (16 tests, was 19): most of the
+old suite existed to exercise `fsevents.hint`'s three outcomes
+(`None`/`(set(), [])`/non-empty) and the noise-filtering fix, none of which
+exist in this module any more. Kept every gate/pacing/exception test that
+still applies (`DETECT_INTERVAL_S`, `freshness.MIN_INTERVAL_S`, indexing
+pref, mount-backed refusal, hidden-duration floor, multi-root
+independence, `active_run` refusal, `already_running` not reported as
+started) and added: `test_this_module_never_calls_fsevents_hint_itself`
+(monkeypatches `fsevents.hint` to raise `AssertionError` if reached — the
+redesign's whole point, made an explicit regression test) and
+`test_a_mount_backed_root_is_refused_before_runner_start_is_even_called`
+(the `MountGuard.blocks(root)` pre-check, previously only reachable via a
+path through `_hint`/`device_uuid` that no longer exists). Deleted the two
+"realistic noisy hint" tests (`_filter_hint` no longer exists to test) and
+the "hint raising" test (no more `_hint` wrapper to catch it — replaced
+with `test_an_unexpected_exception_from_runner_start_does_not_escape`,
+which is the equivalent assertion against the code that remains:
+`note_home_focused`'s per-root `try/except Exception` must still swallow
+something `runner.start` was never contracted to raise, not just the
+documented `ValueError`).
+
+`tests/test_index_api.py`'s home-focus section needed no changes — its
+tests all mock `index_router.note_home_focused`/`index_router.detect.
+note_home_focused` at the router boundary, so they never depended on
+`detect.py`'s internal contract. Verified unchanged by running them
+(6 passed).
+
+Updated the router log message in `server/routers/index.py`
+(`_run_detect_change`) from "home-page focus found changes since the last
+scan; rescanning" to "home-page focus found a stale root; rescanning" —
+the old wording described a replay reporting a change, which no longer
+happens.
+
+`frontend/src/apps/explorer/lib/focus-detect.ts`'s module comment
+referenced `detect.py` "replaying the FSEvents journal... but only when
+asked", which is no longer true; reworded to say the server starts an
+ordinary incremental rescan. `MIN_HIDDEN_MS`/`shouldNoteFocus`/
+`hiddenSeconds` and their tests are unchanged — the 30s client floor was
+never part of what changed. `bun test src/apps/explorer/lib/
+focus-detect.test.ts` still passes (6 passed).
+
+**Verification:** `pytest tests/test_index_detect.py
+tests/test_index_ignore.py tests/test_index_mount_safe.py
+tests/test_index_freshness.py` — 66 passed. `pytest tests/test_index_api.py
+-k home_focus` — 6 passed. `bun test src/apps/explorer/lib/
+focus-detect.test.ts` — 6 passed. Full suite was NOT run (not this round's
+job, per the brief — the orchestrator runs it once at the end).

@@ -1480,11 +1480,11 @@ def note_folder_opened(path: str) -> bool:
 
 # Same shape as `_freshness_slot`: at most one check in flight, a plain
 # non-reentrant lock acquired by the request thread and released by the
-# worker. A flappy window manager can fire `visibilitychange` far more often
-# than a journal replay costs, and `detect.DETECT_INTERVAL_S` already paces
-# the per-root checks themselves — this just keeps two overlapping requests
-# (two browser tabs both regaining focus at once) from running the replay
-# twice concurrently.
+# worker. `detect.py` no longer replays the journal itself (see its module
+# docstring for why), so what runs here is cheap pacing checks plus, when a
+# root is stale enough, an actual `runner.start` — this slot just keeps two
+# overlapping requests (two browser tabs both regaining focus at once) from
+# doing that work twice concurrently.
 _detect_slot = threading.Lock()
 
 
@@ -1497,8 +1497,8 @@ def _run_detect_change(hidden_s: float) -> None:
         started = detect.note_home_focused(cfg, roots, hidden_s)
         if started:
             _wake_index_job_bridge()
-            logger.info("index: home-page focus found changes since the last "
-                        "scan; rescanning %s", started)
+            logger.info("index: home-page focus found a stale root; "
+                        "rescanning %s", started)
     except Exception:  # noqa: BLE001 - housekeeping must never surface
         logger.exception("could not run focus-change detection")
     finally:
@@ -1508,7 +1508,8 @@ def _run_detect_change(hidden_s: float) -> None:
 
 def note_home_focused(hidden_s: float) -> bool:
     """The home page regained focus after being hidden `hidden_s` seconds:
-    check every configured root's change journal in the background.
+    start an incremental rescan of every configured root that is stale
+    enough, in the background.
 
     Returns whether a check was started. Never blocks and never raises — the
     caller pays one lock acquire, same contract as `note_folder_opened`

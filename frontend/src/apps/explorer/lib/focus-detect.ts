@@ -4,13 +4,13 @@
 // `apps/explorer/lib/home-search.ts` keep their testable halves out of the
 // component that owns the effect.
 //
-// See SPEC-focus-change-detection.md. Home search is index-backed and
-// global, so a file dropped anywhere under a scan root while the user was on
-// another tab (a browser download landing in ~/Downloads, say) stays
-// invisible until something rescans that root. The server can detect this
-// cheaply on macOS by replaying the FSEvents journal
-// (fused_render/index/detect.py), but only when asked — this module decides
-// WHEN to ask.
+// See SPEC-focus-change-detection.md and DECISIONS.md. Home search is
+// index-backed and global, so a file dropped anywhere under a scan root
+// while the user was on another tab (a browser download landing in
+// ~/Downloads, say) stays invisible until something rescans that root. The
+// server (fused_render/index/detect.py) starts an ordinary incremental
+// rescan of a stale-enough root when asked — this module decides WHEN to
+// ask, not what the server does once asked.
 
 // How long the page must have been hidden before regaining focus is worth
 // acting on. The signal this exists for is "the user went away and did

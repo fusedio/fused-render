@@ -268,8 +268,11 @@ def default_ignore() -> list[str]:
     Application Support, Mail, Fonts — content a user may legitimately
     search), and this ignore list is USER-EDITABLE, so it is the wrong place
     for a correctness fix a trigger cannot afford to lose to an edited
-    preference anyway. `detect.py` now carries its own non-editable noise
-    filter for that — see `detect._filter_hint` and DECISIONS.md."""
+    preference anyway. `index/detect.py` no longer inspects `fsevents.hint`'s
+    output at all (a later round removed the standalone replay entirely —
+    see DECISIONS.md), which closes this class of bug a different way: there
+    is no raw journal output left in that module for `~/Library` churn to
+    pollute."""
     seen, out = set(), []
     for base in default_home_dirs():
         pattern = norm(os.path.join(base, "**", "mounts"))

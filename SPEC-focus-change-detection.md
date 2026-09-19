@@ -139,6 +139,55 @@ The final fix round therefore:
 See DECISIONS.md ("Final fix round") for the full account, including the
 unrelated Windows CI regression this round also fixed.
 
+## Errata (2026-09-19): the core premise — "standalone replay makes the quiet
+## path cheap" — is wrong on a real home root, and the design changed
+
+Everything above this section describes and repeatedly patches the
+STANDALONE-REPLAY design ("The fix" §, above): replay `fsevents.hint`
+by itself on focus, only start a scan when it reports a change. That
+design's central claim — that the quiet path is cheap because a replay is
+"0.1-2.9s of the journal" — was measured against a root scanned recently.
+It does not hold on a root that has gone quiet for hours, which is exactly
+the situation this feature exists to help with.
+
+Measured on this machine's real `~` (2026-09-19, do not re-litigate):
+`fsevents._replay` gives up and returns `None` past a 20s timeout or a
+200,000-event cap. Right after a scan, a check cost 48ms for 123 events.
+7.2 hours after the last scan, it cost 11.9s for 199,943 events — sitting on
+the cap — and a call in the same minute returned `None` at 5.8s having
+answered nothing at all. `~` generates roughly 28,000 FSEvents/hour, so the
+replay stops being able to answer after about 7 hours without a scan. Since
+`None` must be treated as a no-op (every round of errata above insists on
+this, correctly), the design's actual behaviour on a real home root was:
+the longer since the last scan — exactly when a new download is most likely
+to be missing — the more certain the feature was to burn 6-12s of
+background work and then do nothing. No amount of noise-filtering
+(the two errata rounds above) fixes this: they were both about the
+CONTENT of a successful replay, and this failure mode is about the replay
+not completing at all.
+
+The fix is not another patch to the standalone-replay design; it removes
+the standalone replay. `index/detect.py` no longer calls `fsevents.hint`
+itself. On a qualifying focus event it now just starts the ORDINARY
+incremental scan (`runner.start`) of a stale-enough root — `run_scan`
+already tries the same journal replay internally, racing the dir-cache
+read, and when it can't answer, falls back to its own cache-shortcut walk
+(one `scandir` + mtime compare per directory, no per-file rehash for
+anything unchanged) rather than to "no answer". That fallback was measured
+directly: forcing the `None` case against a same-day copy of this
+machine's real production cache for `/Users/iamsdas` (~78,700 directories),
+the walk took 4.4s wall-clock — bounded by directory count, not event
+count, and it always leaves the index actually current. See DECISIONS.md
+("2026-09-19 — standalone replay removed") for the full measurement and the
+new design.
+
+Everything in "Decisions already taken", "The fix", and both prior errata
+sections above should now be read as history explaining how the feature
+got to this point — including WHY the noise-filtering and ordering fixes
+they describe (MountGuard-before-syscall, the `active_run` guard, the
+already-running check) were correct — not as the current design.
+`index/detect.py`'s own module docstring is the current source of truth.
+
 ## What to build
 
 ### Server
