@@ -52,6 +52,7 @@ import {
   hfLogout,
   putAppSharingEnabled,
   putCanvasesEnabled,
+  putNativeChatEnabled,
   putProjectQueueEnabled,
   putTaskPeekEnabled,
   putTaskCardTitleMode,
@@ -71,6 +72,7 @@ import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import {
   publishChatRecapEnabled,
+  publishNativeChatEnabled,
   publishProjectQueueEnabled,
 } from "@apps/claude/feature-flag";
 import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
@@ -281,19 +283,44 @@ function AppSharingSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pr
   );
 }
 
-// Chat: the one chat setting a person still chooses. The "Native chat" switch
-// that headed this section left the page on 2026-09-19 (Akshil: "hide that
-// flag, default on") — the React chat is simply what the app renders now, and a
-// switch whose only job was the way back to the legacy iframe is not a
-// preference. `native_chat_enabled` stays a stored pref server-side for the env
-// override and old installs (shell/prefs.py); nothing on this page writes it.
-// The recap box that lived inside that section keeps its place and its shape.
-function ChatSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+// Native chat: the React port of the Claude chat, ON by default since
+// 2026-09-17 — the switch is the way back to the legacy iframe, not the way in.
+// Same one-checkbox section shape as Canvases.
+// `FUSED_RENDER_NATIVE_CHAT` beats this switch; the server reports the
+// effective value, so the box shows what the app is actually doing.
+function NativeChatSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // DEFAULT ON, so the fallback is `true` and the read is `!== false` — the
+  // same shape the recap below has always had, and the same the pref itself has
+  // (shell/prefs.py `native_chat_enabled`). A server that predates the field is
+  // a server whose chats are native.
+  const enabled = prefs.chat?.native !== false;
   // DEFAULT ON, so the fallback is `true` and the read is `!== false`: a server
   // that predates the field is a server whose chat shows the fold.
   const recap = prefs.chat?.recap !== false;
   const [recapBusy, setRecapBusy] = useState(false);
+  // `FUSED_RENDER_NATIVE_CHAT` BEATS THE STORED SWITCH (prefs.py
+  // `native_chat_enabled`), so under it a click stores a value the server then
+  // reports back as the other one and the box snaps back with no explanation.
+  // Say which is deciding and take the control out of service, exactly as the
+  // engine section does with `engine.forced_by`.
+  const forcedBy = prefs.chat?.forced_by ?? null;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putNativeChatEnabled(!enabled);
+      onChange(next);
+      publishNativeChatEnabled(next.chat?.native !== false);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const toggleRecap = async () => {
     if (recapBusy) return;
@@ -312,7 +339,34 @@ function ChatSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) =
 
   return (
     <section className="prefs-section">
-      <h2>Chat</h2>
+      <h2>Native chat</h2>
+      <p className="deploy-muted">
+        Render the Claude chat as part of the app instead of an embedded page. On by default;
+        turn it off to go back to the embedded page. Every chat embed switches on the next
+        paint.
+      </p>
+      <label className="prefs-radio">
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={busy || !!forcedBy}
+          onChange={toggle}
+        />
+        <span>
+          <b>Use the native chat</b> in the sidebar, Tasks cards and the canvas workspace.
+        </span>
+      </label>
+      {forcedBy && (
+        <p className="deploy-muted">
+          Set by <code>FUSED_RENDER_NATIVE_CHAT={forcedBy}</code> in this server's environment,
+          which overrides this switch.
+        </p>
+      )}
+      {/* A SETTING OF THE NATIVE CHAT'S, so it lives inside this section rather
+          than beside it — and it is NOT disabled when the chat is off: the box
+          says what the chat will do, and a control that disappears the moment
+          the feature it belongs to is off is a control nobody can find again.
+          Own `busy`, so one switch in flight does not freeze the other. */}
       <label className="prefs-radio">
         <input
           type="checkbox"
@@ -334,14 +388,13 @@ function ChatSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) =
 // is the only place it turns on. Same one-checkbox section shape as the two
 // above.
 //
-// ITS OWN SECTION, not a box inside a chat setting: the queue's most visible
-// half IS the chat — a send into a busy folder gets a Queued chip instead of a
-// run — but the switch also governs Run now, the scheduler's own dispatch and
-// the Tasks board's Queued lane. A control filed under a feature it is not part
-// of is a control nobody finds again when they go looking for the thing it
-// actually does. (The "Native chat" switch that used to sit above this left the
-// page on 2026-09-19 — the React chat is simply on; `native_chat_enabled` stays
-// a stored pref for the env override and old installs, shell/prefs.py.)
+// ITS OWN SECTION, DIRECTLY UNDER NATIVE CHAT, rather than a third box inside
+// it. The two are neighbours because the queue's most visible half IS the chat —
+// a send into a busy folder gets a Queued chip instead of a run — but the switch
+// is not a chat setting: it also governs Run now, the scheduler's own dispatch
+// and the Tasks board's Queued lane, all of which work with the native chat off.
+// A control filed under a feature it is not part of is a control nobody finds
+// again when they go looking for the thing it actually does.
 function ProjectQueueSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1241,7 +1294,7 @@ export default function Preferences() {
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
                 <CanvasesSection prefs={prefs} onChange={setPrefs} />
                 <AppSharingSection prefs={prefs} onChange={setPrefs} />
-                <ChatSection prefs={prefs} onChange={setPrefs} />
+                <NativeChatSection prefs={prefs} onChange={setPrefs} />
                 <ProjectQueueSection prefs={prefs} onChange={setPrefs} />
                 <TaskPeekSection prefs={prefs} onChange={setPrefs} />
                 <TaskCardTitleSection prefs={prefs} onChange={setPrefs} />
