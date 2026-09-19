@@ -105,41 +105,34 @@ function hintAt(x: number, y: number, target: EventTarget | null): Element | nul
   return null;
 }
 
-/** THE TASK FORM IS ANCHORED TO ITS ELEMENT, NOT THE POINTER (Akshil,
- *  2026-09-19: "center-aligned… don't want it to jump"). Centred under the
- *  hovered span and CLAMPED to the viewport, never flipped: a 90ch panel that
- *  followed the cursor swung its whole width to the other side on one pixel of
- *  travel near the right edge. Anchored, it does not move while the pointer is
- *  on the span at all, and near an edge it slides up to the edge and stops. */
-function placeTask(el: Element): void {
+/** THE TASK FORM FOLLOWS THE POINTER, CENTRED ON IT, INSIDE THE MIDDLE 80% OF
+ *  THE VIEWPORT (Akshil, 2026-09-19: "move it with cursor but don't move it
+ *  past 80%… it can stay stuck at one of the ends"). Centred rather than
+ *  offset so the pointer never sits at a corner of it, and CLAMPED to the band
+ *  rather than flipped: the old flip swung a 90ch panel its whole width on one
+ *  pixel of travel near the right edge. Past the band the panel stops and the
+ *  pointer walks on without it. */
+const BAND = 0.8;
+function placeTask(x: number, y: number): void {
   const p = ensurePanel();
   const w = p.offsetWidth;
   const h = p.offsetHeight;
-  // ONE CENTRE FOR THE PAIR (Akshil, 2026-09-19: "same center because they
-  // are like the same thing"): the title span and the reply span are two
-  // halves of one line, so the anchor is the box around BOTH — every sibling
-  // that carries the task form — and the panel lands in the same place
-  // whichever half the pointer is on.
-  const group = Array.from(el.parentElement?.querySelectorAll("[data-hint-title]") ?? [el]);
-  const rects = (group.length ? group : [el]).map((n) => n.getBoundingClientRect());
-  const r = {
-    left: Math.min(...rects.map((q) => q.left)),
-    right: Math.max(...rects.map((q) => q.right)),
-    top: Math.min(...rects.map((q) => q.top)),
-    bottom: Math.max(...rects.map((q) => q.bottom)),
-  };
-  const maxLeft = Math.max(EDGE, window.innerWidth - EDGE - w);
-  const left = Math.min(maxLeft, Math.max(EDGE, (r.left + r.right) / 2 - w / 2));
-  let top = r.bottom + 6;
-  if (top + h > window.innerHeight - EDGE) top = Math.max(EDGE, r.top - 6 - h);
+  const vw = window.innerWidth;
+  const bandLeft = vw * (1 - BAND) / 2;
+  const bandRight = vw - bandLeft;
+  let left = x - w / 2;
+  if (w >= bandRight - bandLeft) left = (vw - w) / 2;
+  else left = Math.min(bandRight - w, Math.max(bandLeft, left));
+  let top = y + OFFSET_Y;
+  if (top + h > window.innerHeight - EDGE) top = Math.max(EDGE, y - OFFSET_Y - h);
   p.style.left = `${Math.round(left)}px`;
   p.style.top = `${Math.round(top)}px`;
 }
 
 function place(x: number, y: number): void {
   const p = ensurePanel();
-  if (host && p.classList.contains("is-task")) {
-    placeTask(host);
+  if (p.classList.contains("is-task")) {
+    placeTask(x, y);
     return;
   }
   // Measured after the text is in, because the flip depends on the width.
