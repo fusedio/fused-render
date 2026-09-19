@@ -270,9 +270,13 @@ export function useComposerDefaults(
   useEffect(() => {
     let live = true;
     pickedSinceRead.current = {};
+    // A NEW CONVERSATION STARTS FROM NOTHING. The previous chat's pair is
+    // cleared before this read goes out, so neither a slow answer nor a failed
+    // one can leave it standing under the new session (Bugbot, PR #1226): the
+    // pills go back to the wash and paint this chat's own record, or "".
+    setRecorded({ model: "", effort: "" });
     setRecordReady(false);
     if (!sessionId) {
-      setRecorded({ model: "", effort: "" });
       setRecordReady(true);
       return;
     }
@@ -305,6 +309,12 @@ export function useComposerDefaults(
     if (!agentDir || !file) return;
     let live = true;
     pickedSinceRead.current = {};
+    // Same rule as the fast read: a detection is about ONE conversation. Left
+    // standing across a session change, `detectionReady` would vouch for the
+    // previous chat's pair and a chat with no record would paint it, then flip
+    // when its own answer landed (Bugbot, PR #1226).
+    setDetected({ model: "", effort: "" });
+    setDetectionReady(false);
     void runAgent(agentDir, "defaults",
                   sessionId ? { file, session_id: sessionId } : { file },
                   { key: null })

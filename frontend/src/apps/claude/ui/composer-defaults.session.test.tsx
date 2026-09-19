@@ -466,3 +466,44 @@ test("a field settled by a param is reported settled on its own, while the other
   expect(box.pills!.effortSettled).toBe(false);
   expect(box.pills!.pillsReady).toBe(false);
 });
+
+test("switching conversation clears the previous one's record and detection before asking again", async () => {
+  // Bugbot, PR #1226: a failed fast read, or a slow read still in flight, left
+  // the previous chat's pair standing under the new session — pinning the old
+  // chat's model onto the new one, or painting it and then flipping.
+  const answers: Record<string, { model: string; effort: string }> = {
+    "sess-a": { model: "opus", effort: "max" },
+  };
+  let slowPending: Array<(v: unknown) => void> = [];
+  globalThis.fetch = ((url: string, init?: RequestInit) => {
+    const target = String(url);
+    if (target.startsWith("/api/tasks/settings")) {
+      const sid = new URL(target, "http://x").searchParams.get("session_id") ?? "";
+      const rec = answers[sid];
+      // The second chat's read FAILS — the case that used to keep the old pair.
+      if (!rec) return Promise.reject(new Error("boom"));
+      return Promise.resolve({
+        ok: true, status: 200, json: () => Promise.resolve(rec),
+      } as unknown as Response);
+    }
+    if (target.startsWith("/api/run") && init?.body) {
+      return new Promise((resolve) => { slowPending.push(resolve); });
+    }
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) } as unknown as Response);
+  }) as unknown as typeof fetch;
+  const params = createMemoryParamsStore({ session_id: "sess-a" });
+  const box = await mount(params);
+  expect(box.pills!.model).toBe("opus");
+  expect(box.pills!.effort).toBe("max");
+  expect(box.pills!.pillsReady).toBe(true);
+
+  await act(async () => { params.set({ session_id: "sess-b" }); });
+  await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
+  // Nothing of sess-a survives: no record, detection not vouched for, so the
+  // pills are back in the wash rather than showing opus/max for a chat that
+  // never chose them.
+  expect(box.pills!.pillsReady).toBe(false);
+  expect(box.pills!.modelSettled).toBe(false);
+  expect(box.pills!.effortSettled).toBe(false);
+  expect(slowPending.length).toBeGreaterThan(0);
+});
