@@ -47,6 +47,7 @@ import {
   RESTART_GIVE_UP_MS,
   type RestartEvent,
   type RestartState,
+  type RestartStage,
 } from "@platform/lib/restart-flow";
 
 /** The deep link. `fused_render/deeplink.py` accepts it payload-free by
@@ -478,6 +479,12 @@ export function requestRestart(): void {
  *  `lastServed` is current the moment someone presses the button. */
 export function noteRestartProbe(probe: { ok: boolean; version?: string | null }): void {
   store.noteRestartProbe(probe);
+}
+
+/** The stage right now, for code that is not a component — the banner's poll
+ *  timer asks this to decide whether a hidden tab still probes. */
+export function restartStageNow(): RestartStage {
+  return store.snapshot().stage;
 }
 
 export function useRestartFlow(): RestartView {

@@ -191,9 +191,11 @@ function restartBody(
     return `The app is still running v${props.version}. Restart to finish the update.`;
   }
   if (props.stage === "gave-up") {
-    // Names the way out that does not depend on this page at all — the button
-    // next to it is the other one, and if the app is truly gone it cannot work.
-    return "The app didn't come back. You can try again, or start fused-render from the menu bar.";
+    // The way out that does not depend on this page: open the app yourself
+    // (Akshil, 2026-09-19: "instead of give up message show this: try opening
+    // the app again"). The button beside it is the other one, and if the app
+    // is truly gone it cannot work.
+    return "The app didn't come back. Try opening fused-render again.";
   }
   if (props.stage === "back") {
     return `Back on v${props.installedVersion} — reloading…`;

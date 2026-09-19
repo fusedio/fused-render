@@ -12,6 +12,7 @@ import {
   initialStatus,
   previewInstalledVersion,
   previewRequestedAt,
+  probeWhileHidden,
   reduceProbe,
   updateDialogMode,
   updateDialogPreview,
@@ -351,4 +352,16 @@ test("the preview invents the one disagreement a dev server cannot supply", () =
   // for it would put a string on screen that is not a version at all.
   expect(previewInstalledVersion("nightly", "nightly")).toBe("nightly");
   expect(previewInstalledVersion("0.5.x", "0.5.x")).toBe("0.5.x");
+});
+
+test("a hidden tab keeps probing only while a restart is in flight", () => {
+  // The reader presses Restart, sees the app back in the Dock, clicks it — the
+  // tab is hidden at the exact moment the new server starts answering. A tab
+  // that stops probing there never sees the version move and never reloads.
+  for (const stage of ["quitting", "restarting", "reconnecting", "back"] as const) {
+    expect(probeWhileHidden(stage)).toBe(true);
+  }
+  for (const stage of ["ready", "gave-up"] as const) {
+    expect(probeWhileHidden(stage)).toBe(false);
+  }
 });

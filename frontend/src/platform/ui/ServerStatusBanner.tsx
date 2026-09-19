@@ -37,6 +37,7 @@ import {
   forgetRestartRecord,
   noteRestartProbe,
   requestRestart,
+  restartStageNow,
   useRestartFlow,
 } from "@platform/lib/restart-store";
 import { useUpdateStatus } from "@platform/lib/update-status";
@@ -46,6 +47,7 @@ import {
   reduceProbe,
   previewInstalledVersion,
   previewRequestedAt,
+  probeWhileHidden,
   updateDialogMode,
   updateDialogPreview,
   UPDATE_DIALOG_KEY,
@@ -179,7 +181,10 @@ function useServerStatus(): {
 
     probeRef.current = probe;
     const interval = window.setInterval(() => {
-      if (document.visibilityState !== "hidden") probe();
+      // Hidden tabs sit the poll out — unless a restart is in flight, when the
+      // hidden tab is the one most likely to miss the app coming back
+      // (server-status.ts `probeWhileHidden`).
+      if (document.visibilityState !== "hidden" || probeWhileHidden(restartStageNow())) probe();
     }, POLL_MS);
 
     const onVisible = () => {

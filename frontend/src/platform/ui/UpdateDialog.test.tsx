@@ -205,7 +205,9 @@ test("one hidden live region says the live step AND the sentence, so every visib
   expect(slow).toBe("Restarting… Taking a little longer than usual — still working on it.");
   // No live step: the sentence alone, and those sentences differ per stage.
   expect(region(await mount(restartAt("back")))).toBe("Back on v0.5.97 — reloading…");
-  expect(region(await mount(restartAt("gave-up")))).toContain("menu bar");
+  expect(region(await mount(restartAt("gave-up")))).toBe(
+    "The app didn't come back. Try opening fused-render again.",
+  );
   expect(region(await mount(restartAt("ready")))).toContain("Restart to finish the update.");
   // The visible body is plain — it is what the region reads, not a second region.
   const r = await mount(restartAt("quitting"));
@@ -459,11 +461,11 @@ test("back and gave-up each say what happened, not what is happening", async () 
     "Back on v0.5.97 — reloading…",
   );
   expect(body(await mount(restartAt("gave-up")))).toBe(
-    "The app didn't come back. You can try again, or start fused-render from the menu bar.",
+    "The app didn't come back. Try opening fused-render again.",
   );
   // The way out that does not depend on this page at all is named, because if
   // the app is truly gone the button beside it cannot work.
-  expect(body(await mount(restartAt("gave-up")))).toContain("menu bar");
+  expect(body(await mount(restartAt("gave-up")))).toContain("Try opening fused-render again");
 });
 
 test("ready still says what it always said", async () => {
