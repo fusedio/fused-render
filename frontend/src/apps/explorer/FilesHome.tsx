@@ -24,7 +24,7 @@ import {
   startIndexScan,
   statPath,
 } from "@platform/lib/api";
-import { hiddenSeconds, shouldNoteFocus } from "@apps/explorer/lib/focus-detect";
+import { hiddenSeconds, isAway, shouldNoteFocus } from "@apps/explorer/lib/focus-detect";
 import { useUrlVersion } from "@platform/lib/hooks";
 import {
   fsMutationCount,
@@ -474,12 +474,17 @@ export function FilesSearch({
   // Home search is index-backed and global, so a file dropped anywhere under a
   // scan root while this tab was hidden (a browser download, a Finder move)
   // stays invisible until the next scan. `noteHomeFocused` (platform/lib/api)
-  // asks the server to replay the macOS FSEvents journal and rescan only if it
-  // reports a real change — cheap on the quiet path (the whole point of
-  // SPEC-focus-change-detection.md), so this fires on every qualifying focus
-  // regain rather than rate-limiting it here; the server holds its own floor
-  // (`index/detect.py`'s `DETECT_INTERVAL_S`) regardless of what this effect
-  // does.
+  // asks the server to start an ordinary incremental rescan of any
+  // configured root that is stale enough — the server no longer replays the
+  // FSEvents journal standalone to decide whether to bother (see
+  // `fused_render/index/detect.py`'s module docstring; a standalone replay's
+  // "cannot tell" answer got MORE likely the longer a root had gone unscanned,
+  // exactly when a change was most likely to be missing). This fires on
+  // every qualifying focus regain rather than rate-limiting it here; the
+  // server holds its own floors (`index/detect.py`'s `DETECT_INTERVAL_S` and
+  // `FOCUS_STALE_S`, plus the shared `freshness.MIN_INTERVAL_S`) regardless
+  // of what this effect does, so a flappy tab cannot turn this into a
+  // rescan-per-transition on the server either.
   //
   // `hiddenSince` is a ref, not state: it drives no render, only the decision
   // made on the NEXT visibility change, and a ref lets the listener close over
@@ -492,21 +497,27 @@ export function FilesSearch({
   // did something else" — is, on the packaged desktop app, someone switching
   // to a DIFFERENT application while this window stays visible. That fires
   // neither a `visibilitychange` (the document never becomes hidden) nor a
-  // page-level blur; it only ever shows up as `document.hasFocus()` going
-  // false, which `window`'s own `blur`/`focus` pair tracks and
+  // page-level blur; it only ever shows up as THIS frame's `window` losing
+  // focus, which `window`'s own `blur`/`focus` pair observes and
   // `visibilitychange` cannot. Conversely, a real tab switch (occlusion,
   // minimize) fires `visibilitychange` but not always a `blur`. Neither
-  // event alone covers both cases, so both are wired, and `isAway()` — not
-  // "which event fired" — is what decides state: whichever of the three
-  // events happens to fire first on the way out sets `hiddenSince` once
-  // (guarded by the `=== null` check so a `blur` immediately followed by a
-  // `visibilitychange` hidden, or vice versa, does not restart the clock),
-  // and whichever fires first on the way back consumes it once (guarded the
-  // same way) — so one away/back transition fires exactly one request no
-  // matter how many of the three events it triggers along the way.
+  // event alone covers both cases, so both are wired as WAKE-UP signals —
+  // `isAway()` (lib/focus-detect.ts) is what actually decides state, not
+  // "which event fired": whichever of the three events happens to fire
+  // first on the way out sets `hiddenSince` once (guarded by the `=== null`
+  // check so a `blur` immediately followed by a `visibilitychange` hidden,
+  // or vice versa, does not restart the clock), and whichever fires first on
+  // the way back consumes it once (guarded the same way) — so one away/back
+  // transition fires exactly one request no matter how many of the three
+  // events it triggers along the way. This split (event fires the check,
+  // `isAway()` decides the answer) is also what lets `isAway()` ask the
+  // shell-aware question — "did focus leave the APP", not "did it leave
+  // THIS FRAME" — without needing a fourth event source of its own (code
+  // review, finding 8): this frame's own `blur` still wakes the listener up
+  // when focus moves to a sibling shell pane, but `isAway()` itself
+  // recognizes that as still-present and returns `false`.
   const hiddenSince = useRef<number | null>(null);
   useEffect(() => {
-    const isAway = () => document.hidden || !document.hasFocus();
     const onTransition = () => {
       if (isAway()) {
         // Only the FIRST event of a transition sets this — see comment
