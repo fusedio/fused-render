@@ -637,3 +637,53 @@ function listedTaskId(value: string | null | undefined): string {
   const v = String(value || "").trim();
   return /^TASK-/.test(v) ? v : "";
 }
+
+/**
+ * WHAT IS LEFT OF A CHAT ONE PRESS BEFORE ITS LAST WAITING MESSAGE GOES.
+ *
+ * Everything `emptyAfterDrop` needs, read off the controller's state and the
+ * rows on screen at the moment `delete` was answered.
+ */
+export interface EmptyChatLook {
+  /** `ChatState.turns` — the transcript. A session with zero of them is as
+   *  empty as no session at all, which is why this is a count and not an id. */
+  turns: number;
+  /** The optimistic follow-ups and the live host's undrained inbox
+   *  (`ChatState.queued` + `.inbox`): words of the reader's that are on screen
+   *  and in nobody's transcript yet. They are not "nothing". */
+  pending: number;
+  /** The transcript has not finished arriving (`historyLoading` / `adopting`).
+   *  Zero turns then means "not read yet", never "there are none". */
+  settling: boolean;
+  /** A run is live, starting, or has an id — a conversation with something in
+   *  flight is not an empty one, whatever the transcript has caught up to. */
+  busy: boolean;
+  /** The entry ids of every waiting row this chat is drawing, INCLUDING the one
+   *  being dropped. Passing the list rather than a count is what lets a poll
+   *  that landed between the render and the answer be seen: a row that arrived
+   *  in that window is a message still waiting, and this chat stays. */
+  rows: readonly string[];
+}
+
+/**
+ * IS THIS CHAT NOTHING BUT THE MESSAGE THAT WAS JUST DELETED?
+ *
+ * A send into a busy folder is not run: it is admitted as a scheduler entry and
+ * drawn as a dashed bubble. A BRAND-NEW chat whose only content is that one
+ * queued message is, once the message is cancelled, a chat with nothing in it —
+ * no transcript, no session, nothing waiting — and leaving the reader parked in
+ * front of an empty pane is the pane saying "your message is gone AND you are
+ * still here" (Akshil, 2026-09-19). So the chat closes and the reader lands back
+ * on the Claude home, which is where a new conversation starts from.
+ *
+ * EVERY OTHER SHAPE STAYS, and the checks are deliberately conservative in that
+ * direction: a transcript with one turn, a second message still in the line, a
+ * run in flight, or a transcript that has simply not been read yet all answer
+ * `false`. Leaving a conversation the reader can still see is the expensive
+ * mistake; keeping an empty pane up is merely the old behaviour.
+ */
+export function emptyAfterDrop(look: EmptyChatLook, entryId: string): boolean {
+  if (look.settling || look.busy) return false;
+  if (look.turns > 0 || look.pending > 0) return false;
+  return look.rows.every((id) => id === entryId);
+}

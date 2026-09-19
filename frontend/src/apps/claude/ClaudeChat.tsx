@@ -153,6 +153,7 @@ import type { QueueFacts } from "@platform/lib/queue";
 import { PENDING_KEY_PREFIX, QUEUED_PARAM } from "@platform/lib/queue";
 import {
   NO_DROPPED,
+  emptyAfterDrop,
   pruneDropped,
   useLiveSeeds,
   headerQueue,
@@ -3456,9 +3457,46 @@ function ChatBody(props: ChatBodyProps) {
         // template arms the next, so "stop repeating" has to reach the template
         // or it is the same button as "skip this run" wearing another word.
         await cancelScheduledMessage(stopId || entryId);
+        // ASKED ON THE ANSWER, not before the press: the chat this leaves behind
+        // is judged from the state the cancel actually returned into — a turn
+        // that landed, a second entry a poll listed, a run that started — and
+        // never from a render that is up to a lap older than the request.
+        const chatNow = controller.getState();
+        const leaving =
+          queueOn &&
+          emptyAfterDrop(
+            {
+              turns: chatNow.turns.length,
+              pending: chatNow.inbox.length + chatNow.queued.length,
+              settling: chatNow.historyLoading || chatNow.adopting,
+              busy:
+                controller.isBusy() || chatNow.status === "running" || !!chatNow.runId,
+              rows: waiting.map((r) => r.entryId),
+            },
+            entryId,
+          );
         setDroppedEntries((cur) => new Set(cur).add(entryId));
         setWaitingSeeds((cur) => cur.filter((q) => q.entryId !== entryId));
         schedRefresh();
+        // …AND A CHAT THAT WAS ONLY THIS MESSAGE GOES WITH IT (Akshil,
+        // 2026-09-19). A brand-new conversation whose one queued send has just
+        // been cancelled has nothing left to be a conversation about, and the
+        // pane it leaves up is an empty transcript over a composer that says
+        // nothing about why the reader is still standing in it.
+        //
+        // THE SAME DOOR `← Chats` SPENDS (`onBack`), and not a second spelling
+        // of it: Back is the one hop that resets the card policy, the seeds, the
+        // leader, the Run next claim and the `?queued=` param together, and a
+        // hand-rolled hop that forgot any one of them would carry this
+        // conversation's memory into the next one. It also asks the composer's
+        // leave question, which is the right question here too — an empty chat
+        // can still have unsent words in its box.
+        //
+        // AFTER THE AWAIT, NEVER BEFORE IT: a cancel that failed leaves the
+        // message in the line, and a pane that had already left would be the
+        // reader told their message is gone when it is not. The `catch` below is
+        // that road and it still stays put.
+        if (leaving) onBack();
       } catch (err) {
         const t = troubleFromError(err);
         controller.reportTrouble({
@@ -3475,7 +3513,7 @@ function ChatBody(props: ChatBodyProps) {
         });
       }
     },
-    [controller, schedRefresh],
+    [controller, schedRefresh, queueOn, waiting, onBack],
   );
 
 

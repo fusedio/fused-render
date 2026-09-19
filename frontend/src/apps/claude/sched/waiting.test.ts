@@ -11,6 +11,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   EMPTY_SEED_WATCH,
+  emptyAfterDrop,
   headerQueue,
   headerTaskId,
   pruneDropped,
@@ -468,5 +469,43 @@ describe("the number at the top of a chat", () => {
     // …and it belongs to the conversation that was on screen: Back and
     // openSession both drop it.
     expect(CHAT).toContain('setAdmitTaskId("");');
+  });
+});
+
+describe("the chat a delete leaves behind", () => {
+  const look = (over: Partial<Parameters<typeof emptyAfterDrop>[0]> = {}) => ({
+    turns: 0,
+    pending: 0,
+    settling: false,
+    busy: false,
+    rows: ["e1"],
+    ...over,
+  });
+
+  it("is EMPTY when the dropped message was the whole of it", () => {
+    // A brand-new chat whose only content was one queued send: no transcript,
+    // nothing else in the line, nothing in flight.
+    expect(emptyAfterDrop(look(), "e1")).toBe(true);
+    // …and a chat drawing no rows at all is emptier still (a second delete
+    // racing the first, a row already pruned).
+    expect(emptyAfterDrop(look({ rows: [] }), "e1")).toBe(true);
+  });
+
+  it("is NOT empty when the conversation has anything else in it", () => {
+    // One turn is a conversation. So is a message the live host is still
+    // holding, and so is a second entry waiting in the folder's line.
+    expect(emptyAfterDrop(look({ turns: 1 }), "e1")).toBe(false);
+    expect(emptyAfterDrop(look({ pending: 1 }), "e1")).toBe(false);
+    expect(emptyAfterDrop(look({ rows: ["e1", "e2"] }), "e1")).toBe(false);
+    // …and a row that is not the one being dropped, whatever else is true.
+    expect(emptyAfterDrop(look({ rows: ["e2"] }), "e1")).toBe(false);
+  });
+
+  it("answers NO while the transcript is unread or a run is live", () => {
+    // Zero turns during a restore means "not read yet", never "there are none"
+    // — and leaving a conversation the reader can still see is the expensive
+    // mistake, so both unknowns stay.
+    expect(emptyAfterDrop(look({ settling: true }), "e1")).toBe(false);
+    expect(emptyAfterDrop(look({ busy: true }), "e1")).toBe(false);
   });
 });
