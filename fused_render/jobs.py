@@ -944,6 +944,44 @@ def dismiss(job_id: str, *, now: float | None = None) -> bool:
         return True
 
 
+def forget(job_id: str, *, now: float | None = None) -> bool:
+    """Take a record off the registry outright, whatever state it is in.
+    Returns whether there was one.
+
+    THE PRODUCER'S OWN "there is nothing left to say about this" — a third
+    statement, distinct from the two above it. `dismiss` is a USER closing a
+    row and so refuses live work (hiding a running download is the bug that
+    whole feature exists to prevent); `_sweep`'s age-out is a CLOCK. This one
+    is the reporter itself, in-process, declaring that its row has no terminal
+    line worth drawing — so it is allowed to take a row that is still
+    `RUNNING`, because the only caller is the code that was doing the running.
+
+    Server-side only by construction: there is no HTTP route into this (a page
+    posts reports, never deletions), so a page cannot delete a row — its own
+    or anyone else's.
+
+    Today one producer needs it: a self-update that installed cleanly
+    (`update/_manager.py::_install`). The finish is already announced by the
+    blocking restart dialog, and the row that used to say "Installed — restart
+    to finish" pointed at a route whose lazy chunk had just been swapped out
+    from under the running window — a card whose only click led to a blank
+    page (Akshil, 2026-09-19). A failure or a cancel still writes its terminal
+    row: those carry information nothing else on screen does.
+
+    Goes through `_forget` like every other removal, so the id is remembered
+    the same way and a straggling late tick cannot re-create the row it just
+    took. A genuinely fresh attempt still re-opens it: `upsert` clears the
+    dismissal for a report that states `state: "running"` outright, which is
+    exactly what an install's opening report does.
+    """
+    now = time.time() if now is None else now
+    with _lock:
+        if job_id not in _jobs:
+            return False
+        _forget(job_id, now)
+        return True
+
+
 def clear_finished(*, now: float | None = None) -> int:
     """Dismiss every TERMINAL record at once (the bulk "Clear" button).
     Returns how many.

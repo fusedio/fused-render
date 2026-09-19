@@ -30,7 +30,7 @@
 // being gone is the restart working, and two surfaces telling opposite stories
 // about the same outage is the bug this flow exists to fix. The cap
 // (RESTART_GIVE_UP_MS) is what gives the card back.
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import UpdateDialog from "@platform/ui/UpdateDialog";
 import {
@@ -202,12 +202,17 @@ function useServerStatus(): {
     };
   }, []);
 
+  // STABLE, so a caller can put it in an effect's deps and have that effect
+  // run when the thing it watches changes rather than on every render of this
+  // component (the installed-transition probe below is exactly that caller).
+  const checkNow = useCallback(() => probeRef.current(), []);
+
   return {
     banner: state.banner,
     version,
     installedVersion,
     dev,
-    checkNow: () => probeRef.current(),
+    checkNow,
   };
 }
 
@@ -222,6 +227,32 @@ export default function ServerStatusBanner() {
   // notice the disk moved. Whichever says so first is enough.
   const update = useUpdateStatus();
   const flow = useRestartFlow();
+
+  // THE INSTALL LANDING WAKES THE PROBE (Akshil, 2026-09-19). Two facts say
+  // "there is a new version on disk" and they arrive on two different clocks:
+  // the update store's `installed` (2 s while an install runs) and this
+  // component's own `/api/config` probe reading `installed_version` (5 s).
+  // `bannerSurface` already opens the dialog on either, but only the probe
+  // carries the VERSION the dialog's title is made of — so without this the
+  // seconds between the two clocks were spent either on a title falling back
+  // to `latest_version` or, when the store's word had not arrived first, with
+  // no dialog on screen at all while the app on disk had already moved.
+  //
+  // One probe per transition INTO `installed`, not one per render: the ref
+  // re-arms only when the state leaves `installed` again (a fresh check, a
+  // later install), so a re-render while the dialog sits on screen costs
+  // nothing. This only ASKS — it starts no restart, and `restart-store`'s own
+  // wake semantics (`noteRestartProbe`, fed by every probe) are untouched.
+  const installedProbedRef = useRef(false);
+  useEffect(() => {
+    if (update?.state !== "installed") {
+      installedProbedRef.current = false;
+      return;
+    }
+    if (installedProbedRef.current) return;
+    installedProbedRef.current = true;
+    checkNow();
+  }, [update?.state, checkNow]);
   // WHAT GOES ON SCREEN is a pure decision (server-status.ts `bannerSurface`) —
   // the restart dialog outranking the "down" card is the whole of step 5, and a
   // rule two surfaces have to agree on should be a test, not a reading of the

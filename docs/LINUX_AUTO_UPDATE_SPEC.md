@@ -35,13 +35,16 @@ today's `mac.UpdateManager`:
 - all the state (`_state`, `_latest`, `_error`, `_progress`,
   `_progress_total`, `_phase`, `_check_error`, `_last_check_at`, `_job_id`,
   `_cancel`, `_job_broken`, `_check_only`) and the `RLock`;
-- `status()`, `check()`, `install()`, `_job_report()`, `_job_clear_cancel()`,
-  `_beat_installing()`, `_cancel_requested()`, `_updates_dir()`,
-  `_sweep_stale_downloads()`, `_check_disk_space()`, `start_auto_checks()`;
+- `status()`, `check()`, `install()`, `_job_report()`, `_job_forget()`,
+  `_job_clear_cancel()`, `_beat_installing()`, `_cancel_requested()`,
+  `_updates_dir()`, `_sweep_stale_downloads()`, `_check_disk_space()`,
+  `start_auto_checks()`;
 - the constants that are not mac-specific (`JOB_PREFIX`, `PHASE_DOWNLOADING`,
-  `PHASE_INSTALLING`, `INSTALL_HEARTBEAT_S`, `DONE_MESSAGE`,
-  `CANCELLED_MESSAGE`, `MIN_CHECK_GAP_S`, `FAILED_CHECK_GAP_S`,
-  `DEV_MANAGER_ENV`, `_DISK_SPACE_FACTOR`).
+  `PHASE_INSTALLING`, `INSTALL_HEARTBEAT_S`, `CANCELLED_MESSAGE`,
+  `MIN_CHECK_GAP_S`, `FAILED_CHECK_GAP_S`, `DEV_MANAGER_ENV`,
+  `_DISK_SPACE_FACTOR`). There is no success message: a clean install removes
+  its row rather than finishing it (D885), on both platforms, because the
+  removal lives in this shared `_install`.
 
 Subclass hooks (abstract or NotImplementedError on the base):
 

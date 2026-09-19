@@ -55,18 +55,19 @@ logger = logging.getLogger("fused_render.update")
 # literal "sys:"): deterministic, so a retry after a failure re-attaches to
 # the row the user is already looking at rather than stacking a second one.
 JOB_PREFIX = jobs.SERVER_ID_PREFIX + "update:"
-# The phase words the row shows while running, and the two terminal lines.
-# Kept here rather than inline so the tests assert against the same strings
-# the UI reads (design vocabulary: "Downloading" / "Installing" /
-# "Installed — restart to finish" / "Cancelled").
+# The phase words the row shows while running, and the one terminal line that
+# is still written. Kept here rather than inline so the tests assert against
+# the same strings the UI reads (design vocabulary: "Downloading" /
+# "Installing" / "Cancelled"). THERE IS NO SUCCESS LINE — a clean install
+# takes its row off the registry instead of finishing it; see `_install`.
 PHASE_DOWNLOADING = "Downloading"
 PHASE_INSTALLING = "Installing"
 # How often the swap re-reports itself while it runs. Well under `jobs.py`'s
 # STALE_AFTER_S (30s): a whole-artifact swap has no progress to report, but a
 # row that says nothing for half a minute is shown as "No longer reporting",
-# and one that says nothing for STALE_DROP_S (600s) is dropped outright —
-# after which the final `done` upsert lands on a dismissed id and the
-# "Installed — restart to finish" line is never drawn.
+# and one that says nothing for STALE_DROP_S (600s) is dropped outright — so
+# a user watching a long swap would be told the update had stopped reporting
+# while it was in fact halfway through replacing the app.
 INSTALL_HEARTBEAT_S = 10.0
 # A CHECK-ONLY MANAGER IN A DEV RUN (Akshil, 2026-09-10). `start()` refuses to
 # run outside a bundle — there is nothing to swap — which also means an
@@ -100,7 +101,6 @@ MIN_CHECK_GAP_S = 60.0
 # seconds bounds that to one fetch at a time and is shorter than any human
 # retry.
 FAILED_CHECK_GAP_S = 5.0
-DONE_MESSAGE = "Installed — restart to finish"
 CANCELLED_MESSAGE = "Cancelled"
 # Keep a margin over the artifact itself: the download and the staged/swapped
 # copy coexist briefly during the swap.
@@ -529,35 +529,39 @@ class UpdateManager:
                 self._state = "error"
                 self._error = str(error)
             return
-        # SILENT ON SUCCESS (2026-09-18). This row used to land on the default
-        # `trail` tier, which pops a card in the floating column
-        # (`popupJobs`, frontend/src/platform/lib/jobs.ts) — and a toast saying
-        # "Installed — restart to finish" now arrives at the same instant as
-        # the blocking dialog that says the same thing and offers the button,
-        # because the install reaching "installed" is what raises that dialog
-        # (`UpdateDialog`'s restart mode, D2). Two announcements of one event,
-        # one of them dismissible and useless.
+        # NO ROW AT ALL ON SUCCESS (Akshil, 2026-09-19). A finished install
+        # used to write a terminal row — "Installed — restart to finish", on
+        # the `silent` tier since #1214 so it at least stopped popping a card
+        # — and that row was wrong in a way no tier could fix:
         #
-        # `silent` is the tier for exactly that — "finishing is not news"
-        # (jobs.py's TIERS) — and the ONE lever that suppresses the pop.
-        # It is a property of SUCCESS only: `effective_tier` still promotes an
-        # `error`/`cancelled` row to `attention`, so a failed install is as loud
-        # as it ever was, and the RUNNING row (its own reports, above, which do
-        # not restate tier and so stay `trail`) is untouched — the download's
-        # bytes, phase and ✕ all still draw.
+        #   • It said nothing the user was not already being told. Reaching
+        #     "installed" is exactly what raises the BLOCKING restart dialog
+        #     (`UpdateDialog`'s restart mode, D2), which carries the same
+        #     sentence AND the button that acts on it. The row was the same
+        #     news, a second time, with nothing to press.
+        #   • Its click was a trap. Every Notifications row navigates
+        #     somewhere; this one's destination was the `/preferences`
+        #     fallback, a lazily-loaded chunk — and by the time the row
+        #     existed the installer had already swapped the `.app` on disk,
+        #     so the chunk the running window would have fetched was gone.
+        #     Clicking the card blanked the page (Akshil, 2026-09-19).
         #
-        # NOTE that `silent` also means NOT RETAINED: `jobRows` drops a
-        # silent+done row from the Notifications panel and `_sweep` ages it out
-        # of the registry. There is no tier that pops nothing yet keeps a row,
-        # and inventing one for this would be a fifth tier for a row nobody
-        # reads after the restart it is announcing.
+        # So the row is REMOVED rather than finished: `jobs.forget` takes it
+        # off the registry outright (it is allowed to take a row that is still
+        # `running` — see its docstring), which is the only way to leave
+        # nothing behind on EVERY surface at once. A `done` row, at any tier,
+        # is still a row some future reader could decide to draw.
         #
-        # `detail` as well as `message`: `jobStatusLine` reads `detail` for a
-        # `done` row and `message` for an `error` one.
-        done_message = self._const("DONE_MESSAGE")
-        self._job_report(state="done", detail=done_message, message=done_message,
-                         done=None, total=None, cancellable=False,
-                         tier=jobs.SILENT)
+        # This is a property of SUCCESS only. The `error` and `cancelled`
+        # paths above still write their terminal rows, and still pop:
+        # "couldn't install" and "cancelled" are the only place that news
+        # exists, and neither of them has swapped the app out from under the
+        # window, so their rows point at a `/preferences` that still loads.
+        #
+        # The RUNNING row is untouched — the download's bytes, its phase word
+        # and its ✕ all draw exactly as before. What disappears is only the
+        # line after the last one.
+        self._job_forget()
         with self._lock:
             self._state = "installed"
             self._progress = None
@@ -598,9 +602,19 @@ class UpdateManager:
             # No dedicated update page or Preferences tab exists — the
             # update surface is sidebar chrome (UpdateBadge.tsx's badge) and
             # the blocking restart dialog ServerStatusBanner.tsx raises —
-            # present on every route
-            # rather than a page of its own. /preferences is the same
-            # fallback the gh-CLI-install job uses for the same reason.
+            # present on every route rather than a page of its own.
+            # /preferences is the same fallback the gh-CLI-install job uses
+            # for the same reason.
+            #
+            # It is kept even though the row this bug was about (the finished
+            # install, whose click landed on a chunk the swap had already
+            # deleted) no longer exists: the rows that still reach
+            # Notifications are the `error` and `cancelled` ones, written on
+            # paths where nothing has been swapped, and a terminal row with
+            # no destination at all is not merely undestined — a non-error
+            # notification with neither `action` nor `page` resolves to
+            # `transient` (notifications.ts's `isTransient`), i.e. a cancel
+            # would stop being KEPT in the list.
             result = jobs.upsert({"id": job_id, **fields},
                                  page="/preferences", server=True)
         except Exception:  # noqa: BLE001 - reporting is never load-bearing
@@ -617,6 +631,29 @@ class UpdateManager:
         if result.get("cancel_requested"):
             with self._lock:
                 self._cancel = True
+
+    def _job_forget(self) -> None:
+        """Take the row off the registry — the SUCCESS path's terminal act,
+        in place of a terminal report (see `_install` for why a clean install
+        leaves no row).
+
+        Deliberately NOT gated on `_job_broken`, unlike `_job_report`: that
+        latch exists because there is a report per megabyte behind the one
+        that failed, and retrying each of them would fill the log with the
+        same traceback hundreds of times over one download. This runs exactly
+        once per install, and the case it covers is the one the latch would
+        make worse — an opening report that landed followed by a tick that
+        did not, which leaves a RUNNING row on screen that nothing else will
+        ever clear.
+        """
+        with self._lock:
+            job_id = self._job_id
+        if job_id is None:
+            return
+        try:
+            jobs.forget(job_id)
+        except Exception:  # noqa: BLE001 - same best-effort rule as _job_report
+            logger.exception("could not remove update job %s", job_id)
 
     def _job_clear_cancel(self) -> None:
         with self._lock:
