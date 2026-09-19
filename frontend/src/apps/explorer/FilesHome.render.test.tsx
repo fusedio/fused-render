@@ -216,6 +216,13 @@ beforeEach(() => {
   // anything that reaches `navigate()` (an Enter that commits a resolved
   // address) throws without this.
   (globalThis as unknown as { window: Record<string, unknown> }).window.dispatchEvent = () => true;
+  // The home-focus-detection effect (SPEC-focus-change-detection.md, code
+  // review) also wires `window` `blur`/`focus` alongside `document`'s
+  // `visibilitychange` — Clock's stubbed `window` has neither, so mounting
+  // FilesHome without this throws the same way it would without
+  // `dispatchEvent` above.
+  (globalThis as unknown as { window: Record<string, unknown> }).window.addEventListener = () => {};
+  (globalThis as unknown as { window: Record<string, unknown> }).window.removeEventListener = () => {};
   (globalThis as Record<string, unknown>).history = {
     state: null,
     replaceState: () => {},

@@ -244,13 +244,45 @@ def default_ignore() -> list[str]:
     a redirected home does not stop the DEFAULT home's mounts from sitting in
     the middle of the tree being scanned. `**/` spans zero or more levels, so
     one pattern per home also covers every branch-nested checkout's own mounts
-    folder."""
+    folder.
+
+    Also names the OS user's `~/Library/Caches` (macOS only in practice — the
+    path simply never exists elsewhere, so the pattern is inert there). This
+    is a PATH pattern, not a bare `DEFAULT_IGNORE_NAMES` entry, and
+    deliberately keyed off the real OS home (`os.path.expanduser("~")`)
+    rather than `default_home_dirs()` (this app's OWN state homes,
+    `~/.fused-render` and `FUSED_RENDER_HOME` — unaffected by either): a bare
+    name would ALSO ban every unrelated directory anywhere on disk that
+    happens to be named `Caches` (an Xcode project, a random tool's cache
+    dir). `~/Library/Caches` is never searchable content — same rationale as
+    `.cache` above, just system- not app-owned. Added 2026-09 at the user's
+    request, DISTINCT from the fix round that follows.
+
+    Do NOT widen this back to the whole `~/Library` tree. That was tried
+    (2026-09, SPEC-focus-change-detection.md's review) to fix a real bug —
+    `index/detect.py`'s home-focus trigger collapsing `fsevents.hint`'s raw,
+    unfiltered journal output to a boolean, with `~/Library`'s constant churn
+    (Safari/Mail caches, saved app state, Spotlight) making that boolean true
+    on nearly every check of a real `~` root — and then reverted in the same
+    round's follow-up: `~/Library` as a DEFAULT is too broad (it also holds
+    Application Support, Mail, Fonts — content a user may legitimately
+    search), and this ignore list is USER-EDITABLE, so it is the wrong place
+    for a correctness fix a trigger cannot afford to lose to an edited
+    preference anyway. `index/detect.py` no longer inspects `fsevents.hint`'s
+    output at all (a later round removed the standalone replay entirely —
+    see DECISIONS.md), which closes this class of bug a different way: there
+    is no raw journal output left in that module for `~/Library` churn to
+    pollute."""
     seen, out = set(), []
     for base in default_home_dirs():
         pattern = norm(os.path.join(base, "**", "mounts"))
         if pattern not in seen:
             seen.add(pattern)
             out.append(pattern)
+    caches = norm(os.path.expanduser("~/Library/Caches"))
+    if caches not in seen:
+        seen.add(caches)
+        out.append(caches)
     return DEFAULT_IGNORE_NAMES + out
 
 

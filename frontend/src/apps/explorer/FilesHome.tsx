@@ -20,9 +20,11 @@ import {
   getClaudeSessionFolders,
   getGitRepos,
   indexRank,
+  noteHomeFocused,
   startIndexScan,
   statPath,
 } from "@platform/lib/api";
+import { hiddenSeconds, isAway, shouldNoteFocus } from "@apps/explorer/lib/focus-detect";
 import { useUrlVersion } from "@platform/lib/hooks";
 import {
   fsMutationCount,
@@ -466,6 +468,94 @@ export function FilesSearch({
   // substring search (see MIN_QUERY_CHARS's own doc comment, lib/home-search.ts).
   const searchable = trimmedQ.length >= MIN_QUERY_CHARS;
   useEffect(() => onActiveChange(active), [active, onActiveChange]);
+
+  // -- change detection on regaining focus -------------------------------------
+  //
+  // Home search is index-backed and global, so a file dropped anywhere under a
+  // scan root while this tab was hidden (a browser download, a Finder move)
+  // stays invisible until the next scan. `noteHomeFocused` (platform/lib/api)
+  // asks the server to start an ordinary incremental rescan of any
+  // configured root that is stale enough — the server no longer replays the
+  // FSEvents journal standalone to decide whether to bother (see
+  // `fused_render/index/detect.py`'s module docstring; a standalone replay's
+  // "cannot tell" answer got MORE likely the longer a root had gone unscanned,
+  // exactly when a change was most likely to be missing). This fires on
+  // every qualifying focus regain rather than rate-limiting it here; the
+  // server holds its own floors (`index/detect.py`'s `DETECT_INTERVAL_S` and
+  // `FOCUS_STALE_S`, plus the shared `freshness.MIN_INTERVAL_S`) regardless
+  // of what this effect does, so a flappy tab cannot turn this into a
+  // rescan-per-transition on the server either.
+  //
+  // `hiddenSince` is a ref, not state: it drives no render, only the decision
+  // made on the NEXT visibility change, and a ref lets the listener close over
+  // a mutable value without becoming a dependency that would tear the effect
+  // down and rebuild it on every transition.
+  //
+  // Two independent event sources feed the SAME "away" state machine rather
+  // than each running its own fire-once logic (code review, D...): the
+  // documented motivating case — "a Finder move", "the user went away and
+  // did something else" — is, on the packaged desktop app, someone switching
+  // to a DIFFERENT application while this window stays visible. That fires
+  // neither a `visibilitychange` (the document never becomes hidden) nor a
+  // page-level blur; it only ever shows up as THIS frame's `window` losing
+  // focus, which `window`'s own `blur`/`focus` pair observes and
+  // `visibilitychange` cannot. Conversely, a real tab switch (occlusion,
+  // minimize) fires `visibilitychange` but not always a `blur`. Neither
+  // event alone covers both cases, so both are wired as WAKE-UP signals —
+  // `isAway()` (lib/focus-detect.ts) is what actually decides state, not
+  // "which event fired": whichever of the three events happens to fire
+  // first on the way out sets `hiddenSince` once (guarded by the `=== null`
+  // check so a `blur` immediately followed by a `visibilitychange` hidden,
+  // or vice versa, does not restart the clock), and whichever fires first on
+  // the way back consumes it once (guarded the same way) — so one away/back
+  // transition fires exactly one request no matter how many of the three
+  // events it triggers along the way. This split (event fires the check,
+  // `isAway()` decides the answer) is also what lets `isAway()` ask the
+  // shell-aware question — "did focus leave the APP", not "did it leave
+  // THIS FRAME" — without needing a fourth event source of its own (code
+  // review, finding 8): this frame's own `blur` still wakes the listener up
+  // when focus moves to a sibling shell pane, but `isAway()` itself
+  // recognizes that as still-present and returns `false`.
+  const hiddenSince = useRef<number | null>(null);
+  useEffect(() => {
+    const onTransition = () => {
+      if (isAway()) {
+        // Only the FIRST event of a transition sets this — see comment
+        // above. `hiddenSince.current` is already null on the very first
+        // "away" this listener ever sees for a page that loaded already
+        // hidden/unfocused (rare, but the same null-means-"nothing to
+        // consume" contract as the return path below), so this simply
+        // starts the clock rather than doing anything visible.
+        if (hiddenSince.current === null) {
+          hiddenSince.current = Date.now();
+        }
+        return;
+      }
+      // Back. `hiddenSince.current` is null on the very first "back" this
+      // listener ever sees — attached while already focused and visible,
+      // the overwhelmingly common case of a normal page load, so this never
+      // fires on mount — and again after every fire below, which is what
+      // stops one away/back transition from firing twice regardless of how
+      // many of the three events it raised.
+      const since = hiddenSince.current;
+      hiddenSince.current = null;
+      if (since === null) return;
+      const hiddenForMs = Date.now() - since;
+      if (!shouldNoteFocus(hiddenForMs)) return;
+      // Fire-and-forget, same as every other accelerator in this file
+      // (platform/lib/index-status.ts's poll failure): a failed or skipped
+      // check is never something the user can act on.
+      noteHomeFocused(hiddenSeconds(hiddenForMs)).catch(() => {});
+    };
+    document.addEventListener("visibilitychange", onTransition);
+    window.addEventListener("blur", onTransition);
+    window.addEventListener("focus", onTransition);
+    return () => {
+      document.removeEventListener("visibilitychange", onTransition);
+      window.removeEventListener("blur", onTransition);
+      window.removeEventListener("focus", onTransition);
+    };
+  }, []);
 
   // -- a query that is really an address --------------------------------------
   //

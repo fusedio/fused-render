@@ -2889,3 +2889,588 @@ Removed the second parse: the "Publish AppImage + attach to release" step
 now exports `VERSION` via `$GITHUB_ENV` (Task 15) alongside `APPIMAGE`, the
 same pattern already used to carry `$APPIMAGE` across steps, so there is
 only one place the filename is ever parsed.
+## worktree-focus-change-detection
+
+Built per SPEC-focus-change-detection.md: `fused_render/index/detect.py` (policy),
+a new `/api/index/note-home-focus` endpoint (wiring only, `server/routers/index.py`),
+and a frontend `visibilitychange` trigger (`apps/explorer/lib/focus-detect.ts` +
+`FilesHome.tsx`).
+
+Decisions made while implementing (spec left them open or under-specified):
+
+* **`detect.py` does not re-check `runner.active_run()` before calling
+  `runner.start()`**, unlike `freshness.py`'s `note_folder_opened`. The
+  freshness precheck exists because a folder-level trigger must not be the
+  thing that "discovers" a mismatch a live run of the enclosing root already
+  covers — a subtler, folder-vs-root distinction that does not apply here:
+  this trigger operates at the ROOT level already, so `runner.start`'s own
+  exact-root-match join (harmless `already_running`-style behaviour) is
+  sufficient. Simpler and still correct; not re-litigated once the join
+  semantics were re-read in runner.py.
+
+* **`MIN_HIDDEN_S` lives in `index/detect.py`, not the router.** The spec's
+  prose introduces the constant while describing the endpoint, which reads
+  ambiguously about which module owns it. Treated it as domain policy (same
+  status as `QUIET_S`/`MIN_INTERVAL_S` living in `freshness.py`, not in
+  `routers/index.py`) so it is exercised directly by `tests/test_index_detect.py`
+  without needing the FastAPI test client. The router's own
+  `note_home_focused` wiring function does NOT re-check it — only the
+  cheaper, synchronous `index_gate.indexing_allowed()` gate, to avoid
+  spawning a thread pointlessly, mirroring exactly what `note_folder_opened`
+  (router) does before its own thread spawn.
+
+* **Added router-level tests to `tests/test_index_api.py`** (a "-- home-focus
+  detection --" section, mirroring the existing "-- open-folder freshness --"
+  section) even though the spec's test list only enumerated `detect.py`-level
+  cases for `tests/test_index_detect.py`. Left the endpoint entirely
+  untested would have meant the fire-and-forget wiring (guard, thread spawn,
+  concurrency slot, malformed-body tolerance) had no coverage at all — the
+  existing precedent (`note_folder_opened`'s own router-level tests) already
+  established that this router file is expected to test its wiring
+  separately from the policy module's tests.
+
+* **`_detect_slot` is a module-level `threading.Lock()`**, matching
+  `_freshness_slot` exactly (one check in flight, dropped rather than
+  queued) rather than anything keyed per-root — the per-root pacing already
+  lives in `detect.DETECT_INTERVAL_S`/`_detect_checked`, so the router-level
+  slot only needs to stop two concurrent focus-regain requests (e.g. two
+  browser tabs) from running the journal replay loop over all roots at once,
+  which is a single global concern, not a per-root one.
+
+* **Frontend gate module lives at `apps/explorer/lib/focus-detect.ts`**
+  (not `platform/lib/`), since the trigger is home-page-specific by design
+  (decision #1 in the spec — not app-wide focus), following
+  `apps/explorer/lib/home-search.ts`'s placement rather than
+  `shell/indexing-lib.ts`'s (that one backs Preferences, a cross-app
+  surface).
+
+* **No client-side rate limiting beyond the hidden-duration floor.** The
+  server's `DETECT_INTERVAL_S`/`freshness.MIN_INTERVAL_S` floors already make
+  every quiet call cheap and every redundant call a no-op, so the frontend
+  effect fires on every qualifying visibility transition without its own
+  debounce — adding one would just be a second copy of a floor the server
+  already owns definitively.
+
+Nothing in the spec was found to be wrong; the two "not yet finalized" items
+noted mid-build (the endpoint's route name, the frontend module's exact
+shape) are settled as above.
+
+## worktree-focus-change-detection — code review fix round
+
+Six findings from code review, fixed in `index/detect.py`,
+`index/ignore.py`, `server/routers/index.py` (no code change needed there —
+see below), `frontend/src/apps/explorer/FilesHome.tsx`, and
+`frontend/src/apps/explorer/FilesHome.render.test.tsx`.
+
+1. **Unfiltered hint made the quiet path unreachable on a real `~` root
+   (High).** `fsevents.hint()` does no ignore-rule filtering of its own, so
+   its raw output on a home root routinely included this app's own writes
+   under `~/.fused-render/**` and macOS's constant `~/Library` churn,
+   neither of which the original `_check_root` filtered before collapsing
+   the hint to a boolean. Fixed two ways together:
+   * `index/detect.py` gained `_filter_hint`, applying the exact per-path
+     filter `scan._run_fsevents` already applies to a journal-driven hint —
+     `ignored_for_index(rules, p, tree=True) or guard.blocks(p) or
+     is_inside_leaf_dir(p)` — before deciding whether anything changed.
+     `guard.blocks(p)` alone (MountGuard covers the whole app state home,
+     not only its `mounts` subdir) makes the scan's own writes inert.
+   * `index/ignore.py`'s `default_ignore()` now also names `~/Library`, as a
+     PATH pattern keyed off the real OS home (`os.path.expanduser("~")`),
+     deliberately NOT a bare `DEFAULT_IGNORE_NAMES` entry — a bare name
+     would ban every unrelated directory anywhere on disk literally named
+     "Library" (an Arduino sketch folder, a Java project), where a path
+     pattern only ever matches the one real OS home. This is a genuine,
+     if narrow, indexing-behaviour change: a fresh install (or anyone who
+     never customized their ignore list) no longer indexes `~/Library`.
+     Judged worth it — nothing under it was ever content a home search
+     should surface, and the existing `.cache`/`.fused`/`dist`/`build`
+     entries already accept the identical "system churn, not user content"
+     trade for narrower directories. `SPEC-focus-change-detection.md` has an
+     Errata section recording why the original spec's "non-empty -> scan"
+     line was incomplete.
+   * Test requirement from the review: `test_realistic_noisy_hint_on_a_real_home_root_starts_no_scan`
+     feeds a REALISTIC `(forced_dirs, [])` shape — real paths under
+     `~/.fused-render` and `~/Library` — and asserts no scan starts, plus a
+     sibling test that the same noise mixed with one genuine changed path
+     still scans (the filter must not overreach).
+
+2. **Missing `runner.active_run` guard (Medium).** `_check_root` called
+   `runner.start` unconditionally; a live run under a different
+   `ignore_sig` (exactly the state right after an ignore-list edit) would be
+   SUPERSEDED — cancelled and respawned — by a focus event, discarding its
+   walk progress. Added the same guard `freshness.note_folder_opened`
+   already applies for the identical reason ("a triggered scan must not be
+   the thing that discovers a mismatch"): if `runner.active_run(cfg, root)`
+   is not `None`, refuse outright. The spec review noted this trigger
+   operates at the ROOT level already (unlike the folder-open trigger, which
+   needed the distinction argued out), so the refusal applies directly.
+
+3. **`started` reported roots where nothing was started (Low/Medium).**
+   `runner.start` returns `{"already_running": True}` when it joins a live
+   run instead of spawning one; `_check_root` ignored that key and returned
+   `True` regardless, so the router logged "home-page focus found changes...
+   rescanning" and woke the Activity card for a scan this trigger had no
+   hand in — actively misleading during exactly the window a full home scan
+   is running. Fixed by checking `result.get("already_running")` after
+   `runner.start` returns and treating it as "not started". No router change
+   needed: `routers/index.py`'s wiring already just trusts `detect.py`'s
+   return value.
+
+4. **Journal replay before any MountGuard check (Low).** `_check_root`
+   reached `fsevents.hint` -> `device_uuid` -> `os.stat(root)` with no guard,
+   contradicting the documented rule (`freshness.note_folder_opened`'s own
+   comment: MountGuard runs "BEFORE any kernel syscall on the caller's
+   path", because a stat on a wedged rclone/NFS mount blocks forever).
+   Latent, not live, today (a mount-backed root has no saved fsevents state,
+   so `hint` returns `None` at its own first check) but fixed properly:
+   `_check_root` now builds one `MountGuard` and checks `guard.blocks(root)`
+   before `_hint` runs, and reuses the same guard object in `_filter_hint`
+   (finding 1) rather than constructing it twice.
+
+5. **Wrong comment about `bool`/`any` (Low).** The old comment claimed
+   `any(hinted)` was called and would be false for `(set(), [])`; neither is
+   true (`any()` was never called, and `bool((set(), []))` is `True` — a
+   non-empty tuple). Restructured rather than just re-worded: `hinted is
+   None` is now its own explicit check, and the emptiness test runs against
+   the FILTERED `forced`/`subtrees` from finding 1 — there is no longer a
+   place where a comment needs to explain a non-obvious boolean coercion.
+
+6. **`visibilitychange` alone misses the desktop-app headline scenario
+   (Low).** Switching to a different application while the window stays
+   visible fires neither `visibilitychange` (`document.hidden` never
+   becomes true) nor was covered at all by the original listener. Added
+   `window` `blur`/`focus` alongside it in `FilesHome.tsx`, unified through
+   one `isAway()` check (`document.hidden || !document.hasFocus()`) rather
+   than three independent per-event handlers, so a transition that raises
+   more than one of the three events (a tab hide often fires both a
+   `visibilitychange` and a `blur`) still fires the endpoint exactly once —
+   the `hiddenSince.current === null` guard on both the "went away" and
+   "came back" branches absorbs the duplicate. `FilesHome.render.test.tsx`
+   needed its `window` stub (from `Clock.install()`, shared with
+   `FileSearchField.render.test.tsx` via `hook-harness.ts`) extended with
+   `addEventListener`/`removeEventListener` — it previously only stubbed
+   `dispatchEvent` because nothing rendered here called `window.
+  addEventListener` before this fix.
+
+Verification: `pytest tests/test_index_detect.py tests/test_index_api.py
+tests/test_index_ignore.py tests/test_index_mount_safe.py
+tests/test_index_freshness.py` (195 passed) and `bun test
+src/apps/explorer src/platform/lib` (2198 passed across the two runs, 0
+failed) after every change in this round.
+
+## Final fix round (Windows regression, `~/Library` default reverted, `~/Library/Caches` added)
+
+Three items, unrelated to each other except by timing.
+
+1. **Windows CI regression in `test_index_detect.py`'s own quiet-path test
+   (High, test-only).** `test-python-windows` failed
+   `test_realistic_noisy_hint_on_a_real_home_root_starts_no_scan`: a scan
+   started where the test asserted none would. Root cause was in the TEST,
+   not in `detect.py`: it redirected home with
+   `monkeypatch.setenv("HOME", str(tmp_path))` alone. `os.path.expanduser("~")`
+   reads `HOME` on POSIX but **ignores it entirely on Windows** (it consults
+   `USERPROFILE`, then `HOMEDRIVE`+`HOMEPATH`) — so on Windows CI the redirect
+   silently no-opped, `default_home_dirs()` (which `MountGuard` uses to build
+   its blocked roots) and `detect._os_noise_roots()` (new this round, see
+   item 2) both resolved against the REAL runner's user profile, and none of
+   the test's tmp-path-shaped noise paths (`.fused-render/...`,
+   `Library/Caches/...`) matched either filter — so the "noise" was seen as a
+   real change and a scan started. `tests/test_index_mount_safe.py`
+   (`test_the_guard_blocks_every_fused_render_home_not_just_the_current_one`)
+   had already hit and fixed this exact platform gap by patching
+   `os.path.expanduser` directly instead of relying on `HOME`; the two
+   `test_index_detect.py` tests that build "realistic" home-shaped noise now
+   do the same (`tests/test_index_detect.py::_fake_home`). macOS being green
+   proved nothing here, per the brief — the bug was in a Windows-specific
+   corner of `expanduser`, invisible on any POSIX runner regardless of how
+   thorough the test looked.
+
+   Made `detect._filter_hint` more robust independent of that test fix:
+   every hinted path is now `norm`ed before it is checked against
+   `ignored_for_index`/`is_inside_leaf_dir`/`IgnoreRules` (all of which split
+   and match on `/` and document that they expect the `norm`ed form). This
+   never matters in production — `fsevents.hint` only returns non-`None` on
+   darwin, where its paths are already forward-slashed — but it means the
+   filter is correct by construction for whatever shape of path a caller
+   (a test, a future non-macOS accelerator) hands it, rather than correct
+   only because production happens to always hand it clean input.
+
+2. **The quiet-path trigger's correctness must not depend on a
+   user-editable preference (High).** The previous round's fix
+   (`~/Library` added to `default_ignore()`, D-numbered above) made
+   `detect._filter_hint`'s noise-dropping depend on the LIVE
+   `default_ignore()` output via `cfg.rules`. That does not hold for anyone
+   who has ever pressed Save in the Indexing preferences panel
+   (`frontend/src/shell/Indexing.tsx`): `IndexConfig.ignore`
+   (`index/config.py:49`) is a dataclass default consulted ONLY when the
+   persisted config has no `ignore` key, `save_config`
+   (`index/config.py:151-155`) writes the list verbatim, and the panel seeds
+   its textarea from the live defaults and persists the whole list on Save
+   (`Indexing.tsx:160`, `:187`). Anyone who saved BEFORE `~/Library` was
+   added carries a frozen snapshot without it, forever — `default_ignore()`
+   is never consulted again for them — and the trigger silently degenerates
+   back into "scan on nearly every focus event", the exact defect the
+   previous round meant to close, for a population the tests could not see
+   (a fresh `IndexConfig()` in every test always gets the live defaults).
+
+   Fix: `detect.py` now carries its own `_NOISE_HOME_SUFFIXES` /
+   `_os_noise_roots()` / `_is_os_noise()`, a small non-editable list
+   consulted directly in `_filter_hint`, independent of `cfg.rules`. The
+   trigger now answers "is this journal entry noise?" from its own
+   authority — a user can empty or rewrite their ignore list and this
+   trigger's quiet path is unaffected either way. See the comment at
+   `_NOISE_HOME_SUFFIXES`'s definition for the full argument against folding
+   it back into `default_ignore()`.
+
+   Reverted the `~/Library` entry `default_ignore()` grew for this
+   (`fused_render/index/ignore.py`). It was too broad a DEFAULT regardless
+   of the above: `~/Library` also holds `Application Support`, `Mail` and
+   `Fonts`, which a user may legitimately want home search to reach, and a
+   default that broad should never have been the fix for an internal
+   trigger's own correctness problem. Reverting it also removes the forced
+   `ignore_sig()` change that entry caused, so nobody pays the
+   full-rescan-on-upgrade `sig()`'s own docstring warns changing the default
+   list causes — except see item 3, which reintroduces exactly that cost on
+   purpose, for a different reason.
+
+3. **Added `~/Library/Caches` to the user-visible default ignore list
+   (requested).** Distinct from items 1-2: `~/Library/Caches` is never
+   searchable content, the same argument that already put `.cache` in
+   `DEFAULT_IGNORE_NAMES`, so it belongs in `default_ignore()` on its own
+   merits regardless of what `detect.py` needs. Added as a PATH pattern
+   keyed off the real OS home (`os.path.expanduser("~/Library/Caches")`),
+   not a bare `DEFAULT_IGNORE_NAMES` entry — a bare `Caches` would ban every
+   unrelated directory anywhere on disk named `Caches`. macOS-only in
+   practice; the path simply never exists elsewhere, so the pattern is
+   inert there.
+
+   **This does change `IgnoreRules.sig()`** (any change to the default
+   pattern list does, per that method's own docstring), which means the
+   first scan after upgrading to a build with this change is a full rescan
+   for every user who has not saved a custom ignore list (custom-list users
+   are unaffected either way, and were never getting this entry
+   automatically regardless). Accepted here because the entry was
+   explicitly requested and the tradeoff — one full rescan, once, in
+   exchange for `~/Library/Caches` never surfacing in home search again —
+   favors taking it. Recorded here so it is a decision, not a silent side
+   effect discovered later via `routers/git_repos.py`-style detective work.
+
+Verification: `pytest tests/test_index_detect.py tests/test_index_api.py
+tests/test_index_ignore.py tests/test_index_mount_safe.py
+tests/test_index_freshness.py` — 195 passed, 0 failed, on this worktree's
+macOS runner. **Windows itself was not run** (no Windows machine available
+in this environment); the fix for item 1 was derived by reading
+`ntpath.expanduser`'s documented behavior and cross-checking it against
+`test_index_mount_safe.py`'s own prior fix for the identical gap, not by
+reproducing the CI failure locally. No frontend files changed this round,
+so no `bun test` run was needed.
+
+## 2026-09-19 — standalone replay removed; scan-on-stale replaces it
+
+Measured on this machine's real `~` (the scan root), the standalone-replay
+design's core premise does not hold: `fsevents._replay` (`index/fsevents.py`)
+gives up and returns `None` — "cannot tell" — past a 20s timeout or a
+200,000-event cap. Right after a scan, a check cost 48ms for 123 events.
+7.2 hours after the last scan it cost 11.9s for 199,943 events (sitting on
+the cap), and a call in the same minute returned `None` at 5.8s having
+answered nothing. `~` generates roughly 28,000 FSEvents/hour, so the replay
+stops being able to answer at all after about 7 hours without a scan — which
+is exactly the situation (a long-idle root) where a new download is most
+likely to be missing. `None` must be a no-op (every prior round of this
+feature's errata insists on this, correctly), so the design's actual
+behaviour on a real home root inverted: the longer since the last scan, the
+more certain the feature was to burn 6-12s of background work and do
+nothing. Neither prior fix round (the noise filter, the MountGuard/
+active-run ordering) touches this — both are about what a SUCCESSFUL replay
+means, and this is about the replay not completing at all.
+
+**Step 1 measurement (required before implementing).** How long does the
+non-journal fallback (`run_scan`'s "scanning (incremental)" phase, taken
+when `fsevents.hint` answers `None` but a dir cache exists) actually cost
+against a real root? Forced honestly: copied `dirs.parquet` from this
+worktree's own live production index
+(`~/.fused-render/branches/worktree-foc/index/dirs.parquet`, scanned earlier
+the same day) into a scratch `IndexConfig` directory with no `fsevents.json`
+alongside it (so `fsevents.hint` legitimately answers `None` — no saved
+journal position — rather than being patched to return `None`), then called
+the real `fused_render.index.scan.run_scan` in-process against a scratch
+`run_dir` with `root=/Users/iamsdas`. Did NOT touch the live worktree's own
+index (no `runner.start`, no subprocess, no write to the running dev
+server's `scans.json`/`runs/`), so nothing here could race the dev server
+already running on port 2678 for this worktree.
+
+Result: 4.37s wall-clock, `78,717` directories visited (`77,316` unchanged,
+`849` changed, `51` added, `10` removed), `126,096` file rows, phase log
+`checking for changes -> scanning (incremental) -> writing index -> ...`
+confirming the journal-fast-path was correctly bypassed. This matches
+`freshness.py`'s own independent measurement in its `MIN_INTERVAL_S`
+comment ("a whole-root incremental scan is ~4.5s" on a 588k-file index) —
+consistent, not a coincidence, since both are the same walk-with-cache-
+shortcut code path. **Conclusion: a full incremental walk is cheap and,
+crucially, its cost is bounded by directory count, not by how long it has
+been since the last scan or how many FSEvents fired in that window** —
+unlike the standalone replay, whose cost (and failure rate) scales with
+exactly that window. No guard against "the walk is too expensive" is
+needed; starting the ordinary scan unconditionally (once past the existing
+floors) is a strict improvement over the old design in every case, not a
+trade.
+
+**The redesign.** `index/detect.py` no longer calls `fsevents.hint` at all.
+`_check_root` now: (1) the `DETECT_INTERVAL_S` in-memory pacing floor, (2)
+`freshness.MIN_INTERVAL_S` read via `runner.last_scan` — now the actual
+"stale enough to be worth it" answer, since there is no longer a second,
+content-based check layered on top of it, (3) a `MountGuard.blocks(root)`
+pre-check (pure string comparison, no syscall on `root`) as a cheap
+short-circuit ahead of `runner.start`'s own guarded checks, (4)
+`runner.active_run(cfg, root) is not None` refusal (unchanged — a focus
+event must never supersede a live run), (5) `runner.start(cfg, root)` in a
+`try/except ValueError`, and (6) refusing to report `already_running` as
+"started" (unchanged). Removed entirely: `_hint`, `_filter_hint`,
+`_NOISE_HOME_SUFFIXES`/`_os_noise_roots`/`_is_os_noise` — all of that
+machinery existed only to make a raw `fsevents.hint()` result trustworthy
+enough to collapse to a boolean, and there is no raw hint result in this
+module any more to filter. `index/ignore.py`'s `default_ignore()` docstring
+(the `~/Library/Caches` entry, and the note about why `~/Library` itself
+was tried and reverted) is updated to point at this history rather than at
+the now-deleted `detect._filter_hint`; the `~/Library/Caches` entry itself
+is untouched (added for an unrelated, still-valid reason — never
+searchable content — not because of anything in `detect.py`).
+
+**DETECT_INTERVAL_S (30.0s) kept, justification changed.** It used to pace
+a standalone journal replay (0.1-2.9s on a fresh root, far more once
+stale). It no longer paces anything expensive: every check `_check_root`
+performs before `runner.start` is in-memory or a small local-file read, so
+today this floor only collapses redundant checks from a flappy focus
+source (two tabs, a window manager) — comfortably below
+`freshness.MIN_INTERVAL_S` (60s), which is what actually decides whether a
+scan starts. `MIN_HIDDEN_S` (30.0s, server-side floor on the client's
+`hidden_s`) is unchanged — it answers a different question ("did the user
+actually go away") that this redesign does not touch.
+
+**Staleness threshold chosen: `freshness.MIN_INTERVAL_S` (60s), unchanged
+from before.** The brief asked for a chosen-and-justified threshold; this
+redesign does not introduce a new one because one already existed and
+already does the job — `freshness.MIN_INTERVAL_S` is the shared "don't scan
+a root that was scanned this recently" floor every trigger (startup
+scheduler, manual buttons, folder-open freshness) already respects, and
+`freshness.py`'s own comment already justifies 60s as cheap given a whole-
+root incremental scan is ~4.5s (independently reconfirmed by this round's
+4.37s measurement). Introducing a SECOND, focus-specific staleness number
+on top would only re-litigate a question `freshness.py` already answered
+for every other trigger, for no reason specific to focus events.
+
+**Rewrote `tests/test_index_detect.py`** (16 tests, was 19): most of the
+old suite existed to exercise `fsevents.hint`'s three outcomes
+(`None`/`(set(), [])`/non-empty) and the noise-filtering fix, none of which
+exist in this module any more. Kept every gate/pacing/exception test that
+still applies (`DETECT_INTERVAL_S`, `freshness.MIN_INTERVAL_S`, indexing
+pref, mount-backed refusal, hidden-duration floor, multi-root
+independence, `active_run` refusal, `already_running` not reported as
+started) and added: `test_this_module_never_calls_fsevents_hint_itself`
+(monkeypatches `fsevents.hint` to raise `AssertionError` if reached — the
+redesign's whole point, made an explicit regression test) and
+`test_a_mount_backed_root_is_refused_before_runner_start_is_even_called`
+(the `MountGuard.blocks(root)` pre-check, previously only reachable via a
+path through `_hint`/`device_uuid` that no longer exists). Deleted the two
+"realistic noisy hint" tests (`_filter_hint` no longer exists to test) and
+the "hint raising" test (no more `_hint` wrapper to catch it — replaced
+with `test_an_unexpected_exception_from_runner_start_does_not_escape`,
+which is the equivalent assertion against the code that remains:
+`note_home_focused`'s per-root `try/except Exception` must still swallow
+something `runner.start` was never contracted to raise, not just the
+documented `ValueError`).
+
+`tests/test_index_api.py`'s home-focus section needed no changes — its
+tests all mock `index_router.note_home_focused`/`index_router.detect.
+note_home_focused` at the router boundary, so they never depended on
+`detect.py`'s internal contract. Verified unchanged by running them
+(6 passed).
+
+Updated the router log message in `server/routers/index.py`
+(`_run_detect_change`) from "home-page focus found changes since the last
+scan; rescanning" to "home-page focus found a stale root; rescanning" —
+the old wording described a replay reporting a change, which no longer
+happens.
+
+`frontend/src/apps/explorer/lib/focus-detect.ts`'s module comment
+referenced `detect.py` "replaying the FSEvents journal... but only when
+asked", which is no longer true; reworded to say the server starts an
+ordinary incremental rescan. `MIN_HIDDEN_MS`/`shouldNoteFocus`/
+`hiddenSeconds` and their tests are unchanged — the 30s client floor was
+never part of what changed. `bun test src/apps/explorer/lib/
+focus-detect.test.ts` still passes (6 passed).
+
+**Verification:** `pytest tests/test_index_detect.py
+tests/test_index_ignore.py tests/test_index_mount_safe.py
+tests/test_index_freshness.py` — 66 passed. `pytest tests/test_index_api.py
+-k home_focus` — 6 passed. `bun test src/apps/explorer/lib/
+focus-detect.test.ts` — 6 passed. Full suite was NOT run (not this round's
+job, per the brief — the orchestrator runs it once at the end).
+
+
+## 2026-09-20 — code review fix round: FOCUS_STALE_S, comment corrections, server-side floor ordering, iframe-aware away detection
+
+Seven findings from a code-review pass on the previous round (the standalone-
+replay removal). One (finding 4, `~/Library/Caches` never reaching installs
+with a saved config) was explicitly out of scope and left untouched — it is
+real, pre-existing, and reported separately.
+
+**Finding 1 (medium) — `_check_root` reused `freshness.MIN_INTERVAL_S` (60s)
+as its own staleness bar.** With the standalone replay gone, `MIN_INTERVAL_S`
+had become the ONLY thing standing between a flappy tab and a full incremental
+scan roughly once a minute, forever: a 31s-hidden tab-away (just past
+`MIN_HIDDEN_S`) that kept happening every 61+ seconds would pass
+`MIN_INTERVAL_S` every single time. Added `detect.FOCUS_STALE_S = 300.0`, a
+trigger-specific floor `_check_root` checks IN ADDITION to `MIN_INTERVAL_S`
+(not instead of it — `MIN_INTERVAL_S` is kept as the shared, lower floor
+every other trigger also honours). Justified against this round's own
+4.37s/78,717-directory measurement (see the 2026-09-19 entry above): at 300s,
+worst-case duty cycle is 4.37/300 ≈ 1.5%, versus ~7% at the old, reused 60s.
+This DIRECTLY REVERSES the 2026-09-19 entry's "Staleness threshold chosen:
+freshness.MIN_INTERVAL_S (60s), unchanged" decision — read that paragraph as
+superseded. The reasoning there ("don't re-litigate a question freshness.py
+already answered") missed that `freshness.MIN_INTERVAL_S` answers "is this
+root due for ANY trigger to rescan it", not "is it worth THIS CHEAP, FREQUENT
+trigger specifically firing" — the two are different questions and conflating
+them is exactly what let the bug through review the first time.
+
+Updated `tests/test_index_detect.py`: split the old
+`test_freshness_min_interval_no_longer_refuses_once_it_has_elapsed` (which
+asserted a scan started once `MIN_INTERVAL_S` alone had elapsed — no longer
+true) into `test_focus_stale_s_still_refuses_after_min_interval_s_has_cleared`
+(the regression test for the bug itself: a root 61s stale is now still
+refused) and `test_focus_stale_s_no_longer_refuses_once_it_has_elapsed` (a
+root past `FOCUS_STALE_S` is scanned). `test_freshness_min_interval_still_
+refuses_when_a_scan_just_ran` needed no behavioural change (still correctly
+refuses within 60s) but its docstring no longer claims `MIN_INTERVAL_S` is
+"THE staleness threshold" on its own.
+
+**Finding 2 (medium) — stale comments describing the deleted design.**
+`FilesHome.tsx:477` and `api.ts:847` both still said the server "replays the
+macOS FSEvents journal and rescans only if it reports a real change" /
+"never blocks on the fsevents replay" — the exact design the 2026-09-19 round
+removed. Worse, `FilesHome.tsx`'s "so this fires on every qualifying focus
+regain rather than rate-limiting it here" was explicitly DERIVED from that
+false premise ("cheap on the quiet path"). Corrected both to describe the
+current design (an ordinary incremental rescan of a stale-enough root) and
+re-derived the "fires on every regain" comment from the server's actual
+pacing/staleness floors (`DETECT_INTERVAL_S`, `FOCUS_STALE_S`,
+`freshness.MIN_INTERVAL_S`) instead.
+
+**Finding 3 (low) — inverted `MIN_HIDDEN_S` security claim, three files.**
+`detect.py`, `focus-detect.ts`, and `api.ts` all said a client "must not be
+able to force a check by just claiming a bigger number" — backwards: the
+gate is `hidden_s < MIN_HIDDEN_S`, so a BIGGER claimed value is exactly what
+passes it, and the server cannot verify the true duration at all regardless
+of which way the client lies. Corrected all three to say what actually
+matters (the server can't verify duration, full stop) and to name what
+actually bounds an abusive client: the pacing/staleness floors
+(`DETECT_INTERVAL_S`, `FOCUS_STALE_S`, `freshness.MIN_INTERVAL_S`), not
+`MIN_HIDDEN_S` itself. Recorded explicitly so a future change does not
+remove one of those floors believing `MIN_HIDDEN_S` was the guard against
+abuse.
+
+**Finding 5 (low) — `routers/index.py`'s `note_home_focused` applied the
+`MIN_HIDDEN_S` floor too late.** It acquired `_detect_slot` and spawned the
+background thread BEFORE the floor was checked — the floor only ran inside
+`detect.note_home_focused`, on the worker thread, after `load_config()` and
+`scan_roots()` had already executed. A call that could never pass the floor
+still paid for a lock acquire and a thread spawn. Moved the `hidden_s <
+detect.MIN_HIDDEN_S` check to the very top of `routers/index.note_home_
+focused`, before the slot acquire. The floor itself stays exactly as
+authoritative as before (still enforced server-side, still re-validated —
+this is not a client-trust change); it is just checked earlier. Added
+`test_note_home_focused_applies_the_hidden_s_floor_before_the_slot_or_thread`
+to `tests/test_index_api.py`, asserting neither the slot nor a thread is
+touched for a call below the floor.
+
+**Finding 6 (low) — `note_home_focused`'s "Never raises" docstring was not
+quite true.** `index_gate.indexing_allowed()` sat outside the per-root
+try/except in `detect.py`, so an exception from it (housekeeping, same class
+of failure `runner.start`/`runner.active_run` are already guarded against)
+would have propagated straight out of a function documented as never
+raising. Wrapped it in its own try/except, logged and swallowed exactly like
+a per-root failure. Added
+`test_indexing_allowed_check_raising_does_not_escape`.
+
+**Finding 7 (low) — a real cross-test lock leak in
+`test_note_home_focused_spawns_a_background_thread_and_returns_at_once`.**
+`_run_detect_change`'s `finally` block resolves `_detect_slot` as a module
+global AT THE TIME IT RUNS, not at the time the thread was spawned. The test
+patched `_detect_slot` to a throwaway `Lock()`, but returned (letting
+monkeypatch restore the ORIGINAL module attribute) without waiting for the
+worker thread to reach its `finally`. If the worker's `finally` ran after
+teardown, it would call `.release()` on the ORIGINAL `_detect_slot` — a lock
+it never acquired — while the throwaway lock the test's own assertions
+referenced would stay locked forever for any later test reusing that shape.
+This is exactly the class of bug named in this repo's own prior notes about
+cross-test lock/state leaks. Fixed by capturing the real `threading.Thread`
+instance (via a small wrapper monkeypatched over `index_router.threading.
+Thread`) and joining it before the test returns, making the worker's
+lifetime deterministic instead of racing monkeypatch's teardown. Applied the
+same capture-and-join pattern in the new finding-5 test for the same reason.
+
+**Finding 8 (medium) — `isAway()` false-positive inside the packaged shell's
+iframe.** `document.hidden || !document.hasFocus()` correctly answers "is the
+page occluded/backgrounded", but `document.hasFocus()` is scoped to THIS
+FRAME's own document — and the explorer's home page can be rendered as an
+iframe alongside sibling shell panes (the sidebar). Per the focus/visibility
+spec, a framed document's `hasFocus()` goes false the instant focus moves to
+ANY other frame, including a sibling pane that never left the app — so
+clicking the sidebar was indistinguishable from switching to a different
+application, and in-app navigation counted as "went away and did something
+else".
+
+Fix: `focus-detect.ts` now exports `isAway(doc, win)`, which still uses
+`doc.hidden` for real occlusion but replaces the frame-local `hasFocus()`
+check with `topHasFocus`: it walks to `win.top` and calls hasFocus() on THAT
+document instead. A document's `hasFocus()` is true whenever the OS-level
+focused area is anywhere in its own frame subtree (spec wording), so calling
+it on the outermost reachable ancestor answers "did focus leave the app
+shell" rather than "did it leave this particular frame" — true for a sibling
+pane, false only once the whole app window loses focus to a different
+application, which is exactly the signal this trigger wants. Falls back to
+this frame's own `hasFocus()` (the pre-fix, eager behaviour) when no such
+ancestor is reachable: not framed at all (`window.top === window` — true for
+a plain browser tab, local dev builds, and this function's own unit tests),
+or a genuine cross-origin ancestor, wrapped in try/catch so a security
+boundary can never throw out of a focus listener. `FilesHome.tsx` now
+imports `isAway` instead of keeping its own local copy of the old logic.
+
+**Honesty about finding 8, per the brief's explicit request:** this is a
+best-effort fix, not a provably complete one, for two reasons kept
+deliberately visible rather than papered over. First, it depends on the
+shell's iframe nesting actually being same-origin all the way to
+`window.top` — an assumption this codebase already makes elsewhere (e.g.
+`TaskCards.tsx`'s `fused.params` climbing `window.parent` "until it runs out
+of same-origin ancestors"), but not one this round independently verified
+against the packaged shell's actual frame tree; if some embedding nests the
+explorer two or more levels deep with a cross-origin frame partway up (the
+`TaskCards.tsx` comment's own "runs out of same-origin ancestors" phrasing
+implies such boundaries exist somewhere in this codebase's frame model),
+`topHasFocus` would silently fall back to the OLD, eager per-frame check for
+that embedding only, not fail loudly. Second, `window.top` may not be the
+right level even when reachable, if the packaged shell nests the sidebar and
+the app under an intermediate frame rather than as direct siblings of the
+true top window — this was not verified against the shell's real DOM
+structure, only reasoned about from the spec and this round's own unit
+tests against synthetic `Document`/`Window` stand-ins. Chose this over the
+purely conservative alternative (drop the `blur`/`focus` pair entirely, back
+to `visibilitychange`-only) because that alternative would have reintroduced
+the regression the PRIOR round's code review fixed (missing the
+"switched to a different application while the window stays visible" case
+entirely) in exchange for fixing this one; `topHasFocus`'s fallback already
+degrades to that prior round's exact behaviour for the one case where it
+cannot answer confidently, so nothing is lost that wasn't already a known
+gap, and the common case (a directly-nested, same-origin sidebar) is fixed.
+
+**Tests run this round, in the foreground, per file:**
+`pytest tests/test_index_detect.py` — 18 passed (added 3: the split
+`FOCUS_STALE_S` pair and the `indexing_allowed`-raises test).
+`pytest tests/test_index_detect.py tests/test_index_freshness.py` — 44
+passed (combined run). `pytest tests/test_index_api.py -k home_focus` — 7
+passed (added 1: the hidden_s-floor-ordering test; the background-thread
+test itself was modified in place, not added). `bun test src/apps/explorer/
+lib/focus-detect.test.ts` — 12 passed (added 6: `isAway`'s cases). `bun run
+typecheck` (`tsc --noEmit`) — clean, no errors. Full suite was NOT run (not
+this round's job, per the brief).

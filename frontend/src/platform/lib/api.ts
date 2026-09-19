@@ -844,6 +844,24 @@ export function requestFolderScan(fsPath: string): Promise<FolderScanRequest> {
   return mutateJson("POST", "/api/index/scan-folder", { path: fsPath });
 }
 
+// POST /api/index/note-home-focus — the home page regained focus after being
+// hidden `hiddenS` seconds. Fire-and-forget on the SERVER (the route never
+// blocks on starting the ordinary incremental rescan it may trigger — see
+// `fused_render/index/detect.py`'s module docstring for why this no longer
+// means replaying the FSEvents journal), so this is fire-and-forget on the
+// client too: the caller (FilesHome.tsx) does not await it or read the
+// response body, the way a failed background poll (index-status.ts) is
+// never something the user can act on. `hiddenS` is an input the server
+// re-validates against its own `MIN_HIDDEN_S` floor, not a decision this
+// call gets to make — and not because a client claiming a LARGER value is
+// the risk (the server's gate is `hidden_s < MIN_HIDDEN_S`, so a bigger
+// number is exactly what passes it); the server's pacing/staleness floors
+// are what actually bound a client hammering this endpoint, not the
+// duration check itself.
+export function noteHomeFocused(hiddenS: number): Promise<{ ok: boolean }> {
+  return mutateJson("POST", "/api/index/note-home-focus", { hidden_s: hiddenS });
+}
+
 // POST /api/index/query and /api/index/ask — read-only SQL over the index, and
 // the same thing from a question in English (index/specs/query.md §5).
 //
