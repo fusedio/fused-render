@@ -421,22 +421,26 @@ button.tasks-caret,
    List row only: grey, italic, same size. Gives way before the title does. */
 .tasks-title-reply {
   flex: 1 1 0;
+  min-width: 0;
   /* Twice the row gap between the title and the reply (Akshil, 2026-09-19):
      the flex gap gives one, this margin gives the other. */
   margin-left: var(--tasks-row-gap);
+  color: var(--fg-muted);
+  font-style: italic;
+  /* Thin and boxed (Akshil, 2026-09-19, screenshot): the reply reads as a
+     quiet aside next to the title, not as a second title. */
+  font-weight: 100;
+  border: 0.5px solid rgba(0, 0, 0, 0.25);
+  border-radius: 4px;
+  padding: 0 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* With a reply in the row, the row's one spacer stops growing: the reply is the
    element that takes the free width, the spacer keeps only its minimum. */
 .tasks-row:has(.tasks-title-reply) .tasks-grow {
   flex-grow: 0;
-}
-.tasks-title-reply {
-  min-width: 0;
-  color: var(--fg-muted);
-  font-style: italic;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* A task whose work has not happened yet (tasks-lib.isUpcomingTask, 2026-08-18).
