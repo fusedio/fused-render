@@ -15,16 +15,8 @@ import { ListTodo } from "lucide-react";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import UpdateBadge from "@platform/ui/UpdateBadge";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
-import type { Config, UpdateStatus } from "@platform/lib/api";
-import { updateInstall } from "@platform/lib/api";
-import {
-  pokeUpdateStatus,
-  setUpdateStatus,
-  updateLabel,
-  updateRelevant,
-  useUpdateStatus,
-} from "@platform/lib/update-status";
-import { requestRestart } from "@platform/lib/restart-store";
+import type { Config } from "@platform/lib/api";
+import { updateLabel, updateRelevant, useUpdateStatus } from "@platform/lib/update-status";
 import { navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { TOURS, startTour } from "@platform/lib/tours";
@@ -124,33 +116,6 @@ const PREFERENCES_ICON = (
   </svg>
 );
 
-// A download arrow into a tray: the update row's action IS a download and a
-// swap, and every one of its siblings in this popover wears a glyph — a lone
-// text row at the top of the list read as a stray status line rather than the
-// thing you click.
-// The install-in-flight glyph for the popover row: a ring that turns
-// (styles/sidebar.css `.update-spinner`), in the icon slot the download arrow
-// otherwise fills — same box, so the row does not shift.
-const UPDATE_SPINNER = <span className="update-spinner" aria-hidden="true" />;
-
-/** The popover row's word. Same as the badge's label except mid-install,
- *  where the badge heading stays "Updating…" and this row names the half that
- *  is running instead (Akshil, 2026-09-08: "downloading, installing, etc."). */
-function updateRowLabel(status: UpdateStatus): string {
-  if (status.state === "installing") {
-    return status.phase === "installing" ? "Installing…" : "Downloading…";
-  }
-  return updateLabel(status);
-}
-
-const UPDATE_ICON = (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M12 3v12" />
-    <path d="m7 10 5 5 5-5" />
-    <path d="M4 18.5V19a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-.5" />
-  </svg>
-);
-
 // A circled question mark — the app's one help affordance, and what a reader
 // looks for when they want the walkthrough back.
 const TOURS_ICON = (
@@ -174,8 +139,8 @@ interface PrefsMenuEntry {
   /** Run this instead of navigating to `href` — the tour entries replay a
       walkthrough in place rather than going anywhere. */
   onPick?: () => void;
-  /** Drawn but inert — the update row while an install runs (Akshil,
-      2026-09-08): it says which half is running and takes no press. */
+  /** Drawn but inert: an entry that has nothing to do right now takes no
+      press (no current caller sets it; the update row that did is gone). */
   disabled?: boolean;
   /** A one-level flyout hung off this row (Tours). Its own entries never carry
       a `submenu` of their own — one level, like ContextMenu's. */
@@ -470,50 +435,13 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const residentModels = aiRuntime.loaded.filter((m) => m.state === "ready");
 
   // The same self-update poll UpdateBadge reads (platform/lib/update-status) —
-  // one store, so the collapsed rail's dot on Preferences and the popover row
-  // below agree with the expanded badge about what's happening, without a
-  // second timer.
+  // one store, so the collapsed rail's dot on Preferences agrees with the
+  // expanded badge about what's happening, without a second timer. The
+  // Settings popover itself says NOTHING about updates any more (Akshil,
+  // 2026-09-19: "there should be nothing related to download update version
+  // in setting dropdown") — the badge above Settings is the one door.
   const updateStatus = useUpdateStatus();
   const updateIsRelevant = updateRelevant(updateStatus);
-  // Same action UpdateBadge's own button performs: the install downloads and
-  // swaps the bundle, whichever tool put it there — one install path for
-  // every install type (D767). Reached from the popover row rather than the
-  // expanded badge's own panel, so there's no panel here to flash a result in:
-  // the outcome shows up through the shared poll instead — the rail dot and
-  // the row's own label follow the store as the state moves.
-  const handleUpdatePick = () => {
-    if (!updateStatus) return;
-    // "Ready to restart" restarts (Akshil, 2026-09-08) — through the ONE
-    // handler every restart goes through (platform/lib/restart-store), the same
-    // one the badge's own button calls. It latches the press and tells the
-    // other windows before it navigates, so a restart started from this row
-    // lights the blocking dialog's stages in every open window, exactly as one
-    // started from the badge does.
-    if (updateStatus.state === "installed") {
-      requestRestart();
-      return;
-    }
-    // ONLY AN UPDATE THAT IS WAITING GETS INSTALLED (bugbot, PR #1049): the
-    // row is drawn for every relevant state, but "Updating…" must not start
-    // a second install under the first, and "Ready to restart" is handled
-    // above — this row is a status line for it, the same as UpdateBadge's
-    // installed state.
-    if (updateStatus.state !== "available" && updateStatus.state !== "error") return;
-    // Same order as UpdateBadge.install: the poke comes AFTER the install
-    // answers, so the poll it arms sees "installing" and runs at the busy
-    // interval — poked first it would still read "available" and arm the 60s
-    // idle timer, leaving the rail dot behind for a minute (bugbot, PR #1049).
-    // Send what THIS row actually shows — `updateStatus.latest_version` —
-    // not just "install whatever's latest": see UpdateBadge.install and
-    // UpdateManager.install's docstring for why a version the caller didn't
-    // pass can't be trusted to match what was on screen.
-    void updateInstall(updateStatus.latest_version)
-      .then(setUpdateStatus)
-      .catch(() => {
-        // Fall through — the re-armed poll picks up the real state.
-      })
-      .finally(pokeUpdateStatus);
-  };
   const updateDot = updateIsRelevant ? (
     <span
       className="sidebar-rail-dot is-update"
@@ -683,24 +611,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // the former sidebar entries (Config), then the settings
   // pages. Same gates as before — an entry a machine can't use stays hidden.
   const menuEntries: (PrefsMenuEntry | "separator")[] = [
-    // A first row for the same fact the collapsed rail's dot and the expanded
-    // badge both carry — the popover is the only one of the three with room
-    // for the actual action, so it gets one here rather than just a label,
-    // and an icon like every other row in the list. `href` is a stable key
-    // (see PrefsMenuEntry) — this row never navigates, it only runs
-    // `handleUpdatePick`.
-    ...(updateIsRelevant && updateStatus
-      ? [{
-          href: "#update",
-          // ONE WORD while the install runs (Akshil, 2026-09-08): which half is
-          // running, and the row takes no press — a spinner where the download
-          // arrow was says the same thing without words.
-          label: updateRowLabel(updateStatus),
-          icon: updateStatus.state === "installing" ? UPDATE_SPINNER : UPDATE_ICON,
-          disabled: updateStatus.state === "installing",
-          onPick: handleUpdatePick,
-        }, "separator" as const]
-      : []),
     ...(claudeConfigAvailable
       ? [{ href: "/claude-config", label: "Claude Config", icon: CLAUDE_CONFIG_ICON }]
       : []),
