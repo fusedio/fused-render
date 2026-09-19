@@ -320,7 +320,7 @@ export function TaskCards({
   // is "this conversation is open RIGHT NOW", this is "this is the one you came
   // back out of" — and it outlives the peek being closed.
   const [selected, setSelected] = useState(readSelectedCard);
-  // Titled by the task, or by the last thing said in it (task-card-title-flag,
+  // Titled by the task, or by the last thing the reader sent in it (task-card-title-flag,
   // `task_card_last_message`). Read once for the wall rather than per card: one
   // subscription, one answer, and no chance of two cards disagreeing mid-poll.
   const titleMode = useTaskCardTitleMode();
@@ -509,7 +509,7 @@ function TaskCard({
    * fill the head's hover used to draw (task-cards.css `.is-selected`), whether
    * or not anything is open now. The List row's own mark, and its fill. */
   selected?: boolean;
-  /** Title the card by the last thing said in its conversation rather than by
+  /** Title the card by the last thing the reader sent in its conversation rather than by
    * the task's own title (task-card-title-flag, `task_card_last_message`). */
   titleMode?: boolean;
   /** After a door archives or unarchives: the card's lane changed, so the page
@@ -525,7 +525,7 @@ function TaskCard({
 }) {
   const when = taskWhen(task);
   // THE ONE LINE UNDER THE HEAD ROW: the task's title, or — with the experiment
-  // on and something said in this conversation — its newest message, whoever
+  // on and something sent in this conversation — the reader's newest message, never Claude's reply, whoever
   // said it (design.md §A, Option 1). The rule is `cardTitleLine`'s, so the
   // card is not a second place deciding what a blank one falls back to.
   const line = cardTitleLine(task, titleMode);

@@ -738,21 +738,42 @@ def test_the_last_message_is_the_prompt_while_the_answer_is_still_coming(
     assert said["text"] == "now do the other one"
 
 
-def test_a_prompt_without_a_timestamp_still_titles_the_row(
+def test_the_last_message_agrees_with_the_rows_newest_message(
         client, projects_dir, card_titles):
-    """A prompt whose timestamp did not parse used to lose to a days-old reply
-    (Akshil, 2026-09-15). No clock is consulted now: the newest prompt in the
-    file is the newest prompt."""
-    prompt = _user("now the newest thing", None)
-    del prompt["timestamp"]
+    """Read off the same merged thread `messages` is cut from (review,
+    2026-09-19): a scheduled occurrence that FIRED titles the row, while one
+    still pending — the thread's newest message, but not one the user has sent
+    — does not, and the row keeps the prompt before it."""
     _write_transcript(projects_dir, "sess-a", "/p", [
-        _user("first", T9), _assistant("an old answer", T10), prompt,
+        _user("first thing", T9),
+    ])
+    _seed_schedule([
+        _entry("e1", "pull today's news", T10, state=schedule.SENT, fired=T10,
+               turn="ok", claude_session_id="sess-a"),
+        _entry("e2", "tomorrow's news", T12, claude_session_id="sess-a"),
     ])
 
-    said = _tasks(client)[0]["last_message"]
-    assert said["role"] == "user"
-    assert said["text"] == "now the newest thing"
-    assert said["at"] == 0.0
+    row = _tasks(client)[0]
+    assert [m["body"] for m in row["messages"]] == [
+        "tomorrow's news", "pull today's news", "first thing"]
+    assert row["last_message"] == {
+        "role": "user", "text": "pull today's news",
+        "at": tasks_store.epoch(T10)}
+
+
+def test_a_send_that_has_not_reached_disk_titles_the_row_at_once(
+        client, projects_dir, card_titles):
+    # The just-sent mark is the newest message in the thread the moment the
+    # page sends it (`_fold_sent_mark`), so the title moves in the same poll
+    # `messages[0]` does, not one transcript flush later.
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-30), uuid="u1"),
+        _assistant("all done", _near_now(-6)),
+    ])
+    tasks_watch.mark_running("sess-a", text="and now the follow-up")
+    row = _by_key(client)["sess-a"]
+    assert row["messages"][0]["body"] == "and now the follow-up"
+    assert row["last_message"]["text"] == "and now the follow-up"
 
 
 def test_a_subagent_brief_is_not_a_prompt(client, projects_dir, card_titles):
@@ -851,6 +872,30 @@ def test_the_last_message_survives_an_incremental_re_read(
         f.write(json.dumps({**_user("now the other one", T11, uuid="u3"),
                             "cwd": "/p", "sessionId": "sess-a"}) + "\n")
     assert _tasks(client)[0]["last_message"]["text"] == "now the other one"
+
+
+def test_a_tool_only_turn_still_clears_a_failed_mark(client, projects_dir):
+    # A tool_use row whose INPUT carries text blocks passes `_reply_fate`'s
+    # substring screen as an ordinary assistant reply, and an ordinary reply
+    # after an API error means the turn was retried and answered: `failed`
+    # clears. This is the one thing an assistant line still contributes to the
+    # scan now that its words are never kept.
+    path = _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("run the migration", T9),
+        _api_error("Wi-Fi off", T10),
+    ])
+    assert _tasks(client)[0]["failed"] is True
+
+    record = {"type": "assistant", "timestamp": T11, "cwd": "/p",
+              "sessionId": "sess-a", "uuid": "sess-a-2",
+              "message": {"role": "assistant",
+                          "content": [{"type": "tool_use", "id": "t1",
+                                       "name": "Write",
+                                       "input": {"blocks": [
+                                           {"type": "text", "text": "x"}]}}]}}
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record) + "\n")
+    assert _tasks(client)[0]["failed"] is False
 
 
 def test_the_row_carries_no_last_message_while_the_pref_is_off(

@@ -496,7 +496,7 @@ function TaskPeekSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pref
 }
 
 // What a task CARD is titled by (experimental): the task's own title, or the
-// newest message in its conversation. Same one-checkbox section shape as the
+// newest message the reader sent in its conversation. Same one-checkbox section shape as the
 // side peek above, same reasons — and it is a SEPARATE section rather than a
 // second box inside that one, because the two are independent: a reader can
 // want either, both or neither, and nesting would imply one turns the other on.

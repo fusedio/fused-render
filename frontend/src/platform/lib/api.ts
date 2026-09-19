@@ -1501,7 +1501,7 @@ export function putTaskPeekEnabled(enabled: boolean): Promise<Prefs> {
 }
 
 /** What a task CARD is titled by (shell/prefs.py `task_card_last_message`):
- *  the conversation's newest message, or the task's own title. */
+ *  the newest message the user sent, or the task's own title. */
 export function putTaskCardTitleMode(lastMessage: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { task_card_last_message: lastMessage });
 }

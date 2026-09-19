@@ -475,8 +475,8 @@ def _new_scan() -> dict:
     # Every reader of `command` uses `.get`, so a record built before this key
     # existed — one already in `_SCAN` when the module is hot-reloaded under the
     # dev server — degrades to "no command" instead of raising. A record from
-    # before the assistant-reply keys were REMOVED may still carry them; nothing
-    # reads them any more, so they are inert.
+    # before the assistant reply was dropped from this scan may still carry its
+    # condensed `reply`; nothing reads it any more, so it is inert.
     return {"offset": 0, "size": -1, "count": 0, "tail": [], "title": "",
             "command": ""}
 
@@ -534,32 +534,43 @@ def _one_line(text: str) -> str:
     return ""
 
 
-def _last_message(rec: dict | None) -> dict | None:
-    """THE NEWEST THING THE USER SAID IN THIS CONVERSATION — `{role, text, at}`
-    with `role` always `"user"` — or None for a task nobody has said anything
-    in yet.
+# The message states that mean the words actually REACHED a session — a chat
+# prompt read off the transcript, a send still on its way there, a scheduled
+# occurrence that fired (`error` is one that fired and whose turn then died).
+# Everything else — pending, missed, cancelled, skipped — is a message the user
+# has not sent yet or never did, and `_last_message` refuses it.
+_SAID_STATES = (schedule.SENT, schedule.SENDING, "error")
 
-    It is the last of the three prompts the row already carries, so it costs no
-    read of its own. Claude's replies are deliberately NOT candidates: a card
-    titled by the reader's own words says what the task IS ("run the
-    migration"), where a card titled by the answer said what Claude had just
-    done about it — a title that changed under the reader with every turn and
-    read as a wall of status lines rather than a wall of tasks (Akshil,
-    2026-09-19). The row's `blocked_reason` already carries the one reply that
-    matters to a listing, the failure.
+
+def _last_message(messages: list[dict]) -> dict | None:
+    """THE NEWEST MESSAGE THE USER SENT IN THIS TASK — `{role, text, at}` with
+    `role` always `"user"` — or None for a task nobody has said anything in yet.
+
+    Read off the MERGED thread (`_merge` + `_fold_sent_mark`), the same list
+    the row's `messages` are cut from, so the two can never disagree: the send
+    that has not reached disk yet titles the row in the same poll it appears as
+    `messages[0]`, and a scheduled occurrence that fired titles it too. One
+    that has NOT fired does not (`_SAID_STATES`): it is the newest message in
+    the thread, but it is not one the user has sent.
+
+    Claude's replies are deliberately not candidates: a card titled by the
+    reader's own words says what the task IS ("run the migration"), where a
+    card titled by the answer said what Claude had just done about it — a title
+    that changed under the reader with every turn and read as a wall of status
+    lines rather than a wall of tasks (Akshil, 2026-09-19). The row's
+    `blocked_reason` already carries the one reply a listing cares about.
 
     `role` stays on the shape so a client that predates this rule keeps
     reading the field the same way; it is simply never `"assistant"` now.
     """
-    if rec is None:
-        return None
-    tail = rec.get("tail") or []
-    if not tail:
-        return None
-    text = _one_line(tail[-1].get("body"))
-    if not text:
-        return None
-    return {"role": "user", "text": text, "at": tail[-1].get("at") or 0.0}
+    for message in reversed(messages):
+        if str(message.get("state") or "") not in _SAID_STATES:
+            continue
+        text = _one_line(message.get("body"))
+        if text:
+            return {"role": "user", "text": text,
+                    "at": float(message.get("at") or 0.0)}
+    return None
 
 
 def _full_prompts(path: str) -> list[dict]:
@@ -3227,13 +3238,14 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         "messages": list(reversed(tail)),
     }
     if last_message:
-        # THE NEWEST PROMPT THE USER SENT — one line of it — or None for a task
+        # THE NEWEST MESSAGE THE USER SENT — one line of it — or None for a task
         # nothing has been said in. It is what the Tasks page titles a row by
         # while `task_card_last_message` is on (shell/prefs.py). Off, the key is
         # absent — which the client reads as "nothing said" — and every row on
-        # the machine stops carrying a field no surface draws. It costs no read
-        # either way: it is the last of the prompts the scan already kept.
-        row["last_message"] = _last_message(rec)
+        # the machine stops carrying a field no surface draws. Read off the
+        # whole merged thread, not the cut tail, so it can never name a message
+        # the tail dropped; it costs no read of its own either way.
+        row["last_message"] = _last_message(merged)
     return row
 
 
