@@ -221,10 +221,17 @@ export function folderFieldRows({
   home: string;
 }): { rows: FolderRow[]; searching: boolean } {
   const q = target.trim();
+  // `~` IS AN ADDRESS BEFORE HOME IS KNOWN. `isPathShapedQuery` can only call a
+  // tilde path an address once it has `home` to resolve it against, and `home`
+  // is "" until `/api/config` answers (for good, if it never does). In that
+  // window `~/Desktop/fu` would read as a search and swap the recents and the
+  // create-folder row for "No project matches" (Bugbot, PR #1239). A leading
+  // tilde names a place whatever home turns out to be, so it is one here too.
   const searching =
     open
     && q !== ""
     && q !== defaultTarget.trim()
+    && !q.startsWith("~")
     && !isPathShapedQuery(q, home, home || undefined);
   if (!searching) {
     return {
@@ -3452,6 +3459,16 @@ export default function NewJobModal({
   //: THE WHOLE PATH, ON HOVER. One portalled element for the list — see
   //: PathTip.tsx for why it is not a `title` and not drawn inside the panel.
   const pathTip = usePathTip();
+  //: Is the next mouse-up the tail of the click that focused the field — see
+  //: `onMouseDown` / `onMouseUp` on the input.
+  const selectOnUp = useRef(false);
+  //: …and it goes when the ROWS go. It is dismissed on pointer-leave, blur,
+  //: scroll and resize, but a keystroke that swaps the recents for project rows
+  //: (or back) remounts the buttons under a pointer that never left, and the tip
+  //: would keep naming a folder that is no longer on screen at coordinates that
+  //: no longer hold a row (Bugbot, PR #1239). Keyed on the list's identity.
+  const { hide: hidePathTip } = pathTip;
+  useEffect(() => { hidePathTip(); }, [pathRows, hidePathTip]);
   /**
    * WHICH ROW THE ARROWS ARE ON — held as the row's own PATH, not its index
    * (Bugbot, PR #1213: "stale highlight after async rows").
@@ -3992,7 +4009,6 @@ export default function NewJobModal({
   // refusal and not a promise, but the reason the field cannot be typed in.
   // Same slot, for the same reason — a locked field has no recents to open and
   // therefore no new folder to be about.
-  const lockedTargetId = useId();
   // …and the third: what the repeat does to this task's thread, attached to
   // the checkbox that decides it.
   const threadHintId = useId();
@@ -4797,6 +4813,14 @@ export default function NewJobModal({
             button next to the field moved in here). Blur closes it, but only
             when focus truly leaves the wrap — clicking a row moves focus INTO
             the dropdown, and closing on that blur would eat the click. */}
+        {/* NOT THERE AT ALL inside an app's Tasks tab (Akshil, 2026-09-19: "in
+            dedicated tasks when we open the new task modal, hide the path field").
+            It used to sit here disabled with a line saying why; a control whose
+            one answer is already known is a control the card is better off
+            without. The target is still saved — `target` is seeded from the
+            scope and never touched — and Save's own check still refuses a path
+            it could not clear. */}
+        {!lockTarget && (
         <div className="schedule-form-line">
           {ICON_FOLDER}
           <div
@@ -4896,16 +4920,12 @@ export default function NewJobModal({
               // The new-folder row only exists while the list is open, so it is
               // only pointed at while it is there — a describedby aimed at a
               // node that is not in the document says nothing at all.
-              // …and a locked field points at its own line instead: there is no
-              // list to open, so neither of the other two can ever be on screen.
               aria-describedby={
-                lockTarget
-                  ? lockedTargetId
-                  : pathError
-                    ? pathErrorId
-                    : newFolder && recentsOpen
-                      ? newFolderId
-                      : undefined
+                pathError
+                  ? pathErrorId
+                  : newFolder && recentsOpen
+                    ? newFolderId
+                    : undefined
               }
               placeholder="Add folder or file"
               // Not a combobox when there is nothing to expand: announcing one
@@ -4924,12 +4944,35 @@ export default function NewJobModal({
                   : undefined
               }
               value={target}
-              onFocus={() => {
+              onFocus={(e) => {
+                // THE WHOLE PATH IS SELECTED ON ARRIVAL (Akshil, 2026-09-19:
+                // "when I select the field it should select the whole path, and
+                // I can replace it directly"). The field opens holding an
+                // address the reader most often wants to replace, not edit, so
+                // the first keystroke replaces it — and a bare word is the
+                // project search one line up. Only on focus: a second click
+                // places the caret like any text field, so editing is still
+                // there for whoever wants it.
+                e.currentTarget.select();
                 if (suppressOpen.current) {
                   suppressOpen.current = false;
                   return;
                 }
                 openRecents();
+              }}
+              // The mouse-up that ends the focusing click would collapse the
+              // selection to a caret in Safari and Chrome alike; swallowed once,
+              // for that click only, so the selection made on focus survives it.
+              // Armed on the mouse-DOWN that finds the field unfocused — not on
+              // focus itself — so a Tab into the field never leaves a swallow
+              // waiting for the first real click.
+              onMouseDown={(e) => {
+                selectOnUp.current = document.activeElement !== e.currentTarget;
+              }}
+              onMouseUp={(e) => {
+                if (!selectOnUp.current) return;
+                selectOnUp.current = false;
+                e.preventDefault();
               }}
               onClick={openRecents}
               onChange={(e) => setTarget(e.target.value)}
@@ -5138,16 +5181,6 @@ export default function NewJobModal({
             )}
           </div>
         </div>
-        {/* WHY THE FIELD ABOVE CANNOT BE TYPED IN (design.md §2). A statement,
-            not a refusal: nothing is wrong, the answer is simply already known.
-            It replaces the path error rather than sitting beside it — a locked
-            path is the app's own folder, and the one case where the check could
-            still fail (the app deleted under the open card) is not something
-            this card can offer a fix for. */}
-        {lockTarget && (
-          <span id={lockedTargetId} className="field-hint schedule-form-sub">
-            Tasks here run against this project.
-          </span>
         )}
         {!lockTarget && pathError && (
           <span id={pathErrorId} className="field-hint schedule-form-bad schedule-form-sub"
