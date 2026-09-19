@@ -2581,7 +2581,7 @@ function TaskNode({
   /** Whether the folder chip is worth drawing. The LIST's answer, not this row's:
    * a chip that every visible row repeats distinguishes nothing (spansProjects). */
   showProject: boolean;
-  /** Title this row by the conversation's newest message instead of the task's
+  /** Title this row by the reader's newest message instead of the task's
    * own name — the LIST's answer too (`task_card_last_message`), for the hook
    * reason its note gives. */
   titleMode?: boolean;
@@ -2783,8 +2783,8 @@ function TaskNode({
     ? null
     : openThreadIntent(task, unread);
   // THE ONE LINE THIS ROW IS TITLED BY: the task's name, or — with the
-  // experiment on and something said in this conversation — its newest message,
-  // whoever said it. One function decides it for the List, the Board and the
+  // experiment on and something sent in this conversation — the reader's newest
+  // message, never Claude's reply. One function decides it for the List, the Board and the
   // Cards wall (task-card-title-flag.cardTitleLine), so "off" cannot mean three
   // slightly different things and a fallback cannot drift between views.
   const line = cardTitleLine(task, titleMode);
@@ -5342,7 +5342,7 @@ function TaskCard({
   /** Whether the folder chip is worth drawing — the BOARD's answer, for the same
    * reason the List row takes it as a prop (spansProjects). */
   showProject: boolean;
-  /** Title this card by the conversation's newest message — the BOARD's answer,
+  /** Title this card by the reader's newest message — the BOARD's answer,
    * for the same reason (`task_card_last_message`). */
   titleMode?: boolean;
   /** The Draft chip's press and its pressed state, passed through untouched —
@@ -5416,7 +5416,7 @@ function TaskCard({
   const draggable = lifts && !dropping;
   // THE ONE LINE THIS CARD IS TITLED BY — the List row's and the Cards wall's
   // own rule, from the one function that holds it (cardTitleLine): the task's
-  // name, or the conversation's newest message when the experiment is on and
+  // name, or the reader's newest message when the experiment is on and
   // there is one.
   const line = cardTitleLine(task, titleMode);
   // Where the click goes and whether it also clears the thread's unread — one

@@ -1296,6 +1296,29 @@ def user_words(text: str) -> str:
     return strip_machinery(text) or ann_notes(text) or carried_words(text)
 
 
+# Claude Code's interrupt markers. Written as `type: user` rows with a real
+# uuid when the reader hits stop — one for a turn, one for a tool call in
+# flight — so every "what did the user say" reader sees them as prompts unless
+# it asks. Kept in step with the frontend's `INTERRUPT_MARK` (protocol/wire.ts)
+# and `claude_sessions._INTERRUPT_MARK`. Exact after a strip, never fuzzy: a
+# prompt that TALKS about interrupts is still what the reader wrote.
+_INTERRUPT_MARKS = frozenset((
+    "[Request interrupted by user]",
+    "[Request interrupted by user for tool use]",
+))
+
+
+def is_interrupt_mark(text: str) -> bool:
+    """Is this user record the CLI's stop marker rather than something typed?
+
+    A row titled "[Request interrupted by user]" was the reported bug (Akshil,
+    2026-09-19): with the Tasks page titling rows by the user's last message,
+    the most common way to walk away — hit stop, then leave — put the marker on
+    the row as if the reader had said it.
+    """
+    return (text or "").strip() in _INTERRUPT_MARKS
+
+
 def is_machinery(text: str) -> bool:
     """Is this record machinery WHOLE — nothing a human contributed to it?
 

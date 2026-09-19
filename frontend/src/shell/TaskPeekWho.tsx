@@ -35,7 +35,7 @@ export function peekTitle(task: Task): string {
  * THE ONE LINE EVERY SURFACE NAMES A TASK BY — the list row, the chat header,
  * the peek panel, the cards popup (Akshil, 2026-09-15: "show the same title
  * everywhere"). `cardTitleLine`'s rule, subscribed to the pref: the newest
- * message while "Title a task by its last message" is on, else the task's own
+ * message while "Title a task by your last message" is on, else the task's own
  * title, and the card's "(untitled)" word for a task that has neither.
  * Takes `null` so a panel with no task yet can still call it unconditionally.
  */
@@ -68,8 +68,8 @@ export function TaskPeekWho({ task, running = false }: {
    */
   running?: boolean;
 }) {
-  // THE SAME LINE THE LIST ROW PRINTS. With "Title a task by its last message"
-  // on, the row under this header shows the newest thing said; a header still
+  // THE SAME LINE THE LIST ROW PRINTS. With "Title a task by your last message"
+  // on, the row under this header shows the reader's newest message; a header still
   // showing the task's name was two surfaces naming one chat two ways
   // (Akshil, 2026-09-15: "header also shows last message").
   const title = useTaskHeadline(task);

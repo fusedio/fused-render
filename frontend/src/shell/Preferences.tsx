@@ -496,7 +496,7 @@ function TaskPeekSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pref
 }
 
 // What a task CARD is titled by (experimental): the task's own title, or the
-// newest message in its conversation. Same one-checkbox section shape as the
+// newest message the reader sent in its conversation. Same one-checkbox section shape as the
 // side peek above, same reasons — and it is a SEPARATE section rather than a
 // second box inside that one, because the two are independent: a reader can
 // want either, both or neither, and nesting would imply one turns the other on.
@@ -537,9 +537,9 @@ function TaskCardTitleSection({
       <label className="prefs-radio">
         <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
         <span>
-          <b>Title a task by its last message</b> — the newest thing said in the
-          conversation, yours or Claude's, with the task number leading the row
-          instead. Tasks with nothing said yet keep their title.
+          <b>Title a task by your last message</b> — the newest thing you sent
+          in the conversation, with the task number leading the row instead.
+          Tasks you have not said anything in yet keep their title.
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}

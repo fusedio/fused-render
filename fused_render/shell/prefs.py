@@ -243,8 +243,9 @@ def task_peek_enabled() -> bool:
 
 def task_card_last_message() -> bool:
     """Whether a card on the Tasks page's Cards wall is TITLED BY THE NEWEST
-    MESSAGE in its conversation — the reader's or Claude's — instead of by the
-    task's own title (default off, opt-in while the experiment runs).
+    MESSAGE THE READER SENT in its conversation — never Claude's reply —
+    instead of by the task's own title (default off, opt-in while the
+    experiment runs).
 
     Same idiom and the same strictness as `task_peek_enabled` above, and for the
     same reason: it decides what a whole wall of cards reads as, so only a

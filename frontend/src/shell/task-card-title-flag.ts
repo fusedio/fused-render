@@ -1,6 +1,7 @@
 // What a task CARD is titled by — the task's own title, or the newest message
-// in its conversation (design.md §A, Option 1: the id leads the head row and
-// the title row shows the last thing said, by the reader or by Claude). The
+// THE READER SENT in its conversation (design.md §A, Option 1: the id leads the
+// head row and the title row shows the last thing the reader said; Claude's
+// replies are never candidates — the server decides that, tasks.py). The
 // `task_card_last_message` pref (fused_render/shell/prefs.py), experimental and
 // default OFF.
 //

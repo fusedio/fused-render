@@ -1501,7 +1501,7 @@ export function putTaskPeekEnabled(enabled: boolean): Promise<Prefs> {
 }
 
 /** What a task CARD is titled by (shell/prefs.py `task_card_last_message`):
- *  the conversation's newest message, or the task's own title. */
+ *  the newest message the user sent, or the task's own title. */
 export function putTaskCardTitleMode(lastMessage: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { task_card_last_message: lastMessage });
 }
@@ -3291,11 +3291,12 @@ export interface Task {
   // joined onto a session row was before a form could be bound to one.
   draft?: { preview: string; updated_at: number; kind?: "chat" | "form" } | null;
   /**
-   * THE LAST TURN OF THIS CONVERSATION, whoever took it — one line of it, with
-   * `role` saying which — or null for a task nothing has been said in yet.
+   * THE NEWEST MESSAGE THE USER SENT in this conversation — one line of it —
+   * or null for a task the user has not said anything in yet.
    *
-   * `messages` below carries PROMPTS only, so this is the one field on the row
-   * that can carry Claude's own words. It is what the Cards wall titles a card
+   * The newest PROMPT the user sent — Claude's replies are never candidates,
+   * so `role` is always "user" on a current server; the union stays for a
+   * server that predates that rule. It is what the Cards wall titles a card
    * by while the `task_card_last_message` pref is on (shell/task-card-title-
    * flag.ts); nothing reads it while the pref is off.
    *

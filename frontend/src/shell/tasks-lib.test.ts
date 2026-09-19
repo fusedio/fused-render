@@ -2402,7 +2402,7 @@ describe("the unread mark", () => {
     );
     // ...and the title is still a title: the words, then nothing an eye can see.
     // The words are `cardTitleLine`'s now — the task's name, or the
-    // conversation's newest message with `task_card_last_message` on — which is
+    // reader's newest message with `task_card_last_message` on — which is
     // the same function the List row and the Cards wall ask (2026-09-14).
     expect(CARD).toMatch(
       /className=\{"schedule-tv-card-title"[^}]*\}>\s*\{line\.text \|\| "\(untitled\)"\}/,

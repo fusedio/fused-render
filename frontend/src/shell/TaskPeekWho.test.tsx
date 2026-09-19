@@ -43,8 +43,10 @@ function render(props: Parameters<typeof TaskPeekWho>[0]) {
   return { text: () => JSON.stringify(r.toJSON()) };
 }
 
+// The server only ever sends the reader's own prompt as `last_message` now;
+// the client does not read `role`, so the fixture keeps the wire shape only.
 const said = (text: string) =>
-  task({ last_message: { role: "assistant", text, at: 1 } } as Partial<Task>);
+  task({ last_message: { role: "user", text, at: 1 } } as Partial<Task>);
 
 test("pref ON: the header prints the row's line — the newest message, first line only", () => {
   act(() => publishTaskCardTitleMode(true));

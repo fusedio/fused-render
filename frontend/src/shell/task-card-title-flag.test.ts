@@ -40,7 +40,9 @@ describe("the line a card is titled by", () => {
     expect(shown).toEqual({ text: "Fix login redirect", said: false });
   });
 
-  it("is the newest message with it on — whoever said it", () => {
+  it("draws whatever the server sent as the newest message with it on", () => {
+    // The server only ever sends the reader's own prompt now; the client does
+    // not second-guess `role`, so an older server's reply still draws.
     for (const role of ["user", "assistant"] as const) {
       expect(cardTitleLine(task({ last_message: { role, text: "Ran it", at: 2 } }), true))
         .toEqual({ text: "Ran it", said: true });
