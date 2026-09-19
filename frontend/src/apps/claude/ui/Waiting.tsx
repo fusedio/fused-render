@@ -25,7 +25,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   canRunNext,
   queueAheadHref,
-  queueBehind,
+  queueAfter,
   queueRunsNext,
   RUN_NEXT_HINT,
   RUN_NEXT_LABEL,
@@ -44,7 +44,7 @@ import {
 import type { WaitingRowData } from "../sched/waiting";
 import { useDismissOnWindow } from "./useDismissOnWindow";
 
-/** The separator the line is written with — `queued · behind TASK-038 · delete`.
+/** The separator the line is written with — `queued · after TASK-038 · delete`.
  *  A span rather than part of a string so each piece can be its own element (one
  *  of them is a link, another a button) while the sentence still reads as one.
  *  Decorative: a screen reader gets the words. */
@@ -83,7 +83,7 @@ export function WaitingRow({
   onDelete,
   onStopRepeat,
 }: WaitingRowProps) {
-  const behind = queueBehind(facts);
+  const behind = queueAfter(facts);
   const href = queueAheadHref(facts);
   const when = row.word === "scheduled" ? waitingWhen(row.due, now) : "";
   /**
@@ -166,7 +166,7 @@ export function WaitingRow({
           <>
             <Dot />
             <span className="c-waiting-behind">
-              {"behind "}
+              {"after "}
               {/* THE ID IS THE LINK, not the whole phrase: "behind" is this
                   sentence's own word and TASK-038 is the other conversation. The
                   title carries what that task is ABOUT, which is the thing a
@@ -259,7 +259,7 @@ export interface WaitingCardProps {
 }
 
 /**
- * THE ONE CARD OVER THE COMPOSER — "2 messages waiting · behind TASK-038", and
+ * THE ONE CARD OVER THE COMPOSER — "2 messages waiting · after TASK-038", and
  * the one press that changes it.
  *
  * WHY IT EXISTS BESIDE THE ROWS. The rows are in the transcript, which scrolls;
@@ -289,7 +289,7 @@ export function WaitingCard({ count, facts, busy, onRunNext }: WaitingCardProps)
    * now follows `waitingCardText`'s own rule (`queue_priority` alone silences
    * it) and the button follows `canRunNext`.
    */
-  const behind = queueRunsNext(facts) ? "" : queueBehind(facts);
+  const behind = queueRunsNext(facts) ? "" : queueAfter(facts);
   const showRun = canRunNext(facts);
   const href = queueAheadHref(facts);
   return (
@@ -306,7 +306,7 @@ export function WaitingCard({ count, facts, busy, onRunNext }: WaitingCardProps)
           </span>
           {behind ? (
             <span className="wc-behind">
-              {"behind "}
+              {"after "}
               {href ? (
                 <a className="wc-ahead" href={href} title={facts.queue_ahead_title || undefined}>
                   {facts.queue_ahead}

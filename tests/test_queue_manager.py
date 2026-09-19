@@ -754,13 +754,17 @@ def test_positions_shape_and_priority():
     m.enqueue(F1, "b")
     m.enqueue(F1, "c")
     assert m.positions() == {
-        "b": {"key": F1, "position": 1, "ahead_key": "a", "priority": False},
-        "c": {"key": F1, "position": 2, "ahead_key": "b", "priority": False},
+        "b": {"key": F1, "position": 1, "ahead_key": "a",
+              "ahead_names": ["a", "sess", "run"], "priority": False},
+        "c": {"key": F1, "position": 2, "ahead_key": "b",
+              "ahead_names": ["b"], "priority": False},
     }
     m.skip("c")
     assert m.positions() == {
-        "c": {"key": F1, "position": 1, "ahead_key": "a", "priority": True},
-        "b": {"key": F1, "position": 2, "ahead_key": "c", "priority": False},
+        "c": {"key": F1, "position": 1, "ahead_key": "a",
+              "ahead_names": ["a", "sess", "run"], "priority": True},
+        "b": {"key": F1, "position": 2, "ahead_key": "c",
+              "ahead_names": ["c"], "priority": False},
     }
 
 
@@ -810,7 +814,7 @@ def test_positions_of_an_ownerless_line_names_nobody_ahead():
     m._state["folders"][F1] = {"owner": None, "blocked": [],
                                "line": [{"task": "b", "entry_id": "", "promoted": False}]}
     assert m.positions()["b"] == {"key": F1, "position": 1, "ahead_key": "",
-                                  "priority": False}
+                                  "ahead_names": [], "priority": False}
 
 
 def test_place_and_is_free_and_owner_reads():
@@ -1051,7 +1055,7 @@ def test_a_legacy_held_answer_is_migrated_into_the_index(state):
                                        "at": 1.0}
     assert line_of(m) == ["sess-a"]
     assert m.positions()["sess-a"] == {"key": F1, "position": 1, "ahead_key": "",
-                                       "priority": True}
+                                       "ahead_names": [], "priority": True}
     assert not os.path.exists(path)
     assert os.path.exists(path + qm.MIGRATED_SUFFIX)
     # And the first reconcile is what actually hands it over — construction
@@ -1706,6 +1710,49 @@ def test_an_owner_named_only_by_its_run_is_nobody_to_name_either():
     assert m.positions()["b"]["ahead_key"] == ""
 
 
+def test_positions_names_the_owner_every_way_the_page_might_have_filed_it():
+    """`ahead_key` IS WHAT TO PRINT; `ahead_names` IS WHAT TO LOOK UP WITH.
+
+    A brand-new chat holds the folder under the only name it had when its turn
+    started — its run id — and the Tasks page files its row under the session
+    Claude Code minted a moment later. One chat, two names, and the row behind
+    it read "1st in line" with nothing after it for as long as the reader was
+    only offered the first (`tasks.py::_name_ahead`)."""
+    m = idle_world().manager()
+    m.started(F1, "", run_id="run-1", session_id="sess-1")
+    m.enqueue(F1, "b")
+    spot = m.positions()["b"]
+    assert spot["ahead_key"] == "run-1"
+    assert spot["ahead_names"] == ["run-1", "sess-1"]
+
+
+def test_positions_never_offers_the_placeholder_token_but_keeps_its_other_names():
+    """`admit:<token>` names nothing anywhere and is dropped from the lookup
+    list too — but a placeholder with a run filed against it is a turn like any
+    other, and that run is a name worth trying."""
+    m = idle_world().manager()
+    m.claim(F1, qm.PLACEHOLDER_PREFIX + "one", run_id="run-9")
+    m.enqueue(F1, "b")
+    spot = m.positions()["b"]
+    assert spot["ahead_key"] == ""
+    assert spot["ahead_names"] == ["run-9"]
+
+
+def test_positions_names_the_item_ahead_by_its_entry_as_well_as_its_key():
+    """Position n > 1 stands behind another QUEUED task, and that one can be
+    filed under a name of its own too — the entry it was stored as, which is the
+    one name of a scheduled message that never moves while its key rekeys onto
+    the session its run publishes."""
+    m = idle_world().manager()
+    m.started(F1, "a")
+    m.enqueue(F1, "b", entry_id="e2")
+    m.enqueue(F1, "c")
+    assert m.positions()["c"]["ahead_key"] == "b"
+    assert m.positions()["c"]["ahead_names"] == ["b", "pending:e2"]
+    # …and the owner's own names are unchanged by any of it.
+    assert m.positions()["b"]["ahead_names"] == ["a"]
+
+
 def test_a_placeholder_never_rings_the_long_poll():
     world = idle_world()
     m = world.manager()
@@ -2288,6 +2335,21 @@ def test_restore_claim_puts_a_spent_token_back_once():
     assert m.consume_claim(F1, token) is False
     assert m.restore_claim(F1, "") is False
     assert m.restore_claim("/nowhere", token) is False
+
+
+def test_restore_claim_refuses_a_token_for_a_conversation_the_owner_is_not():
+    """Review, 2026-09-18: `consumed` is stamped by ANY consume, so owner B
+    consuming its own token must not let owner A's spent token land on B."""
+    m = idle_world().manager()
+    _ok, _took, t_a = m.claim_for_send(F1, "a", "run-a", "sess-a")
+    m.consume_claim(F1, t_a)
+    m.exited("a", "run-a")
+    _ok, _took, t_b = m.claim_for_send(F1, "b", "run-b", "sess-b")
+    m.consume_claim(F1, t_b)
+    assert m.restore_claim(F1, t_a, run_id="run-a", session_id="sess-a") is False
+    assert m.restore_claim(F1, t_b, run_id="run-b") is True
+    assert m.restore_claim(F1, t_b, session_id="sess-b") is True
+    assert m.owner(F1)["claims"] == [t_b]
 
 
 def test_restore_claim_refuses_a_folder_whose_owner_changed():

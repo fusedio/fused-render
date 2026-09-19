@@ -310,7 +310,13 @@ def is_turn_ended(session_id: str) -> bool:
         if ended_at is None:
             return False
         mark = _marks.get(session_id)
-        if mark is not None and mark["until"] > time.time() and mark["at"] > ended_at:
+        # `>=`, NOT `>`: a mark stamped in the same clock tick as the ended
+        # stamp is the NEXT turn's — the queue marks a session running right
+        # after dispatching it, and dispatch follows the previous turn's end
+        # by causality. Windows' `time.time()` ticks every ~15 ms, so the two
+        # stamps were routinely equal there and the fresh turn read as ended
+        # (CI, 2026-09-18).
+        if mark is not None and mark["until"] > time.time() and mark["at"] >= ended_at:
             return False
         row = _registry.get(session_id)
         reg_mtime = _registry_mtime.get(session_id)

@@ -153,8 +153,10 @@ import type { QueueFacts } from "@platform/lib/queue";
 import { PENDING_KEY_PREFIX, QUEUED_PARAM } from "@platform/lib/queue";
 import {
   NO_DROPPED,
+  emptyAfterDrop,
   pruneDropped,
   useLiveSeeds,
+  headerQueue,
   headerTaskId,
   waitingFacts,
   waitingRows,
@@ -3446,6 +3448,13 @@ function ChatBody(props: ChatBodyProps) {
    * because the poll's own list is up to a lap older than the press and would
    * otherwise put the row straight back (`sched/waiting` `pruneDropped`).
    */
+  // THE ROWS AS OF THE ANSWER, through a ref (Bugbot, PR #1228): the callback
+  // below is created once per dependency change, and a listing that landed
+  // during the cancel request — a second entry this chat queued — would be
+  // invisible to a `waiting` captured at creation. The ref is rewritten every
+  // render, so the check reads the rows the pane is drawing right now.
+  const waitingRef = useRef(waiting);
+  waitingRef.current = waiting;
   const deleteWaiting = useCallback(
     async (entryId: string, stopId: string = "") => {
       setDeleting((cur) => new Set(cur).add(entryId));
@@ -3455,9 +3464,46 @@ function ChatBody(props: ChatBodyProps) {
         // template arms the next, so "stop repeating" has to reach the template
         // or it is the same button as "skip this run" wearing another word.
         await cancelScheduledMessage(stopId || entryId);
+        // ASKED ON THE ANSWER, not before the press: the chat this leaves behind
+        // is judged from the state the cancel actually returned into — a turn
+        // that landed, a second entry a poll listed, a run that started — and
+        // never from a render that is up to a lap older than the request.
+        const chatNow = controller.getState();
+        const leaving =
+          queueOn &&
+          emptyAfterDrop(
+            {
+              turns: chatNow.turns.length,
+              pending: chatNow.inbox.length + chatNow.queued.length,
+              settling: chatNow.historyLoading || chatNow.adopting,
+              busy:
+                controller.isBusy() || chatNow.status === "running" || !!chatNow.runId,
+              rows: waitingRef.current.map((r) => r.entryId),
+            },
+            entryId,
+          );
         setDroppedEntries((cur) => new Set(cur).add(entryId));
         setWaitingSeeds((cur) => cur.filter((q) => q.entryId !== entryId));
         schedRefresh();
+        // …AND A CHAT THAT WAS ONLY THIS MESSAGE GOES WITH IT (Akshil,
+        // 2026-09-19). A brand-new conversation whose one queued send has just
+        // been cancelled has nothing left to be a conversation about, and the
+        // pane it leaves up is an empty transcript over a composer that says
+        // nothing about why the reader is still standing in it.
+        //
+        // THE SAME DOOR `← Chats` SPENDS (`onBack`), and not a second spelling
+        // of it: Back is the one hop that resets the card policy, the seeds, the
+        // leader, the Run next claim and the `?queued=` param together, and a
+        // hand-rolled hop that forgot any one of them would carry this
+        // conversation's memory into the next one. It also asks the composer's
+        // leave question, which is the right question here too — an empty chat
+        // can still have unsent words in its box.
+        //
+        // AFTER THE AWAIT, NEVER BEFORE IT: a cancel that failed leaves the
+        // message in the line, and a pane that had already left would be the
+        // reader told their message is gone when it is not. The `catch` below is
+        // that road and it still stays put.
+        if (leaving) onBack();
       } catch (err) {
         const t = troubleFromError(err);
         controller.reportTrouble({
@@ -3474,7 +3520,7 @@ function ChatBody(props: ChatBodyProps) {
         });
       }
     },
-    [controller, schedRefresh],
+    [controller, schedRefresh, queueOn, onBack],
   );
 
 
@@ -4210,7 +4256,24 @@ function ChatBody(props: ChatBodyProps) {
                 // send was behind somebody else's run could not tell it from an
                 // idle chat (Akshil, 2026-09-17). `Topbar` draws it only while
                 // the row says `queued`.
-                queue={queueOn ? sched.row : null}
+                //
+                // …AND THE CARD'S OWN ANSWER WHEN THAT FEED HAS NOT SPOKEN
+                // (`headerQueue`, Akshil 2026-09-18). The feed's row is the fast
+                // answer and not always AN answer — its long-poll parks while the
+                // document is hidden — so a pane left open in a background tab
+                // kept a done ring over a send the server had already queued,
+                // while the waiting bubble and the card over the box, both fed by
+                // `waitFacts`, were right the whole time.
+                queue={
+                  queueOn
+                    ? headerQueue(
+                        sched.row,
+                        waitFacts,
+                        waitCount,
+                        running || sched.row?.status === "in_progress",
+                      )
+                    : null
+                }
               />
             ) : null}
             <Transcript

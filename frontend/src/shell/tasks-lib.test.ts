@@ -57,8 +57,11 @@ import {
   expireQueueOverrides,
   isQueued,
   NO_QUEUE_OVERRIDES,
+  skipLine,
+  skipLineOverrides,
   skippedOverride,
   withQueueOverride,
+  withQueueOverrides,
   hasActiveFilters,
   hasDraft,
   isChatDraftTask,
@@ -142,6 +145,8 @@ import {
   viewFromSearch,
   viewUrl,
   mergeTaskChanges,
+  taskIdentity,
+  taskListKeys,
   provisionalTasks,
   emptyPaneFailed,
   emptyPaneText,
@@ -8335,7 +8340,11 @@ describe("sortForList: the page's one order", () => {
     expect(VIEWS).toContain(
       "const rows = useMemo(() => sortForList(tasks, now), [tasks, now]);",
     );
-    expect(VIEWS).toContain("{rows.map((task) => (");
+    // The index rides along ONLY so the row can take its React key from
+    // `taskListKeys` (the queue's identity rule); the rows themselves are still
+    // drawn straight off the sorted list, in its order, with nothing between them.
+    expect(VIEWS).toContain("{rows.map((task, ix) => (");
+    expect(VIEWS).toContain("key={rowKeys[ix]}");
   });
 });
 
@@ -10282,6 +10291,140 @@ describe("mergeTaskChanges", () => {
   });
 });
 
+// ---- the dispatched row keeps its place (project queue) ----------------------
+// One task, two names: `pending:<entry>` while it waits in a folder's line and
+// its session id from the beat it runs. The rule that makes the two one row is
+// `taskIdentity`, spent on a list through `taskListKeys` and on the fold through
+// `mergeTaskChanges`'s `queueOn` — and it is the flag's, whole: with the queue
+// off, keys are `task.key` and the merge is the merge above, unchanged.
+
+describe("the identity a dispatched row keeps", () => {
+  const task = (over: Partial<Task>): Task =>
+    ({
+      key: "",
+      task_id: "",
+      session_id: "",
+      last_active: 0,
+      status: "done",
+      messages: [],
+      ...over,
+    }) as unknown as Task;
+
+  const pending = task({
+    key: "pending:e4",
+    task_id: "TASK-052",
+    status: "queued",
+    last_active: 30,
+  });
+  const started = task({
+    key: "sess-4",
+    task_id: "TASK-052",
+    session_id: "sess-4",
+    status: "in_progress",
+    last_active: 35,
+  });
+
+  it("is the number when there is one, and the key when there is not", () => {
+    expect(taskIdentity(pending)).toBe("TASK-052");
+    expect(taskIdentity(started)).toBe("TASK-052");
+    expect(taskIdentity(task({ key: "sess-9" }))).toBe("sess-9");
+    // A draft carries a number too and is still keyed on its own key: it is not
+    // a conversation and never becomes one in place.
+    expect(taskIdentity(task({ key: "draft:d1", task_id: "TASK-052", kind: "draft" })))
+      .toBe("draft:d1");
+  });
+
+  it("keys a waiting row and the run it becomes the same, flag on", () => {
+    const before = taskListKeys([pending, task({ key: "other" })], true);
+    const after = taskListKeys([started, task({ key: "other" })], true);
+    expect(before[0]).toBe("TASK-052");
+    expect(after[0]).toBe(before[0]);
+  });
+
+  it("keys every row on `task.key` with the flag off", () => {
+    expect(taskListKeys([pending, started, task({ key: "other" })], false))
+      .toEqual(["pending:e4", "sess-4", "other"]);
+  });
+
+  it("never spends one number on two rows", () => {
+    // A draft and a session sharing a number: the draft is out of the rule, so
+    // the session takes it and the draft keeps its key.
+    const draft = task({ key: "draft:d1", task_id: "TASK-052", kind: "draft" });
+    expect(taskListKeys([draft, started], true)).toEqual(["draft:d1", "TASK-052"]);
+    // Two SESSIONS sharing a respent number (tasks-lib.cardKey's incident):
+    // nobody spends it, because "the first one" is a fact about the sort and a
+    // winner that moves when the list re-sorts would remount both rows.
+    const twin = task({ key: "sess-7", task_id: "TASK-052", session_id: "sess-7" });
+    expect(taskListKeys([started, twin], true)).toEqual(["sess-4", "sess-7"]);
+    expect(taskListKeys([twin, started], true)).toEqual(["sess-7", "sess-4"]);
+    // A pending row still on screen beside the session it became: the session
+    // has the number, the pending row falls back — one row keeps its node.
+    expect(taskListKeys([pending, started], true)).toEqual(["pending:e4", "TASK-052"]);
+    // A number that is also some row's own key is nobody's.
+    const named = task({ key: "TASK-052" });
+    expect(taskListKeys([named, started], true)).toEqual(["TASK-052", "sess-4"]);
+  });
+
+  it("keeps a row without a number on its own key", () => {
+    const bare = task({ key: "sess-1", session_id: "sess-1" });
+    expect(taskListKeys([bare, pending], true)).toEqual(["sess-1", "TASK-052"]);
+  });
+
+  it("hands back one key per row, always distinct", () => {
+    const dupe = task({ key: "same" });
+    const keys = taskListKeys([dupe, dupe, dupe], true);
+    expect(keys.length).toBe(3);
+    expect(new Set(keys).size).toBe(3);
+  });
+
+  it("swaps the waiting row for its run in one pass — one row, running", () => {
+    const shown = [pending, task({ key: "other", last_active: 20 })];
+    const merged = mergeTaskChanges(shown, [started], ["pending:e4"], true);
+    expect(merged.map((t) => t.key)).toEqual(["sess-4", "other"]);
+    expect(merged[0].status).toBe("in_progress");
+    // And the key the list draws it under has not moved.
+    expect(taskListKeys(shown, true)[0]).toBe(taskListKeys(merged, true)[0]);
+  });
+
+  it("replaces rather than appends when the payload forgets the gone key", () => {
+    const merged = mergeTaskChanges([pending], [started], [], true);
+    expect(merged.map((t) => t.key)).toEqual(["sess-4"]);
+  });
+
+  it("holds a dispatched waiting row until its run lands, flag on", () => {
+    const merged = mergeTaskChanges([pending], [], ["pending:e4"], true);
+    expect(merged.map((t) => t.key)).toEqual(["pending:e4"]);
+    // Painted as what it has become — never a hole, never a stale "in line".
+    expect(merged[0].status).toBe("in_progress");
+    // …and the row it was waiting for takes its place on the next fold.
+    expect(mergeTaskChanges(merged, [started], [], true).map((t) => t.key))
+      .toEqual(["sess-4"]);
+  });
+
+  it("holds nothing with the flag off — the old merge, exactly", () => {
+    expect(mergeTaskChanges([pending], [], ["pending:e4"])).toEqual([]);
+    expect(mergeTaskChanges([pending], [started], [], false).map((t) => t.key))
+      .toEqual(["sess-4", "pending:e4"]);
+  });
+
+  it("holds only a waiting row that carries a number and was not settled", () => {
+    const numberless = task({ key: "pending:e9", status: "queued" });
+    expect(mergeTaskChanges([numberless], [], ["pending:e9"], true)).toEqual([]);
+    const settled = task({ key: "pending:e8", task_id: "TASK-060", status: "archived" });
+    expect(mergeTaskChanges([settled], [], ["pending:e8"], true)).toEqual([]);
+    // A session row told it is gone is gone: only a `pending:` key is ever held.
+    expect(mergeTaskChanges([started], [], ["sess-4"], true)).toEqual([]);
+  });
+
+  it("never evicts a twin that merely shares a respent number", () => {
+    const twin = task({
+      key: "sess-7", task_id: "TASK-052", session_id: "sess-7", last_active: 10,
+    });
+    const merged = mergeTaskChanges([twin], [started], [], true);
+    expect(merged.map((t) => t.key)).toEqual(["sess-4", "sess-7"]);
+  });
+});
+
 describe("what a waiting row does NOT grow", () => {
   const ROW_SRC = (() => {
     const from = VIEWS.indexOf('className={"tasks-row"');
@@ -10892,15 +11035,138 @@ describe("the optimistic queue claim", () => {
 
   it("claims the head of the line for a skip, and leaves the holder alone", () => {
     // Skipping never touches the run in flight, so the row still names whatever
-    // it was already behind.
-    const before = row({ status: "queued", queue_position: 5, queue_ahead: "TASK-041", queue_ahead_title: "News" });
+    // it was already behind — the LINK it wore included, which the claim has to
+    // carry now that it may also be asked to name a different holder.
+    const before = row({
+      status: "queued",
+      queue_position: 5,
+      queue_ahead: "TASK-041",
+      queue_ahead_title: "News",
+      queue_ahead_session: "sess-41",
+      queue_ahead_target: "/repo/news.py",
+      queue_ahead_key: "sess-41",
+    });
     expect(skippedOverride(before)).toEqual({
       key: "k1",
       status: "queued",
       queue_position: 1,
       queue_ahead: "TASK-041",
       queue_ahead_title: "News",
+      queue_ahead_session: "sess-41",
+      queue_ahead_target: "/repo/news.py",
+      queue_ahead_key: "sess-41",
       queue_priority: true,
     });
+  });
+
+  it("repaints the WHOLE line on a skip, so no two rows read 1st", () => {
+    // THE DOUBLE-1st FRAME (Akshil, 2026-09-18). Three waiting rows in one
+    // folder; ⤒ on the 2nd. The press answers for its own row, and the line the
+    // press just changed answers for the rest — in one set of claims, so the
+    // paint that promotes one row is the paint that demotes the other.
+    const line = [
+      row({
+        key: "a",
+        task_id: "TASK-001",
+        title: "first",
+        session_id: "sess-a",
+        status: "queued",
+        queue_key: "/repo",
+        queue_position: 1,
+        queue_ahead: "TASK-000",
+        queue_ahead_title: "the run",
+        queue_ahead_session: "sess-run",
+        queue_ahead_target: "/repo/run.py",
+        queue_priority: true,
+      }),
+      row({
+        key: "b",
+        task_id: "TASK-002",
+        title: "second",
+        session_id: "sess-b",
+        target: "/repo/b.py",
+        status: "queued",
+        queue_key: "/repo",
+        queue_position: 2,
+        queue_ahead: "TASK-001",
+        queue_ahead_title: "first",
+      }),
+      row({
+        key: "c",
+        task_id: "TASK-003",
+        status: "queued",
+        queue_key: "/repo",
+        queue_position: 3,
+        queue_ahead: "TASK-002",
+        queue_ahead_title: "second",
+      }),
+      // Another folder entirely: a line is per folder and this one did not move.
+      row({ key: "z", status: "queued", queue_key: "/other", queue_position: 1, queue_priority: true }),
+    ];
+    const pressed = line[1] as Task;
+    const painted = applyQueueOverrides(
+      line as Task[],
+      withQueueOverrides(NO_QUEUE_OVERRIDES, skipLineOverrides(line as Task[], skippedOverride(pressed))),
+    );
+    const by = (key: string) => painted.find((t) => t.key === key) as Task;
+    // The pressed row is the head, and the only thing wearing the ⤒ claim.
+    expect(by("b").queue_position).toBe(1);
+    expect(by("b").queue_priority).toBe(true);
+    expect(painted.filter((t) => t.queue_priority && t.queue_key === "/repo")).toHaveLength(1);
+    // The row it went past is 2nd, and it is behind the pressed row now — id,
+    // title and the pair that makes the id a link.
+    expect(by("a").queue_position).toBe(2);
+    expect(by("a").queue_ahead).toBe("TASK-002");
+    expect(by("a").queue_ahead_title).toBe("second");
+    expect(by("a").queue_ahead_session).toBe("sess-b");
+    expect(by("a").queue_ahead_target).toBe("/repo/b.py");
+    expect(by("a").queue_priority).toBe(false);
+    // Nobody behind the press moved: the press jumped over one row, not three.
+    expect(by("c").queue_position).toBe(3);
+    expect(by("c").queue_ahead).toBe("TASK-002");
+    // …and the other folder is untouched, ⤒ and all.
+    expect(by("z").queue_position).toBe(1);
+    expect(by("z").queue_priority).toBe(true);
+  });
+
+  it("a second press before the listing lands supersedes the first — never two firsts", () => {
+    // Bugbot, PR #1228: ⤒ on c, then ⤒ on b while the server has not answered
+    // for c yet. Read off the RAW listing, the second press saw c still at 3 —
+    // neither shifted nor stripped of its claim — while c's standing override
+    // kept it at 1 with the glyph beside b. Read off the rows as painted, c is
+    // the head the second press displaces.
+    const line = [
+      row({ key: "a", task_id: "TASK-001", title: "first", status: "queued", queue_key: "/repo",
+            queue_position: 1, queue_ahead: "TASK-000", queue_priority: true }),
+      row({ key: "b", task_id: "TASK-002", title: "second", session_id: "sess-b", target: "/repo/b.py",
+            status: "queued", queue_key: "/repo", queue_position: 2, queue_ahead: "TASK-001" }),
+      row({ key: "c", task_id: "TASK-003", title: "third", session_id: "sess-c", target: "/repo/c.py",
+            status: "queued", queue_key: "/repo", queue_position: 3, queue_ahead: "TASK-002" }),
+    ];
+    const first = skipLine(NO_QUEUE_OVERRIDES, line as Task[], skippedOverride(line[2] as Task));
+    const second = skipLine(first, line as Task[], skippedOverride(line[1] as Task));
+    const painted = applyQueueOverrides(line as Task[], second);
+    const by = (key: string) => painted.find((t) => t.key === key) as Task;
+    expect(painted.filter((t) => t.queue_position === 1)).toHaveLength(1);
+    expect(painted.filter((t) => t.queue_priority)).toHaveLength(1);
+    expect(by("b").queue_position).toBe(1);
+    expect(by("b").queue_priority).toBe(true);
+    // c was the head the second press went past: 2nd now, behind b, no glyph.
+    expect(by("c").queue_position).toBe(2);
+    expect(by("c").queue_ahead).toBe("TASK-002");
+    expect(by("c").queue_ahead_session).toBe("sess-b");
+    expect(by("c").queue_priority).toBe(false);
+    // a was already behind c after the first press and stays 3rd behind c.
+    expect(by("a").queue_position).toBe(3);
+    expect(by("a").queue_ahead).toBe("TASK-003");
+    expect(by("a").queue_priority).toBe(false);
+  });
+
+  it("claims nothing about a folder the pressed row is not in the listing for", () => {
+    // A key this listing has no row for is a task that has left; the press still
+    // paints its own claim and invents nothing about anybody else.
+    const line = [row({ key: "a", status: "queued", queue_key: "/repo", queue_position: 1 })];
+    const claims = skipLineOverrides(line as Task[], { key: "gone", status: "queued", queue_position: 1 });
+    expect(claims.map((c) => c.key)).toEqual(["gone"]);
   });
 });

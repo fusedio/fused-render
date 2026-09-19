@@ -105,9 +105,9 @@ import {
   isChatDraftTask,
   NO_QUEUE_OVERRIDES,
   provisionalTasks,
+  skipLine,
   viewFromSearch,
   viewUrl,
-  withQueueOverride,
 } from "./tasks-lib";
 import type { QueueOverride, QueueOverrides, TaskView } from "./tasks-lib";
 import { TaskCards } from "./TaskCards";
@@ -328,8 +328,22 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // by the answer it was written to beat. They are retired by the listing feed's
   // subscription below, which is the one place the server's answer arrives.
   const [queueOverrides, setQueueOverrides] = useState<QueueOverrides>(NO_QUEUE_OVERRIDES);
+  // …AND A CLAIM IS ABOUT A LINE, NOT A ROW (Akshil, 2026-09-18). A press on ⤒
+  // used to promote its own row and leave every other row in the folder saying
+  // what it said before, so for the 0.3-0.6 s before the listing landed the
+  // pressed row and the row it went past BOTH read "1st in line".
+  // `skipLine` turns the one answer into the folder's whole new order, read off
+  // the rows AS PAINTED (a second press before the listing lands supersedes the
+  // first), and it is folded in as one update, so no paint ever shows half of it.
+  //
+  // THE ROWS THROUGH A REF: the callback's identity is handed to every row as
+  // `onQueued`, and a new one on every listing would be a new prop on every row
+  // a second. What the press needs is the latest listing, and that is what a ref
+  // read at press time is.
+  const tasksRef = useRef(tasks);
+  tasksRef.current = tasks;
   const noteQueued = useCallback((override: QueueOverride) => {
-    setQueueOverrides((cur) => withQueueOverride(cur, override));
+    setQueueOverrides((cur) => skipLine(cur, tasksRef.current, override));
   }, []);
   const [queued, setQueued] = useState<ScheduledMessage[]>([]);
   const [running, setRunning] = useState<ScheduledMessage[]>([]);

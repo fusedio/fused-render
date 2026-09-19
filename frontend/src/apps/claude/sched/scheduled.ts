@@ -74,6 +74,20 @@ export interface SchedTask {
   queue_ahead_title?: string;
   queue_ahead_session?: string;
   queue_ahead_target?: string;
+  /** …AND THE HOLDER'S OWN LISTING KEY, which is the OTHER door the id opens: a
+   *  holder whose run has not published a session yet is keyed
+   *  `pending:<entry id>`, and that entry IS a conversation
+   *  (platform/lib/queue.queueAheadHref).
+   *
+   *  IT WAS MISSING FROM THIS ROW and the chat header paid for it twice (Akshil,
+   *  2026-09-18). The Tasks row drew "behind TASK-046" as a link and the header
+   *  three pixels away drew it as plain text, because `sameQueueRow` below is the
+   *  gate every feed answer passes through and a field it does not compare is a
+   *  change it cannot see: the listing that finally named the holder's key was
+   *  read as "the same answer" and thrown away, so the header kept the older row
+   *  — the one with no door on it — for as long as nothing else about the line
+   *  moved. */
+  queue_ahead_key?: string;
   queue_priority?: boolean;
   /** HOW MANY OF THIS TASK'S MESSAGES ARE WAITING — the server's count, and the
    *  only honest one: it is the side that can see every entry, and "waiting"

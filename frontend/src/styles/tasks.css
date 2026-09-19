@@ -1968,7 +1968,7 @@ button.tasks-caret,
 }
 
 /* ---- where a task stands in its folder's line -------------------------------
-   The project queue's one sentence — "1st in line · behind TASK-038" — worn by a
+   The project queue's one sentence — "after TASK-038 | 2nd" — worn by a
    List row (`.tasks-row-queue`, in the flow after the title's marks) and by a
    Board card (`.tasks-card-queue`, its own line under the title). One builder
    writes the words (tasks-lib.queueCaption); these two only place them.
@@ -1987,8 +1987,10 @@ button.tasks-caret,
    the viewport is, because the row does not know and must not guess. */
 .tasks-row-queue {
   /* SHRINKABLE, unlike the title marks beside it (`flex: 0 0 auto`): this is the
-     one caption on the row that may be cut, because its front — "#2 in line" —
-     is the part that matters and reads fine on its own. `min-width: 0` is what
+     one caption on the row that may be cut, because its front — "after TASK-038"
+     — is the part that matters and reads fine on its own. (That ordering is why
+     the holder leads the sentence: the ellipsis eats the END, and the id is the
+     one token on the line a reader can press.) `min-width: 0` is what
      actually lets a flex item go below its content width.
 
      AND IT GIVES WAY FIRST, WHICH IS WHAT THE SHRINK FACTOR IS FOR (browser QA
@@ -2050,22 +2052,19 @@ button.tasks-caret,
   overflow-wrap: anywhere;
 }
 
-/* AT THE HEAD OF THE LINE the caption stops being muted, on both surfaces. It
-   is the one card in the lane whose work goes out next, and a reader sweeping a
-   column of identical grey sentences has nothing to find it by otherwise.
-   `--status-queued`, the running yellow this state wears everywhere since
-   2026-09-12 (an alias of `--status-progress`; the DASH on the ring is what
-   separates waiting from running) — NOT `--activity`. The blue was retired from every queued surface
-   when the lane folded into In Progress: waiting is a quieter running, in the
-   running hue, and a blue caption under an amber card said the opposite
-   (tokens.css). */
-.tasks-row-queue.is-next,
-.tasks-card-queue.is-next {
-  color: var(--status-queued);
-}
+/* NO `.is-next` RULE ANY MORE, AND THAT IS THE POINT (Akshil, 2026-09-19).
+   A skipped row's caption used to drop out of the muted register into
+   `--status-queued` and lead with a ⤒, so one row in a lane of waiting rows read
+   as a different KIND of object. A skip does not change what a row IS — it
+   changes where it stands, and where it stands is the whole of what this caption
+   says. One register for every waiting row; the ORDER tells them apart. The ⤒
+   survives as the Run next BUTTON's face (`.tasks-act--skip`) and decorates
+   nothing. */
 
-/* THE ID INSIDE THE CAPTION — "behind TASK-038", where TASK-038 is a press into
+/* THE ID INSIDE THE CAPTION — "after TASK-038", where TASK-038 is a press into
    the conversation that is in the way (ScheduleTaskViews.QueueCaptionText).
+   It is the ONE part of the caption with a destination of its own: every other
+   pixel of the span opens the row it sits on (see the row's own note).
    It inherits the caption's size and colour and takes only the underline, so the
    sentence still reads as one sentence rather than as a label with a link glued
    to the end. The holder's own title is on the pointer, where it stopped being
@@ -2107,15 +2106,6 @@ button.tasks-caret,
 }
 .tasks-msg-state--queued {
   color: var(--status-queued);
-}
-
-/* The ⤒ that leads a priority caption (tasks-lib.QUEUE_PRIORITY_GLYPH). Its own
-   rule only to stop a text glyph riding high against 11px words. */
-.tasks-queue-glyph {
-  flex: 0 0 auto;
-  font-size: 12px;
-  line-height: 1;
-  transform: translateY(1px);
 }
 
 /* ---- "and that one was stopped" --------------------------------------------

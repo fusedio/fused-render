@@ -579,3 +579,104 @@ describe("onDraftChange", () => {
     off();
   });
 });
+
+// ---- the queue's rekey is a fold, not a delete and an insert -----------------
+// A message waiting in a folder's line is `pending:<entry>`; the beat it is
+// dispatched the listing files it under its session and the fast lane sends the
+// session row plus the pending key flagged `gone` in ONE payload
+// (routers/tasks.py `_rekeyed_pendings`). Folded with the flag up, that is one
+// row changing state — never a frame with both, never a frame with neither.
+
+describe("a dispatched queue row through the feed", () => {
+  const waiting = (): Task =>
+    ({
+      key: "pending:e4",
+      task_id: "TASK-052",
+      project: "/proj",
+      session_id: "",
+      status: "queued",
+      last_active: 30,
+    }) as Task;
+  const running = (): Task =>
+    ({
+      key: "sess-4",
+      task_id: "TASK-052",
+      project: "/proj",
+      session_id: "sess-4",
+      status: "in_progress",
+      last_active: 35,
+    }) as Task;
+
+  /** The flag is MODULE state on `apps/claude/feature-flag` and outlives every
+   *  test in this process, so every case here puts it back by hand. */
+  const setQueueFlag = async (on: boolean) => {
+    const { applyQueueFlagBroadcast, QUEUE_FLAG_BROADCAST_KEY } = await import(
+      "@apps/claude/feature-flag"
+    );
+    applyQueueFlagBroadcast(QUEUE_FLAG_BROADCAST_KEY, JSON.stringify({ on }));
+  };
+
+  test("swaps the waiting row for its run in one paint, flag on", async () => {
+    await setQueueFlag(true);
+    try {
+      const e = env(
+        [{ generation: 1 }, { generation: 2, rows: [running()], gone: ["pending:e4"] }],
+        [{ tasks: [waiting()], generation: 1 }],
+      );
+      const seen: ListingEvent[] = [];
+      const off = subscribeListing((ev) => seen.push(ev), e);
+      await settle();
+      off();
+      // ONE row for the task, under the session's name, running — and no frame
+      // in between held two rows or none.
+      for (const ev of seen) {
+        expect(ev.rows.filter((t) => t.task_id === "TASK-052").length).toBe(1);
+      }
+      const last = seen[seen.length - 1];
+      expect(last.rows.map((t) => t.key)).toEqual(["sess-4"]);
+      expect(last.rows[0].status).toBe("in_progress");
+      // The swap rode in one payload, so nothing had to be held and no extra
+      // `GET /api/tasks` was spent on it.
+      expect(e.readCount()).toBe(1);
+    } finally {
+      await setQueueFlag(false);
+    }
+  });
+
+  test("holds the row when only the `gone` half arrives, and re-reads", async () => {
+    await setQueueFlag(true);
+    try {
+      const e = env(
+        [{ generation: 1 }, { generation: 2, rows: [], gone: ["pending:e4"] }],
+        [{ tasks: [waiting()], generation: 1 }, { tasks: [running()], generation: 2 }],
+      );
+      const seen: ListingEvent[] = [];
+      const off = subscribeListing((ev) => seen.push(ev), e);
+      await settle();
+      off();
+      // No hole: the row stays, painted as the run it has become…
+      const held = seen.find((ev) => ev.delta?.gone.includes("pending:e4"));
+      expect(held?.rows.map((t) => t.key)).toEqual(["pending:e4"]);
+      expect(held?.rows[0].status).toBe("in_progress");
+      // …and a claim is not news, so the whole listing is asked for at once
+      // rather than waited out on the 20 s floor.
+      expect(e.readCount()).toBe(2);
+    } finally {
+      await setQueueFlag(false);
+    }
+  });
+
+  test("with the flag off the same payload simply drops the row", async () => {
+    const e = env(
+      [{ generation: 1 }, { generation: 2, rows: [], gone: ["pending:e4"] }],
+      [{ tasks: [waiting()], generation: 1 }],
+    );
+    const seen: ListingEvent[] = [];
+    const off = subscribeListing((ev) => seen.push(ev), e);
+    await settle();
+    off();
+    expect(seen[seen.length - 1].rows).toEqual([]);
+    // And nothing was re-read on its account.
+    expect(e.readCount()).toBe(1);
+  });
+});

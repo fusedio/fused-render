@@ -119,11 +119,21 @@ describe("the Preferences switch", () => {
 });
 
 describe("the Board's waiting cards", () => {
-  it("draws the card's place in the line, and the ⤒ only at the head", () => {
+  it("draws the card's place in the line, and NOTHING that marks a skip", () => {
     expect(CARD).toContain("const queue = queueCaption(task);");
-    expect(CARD).toContain('className={"tasks-card-queue" + (queue.runsNext ? " is-next" : "")}');
-    expect(CARD).toContain("{queue.runsNext && (");
-    expect(CARD).toContain("{QUEUE_PRIORITY_GLYPH}");
+    expect(CARD).toContain('<span className="tasks-card-queue" title={queue.aheadTitle || undefined}>');
+    // NO HIGHLIGHT FOR A SKIPPED CARD (Akshil, 2026-09-19). It used to lead with
+    // the ⤒ and repaint the sentence in the queued hue, which made one card in a
+    // lane of waiting cards read as a different KIND of thing — where all a skip
+    // does is change the ORDER, and the order is what the caption already says.
+    // The glyph survives as the Run next BUTTON's face and decorates nothing.
+    for (const src of [CARD, ROW]) {
+      expect(src).not.toContain("is-next");
+      expect(src).not.toContain("tasks-queue-glyph");
+      expect(src).not.toContain("{queue.runsNext && (");
+    }
+    expect(css(TASKS_CSS)).not.toContain("is-next");
+    expect(css(TASKS_CSS)).not.toContain(".tasks-queue-glyph");
     // …and the caption's one actionable token is a LINK into the conversation
     // that is in the way. The same component the List row draws, because it is
     // one sentence (ScheduleTaskViews.QueueCaptionText).
@@ -188,10 +198,26 @@ describe("the List's waiting row", () => {
   it("says where it stands, in the flow — never as a second line", () => {
     // Every row here is one line tall, and one row growing to two would break
     // the rhythm the whole column is scanned down. The card is what grows.
-    expect(ROW).toContain('className={"tasks-row-queue" + (queue.runsNext ? " is-next" : "")}');
+    expect(ROW).toContain('className="tasks-row-queue"');
     expect(ROW).toContain("<QueueCaptionText queue={queue} />");
     expect(css(TASKS_CSS)).toContain(".tasks-row-queue {");
     expect(css(TASKS_CSS)).toContain(".tasks-card-queue {");
+  });
+
+  it("spends the row's own press, because it SITS OVER the row's link", () => {
+    // `.tasks-row-queue` is `z-index: 2` over the stretched `.tasks-rowlink`
+    // (for its tooltip), which made the whole caption a dead run of pixels —
+    // the identical fault the file mark beside it was fixed for. The three
+    // handlers are the mark's three, verbatim: plain press activates, a
+    // modified one opens a tab, a middle press does not autoscroll. The
+    // behaviour itself is mounted in queue-caption-press.test.tsx.
+    const at = ROW.indexOf('className="tasks-row-queue"');
+    expect(at).toBeGreaterThan(-1);
+    const span = ROW.slice(at, ROW.indexOf("</span>", at));
+    expect(span).toContain("if (opensElsewhere(e)) {");
+    expect(span).toContain("activate();");
+    expect(span).toContain("onAuxClick={(e) => {");
+    expect(span).toContain("if (e.button === 1 && href) e.preventDefault();");
   });
 
   it("grows a Run next only on a waiting row, and not behind the hover-actions flag", () => {
@@ -222,7 +248,7 @@ describe("the List's waiting row", () => {
     // THE CAPTION IS NOT GATED ON IT. `1 message waiting · behind TASK-056` is
     // true at the head of the line and stays printed; only the button goes.
     expect(waitingCardText(1, { status: "queued", queue_position: 1, queue_ahead: "TASK-056" })).toBe(
-      "1 message waiting · behind TASK-056",
+      "1 message waiting · after TASK-056",
     );
   });
 
@@ -256,14 +282,19 @@ describe("the queue's ink", () => {
     expect(css(SCHEDULE_CSS)).toContain(
       ".schedule-ring--queued {\n  color: var(--status-queued);\n  border-style: dashed;\n}",
     );
-    expect(css(TASKS_CSS)).toContain(
-      ".tasks-row-queue.is-next,\n.tasks-card-queue.is-next {\n  color: var(--status-queued);\n}",
+    // …and the caption itself spends NO hue: it is the muted register on every
+    // waiting row, skipped or not (the `is-next` rule went on 2026-09-19).
+    const caption = css(TASKS_CSS).slice(
+      css(TASKS_CSS).indexOf(".tasks-row-queue {"),
+      css(TASKS_CSS).indexOf("}", css(TASKS_CSS).indexOf(".tasks-row-queue {")),
     );
+    expect(caption).toContain("color: var(--fg-muted)");
+    expect(css(TASKS_CSS)).not.toContain("--status-queued);\n}\n\n/* THE ID INSIDE");
     // NOT `--activity`, on any surface that names the state. Read off the real
     // rules with the prose stripped, since the comments discuss the retired hue.
     for (const rule of [
       ".schedule-ring--queued",
-      ".tasks-row-queue.is-next",
+      ".tasks-row-queue {",
       ".tasks-msg-state--queued",
       ".schedule-tv-lane-split",
     ]) {

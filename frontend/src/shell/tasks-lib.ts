@@ -42,6 +42,7 @@ import { labelForSource } from "@platform/lib/format";
 import {
   CHAT_ENTRY_ORIGIN,
   chatUrl,
+  PENDING_KEY_PREFIX,
   pendingEntryId,
   queuePosition,
   runningWaitingLabel,
@@ -2177,9 +2178,11 @@ export {
   pendingEntryId,
   PENDING_KEY_PREFIX,
   QUEUED_PARAM,
+  QUEUED_WORD,
+  queueAfter,
   queueAheadHref,
-  queueBehind,
   queueCaption,
+  QUEUE_CAPTION_SEP,
   queueOrdinal,
   queuePosition,
   queueRunsNext,
@@ -5005,18 +5008,182 @@ export function pulseTitle(pulse: TasksPulse): string {
   return parts.join(" · ");
 }
 
+// ---- ONE IDENTITY FOR A ROW THAT CHANGES ITS NAME ----------------------------
+// `key` is the server's row identity and it MOVES under one task exactly once:
+// a message waiting in a folder's line is listed as `pending:<entry-id>`, and
+// the beat its run gets a session the listing files it under the session id
+// instead (routers/tasks.py `_rekeyed_pendings` — the session row and the
+// pending row flagged `gone` ride in ONE payload, so the data is already a clean
+// swap). What was not clean was the PAINT: both lists key their rows on
+// `task.key`, so the swap unmounted the pending row and mounted a session row in
+// its place — the row blinked out for a beat and came back running, worst of all
+// on a task the reader had just skipped, where the blink lands on the very row
+// the press was about (Akshil QA, 2026-09-18).
+//
+// So both halves — the merge that decides replace-vs-append, and the React key —
+// ask ONE question: what is this row's identity. `task_id` is the answer when
+// there is one, because a number is allocated once per task and carried ACROSS
+// the rekey (`tasks_store.ensure_ids`), which is exactly the fact the key lacks.
+//
+// FLAG-GATED, and the gate is at the call sites rather than in here: with the
+// project queue off nothing is ever held in a line, so nothing is ever rekeyed
+// while it is on screen, and the byte-for-byte old behaviour (key by `task.key`,
+// merge by `task.key`) is what those call sites keep.
+//
+// AND `task_id` IS NOT UNIQUE — `cardKey` above carries the incident that proves
+// it: the pending row's number is respent when the rekey is refused, and a live
+// listing held four numbers naming two sessions each. A duplicate React key
+// stops a list updating, which is how the first attempt at this (reverted,
+// 63bddc24d) broke live rows. `taskListKeys` is therefore the only way this is
+// ever spent on a list: it hands back one key per row, unique by construction,
+// and it hands back `task.key` for every row it cannot vouch for.
+
+/** The `draft:<id>` rows' prefix (platform/lib/drafts.taskDraftKey). A draft
+ *  carries a number too — it is allocated at the form, not at the run — but a
+ *  draft is not a conversation and never becomes one in place, so it is left out
+ *  of the rule entirely and keyed on its own key. */
+const DRAFT_KEY_PREFIX = "draft:";
+
+/** The row's NUMBER when it is allowed to stand for the row, "" otherwise —
+ *  the whole of the rule that decides which rows may be tracked across a rekey.
+ *  Private: everything outside asks `taskIdentity` or `taskListKeys`. */
+function taskNumber(task: Pick<Task, "key" | "task_id" | "kind">): string {
+  if (task.kind === "draft" || task.key.startsWith(DRAFT_KEY_PREFIX)) return "";
+  return task.task_id || "";
+}
+
+/**
+ * WHAT THIS ROW IS, across a change of key: its number, else its key.
+ *
+ * The per-row half of the rule. It is a CANDIDATE and not yet a React key — a
+ * list has to answer for two rows claiming one number as well (`taskListKeys`),
+ * and the merge below asks a narrower question again.
+ */
+export function taskIdentity(task: Pick<Task, "key" | "task_id" | "kind">): string {
+  return taskNumber(task) || task.key;
+}
+
+/**
+ * THE REACT KEYS FOR ONE RENDERED LIST, in the rows' own order and unique by
+ * construction — the only sanctioned way to spend `taskIdentity` on a list.
+ *
+ * With the flag down this is `rows.map(t => t.key)` and nothing else.
+ *
+ * With it up, a number is spent by AT MOST ONE row per list:
+ *
+ *   * a number only one row claims is that row's key — the ordinary case, and
+ *     the one the whole fix is about: `pending:<entry>` and the session it
+ *     becomes are one number, so the row keeps its DOM node through the swap;
+ *   * a number TWO rows claim (the respent-number twins of `cardKey`, or a
+ *     pending row still on screen beside the session it became) goes to the one
+ *     with a session and to nobody at all when that is not exactly one row. Not
+ *     "the first one wins": first is a fact about the SORT, and a winner that
+ *     changes when the list re-sorts would remount both rows — the bug, twice;
+ *   * a number that is also some row's own key is nobody's, since spending it
+ *     would collide with that row.
+ *
+ * Anything left over falls back to `task.key`, and a final pass suffixes the
+ * impossible case rather than emitting a duplicate: React silently stops
+ * updating rows that share a key, which is a worse failure than an ugly key.
+ */
+export function taskListKeys(rows: readonly Task[], queueOn: boolean): string[] {
+  if (!queueOn) return rows.map((t) => t.key);
+  const ownKeys = new Set(rows.map((t) => t.key));
+  /** number -> the row indices claiming it. */
+  const claims = new Map<string, number[]>();
+  rows.forEach((t, i) => {
+    const n = taskNumber(t);
+    if (!n || ownKeys.has(n)) return;
+    const held = claims.get(n);
+    if (held) held.push(i);
+    else claims.set(n, [i]);
+  });
+  /** row index -> the number it is allowed to spend. */
+  const spends = new Map<number, string>();
+  for (const [n, ix] of claims) {
+    if (ix.length === 1) {
+      spends.set(ix[0], n);
+      continue;
+    }
+    const withSession = ix.filter((i) => !!rows[i].session_id);
+    if (withSession.length === 1) spends.set(withSession[0], n);
+  }
+  const used = new Set<string>();
+  return rows.map((t, i) => {
+    let key = spends.get(i) ?? t.key;
+    if (used.has(key)) {
+      let n = 2;
+      while (used.has(`${key}#${n}`)) n += 1;
+      key = `${key}#${n}`;
+    }
+    used.add(key);
+    return key;
+  });
+}
+
 /**
  * Fold a `/api/tasks/changes` answer into the rows on screen: rows in `upserts`
  * replace (or join) the row with the same key, keys in `gone` leave, and the
  * result keeps the one ordering promise this client makes — the server's
  * `last_active` descending — so a session that just woke up rises to the top
  * the same way it would on the next full poll.
+ *
+ * `queueOn` buys the two halves of the rekey the paint needs, and NOTHING with
+ * the flag down (the default is off, and `dropListingKeys` leaves it off on
+ * purpose — see its call):
+ *
+ *   * REPLACE, NEVER APPEND. A session row carrying the number of a
+ *     `pending:<entry>` row already on screen takes that row's place even when
+ *     the payload forgot to say the pending key is gone, so no frame ever shows
+ *     one task twice;
+ *   * AND NEVER NEITHER. A `pending:<entry>` row told it is gone whose
+ *     replacement is NOT in this payload stays, painted as the run it has just
+ *     become, instead of leaving a hole until the next row lands. Narrow on
+ *     purpose: only a `pending:` key, only one that carries a number, and only
+ *     from a status that means the work was asked for and not yet finished. The
+ *     caller pairs it with a full re-read (shell/tasksPulse), so a `gone` that
+ *     was really a CANCEL is corrected by one round trip rather than standing
+ *     until the 20 s floor.
  */
-export function mergeTaskChanges(tasks: Task[], upserts: Task[], gone: string[]): Task[] {
+export function mergeTaskChanges(
+  tasks: Task[],
+  upserts: Task[],
+  gone: string[],
+  queueOn = false,
+): Task[] {
   const drop = new Set(gone);
+  const live = upserts.filter((t) => !drop.has(t.key));
   const byKey = new Map<string, Task>();
   for (const t of tasks) if (!drop.has(t.key)) byKey.set(t.key, t);
-  for (const t of upserts) if (!drop.has(t.key)) byKey.set(t.key, t);
+  if (queueOn) {
+    /** The numbers arriving under a key that is NOT a pending one — which is
+     *  the only direction a rekey ever goes, and the only pair this may treat
+     *  as one task. (Two settled sessions sharing a respent number are not
+     *  that, and evicting one of them would be data loss.) */
+    const arriving = new Set(
+      live
+        .filter((t) => !t.key.startsWith(PENDING_KEY_PREFIX))
+        .map(taskNumber)
+        .filter((n) => !!n),
+    );
+    for (const [key, t] of [...byKey]) {
+      if (!key.startsWith(PENDING_KEY_PREFIX)) continue;
+      const n = taskNumber(t);
+      if (n && arriving.has(n)) byKey.delete(key);
+    }
+    const standing = new Set([...byKey.values()].map(taskNumber).filter((n) => !!n));
+    for (const t of tasks) {
+      if (!drop.has(t.key) || !t.key.startsWith(PENDING_KEY_PREFIX)) continue;
+      const n = taskNumber(t);
+      if (!n || arriving.has(n) || standing.has(n)) continue;
+      if (t.status !== "queued" && t.status !== "in_progress") continue;
+      // `in_progress`, because the one thing we DO know about a pending row the
+      // server has stopped listing under that name is that its wait is over.
+      byKey.set(t.key, { ...t, status: "in_progress" });
+      standing.add(n);
+    }
+  }
+  for (const t of live) byKey.set(t.key, t);
   return [...byKey.values()].sort((a, b) => b.last_active - a.last_active);
 }
 
@@ -5049,6 +5216,16 @@ export interface QueueOverride {
   queue_position?: number;
   queue_ahead?: string;
   queue_ahead_title?: string;
+  /** …AND WHERE THAT NAME GOES, which a claim has to carry now that a claim can
+   *  change WHO is in front (`skipLineOverrides`). The row it is painted over
+   *  already holds the pair for the OLD holder, so leaving these out left the
+   *  demoted row printing one task's id under another task's link — a pointer to
+   *  the wrong conversation, which is worse than no pointer at all. A claim that
+   *  cannot name them leaves them "" and the id goes back to plain text for the
+   *  moment the claim lives (platform/lib/queue.queueAheadHref). */
+  queue_ahead_session?: string;
+  queue_ahead_target?: string;
+  queue_ahead_key?: string;
   queue_priority?: boolean;
 }
 
@@ -5064,6 +5241,20 @@ export function withQueueOverride(
   next: QueueOverride,
 ): QueueOverrides {
   return { ...cur, [next.key]: next };
+}
+
+/** …and a WHOLE LINE of them at once (`skipLineOverrides`). One press moves
+ *  several rows, and folding them in one at a time would paint the intermediate
+ *  states — which is the "two rows both reading 1st" frame this exists to end.
+ *  Same rule per key: the later claim about a key replaces the earlier one. */
+export function withQueueOverrides(
+  cur: QueueOverrides,
+  next: readonly QueueOverride[],
+): QueueOverrides {
+  if (next.length === 0) return cur;
+  const out: Record<string, QueueOverride> = { ...cur };
+  for (const claim of next) out[claim.key] = claim;
+  return out;
 }
 
 /**
@@ -5118,6 +5309,12 @@ export function applyQueueOverrides(
       queue_position: claim.queue_position ?? 0,
       queue_ahead: claim.queue_ahead ?? "",
       queue_ahead_title: claim.queue_ahead_title ?? "",
+      // THE WHOLE "who is in front" ANSWER COMES FROM THE CLAIM, never half of
+      // it from the row underneath: a claim that moved the line named a new
+      // task, and the row's own pair still points at the old one.
+      queue_ahead_session: claim.queue_ahead_session ?? "",
+      queue_ahead_target: claim.queue_ahead_target ?? "",
+      queue_ahead_key: claim.queue_ahead_key ?? "",
       queue_priority: claim.queue_priority ?? false,
     };
   });
@@ -5126,16 +5323,157 @@ export function applyQueueOverrides(
 /** The claim a SKIP makes: head of the line, and nothing about the run in
  *  flight, which skipping never touches. The holder it names is whatever the row
  *  already said — the folder did not change hands because somebody jumped the
- *  queue. */
+ *  queue, so the link the id wears is carried over with it. */
 export function skippedOverride(task: Task): QueueOverride {
   return {
     key: task.key,
     status: "queued",
     queue_position: 1,
-    queue_ahead: task.queue_ahead ?? "",
-    queue_ahead_title: task.queue_ahead_title ?? "",
+    ...aheadOfRow(task),
     queue_priority: true,
   };
+}
+
+/** The four fields that say WHO IS IN FRONT, copied off a row that already
+ *  holds the answer. */
+function aheadOfRow(task: Task): Pick<
+  QueueOverride,
+  "queue_ahead" | "queue_ahead_title" | "queue_ahead_session" | "queue_ahead_target" | "queue_ahead_key"
+> {
+  return {
+    queue_ahead: task.queue_ahead ?? "",
+    queue_ahead_title: task.queue_ahead_title ?? "",
+    queue_ahead_session: task.queue_ahead_session ?? "",
+    queue_ahead_target: task.queue_ahead_target ?? "",
+    queue_ahead_key: task.queue_ahead_key ?? "",
+  };
+}
+
+/** …and the same four naming A ROW ITSELF — what the task behind it should say
+ *  it is behind. `queue_ahead_key` is that row's own listing key, which is the
+ *  door the id opens while its run has no session yet (`pending:<entry>`,
+ *  platform/lib/queue.queueAheadHref). */
+function aheadIsRow(task: Task): Pick<
+  QueueOverride,
+  "queue_ahead" | "queue_ahead_title" | "queue_ahead_session" | "queue_ahead_target" | "queue_ahead_key"
+> {
+  return {
+    queue_ahead: task.task_id ?? "",
+    queue_ahead_title: task.title ?? "",
+    queue_ahead_session: task.session_id ?? "",
+    queue_ahead_target: task.target ?? "",
+    queue_ahead_key: task.key,
+  };
+}
+
+/** The folder a task's work happens in — the server's own `queue_key`, and the
+ *  project for a row (or a server) that carries none. It is what a LINE is a
+ *  line of: two tasks share a queue when they share this. */
+function queueFolderOf(task: Task): string {
+  return (task.queue_key || task.project || "").trim();
+}
+
+/**
+ * ONE PRESS, THE WHOLE LINE REPAINTED — the claims a skip makes about every row
+ * in the folder, not only about the row that was pressed.
+ *
+ * THE BUG THIS ENDS (Akshil, 2026-09-18): pressing ⤒ on the 2nd row promoted it
+ * to "1st in line" and said nothing about the row that was already 1st, so for
+ * the 0.3-0.6 s before the server's listing landed TWO rows read "1st in line"
+ * and the reader could not tell which of them was going to run. A queue is one
+ * order, and a claim about one row's place is a claim about everybody else's:
+ * the whole line has to move in the same paint or it is not a line.
+ *
+ * WHAT MOVES, and nothing else:
+ *
+ *   * the pressed row takes `head` exactly as the caller built it — position 1,
+ *     `queue_priority`, and whatever the server said is still in front of it
+ *     (the RUN holding the folder, which a skip never touches);
+ *   * every row the press jumped OVER — the ones standing between the pressed
+ *     row's new place and its old one — shifts one place back;
+ *   * the row that was standing where the pressed row now stands is the only one
+ *     whose "behind X" changes, because it is the only one whose neighbour
+ *     changed: it is now behind the pressed task, id, title and link;
+ *   * every other queued row in the folder keeps its number and its sentence,
+ *     and only loses `queue_priority` if it was wearing it — the ⤒ glyph is a
+ *     claim on the one spot at the head, and after this press that spot is the
+ *     pressed row's.
+ *
+ * Rows in OTHER folders are never touched: a line is per folder, and a skip in
+ * one says nothing about another. Rows that need no change get no claim, so the
+ * common press on a two-deep line leaves two claims and not twenty.
+ *
+ * PURELY LOCAL AND SHORT-LIVED, exactly as the single claim was: every key here
+ * is a key the next `/api/tasks` answer speaks about, so `expireQueueOverrides`
+ * retires the whole set together and the server's order wins unconditionally.
+ */
+export function skipLineOverrides(
+  tasks: readonly Task[],
+  head: QueueOverride,
+): QueueOverride[] {
+  const out: QueueOverride[] = [head];
+  const pressed = tasks.find((t) => t.key === head.key);
+  if (!pressed) return out;
+  const folder = queueFolderOf(pressed);
+  /** Where the press PUT it (the server's own answer, 1 for an ordinary skip)
+   *  and where it STOOD. A `was` of 0 is "the server never placed it", and the
+   *  honest reading of a row arriving at the head from nowhere is that it is now
+   *  in front of everybody. */
+  const to = Math.max(1, head.queue_position ?? 1);
+  const was = pressed.queue_position ?? 0;
+  const behind = aheadIsRow(pressed);
+  for (const task of tasks) {
+    if (task.key === head.key) continue;
+    if (task.status !== "queued") continue;
+    if (queueFolderOf(task) !== folder) continue;
+    const at = task.queue_position ?? 0;
+    const jumped = at >= to && (was <= 0 || at < was);
+    if (!jumped) {
+      // Untouched — unless it is still wearing the head's claim, which is now
+      // the pressed row's and may not be worn twice.
+      if (task.queue_priority) {
+        out.push({
+          key: task.key,
+          status: "queued",
+          queue_position: at,
+          ...aheadOfRow(task),
+          queue_priority: false,
+        });
+      }
+      continue;
+    }
+    out.push({
+      key: task.key,
+      status: "queued",
+      queue_position: at + 1,
+      // Only the row the pressed one displaced has a new neighbour; the rest
+      // are still behind whatever they were behind.
+      ...(at === to ? behind : aheadOfRow(task)),
+      queue_priority: false,
+    });
+  }
+  return out;
+}
+
+/**
+ * A SKIP FOLDED INTO THE STANDING CLAIMS — the one entry point both lists use.
+ *
+ * THE LINE IS COMPUTED FROM THE ROWS AS PAINTED, not from the raw listing
+ * (Bugbot, PR #1228). A second ⤒ before the first one's listing lands used to
+ * read the server's old positions: the row the first press promoted still sat
+ * at its old place in `tasks`, so the second pass neither shifted it nor took
+ * its head claim away — and its standing override kept it at 1 with the glyph
+ * beside the new head. Two firsts, which is the frame this overlay exists to
+ * end. Applying the claims first makes every press see the line the reader
+ * sees, so each press's answer supersedes the last one's for every row it moves.
+ */
+export function skipLine(
+  cur: QueueOverrides,
+  tasks: readonly Task[],
+  head: QueueOverride,
+): QueueOverrides {
+  const painted = applyQueueOverrides(tasks as Task[], cur);
+  return withQueueOverrides(cur, skipLineOverrides(painted, head));
 }
 
 /**

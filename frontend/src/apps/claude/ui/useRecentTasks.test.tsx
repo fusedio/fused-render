@@ -243,6 +243,53 @@ test("…and the next listing retires it, right or wrong", async () => {
   expect(h.rows()?.[0].queue_priority).toBe(false);
 });
 
+test("a skip repaints the WHOLE line, so no frame shows two 1sts", async () => {
+  // THE DOUBLE-1st FRAME (Akshil, 2026-09-18). The claim promoted the pressed
+  // row and said nothing about the row it went past, so for the 0.3-0.6 s before
+  // the listing landed both of them read "1st in line" and the reader could not
+  // tell which one was going to run.
+  const h = await mount("/tpl", "/repo/x.py");
+  const first = laned("a", "queued", {
+    queue_position: 1,
+    queue_ahead: "TASK-000",
+    queue_ahead_title: "the run",
+    queue_priority: true,
+  });
+  const second = laned("b", "queued", {
+    queue_position: 2,
+    queue_ahead: "A",
+    queue_ahead_title: "a",
+  });
+  const third = laned("c", "queued", {
+    queue_position: 3,
+    queue_ahead: "B",
+    queue_ahead_title: "b",
+  });
+  await h.serve([first, second, third]);
+
+  await act(async () => noteQueueClaim(skippedOverride(second)));
+  const by = (key: string) => h.rows()?.find((t) => t.key === key) as Task;
+  // The pressed row is the head, and the ⤒ claim is on it and on nothing else.
+  expect(by("b").queue_position).toBe(1);
+  expect(by("b").queue_priority).toBe(true);
+  expect(h.rows()?.filter((t) => t.queue_priority)).toHaveLength(1);
+  // The row it went past reads 2nd, and reads it as behind the pressed row —
+  // id, title and the pair that makes the id a link.
+  expect(by("a").queue_position).toBe(2);
+  expect(by("a").queue_priority).toBe(false);
+  expect(by("a").queue_ahead).toBe("B");
+  expect(by("a").queue_ahead_title).toBe("b");
+  expect(by("a").queue_ahead_session).toBe("b");
+  expect(by("a").queue_ahead_target).toBe("/repo/x.py");
+  // Nobody behind the press moved: a skip jumps the rows in front of it.
+  expect(by("c").queue_position).toBe(3);
+  expect(by("c").queue_ahead).toBe("B");
+  // …and the whole set retires together on the next listing, as one claim did.
+  await h.serve([first, second, third]);
+  expect(by("a").queue_position).toBe(1);
+  expect(by("b").queue_position).toBe(2);
+});
+
 test("a claim for a key this pane has no row for changes nothing", async () => {
   const h = await mount("/tpl", "/repo/x.py");
   await h.serve([laned("a", "in_progress")]);
@@ -322,4 +369,44 @@ test("…and a re-read's skeleton does not drop the header back to the fallback"
   await h.serve([row("a")]);
   expect(h.task()).toBe(null);
   expect(h.pending()).toBe(false);
+});
+
+// ---- the dispatched row survives this hook's own narrowing -------------------
+// The merge that makes a `pending:<entry>` row and the session it becomes ONE
+// row is the feed's (shell/tasksPulse, tasks-lib.mergeTaskChanges); the KEY the
+// Recent list draws them under is `tasks-lib.taskListKeys`. Between the two sits
+// this hook, which narrows the whole listing to one pane and re-sorts it — so
+// the thing worth pinning here is that neither pass drops the waiting row or
+// moves its identity out from under it.
+
+test("a waiting row is this pane's row, and keeps its identity when it runs", async () => {
+  const { taskListKeys } = await import("@shell/tasks-lib");
+  const waiting = {
+    key: "pending:e4",
+    task_id: "TASK-052",
+    project: "/repo",
+    target: "/repo/x.py",
+    session_id: "",
+    status: "queued",
+    title: "waiting",
+  } as unknown as Task;
+  const running = {
+    ...waiting, key: "sess-4", session_id: "sess-4", status: "in_progress",
+  } as Task;
+
+  const h = await mount("/tpl", "/repo/x.py");
+  // A row with NO SESSION is still a row of this pane: `taskInPane` asks about
+  // the target, and a message that has not run yet has one.
+  await h.serve([waiting]);
+  expect(h.rows()?.map((t) => t.key)).toEqual(["pending:e4"]);
+  const before = taskListKeys(h.rows() ?? [], true);
+
+  // The feed swaps the two halves in one payload, so the hook only ever sees one
+  // of them — and the key it is drawn under has not moved.
+  await h.serve([running]);
+  expect(h.rows()?.map((t) => t.key)).toEqual(["sess-4"]);
+  expect(taskListKeys(h.rows() ?? [], true)).toEqual(before);
+  expect(before).toEqual(["TASK-052"]);
+  // …and with the flag down, both are drawn under the server's own key.
+  expect(taskListKeys(h.rows() ?? [], false)).toEqual(["sess-4"]);
 });

@@ -94,6 +94,7 @@ import {
   laneRolledUp,
   laneUnread,
   sortForList,
+  taskListKeys,
   showsRowActions,
   statusColumn,
   markAllRead,
@@ -118,6 +119,8 @@ import {
   canRunNext,
   messageState,
   queueCaption,
+  QUEUED_WORD,
+  QUEUE_CAPTION_SEP,
   QUEUE_PRIORITY_GLYPH,
   RUN_NEXT_DONE_HINT,
   RUN_NEXT_HINT,
@@ -526,30 +529,35 @@ const STATUS_LABELS: Record<BoardColumn, string> = {
  */
 /**
  * THE QUEUE'S CAPTION, with its one actionable token drawn as a link —
- * "1st in line · behind TASK-038".
+ * "after TASK-038 | 3rd".
  *
- * One component for the List row and the Board card, because the sentence is one
- * sentence: `tasks-lib.queueCaption` writes the words, this places them, and
- * neither view holds an opinion about either.
+ * One component for the List row, the Board card and the chat header, because
+ * the sentence is one sentence: `tasks-lib.queueCaption` writes the words, this
+ * places them, and no view holds an opinion about either.
  *
- * THE ID IS THE LINK AND "behind" IS NOT. The reader's question about the thing
+ * THE HOLDER LEADS AND THE PLACE FOLLOWS (Akshil, 2026-09-19). The id is both
+ * what the reader came to the row for and the only word on it they can press,
+ * and it used to arrive last — after a clause that had already spent the width a
+ * narrow row has to give, so the one actionable token was the first to be cut.
+ *
+ * THE ID IS THE LINK AND "after" IS NOT. The reader's question about the thing
  * in their way is what it is doing, and TASK-038 is where that is answered — so
  * it is a press, with the holder's own title on the pointer. That title used to
  * be INK, quoted inside this caption, and it was the first thing to push the id
  * off the end of a 340px row (Akshil, 2026-09-12). A holder with no session to
  * open yet is plain text rather than a link to nothing.
  *
- * `e.stopPropagation()`: both hosts are themselves a press (a row opens its
- * thread, a card opens its conversation), and a link inside one must not also
- * fire the thing it sits in.
+ * `e.stopPropagation()`: every host is itself a press (a row opens its
+ * conversation, a card opens its own), and a link inside one must not also fire
+ * the thing it sits in — the id goes to the HOLDER's chat and nowhere else,
+ * while every other pixel of the caption goes where the row goes.
  */
 export function QueueCaptionText({ queue }: { queue: QueueCaption }) {
   return (
     <>
-      {queue.place}
-      {queue.behind && (
+      {queue.after && (
         <>
-          {" · behind "}
+          {"after "}
           {queue.aheadHref ? (
             <a
               className="tasks-queue-ahead"
@@ -564,8 +572,13 @@ export function QueueCaptionText({ queue }: { queue: QueueCaption }) {
               {queue.ahead}
             </span>
           )}
+          {queue.place && QUEUE_CAPTION_SEP}
         </>
       )}
+      {queue.place}
+      {/* Neither half known: the status word itself, which is the whole of what
+          the server was able to say. */}
+      {!queue.after && !queue.place && QUEUED_WORD}
     </>
   );
 }
@@ -2072,6 +2085,19 @@ export function TaskList({
   // once a second.
   const now = useNow();
   const rows = useMemo(() => sortForList(tasks, now), [tasks, now]);
+  /**
+   * THE ROWS' REACT KEYS, and the reason they are not `task.key` any more.
+   *
+   * A message waiting in a folder's line is `pending:<entry>` and becomes its
+   * session id the moment it is dispatched — one task, two names — so a row
+   * keyed on the name unmounted and remounted at the handover and the reader
+   * watched it blink out and come back running (Akshil QA, 2026-09-18).
+   * `taskListKeys` answers with the task's NUMBER where it can vouch that one
+   * number names one row here, and with `task.key` everywhere else; with the
+   * queue off it is `task.key` for every row and nothing has changed.
+   */
+  const queueOn = useProjectQueueEnabled();
+  const rowKeys = useMemo(() => taskListKeys(rows, queueOn), [rows, queueOn]);
 
   /**
    * Open or close a task — and, on the way OPEN, fetch the rest of its thread.
@@ -2381,9 +2407,9 @@ export function TaskList({
           where a list has no frame and five headers are five interruptions in
           the one column a person is scanning. The order already says what they
           said. */}
-      {rows.map((task) => (
+      {rows.map((task, ix) => (
         <TaskNode
-          key={task.key}
+          key={rowKeys[ix]}
           task={task}
           home={home}
           showProject={showProject}
@@ -3721,22 +3747,49 @@ function TaskNode({
             idea how wide the pane is and must not pretend to.
 
             THE WORDS GET THEIR OWN SPAN, and it is not decoration: this element
-            is an `inline-flex` box (the ⤒ has to sit beside the sentence), and
-            `text-overflow` never reaches a flex item — so the caption clipped
-            mid-glyph instead of trailing off, and at a 400px pane it and the
-            title BOTH shrank to nothing (browser QA round 2). The span is the
-            block-with-inline-content an ellipsis needs; the shrink order is the
-            stylesheet's. */}
+            is an `inline-flex` box, and `text-overflow` never reaches a flex
+            item — so the caption clipped mid-glyph instead of trailing off, and
+            at a 400px pane it and the title BOTH shrank to nothing (browser QA
+            round 2). The span is the block-with-inline-content an ellipsis
+            needs; the shrink order is the stylesheet's.
+
+            NO ⤒ AND NO SECOND COLOUR ANY MORE (Akshil, 2026-09-19). A skipped
+            row used to lead with the glyph and repaint the whole sentence in the
+            queued hue, which made one row in the column look like a different
+            KIND of thing — where all a skip does is change the ORDER, and the
+            new order is what the caption already prints. The glyph is the Run
+            next BUTTON's face (its seat is in the hover strip below) and
+            nothing is decorated with it.
+
+            AND A PRESS HERE IS A PRESS ON THE ROW (Akshil, 2026-09-19: clicking
+            the caption of a queued row did not open its chat). This span is
+            `z-index: 2` over the stretched `.tasks-rowlink` — it has to be, for
+            its own tooltip — which made the whole caption a dead run of pixels,
+            the identical fault the file mark above was fixed for. So it spends
+            the same three gestures the mark does. The `TASK-x` link inside it
+            stops propagation and keeps its own destination: the caption opens
+            THIS row, the id opens the holder's. */}
         {queue && (
           <span
-            className={"tasks-row-queue" + (queue.runsNext ? " is-next" : "")}
+            className="tasks-row-queue"
             data-hint={queue.aheadTitle || queue.text}
+            onClick={(e) => {
+              if (!href) return;
+              if (opensElsewhere(e)) {
+                window.open(href, "_blank", "noopener");
+                return;
+              }
+              activate();
+            }}
+            onAuxClick={(e) => {
+              if (e.button !== 1 || !href) return;
+              e.preventDefault();
+              window.open(href, "_blank", "noopener");
+            }}
+            onMouseDown={(e) => {
+              if (e.button === 1 && href) e.preventDefault();
+            }}
           >
-            {queue.runsNext && (
-              <span className="tasks-queue-glyph" aria-hidden="true">
-                {QUEUE_PRIORITY_GLYPH}
-              </span>
-            )}
             <span className="tasks-queue-text">
               <QueueCaptionText queue={queue} />
             </span>
@@ -4703,6 +4756,10 @@ export function TaskBoard({
   // than per lane, because a lane that happens to hold one project is not a page
   // that holds one — the reader is looking at all five columns at once.
   const showProject = useMemo(() => spansProjects(tasks), [tasks]);
+  /** Is the project queue on — read here only so the lanes below can key their
+   *  cards on the task's identity rather than on a name that moves at dispatch
+   *  (`taskListKeys`). Off, every card is keyed on `task.key` as before. */
+  const queueOn = useProjectQueueEnabled();
 
 
   const allowed = useMemo(
@@ -5141,6 +5198,11 @@ export function TaskBoard({
            *  seam, and never below the fold's last visible card. */
           const splitAt = laneSplitAt(col.key, cards);
           const hidden = Math.max(lane.length - cards.length, 0);
+          /** The List's rule, on the Board's cards — a dispatched message is one
+           *  task under two names here too (`taskListKeys`). Per LANE, which is
+           *  all React asks: a card that crosses lanes is remounted by the move
+           *  itself and there is nothing to preserve. */
+          const cardKeys = taskListKeys(cards, queueOn);
           return (
             <div className="schedule-tv-lane" key={col.key}>
               <button
@@ -5175,7 +5237,7 @@ export function TaskBoard({
                   <p className="tasks-run-hint">{runHint}</p>
                 )}
                 {cards.map((task, ix) => (
-                  <Fragment key={task.key}>
+                  <Fragment key={cardKeys[ix]}>
                     {/* THE SEAM, drawn only where there is one: a thin dashed
                         rule between the cards that are RUNNING and the ones
                         waiting on a busy folder, with the reader's own word on
@@ -5191,7 +5253,6 @@ export function TaskBoard({
                       </p>
                     )}
                   <TaskCard
-                    key={task.key}
                     task={task}
                     home={home}
                     showProject={showProject}
@@ -5636,25 +5697,20 @@ function TaskCard({
             one thing the reader came to the card for.
 
             NO WIDTH ANYWHERE ON IT, and that is deliberate rather than
-            incidental. A lane is 260px, the sentence is "12th in line · behind
-            TASK-1041", and a folder name or an id can be any length — so it
+            incidental. A lane is 260px, the sentence is "after TASK-1041 | 12th",
+            and a folder name or an id can be any length — so it
             WRAPS (tasks.css) and the card gets taller, exactly as a long title
             already makes it taller. A fixed width here would clip the id, which
             is the only part of the sentence a reader can act on.
 
-            The ⤒ leads when this is the one that goes out next, because that is
-            a different fact from a place in a queue and a reader scanning the
-            lane should be able to find it without reading any words. */}
+            NO ⤒ AND NO SECOND COLOUR (Akshil, 2026-09-19). The card that had
+            been skipped used to lead with the glyph and turn the whole sentence
+            yellow — a highlight on a state that is not a state: a skip moves
+            this card's PLACE, and the place is the sentence. One register for
+            every waiting card in the lane, and the order is what tells them
+            apart. */}
         {queue && (
-          <span
-            className={"tasks-card-queue" + (queue.runsNext ? " is-next" : "")}
-            title={queue.aheadTitle || undefined}
-          >
-            {queue.runsNext && (
-              <span className="tasks-queue-glyph" aria-hidden="true">
-                {QUEUE_PRIORITY_GLYPH}
-              </span>
-            )}
+          <span className="tasks-card-queue" title={queue.aheadTitle || undefined}>
             <QueueCaptionText queue={queue} />
           </span>
         )}

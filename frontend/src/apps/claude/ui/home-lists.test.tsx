@@ -371,6 +371,104 @@ test("a Recent row carries Run next's two handles", () => {
   expect(typeof props.onReload).toBe("function");
 });
 
+// ---- THE DISPATCHED ROW KEEPS ITS PLACE (Akshil QA, 2026-09-18) -------------
+// A message waiting in a folder's line is listed as `pending:<entry>` and is
+// re-keyed to its session id the beat the queue dispatches it. Keyed on that
+// name, the row unmounted and a fresh one mounted in its place — the reader
+// watched it blink out for a beat and come back running, worst of all on a task
+// they had just skipped. `tasks-lib.taskListKeys` is the rule both this list and
+// the Tasks page spend, and the flag is the whole of the gate.
+
+/** The React key a row was actually rendered under. The test renderer keeps no
+ *  public door to it, and the key is precisely the claim being made here: the
+ *  same key across the handover IS "the row kept its DOM node". */
+function rowKey(inst: unknown): string | null {
+  return (inst as { _fiber?: { key?: string | null } })._fiber?.key ?? null;
+}
+
+const setQueueFlag = async (on: boolean) => {
+  const { applyQueueFlagBroadcast, QUEUE_FLAG_BROADCAST_KEY } = await import(
+    "../feature-flag"
+  );
+  applyQueueFlagBroadcast(QUEUE_FLAG_BROADCAST_KEY, JSON.stringify({ on }));
+};
+
+/** The same task, waiting in its folder's line and then running. One number,
+ *  two names — the whole of the bug. */
+const WAITING = chat("pending:e4", {
+  key: "pending:e4",
+  task_id: "TASK-052",
+  session_id: "",
+  status: "queued",
+  queue_position: 1,
+});
+const RUNNING = chat("sess-4", { task_id: "TASK-052", status: "in_progress" });
+
+test("a waiting row and the run it becomes are ONE list item, flag on", async () => {
+  await setQueueFlag(true);
+  try {
+    const r = mount(
+      <Lists file="/repo/x.py" agentDir="/tpl" recent={[WAITING]} artifacts={[]} onOpen={() => {}} />,
+    );
+    const before = rowKey(r.root.findByType(TaskRowItem));
+    expect(before).toBe("TASK-052");
+    act(() => {
+      r.update(
+        <Lists file="/repo/x.py" agentDir="/tpl" recent={[RUNNING]} artifacts={[]} onOpen={() => {}} />,
+      );
+    });
+    const rows = r.root.findAllByType(TaskRowItem);
+    // One row, in place, now running — never two and never none.
+    expect(rows.length).toBe(1);
+    expect(rowKey(rows[0])).toBe(before);
+    expect((rows[0].props as { task: Task }).task.status).toBe("in_progress");
+  } finally {
+    await setQueueFlag(false);
+  }
+});
+
+test("a draft sharing the number keeps its own key, flag on", async () => {
+  await setQueueFlag(true);
+  try {
+    // A number is respent when a rekey is refused (tasks-lib.cardKey's
+    // incident), and a duplicate React key is what stopped the first attempt at
+    // this fix from updating rows at all. Two rows, two keys, always.
+    const draft = chat("draft:d1", {
+      key: "draft:d1",
+      task_id: "TASK-052",
+      kind: "draft",
+      session_id: "",
+    });
+    const r = mount(
+      <Lists
+        file="/repo/x.py"
+        agentDir="/tpl"
+        recent={[draft, RUNNING]}
+        artifacts={[]}
+        onFillDraft={() => {}}
+        onOpen={() => {}}
+      />,
+    );
+    const keys = r.root.findAllByType(TaskRowItem).map(rowKey);
+    expect(keys).toEqual(["draft:d1", "TASK-052"]);
+  } finally {
+    await setQueueFlag(false);
+  }
+});
+
+test("with the queue off every row is keyed on `task.key`, as before", () => {
+  const r = mount(
+    <Lists
+      file="/repo/x.py"
+      agentDir="/tpl"
+      recent={[WAITING, RUNNING]}
+      artifacts={[]}
+      onOpen={() => {}}
+    />,
+  );
+  expect(r.root.findAllByType(TaskRowItem).map(rowKey)).toEqual(["pending:e4", "sess-4"]);
+});
+
 test("two filled lists earn the tab bar; an empty one earns no tab", () => {
   const r = mount(
     <Lists

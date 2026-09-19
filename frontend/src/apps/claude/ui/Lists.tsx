@@ -20,7 +20,8 @@ import {
 } from "@platform/shadcn/ui/tabs";
 import type { Task } from "@platform/lib/api";
 import { TaskRowItem } from "@shell/ScheduleTaskViews";
-import { isDraftTask, taskHref, upcomingEditEntry } from "@shell/tasks-lib";
+import { isDraftTask, taskHref, taskListKeys, upcomingEditEntry } from "@shell/tasks-lib";
+import { useProjectQueueEnabled } from "../feature-flag";
 import type { Artifact } from "../protocol/artifacts";
 import { ArtifactRow } from "./ArtifactRow";
 import {
@@ -184,6 +185,21 @@ export function Lists({
     }
     return map;
   }, [recent]);
+
+  /**
+   * THE ROWS' REACT KEYS — the Tasks list's own rule, borrowed rather than
+   * reinvented (`tasks-lib.taskListKeys`), because these ARE the Tasks list's
+   * rows.
+   *
+   * A message waiting in a folder's line is listed as `pending:<entry>` and is
+   * re-keyed to its session id the moment the queue dispatches it. Keyed on that
+   * name, the row unmounted and a new one mounted in its place, so a task the
+   * reader had just skipped blinked out of Recent chats for a beat and came back
+   * running (Akshil QA, 2026-09-18). The number survives the rekey; the name does
+   * not. With the queue off every key is `task.key`, exactly as before.
+   */
+  const queueOn = useProjectQueueEnabled();
+  const rowKeys = useMemo(() => taskListKeys(recent ?? [], queueOn), [recent, queueOn]);
 
   /** Up/Down walk the rows and Enter opens — a keyboard's copy of the pointer's
    *  own reach down the list. */
@@ -354,9 +370,9 @@ export function Lists({
         // off it (styles/tasks.css), and without it the rows read as a column
         // of floating lines rather than as one list.
         <div className="tasks-list-frame">
-          {recent.map((task) => (
+          {recent.map((task, ix) => (
             <TaskRowItem
-              key={task.key}
+              key={rowKeys[ix]}
               task={task}
               {...pressFor(task)}
               // RUN NEXT'S TWO HALVES (Akshil QA, 2026-09-16). The row's own

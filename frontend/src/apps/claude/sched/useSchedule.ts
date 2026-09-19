@@ -183,6 +183,13 @@ export function sameQueueRow(a: SchedTask | null, b: SchedTask | null): boolean 
     a.queue_ahead_title === b.queue_ahead_title &&
     a.queue_ahead_session === b.queue_ahead_session &&
     a.queue_ahead_target === b.queue_ahead_target &&
+    // …INCLUDING THE HOLDER'S KEY, which the pane very much does draw: it is the
+    // second half of whether "behind TASK-046" is a LINK (`queueAheadHref`), and
+    // a holder that has not opened a session yet is reachable by nothing else.
+    // Left out, a listing whose only news was the holder's key read as the same
+    // answer and was dropped — so the header sat on a row with no door while the
+    // Tasks row beside it had one.
+    a.queue_ahead_key === b.queue_ahead_key &&
     a.queue_priority === b.queue_priority &&
     a.queue_waiting === b.queue_waiting &&
     a.queue_blocking === b.queue_blocking

@@ -97,7 +97,7 @@ class _Manager:
         toks.remove(token)
         return True
 
-    def restore_claim(self, folder, token):
+    def restore_claim(self, folder, token, run_id="", session_id=""):
         """`QueueManager.restore_claim`, mirrored: a spent token goes back."""
         if not token or folder not in self.owners:
             return False
