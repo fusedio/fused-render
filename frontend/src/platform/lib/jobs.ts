@@ -244,6 +244,19 @@ export function jobsAfterClear(jobs: Job[]): Job[] {
 // A scheduled message's job row, by id (fused_render/schedule.py `_JOB_PREFIX`).
 export const SCHEDULE_JOB_PREFIX = "sys:schedule:";
 
+/** The self-update's Activity row (`fused_render/update/_manager.py`'s
+ *  `JOB_PREFIX`), one id per version. Mirrored the same way
+ *  `SCHEDULE_JOB_PREFIX` is. */
+export const UPDATE_JOB_PREFIX = "sys:update:";
+
+/** The one self-update job still running or waiting, or `null` — what
+ *  `platform/ui/UpdateProgressCard` draws bottom right while the install runs.
+ *  Terminal update rows are not this card's business: they pop and retain
+ *  through the ordinary `popupTick`/`terminalNotifications` paths. */
+export function updateJobInFlight(jobs: Job[]): Job | null {
+  return jobs.find((j) => j.id.startsWith(UPDATE_JOB_PREFIX) && (isRunning(j) || j.state === "waiting")) ?? null;
+}
+
 // A model load's own row, by id (fused_render/ai/supervisor.py `job_id_for`).
 export const AI_MODEL_JOB_PREFIX = "sys:ai-model:";
 

@@ -52,12 +52,14 @@
 import ServerStatusBanner from "@platform/ui/ServerStatusBanner";
 import MessagePopupCard from "@platform/ui/MessagePopupCard";
 import JobPopupCard from "@platform/ui/JobPopupCard";
+import UpdateProgressCard from "@platform/ui/UpdateProgressCard";
 import { IS_EMBED } from "@platform/lib/router";
 import type { Job } from "@platform/lib/jobs";
 
 export default function NotificationHost({
   jobPopup,
   onJobPopupGone,
+  updateJob,
 }: {
   /** The one terminal job currently popped, or `null` for none — "latest
    *  wins" is enforced upstream (jobs.ts `popupTick`), so this is never more
@@ -65,6 +67,11 @@ export default function NotificationHost({
    *  wizard's own mount, App.tsx) simply never has one to pass. */
   jobPopup?: Job | null;
   onJobPopupGone?: () => void;
+  /** The self-update's row while it runs (`jobs.ts` `updateJobInFlight`),
+   *  drawn as a progress card that stays until closed — the one entry here
+   *  that is minutes long on purpose: it is the install the person is
+   *  waiting on, and the restart dialog takes over the moment it lands. */
+  updateJob?: Job | null;
 } = {}) {
   return (
     <div className="notif-host">
@@ -91,6 +98,9 @@ export default function NotificationHost({
           onGone={onJobPopupGone ?? (() => {})}
         />
       )}
+      {/* Keyed on the job id so a later version's install is a fresh card
+          even if the previous one was closed. */}
+      {!IS_EMBED && updateJob && <UpdateProgressCard key={updateJob.id} job={updateJob} />}
       {!IS_EMBED && <ServerStatusBanner />}
     </div>
   );

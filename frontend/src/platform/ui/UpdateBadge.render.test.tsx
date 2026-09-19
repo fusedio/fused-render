@@ -1,6 +1,6 @@
 // The badge's two faces, rendered: the idle row ("Check for updates") that the
-// slot wears while there is nothing to report, and the accordion it hands the
-// slot to when a check finds a version. The store is module-global and reads
+// slot wears while there is nothing to report, and the flat install row it
+// hands the slot to when a check finds a version (no accordion, 2026-09-19). The store is module-global and reads
 // /api/config through fetch, so fetch is stubbed by URL — one stub for what the
 // server currently says, another for what POST /api/update/check answers.
 import { installDomShim } from "@platform/lib/testDomShim";
@@ -115,9 +115,9 @@ test("with an updater and nothing to report, the slot offers a check", async () 
   expect(text(row)).toBe("Check for updates");
   // Quiet: the accent dot means news, and this row is the absence of it.
   expect(find(r.toJSON(), "update-badge-dot")).toBeNull();
-  // The refresh glyph sits where the accordion keeps its chevron.
+  // The refresh glyph sits where the install row keeps its download arrow.
   expect(find(row, "update-badge-refresh")).not.toBeNull();
-  expect(find(row, "update-badge-chev")).toBeNull();
+  expect(find(row, "update-badge-trail")).toBeNull();
 });
 
 test("a press posts one check and reads the answer back as up to date, with the version", async () => {
@@ -137,7 +137,7 @@ test("a press posts one check and reads the answer back as up to date, with the 
   expect(after.props.disabled).toBe(false);
 });
 
-test("a check that finds a version hands the slot to the accordion, already open", async () => {
+test("a check that finds a version hands the slot to the install button — one row, no accordion", async () => {
   configUpdate = status({});
   checkAnswer = () => status({ state: "available", latest_version: "9.9.9" });
   const r = await mount(<UpdateBadge version="0.5.22" />);
@@ -147,22 +147,58 @@ test("a check that finds a version hands the slot to the accordion, already open
   await flush();
   const tree = r.toJSON();
   expect(find(tree, "update-badge-row-check")).toBeNull();
-  const row = find(tree, "update-badge-row")!;
-  expect(text(row)).toContain("Update available — v9.9.9");
-  expect(row.props["aria-expanded"]).toBe(true);
-  const action = find(tree, "update-badge-action")!;
-  expect(text(action)).toBe("Update to v9.9.9");
+  const row = find(tree, "update-badge-row-install")!;
+  expect(row.type).toBe("button");
+  expect(text(row)).toBe("Update to v9.9.9");
+  expect(find(row, "update-badge-trail")).not.toBeNull();
+  // Nothing to expand, nothing hidden behind the row.
+  expect(row.props["aria-expanded"]).toBeUndefined();
+  expect(find(tree, "update-badge-panel")).toBeNull();
 });
 
-test("a check-only manager gets the row and the sentence, not the Update button", async () => {
-  configUpdate = status({ state: "available", latest_version: "9.9.9", check_only: true });
+test("pressing the install row posts the version on screen and the row turns into Downloading…", async () => {
+  configUpdate = status({ state: "available", latest_version: "9.9.9" });
+  const installs: string[] = [];
+  const inner = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.includes("/api/update/install")) {
+      installs.push(JSON.parse(String(init?.body)).expected_version);
+      configUpdate = status({ state: "installing", phase: "downloading", latest_version: "9.9.9" });
+      return new Response(JSON.stringify(configUpdate), { headers: { "content-type": "application/json" } });
+    }
+    return inner(input, init);
+  };
   const r = await mount(<UpdateBadge version="0.5.22" />);
   await act(async () => {
-    find(r.toJSON(), "update-badge-row")!.props.onClick();
+    find(r.toJSON(), "update-badge-row-install")!.props.onClick();
   });
+  await flush();
+  expect(installs).toEqual(["9.9.9"]);
   const tree = r.toJSON();
+  expect(find(tree, "update-badge-row-install")).toBeNull();
+  const line = find(tree, "update-badge-row-static")!;
+  expect(text(line)).toBe("Downloading…");
+  expect(find(line, "update-spinner")).not.toBeNull();
+});
+
+test("installed is a status line with no restart button — the blocking dialog owns the restart", async () => {
+  configUpdate = status({ state: "installed", latest_version: "9.9.9" });
+  const r = await mount(<UpdateBadge version="0.5.22" />);
+  const tree = r.toJSON();
+  expect(text(find(tree, "update-badge-row-static"))).toBe("Ready to restart");
   expect(find(tree, "update-badge-action")).toBeNull();
-  expect(text(find(tree, "update-badge-panel"))).toContain("no bundle to update");
+  expect(find(tree, "update-badge-row-install")).toBeNull();
+});
+
+test("a check-only manager gets a status line, not the install button", async () => {
+  configUpdate = status({ state: "available", latest_version: "9.9.9", check_only: true });
+  const r = await mount(<UpdateBadge version="0.5.22" />);
+  const tree = r.toJSON();
+  expect(find(tree, "update-badge-row-install")).toBeNull();
+  const line = find(tree, "update-badge-row-static")!;
+  expect(text(line)).toBe("v9.9.9 available · dev run");
+  expect(line.props.title).toContain("no bundle to update");
 });
 
 test("a check the SERVER could not complete is a failed check, not up to date", async () => {
@@ -207,7 +243,7 @@ test("the badge shows exactly what the wire says — a 'checking' poll is the id
   // "checking", that is a manager that was idle, and the idle face is right.
   configUpdate = status({ state: "available", latest_version: "9.9.9", check_only: true });
   const r = await mount(<UpdateBadge version="0.5.22" />);
-  expect(text(find(r.toJSON(), "update-badge-row"))).toContain("Update available — v9.9.9");
+  expect(text(find(r.toJSON(), "update-badge-row-static"))).toContain("v9.9.9 available");
   configUpdate = status({ state: "checking" });
   await act(async () => {
     pokeUpdateStatus();

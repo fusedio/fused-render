@@ -1098,11 +1098,10 @@ a.bookmark-name::after {
 
 /* -- Self-update badge (platform/ui/UpdateBadge, packaged mac app only) ----- */
 
-/* An accordion: the toggle row and the panel it opens share ONE border and
-   one radius, so an open badge reads as a single group rather than a button
-   with a loose slab under it. `overflow: hidden` is what lets the row's own
-   tinted fill stop at the rounded corners — the row has no radius of its own
-   any more, this container owns it. */
+/* ONE FLAT ROW (2026-09-19, no accordion any more): the frame draws the
+   border and the radius, the row inside is either the install button or a
+   status line. `overflow: hidden` lets the row's own tinted fill stop at the
+   rounded corners — the row has no radius of its own, this container owns it. */
 .update-badge {
   margin: 2px 8px;
   font-size: 12px;
@@ -1144,7 +1143,7 @@ a.bookmark-name::after {
 }
 
 /* THE IDLE FACE — "Check for updates" (2026-09-10). Same frame, same place, but
-   quiet: no tinted fill at rest (the fill says "there is news" on the accordion
+   quiet: no tinted fill at rest (the fill says "there is news" on the install
    row, and this row is the absence of news), muted text, and the hover is the
    one the nav rows above use. It is the same slot the accordion takes over.
    Same padding and type as the accordion row, so the two are one line tall
@@ -1171,7 +1170,7 @@ a.bookmark-name::after {
   color: var(--fg-muted);
 }
 
-/* Trailing, where the accordion keeps its chevron, at the chevron's colour. */
+/* Trailing, where the install row keeps its download arrow, same colour. */
 .update-badge-refresh {
   display: flex;
   margin-left: auto;
@@ -1200,56 +1199,19 @@ a.bookmark-name::after {
   flex: none;
 }
 
-/* Trailing, and it points down when shut and up when open. Driven off the
-   row's own `aria-expanded` rather than a second class, so the accessible
-   state and the drawn one cannot disagree. */
-.update-badge-chev {
+/* Trailing on the install row: the download arrow (or the spinner while the
+   install runs), at the refresh glyph's colour and in its slot. */
+.update-badge-trail {
   display: flex;
   margin-left: auto;
   flex: none;
   color: var(--fg-muted);
-  transition: transform 140ms ease;
 }
 
-.update-badge-row[aria-expanded="true"] .update-badge-chev {
-  transform: rotate(180deg);
-}
-
-/* The chevron's rotation holds still under prefers-reduced-motion — styles/reduced-motion.css blankets every transition. */
-
-/* The seam between the row and the panel — the container's border draws the
-   outside, this draws the fold. */
-.update-badge-panel {
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  border-top: 1px solid var(--border);
-}
-
-.update-badge-text {
-  color: var(--fg-muted);
-  line-height: 1.4;
-}
-
-.update-badge-error {
+/* The install row is the action itself, so the pointer says so; the fill is
+   the accordion row's old "there is news" tint. */
+.update-badge-row-install:hover .update-badge-trail {
   color: var(--fg);
-}
-
-.update-badge-action {
-  /* A <button> or an <a> — same box either way. (The installed state's Restart
-     used to be a link to fused-render://relaunch and is a button now: the press
-     has to be remembered, which a link cannot do — platform/lib/restart-store.) */
-  display: inline-block;
-  text-decoration: none;
-  align-self: flex-start;
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--accent);
-  color: var(--bg);
-  font-size: 12px;
-  cursor: pointer;
 }
 
 /* Still in use, but no longer by the badge: TroubleCard and ClaudeHealthStrip

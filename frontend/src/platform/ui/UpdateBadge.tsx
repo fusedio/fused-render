@@ -1,31 +1,37 @@
 // Sidebar self-update affordance. Renders nothing until /api/config's
 // `update` field says a newer version exists (packaged mac app only — the
-// field is absent everywhere else), then shows an "Update available" row that
-// expands into a small panel — an accordion: the row wears a chevron, and row
-// and panel share one border so the open state reads as a single group.
+// field is absent everywhere else), then shows ONE flat row: the button that
+// downloads and swaps the bundle. No accordion any more (Akshil, 2026-09-19:
+// "we need only download button") — the row that used to say "Update
+// available" and hide the action behind a chevron IS the action now, and every
+// later state is a plain status line in the same frame: "Downloading…",
+// "Installing…", "Ready to restart".
 //
-// ONE install path for every install type (D767), so this panel has exactly
-// one button and never mentions Homebrew: the in-app install downloads and
-// swaps the same version-verified bundle whichever tool put it there, and the
-// app never runs brew on itself (the cask's `uninstall quit:` would quit the
-// app mid-upgrade — see fused_render/update/mac.py). Once the button is
-// pressed the panel only points at the Activity dock — the bytes, the phase
-// and the Cancel are on the dock's `sys:update:<version>` row, never here
-// (one word: Downloading… / Installing…).
+// ONE install path for every install type (D767), so this row never mentions
+// Homebrew: the in-app install downloads and swaps the same version-verified
+// bundle whichever tool put it there, and the app never runs brew on itself
+// (the cask's `uninstall quit:` would quit the app mid-upgrade — see
+// fused_render/update/mac.py). Once pressed, the bytes, the phase and the
+// Cancel live on the Activity dock's `sys:update:<version>` row and on the
+// bottom-right progress card (platform/ui/UpdateProgressCard) — never here.
+//
+// THE SERVER INSTALLS THE NEWEST VERSION IT CAN FIND (Akshil, 2026-09-19:
+// "before downloading the version we show, check if there is new version
+// available and then download the newer version instead"): the press sends
+// the version on screen, the server force-rechecks the manifest, and a newer
+// release than the one shown is what gets installed — see
+// UpdateManager.install. The poll then shows the version that actually went.
+//
+// NO RESTART BUTTON. The blocking restart dialog (platform/ui/UpdateDialog,
+// raised by ServerStatusBanner the moment the shared store says "installed")
+// owns the restart; a second button here would be the same action twice.
 //
 // The poll itself lives in platform/lib/update-status.ts, shared with the
 // collapsed rail's dot and the Settings popover's own row — see that file's
-// header for why. Once the install lands, the blocking restart dialog takes
-// over (platform/ui/UpdateDialog, raised by ServerStatusBanner the moment this
-// same store says "installed") — so the
-// row drops to a plain "Ready to restart" status line whose button hands the
-// press to `platform/lib/restart-store` — the one entry point every restart
-// goes through — and `UpdateDialog`'s restart mode carries the wording and the
-// stages from there.
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+// header for why.
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { updateInstall, type UpdateStatus } from "@platform/lib/api";
-import { requestRestart } from "@platform/lib/restart-store";
 import {
   CHECK_RESULT_HOLD_MS,
   checkForUpdates,
@@ -51,7 +57,7 @@ import {
 // updates was invisible exactly when a person wondered whether there was one.
 // Now the same frame, in the same place above Settings, reads "Check for
 // updates" while there is nothing to report — one slot, two faces, and the
-// accordion takes it back the moment a version is found.
+// install row takes it back the moment a version is found.
 //
 // Only when the updater is THERE (`status !== null`): an unpackaged dev run has
 // no `update` in /api/config and nothing to check against, so it still shows
@@ -59,8 +65,8 @@ import {
 // how this row gets tried against 127.0.0.1 at all.
 //
 // A `<button>`, quiet: no accent dot (the dot means "there is news", and this
-// row is the absence of news), muted text, a refresh glyph where the accordion
-// keeps its chevron. The glyph turns while a check is in flight — the one
+// row is the absence of news), muted text, a refresh glyph trailing where the
+// install row keeps its download arrow. The glyph turns while a check is in flight — the one
 // motion in the sidebar, and it is the row's own progress — and reduced-motion
 // holds it still through styles/reduced-motion.css like every other transition.
 const REFRESH = (
@@ -72,15 +78,15 @@ const REFRESH = (
   </span>
 );
 
-// The accordion's disclosure mark: the row is a toggle, and a chevron is what
-// says so before it is clicked. One glyph, not two states of markup — CSS
-// rotates it 180° off the row's own `aria-expanded`, so the open state has a
-// single source of truth and the screen-reader answer and the visual one
-// cannot drift apart.
-const CHEVRON = (
-  <span className="update-badge-chev" aria-hidden="true">
+// The install row's trailing mark: a download arrow into a tray — the same
+// glyph the Settings popover's update row wears (shell/GlobalSidebar.tsx), so
+// the two doors to the same action read as one.
+const DOWNLOAD = (
+  <span className="update-badge-trail" aria-hidden="true">
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="m6 9 6 6 6-6" />
+      <path d="M12 3v12" />
+      <path d="m7 10 5 5 5-5" />
+      <path d="M4 18.5V19a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-.5" />
     </svg>
   </span>
 );
@@ -91,16 +97,11 @@ const CHEVRON = (
 // row reads it ("Up to date · v0.5.22").
 export default function UpdateBadge({ version = null }: { version?: string | null } = {}) {
   const status = useUpdateStatus();
-  const [open, setOpen] = useState(false);
-  // The row is the disclosure control; the panel is what it discloses, so the
-  // pair is wired together by id — `aria-expanded` alone says a thing opened
-  // without saying which.
-  const panelId = useId();
   // The idle row's own phase — local, not in the store: it is about THIS press
   // ("Checking…", then the answer for a few seconds), and the store already
   // says the durable thing (idle / available). A found update is not a phase
-  // here at all: the store flips to "available", the accordion takes the slot,
-  // and `open` is set so the Update button is on screen without a second press.
+  // here at all: the store flips to "available" and the install row takes the
+  // slot — the Update button is on screen with no second press.
   const [phase, setPhase] = useState<ManualCheckPhase>("rest");
   const holdTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(holdTimer.current), []);
@@ -114,12 +115,9 @@ export default function UpdateBadge({ version = null }: { version?: string | nul
   // Stable (setters and refs only), so the effect below can list it honestly.
   const settle = useCallback((result: UpdateStatus) => {
     let next: ManualCheckPhase = result.check_error ? "failed" : "current";
-    if (updateRelevant(result)) {
-      // The accordion takes the slot; open it so the Update button is on
-      // screen without a second press. The phase is not read on that branch.
-      setOpen(true);
-      next = "current";
-    }
+    // A found update: the install row takes the slot and the phase is not
+    // read on that branch.
+    if (updateRelevant(result)) next = "current";
     setPhase(next);
     clearTimeout(holdTimer.current);
     holdTimer.current = setTimeout(() => setPhase("rest"), CHECK_RESULT_HOLD_MS);
@@ -174,13 +172,12 @@ export default function UpdateBadge({ version = null }: { version?: string | nul
   }
 
   const install = async () => {
-    setOpen(true);
     try {
-      // Send what THIS render actually shows — `status.latest_version` —
-      // not just "install whatever's latest": the server's own background
-      // loop can move `_latest` on its own five-minute cadence, so without
-      // this the button could silently install a version the user never
-      // saw on screen (see UpdateManager.install's docstring).
+      // Send what THIS render actually shows — `status.latest_version`. The
+      // server force-rechecks the manifest before it starts and installs the
+      // NEWEST version it finds — the one shown, or a newer one published
+      // since (UpdateManager.install). It never installs anything older than
+      // what was on screen.
       setUpdateStatus(await updateInstall(status.latest_version));
     } catch {
       // Fall through — the re-armed poll picks up the real state.
@@ -188,85 +185,66 @@ export default function UpdateBadge({ version = null }: { version?: string | nul
     pokeUpdateStatus();
   };
 
-  const label = updateLabel(status);
   const dot = <span className="update-badge-dot" aria-hidden="true" />;
 
-  // The installed state: a status line AND the way out, right here (Akshil,
-  // 2026-09-08: "have the action button there as well so we can restart it
-  // directly above the settings item"). Nothing to expand — the button is
-  // always drawn, so the row carries no chevron.
-  //
-  // `requestRestart()`, NOT A LINK. It used to be an `<a
-  // href="fused-render://relaunch">`, which is a restart nothing remembers: the
-  // deep link answers the page nothing, so a press here left every window —
-  // this one included — to discover the outage as if the app had crashed. The
-  // one handler (platform/lib/restart-store) latches the press, tells the other
-  // windows, and then navigates, so the blocking dialog lights up with the same
-  // stages whichever surface the press came from. Same class: `.update-badge-action`
-  // has always styled a button and a link identically.
-  if (status.state === "installed") {
+  // THE ACTION ROW: the one button. Its label names the version it will
+  // fetch; the download arrow trails where the idle face keeps its refresh
+  // glyph, so the two faces are one line tall alike.
+  if (status.state === "available" && !status.check_only) {
     return (
       <div className="update-badge">
-        <div className="update-badge-row update-badge-row-static">
+        <button type="button" className="update-badge-row update-badge-row-install" onClick={install}>
           {dot}
-          {label}
-        </div>
-        <div className="update-badge-panel">
-          <button type="button" className="update-badge-action" onClick={requestRestart}>
-            Restart fused-render
-          </button>
-        </div>
+          Update to v{status.latest_version}
+          {DOWNLOAD}
+        </button>
       </div>
     );
   }
 
+  // A failed install: the same button, with the reason on it (title) — a
+  // press retries, the same call as the first one.
+  if (status.state === "error") {
+    return (
+      <div className="update-badge" aria-live="polite">
+        <button
+          type="button"
+          className="update-badge-row update-badge-row-install"
+          onClick={install}
+          title={`Update failed: ${status.error ?? "unknown error"}`}
+        >
+          {dot}
+          Update failed · Try again
+          {DOWNLOAD}
+        </button>
+      </div>
+    );
+  }
+
+  // EVERY OTHER STATE IS A STATUS LINE, nothing to press:
+  //   check-only   the dev-run manager (mac.DEV_MANAGER_ENV) can look but not
+  //                swap — say so instead of drawing a button the server refuses
+  //   installing   one word for which half is running (Akshil, 2026-09-08:
+  //                "just words that give status quickly"); the numbers stay on
+  //                the Activity row and the bottom-right progress card
+  //   installed    "Ready to restart" — the blocking dialog holds the button
+  let line: string;
+  let title: string | undefined;
+  if (status.state === "installing") {
+    line = status.phase === "installing" ? "Installing…" : "Downloading…";
+  } else if (status.state === "installed") {
+    line = updateLabel(status);
+  } else {
+    line = `v${status.latest_version} available · dev run`;
+    title = `v${status.latest_version} is out. This dev run has no bundle to update — install from the packaged app.`;
+  }
   return (
-    <div className="update-badge">
-      <button
-        type="button"
-        className="update-badge-row"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        aria-controls={panelId}
-      >
+    <div className="update-badge" aria-live="polite">
+      <div className="update-badge-row update-badge-row-static" title={title}>
         {dot}
-        {label}
-        {CHEVRON}
-      </button>
-      {open && (
-        <div className="update-badge-panel" id={panelId}>
-          {status.state === "available" && !status.check_only && (
-            <button type="button" className="update-badge-action" onClick={install}>
-              Update to v{status.latest_version}
-            </button>
-          )}
-          {status.state === "available" && status.check_only && (
-            // The dev-run manager (mac.DEV_MANAGER_ENV) can look but not swap:
-            // say so instead of drawing a button whose press the server refuses.
-            <div className="update-badge-text">
-              v{status.latest_version} is out. This dev run has no bundle to
-              update — install from the packaged app.
-            </div>
-          )}
-          {status.state === "installing" && (
-            // One word for where the install is (Akshil, 2026-09-08: "just words
-            // that give status quickly"); the numbers stay on the Activity row.
-            <div className="update-badge-text">
-              {status.phase === "installing" ? "Installing…" : "Downloading…"}
-            </div>
-          )}
-          {status.state === "error" && (
-            <>
-              <div className="update-badge-text update-badge-error">
-                Update failed: {status.error ?? "unknown error"}
-              </div>
-              <button type="button" className="update-badge-action" onClick={install}>
-                Try again
-              </button>
-            </>
-          )}
-        </div>
-      )}
+        {line}
+        {status.state === "installing" && <span className="update-spinner update-badge-trail" aria-hidden="true" />}
+      </div>
     </div>
   );
 }
