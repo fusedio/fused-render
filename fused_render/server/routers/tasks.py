@@ -289,6 +289,11 @@ def _prompt(obj) -> dict | None:
     text = tasks_store.first_text(message.get("content")).strip()
     if not text or tasks_store.is_machinery(text):
         return None
+    # The CLI's stop marker is a user row too, and not one the reader typed.
+    # Refused here so it is neither a message, a count, nor — with
+    # `task_card_last_message` on — the row's title (Akshil, 2026-09-19).
+    if tasks_store.is_interrupt_mark(text):
+        return None
     # The remainder can still be empty — annotations or a screenshot sent with no
     # typed words. That IS something the user did, and until 2026-09-18 this
     # dropped it, which is worse than an empty bubble by a long way: `_status`

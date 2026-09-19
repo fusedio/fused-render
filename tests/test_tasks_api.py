@@ -786,6 +786,29 @@ def test_an_api_error_leaves_the_prompt_as_the_last_message(
     assert task["last_message"]["text"] == "run the migration"
 
 
+def test_the_interrupt_marker_is_not_the_last_message(
+        client, projects_dir, card_titles):
+    # Hit stop, then leave: the CLI writes `[Request interrupted by user]` as a
+    # user row with a real uuid. Not something the reader said — neither a
+    # message nor the title (Akshil, 2026-09-19). Both marker forms.
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("run the migration", T9),
+        _user("[Request interrupted by user for tool use]", T10, uuid="u2"),
+        _user("[Request interrupted by user]\n", T11, uuid="u3"),
+    ])
+
+    row = _tasks(client)[0]
+    assert row["message_count"] == 1
+    assert row["last_message"]["text"] == "run the migration"
+    # ...while a prompt that merely TALKS about the marker is the reader's.
+    _write_transcript(projects_dir, "sess-b", "/q", [
+        _user("why did [Request interrupted by user] appear?", T9),
+    ])
+    rows = {r["last_message"]["text"] for r in _tasks(client)
+            if r.get("last_message")}
+    assert "why did [Request interrupted by user] appear?" in rows
+
+
 def test_a_task_with_nothing_said_in_it_has_no_last_message(
         client, tmp_path, card_titles):
     # A scheduled message that has not run: no transcript, nothing said. The
