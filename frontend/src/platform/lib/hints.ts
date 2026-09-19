@@ -115,9 +115,21 @@ function placeTask(el: Element): void {
   const p = ensurePanel();
   const w = p.offsetWidth;
   const h = p.offsetHeight;
-  const r = el.getBoundingClientRect();
+  // ONE CENTRE FOR THE PAIR (Akshil, 2026-09-19: "same center because they
+  // are like the same thing"): the title span and the reply span are two
+  // halves of one line, so the anchor is the box around BOTH — every sibling
+  // that carries the task form — and the panel lands in the same place
+  // whichever half the pointer is on.
+  const group = Array.from(el.parentElement?.querySelectorAll("[data-hint-title]") ?? [el]);
+  const rects = (group.length ? group : [el]).map((n) => n.getBoundingClientRect());
+  const r = {
+    left: Math.min(...rects.map((q) => q.left)),
+    right: Math.max(...rects.map((q) => q.right)),
+    top: Math.min(...rects.map((q) => q.top)),
+    bottom: Math.max(...rects.map((q) => q.bottom)),
+  };
   const maxLeft = Math.max(EDGE, window.innerWidth - EDGE - w);
-  const left = Math.min(maxLeft, Math.max(EDGE, r.left + r.width / 2 - w / 2));
+  const left = Math.min(maxLeft, Math.max(EDGE, (r.left + r.right) / 2 - w / 2));
   let top = r.bottom + 6;
   if (top + h > window.innerHeight - EDGE) top = Math.max(EDGE, r.top - 6 - h);
   p.style.left = `${Math.round(left)}px`;
