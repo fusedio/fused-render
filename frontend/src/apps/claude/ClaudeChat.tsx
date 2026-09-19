@@ -1461,8 +1461,26 @@ function ChatBody(props: ChatBodyProps) {
 
   // ── the three pills ────────────────────────────────────────────────────────
   const defaults = useComposerDefaults(agentDir, file, params);
-  liveModel.current = defaults.model;
-  liveEffort.current = defaults.effort;
+  // WHAT THE RUN IS ACTUALLY LAUNCHED WITH (`run-controller`'s `curModel` /
+  // `curEffort`, read at send time on every `start` and `send`) — and it is ""
+  // for as long as the pills have not resolved.
+  //
+  // "" is not a missing field: `agent._claude_argv` omits `--model`/`--effort`
+  // entirely for it, so the CLI runs on its own default and `agent._start`
+  // RECORDS what it chose — which is then this chat's record and what the pill
+  // shows from its next read on. That is the only behaviour that cannot send a
+  // model the reader was never shown: while `pillsReady` is false the pill is a
+  // wash, and launching on a constant the record was about to overturn is
+  // exactly the bug the wash exists to hide. A field that is unresolved is also
+  // a field this chat has NO record for (see `pillsReady`), so nothing the app
+  // wrote down is being contradicted.
+  // PER FIELD, not `pillsReady`: a task opened with `?model=haiku` has its
+  // model settled the instant the record read answers, while its effort may
+  // still be waiting on the slow read. Tying both to one flag would send that
+  // turn with NO model and let the CLI pick — the task's explicit choice lost
+  // on its first send (review, PR #1226).
+  liveModel.current = defaults.modelSettled ? defaults.model : "";
+  liveEffort.current = defaults.effortSettled ? defaults.effort : "";
   // The ask branch waits on these before its automatic send, so a "Fix with AI"
   // run never launches on the fallback model (T:19233-19248).
   const detected = useRef<{ promise: Promise<void>; done: () => void } | null>(null);
@@ -3023,6 +3041,7 @@ function ChatBody(props: ChatBodyProps) {
       setModel: defaults.setModel,
       setEffort: defaults.setEffort,
       setPermission: defaults.setPermission,
+      ready: defaults.pillsReady,
     }),
     [defaults],
   );

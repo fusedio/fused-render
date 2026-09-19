@@ -73,6 +73,16 @@ export interface ComposerControls {
   setModel(value: string): void;
   setEffort(value: string): void;
   setPermission(value: PermissionMode): void;
+  /** `useComposerDefaults`'s `pillsReady` — the model/effort pills may show
+   *  their value. Until it is true they draw a wash of the same size instead
+   *  (`PillSelect`'s `loading`): the two reads behind those values land at
+   *  different speeds, and a pill that paints a constant while the answer is
+   *  still out is a pill that flips two seconds later (Akshil, 2026-09-19).
+   *
+   *  Optional, and treated as READY when absent: the permission pill has no
+   *  read behind it at all, and every host that states its own pair (tests, the
+   *  cards wall) is stating a settled one. */
+  ready?: boolean;
 }
 
 // ---- the fitting ladder ----------------------------------------------------
@@ -1498,9 +1508,9 @@ export function ComposerCard({
     // appearing or leaving changes `composerRowNeed` by a whole control plus a
     // gap, which is exactly the kind of change T's MutationObserver existed to
     // catch (T:12455-12474).
-    `${controls.model}|${controls.effort}|${controls.permission}|${blocked ? 1 : 0}|${
-      camera ? 1 : 0
-    }|${String(fitRevision ?? "")}`,
+    `${controls.model}|${controls.effort}|${controls.permission}|${
+      controls.ready === false ? 0 : 1
+    }|${blocked ? 1 : 0}|${camera ? 1 : 0}|${String(fitRevision ?? "")}`,
   );
 
   // THIS IS THE NATIVE `initialFocus`, and it has to be, because a modal's
@@ -1883,8 +1893,16 @@ export function ComposerCard({
             untouched, so the fit ladder still measures it. */}
         <div className="c-composer-tools">
         <div className="c-composer-row" ref={rowRef}>
-          <ModelSelect value={controls.model} onChange={controls.setModel} />
-          <EffortSelect value={controls.effort} onChange={controls.setEffort} />
+          <ModelSelect
+            value={controls.model}
+            onChange={controls.setModel}
+            loading={controls.ready === false}
+          />
+          <EffortSelect
+            value={controls.effort}
+            onChange={controls.setEffort}
+            loading={controls.ready === false}
+          />
           <PermissionSelect
             value={controls.permission}
             onChange={controls.setPermission}

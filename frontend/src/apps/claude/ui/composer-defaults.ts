@@ -20,7 +20,7 @@
 // set a value matching no option, which renders as a blank pill (fitSelect
 // returns early with no `selectedOptions[0]`) and is also what reaches the CLI.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getPrefs, recordChatSettings } from "@platform/lib/api";
+import { getPrefs, readChatSettings, recordChatSettings } from "@platform/lib/api";
 import { listedModelIn } from "@platform/lib/model-vocab";
 import { runAgent } from "../protocol/agent";
 import type { DefaultsResponse, PermissionMode } from "../protocol/types";
@@ -158,9 +158,29 @@ export interface ComposerDefaults {
   setModel(value: string): void;
   setEffort(value: string): void;
   setPermission(value: PermissionMode): void;
-  /** Both best-effort reads have landed (or failed). The "Fix with AI" boot
-   *  branch awaits this before its automatic send (T:12619, 12635). */
+  /** Every best-effort read has landed (or failed) — the record, detection and
+   *  the prefs. The "Fix with AI" boot branch awaits this before its automatic
+   *  send (T:12619, 12635), so the record read is IN it: an automatic send is
+   *  the one send a human cannot hold back, and it must not launch on a value
+   *  the record was about to overturn. */
   ready: boolean;
+  /** THE PILLS MAY PAINT THEIR VALUE.
+   *
+   *  Weaker than `ready` and deliberately so: a pill is settled as soon as
+   *  nothing still in flight can CHANGE it, which for the overwhelming majority
+   *  of chats is the record read alone (milliseconds). Only a field the record
+   *  left "" — and that no URL param seeded either — has to wait for the slow
+   *  `defaults` read, because detection is the next rank down.
+   *
+   *  Until this is true the composer draws the pills in a loading state rather
+   *  than a value, which is the whole of the fix: a pill that has shown nothing
+   *  cannot flip. */
+  pillsReady: boolean;
+  /** The two halves of `pillsReady`, for the one caller that must not tie them
+   *  together: what a send carries. A model settled by a task's `?model=` must
+   *  reach the CLI even while the effort is still being looked up. */
+  modelSettled: boolean;
+  effortSettled: boolean;
 }
 
 /**
@@ -181,15 +201,20 @@ export function useComposerDefaults(
   });
   const [pref, setPref] = useState("");
   // WHAT THE APP ITSELF WROTE DOWN for this conversation — the record that
-  // outranks everything else here (see the header). It arrives with detection,
-  // off the same `defaults` read, and is updated straight away on a pick so the
-  // pill does not flicker back to its old value while the POST is in flight.
+  // outranks everything else here (see the header). It arrives off its OWN
+  // read (`GET /api/tasks/settings`, one JSON file, milliseconds) rather than
+  // off the `defaults` subprocess, which is what lets the pills wait for it
+  // instead of painting a constant and swapping it two seconds later. It is
+  // updated straight away on a pick so the pill does not flicker back to its
+  // old value while the POST is in flight.
   const [recorded, setRecorded] = useState<{ model: string; effort: string }>({
     model: "",
     effort: "",
   });
   const [detectionReady, setDetectionReady] = useState(false);
   const [prefsReady, setPrefsReady] = useState(false);
+  // THE FAST HALF, and the one the pills actually wait on. See `pillsReady`.
+  const [recordReady, setRecordReady] = useState(false);
 
   // WHICH CONVERSATION THE PILLS ARE ABOUT, and it is the subject of every
   // question this hook asks. Detection used to name only the FOLDER, and
@@ -221,6 +246,61 @@ export function useComposerDefaults(
   // read starts, because a new read is about a new conversation.
   const pickedSinceRead = useRef<{ model?: string; effort?: string }>({});
 
+  // ── THE FAST READ: this chat's record, straight off the store ─────────────
+  //
+  // ONE JSON FILE READ over HTTP (`GET /api/tasks/settings`), asked on mount and
+  // again the moment the chat learns its id. It answers the rank that outranks
+  // everything else here, and it answers it in milliseconds — which is the whole
+  // of the flip fix. The slow `defaults` read below spawns agent.py as a
+  // subprocess to scan a transcript tail; it took two to three seconds, and the
+  // pills had already painted a constant by then, so every open of a chat showed
+  // one value and then swapped it (Akshil, 2026-09-19).
+  //
+  // A chat with NO SESSION is answered here rather than asked: there is no
+  // conversation to have a record, so the record is "" for both fields and it is
+  // known synchronously. It still has to be MARKED ready, because `pillsReady`
+  // waits on this flag for every chat.
+  //
+  // The stale-read guard applies to THIS read as much as to the slow one, and
+  // for the same reason: the pill can be moved while a read is in flight, the
+  // pick is recorded server-side, and an answer composed before that write lands
+  // after it. `pickedSinceRead` is cleared HERE — a new conversation is what
+  // invalidates it, and this is the effect that knows the conversation changed
+  // even when the agent dir has not arrived yet.
+  useEffect(() => {
+    let live = true;
+    pickedSinceRead.current = {};
+    setRecordReady(false);
+    if (!sessionId) {
+      setRecorded({ model: "", effort: "" });
+      setRecordReady(true);
+      return;
+    }
+    void readChatSettings(sessionId)
+      .then((rec) => {
+        if (!live) return;
+        const picked = pickedSinceRead.current;
+        setRecorded({
+          model: picked.model ?? listedModel(rec?.model),
+          effort:
+            picked.effort ??
+            (rec && EFFORTS.includes(rec.effort as (typeof EFFORTS)[number])
+              ? rec.effort
+              : ""),
+        });
+      })
+      .catch(() => {
+        // Best-effort, like every other read here: a record we could not fetch
+        // is a record that says nothing, and the ranks below it speak.
+      })
+      .finally(() => {
+        if (live) setRecordReady(true);
+      });
+    return () => {
+      live = false;
+    };
+  }, [sessionId]);
+
   useEffect(() => {
     if (!agentDir || !file) return;
     let live = true;
@@ -242,16 +322,24 @@ export function useComposerDefaults(
         // record naming something this build does not offer renders as a blank
         // pill. An agent that predates the field simply has none, which reads
         // as "no record" — exactly what it means.
+        // THE SAME RECORD, SECOND. The fast read above has almost always
+        // answered by now and this is the same file read twice — but the agent
+        // is the only reader when the fast door is missing (an older server) or
+        // failed, so it still teaches. PER FIELD, and never backwards: a field
+        // this answer has no value for leaves the one already learned alone,
+        // which is what stops a `defaults` answer composed before a pill pick
+        // from erasing it a second time.
         const rec = d?.recorded;
         const picked = pickedSinceRead.current;
-        setRecorded({
-          model: picked.model ?? (rec ? listedModel(rec.model) : ""),
-          effort:
-            picked.effort ??
-            (rec && EFFORTS.includes(rec.effort as (typeof EFFORTS)[number])
-              ? rec.effort
-              : ""),
-        });
+        const recModel = rec ? listedModel(rec.model) : "";
+        const recEffort =
+          rec && EFFORTS.includes(rec.effort as (typeof EFFORTS)[number])
+            ? rec.effort
+            : "";
+        setRecorded((prev) => ({
+          model: picked.model ?? (prev.model || recModel),
+          effort: picked.effort ?? (prev.effort || recEffort),
+        }));
       })
       .catch(() => {
         // Best-effort: the pills keep the fallback rather than showing nothing.
@@ -296,6 +384,30 @@ export function useComposerDefaults(
   const effort = resolveEffort(snapshot.effort, detected.effort, recorded.effort);
   const permission = resolvePermission(snapshot.permission);
 
+  // ── WHEN A PILL MAY SHOW ITS VALUE ────────────────────────────────────────
+  //
+  // Per FIELD, and the question is never "has everything answered" but "can
+  // anything still in flight CHANGE this one". Read straight off the ranking
+  // above:
+  //
+  //   * a record for this field, or a `?model=`/`?effort=` the host seeded —
+  //     both outrank every read that is still out, so the field is settled the
+  //     moment the (fast) record read has answered;
+  //   * neither — then the next rank down is detection, and for the model the
+  //     prefs default behind it, so the slow reads have to land first.
+  //
+  // An unlisted param is settled too, and deliberately: `resolveModel` folds it
+  // to the constant rather than falling through, so nothing pending speaks for
+  // that field either.
+  const recordAnswered = recordReady;
+  const modelSettled =
+    recordAnswered &&
+    (!!recorded.model || !!snapshot.model || (detectionReady && prefsReady));
+  const effortSettled =
+    recordAnswered &&
+    (!!recorded.effort || !!snapshot.effort || detectionReady);
+  const pillsReady = modelSettled && effortSettled;
+
   // A PICK IS A WRITE, not just a param. The param still moves — it is what the
   // rest of the page reads this render, and what a copied URL carries — but it
   // is the record that survives leaving the page and that every other door into
@@ -332,8 +444,12 @@ export function useComposerDefaults(
       },
       setPermission: (value: PermissionMode) =>
         params.set({ permission: value }),
-      ready: detectionReady && prefsReady,
+      ready: detectionReady && prefsReady && recordReady,
+      pillsReady,
+      modelSettled,
+      effortSettled,
     }),
-    [model, effort, permission, params, record, detectionReady, prefsReady],
+    [model, effort, permission, params, record, detectionReady, prefsReady,
+     recordReady, pillsReady, modelSettled, effortSettled],
   );
 }

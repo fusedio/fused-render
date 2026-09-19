@@ -4919,6 +4919,56 @@ class SettingsPatch(BaseModel):
     effort: str = ""
 
 
+def _settings_session_id(raw: str) -> str:
+    """The one id check both settings doors make.
+
+    `agent._defaults` refuses ids with separators or a leading dot before it
+    reads anything, so a record filed under one would never be read back — and a
+    READ of one is equally a question no store can answer. Same shape the
+    running-mark endpoint demands, said once so the two doors cannot drift."""
+    session_id = (raw or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="missing session_id")
+    if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
+        raise HTTPException(status_code=400,
+                            detail=f"invalid session_id {session_id!r}")
+    return session_id
+
+
+@router.get("/api/tasks/settings")
+def api_task_settings_read(session_id: str = ""):
+    """WHAT THIS CONVERSATION IS RECORDED AS RUNNING WITH, in one file read.
+
+    THE FAST HALF OF THE COMPOSER'S RANKING, and it exists because the slow one
+    was the whole latency. The pills' record used to arrive only on
+    `runAgent(agentDir, "defaults")` — a POST /api/run that SPAWNS agent.py as a
+    subprocess and scans a transcript tail, seconds of work — so every open of a
+    chat painted the constant default (or the URL seed) first and flipped to the
+    recorded value two or three seconds later (Akshil, 2026-09-19: "when I come
+    to the page after 2-3 seconds it flips, same when I reload").
+
+    The record itself is one JSON file this process already reads on every
+    listing (`tasks_store.settings_state`), so it never needed the subprocess at
+    all. The `defaults` read stays for what only it can answer — the
+    transcript/folder ladder for a field this record left "" — and this door
+    answers the rank ABOVE it in milliseconds.
+
+    "" FOR A FIELD THIS STORE HAS NO ANSWER FOR, and that is the load-bearing
+    answer: it means "no record", which is precisely what leaves detection and
+    the composer's own constants speaking. An unknown session is `{"", ""}` and
+    not a 404 — a conversation with nothing recorded and a conversation that
+    never existed are the same fact to the asker.
+
+    Folded through `_display_model` like every other way out of this module, so
+    a chat recorded under the retired pinned Fable id reads as `fable` and opens
+    on the row the picker now offers instead of a blank pill.
+    """
+    session_id = _settings_session_id(session_id)
+    model, effort = tasks_store.session_settings(
+        tasks_store.settings_state(), session_id)
+    return {"model": _display_model(model), "effort": effort}
+
+
 @router.post("/api/tasks/settings")
 def api_task_settings(patch: SettingsPatch):
     """Record which model this conversation runs with, and how hard it thinks.
@@ -4932,15 +4982,9 @@ def api_task_settings(patch: SettingsPatch):
     Answers with the record as stored, so a client that wants to know what it
     now says does not have to guess or re-read the listing.
     """
-    session_id = patch.session_id.strip()
-    if not session_id:
-        raise HTTPException(status_code=400, detail="missing session_id")
-    # The shape the readers accept (`agent._bad_id`, `_SESSION_ID_SHAPE` on the
-    # running-mark endpoint): a record filed under an id no reader will ever
-    # look up is dead weight in a file that is read on every listing.
-    if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
-        raise HTTPException(status_code=400,
-                            detail=f"invalid session_id {session_id!r}")
+    # The shape the readers accept: a record filed under an id no reader will
+    # ever look up is dead weight in a file that is read on every listing.
+    session_id = _settings_session_id(patch.session_id)
     model = patch.model.strip()
     effort = patch.effort.strip()
     if model and not _MODEL_SHAPE.match(model):

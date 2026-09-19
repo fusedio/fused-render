@@ -3800,6 +3800,32 @@ export function markWholeTaskRead(
 //
 // Per field: send the one that changed. An omitted field is "not saying", never
 // "nothing" — the server keeps what the other pick (or the spawn) recorded.
+// THE SAME RECORD, READ BACK — and read FIRST, before anything slower.
+//
+// The composer learned its record off the agent's `defaults` action, which is a
+// POST /api/run that spawns agent.py as a subprocess and scans a transcript
+// tail. That took two to three seconds, and the pills were already showing
+// something — the constant default, or the `?model=` a deep link seeded — so
+// every open of a chat FLIPPED once the answer landed (Akshil, 2026-09-19).
+//
+// The record is one small JSON file the server already reads on every listing,
+// so it never needed the subprocess. This is that read, straight over HTTP: it
+// answers in milliseconds, it outranks every other source the composer has, and
+// the pills wait for it rather than guessing ahead of it. The `defaults` call
+// stays for the one thing only it knows — the transcript/folder ladder, which
+// speaks for a field this record left "".
+//
+// `{model: "", effort: ""}` for a session with nothing recorded, and for one
+// that does not exist: "no record" is the answer that leaves detection and the
+// composer's constants speaking, and the two cases are the same fact here.
+export function readChatSettings(
+  sessionId: string,
+): Promise<{ model: string; effort: string }> {
+  return getJson<{ model: string; effort: string }>(
+    `/api/tasks/settings?session_id=${encodeURIComponent(sessionId)}`,
+  );
+}
+
 export function recordChatSettings(
   sessionId: string,
   settings: { model?: string; effort?: string },

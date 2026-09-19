@@ -2133,6 +2133,69 @@ def test_picking_one_pill_never_erases_the_other(client, projects_dir):
     assert r.json() == {"ok": True, "model": "haiku", "effort": "max"}
 
 
+# ---- READING the record, without the subprocess (Akshil, 2026-09-19) --------
+#
+# "It takes some time to load in these model and effort … when I come to the
+# page after 2-3 seconds it flips, same when I reload." The composer learned the
+# record off the agent's `defaults` action — a POST /api/run that spawns agent.py
+# and scans a transcript tail — so the pills painted a constant first and swapped
+# it seconds later. The record is one JSON file this process already reads on
+# every listing; this door hands it over in milliseconds so the pills can WAIT
+# for it instead of guessing ahead of it.
+
+
+def test_the_record_can_be_read_back_without_spawning_anything(
+        client, projects_dir):
+    """The fast half of the composer's ranking. Same file the POST writes, same
+    answer the listing derives its row from — one GET away."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    tasks_store.record_settings("sess-a", "haiku", "low")
+    r = client.get("/api/tasks/settings", params={"session_id": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"model": "haiku", "effort": "low"}
+
+
+def test_reading_a_record_under_the_retired_pinned_Fable_id_says_fable(client):
+    """Folded on the way out exactly as the ROW is (`_display_model`): a chat
+    recorded under "claude-fable-5-1" opens on the Fable the picker offers, not
+    on a blank pill. Display only — what the CLI is handed is untouched."""
+    tasks_store.record_settings("sess-a", "claude-fable-5-1", "max")
+    r = client.get("/api/tasks/settings", params={"session_id": "sess-a"})
+    assert r.json() == {"model": "fable", "effort": "max"}
+
+
+def test_a_session_with_nothing_recorded_reads_as_no_opinion(client):
+    """"" FOR BOTH, and not a 404: "no record" is the load-bearing answer — it
+    is what leaves detection and the composer's own constants speaking, and a
+    conversation that never existed says the same thing as one that never
+    chose."""
+    r = client.get("/api/tasks/settings", params={"session_id": "no-such"})
+    assert r.status_code == 200
+    assert r.json() == {"model": "", "effort": ""}
+
+
+def test_a_record_of_one_field_reads_back_as_one_field(client):
+    """Per field here too: a chat that recorded only an effort must not be told
+    its model is "", it must be told nothing about its model — which is the same
+    string, and the composer's next rank down is what fills it."""
+    tasks_store.record_settings("sess-a", effort="low")
+    assert client.get("/api/tasks/settings",
+                      params={"session_id": "sess-a"}).json() \
+        == {"model": "", "effort": "low"}
+
+
+def test_the_read_refuses_the_same_ids_the_write_does(client):
+    """One validator behind both doors (`_settings_session_id`): an id no reader
+    would ever look up is not a question this endpoint answers, and a caller
+    that asked with one has a bug rather than an empty record."""
+    for sid in ("", "../../etc/passwd", ".hidden", "a/b", "a\\b", "d:x", ".",
+                ".."):
+        r = client.get("/api/tasks/settings", params={"session_id": sid})
+        assert r.status_code == 400, sid
+    assert client.get("/api/tasks/settings",
+                      params={"session_id": "sess-ok.1_2"}).status_code == 200
+
+
 def test_the_settings_endpoint_refuses_words_it_does_not_know(client, projects_dir):
     """A 400 rather than a silent fallback: a caller that asked for an effort
     this build has no name for has been answered with a different session, which

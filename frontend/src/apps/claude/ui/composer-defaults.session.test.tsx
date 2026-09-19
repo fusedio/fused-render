@@ -263,3 +263,206 @@ test("a pick made while the defaults read is in flight is not undone by its answ
   expect(box.pills!.effort).toBe("low");
   expect(box.pills!.model).toBe("opus");
 });
+
+
+// ---- THE FAST READ, AND WHY THE PILLS WAIT FOR IT ----------------------------
+//
+// "It takes some time to load in these model and effort … when I come to the
+// page after 2-3 seconds it flips, same when I reload" (Akshil, 2026-09-19).
+//
+// The record above is the rank that outranks every other, and it used to arrive
+// on the SLOW read: `runAgent(agentDir, "defaults")` is a POST /api/run that
+// spawns agent.py as a subprocess to scan a transcript tail. Two to three
+// seconds — during which the pills had already painted the constant default or
+// the URL seed, and then swapped it.
+//
+// So the record gets a door of its own: `GET /api/tasks/settings`, one JSON file
+// the server already reads on every listing, answered in milliseconds. The slow
+// read stays for the one thing only it knows — the transcript/folder ladder —
+// and the pills are held (`pillsReady`) until nothing still in flight can change
+// them. A pill that has never shown a value cannot flip to a different one.
+
+/** The two reads, separately steerable: `fast` is `GET /api/tasks/settings`,
+ *  `slow` is the agent's `defaults` action. Either can be HELD — answered only
+ *  when the test says so — which is how the order of the two is asserted. */
+function reads(opts: {
+  fast?: Defaults["recorded"];
+  slow?: Defaults;
+  holdFast?: boolean;
+  holdSlow?: boolean;
+} = {}) {
+  const posts: Record<string, unknown>[] = [];
+  let letFast: (() => void) | null = null;
+  let letSlow: (() => void) | null = null;
+  const answer = (body: unknown) =>
+    ({ ok: true, status: 200, json: () => Promise.resolve(body) }) as unknown as Response;
+  const fastBody = () => ({
+    model: opts.fast?.model ?? "",
+    effort: opts.fast?.effort ?? "",
+  });
+  const slowBody = () => ({
+    ok: true,
+    result: {
+      model: opts.slow?.model ?? "",
+      effort: opts.slow?.effort ?? "",
+      recorded: opts.slow?.recorded ?? { model: "", effort: "" },
+    },
+  });
+  globalThis.fetch = ((url: string, init?: RequestInit) => {
+    const target = String(url);
+    if (target.startsWith("/api/tasks/settings")) {
+      if (init?.method === "POST") {
+        posts.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+        return Promise.resolve(answer({ ok: true }));
+      }
+      if (!opts.holdFast) return Promise.resolve(answer(fastBody()));
+      return new Promise<Response>((done) => {
+        letFast = () => done(answer(fastBody()));
+      });
+    }
+    if (target.startsWith("/api/run")) {
+      if (!opts.holdSlow) return Promise.resolve(answer(slowBody()));
+      return new Promise<Response>((done) => {
+        letSlow = () => done(answer(slowBody()));
+      });
+    }
+    return Promise.resolve(answer({}));
+  }) as unknown as typeof fetch;
+  const settle = async (open: (() => void) | null) => {
+    await act(async () => {
+      open?.();
+      await new Promise((done) => setTimeout(done, 0));
+    });
+  };
+  return {
+    posts,
+    landFast: () => settle(letFast),
+    landSlow: () => settle(letSlow),
+  };
+}
+
+test("the record arrives on the FAST read, with the slow one still in flight", async () => {
+  // The whole fix in one assertion: the pills hold their final value before the
+  // subprocess has said anything at all.
+  const wire = reads({ fast: { model: "haiku", effort: "low" }, holdSlow: true });
+  const box = await mount(createMemoryParamsStore({ session_id: "sess-a" }));
+  expect([box.pills!.model, box.pills!.effort]).toEqual(["haiku", "low"]);
+  expect(box.pills!.pillsReady).toBe(true);
+  // …and the slow read landing afterwards changes nothing.
+  await wire.landSlow();
+  expect([box.pills!.model, box.pills!.effort]).toEqual(["haiku", "low"]);
+});
+
+test("the pills are NOT ready while the fast read is in flight", async () => {
+  // The composer draws a wash for this window rather than a value, so there is
+  // nothing on screen for the answer to overturn.
+  const wire = reads({
+    fast: { model: "haiku", effort: "low" },
+    holdFast: true,
+    slow: { recorded: { model: "", effort: "" } },
+  });
+  const box = await mount(createMemoryParamsStore({ session_id: "sess-a" }));
+  expect(box.pills!.pillsReady).toBe(false);
+  await wire.landFast();
+  expect(box.pills!.pillsReady).toBe(true);
+  expect([box.pills!.model, box.pills!.effort]).toEqual(["haiku", "low"]);
+});
+
+test("a field the record left empty waits for the slow read", async () => {
+  // Per FIELD, like every other question about this pair. The model is settled
+  // the moment the record answers; the effort has no record and no param, so
+  // detection is the next rank down and the pill has to wait for it.
+  const wire = reads({
+    fast: { model: "haiku", effort: "" },
+    slow: { effort: "max" },
+    holdSlow: true,
+  });
+  const box = await mount(createMemoryParamsStore({ session_id: "sess-a" }));
+  expect(box.pills!.model).toBe("haiku");
+  expect(box.pills!.pillsReady).toBe(false);
+  await wire.landSlow();
+  expect(box.pills!.pillsReady).toBe(true);
+  expect([box.pills!.model, box.pills!.effort]).toEqual(["haiku", "max"]);
+});
+
+test("a seeded param settles its pill without waiting for the slow read", async () => {
+  // The rank below a record is the URL param, and nothing still in flight can
+  // outrank it — so a deep-linked chat with no record of its own paints at once
+  // rather than washing for the whole of the subprocess.
+  reads({ fast: { model: "", effort: "" }, holdSlow: true });
+  const box = await mount(
+    createMemoryParamsStore({ session_id: "sess-a", model: "opus", effort: "max" }),
+  );
+  expect(box.pills!.pillsReady).toBe(true);
+  expect([box.pills!.model, box.pills!.effort]).toEqual(["opus", "max"]);
+});
+
+test("a chat with NO session needs no fast read, and still resolves", async () => {
+  // There is no conversation to have a record, so the record is "" for both
+  // fields and known without asking. Detection answers the folder's question for
+  // it, and the pills wait for exactly that.
+  const wire = reads({ slow: { model: "opus", effort: "max" }, holdSlow: true });
+  const box = await mount(createMemoryParamsStore({}));
+  expect(box.pills!.pillsReady).toBe(false);
+  await wire.landSlow();
+  expect(box.pills!.pillsReady).toBe(true);
+  expect([box.pills!.model, box.pills!.effort]).toEqual(["opus", "max"]);
+});
+
+test("a pick made while the FAST read is in flight is not undone by its answer", async () => {
+  // The same stale-read race the slow read has, and it is tighter here rather
+  // than gone: the read is milliseconds, but it is asked again the moment the
+  // chat learns its id, and a pill can be moved in that window. The pick is
+  // recorded server-side; the answer already on the wire was composed before
+  // that write and lands after it.
+  const wire = reads({ fast: { model: "opus", effort: "max" }, holdFast: true,
+                       holdSlow: true });
+  const box = await mount(createMemoryParamsStore({ session_id: "sess-a" }));
+
+  await act(async () => { box.pills!.setEffort("low"); });
+  expect(box.pills!.effort).toBe("low");
+  expect(wire.posts).toEqual([{ session_id: "sess-a", effort: "low" }]);
+
+  await wire.landFast();
+  // The picked field holds; the one the reader did not touch takes the read.
+  expect(box.pills!.effort).toBe("low");
+  expect(box.pills!.model).toBe("opus");
+});
+
+test("`ready` waits on the record too — the automatic send cannot outrun it", async () => {
+  // `ready` is what the "Fix with AI" boot branch awaits before its automatic
+  // send, and that is the one send a human cannot hold back. It must not launch
+  // on a constant the record was about to overturn.
+  const wire = reads({ fast: { model: "haiku", effort: "low" }, holdFast: true });
+  const box = await mount(createMemoryParamsStore({ session_id: "sess-a" }));
+  expect(box.pills!.ready).toBe(false);
+  await wire.landFast();
+  expect(box.pills!.ready).toBe(true);
+});
+
+test("a field settled by a param is reported settled on its own, while the other still waits", async () => {
+  // What a send carries is decided PER FIELD: a task peek opens with
+  // `?model=haiku`, so the model is settled the moment the record read answers
+  // ("" — nothing recorded yet) even though the effort still waits on the slow
+  // read. Tying both to `pillsReady` sent that turn with no model at all.
+  let answerSlow: ((v: unknown) => void) | null = null;
+  globalThis.fetch = ((url: string, init?: RequestInit) => {
+    const target = String(url);
+    if (target.startsWith("/api/tasks/settings")) {
+      return Promise.resolve({
+        ok: true, status: 200,
+        json: () => Promise.resolve({ model: "", effort: "" }),
+      } as unknown as Response);
+    }
+    if (target.startsWith("/api/run") && init?.body) {
+      return new Promise((resolve) => { answerSlow = resolve; });
+    }
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) } as unknown as Response);
+  }) as unknown as typeof fetch;
+  const box = await mount(createMemoryParamsStore({ session_id: "sess-a", model: "haiku" }));
+  expect(answerSlow).not.toBeNull();
+  expect(box.pills!.modelSettled).toBe(true);
+  expect(box.pills!.model).toBe("haiku");
+  expect(box.pills!.effortSettled).toBe(false);
+  expect(box.pills!.pillsReady).toBe(false);
+});
