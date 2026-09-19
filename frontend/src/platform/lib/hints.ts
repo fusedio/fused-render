@@ -105,10 +105,47 @@ function hintAt(x: number, y: number, target: EventTarget | null): Element | nul
   return null;
 }
 
+/** THE TASK FORM FOLLOWS THE POINTER INSIDE THE MIDDLE 80% OF THE VIEWPORT
+ *  (Akshil, 2026-09-19): its LEFT edge starts at the pointer, like every other
+ *  caption, and it is CLAMPED to the band rather than flipped — the old flip
+ *  swung a 90ch panel its whole width on one pixel of travel near the right
+ *  edge. At the band's end the panel stops and the pointer walks on without it. */
+const BAND = 0.8;
+function placeTask(x: number, y: number): void {
+  const p = ensurePanel();
+  const w = measureWidth(p);
+  const h = p.offsetHeight;
+  const vw = window.innerWidth;
+  const bandLeft = vw * (1 - BAND) / 2;
+  const bandRight = vw - bandLeft;
+  let left = x + OFFSET_X;
+  if (w >= bandRight - bandLeft) left = (vw - w) / 2;
+  else left = Math.min(bandRight - w, Math.max(bandLeft, left));
+  let top = y + OFFSET_Y;
+  if (top + h > window.innerHeight - EDGE) top = Math.max(EDGE, y - OFFSET_Y - h);
+  p.style.left = `${Math.round(left)}px`;
+  p.style.top = `${Math.round(top)}px`;
+}
+
+/** The panel's width with the whole viewport to lay out in. A `position:
+ *  fixed` box with a `left` set shrink-wraps to the room to its RIGHT, so a
+ *  panel measured where the last hint left it — near the right edge — reads
+ *  narrower than it will be once moved, and the clamp computed from that
+ *  width lets it overflow. That is the "entered from the right without
+ *  moving" bug: one placement, from a stale left. Measured at 0 instead. */
+function measureWidth(p: HTMLDivElement): number {
+  p.style.left = "0px";
+  return p.offsetWidth;
+}
+
 function place(x: number, y: number): void {
   const p = ensurePanel();
+  if (p.classList.contains("is-task")) {
+    placeTask(x, y);
+    return;
+  }
   // Measured after the text is in, because the flip depends on the width.
-  const w = p.offsetWidth;
+  const w = measureWidth(p);
   const h = p.offsetHeight;
   let left = x + OFFSET_X;
   let top = y + OFFSET_Y;
@@ -152,9 +189,36 @@ function renderHint(p: HTMLDivElement, text: string): void {
   p.replaceChildren(grid);
 }
 
-function show(text: string, x: number, y: number): void {
+/** THE TASK ROW'S OWN FORM (Akshil, 2026-09-19): hovering the title or the
+ *  reply shows BOTH, untruncated, in the styles the row prints them in — the
+ *  title's line, then the reply's. Opted into with `data-hint-title` (and an
+ *  optional `data-hint-reply`) beside `data-hint`; `data-hint` stays as the
+ *  plain-text fallback so `hintAt` resolves the element the same way. */
+function renderTaskHint(p: HTMLDivElement, el: Element): boolean {
+  const title = (el.getAttribute("data-hint-title") || "").trim();
+  if (!title) return false;
+  const reply = (el.getAttribute("data-hint-reply") || "").trim();
+  const wrap = document.createElement("div");
+  wrap.className = "hint-task";
+  const t = document.createElement("div");
+  t.className = "hint-task-title";
+  t.textContent = title;
+  wrap.append(t);
+  if (reply) {
+    const r = document.createElement("div");
+    r.className = "hint-task-reply";
+    r.textContent = reply;
+    wrap.append(r);
+  }
+  p.replaceChildren(wrap);
+  return true;
+}
+
+function show(el: Element, x: number, y: number): void {
   const p = ensurePanel();
-  renderHint(p, text);
+  const task = renderTaskHint(p, el);
+  if (!task) renderHint(p, el.getAttribute("data-hint") || "");
+  p.classList.toggle("is-task", task);
   p.classList.add("is-on");
   place(x, y);
 }
@@ -176,7 +240,7 @@ function onOver(e: PointerEvent): void {
     return;
   }
   host = el;
-  show(el.getAttribute("data-hint") || "", e.clientX, e.clientY);
+  show(el, e.clientX, e.clientY);
 }
 
 function onMove(e: PointerEvent): void {
@@ -192,7 +256,7 @@ function onMove(e: PointerEvent): void {
   }
   if (el !== host) {
     host = el;
-    show(el.getAttribute("data-hint") || "", e.clientX, e.clientY);
+    show(el, e.clientX, e.clientY);
     return;
   }
   place(e.clientX, e.clientY);
@@ -215,7 +279,7 @@ function onFocus(e: FocusEvent): void {
   if (!el) return;
   const r = el.getBoundingClientRect();
   host = el;
-  show(el.getAttribute("data-hint") || "", r.left + r.width / 2 - OFFSET_X, r.bottom - OFFSET_Y + 6);
+  show(el, r.left + r.width / 2 - OFFSET_X, r.bottom - OFFSET_Y + 6);
 }
 
 /** Install the one listener set. Idempotent, so a re-render or a second caller

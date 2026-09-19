@@ -421,22 +421,50 @@ button.tasks-caret,
    List row only: grey, italic, same size. Gives way before the title does. */
 .tasks-title-reply {
   flex: 1 1 0;
+  min-width: 0;
   /* Twice the row gap between the title and the reply (Akshil, 2026-09-19):
      the flex gap gives one, this margin gives the other. */
   margin-left: var(--tasks-row-gap);
+  color: var(--fg-muted);
+  font-style: italic;
+  /* Thin (Akshil, 2026-09-19, screenshot): the reply reads as a quiet aside
+     next to the title, not as a second title. */
+  font-weight: 100;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+/* THE ROW'S HOVER CAPTION (hints.ts `renderTaskHint`): the title line and the
+   reply line whole, each in the style the row prints it in — same size, same
+   weight, same ink, same box — only allowed to wrap instead of clamp. The
+   panel widens for it: a full first line is longer than a 46ch caption. */
+.hint-panel.is-task {
+  max-width: min(90ch, 80vw);
+  font-size: 13px;
+  line-height: 16px;
+  padding: 6px 8px;
+}
+.hint-task {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  white-space: normal;
+}
+.hint-task-title {
+  font-weight: 500;
+  color: var(--fg);
+}
+.hint-task-reply {
+  color: var(--fg-muted);
+  font-style: italic;
+  font-weight: 100;
+}
+
 /* With a reply in the row, the row's one spacer stops growing: the reply is the
    element that takes the free width, the spacer keeps only its minimum. */
 .tasks-row:has(.tasks-title-reply) .tasks-grow {
   flex-grow: 0;
-}
-.tasks-title-reply {
-  min-width: 0;
-  color: var(--fg-muted);
-  font-style: italic;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* A task whose work has not happened yet (tasks-lib.isUpcomingTask, 2026-08-18).
@@ -828,9 +856,11 @@ button.tasks-caret,
    behind it as the fallback for anything that will not take an SVG cursor
    (WebKit), so the worst case is the hand these chips used to wear. */
 :root {
+  /* Typicons' filter (react-icons `TiFilter`), drawn at 16px — the 24px funnel
+     before it was too big beside a 13px chip (Akshil, 2026-09-19). */
   --cur-filter:
-    url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M4.5 5h15l-5.9 7v5.5l-3.2 1.7V12z' fill='%23fff' stroke='%23000' stroke-width='2.8' stroke-linejoin='round' stroke-linecap='round'/%3E%3Cpath d='M4.5 5h15l-5.9 7v5.5l-3.2 1.7V12z' fill='%23fff'/%3E%3C/svg%3E")
-      5 5,
+    url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24'%3E%3Cpath d='M19 6h-14c-1.1 0-1.4.6-.6 1.4l4.2 4.2c.8.8 1.4 2.3 1.4 3.4v5l4-2v-3.5c0-.8.6-2.1 1.4-2.9l4.2-4.2c.8-.8.5-1.4-.6-1.4z' fill='%23fff' stroke='%23000' stroke-width='3' stroke-linejoin='round'/%3E%3Cpath d='M19 6h-14c-1.1 0-1.4.6-.6 1.4l4.2 4.2c.8.8 1.4 2.3 1.4 3.4v5l4-2v-3.5c0-.8.6-2.1 1.4-2.9l4.2-4.2c.8-.8.5-1.4-.6-1.4z' fill='%23fff'/%3E%3C/svg%3E")
+      3 3,
     pointer;
 }
 
@@ -842,7 +872,9 @@ button.tasks-caret,
 .task-card-head-row .schedule-tv-id--tag,
 .tasks-row .schedule-tv-id--tag {
   appearance: none;
-  border: 0;
+  /* A HAIRLINE BOX (Akshil, 2026-09-19): moved here from the reply line, in
+     the light ink so it reads on the dark surface. */
+  border: 0.5px solid rgba(255, 255, 255, 0.25);
   background: none;
   font: inherit;
   /* A FUNNEL, NOT A HAND (Akshil, 2026-09-17). Every other pointer in a task
