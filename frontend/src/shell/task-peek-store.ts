@@ -74,6 +74,11 @@ export function peekItemProps(key: string, openable: boolean): Record<string, st
  *  the element's own box so nothing changes size (styles/task-peek.css). */
 export const PEEK_OPEN_CLASS = "is-peeked";
 
+/** Marks a surface drawn INSIDE the frame that is not page background — a
+ *  popover that renders in place rather than through a portal. A click there
+ *  keeps the peek open (`PEEK_FRAME_KEEPS_OPEN`). */
+export const PEEK_KEEP_ATTR = "data-peek-keep";
+
 /**
  * THE MARK A WALKED-TO ITEM WEARS WHILE IT HOLDS THE WALK'S OWN FOCUS, and the
  * whole of its job is to take the focus RING off (styles/task-peek.css).
@@ -355,7 +360,11 @@ export function resolvePeekKey(
  */
 export const PEEK_FRAME_KEEPS_OPEN =
   'button, a, input, select, textarea, [role="button"], ' +
-  `[${PEEK_ITEM_ATTR}], .schedule-toolbar, .modal-dialog, .context-menu`;
+  `[${PEEK_ITEM_ATTR}], .schedule-toolbar, .modal-dialog, .context-menu, ` +
+  // The app page's frame holds more than the Tasks page did (2026-09-20): its
+  // header's icon is a span that opens a picker, and the picker itself is
+  // drawn inside the frame — a click in either is a click ON something.
+  `.app-page-icon-toggle, [${PEEK_KEEP_ATTR}]`;
 
 /** Does a click that landed on `hit` close the peek? */
 export function frameClickCloses(hit: Element | null): boolean {

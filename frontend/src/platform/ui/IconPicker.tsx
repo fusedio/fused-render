@@ -528,6 +528,10 @@ export default function IconPicker({
       // elements only (tokens.css stores bare colours in --shadow-*).
       data-slot="icon-picker"
       className="fixed z-[1001] flex w-[292px] flex-col gap-2 rounded-xl border border-border bg-popover p-2 text-popover-foreground shadow-md"
+      // Drawn in place, not portalled: inside the Tasks side peek's frame a
+      // click on this popover must not read as a click on blank page
+      // (shell/task-peek-store.ts `PEEK_FRAME_KEEPS_OPEN`).
+      data-peek-keep="1"
     >
       <div className="flex items-center justify-between gap-2 border-b border-border pb-1">
         {tabs.length > 1 ? (

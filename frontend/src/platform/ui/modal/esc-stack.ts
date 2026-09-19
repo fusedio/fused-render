@@ -34,6 +34,14 @@ export function isTopmost(token: object): boolean {
   return stack.length === 0 || stack[stack.length - 1] === token;
 }
 
+/** Is ANY modal up? For a surface that closes on Esc but is not itself a
+ *  modal — the Tasks side peek — and so has no token to be topmost with: a
+ *  dialog over it owns the press, and the peek must stand down for it
+ *  (2026-09-20: the New task card over an open peek closed both on one Esc). */
+export function anyModalOpen(): boolean {
+  return stack.length > 0;
+}
+
 /** Test-only: the depth, for asserting that mounts and unmounts balance. */
 export function openModalCount(): number {
   return stack.length;
