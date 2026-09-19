@@ -2776,6 +2776,16 @@ describe("the folder field's two lists", () => {
       expect(searching).toBe(false);
       expect(rows.map((r) => r.path)).toEqual(RECENTS);
     }
+    // …AND A TILDE IS ONE BEFORE HOME IS KNOWN. `home` is "" until /api/config
+    // answers; `isPathShapedQuery` cannot resolve `~` without it and would call
+    // `~/Desktop/fu` a search, swapping the recents and the create-folder row
+    // for "No project matches" for that beat — or for good, if the call fails
+    // (Bugbot, PR #1239).
+    for (const typed of ["~", "~/", "~/Desktop/fu"]) {
+      const { rows, searching } = ask(typed, { home: "" });
+      expect(searching).toBe(false);
+      expect(rows.map((r) => r.path)).toEqual(RECENTS);
+    }
   });
 
   test("the default text is nobody having typed anything", () => {

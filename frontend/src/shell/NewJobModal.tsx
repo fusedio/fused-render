@@ -221,10 +221,17 @@ export function folderFieldRows({
   home: string;
 }): { rows: FolderRow[]; searching: boolean } {
   const q = target.trim();
+  // `~` IS AN ADDRESS BEFORE HOME IS KNOWN. `isPathShapedQuery` can only call a
+  // tilde path an address once it has `home` to resolve it against, and `home`
+  // is "" until `/api/config` answers (for good, if it never does). In that
+  // window `~/Desktop/fu` would read as a search and swap the recents and the
+  // create-folder row for "No project matches" (Bugbot, PR #1239). A leading
+  // tilde names a place whatever home turns out to be, so it is one here too.
   const searching =
     open
     && q !== ""
     && q !== defaultTarget.trim()
+    && !q.startsWith("~")
     && !isPathShapedQuery(q, home, home || undefined);
   if (!searching) {
     return {
@@ -3452,6 +3459,13 @@ export default function NewJobModal({
   //: THE WHOLE PATH, ON HOVER. One portalled element for the list — see
   //: PathTip.tsx for why it is not a `title` and not drawn inside the panel.
   const pathTip = usePathTip();
+  //: …and it goes when the ROWS go. It is dismissed on pointer-leave, blur,
+  //: scroll and resize, but a keystroke that swaps the recents for project rows
+  //: (or back) remounts the buttons under a pointer that never left, and the tip
+  //: would keep naming a folder that is no longer on screen at coordinates that
+  //: no longer hold a row (Bugbot, PR #1239). Keyed on the list's identity.
+  const { hide: hidePathTip } = pathTip;
+  useEffect(() => { hidePathTip(); }, [pathRows, hidePathTip]);
   /**
    * WHICH ROW THE ARROWS ARE ON — held as the row's own PATH, not its index
    * (Bugbot, PR #1213: "stale highlight after async rows").
