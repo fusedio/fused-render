@@ -3171,6 +3171,27 @@ export interface Task {
   // session or entry behind it to take one from.
   title_source: "user" | "ai" | "message" | "entry" | "draft";
   description: string;
+  /**
+   * WHICH CLAUDE THIS TASK'S RUNS USE and how hard it thinks — `""` on both for
+   * the overwhelming majority, which chose neither (`tasks.py::_row_settings`).
+   *
+   * THE CONVERSATION'S OWN RECORD where it has one — what the app wrote down at
+   * the last spawn, the last send or the reader's last pill pick — and the task
+   * entry's stored setting behind it, for the window before the first run.
+   *
+   * NOTHING DRAWS THEM, and that is still the design ("the card asks, the list
+   * stays quiet" — shell/NewJobModal). They are here for the side peek, whose
+   * composer is a REAL chat: handed no opinion, it detects the model last used
+   * in that folder (`agent._defaults`) and showed the reader settings they had
+   * never chosen. The peek seeds these instead, and the composer's own ranking
+   * (`record > param > detected > pref > constant`) retires the seed as soon as
+   * the chat has a record of its own.
+   *
+   * `""` is a real answer — "this task has no opinion" — and is what leaves
+   * detection speaking for every conversation that is not a task.
+   */
+  model: string;
+  effort: string;
   // Decided by the SERVER, once, for every view — List, Board and Calendar all
   // read this rather than each deriving a column from the newest message.
   //
@@ -3795,6 +3816,58 @@ export function markWholeTaskRead(
     key,
     all: true,
   });
+}
+
+// WHAT THIS CHAT RUNS WITH, written on every pill pick.
+//
+// The composer's model/effort used to be remembered by the URL and nothing
+// else: leave the page and the pick was gone, and coming back through any
+// other door (the Tasks peek, its Open button, a row, the chat list, a bare
+// URL) fell back to DETECTION — the model last used by any chat in that folder.
+// A task created with haiku/low opened on fable/max. So a pick is a write now,
+// into the same per-session record the spawn path writes (`agent._start`), and
+// every door reads that one record first.
+//
+// Keyed by SESSION, not by task key: this is a fact about a conversation, and
+// most conversations are not tasks. A chat with no session yet sends nothing —
+// there is nothing to key on, and its first send records the pair server-side.
+//
+// Per field: send the one that changed. An omitted field is "not saying", never
+// "nothing" — the server keeps what the other pick (or the spawn) recorded.
+// THE SAME RECORD, READ BACK — and read FIRST, before anything slower.
+//
+// The composer learned its record off the agent's `defaults` action, which is a
+// POST /api/run that spawns agent.py as a subprocess and scans a transcript
+// tail. That took two to three seconds, and the pills were already showing
+// something — the constant default, or the `?model=` a deep link seeded — so
+// every open of a chat FLIPPED once the answer landed (Akshil, 2026-09-19).
+//
+// The record is one small JSON file the server already reads on every listing,
+// so it never needed the subprocess. This is that read, straight over HTTP: it
+// answers in milliseconds, it outranks every other source the composer has, and
+// the pills wait for it rather than guessing ahead of it. The `defaults` call
+// stays for the one thing only it knows — the transcript/folder ladder, which
+// speaks for a field this record left "".
+//
+// `{model: "", effort: ""}` for a session with nothing recorded, and for one
+// that does not exist: "no record" is the answer that leaves detection and the
+// composer's constants speaking, and the two cases are the same fact here.
+export function readChatSettings(
+  sessionId: string,
+): Promise<{ model: string; effort: string }> {
+  return getJson<{ model: string; effort: string }>(
+    `/api/tasks/settings?session_id=${encodeURIComponent(sessionId)}`,
+  );
+}
+
+export function recordChatSettings(
+  sessionId: string,
+  settings: { model?: string; effort?: string },
+): Promise<{ ok: boolean; model: string; effort: string }> {
+  return postJson<{ ok: boolean; model: string; effort: string }>(
+    "/api/tasks/settings",
+    { session_id: sessionId, ...settings },
+  );
 }
 
 // Filing a task away. ONE call, because it is one gesture with two halves that
@@ -5468,8 +5541,10 @@ export function scheduleMessage(body: {
   // resume the conversation it was scheduled from.
   session_learned?: boolean;
   permission_mode?: string;
-  // The run's model (`--model`: an alias like "fable", or a pinned full id like
-  // "claude-fable-5-1") and its thinking budget (`--effort`: low…max). Omitted
+  // The run's model (`--model`: one of the CLI's family aliases, "fable" /
+  // "opus" / "sonnet" / "haiku" — an older entry may still carry a full id like
+  // "claude-fable-5-1", which the pickers read as its alias) and its thinking
+  // budget (`--effort`: low…max). Omitted
   // rather than sent empty, like everything else optional here — the server
   // stores "" for "pass no flag", so an absent key and a blank one already mean
   // the same thing and the shorter body is the honest one.

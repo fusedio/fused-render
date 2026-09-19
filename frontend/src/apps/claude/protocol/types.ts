@@ -201,7 +201,10 @@ export interface AgentRequests {
   app_state: AppStateRequest;
   sessions: FileRequest;
   live_run: FileSessionRequest;
-  defaults: FileRequest;
+  /** `session_id` OPTIONAL, exactly as `live_run` takes it: with one the agent
+   *  answers for THAT conversation (off its own transcript), without one for
+   *  the folder. See `agent._defaults` and `ui/composer-defaults`. */
+  defaults: FileRequest & { session_id?: string };
   history: FileSessionRequest;
   snapshots: SnapshotsRequest;
   snapshot_plan: SnapshotPlanRequest;
@@ -610,7 +613,17 @@ export interface RunIdResponse {
 export interface DefaultsResponse {
   model: string;
   effort: string;
-  source: "" | "session" | "settings";
+  source: "" | "record" | "session" | "settings";
+  /** THE APP'S OWN RECORD of what this conversation runs with — written by
+   *  every spawn, every send and every pill pick (`tasks_store`'s
+   *  `session_settings.json`), and `""` on both for a chat that has none.
+   *
+   *  It rides back BESIDE the resolved pair above, rather than only inside it,
+   *  because the composer has to rank it above its own `?model=`/`?effort=`
+   *  params: those are a SEED for a brand-new chat (the New task card's deep
+   *  link, "Fix with AI"), and a seed that outranked the record would undo a
+   *  pill the reader changed mid-chat every time the page was reopened. */
+  recorded: { model: string; effort: string };
 }
 
 /** agent.py:4625-4627 (`_cli_sessions`), newest first. */

@@ -9,9 +9,11 @@ export interface EffortSelectProps {
   value: string;
   onChange(value: string): void;
   disabled?: boolean;
+  /** The composer has not resolved this chat's value yet — see `PillSelect`. */
+  loading?: boolean;
 }
 
-export function EffortSelect({ value, onChange, disabled }: EffortSelectProps) {
+export function EffortSelect({ value, onChange, disabled, loading }: EffortSelectProps) {
   return (
     <PillSelect
       kind="c-effort-sel"
@@ -21,6 +23,7 @@ export function EffortSelect({ value, onChange, disabled }: EffortSelectProps) {
       options={OPTIONS}
       onChange={onChange}
       disabled={disabled}
+      loading={loading}
     />
   );
 }

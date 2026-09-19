@@ -621,6 +621,62 @@ select.c-pill {
   position: relative;
   display: inline-flex;
 }
+/* ---- a pill whose value is still being read (Akshil, 2026-09-19) --------
+   "It takes some time to load in these model and effort … when I come to the
+   page after 2-3 seconds it flips, same when I reload." The pills used to paint
+   the constant default (or the URL seed) and swap it once the chat's record
+   arrived. The record is fast now (`GET /api/tasks/settings`), but fast is not
+   instant and one field can still be waiting on the slow `defaults` read — so
+   the answer is not a quicker flip, it is NO FIRST VALUE AT ALL: until
+   `useComposerDefaults`'s `pillsReady` the pill shows a wash, and a pill that
+   has shown nothing cannot flip to something else.
+
+   THE BOX DOES NOT MOVE. The <select> keeps its provisionally selected option,
+   so `fitSelect` measures the same text it will measure when the wash lifts —
+   the word is hidden with `color: transparent`, not removed. The caret goes,
+   because there is nothing to open: the select is `disabled` for the same
+   reason.
+
+   Its own keyframes rather than explorer.css's `skel-shimmer`: keyframe names
+   are global per document, and this stylesheet must not depend on another one
+   being in the bundle. */
+.c-pillwrap.is-loading select.c-pill {
+  color: transparent;
+  background-image: none;
+  opacity: 1; /* the wash IS the dimming; `.c-pill:disabled`'s .55 would fade it */
+  cursor: default;
+}
+.c-pillwrap.is-loading::after {
+  content: "";
+  position: absolute;
+  /* Inset to the pill's own text box, so the wash reads as the missing WORD
+     rather than as a second pill. */
+  inset: 5px 9px 5px 8px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    var(--c-surface-2) 25%,
+    var(--c-border) 50%,
+    var(--c-surface-2) 75%
+  );
+  background-size: 200% 100%;
+  animation: c-pill-wash 1.2s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes c-pill-wash {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .c-pillwrap.is-loading::after {
+    animation: none;
+  }
+}
+
 /* The popover's anchor: the pill's own box, never a target of its own — the
    pointer path is the select's cancelled pointerdown and the keyboard path is
    the select itself (T:12571-12586). */

@@ -516,7 +516,13 @@ export function TaskPeek({
       // where every other framing site applies it (legacy-src.ts's header).
       // `noFocus` below is the same fact for the native branch.
       ? withNoFocus(
-          peekFrameSrc(template, task.target || task.project, task.session_id, anchor ?? undefined),
+          peekFrameSrc(template, task.target || task.project, task.session_id,
+                       anchor ?? undefined,
+                       // The task's own model/effort, so the FLAG-OFF frame
+                       // opens on them too — the native branch seeds the same
+                       // two through `ChatMount`. Both "" for a task that chose
+                       // neither, which appends nothing.
+                       { model: task.model, effort: task.effort }),
         )
       : null;
   const resolving = !src && !gone && !!task?.session_id && template === undefined;
@@ -1342,6 +1348,23 @@ export function TaskPeek({
                 title={`${shortTaskId(task.task_id)} ${title}`}
                 file={task.target || task.project}
                 sessionId={task.session_id}
+                // WHAT THIS TASK IS SET TO (Akshil, 2026-09-18: "I saw the
+                // sidebar peek — the values there were different", then "what I
+                // select as a user stays").
+                //
+                // A SEED, AND IT STANDS DOWN BY ITSELF. `/api/tasks` answers
+                // this pair from the conversation's own record where it has one
+                // and from the task's entry where it does not (`_row_settings`),
+                // and the composer ranks that record above the params these two
+                // become — so seeding is the right answer for the window before
+                // the first run, and is outranked the moment the chat has one of
+                // its own. Gating it on `!task.session_id` was the earlier
+                // attempt at that and was too coarse: a task whose session
+                // existed but whose transcript had not been written yet got no
+                // seed and no record, and detection answered with a neighbour
+                // chat's model.
+                model={task.model}
+                effort={task.effort}
                 // ONE TURN TO LAND ON, when the press that opened this was a
                 // message row rather than a task row (task-peek-store
                 // `PeekState.anchor`). Absent, the conversation opens where a

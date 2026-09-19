@@ -1815,3 +1815,64 @@ test("a half that was EMPTY when the box was spent is fresh at once", () => {
   });
   expect(freshBox({ text: "", files: 0 }, "", 0)).toEqual({ text: true, tray: true });
 });
+
+// ---- the pills while their value is still being read ------------------------
+//
+// "It takes some time to load in these model and effort … when I come to the
+// page after 2-3 seconds it flips, same when I reload" (Akshil, 2026-09-19).
+// The two values behind these pills come from reads that land at different
+// speeds, and the pills used to paint the constant default meanwhile. The fix is
+// not a faster flip, it is NO FIRST VALUE: `controls.ready` false draws a wash
+// of the same size, and a pill that has shown nothing cannot flip to something
+// else.
+
+/** The model pill's <select> and the wrapper that carries the wash. */
+function modelPill(c: ReturnType<typeof mount>) {
+  return {
+    sel: c.root.findByProps({ className: "c-pill c-model-sel" }),
+    wrap: c.root.findAllByType("span").find(
+      (n) => typeof n.props.className === "string"
+        && n.props.className.startsWith("c-pillwrap")
+        && n.findAllByProps({ className: "c-pill c-model-sel" }).length > 0,
+    )!,
+  };
+}
+function effortPill(c: ReturnType<typeof mount>) {
+  return c.root.findByProps({ className: "c-pill c-effort-sel" });
+}
+
+test("an unresolved pill is a wash, not a value (Akshil, 2026-09-19)", () => {
+  const c = mount({ controls: { ...controls, ready: false } });
+  const { sel, wrap } = modelPill(c);
+  // The wash is on, so nothing readable is painted…
+  expect(wrap.props.className).toBe("c-pillwrap is-loading");
+  // …and the pill refuses a pick: there is nothing to pick yet, and a choice
+  // made against a value nobody has seen is the same wrong answer the flip was.
+  expect(sel.props.disabled).toBe(true);
+  expect(sel.props["aria-busy"]).toBe(true);
+  expect(effortPill(c).props.disabled).toBe(true);
+  // THE BOX DOES NOT MOVE: the <select> keeps a selected option, so `fitSelect`
+  // measures the same text it will measure when the wash lifts.
+  expect(sel.props.value).toBe(DEFAULT_MODEL);
+});
+
+test("the value shows ONCE the reads have landed, and never before", () => {
+  const c = mount({ controls: { ...controls, ready: false } });
+  expect(modelPill(c).wrap.props.className).toBe("c-pillwrap is-loading");
+  // The host resolves: a different model than the one the box was sized on, and
+  // it is the FIRST one this pill has ever shown.
+  c.rerender({ controls: { ...controls, model: "haiku", ready: true } });
+  const { sel, wrap } = modelPill(c);
+  expect(wrap.props.className).toBe("c-pillwrap");
+  expect(sel.props.disabled).toBe(false);
+  expect(sel.props["aria-busy"]).toBeUndefined();
+  expect(sel.props.value).toBe("haiku");
+});
+
+test("a host that states no `ready` at all is stating a settled pair", () => {
+  // Backward compatible by construction — the cards wall and the tests hand a
+  // pair they already know, and the permission pill has no read behind it.
+  const c = mount();
+  expect(modelPill(c).wrap.props.className).toBe("c-pillwrap");
+  expect(modelPill(c).sel.props.disabled).toBe(false);
+});

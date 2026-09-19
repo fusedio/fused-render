@@ -62,7 +62,10 @@ def test_last_used_comes_from_the_newest_transcript_rows(tmp_path, monkeypatch):
         {"effort": "xhigh", "message": {"model": "claude-fable-5"}},
     ])
     out = agent.main(action="defaults", file=file)
-    assert out == {"model": "fable", "effort": "xhigh", "source": "session"}
+    # `recorded` is the app's OWN per-session record, and this chat is asked
+    # about as a folder — there is no conversation to have one.
+    assert out == {"model": "fable", "effort": "xhigh", "source": "session",
+                   "recorded": {"model": "", "effort": ""}}
 
 
 def test_settings_fill_in_when_no_transcript_speaks(tmp_path, monkeypatch):
@@ -88,7 +91,8 @@ def test_nothing_detected_returns_empty_not_a_guess(tmp_path, monkeypatch):
     agent = _agent_in(tmp_path, monkeypatch)
     file, _ = _target(tmp_path)
     out = agent.main(action="defaults", file=file)
-    assert out == {"model": "", "effort": "", "source": ""}
+    assert out == {"model": "", "effort": "", "source": "",
+                   "recorded": {"model": "", "effort": ""}}
 
 
 def test_unknown_values_never_leak_into_the_answer(tmp_path, monkeypatch):
@@ -124,8 +128,11 @@ def test_the_page_asks_and_ranks_detection_below_an_explicit_choice():
         'fused.params.get("model") || detectedModel || prefModel || DEFAULT_MODEL' in html
     )
     assert 'fused.params.get("effort") || detectedEffort || DEFAULT_EFFORT' in html
-    # detected values are validated against the selector's own lists
-    assert "MODELS.includes(d.model)" in html
+    # detected values are validated against the selector's own lists — the
+    # model through `shortModel` first, so a transcript still naming the retired
+    # pinned Fable id preselects the alias that replaced it instead of nothing.
+    assert "const dm = d && shortModel(d.model);" in html
+    assert "MODELS.includes(dm)" in html
     assert "EFFORTS.includes(d.effort)" in html
     # …and so is the preference, for the same reason: a name this build's
     # selector doesn't have cannot be shown as selected.

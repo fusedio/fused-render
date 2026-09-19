@@ -5507,6 +5507,11 @@ export function provisionalTasks(rows: TaskPulseTask[]): Task[] {
     // this page did not fetch is not one of those.
     title_source: "message",
     description: "",
+    // NEUTRAL, like every other field pulse does not carry — and here neutral
+    // is also the honest answer: "" means "no opinion", which is what a row the
+    // page has not fetched yet can truthfully say about a task's model.
+    model: "",
+    effort: "",
     status: row.status,
     failed: false,
     blocked_reason: "",

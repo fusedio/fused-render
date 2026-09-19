@@ -72,6 +72,7 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 // The app's own ghost rows — the same ones the task peek holds over a booting
 // conversation. One loading vocabulary, not a second.
 import { SkeletonLines } from "@platform/ui/Skeleton";
+import { listedModelIn, normalizeModel } from "@platform/lib/model-vocab";
 import { navigateUrl } from "@platform/lib/router";
 import { ENTER_LABEL, isMod, MOD_LABEL } from "@platform/lib/platform";
 import {
@@ -3218,7 +3219,17 @@ export default function NewJobModal({
   // this form has an opinion about (a task runs unattended, so "auto"), while a
   // model is one the CLI is better placed to pick per project than we are from
   // here. An edit prefills from the entry, so a task keeps what it was set to.
-  const [model, setModel] = useState(saved.model ?? editing?.model ?? "");
+  //
+  // THROUGH `normalizeModel`, and this is the one door a stored value comes in
+  // by. An entry booked before the pinned Fable id was retired still says
+  // "claude-fable-5-1"; left raw it is a value TASK_MODELS has never heard of,
+  // so `taskRunOptions` carries it through as its own row and the card shows a
+  // reader the CLI's spelling of a model the menu now calls Fable — and writes
+  // it back on the next Save.
+  const [model, setModel] = useState(() => {
+    const stored = saved.model ?? editing?.model ?? "";
+    return listedModelIn(stored, TASK_MODELS.map((o) => o.key)) || normalizeModel(stored);
+  });
   const [effort, setEffort] = useState(saved.effort ?? editing?.effort ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -5648,7 +5659,7 @@ export default function NewJobModal({
               this same card reopened on an edit, prefilled.
 
               ONE ROW, two equal columns (Akshil, 2026-09-03). They are one
-              decision read together — "Fable 5.1, thinking high" is the
+              decision read together — "Fable, thinking high" is the
               sentence — and stacking them spent two full rows of the card's
               least-used section saying half of it each. Permissions stays on
               its own line above: it is a policy with a consequence to explain,

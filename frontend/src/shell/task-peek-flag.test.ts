@@ -835,3 +835,96 @@ describe("the stylesheet changes nothing when the feature is off", () => {
     }
   });
 });
+
+// ---- the peek's composer opens on THIS TASK's run settings --------------------
+// Akshil, 2026-09-18: "I saw the sidebar peek — the values there were
+// different." The peek's body is a real chat, and a chat handed no opinion about
+// its model resolves one by DETECTION — `agent._defaults`, the model last used
+// in that FOLDER, scanned off its newest transcripts. That is the right answer
+// for a chat somebody opened on a folder and the wrong one for a task that was
+// set up with a model in the New task card.
+//
+// The composer's ranking has a seat for the truth
+// (`record > param > detected > pref > constant`, apps/claude/ui/composer-defaults)
+// and both branches of the peek now state the task's own — unconditionally,
+// because the seat above them is what retires the seed.
+describe("the peek's run settings", () => {
+  const PEEK = read("TaskPeek.tsx");
+
+  /** The file with every run of whitespace collapsed, so an assertion about
+   *  WHAT the source says is not also an assertion about how it wrapped. */
+  const flat = PEEK.replace(/\s+/g, " ");
+
+  it("seeds the task's model and effort, and lets the record outrank them", () => {
+    // UNCONDITIONALLY, and that is the fix to the first attempt at this. Gating
+    // the seed on `!task.session_id` was too coarse: a task whose session
+    // existed but whose transcript had not been written yet got no seed AND no
+    // detection, so the composer fell through to the newest OTHER chat in the
+    // folder — fable/max for a task created with haiku/low (Akshil,
+    // 2026-09-18). The conversation's own record is what stands the seed down
+    // now, and it exists from the first spawn rather than from the first
+    // transcript row.
+    expect(flat).toContain("model={task.model} effort={task.effort}");
+  });
+
+  it("…and does the same to the FLAG-OFF frame's URL, so the branches agree", () => {
+    // The legacy template reads the same two params (`curModel`/`curEffort`).
+    expect(flat).toContain("{ model: task.model, effort: task.effort }),");
+  });
+
+  it("does not DRAW them — the peek is about a task, not about the tool", () => {
+    // The same rule the header took when it stopped wearing the chat's Topbar:
+    // a model cluster is a fact about the TOOL. These two travel as settings
+    // for the composer and are not a third thing in the header.
+    expect(PEEK).not.toContain("taskRunLabel");
+    expect(PEEK).not.toContain("MODEL_LABELS");
+  });
+});
+
+
+// ---- ONE ANSWER THROUGH EVERY DOOR (Akshil, 2026-09-18) ----------------------
+//
+// "What I select as a user stays." The pills are resolved by
+// `ui/composer-defaults`, which asks the agent about a SESSION — so a route
+// keeps its promise exactly as far as it carries the session id to the chat it
+// opens. These pin that every door does.
+//
+// The routes, and where each one's id comes from:
+//   (a) task row → side peek          `ChatMount sessionId={task.session_id}`
+//   (b) peek → Open → explorer chat   `taskHref` → `explorerUrl` → `chatUrl`
+//   (c) Tasks list → row → chat       the same `taskHref`
+//   (d) chat list / recents → chat    the explorer's own row href
+//   (e) a bare URL with only session_id
+//   (f) a hand-typed chat whose reader picked a model — no task, no seed; the
+//       pick is in the transcript and `_defaults` reads it back
+//       (tests/test_claude_sessions_merged.py).
+describe("every door into a chat names the conversation", () => {
+  const PEEK = read("TaskPeek.tsx");
+
+  it("(a) the peek hands the session to the mount", () => {
+    expect(PEEK).toContain("sessionId={task.session_id}");
+  });
+
+  it("(b,c,d,e) every URL door carries session_id", async () => {
+    const { chatUrl } = await import("@platform/lib/queue");
+    const { explorerUrl, chatPaneUrl } = await import("./schedule-lib");
+    const { taskHref } = await import("./tasks-lib");
+
+    expect(chatUrl("/w/p", "sess-1")).toContain("session_id=sess-1");
+    expect(explorerUrl("/w/p", "sess-1")).toContain("session_id=sess-1");
+    // The peek's Open door is `taskHref`, and it is the SAME string the row's
+    // own door builds — one address for one conversation, however it is reached.
+    const href = taskHref({ session_id: "sess-1", target: "/w/p", project: "/w" });
+    expect(href).toBe(explorerUrl("/w/p", "sess-1"));
+    expect(href).toContain("session_id=sess-1");
+    // …and the one door that deliberately names NO conversation still says so
+    // by omission rather than by an empty value.
+    expect(chatPaneUrl("/w/p")).not.toContain("session_id");
+  });
+
+  it("the peek's Open door and the row's door cannot drift", () => {
+    // Both are `taskHref`. A second builder here is how one route would start
+    // answering a different question from the other.
+    expect(PEEK).toContain("taskHref(");
+  });
+});

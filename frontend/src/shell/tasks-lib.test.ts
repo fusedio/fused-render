@@ -188,6 +188,10 @@ function task(over: Partial<Task> = {}, n = 1): Task {
     title: "Pull today's news",
     title_source: "ai",
     description: "",
+    // The run settings a task carries; "" is "chose neither", which is what
+    // every fixture here is unless it says otherwise.
+    model: "",
+    effort: "",
     status: "done",
     failed: false,
     live: false,

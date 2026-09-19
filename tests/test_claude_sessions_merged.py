@@ -52,6 +52,13 @@ def agent(tmp_path, monkeypatch):
     projects.mkdir(parents=True)
     monkeypatch.setattr(mod, "CLAUDE_DIR", str(tmp_path / "claude"))
     monkeypatch.setattr(mod, "PROJECTS", str(projects))
+    # …and the app's OWN state dir, which is where the per-session model/effort
+    # record lives (`_state_file`). The ENV VAR, not a module constant: a
+    # template may not import `fused_render`, so that path is re-derived from the
+    # environment on every call the way `_held_answers` does — and a test that
+    # left it alone would read (and write) the developer's real
+    # ~/.fused-render.
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     return mod
 
 
@@ -1035,3 +1042,203 @@ def test_cli_sessions_read_running_off_the_registry_too(agent, target):
     assert [s["running"] for s in agent._cli_sessions(workdir)] == [False]
     _registry_row(agent, sid, workdir, "busy")
     assert [s["running"] for s in agent._cli_sessions(workdir)] == [True]
+
+
+# ---- which model the pills open on (Akshil, 2026-09-18) ----------------------
+#
+# "What I select as a user stays." `_defaults` answered a question about a
+# FOLDER — the model last used anywhere in it — and every door into a chat asked
+# it that way, so the same conversation opened from the Tasks peek, from that
+# peek's Open button, from a row, from the chat list or from a bare URL could
+# each be told something different, and a pill the reader had set in THIS chat
+# lost to whatever some other chat in the same folder ran with more recently.
+#
+# So the question gains a subject, and the answer comes from the conversation or
+# it does not come at all: the app's OWN record first (`session_settings.json`,
+# written by every spawn, every send and every pill pick), then that chat's own
+# transcript, and then nothing. A field neither knows stays "" — never a
+# neighbour's value, which is how a task created with haiku/low opened on
+# fable/max. One question, one answer, whatever door was used.
+
+
+def _ran(model, effort, cwd):
+    """An assistant row as Claude Code writes one — which is where the model a
+    turn actually used is recorded, and the effort beside it."""
+    return {"type": "assistant", "cwd": cwd, "isSidechain": False,
+            "effort": effort, "message": {"role": "assistant", "model": model}}
+
+
+@pytest.fixture()
+def recorded(tmp_path):
+    """The app's own model/effort store, as saved — the `agent` fixture already
+    points it at this tmp home."""
+
+    def read():
+        path = tmp_path / "home" / "claude-sessions" / "session_settings.json"
+        if not path.exists():
+            return {}
+        return {k: {f: v[f] for f in ("model", "effort") if f in v}
+                for k, v in json.loads(path.read_text()).items()}
+
+    return read
+
+
+def test_the_named_session_answers_for_itself(agent, target):
+    """The whole fix. Two conversations in one folder, and the newer one is not
+    the one being asked about."""
+    file, workdir = target
+    _cli_transcript(agent, workdir, "older",
+                    [_ran("claude-opus-4-6-20260514", "max", workdir)], mtime=500)
+    _cli_transcript(agent, workdir, "newer",
+                    [_ran("claude-haiku-4-5", "low", workdir)], mtime=9000)
+
+    # Asked about the folder, the NEWEST wins — unchanged, and right for a chat
+    # somebody opened on a folder.
+    assert agent._defaults(file)["model"] == "haiku"
+    # Asked about a conversation, that conversation wins.
+    mine = agent._defaults(file, "older")
+    assert (mine["model"], mine["effort"]) == ("opus", "max")
+    assert mine["source"] == "session"
+
+
+def test_a_pill_the_reader_changed_mid_CHAT_is_what_comes_back(agent, target):
+    """The reported sentence, from the other end: a model picked in the composer
+    is what the following turns run with, so it is what the transcript's NEWEST
+    rows say — and `_scan_transcript` reads from the tail."""
+    file, workdir = target
+    _cli_transcript(agent, workdir, "s1", [
+        _ran("claude-sonnet-4-5", "medium", workdir),
+        _ran("claude-opus-4-6-20260514", "high", workdir),
+    ])
+    picked = agent._defaults(file, "s1")
+    assert (picked["model"], picked["effort"]) == ("opus", "high")
+
+
+def test_a_named_session_with_nothing_of_its_own_answers_NOTHING(agent, target):
+    """A task that has not run yet, or an id from another machine — and the
+    reported bug's second half.
+
+    It used to answer the FOLDER's question here, which meant a neighbour chat's
+    model and effort. Asking about one conversation and being told partly about
+    another is worse than being told "I don't know", because the caller cannot
+    tell which half it got: a task created with haiku/low opened on fable/max
+    (Akshil, 2026-09-18). "" is the honest answer, and the caller's own default
+    — or the task's own stored setting, seeded by the peek — is what speaks."""
+    file, workdir = target
+    _cli_transcript(agent, workdir, "other",
+                    [_ran("claude-fable-5", "xhigh", workdir)])
+    answer = agent._defaults(file, "not-a-session-here")
+    assert (answer["model"], answer["effort"]) == ("", "")
+    assert answer["source"] == ""
+
+
+def test_a_named_session_never_backfills_ONE_field_from_a_neighbour(agent, target):
+    """The bug exactly. Claude Code writes the transcript's top-level `effort`
+    key only sometimes, so this chat records a model and no effort — and the
+    effort used to be filled in from whichever chat in the folder ran last."""
+    file, workdir = target
+    _cli_transcript(agent, workdir, "neighbour",
+                    [_ran("claude-fable-5", "max", workdir)], mtime=9000)
+    _cli_transcript(agent, workdir, "mine", [
+        {"type": "assistant", "cwd": workdir, "isSidechain": False,
+         "message": {"role": "assistant", "model": "claude-haiku-4-5"}},
+    ], mtime=500)
+    answer = agent._defaults(file, "mine")
+    assert answer["model"] == "haiku"
+    assert answer["effort"] == ""
+
+
+def test_the_chats_own_record_is_read_before_its_transcript(agent, target,
+                                                            recorded):
+    """The record is what the app itself wrote down — every spawn, every send,
+    every pill pick — so it leads, and it is complete where the transcript is
+    not."""
+    file, workdir = target
+    _cli_transcript(agent, workdir, "mine",
+                    [_ran("claude-sonnet-4-5", "medium", workdir)])
+    agent._record_settings("mine", "haiku", "low")
+    answer = agent._defaults(file, "mine")
+    assert (answer["model"], answer["effort"]) == ("haiku", "low")
+    assert answer["source"] == "record"
+    # And it rides back on its own, so the composer can rank it above the
+    # `?model=`/`?effort=` params a deep link seeded.
+    assert answer["recorded"] == {"model": "haiku", "effort": "low"}
+    assert recorded() == {"mine": {"model": "haiku", "effort": "low"}}
+
+
+def test_a_record_naming_the_retired_pinned_Fable_id_answers_fable(agent, target,
+                                                                   recorded):
+    """BACKWARD COMPATIBILITY, and the reason `_defaults` folds the record at
+    all. The picker offered "claude-fable-5-1" beside "fable" until 2026-09-18;
+    they were the same model, so only the alias is left. Every chat settled
+    before that still has the id written down for it — handed back raw it is a
+    value the page's MODELS list no longer holds, so the pill blanks and the
+    ranking falls through to a default nobody chose."""
+    file, workdir = target
+    agent._record_settings("mine", "claude-fable-5-1", "high")
+    answer = agent._defaults(file, "mine")
+    assert (answer["model"], answer["effort"]) == ("fable", "high")
+    assert answer["recorded"] == {"model": "fable", "effort": "high"}
+    # The FILE is untouched — this is a reading of the record, not a rewrite of
+    # it, and what the CLI is handed on an existing entry is still accepted.
+    assert recorded()["mine"]["model"] == "claude-fable-5-1"
+
+
+def test_a_record_of_ONE_field_leaves_the_other_to_the_transcript(agent, target,
+                                                                  recorded):
+    """Per field, everywhere: a pill pick names one, and it must not erase what
+    the chat is known to have run with."""
+    file, workdir = target
+    _cli_transcript(agent, workdir, "mine",
+                    [_ran("claude-sonnet-4-5", "medium", workdir)])
+    agent._record_settings("mine", effort="max")
+    answer = agent._defaults(file, "mine")
+    assert (answer["model"], answer["effort"]) == ("sonnet", "max")
+    assert answer["recorded"] == {"model": "", "effort": "max"}
+
+
+def test_recording_one_field_never_wipes_the_one_beside_it(agent, recorded):
+    """Two writers share this file — the spawn path records both, a pill records
+    one — so "not saying" and "nothing" have to stay different words."""
+    agent._record_settings("mine", "haiku", "low")
+    agent._record_settings("mine", model="opus")
+    assert agent._session_settings("mine") == ("opus", "low")
+    agent._record_settings("mine", effort="max")
+    assert agent._session_settings("mine") == ("opus", "max")
+    # An empty pair says nothing at all and writes nothing.
+    agent._record_settings("mine")
+    assert agent._session_settings("mine") == ("opus", "max")
+    # And a chat with no id has nothing to key a record on.
+    agent._record_settings("", "haiku", "low")
+    assert "" not in recorded()
+
+
+def test_a_chat_with_no_record_still_reads_its_own_transcript(agent, target):
+    """The legacy fallback, and the reason the scan is kept at all: every
+    conversation that predates this store."""
+    file, workdir = target
+    _cli_transcript(agent, workdir, "mine",
+                    [_ran("claude-opus-4-6-20260514", "high", workdir)])
+    answer = agent._defaults(file, "mine")
+    assert (answer["model"], answer["effort"]) == ("opus", "high")
+    assert answer["source"] == "session"
+    assert answer["recorded"] == {"model": "", "effort": ""}
+
+
+def test_an_unusable_session_id_is_never_turned_into_a_path(agent, target):
+    """The id becomes a filename here. `_bad_id` guards every other reader that
+    does that, and this one is no different — a traversal must read the folder's
+    answer, not somebody else's file."""
+    file, workdir = target
+    _cli_transcript(agent, workdir, "ok", [_ran("claude-haiku-4-5", "low", workdir)])
+    for bad in ("../../etc/passwd", "a/b", ""):
+        answer = agent._defaults(file, bad)
+        assert answer["model"] == "haiku", bad
+
+
+def test_the_folder_question_is_unchanged_when_nothing_is_named(agent, target):
+    """Every chat that is not about one conversation — and every caller that
+    predates this — still gets exactly what it got."""
+    file, workdir = target
+    _cli_transcript(agent, workdir, "s1", [_ran("claude-sonnet-4-5", "low", workdir)])
+    assert agent._defaults(file) == agent._defaults(file, "")

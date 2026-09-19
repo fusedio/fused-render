@@ -1988,15 +1988,14 @@ export function popoverPos(
 // a list of five strings that changes about once a year. If you add a model,
 // add it in both places.
 //
-// Model values carry BOTH shapes `--model` accepts: a floating alias ("fable" —
-// whatever Fable is today, which follows the CLI forward on its own) and a pinned
-// full id ("claude-fable-5-1" — that exact model, whatever ships next). A
-// scheduled task is the case that wants pinning most: it runs unattended, on a
-// repeat, for weeks, and "the model moved under it" is not a thing anyone is
-// watching for.
+// ONE ROW PER MODEL. A pinned full id ("claude-fable-5-1") used to sit above the
+// alias that names the same model, offered as the way to hold a repeating task
+// still. They are the same model, so the pair was a choice with one answer
+// (Akshil, 2026-09-18) — and an entry booked under the old id still reads as
+// Fable here: the card folds a stored value through `normalizeModel`
+// (platform/lib/model-vocab) before it reaches this list.
 export const TASK_MODELS: readonly { key: string; label: string }[] = [
   { key: "", label: "Default" },
-  { key: "claude-fable-5-1", label: "Fable 5.1" },
   { key: "fable", label: "Fable" },
   { key: "opus", label: "Opus" },
   { key: "sonnet", label: "Sonnet" },

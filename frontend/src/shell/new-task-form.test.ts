@@ -250,12 +250,12 @@ describe("the payload", () => {
     expect("effort" in untouched).toBe(false);
 
     const picked = buildSchedulePayload(
-      form({ model: "claude-fable-5-1", effort: "high" }),
+      form({ model: "opus", effort: "high" }),
     );
-    // The KEY travels, not the label: "claude-fable-5-1" is what `--model`
-    // takes, "Fable 5.1" is only how the card says it. Same for "high", whose
-    // field is labelled Thinking.
-    expect(picked.model).toBe("claude-fable-5-1");
+    // The KEY travels, not the label: "opus" is what `--model` takes, "Opus" is
+    // only how the card says it. Same for "high", whose field is labelled
+    // Thinking.
+    expect(picked.model).toBe("opus");
     expect(picked.effort).toBe("high");
 
     // Independent of each other — a task can pin the model and leave the

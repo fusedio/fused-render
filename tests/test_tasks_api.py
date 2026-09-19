@@ -2050,6 +2050,244 @@ def test_the_same_chat_reads_done_once_the_run_has_stopped(
     assert task["status"] == "done"
 
 
+# ---- the run settings a task carries (Akshil, 2026-09-18) --------------------
+#
+# "When we change model and effort from the new task modal it doesn't get
+# reflected" — and the surface was the SIDE PEEK, whose composer pills showed
+# something else entirely. They showed `agent._defaults`: the model last used in
+# that FOLDER, scanned off its newest transcripts, which is the right answer for
+# a chat opened on a folder and the wrong one for a task that was set up with a
+# model of its own.
+#
+# The peek could not have shown the task's model, because the row it is drawn
+# from did not carry one. It does now — and the entry's value is the truth
+# rather than a second opinion about it: `schedule._send` passes exactly
+# `entry["model"]` / `entry["effort"]` to `spawn_helper`, which passes them to
+# `claude --model` / `--effort`. Stored IS what the run uses.
+
+
+def test_a_task_carries_the_model_and_effort_its_runs_use(client, projects_dir):
+    """The two fields the New task card set, on the row every surface reads."""
+    _seed_schedule([_entry("e1", "nightly sweep", T12,
+                           model="opus", effort="max")])
+    task = _tasks(client)[0]
+    assert task["model"] == "opus"
+    assert task["effort"] == "max"
+
+
+def test_a_task_booked_under_the_retired_pinned_Fable_id_says_fable(
+        client, projects_dir):
+    """BACKWARD COMPATIBILITY. The pickers offered "claude-fable-5-1" beside the
+    alias naming the same model until 2026-09-18; only "fable" is left. Entries
+    booked under the old id are not going anywhere, and the row is what the side
+    peek's composer OPENS on — a value no picker lists any more opens a blank
+    pill. So the row says the word the menus now use.
+
+    Display only: `schedule._send` still hands `entry["model"]` to `--model`
+    verbatim, and the CLI takes the full id exactly as it always did."""
+    _seed_schedule([_entry("e1", "nightly sweep", T12,
+                           model="claude-fable-5-1", effort="max")])
+    task = _tasks(client)[0]
+    assert task["model"] == "fable"
+    assert task["effort"] == "max"
+
+
+def test_a_task_that_chose_neither_says_nothing_about_them(client, projects_dir):
+    """"" IS THE ANSWER, and it is the load-bearing one: it means "this task has
+    no opinion", which is what lets the chat's own detection keep speaking for
+    every conversation that never went through the New task card. A row that
+    invented "sonnet" here would pin every hand-typed chat to a model nobody
+    chose."""
+    _seed_schedule([_entry("e1", "no opinion", T12)])
+    assert [_tasks(client)[0][k] for k in ("model", "effort")] == ["", ""]
+
+
+def test_a_plain_chat_has_no_run_settings_either(client, projects_dir):
+    """No schedule anywhere near it — a session the user typed into. Same
+    answer, for the same reason."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hello", T9)])
+    assert [_tasks(client)[0][k] for k in ("model", "effort")] == ["", ""]
+
+
+def test_the_newest_entry_that_named_one_speaks(client, projects_dir):
+    """A task is a THREAD, and a thread can hold several scheduled messages. The
+    newest that names a setting is the one a reader is about to act on, which is
+    the same rule `_description` takes over the same list — and it is asked per
+    FIELD, so an entry that pinned only the effort does not wipe the model an
+    earlier one pinned."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    _seed_schedule([
+        _entry("e1", "first", T9, state=schedule.SENT, fired=T9,
+               claude_session_id="sess-a", model="opus", effort="low"),
+        _entry("e2", "second", T12, claude_session_id="sess-a", effort="max"),
+    ])
+    task = _by_key(client)["sess-a"]
+    assert task["model"] == "opus", "the newest entry that named one"
+    assert task["effort"] == "max", "…asked per field"
+
+
+# ---- the conversation's OWN record, above the entry's ------------------------
+#
+# The entry is the truth only until the first run. After it the conversation has
+# one of its own — what `agent._start`/`_send` actually launched with, and what
+# the reader's pill last said — and THAT is what every door has to read, or a
+# pill moved mid-chat is undone by the next open.
+#
+# It is also what closes the window the report lived in: a task whose session
+# existed but whose transcript had not been written yet had nothing to detect
+# from, and detection answered with the newest OTHER chat in the folder
+# (fable/max, for a task created with haiku/low — Akshil, 2026-09-18).
+
+
+def test_the_chats_own_record_outranks_the_entry(client, projects_dir):
+    """A reader who moved a pill has changed the CHAT, not the task's booked
+    messages — so the row follows them."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    _seed_schedule([_entry("e1", "nightly", T12, claude_session_id="sess-a",
+                           model="opus", effort="max")])
+    assert [_by_key(client)["sess-a"][k] for k in ("model", "effort")] \
+        == ["opus", "max"]
+    tasks_store.record_settings("sess-a", "haiku", "low")
+    assert [_by_key(client)["sess-a"][k] for k in ("model", "effort")] \
+        == ["haiku", "low"]
+
+
+def test_a_record_of_one_field_leaves_the_other_to_the_entry(client, projects_dir):
+    """Per field, the same rule the entries themselves are read by: recording an
+    effort must not wipe the model the task was set up with."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    _seed_schedule([_entry("e1", "nightly", T12, claude_session_id="sess-a",
+                           model="opus", effort="max")])
+    tasks_store.record_settings("sess-a", effort="low")
+    assert [_by_key(client)["sess-a"][k] for k in ("model", "effort")] \
+        == ["opus", "low"]
+
+
+def test_a_pill_pick_is_written_for_the_conversation(client, projects_dir):
+    """The endpoint the composer posts to on every pick. The param it also sets
+    dies with the address bar; this is the half that survives the next open."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    r = client.post("/api/tasks/settings",
+                    json={"session_id": "sess-a", "model": "haiku",
+                          "effort": "low"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "model": "haiku", "effort": "low"}
+    assert [_by_key(client)["sess-a"][k] for k in ("model", "effort")] \
+        == ["haiku", "low"]
+
+
+def test_picking_one_pill_never_erases_the_other(client, projects_dir):
+    """Two pills, two requests, one record. An absent field is "not saying",
+    never "nothing" — the spawn path writes both and a pick writes one."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    client.post("/api/tasks/settings",
+                json={"session_id": "sess-a", "model": "haiku", "effort": "low"})
+    r = client.post("/api/tasks/settings",
+                    json={"session_id": "sess-a", "effort": "max"})
+    assert r.json() == {"ok": True, "model": "haiku", "effort": "max"}
+
+
+# ---- READING the record, without the subprocess (Akshil, 2026-09-19) --------
+#
+# "It takes some time to load in these model and effort … when I come to the
+# page after 2-3 seconds it flips, same when I reload." The composer learned the
+# record off the agent's `defaults` action — a POST /api/run that spawns agent.py
+# and scans a transcript tail — so the pills painted a constant first and swapped
+# it seconds later. The record is one JSON file this process already reads on
+# every listing; this door hands it over in milliseconds so the pills can WAIT
+# for it instead of guessing ahead of it.
+
+
+def test_the_record_can_be_read_back_without_spawning_anything(
+        client, projects_dir):
+    """The fast half of the composer's ranking. Same file the POST writes, same
+    answer the listing derives its row from — one GET away."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    tasks_store.record_settings("sess-a", "haiku", "low")
+    r = client.get("/api/tasks/settings", params={"session_id": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"model": "haiku", "effort": "low"}
+
+
+def test_reading_a_record_under_the_retired_pinned_Fable_id_says_fable(client):
+    """Folded on the way out exactly as the ROW is (`_display_model`): a chat
+    recorded under "claude-fable-5-1" opens on the Fable the picker offers, not
+    on a blank pill. Display only — what the CLI is handed is untouched."""
+    tasks_store.record_settings("sess-a", "claude-fable-5-1", "max")
+    r = client.get("/api/tasks/settings", params={"session_id": "sess-a"})
+    assert r.json() == {"model": "fable", "effort": "max"}
+
+
+def test_a_session_with_nothing_recorded_reads_as_no_opinion(client):
+    """"" FOR BOTH, and not a 404: "no record" is the load-bearing answer — it
+    is what leaves detection and the composer's own constants speaking, and a
+    conversation that never existed says the same thing as one that never
+    chose."""
+    r = client.get("/api/tasks/settings", params={"session_id": "no-such"})
+    assert r.status_code == 200
+    assert r.json() == {"model": "", "effort": ""}
+
+
+def test_a_record_of_one_field_reads_back_as_one_field(client):
+    """Per field here too: a chat that recorded only an effort must not be told
+    its model is "", it must be told nothing about its model — which is the same
+    string, and the composer's next rank down is what fills it."""
+    tasks_store.record_settings("sess-a", effort="low")
+    assert client.get("/api/tasks/settings",
+                      params={"session_id": "sess-a"}).json() \
+        == {"model": "", "effort": "low"}
+
+
+def test_the_read_refuses_the_same_ids_the_write_does(client):
+    """One validator behind both doors (`_settings_session_id`): an id no reader
+    would ever look up is not a question this endpoint answers, and a caller
+    that asked with one has a bug rather than an empty record."""
+    for sid in ("", "../../etc/passwd", ".hidden", "a/b", "a\\b", "d:x", ".",
+                ".."):
+        r = client.get("/api/tasks/settings", params={"session_id": sid})
+        assert r.status_code == 400, sid
+    assert client.get("/api/tasks/settings",
+                      params={"session_id": "sess-ok.1_2"}).status_code == 200
+
+
+def test_the_settings_endpoint_refuses_words_it_does_not_know(client, projects_dir):
+    """A 400 rather than a silent fallback: a caller that asked for an effort
+    this build has no name for has been answered with a different session, which
+    is worse than being told no. The MODEL is not list-checked — the composer
+    offers pinned ids no Python vocabulary here carries — so its shape is."""
+    bad = [{"session_id": "sess-a", "effort": "turbo"},
+           {"session_id": "sess-a", "model": "../../etc/passwd"},
+           {"session_id": "", "model": "haiku"},
+           {"session_id": "sess-a"}]
+    for body in bad:
+        assert client.post("/api/tasks/settings", json=body).status_code == 400, body
+
+
+def test_the_settings_endpoint_refuses_an_id_no_reader_would_look_up(client):
+    """`agent._defaults` refuses ids with separators or a leading dot before it
+    reads anything; a record filed under one would never be read back, only
+    carried by every listing. Same shape the running-mark endpoint demands."""
+    for sid in ("../../etc/passwd", ".hidden", "a/b", "a\\b", "d:x", ".", ".."):
+        r = client.post("/api/tasks/settings",
+                        json={"session_id": sid, "model": "haiku"})
+        assert r.status_code == 400, sid
+    assert client.post("/api/tasks/settings",
+                       json={"session_id": "sess-ok.1_2", "model": "haiku"}
+                       ).status_code == 200
+
+
+
+def test_a_record_for_a_chat_that_is_not_a_task_bothers_nobody(client, projects_dir):
+    """Most conversations are not tasks, and the record is keyed by SESSION.
+    Writing one must not mint a row, and must not fail."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
+    before = {t["key"] for t in _tasks(client)}
+    assert client.post("/api/tasks/settings",
+                       json={"session_id": "no-such-session",
+                             "model": "haiku"}).status_code == 200
+    assert {t["key"] for t in _tasks(client)} == before
+
+
 def test_a_freshly_resolved_turn_outvotes_the_transcripts_liveness(
         client, projects_dir):
     """The popover/tasks-page split, closed on the server's side.

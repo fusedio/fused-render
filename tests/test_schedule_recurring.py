@@ -212,9 +212,9 @@ def test_an_occurrence_inherits_the_templates_model_and_effort(target, spawned):
     that kept them to itself would run every repeat on the default model —
     exactly the run the user configured them for (bugbot, PR #968)."""
     template = schedule.create(str(target), "run", repeats="*/5 * * * *",
-                               model="claude-fable-5-1", effort="high")
+                               model="opus", effort="high")
     occurrence = _occurrences(template["id"])[0]
-    assert occurrence["model"] == "claude-fable-5-1"
+    assert occurrence["model"] == "opus"
     assert occurrence["effort"] == "high"
 
     # ...and a template without either hands down the empty strings the rest of

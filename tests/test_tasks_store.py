@@ -1041,3 +1041,52 @@ def test_one_folder_is_one_counter_however_it_is_spelled():
     # not a rewrite of what is stored.
     assert tasks_store.task_ids()["pending:e1"]["project"] == native
 
+
+
+# ---- session_settings.json: what a conversation runs with -------------------
+
+
+def test_a_recorded_pair_reads_back(state_dir):
+    tasks_store.record_settings("sess-a", "haiku", "low")
+    assert tasks_store.session_settings(
+        tasks_store.settings_state(), "sess-a") == ("haiku", "low")
+
+
+def test_only_the_fields_given_are_written(state_dir):
+    """"Not saying" and "nothing" are different words, and they have to stay
+    different: the spawn path records both fields, a pill pick records one, and
+    they share the file."""
+    tasks_store.record_settings("sess-a", "haiku", "low")
+    tasks_store.record_settings("sess-a", model="opus")
+    state = tasks_store.settings_state()
+    assert tasks_store.session_settings(state, "sess-a") == ("opus", "low")
+    tasks_store.record_settings("sess-a", effort="max")
+    assert tasks_store.session_settings(
+        tasks_store.settings_state(), "sess-a") == ("opus", "max")
+
+
+def test_nothing_to_say_writes_nothing(state_dir):
+    """An empty pair, and a conversation with no identity to key a record on —
+    a `""` key would be a record every id-less caller overwrote in turn."""
+    assert tasks_store.record_settings("sess-a") == {}
+    assert tasks_store.record_settings("", "haiku", "low") == {}
+    assert tasks_store.settings_state() == {}
+
+
+def test_a_session_nobody_recorded_says_nothing(state_dir):
+    """"" for both, which is what leaves the caller's own default speaking."""
+    assert tasks_store.session_settings({}, "sess-a") == ("", "")
+    assert tasks_store.session_settings({"sess-a": "not a record"}, "sess-a") \
+        == ("", "")
+
+
+def test_erasing_a_session_erases_what_it_ran_with(state_dir):
+    """The conversation is gone, so the record has nothing left to be about —
+    and left behind it would re-seed a new chat handed the same id."""
+    tasks_store.record_settings("sess-a", "haiku", "low")
+    tasks_store.record_settings("sess-b", "opus", "max")
+    result = tasks_store.forget_session("sess-a")
+    assert result["settings"] is True
+    state = tasks_store.settings_state()
+    assert tasks_store.session_settings(state, "sess-a") == ("", "")
+    assert tasks_store.session_settings(state, "sess-b") == ("opus", "max")

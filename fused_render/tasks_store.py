@@ -728,12 +728,112 @@ def mark_deleted(key: str, now: float | None = None) -> None:
     _update(DELETED_FILE, mutate)
 
 
+# -------------------------------------------------- session_settings.json
+#
+#     {"<session-id>": {"model": "haiku", "effort": "low", "at": 1755300000.0}}
+#
+# WHICH CLAUDE A CONVERSATION RUNS WITH, and how hard it thinks — the fourth
+# fact about a task that cannot live in a transcript, after its number, its read
+# marks and its tombstone, and it lives here for the same reasons: keyed by
+# session, global, never branch-nested.
+#
+# WHY OURS AND NOT THE TRANSCRIPT'S. The composer used to DETECT both by reading
+# Claude Code's transcripts: the model off `message.model`, which every
+# assistant row carries, and the effort off a top-level `effort` key, which
+# Claude Code writes only sometimes. A field the writer does not reliably write
+# is a field that reads as missing, and a missing field used to be filled in
+# from the newest OTHER chat in the same folder — so a task set up with
+# haiku/low opened on some neighbour's max (Akshil, 2026-09-18: "made a task
+# with haiku/low; peek first showed fable/max"). Detection also cannot answer
+# at all in the seconds between "this conversation has an id" and "this
+# conversation has a transcript", which is exactly when a new task's peek is
+# first read.
+#
+# So the app records what it launched a run with, and what the reader picked,
+# at the moment it knows — `agent._start` and `_send` for every spawn and every
+# send, `POST /api/tasks/settings` for every pill pick — and every surface reads
+# THAT. Transcript scanning stays as the legacy fallback for conversations that
+# predate this store.
+#
+# PER FIELD, and a missing one stays missing. `record` writes only what it was
+# given, so a pick that names the effort cannot wipe a model recorded at spawn.
+# Nothing here ever answers about a DIFFERENT session: a field this store has
+# no value for reads as "", the caller's own constant default speaks, and the
+# reader is never told about a conversation they did not ask about.
+#
+# A record for a session whose transcript is later erased goes with it
+# (`forget_session`) — there is no conversation left for it to be about.
+
+SETTINGS_FILE = "session_settings.json"
+
+
+def settings_state() -> dict:
+    """The per-session model/effort store, as saved. Missing/corrupt reads as
+    {} — no record anywhere, so every chat falls back to detection, which is
+    precisely how the app behaved before this file existed."""
+    return load_state(SETTINGS_FILE)
+
+
+def session_settings(state: dict, session_id: str) -> tuple[str, str]:
+    """`(model, effort)` recorded for one session, "" for each field this store
+    has no answer for.
+
+    Strings only, and no vocabulary check here: the store keeps what the app
+    launched with, and the two readers that turn it into a selected pill
+    (`agent._defaults`, the composer's own `pick`) each validate against the
+    list THEY offer. A value this module rejected would be a value the CLI
+    really ran with that the app then denies knowing."""
+    rec = state.get(str(session_id or ""))
+    if not isinstance(rec, dict):
+        return "", ""
+    return (str(rec.get("model") or ""), str(rec.get("effort") or ""))
+
+
+def record_settings(session_id: str, model: str = "", effort: str = "",
+                    now: float | None = None) -> dict:
+    """Record what this conversation runs with; return the stored record.
+
+    ONLY THE FIELDS GIVEN. An empty `model` means "I am not saying anything
+    about the model", not "the model is nothing" — a pill pick names one field,
+    a spawn names both, and neither may erase what the other knew. That is the
+    same invariant `mark_read_many` keeps for the ids it was handed.
+
+    Writes nothing for an empty session id: a conversation with no identity has
+    nothing to key a record on, and a `""` key would be a record every future
+    id-less caller overwrote in turn. The task entry's own setting is what
+    speaks for that window (`routers/tasks.py::_run_settings`)."""
+    session_id = str(session_id or "").strip()
+    model = str(model or "").strip()
+    effort = str(effort or "").strip()
+    if not session_id or not (model or effort):
+        return {}
+    stamp = time.time() if now is None else float(now)
+
+    def mutate(state: dict):
+        rec = state.get(session_id)
+        rec = dict(rec) if isinstance(rec, dict) else {}
+        if model:
+            rec["model"] = model
+        if effort:
+            rec["effort"] = effort
+        rec["at"] = stamp
+        state[session_id] = rec
+        return rec, True
+
+    return _update(SETTINGS_FILE, mutate)
+
+
 def forget_session(session_id: str) -> dict:
-    """Erase what these two stores keep about one session — the erase gesture's
+    """Erase what these stores keep about one session — the erase gesture's
     share of `POST /api/tasks/erase`, where the transcript itself goes too.
 
     `read.json`'s record GOES: it is per-message read marks for messages that
     no longer exist, and there is no thread left for them to be about.
+
+    `session_settings.json`'s record GOES for the same reason: it says which
+    model a conversation runs with, and the conversation is gone. Left behind,
+    it would be the one thing that outlived the erase and re-seeded a new chat
+    that happened to be handed the same id.
 
     `task_ids.json`'s record STAYS, deliberately, and this is the one decision
     in here worth arguing. Allocation is "max n seen for this project, plus
@@ -747,8 +847,15 @@ def forget_session(session_id: str) -> dict:
     go on wearing its number — and it is legible in the file besides, so a human
     reading the store can tell a reserved number from a live one.
 
-    Returns `{"read": bool, "number": bool}` — whether each store changed."""
+    Returns `{"read": bool, "settings": bool, "number": bool}` — whether each
+    store changed."""
     def forget_read(state: dict):
+        if session_id not in state:
+            return False, False
+        state.pop(session_id, None)
+        return True, True
+
+    def forget_settings(state: dict):
         if session_id not in state:
             return False, False
         state.pop(session_id, None)
@@ -763,6 +870,7 @@ def forget_session(session_id: str) -> dict:
         return True, True
 
     return {"read": _update(READ_FILE, forget_read),
+            "settings": _update(SETTINGS_FILE, forget_settings),
             "number": _update(TASK_IDS_FILE, reserve_number)}
 
 

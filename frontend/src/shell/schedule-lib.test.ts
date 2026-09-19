@@ -10,6 +10,7 @@ import {
   taskRunLabel,
   taskRunOptions,
 } from "./schedule-lib";
+import { normalizeModel } from "@platform/lib/model-vocab";
 import { taskFolder } from "./useMissingFolders";
 
 describe("describeRepeats", () => {
@@ -392,6 +393,10 @@ function task(over: Partial<Task> & { key: string }): Task {
     title: "Pull news",
     title_source: "ai",
     description: "",
+    // The run settings a task carries; "" is "chose neither", which is what
+    // every fixture here is unless it says otherwise.
+    model: "",
+    effort: "",
     status: "upcoming",
     failed: false,
     live: false,
@@ -2414,19 +2419,31 @@ describe("the popover's header rail (Akshil, 2026-08-19)", () => {
 // rule that is not obvious about them: an unrecognised stored value stays
 // selectable instead of collapsing onto "Default".
 describe("what a task can be run with", () => {
-  it("offers Default first, then the pinned model ahead of its floating alias", () => {
+  it("offers Default first, then one row per model", () => {
     // "" leads because it is the answer for almost every task — no flag, let
     // the run detect the project's own config — and it has to be reachable
     // again after someone picks a model.
     expect(TASK_MODELS[0]).toEqual({ key: "", label: "Default" });
-    // Both shapes `--model` accepts are on the menu, pinned id first: someone
-    // who opens this menu at all is usually after a specific model, and a
-    // scheduled task is exactly the thing that should not move under its owner
-    // when the alias advances.
+    // ONE ROW PER MODEL. A pinned full id ("claude-fable-5-1") used to lead the
+    // four, above the alias naming the same model — the same thing twice, so
+    // the menu asked a question with one answer (Akshil, 2026-09-18).
     expect(TASK_MODELS.map((o) => o.key)).toEqual([
-      "", "claude-fable-5-1", "fable", "opus", "sonnet", "haiku",
+      "", "fable", "opus", "sonnet", "haiku",
     ]);
-    expect(taskRunLabel(TASK_MODELS, "claude-fable-5-1")).toBe("Fable 5.1");
+    expect(taskRunLabel(TASK_MODELS, "fable")).toBe("Fable");
+  });
+
+  it("says Fable for a task still booked under the retired pinned id", () => {
+    // Entries outlive the menu. A task scheduled before 2026-09-18 still stores
+    // "claude-fable-5-1", which this list has never heard of — so `taskRunOptions`
+    // would carry it through as its own row and the card would show a reader the
+    // CLI's spelling of a model it now calls Fable, then write that back on the
+    // next Save. The card folds a stored value through `normalizeModel` first
+    // (NewJobModal's `model` state), which is what this composition asserts.
+    expect(taskRunLabel(TASK_MODELS, normalizeModel("claude-fable-5-1")))
+      .toBe("Fable");
+    expect(taskRunOptions(TASK_MODELS, normalizeModel("claude-fable-5-1")))
+      .toHaveLength(TASK_MODELS.length);
   });
 
   it("offers the five --effort levels, cheapest first, said in English", () => {

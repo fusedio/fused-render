@@ -99,20 +99,22 @@ def test_the_model_and_the_thinking_budget_are_stored_on_the_entry(client, targe
     passthrough is the whole change, so what is asserted is that the values reach
     the STORE and come back on a read.
 
-    Both shapes of `--model` go through untouched — an alias and a pinned full
-    id — because this layer does not hold a copy of the CLI's vocabulary."""
+    Both shapes of `--model` go through untouched — a full dated id and a family
+    alias — because this layer does not hold a copy of the CLI's vocabulary."""
     res = client.post("/api/schedule", headers=WRITE,
                       json={"target": str(target), "message": "hi",
                             "delay_seconds": 60,
-                            "model": "claude-fable-5-1", "effort": "high"})
+                            "model": "claude-opus-4-6-20260514",
+                            "effort": "high"})
     assert res.status_code == 200
     entry = res.json()["entry"]
-    assert entry["model"] == "claude-fable-5-1"
+    assert entry["model"] == "claude-opus-4-6-20260514"
     assert entry["effort"] == "high"
     # …and off a fresh read of the store, which is what an EDIT prefills from:
     # editing is cancel + re-create, so a field the list does not carry is a
     # choice the next save resets to the default.
-    assert client.get("/api/schedule").json()["entries"][0]["model"] == "claude-fable-5-1"
+    assert (client.get("/api/schedule").json()["entries"][0]["model"]
+            == "claude-opus-4-6-20260514")
 
     # The alias shape too. Nothing here validates the name — the CLI is the
     # authority on what `--model` takes, and a list in this file would go stale

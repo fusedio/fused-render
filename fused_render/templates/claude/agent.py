@@ -1458,6 +1458,119 @@ def _held_answers(run_id: str) -> set:
         return set()
 
 
+# THE CHAT'S OWN model/effort record — `fused_render/tasks_store.py`'s
+# `session_settings.json`, keyed by session id:
+#
+#     {"<session-id>": {"model": "haiku", "effort": "low", "at": 1755300000.0}}
+#
+# THE PATH IS SPELLED HERE RATHER THAN IMPORTED, for the same two reasons
+# HELD_ANSWERS above is: this file is a TEMPLATE outside the package's import
+# graph (SPEC PY-15) and also a runPython target, so `import fused_render` is
+# not available to it. `tasks_store` carries the matching note beside its own
+# copy; move one and move both.
+#
+# WHY THE APP KEEPS ITS OWN RECORD when the transcript looks like it already
+# says. `_scan_transcript` reads the model off `message.model`, which every
+# assistant row carries, and the effort off a top-level `effort` key, which
+# Claude Code writes only sometimes — so effort routinely read as MISSING, and
+# a missing field used to be filled in from the newest OTHER chat in the folder.
+# A task set up with haiku/low opened on a neighbour's max (Akshil, 2026-09-18).
+# And no transcript exists at all in the seconds between a chat getting an id
+# and its first row landing, which is exactly when a new task's peek is read.
+#
+# So every spawn (`_start`) and every send (`_send`) records what it actually
+# launched with, the pill records every pick (`POST /api/tasks/settings`), and
+# `_defaults` reads THIS first. Transcript scanning stays as the fallback for
+# conversations that predate the store.
+SESSION_SETTINGS = ("claude-sessions", "session_settings.json")
+
+
+def _state_file(*parts: str) -> str:
+    """One path inside `~/.fused-render`'s global state dir — the same
+    directory, derived the same way from the environment, that `_held_answers`
+    reads its own store from. GLOBAL, never branch-nested: a session belongs to
+    the machine's one `~/.claude/projects` pool, so a chat started from a
+    worktree must be the same chat when it is read from main."""
+    home = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser(
+        "~/.fused-render")
+    return os.path.join(home, *parts)
+
+
+def _session_settings(session_id: str) -> tuple:
+    """`(model, effort)` this app recorded for one conversation, "" for each
+    field it has no record of.
+
+    Best-effort, and cheap on a machine that has never recorded one: a `stat` of
+    a file that is not there is the whole cost, the same shape `_held_answers`
+    takes on the poll path. Every failure reads as no record, which simply
+    leaves the older transcript detection speaking."""
+    if not session_id or _bad_id(session_id):
+        return "", ""   # the same guard `_defaults` puts on ids from the page
+    path = _state_file(*SESSION_SETTINGS)
+    try:
+        os.stat(path)
+    except OSError:
+        return "", ""   # nothing has ever been recorded here: no read, no parse
+    try:
+        with open(path, encoding="utf-8") as fh:
+            state = json.load(fh)
+        rec = state.get(session_id)
+        if not isinstance(rec, dict):
+            return "", ""
+        return str(rec.get("model") or ""), str(rec.get("effort") or "")
+    except (OSError, ValueError, AttributeError, TypeError):
+        return "", ""
+
+
+def _record_settings(session_id: str, model: str = "", effort: str = "") -> None:
+    """Record what this conversation is running with. Best-effort: a store that
+    will not open costs a chat its remembered pill, never a send.
+
+    ONLY THE FIELDS GIVEN, which is what makes this safe to call from two
+    places that each know half: an empty `model` means "not saying", not "no
+    model". Same invariant `tasks_store.record_settings` keeps on the server
+    side — the two writers share one file, so they have to share one rule.
+
+    Locked for the whole read-modify-write where the platform has flock, like
+    `tasks_store._update`: two chats sending at the same moment is ordinary (the
+    app runs several windows against one server), and an unlocked pair would
+    persist a snapshot taken before the other's write and drop it."""
+    session_id = (session_id or "").strip()
+    model = (model or "").strip()
+    effort = (effort or "").strip()
+    if not session_id or _bad_id(session_id) or not (model or effort):
+        return   # an id `_defaults` would refuse to read is not worth writing
+    path = _state_file(*SESSION_SETTINGS)
+    try:
+        import fcntl        # POSIX only — Windows takes the unlocked path,
+    except ImportError:     # the same posture tasks_store takes for the same file
+        fcntl = None
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".lock", "w") as lock:
+            if fcntl is not None:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    state = json.load(fh)
+            except (OSError, ValueError):
+                state = {}
+            if not isinstance(state, dict):
+                state = {}
+            rec = state.get(session_id)
+            rec = dict(rec) if isinstance(rec, dict) else {}
+            if model:
+                rec["model"] = model
+            if effort:
+                rec["effort"] = effort
+            rec["at"] = time.time()
+            state[session_id] = rec
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(state, fh, indent=2, ensure_ascii=False)
+    except OSError:
+        pass
+
+
 def _permissions(run_dir: str) -> list:
     """Every permission request this run has raised, each with the user's
     decision if one has been made. The whole list, not just the unanswered
@@ -2618,6 +2731,17 @@ def _start(file: str, message: str, session_id: str, model: str,
         proc.stdin.write(json.dumps(req).encode("utf-8"))
     finally:
         proc.stdin.close()
+    # WHAT THIS CHAT RUNS WITH — the app's own answer to "which model is this
+    # conversation on?", which every surface reads first (`_defaults`). Here
+    # rather than only in the composer because this is the one point every send
+    # passes through: a scheduled run, the apps API and canvases.py all reach
+    # the CLI this way and none of them has a pill to have recorded a pick.
+    # AFTER the host is up, not before: a Popen that raises leaves no
+    # conversation to have a record about, and a record for a chat that never
+    # ran would answer the next chat handed the same id. `new_session_id or
+    # session_id` is the conversation the turn actually happens in, the same
+    # pair the return value names.
+    _record_settings(new_session_id or session_id, model, effort)
     # Transient: overwritten by the host with the CLI's OWN pid the moment it
     # spawns it (see session_host.py) — `_cancel`'s killpg needs that one, not
     # the host's, to reach the CLI's whole process group. Written here, to the
@@ -3269,6 +3393,21 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         # life of the file.
         with _private_open(os.path.join(run_dir, "host.json")) as f:
             json.dump(host, f)
+    # WHAT THIS CHAT RUNS WITH, recorded for the same reason `_start` records
+    # it and at the same moment in the send: a follow-up never passes through
+    # `_start`, so without this a pill changed mid-session would reach the CLI
+    # (the control request above) and leave no trace any surface could read
+    # back. `_run_own_session` names the conversation this run's turn is in;
+    # a resume has its id under `resumed_from` instead, which is the same
+    # conversation. Whichever is present is the one the record belongs to.
+    try:
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError):
+        meta = {}
+    _record_settings(
+        _run_own_session(run_dir, meta) or str(meta.get("resumed_from") or ""),
+        model, effort)
     # Marks this message as sent-but-not-yet-echoed, so `_poll` (see its
     # `pending_echo` handling) will not believe a stale trailing `result` in
     # `out.jsonl` means the turn is done: at this exact instant the host may
@@ -5262,35 +5401,27 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
 _MODEL_SHORT = ("fable", "opus", "sonnet", "haiku")
 _EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
-# The PINNED entries the picker offers beside the aliases — full `--model` ids
-# rather than a family name (template.html's MODELS). They have to be matched
-# BEFORE the short names below, and matched exactly, because every one of them
-# contains its own family name: "claude-fable-5-1-20260401" collapsed to "fable"
-# under the old loop, so a chat actually running the pinned model came back from
-# detection as the floating alias and the pill preselected the wrong option.
-#
-# Each pattern is anchored on the version and refuses a longer number, so a
-# future "fable-5-10" is NOT read as 5.1 — the whole point of a pinned entry is
-# that it names one model, and a prefix match would quietly stop being true.
-# What is not pinned still falls through to the family name, which is the right
-# answer for it: the alias is what the user would have picked.
-_MODEL_PINNED = ((re.compile(r"fable-5[.-]1(?!\d)"), "claude-fable-5-1"),)
+# The picker used to offer a PINNED full id ("claude-fable-5-1") beside the
+# family alias that names the same model, and this function had to match it
+# first and exactly — every pinned id contains its own family name, so the loop
+# below would otherwise collapse it. That entry is gone: it was the same model
+# under two spellings, so the menu asked a question with one answer (Akshil,
+# 2026-09-18). Every Fable id — dated, pinned, bare — is "fable" again, which is
+# the row the picker offers and the one the user would have chosen.
 
 
 def _short_model(raw: str) -> str:
-    """Collapse any spelling of a model — full id ('claude-fable-5'), alias
-    ('opusplan'), or already-short name — to one of the selector's values.
+    """Collapse any spelling of a model — full id ('claude-fable-5-1-20260401'),
+    alias ('opusplan'), or already-short name — to one of the selector's values.
 
-    That is a short family name ('fable') for anything the picker offers as an
-    alias, and the full pinned id ('claude-fable-5-1') for the ones it offers by
-    version. The return value is a value the <select> actually holds: the page
-    validates detection against its own MODELS list and drops anything else, so
-    a spelling that does not round-trip here is a preselect that silently never
-    happens."""
+    That is the short family name: 'fable', 'opus', 'sonnet', 'haiku'. The
+    return value is a value the <select> actually holds: the page validates
+    detection against its own MODELS list and drops anything else, so a spelling
+    that does not round-trip here is a preselect that silently never happens —
+    and a transcript or a record still naming the retired pinned id has to come
+    back as the alias, or a chat that has been running on Fable for weeks opens
+    on a blank pill."""
     raw = (raw or "").lower()
-    for pattern, value in _MODEL_PINNED:
-        if pattern.search(raw):
-            return value
     for name in _MODEL_SHORT:
         if name in raw:
             return name
@@ -5334,20 +5465,76 @@ def _scan_transcript(path: str) -> tuple:
     return model, effort
 
 
-def _defaults(file: str) -> dict:
-    """The model/effort the user ACTUALLY last used with Claude Code for this
-    project — through this template or the CLI directly — so the selectors can
-    preselect a real config instead of a hardcoded guess.
+def _defaults(file: str, session_id: str = "") -> dict:
+    """The model/effort the selectors should open on — for THIS CONVERSATION
+    when one is named, else the ones last used in this project.
 
-    Priority: newest session transcripts in this project's store (true
-    last-used, shared by CLI and template runs since both key sessions on the
-    same cwd munge), then settings files (project .claude/settings.local.json,
-    project .claude/settings.json, ~/.claude/settings.json — the `model` and
-    `effortLevel` keys). Empty fields mean nothing was detected; the page keeps
-    its own fallback."""
+    THE CONVERSATION ANSWERS FOR ITSELF, or it does not answer (Akshil,
+    2026-09-18: "what I select as a user stays"). With a `session_id` this reads
+    exactly two things, in order:
+
+      1. THE APP'S OWN RECORD (`_session_settings`) — what the last spawn, the
+         last send, or the reader's own pill said this chat runs with. Written
+         by us, so it is complete and it exists from the instant the chat has an
+         id, which is seconds before its first transcript row does.
+      2. THAT CHAT'S TRANSCRIPT, and only that one — the legacy fallback, for
+         conversations older than the record.
+
+    AND THEN IT STOPS. No sibling transcript, no settings file, nothing about
+    the FOLDER. A field neither of the two knows comes back "" and the caller's
+    own constant default speaks. That is the whole fix: asking about one
+    conversation and being answered partly about another is worse than being
+    answered "I don't know", because the caller cannot tell which half it got —
+    and it is precisely how a task created with haiku/low opened on fable/max,
+    since Claude Code writes the transcript's `effort` key only sometimes and
+    the missing half was filled in from whichever neighbour chat ran last.
+
+    WITHOUT a session id — a brand-new chat, which has no conversation to ask —
+    the folder ladder answers as it always has: the newest transcripts in this
+    project's store (true last-used, shared by CLI and template runs since both
+    key sessions on the same cwd munge), then settings files (project
+    .claude/settings.local.json, project .claude/settings.json,
+    ~/.claude/settings.json — the `model` and `effortLevel` keys).
+
+    `recorded` rides back beside the resolved pair so the composer can rank the
+    record ABOVE its own `?model=`/`?effort=` params: those params are a SEED
+    for a new chat (the New task card's deep link, "Fix with AI"), and a seed
+    that outranked the record would undo a pill the reader changed mid-chat on
+    the next open. Empty fields mean nothing was detected; the page keeps its
+    own fallback."""
     workdir = _workdir(os.path.abspath(file))
     model = effort = source = ""
     proj = os.path.join(PROJECTS, _munge(workdir))
+    # `_bad_id` for the reason every other reader of a session id has it: the id
+    # becomes a path below, and one that does not round-trip is not a session
+    # this store can hold. A rejected id is treated as no id at all.
+    named = bool(session_id) and not _bad_id(session_id)
+    rec_model, rec_effort = _session_settings(session_id) if named else ("", "")
+    # A RECORD OUTLIVES THE PICKER'S VOCABULARY. Chats settled before the pinned
+    # Fable id was retired still have "claude-fable-5-1" written down for them;
+    # handed back raw it is a value the page's MODELS list no longer holds, so
+    # the pill blanks and the ranking falls to a default nobody chose. Folded
+    # through the same function detection uses, it comes back as the alias that
+    # now offers that model. A value the vocabulary does not know at all is left
+    # exactly as written — the page is the one that judges it.
+    rec_model = _short_model(rec_model) or rec_model
+    if rec_model or rec_effort:
+        model, effort, source = rec_model, rec_effort, "record"
+    if named:
+        # THIS CHAT'S TRANSCRIPT, and then done — see the docstring for why the
+        # folder ladder below is not reached from here.
+        if not (model and effort):
+            mine = os.path.join(proj, session_id + ".jsonl")
+            if os.path.exists(mine):
+                m, e = _scan_transcript(mine)
+                model = model or m
+                effort = effort or e
+                if m or e:
+                    # "record" already, when one existed: the leading source is
+                    # the one a reader wants named.
+                    source = source or "session"
+        return {"model": model, "effort": effort, "source": source,
+                "recorded": {"model": rec_model, "effort": rec_effort}}
     try:
         names = [n for n in os.listdir(proj) if n.endswith(".jsonl")]
         paths = sorted((os.path.join(proj, n) for n in names),
@@ -5385,7 +5572,11 @@ def _defaults(file: str) -> dict:
                     effort, source = e, source or "settings"
             if model and effort:
                 break
-    return {"model": model, "effort": effort, "source": source}
+    # `recorded` is empty for a chat with no id: there is nothing to have
+    # recorded about a conversation that does not exist yet, and the caller's
+    # own seed is what speaks for that window.
+    return {"model": model, "effort": effort, "source": source,
+            "recorded": {"model": "", "effort": ""}}
 
 
 # How many OUTSIDE sessions the list carries, and how far into one of them the
@@ -6442,7 +6633,10 @@ def main(action: str = "start", file: str = "", message: str = "",
     if action == "defaults":
         if not file:
             return {"error": "missing target file (no _file param?)"}
-        return _defaults(file)
+        # `session_id` is optional and already bound above: with one this
+        # answers for THAT conversation, without one for the folder — see
+        # `_defaults`. Same shape as `live_run` two branches up.
+        return _defaults(file, session_id)
     if action == "history":
         if not file:
             return {"error": "missing target file (no _file param?)"}
