@@ -3448,6 +3448,13 @@ function ChatBody(props: ChatBodyProps) {
    * because the poll's own list is up to a lap older than the press and would
    * otherwise put the row straight back (`sched/waiting` `pruneDropped`).
    */
+  // THE ROWS AS OF THE ANSWER, through a ref (Bugbot, PR #1228): the callback
+  // below is created once per dependency change, and a listing that landed
+  // during the cancel request — a second entry this chat queued — would be
+  // invisible to a `waiting` captured at creation. The ref is rewritten every
+  // render, so the check reads the rows the pane is drawing right now.
+  const waitingRef = useRef(waiting);
+  waitingRef.current = waiting;
   const deleteWaiting = useCallback(
     async (entryId: string, stopId: string = "") => {
       setDeleting((cur) => new Set(cur).add(entryId));
@@ -3471,7 +3478,7 @@ function ChatBody(props: ChatBodyProps) {
               settling: chatNow.historyLoading || chatNow.adopting,
               busy:
                 controller.isBusy() || chatNow.status === "running" || !!chatNow.runId,
-              rows: waiting.map((r) => r.entryId),
+              rows: waitingRef.current.map((r) => r.entryId),
             },
             entryId,
           );
@@ -3513,7 +3520,7 @@ function ChatBody(props: ChatBodyProps) {
         });
       }
     },
-    [controller, schedRefresh, queueOn, waiting, onBack],
+    [controller, schedRefresh, queueOn, onBack],
   );
 
 

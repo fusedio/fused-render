@@ -32,6 +32,10 @@ const cancels: Array<Record<string, unknown>> = [];
 /** What that cancel answers: a rejection is the road on which nothing may
  *  navigate. */
 let cancelFails = false;
+/** A gate the cancel answer waits behind, so a test can land something in the
+ *  chat WHILE the request is in flight (Bugbot, PR #1228). */
+let cancelHold: Promise<void> = Promise.resolve();
+let releaseCancel: () => void = () => {};
 /** The turns `GET /api/claude-sessions/history` hands back — the difference
  *  between an empty chat and one with something in it. */
 let historyTurns: Array<Record<string, unknown>> = [];
@@ -60,6 +64,7 @@ function stubFetch(): void {
     if (url === "/api/tasks/queue/admit") return jsonRes(admitAnswer);
     if (url === "/api/schedule/cancel") {
       cancels.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+      await cancelHold;
       if (cancelFails) return { ok: false, status: 500, json: async () => ({}) } as Response;
       return jsonRes({ entry: { id: "q1", state: "cancelled" } });
     }
@@ -86,6 +91,8 @@ function stubFetch(): void {
 const mounted: Array<ReturnType<typeof create>> = [];
 
 beforeEach(() => {
+  cancelHold = Promise.resolve();
+  releaseCancel = () => {};
   cancels.length = 0;
   cancelFails = false;
   historyTurns = [];
@@ -227,6 +234,26 @@ test("a SECOND queued message still waiting keeps the chat open", async () => {
   expect(cancels).toHaveLength(1);
   // One message of this chat's is still in the folder's line, so the chat is
   // still about something.
+  expect(inChat(r)).toBe(true);
+  expect(byClass(r, "c-waiting")).toHaveLength(1);
+});
+
+test("a second message queued WHILE the cancel is in flight keeps the chat open", async () => {
+  // Bugbot, PR #1228: the rows were read off the render that created the
+  // callback, so a listing that landed during the request was invisible and
+  // the pane left a chat that still had a message in the line.
+  const r = await mountChat();
+  await sendQueued(r, "say hi", "q1");
+  cancelHold = new Promise<void>((res) => {
+    releaseCancel = res;
+  });
+  await pressDelete(r, 0);
+  expect(cancels).toHaveLength(1);
+  // …and while the server has not answered, the reader queues another one.
+  await sendQueued(r, "and then say bye", "q2");
+  expect(byClass(r, "c-waiting")).toHaveLength(2);
+  releaseCancel();
+  await settle(30);
   expect(inChat(r)).toBe(true);
   expect(byClass(r, "c-waiting")).toHaveLength(1);
 });
