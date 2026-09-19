@@ -427,12 +427,9 @@ button.tasks-caret,
   margin-left: var(--tasks-row-gap);
   color: var(--fg-muted);
   font-style: italic;
-  /* Thin and boxed (Akshil, 2026-09-19, screenshot): the reply reads as a
-     quiet aside next to the title, not as a second title. */
+  /* Thin (Akshil, 2026-09-19, screenshot): the reply reads as a quiet aside
+     next to the title, not as a second title. */
   font-weight: 100;
-  border: 0.5px solid rgba(0, 0, 0, 0.25);
-  border-radius: 4px;
-  padding: 0 6px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -462,9 +459,6 @@ button.tasks-caret,
   color: var(--fg-muted);
   font-style: italic;
   font-weight: 100;
-  border: 0.5px solid rgba(0, 0, 0, 0.25);
-  border-radius: 4px;
-  padding: 0 6px;
 }
 
 /* With a reply in the row, the row's one spacer stops growing: the reply is the
@@ -878,7 +872,9 @@ button.tasks-caret,
 .task-card-head-row .schedule-tv-id--tag,
 .tasks-row .schedule-tv-id--tag {
   appearance: none;
-  border: 0;
+  /* A HAIRLINE BOX (Akshil, 2026-09-19): moved here from the reply line, in
+     the light ink so it reads on the dark surface. */
+  border: 0.5px solid rgba(255, 255, 255, 0.25);
   background: none;
   font: inherit;
   /* A FUNNEL, NOT A HAND (Akshil, 2026-09-17). Every other pointer in a task
