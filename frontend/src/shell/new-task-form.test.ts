@@ -2612,12 +2612,13 @@ describe("the path locks to the app the card was opened in", () => {
     expect(src).toContain('role={lockTarget ? undefined : "combobox"}');
   });
 
-  test("it says why, and the line is attached to the field", () => {
+  test("the locked field is not drawn at all", () => {
+    // Akshil, 2026-09-19: "in dedicated tasks when we open the new task modal,
+    // hide the path field". It used to sit disabled with a line saying why; the
+    // whole row goes now, and the target is still what the scope seeded.
     const src = card();
-    expect(src).toContain("Tasks here run against this project.");
-    // Described-by, not merely printed underneath: a reader who never sees the
-    // layout still hears the reason from the field itself.
-    expect(src).toContain("? lockedTargetId");
+    expect(src).toContain('{!lockTarget && (\n        <div className="schedule-form-line">');
+    expect(src).not.toContain("Tasks here run against this project.");
   });
 });
 
@@ -2773,6 +2774,16 @@ describe("the folder field's two lists", () => {
     // offering what the card remembers.
     for (const typed of ["/Users/me/Desk", "~/Desktop/fu", "C:/proj", "../up"]) {
       const { rows, searching } = ask(typed);
+      expect(searching).toBe(false);
+      expect(rows.map((r) => r.path)).toEqual(RECENTS);
+    }
+    // …AND A TILDE IS ONE BEFORE HOME IS KNOWN. `home` is "" until /api/config
+    // answers; `isPathShapedQuery` cannot resolve `~` without it and would call
+    // `~/Desktop/fu` a search, swapping the recents and the create-folder row
+    // for "No project matches" for that beat — or for good, if the call fails
+    // (Bugbot, PR #1239).
+    for (const typed of ["~", "~/", "~/Desktop/fu"]) {
+      const { rows, searching } = ask(typed, { home: "" });
       expect(searching).toBe(false);
       expect(rows.map((r) => r.path)).toEqual(RECENTS);
     }

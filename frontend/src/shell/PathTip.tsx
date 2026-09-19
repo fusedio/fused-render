@@ -65,6 +65,18 @@ const SLACK = 1;
  * sometimes answers `""` for the `font` shorthand, hence the two-part fallback:
  * size and family are the parts `measureText` actually cares about.
  */
+/** The width text may occupy in `el`: `clientWidth` less its own padding. */
+function contentWidth(el: HTMLElement): number {
+  let pad = 0;
+  try {
+    const cs = getComputedStyle(el);
+    pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+  } catch {
+    pad = 0;
+  }
+  return Math.max(0, el.clientWidth - pad);
+}
+
 export function FitPath({
   path,
   fullPath,
@@ -89,7 +101,13 @@ export function FitPath({
       return;
     }
     const fit = () => {
-      const box = el.clientWidth;
+      // THE CONTENT BOX, not `clientWidth`: that includes the span's own padding
+      // (`.schedule-recents-where` keeps 8px on the left to stand off the name),
+      // and a string measured against it paints 8px wider than the area it is
+      // drawn in — with `text-align: right` and `overflow: hidden` the start of
+      // the path, the half middle-truncation exists to keep, is what got clipped
+      // (Bugbot, PR #1239).
+      const box = contentWidth(el);
       lastWidth.current = box;
       // Zero width is a box that has not been laid out yet (or a hidden panel);
       // measuring against it would answer "…" for everything.
