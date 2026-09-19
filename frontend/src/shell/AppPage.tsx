@@ -113,6 +113,9 @@ import AppVersionPicker from "./AppVersionPicker";
 import { useAppVersionLabel } from "@platform/lib/appVersionLabel";
 import SnapshotError from "./SnapshotError";
 import { useAppPageSnapshot, type AppPageSnapshotState } from "./useAppPageSnapshot";
+import { TaskPeekFrame } from "./TaskPeekFrame";
+import { useTaskPeekEnabled } from "./task-peek-flag";
+import { peekSearch } from "./task-peek-store";
 
 // ---- the tabs, as ONE registry -----------------------------------------------
 //
@@ -439,8 +442,23 @@ export default function AppPage({
     e.preventDefault();
     // The query rides along: it is the tab's own (`?view=` on Tasks), and a
     // switch away and back should find it as it was.
-    if (next !== tab) navigateUrl(appPageUrl(dir, next, location.search));
+    if (next !== tab) navigateUrl(tabUrl(next));
   };
+  // A tab's address. `?peek=` is the ONE param that does not ride along: it
+  // names a panel only the Tasks tab can show, and a switch away is a close
+  // (the tab unmounts its Scheduled, which is the peek's host). Carrying it to
+  // Overview would only put a dead param on the URL and re-open the panel on
+  // the way back — a Back that lands on Tasks with the peek up is the history
+  // entry's job, not the link's.
+  const tabUrl = (next: AppPageTab) => appPageUrl(dir, next, peekSearch(location.search, null));
+  // THE SIDE PEEK, HOSTED BY THIS PAGE (2026-09-20 — the same panel `/tasks`
+  // has, TaskPeekFrame.tsx): the frame is this WHOLE page, header and tab
+  // strip included, so the panel runs the full height of the content area
+  // exactly as it does there. Only the Tasks tab can open one, and only while
+  // the feature is on; any other tab (and the flag's first null frames) leaves
+  // the page bare.
+  const peekOn = useTaskPeekEnabled();
+  const peekable = peekOn === true && tab === "tasks";
 
   // Folded ONCE for every tilde below: `home` is raw expanduser (backslashed on
   // Windows) while `dir` and the root are forward-slash, and a prefix test
@@ -511,6 +529,7 @@ export default function AppPage({
   };
 
   return (
+    <TaskPeekFrame peekable={peekable}>
     <div className="app-page">
       <header className="app-page-head">
         <div className="app-page-title">
@@ -658,7 +677,7 @@ export default function AppPage({
                     nativeButton={false}
                     render={
                       <a
-                        href={appPageUrl(dir, id, location.search)}
+                        href={tabUrl(id)}
                         onClick={(e) => pickTab(e, id)}
                       />
                     }
@@ -718,5 +737,6 @@ export default function AppPage({
           })}
       </div>
     </div>
+    </TaskPeekFrame>
   );
 }

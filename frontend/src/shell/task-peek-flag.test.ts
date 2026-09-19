@@ -28,6 +28,7 @@ const VIEWS = read("ScheduleTaskViews.tsx");
 const CARDS = read("TaskCards.tsx");
 const CALENDAR = read("ScheduleCalendar.tsx");
 const PAGE = read("Scheduled.tsx");
+const FRAME = read("TaskPeekFrame.tsx");
 const APP = read("App.tsx");
 const FIT = read("row-fit.ts");
 const FLAG = read("task-peek-flag.ts");
@@ -168,9 +169,14 @@ describe("the markup adds nothing when the feature is off", () => {
     expect(FIT).toContain("(enabled ? { level } : OFF_FIT)");
   });
 
-  it("mounts no panel: the host is the flag AND the page", () => {
-    expect(PAGE).toContain("const peekable = !scope && peekOn;");
+  it("mounts no panel: the host is the flag, on /tasks and on the app page's Tasks tab alike", () => {
+    // Since 2026-09-20 the scope no longer disarms the peek — the app page's
+    // Tasks tab hosts the same panel (TaskPeekFrame.tsx) — so the flag is the
+    // whole gate on the Tasks page, and the app page adds its own tab test.
+    expect(PAGE).toContain("const peekable = peekOn;");
     expect(PAGE).toContain("if (!peekable) return page;");
+    expect(FRAME).toContain("if (!peekable) return <>{children}</>;");
+    expect(read("AppPage.tsx")).toContain('const peekable = peekOn === true && tab === "tasks";');
     // Which also means no param-boundary claim from this page: the claim lives
     // in TaskPeek, and TaskPeek is inside the branch above.
     expect(read("TaskPeek.tsx")).toContain("useParamBoundary(nativeChat === false && !!src)");
@@ -546,10 +552,12 @@ describe("the one selected style, and the flag that gates it", () => {
   // the whole restyle to a reader who opted out.
 
   it("reaches nothing with the feature off: every rule names the host", () => {
-    // `.tasks-peek-host` is rendered by Scheduled.tsx only when `peekable` —
-    // the flag AND the unscoped /tasks route — so with the feature down the
-    // wrapper does not exist and not one of these selectors can match.
-    expect(PAGE).toContain('<div className="tasks-peek-host">');
+    // `.tasks-peek-host` is rendered by TaskPeekFrame.tsx only when `peekable`
+    // — the flag, on /tasks and on the app page's Tasks tab — so with the
+    // feature down the wrapper does not exist and not one of these selectors
+    // can match.
+    expect(FRAME).toContain('<div className="tasks-peek-host" ref={setHost}>');
+    expect(FRAME).toContain("if (!peekable) return <>{children}</>;");
     expect(PAGE).toContain("if (!peekable) return page;");
     const rules = PEEK_CSS.split("}")
       .map((chunk) => chunk.slice(chunk.lastIndexOf("*/") + 1).split("{")[0] ?? "")
@@ -675,11 +683,14 @@ describe("the middle pane's floor", () => {
     // rather than folding its marks from the first pixel the frame is under
     // the column (Scheduled.tsx `scrolls`).
     expect(PAGE).toContain("const scrolls = peek.open && peek.tight;");
-    expect(PAGE).toContain('data-floored={scrolls ? "1" : undefined}');
-    expect(PAGE).toContain('"--tasks-floor": `${contentFloor}px`');
+    // The frame itself moved to TaskPeekFrame.tsx (2026-09-20) so the app page
+    // can draw the same one; the switch and the number are written there.
+    expect(FRAME).toContain("const scrolls = layout.open && layout.tight;");
+    expect(FRAME).toContain('data-floored={scrolls ? "1" : undefined}');
+    expect(FRAME).toContain('"--tasks-floor": `${contentFloor}px`');
     // The number is a CONTENT width: the frame's ¾ baseline counts the page's
     // gutters, and the views live inside them.
-    expect(PAGE).toContain("peek.floor - peekGutter()");
+    expect(FRAME).toContain("layout.floor - peekGutter()");
   });
 
   it("keeps the seam reachable in cover mode — it is the only way back", () => {

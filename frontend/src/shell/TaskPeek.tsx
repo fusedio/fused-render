@@ -37,6 +37,7 @@ import { notify } from "@platform/lib/notifications";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { useParamBoundary } from "@platform/lib/param-boundary";
 import { navigateUrl } from "@platform/lib/router";
+import { anyModalOpen } from "@platform/ui/modal/esc-stack";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { ChatMount, useNativeChatFlag } from "@apps/claude";
@@ -664,6 +665,14 @@ export function TaskPeek({
     (e: KeyboardEvent, doc: Document): boolean => {
       if (e.defaultPrevented) return false;
       if (e.key === "Escape") {
+        // A DIALOG OVER THE PANEL OWNS THE PRESS. The modal chassis peels one
+        // layer per Esc through its own stack (platform/ui/modal/esc-stack),
+        // but this panel is not a modal and holds no token in it — so with the
+        // New task card up over an open peek, one press closed the card AND
+        // the peek (the chassis never marks the event spent). Standing down
+        // while any dialog is registered is the one rule that makes the peek
+        // the layer UNDER every dialog, which is what it is on screen.
+        if (anyModalOpen()) return false;
         e.preventDefault();
         escapeOrBlur(doc);
         return true;
