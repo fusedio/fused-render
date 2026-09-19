@@ -3300,3 +3300,171 @@ tests/test_index_freshness.py` — 66 passed. `pytest tests/test_index_api.py
 -k home_focus` — 6 passed. `bun test src/apps/explorer/lib/
 focus-detect.test.ts` — 6 passed. Full suite was NOT run (not this round's
 job, per the brief — the orchestrator runs it once at the end).
+
+
+## 2026-09-20 — code review fix round: FOCUS_STALE_S, comment corrections, server-side floor ordering, iframe-aware away detection
+
+Seven findings from a code-review pass on the previous round (the standalone-
+replay removal). One (finding 4, `~/Library/Caches` never reaching installs
+with a saved config) was explicitly out of scope and left untouched — it is
+real, pre-existing, and reported separately.
+
+**Finding 1 (medium) — `_check_root` reused `freshness.MIN_INTERVAL_S` (60s)
+as its own staleness bar.** With the standalone replay gone, `MIN_INTERVAL_S`
+had become the ONLY thing standing between a flappy tab and a full incremental
+scan roughly once a minute, forever: a 31s-hidden tab-away (just past
+`MIN_HIDDEN_S`) that kept happening every 61+ seconds would pass
+`MIN_INTERVAL_S` every single time. Added `detect.FOCUS_STALE_S = 300.0`, a
+trigger-specific floor `_check_root` checks IN ADDITION to `MIN_INTERVAL_S`
+(not instead of it — `MIN_INTERVAL_S` is kept as the shared, lower floor
+every other trigger also honours). Justified against this round's own
+4.37s/78,717-directory measurement (see the 2026-09-19 entry above): at 300s,
+worst-case duty cycle is 4.37/300 ≈ 1.5%, versus ~7% at the old, reused 60s.
+This DIRECTLY REVERSES the 2026-09-19 entry's "Staleness threshold chosen:
+freshness.MIN_INTERVAL_S (60s), unchanged" decision — read that paragraph as
+superseded. The reasoning there ("don't re-litigate a question freshness.py
+already answered") missed that `freshness.MIN_INTERVAL_S` answers "is this
+root due for ANY trigger to rescan it", not "is it worth THIS CHEAP, FREQUENT
+trigger specifically firing" — the two are different questions and conflating
+them is exactly what let the bug through review the first time.
+
+Updated `tests/test_index_detect.py`: split the old
+`test_freshness_min_interval_no_longer_refuses_once_it_has_elapsed` (which
+asserted a scan started once `MIN_INTERVAL_S` alone had elapsed — no longer
+true) into `test_focus_stale_s_still_refuses_after_min_interval_s_has_cleared`
+(the regression test for the bug itself: a root 61s stale is now still
+refused) and `test_focus_stale_s_no_longer_refuses_once_it_has_elapsed` (a
+root past `FOCUS_STALE_S` is scanned). `test_freshness_min_interval_still_
+refuses_when_a_scan_just_ran` needed no behavioural change (still correctly
+refuses within 60s) but its docstring no longer claims `MIN_INTERVAL_S` is
+"THE staleness threshold" on its own.
+
+**Finding 2 (medium) — stale comments describing the deleted design.**
+`FilesHome.tsx:477` and `api.ts:847` both still said the server "replays the
+macOS FSEvents journal and rescans only if it reports a real change" /
+"never blocks on the fsevents replay" — the exact design the 2026-09-19 round
+removed. Worse, `FilesHome.tsx`'s "so this fires on every qualifying focus
+regain rather than rate-limiting it here" was explicitly DERIVED from that
+false premise ("cheap on the quiet path"). Corrected both to describe the
+current design (an ordinary incremental rescan of a stale-enough root) and
+re-derived the "fires on every regain" comment from the server's actual
+pacing/staleness floors (`DETECT_INTERVAL_S`, `FOCUS_STALE_S`,
+`freshness.MIN_INTERVAL_S`) instead.
+
+**Finding 3 (low) — inverted `MIN_HIDDEN_S` security claim, three files.**
+`detect.py`, `focus-detect.ts`, and `api.ts` all said a client "must not be
+able to force a check by just claiming a bigger number" — backwards: the
+gate is `hidden_s < MIN_HIDDEN_S`, so a BIGGER claimed value is exactly what
+passes it, and the server cannot verify the true duration at all regardless
+of which way the client lies. Corrected all three to say what actually
+matters (the server can't verify duration, full stop) and to name what
+actually bounds an abusive client: the pacing/staleness floors
+(`DETECT_INTERVAL_S`, `FOCUS_STALE_S`, `freshness.MIN_INTERVAL_S`), not
+`MIN_HIDDEN_S` itself. Recorded explicitly so a future change does not
+remove one of those floors believing `MIN_HIDDEN_S` was the guard against
+abuse.
+
+**Finding 5 (low) — `routers/index.py`'s `note_home_focused` applied the
+`MIN_HIDDEN_S` floor too late.** It acquired `_detect_slot` and spawned the
+background thread BEFORE the floor was checked — the floor only ran inside
+`detect.note_home_focused`, on the worker thread, after `load_config()` and
+`scan_roots()` had already executed. A call that could never pass the floor
+still paid for a lock acquire and a thread spawn. Moved the `hidden_s <
+detect.MIN_HIDDEN_S` check to the very top of `routers/index.note_home_
+focused`, before the slot acquire. The floor itself stays exactly as
+authoritative as before (still enforced server-side, still re-validated —
+this is not a client-trust change); it is just checked earlier. Added
+`test_note_home_focused_applies_the_hidden_s_floor_before_the_slot_or_thread`
+to `tests/test_index_api.py`, asserting neither the slot nor a thread is
+touched for a call below the floor.
+
+**Finding 6 (low) — `note_home_focused`'s "Never raises" docstring was not
+quite true.** `index_gate.indexing_allowed()` sat outside the per-root
+try/except in `detect.py`, so an exception from it (housekeeping, same class
+of failure `runner.start`/`runner.active_run` are already guarded against)
+would have propagated straight out of a function documented as never
+raising. Wrapped it in its own try/except, logged and swallowed exactly like
+a per-root failure. Added
+`test_indexing_allowed_check_raising_does_not_escape`.
+
+**Finding 7 (low) — a real cross-test lock leak in
+`test_note_home_focused_spawns_a_background_thread_and_returns_at_once`.**
+`_run_detect_change`'s `finally` block resolves `_detect_slot` as a module
+global AT THE TIME IT RUNS, not at the time the thread was spawned. The test
+patched `_detect_slot` to a throwaway `Lock()`, but returned (letting
+monkeypatch restore the ORIGINAL module attribute) without waiting for the
+worker thread to reach its `finally`. If the worker's `finally` ran after
+teardown, it would call `.release()` on the ORIGINAL `_detect_slot` — a lock
+it never acquired — while the throwaway lock the test's own assertions
+referenced would stay locked forever for any later test reusing that shape.
+This is exactly the class of bug named in this repo's own prior notes about
+cross-test lock/state leaks. Fixed by capturing the real `threading.Thread`
+instance (via a small wrapper monkeypatched over `index_router.threading.
+Thread`) and joining it before the test returns, making the worker's
+lifetime deterministic instead of racing monkeypatch's teardown. Applied the
+same capture-and-join pattern in the new finding-5 test for the same reason.
+
+**Finding 8 (medium) — `isAway()` false-positive inside the packaged shell's
+iframe.** `document.hidden || !document.hasFocus()` correctly answers "is the
+page occluded/backgrounded", but `document.hasFocus()` is scoped to THIS
+FRAME's own document — and the explorer's home page can be rendered as an
+iframe alongside sibling shell panes (the sidebar). Per the focus/visibility
+spec, a framed document's `hasFocus()` goes false the instant focus moves to
+ANY other frame, including a sibling pane that never left the app — so
+clicking the sidebar was indistinguishable from switching to a different
+application, and in-app navigation counted as "went away and did something
+else".
+
+Fix: `focus-detect.ts` now exports `isAway(doc, win)`, which still uses
+`doc.hidden` for real occlusion but replaces the frame-local `hasFocus()`
+check with `topHasFocus`: it walks to `win.top` and calls hasFocus() on THAT
+document instead. A document's `hasFocus()` is true whenever the OS-level
+focused area is anywhere in its own frame subtree (spec wording), so calling
+it on the outermost reachable ancestor answers "did focus leave the app
+shell" rather than "did it leave this particular frame" — true for a sibling
+pane, false only once the whole app window loses focus to a different
+application, which is exactly the signal this trigger wants. Falls back to
+this frame's own `hasFocus()` (the pre-fix, eager behaviour) when no such
+ancestor is reachable: not framed at all (`window.top === window` — true for
+a plain browser tab, local dev builds, and this function's own unit tests),
+or a genuine cross-origin ancestor, wrapped in try/catch so a security
+boundary can never throw out of a focus listener. `FilesHome.tsx` now
+imports `isAway` instead of keeping its own local copy of the old logic.
+
+**Honesty about finding 8, per the brief's explicit request:** this is a
+best-effort fix, not a provably complete one, for two reasons kept
+deliberately visible rather than papered over. First, it depends on the
+shell's iframe nesting actually being same-origin all the way to
+`window.top` — an assumption this codebase already makes elsewhere (e.g.
+`TaskCards.tsx`'s `fused.params` climbing `window.parent` "until it runs out
+of same-origin ancestors"), but not one this round independently verified
+against the packaged shell's actual frame tree; if some embedding nests the
+explorer two or more levels deep with a cross-origin frame partway up (the
+`TaskCards.tsx` comment's own "runs out of same-origin ancestors" phrasing
+implies such boundaries exist somewhere in this codebase's frame model),
+`topHasFocus` would silently fall back to the OLD, eager per-frame check for
+that embedding only, not fail loudly. Second, `window.top` may not be the
+right level even when reachable, if the packaged shell nests the sidebar and
+the app under an intermediate frame rather than as direct siblings of the
+true top window — this was not verified against the shell's real DOM
+structure, only reasoned about from the spec and this round's own unit
+tests against synthetic `Document`/`Window` stand-ins. Chose this over the
+purely conservative alternative (drop the `blur`/`focus` pair entirely, back
+to `visibilitychange`-only) because that alternative would have reintroduced
+the regression the PRIOR round's code review fixed (missing the
+"switched to a different application while the window stays visible" case
+entirely) in exchange for fixing this one; `topHasFocus`'s fallback already
+degrades to that prior round's exact behaviour for the one case where it
+cannot answer confidently, so nothing is lost that wasn't already a known
+gap, and the common case (a directly-nested, same-origin sidebar) is fixed.
+
+**Tests run this round, in the foreground, per file:**
+`pytest tests/test_index_detect.py` — 18 passed (added 3: the split
+`FOCUS_STALE_S` pair and the `indexing_allowed`-raises test).
+`pytest tests/test_index_detect.py tests/test_index_freshness.py` — 44
+passed (combined run). `pytest tests/test_index_api.py -k home_focus` — 7
+passed (added 1: the hidden_s-floor-ordering test; the background-thread
+test itself was modified in place, not added). `bun test src/apps/explorer/
+lib/focus-detect.test.ts` — 12 passed (added 6: `isAway`'s cases). `bun run
+typecheck` (`tsc --noEmit`) — clean, no errors. Full suite was NOT run (not
+this round's job, per the brief).

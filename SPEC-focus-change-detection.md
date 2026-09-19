@@ -188,6 +188,43 @@ they describe (MountGuard-before-syscall, the `active_run` guard, the
 already-running check) were correct — not as the current design.
 `index/detect.py`'s own module docstring is the current source of truth.
 
+## Errata (2026-09-20, code review fix round): a second, focus-specific
+## staleness floor, and the away-detection formula below is now stale
+
+The 2026-09-19 entry above (and its corresponding DECISIONS.md entry) chose
+to gate `_check_root` on `freshness.MIN_INTERVAL_S` (60s) alone, reasoning
+that a second, focus-specific number would "re-litigate a question
+`freshness.py` already answered." That reasoning did not survive a code
+review pass: `MIN_INTERVAL_S` answers "is this root due for ANY trigger to
+rescan it", which is a different question from "is it worth THIS cheap,
+frequent trigger specifically firing" — and reusing it meant a flappy
+30s+-hidden tab-away could restart a full incremental scan roughly once a
+minute, indefinitely. `index/detect.py` now also checks a second, higher,
+trigger-specific floor, `FOCUS_STALE_S = 300.0` (5 minutes), before starting
+a scan from a focus event; `freshness.MIN_INTERVAL_S` is unchanged and still
+checked as the lower, shared floor every trigger honours. See DECISIONS.md
+("2026-09-20 — code review fix round") for the full justification against
+the 4.37s/78,717-directory measurement this entry already cites, and treat
+this paragraph as the correction to that one.
+
+Also stale as of this round: "What to build" → "Frontend" below still says
+to track "away" as `document.hidden || !document.hasFocus()`. That formula
+is wrong for this app's actual embedding — the explorer's home page can run
+inside an iframe in the packaged desktop shell, alongside sibling panes
+(the sidebar) that are part of the SAME app window, and a framed document's
+own `hasFocus()` goes false the instant focus moves to ANY other frame, so
+that formula counted clicking the sidebar as "went away and did something
+else." `frontend/src/apps/explorer/lib/focus-detect.ts` now exports
+`isAway(doc, win)`, which keeps `doc.hidden` for real occlusion but replaces
+the frame-local `hasFocus()` half with a check against the outermost
+reachable same-origin ancestor (`window.top`), falling back to this frame's
+own `hasFocus()` only when unframed or across a cross-origin boundary. This
+is a best-effort fix, not a provably complete one — it depends on an
+assumption (same-origin nesting up to `window.top`) this round did not
+verify against the packaged shell's actual frame tree; see DECISIONS.md for
+the full caveat. `FilesHome.tsx` now calls the exported `isAway()` instead
+of inlining the formula.
+
 ## What to build
 
 ### Server
@@ -277,6 +314,8 @@ Python — new `tests/test_index_detect.py`:
 * `hint` raises → no scan, no exception escapes.
 * Per-root `DETECT_INTERVAL_S` floor refuses a second call inside the window.
 * `freshness.MIN_INTERVAL_S` still refuses when a scan just ran.
+* `FOCUS_STALE_S` (2026-09-20 errata, above) still refuses a root that is
+  past `MIN_INTERVAL_S` but not yet past this trigger's own, higher floor.
 * Indexing pref off → no-op.
 * Hidden duration below `MIN_HIDDEN_S` → no-op.
 
