@@ -105,28 +105,37 @@ function hintAt(x: number, y: number, target: EventTarget | null): Element | nul
   return null;
 }
 
-/** THE TASK FORM FOLLOWS THE POINTER, CENTRED ON IT, INSIDE THE MIDDLE 80% OF
- *  THE VIEWPORT (Akshil, 2026-09-19: "move it with cursor but don't move it
- *  past 80%… it can stay stuck at one of the ends"). Centred rather than
- *  offset so the pointer never sits at a corner of it, and CLAMPED to the band
- *  rather than flipped: the old flip swung a 90ch panel its whole width on one
- *  pixel of travel near the right edge. Past the band the panel stops and the
- *  pointer walks on without it. */
+/** THE TASK FORM FOLLOWS THE POINTER INSIDE THE MIDDLE 80% OF THE VIEWPORT
+ *  (Akshil, 2026-09-19): its LEFT edge starts at the pointer, like every other
+ *  caption, and it is CLAMPED to the band rather than flipped — the old flip
+ *  swung a 90ch panel its whole width on one pixel of travel near the right
+ *  edge. At the band's end the panel stops and the pointer walks on without it. */
 const BAND = 0.8;
 function placeTask(x: number, y: number): void {
   const p = ensurePanel();
-  const w = p.offsetWidth;
+  const w = measureWidth(p);
   const h = p.offsetHeight;
   const vw = window.innerWidth;
   const bandLeft = vw * (1 - BAND) / 2;
   const bandRight = vw - bandLeft;
-  let left = x - w / 2;
+  let left = x + OFFSET_X;
   if (w >= bandRight - bandLeft) left = (vw - w) / 2;
   else left = Math.min(bandRight - w, Math.max(bandLeft, left));
   let top = y + OFFSET_Y;
   if (top + h > window.innerHeight - EDGE) top = Math.max(EDGE, y - OFFSET_Y - h);
   p.style.left = `${Math.round(left)}px`;
   p.style.top = `${Math.round(top)}px`;
+}
+
+/** The panel's width with the whole viewport to lay out in. A `position:
+ *  fixed` box with a `left` set shrink-wraps to the room to its RIGHT, so a
+ *  panel measured where the last hint left it — near the right edge — reads
+ *  narrower than it will be once moved, and the clamp computed from that
+ *  width lets it overflow. That is the "entered from the right without
+ *  moving" bug: one placement, from a stale left. Measured at 0 instead. */
+function measureWidth(p: HTMLDivElement): number {
+  p.style.left = "0px";
+  return p.offsetWidth;
 }
 
 function place(x: number, y: number): void {
@@ -136,7 +145,7 @@ function place(x: number, y: number): void {
     return;
   }
   // Measured after the text is in, because the flip depends on the width.
-  const w = p.offsetWidth;
+  const w = measureWidth(p);
   const h = p.offsetHeight;
   let left = x + OFFSET_X;
   let top = y + OFFSET_Y;
