@@ -3632,6 +3632,11 @@ function TaskNode({
         >
           {label}
         </span>
+        {task.last_reply ? (
+          <span className="tasks-title-reply" data-hint={task.last_reply}>
+            {task.last_reply}
+          </span>
+        ) : null}
         {/* The one thing that follows the title (Akshil, 2026-08-23): a file
             mark, on the tasks whose target is a FILE rather than the folder.
             The row already says which project the work happened in; what it

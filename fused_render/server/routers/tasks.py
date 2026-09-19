@@ -438,9 +438,11 @@ def _absorb(rec: dict, line: str) -> None:
     fate = _reply_fate(line)
     if fate is not None:
         _mark_fate(rec["tail"], fate, line)
-        # That is ALL an assistant line contributes. Its words are never kept:
-        # `last_message` is the newest thing the USER said (see `_last_message`),
-        # so no assistant row is ever handed to `json.loads` here.
+        # An ordinary reply is also the newest thing Claude has said: keep the
+        # RAW line (one parse per scan, in `_condense_reply`), never an
+        # API-error row. The List row prints its first line after the title.
+        if fate is False:
+            rec["reply_line"] = line
         return
     if '"user"' not in line and sessions.AI_TITLE_HINT not in line:
         return
@@ -478,7 +480,32 @@ def _new_scan() -> dict:
     # before the assistant reply was dropped from this scan may still carry its
     # condensed `reply`; nothing reads it any more, so it is inert.
     return {"offset": 0, "size": -1, "count": 0, "tail": [], "title": "",
-            "command": ""}
+            "command": "", "reply_line": "", "reply": ""}
+
+
+def _condense_reply(rec: dict) -> None:
+    """Boil the kept assistant line down to its first non-empty text line and
+    drop the raw bytes. One `json.loads` per scan that read new bytes."""
+    line = rec.get("reply_line") or ""
+    if not line:
+        return
+    rec["reply_line"] = ""
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return
+    if not isinstance(obj, dict) or obj.get("type") != "assistant":
+        return
+    message = obj.get("message")
+    if not isinstance(message, dict):
+        return
+    # Own cap, wider than `_LAST_MESSAGE_MAX`: this line fills the row's whole
+    # free width on a wide screen, so 200 characters would ellipsise early.
+    for raw in str(tasks_store.first_text(message.get("content")) or "").splitlines():
+        text = raw.strip()
+        if text:
+            rec["reply"] = text[:600]
+            return
 
 
 def _scan(path: str) -> dict | None:
@@ -516,6 +543,7 @@ def _scan(path: str) -> dict | None:
         for line in text.split("\n"):
             if line.strip():
                 _absorb(rec, line)
+        _condense_reply(rec)
     rec["size"] = size
     _SCAN[path] = rec
     return rec
@@ -3062,6 +3090,9 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         "session_id": task["session_id"],
         "title": title,
         "title_source": source,
+        # First line of Claude's newest reply, "" when none. The List row
+        # prints it, grey and italic, in the space after the title.
+        "last_reply": (rec.get("reply") or "") if rec else "",
         # Deferred by §12 — Claude Code stores no summary, so filling this needs
         # an LLM call. Read from the entry so a store that grows the field later
         # starts working without a change here.
