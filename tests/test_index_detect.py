@@ -150,9 +150,10 @@ def test_freshness_min_interval_still_refuses_when_a_scan_just_ran(
     """freshness.MIN_INTERVAL_S, read off scans.json via runner.last_scan, is
     the floor every OTHER trigger already respects — this one must too, or a
     focus event could rescan a root the scheduler or a manual button just
-    finished. This is now THE staleness threshold: with the standalone
-    journal check gone, this floor (plus DETECT_INTERVAL_S's pacing) is the
-    entire answer to "is this root stale enough to be worth it"."""
+    finished. It is the LOWER of the two staleness floors this trigger
+    checks (see test_focus_stale_s_* below for the higher, trigger-specific
+    one) — a root freshly scanned by anything is refused regardless of which
+    floor would otherwise bind."""
     from fused_render.index import freshness
 
     root = _root(tmp_path)
@@ -163,13 +164,36 @@ def test_freshness_min_interval_still_refuses_when_a_scan_just_ran(
     assert spawned == []
 
 
-def test_freshness_min_interval_no_longer_refuses_once_it_has_elapsed(
+def test_focus_stale_s_still_refuses_after_min_interval_s_has_cleared(
         tmp_path, monkeypatch, spawned):
+    """Code review (medium): `_check_root` used to reuse the shared, 60s
+    `freshness.MIN_INTERVAL_S` as its OWN staleness bar, so a root scanned
+    61s ago (well past `MIN_INTERVAL_S`, well within `FOCUS_STALE_S`) was
+    rescanned by this trigger alone — a 31s-hidden tab-away could burn a full
+    incremental scan roughly once a minute, indefinitely. `FOCUS_STALE_S`
+    (300s) is the trigger-specific floor that actually decides this now;
+    `MIN_INTERVAL_S` having already cleared is not enough on its own."""
     from fused_render.index import freshness
 
     root = _root(tmp_path)
+    last = NOW - freshness.MIN_INTERVAL_S - 1
+    assert (NOW - last) < detect.FOCUS_STALE_S  # sanity: still inside the new floor
+    monkeypatch.setattr(runner, "last_scan", lambda cfg, r: last)
+    assert detect.note_home_focused(
+        _cfg(tmp_path), [root], detect.MIN_HIDDEN_S, now=NOW) == []
+    assert spawned == []
+
+
+def test_focus_stale_s_no_longer_refuses_once_it_has_elapsed(
+        tmp_path, monkeypatch, spawned):
+    """This is now THE staleness threshold this trigger checks on top of the
+    shared `freshness.MIN_INTERVAL_S` floor: with the standalone journal
+    check gone, `FOCUS_STALE_S` (plus `DETECT_INTERVAL_S`'s in-memory
+    pacing) is the entire answer to "is this root stale enough to be worth
+    a FOCUS event specifically rescanning it"."""
+    root = _root(tmp_path)
     monkeypatch.setattr(runner, "last_scan",
-                        lambda cfg, r: NOW - freshness.MIN_INTERVAL_S - 1)
+                        lambda cfg, r: NOW - detect.FOCUS_STALE_S - 1)
     assert detect.note_home_focused(
         _cfg(tmp_path), [root], detect.MIN_HIDDEN_S, now=NOW) == [root]
     assert spawned == [{"root": root, "full": False}]
@@ -183,6 +207,25 @@ def test_indexing_pref_off_is_a_no_op(tmp_path, monkeypatch, spawned):
     monkeypatch.setattr(index_gate, "indexing_blocked", lambda: "disabled")
     assert detect.note_home_focused(
         _cfg(tmp_path), [root], detect.MIN_HIDDEN_S, now=NOW) == []
+    assert spawned == []
+
+
+def test_indexing_allowed_check_raising_does_not_escape(
+        tmp_path, monkeypatch, spawned, caplog):
+    """Code review (low): `index_gate.indexing_allowed()` used to sit outside
+    the per-root try/except, so it could raise straight out of
+    `note_home_focused` despite that function's own "Never raises"
+    docstring. This must be swallowed exactly like a per-root failure is."""
+    root = _root(tmp_path)
+
+    def boom():
+        raise RuntimeError("gate check blew up")
+
+    monkeypatch.setattr(index_gate, "indexing_allowed", boom)
+    with caplog.at_level(logging.ERROR):
+        result = detect.note_home_focused(
+            _cfg(tmp_path), [root], detect.MIN_HIDDEN_S, now=NOW)
+    assert result == []
     assert spawned == []
 
 

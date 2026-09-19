@@ -1513,8 +1513,16 @@ def note_home_focused(hidden_s: float) -> bool:
 
     Returns whether a check was started. Never blocks and never raises — the
     caller pays one lock acquire, same contract as `note_folder_opened`
-    above. `hidden_s` is untrusted input from the client; `detect.py` is
-    where the `MIN_HIDDEN_S` floor is actually enforced, not here."""
+    above. `hidden_s` is untrusted input from the client; `detect.py`'s
+    `MIN_HIDDEN_S` remains the AUTHORITATIVE floor (this mirrors it, it does
+    not replace it) — applied here too, before the slot acquire and thread
+    spawn below, so a call that can never pass it does not pay for either.
+    Code review (low): this used to be checked only inside
+    `detect.note_home_focused`, on the worker thread, AFTER `load_config()`
+    and `scan_roots()` had already run — real cost for a call that was
+    always going to be refused."""
+    if hidden_s < detect.MIN_HIDDEN_S:
+        return False
     if not index_gate.indexing_allowed():
         return False
     if not _detect_slot.acquire(blocking=False):

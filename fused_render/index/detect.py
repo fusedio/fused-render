@@ -47,9 +47,10 @@ This module now holds only the STALENESS policy for the focus trigger —
 mirroring how `index/freshness.py` holds the folder-open policy while
 `server/routers/index.py` holds only the wiring (the thread, the
 `_index_job_wake` nudge). "Stale enough to be worth it" is answered entirely
-by the floors below (`DETECT_INTERVAL_S`, `freshness.MIN_INTERVAL_S`) — there
-is no new judgment call about the CONTENT of a change to make, because this
-module no longer looks at the journal's output at all.
+by the floors below (`DETECT_INTERVAL_S`, `FOCUS_STALE_S`,
+`freshness.MIN_INTERVAL_S`) — there is no new judgment call about the CONTENT
+of a change to make, because this module no longer looks at the journal's
+output at all.
 """
 import logging
 import threading
@@ -66,10 +67,20 @@ logger = logging.getLogger(__name__)
 # event is worth acting on. The signal this module exists for is "went away
 # and did something else" (a browser download, a Finder move) — not "alt-tabbed
 # between two of this app's own windows", which fires a `visibilitychange` just
-# as readily but changed nothing on disk. Enforced server-side: the client's
-# hidden-duration is an input this module decides with, never a decision the
-# client already made — a stale tab or a modified client must not be able to
-# force a check by just claiming a bigger number.
+# as readily but changed nothing on disk.
+#
+# Enforced server-side because the server cannot verify a client-reported
+# duration at all, not because a bigger number is somehow dangerous — the
+# gate below is `hidden_s < MIN_HIDDEN_S`, so a LARGER claimed value is
+# exactly what passes it. What actually bounds a client (honest or modified)
+# spamming this endpoint with a huge `hidden_s` on every keystroke is the
+# PACING floors, not this one: `DETECT_INTERVAL_S` collapses repeat checks of
+# one root in-memory, and `freshness.MIN_INTERVAL_S`/`FOCUS_STALE_S` (below)
+# refuse to start a scan at all unless the root is actually stale. Losing
+# either of those floors would be the real hole; this constant only screens
+# out a genuinely-brief transition (two of this app's own windows trading
+# focus) that a legitimate client would never claim a large duration for in
+# the first place.
 MIN_HIDDEN_S = 30.0
 
 # Floor between DETECT CHECKS of one root, kept in this module the same
@@ -93,10 +104,33 @@ MIN_HIDDEN_S = 30.0
 # read, so this floor is now pure request-collapsing (one flappy window
 # shouldn't call `runner.last_scan`/`runner.active_run` fifty times a
 # second), not a cost control. 30s is kept because it is still comfortably
-# below `freshness.MIN_INTERVAL_S` (60s) — the floor that actually decides
-# whether a scan starts — with room for a focus event to be the one that
-# notices a root has gone stale soon after it clears.
+# below `FOCUS_STALE_S` (below) — the floor that actually decides whether a
+# scan starts — with room for a focus event to be the one that notices a
+# root has gone stale soon after it clears.
 DETECT_INTERVAL_S = 30.0
+
+# How long a root must have gone unscanned before a FOCUS event is allowed to
+# be the thing that rescans it. This is deliberately its OWN constant, not a
+# reuse of `freshness.MIN_INTERVAL_S` (below): the two answer different
+# questions. `MIN_INTERVAL_S` answers "is this root due for a rescan at all"
+# for every trigger equally (the startup scheduler, a manual button, a
+# folder-open); this one answers "is it worth THIS trigger, specifically,
+# firing" — a focus event is cheap to observe (every tab switch) but not free
+# to act on, and code review correctly flagged that reusing the 60s
+# `MIN_INTERVAL_S` here meant a user who kept tabbing away for just over 30s
+# (`MIN_HIDDEN_S`) and back could trigger a full incremental scan roughly
+# once a minute, indefinitely, for as long as they kept doing it.
+#
+# A full incremental walk of a real, large home root was measured at 4.37s
+# for 78,717 directories (DECISIONS.md, "2026-09-19 — standalone replay
+# removed"). At this floor's 300s (5 minute) period, that walk's worst-case
+# duty cycle is 4.37 / 300 ≈ 1.5% — comfortably background work even if a
+# user managed to keep a root exactly on this boundary indefinitely, versus
+# up to ~7% at the old 60s floor (4.37 / 60). `freshness.MIN_INTERVAL_S` is
+# kept as the separate, lower floor it always was — it still guards every
+# OTHER trigger, and nothing here removes it as the shared "just scanned,
+# leave it alone" backstop this trigger also honours (see `_check_root`).
+FOCUS_STALE_S = 300.0
 
 # root -> when it was last checked by this trigger. Bounded by the number of
 # configured scan roots (a handful); no eviction needed, same shape as
@@ -125,7 +159,16 @@ def _check_root(cfg: IndexConfig, root: str, now: float) -> bool:
     if not _detect_due(root, now):
         return False
     last = runner.last_scan(cfg, root)
+    # Two floors, kept separate on purpose (see each constant's own comment):
+    # `MIN_INTERVAL_S` is the shared "just scanned, leave it alone" backstop
+    # every trigger honours; `FOCUS_STALE_S` is this trigger's OWN, higher
+    # bar for how stale a root must be before a focus event specifically is
+    # allowed to be the thing that rescans it. Checking both (rather than
+    # only the larger one) keeps this trigger correct even if a future
+    # change ever lowered `FOCUS_STALE_S` below `MIN_INTERVAL_S`.
     if last is not None and (now - last) < freshness.MIN_INTERVAL_S:
+        return False
+    if last is not None and (now - last) < FOCUS_STALE_S:
         return False
     # Pure string comparison against roots resolved at construction time — no
     # syscall on `root` (MountGuard's own docstring) — so this cheaply short
@@ -175,9 +218,9 @@ def note_home_focused(cfg: IndexConfig, roots, hidden_s: float,
     stale enough to be worth it.
 
     Returns the roots a scan was started for (possibly empty — most calls
-    land inside `DETECT_INTERVAL_S`/`freshness.MIN_INTERVAL_S` of the last
-    one and do nothing). Never raises: this is an accelerator, not a request
-    any caller should have to handle failing."""
+    land inside `DETECT_INTERVAL_S`/`FOCUS_STALE_S`/`freshness.MIN_INTERVAL_S`
+    of the last one and do nothing). Never raises: this is an accelerator,
+    not a request any caller should have to handle failing."""
     now = time.time() if now is None else now
     if hidden_s < MIN_HIDDEN_S:
         return []
@@ -186,7 +229,18 @@ def note_home_focused(cfg: IndexConfig, roots, hidden_s: float,
     # the macOS Full Disk Access grant. `runner.start` re-checks this itself
     # as a backstop (see `_check_root`), but failing here, before touching
     # any root, is what keeps a disabled pref from paying even that cost.
-    if not index_gate.indexing_allowed():
+    #
+    # Wrapped the same as every per-root check below: this function's own
+    # docstring promises "never raises", and `index_gate.indexing_allowed()`
+    # is housekeeping the same way `runner.start`/`runner.active_run` are —
+    # it must not be the one thing here allowed to break that contract just
+    # because it happens to run before the per-root loop starts.
+    try:
+        allowed = index_gate.indexing_allowed()
+    except Exception:  # noqa: BLE001 - housekeeping must never surface
+        logger.exception("could not check whether indexing is allowed")
+        return []
+    if not allowed:
         return []
     started = []
     for root in roots or []:
