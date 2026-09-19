@@ -12,6 +12,7 @@ import {
   initialStatus,
   previewInstalledVersion,
   previewRequestedAt,
+  probeOnTick,
   probeWhileHidden,
   reduceProbe,
   updateDialogMode,
@@ -364,4 +365,14 @@ test("a hidden tab keeps probing only while a restart is in flight", () => {
   for (const stage of ["ready", "gave-up"] as const) {
     expect(probeWhileHidden(stage)).toBe(false);
   }
+});
+
+test("the poll tick probes a visible tab always, and a hidden one only mid-restart", () => {
+  expect(probeOnTick("visible", "ready")).toBe(true);
+  expect(probeOnTick("hidden", "ready")).toBe(false);
+  expect(probeOnTick("hidden", "gave-up")).toBe(false);
+  expect(probeOnTick("hidden", "reconnecting")).toBe(true);
+  expect(probeOnTick("hidden", "quitting")).toBe(true);
+  // A DOM with no visibilityState at all (the test shim) is not a hidden tab.
+  expect(probeOnTick(undefined, "ready")).toBe(true);
 });

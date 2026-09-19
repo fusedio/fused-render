@@ -47,7 +47,7 @@ import {
   reduceProbe,
   previewInstalledVersion,
   previewRequestedAt,
-  probeWhileHidden,
+  probeOnTick,
   updateDialogMode,
   updateDialogPreview,
   UPDATE_DIALOG_KEY,
@@ -184,7 +184,7 @@ function useServerStatus(): {
       // Hidden tabs sit the poll out — unless a restart is in flight, when the
       // hidden tab is the one most likely to miss the app coming back
       // (server-status.ts `probeWhileHidden`).
-      if (document.visibilityState !== "hidden" || probeWhileHidden(restartStageNow())) probe();
+      if (probeOnTick(document.visibilityState, restartStageNow())) probe();
     }, POLL_MS);
 
     const onVisible = () => {

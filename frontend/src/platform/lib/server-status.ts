@@ -307,3 +307,11 @@ export function bannerSurface({ banner, mode, updateState, stage }: SurfaceInput
 export function probeWhileHidden(stage: RestartStage): boolean {
   return restartInFlight(stage);
 }
+
+/** THE POLL TICK'S WHOLE DECISION, so it can be tested without a 5s timer: a
+ *  visible tab always probes; a hidden one only during a restart. `visibility`
+ *  is `document.visibilityState`, which a DOM shim may leave undefined — that
+ *  is not "hidden", so it probes as a visible tab would. */
+export function probeOnTick(visibility: string | undefined, stage: RestartStage): boolean {
+  return visibility !== "hidden" || probeWhileHidden(stage);
+}
