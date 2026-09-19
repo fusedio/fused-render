@@ -1382,6 +1382,13 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           // Newest-first fallback recents: past entries arrive newest first,
           // and the modal dedupes against what localStorage already knows.
           recentTargets={entries.map((e) => e.target)}
+          // THE SAME FOLDERS THE PROJECT FILTER OFFERS (Akshil, 2026-09-19:
+          // "when I clear the path and search, it should search from projects —
+          // the same project options I have in the filter beside the New task
+          // button"). One array, computed once above and handed to both
+          // controls, so the two lists can never drift apart: a folder the
+          // toolbar can filter by is a folder this card can be pointed at.
+          projects={projects}
           // NOTHING TO CLEAR HERE ANY MORE, and that is the fix rather than an
           // omission (Akshil, 2026-09-12). The hop used to be six values undone
           // one by one on close — with `attachments` missing from the list, so a

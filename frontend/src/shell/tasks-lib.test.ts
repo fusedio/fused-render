@@ -5674,7 +5674,7 @@ describe("the Project filter's glyph", () => {
     // The FilterMenu's own prop — not the `aria-label="Project"` on the rows'
     // radiogroup, which is a different control naming the same facet and comes
     // first in the file. The indent is what tells the two apart.
-    const project = VIEWS.slice(VIEWS.indexOf('\n          label="Project"'));
+    const project = VIEWS.slice(VIEWS.indexOf('\n          label={filters.projects.length === 1'));
     expect(project.slice(0, project.indexOf("onClear"))).toContain("icon={ICON_FOLDER}");
     // A prop with the ring as its default, so the Status menu is untouched — there
     // the ring IS the vocabulary a status is stated in.
@@ -7915,6 +7915,39 @@ describe("the two filter menus", () => {
   // Akshil, 2026-09-14, after a round where the Project trigger printed the
   // chosen folder's NAME and the rows carried ticks.
 
+  it("keeps the search box put while the project rows scroll under it", () => {
+    // Akshil, 2026-09-19: "search should be fixed in place, it shouldn't
+    // scroll with the projects list. overflow should be only on the options."
+    //
+    // STICKY, and the PANEL goes on being the scroller. A round of this made
+    // the radiogroup the scroller instead — which meant giving it a real box,
+    // and a real box between the panel and its rows is the 28-slivers bug that
+    // `display: contents` exists to prevent. The box rides the panel's top
+    // edge instead: one property, and nothing else about the panel moves.
+    const group = block(SCHEDULE_CSS, ".schedule-tv-pop-radiogroup");
+    expect(group).toContain("display: contents");
+    const panel = block(TASKS_CSS, ".schedule-tv-pop.tasks-pop");
+    expect(panel).toContain("overflow-y: auto");
+    const search = block(
+      SCHEDULE_CSS, ".schedule-tv-pop .schedule-tv-search.schedule-tv-pop-search");
+    expect(search).toContain("position: sticky");
+    expect(search).toContain("top: 0");
+    // It keeps its own height, and it is PAINTED — a transparent sticky box
+    // shows the rows sliding under it, and a `z-index` is what keeps it over
+    // their hover wash.
+    expect(search).toContain("flex: 0 0 auto");
+    expect(search).toContain("background: var(--bg-popover)");
+    expect(search).toContain("z-index: 1");
+    // …and the 2px above it is PADDING, not margin: a margin over a sticky box
+    // is a 2px window at `top: 0` for a hairline of the row under it.
+    expect(search).toContain("padding-top: 2px");
+    expect(search).not.toContain("margin: 2px");
+    // The rows inside still keep their own height — the selector walks through
+    // the group, which is still there in the DOM whatever `display` says.
+    expect(TASKS_CSS).toContain(
+      ".schedule-tv-pop.tasks-pop > .schedule-tv-pop-radiogroup > .schedule-tv-pop-item");
+  });
+
   it("shows the badge and the ✕ only with something to count, and closes on every press", () => {
     // Akshil, 2026-09-14, twice. Round one printed the chosen folder's NAME on
     // the trigger; round two RESERVED an empty badge and an empty ✕ slot so the
@@ -7923,8 +7956,23 @@ describe("the two filter menus", () => {
     // stayed is the cheap one: the menu CLOSES on the press ("if on click you
     // close the dropdown then it solves the shifting"), so a trigger that grows
     // does so under no menu at all, and the next open measures it fresh.
+    //
+    // Akshil, 2026-09-19: the NAME is back on the Project trigger ("show the
+    // project name in that instead of 'Project 1'") — safe now that the press
+    // closes the menu — and the badge stands down there, because a "1" after a
+    // name is the same fact twice. Status is untouched: its badge still counts.
     expect(VIEWS).toContain(
-      '{count > 0 && <span className="schedule-tv-filter-count">{count}</span>}');
+      '{badge && count > 0 && <span className="schedule-tv-filter-count">{count}</span>}');
+    expect(VIEWS).toContain(
+      'label={filters.projects.length === 1 ? basename(filters.projects[0]) : "Project"}');
+    expect(VIEWS).toContain("badge={filters.projects.length !== 1}");
+    // …and the accessible names keep saying WHAT KIND of filter it is: the ✕
+    // is "Clear the project filter", never "Clear the fused-render filter".
+    expect(VIEWS).toContain('name="Project"');
+    expect(VIEWS).toContain("`Clear the ${(name ?? label).toLowerCase()} filter`");
+    expect(VIEWS).toContain("`Filter by ${name ?? label}`");
+    const statusMenu = VIEWS.slice(VIEWS.indexOf('label="Status"'));
+    expect(statusMenu.slice(0, statusMenu.indexOf("onClear"))).not.toContain("badge=");
     expect(VIEWS).toContain("{splittable && (");
     expect(VIEWS).not.toContain("is-empty");
     expect(SCHEDULE_CSS).not.toContain(".schedule-tv-filter-count.is-empty");

@@ -1465,20 +1465,25 @@
 /* Rows keep their own height inside that scroller — a constrained flex column
    otherwise squeezes them all to fit, which turns fifty folders into fifty
    slivers. The same rule, for the same reason, as tasks.css gives
-   `.schedule-tv-pop-item`; the separator, the verbs and the two notices are
-   named too, because a scroller squeezes everything it holds. */
+   `.schedule-tv-pop-item`; the separator, the verbs and the empty line are named
+   too, because a scroller squeezes everything it holds. */
 .schedule-recents-scroll > .schedule-picker-row,
 .schedule-form .schedule-recents-scroll > .schedule-picker-row,
 .schedule-recents-foot > .schedule-picker-row,
 .schedule-form .schedule-recents-foot > .schedule-picker-row,
 .schedule-recents-foot > .schedule-recents-sep,
-.schedule-recents-scroll > .schedule-recents-empty,
-.schedule-recents-scroll > .schedule-recents-wait {
+.schedule-recents-scroll > .schedule-recents-empty {
   flex: 0 0 auto;
 }
 
+/* THE NAME NEVER STARVES THE PATH (Akshil, 2026-09-19). Both halves used to be
+   `flex: 0 1 auto`, so a long folder name took the row and left the address
+   beside it a stub. The name keeps its own width up to a little over half the
+   row and ellipsises there; everything left over is the path's, which is what
+   `FitPath` measures itself against. */
 .schedule-recents-path {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
+  max-width: 55%;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1486,21 +1491,33 @@
 }
 
 /* WHERE A ROW'S FOLDER LIVES, when the row did not come from the line the
-   reader is typing — a remembered folder, or one the index found. The Explorer's
-   completion rows print the NAME alone, because the address is already in the
-   field one line above; these two kinds did not come from the field, so they say
-   where they are, quietly, at the end of the row. Pushed right and truncated
-   from the FRONT would be better still, but a path is read from its tail and
-   `text-overflow` only cuts the tail — so it ellipsises like every other path in
-   this card. */
+   reader is typing — a remembered folder, or a project this page knows. The
+   Explorer's completion rows print the NAME alone, because the address is
+   already in the field one line above; these two kinds did not come from the
+   field, so they say where they are, quietly, at the end of the row.
+
+   MIDDLE-TRUNCATED, NOT ELLIPSISED (Akshil, 2026-09-19: "let's have start and
+   end of path, rest middle-truncate"). `text-overflow` only ever cuts the tail,
+   and the tail of a path is the half that says which folder this is — so the
+   cutting is done in JS instead (`FitPath` / `fitPathMiddle` in PathTip.tsx,
+   measured with `measureText` against this box's own width) and the rule here
+   only has to hand it a stable width and get out of the way. Hence no
+   `text-overflow`: the string arrives already the right length, and an ellipsis
+   rule on top of it would cut a second time.
+
+   `flex: 1 1 auto` with nothing else flexible in the row means this span is
+   handed ALL the leftover width whether its text is long or short — which is
+   what makes the measurement stable, since shortening the text cannot shrink
+   the box it was measured against. `text-align: right` is what an auto left
+   margin used to do; the margin cannot stay, because auto margins eat the free
+   space before `flex-grow` can. */
 .schedule-recents-where {
-  margin-left: auto;
   padding-left: 8px;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: right;
   font-size: 11px;
   color: var(--fg-faint);
 }
@@ -1518,14 +1535,40 @@
   background: rgba(var(--tint), 0.08);
 }
 
-/* A search that found nothing still answers — the same sentence, in the same
-   words, as the Tasks page's project menu (`.schedule-tv-pop-empty`). Not a
-   row: there is nothing to press. */
+/* A SEARCH THAT FOUND NOTHING STILL ANSWERS — the same sentence, in the same
+   words and the same shape, as the Tasks page's project menu
+   (`.schedule-tv-pop-empty`). Not a row: there is nothing to press. */
 .schedule-recents-empty {
+  flex: 0 0 auto;
   margin: 0;
   padding: 6px 8px;
   font-size: 12px;
   color: var(--fg-faint);
+}
+
+/* THE HOVERED ROW'S WHOLE PATH (Akshil, 2026-09-19: "on hover an instant
+   tooltip / aria-label with the full path (avoid z-index issues)").
+
+   A `title` would have been one attribute, and it is the wrong one twice: the
+   browser holds it back a second or so — the reader has moved on — and it is
+   drawn by the OS, so it cannot be styled to match the panel it belongs to.
+   This is one element, portalled to `<body>` and `position: fixed`, so the
+   modal's stacking context and the dropdown's own layer have nothing to say
+   about where it lands. `pointer-events: none` so it can never eat the click
+   meant for the row it is describing. */
+.schedule-path-tip {
+  position: fixed;
+  z-index: 10000;
+  pointer-events: none;
+  background: var(--bg-popover);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--fg);
+  box-shadow: 0 4px 12px var(--shadow-md);
+  max-width: 60vw;
+  word-break: break-all;
 }
 
 /* The line between the found paths and the verbs. Its OWN element, not a
@@ -4359,9 +4402,17 @@ input.schedule-when-field {
     [data-fit="8"],
     [data-fit="9"]
   )
-  .schedule-tv-search {
+  .schedule-tv-search:not(.schedule-tv-pop-search) {
   display: none;
 }
+
+/* …BUT NOT THE ONE INSIDE THE PROJECT MENU. The facet's "Find a folder…" box
+   wears `.schedule-tv-search` for the magnifier's positioning and is drawn
+   inside the toolbar's DOM, so this ladder rung was folding it away with the
+   toolbar's own field: a project menu with 87 folders and no box to find one
+   in, on any pane narrower than rung 3 (seen 2026-09-19 at 734px). The panel
+   is fixed-positioned and outside the row's width problem entirely, so it
+   keeps its box at every rung. */
 
 /* -- and then CONTROLS GO, lowest priority first ------------------------------
    The ladder's second half (design.md, Widths v2, reordered by Polish batch 4).
@@ -4519,38 +4570,30 @@ input.schedule-when-field {
    this popover is drawn; scoping it to `.schedule-toolbar` instead would have
    tied on specificity and left it depending on paint order, and would say
    nothing about the merged menu or a popover drawn inside `.prefs-section`. */
+/* …AND IT STAYS PUT WHILE THE FOLDERS SCROLL (Akshil, 2026-09-19: "search
+   should be fixed in place, it shouldn't scroll with the projects list").
+
+   STICKY, NOT A SECOND SCROLLER. The panel goes on being the scroller it has
+   always been (tasks.css `.schedule-tv-pop.tasks-pop`, `overflow-y: auto`) and
+   this box rides its top edge — which is the one shape that leaves the
+   radiogroup's `display: contents` alone. Making the GROUP the scroller instead
+   would have given it a real box, and a real box between the panel and its rows
+   is the 28-slivers bug that `display: contents` exists to prevent.
+
+   Its own background, because a sticky element is painted OVER the rows sliding
+   under it and a transparent one would show them through; `z-index` for the
+   same reason, against the rows' own hover wash. The 2px that used to be a top
+   MARGIN is padding now: a margin above a sticky box is a 2px window at
+   `top: 0` for a hairline of the row underneath to show through. */
 .schedule-tv-pop .schedule-tv-search.schedule-tv-pop-search {
   flex: 0 0 auto;
   width: auto;
-  margin: 2px 2px 4px;
-}
-
-/* A LOOKUP IS STILL OUT (Akshil, 2026-09-18: "when I am searching show a
-   spinner… right now for a split second it shows me create new folder, or no
-   results — jarring").
-
-   THE SAME ANSWER THE BROWSE PANEL IN THIS CARD ALREADY GIVES
-   (`.schedule-picker-list.is-loading` above): the rows that are there stay put
-   and dim until the next ones land — steady geometry, visible progress. Same
-   numbers, so the two lists in one card read as one control. `pointer-events`
-   goes with it for the same reason it does there: a row that is about to be
-   replaced must not take a click meant for its successor. */
-.schedule-recents.is-loading .schedule-recents-scroll .schedule-picker-row {
-  opacity: 0.45;
-}
-
-/* NO `pointer-events: none` HERE, unlike the Browse panel this borrows from
-   (Bugbot, PR #1213). There the whole listing is being REPLACED, so a row about
-   to vanish must not take a click meant for its successor. Here the rows on
-   screen are the last true answer and they stay — a reader who can see the
-   folder they want must be able to press it, whatever else is still arriving.
-   Dim says "more is coming"; it must not also say "and you may not act". */
-
-/* …and the FIRST answer, which has nothing to dim. The app's own ghost rows
-   (`SkeletonLines`, the same the peek holds over a booting chat), padded to the
-   row rhythm so the panel does not jump when they are replaced. */
-.schedule-recents-wait {
-  padding: 8px;
+  margin: 0 2px 4px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-popover);
+  padding-top: 2px;
 }
 
 /* A search that found nothing still answers. Not a row: there is nothing to
@@ -4577,4 +4620,23 @@ input.schedule-when-field {
    does; the two move together. */
 .schedule-tv-pop-radiogroup {
   display: contents;
+}
+
+
+/* The chosen folder's name stands in for the word "Project" on the filter
+   trigger; a long one is ellipsised rather than pushing Status and + New task
+   off the bar. Wide enough for most repo names, narrow enough that the ladder
+   still has a bar to fold.
+
+   SCOPED TO THE LADDER'S OWN TOOLBAR (`[data-fit]`), not to every
+   `.schedule-fit-lbl` on the page: the label this shapes is the one the fit
+   ladder measures, and a rule that reaches a toolbar with no ladder on it would
+   clip a name for a width problem that toolbar does not have. */
+.schedule-toolbar[data-fit]
+  .schedule-tv-pop-wrap[data-filter="project"]
+  .schedule-fit-lbl {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

@@ -48,7 +48,7 @@ let PAST_NOTE_ONE_OFF: typeof import("./NewJobModal").PAST_NOTE_ONE_OFF;
 let PAST_NOTE_CATCH_UP: typeof import("./NewJobModal").PAST_NOTE_CATCH_UP;
 let defaultTargetOf: typeof import("./NewJobModal").defaultTargetOf;
 let targetVerdict: typeof import("./NewJobModal").targetVerdict;
-let folderSearchSpec: typeof import("./NewJobModal").folderSearchSpec;
+let folderFieldRows: typeof import("./NewJobModal").folderFieldRows;
 let splitTargetPath: typeof import("./NewJobModal").splitTargetPath;
 let PATH_MISSING: typeof import("./NewJobModal").PATH_MISSING;
 let twoLevelsMissing: typeof import("./NewJobModal").twoLevelsMissing;
@@ -58,7 +58,7 @@ let seededDraftForm: typeof import("./NewJobModal").seededDraftForm;
 beforeAll(async () => {
   const mod = await import("./NewJobModal");
   initialRepeatKey = mod.initialRepeatKey;
-  folderSearchSpec = mod.folderSearchSpec;
+  folderFieldRows = mod.folderFieldRows;
   applyRepeatToggle = mod.applyRepeatToggle;
   buildSchedulePayload = mod.buildSchedulePayload;
   learnedSessionOf = mod.learnedSessionOf;
@@ -1708,23 +1708,20 @@ describe("where the new-folder answer is shown", () => {
   const css = () =>
     readFileSync(join(import.meta.dir, "../styles/schedule.css"), "utf8");
 
-  test("the row lives inside the recents dropdown, under the matches", () => {
+  test("the row lives inside the recents dropdown, under the folders", () => {
     const s = src();
-    // The panel's class is composed now — it wears `is-loading` while a SEARCH
-    // is out — so the pair is found rather than the whole attribute.
-    const open = s.indexOf('"schedule-recents" + (searchPending');
+    const open = s.indexOf('className="schedule-recents"');
     const rowAt = s.indexOf("schedule-recents-new\"");
     expect(open).toBeGreaterThan(-1);
     expect(rowAt).toBeGreaterThan(open);
     // …and AFTER the folder rows, which is a deliberate reversal of where it
     // sat for one round (browser QA, 2026-09-18). Leading the list also meant
     // leading the arrow ring, and ArrowDown-then-Enter — the commonest pair on
-    // any typeahead — therefore CREATED a folder rather than picking the match
-    // sitting right underneath it. Matches first, "create this one" last, which
-    // is where every tag and folder picker puts it. The behaviour is pinned in
-    // `folder-search.render.test.tsx`; this pins that the markup agrees, because
-    // a ring that walks one way while the list reads the other is a reader
-    // watching `aria-activedescendant` jump backwards.
+    // any typeahead — therefore CREATED a folder rather than picking the one
+    // sitting right underneath it. Remembered folders first, "create this one"
+    // last, which is where every tag and folder picker puts it. A ring that
+    // walks one way while the list reads the other is a reader watching
+    // `aria-activedescendant` jump backwards.
     expect(rowAt).toBeGreaterThan(s.indexOf("{pathRows.map("));
   });
 
@@ -2690,66 +2687,158 @@ describe("the source-task chip", () => {
 });
 
 
-// ---- Finding a folder from the path field -----------------------------------
+// ---- What the folder field's drop offers ------------------------------------
 //
-// "Add search functionality for path in new task modal path" (Akshil,
-// 2026-09-18). The field offered the folders this form remembered; it could not
-// FIND one, so a folder the reader had never scheduled against was only
-// reachable by walking to it through Browse.
+// "when I clear the path and search, it should search from projects — the same
+// project options I have in the filter beside the New task button" (Akshil,
+// 2026-09-19). The field is an address being edited nearly all of the time, and
+// then the drop is the folders this card remembers, untouched by typing. Clear
+// it, type a word, and it is a search over the very array the toolbar's Project
+// filter offers.
 //
-// The engine is the app's own — `searchFiles` over the file index, the one
-// endpoint on the machine that answers with DIRECTORIES ALONE (`kind: "dir"`,
-// fused_render/server/routers/search.py). All that is new is the translation
-// from "what somebody has typed into a path box" to that spec, which is what
-// these pin.
-describe("what the path field asks the index for", () => {
-  test("a bare name is the name being reached for", () => {
-    expect(folderSearchSpec("render")).toEqual(
-      { kind: "dir", name_terms: ["render"], path_hints: [] });
-  });
-
-  test("the segments above it narrow WHERE to look", () => {
-    // `name_terms` matches a folder's own name and `path_hints` a segment
-    // anywhere above it — which is exactly the shape of a path being typed.
-    expect(folderSearchSpec("fused/ren")).toEqual(
-      { kind: "dir", name_terms: ["ren"], path_hints: ["fused"] });
-    // FOUR HINTS AT MOST, which is what the spec takes — and the four NEAREST
-    // the name, because those are the four that narrow hardest.
-    expect(folderSearchSpec("/a/b/Users/me/Desktop/fused/ren")).toEqual({
-      kind: "dir",
-      name_terms: ["ren"],
-      path_hints: ["Users", "me", "Desktop", "fused"],
+// `folderFieldRows` is the whole of that decision, and it is a pure function so
+// that it can be read here rather than inferred from four conditions inside a
+// 5000-line render.
+describe("the folder field's two lists", () => {
+  const HOME = "/Users/me";
+  const RECENTS = [
+    "/Users/me/Desktop/fused/fused-render",
+    "/Users/me/Desktop/aviary",
+  ];
+  const PROJECTS = [
+    "/Users/me/Desktop/aviary",
+    "/Users/me/Desktop/fused/fused-render",
+    "/Users/me/Work/lens",
+  ];
+  const ask = (target: string, extra: Partial<Parameters<typeof folderFieldRows>[0]> = {}) =>
+    folderFieldRows({
+      target,
+      defaultTarget: "/Users/me/Desktop/fused",
+      open: true,
+      recents: RECENTS,
+      projects: PROJECTS,
+      home: HOME,
+      ...extra,
     });
-    // Backslashes are separators too: a Windows path typed into this field is
-    // the same sentence about the same folders.
-    expect(folderSearchSpec("fused\\ren")).toEqual(
-      { kind: "dir", name_terms: ["ren"], path_hints: ["fused"] });
+
+  test("a bare word searches the page's projects", () => {
+    const { rows, searching } = ask("render");
+    expect(searching).toBe(true);
+    expect(rows.map((r) => r.path)).toEqual(["/Users/me/Desktop/fused/fused-render"]);
+    // The NAME leads the row and the WHOLE path follows it — a folder the
+    // reader has not typed their way to has to say where it is, in full.
+    expect(rows[0]).toEqual({
+      path: "/Users/me/Desktop/fused/fused-render",
+      name: "fused-render",
+      where: "/Users/me/Desktop/fused/fused-render",
+    });
   });
 
-  test("the root and home are not hints", () => {
-    // "/" and "~" name the whole disk and the whole home. They narrow nothing,
-    // and each would cost one of the four terms the spec allows.
-    expect(folderSearchSpec("~/proj")).toEqual(
-      { kind: "dir", name_terms: ["proj"], path_hints: [] });
-    expect(folderSearchSpec("/proj")).toEqual(
-      { kind: "dir", name_terms: ["proj"], path_hints: [] });
+  test("the match is on the NAME, like the filter's own", () => {
+    // `projectMatches` (tasks-lib, PR #1229): case-folded substring of the
+    // basename, never of the path. "desktop" is a segment two of these three
+    // share and a name none of them has, so it finds nothing — exactly what
+    // the filter beside the New task button answers.
+    expect(ask("AVIARY").rows.map((r) => r.name)).toEqual(["aviary"]);
+    expect(ask("desktop").rows).toEqual([]);
+    expect(ask("work").rows).toEqual([]);
   });
 
-  test("nothing worth asking is answered null", () => {
-    // Empty, one character (which matches most of a machine), and a path whose
-    // last segment is finished — a trailing separator is a reader describing a
-    // PARENT, and "what is inside this folder" is Browse's question.
-    expect(folderSearchSpec("")).toBeNull();
-    expect(folderSearchSpec("   ")).toBeNull();
-    expect(folderSearchSpec("r")).toBeNull();
-    expect(folderSearchSpec("/Users/me/")).toBeNull();
+  test("the projects keep their own order, and nothing is capped", () => {
+    // Their own order is the one the filter menu prints (tasks-lib
+    // `projectOptions`, alphabetical by the NAME it shows). A second ranking
+    // here would put the same folders in two orders in two controls.
+    expect(ask("r").rows.map((r) => r.path)).toEqual([
+      "/Users/me/Desktop/aviary",
+      "/Users/me/Desktop/fused/fused-render",
+    ]);
+    // …and no five-row cap, unlike the recents: the panel scrolls, and a
+    // search that hid the eighth answer would be a search you cannot trust.
+    const nine = Array.from({ length: 9 }, (_, i) => `/p/repo${i}`);
+    expect(ask("repo", { projects: nine }).rows).toHaveLength(9);
   });
 
-  test("only ever directories", () => {
-    // The field can hold a folder. An endpoint that ranked files alongside them
-    // — which is what the OTHER search box uses — would offer a `.png` here.
-    for (const typed of ["render", "fused/ren", "~/proj"]) {
-      expect(folderSearchSpec(typed)?.kind).toBe("dir");
+  test("a search that finds nothing is still a search", () => {
+    // Which is what puts "No project matches" on screen rather than the
+    // remembered folders — an empty answer is an answer.
+    const { rows, searching } = ask("zzz");
+    expect(searching).toBe(true);
+    expect(rows).toEqual([]);
+  });
+
+  test("text that NAMES A PLACE is an address, and leaves the recents alone", () => {
+    // A leading `/`, `~` or a drive letter is the Explorer's own test for "this
+    // is an address" (`isPathShapedQuery`). The field opens pre-filled with one,
+    // so this is the common case: typing edits an address, and the drop goes on
+    // offering what the card remembers.
+    for (const typed of ["/Users/me/Desk", "~/Desktop/fu", "C:/proj", "../up"]) {
+      const { rows, searching } = ask(typed);
+      expect(searching).toBe(false);
+      expect(rows.map((r) => r.path)).toEqual(RECENTS);
     }
+  });
+
+  test("the default text is nobody having typed anything", () => {
+    // The card opens on a path. Answering it with a search would be the form
+    // searching for its own default — and it is the TEXT that decides, not a
+    // "has been edited" flag, so leaving the field and coming back answers the
+    // same way.
+    expect(ask("/Users/me/Desktop/fused").searching).toBe(false);
+    expect(ask("  /Users/me/Desktop/fused  ").searching).toBe(false);
+    expect(ask("").searching).toBe(false);
+    expect(ask("   ").searching).toBe(false);
+    expect(ask("").rows.map((r) => r.path)).toEqual(RECENTS);
+    // …and a bare-word DEFAULT is not a search either, for the same reason.
+    expect(ask("scratch", { defaultTarget: "scratch" }).searching).toBe(false);
+  });
+
+  test("a shut drop answers nothing", () => {
+    expect(ask("render", { open: false }).searching).toBe(false);
+  });
+
+  test("the remembered folders are capped, and say where they SIT", () => {
+    const many = ["/a/1", "/a/2", "/a/3", "/a/4", "/a/5", "/a/6", "/a/7"];
+    const { rows } = ask("", { recents: many });
+    expect(rows).toHaveLength(5);
+    expect(rows[0]).toEqual({ path: "/a/1", name: "1", where: "/a" });
+  });
+
+  test("no projects is simply a search that finds nothing", () => {
+    // The app page's scoped card and a deep link both open with no listing
+    // behind them; a search there is empty rather than broken.
+    const { rows, searching } = ask("render", { projects: [] });
+    expect(searching).toBe(true);
+    expect(rows).toEqual([]);
+  });
+});
+
+
+// ---- Tab, in the folder field ------------------------------------------------
+describe("Tab in the folder field", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+
+  test("Tab with nothing arrowed to leaves the typed path alone", () => {
+    // `completionKeyAction` answers Tab with row 0 when nothing is highlighted
+    // (`tabDefaultIndex`), which is right for the Explorer — there row 0
+    // completes the segment being typed — and wrong here, where row 0 is a
+    // folder from last week: Tab out of a freshly typed path replaced it
+    // (review, 2026-09-19). The guard comes BEFORE `preventDefault`, so the key
+    // goes on doing what Tab does.
+    const s = src();
+    const guard = s.indexOf('if (act.type === "tab-accept" && pathAt < 0) return;');
+    expect(guard).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(s.indexOf('act.type === "tab-accept" || act.type === "enter-accept"'));
+  });
+
+  test("Tab fills the field, Enter answers with it — and nothing else branches", () => {
+    // The `stepping` reduction that used to sit here read `row.is_dir` and
+    // `row.where`, and with every row a folder both arms came out the same way
+    // for Tab; `!row.where` made ENTER on a root-level folder behave like Tab.
+    const s = src();
+    expect(s).not.toContain("const stepping =");
+    expect(s).toContain('if (act.type === "tab-accept") acceptPath(row);');
+    // …and the dead icon arm went with the dead flag: every row this list
+    // builds is a folder.
+    expect(s).not.toContain("p.is_dir ? ICON_FOLDER : ICON_FILE");
   });
 });

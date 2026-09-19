@@ -666,8 +666,11 @@ describe("the toolbar's fold rules, in the stylesheet", () => {
     // A row with no room for a search field says so (design.md, Polish batch
     // 5). `display: none` and nothing else: the toolbar re-measures, ⌘K answers
     // the same question from anywhere, and the field comes back with the width.
+    // `:not(.schedule-tv-pop-search)`: the Project menu's "Find a folder…" box
+    // shares the class for the magnifier's positioning and sits inside the
+    // toolbar's DOM, so an unqualified rung folded it away too (2026-09-19).
     const at = FLAT.indexOf(
-      `.schedule-toolbar:is(${levelsFrom(3).join(",")}) .schedule-tv-search {`,
+      `.schedule-toolbar:is(${levelsFrom(3).join(",")}) .schedule-tv-search:not(.schedule-tv-pop-search) {`,
     );
     expect(at).toBeGreaterThan(-1);
     expect(FLAT.slice(at).slice(0, 200)).toContain("display: none");
