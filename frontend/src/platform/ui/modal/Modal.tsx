@@ -432,7 +432,29 @@ export function Modal({
         </div>
         <div className={"modal-body " + (plainBody ? "modal-body-plain" : "deploy-body")}>{children}</div>
         {(footer || confirmClose) && (
-          <div className="modal-footer">
+          <div
+            className="modal-footer"
+            // ARROW KEYS WALK THE FOOTER (Akshil, 2026-09-21). Tab already does,
+            // but a reader looking at two buttons side by side reaches for ←/→
+            // first — and with focus parked on Cancel, ← → Enter is the
+            // keyboard spelling of "Delete forever" that never mis-fires the
+            // way an unringed Enter did. Only footer buttons take part; a key
+            // typed into a footer input (the New task form has none, but the
+            // chassis is shared) is left alone, and the walk wraps.
+            onKeyDown={(e) => {
+              if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+              const target = e.target as HTMLElement;
+              if (target.tagName !== "BUTTON") return;
+              const buttons = Array.from(
+                e.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"),
+              );
+              const at = buttons.indexOf(target as HTMLButtonElement);
+              if (at < 0 || buttons.length < 2) return;
+              e.preventDefault();
+              const step = e.key === "ArrowRight" ? 1 : -1;
+              buttons[(at + step + buttons.length) % buttons.length].focus();
+            }}
+          >
             {confirmClose && (
               <span className="modal-dirty-hint" role="status">
                 Unsaved changes — close again to discard

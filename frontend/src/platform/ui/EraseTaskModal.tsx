@@ -23,7 +23,7 @@
 // shared `Modal` chassis, the target named in the title, the consequence in the
 // body, the path in mono, and a `btn-danger` whose word is the verb rather than
 // "OK".
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { shortTaskId } from "@platform/lib/task-id";
 import { eraseTask } from "@platform/lib/api";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
@@ -66,6 +66,13 @@ export function EraseTaskModal({
   // press Cancel next. Verbatim, so the words the row's hint promises and the
   // words the refusal gives are the same words.
   const [err, setErr] = useState("");
+  // DELETE IS THE DEFAULT (Akshil, 2026-09-21). The chassis would park focus on
+  // Cancel, the footer's first button; here the reader has already chosen
+  // "Delete task" from a menu, so Enter means "yes, do it" — the dialog is the
+  // confirmation, not the choice. Focus lands on the confirm, ringed
+  // (buttons-modal.css, `.modal-footer .btn:focus`); Esc and Cancel are one
+  // key or one ← away.
+  const confirmRef = useRef<HTMLButtonElement>(null);
 
   const confirm = async () => {
     if (busy) return;
@@ -97,13 +104,26 @@ export function EraseTaskModal({
       title={`Delete ${shortTaskId(task.task_id)}?`}
       busy={busy}
       onClose={onClose}
+      initialFocus={confirmRef}
       {...(dialogClassName ? { dialogClassName } : {})}
       footer={
         <>
           <button type="button" className="btn btn-secondary" disabled={busy} onClick={onClose}>
             Cancel
           </button>
-          <button type="button" className="btn btn-danger" disabled={busy} onClick={confirm}>
+          <button
+            ref={confirmRef}
+            type="button"
+            className="btn btn-danger"
+            // NOT `disabled` WHILE BUSY (Akshil, 2026-09-21: "Enter shifts the
+            // outline to the modal"). A disabled button cannot hold focus, so
+            // the press that started the erase threw focus out of the button
+            // and the chassis's last-resort fallback landed it on the dialog
+            // card, ring and all. `aria-disabled` says the same to assistive
+            // tech; `confirm` already ignores a second press while busy.
+            aria-disabled={busy}
+            onClick={confirm}
+          >
             {busy ? "Deleting…" : "Delete forever"}
           </button>
         </>
