@@ -516,7 +516,7 @@ OPTIONS = {
         "CFBundleDocumentTypes": DOCUMENT_TYPES,
         # fused-render:// deep links (SPEC §26, D110): delivered to
         # application:openURLs: in app.py. Scheme deliberately NOT
-        # branch-suffixed (same rationale as the bookmark UTI below): every
+        # branch-suffixed (same rationale as the .fused UTI below): every
         # build speaks the same links, LaunchServices picks one handler.
         "CFBundleURLTypes": [
             {

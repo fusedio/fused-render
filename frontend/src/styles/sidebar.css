@@ -1119,6 +1119,18 @@ a.bookmark-name::after {
   background: var(--bg);
 }
 
+/* A disabled action (e.g. the Projects archive button while its request is in
+   flight): greyed, inert, but still hoverable so its title shows. */
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.icon-btn:disabled:hover {
+  color: var(--fg-muted);
+  background: none;
+}
+
 .bookmark-rename-input {
   flex: 1 1 auto;
   min-width: 0;
