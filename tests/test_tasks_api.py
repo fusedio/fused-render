@@ -15,6 +15,7 @@ Nothing here reads the real ~/.claude — every path is under tmp_path.
 import json
 import os
 import time
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -110,6 +111,27 @@ def _api_error(text, ts, status=None):
 
 def _ai_title(title, session_id="s"):
     return {"type": "ai-title", "aiTitle": title, "sessionId": session_id}
+
+
+# The rows Claude Code 2.1.x appends as it exits, which re-create a transcript
+# an erase has just removed. Not one of them carries a `timestamp`, and not one
+# of them is a `user` row — which is the whole reason the revival rule reads
+# messages and not mtimes.
+_EXIT_ROWS = [
+    {"type": "last-prompt", "prompt": "hi r1"},
+    {"type": "ai-title", "aiTitle": "", "sessionId": "sess-a"},
+    {"type": "mode", "mode": "default"},
+    {"type": "permission-mode", "permissionMode": "acceptEdits"},
+    {"type": "atis-latch", "latched": False},
+    {"type": "cost-state", "totalCostUsd": 0.01},
+]
+
+
+def _later(seconds=60):
+    """An ISO stamp `seconds` from now — later than any tombstone a test in
+    this file can have written."""
+    return datetime.fromtimestamp(
+        time.time() + seconds, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _write_transcript(projects_dir, session_id, cwd, records, encoded=None):
@@ -3210,17 +3232,51 @@ def test_an_entry_created_after_the_delete_revives_the_task(client,
     assert "sess-a" in _by_key(client)
 
 
-def test_a_transcript_that_grows_after_the_delete_revives_the_task(
+def test_a_user_message_after_the_delete_revives_the_task(
         client, projects_dir):
     """The other kind of later activity: the user said something in the
-    session itself. Append-only files move their mtime for exactly one
-    reason, and it postdating the tombstone is what brings the row back."""
+    session itself. It is the MESSAGE that answers, not the file — a
+    `type: "user"` row stamped after the tombstone."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    client.post("/api/tasks/delete", json={"key": "sess-a"})
+    assert _tasks(client) == []
+    _write_transcript(projects_dir, "sess-a", "/p",
+                      [_user("hi", T9), _user("and one more thing", _later())])
+    assert "sess-a" in _by_key(client)
+
+
+def test_the_exit_rows_of_a_closing_session_do_not_revive_the_task(
+        client, projects_dir):
+    """THE GHOST ROW (Akshil, 2026-09-20). Deleting a task takes the transcript
+    away, but the `claude` behind it is usually still alive — an app chat until
+    session_host's 30 s idle reap, a terminal until the user quits — and on its
+    way out Claude Code 2.1.x appends its bookkeeping: `last-prompt`,
+    `ai-title`, `mode`, `permission-mode`, `atis-latch`, `cost-state`. The file
+    is back, newer than the tombstone, holding nothing anybody typed, and the
+    row came back blank and done half a minute after it was deleted. No row
+    here carries a timestamp, so none of them is news."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi r1", T9)])
+    client.post("/api/tasks/delete", json={"key": "sess-a"})
+    assert _tasks(client) == []
+    path = _write_transcript(projects_dir, "sess-a", "/p", _EXIT_ROWS)
+    future = time.time() + 60
+    os.utime(path, (future, future))
+    assert _tasks(client) == []
+
+
+def test_a_rewritten_transcript_with_nothing_newer_stays_deleted(
+        client, projects_dir):
+    """The same rule from the other side: the file is rewritten whole — newer
+    mtime, bigger, the conversation intact — but the newest thing the USER
+    said still predates the tombstone. A moved mtime is not a message."""
     path = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     client.post("/api/tasks/delete", json={"key": "sess-a"})
     assert _tasks(client) == []
+    _write_transcript(projects_dir, "sess-a", "/p",
+                      [_user("hi", T9), _assistant("hello", T10)] + _EXIT_ROWS)
     future = time.time() + 60
     os.utime(path, (future, future))
-    assert "sess-a" in _by_key(client)
+    assert _tasks(client) == []
 
 
 def test_deleting_a_task_that_is_not_there_is_a_404(client):

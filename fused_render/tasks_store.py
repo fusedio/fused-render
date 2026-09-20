@@ -890,11 +890,32 @@ _HEAD_CACHE: dict[str, tuple[int, str | None, float | None, str, str,
 _HEAD_CHARS = 256 * 1024
 _HEAD_LINES = 2000
 
+# (path, size, mtime_ns, at) -> "is there a user message newer than `at`".
+# Keyed by the file's identity AND by the question, because the answer changes
+# the moment either does; a rewrite that shrinks the file misses the key and is
+# re-read, which is the point (see `user_row_after`).
+_USER_ROW_CACHE: dict[tuple[str, int, int, float], bool] = {}
+
+_TAIL_CHUNK = 64 * 1024
+
+# How far a transcript's timestamps may run BACKWARDS as it is read forwards:
+# a compaction replays older rows after newer ones, and an attachment row can
+# trail its send. Measured worst case over 120 real transcripts here: ten
+# minutes. An hour is the slack a backward walk must cross before it may call
+# the rest of the file older (`_row_after`).
+_ORDER_SLACK = 3600.0
+
+# The most a single backward walk will read before giving up. Only a deleted
+# task whose transcript moved is ever walked, and the answer is cached per
+# append, so this is a ceiling on the pathological case, not a budget.
+_TAIL_MAX = 16 * 1024 * 1024
+
 
 def reset_cache() -> None:
     """Forget every cached head. For tests, and for any caller that wants the
     next walk to re-read from disk unconditionally."""
     _HEAD_CACHE.clear()
+    _USER_ROW_CACHE.clear()
 
 
 def epoch(value) -> float | None:
@@ -1560,6 +1581,152 @@ def head(path: str, size: int | None = None,
     cwd, first_ts, prompt, pane, entrypoint, settled = _parse_head(path)
     _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane, entrypoint, settled)
     return cwd, first_ts, prompt, pane, entrypoint
+
+
+def _said_something(obj: dict) -> bool:
+    """Is this `type: "user"` row a MESSAGE, or the machine talking to itself?
+
+    Claude Code files a tool's output as a user row too — in a live transcript
+    most of them are — and a run still draining when the delete landed would
+    otherwise revive the row off its own tool results. A row whose content is
+    nothing but `tool_result` blocks said nothing. Anything else (a string, a
+    text block, an image, an empty message) is taken at face value: the cost of
+    being wrong the other way is a task that stays hidden while its reader is
+    typing in it."""
+    msg = obj.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if not isinstance(content, list) or not content:
+        return True
+    return not all(isinstance(b, dict) and b.get("type") == "tool_result"
+                   for b in content)
+
+
+def _row_after(line: bytes, at: float, floor: float) -> bool | None:
+    """One transcript line read backwards: True "a user message newer than
+    `at`", False "stop, we are safely past `at`", None "no opinion, keep
+    walking".
+
+    Only a parseable `timestamp` can stop the walk — the bookkeeping rows
+    Claude Code appends on exit (`last-prompt`, `ai-title`, `mode`,
+    `permission-mode`, `atis-latch`, `cost-state`) and the file-history
+    snapshots carry none, and a row that cannot say when it happened is not
+    evidence that anything did.
+
+    AND `floor`, NOT `at`, IS WHAT STOPS IT. A transcript is not sorted: a
+    compaction replays older rows after newer ones, and an attachment or
+    system row can trail the send it belongs to. Measured over 120 real
+    transcripts, 381 user rows have a LATER-positioned row with an older
+    stamp, 59 of them by more than a minute and the worst by ten. Stopping on
+    the first old row would walk straight past those — the tombstone's failure
+    inverted, a live conversation left hidden. The floor is `at` minus a slack
+    wider than anything observed (`_ORDER_SLACK`)."""
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    ts = epoch(obj.get("timestamp"))
+    if ts is None:
+        return None
+    if ts < floor:
+        return False
+    if ts > at and obj.get("type") == "user" and _said_something(obj):
+        return True
+    return None
+
+
+def user_row_after(path: str, at: float) -> bool:
+    """Did the user say something in this transcript after `at`?
+
+    THE QUESTION A TOMBSTONE ASKS (`routers/tasks.py:_deleted`), and the reason
+    it cannot be asked of the mtime. A transcript is append-only WHILE the
+    conversation runs, but Claude Code also rewrites it on the way out: exiting
+    2.1.x appends `last-prompt`, `ai-title`, `mode`, `permission-mode`,
+    `atis-latch` and `cost-state` rows, re-creating a file an erase had just
+    removed. The mtime moves; nobody typed anything. Answering off the mtime
+    alone brought every erased chat back ~30 s later as a blank done row.
+
+    READ FROM THE END, because that is where the news is and the file can be
+    megabytes: `_TAIL_CHUNK` at a time backwards over COMPLETE lines, with the
+    line that straddles each seek point joined once from the pieces either side
+    of it (never re-concatenated per chunk — one real transcript here holds a
+    single 2.4 MiB line). The walk stops at the first row stamped before
+    `at - _ORDER_SLACK`; see `_row_after` for why the slack is not zero.
+
+    THREE WAYS IT GIVES UP, all of them answering False, because the caller's
+    rule is that no evidence is not revival: an unreadable file, a short read
+    (the file was replaced or truncated under us — precisely the erase-then-
+    recreate this whole fix is about, and gluing non-adjacent bytes into one
+    "line" could fabricate a verdict), and `_TAIL_MAX` bytes without reaching
+    the floor.
+
+    Cached per (path, size, mtime_ns, question), read off the OPEN handle so
+    the key describes the bytes actually walked. A rewrite that shrinks the
+    file misses the key and is read again.
+    """
+    try:
+        fh = open(path, "rb")
+    except OSError:
+        return False
+    with fh:
+        try:
+            st = os.fstat(fh.fileno())
+            key = (str(path), st.st_size, st.st_mtime_ns, float(at))
+            cached = _USER_ROW_CACHE.get(key)
+            if cached is not None:
+                return cached
+            verdict = _walk_back(fh, st.st_size, at)
+        except OSError:
+            return False
+    answer = bool(verdict)
+    if len(_USER_ROW_CACHE) > 20000:  # same bound, same reason, as _HEAD_CACHE
+        _USER_ROW_CACHE.clear()
+    _USER_ROW_CACHE[key] = answer
+    return answer
+
+
+def _walk_back(fh, size: int, at: float) -> bool | None:
+    """`user_row_after`'s loop: complete lines, newest first, until one of them
+    has an opinion or the walk gives up (see that docstring for all three ways
+    it does)."""
+    floor = at - _ORDER_SLACK
+    pos = size
+    scanned = 0
+    # The pieces of the line that straddles `pos`, in file order.
+    straddle: list[bytes] = []
+    while pos > 0:
+        step = min(_TAIL_CHUNK, pos)
+        pos -= step
+        fh.seek(pos)
+        block = fh.read(step)
+        if len(block) != step:
+            return None  # replaced or truncated under us
+        scanned += step
+        if scanned > _TAIL_MAX:
+            return None
+        pieces = block.split(b"\n")
+        if len(pieces) == 1:  # no line ends in this block
+            straddle.insert(0, block)
+            continue
+        rows = [pieces[-1] + b"".join(straddle)]
+        rows.extend(reversed(pieces[1:-1]))
+        if pos == 0:  # the file's first line is complete
+            rows.append(pieces[0])
+        straddle = [] if pos == 0 else [pieces[0]]
+        for row in rows:
+            answer = _row_after(row, at, floor)
+            if answer is not None:
+                return answer
+    # The file's FIRST line, when no newline was found before reaching the
+    # start: nothing above it can have closed it, so it is complete and it is
+    # the last row left to read.
+    if straddle:
+        return _row_after(b"".join(straddle), at, floor)
+    return None
 
 
 def project_of(cwd: str) -> str:
