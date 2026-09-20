@@ -243,7 +243,7 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     render: ({ dir, snapshot }) => <AppApi dir={dir} snapshot={snapshot} />,
   },
   doctor: {
-    label: "App Doctor",
+    label: "Doctor",
     Icon: Stethoscope,
     // Not keepMounted: the report is fetched fresh on every mount, so coming
     // back to the tab IS the re-run (the panel also offers one in place).
