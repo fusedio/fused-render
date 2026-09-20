@@ -53,13 +53,11 @@ MAX_PORT = DEFAULT_PORT + 10
 
 
 def view_url_path(fs_path: str) -> str:
-    """Shell URL path for a Finder-opened file (SB-9, D99).
+    """Shell URL path for a Finder-opened file.
 
-    A `.bookmark` file is not previewed — it routes to the `_bookmark`
-    sentinel, which reads the file server-side and redirects to the view it
-    describes (the frontend resolves its relative paths against the file's
-    own directory). Everything else opens as a plain `/view/<path>`.
-    Module-level (not a closure) so it is testable without AppKit.
+    A `.fused` app lands on its embed URL; everything else opens as a plain
+    `/view/<path>`. Module-level (not a closure) so it is testable without
+    AppKit.
 
     Delegates to the shared `_view_url_codec` (the single body, now 4/4
     consumers with winopen/deeplink/shell.seed) so macOS encodes paths exactly
@@ -89,7 +87,7 @@ def openurls_target_path(raw_url: str) -> str:
     """Shell URL path for an `application:openURLs:` event (SPEC §26, D110).
 
     AppKit delivers both `fused-render://` deep links AND plain document
-    opens (e.g. a Finder double-click on a registered `.bookmark` file, as
+    opens (e.g. a Finder double-click on a registered `.fused` file, as
     a `file://` URL) through this one selector — unlike `openFiles:`, which
     only ever gets plain paths. Only a `fused-render:` URL is a deep link;
     anything else is a file open and must resolve the same way
@@ -1249,7 +1247,7 @@ def main() -> None:
     # clone, so this handler only ferries the raw URL to the server.
     #
     # AppKit also routes plain document opens (Finder double-click on a
-    # registered file type, e.g. .bookmark) through this same selector as a
+    # registered file type, e.g. .fused) through this same selector as a
     # file:// URL on some launches, not through application:openFiles:.
     # openurls_target_path tells the two apart (mirrors the scheme check in
     # winopen.py's _open()).

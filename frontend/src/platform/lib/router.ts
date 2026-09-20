@@ -13,8 +13,8 @@ export const VIEW_PREFIX = "/explorer/view/";
 // prefixes are served by full page loads, so it can't change without one.
 export const EMBED_PREFIX = "/explorer/embed/";
 
-// Pre-rename URL shapes (old bookmarks/recents entries, .bookmark files,
-// external embed links). Settings sentinels became plain routes at the same
+// Pre-rename URL shapes (old bookmarks/recents entries, external embed
+// links). Settings sentinels became plain routes at the same
 // time as the /explorer prefix rename.
 const LEGACY_SENTINELS: Record<string, string> = {
   "/view/_home": "/apps",
@@ -676,7 +676,7 @@ export function navigateUrl(url: string, opts?: { isDir?: boolean }): void {
   // folder's chat) pass the same isDir nav hint navigate() takes, so the
   // destination paints the right scaffold instead of the file one.
   const state = opts && typeof opts.isDir === "boolean" ? { fsDir: opts.isDir } : null;
-  // Stored urls (bookmarks, recents, .bookmark files) may predate the
+  // Stored urls (bookmarks, recents) may predate the
   // /explorer prefix rename; an in-app push skips the module-init rewrite, so
   // map here or the dispatcher won't recognize the path.
   const href = rewriteLegacyUrl(url);

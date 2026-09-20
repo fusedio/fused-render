@@ -117,7 +117,6 @@ const Apps = lazy(() => import("@apps/builder/Apps"));
 const ClaudeConfig = lazy(() =>
   import("@apps/claude_config").then((m) => ({ default: m.ClaudeConfig })),
 );
-const BookmarkOpen = lazy(() => import("@apps/explorer/BookmarkOpen"));
 // Canvases (legacy-workbench local development): the listing and the
 // per-canvas workspace with the embedded live workbench.
 const Canvases = lazy(() =>
@@ -758,7 +757,6 @@ export default function App({ config }: { config: Config }) {
   const isCanvases = pathname === "/canvases";
   const canvasWorkspaceName =
     /^\/canvases\/([A-Za-z0-9_]+)$/.exec(pathname)?.[1] ?? null;
-  const isBookmark = pathname === "/explorer/view/_bookmark";
   // `/apps/<tag>/<name>` used to resolve HERE, to the app folder under the
   // workspace (a pure fused_dir codec) or — for the virtual "linked" tag, whose
   // folders live anywhere on disk — through GET /api/apps/linked-path, one async
@@ -790,14 +788,8 @@ export default function App({ config }: { config: Config }) {
     isHome ||
     isClaudeConfig ||
     isCanvases ||
-    canvasWorkspaceName !== null ||
-    isBookmark;
+    canvasWorkspaceName !== null;
   const fsPath = isSentinel ? null : fsPathFromLocation();
-  // Browsing to a `.bookmark` file in the explorer opens it like a Finder
-  // double-click (SB-9): same component as the `_bookmark` sentinel, fed the
-  // fs path directly — never StatView (the file describes a view, it isn't one).
-  const bookmarkFile =
-    fsPath && fsPath.toLowerCase().endsWith(".bookmark") ? fsPath : null;
   // A resolved fsPath mounts StatView below, which owns the title itself.
   useDocumentTitle(
     isPanel
@@ -828,11 +820,9 @@ export default function App({ config }: { config: Config }) {
                               ? "Workbench Canvases"
                               : canvasWorkspaceName
                                 ? `Canvas: ${canvasWorkspaceName}`
-                                : isBookmark || bookmarkFile
-                                  ? "Bookmark"
-                                  : fsPath
-                                    ? undefined
-                                    : null,
+                                : fsPath
+                                  ? undefined
+                                  : null,
   );
 
   // First-run onboarding tours: the registry picks the tour this route is
@@ -1036,22 +1026,6 @@ export default function App({ config }: { config: Config }) {
   } else if (isClaudeConfig) {
     // Claude Config panel — native, no mount (see ClaudeConfigView).
     main = <ClaudeConfigView key={epoch} />;
-  } else if (isBookmark || bookmarkFile) {
-    // `.bookmark` open flow (SB-9, D99): Finder double-click lands on the
-    // `/view/_bookmark?file=` sentinel; browsing to the file in the explorer
-    // renders the same redirector with the fs path as a prop.
-    main = (
-      <>
-        <div id="breadcrumb">
-          <StaticBreadcrumb label="Bookmark" />
-        </div>
-        <div id="content" key={epoch}>
-          <Suspense fallback={<RouteFallback />}>
-            <BookmarkOpen key={epoch} file={bookmarkFile ?? undefined} />
-          </Suspense>
-        </div>
-      </>
-    );
   } else if (!fsPath) {
     main = (
       <>

@@ -302,15 +302,6 @@ _PREVIEWABLE_EXTENSIONS = [
 
 DOCUMENT_TYPES = [
     {
-        # `.bookmark` is our own format (SB-9, D99): declare the UTI below and
-        # claim Owner rank so a Finder double-click always opens FusedRender.
-        "CFBundleTypeName": "FusedRender bookmark",
-        "CFBundleTypeRole": "Viewer",
-        "LSHandlerRank": "Owner",
-        "CFBundleTypeExtensions": ["bookmark"],
-        "LSItemContentTypes": ["io.fused.render.bookmark"],
-    },
-    {
         # `.fused` is our own single-file app format (SPEC §43, D385): declare
         # the UTI below and claim Owner rank so a Finder double-click always
         # opens FusedRender on the /openfused confirm page.
@@ -533,22 +524,15 @@ OPTIONS = {
                 "CFBundleURLSchemes": ["fused-render"],
             }
         ],
-        # No other app defines `.bookmark`, so export the UTI ourselves —
+        # No other app defines `.fused`, so export the UTI ourselves —
         # without this, LaunchServices treats the extension as dynamic data
         # and the Owner rank above binds unreliably. Identifier deliberately
         # NOT branch-suffixed: every FusedRender build describes the same
         # file format, even though only one can be the Finder default.
         "UTExportedTypeDeclarations": [
-            {
-                "UTTypeIdentifier": "io.fused.render.bookmark",
-                "UTTypeDescription": "FusedRender bookmark",
-                "UTTypeConformsTo": ["public.json"],
-                "UTTypeTagSpecification": {"public.filename-extension": ["bookmark"]},
-            },
-            # Same posture for `.fused` (SPEC §43, D385): our own format, the
-            # UTI exported so the Owner rank above binds reliably. Physically
-            # a zip, but conforming to public.data (not public.zip-archive)
-            # keeps Archive Utility and friends from claiming it.
+            # `.fused` (SPEC §43, D385): physically a zip, but conforming to
+            # public.data (not public.zip-archive) keeps Archive Utility and
+            # friends from claiming it.
             {
                 "UTTypeIdentifier": "io.fused.render.app",
                 "UTTypeDescription": "FusedRender app",

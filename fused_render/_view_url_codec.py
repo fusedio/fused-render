@@ -3,9 +3,7 @@
 Mirrors the frontend codec (frontend/src/platform/lib/router.ts urlForFsPath): only a
 drive-letter path gets its backslashes normalized to '/' before segmenting —
 a UNC path stays one percent-encoded segment, and on POSIX a backslash is a
-legal filename character that must round-trip untouched. A `.bookmark` file
-is not previewed directly (SB-9, D99): it routes through the `_bookmark`
-sentinel, which reads it server-side and redirects to the view it describes.
+legal filename character that must round-trip untouched.
 
 Pure path classification only (no filesystem/OS calls), so this module and
 its tests run identically on Windows, macOS, and Linux.
@@ -44,8 +42,6 @@ def canonical_fs_path(fs_path: str) -> str:
 def view_url_path(fs_path: str) -> str:
     """Explorer URL path (no host/port) for an absolute fs path."""
     norm = canonical_fs_path(fs_path)
-    if fs_path.lower().endswith(".bookmark"):
-        return "/explorer/view/_bookmark?file=" + quote(norm, safe="")
     if fs_path.lower().endswith(".fused"):
         # An OS-delivered .fused open (Finder double-click, Explorer "Open
         # with") lands on the file's own EMBED URL: the fusedapp preview
