@@ -4871,6 +4871,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     retry_status = 0     # HTTP status of the last one (529 overloaded, 429 …)
     gave_up = None       # the retry still in flight when the run ended badly
     quota = None         # the latest `rate_limit_event` — plan window + reset time
+    context = None       # the latest API response's own `usage` (`_context_usage`)
     # WHAT THE RUN IS DOING RIGHT NOW, beyond the verb. Every one of these is a
     # thing the CLI already writes to out.jsonl and the page used to ignore, so
     # a long quiet stretch — a minute of extended thinking, a Bash `sleep 30`,
@@ -4975,6 +4976,13 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                         for x in tasks if isinstance(x, dict) and x.get("task_id")}
         elif t == "assistant":
             skills += _skill_calls(row)
+            # THE WINDOW AS OF THIS MESSAGE. Same filter and same shape as the
+            # transcript walk uses (`_context_usage`), because it is the same
+            # record: the stream writes each finished assistant message with
+            # the API's own `usage` on it.
+            reading = _context_usage(row.get("message") or {})
+            if reading is not None:
+                context = reading
             for blk in (row.get("message") or {}).get("content") or []:
                 if isinstance(blk, dict) and blk.get("type") == "tool_use" \
                         and blk.get("id"):
@@ -5020,6 +5028,14 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                     tool_input_bytes += len(delta.get("partial_json") or "")
             elif et == "message_start":
                 thinking_tokens = 0
+                # THE EARLIEST THE WINDOW CAN BE KNOWN: `message_start` carries
+                # the request's own input counts — the prompt that just went up
+                # the wire — seconds before the message it opens is finished and
+                # written as an `assistant` row. Read here as well as there so a
+                # long reply's meter steps at the START of the response.
+                reading = _context_usage(ev.get("message") or {})
+                if reading is not None:
+                    context = reading
             elif et == "message_delta":
                 usage = ev.get("usage") or {}
                 tokens_current = usage.get("output_tokens", tokens_current)
@@ -5346,6 +5362,13 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             # `resets_at` is what lets the page schedule the comeback at the
             # actual reset instead of telling the user to wait.
             "quota": quota,
+            # HOW FULL THE CONTEXT WINDOW IS, mid-turn. The CLI updates its
+            # statusline after every API RESPONSE, and one turn that calls six
+            # tools is seven responses — so the meter steps up during a long
+            # turn instead of freezing until the transcript refresh lands.
+            # `None` when this poll's window held no response at all: "nothing
+            # new", which the page reads as "keep what you have".
+            "context": context,
             # The page's own stop button sets a variable and can swallow the
             # resulting error itself, but a stop from anywhere else (the
             # tasks queue card's ✕, which goes through schedule.py) needs
@@ -6088,6 +6111,104 @@ def _row_ts(row: dict) -> float | None:
     return parsed.timestamp()
 
 
+# THE TEXTS THE CLI WRITES INSTEAD OF A REPLY (`ERROR_TEXTS`, spec §9). A row
+# carrying one of these is bookkeeping — an interrupt, a refused tool, a turn
+# nobody asked an answer of — and its `usage` is not the state of the window.
+# Matched by PREFIX because the refusal spells out what was refused after the
+# first sentence.
+_CONTEXT_ERROR_TEXTS = (
+    "[Request interrupted by user]",
+    "[Request interrupted by user for tool use]",
+    "No response requested.",
+    "The user doesn't want to take this action right now",
+    "The user doesn't want to proceed with this tool use",
+)
+
+# An `iterations` entry that is not a reply of its own: its counts are a step
+# inside the turn, not the prompt that went up the wire.
+_CONTEXT_SKIP_ITERATIONS = ("advisor_message", "compaction")
+
+
+def _context_usage(msg: dict) -> dict | None:
+    """The CONTEXT WINDOW READING carried by ONE assistant message, or None.
+
+    This is Claude Code's own `d$` filter and `TNe` normalisation (spec §9),
+    mirrored so the meter this app draws and the meter the CLI draws over the
+    same conversation cannot disagree:
+
+    * a `"<synthetic>"` model is a rate-limit or API-error record. Those DO
+      carry a `usage` object — all zeros — so they have to be skipped by the
+      model check rather than by the absence of one;
+    * a first content block whose text is one of `_CONTEXT_ERROR_TEXTS` is a
+      row the CLI wrote in place of a reply;
+    * `usage.iterations`, when present, is the per-step breakdown, and the LAST
+      real step's counts are the ones that describe the request — an advisor or
+      compaction step is not one.
+
+    The four counts are reported RAW rather than summed: the pill's percentage
+    is input-only (the statusline's definition) and the auto-compact arithmetic
+    adds the output in, so a sum taken here would force one of the two readings
+    to be wrong.
+
+    Defensive about every field: a transcript is somebody else's file format,
+    and a missing or non-numeric number must cost the reading its accuracy at
+    worst, never the whole history payload.
+    """
+    if not isinstance(msg, dict):
+        return None
+    usage = msg.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    model = str(msg.get("model") or "")
+    if model == "<synthetic>":
+        return None
+    content = msg.get("content")
+    if isinstance(content, list) and content:
+        first = content[0]
+        if isinstance(first, dict) and first.get("type") == "text":
+            text = str(first.get("text") or "")
+            if text.startswith(_CONTEXT_ERROR_TEXTS):
+                return None
+    iterations = usage.get("iterations")
+    if isinstance(iterations, list):
+        for step in reversed(iterations):
+            if isinstance(step, dict) \
+                    and step.get("type") not in _CONTEXT_SKIP_ITERATIONS:
+                usage = step
+                break
+
+    def n(key: str) -> int:
+        value = usage.get(key)
+        # `bool` is an `int` in Python and `True` would read as 1 token.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0
+        try:
+            return max(0, int(value))
+        except (ValueError, OverflowError):
+            return 0
+
+    reading = {
+        "input_tokens": n("input_tokens"),
+        "cache_creation_input_tokens": n("cache_creation_input_tokens"),
+        "cache_read_input_tokens": n("cache_read_input_tokens"),
+        "output_tokens": n("output_tokens"),
+        # WHICH MODEL SAID IT, because the window depends on it: `[1m]`, Sonnet
+        # 5, Fable and Opus 5 are a million tokens and everything else is 200k.
+        # "" when the row does not say, and the page falls back to the picker.
+        "model": model,
+        # True only for the estimate a compaction leaves behind — see `_history`.
+        "compacted": False,
+    }
+    # A usage that counts NOTHING says nothing about the window (the zero-filled
+    # object on an error record is the case this catches when the model field is
+    # missing too), and reporting it would blank a meter that was right.
+    if not any(reading[k] for k in (
+            "input_tokens", "cache_creation_input_tokens",
+            "cache_read_input_tokens", "output_tokens")):
+        return None
+    return reading
+
+
 def _history(file: str, session_id: str, app_reads: bool = False,
              inbox: bool = True) -> dict:
     """Rebuild the conversation from the Claude Code session transcript.
@@ -6131,7 +6252,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
     timestamp is missing or unparseable (`_row_ts`). Optional throughout, the
     same way `uuid` is: the legacy template reads neither and is unaffected."""
     if _bad_id(session_id):
-        return {"turns": [], "transcript": _transcript_stat("")}
+        return {"turns": [], "transcript": _transcript_stat(""), "context": None}
     file = os.path.abspath(file)
     path = os.path.join(PROJECTS, _munge(_workdir(file)),
                         session_id + ".jsonl")
@@ -6149,10 +6270,22 @@ def _history(file: str, session_id: str, app_reads: bool = False,
     if not os.path.isfile(path):
         # A run can be live before its transcript exists (the CLI writes the
         # first row after `system/init`), and its card must not wait on that.
-        return {"turns": [], "transcript": stat, **_history_live(file, session_id, inbox=inbox)}
+        return {"turns": [], "transcript": stat, "context": None,
+                **_history_live(file, session_id, inbox=inbox)}
 
     turns = []
     stretch = []  # rows of the assistant reply being read, for its segments
+    # THE LATEST ASSISTANT ROW'S CONTEXT READING, overwritten as the walk finds
+    # newer ones — the last one standing is the state of the window right now.
+    # Free: these are the same rows already being parsed, no second read.
+    context = None
+    # ...and the `compact_boundary` the CLI writes when it summarises a
+    # conversation, when one is NEWER than that reading. Everything before a
+    # compaction is gone from the model's head, so the usage rows above it
+    # describe a window that no longer exists: the boundary's own `postTokens`
+    # is the estimate that replaces them (spec §6). Reset by the next real
+    # reading, which is the API's own count of what the summary actually cost.
+    compacted = None
 
     def close_stretch():
         """Attach the stretch's segments to the assistant turn they belong to.
@@ -6197,6 +6330,20 @@ def _history(file: str, session_id: str, app_reads: bool = False,
         msg = row.get("message") or {}
         role = msg.get("role")
         content = msg.get("content")
+        if row.get("type") == "system" and row.get("subtype") == "compact_boundary":
+            meta = row.get("compactMetadata")
+            compacted = meta if isinstance(meta, dict) else {}
+        if role == "assistant" and isinstance(msg, dict):
+            # Read BEFORE any of the branches below, so a reply this walk drops
+            # (an API failure, a row with no prose and no tools) still reports
+            # the window it consumed. A row without usable `usage` leaves the
+            # previous reading standing rather than blanking the meter.
+            reading = _context_usage(msg)
+            if reading is not None:
+                context = reading
+                # A reading NEWER than the boundary is the API's own count of
+                # the compacted conversation, which beats any estimate.
+                compacted = None
         if role == "user":
             if isinstance(content, str):
                 text = content
@@ -6303,10 +6450,31 @@ def _history(file: str, session_id: str, app_reads: bool = False,
     if turns and turns[-1]["role"] == "assistant" \
             and _stopped_last(file, session_id):
         turns[-1]["stopped"] = True
+    # A COMPACTION AFTER THE LAST READING REPLACES IT. The rows above the
+    # boundary counted a conversation the model no longer holds; what it holds
+    # now is the summary, whose size only the boundary knows (`postTokens`) and
+    # only as an ESTIMATE — the API has not been asked yet. Reported as input
+    # with no output, and flagged, so the page can say it is an estimate.
+    #
+    # No `postTokens` and there is nothing honest to draw, so the meter goes
+    # away entirely — which is exactly what the CLI's own statusline does here
+    # (`current_usage` is null until the next API call).
+    if compacted is not None:
+        post = compacted.get("postTokens")
+        if isinstance(post, bool) or not isinstance(post, (int, float)) \
+                or post <= 0:
+            context = None
+        else:
+            context = {"input_tokens": int(post),
+                       "cache_creation_input_tokens": 0,
+                       "cache_read_input_tokens": 0, "output_tokens": 0,
+                       "model": (context or {}).get("model", ""),
+                       "compacted": True}
     # `transcript` is the watermark the page's live watch compares against
     # (origin/main, D406) — the stat taken BEFORE this read, so a row appended
     # while we were parsing shows up as a change rather than being missed.
-    return {"turns": turns, "transcript": stat, **_history_live(file, session_id, inbox=inbox)}
+    return {"turns": turns, "transcript": stat, "context": context,
+            **_history_live(file, session_id, inbox=inbox)}
 
 
 def _history_live(file: str, session_id: str, inbox: bool = True) -> dict:

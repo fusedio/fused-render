@@ -112,6 +112,7 @@ function state(over: Partial<ChatState> = {}): ChatState {
     historyLoading: false,
     adopting: false,
     transcript: null,
+    context: null,
     ownRunEndedAt: 0,
     repaired: 0,
     transcriptGen: 0,

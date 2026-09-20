@@ -484,6 +484,20 @@ export interface PollResponse {
    *  agent.py. */
   window?: number;
   /**
+   * THE CONTEXT READING MID-TURN, off the newest `message_start` (or finished
+   * `assistant` row) in THIS poll's window — the same `usage` shape history
+   * reports, and the same thing the CLI does with its statusline: it updates
+   * after every API response, and one turn that calls six tools is seven
+   * responses.
+   *
+   * `null` (or absent, on an older agent.py) when this poll's window held no
+   * API response at all, which is most polls of a long tool call. That is
+   * "nothing new to say", NEVER "no context": the page keeps the reading it
+   * has. Only history is allowed to clear the meter, because only history
+   * knows which conversation is on screen.
+   */
+  context?: ContextUsage | null;
+  /**
    * Where a mid-stream follow-up was ABSORBED into the reply already streaming
    * (agent.py `_absorbed_turn_breaks`). One entry per seam, in file order,
    * each the `segments` count and the `text` length of everything BEFORE that
@@ -731,6 +745,44 @@ export interface HistoryResponse {
    * nothing is held when nothing is running.
    */
   inbox?: InboxMessage[];
+  /**
+   * HOW FULL THE MODEL'S CONTEXT WINDOW IS, off the LATEST USABLE assistant
+   * record's `message.usage` (agent.py `_context_usage` / `_usage_row`).
+   *
+   * `null` when no reply has carried usage yet (a brand-new chat, an older
+   * transcript, a compaction whose `postTokens` the boundary row did not
+   * record): the composer draws no meter at all rather than a truthful-looking
+   * 0%, which is what the CLI's own statusline does too — `current_usage` is
+   * `null` until the next API call. Optional on the wire for an older server,
+   * same reading.
+   */
+  context?: ContextUsage | null;
+}
+
+/**
+ * ONE REPLY'S `usage`, as the API reported it — the four counts RAW, not summed.
+ *
+ * Raw because the two readings drawn off it have different numerators: the
+ * pill's percentage is input-only (`input + cache_creation + cache_read`, the
+ * statusline's own definition, which the docs state does NOT include output)
+ * and the auto-compact arithmetic behind the warning line adds `output_tokens`
+ * in. Summing on the wire would force one of the two to be wrong;
+ * `ui/context-window.ts` owns both sums.
+ *
+ * `model` is the id that reply was made with, which is what decides the
+ * window's SIZE (`[1m]`, Sonnet 5, Fable, Opus 5 → a million; everything else
+ * 200k) — "" when the row does not say, and the composer falls back to the
+ * picker's value. `compacted` marks a reading taken from a `compact_boundary`
+ * row's own `postTokens` rather than from the API: an ESTIMATE the compactor
+ * made, which the meter labels as one.
+ */
+export interface ContextUsage {
+  input_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+  output_tokens: number;
+  model: string;
+  compacted: boolean;
 }
 
 /** agent.py:904 / 868,883. */

@@ -31,7 +31,7 @@ import {
 import { notify } from "@platform/lib/notifications";
 import { onDraftChange } from "@shell/tasksPulse";
 import "../styles/composer.css";
-import type { PermissionMode } from "../protocol/types";
+import type { ContextUsage, PermissionMode } from "../protocol/types";
 import type { RunStatus, SendOptions } from "../protocol/controller-api";
 import type { Attachment } from "../shots/types";
 import {
@@ -43,6 +43,8 @@ import {
   type RowFit,
 } from "./fit";
 import { PERMISSION_SHORT } from "./composer-defaults";
+import { ContextMeter } from "./ContextMeter";
+import { contextInput, warnLine } from "./context-window";
 import { EffortSelect } from "./EffortSelect";
 import { ModelSelect } from "./ModelSelect";
 import { PermissionSelect } from "./PermissionSelect";
@@ -212,6 +214,17 @@ export interface ComposerCardProps {
    * worse than 24px of composer card (the note's own original argument).
    */
   queueOn?: boolean;
+  /**
+   * HOW FULL THE MODEL'S CONTEXT WINDOW IS for the conversation on screen
+   * (`ChatState.context` — the latest reply's own `usage`, raw). `null`/absent,
+   * or an input sum of 0, draws neither the meter nor the line above the box:
+   * the landing composer has no conversation, and a chat whose first reply has
+   * not landed has nothing true to say yet.
+   *
+   * The WINDOW is derived here rather than passed, because it follows the model
+   * and the model has two possible answers — see `ctxModel` below.
+   */
+  context?: ContextUsage | null;
   /** A fresh turn. */
   onSend(text: string, opts: SendOptions): void;
   /** Into the live run's inbox (T:16024). Falls back to `onSend` when absent. */
@@ -471,6 +484,7 @@ export function ComposerCard({
   status,
   queued,
   queueOn,
+  context,
   onSend,
   onFollowUp,
   onStop,
@@ -1501,6 +1515,21 @@ export function ComposerCard({
   });
   const running =
     status === "running" || status === "starting" || status === "stopping";
+
+  /**
+   * THE CONTEXT METER'S TWO FACTS, resolved once so the fit key, the pill and
+   * the line above the box cannot disagree about them.
+   *
+   * The MODEL is the transcript's own before the pill's: the tokens being drawn
+   * were spent by the reply that names it, and a reader who has just switched
+   * the pill to a million-token model has not thereby made the last turn's 180k
+   * fit in a million — the next turn will say so itself. The pill is the
+   * fallback for a chat whose transcript names nothing.
+   */
+  const ctxModel = context?.model || controls.model;
+  const ctxUsage = context && contextInput(context) > 0 ? context : null;
+  const ctxWarn = ctxUsage ? warnLine(ctxModel, ctxUsage) : "";
+
   const fit = useRowFit(
     rowRef,
     columnRef,
@@ -1508,9 +1537,12 @@ export function ComposerCard({
     // appearing or leaving changes `composerRowNeed` by a whole control plus a
     // gap, which is exactly the kind of change T's MutationObserver existed to
     // catch (T:12455-12474).
+    // THE METER IS IN THE KEY BY ITS PRESENCE, and only by that: it is a fixed
+    // 24px box whose digits live INSIDE the ring, so the seat appearing or
+    // leaving moves `composerRowNeed` and "9%" → "100%" does not.
     `${controls.model}|${controls.effort}|${controls.permission}|${
       controls.ready === false ? 0 : 1
-    }|${blocked ? 1 : 0}|${camera ? 1 : 0}|${String(fitRevision ?? "")}`,
+    }|${blocked ? 1 : 0}|${camera ? 1 : 0}|${ctxUsage ? 1 : 0}|${String(fitRevision ?? "")}`,
   );
 
   // THIS IS THE NATIVE `initialFocus`, and it has to be, because a modal's
@@ -1786,6 +1818,14 @@ export function ComposerCard({
           the same y on both sides either way; what changes is which side of the
           border the chip is on. */}
       {chips}
+      {/* THE ONE LINE THE CLI PRINTS ABOVE ITS PROMPT (spec §4), in the same
+          seat: directly over the box, outside the card, where the tray chips
+          and the schedule block already say the things a reader needs BEFORE
+          they type rather than after. Verbatim copy, dim, no icon, and gone
+          entirely below the warning threshold — a context line that is always
+          there is a context line nobody reads, which is exactly why the CLI
+          shows it for the last 20k tokens only. */}
+      {ctxWarn ? <div className="c-ctxwarn">{ctxWarn}</div> : null}
       <form
         ref={formRef}
         className={collapsed ? "c-composer is-idle" : "c-composer"}
@@ -1908,6 +1948,14 @@ export function ComposerCard({
             onChange={controls.setPermission}
             compact={fit !== "full"}
           />
+          {/* RIGHT AFTER THE PICKERS AND BEFORE THE SPACER: the three pills say
+              what the next turn will be made with, and this says how much room
+              is left to make it in — one group, read left to right. It draws
+              nothing at all when the conversation has no reading yet, so the
+              landing composer and a brand-new chat are untouched, and it keeps
+              its whole 24px at every rung because there is nothing inside it to
+              drop: the digits are in the ring. */}
+          <ContextMeter usage={ctxUsage} model={ctxModel} />
           <span className="c-spacer" />
           {camera}
           {/* IMMEDIATELY LEFT OF SEND, and that seat is the whole idea: these two

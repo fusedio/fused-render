@@ -612,6 +612,205 @@ select.c-pill {
   opacity: 0.45;
   cursor: not-allowed;
 }
+/* ---- the context meter (the composer's "how full is the window") --------
+   A RING WITH THE NUMBER INSIDE IT, sized to the pills it sits beside (24px,
+   which is what 12px type in a 3px-padded pill measures). One object rather
+   than a ring next to a percentage: two readings of one fact competing for the
+   same 40px is what the second spelling would be, and a ring around the digits
+   survives the row's tightest rungs with nothing left to drop.
+
+   DIM AT EVERY LEVEL, and that is parity rather than an oversight — the CLI
+   has no colour ramp while auto-compact is on (spec §4). The arc takes
+   `currentColor`, so hover and focus move ring and digits together. */
+.c-ctxwrap {
+  display: inline-flex;
+}
+.c-ctxmeter {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* The pills beside it stand 28px; the ring stands the same, so the row reads
+     as one line of controls rather than a row with a smaller coin in it. */
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  font: inherit;
+  line-height: 1;
+  color: var(--c-dim);
+  cursor: pointer;
+  outline: none;
+  /* A press opens the breakdown; a drag across it must not select the digits
+     instead of pressing. */
+  user-select: none;
+  transition:
+    background-color 0.12s,
+    color 0.12s;
+}
+.c-ctxmeter:hover,
+.c-ctxmeter:focus-visible,
+.c-ctxmeter[aria-expanded="true"] {
+  background-color: var(--c-surface-2);
+  color: var(--c-fg);
+}
+.c-ctxmeter:focus-visible {
+  border-color: var(--c-border-strong);
+}
+.c-ctxmeter-ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.c-ctxmeter-track {
+  fill: none;
+  stroke: var(--c-border-strong);
+  stroke-width: 2;
+}
+.c-ctxmeter-arc {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  /* The fill steps once per API response, not continuously — a short ease
+     reads as the number moving rather than as a new number appearing. */
+  transition: stroke-dasharray 0.25s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .c-ctxmeter-arc {
+    transition: none;
+  }
+}
+.c-ctxmeter-pct {
+  position: relative;
+  font-size: 10.5px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+/* THE ONE DIM LINE ABOVE THE BOX (spec §4), and it is one line: no icon, no
+   colour, no box. It appears 20k tokens before auto-compact fires and says the
+   same words the CLI says. */
+.c-ctxwarn {
+  margin: 0 2px 6px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--c-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- `/context`, in a popover -------------------------------------------
+   The block chart the CLI prints, at this app's type. The three legend colours
+   are the CLI's own dark values, with light-theme equivalents beside them —
+   published as tokens so the grid and its legend cannot drift apart. */
+.c-tokens,
+.c-overlay,
+.chat-root {
+  --c-ctx-messages: rgb(130, 125, 189);
+  --c-ctx-buffer: rgb(153, 153, 153);
+  --c-ctx-free: rgb(136, 136, 136);
+}
+:root[data-theme="light"] .c-tokens,
+:root[data-theme="light"] .c-overlay,
+:root[data-theme="light"] .chat-root {
+  --c-ctx-messages: rgb(85, 80, 150);
+  --c-ctx-buffer: rgb(110, 110, 110);
+  --c-ctx-free: rgb(150, 150, 150);
+}
+.c-ctxpop {
+  padding: 10px 12px;
+  background: var(--c-panel);
+  border: 1px solid var(--c-border-strong);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px var(--c-shadow);
+  /* Floored to the chat pane it hangs in rather than to the window: at 20
+     columns the grid needs about 220px and the longest legend row about 260,
+     so a 300px card fits inside the narrowest pane this chat ships in and the
+     popover does not have to spill over the preview beside it. */
+  width: max-content;
+  max-width: min(92vw, 300px);
+}
+.c-ctxpop-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.c-ctxpop-title {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--c-fg);
+}
+.c-ctxpop-dim {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--c-faint);
+}
+.c-ctxpop-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--c-ctx-cols, 10), 1fr);
+  /* The glyphs carry the picture; the grid only has to keep the rows square
+     and the columns even. */
+  margin: 8px 0;
+  line-height: 1;
+  letter-spacing: 0;
+}
+.c-ctxpop-sq,
+.c-ctxpop-key {
+  /* The CLI's glyphs (⛀ ⛁ ⛝ ⛶, U+26C0–U+26F6) live in the symbol faces, not the
+     UI text face — without these fallbacks every square is tofu and the three
+     categories are told apart only by three greys. */
+  font-family: "Apple Symbols", "Segoe UI Symbol", "Noto Sans Symbols 2",
+    "Noto Sans Symbols2", "DejaVu Sans", "Symbola", sans-serif;
+  font-size: 10px;
+  line-height: 1.2;
+  text-align: center;
+}
+.c-ctxpop-key.is-messages { color: var(--c-ctx-messages); }
+.c-ctxpop-key.is-buffer { color: var(--c-ctx-buffer); }
+.c-ctxpop-key.is-free { color: var(--c-ctx-free); opacity: 0.7; }
+.c-ctxpop-sq.is-messages {
+  color: var(--c-ctx-messages);
+}
+.c-ctxpop-sq.is-buffer {
+  color: var(--c-ctx-buffer);
+}
+.c-ctxpop-sq.is-free {
+  color: var(--c-ctx-free);
+  opacity: 0.7;
+}
+.c-ctxpop-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 2px;
+}
+.c-ctxpop-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.c-ctxpop-label {
+  color: var(--c-fg);
+}
+.c-ctxpop-num {
+  color: var(--c-faint);
+}
+.c-ctxpop-note {
+  color: var(--c-faint);
+  font-size: 11px;
+}
+
 /* The platform popup a keyboard user still gets should not arrive white. */
 .c-pill option {
   background: var(--c-bg);
