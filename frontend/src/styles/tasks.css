@@ -874,7 +874,7 @@ button.tasks-caret,
   appearance: none;
   /* A HAIRLINE BOX (Akshil, 2026-09-19): moved here from the reply line, in
      the light ink so it reads on the dark surface. */
-  border: 0.5px solid rgba(255, 255, 255, 0.25);
+  border: 0.5px solid var(--scrim-border);
   background: none;
   font: inherit;
   /* A FUNNEL, NOT A HAND (Akshil, 2026-09-17). Every other pointer in a task
