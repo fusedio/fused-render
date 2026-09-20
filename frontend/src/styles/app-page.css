@@ -24,7 +24,10 @@
      tab strip and the frame instead of hugging the window edge. */
   width: min(1050px, calc(100% - 48px));
   margin: 0 auto;
-  padding: 14px 0 10px;
+  padding: 24px 0 10px;
+  /* Two lines of text on the left (name over folder), so the row is
+     ~50px tall; the actions opposite center against it. */
+  min-height: 50px;
 }
 
 /* Mark, then the name/folder pair. CENTER, not baseline: the mark is a square
@@ -35,30 +38,34 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
+/* Name over folder, two stacked lines — the mark spans both:
+     [icon][title]
+     [icon][path]   */
 .app-page-name {
   min-width: 0;
   display: flex;
-  align-items: baseline;
-  gap: 12px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
 }
 
 /* The app's mark and the icon picker's toggle in one: a plain button, since
    nothing here wraps it in a link (the sidebar's glyph is a span for exactly
-   that reason). 26px against the 18px name — the same posture as the card's
-   mark, sized to the text beside it rather than the other way round. */
+   that reason). 50px: tall enough to span the name AND the folder line
+   stacked beside it. */
 .app-page-icon {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 50px;
+  height: 50px;
   padding: 0;
   border: 0;
-  border-radius: 7px;
+  border-radius: 11px;
   background: none;
   color: var(--fg-muted);
   cursor: pointer;
@@ -82,20 +89,22 @@
    one from the shell. */
 .app-page-icon img.is-raster {
   object-fit: cover;
-  border-radius: 7px;
+  border-radius: 11px;
 }
 
 /* The generic star (AppStar) is a bare sparkle where an authored icon is a
    whole tile of artwork — inset, so it does not shout louder than the name. */
 .app-page-icon svg {
-  width: 16px;
-  height: 16px;
+  width: 26px;
+  height: 26px;
 }
 
 .app-page-title h1 {
   margin: 0;
+  max-width: 100%;
   font-size: 18px;
   font-weight: 600;
+  line-height: 1.2;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -105,7 +114,9 @@
 .app-page-folder {
   flex: 0 1 auto;
   min-width: 0;
+  max-width: 100%;
   font-size: 12px;
+  line-height: 1.3;
   color: var(--fg-muted);
   text-decoration: none;
   overflow: hidden;
@@ -118,15 +129,25 @@
   text-decoration: underline;
 }
 
-/* "Open app" sits opposite the title, centred on its line. */
+/* "Open in explorer" sits opposite the title, centred on its line. */
 .app-page-open {
   flex: 0 0 auto;
 }
 
+/* The head's buttons: a step up from the `sm` size they are declared with,
+   so they hold their own against the two-line title and the 50px mark. */
+.app-page-actions > button {
+  height: 36px;
+  padding-inline: 14px;
+  font-size: 13px;
+}
+
 /* The head's right-hand group: the fused-API "Migrate" button (only when the
-   app is behind the runtime) beside "Open app". */
+   app is behind the runtime) beside "Open app". Centered against the
+   two-line title by the head's own align-items: center. */
 .app-page-actions {
   flex: 0 0 auto;
+  align-self: center;
   display: flex;
   align-items: center;
   gap: 8px;
