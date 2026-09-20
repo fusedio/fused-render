@@ -144,3 +144,22 @@ describe("what it cleans up after", () => {
     expect(SRC).toContain("el.getBoundingClientRect()");
   });
 });
+
+describe("the task row's two-line form", () => {
+  const SRC = readFileSync(new URL("./hints.ts", import.meta.url), "utf8");
+  it("opts in on the ATTRIBUTE, and draws whichever lines it was given", () => {
+    // Title + reply: the List row. Reply alone: the Board card (Akshil,
+    // 2026-09-20: "let's not show the title, only the last reply"). Neither:
+    // not this form — the plain `data-hint` draws instead.
+    expect(SRC).toContain('if (!el.hasAttribute("data-hint-title")) return false;');
+    expect(SRC).toContain("if (!title && !reply) return false;");
+    expect(SRC).toMatch(/if \(title\) \{[\s\S]*?hint-task-title/);
+    expect(SRC).toMatch(/if \(reply\) \{[\s\S]*?hint-task-reply/);
+  });
+  it("the Board card asks for the reply only, and has no caption without one", () => {
+    const VIEWS = readFileSync(new URL("../../shell/ScheduleTaskViews.tsx", import.meta.url), "utf8");
+    expect(VIEWS).toContain('data-hint={lockedDraft ? "Finish the draft to run it." : task.last_reply || ""}');
+    expect(VIEWS).toContain('data-hint-title=""');
+    expect(VIEWS).toContain('data-hint-reply={lockedDraft ? "" : task.last_reply || ""}');
+  });
+});

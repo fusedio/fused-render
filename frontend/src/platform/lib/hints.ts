@@ -193,17 +193,25 @@ function renderHint(p: HTMLDivElement, text: string): void {
  *  reply shows BOTH, untruncated, in the styles the row prints them in — the
  *  title's line, then the reply's. Opted into with `data-hint-title` (and an
  *  optional `data-hint-reply`) beside `data-hint`; `data-hint` stays as the
- *  plain-text fallback so `hintAt` resolves the element the same way. */
+ *  plain-text fallback so `hintAt` resolves the element the same way.
+ *
+ *  Either line may be left out — an empty `data-hint-title` with a reply is
+ *  the Board card's REPLY-ONLY caption (Akshil, 2026-09-20: "let's not show
+ *  the title, only the last reply"), still in the reply line's own style.
+ *  Both empty is not this form at all, and the plain `data-hint` draws. */
 function renderTaskHint(p: HTMLDivElement, el: Element): boolean {
+  if (!el.hasAttribute("data-hint-title")) return false;
   const title = (el.getAttribute("data-hint-title") || "").trim();
-  if (!title) return false;
   const reply = (el.getAttribute("data-hint-reply") || "").trim();
+  if (!title && !reply) return false;
   const wrap = document.createElement("div");
   wrap.className = "hint-task";
-  const t = document.createElement("div");
-  t.className = "hint-task-title";
-  t.textContent = title;
-  wrap.append(t);
+  if (title) {
+    const t = document.createElement("div");
+    t.className = "hint-task-title";
+    t.textContent = title;
+    wrap.append(t);
+  }
   if (reply) {
     const r = document.createElement("div");
     r.className = "hint-task-reply";

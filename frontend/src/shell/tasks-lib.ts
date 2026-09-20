@@ -78,13 +78,33 @@ export function firstLine(text: string): string {
   return text.split("\n").map((s) => s.trim()).find(Boolean) ?? text.trim();
 }
 
-/** THE ONE LINE EVERY VIEW TITLES A TASK BY: the first line of its own title,
- *  or "" for a task that has none — which is each view's cue to print its
- *  "(untitled)" word. Until 2026-09-20 an experiment (`task_card_last_message`)
- *  could swap in the reader's newest message here; the switch is gone, and the
- *  hover caption is where that message now lives (hints.ts `renderTaskHint`). */
-export function taskTitleLine(task: { title?: string | null }): string {
-  return firstLine(task.title ?? "");
+/** What a task's title row draws, and whether it is a message. */
+export interface CardTitle {
+  /** The one line to print. "" when the task has neither a message nor a title,
+   *  which is the view's own cue to print its "(untitled)" word — one place
+   *  decides those words, and it is not this one. */
+  text: string;
+  /** It is the conversation's newest message rather than the task's title.
+   *  The caption follows it (the message, not the title, is what the one-line
+   *  clamp is hiding); nothing else on the row changes with it. */
+  said: boolean;
+}
+
+/** THE ONE LINE EVERY VIEW TITLES A TASK BY — the List row, the Board card,
+ *  the Cards wall and the peek header: the reader's newest message in the
+ *  conversation, first line only, or the task's own title for a task nothing
+ *  has been said in yet (a task that has never run, a server that predates
+ *  the field). Always on since 2026-09-20 (Akshil: removing a Preferences
+ *  switch means the feature is on by default) — until then it was the
+ *  `task_card_last_message` experiment. The fallback is not a nicety: a wall
+ *  where some cards carried a message and others were simply blank would read
+ *  as a wall of broken cards. */
+export function cardTitleLine(task: {
+  title?: string | null;
+  last_message?: { text: string } | null;
+}): CardTitle {
+  const said = firstLine(task.last_message?.text ?? "");
+  return said ? { text: said, said: true } : { text: firstLine(task.title ?? ""), said: false };
 }
 
 /** A path as a person reads it: $HOME collapsed to "~". */

@@ -3707,11 +3707,6 @@ function ChatBody(props: ChatBodyProps) {
       controls,
       status: state.status,
       queued: state.queued,
-      // HOW FULL THE WINDOW IS, for the composer's context meter. Straight off
-      // the controller — it moves with the transcript and with nothing else, so
-      // the landing composer (no conversation) and a brand-new chat both get
-      // `null` and draw no meter.
-      context: state.context,
       onSend,
       onFollowUp,
       onStop,
@@ -3855,7 +3850,6 @@ function ChatBody(props: ChatBodyProps) {
       state.sessionId,
       state.status,
       state.queued,
-      state.context,
       controls,
       onSend,
       onFollowUp,

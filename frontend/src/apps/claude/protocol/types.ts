@@ -731,32 +731,6 @@ export interface HistoryResponse {
    * nothing is held when nothing is running.
    */
   inbox?: InboxMessage[];
-  /**
-   * HOW FULL THE MODEL'S CONTEXT WINDOW IS, off the LATEST assistant record's
-   * `message.usage` (agent.py `_context_usage`).
-   *
-   * `tokens` is the three INPUT numbers of that one reply summed — fresh
-   * input, cache written, cache read — which is what Claude Code's statusline
-   * calls "context usage": every request re-sends the whole conversation, so
-   * the newest reply's prompt already IS the window's contents, and summing
-   * the conversation would count the same tokens once per turn.
-   * `output_tokens` is what came back, reported beside it and not added in.
-   * `model` is the id that reply was made with, which is what decides the
-   * window's SIZE (a `[1m]` qualifier is a million; everything else 200k) —
-   * "" when the row does not say, and the composer falls back to the picker.
-   *
-   * `null` when no reply has carried usage yet (a brand-new chat, an older
-   * transcript): the composer draws no meter at all rather than a truthful-
-   * looking 0%. Optional on the wire for an older server, same reading.
-   */
-  context?: ContextUsage | null;
-}
-
-/** agent.py `_context_usage` — see `HistoryResponse.context`. */
-export interface ContextUsage {
-  tokens: number;
-  output_tokens: number;
-  model: string;
 }
 
 /** agent.py:904 / 868,883. */

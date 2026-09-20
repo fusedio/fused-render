@@ -9,7 +9,6 @@
 import type {
   Activity,
   AppStateRow,
-  ContextUsage,
   Decision,
   DecisionScope,
   HistoryTurn,
@@ -258,19 +257,6 @@ export interface ChatState {
    */
   adopting: boolean;
   transcript: TranscriptStat | null;
-  /**
-   * HOW FULL THE CONTEXT WINDOW IS — the reading off the latest assistant
-   * record of the transcript that is on screen (`HistoryResponse.context`,
-   * agent.py `_context_usage`). The composer's context meter draws it.
-   *
-   * It moves with the TRANSCRIPT and only with it: history lands it, a history
-   * refresh replaces it, opening another session clears it, and a brand-new
-   * chat has `null`. The live poll deliberately does not touch it — a run's own
-   * token counter is a different number (what THIS turn has streamed) and the
-   * window's reading is only true once the reply it belongs to has been written
-   * down. `null` is "nothing to draw": no meter, rather than 0%.
-   */
-  context: ContextUsage | null;
   /** T:16411 `ownRunEndedAt` — the clock reading at which a run THIS frame was
    *  streaming last ended, or 0 if none has. D415's transcript follower (PR4)
    *  compares against it so rows this page just wrote are not read back as

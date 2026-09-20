@@ -74,7 +74,7 @@ import {
   usageLimitCaption,
   taskWhen,
   tildePath,
-  taskTitleLine,
+  cardTitleLine,
 } from "./tasks-lib";
 import { MISSING_FOLDER_TOAST, taskFolder, toastMissingFolder } from "./useMissingFolders";
 import {
@@ -515,10 +515,12 @@ function TaskCard({
   draftOn?: boolean;
 }) {
   const when = taskWhen(task);
-  // THE ONE LINE UNDER THE HEAD ROW: the task's title. The rule is
-  // tasks-lib.taskTitleLine's, so the card is not a second place deciding what
-  // a blank one falls back to.
-  const title = taskTitleLine(task) || "(untitled)";
+  // THE ONE LINE UNDER THE HEAD ROW: the reader's newest message, never
+  // Claude's reply, or the task's title when nothing has been said (design.md
+  // §A, Option 1). The rule is tasks-lib.cardTitleLine's, so the card is not a
+  // second place deciding what a blank one falls back to.
+  const line = cardTitleLine(task);
+  const title = line.text || "(untitled)";
   // Words nobody has sent, in this conversation's composer — the List row's and
   // the Board card's own chip, from the same function, so the three views
   // cannot describe one draft differently (tasks-lib.draftTag).
@@ -720,13 +722,11 @@ function TaskCard({
             (Akshil, 2026-09-04). Same mechanism, same words, same delay. */}
         <span
           className="task-card-title"
-          // The hint says the title whole — the card clamps it to one line, so
-          // the hint is where the rest of a long sentence is — and then the
-          // newest reply under it, in the List row's own two-line form
-          // (hints.ts `renderTaskHint`; Akshil, 2026-09-20).
-          data-hint={task.title}
-          data-hint-title={task.title}
-          data-hint-reply={task.last_reply || ""}
+          // The hint says the line's own words, whole: the title where the line
+          // is the title, the message where it is the message — the server caps
+          // that at 200 characters and the card clamps it to one, so the hint is
+          // where the rest of a long sentence is.
+          data-hint={line.said ? task.last_message?.text : task.title}
         >
           {title}
         </span>

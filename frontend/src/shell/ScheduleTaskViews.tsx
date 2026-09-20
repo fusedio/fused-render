@@ -137,7 +137,7 @@ import {
   taskRunIntent,
   taskUnread,
   taskUnreadLabel,
-  taskTitleLine,
+  cardTitleLine,
   taskWhen,
   threadView,
   tildePath,
@@ -2788,10 +2788,12 @@ function TaskNode({
   const chat = folderMissing || isDraftTask(task)
     ? null
     : openThreadIntent(task, unread);
-  // THE ONE LINE THIS ROW IS TITLED BY: the task's name. One function decides
-  // it for the List, the Board and the Cards wall (tasks-lib.taskTitleLine), so
-  // a fallback cannot drift between views.
-  const label = taskTitleLine(task) || "(untitled)";
+  // THE ONE LINE THIS ROW IS TITLED BY: the reader's newest message, or the
+  // task's name when nothing has been said. One function decides it for the
+  // List, the Board and the Cards wall (tasks-lib.cardTitleLine), so a
+  // fallback cannot drift between views.
+  const line = cardTitleLine(task);
+  const label = line.text || "(untitled)";
   // Whether this row's work is still ahead of it, which is the one thing that
   // greys its title. tasks-lib.isUpcomingTask owns both halves of the question
   // (the lane, and whether its next run has already gone by).
@@ -3631,11 +3633,11 @@ function TaskNode({
           /* The caption is the WHOLE of whatever this line is one line of — the
              untruncated message when the row is showing one, the title when it
              is not — because what a caption is for is the text the clamp hides. */
-          data-hint={task.title}
+          data-hint={line.said ? task.last_message?.text : task.title}
           /* Hovering either the title or the reply shows BOTH lines whole, in
              the row's own styles (hints.ts `renderTaskHint`, Akshil,
              2026-09-19): what the row clamps is what the reader is missing. */
-          data-hint-title={task.title}
+          data-hint-title={line.said ? task.last_message?.text : task.title}
           data-hint-reply={task.last_reply || ""}
         >
           {label}
@@ -3644,7 +3646,7 @@ function TaskNode({
           <span
             className="tasks-title-reply"
             data-hint={task.last_reply}
-            data-hint-title={task.title}
+            data-hint-title={line.said ? task.last_message?.text : task.title}
             data-hint-reply={task.last_reply}
           >
             {task.last_reply}
@@ -5425,8 +5427,8 @@ function TaskCard({
    *  explained itself for 300 ms would be noise. */
   const draggable = lifts && !dropping;
   // THE ONE LINE THIS CARD IS TITLED BY — the List row's and the Cards wall's
-  // own rule, from the one function that holds it (tasks-lib.taskTitleLine).
-  const title = taskTitleLine(task);
+  // own rule, from the one function that holds it (tasks-lib.cardTitleLine).
+  const line = cardTitleLine(task);
   // Where the click goes and whether it also clears the thread's unread — one
   // answer, from tasks-lib, and the SAME answer the List row's Open chat button
   // gets. Null means the card has nowhere to go (no session yet), and then the
@@ -5554,15 +5556,18 @@ function TaskCard({
            the title. Nothing is lost: a draft card's title is drawn on its own
            face, and the reader hovering a card that just refused to lift is
            asking why, not what it is called. */
-        data-hint={lockedDraft ? "Finish the draft to run it." : task.title}
-        /* THE LIST ROW'S OWN TWO-LINE CAPTION (Akshil, 2026-09-20: "in kanban
-           board when we hover over task title, let's also show last response
-           first line. exact same style of what we have in list view"): the
-           title whole, then the newest reply — hints.ts `renderTaskHint`, the
-           same attributes the row's `.tasks-title` carries, so the two views
-           cannot drift. Not on a locked draft, whose caption is the sentence
-           above and has no reply to show. */
-        data-hint-title={lockedDraft ? "" : task.title}
+        /* THE NEWEST REPLY, AND ONLY THAT (Akshil, 2026-09-20: "in kanban board
+           when we hover over task title, let's also show last response first
+           line" — then "let's not show the title, only the last reply"): the
+           List row's own reply line, in the row's own styles, without the
+           title line above it — hints.ts `renderTaskHint` with an empty
+           `data-hint-title`. A card whose conversation has no reply yet has no
+           caption at all (`data-hint=""` is the opt-out): the title is drawn
+           on the card's face, and the reader was not asking for it. The one
+           exception is a draft that cannot run, whose caption is the sentence
+           saying why. */
+        data-hint={lockedDraft ? "Finish the draft to run it." : task.last_reply || ""}
+        data-hint-title=""
         data-hint-reply={lockedDraft ? "" : task.last_reply || ""}
         draggable={draggable}
         onDragStart={(ev) => {
@@ -5691,7 +5696,7 @@ function TaskCard({
             reliably announced (the same reason ScheduleCalendar gives its own dot a
             `role="img"`), where real text always is. */}
         <span className={"schedule-tv-card-title" + (unread > 0 ? " is-unread" : "")}>
-          {title || "(untitled)"}
+          {line.text || "(untitled)"}
           {unread > 0 && (
             <span className="tasks-said">{`, ${taskUnreadLabel(unread)}`}</span>
           )}
