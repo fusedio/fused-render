@@ -28,6 +28,20 @@ describe("the rows a held follow-up earns", () => {
     expect(inboxKey(wire)).toBe("heloo");
   });
 
+  it("a picture-only wire keys on its marker, and two of them stay two rows", () => {
+    // A wordless send's wire is only `<pane-shot>`; `stripBlocks` turns that
+    // into the same marker the optimistic bubble drew. Same marker, one id
+    // each — the second is not swallowed by the first.
+    const wire = '<pane-shot>\n[{"kind":"pane","view":"/tmp/a.webp"}]\n</pane-shot>';
+    const marker = inboxKey(wire);
+    expect(marker).not.toBe("");
+    expect(marker).not.toContain("<pane-shot");
+    expect(inboxBubbles([msg("f1", wire)], [wire], [])).toEqual([]);
+    const two = inboxBubbles([msg("f1", wire), msg("f2", wire)], [], []);
+    expect(two.map((r) => r.id)).toEqual(["f1", "f2"]);
+    expect(two.every((r) => r.text === marker)).toBe(true);
+  });
+
   it("draws nothing at all for an empty, absent or older-server answer", () => {
     // An agent.py without the field sends none, which is the same as an empty
     // inbox — and is exactly what this pane did before the field existed.

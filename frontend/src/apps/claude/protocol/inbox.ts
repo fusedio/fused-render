@@ -106,7 +106,7 @@ export function inboxBubbles(
     if (!row) continue;
     // Drawn as the words too, for the row nothing else is drawing yet.
     const text = stripBlocks(String(row.text ?? ""));
-    const key = inboxKey(text);
+    const key = text.trim(); // already stripped — `inboxKey` of the wire
     // A WORDLESS ENTRY IS NOT A BUBBLE. Pictures alone have no typed line, and
     // an empty bubble under the log says nothing a reader can read.
     if (!key) continue;
