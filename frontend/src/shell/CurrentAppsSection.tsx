@@ -40,7 +40,7 @@ import {
   SECTION_BODY_CLASS,
   useSectionContentCap,
 } from "@platform/ui/sidebar/useSectionContentCap";
-import { embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
+import { navigate, navigateUrl } from "@platform/lib/router";
 import { notify } from "@platform/lib/notifications";
 import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
 import { useAppSharingFeature } from "@platform/lib/share-app-flag";
@@ -626,8 +626,8 @@ export default function CurrentAppsSection() {
   };
 
   // ---- the row's right-click menu ---------------------------------------------
-  // "Open app" is the app page header's own button (AppPage.tsx) — the entry
-  // page in a new tab. The rest are the desk's own verbs — the dot, the
+  // "Open in Explorer" is the app card menu's own entry (appCardMenu.ts) — the
+  // app's folder as a listing. The rest are the desk's own verbs — the dot, the
   // tasks, the row itself.
   const [menu, setMenu] = useState<{
     x: number;
@@ -690,22 +690,20 @@ export default function CurrentAppsSection() {
     }
   };
 
-  // Share sits right under "Open app": the same flag-branched entry the app
+  // Share sits right under "Open in Explorer": the same flag-branched entry the app
   // card menu carries (appCardMenu.ts) — the unified sheet with the flag on,
   // the plain `.fused` export with it off. A hook, not the sync getter: this
   // menu is built inside a component, so it follows the flag live.
   const sharing = useAppSharingFeature();
   const menuItems = (app: CurrentApp): MenuEntry[] => [
     {
-      // The app page header's own "Open app": the entry page full-size AS AN
-      // APP — embed mode, chrome-free — in a new tab so the current page stays
-      // put. Same URL as AppPage's button; the two must not diverge.
-      label: "Open app",
-      icon: MenuIcons.open,
-      disabled: !app.exists || !app.entry,
-      onClick: () => {
-        if (app.entry) window.open(embedUrlForFsPath(app.entry), "_blank", "noopener");
-      },
+      // The app card menu's own "Open in Explorer" (appCardMenu.ts): the app's
+      // folder as a plain listing, same label, glyph and nav hint — the two
+      // menus must not name or aim the same action differently.
+      label: "Open in Explorer",
+      icon: MenuIcons.folder,
+      disabled: !app.exists,
+      onClick: () => navigate(app.path, { isDir: true }),
     },
     sharing
       ? {
