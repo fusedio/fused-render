@@ -137,6 +137,7 @@ import {
   type TranscriptTail,
   type Viewable,
 } from "./ui";
+import { debugSentEnabled } from "./ui/debug-sent";
 import { recapAnchor } from "./protocol/recap";
 import {
   queueEnabled,
@@ -1968,6 +1969,8 @@ function ChatBody(props: ChatBodyProps) {
 
   // ── the composer, the topbar and the landing ───────────────────────────────
   const [sent, setSent] = useState<UserTurn | null>(null);
+  // The door to it is hung only for a developer who asked (`ui/debug-sent`).
+  const debugSent = useMemo(() => debugSentEnabled(), []);
   // The landing's list only: a chat on screen has no lists, and the long-poll
   // behind it should not run for one that is not showing them (T:18339).
   /**
@@ -4305,7 +4308,7 @@ function ChatBody(props: ChatBodyProps) {
               pickerMode={defaults.permission}
               msgAnchor={msgAnchor}
               onAnchorSpent={onAnchorSpent}
-              onShowSent={setSent}
+              {...(debugSent ? { onShowSent: setSent } : {})}
               onOpenShot={setViewing}
               paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}

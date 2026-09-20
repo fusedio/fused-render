@@ -1,7 +1,7 @@
 // R4-1: THE RECEIPT IS THE DOOR.
 //
-// "app state attached" is the only line under a bubble that says the message
-// carried more than the bubble shows, so it is the line that opens the panel
+// A receipt row under a bubble (a picture, a note) says the message carried
+// more than the bubble shows, so it is the line that opens the panel
 // showing that "more" — the affordance T ships (T:11059 `row.title = "Click to
 // see exactly what was sent to the agent"`, T:1249). What this pins:
 //
@@ -61,41 +61,20 @@ function user(over: Partial<UserTurn> = {}): UserTurn {
 
 const WIRE = "what is the app title?\n<live-app-state>{\"title\":\"sine\"}</live-app-state>";
 
-test("the receipt IS the button, and it is the only door (R4-1)", () => {
-  const seen: UserTurn[] = [];
+// 2026-09-20 (Akshil): the app-state receipt line is gone. A message that
+// carried a `<live-app-state>` block draws the words and nothing under them —
+// no "app state attached" caption, as a button or as text — whether or not a
+// panel host is mounted.
+test("an app-state send draws NO receipt line at all", () => {
   const turn = user({ raw: WIRE, appState: true });
-  const r = mount(<Turn turn={turn} onShowSent={(t) => seen.push(t)} />);
-
-  const attach = find(r, "attach");
-  expect(attach).toHaveLength(1);
-  expect(attach[0].type).toBe("button");
-  // The words are unchanged — this is still the receipt, not a new control.
-  expect((attach[0].children ?? []).join("")).toBe("app state attached");
-  // T's own hover copy, so the press is discoverable before it is made.
-  expect((attach[0].props as { title?: string }).title).toBe(
-    "Click to see exactly what was sent to the agent",
-  );
-  // ONE door: the separate hover control is gone for a turn with a receipt.
-  expect(find(r, "sentbtn")).toHaveLength(0);
-
-  act(() => {
-    (attach[0].props as { onClick: () => void }).onClick();
-  });
-  // The whole turn, not just its text: the panel reads `raw` off it.
-  expect(seen).toEqual([turn]);
+  const withHost = mount(<Turn turn={turn} onShowSent={() => {}} />);
+  expect(find(withHost, "attach")).toHaveLength(0);
+  expect(find(withHost, "sentbtn")).toHaveLength(0);
+  const noHost = mount(<Turn turn={turn} />);
+  expect(find(noHost, "attach")).toHaveLength(0);
+  expect(JSON.stringify(noHost.toJSON())).not.toContain("app state attached");
 });
 
-test("a receipt with nothing extra behind it is not a door (R4-1)", () => {
-  // Same text on the wire as in the bubble → the panel would show the bubble
-  // back to the reader, so there is nothing to open.
-  const r = mount(
-    <Turn turn={user({ raw: "what is the app title?", appState: true })} onShowSent={() => {}} />,
-  );
-  const attach = find(r, "attach");
-  expect(attach).toHaveLength(1);
-  expect(attach[0].type).toBe("div");
-  expect(find(r, "sentbtn")).toHaveLength(0);
-});
 
 // P3R1-7: an ANNOTATED send's receipt rows are the door, so the hover control
 // has nothing left to do there.
@@ -152,32 +131,10 @@ test("the hover control is gone from the SOURCE and the SHEET (P3R1-7)", () => {
   }
 });
 
-test("no host to open the panel → the receipt is plain text again (R4-1)", () => {
-  const r = mount(<Turn turn={user({ raw: WIRE, appState: true })} />);
-  const attach = find(r, "attach");
-  expect(attach).toHaveLength(1);
-  expect(attach[0].type).toBe("div");
-  expect(find(r, "sentbtn")).toHaveLength(0);
-});
-
-test("the receipt keeps its 11px faint typography, as a button (T:1804)", () => {
+test("the app-state caption's CSS went with it — no `.attach` rules in the sheet", () => {
   const sheet = readFileSync(join(import.meta.dir, "../styles/transcript.css"), "utf8");
-  const base = sheet.slice(sheet.indexOf(".chat-root .turn.user .attach {"));
-  expect(base.slice(0, base.indexOf("}"))).toContain("font-size: 11px");
-  const door = sheet.slice(sheet.indexOf(".chat-root .turn.user button.attach {"));
-  expect(door).not.toBe("");
-  const body = door.slice(0, door.indexOf("}"));
-  // A button reset, not a restyle: the caption must not arrive as a boxed
-  // control with the UA's own font.
-  expect(body).toContain("font-size: 11px");
-  expect(body).toContain("cursor: pointer");
-  expect(body).toContain("border: 0");
-  expect(body).toContain("background: none");
-  // …and it says it is pressable on hover AND on keyboard focus.
-  expect(sheet).toContain(".chat-root .turn.user button.attach:focus-visible");
-  expect(
-    sheet.slice(sheet.indexOf(".chat-root .turn.user button.attach:hover")),
-  ).toContain("text-decoration: underline");
+  expect(sheet).not.toContain(".turn.user .attach");
+  expect(sheet).not.toContain("button.attach");
 });
 
 test("the panel wears the app's modal chrome, not its own (R4-1)", () => {

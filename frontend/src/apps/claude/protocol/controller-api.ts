@@ -37,10 +37,8 @@ export interface UserTurn {
   raw?: string;
   /**
    * This message carried a `<live-app-state>` description of the app the pane
-   * was showing. The UI draws the receipt legacy draws — "app state attached",
-   * a faint caption under the bubble (T:16588-16596, `.user .attach` at
-   * T:1802) — because the push channel is otherwise invisible and the reader
-   * has no way to know the agent was told what they were looking at.
+   * was showing. Recorded only — nothing is drawn for it (the "app state
+   * attached" caption went 2026-09-20); the "what was sent" panel reads `raw`.
    */
   appState?: true;
   uuid?: string;

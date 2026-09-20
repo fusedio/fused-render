@@ -16,6 +16,32 @@ describe("the rows a held follow-up earns", () => {
     expect(rows.map((r) => r.id)).toEqual(["f1", "f2"]);
   });
 
+  it("matches and draws the WORDS, not the wire the run holds (queue QA, 2026-09-20)", () => {
+    // The run reports its inbox verbatim — `<live-app-state>` block and all —
+    // while the bubble already on screen is the stripped text. Keying the two
+    // differently drew the message twice, the second time as the raw block.
+    const wire = "<live-app-state>\n{\"title\":\"sine\"}\n</live-app-state>\n\nheloo";
+    expect(inboxBubbles([msg("f1", wire)], [], ["heloo"])).toEqual([]);
+    expect(inboxBubbles([msg("f1", wire)], ["heloo"], [])).toEqual([]);
+    // Nothing else drawing it → the bubble it earns is the words alone.
+    expect(inboxBubbles([msg("f1", wire)], [], []).map((r) => r.text)).toEqual(["heloo"]);
+    expect(inboxKey(wire)).toBe("heloo");
+  });
+
+  it("a picture-only wire keys on its marker, and two of them stay two rows", () => {
+    // A wordless send's wire is only `<pane-shot>`; `stripBlocks` turns that
+    // into the same marker the optimistic bubble drew. Same marker, one id
+    // each — the second is not swallowed by the first.
+    const wire = '<pane-shot>\n[{"kind":"pane","view":"/tmp/a.webp"}]\n</pane-shot>';
+    const marker = inboxKey(wire);
+    expect(marker).not.toBe("");
+    expect(marker).not.toContain("<pane-shot");
+    expect(inboxBubbles([msg("f1", wire)], [wire], [])).toEqual([]);
+    const two = inboxBubbles([msg("f1", wire), msg("f2", wire)], [], []);
+    expect(two.map((r) => r.id)).toEqual(["f1", "f2"]);
+    expect(two.every((r) => r.text === marker)).toBe(true);
+  });
+
   it("draws nothing at all for an empty, absent or older-server answer", () => {
     // An agent.py without the field sends none, which is the same as an empty
     // inbox — and is exactly what this pane did before the field existed.
