@@ -1274,86 +1274,33 @@ def test_native_chat_defaults_on_and_toggles(tmp_path, monkeypatch):
     ]["native"] is True
 
 
-# -- task side peek flag (default ON since 2026-09-17) -------------------------
+# -- task side peek: always on since 2026-09-20 ------------------------------
 
 
-def test_task_peek_defaults_on_and_toggles(tmp_path, monkeypatch):
-    client, home = _client(tmp_path, monkeypatch)
-    # Default ON: a click on a task row opens the side panel, and the switch is
-    # the way back to navigating to the Explorer.
-    assert client.get("/api/prefs").json()["task_peek"]["enabled"] is True
-    body = client.put("/api/prefs", json={"task_peek_enabled": False}, headers=FUSED).json()
-    assert body["task_peek"]["enabled"] is False
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["task_peek_enabled"] is False
-    assert client.put("/api/prefs", json={"task_peek_enabled": True}, headers=FUSED).json()[
-        "task_peek"
-    ]["enabled"] is True
-
-
-def test_task_peek_junk_value_reads_as_on(tmp_path, monkeypatch):
-    # Only a stored `false` is off — missing, legacy and junk all read as ON,
-    # which is the answer the pref's own default gives.
+def test_task_peek_is_always_on_and_ignores_a_stored_false(tmp_path, monkeypatch):
+    # The switch is gone from Preferences. A prefs.json an older build wrote
+    # with the peek OFF must not strand the reader on the navigate-away path.
     client, home = _client(tmp_path, monkeypatch)
     home.mkdir(parents=True, exist_ok=True)
-    (home / "prefs.json").write_text(json.dumps({"task_peek_enabled": "yes"}), encoding="utf-8")
+    (home / "prefs.json").write_text(json.dumps({"task_peek_enabled": False}), encoding="utf-8")
     assert client.get("/api/prefs").json()["task_peek"]["enabled"] is True
     assert prefs_mod.task_peek_enabled() is True
 
 
-def test_put_rejects_bad_task_peek_enabled(tmp_path, monkeypatch):
-    client, home = _client(tmp_path, monkeypatch)
-    assert (
-        client.put("/api/prefs", json={"task_peek_enabled": "yes"}, headers=FUSED).status_code
-        == 400
-    )
-    assert not (home / "prefs.json").exists()
-
-
-def test_task_peek_survives_a_write_of_another_pref(tmp_path, monkeypatch):
-    # One prefs.json, many switches: turning the peek on and then touching an
-    # unrelated pref must not drop it (the merge, not a whole-file replace).
-    client, home = _client(tmp_path, monkeypatch)
-    client.put("/api/prefs", json={"task_peek_enabled": True}, headers=FUSED)
-    body = client.put("/api/prefs", json={"reader_enabled": True}, headers=FUSED).json()
-    assert body["task_peek"]["enabled"] is True
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["task_peek_enabled"] is True
-
-
-# -- task card title (experimental) flag ---------------------------------------
-
-
-def test_task_card_last_message_defaults_off_and_toggles(tmp_path, monkeypatch):
-    client, home = _client(tmp_path, monkeypatch)
-    # Default off: a card is titled by its task, exactly as the Cards wall has
-    # always drawn it, until someone opts in.
-    assert client.get("/api/prefs").json()["task_cards"]["last_message"] is False
-    body = client.put(
-        "/api/prefs", json={"task_card_last_message": True}, headers=FUSED).json()
-    assert body["task_cards"]["last_message"] is True
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["task_card_last_message"] is True
-    assert client.put(
-        "/api/prefs", json={"task_card_last_message": False}, headers=FUSED,
-    ).json()["task_cards"]["last_message"] is False
-
-
-def test_task_card_last_message_junk_value_reads_as_off(tmp_path, monkeypatch):
-    client, home = _client(tmp_path, monkeypatch)
-    home.mkdir(parents=True, exist_ok=True)
-    (home / "prefs.json").write_text(
-        json.dumps({"task_card_last_message": "yes"}), encoding="utf-8")
-    assert client.get("/api/prefs").json()["task_cards"]["last_message"] is False
-    assert prefs_mod.task_card_last_message() is False
-
-
-def test_put_rejects_bad_task_card_last_message(tmp_path, monkeypatch):
+def test_put_no_longer_accepts_the_removed_task_switches(tmp_path, monkeypatch):
+    # `task_peek_enabled` and `task_card_last_message` were both Preferences
+    # switches until 2026-09-20; a PUT naming only one of them is a PUT naming
+    # no known preference, and the payload never grows a `task_cards` key.
     client, home = _client(tmp_path, monkeypatch)
     assert client.put(
-        "/api/prefs", json={"task_card_last_message": "yes"}, headers=FUSED,
-    ).status_code == 400
+        "/api/prefs", json={"task_peek_enabled": False}, headers=FUSED).status_code == 400
+    assert client.put(
+        "/api/prefs", json={"task_card_last_message": True}, headers=FUSED).status_code == 400
     assert not (home / "prefs.json").exists()
+    assert "task_cards" not in client.get("/api/prefs").json()
+
+
+# -- task notify terminal sessions flag ----------------------------------------
 
 
 def test_task_notify_terminal_sessions_defaults_off_and_toggles(tmp_path, monkeypatch):
@@ -1387,19 +1334,6 @@ def test_put_rejects_bad_task_notify_terminal_sessions(tmp_path, monkeypatch):
         "/api/prefs", json={"task_notify_terminal_sessions": "yes"}, headers=FUSED,
     ).status_code == 400
     assert not (home / "prefs.json").exists()
-
-
-def test_the_two_task_page_switches_are_independent(tmp_path, monkeypatch):
-    # One prefs.json, two experiments on one page, and neither turns the other
-    # on: the peek is about where a task opens, this is about what a card says.
-    client, home = _client(tmp_path, monkeypatch)
-    client.put("/api/prefs", json={"task_card_last_message": True}, headers=FUSED)
-    body = client.put("/api/prefs", json={"task_peek_enabled": True}, headers=FUSED).json()
-    assert body["task_cards"]["last_message"] is True
-    assert body["task_peek"]["enabled"] is True
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["task_card_last_message"] is True
-    assert stored["task_peek_enabled"] is True
 
 
 def test_native_chat_junk_value_reads_as_on(tmp_path, monkeypatch):

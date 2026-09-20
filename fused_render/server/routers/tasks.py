@@ -291,7 +291,7 @@ def _prompt(obj) -> dict | None:
         return None
     # The CLI's stop marker is a user row too, and not one the reader typed.
     # Refused here so it is neither a message, a count, nor — with
-    # `task_card_last_message` on — the row's title (Akshil, 2026-09-19).
+    # the row's hover caption (Akshil, 2026-09-19).
     if tasks_store.is_interrupt_mark(text):
         return None
     # The remainder can still be empty — annotations or a screenshot sent with no
@@ -2884,13 +2884,13 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     entries alone (`_row_settings`), which is what the three single-row callers
     below want: none of them draws a pill.
 
-    `last_message` is `shell_prefs.task_card_last_message()`, read once per
-    request by the caller for the same reason the joins above are: it is one
-    file, and asking it per row would open it once per task on the machine.
-    False — the default, and what the three single-row callers take, none of
-    which reads the field — leaves the key OFF the row entirely rather than
-    sending a null: the only surface for it is the Cards wall's experimental
-    title, and the client already reads an absent key as "nothing said".
+    `last_message` — whether the row carries the newest thing the user said —
+    is True for the listing and False for the three single-row callers below,
+    none of which reads the field. False leaves the key OFF the row entirely
+    rather than sending a null, and the client reads an absent key as
+    "nothing said". (Until 2026-09-20 this followed the `task_card_last_message`
+    pref, an experiment that titled the row by that message; the pref is gone
+    and the listing always carries the field now.)
 
     `revived` is an OUT parameter and the only one: a session whose archive
     record this row has just found stale is appended to it, and the caller does
@@ -3270,12 +3270,9 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     }
     if last_message:
         # THE NEWEST MESSAGE THE USER SENT — one line of it — or None for a task
-        # nothing has been said in. It is what the Tasks page titles a row by
-        # while `task_card_last_message` is on (shell/prefs.py). Off, the key is
-        # absent — which the client reads as "nothing said" — and every row on
-        # the machine stops carrying a field no surface draws. Read off the
-        # whole merged thread, not the cut tail, so it can never name a message
-        # the tail dropped; it costs no read of its own either way.
+        # nothing has been said in. The peek header's hint reads it. Read off
+        # the whole merged thread, not the cut tail, so it can never name a
+        # message the tail dropped; it costs no read of its own either way.
         row["last_message"] = _last_message(merged)
     return row
 
@@ -4287,11 +4284,8 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # session alone — which builds no draft rows at all — still answers a row
     # that knows about its draft (`_bound_chips`).
     bound_chips = _bound_chips(task_drafts)
-    # ONE prefs read for the whole build, like every other join above: whether
-    # a row carries `last_message` at all (shell/prefs.py, experimental and
-    # default off). Per row it would be one file open per task on the machine,
-    # per poll.
-    last_message = shell_prefs.task_card_last_message()
+    # Every listing row carries `last_message` (see `_row`'s doc comment).
+    last_message = True
     # ONE READ of the per-session model/effort record for the whole listing,
     # same reason as every join above: it is one small file, and asking it per
     # row would open it once per task on the machine.

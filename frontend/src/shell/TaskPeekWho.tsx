@@ -21,8 +21,7 @@
 import type { Task } from "@platform/lib/api";
 import { columnLabel } from "./schedule-lib";
 import { StatusIcon } from "./ScheduleTaskViews";
-import { cardTitleLine, useTaskCardTitleMode } from "./task-card-title-flag";
-import { basename, firstLine, ringFailed, shortTaskId, taskColumn, tildePath } from "./tasks-lib";
+import { basename, cardTitleLine, firstLine, ringFailed, shortTaskId, taskColumn, tildePath } from "./tasks-lib";
 
 /** The title the header prints — the task's own first line, and the word every
  *  surface uses for a task that has none. Exported because the peek's menu and
@@ -34,15 +33,16 @@ export function peekTitle(task: Task): string {
 /**
  * THE ONE LINE EVERY SURFACE NAMES A TASK BY — the list row, the chat header,
  * the peek panel, the cards popup (Akshil, 2026-09-15: "show the same title
- * everywhere"). `cardTitleLine`'s rule, subscribed to the pref: the newest
- * message while "Title a task by your last message" is on, else the task's own
- * title, and the card's "(untitled)" word for a task that has neither.
- * Takes `null` so a panel with no task yet can still call it unconditionally.
+ * everywhere"). `cardTitleLine`'s rule: the reader's newest message, else the
+ * task's own title, and the card's "(untitled)" word for a task that has
+ * neither. Still a hook by name — until 2026-09-20 it subscribed to the "title
+ * a task by your last message" pref, and every caller is a component that
+ * calls it unconditionally. Takes `null` so a panel with no task yet can still
+ * call it.
  */
 export function useTaskHeadline(task: Task | null | undefined): string {
-  const titleMode = useTaskCardTitleMode();
   if (!task) return "";
-  return cardTitleLine(task, titleMode).text || peekTitle(task);
+  return cardTitleLine(task).text || peekTitle(task);
 }
 
 /**

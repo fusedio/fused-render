@@ -1,4 +1,4 @@
-// The flag's own contract — same idiom check as task-card-title-flag.test.ts's
+// The flag's own contract — same idiom check as task-peek-flag.test.ts's
 // "the flag module" describe block. The DECISION this flag gates (whether a
 // terminal session's finished-task notice fires) is tested in
 // task-status-notify.test.ts, since `notificationForTransition` is pure and

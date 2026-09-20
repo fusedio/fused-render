@@ -222,38 +222,15 @@ def native_chat_enabled() -> bool:
 
 def task_peek_enabled() -> bool:
     """Whether the Tasks page opens a task in a SIDE PANEL beside the list
-    instead of navigating to the Explorer (default ON — Akshil, 2026-09-17: out
-    of experiment, it is how the page opens a task).
-
-    Same idiom as `native_chat_enabled` above and turned over for the same
-    reason: only a stored `false` is off, and missing/legacy/junk read as on, so
-    an install that has never opened Preferences gets the panel. The navigate-
-    away path is untouched and is still what the switch turns back on.
-
-    NO ENV OVERRIDE, deliberately, and that is the one place it differs from
-    `native_chat_enabled`. That switch has one because a dev server or a test
-    run has to be able to pick a chat implementation without touching
-    prefs.json — the two implementations are both shipped and both supported.
-    This is one page's interaction model; there is nothing to pin a process to,
-    and an env var nobody sets is a second way for the answer to come out that
-    has to be kept in step with the first.
+    instead of navigating to the Explorer — ALWAYS, since 2026-09-20 (Akshil:
+    "remove the flag of ... sidebar peek"). The switch is gone from
+    Preferences and the PUT no longer accepts `task_peek_enabled`; a stored
+    value from an older build is ignored, so nobody is stranded on the
+    navigate-away path with no way back. Kept as a function, and kept in the
+    GET payload as `task_peek.enabled`, because the client's flag module still
+    reads it — a server that sends nothing reads as ON there too.
     """
-    return read_prefs().get("task_peek_enabled") is not False
-
-
-def task_card_last_message() -> bool:
-    """Whether a card on the Tasks page's Cards wall is TITLED BY THE NEWEST
-    MESSAGE THE READER SENT in its conversation — never Claude's reply —
-    instead of by the task's own title (default off, opt-in while the
-    experiment runs).
-
-    Same idiom and the same strictness as `task_peek_enabled` above, and for the
-    same reason: it decides what a whole wall of cards reads as, so only a
-    stored `true` is on and anything else — missing, legacy, junk — leaves the
-    card the card it has always been. No env override either; there is nothing a
-    process needs to pin about one view's experiment.
-    """
-    return read_prefs().get("task_card_last_message") is True
+    return True
 
 
 def notify_terminal_sessions_enabled() -> bool:
@@ -272,7 +249,7 @@ def notify_terminal_sessions_enabled() -> bool:
     terminal session raising a fused-render notification unasked; a user who
     wants those back opts in explicitly.
 
-    Same idiom as `task_card_last_message` above: only a stored `true` is on,
+    Same idiom as `project_queue_enabled` below: only a stored `true` is on,
     everything else (missing, legacy, junk) stays off. No env override — there
     is nothing a process needs to pin about a Preferences toggle.
     """
@@ -628,18 +605,10 @@ def _prefs_response() -> dict:
             # reads `p.chat?.recap !== false` for exactly that reason.
             "recap": chat_recap_enabled(),
         },
-        # Whether a task on the Tasks page opens in a side panel beside the
-        # list instead of navigating away (experimental, opt-in). A bare
-        # boolean and not the `{value, forced_by}` shape `chat` above wears:
-        # there is no env override to report, because there is nothing a
-        # process needs to pin here (see `task_peek_enabled`).
+        # A task on the Tasks page opens in a side panel beside the list —
+        # always, since 2026-09-20 (`task_peek_enabled`). Still sent, because
+        # the client's flag module reads it.
         "task_peek": {"enabled": task_peek_enabled()},
-        # …and what a CARD on that page is titled by: the newest message in its
-        # conversation instead of the task's own title (experimental, opt-in).
-        # A namespace rather than a bare boolean beside the one above, because
-        # the card is one surface with more than one thing an experiment can
-        # move, and `last_message` names which one this is.
-        "task_cards": {"last_message": task_card_last_message()},
         # Whether a finished-task notification fires for a session that
         # entered from an interactive terminal (default off, opt-in) — see
         # `notify_terminal_sessions_enabled`'s own doc comment for why this
@@ -823,19 +792,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'native_chat_enabled' must be a boolean"}, status_code=400)
         prefs["native_chat_enabled"] = value
         changed = True
-    if "task_peek_enabled" in body:
-        value = body.get("task_peek_enabled")
-        if not isinstance(value, bool):
-            return JSONResponse({"error": "'task_peek_enabled' must be a boolean"}, status_code=400)
-        prefs["task_peek_enabled"] = value
-        changed = True
-    if "task_card_last_message" in body:
-        value = body.get("task_card_last_message")
-        if not isinstance(value, bool):
-            return JSONResponse(
-                {"error": "'task_card_last_message' must be a boolean"}, status_code=400)
-        prefs["task_card_last_message"] = value
-        changed = True
     if "task_notify_terminal_sessions" in body:
         value = body.get("task_notify_terminal_sessions")
         if not isinstance(value, bool):
@@ -958,8 +914,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
                       "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'native_chat_enabled', "
-                      "'chat_recap_enabled', 'task_peek_enabled', "
-                      "'task_card_last_message', 'task_notify_terminal_sessions', "
+                      "'chat_recap_enabled', 'task_notify_terminal_sessions', "
                       "'project_queue_enabled', "
                       "'lan_enabled', "
                       "'default_model', 'indexing_enabled', 'ranked_search_enabled', "

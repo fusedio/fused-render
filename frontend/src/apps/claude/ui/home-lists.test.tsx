@@ -883,10 +883,9 @@ test("OPENING A CHAT CLEARS ITS RING, and says so to the server", async () => {
     await act(async () => {
       (taskRow(r).props as { onClick(): void }).onClick();
     });
-    // The row asks the server for ONE thing on a press. It also reads
-    // `/api/prefs` on mount (TaskRowItem -> useTaskCardTitleMode), which is a
-    // fact about the row and not about this press, so the claim is filtered to
-    // the write rather than widened to "whatever the row happens to fetch".
+    // The row asks the server for ONE thing on a press. The claim is filtered
+    // to the write rather than widened to "whatever the row happens to fetch",
+    // so a read the row makes on mount can never be mistaken for the press's.
     const reads = calls.filter((c) => c.url === "/api/tasks/read");
     expect(reads.map((c) => c.url)).toEqual(["/api/tasks/read"]);
     expect(reads[0].body).toEqual({ key: "s1", all: true });

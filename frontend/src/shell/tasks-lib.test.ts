@@ -2401,9 +2401,9 @@ describe("the unread mark", () => {
       ".tasks-title.is-unread",
     );
     // ...and the title is still a title: the words, then nothing an eye can see.
-    // The words are `cardTitleLine`'s now — the task's name, or the
-    // reader's newest message with `task_card_last_message` on — which is
-    // the same function the List row and the Cards wall ask (2026-09-14).
+    // The words are `cardTitleLine`'s (tasks-lib) — the reader's newest
+    // message, else the task's name — the same function the List row and the
+    // Cards wall ask.
     expect(CARD).toMatch(
       /className=\{"schedule-tv-card-title"[^}]*\}>\s*\{line\.text \|\| "\(untitled\)"\}/,
     );
@@ -5626,7 +5626,8 @@ describe("every caption on a row is an INSTANT hint", () => {
     // …and no native `title` either: it is placed perfectly and waits four to
     // five seconds on a session's first hover, which is the whole reason
     // platform/lib/hints.ts exists.
-    expect(row).not.toContain("title={task.title}");
+    // A native `title=` attribute — not the `data-hint-title=` opt-in (hints.ts).
+    expect(row).not.toMatch(/(^|\s)title=\{task\.title\}/);
     expect(row).not.toContain("title={when.title}");
     // …and the four support rules are gone from the stylesheet with it.
     expect(SCHEDULE_CSS).not.toContain('.tasks-row[data-tip]');
@@ -8933,9 +8934,8 @@ describe("the Cards view's frame", () => {
     expect(frame).toContain("height: 133.3334%");
     expect(frame).toContain("transform-origin: 0 0");
     // The full title rides the app's own hint (hints.ts), like a List row's,
-    // not a native `title` that arrives a second later — and, with the last-
-    // message experiment on, the hint is the message's own full text instead
-    // (shell/task-card-title-flag.ts).
+    // not a native `title` that arrives a second later — and where the line
+    // is the newest message, the hint is that message's own full text.
     expect(CARDS).toContain('data-hint={line.said ? task.last_message?.text : task.title}');
     expect(CARDS).not.toContain('className="task-card-title" title=');
     // Two rows: ring then id top-left (the List row's order), the time at the

@@ -1251,21 +1251,15 @@ export interface Prefs {
   // so "not sent" and "off" are honestly the same answer here.
   queue?: { enabled: boolean };
   /** Whether a task on the Tasks page opens in a side panel beside the list
-   *  instead of navigating away (shell/prefs.py `task_peek_enabled`, default
-   *  ON). Optional because a server that predates the switch sends nothing —
-   *  which reads as ON, the same as the default. */
+   *  instead of navigating away (shell/prefs.py `task_peek_enabled`) — always
+   *  `true` since 2026-09-20; the Preferences switch is gone. Optional because
+   *  a server that predates the field sends nothing — which reads as ON too. */
   task_peek?: { enabled: boolean };
-  /** Whether a card on the Tasks page's Cards wall is titled by the newest
-   *  message in its conversation instead of by the task's own title
-   *  (shell/prefs.py `task_card_last_message`, experimental, default off).
-   *  Optional for the same reason `task_peek` is: a server that predates the
-   *  switch sends nothing, and nothing reads as off. */
-  task_cards?: { last_message: boolean };
   /** Whether a finished-task notification fires for a session that entered
    *  from an interactive terminal, rather than only one started through
    *  fused-render's own Claude template (shell/prefs.py
    *  `task_notify_terminal_sessions`, default off). Optional for the same
-   *  reason `task_cards` is: a server that predates the switch sends nothing,
+   *  reason `task_peek` is: a server that predates the switch sends nothing,
    *  and nothing reads as off — the default this branch fixed a bug by
    *  choosing. See `Task.entrypoint`'s own doc comment for why this can only
    *  ever be a best-effort filter, never an exact one. */
@@ -1493,17 +1487,6 @@ export function putAppSharingEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putNativeChatEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { native_chat_enabled: enabled });
-}
-
-/** The task side peek's switch (shell/prefs.py `task_peek_enabled`). */
-export function putTaskPeekEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { task_peek_enabled: enabled });
-}
-
-/** What a task CARD is titled by (shell/prefs.py `task_card_last_message`):
- *  the newest message the user sent, or the task's own title. */
-export function putTaskCardTitleMode(lastMessage: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { task_card_last_message: lastMessage });
 }
 
 /** Whether a finished-task notification fires for an interactive-terminal
@@ -3296,9 +3279,8 @@ export interface Task {
    *
    * The newest PROMPT the user sent — Claude's replies are never candidates,
    * so `role` is always "user" on a current server; the union stays for a
-   * server that predates that rule. It is what the Cards wall titles a card
-   * by while the `task_card_last_message` pref is on (shell/task-card-title-
-   * flag.ts); nothing reads it while the pref is off.
+   * server that predates that rule. The peek header's hint reads it; until
+   * 2026-09-20 an experiment could title a card by it.
    *
    * Optional: a server that predates the field sends nothing, which reads the
    * same as "nothing said yet" — the card falls back to the task's title, the

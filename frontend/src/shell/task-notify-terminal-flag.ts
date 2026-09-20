@@ -6,7 +6,7 @@
 // unasked, so opting BACK into that is what this flag gates, not the other
 // way around.
 //
-// A CLONE OF `task-card-title-flag.ts`, deliberately down to the shape: one
+// A CLONE OF `task-peek-flag.ts`, deliberately down to the shape: one
 // shared GET, a generation guard so a publish beats a slower in-flight read,
 // and `null` meaning "not asked yet". See that file's own header for why the
 // tri-state matters — the same reasoning applies here: a premature `true`
