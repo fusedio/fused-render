@@ -228,18 +228,14 @@ export function useAppActionRows({
     navigateUrl("/apps/" + encodeFsPathSegments(dir));
   };
 
+  // Row order (owner, 2026-09-21: "move doctor of folder/file context menu
+  // below mcp config, share to the top"): Share…, Open as project, MCP
+  // config, App Doctor. Share leads because it is what the menu is opened
+  // for; the Doctor closes the app rows because it is the check you run
+  // before sharing, not the thing you came to do — its status dot rides the
+  // trigger, so the row need not be first to be seen.
   const app: MenuEntry[] = isEntry
     ? [
-        {
-          label: "App Doctor",
-          icon: <Stethoscope {...LUCIDE} />,
-          title:
-            "Check " + name +
-            " before you share it: leaked credentials, paths tied to this machine, " +
-            "stray generated files, uncommitted work, a stale fused API version",
-          trailing: <AppDoctorStatusDot checks={doctorChecks} />,
-          onClick: () => setDoctorOpen(true),
-        },
         // The one Share entry: the sheet behind it offers the public link
         // (share_app.py) and the `.fused` download together (see `doShare`).
         // Flag off: the plain "Download app" row instead.
@@ -288,6 +284,19 @@ export function useAppActionRows({
           : mcp.reason ?? "This folder publishes no MCP tools",
       disabled: mcp.pending || !mcp.available,
       onClick: onOpenMcp,
+    });
+  }
+
+  if (isEntry) {
+    app.push({
+      label: "App Doctor",
+      icon: <Stethoscope {...LUCIDE} />,
+      title:
+        "Check " + name +
+        " before you share it: leaked credentials, paths tied to this machine, " +
+        "stray generated files, uncommitted work, a stale fused API version",
+      trailing: <AppDoctorStatusDot checks={doctorChecks} />,
+      onClick: () => setDoctorOpen(true),
     });
   }
 
