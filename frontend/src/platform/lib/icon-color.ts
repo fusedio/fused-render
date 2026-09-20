@@ -112,18 +112,10 @@ export function readIconColor(svg: string): IconColor | null {
 export function themeIconSvg(svg: string, theme: Theme): string {
   const color = readIconColor(svg);
   if (!color) return svg;
-  // An emoji file written before 2026-09-20 carries the plate the picker no
-  // longer draws (app-icon.ts emojiIconSvg); drop it at render so those apps
-  // match a fresh pick without a re-pick. Only a picker-written emoji has a
-  // `<text>` glyph — a lucide pick is strokes — so that is the tell.
-  if (/<text\b/.test(svg)) svg = svg.replace(PLATE_RECT_RE, "");
   return svg
     .replace(/currentColor/g, ICON_COLOR_HEX[color][theme])
     .replace(/var\(--fused-bg\)/g, ICON_BG_HEX[theme]);
 }
-
-/** The rect iconPlateRect writes, any size. */
-const PLATE_RECT_RE = /<rect [^>]*style="fill:var\(--fused-bg\)"\/>/;
 
 /** A data: URL for an svg document. encodeURIComponent, not base64: the
  *  result is readable in devtools and about a third smaller for this text. */

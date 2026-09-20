@@ -1261,9 +1261,16 @@ a.bookmark-name::after {
 }
 
 /* 18px slot, not .bookmark-glyph's 14px (owner, 2026-09-20): the icon fills
-   the row's own line box (13px name at 1.35 ≈ 17.5px) instead of sitting in
-   a 6px moat of row padding, so an authored icon.svg reads as a mark rather
-   than a speck. Bookmarks and Recents keep the 14px slot. */
+   the row's own line box (13px name at 1.35 ≈ 17.5px), so an authored
+   icon.svg reads as a mark rather than a speck. The 4px comes out of the
+   row's left padding (10 → 8) and gap (7 → 5), so 8 + 18 + 5 = 31 and the
+   name column stays flush with Bookmarks' 10 + 14 + 7. Vertical padding is
+   untouched: 18px vs the line box is sub-pixel. */
+.current-app-row {
+  padding-left: 8px;
+  gap: 5px;
+}
+
 .current-app-glyph {
   display: inline-flex;
   align-items: center;

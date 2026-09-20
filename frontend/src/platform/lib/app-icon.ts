@@ -14,7 +14,8 @@ import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
  *  A lucide pick keeps its plate (IconPicker.glyphIconSvg) because a bare
  *  stroke glyph needs the contrast. `data-fused-color="default"` stays so
  *  readIconColor still recognises the file as picker-written; the emoji has
- *  no currentColor strokes, so themeIconSvg leaves the glyph untouched. */
+ *  no currentColor strokes, so themeIconSvg leaves the glyph untouched.
+ *  Files written before this keep their plate; no migration (owner). */
 export function emojiIconSvg(emoji: string): string {
   const safe = emoji
     .replace(/&/g, "&amp;")
