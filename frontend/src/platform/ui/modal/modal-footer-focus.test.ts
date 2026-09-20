@@ -7,11 +7,13 @@ import { beforeAll, describe, expect, test } from "bun:test";
 
 let css = "";
 let modal = "";
+let erase = "";
 beforeAll(async () => {
   css = await Bun.file(
     new URL("../../../styles/buttons-modal.css", import.meta.url).pathname,
   ).text();
   modal = await Bun.file(new URL("./Modal.tsx", import.meta.url).pathname).text();
+  erase = await Bun.file(new URL("../EraseTaskModal.tsx", import.meta.url).pathname).text();
 });
 
 function rule(selector: string): string {
@@ -44,5 +46,20 @@ describe("a focused footer button says so", () => {
 
   test("the chassis still parks initial focus in the body/footer, past the head", () => {
     expect(modal).toContain('focusables.find((el) => !el.closest(".modal-head"))');
+  });
+
+  test("the Delete task dialog opens with Delete forever focused", () => {
+    expect(erase).toContain("initialFocus={confirmRef}");
+    expect(erase).toMatch(/ref=\{confirmRef\}[\s\S]{0,120}className="btn btn-danger"/);
+  });
+
+  test("the confirm keeps focus while the erase runs: aria-disabled, never disabled", () => {
+    const confirmBtn = erase.slice(erase.indexOf("ref={confirmRef}"), erase.indexOf("onClick={confirm}"));
+    expect(confirmBtn).toContain("aria-disabled={busy}");
+    expect(confirmBtn).not.toMatch(/\sdisabled=\{busy\}/);
+  });
+
+  test("the dialog card draws no ring when it is the focus fallback", () => {
+    expect(rule(".modal-dialog:focus")).toContain("outline: none");
   });
 });

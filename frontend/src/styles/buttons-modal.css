@@ -135,6 +135,12 @@
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+/* The card itself is the chassis's LAST-RESORT focus home (every control in
+   it gone or disabled). It is not a control, so it draws no ring: a ring
+   around the whole dialog says "press Enter here" about nothing. */
+.modal-dialog:focus {
+  outline: none;
+}
 
 .modal-dirty-hint {
   color: var(--fg-muted);
