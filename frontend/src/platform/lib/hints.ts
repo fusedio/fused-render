@@ -140,7 +140,11 @@ function measureWidth(p: HTMLDivElement): number {
 
 function place(x: number, y: number): void {
   const p = ensurePanel();
-  if (p.classList.contains("is-task")) {
+  // The band is for the ROW's two-line form, whose 90ch panel used to swing
+  // on a flip. The Board card's reply-only form is a short caption and starts
+  // at the cursor like every other hint (Akshil, 2026-09-20: "let's not apply
+  // it for the kanban board, have the tooltip start from the cursor").
+  if (p.classList.contains("is-task") && !p.classList.contains("is-reply")) {
     placeTask(x, y);
     return;
   }
@@ -204,6 +208,9 @@ function renderTaskHint(p: HTMLDivElement, el: Element): boolean {
   const title = (el.getAttribute("data-hint-title") || "").trim();
   const reply = (el.getAttribute("data-hint-reply") || "").trim();
   if (!title && !reply) return false;
+  // The reply-only form is marked, because it is PLACED differently (see
+  // `place`) and reads narrower (tasks.css `.is-reply`).
+  p.classList.toggle("is-reply", !title);
   const wrap = document.createElement("div");
   wrap.className = "hint-task";
   if (title) {
@@ -227,6 +234,7 @@ function show(el: Element, x: number, y: number): void {
   const task = renderTaskHint(p, el);
   if (!task) renderHint(p, el.getAttribute("data-hint") || "");
   p.classList.toggle("is-task", task);
+  if (!task) p.classList.remove("is-reply");
   p.classList.add("is-on");
   place(x, y);
 }

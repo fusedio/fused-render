@@ -444,6 +444,12 @@ button.tasks-caret,
   line-height: 16px;
   padding: 6px 8px;
 }
+/* The Board card's reply-only caption (Akshil, 2026-09-20: "have a max-width
+   smaller, this max-width is just too big"): one italic line of reply, so the
+   plain caption's measure, not the row's 90ch. */
+.hint-panel.is-task.is-reply {
+  max-width: min(46ch, 60vw);
+}
 .hint-task {
   display: flex;
   flex-direction: column;

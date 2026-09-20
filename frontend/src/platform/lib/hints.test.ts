@@ -156,6 +156,14 @@ describe("the task row's two-line form", () => {
     expect(SRC).toMatch(/if \(title\) \{[\s\S]*?hint-task-title/);
     expect(SRC).toMatch(/if \(reply\) \{[\s\S]*?hint-task-reply/);
   });
+  it("the reply-only form starts at the cursor and reads narrow — the band is the row's", () => {
+    // Akshil, 2026-09-20: the 80%-band clamp is for the two-line row caption;
+    // the Board card's reply-only caption is placed like every other hint.
+    expect(SRC).toContain('p.classList.toggle("is-reply", !title);');
+    expect(SRC).toContain('if (p.classList.contains("is-task") && !p.classList.contains("is-reply")) {');
+    const CSS = readFileSync(new URL("../../styles/tasks.css", import.meta.url), "utf8");
+    expect(CSS).toMatch(/\.hint-panel\.is-task\.is-reply \{\s*max-width: min\(46ch, 60vw\);/);
+  });
   it("the Board card asks for the reply only, and has no caption without one", () => {
     const VIEWS = readFileSync(new URL("../../shell/ScheduleTaskViews.tsx", import.meta.url), "utf8");
     expect(VIEWS).toContain('data-hint={lockedDraft ? "Finish the draft to run it." : task.last_reply || ""}');
