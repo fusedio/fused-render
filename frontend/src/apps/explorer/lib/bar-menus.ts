@@ -1,5 +1,6 @@
-// The item lists for the CRUMB BAR's right-click menu, in the two states the
-// bar has: over a folder (the listing owns it) and over a single file.
+// The item lists for the explorer's kebab and CRUMB BAR right-click menus, in
+// the two states the bar has: over a folder (the listing owns it) and over a
+// single file (the preview owns it).
 //
 // Plain builders taking their actions as callbacks, for the reason every other
 // menu in the explorer is built this way (listing/useFileOps, lib/fs-actions'
@@ -19,6 +20,15 @@
 // order. The rows themselves are not written out here — the folder ops come
 // from useFileOps (clipboard, dialogs, refetch it owns), the app rows from
 // EntryActionsMenu's hook — so no surface can grow a private copy.
+//
+// THE FILE MENU IS THE SAME ARRANGEMENT ON TWO SURFACES — the file preview's
+// kebab (`⋮` after the mode control) and a right-click on the crumb bar over
+// the open file. They used to be two lists: the kebab carried the app rows
+// alone, the bar carried Rename, Reveal, the copies and the splits, and nothing
+// showed both. `fileMenu` below is the file's ONE builder, the folder menu's
+// groups minus `create` (there is nothing to put INTO a file): the app rows
+// come from EntryActionsMenu's hook, the file ops from Preview's
+// usePreviewFileMenu (its rename dialog, its clipboard, its preview shot).
 import { createElement } from "react";
 import type { MenuEntry } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
@@ -118,15 +128,25 @@ export interface FolderMenuGroups {
 
 const FOLDER_GROUP_ORDER: (keyof FolderMenuGroups)[] = ["app", "create", "folder", "open", "copy"];
 
-export function folderMenu(groups: FolderMenuGroups): MenuEntry[] {
+// Groups → one flat list, a separator between consecutive NON-EMPTY groups and
+// never at either end. Shared by the folder and file builders so the two menus
+// cannot drift in how they draw a divider.
+function groupedMenu<G extends string>(
+  order: readonly G[],
+  groups: Partial<Record<G, MenuEntry[]>>,
+): MenuEntry[] {
   const out: MenuEntry[] = [];
-  for (const key of FOLDER_GROUP_ORDER) {
+  for (const key of order) {
     const rows = groups[key];
     if (!rows || rows.length === 0) continue;
     if (out.length) out.push("separator");
     out.push(...rows);
   }
   return out;
+}
+
+export function folderMenu(groups: FolderMenuGroups): MenuEntry[] {
+  return groupedMenu(FOLDER_GROUP_ORDER, groups);
 }
 
 export interface CrumbActions {
@@ -153,57 +173,36 @@ export function crumbMenu(actions: CrumbActions): MenuEntry[] {
   ];
 }
 
-export interface FileBarActions {
-  onRename: () => void;
-  onOpenInClaude: () => void;
-  onCopyPath: () => void;
-  onReveal: () => void;
-  onOpenInNewTab: () => void;
-  // Omitted where the surface cannot split (an embedded pane already IS a
-  // split, and a directory's preview has no file to split on) — the separator
-  // goes with it, so the menu never ends in a divider.
-  onSplit?: (dir: SplitDir) => void;
-  // Only on an APP's entry page (Preview asks /api/apps/entry): photograph
-  // what the frame is showing and make it the folder's preview.png. Absent on
-  // a plain file — there is no card anywhere that would show the picture.
-  onSetPreview?: () => void;
+// The file menu's GROUPS, in the order they are shown — the folder menu's
+// groups without `create`, so a file and its folder read as one menu family:
+//
+//   app   what the file's folder IS, when the file is its entry page: App
+//         Doctor, Share…, Open as project, MCP config, and Set Current View as
+//         Preview — the one row that photographs the app rather than acting on
+//         the file. First for the folder menu's reason: it carries the status
+//         dot, and it is absent on a plain file.
+//   file  the file itself: Rename…. Deliberately NOT the preview header's full
+//         Finder menu (Preview's buildMenu): no Open With (the mode control is
+//         two inches away in the same bar), no Bin/Duplicate/Cut/Copy — a top
+//         bar is not where a file gets destroyed.
+//   open  the same file somewhere else: Reveal in Finder, Open in New Tab,
+//         Open in embed, Split right, Split down — the folder menu's `open`
+//         row for row, so the shared pair never swaps places between the two
+//         bars (they are one surface to the user).
+//   copy  text to the clipboard: Copy Path, Copy Claude session command.
+//
+// Each surface fills what it may offer (a pane cannot split; a directory
+// previewed in a non-listing mode has no file rows at all) and gets the same
+// shape back for what it did fill.
+export interface FileMenuGroups {
+  app?: MenuEntry[];
+  file?: MenuEntry[];
+  open?: MenuEntry[];
+  copy?: MenuEntry[];
 }
 
-// Right-click on the bar over a single open FILE. A short list on purpose: it
-// replaces the path `⋮` (whose two items are the middle pair here) and adds the
-// three things the bar was otherwise silent about — renaming the file you are
-// looking at, copying the command that starts a Claude session there, and the
-// splits that used to be naked
-// glyphs at the far right of the window.
-//
-// Deliberately NOT the preview header's full file menu (Preview's buildMenu):
-// no Open With (the mode control is two inches away in this same bar), no
-// Bin/Duplicate/Cut/Copy — a top bar is not where a file gets destroyed.
-export function fileBarMenu(actions: FileBarActions): MenuEntry[] {
-  // Reveal → Open in New Tab → Copy Path → Copy Claude session command, in
-  // exactly the folder menu's order (useFileOps.folderGroups, `open` then
-  // `copy`) — the two bars are one surface to the user, and the shared rows
-  // must not swap places between them.
-  return [
-    { label: "Rename…", icon: MenuIcons.rename, onClick: actions.onRename },
-    "separator",
-    { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: actions.onReveal },
-    { label: "Open in New Tab", icon: MenuIcons.newTab, onClick: actions.onOpenInNewTab },
-    { label: "Copy Path", icon: MenuIcons.copyPath, onClick: actions.onCopyPath },
-    {
-      label: "Copy Claude session command",
-      icon: MenuIcons.openWith,
-      onClick: actions.onOpenInClaude,
-    },
-    // In its own group: the four above are about the FILE; this one is about
-    // the APP the file is the face of (Akshil, 2026-08-27: "if I right-click
-    // ... I want an option of add a preview").
-    ...(actions.onSetPreview
-      ? ([
-          "separator",
-          { label: "Set Current View as Preview", icon: MenuIcons.camera, onClick: actions.onSetPreview },
-        ] as MenuEntry[])
-      : []),
-    ...(actions.onSplit ? (["separator", ...splitItems(actions.onSplit)] as MenuEntry[]) : []),
-  ];
+const FILE_GROUP_ORDER: (keyof FileMenuGroups)[] = ["app", "file", "open", "copy"];
+
+export function fileMenu(groups: FileMenuGroups): MenuEntry[] {
+  return groupedMenu(FILE_GROUP_ORDER, groups);
 }

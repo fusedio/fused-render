@@ -40,7 +40,7 @@ import {
   friendlyFsError,
   claudeTerminalCommand,
 } from "@apps/explorer/lib/fs-actions";
-import { crumbMenu, fileBarMenu } from "@apps/explorer/lib/bar-menus";
+import { crumbMenu, fileMenu, splitItems } from "@apps/explorer/lib/bar-menus";
 import { enterPanel } from "@apps/explorer/lib/split-actions";
 import { publishTopbarMenu } from "@apps/explorer/topbar-menu";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
@@ -85,9 +85,9 @@ import {
 } from "@platform/lib/snapshot-param";
 import { disarmSidebarOnFailedSelect } from "@apps/explorer/lib/snapshot-clear";
 import { usePreviewSnapshot } from "@apps/explorer/lib/usePreviewSnapshot";
-import { ModeMenu } from "@apps/explorer/BarMenu";
+import { ModeMenu, OverflowMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
-import { EntryActionsMenu } from "@apps/explorer/EntryActionsMenu";
+import { useAppActionRows } from "@apps/explorer/EntryActionsMenu";
 import { McpDialog } from "@apps/explorer/McpDialog";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
 import { ChatMount, sideFrameSrc, useNativeChatFlag } from "@apps/claude";
@@ -192,7 +192,7 @@ function usePreviewSideSlot(): HTMLElement | null {
 // which is why this probes on mount and re-probes per file rather than trusting
 // anything cached.
 //
-// Lives in the header, like the kebab (EntryActionsMenu) beside it — which embed mode
+// Lives in the header, like the kebab (buildFileMenu) beside it — which embed mode
 // hides, so a `.fused` opened by double-click used to show no Clone at all
 // (D390's chrome-free posture, accepted in D397). The top-level embed's
 // EmbedStrip now renders this same button (one control, one label rule) with
@@ -354,8 +354,15 @@ function usePreviewFileMenu(
   loadOpenWith: () => Promise<MenuItem[]>,
   // "This preview owns the window's crumb bar" — the same flag that portals its
   // mode control into it. While it holds, a right-click anywhere on that bar
-  // opens THIS file's bar menu (topbar-menu.ts + lib/bar-menus).
-  actionsInTopbar?: boolean
+  // opens THIS file's menu (topbar-menu.ts + lib/bar-menus).
+  actionsInTopbar?: boolean,
+  // The view's COMPOSED file menu — this hook's groups plus the app rows the
+  // view holds (useAppActionRows) — read at click time so the bar's right-click
+  // shows exactly what the kebab shows. A ref, not a value, for the reason
+  // useFileOps takes `folderMenuRef`: the view builds it after this hook has
+  // returned the groups it composes. Absent (FallbackPreview, which has no
+  // kebab), the bar shows this hook's groups alone.
+  fileMenuRef?: React.MutableRefObject<(() => MenuEntry[]) | null>,
 ) {
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
   const [dialog, setDialog] = useState<PreviewDialog | null>(null);
@@ -522,7 +529,7 @@ function usePreviewFileMenu(
   };
 
   // IS THIS FILE AN APP'S FACE? The one shared entry rule, asked of the server
-  // (/api/apps/entry) exactly as EntryActionsMenu asks it — under the marker
+  // (/api/apps/entry) exactly as useAppActionRows asks it — under the marker
   // rule a filename says nothing. Only an entry gets "Set Current View as
   // Preview": a preview.png beside a plain html file has no card to show it.
   const [isAppEntry, setIsAppEntry] = useState(false);
@@ -599,21 +606,51 @@ function usePreviewFileMenu(
     );
   };
 
-  // The CRUMB BAR's menu for this file — deliberately not `buildMenu` above (see
-  // lib/bar-menus for what it leaves out and why). The splits are offered on the
-  // same condition TemplatePreview uses for its own split affordances: a single
-  // file, in the shell window, not inside a pane that already is a split.
-  const barMenuItems = (): MenuEntry[] =>
-    fileBarMenu({
-      onRename: startRename,
-      onOpenInClaude: doOpenInClaude,
-      onCopyPath: doCopyPath,
-      onReveal: doReveal,
-      onOpenInNewTab: () => window.open(urlForFsPath(fsPath), "_blank", "noopener"),
-      onSetPreview: isAppEntry ? doSetPreview : undefined,
-      onSplit:
-        !stat.is_dir && !IS_EMBED ? (dir) => enterPanel(fsPath, dir) : undefined,
+  // THIS HOOK'S SHARE OF THE FILE MENU (bar-menus' fileMenu), by group. The
+  // view composes them with the app rows into the one list its kebab and the
+  // crumb bar's right-click both show. Two pieces come back on their own rather
+  // than inside a group because the view has to slot rows around them:
+  //   `setPreview` belongs in `app` AFTER the app rows (it photographs the app
+  //   the file fronts — Akshil, 2026-08-27: "if I right-click ... I want an
+  //   option of add a preview"), and only on the entry page: a preview.png
+  //   beside a plain html file has no card to show it;
+  //   `splits` close `open` AFTER Open in embed, matching the folder menu's
+  //   order, on the condition TemplatePreview uses for its own split
+  //   affordances: a single file, not inside a pane that already is a split.
+  // Rebuilt per call: `isAppEntry` lands after first paint.
+  const fileGroups = (): Record<"file" | "open" | "copy" | "setPreview" | "splits", MenuEntry[]> => ({
+    file: [{ label: "Rename…", icon: MenuIcons.rename, onClick: startRename }],
+    open: [
+      { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: doReveal },
+      {
+        label: "Open in New Tab",
+        icon: MenuIcons.newTab,
+        onClick: () => window.open(urlForFsPath(fsPath), "_blank", "noopener"),
+      },
+    ],
+    copy: [
+      { label: "Copy Path", icon: MenuIcons.copyPath, onClick: doCopyPath },
+      { label: "Copy Claude session command", icon: MenuIcons.openWith, onClick: doOpenInClaude },
+    ],
+    setPreview: isAppEntry
+      ? [{ label: "Set Current View as Preview", icon: MenuIcons.camera, onClick: doSetPreview }]
+      : [],
+    splits: !stat.is_dir && !IS_EMBED ? splitItems((dir) => enterPanel(fsPath, dir)) : [],
+  });
+
+  // The CRUMB BAR's menu for this file: the view's composed list when it
+  // published one, this hook's groups alone otherwise — in the same
+  // arrangement, so FallbackPreview's bar reads like TemplatePreview's.
+  const barMenuItems = (): MenuEntry[] => {
+    if (fileMenuRef?.current) return fileMenuRef.current();
+    const own = fileGroups();
+    return fileMenu({
+      app: own.setPreview,
+      file: own.file,
+      open: [...own.open, ...own.splits],
+      copy: own.copy,
     });
+  };
 
   // Publish it for as long as this preview owns the bar. Through a ref for the
   // reason useFileOps does the same: the builder closes over `fsPath`/`stat`, so
@@ -684,7 +721,7 @@ function usePreviewFileMenu(
     </>
   );
 
-  return { onContextMenu, overlays };
+  return { onContextMenu, overlays, fileGroups };
 }
 
 // `_mode` (shell URL) selects among stat.templates by name (SPEC PT-9): absent
@@ -1945,7 +1982,78 @@ function TemplatePreview({
     else void setMode(m);
   };
   const loadOpenWith = () => Promise.resolve(buildOpenWithItems(templates, openMode));
-  const fileMenu = usePreviewFileMenu(fsPath, stat, loadOpenWith, actionsInTopbar);
+  const fileMenuRef = useRef<(() => MenuEntry[]) | null>(null);
+  const fileOps = usePreviewFileMenu(fsPath, stat, loadOpenWith, actionsInTopbar, fileMenuRef);
+
+  // THE APP ROWS (EntryActionsMenu's hook): App Doctor, Share, Open as project,
+  // MCP config, gated on this file being its folder's entry page (the hook asks
+  // /api/apps/entry), and Open in embed. Over a DIRECTORY previewed by this
+  // view in one of its NON-LISTING modes `isEntry` is answered `false` up
+  // front — the folder is not a page — so none of the app rows are asked for,
+  // and nothing probes the parent for MCP.
+  //
+  // Open in embed opens this same page under the chrome-free embed prefix — no
+  // sidebar, no crumb, no header — with the current query carried over and
+  // `_mode` stamped explicitly even when the view is on its default (the URL
+  // omits it then). In a NEW TAB: the view/embed prefix is read once at module
+  // init (router.ts), so it is a new document either way, and the old
+  // fullscreen button's `location.assign` left this tab with no way back but
+  // EmbedStrip's "Open in explorer". The explorer stays put now; the embed's
+  // strip still carries the query back for anyone who wants it.
+  const appRows = useAppActionRows({
+    fsPath,
+    isEntry: stat.is_dir ? false : undefined,
+    snapshotSha,
+    snapshotResolved,
+    snapshotPending,
+    snapshotError,
+    onOpenEmbed: () => {
+      // The existing query goes across BYTE FOR BYTE — no URLSearchParams
+      // round trip, which would re-encode every value on the way. Only the
+      // `_mode` stamp is appended, and only when the URL omits it (the
+      // default mode; setMode deletes the param for clean URLs).
+      const search = location.search;
+      const stamped = new URLSearchParams(search).has("_mode")
+        ? search
+        : (search ? search + "&" : "?") + "_mode=" + encodeURIComponent(entry.mode);
+      window.open(embedUrlForFsPath(fsPath, stamped), "_blank", "noopener");
+    },
+    // No MCP row on a surface that never probed the parent (a panel/tab
+    // pane): the prop's own comment says why silence beats a wrong reason
+    // there.
+    mcp: splitCapable
+      ? {
+          available: mcpSrc !== null,
+          pending: parentMcp.pending,
+          reason: unavailableReason("mcp"),
+        }
+      : undefined,
+    onOpenMcp: () => setMcpOpen(true),
+  });
+
+  // THE FILE MENU — one list, two surfaces (the kebab, the crumb bar's
+  // right-click through `fileMenuRef`). Built per open, never memoised: the
+  // app rows track their probes. The groups and their order are bar-menus'
+  // fileMenu; this only fills them. The file's own rows (Rename, Reveal, the
+  // copies, the splits, Set Current View as Preview) join ONLY where this
+  // preview owns the crumb bar over a FILE — the same `ownsBar` the bar menu
+  // is published on. Elsewhere the kebab stays the app rows alone, as it was:
+  // over a directory in a non-listing mode (Rename here would rename the
+  // folder through the file's dialog) and over a file in a pane, whose header
+  // right-click carries the full Finder menu (usePreviewFileMenu's buildMenu)
+  // instead.
+  const ownsFileBar = !!actionsInTopbar && !stat.is_dir;
+  const buildFileMenu = (): MenuEntry[] => {
+    if (!ownsFileBar) return fileMenu({ app: appRows.app, open: appRows.open });
+    const own = fileOps.fileGroups();
+    return fileMenu({
+      app: [...appRows.app, ...own.setPreview],
+      file: own.file,
+      open: [...own.open, ...appRows.open, ...own.splits],
+      copy: own.copy,
+    });
+  };
+  fileMenuRef.current = buildFileMenu;
 
   const headerActions = (
     <>
@@ -1963,10 +2071,10 @@ function TemplatePreview({
         <CloneAppFileButton fsPath={fsPath} />
       )}
       {/* The app-level actions — App Doctor, Share (public link or .fused file,
-          SPEC §43 AF-4), Open as project, Open in embed, MCP config — are the
-          kebab AFTER the mode control (EntryActionsMenu, below). They stood here
-          as bordered buttons of their own for a while; the argument for the
-          menu is on that component. */}
+          SPEC §43 AF-4), Open as project, Open in embed, MCP config — are rows
+          of the kebab AFTER the mode control (useAppActionRows → buildFileMenu,
+          above). They stood here as bordered buttons of their own for a while;
+          the argument for the menu is on EntryActionsMenu.tsx. */}
       {/* One mode control per view, and for an explorer FOLDER it is the
           preview pane's, not this one. The pane header carries a ModeMenu of
           its own beside the previewed row (ListingPreviewPane), so a folder
@@ -2022,57 +2130,17 @@ function TemplatePreview({
           onSelect={setMode}
         />
       )}
-      {/* THE KEBAB (EntryActionsMenu): the app-level one-shots, and the
-          fullscreen glyph that stood here as its "Open in embed" row. That row
-          opens this same page under the chrome-free embed prefix — no sidebar,
-          no crumb, no header — with the current query carried over and `_mode`
-          stamped explicitly even when the view is on its default (the URL omits
-          it then). In a NEW TAB: the view/embed prefix is read once at module
-          init (router.ts), so it is a new document either way, and the old
-          button's `location.assign` left this tab with no way back but
-          EmbedStrip's "Open in explorer". The explorer stays put now; the
-          embed's strip still carries the query back for anyone who wants it.
+      {/* THE KEBAB: the file menu (`buildFileMenu`, above) in a `⋮` — the
+          SAME list a right-click on the crumb bar opens. One menu, two ways
+          in. A file that qualifies for no row gets no `⋮` at all (OverflowMenu
+          renders nothing on an empty list). The App Doctor's dot rides the
+          trigger so it is seen without a click.
 
-          Over a DIRECTORY previewed by this view in one of its NON-LISTING
-          modes the kebab carries that one row alone: `isEntry` is answered
-          `false` up front — the folder is not a page — so none of the app rows
-          are asked for, and nothing probes the parent for MCP. In LISTING mode
-          the listing owns the bar's kebab (Listing.tsx's EntryActionsMenu, with
-          its own Open in embed row), so this one stands down — two `⋮` in one
-          bar was the bug. */}
+          In LISTING mode over a directory the listing owns the bar's kebab
+          (Listing.tsx's buildFolderMenu, with its own Open in embed row), so
+          this one stands down — two `⋮` in one bar was the bug. */}
       {!(stat.is_dir && isListing) && (
-        <EntryActionsMenu
-          fsPath={fsPath}
-          isEntry={stat.is_dir ? false : undefined}
-          snapshotSha={snapshotSha}
-          snapshotResolved={snapshotResolved}
-          snapshotPending={snapshotPending}
-          snapshotError={snapshotError}
-          onOpenEmbed={() => {
-            // The existing query goes across BYTE FOR BYTE — no URLSearchParams
-            // round trip, which would re-encode every value on the way. Only the
-            // `_mode` stamp is appended, and only when the URL omits it (the
-            // default mode; setMode deletes the param for clean URLs).
-            const search = location.search;
-            const stamped = new URLSearchParams(search).has("_mode")
-              ? search
-              : (search ? search + "&" : "?") + "_mode=" + encodeURIComponent(entry.mode);
-            window.open(embedUrlForFsPath(fsPath, stamped), "_blank", "noopener");
-          }}
-          /* No MCP row on a surface that never probed the parent (a panel/tab
-             pane): the prop's own comment says why silence beats a wrong
-             reason there. */
-          mcp={
-            splitCapable
-              ? {
-                  available: mcpSrc !== null,
-                  pending: parentMcp.pending,
-                  reason: unavailableReason("mcp"),
-                }
-              : undefined
-          }
-          onOpenMcp={() => setMcpOpen(true)}
-        />
+        <OverflowMenu items={buildFileMenu()} title="File actions" badge={appRows.badge} />
       )}
       {/* The sidebar's OPENER, LAST in the bar — the shared control (SideChrome),
           which is where the "one affordance, two places, chosen by state" split
@@ -2101,7 +2169,7 @@ function TemplatePreview({
         <Header
           fsPath={fsPath}
           stat={stat}
-          onContextMenu={fileMenu.onContextMenu}
+          onContextMenu={fileOps.onContextMenu}
         >
           {headerActions}
         </Header>
@@ -2473,7 +2541,9 @@ function TemplatePreview({
           be nothing on the other side of it. */}
       {sideTargetEntry && !activeSide && sideSlot &&
         createPortal(<SideReopenEdge onOpen={toggleSide} />, sideSlot)}
-      {fileMenu.overlays}
+      {fileOps.overlays}
+      {/* The App Doctor's dialog, off the file menu's row (useAppActionRows). */}
+      {appRows.modal}
     </>
   );
 }
@@ -2630,10 +2700,10 @@ function FallbackPreview({
   // No renderable views back this file (that's why it's the fallback), so Open
   // With resolves to the empty "No views available" list without a re-stat.
   const loadOpenWith = () => Promise.resolve(buildOpenWithItems([], () => {}));
-  const fileMenu = usePreviewFileMenu(fsPath, stat, loadOpenWith, actionsInTopbar);
+  const fileOps = usePreviewFileMenu(fsPath, stat, loadOpenWith, actionsInTopbar);
   return (
     <>
-      {!actionsInTopbar && <Header fsPath={fsPath} stat={stat} onContextMenu={fileMenu.onContextMenu} />}
+      {!actionsInTopbar && <Header fsPath={fsPath} stat={stat} onContextMenu={fileOps.onContextMenu} />}
       <div className="preview-body">
         <div className="metadata-stack">
           <RegistryFixNotice fsPath={fsPath} isDir={stat.is_dir} onReload={onReload} />
@@ -2654,7 +2724,7 @@ function FallbackPreview({
           </div>
         </div>
       </div>
-      {fileMenu.overlays}
+      {fileOps.overlays}
     </>
   );
 }

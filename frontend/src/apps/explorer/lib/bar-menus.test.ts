@@ -11,7 +11,7 @@ import type { MenuEntry, MenuItem } from "@platform/ui/ContextMenu";
 (globalThis as { location?: unknown }).location = new URL("http://x/");
 const {
   crumbMenu,
-  fileBarMenu,
+  fileMenu,
   folderMenu,
   splitItems,
   canRenameBase,
@@ -99,30 +99,48 @@ test("crumbMenu is exactly the two ancestor items, in the row menu's order", () 
   for (const i of items) expect(i === "separator" ? null : i.icon).not.toBeNull();
 });
 
-test("fileBarMenu lists rename, Claude, the path pair and the splits", () => {
+// -- fileMenu ------------------------------------------------------------------
+// The file preview's kebab and the crumb bar's right-click over the open file
+// show ONE list, composed by Preview.tsx from useAppActionRows' groups and
+// usePreviewFileMenu's. These pin the builder's arrangement: the folder menu's
+// groups minus `create`, in the folder menu's order.
+
+const row = (label: string, onClick?: () => void): MenuItem => ({ label, icon: null, onClick });
+
+test("fileMenu lays the groups out app → file → open → copy with one divider between", () => {
   const called: string[] = [];
-  const items = fileBarMenu({
-    onRename: () => called.push("rename"),
-    onOpenInClaude: () => called.push("claude"),
-    onCopyPath: () => called.push("copy"),
-    onReveal: () => called.push("reveal"),
-    onOpenInNewTab: () => called.push("newtab"),
-    onSplit: (dir) => called.push("split:" + dir),
+  const items = fileMenu({
+    app: [row("App Doctor"), row("Share…"), row("Set Current View as Preview", () => called.push("shot"))],
+    file: [row("Rename…", () => called.push("rename"))],
+    open: [
+      row("Reveal in Finder", () => called.push("reveal")),
+      row("Open in New Tab", () => called.push("newtab")),
+      row("Open in embed"),
+      ...splitItems((dir) => called.push("split:" + dir)),
+    ],
+    copy: [row("Copy Path", () => called.push("copy")), row("Copy Claude session command", () => called.push("claude"))],
   });
   // The shared rows sit in the FOLDER menu's order (useFileOps.folderGroups):
-  // Reveal → Open in New Tab → Copy Path → Claude Code. Two bars, one surface.
+  // Reveal → Open in New Tab → embed → the splits, then the copy pair. Two
+  // bars, one surface.
   expect(labels(items)).toEqual([
+    "App Doctor",
+    "Share…",
+    "Set Current View as Preview",
+    "—",
     "Rename…",
     "—",
     "Reveal in Finder",
     "Open in New Tab",
-    "Copy Path",
-    "Copy Claude session command",
-    "—",
+    "Open in embed",
     "Split right",
     "Split down",
+    "—",
+    "Copy Path",
+    "Copy Claude session command",
   ]);
   for (const label of [
+    "Set Current View as Preview",
     "Rename…",
     "Reveal in Finder",
     "Open in New Tab",
@@ -132,62 +150,38 @@ test("fileBarMenu lists rename, Claude, the path pair and the splits", () => {
     item(items, label).onClick?.();
   }
   item(items, "Split down").onClick?.();
-  expect(called).toEqual(["rename", "reveal", "newtab", "copy", "claude", "split:col"]);
+  expect(called).toEqual(["shot", "rename", "reveal", "newtab", "copy", "claude", "split:col"]);
 });
 
-test("fileBarMenu drops the splits AND their separator when it can't split", () => {
-  const items = fileBarMenu({
-    onRename: () => {},
-    onOpenInClaude: () => {},
-    onCopyPath: () => {},
-    onReveal: () => {},
-    onOpenInNewTab: () => {},
+test("fileMenu draws no divider for an empty or absent group and never ends in one", () => {
+  // A plain file (no app rows, nothing to photograph) in a pane (no splits):
+  // what usePreviewFileMenu's groups alone produce.
+  const items = fileMenu({
+    app: [],
+    file: [row("Rename…")],
+    open: [row("Reveal in Finder"), row("Open in New Tab")],
+    copy: [row("Copy Path"), row("Copy Claude session command")],
   });
   expect(labels(items)).toEqual([
     "Rename…",
     "—",
     "Reveal in Finder",
     "Open in New Tab",
+    "—",
     "Copy Path",
     "Copy Claude session command",
   ]);
   // No trailing divider: a menu that ends in a separator reads as a menu with
   // something missing.
   expect(items[items.length - 1]).not.toBe("separator");
-});
-
-test("fileBarMenu offers Set Current View as Preview only on an app entry, in its own group", () => {
-  const base = {
-    onRename: () => {},
-    onOpenInClaude: () => {},
-    onCopyPath: () => {},
-    onReveal: () => {},
-    onOpenInNewTab: () => {},
-  };
-  // A plain file: no preview verb, and no orphan separator for it.
-  expect(labels(fileBarMenu(base))).not.toContain("Set Current View as Preview");
-  let shot = 0;
-  const items = fileBarMenu({ ...base, onSetPreview: () => shot++, onSplit: () => {} });
-  expect(labels(items)).toEqual([
-    "Rename…",
+  // The kebab over a directory previewed in a non-listing mode, or over a file
+  // in a pane: the app rows alone, no file groups at all.
+  expect(labels(fileMenu({ app: [row("App Doctor")], open: [row("Open in embed")] }))).toEqual([
+    "App Doctor",
     "—",
-    "Reveal in Finder",
-    "Open in New Tab",
-    "Copy Path",
-    "Copy Claude session command",
-    "—",
-    "Set Current View as Preview",
-    "—",
-    "Split right",
-    "Split down",
+    "Open in embed",
   ]);
-  item(items, "Set Current View as Preview").onClick?.();
-  expect(shot).toBe(1);
-  // Without splits the preview group still closes the list cleanly.
-  expect(labels(fileBarMenu({ ...base, onSetPreview: () => {} })).slice(-2)).toEqual([
-    "—",
-    "Set Current View as Preview",
-  ]);
+  expect(fileMenu({})).toEqual([]);
 });
 
 // -- canRenameBase -------------------------------------------------------------
