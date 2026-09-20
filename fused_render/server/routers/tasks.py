@@ -5193,6 +5193,57 @@ def api_task_unarchive(patch: UnarchivePatch):
             "status": row["status"]}
 
 
+# ------------------------------------------- the queue's half of delete/erase
+# Two verbs that end a task, and the project queue has to hear both of them
+# (`project_queue`, flag `project_queue_enabled`). The manager is the only
+# place a held card decision and a folder's line live, and neither is reachable
+# from the scheduler's store — so a delete that only cancelled entries left the
+# task standing in its folder's line with an answer waiting to be delivered,
+# and the delivery brought the row back (`_deleted` reads the transcript's
+# mtime against the tombstone). See `queue_manager.remove`, and
+# `schedule._queue_forget` for the other verb — cancelling ONE MESSAGE is
+# `forget_entry`, never this.
+
+
+def _queue_holds_live(key: str) -> bool:
+    """Would deleting this task pull the rug out from under a live run?
+
+    `queue_manager.holds_live`: the key owns a folder, is parked on a card, or
+    has a decision held for it, and the status sync says the process is still
+    there. False with the flag off, and best-effort — an index that cannot be
+    read must not make a task undeletable."""
+    if not project_queue.enabled():
+        return False
+    try:
+        return bool(queue_manager.get().holds_live(key))
+    except Exception:  # noqa: BLE001 — an unreadable index refuses nothing
+        logger.debug("queue: could not ask whether %s is live", key,
+                     exc_info=True)
+        return False
+
+
+def _queue_drop_task(key: str) -> None:
+    """Take the task out of the queue for good — every line, every blocked
+    list, the held answers, and the folder if it happened to hold one
+    (`queue_manager.remove`).
+
+    `schedule.cancel` above has already told the manager about each pending
+    ENTRY (`_queue_forget` → `forget_entry`), and that is not enough: an item
+    the queue minted itself carries no entry id (`card_answered`,
+    `card_cleared`), and a held decision is filed under the task key rather
+    than under any message. Only the keyed verb reaches those.
+
+    Best-effort, like every other queue call on a door's road: the row is being
+    taken away either way, and `reconcile` is the backstop."""
+    if not project_queue.enabled():
+        return
+    try:
+        queue_manager.get().remove(key)
+    except Exception:  # noqa: BLE001 — a stale line is a pump, not a loss
+        logger.debug("queue: could not drop %s from its line", key,
+                     exc_info=True)
+
+
 class DeletePatch(BaseModel):
     key: str
 
@@ -5231,6 +5282,19 @@ def api_task_delete(patch: DeletePatch):
     asked is the same derived row every view paints (`_row`), so this endpoint
     cannot disagree with the pill the user is looking at.
 
+    AND REFUSED FOR A WORD THE ROW CANNOT SAY (`_queue_holds_live`). With the
+    project queue on, a run parked on a card the user has already answered
+    reads `queued` — the decision is held until the folder frees, so the run
+    is not "parked" any more and not yet running again — and neither status
+    word above catches it. The queue is asked directly instead: it is the only
+    thing that knows a process is standing behind that key.
+
+    AND THE QUEUE IS TOLD (`_queue_drop_task`). Cancelling the task's entries
+    takes its MESSAGES out of the line one at a time; the line item the queue
+    minted for itself and the decision it is holding answer to the key alone,
+    and a delete that left them behind let a later delivery resume the run and
+    bring the row back.
+
     WHAT IS AND IS NOT ERASED, in the answer as in fact: pending work is
     cancelled (`cancelled` counts it), the row is gone everywhere, and the
     TRANSCRIPT IS NOT TOUCHED (D306) — `erased_transcript` is always False and
@@ -5264,6 +5328,17 @@ def api_task_delete(patch: DeletePatch):
         raise HTTPException(
             status_code=409,
             detail="that task is running — stop the run first, then delete")
+    # AND THE THIRD RUNNING WORD, WHICH IS NOT A WORD (PR #1194). A run parked
+    # on a card the user has ALREADY answered reads `queued`: the decision is
+    # held until the folder frees, so `_parked_runs` deliberately stops calling
+    # it parked. Nothing above catches that — this row is built without the
+    # parked index or the queue's lines — so the queue is asked directly
+    # whether a process is behind this key. A task merely WAITING in a line is
+    # not refused: nothing is running, and the delete cancels its place.
+    if _queue_holds_live(key):
+        raise HTTPException(
+            status_code=409,
+            detail="that task is running — stop the run first, then delete")
 
     cancelled = 0
     for template_id in _every_rule_behind(key):
@@ -5276,6 +5351,9 @@ def api_task_delete(patch: DeletePatch):
         if entry_id and schedule.cancel(entry_id) is not None:
             cancelled += 1
 
+    # OUT OF THE QUEUE BEFORE THE TOMBSTONE, so nothing can be handed a folder
+    # or a held answer for a row that is on its way out.
+    _queue_drop_task(key)
     tasks_store.mark_deleted(key)
     # BOTH HALVES OF THIS SESSION'S UNSENT TEXT GO WITH THE ROW (design.md,
     # PR C). The row is the only place either could ever have been drawn — the
@@ -5316,8 +5394,10 @@ def api_task_erase(patch: ErasePatch):
     THE SAME FIRST HALVES AS DELETE, for the reasons documented there and not
     repeated here: the 409 while a run is in flight (a live turn cannot be
     cancelled, and erasing the transcript under a writing process is worse than
-    hiding it), then `_every_rule_behind` before the task's own pending entries
-    so a rule cannot mint one back.
+    hiding it) — the queue's reading of that included — then
+    `_every_rule_behind` before the task's own pending entries so a rule cannot
+    mint one back, and the task out of the queue (`_queue_drop_task`) before
+    anything comes off the disk.
 
     WHAT COMES OFF THE DISK, and why each is plural. `<session_id>.jsonl` is
     globbed across EVERY project dir rather than read off the row's own path,
@@ -5369,6 +5449,14 @@ def api_task_erase(patch: ErasePatch):
         raise HTTPException(
             status_code=409,
             detail="that task is running — stop the run first, then delete")
+    # The queue's own reading of "running", for the reason api_task_delete's
+    # guard documents — and, again, one more here: a held decision delivered
+    # into a session whose transcript this endpoint has just removed would be
+    # a run resumed onto nothing.
+    if _queue_holds_live(key):
+        raise HTTPException(
+            status_code=409,
+            detail="that task is running — stop the run first, then delete")
 
     cancelled = 0
     for template_id in _every_rule_behind(key):
@@ -5380,6 +5468,16 @@ def api_task_erase(patch: ErasePatch):
         entry_id = str(entry.get("id") or "")
         if entry_id and schedule.cancel(entry_id) is not None:
             cancelled += 1
+
+    # BEFORE A SINGLE FILE GOES, and that order is the point: `remove` both
+    # drops the held decision and lets go of the folder, so a pump on another
+    # thread cannot deliver an answer into this session — resuming the run —
+    # in the window between the erase deciding to go ahead and the transcript
+    # leaving the disk. An erase that then fails on a file leaves the task
+    # listed with its queue place gone, which is the same shape the cancelled
+    # work above already has ("the work already cancelled stays cancelled");
+    # the other order risks a run writing a transcript back while we delete it.
+    _queue_drop_task(key)
 
     removed, erased, failed, refused = 0, False, 0, 0
     # The draft rows this erase takes away, announced beside the task's own key

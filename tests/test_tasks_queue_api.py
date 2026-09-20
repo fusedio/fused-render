@@ -222,6 +222,27 @@ class FakeManager:
         answer = self.answers.get(task_key)
         return dict(answer) if answer else None
 
+    def holds_live(self, task_key):
+        """`queue_manager.QueueManager.holds_live` — is a RUN of this task in
+        flight: it owns a folder, or a decision is held for it, and the status
+        sync agrees the process is still there.
+
+        The fake asks the router's own sync (`_queue_running`/`_queue_blocked`,
+        what the real manager is wired to), so a case says "this run is alive"
+        the way every other case here does — with a real run dir (`park`) or a
+        registry row — rather than by setting a flag on the fake. A task merely
+        standing in a line holds nothing, which is the whole distinction the
+        delete door needs."""
+        records = [owner for owner in self.owners.values()
+                   if owner and task_key in self._names(owner)]
+        answer = self.answers.get(task_key)
+        if answer:
+            records.append({"task": task_key, "run_id": answer["run_id"],
+                            "session_id": task_key})
+        return any(tasks_mod._queue_running(record)
+                   or tasks_mod._queue_blocked(record)
+                   for record in records)
+
     def owner(self, folder):
         return self.owners.get(folder)
 
@@ -3224,3 +3245,125 @@ def test_a_running_mark_in_the_same_tick_as_the_ended_stamp_still_wins():
     with mock.patch.object(tw.time, "time", return_value=at):
         tw.mark_running("sess-2")
     assert not tw.is_turn_ended("sess-2")
+
+
+# ============================== delete and erase, and the queue that outlives
+#
+# THE TWO VERBS THAT END A TASK (`/api/tasks/delete`, `/api/tasks/erase`) never
+# learnt about the queue (Akshil, 2026-09-20). They cancel the task's pending
+# entries — which reaches the line ONE MESSAGE at a time (`schedule._queue_forget`
+# → `forget_entry`) — and say nothing about the task itself, so a held decision
+# and a line item the queue minted for itself outlived the row: the next pump
+# delivered the answer, the run wrote to its transcript, and `_deleted` (the
+# transcript's mtime against the tombstone) put the task back on the page. The
+# other half is the guard: #1194 made a run parked on an answered card read
+# `queued` rather than `needs_attention`, and both endpoints refuse only the two
+# older words.
+
+
+def test_deleting_a_queued_task_drops_its_held_answer_and_its_place(
+        client, projects_dir, folders, flag, manager):
+    """The ghost row. The decision is filed under the TASK — no message names
+    it, so no entry cancel can reach it — and the line item is the folder's
+    slot, which is why everything behind a deleted task went on waiting for a
+    row nobody could see."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    _transcript(projects_dir, "sess-a", alpha, "run the build")
+    _transcript(projects_dir, "sess-b", alpha, "and me after")
+    manager.line(alpha, "sess-a", "sess-b", holder="sess-holder")
+    # The run this answer was given to is gone — nothing is staged in the runs
+    # tree — which is what makes the task deletable rather than a 409 below.
+    manager.hold("sess-a", run_id="r-a", request_id="req-1",
+                 raw={"decision": "allow"})
+    assert _rows(client)["sess-a"]["status"] == "queued"
+
+    r = _post(client, "/api/tasks/delete", {"key": "sess-a"})
+    assert r.status_code == 200, r.text
+
+    assert ("remove", "sess-a") in manager.events
+    assert manager.held_answer("sess-a") is None
+    assert manager.lines[alpha] == ["sess-b"]
+    # …and the task behind it moves up, instead of queueing behind a row that
+    # is not on the page any more.
+    rows = _rows(client)
+    assert "sess-a" not in rows
+    assert rows["sess-b"]["queue_position"] == 1
+
+
+def test_erasing_a_queued_task_leaves_the_queue_before_the_files_go(
+        client, projects_dir, folders, flag, manager, monkeypatch):
+    """Order, and it is the point: `remove` drops the held decision AND lets go
+    of the folder, so no pump can deliver an answer into this session —
+    resuming the run — in the window between the erase deciding to go ahead and
+    the transcript leaving the disk."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    path = _transcript(projects_dir, "sess-a", alpha, "run the build")
+    manager.line(alpha, "sess-a", holder="sess-holder")
+    manager.hold("sess-a", run_id="r-a", request_id="req-1",
+                 raw={"decision": "allow"})
+
+    order: list[str] = []
+    real_remove = manager.remove
+    real_erase = tasks_mod._erase_session_files
+    monkeypatch.setattr(manager, "remove",
+                        lambda key: (order.append("remove"), real_remove(key))[1])
+    monkeypatch.setattr(tasks_mod, "_erase_session_files",
+                        lambda session_id, path: (order.append("files"),
+                                                  real_erase(session_id, path))[1])
+
+    r = _post(client, "/api/tasks/erase", {"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["erased_transcript"] is True
+
+    assert order == ["remove", "files"]
+    assert manager.held_answer("sess-a") is None
+    assert manager.lines[alpha] == []
+    assert not path.exists()
+
+
+def test_deleting_a_run_parked_on_an_answered_card_is_refused(
+        client, projects_dir, folders, flag, park, manager):
+    """#1194's shape, and the hole it opened in both guards. The user has
+    answered the card, so the decision is held and `_parked_runs` stops calling
+    the run parked — the row reads `queued`, which neither endpoint refuses.
+    The process is still very much alive, and tombstoning the row (or erasing
+    its transcript) out from under it is the exact failure the 409 exists to
+    prevent."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    _transcript(projects_dir, "sess-a", alpha, "run the build")
+    park("r-a", "sess-a", alpha)
+    manager.hold("sess-a", run_id="r-a", request_id="req-1",
+                 raw={"decision": "allow"})
+    manager.line(alpha, "sess-a", holder="sess-holder", priority=("sess-a",))
+    assert _rows(client)["sess-a"]["status"] == "queued"
+
+    for verb in ("delete", "erase"):
+        r = _post(client, "/api/tasks/" + verb, {"key": "sess-a"})
+        assert r.status_code == 409, (verb, r.text)
+        assert "stop the run first" in r.json()["detail"]
+
+    # Nothing was taken away on the way to the refusal.
+    assert manager.held_answer("sess-a") is not None
+    assert manager.lines[alpha] == ["sess-a"]
+    assert "sess-a" in _rows(client)
+
+
+def test_the_flag_off_says_nothing_to_the_queue_on_delete(
+        client, projects_dir, folders, flag, manager):
+    """Flag off is main: the manager is not asked whether the task is live and
+    not told that it is gone, because with the feature off nothing ever queued
+    it."""
+    flag(False)
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-a", alpha, "run the build")
+    manager.line(alpha, "sess-a", holder="sess-holder")
+
+    assert _post(client, "/api/tasks/delete",
+                 {"key": "sess-a"}).status_code == 200
+    assert _kinds(manager, "remove") == []

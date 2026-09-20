@@ -1666,6 +1666,51 @@ class QueueManager:
         with self._lock:
             return copy.deepcopy(self._answers_of(task_key))
 
+    def holds_live(self, task_key: str) -> bool:
+        """Is a RUN of this task in flight as far as the index is concerned —
+        it owns a folder, it is parked on a card (`blocked`), or a decision is
+        being held for it — and does the status sync agree?
+
+        WHAT THE STATUS WORD CANNOT SAY (delete/erase, PR #1194). A run parked
+        on a card the user has already answered reads `queued` rather than
+        `needs_attention` (`_parked_runs`'s fourth condition), so the row a
+        door is looking at describes a task that is WAITING and a task that is
+        RUNNING with the same word. The line says whether a message is waiting;
+        this says whether a process is live.
+
+        STANDING IN A LINE IS NOT THIS. A queued message has no process yet, so
+        deleting it interrupts nothing — the door deletes it and `remove` takes
+        it out of the line.
+
+        ASKED OF THE STATUS SYNC, not of the index alone: an owner whose
+        process died sits in the file until the next `reconcile`, and a guard
+        that trusted the index would refuse to delete a task nothing is running
+        any more. `_alive` keeps the record when the sync raises, which is the
+        safe direction here too — a refusal the user can retry, rather than a
+        tombstone over a live turn.
+
+        A stale `admit:` placeholder is no process at all (`is_free` reads it
+        the same way): nothing ever came back for it, so it holds nothing."""
+        key = _text(task_key)
+        if not key:
+            return False
+        with self._lock:
+            records: list[dict] = []
+            for rec in self._state["folders"].values():
+                owner = rec["owner"]
+                if (owner is not None and self._owner_matches(owner, key)
+                        and not (_is_placeholder(_text(owner.get("task")))
+                                 and self._stale_placeholder(owner))):
+                    records.append(owner)
+                records.extend(self._as_record(item) for item in rec["blocked"]
+                               if item["task"] == key)
+            # A held decision names the run it was raised against — the same
+            # record `_prune_answers` asks the sync about when it retires one.
+            records.extend({"task": key, "run_id": answer["run_id"],
+                            "session_id": key}
+                           for answer in self._answers_of(key))
+            return any(self._alive(record) for record in records)
+
     # -------------------------------------------------------- maintenance
     def pump(self, folder: str) -> None:
         with self._txn() as keys:
