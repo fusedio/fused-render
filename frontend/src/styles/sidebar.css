@@ -1260,26 +1260,26 @@ a.bookmark-name::after {
   flex: 0 0 auto;
 }
 
-/* 20px slot, not .bookmark-glyph's 14px (owner, 2026-09-20, "+2px, reduce
-   padding"): the icon overfills the row's line box (13px name at 1.35 ≈
-   17.5px), so an authored icon.svg reads as a mark rather than a speck. The
-   row gives the width back from its left padding (10 → 6) and gap (7 → 5):
-   6 + 20 + 5 = 31 keeps the name column flush with Bookmarks' 10 + 14 + 7.
-   Vertical padding drops 6 → 5 so 5 + 20 + 5 = 30 stays within a pixel of
-   the Bookmarks rows' 6 + 17.5 + 6. */
+/* 24px slot, not .bookmark-glyph's 14px (owner, 2026-09-20): a 20px icon
+   centred in a 24px square. The slot, not the row padding, sets the row's
+   height: 3 + 24 + 3 = 30 ≈ the Bookmarks rows' 6 + 17.5 + 6, so the two
+   sections keep one rhythm while the icon grows. The name column sits at
+   4 + 24 + 7 = 35, 4px right of Bookmarks' 31 — owner accepted the shift
+   over a smaller icon. */
 .current-app-row {
-  padding: 5px 10px 5px 6px;
-  gap: 5px;
+  padding: 3px 10px 3px 4px;
+  gap: 7px;
 }
 
 .current-app-glyph {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
+  width: 24px;
+  height: 24px;
 }
 
-/* The app's own icon.svg, filling the 20px glyph slot as is — the author's
+/* The app's own icon.svg, 20px inside the 24px slot as is — the author's
    shape AND colours, untouched (owner, 2026-08-27). */
 .current-app-icon {
   display: block;
