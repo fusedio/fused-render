@@ -167,6 +167,13 @@ a.context-menu-item {
   flex: 1 1 auto;
 }
 
+/* The row's trailing slot (MenuItem.trailing): a status dot, a spinner. */
+.context-menu-trailing {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 12px;
+}
+
 .context-menu-arrow {
   font-size: 14px;
   line-height: 1;

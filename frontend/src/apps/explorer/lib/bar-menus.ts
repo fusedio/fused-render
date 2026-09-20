@@ -7,11 +7,18 @@
 // menu's shape is only checkable when the list is a function of its inputs
 // rather than JSX inline in a handler. bar-menus.test.ts is the whole argument.
 //
-// The FOLDER list is not written out here at all — it is the listing's own
-// background menu plus the splits, and the background menu is
-// useFileOps.backgroundMenu(). Duplicating those seven items so the bar could
-// have its own copy is exactly the drift the header `⋮` was consolidated to
-// stop (see Listing's openHeaderMenu), so `folderBarMenu` takes them.
+// THE FOLDER MENU IS ONE LIST ON THREE SURFACES — the listing's kebab (`⋮` in
+// the search row), a right-click on the listing's empty background, and a
+// right-click on the crumb bar over the folder. They used to be three lists:
+// the kebab carried the app rows (App Doctor, Share, Open as project, MCP,
+// embed) and then the folder ops and the splits; the background right-click
+// carried the folder ops alone, in a different order; the bar carried the
+// folder ops and the splits. Same folder, three menus that disagreed about
+// what you could do to it. `folderMenu` below is the ONE builder: every
+// surface hands it the same grouped input and shows the same rows in the same
+// order. The rows themselves are not written out here — the folder ops come
+// from useFileOps (clipboard, dialogs, refetch it owns), the app rows from
+// EntryActionsMenu's hook — so no surface can grow a private copy.
 import { createElement } from "react";
 import type { MenuEntry } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
@@ -62,29 +69,10 @@ export function canRenameBase(dir: string, guard: RenameBaseGuard): boolean {
   return true;
 }
 
-// Prepends "Rename…" + a separator onto a folder's background-menu items when
-// canRenameBase allows it, or hands them back untouched when it doesn't. Its
-// own builder (rather than inlined where backgroundMenu assembles the rest of
-// the list) so the SHAPE of this one decision — leads with Rename, or omits it
-// — is checkable without instantiating useFileOps's hook state.
-export function withFolderRename(
-  items: MenuEntry[],
-  dir: string,
-  guard: RenameBaseGuard,
-  onRename: () => void
-): MenuEntry[] {
-  if (!canRenameBase(dir, guard)) return items;
-  return [
-    { label: "Rename…", icon: MenuIcons.rename, onClick: onRename },
-    "separator",
-    ...items,
-  ];
-}
-
 // The two split-entry rows, with the same glyphs the panel bar uses. One
-// definition, three callers (the bar's two menus and the listing's header `⋮`
-// through folderBarMenu), because "Split right" that means `row` in one menu
-// and `col` in another is the kind of bug nobody re-checks.
+// definition for the file bar's menu and the folder menu's `open` group,
+// because "Split right" that means `row` in one menu and `col` in another is
+// the kind of bug nobody re-checks.
 export function splitItems(onSplit: (dir: SplitDir) => void): MenuEntry[] {
   return [
     {
@@ -100,14 +88,45 @@ export function splitItems(onSplit: (dir: SplitDir) => void): MenuEntry[] {
   ];
 }
 
-// Right-click on the bar over a FOLDER: the middle panel's header `⋮` menu,
-// item for item — the folder's own actions (`background`), then the splits.
-// The header button and the bar's right-click are two surfaces on one list.
-export function folderBarMenu(
-  background: MenuEntry[],
-  onSplit: (dir: SplitDir) => void
-): MenuEntry[] {
-  return [...background, "separator", ...splitItems(onSplit)];
+// The folder menu's GROUPS, in the order they are shown. A group is a run of
+// rows with a separator either side; an empty or absent group draws nothing,
+// not a stray rule.
+//
+//   app     what this folder IS, when it is an app: App Doctor, Share…,
+//           Open as project, MCP config. First because it is the reason the
+//           kebab carries a status dot, and absent on a plain folder.
+//   create  things that put something new in this folder: New Folder…,
+//           New File…, Paste. The verbs a hand reaches for a background menu
+//           for, so they lead once the app rows are out of the way.
+//   folder  the folder itself: Rename…, Refresh.
+//   open    the same folder somewhere else: Reveal in Finder, Open in New
+//           Tab, Open in embed, Split right, Split down. One group because they
+//           all answer "show me this elsewhere"; the splits are not a special
+//           case of anything, just two more elsewheres.
+//   copy    text to the clipboard: Copy path, Copy Claude session command.
+//
+// Each surface fills what it may offer (a panel pane cannot split or embed; a
+// folder that is not an app has no `app` rows) and gets the same shape back
+// for what it did fill — which is how the three surfaces show one menu.
+export interface FolderMenuGroups {
+  app?: MenuEntry[];
+  create?: MenuEntry[];
+  folder?: MenuEntry[];
+  open?: MenuEntry[];
+  copy?: MenuEntry[];
+}
+
+const FOLDER_GROUP_ORDER: (keyof FolderMenuGroups)[] = ["app", "create", "folder", "open", "copy"];
+
+export function folderMenu(groups: FolderMenuGroups): MenuEntry[] {
+  const out: MenuEntry[] = [];
+  for (const key of FOLDER_GROUP_ORDER) {
+    const rows = groups[key];
+    if (!rows || rows.length === 0) continue;
+    if (out.length) out.push("separator");
+    out.push(...rows);
+  }
+  return out;
 }
 
 export interface CrumbActions {
@@ -161,10 +180,10 @@ export interface FileBarActions {
 // no Open With (the mode control is two inches away in this same bar), no
 // Bin/Duplicate/Cut/Copy — a top bar is not where a file gets destroyed.
 export function fileBarMenu(actions: FileBarActions): MenuEntry[] {
-  // Reveal → Copy Path → Copy Claude session command, in exactly the folder
-  // menu's
-  // order (useFileOps.backgroundMenu) — the two bars are one surface to the
-  // user, and the shared trio must not swap places between them.
+  // Reveal → Open in New Tab → Copy Path → Copy Claude session command, in
+  // exactly the folder menu's order (useFileOps.folderGroups, `open` then
+  // `copy`) — the two bars are one surface to the user, and the shared rows
+  // must not swap places between them.
   return [
     { label: "Rename…", icon: MenuIcons.rename, onClick: actions.onRename },
     "separator",
