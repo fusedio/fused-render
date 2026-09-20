@@ -11,7 +11,7 @@
 // THE FOLDER MENU IS ONE LIST ON THREE SURFACES — the listing's kebab (`⋮` in
 // the search row), a right-click on the listing's empty background, and a
 // right-click on the crumb bar over the folder. They used to be three lists:
-// the kebab carried the app rows (App Doctor, Share, Open as project, MCP,
+// the kebab carried the app rows (Share, Open as project, MCP, App Doctor,
 // embed) and then the folder ops and the splits; the background right-click
 // carried the folder ops alone, in a different order; the bar carried the
 // folder ops and the splits. Same folder, three menus that disagreed about
@@ -102,8 +102,8 @@ export function splitItems(onSplit: (dir: SplitDir) => void): MenuEntry[] {
 // rows with a separator either side; an empty or absent group draws nothing,
 // not a stray rule.
 //
-//   app     what this folder IS, when it is an app: App Doctor, Share…,
-//           Open as project, MCP config. First because it is the reason the
+//   app     what this folder IS, when it is an app: Share…, Open as
+//           project, MCP config, App Doctor. First because it is the reason the
 //           kebab carries a status dot, and absent on a plain folder.
 //   create  things that put something new in this folder: New Folder…,
 //           New File…, Paste. The verbs a hand reaches for a background menu
@@ -188,8 +188,8 @@ export function crumbMenu(actions: CrumbActions): MenuEntry[] {
 // The file menu's GROUPS, in the order they are shown — the folder menu's
 // groups without `create`, so a file and its folder read as one menu family:
 //
-//   app   what the file's folder IS, when the file is its entry page: App
-//         Doctor, Share…, Open as project, MCP config, and Set Current View as
+//   app   what the file's folder IS, when the file is its entry page: Share…,
+//         Open as project, MCP config, App Doctor, and Set Current View as
 //         Preview — the one row that photographs the app rather than acting on
 //         the file. First for the folder menu's reason: it carries the status
 //         dot, and it is absent on a plain file.
