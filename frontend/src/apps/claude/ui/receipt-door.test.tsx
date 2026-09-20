@@ -131,24 +131,10 @@ test("the hover control is gone from the SOURCE and the SHEET (P3R1-7)", () => {
   }
 });
 
-test("the receipt keeps its 11px faint typography, as a button (T:1804)", () => {
+test("the app-state caption's CSS went with it — no `.attach` rules in the sheet", () => {
   const sheet = readFileSync(join(import.meta.dir, "../styles/transcript.css"), "utf8");
-  const base = sheet.slice(sheet.indexOf(".chat-root .turn.user .attach {"));
-  expect(base.slice(0, base.indexOf("}"))).toContain("font-size: 11px");
-  const door = sheet.slice(sheet.indexOf(".chat-root .turn.user button.attach {"));
-  expect(door).not.toBe("");
-  const body = door.slice(0, door.indexOf("}"));
-  // A button reset, not a restyle: the caption must not arrive as a boxed
-  // control with the UA's own font.
-  expect(body).toContain("font-size: 11px");
-  expect(body).toContain("cursor: pointer");
-  expect(body).toContain("border: 0");
-  expect(body).toContain("background: none");
-  // …and it says it is pressable on hover AND on keyboard focus.
-  expect(sheet).toContain(".chat-root .turn.user button.attach:focus-visible");
-  expect(
-    sheet.slice(sheet.indexOf(".chat-root .turn.user button.attach:hover")),
-  ).toContain("text-decoration: underline");
+  expect(sheet).not.toContain(".turn.user .attach");
+  expect(sheet).not.toContain("button.attach");
 });
 
 test("the panel wears the app's modal chrome, not its own (R4-1)", () => {

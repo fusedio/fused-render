@@ -10,8 +10,8 @@
 // a live popup and a reopened one cannot say different things.
 //
 // THE DOOR IS THE RECEIPT (R4-1). This box is opened by clicking the receipt
-// line under the bubble it belongs to — "app state attached", "screenshot
-// attached", "image attached: …" — T's own affordance (T:11059
+// line under the bubble it belongs to — "screenshot attached", "image
+// attached: …" — T's own affordance (T:11059
 // `row.title = "Click to see exactly what was sent to the agent"`, T:1249), not
 // a second control beside it. `ui/Turn` and `ui/Receipts` own those presses.
 //
