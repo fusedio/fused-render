@@ -1133,7 +1133,7 @@ def test_relay_cancel_during_retry_discards_the_respawned_instance(monkeypatch):
     respawned = _FakeProc()
     calls = []
 
-    async def fake_configure(model, system_prompt, effort):
+    async def fake_configure(model, system_prompt, effort, mcp_servers=None):
         calls.append(1)
         if len(calls) == 1:
             raise _server_ai._AiProcFailure("first attempt died")

@@ -48,6 +48,8 @@ import {
   StarterCards,
   type Starter,
 } from "./controls";
+import { McpToolsPanel } from "./McpToolsPanel";
+import { loadMcpServers, saveMcpServers, type McpServerConfig } from "./mcpTools";
 import { useAutoGrow } from "@platform/lib/autoGrow";
 import { StarterIcons } from "./starterIcons";
 import { saveToCache, useWebcam, WebcamOverlay } from "./webcam";
@@ -158,12 +160,30 @@ function replyStats(usage: ChatUsage | null | undefined, seconds?: number | null
   return `${usage.outputTokens} tokens${rate}`;
 }
 
+/** One tool call this run made, merged from its `call`/`result` pair
+ *  (`client.ts`'s own `ToolEvent`) into one entry a reader can follow —
+ *  `pending` until the matching result arrives. Shown as its own block
+ *  above the answer text rather than spliced into it at the exact point the
+ *  model called it: the server already streams a tool round's raw text
+ *  live (`_generate_with_tools`'s own docstring), so the call/result pair
+ *  here is a SUMMARY beside that stream, not a replacement for it — placing
+ *  it inline would mean tracking a character offset into `reply.text` this
+ *  stage has no other reason to keep. */
+interface ToolActivity {
+  name: string;
+  arguments?: Record<string, unknown>;
+  result?: string;
+  ok?: boolean;
+  pending: boolean;
+}
+
 interface Reply {
   text: string;
   pending: boolean;
   usage?: ChatUsage | null;
   /** The local tier's wall-clock, from `providerMetadata.local.seconds` (D632). */
   seconds?: number | null;
+  toolActivity?: ToolActivity[];
 }
 
 export function TextStage({
@@ -211,6 +231,14 @@ export function TextStage({
     numParam("maxtok", DEFAULTS.max_tokens, ...LIMITS.max_tokens),
   );
   const [system, setSystem] = useState(() => readParam("system") ?? "");
+  // Loaded from localStorage, never the URL (`mcpTools.ts`'s own note on
+  // why — a stray secret in `env`/`headers` must not end up in a shared
+  // link or browser history the way every other setting on this stage may).
+  const [mcpServers, setMcpServers] = useState<McpServerConfig[]>(() => loadMcpServers());
+  const setMcpServersAndSave = (next: McpServerConfig[]) => {
+    setMcpServers(next);
+    saveMcpServers(next);
+  };
   useEffect(() => {
     const timer = window.setTimeout(() => {
       writeParams({
@@ -342,6 +370,32 @@ export function TextStage({
         settings: settings(),
         signal: controller.signal,
         onChunk: (text) => setReply((r) => (r ? { ...r, text: r.text + text } : r)),
+        onToolEvent: (event) =>
+          setReply((r) => {
+            if (!r) return r;
+            const toolActivity = [...(r.toolActivity ?? [])];
+            if (event.kind === "call") {
+              toolActivity.push({ name: event.name, arguments: event.arguments, pending: true });
+            } else {
+              // The most recent PENDING call of this name — the ordinary
+              // case has exactly one in flight, and a name reused across
+              // rounds must not have an earlier, already-settled entry
+              // overwritten by a later result meant for a different call.
+              for (let i = toolActivity.length - 1; i >= 0; i--) {
+                if (toolActivity[i].name === event.name && toolActivity[i].pending) {
+                  toolActivity[i] = {
+                    ...toolActivity[i],
+                    result: event.result,
+                    ok: event.ok,
+                    pending: false,
+                  };
+                  break;
+                }
+              }
+            }
+            return { ...r, toolActivity };
+          }),
+        ...(mcpServers.length ? { mcpServers } : {}),
         // The attached picture, if this model can actually be sent one right
         // now — `attachedImage` already applies `usableAttachment`, so an
         // attachment kept from a model that could ask about it, switched to
@@ -618,6 +672,7 @@ export function TextStage({
           fallback={DEFAULTS.top_p}
           onChange={setTopP}
         />
+        <McpToolsPanel servers={mcpServers} onChange={setMcpServersAndSave} />
       </ConfigPanel>
 
       {/* Examples first, under the box they fill; hidden once there is a
@@ -639,6 +694,26 @@ export function TextStage({
         <div className="pg-answer-block">
           <p className="pg-answer-label">Response</p>
           <div className="pg-answer">
+          {reply.toolActivity && reply.toolActivity.length > 0 && (
+            <div className="pg-tool-events">
+              {reply.toolActivity.map((t, i) => (
+                <div className="pg-tool-event" key={i}>
+                  <div className="pg-tool-event-head">
+                    <span className="pg-tool-event-name">{t.name}</span>
+                    <span
+                      className={"pg-tool-event-state" + (t.ok === false ? " is-error" : "")}
+                    >
+                      {t.pending ? "calling…" : t.ok === false ? "error" : "done"}
+                    </span>
+                  </div>
+                  {t.arguments && Object.keys(t.arguments).length > 0 && (
+                    <pre>{JSON.stringify(t.arguments)}</pre>
+                  )}
+                  {t.result !== undefined && <pre>{t.result}</pre>}
+                </div>
+              ))}
+            </div>
+          )}
           {!reply.pending && reply.text && (
             <CopyButton text={shown.answer || reply.text} label="Copy the reply" />
           )}

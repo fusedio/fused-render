@@ -14,6 +14,7 @@
 // is its business, not a second contract to copy here.
 import { postJson, rawUrl, sourceHeader } from "@platform/lib/api";
 import { fetchJobs, type Job } from "@platform/lib/jobs";
+import type { McpServerConfig } from "./mcpTools";
 
 // SPEC-quiet-notifications.md bug 1/bug 2: `X-Fused-Source` is who RAISED the
 // job, deliberately separate from `X-Fused-Page` (never sent by this module
@@ -72,6 +73,21 @@ export interface ChatResult {
   providerMetadata: Record<string, { seconds?: number | null } & Record<string, unknown>>;
 }
 
+/** One tool-call round from `server/ai.py`'s `_generate_with_tools` — two
+ *  frames, `call` then `result`, forwarded here as their own NDJSON frame
+ *  types (additive to the wire shape: an older reader's `chunk`/`done`
+ *  switch simply never matches either). Local models only reach this path
+ *  for their own tool activity — the Claude tier's tool loop runs entirely
+ *  inside the `claude` CLI and this stage does not (yet) surface it turn by
+ *  turn, only in the final answer. */
+export interface ToolEvent {
+  kind: "call" | "result";
+  name: string;
+  arguments?: Record<string, unknown>;
+  result?: string;
+  ok?: boolean;
+}
+
 /** The 409 a text generation answers when its model is not resident (AI-5):
  *  not a failure — the load has STARTED, and `jobId` is the row to watch. */
 export class ModelLoading extends Error {
@@ -106,6 +122,15 @@ export async function streamChat(opts: {
    *  contract (mlx_text/worker.py). A LIST, like the wire shape it forwards
    *  to — server/ai.py's own comment says why a list rather than one path. */
   images?: string[];
+  /** MCP servers this turn may call as tools (server/ai.py's `mcpServers`)
+   *  — optional and omitted entirely when empty, the same "absent changes
+   *  nothing" contract `images` above follows, so a caller that never
+   *  configured any tools sends byte-for-byte the request it always did. */
+  mcpServers?: McpServerConfig[];
+  /** Called for each tool-call round a local model made (server/ai.py's
+   *  `tool_call`/`tool_result` NDJSON frames) — absent on an ordinary run
+   *  that named no tools, or on one where the model never called any. */
+  onToolEvent?: (event: ToolEvent) => void;
 }): Promise<ChatResult> {
   const body: Record<string, unknown> = {
     prompt: opts.prompt,
@@ -113,6 +138,7 @@ export async function streamChat(opts: {
     stream: true,
     ...(opts.history.length ? { history: opts.history } : {}),
     ...(opts.images && opts.images.length ? { images: opts.images } : {}),
+    ...(opts.mcpServers && opts.mcpServers.length ? { mcpServers: opts.mcpServers } : {}),
   };
   for (const [key, value] of Object.entries(opts.settings)) {
     if (value !== undefined && value !== null && value !== "") body[key] = value;
@@ -155,9 +181,21 @@ export async function streamChat(opts: {
         ok?: boolean;
         result?: ChatResult;
         error?: unknown;
+        name?: string;
+        arguments?: Record<string, unknown>;
       };
       if (frame.type === "chunk") opts.onChunk(frame.text || "");
-      else if (frame.type === "done") {
+      else if (frame.type === "tool_call" && frame.name) {
+        opts.onToolEvent?.({ kind: "call", name: frame.name, arguments: frame.arguments });
+      } else if (frame.type === "tool_result" && frame.name) {
+        const r = frame as unknown as { result?: string; ok?: boolean };
+        opts.onToolEvent?.({
+          kind: "result",
+          name: frame.name,
+          result: r.result,
+          ok: r.ok !== false,
+        });
+      } else if (frame.type === "done") {
         // Errors after the first byte are demoted to an ok:false done frame on
         // a 200 (AI-1b) — this is the one place they surface.
         if (!frame.ok) throw frameError(frame.error);

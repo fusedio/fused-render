@@ -2246,3 +2246,96 @@
 .pg-group-apple {
   margin-top: 6px;
 }
+
+/* McpToolsPanel — the Text stage's configured MCP servers. A plain list,
+ * not `ListRow` (that is `apps/claude_config`'s own private kit, a
+ * different app's UI — this panel is deliberately small enough not to need
+ * borrowing it). */
+.pg-mcp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pg-mcp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.pg-mcp-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-mcp-type {
+  margin-left: auto;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.pg-mcp-add {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+/* Tool activity in a reply — a call and its result, shown as one quiet
+ * block above the answer text (`TextStage.tsx`'s own note on why this is
+ * not interleaved position-for-position with the streamed prose). */
+.pg-tool-events {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.pg-tool-event {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.pg-tool-event-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono, monospace);
+}
+
+.pg-tool-event-name {
+  font-weight: 600;
+}
+
+.pg-tool-event-state {
+  margin-left: auto;
+  color: var(--fg-muted);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pg-tool-event-state.is-error {
+  color: var(--danger, #c0392b);
+}
+
+.pg-tool-event pre {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
