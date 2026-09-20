@@ -25,7 +25,7 @@ function rule(selector: string): string {
 describe("a focused footer button says so", () => {
   test("the ring is on :focus, not :focus-visible, inside the footer", () => {
     const ring = rule(".modal-footer .btn:focus");
-    expect(ring).toContain("outline: 2px solid var(--accent)");
+    expect(ring).toContain("outline: 1px solid var(--accent)");
     expect(css).not.toContain(".modal-footer .btn:focus-visible {");
   });
 
