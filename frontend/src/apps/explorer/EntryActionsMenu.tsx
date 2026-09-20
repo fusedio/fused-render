@@ -164,7 +164,12 @@ export function useAppActionRows({
   // Opening the modal re-fetches its own copy; this one is only for the dot and
   // is never reused to seed the dialog.
   const doctorChecks = useAppDoctorChecks(isEntry ? dir : null);
-  const versionLabel = useAppVersionLabel(dir, snapshotSha);
+  // Gated on `isEntry` like the doctor checks: the label is read by the Share
+  // row alone, which exists only on an entry — and this hook is mounted over
+  // every file view now (not just where a kebab rendered), so an ungated sha
+  // would fetch the parent's commit list for a snapshot-previewed folder that
+  // gets no Share row.
+  const versionLabel = useAppVersionLabel(dir, isEntry ? snapshotSha : null);
 
   // Mirrors AppPage.tsx's `shareDisabled`: a click landing mid-resolve, before
   // `snapshotResolved.dir` exists, must not fall through to exporting the LIVE
