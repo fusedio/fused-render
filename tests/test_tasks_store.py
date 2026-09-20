@@ -1090,3 +1090,204 @@ def test_erasing_a_session_erases_what_it_ran_with(state_dir):
     state = tasks_store.settings_state()
     assert tasks_store.session_settings(state, "sess-a") == ("", "")
     assert tasks_store.session_settings(state, "sess-b") == ("opus", "max")
+
+
+# ------------------------------------------------- did the user say anything?
+# `user_row_after` — the evidence a tombstone asks for before it lets a row
+# come back (routers/tasks.py:_deleted). Read from the END of the transcript,
+# because Claude Code's exit bookkeeping rewrites the file long after the last
+# thing anybody typed.
+
+
+def _rows(tmp_path, name, rows):
+    path = tmp_path / name
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return str(path)
+
+
+def _user_row(ts, text="hi"):
+    return {"type": "user", "timestamp": ts, "uuid": "u-" + str(ts),
+            "message": {"role": "user",
+                        "content": [{"type": "text", "text": text}]}}
+
+
+# The rows Claude Code 2.1.x appends as it exits: no timestamp anywhere, and
+# not one of them is a `user` row.
+_EXIT_ROWS = [
+    {"type": "last-prompt", "prompt": "hi r1"},
+    {"type": "ai-title", "aiTitle": "", "sessionId": "s"},
+    {"type": "mode", "mode": "default"},
+    {"type": "permission-mode", "permissionMode": "acceptEdits"},
+    {"type": "atis-latch", "latched": False},
+    {"type": "cost-state", "totalCostUsd": 0.01},
+]
+
+# 2026-08-16T09:00:00Z and 2026-08-16T11:00:00Z, the stamps used either side
+# of a tombstone at 10:00.
+_BEFORE = "2026-08-16T09:00:00Z"
+_AFTER = "2026-08-16T11:00:00Z"
+_AT = 1786874400.0  # 2026-08-16T10:00:00Z
+
+
+def test_a_user_message_after_the_mark_is_evidence(tmp_path):
+    path = _rows(tmp_path, "a.jsonl", [_user_row(_BEFORE), _user_row(_AFTER)])
+    assert tasks_store.user_row_after(path, _AT) is True
+
+
+def test_exit_bookkeeping_is_not_evidence(tmp_path):
+    """THE BUG THIS EXISTS FOR: the file is newer than the tombstone and holds
+    nothing but the rows Claude Code writes on its way out. None of them says
+    when it happened, so none of them says anything happened."""
+    path = _rows(tmp_path, "b.jsonl", _EXIT_ROWS)
+    assert tasks_store.user_row_after(path, _AT) is False
+
+
+def test_exit_bookkeeping_over_an_older_conversation_is_not_evidence(tmp_path):
+    """The shape on disk after a real erase: the transcript comes back holding
+    the old turn AND the exit rows. The walk skips the stampless rows and stops
+    on the first stamp it can read, which is older than the mark."""
+    path = _rows(tmp_path, "c.jsonl", [_user_row(_BEFORE)] + _EXIT_ROWS)
+    assert tasks_store.user_row_after(path, _AT) is False
+
+
+def test_an_assistant_row_after_the_mark_is_not_a_user_message(tmp_path):
+    """A run that was still finishing writes rows of its own; the question is
+    whether the USER said something, so the walk goes on past them — and stops
+    on the older user row beneath."""
+    path = _rows(tmp_path, "d.jsonl", [
+        _user_row(_BEFORE),
+        {"type": "assistant", "timestamp": _AFTER,
+         "message": {"role": "assistant", "content": []}},
+    ])
+    assert tasks_store.user_row_after(path, _AT) is False
+
+
+def test_the_mark_itself_is_not_after_it(tmp_path):
+    """STRICTLY newer. A row written in the same instant as the tombstone is
+    the delete's own moment, not news from after it."""
+    path = _rows(tmp_path, "e.jsonl", [_user_row("2026-08-16T10:00:00Z")])
+    assert tasks_store.user_row_after(path, _AT) is False
+
+
+def test_a_multi_chunk_file_is_read_from_the_end(tmp_path):
+    """The read walks backwards 64 KiB at a time. A transcript far bigger than
+    one chunk, whose only newer user row is the last line, must be found — and
+    found without the walk running off a chunk boundary mid-line."""
+    filler = [_user_row(_BEFORE, "x" * 900) for _ in range(200)]
+    path = _rows(tmp_path, "f.jsonl", filler + [_user_row(_AFTER)])
+    assert os.path.getsize(path) > 64 * 1024
+    assert tasks_store.user_row_after(path, _AT) is True
+
+
+def test_a_multi_chunk_file_of_stampless_rows_answers_no(tmp_path):
+    """The same size, with the newest rows carrying no timestamp at all: the
+    walk has to cross every chunk boundary before it reaches the old stamp
+    underneath, and still answer no."""
+    filler = [{"type": "file-history-snapshot", "blob": "x" * 900}
+              for _ in range(200)]
+    path = _rows(tmp_path, "g.jsonl", [_user_row(_BEFORE)] + filler)
+    assert os.path.getsize(path) > 64 * 1024
+    assert tasks_store.user_row_after(path, _AT) is False
+
+
+def test_an_empty_or_missing_transcript_is_no_evidence(tmp_path):
+    empty = tmp_path / "h.jsonl"
+    empty.write_text("")
+    assert tasks_store.user_row_after(str(empty), _AT) is False
+    missing = str(tmp_path / "nope.jsonl")
+    assert tasks_store.user_row_after(missing, _AT) is False
+
+
+def test_a_half_written_last_line_does_not_stop_the_walk(tmp_path):
+    """A transcript caught mid-append: the tail is not JSON yet. It is skipped
+    like any unreadable row, and the complete row above it still answers."""
+    path = tmp_path / "i.jsonl"
+    path.write_text(json.dumps(_user_row(_AFTER)) + "\n"
+                    + '{"type": "user", "timesta')
+    assert tasks_store.user_row_after(str(path), _AT) is True
+
+
+def test_a_rewritten_file_is_read_again(tmp_path):
+    """The answer is cached per (path, size, mtime, question). A transcript
+    that SHRANK was replaced, and a cache keyed on its old size cannot answer
+    for it — which is the case an erase-then-recreate produces."""
+    path = _rows(tmp_path, "j.jsonl", [_user_row(_BEFORE), _user_row(_AFTER)])
+    assert tasks_store.user_row_after(path, _AT) is True
+    _rows(tmp_path, "j.jsonl", _EXIT_ROWS)
+    assert tasks_store.user_row_after(path, _AT) is False
+
+
+def test_a_replayed_older_row_does_not_hide_the_message_above_it(tmp_path):
+    """TRANSCRIPTS ARE NOT SORTED. A compaction replays older rows after newer
+    ones, and an attachment row can trail the send it belongs to — measured
+    here, 381 user rows across 120 real transcripts have a later-positioned
+    row with an older stamp. A walk that stopped at the first old row would
+    leave a live conversation hidden."""
+    path = _rows(tmp_path, "k.jsonl", [
+        _user_row(_AFTER),
+        {"type": "system", "timestamp": _BEFORE,
+         "subtype": "compact_boundary"},
+        _user_row(_BEFORE, "replayed"),
+    ] + _EXIT_ROWS)
+    assert tasks_store.user_row_after(path, _AT) is True
+
+
+def test_the_walk_stops_once_it_is_safely_past_the_mark(tmp_path):
+    """The slack is not infinite: a row stamped more than `_ORDER_SLACK`
+    before the mark ends the walk, so a long transcript is not read whole.
+    The newer row above that floor is deliberately never reached."""
+    old = "2026-08-16T06:00:00Z"  # four hours before the mark
+    path = _rows(tmp_path, "l.jsonl", [_user_row(_AFTER), _user_row(old)])
+    assert tasks_store.user_row_after(path, _AT) is False
+
+
+def test_a_tool_result_is_not_somebody_talking(tmp_path):
+    """Claude Code files a tool's output as a `user` row too. A run still
+    draining when the delete landed must not revive the row off its own tool
+    results — the promise is that somebody SAID something."""
+    path = _rows(tmp_path, "m.jsonl", [{
+        "type": "user", "timestamp": _AFTER, "uuid": "u-tr",
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]},
+    }])
+    assert tasks_store.user_row_after(path, _AT) is False
+
+
+def test_a_tool_result_next_to_words_still_counts(tmp_path):
+    """Only an all-`tool_result` content says nothing."""
+    path = _rows(tmp_path, "n.jsonl", [{
+        "type": "user", "timestamp": _AFTER, "uuid": "u-mix",
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+            {"type": "text", "text": "and one more thing"}]},
+    }])
+    assert tasks_store.user_row_after(path, _AT) is True
+
+
+def test_one_line_longer_than_a_chunk_is_read_whole(tmp_path):
+    """A single row far bigger than `_TAIL_CHUNK` — real transcripts here hold
+    one of 2.4 MiB. The pieces either side of every seek point are joined once,
+    and the line still parses."""
+    path = _rows(tmp_path, "o.jsonl", [_user_row(_BEFORE),
+                                       _user_row(_AFTER, "x" * 300_000)])
+    assert tasks_store.user_row_after(path, _AT) is True
+
+
+def test_a_walk_that_runs_out_of_budget_gives_up_rather_than_guesses(
+        tmp_path, monkeypatch):
+    """`_TAIL_MAX` is the ceiling on the pathological case. Hitting it answers
+    "no evidence", which is the caller's rule, not "revive"."""
+    monkeypatch.setattr(tasks_store, "_TAIL_MAX", 1024)
+    filler = [_user_row(_BEFORE, "x" * 900) for _ in range(50)]
+    path = _rows(tmp_path, "p.jsonl", [_user_row(_AFTER)] + filler)
+    assert tasks_store.user_row_after(path, _AT) is False
+
+
+def test_a_file_whose_only_line_never_ends_is_still_read(tmp_path):
+    """No newline anywhere: the backward walk reaches the file's start holding
+    the whole line in hand, and that line is complete — nothing above it can
+    close it. Dropping it read a one-row transcript as empty (found by fuzzing
+    the walk against a naive reader)."""
+    path = tmp_path / "q.jsonl"
+    path.write_text(json.dumps(_user_row(_AFTER)))  # no trailing newline
+    assert tasks_store.user_row_after(str(path), _AT) is True

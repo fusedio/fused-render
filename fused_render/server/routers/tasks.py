@@ -2398,13 +2398,28 @@ def _deleted(task: dict, deleted: dict) -> bool:
       `due` is deliberately not read, because delete cancels pending entries
       and a cancelled entry's future due time is not news, it is a corpse with
       a date on it;
-    * **the transcript grew** — the user (or a run that was already in flight
-      when the delete landed, which the endpoint refuses but a race can slip)
-      said something in the session. Append-only files move their mtime for
-      exactly one reason. An unreadable mtime counts as no evidence, not as
-      revival: degrading widens nothing here because the tombstone still
-      answers, and a task wrongly hidden is recoverable while a delete that
-      silently failed is not — the endpoint's answer is the receipt.
+    * **a user message newer than the tombstone** — somebody said something in
+      the session after it was hidden: the reader typing into the conversation
+      again, or a scheduled message delivered into it, which writes its own
+      `type: "user"` row with the moment it landed. That row, found by reading
+      backwards from the end of the transcript (`tasks_store.user_row_after`),
+      is the evidence. An unreadable file counts as no evidence, not as
+      revival: degrading widens nothing here because the
+      tombstone still answers, and a task wrongly hidden is recoverable while a
+      delete that silently failed is not — the endpoint's answer is the
+      receipt.
+
+    A MOVED MTIME IS NOT A MESSAGE (Akshil, 2026-09-20: "hi r1" deleted, back
+    half a minute later as a blank done row). The file being newer than the
+    tombstone used to BE the second bullet, and it is not evidence: Claude Code
+    writes bookkeeping rows on its way out — `last-prompt`, `ai-title`, `mode`,
+    `permission-mode`, `atis-latch`, `cost-state` — which re-create a
+    transcript an erase has just removed, seconds or minutes later, whenever
+    the process behind the session finally goes. None of them carries a
+    timestamp and none of them is a `user` row, so none of them can pass the
+    test above. The mtime still runs FIRST, as the cheap gate: a file no newer
+    than the tombstone is not read at all, and a listing walks every
+    transcript on the machine.
 
     This is `_revived` restated for a stronger filing — same promise, same
     shape, different record.
@@ -2419,10 +2434,11 @@ def _deleted(task: dict, deleted: dict) -> bool:
     path = task["path"]
     if path:
         try:
-            if os.path.getmtime(path) > at:
-                return False
+            grew = os.path.getmtime(path) > at
         except OSError:
-            pass
+            grew = False
+        if grew and tasks_store.user_row_after(path, at):
+            return False
     return True
 
 
