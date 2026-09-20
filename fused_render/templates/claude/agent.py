@@ -6088,6 +6088,46 @@ def _row_ts(row: dict) -> float | None:
     return parsed.timestamp()
 
 
+def _context_usage(msg: dict) -> dict | None:
+    """The CONTEXT WINDOW READING carried by ONE assistant record, or None.
+
+    Claude Code writes the API's own `usage` onto every assistant row. What the
+    CLI's statusline calls "context usage" is not the sum of a conversation —
+    each request re-sends the whole conversation, so the LATEST reply's three
+    INPUT numbers (fresh input, the cache it wrote, the cache it read) already
+    are the whole prompt that went up the wire. `output_tokens` is reported
+    beside it but deliberately NOT added in: it is what came back, and it only
+    counts against the window on the NEXT request, where it arrives as input.
+
+    Defensive about every field: a transcript is somebody else's file format,
+    and a missing or non-numeric number must cost the reading its accuracy at
+    worst, never the whole history payload.
+    """
+    usage = msg.get("usage")
+    if not isinstance(usage, dict):
+        return None
+
+    def n(key: str) -> int:
+        value = usage.get(key)
+        # `bool` is an `int` in Python and `True` would read as 1 token.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0
+        try:
+            return max(0, int(value))
+        except (ValueError, OverflowError):
+            return 0
+
+    return {
+        "tokens": (n("input_tokens") + n("cache_creation_input_tokens")
+                   + n("cache_read_input_tokens")),
+        "output_tokens": n("output_tokens"),
+        # WHICH MODEL SAID IT, because the window depends on it: a `[1m]` id is
+        # a million-token window and everything else is 200k. "" when the row
+        # does not say, and the page falls back to the picker's own value.
+        "model": str(msg.get("model") or ""),
+    }
+
+
 def _history(file: str, session_id: str, app_reads: bool = False,
              inbox: bool = True) -> dict:
     """Rebuild the conversation from the Claude Code session transcript.
@@ -6131,7 +6171,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
     timestamp is missing or unparseable (`_row_ts`). Optional throughout, the
     same way `uuid` is: the legacy template reads neither and is unaffected."""
     if _bad_id(session_id):
-        return {"turns": [], "transcript": _transcript_stat("")}
+        return {"turns": [], "transcript": _transcript_stat(""), "context": None}
     file = os.path.abspath(file)
     path = os.path.join(PROJECTS, _munge(_workdir(file)),
                         session_id + ".jsonl")
@@ -6149,10 +6189,15 @@ def _history(file: str, session_id: str, app_reads: bool = False,
     if not os.path.isfile(path):
         # A run can be live before its transcript exists (the CLI writes the
         # first row after `system/init`), and its card must not wait on that.
-        return {"turns": [], "transcript": stat, **_history_live(file, session_id, inbox=inbox)}
+        return {"turns": [], "transcript": stat, "context": None,
+                **_history_live(file, session_id, inbox=inbox)}
 
     turns = []
     stretch = []  # rows of the assistant reply being read, for its segments
+    # THE LATEST ASSISTANT ROW'S CONTEXT READING, overwritten as the walk finds
+    # newer ones — the last one standing is the state of the window right now.
+    # Free: these are the same rows already being parsed, no second read.
+    context = None
 
     def close_stretch():
         """Attach the stretch's segments to the assistant turn they belong to.
@@ -6197,6 +6242,14 @@ def _history(file: str, session_id: str, app_reads: bool = False,
         msg = row.get("message") or {}
         role = msg.get("role")
         content = msg.get("content")
+        if role == "assistant" and isinstance(msg, dict):
+            # Read BEFORE any of the branches below, so a reply this walk drops
+            # (an API failure, a row with no prose and no tools) still reports
+            # the window it consumed. A row without `usage` leaves the previous
+            # reading standing rather than blanking the meter.
+            reading = _context_usage(msg)
+            if reading is not None:
+                context = reading
         if role == "user":
             if isinstance(content, str):
                 text = content
@@ -6306,7 +6359,8 @@ def _history(file: str, session_id: str, app_reads: bool = False,
     # `transcript` is the watermark the page's live watch compares against
     # (origin/main, D406) — the stat taken BEFORE this read, so a row appended
     # while we were parsing shows up as a change rather than being missed.
-    return {"turns": turns, "transcript": stat, **_history_live(file, session_id, inbox=inbox)}
+    return {"turns": turns, "transcript": stat, "context": context,
+            **_history_live(file, session_id, inbox=inbox)}
 
 
 def _history_live(file: str, session_id: str, inbox: bool = True) -> dict:

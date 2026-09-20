@@ -78,6 +78,15 @@ export function firstLine(text: string): string {
   return text.split("\n").map((s) => s.trim()).find(Boolean) ?? text.trim();
 }
 
+/** THE ONE LINE EVERY VIEW TITLES A TASK BY: the first line of its own title,
+ *  or "" for a task that has none — which is each view's cue to print its
+ *  "(untitled)" word. Until 2026-09-20 an experiment (`task_card_last_message`)
+ *  could swap in the reader's newest message here; the switch is gone, and the
+ *  hover caption is where that message now lives (hints.ts `renderTaskHint`). */
+export function taskTitleLine(task: { title?: string | null }): string {
+  return firstLine(task.title ?? "");
+}
+
 /** A path as a person reads it: $HOME collapsed to "~". */
 export function tildePath(path: string, home: string): string {
   if (!home) return path;

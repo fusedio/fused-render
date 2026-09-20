@@ -43,6 +43,8 @@ import {
   type RowFit,
 } from "./fit";
 import { PERMISSION_SHORT } from "./composer-defaults";
+import { ContextMeter } from "./ContextMeter";
+import { contextFill, contextPercent, contextWindowOf } from "./context-window";
 import { EffortSelect } from "./EffortSelect";
 import { ModelSelect } from "./ModelSelect";
 import { PermissionSelect } from "./PermissionSelect";
@@ -212,6 +214,19 @@ export interface ComposerCardProps {
    * worse than 24px of composer card (the note's own original argument).
    */
   queueOn?: boolean;
+  /**
+   * HOW FULL THE MODEL'S CONTEXT WINDOW IS for the conversation on screen
+   * (`ChatState.context`, off the latest assistant record — agent.py
+   * `_context_usage`). `null`/absent, or `tokens: 0`, draws no meter at all:
+   * the landing composer has no conversation, and a chat whose first reply has
+   * not landed has nothing true to say yet.
+   *
+   * The WINDOW is derived here rather than passed: `context.model` is what the
+   * last reply was actually made with, and the model pill is the only answer a
+   * conversation that has not replied has — so the transcript's id is preferred
+   * and the pill is the fallback (`contextWindowFor`).
+   */
+  context?: { tokens: number; output_tokens: number; model: string } | null;
   /** A fresh turn. */
   onSend(text: string, opts: SendOptions): void;
   /** Into the live run's inbox (T:16024). Falls back to `onSend` when absent. */
@@ -471,6 +486,7 @@ export function ComposerCard({
   status,
   queued,
   queueOn,
+  context,
   onSend,
   onFollowUp,
   onStop,
@@ -1501,6 +1517,24 @@ export function ComposerCard({
   });
   const running =
     status === "running" || status === "starting" || status === "stopping";
+
+  /**
+   * THE CONTEXT METER'S THREE NUMBERS, computed once so the fit key and the
+   * seat itself cannot disagree about whether there is a meter.
+   *
+   * The WINDOW prefers the transcript's own model over the pill: the tokens
+   * being drawn were spent by the reply that names it, and a reader who has
+   * just switched the pill to a `[1m]` model has not thereby made the last
+   * turn's 180k fit in a million — the next turn will say so itself. The pill
+   * is the fallback for a chat whose transcript names nothing, and the COUNT
+   * overrules both when it proves a bigger window than either id admits to
+   * (`contextWindowOf`).
+   */
+  const ctxTokens =
+    context && Number.isFinite(context.tokens) && context.tokens > 0 ? context.tokens : 0;
+  const ctxWindow = contextWindowOf(ctxTokens, context?.model || controls.model);
+  const ctxPct = ctxTokens > 0 ? contextPercent(contextFill(ctxTokens, ctxWindow)) : -1;
+
   const fit = useRowFit(
     rowRef,
     columnRef,
@@ -1508,9 +1542,13 @@ export function ComposerCard({
     // appearing or leaving changes `composerRowNeed` by a whole control plus a
     // gap, which is exactly the kind of change T's MutationObserver existed to
     // catch (T:12455-12474).
+    // THE METER IS IN THE KEY BY ITS PRINTED VALUE, not merely by its presence:
+    // the seat appearing is a whole control plus a gap, and "9%" → "100%" is
+    // another glyph inside it — both of which change `composerRowNeed`, which
+    // is exactly the class of change T's MutationObserver existed to catch.
     `${controls.model}|${controls.effort}|${controls.permission}|${
       controls.ready === false ? 0 : 1
-    }|${blocked ? 1 : 0}|${camera ? 1 : 0}|${String(fitRevision ?? "")}`,
+    }|${blocked ? 1 : 0}|${camera ? 1 : 0}|${ctxPct}|${String(fitRevision ?? "")}`,
   );
 
   // THIS IS THE NATIVE `initialFocus`, and it has to be, because a modal's
@@ -1907,6 +1945,21 @@ export function ComposerCard({
             value={controls.permission}
             onChange={controls.setPermission}
             compact={fit !== "full"}
+          />
+          {/* RIGHT AFTER THE PICKERS AND BEFORE THE SPACER: the three pills say
+              what the next turn will be made with, and this says how much room
+              is left to make it in — one group, read left to right. It draws
+              nothing at all when the conversation has no reading yet, so the
+              landing composer and a brand-new chat are untouched.
+
+              The digits go one rung LATER than the permission pill's words: a
+              percentage is two or three glyphs where that label is a phrase, so
+              spending the row's last width on it is the cheaper trade — and the
+              ring alone still says roughly how full the window is. */}
+          <ContextMeter
+            tokens={ctxTokens}
+            window={ctxWindow}
+            compact={fit === "tight" || fit === "stack"}
           />
           <span className="c-spacer" />
           {camera}

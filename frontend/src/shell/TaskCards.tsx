@@ -74,6 +74,7 @@ import {
   usageLimitCaption,
   taskWhen,
   tildePath,
+  taskTitleLine,
 } from "./tasks-lib";
 import { MISSING_FOLDER_TOAST, taskFolder, toastMissingFolder } from "./useMissingFolders";
 import {
@@ -83,7 +84,6 @@ import {
   usePeekHost,
   usePeekedKey,
 } from "./task-peek-store";
-import { cardTitleLine, useTaskCardTitleMode } from "./task-card-title-flag";
 import { useTaskHeadline } from "./TaskPeekWho";
 import { useMarginWheel } from "./useMarginWheel";
 
@@ -320,10 +320,6 @@ export function TaskCards({
   // is "this conversation is open RIGHT NOW", this is "this is the one you came
   // back out of" — and it outlives the peek being closed.
   const [selected, setSelected] = useState(readSelectedCard);
-  // Titled by the task, or by the last thing the reader sent in it (task-card-title-flag,
-  // `task_card_last_message`). Read once for the wall rather than per card: one
-  // subscription, one answer, and no chance of two cards disagreeing mid-poll.
-  const titleMode = useTaskCardTitleMode();
   const openTask = (task: Task) => {
     const key = cardKey(task);
     setSelected(key);
@@ -450,7 +446,6 @@ export function TaskCards({
           peekOn={peekOn}
           peeked={peekedKey === cardKey(task)}
           selected={selected === cardKey(task)}
-          titleMode={titleMode}
           onReload={onReload}
           project={
             showProject
@@ -485,7 +480,6 @@ function TaskCard({
   peekOn = false,
   peeked = false,
   selected = false,
-  titleMode = false,
   onReload,
   project,
   onPickDraft,
@@ -509,9 +503,6 @@ function TaskCard({
    * fill the head's hover used to draw (task-cards.css `.is-selected`), whether
    * or not anything is open now. The List row's own mark, and its fill. */
   selected?: boolean;
-  /** Title the card by the last thing the reader sent in its conversation rather than by
-   * the task's own title (task-card-title-flag, `task_card_last_message`). */
-  titleMode?: boolean;
   /** After a door archives or unarchives: the card's lane changed, so the page
    * re-reads (the popup's own rule, TaskPeek). */
   onReload?: () => void;
@@ -524,12 +515,10 @@ function TaskCard({
   draftOn?: boolean;
 }) {
   const when = taskWhen(task);
-  // THE ONE LINE UNDER THE HEAD ROW: the task's title, or — with the experiment
-  // on and something sent in this conversation — the reader's newest message, never Claude's reply, whoever
-  // said it (design.md §A, Option 1). The rule is `cardTitleLine`'s, so the
-  // card is not a second place deciding what a blank one falls back to.
-  const line = cardTitleLine(task, titleMode);
-  const title = line.text || "(untitled)";
+  // THE ONE LINE UNDER THE HEAD ROW: the task's title. The rule is
+  // tasks-lib.taskTitleLine's, so the card is not a second place deciding what
+  // a blank one falls back to.
+  const title = taskTitleLine(task) || "(untitled)";
   // Words nobody has sent, in this conversation's composer — the List row's and
   // the Board card's own chip, from the same function, so the three views
   // cannot describe one draft differently (tasks-lib.draftTag).
@@ -731,11 +720,13 @@ function TaskCard({
             (Akshil, 2026-09-04). Same mechanism, same words, same delay. */}
         <span
           className="task-card-title"
-          // The hint says the line's own words, whole: the title where the line
-          // is the title, the message where it is the message — the server caps
-          // that at 200 characters and the card clamps it to one, so the hint is
-          // where the rest of a long sentence is.
-          data-hint={line.said ? task.last_message?.text : task.title}
+          // The hint says the title whole — the card clamps it to one line, so
+          // the hint is where the rest of a long sentence is — and then the
+          // newest reply under it, in the List row's own two-line form
+          // (hints.ts `renderTaskHint`; Akshil, 2026-09-20).
+          data-hint={task.title}
+          data-hint-title={task.title}
+          data-hint-reply={task.last_reply || ""}
         >
           {title}
         </span>

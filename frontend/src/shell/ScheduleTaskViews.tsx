@@ -47,7 +47,6 @@ import {
 import { notify } from "@platform/lib/notifications";
 import { useNow } from "@platform/lib/clock";
 import { EraseTaskModal } from "./EraseTaskModal";
-import { cardTitleLine, useTaskCardTitleMode } from "./task-card-title-flag";
 import { canRunDraft, runDraftNow, runRowDraftNow } from "./draft-run";
 import {
   deleteChatDraft,
@@ -138,6 +137,7 @@ import {
   taskRunIntent,
   taskUnread,
   taskUnreadLabel,
+  taskTitleLine,
   taskWhen,
   threadView,
   tildePath,
@@ -2042,11 +2042,6 @@ export function TaskList({
   // Off, every line below that mentions the peek stands down and the list is
   // byte-for-byte the list this page has always rendered.
   const peekOn = usePeekHost();
-  // …and whether a row is titled by its last message rather than by the task's
-  // own name (`task_card_last_message`). Spent ONCE for the whole column, like
-  // the peek's above and like the Cards wall's: a hook that appeared per row
-  // would be a hook count that moves with the filter.
-  const titleMode = useTaskCardTitleMode();
   // BOTH HOOKS, UNCONDITIONALLY, and the flag is spent on the VALUE. `host`
   // starts false and flips true in a layout effect, so a view that painted its
   // first commit with the feature off would grow a hook on the next render —
@@ -2438,7 +2433,6 @@ export function TaskList({
           task={task}
           home={home}
           showProject={showProject}
-          titleMode={titleMode}
           folderMissing={missing?.has(taskFolder(task)) ?? false}
           open={expanded.has(task.key)}
           peekOn={peekOn}
@@ -2525,18 +2519,10 @@ export function TaskRowItem({
   onQueued?: (override: QueueOverride) => void;
   onReload?: () => void;
 }) {
-  // THE SAME PREF THE TASKS PAGE READS (`task_card_last_message`, Akshil
-  // 2026-09-14: it must apply in chat rows too). Read HERE rather than handed
-  // down from the chat's list: the switch is a fact about how a task row is
-  // titled, so the row that borrows the component borrows its answer too, and
-  // the chat needs no prefs read of its own to draw a Tasks row. One shared
-  // GET behind `task-card-title-flag`, however many rows subscribe.
-  const titleMode = useTaskCardTitleMode();
   return (
     <TaskNode
       task={task}
       home={home}
-      titleMode={titleMode}
       showProject={false}
       folderMissing={false}
       open={false}
@@ -2570,7 +2556,6 @@ function TaskNode({
   task,
   home,
   showProject,
-  titleMode = false,
   folderMissing,
   open: requested,
   variant = "task",
@@ -2606,10 +2591,6 @@ function TaskNode({
   /** Whether the folder chip is worth drawing. The LIST's answer, not this row's:
    * a chip that every visible row repeats distinguishes nothing (spansProjects). */
   showProject: boolean;
-  /** Title this row by the reader's newest message instead of the task's
-   * own name — the LIST's answer too (`task_card_last_message`), for the hook
-   * reason its note gives. */
-  titleMode?: boolean;
   /** The task's folder is gone from the disk (useMissingFolders). The row then
    * has nowhere to go: its press raises a toast instead of leaving for an
    * Explorer that can only answer with a stat error. */
@@ -2807,13 +2788,10 @@ function TaskNode({
   const chat = folderMissing || isDraftTask(task)
     ? null
     : openThreadIntent(task, unread);
-  // THE ONE LINE THIS ROW IS TITLED BY: the task's name, or — with the
-  // experiment on and something sent in this conversation — the reader's newest
-  // message, never Claude's reply. One function decides it for the List, the Board and the
-  // Cards wall (task-card-title-flag.cardTitleLine), so "off" cannot mean three
-  // slightly different things and a fallback cannot drift between views.
-  const line = cardTitleLine(task, titleMode);
-  const label = line.text || "(untitled)";
+  // THE ONE LINE THIS ROW IS TITLED BY: the task's name. One function decides
+  // it for the List, the Board and the Cards wall (tasks-lib.taskTitleLine), so
+  // a fallback cannot drift between views.
+  const label = taskTitleLine(task) || "(untitled)";
   // Whether this row's work is still ahead of it, which is the one thing that
   // greys its title. tasks-lib.isUpcomingTask owns both halves of the question
   // (the lane, and whether its next run has already gone by).
@@ -3653,11 +3631,11 @@ function TaskNode({
           /* The caption is the WHOLE of whatever this line is one line of — the
              untruncated message when the row is showing one, the title when it
              is not — because what a caption is for is the text the clamp hides. */
-          data-hint={line.said ? task.last_message?.text : task.title}
+          data-hint={task.title}
           /* Hovering either the title or the reply shows BOTH lines whole, in
              the row's own styles (hints.ts `renderTaskHint`, Akshil,
              2026-09-19): what the row clamps is what the reader is missing. */
-          data-hint-title={line.said ? task.last_message?.text : task.title}
+          data-hint-title={task.title}
           data-hint-reply={task.last_reply || ""}
         >
           {label}
@@ -3666,7 +3644,7 @@ function TaskNode({
           <span
             className="tasks-title-reply"
             data-hint={task.last_reply}
-            data-hint-title={line.said ? task.last_message?.text : task.title}
+            data-hint-title={task.title}
             data-hint-reply={task.last_reply}
           >
             {task.last_reply}
@@ -5076,9 +5054,6 @@ export function TaskBoard({
   // Which card's conversation is open in the side peek right now — the halo,
   // the List row's own mark drawn on a card (styles/task-peek.css).
   const peekOn = usePeekHost();
-  // …and the lanes' own copy of the title flag, spent once for the whole board
-  // (see the List's note).
-  const titleMode = useTaskCardTitleMode();
   // Unconditional — see the List's own note above.
   const openKey = usePeekedKey();
   const peekedKey = peekOn ? openKey : null;
@@ -5296,7 +5271,6 @@ export function TaskBoard({
                     task={task}
                     home={home}
                     showProject={showProject}
-                    titleMode={titleMode}
                     onPickDraft={onPickDraft}
                     draftOn={draftOn}
                     folderMissing={missing?.has(taskFolder(task)) ?? false}
@@ -5355,7 +5329,6 @@ function TaskCard({
   task,
   home,
   showProject,
-  titleMode = false,
   onPickDraft,
   draftOn,
   folderMissing,
@@ -5382,9 +5355,6 @@ function TaskCard({
   /** Whether the folder chip is worth drawing — the BOARD's answer, for the same
    * reason the List row takes it as a prop (spansProjects). */
   showProject: boolean;
-  /** Title this card by the reader's newest message — the BOARD's answer,
-   * for the same reason (`task_card_last_message`). */
-  titleMode?: boolean;
   /** The Draft chip's press and its pressed state, passed through untouched —
    *  see TaskBoard's own props. */
   onPickDraft?: () => void;
@@ -5455,10 +5425,8 @@ function TaskCard({
    *  explained itself for 300 ms would be noise. */
   const draggable = lifts && !dropping;
   // THE ONE LINE THIS CARD IS TITLED BY — the List row's and the Cards wall's
-  // own rule, from the one function that holds it (cardTitleLine): the task's
-  // name, or the reader's newest message when the experiment is on and
-  // there is one.
-  const line = cardTitleLine(task, titleMode);
+  // own rule, from the one function that holds it (tasks-lib.taskTitleLine).
+  const title = taskTitleLine(task);
   // Where the click goes and whether it also clears the thread's unread — one
   // answer, from tasks-lib, and the SAME answer the List row's Open chat button
   // gets. Null means the card has nowhere to go (no session yet), and then the
@@ -5586,9 +5554,16 @@ function TaskCard({
            the title. Nothing is lost: a draft card's title is drawn on its own
            face, and the reader hovering a card that just refused to lift is
            asking why, not what it is called. */
-        data-hint={lockedDraft
-          ? "Finish the draft to run it."
-          : (line.said ? task.last_message?.text : task.title)}
+        data-hint={lockedDraft ? "Finish the draft to run it." : task.title}
+        /* THE LIST ROW'S OWN TWO-LINE CAPTION (Akshil, 2026-09-20: "in kanban
+           board when we hover over task title, let's also show last response
+           first line. exact same style of what we have in list view"): the
+           title whole, then the newest reply — hints.ts `renderTaskHint`, the
+           same attributes the row's `.tasks-title` carries, so the two views
+           cannot drift. Not on a locked draft, whose caption is the sentence
+           above and has no reply to show. */
+        data-hint-title={lockedDraft ? "" : task.title}
+        data-hint-reply={lockedDraft ? "" : task.last_reply || ""}
         draggable={draggable}
         onDragStart={(ev) => {
           // Some data is required for Firefox to start a drag at all; the task
@@ -5716,7 +5691,7 @@ function TaskCard({
             reliably announced (the same reason ScheduleCalendar gives its own dot a
             `role="img"`), where real text always is. */}
         <span className={"schedule-tv-card-title" + (unread > 0 ? " is-unread" : "")}>
-          {line.text || "(untitled)"}
+          {title || "(untitled)"}
           {unread > 0 && (
             <span className="tasks-said">{`, ${taskUnreadLabel(unread)}`}</span>
           )}

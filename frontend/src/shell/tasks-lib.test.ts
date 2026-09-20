@@ -2401,11 +2401,10 @@ describe("the unread mark", () => {
       ".tasks-title.is-unread",
     );
     // ...and the title is still a title: the words, then nothing an eye can see.
-    // The words are `cardTitleLine`'s now — the task's name, or the
-    // reader's newest message with `task_card_last_message` on — which is
-    // the same function the List row and the Cards wall ask (2026-09-14).
+    // The words are `taskTitleLine`'s (tasks-lib) — the task's name — which
+    // is the same function the List row and the Cards wall ask.
     expect(CARD).toMatch(
-      /className=\{"schedule-tv-card-title"[^}]*\}>\s*\{line\.text \|\| "\(untitled\)"\}/,
+      /className=\{"schedule-tv-card-title"[^}]*\}>\s*\{title \|\| "\(untitled\)"\}/,
     );
     // WEIGHT IS NOT A FACT A SCREEN READER HAS (bugbot, PR #596): bold is the whole
     // visual signal and `font-weight` never reaches the accessibility tree, so the
@@ -5598,10 +5597,8 @@ describe("the folder chip on a row and a card", () => {
     // The task's own name is still captioned — on the TITLE now, not the row
     // (Akshil: "the tooltip of title should only show up if I am on title
     // text"), and through the instant panel rather than a native tooltip.
-    // …and it captions the WHOLE of whatever the line is one line of: the
-    // untruncated message when the row is titled by one, the title otherwise.
-    expect(ROW).toContain(
-      "data-hint={line.said ? task.last_message?.text : task.title}");
+    // …and it captions the WHOLE title — the text the one-line clamp hides.
+    expect(ROW).toContain("data-hint={task.title}");
   });
 });
 
@@ -5626,7 +5623,8 @@ describe("every caption on a row is an INSTANT hint", () => {
     // …and no native `title` either: it is placed perfectly and waits four to
     // five seconds on a session's first hover, which is the whole reason
     // platform/lib/hints.ts exists.
-    expect(row).not.toContain("title={task.title}");
+    // A native `title=` attribute — not the `data-hint-title=` opt-in (hints.ts).
+    expect(row).not.toMatch(/(^|\s)title=\{task\.title\}/);
     expect(row).not.toContain("title={when.title}");
     // …and the four support rules are gone from the stylesheet with it.
     expect(SCHEDULE_CSS).not.toContain('.tasks-row[data-tip]');
@@ -8933,10 +8931,11 @@ describe("the Cards view's frame", () => {
     expect(frame).toContain("height: 133.3334%");
     expect(frame).toContain("transform-origin: 0 0");
     // The full title rides the app's own hint (hints.ts), like a List row's,
-    // not a native `title` that arrives a second later — and, with the last-
-    // message experiment on, the hint is the message's own full text instead
-    // (shell/task-card-title-flag.ts).
-    expect(CARDS).toContain('data-hint={line.said ? task.last_message?.text : task.title}');
+    // not a native `title` that arrives a second later — in the row's own
+    // two-line form, the newest reply under it (Akshil, 2026-09-20).
+    expect(CARDS).toContain('data-hint={task.title}');
+    expect(CARDS).toContain('data-hint-title={task.title}');
+    expect(CARDS).toContain('data-hint-reply={task.last_reply || ""}');
     expect(CARDS).not.toContain('className="task-card-title" title=');
     // Two rows: ring then id top-left (the List row's order), the time at the
     // right, the title alone below (Akshil, 2026-09-04). No Open button

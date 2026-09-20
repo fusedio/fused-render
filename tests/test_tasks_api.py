@@ -77,15 +77,6 @@ def client(tmp_path):
     return TestClient(create_app(start_dir=str(tmp_path)))
 
 
-@pytest.fixture()
-def card_titles(home):
-    """The Cards wall's experimental title, ON — `task_card_last_message`
-    (shell/prefs.py). A row carries `last_message` only while it is, and the
-    pref is read per request, so writing the file is the whole setup. `home`
-    rather than `tmp_path` so the tmp FUSED_RENDER_HOME is in place first."""
-    shell_storage.write_json(prefs_mod._path(), {"task_card_last_message": True})
-
-
 # ------------------------------------------------------------------ fixtures
 
 
@@ -705,15 +696,15 @@ def test_only_the_three_newest_messages_ride_along(client, projects_dir):
 
 # -------------------------------------------- the newest thing the user said
 #
-# `last_message` is what the Tasks page titles a row by while
-# `task_card_last_message` is on (shell/prefs.py) — which is why every test
-# here takes the `card_titles` fixture — and the rule is "the newest PROMPT".
+# `last_message` is the newest thing the user said, carried on every listing
+# row (it was gated on the `task_card_last_message` pref until 2026-09-20),
+# and the rule is "the newest PROMPT".
 # Claude's replies are never candidates (Akshil, 2026-09-19): a title that
 # tracked the answer changed under the reader every turn.
 
 
 def test_the_last_message_is_the_prompt_even_when_claude_answered_last(
-        client, projects_dir, card_titles):
+        client, projects_dir):
     _write_transcript(projects_dir, "sess-a", "/p", [
         _user("run the migration\nand then tidy up", T9),
         _assistant("Ran the migration, 3 tables updated", T10),
@@ -727,7 +718,7 @@ def test_the_last_message_is_the_prompt_even_when_claude_answered_last(
 
 
 def test_the_last_message_is_the_prompt_while_the_answer_is_still_coming(
-        client, projects_dir, card_titles):
+        client, projects_dir):
     _write_transcript(projects_dir, "sess-a", "/p", [
         _assistant("older answer", T9),
         _user("now do the other one", T10),
@@ -739,7 +730,7 @@ def test_the_last_message_is_the_prompt_while_the_answer_is_still_coming(
 
 
 def test_the_last_message_agrees_with_the_rows_newest_message(
-        client, projects_dir, card_titles):
+        client, projects_dir):
     """Read off the same merged thread `messages` is cut from (review,
     2026-09-19): a scheduled occurrence that FIRED titles the row, while one
     still pending — the thread's newest message, but not one the user has sent
@@ -762,7 +753,7 @@ def test_the_last_message_agrees_with_the_rows_newest_message(
 
 
 def test_a_send_that_has_not_reached_disk_titles_the_row_at_once(
-        client, projects_dir, card_titles):
+        client, projects_dir):
     # The just-sent mark is the newest message in the thread the moment the
     # page sends it (`_fold_sent_mark`), so the title moves in the same poll
     # `messages[0]` does, not one transcript flush later.
@@ -776,7 +767,7 @@ def test_a_send_that_has_not_reached_disk_titles_the_row_at_once(
     assert row["last_message"]["text"] == "and now the follow-up"
 
 
-def test_a_subagent_brief_is_not_a_prompt(client, projects_dir, card_titles):
+def test_a_subagent_brief_is_not_a_prompt(client, projects_dir):
     """`isSidechain` is a prompt written FOR a subagent. Every other reader of
     a transcript's prompts skips it (tasks_store.head, agent.py); the listing's
     own reader did not, so a brief could be the row's newest message and its
@@ -793,7 +784,7 @@ def test_a_subagent_brief_is_not_a_prompt(client, projects_dir, card_titles):
 
 
 def test_an_api_error_leaves_the_prompt_as_the_last_message(
-        client, projects_dir, card_titles):
+        client, projects_dir):
     _write_transcript(projects_dir, "sess-a", "/p", [
         _user("run the migration", T9),
         _api_error("You've hit your session limit", T10),
@@ -808,7 +799,7 @@ def test_an_api_error_leaves_the_prompt_as_the_last_message(
 
 
 def test_the_interrupt_marker_is_not_the_last_message(
-        client, projects_dir, card_titles):
+        client, projects_dir):
     # Hit stop, then leave: the CLI writes `[Request interrupted by user]` as a
     # user row with a real uuid. Not something the reader said — neither a
     # message nor the title (Akshil, 2026-09-19). Both marker forms.
@@ -831,7 +822,7 @@ def test_the_interrupt_marker_is_not_the_last_message(
 
 
 def test_a_task_with_nothing_said_in_it_has_no_last_message(
-        client, tmp_path, card_titles):
+        client, tmp_path):
     # A scheduled message that has not run: no transcript, nothing said. The
     # card falls back to the task's own title.
     _seed_schedule([_entry("e1", "water the plants", time.time() + 3600,
@@ -840,7 +831,7 @@ def test_a_task_with_nothing_said_in_it_has_no_last_message(
 
 
 def test_a_task_claude_has_only_replied_in_has_no_last_message(
-        client, projects_dir, card_titles):
+        client, projects_dir):
     # Nothing the USER said: the field is null and the card keeps its title.
     _write_transcript(projects_dir, "sess-a", "/p", [
         _assistant("Hello, how can I help?", T9),
@@ -849,7 +840,7 @@ def test_a_task_claude_has_only_replied_in_has_no_last_message(
 
 
 def test_the_last_message_survives_an_incremental_re_read(
-        client, projects_dir, card_titles):
+        client, projects_dir):
     # The scan is incremental, so the SECOND poll — which reads no new bytes at
     # all — must answer the same as the first rather than blanking the field.
     path = _write_transcript(projects_dir, "sess-a", "/p", [
@@ -898,16 +889,16 @@ def test_a_tool_only_turn_still_clears_a_failed_mark(client, projects_dir):
     assert _tasks(client)[0]["failed"] is False
 
 
-def test_the_row_carries_no_last_message_while_the_pref_is_off(
-        client, projects_dir):
-    # Default off (no `card_titles` fixture): the field is ABSENT, not null —
-    # nothing draws it, and every row on the machine stops paying for it.
+def test_a_single_row_answer_carries_no_last_message(client, projects_dir):
+    # The listing carries the field; the single-row doors (a `/messages` read)
+    # do not — nothing there draws it, so the key is ABSENT, not null.
     _write_transcript(projects_dir, "sess-a", "/p", [
         _user("run the migration", T9),
         _assistant("Ran it", T10),
     ])
 
-    assert "last_message" not in _tasks(client)[0]
+    assert _tasks(client)[0]["last_message"]["text"] == "run the migration"
+    assert "last_message" not in client.get("/api/tasks/sess-a/messages").json()
 
 
 def test_show_more_returns_the_whole_thread_newest_first(client, projects_dir):

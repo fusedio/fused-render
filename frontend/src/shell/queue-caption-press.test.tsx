@@ -18,29 +18,17 @@
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer, type ReactTestInstance } from "react-test-renderer";
 
 import type { Task } from "@platform/lib/api";
 
 const { TaskRowItem } = await import("./ScheduleTaskViews");
-const { publishTaskCardTitleMode, resetTaskCardTitleFlagForTests } = await import(
-  "./task-card-title-flag"
-);
-
-beforeEach(() => {
-  // The row reads `task_card_last_message` on mount (`useTaskCardTitleMode`).
-  // Handing it the shipping answer up front keeps the read off the network AND
-  // off the microtask queue — an async `set()` after the assertions is a state
-  // update outside `act` and has nothing to do with what is being tested.
-  publishTaskCardTitleMode(false);
-});
 
 const mounted: ReactTestRenderer[] = [];
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
-  resetTaskCardTitleFlagForTests();
 });
 
 const HOLDER = {

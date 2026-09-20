@@ -612,6 +612,81 @@ select.c-pill {
   opacity: 0.45;
   cursor: not-allowed;
 }
+/* ---- the context meter (the composer's "how full is the window") --------
+   Typed as a pill and shaped as a pill, but it is a <span> and not a control:
+   no hover wash, no focus ring, no caret. `--c-dim` is the pills' resting
+   colour, so at rest the meter reads as one of them rather than as an alert.
+
+   `currentColor` does ALL the colouring: the arc inherits it, so the three
+   levels below are one declaration each and both themes come free — every
+   value is a `--c-*` token, which chat.css publishes for light and dark. */
+.c-ctxmeter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  /* The pill box, minus the paddings a pressable one needs on its text side:
+     the ring is round and already carries its own optical margin. */
+  padding: 3px 7px 3px 5px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--c-dim);
+  white-space: nowrap;
+  /* It is a readout, not a target: a drag that starts here should not select
+     the digits, and nothing about it answers a click. */
+  user-select: none;
+  cursor: default;
+}
+.c-ctxmeter.is-warn {
+  color: var(--c-status-progress);
+}
+.c-ctxmeter.is-full {
+  color: var(--c-error);
+}
+/* The digits go, the ring stays — the meter costs a glyph instead of a seat
+   once the row is out of width. Padding closes up with them. */
+.c-ctxmeter.is-compact {
+  padding-left: 4px;
+  padding-right: 4px;
+}
+.c-ctxmeter-ring {
+  /* In `em`, so the ring tracks the row's type at any zoom rather than
+     freezing at 12 device pixels. */
+  width: 1em;
+  height: 1em;
+  flex: none;
+  display: block;
+  overflow: visible;
+}
+.c-ctxmeter-track {
+  fill: none;
+  stroke: var(--c-border-strong);
+  stroke-width: 1.6;
+}
+.c-ctxmeter-arc {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  /* The fill steps once per turn, not continuously — a short ease reads as the
+     number moving rather than as a new number appearing. */
+  transition: stroke-dasharray 0.25s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .c-ctxmeter-arc {
+    transition: none;
+  }
+}
+.c-ctxmeter-pct {
+  font-variant-numeric: tabular-nums;
+}
+/* The tight rung takes 3px off every pill's sides; this one goes with them. */
+.c-composer-row.is-tight .c-ctxmeter {
+  padding-left: 3px;
+  padding-right: 3px;
+}
+
 /* The platform popup a keyboard user still gets should not arrive white. */
 .c-pill option {
   background: var(--c-bg);

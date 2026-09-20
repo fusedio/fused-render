@@ -214,6 +214,7 @@ function emptyState(file: string | null): ChatState {
     historyLoading: false,
     adopting: false,
     transcript: null,
+    context: null,
     ownRunEndedAt: 0,
     repaired: 0,
     transcriptGen: 0,
@@ -2614,6 +2615,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
     emit({
       turns: historyToTurns(res),
       transcript: res.transcript ?? null,
+      // THE CONTEXT READING TRAVELS WITH THE TRANSCRIPT, `null` included: this
+      // payload IS the conversation now on screen, so an answer that carries no
+      // reading (a chat whose first reply has not landed, an older server) must
+      // take the previous chat's meter down with it rather than leave somebody
+      // else's percentage under the box.
+      context: res.context ?? null,
       ...(fromCache ? {} : { historyLoading: false }),
       ...(live ? { permissions: permissionRows(), adopting: false } : {}),
     });
@@ -2662,6 +2669,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // flag arrives too late to have prevented it.
       adopting: true,
       turns: [],
+      // The meter belongs to the conversation that is leaving. Cleared with the
+      // turns rather than left to the fetch, so the window between the two does
+      // not show the last chat's fill under an empty log.
+      context: null,
       permissions: [],
       appState: [],
       skills: [],
@@ -3454,6 +3465,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
       emit({
         turns: historyToTurns(res),
         ...(res.transcript && res.transcript.path ? { transcript: res.transcript } : {}),
+        // The rows this refresh just brought in are exactly what moved the
+        // window, so the meter moves with them — this is the whole refresh
+        // story for the context bar: a turn ends, the standing watch sees the
+        // transcript grow, this runs, the percentage steps up. No polling of
+        // its own.
+        context: res.context ?? null,
       });
     } catch (err) {
       // The transcript stays exactly as it rendered. The watermark is NOT
