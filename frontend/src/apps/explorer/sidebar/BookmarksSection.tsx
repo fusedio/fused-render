@@ -85,7 +85,7 @@ function countBookmarks(list: BookmarkItem[]): number {
 // Folder shape drawn inline so it inherits currentColor — an emoji folder
 // ignores the theme and looks heavy at this size.
 const FOLDER_ICON = (
-  <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+  <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
     <path d="M1.5 4A1.5 1.5 0 0 1 3 2.5h3.1c.4 0 .78.16 1.06.44l.8.8c.1.1.22.16.35.16H13A1.5 1.5 0 0 1 14.5 5.4V12A1.5 1.5 0 0 1 13 13.5H3A1.5 1.5 0 0 1 1.5 12V4z" />
   </svg>
 );

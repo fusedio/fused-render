@@ -45,13 +45,16 @@ export const ICON_COLOR_HEX: Record<IconColor, { light: string; dark: string }> 
   red: { light: "#d44c47", dark: "#df5452" },
 };
 
-/** The plate behind a picker-written glyph: white on light, black on dark.
- *  Written into the file as `var(--fused-bg)` (declared in the svg's own
- *  `<style>` with a prefers-color-scheme flip, for standalone readers) and
- *  swapped for the literal hex by `themeIconSvg` when the shell draws it. */
+/** The plate behind a picker-written glyph: the `--bg-alt` pair (tokens.css),
+ *  the sidebar's own background, so on the Projects row the plate dissolves
+ *  into the surface and the glyph reads as if drawn straight on it (owner,
+ *  2026-09-20; was white / black). Written into the file as `var(--fused-bg)`
+ *  (declared in the svg's own `<style>` with a prefers-color-scheme flip, for
+ *  standalone readers) and swapped for the literal hex by `themeIconSvg` when
+ *  the shell draws it — so files already on disk follow this change. */
 export const ICON_BG_HEX: { light: string; dark: string } = {
-  light: "#ffffff",
-  dark: "#000000",
+  light: "#f4f5f7",
+  dark: "#1b1d21",
 };
 
 /** The `<style>` block a picker-written icon.svg carries so it reads right
@@ -66,12 +69,13 @@ export function iconStyleBlock(color: IconColor): string {
   );
 }
 
-/** The rounded plate, first child so everything else draws over it. `style=`
+/** The plate, first child so everything else draws over it. A full square,
+ *  no radius (owner, 2026-09-20): the plate is the sidebar's own colour, so
+ *  a rounded corner only showed as a notch on hover/active rows. `style=`
  *  not `fill=`: a `var()` is only honoured in CSS, not as a presentation
  *  attribute. */
 export function iconPlateRect(size: number): string {
-  const rx = Math.round(size * 0.22 * 100) / 100;
-  return `<rect width="${size}" height="${size}" rx="${rx}" style="fill:var(--fused-bg)"/>`;
+  return `<rect width="${size}" height="${size}" style="fill:var(--fused-bg)"/>`;
 }
 
 export const ICON_COLOR_LABEL: Record<IconColor, string> = {

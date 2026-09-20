@@ -322,7 +322,7 @@ function CurrentAppRow({
           // the generic mark, on currentColor so it follows the glyph's tokens
           // (muted at rest, accent on the active row) — the SidebarFrame
           // cube's own posture.
-          <AppStar className="current-app-star" width={12} height={12} />
+          <AppStar className="current-app-star" width={16} height={16} />
         )}
       </span>
       <a

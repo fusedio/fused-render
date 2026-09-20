@@ -814,10 +814,8 @@ button.sidebar-prefs-trigger {
 
 .recent-row .recent-glyph {
   /* The glyph slot is inert here (bookmarks use it as the icon-picker
-     button); keep the width so names align with bookmark rows. */
+     button); it keeps .bookmark-glyph's 24px box so names align. */
   cursor: inherit;
-  display: inline-flex;
-  justify-content: center;
 }
 
 .bookmark-row {
@@ -825,7 +823,10 @@ button.sidebar-prefs-trigger {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 6px 10px;
+  /* 3px/4px, not 6px/10px (owner, 2026-09-20): the 24px glyph slot below
+     sets the row's height (3 + 24 + 3 = 30, what 6 + 17.5 + 6 gave before),
+     and the icon is what grew — the row did not. */
+  padding: 3px 10px 3px 4px;
   border-radius: 8px;
   cursor: pointer;
   /* Opaque equivalent of this row's background, for the hover actions' fade
@@ -847,20 +848,28 @@ button.sidebar-prefs-trigger {
   color: var(--accent);
 }
 
+/* 24px square slot, shared by Bookmarks, folders, Recents and the Projects
+   rows so the four name columns start at one x (4 + 24 + 7 = 35). */
 .bookmark-glyph {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--fg-muted);
-  font-size: 11px;
+  font-size: 15px;
+  line-height: 1;
   cursor: pointer;
-  width: 14px;
+  width: 24px;
+  height: 24px;
   text-align: center;
   position: relative;
   z-index: 1;
 }
 
-/* Custom emoji icons render at natural color, slightly larger than the star. */
+/* Custom emoji icons render at natural color, filling the slot the way an
+   app's icon.svg does next door. */
 .bookmark-glyph.custom-icon {
-  font-size: 12px;
+  font-size: 19px;
 }
 
 .bookmark-row.active .bookmark-glyph {
@@ -1276,27 +1285,20 @@ a.bookmark-name::after {
    (equal share with Bookmarks, own scroll, content-capped) is the shared rule
    beside .sidebar-bookmarks above. */
 
-.current-app-glyph {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-/* The app's own icon.svg, filling the 14px glyph slot as is — the author's
-   shape AND colours, untouched (owner, 2026-08-27). */
+/* The Projects row shares .bookmark-row's 24px slot and 3px/4px padding;
+   nothing to add here. */
+/* The app's own icon.svg or icon.png, filling the 24px slot edge to edge —
+   the author's shape AND colours, untouched (owner, 2026-08-27), but cover
+   not contain (owner, 2026-09-20): the file bleeds to the slot and the slot
+   rounds the corners, so a square-plated picker icon and a photo-like png
+   get one silhouette. A wide or tall svg loses its edges rather than
+   letterboxing. */
 .current-app-icon {
   display: block;
-  width: 14px;
-  height: 14px;
-  object-fit: contain;
-}
-
-/* The icon.png fallback (app_listing.ICON_NAMES): a raster has no plate of its
-   own, so the shell fits it to the rounded square — cover, not contain, so a
-   photo-like file fills the slot with no letterbox. Svg keeps the rule above. */
-.current-app-icon.is-raster {
+  width: 24px;
+  height: 24px;
   object-fit: cover;
-  border-radius: 3px;
+  border-radius: 4px;
 }
 
 /* The running dot sits after the name, in flow: the name gives up its
