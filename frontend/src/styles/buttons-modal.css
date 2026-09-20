@@ -132,7 +132,10 @@
    whichever way focus arrived — the same accent ring keyboard focus already
    wears everywhere else, so it reads as "focused", not as a new state. */
 .modal-footer .btn:focus {
-  outline: 2px solid var(--accent);
+  /* 1px, not the 2px keyboard ring: it sits on a button that is already the
+     visual weight of the row, and the thicker ring read as a second border
+     (Akshil, 2026-09-21). */
+  outline: 1px solid var(--accent);
   outline-offset: 2px;
 }
 /* The card itself is the chassis's LAST-RESORT focus home (every control in
