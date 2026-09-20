@@ -32,6 +32,7 @@ import { isTopmost, popModal, pushModal } from "./esc-stack";
 import { OVERLAY_EXIT_MS } from "@platform/lib/exit-animation";
 import {
   CLOSE_CONTROL_SELECTOR,
+  backdropPressCloses,
   decideClose,
   isDisarmingInteraction,
 } from "./dirty-guard";
@@ -290,6 +291,9 @@ export function Modal({
   // layer when a dialog is nested inside another (see `openModals`). The token
   // is this instance's own identity, registered for the life of the mount — the
   // exit animation included, since a dialog still on screen is still a layer.
+  // When this dialog opened, for the scrim's grace period. A ref, not state:
+  // read at press time, never rendered.
+  const openedAt = useRef(performance.now());
   const token = useRef({});
   useEffect(() => {
     const mine = token.current;
@@ -341,7 +345,12 @@ export function Modal({
     <div
       className={"modal-overlay deploy-overlay" + (closing ? " closing" : "")}
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) attemptClose();
+        // Only the scrim itself, and not in its first moments: the second press
+        // of a double-click on whatever opened this dialog lands here, on the
+        // spot the pointer never left (dirty-guard `backdropPressCloses`).
+        if (e.target !== e.currentTarget) return;
+        if (!backdropPressCloses(openedAt.current, performance.now())) return;
+        attemptClose();
       }}
       onKeyDown={onKeyDown}
     >

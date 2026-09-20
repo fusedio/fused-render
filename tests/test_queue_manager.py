@@ -339,6 +339,25 @@ def test_remove_drops_from_line_blocked_and_answers():
     assert owner_key(m) == "b"
 
 
+def test_remove_clears_a_resume_marker_no_entry_cancel_can_reach():
+    """`forget_entry` names one MESSAGE and matches by entry id; the items the
+    queue mints for itself carry none (`card_answered`, `card_cleared`), so
+    only the keyed verb takes those out of the line. This is the half of a
+    delete that cancelling the task's scheduled entries can never do."""
+    m = World().manager()
+    m.enqueue(F1, "a", "e1")
+    m.enqueue(F1, "b", "e2")
+    m.card_raised("a")                       # a parked, b takes the folder
+    m.card_cleared("a")                      # answered elsewhere: a marker
+    assert line_of(m) == ["a"]
+    assert [i["entry_id"] for i in m.snapshot()["folders"][F1]["line"]] == [""]
+
+    m.forget_entry("e1")                     # the marker names no message
+    assert line_of(m) == ["a"]
+    m.remove("a")
+    assert line_of(m) == []
+
+
 def test_remove_of_the_owner_ends_the_turn_and_pumps():
     m = World().manager()
     m.enqueue(F1, "a")
@@ -389,6 +408,105 @@ def test_remove_of_a_stuck_line_head_pumps_the_next_task(monkeypatch):
     assert line_of(m) == []
     assert owner_key(m) == "y"
     assert attempts == ["y"]
+
+
+# ---------------------------------------------------------------- holds_live
+
+
+def test_holds_live_for_the_owner_and_not_for_the_line():
+    """The two answers the delete door needs told apart: the folder's owner is
+    a process in flight, and everybody behind it is a message that has not
+    started."""
+    world = World()
+    m = world.manager()
+    m.enqueue(F1, "a")
+    m.enqueue(F1, "b")
+    world.running_keys.add("a")
+    assert m.holds_live("a") is True
+    assert m.holds_live("b") is False
+    assert m.holds_live("") is False
+    assert m.holds_live("nobody") is False
+
+
+def test_holds_live_for_a_parked_run_and_for_its_held_answer():
+    """Parked is live — a turn waiting on a human — and stays live once the
+    user answers: the decision is held, the task moves into the line, and the
+    run it belongs to is still sitting there waiting for the folder."""
+    world = World()
+    m = world.manager()
+    m.enqueue(F1, "a")
+    m.enqueue(F1, "b")
+    m.card_raised("a")                       # b owns, a parked
+    world.blocked_keys.add("a")
+    assert m.holds_live("a") is True
+
+    m.card_answered("a", "run-a", "req-1", {"answer": "allow"})
+    assert blocked_of(m) == [] and line_of(m) == ["a"]
+    world.blocked_keys.clear()
+    world.running_keys.add("a")
+    assert m.holds_live("a") is True
+
+
+def test_holds_live_is_false_once_the_run_behind_the_answer_is_gone():
+    """A held decision for a process that has died holds nothing: the status
+    sync is what decides, so the row can be deleted rather than being refused
+    until the next `reconcile` retires the answer."""
+    world = World()
+    m = world.manager()
+    m.enqueue(F1, "a")
+    m.enqueue(F1, "b")
+    m.card_raised("a")
+    m.card_answered("a", "run-a", "req-1", {})
+    assert m.held_answer("a") is not None
+    assert m.holds_live("a") is False
+
+
+def test_holds_live_while_the_spawn_is_still_in_flight():
+    """A `starting` owner has no run id yet, so the status sync has nothing to
+    say about it — and the door must not read that silence as "nothing
+    running" and hand the folder to the next task beside a process being
+    created right now (Bugbot, PR #1254). Probed from INSIDE the spawn, which
+    is the only moment the owner is in this state."""
+    world = World()
+    seen: list[bool] = []
+    holder: list = []
+    real_spawn = world.spawn
+
+    def probing_spawn(folder, task_key):
+        seen.append(holder[0].holds_live(task_key))
+        return real_spawn(folder, task_key)
+
+    world.spawn = probing_spawn
+    m = world.manager()
+    holder.append(m)
+    m.enqueue(F1, "a")
+    assert seen == [True]
+    # Once the spawn has returned the owner carries a run id and the sync is
+    # the authority again: nothing running says so.
+    assert m.holds_live("a") is False
+    world.running_keys.add("run")
+    assert m.holds_live("a") is True
+
+
+def test_holds_live_for_a_resume_marker_in_the_line():
+    """A card answered outside the queue turns the parked task into a resume
+    marker at the head of the line: not a message waiting for the folder but a
+    run already going. It holds the folder for as long as that run is alive,
+    and stops the moment the sync says it is gone."""
+    world = World()
+    m = world.manager()
+    m.enqueue(F1, "a")
+    m.enqueue(F1, "b")
+    m.card_raised("a")                       # b owns, a parked
+    m.card_cleared("a", "run-a")
+    assert line_of(m) == ["a"]
+    assert m.held_answer("a") is None
+    # The marker carries the parked item's own names (the sync is asked with
+    # the whole record), so the run is named by the task here.
+    world.running_keys.add("a")
+    assert m.holds_live("a") is True
+    world.running_keys.clear()
+    assert m.holds_live("a") is False
 
 
 # ------------------------------------------------------------------- started
