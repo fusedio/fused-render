@@ -76,6 +76,7 @@ import {
   AppWindow,
   Download,
   Files,
+  FolderOpen,
   ListTodo,
   Loader2,
   Share2,
@@ -559,20 +560,6 @@ export default function AppPage({
         </div>
         {entry && (
           <div className="app-page-actions">
-            {/* The app's entry page in the EXPLORER — sidebar, crumb, header
-                and all. This button used to open the chrome-free embed in a
-                new tab; the explorer's own header now carries a fullscreen
-                control that does that hop, so this page offers one route (the
-                explorer) and the explorer offers the next (the embed). The
-                folder link opposite is the same route one level up. */}
-            <Button
-              size="sm"
-              variant="outline"
-              className="app-page-open"
-              onClick={() => navigateUrl(urlForFsPath(entry), { isDir: false })}
-            >
-              Open in explorer
-            </Button>
             {/* ONE button: Share (the sheet behind it holds both the public
                 link and the .fused download) with the flag on, plain Export
                 with it off — see the `handleShare` comment above. Disabled
@@ -614,6 +601,21 @@ export default function AppPage({
                   )}
                 </>
               )}
+            </Button>
+            {/* The app's entry page in the EXPLORER — sidebar, crumb, header
+                and all. This button used to open the chrome-free embed in a
+                new tab; the explorer's own header now carries a fullscreen
+                control that does that hop, so this page offers one route (the
+                explorer) and the explorer offers the next (the embed). The
+                folder link opposite is the same route one level up. */}
+            <Button
+              size="sm"
+              variant="default"
+              className="app-page-open"
+              onClick={() => navigateUrl(urlForFsPath(entry), { isDir: false })}
+            >
+              Open
+              <FolderOpen data-icon="inline-end" />
             </Button>
           </div>
         )}
