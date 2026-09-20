@@ -43,6 +43,8 @@ export interface ContextMeterProps {
 /** The ring's geometry in its own 28-unit box — the height of the pills
  *  beside it. r=12 keeps the 2-wide stroke inside the viewBox at every angle. */
 const R = 12;
+/** …and its centre. */
+const C = 14;
 const CIRCUMFERENCE = 2 * Math.PI * R;
 
 /**
@@ -68,44 +70,48 @@ export function ContextMeter({ usage, model }: ContextMeterProps) {
   // large-arc-flag arithmetic, and it degrades to an empty ring at 0.
   const dash = `${((CIRCUMFERENCE * pct) / 100).toFixed(2)} ${CIRCUMFERENCE.toFixed(2)}`;
 
-  // `c-pillwrap` is worn for its positioning alone: the popover hangs off an
-  // inert anchor laid over this box, exactly as the three select pills do.
+  // `c-pillwrap` is worn for its positioning alone, as the three select pills
+  // wear it. Unlike them, the ring IS the trigger (SchedButton's shape): Base
+  // UI then owns the toggle, so a second press on the ring closes the report
+  // instead of an outside-press closing it and this button's own click
+  // flipping it straight back open (Bugbot, PR #1253).
   return (
     <span className="c-pillwrap c-ctxwrap">
-      <button
-        type="button"
-        className="c-ctxmeter"
-        data-hint={hint}
-        aria-label={hint}
-        aria-expanded={open}
-        onClick={() => setOpen((was) => !was)}
-      >
-        <svg
-          className="c-ctxmeter-ring"
-          viewBox="0 0 28 28"
-          aria-hidden="true"
-          focusable="false"
-        >
-          <circle className="c-ctxmeter-track" cx="14" cy="14" r={R} />
-          <circle
-            className="c-ctxmeter-arc"
-            cx="12"
-            cy="12"
-            r={R}
-            strokeDasharray={dash}
-            transform="rotate(-90 14 14)"
-          />
-        </svg>
-        {/* The sentence above already says the number; saying it twice is what
-            an unhidden label here would do. */}
-        <span className="c-ctxmeter-pct" aria-hidden="true">
-          {pct}
-        </span>
-      </button>
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger
           render={
-            <span className="c-pill-anchor" aria-hidden="true" tabIndex={-1} />
+            <button
+              type="button"
+              className="c-ctxmeter"
+              data-hint={hint}
+              aria-label={hint}
+            >
+              <svg
+                className="c-ctxmeter-ring"
+                viewBox="0 0 28 28"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <circle className="c-ctxmeter-track" cx={C} cy={C} r={R} />
+                {/* The arc shares the track's centre, and is rotated about
+                    that same point — a quarter turn back, so the first dash
+                    starts at twelve o'clock and sits concentric with the
+                    track (Bugbot, PR #1253). */}
+                <circle
+                  className="c-ctxmeter-arc"
+                  cx={C}
+                  cy={C}
+                  r={R}
+                  strokeDasharray={dash}
+                  transform={`rotate(-90 ${C} ${C})`}
+                />
+              </svg>
+              {/* The sentence above already says the number; saying it twice is
+                  what an unhidden label here would do. */}
+              <span className="c-ctxmeter-pct" aria-hidden="true">
+                {pct}
+              </span>
+            </button>
           }
         />
         <PopoverContent

@@ -80,6 +80,15 @@ test("the arc is the percentage, drawn from twelve o'clock", () => {
   // Rotated a quarter turn back, so the arc starts at the top like every other
   // dial a reader has seen.
   expect(arc("claude-haiku-4-5", 100_000).transform).toBe("rotate(-90 14 14)");
+  // …about the TRACK's centre, which the arc shares — an arc centred elsewhere
+  // and rotated about the track is a crescent, not a fill (Bugbot, PR #1253).
+  const ring = create(
+    <ContextMeter usage={usage({ cache_read_input_tokens: 1000, model: "claude-haiku-4-5" })} model="claude-haiku-4-5" />,
+  ).root;
+  const track = ring.findByProps({ className: "c-ctxmeter-track" }).props;
+  const filled = ring.findByProps({ className: "c-ctxmeter-arc" }).props;
+  expect([filled.cx, filled.cy]).toEqual([track.cx, track.cy]);
+  expect(filled.transform).toBe(`rotate(-90 ${track.cx} ${track.cy})`);
   // A million-token model reports its own scale: the same count, a quieter ring.
   expect(arc("claude-sonnet-5", 100_000).strokeDasharray).toBe(
     `${(circumference * 0.1).toFixed(2)} ${circumference.toFixed(2)}`,
