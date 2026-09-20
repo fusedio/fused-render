@@ -28,6 +28,8 @@ import {
   splitBookmarkUrl,
   isBookmarkMissing,
   takeLastAddedBookmarkId,
+  addBookmark,
+  allBookmarks,
 } from "@platform/lib/bookmarks";
 import { bookmarkSaveTarget } from "@platform/lib/bookmark-file";
 import { exportBookmarkFile } from "@platform/lib/api";
@@ -834,6 +836,27 @@ export default function BookmarksSection() {
   const armed = getArmedBookmarkFor(location.pathname);
   const rowActive = (b: Bookmark): boolean =>
     armed ? armed.id === b.id : b.url === currentUrl();
+  // The heading's "+": with a bookmark for this view already in the tree it
+  // scrolls that row into view (the button only renders while the section is
+  // open, so the row is mounted); otherwise it saves the view as a new bookmark, named after the
+  // path's last segment (the sidebar has no rendered title to borrow).
+  const activeBookmark = allBookmarks().find(rowActive);
+  const onHeadingAdd = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (activeBookmark) {
+      rowRefs.current.get(activeBookmark.id)?.scrollIntoView({ block: "nearest" });
+      return;
+    }
+    const seg = location.pathname.split("/").filter(Boolean).pop() ?? "";
+    let name = "Bookmark";
+    try {
+      name = decodeURIComponent(seg) || name;
+    } catch {
+      name = seg || name;
+    }
+    await addBookmark(name, currentUrl());
+    notifyBookmarksChanged();
+  };
   // Dirty = the armed row's current params differ from its saved url — the
   // exact visibility condition of the Update-bookmark button (Breadcrumb).
   // Pathname already matches (the gate above), so only the search differs.
@@ -926,6 +949,16 @@ export default function BookmarksSection() {
               count are the same element (sidebar.css). */}
           {sectionCollapsed && (
             <span className="sidebar-count-chip recents-count">{countBookmarks(items)}</span>
+          )}
+          {!sectionCollapsed && (
+            <button
+              className="icon-btn sidebar-heading-add"
+              title={activeBookmark ? "Show current bookmark" : "Bookmark this view"}
+              aria-label={activeBookmark ? "Show current bookmark" : "Bookmark this view"}
+              onClick={onHeadingAdd}
+            >
+              +
+            </button>
           )}
         </div>
         {!sectionCollapsed &&
