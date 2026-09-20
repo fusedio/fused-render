@@ -1301,15 +1301,15 @@ a.bookmark-name::after {
   border-radius: 4px;
 }
 
-/* A png (is-raster, CurrentAppsSection) sits 3px smaller inside the same
-   24px slot (owner tuned live, 2026-09-20): 1.5px of air each side so a
+/* A png (is-raster, CurrentAppsSection) sits 4px smaller inside the same
+   24px slot (owner tuned live, 2026-09-20): 2px of air each side so a
    photo-like file edge-to-edge does not read heavier than the svg glyphs
    around it. Margin, not a smaller slot, so the row's geometry does not
    move. */
 .current-app-icon.is-raster {
-  width: 21px;
-  height: 21px;
-  margin: 1.5px;
+  width: 20px;
+  height: 20px;
+  margin: 2px;
 }
 
 /* The running dot sits after the name, in flow: the name gives up its
