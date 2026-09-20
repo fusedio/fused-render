@@ -837,19 +837,13 @@ export default function BookmarksSection() {
   const rowActive = (b: Bookmark): boolean =>
     armed ? armed.id === b.id : b.url === currentUrl();
   // The heading's "+": with a bookmark for this view already in the tree it
-  // scrolls that row into view (the fold-aware path the auto-scroll effect
-  // owns); otherwise it saves the view as a new bookmark, named after the
+  // scrolls that row into view (the button only renders while the section is
+  // open, so the row is mounted); otherwise it saves the view as a new bookmark, named after the
   // path's last segment (the sidebar has no rendered title to borrow).
   const activeBookmark = allBookmarks().find(rowActive);
   const onHeadingAdd = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (activeBookmark) {
-      if (sectionCollapsed) {
-        pendingScrollId.current = activeBookmark.id;
-        localStorage.setItem(BOOKMARKS_COLLAPSED_KEY, "0");
-        setSectionCollapsed(false);
-        return;
-      }
       rowRefs.current.get(activeBookmark.id)?.scrollIntoView({ block: "nearest" });
       return;
     }
@@ -956,14 +950,16 @@ export default function BookmarksSection() {
           {sectionCollapsed && (
             <span className="sidebar-count-chip recents-count">{countBookmarks(items)}</span>
           )}
-          <button
-            className="icon-btn sidebar-heading-add"
-            title={activeBookmark ? "Show current bookmark" : "Bookmark this view"}
-            aria-label={activeBookmark ? "Show current bookmark" : "Bookmark this view"}
-            onClick={onHeadingAdd}
-          >
-            +
-          </button>
+          {!sectionCollapsed && (
+            <button
+              className="icon-btn sidebar-heading-add"
+              title={activeBookmark ? "Show current bookmark" : "Bookmark this view"}
+              aria-label={activeBookmark ? "Show current bookmark" : "Bookmark this view"}
+              onClick={onHeadingAdd}
+            >
+              +
+            </button>
+          )}
         </div>
         {!sectionCollapsed &&
           (items.length === 0 ? (

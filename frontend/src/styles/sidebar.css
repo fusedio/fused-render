@@ -807,8 +807,8 @@ button.sidebar-prefs-trigger {
    is an .icon-btn at `right: 6px` inside a row whose edge is the heading's, and
    the heading carries 10px right padding, so -4px puts the two glyphs on one
    column. Zero block padding so the heading keeps its height (the seams and
-   useSectionContentCap's min-height both read it). Behind a collapsed count the
-   chip already took the slack, so the auto margin yields to the flex gap. */
+   useSectionContentCap's min-height both read it). Open sections only: folded,
+   the heading's far end belongs to the count chip. */
 .recents-heading > .sidebar-heading-add {
   margin-left: auto;
   margin-right: -4px;
@@ -816,9 +816,6 @@ button.sidebar-prefs-trigger {
   padding-bottom: 0;
   line-height: 1;
   font-size: 13px;
-}
-.recents-heading > .sidebar-count-chip ~ .sidebar-heading-add {
-  margin-left: 0;
 }
 
 /* The heading's collapsed count. No skin of its own since 2026-08-18: it wears
