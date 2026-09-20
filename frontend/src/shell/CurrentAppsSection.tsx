@@ -795,6 +795,17 @@ export default function CurrentAppsSection() {
           Projects
           <span className="sidebar-heading-chevron" aria-hidden="true" />
           {collapsed && <span className="sidebar-count-chip">{apps.length}</span>}
+          <button
+            className="icon-btn sidebar-heading-add"
+            title="New app"
+            aria-label="New app"
+            onClick={(e) => {
+              e.stopPropagation();
+              setComposing(true);
+            }}
+          >
+            +
+          </button>
         </div>
         {!collapsed && apps.map(render)}
         {!collapsed && (
