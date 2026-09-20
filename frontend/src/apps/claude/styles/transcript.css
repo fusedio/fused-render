@@ -2264,13 +2264,17 @@
   white-space: nowrap;
   min-width: 0;
 }
-/* A comment row IS the door into the "what was sent" popup — no separate
-   button, the row itself is the affordance. */
+/* A comment row is the door into the "what was sent" popup ONLY when one is
+   wired (`role="button"` — Receipts wires it behind the debug flag, see
+   ui/debug-sent). A row with nothing behind it is plain text: no hand, no
+   underline promising a press that does nothing (Akshil, 2026-09-20). */
 .chat-root .annsum .annsum-note {
-  cursor: pointer;
   border-radius: 4px;
 }
-.chat-root .annsum .annsum-note:hover .annsum-txt {
+.chat-root .annsum .annsum-note[role="button"] {
+  cursor: pointer;
+}
+.chat-root .annsum .annsum-note[role="button"]:hover .annsum-txt {
   text-decoration: underline;
   text-underline-offset: 2px;
 }

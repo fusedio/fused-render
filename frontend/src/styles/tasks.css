@@ -872,9 +872,10 @@ button.tasks-caret,
 .task-card-head-row .schedule-tv-id--tag,
 .tasks-row .schedule-tv-id--tag {
   appearance: none;
-  /* A HAIRLINE BOX (Akshil, 2026-09-19): moved here from the reply line, in
-     the light ink so it reads on the dark surface. */
-  border: 0.5px solid var(--scrim-border);
+  /* A HAIRLINE BOX (Akshil, 2026-09-19): moved here from the reply line. In
+     the THEME's ink at a quarter strength — a fixed white hairline vanished on
+     the light surface (Akshil, 2026-09-20). */
+  border: 0.5px solid color-mix(in srgb, var(--fg) 25%, transparent);
   background: none;
   font: inherit;
   /* A FUNNEL, NOT A HAND (Akshil, 2026-09-17). Every other pointer in a task
