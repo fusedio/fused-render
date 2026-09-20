@@ -76,15 +76,15 @@
 .btn-danger,
 .deploy-body .btn-danger,
 .prefs-section .btn-danger {
-  background: var(--error);
+  background: rgba(var(--error-rgb), 0.12);
   border-color: transparent;
-  color: var(--bg);
+  color: var(--error);
   font-weight: 600;
 }
 .btn-danger:hover:not(:disabled),
 .deploy-body .btn-danger:hover:not(:disabled),
 .prefs-section .btn-danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--error) 86%, var(--fg));
+  background: rgba(var(--error-rgb), 0.2);
   border-color: transparent;
 }
 
@@ -125,8 +125,9 @@
    button — Cancel, the safe answer in a destructive dialog — but the ring that
    says so is `:focus-visible`, and Chrome withholds that ring for focus moved
    by script right after a MOUSE click. So the dialog opened with Cancel
-   focused and nothing showing it, the outlined red "Delete forever" beside it
-   read as the live one, Enter pressed Cancel, and the dialog was gone before
+   focused and nothing showing it, the red-BORDERED "Delete forever" beside it
+   read as the live one (the border is gone: a tinted red button carries
+   the danger without borrowing the shape of a ring), Enter pressed Cancel, and the dialog was gone before
    it had finished fading in. Inside a footer the ring shows on `:focus`,
    whichever way focus arrived — the same accent ring keyboard focus already
    wears everywhere else, so it reads as "focused", not as a new state. */

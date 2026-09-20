@@ -27,13 +27,19 @@ describe("a focused footer button says so", () => {
     expect(css).not.toContain(".modal-footer .btn:focus-visible {");
   });
 
-  test("the destructive confirm is a solid button, the shape of .btn-primary", () => {
+  test("the destructive confirm is tinted red text on a light red fill, with no border", () => {
     const danger = rule(".btn-danger,\n.deploy-body .btn-danger,\n.prefs-section .btn-danger");
-    expect(danger).toContain("background: var(--error)");
-    expect(danger).toContain("color: var(--bg)");
+    expect(danger).toContain("background: rgba(var(--error-rgb), 0.12)");
+    expect(danger).toContain("color: var(--error)");
+    // The red BORDER is what read as a focus ring next to an unringed Cancel.
     expect(danger).toContain("border-color: transparent");
-    // The outlined red look is what read as "focused" next to an unringed Cancel.
-    expect(danger).not.toContain("rgba(var(--error-rgb)");
+    expect(danger).not.toContain("border-color: var(--error)");
+  });
+
+  test("← and → walk the footer's buttons, wrapping", () => {
+    expect(modal).toContain('if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;');
+    expect(modal).toContain('querySelectorAll<HTMLButtonElement>("button:not(:disabled)")');
+    expect(modal).toContain("buttons[(at + step + buttons.length) % buttons.length].focus()");
   });
 
   test("the chassis still parks initial focus in the body/footer, past the head", () => {
