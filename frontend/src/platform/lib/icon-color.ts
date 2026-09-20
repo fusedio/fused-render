@@ -69,12 +69,13 @@ export function iconStyleBlock(color: IconColor): string {
   );
 }
 
-/** The rounded plate, first child so everything else draws over it. `style=`
+/** The plate, first child so everything else draws over it. A full square,
+ *  no radius (owner, 2026-09-20): the plate is the sidebar's own colour, so
+ *  a rounded corner only showed as a notch on hover/active rows. `style=`
  *  not `fill=`: a `var()` is only honoured in CSS, not as a presentation
  *  attribute. */
 export function iconPlateRect(size: number): string {
-  const rx = Math.round(size * 0.22 * 100) / 100;
-  return `<rect width="${size}" height="${size}" rx="${rx}" style="fill:var(--fused-bg)"/>`;
+  return `<rect width="${size}" height="${size}" style="fill:var(--fused-bg)"/>`;
 }
 
 export const ICON_COLOR_LABEL: Record<IconColor, string> = {

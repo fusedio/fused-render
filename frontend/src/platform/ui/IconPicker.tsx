@@ -76,9 +76,9 @@ function escapeAttr(v: string | number): string {
 }
 
 /** A lucide icon as a standalone icon.svg document: lucide's 24-unit
- *  viewBox with a rounded plate behind the glyph (the sidebar's `--bg-alt`
- *  pair — icon-color.ts ICON_BG_HEX) and the glyph inset so its strokes clear
- *  the plate's corners, in the named colour.
+ *  viewBox with a square plate behind the glyph (the sidebar's `--bg-alt`
+ *  pair — icon-color.ts ICON_BG_HEX) and the glyph inset so its strokes stay
+ *  off the plate's edge, in the named colour.
  *
  *  The colours are written TWICE, for two readers. The root's
  *  `data-fused-color` plus `stroke="currentColor"` / `var(--fused-bg)` is the
@@ -100,12 +100,14 @@ export function glyphIconSvg(node: IconNode, color: IconColor = "default"): stri
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" data-fused-color="${color}">` +
     iconStyleBlock(color) +
     iconPlateRect(24) +
-    // Inset 3 units a side (glyph drawn at 75%) so the 24-unit lucide art
-    // sits inside the plate rather than touching its rounded corners.
-    '<g transform="translate(3 3) scale(0.75)" fill="none" ' +
-    // 3 not lucide's 2: the row draws the file at 20px and the glyph is at
-    // 75%, where a thinner stroke lands near a pixel and reads faint.
-    'stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">' +
+    // Inset 2.4 units a side (glyph drawn at 80%; owner, 2026-09-20, was
+    // 75%) so the 24-unit lucide art sits inside the plate rather than
+    // touching its edge.
+    '<g transform="translate(2.4 2.4) scale(0.8)" fill="none" ' +
+    // Lucide's own 2 (owner, 2026-09-20, was 3): the row now draws the file
+    // at 24px and the glyph at 80%, so the stroke lands at ~1.6px and no
+    // longer needs thickening to survive.
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
     inner +
     "</g></svg>"
   );
