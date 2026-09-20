@@ -42,6 +42,8 @@ import {
 } from "@platform/ui/sidebar/useSectionContentCap";
 import { embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
 import { notify } from "@platform/lib/notifications";
+import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
+import { useAppSharingFeature } from "@platform/lib/share-app-flag";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Modal } from "@platform/ui/modal/Modal";
@@ -688,6 +690,11 @@ export default function CurrentAppsSection() {
     }
   };
 
+  // Share sits right under "Open app": the same flag-branched entry the app
+  // card menu carries (appCardMenu.ts) — the unified sheet with the flag on,
+  // the plain `.fused` export with it off. A hook, not the sync getter: this
+  // menu is built inside a component, so it follows the flag live.
+  const sharing = useAppSharingFeature();
   const menuItems = (app: CurrentApp): MenuEntry[] => [
     {
       // The app page header's own "Open app": the entry page full-size AS AN
@@ -700,6 +707,19 @@ export default function CurrentAppsSection() {
         if (app.entry) window.open(embedUrlForFsPath(app.entry), "_blank", "noopener");
       },
     },
+    sharing
+      ? {
+          label: "Share…",
+          icon: MenuIcons.share,
+          disabled: !app.exists,
+          onClick: () => openShareApp({ path: app.path, name: app.name }),
+        }
+      : {
+          label: "Export App File",
+          icon: MenuIcons.download,
+          disabled: !app.exists,
+          onClick: () => void exportAppFileOnly({ path: app.path, name: app.name }),
+        },
     {
       label: "Rename…",
       icon: MenuIcons.rename,
