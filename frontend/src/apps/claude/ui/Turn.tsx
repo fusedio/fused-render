@@ -105,10 +105,6 @@ export const Turn = memo(function Turn({
     );
   }
   if (turn.role === "user") {
-    // Is there a "what was sent" to open at all? Only when the composed wire
-    // differs from what the reader typed — otherwise the panel would show the
-    // bubble back to them.
-    const sent = onShowSent && turn.raw && turn.raw !== turn.text ? onShowSent : null;
     // WHEN it was sent (design.md §C): epoch seconds, off the transcript
     // record for a restored turn (agent.py `_row_ts`) and off the controller
     // for a live send. Absent on an old transcript, and then no time is drawn.
@@ -160,32 +156,10 @@ export const Turn = memo(function Turn({
             {...(onShowSent ? { onShowSent } : {})}
           />
         ) : null}
-        {turn.appState ? (
-          // The push channel's receipt (T:16588-16596, `.user .attach` T:1802):
-          // this message carried a description of the app the user is looking at.
-          //
-          // THE RECEIPT IS THE DOOR (R4-1, Akshil). It says the message carried
-          // more than the bubble shows, so it is the one line a reader who wants
-          // to see that "more" points at — exactly what T does with it
-          // (T:11059 `row.title = "Click to see exactly what was sent to the
-          // agent"`, T:1249). A second "what was sent" control beside it was
-          // two doors into one room, and the wordier of them was the one that
-          // only appeared on hover. So the receipt becomes a real `button` —
-          // keyboard-reachable, with the pointer and the underline to say so —
-          // and keeps its 11px faint typography (T:1804) unchanged.
-          sent ? (
-            <button
-              type="button"
-              className="attach is-door"
-              title="Click to see exactly what was sent to the agent"
-              onClick={() => sent(turn)}
-            >
-              app state attached
-            </button>
-          ) : (
-            <div className="attach">app state attached</div>
-          )
-        ) : null}
+        {/* NO "app state attached" LINE (Akshil, 2026-09-20). The push
+            channel's receipt named machinery the reader never typed and never
+            needs to know rode along; the message is the words. `turn.appState`
+            is still recorded on the turn for the "what was sent" panel. */}
         {/* AND THERE IS NO "what was sent" HOVER CONTROL, ANYWHERE (P3R1-7,
             owner 2026-09-10). One survived here, for the turn whose wire differs
             with no receipt line to press — defensible in itself and confusing in

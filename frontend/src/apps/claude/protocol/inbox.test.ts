@@ -16,6 +16,18 @@ describe("the rows a held follow-up earns", () => {
     expect(rows.map((r) => r.id)).toEqual(["f1", "f2"]);
   });
 
+  it("matches and draws the WORDS, not the wire the run holds (queue QA, 2026-09-20)", () => {
+    // The run reports its inbox verbatim — `<live-app-state>` block and all —
+    // while the bubble already on screen is the stripped text. Keying the two
+    // differently drew the message twice, the second time as the raw block.
+    const wire = "<live-app-state>\n{\"title\":\"sine\"}\n</live-app-state>\n\nheloo";
+    expect(inboxBubbles([msg("f1", wire)], [], ["heloo"])).toEqual([]);
+    expect(inboxBubbles([msg("f1", wire)], ["heloo"], [])).toEqual([]);
+    // Nothing else drawing it → the bubble it earns is the words alone.
+    expect(inboxBubbles([msg("f1", wire)], [], []).map((r) => r.text)).toEqual(["heloo"]);
+    expect(inboxKey(wire)).toBe("heloo");
+  });
+
   it("draws nothing at all for an empty, absent or older-server answer", () => {
     // An agent.py without the field sends none, which is the same as an empty
     // inbox — and is exactly what this pane did before the field existed.

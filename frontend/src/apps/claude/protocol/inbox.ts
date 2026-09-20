@@ -45,6 +45,7 @@
 // controller is drawing and what the transcript holds, and answers with a
 // subset of the first. No React, no fetches, no clock.
 import type { InboxMessage } from "./types";
+import { stripBlocks } from "./wire";
 
 /** One drawn row: an inbox entry that nothing else on screen is saying. */
 export interface InboxBubble {
@@ -59,7 +60,12 @@ export interface InboxBubble {
  *  case- or punctuation-insensitive — two genuinely different messages that
  *  differ only in case are two messages. */
 export function inboxKey(text: string): string {
-  return String(text ?? "").trim();
+  // THE WORDS, not the wire. The run reports its inbox verbatim, so a row
+  // still carries the `<live-app-state>` block the page composed onto the
+  // send, while the bubble it has to match against draws `stripBlocks(...)`
+  // — the same message keyed two ways drew twice, the second time as the
+  // raw block (project queue QA, 2026-09-20).
+  return stripBlocks(String(text ?? "")).trim();
 }
 
 /**
@@ -98,7 +104,8 @@ export function inboxBubbles(
   const out: InboxBubble[] = [];
   for (const row of rows) {
     if (!row) continue;
-    const text = String(row.text ?? "");
+    // Drawn as the words too, for the row nothing else is drawing yet.
+    const text = stripBlocks(String(row.text ?? ""));
     const key = inboxKey(text);
     // A WORDLESS ENTRY IS NOT A BUBBLE. Pictures alone have no typed line, and
     // an empty bubble under the log says nothing a reader can read.
