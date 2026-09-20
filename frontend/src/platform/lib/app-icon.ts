@@ -5,14 +5,16 @@
 // through `appIconUrl`.
 import type { IconPick } from "@platform/ui/IconPicker";
 import { removeAppIcon, setAppIcon } from "@platform/lib/api";
-import { iconPlateRect, iconStyleBlock } from "@platform/lib/icon-color";
+import { iconStyleBlock } from "@platform/lib/icon-color";
 import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
 
 /** The picked emoji as a standalone icon.svg document — square viewBox, no
- *  fixed size, on the same rounded plate a lucide pick gets (white on light,
- *  black on dark; icon-color.ts). `data-fused-color="default"` is there so
- *  the shell's theme swap (themeIconSvg) resolves the plate; the emoji has no
- *  currentColor strokes, so the glyph itself is untouched. */
+ *  fixed size, and NO plate (owner, 2026-09-20): an emoji is a full-colour
+ *  tile of its own, and a plate behind it read as a box around a sticker.
+ *  A lucide pick keeps its plate (IconPicker.glyphIconSvg) because a bare
+ *  stroke glyph needs the contrast. `data-fused-color="default"` stays so
+ *  readIconColor still recognises the file as picker-written; the emoji has
+ *  no currentColor strokes, so themeIconSvg leaves the glyph untouched. */
 export function emojiIconSvg(emoji: string): string {
   const safe = emoji
     .replace(/&/g, "&amp;")
@@ -21,7 +23,6 @@ export function emojiIconSvg(emoji: string): string {
   return (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" data-fused-color="default">' +
     iconStyleBlock("default") +
-    iconPlateRect(64) +
     '<text x="32" y="32" text-anchor="middle" dominant-baseline="central" ' +
     `font-size="44">${safe}</text></svg>`
   );

@@ -45,13 +45,16 @@ export const ICON_COLOR_HEX: Record<IconColor, { light: string; dark: string }> 
   red: { light: "#d44c47", dark: "#df5452" },
 };
 
-/** The plate behind a picker-written glyph: white on light, black on dark.
- *  Written into the file as `var(--fused-bg)` (declared in the svg's own
- *  `<style>` with a prefers-color-scheme flip, for standalone readers) and
- *  swapped for the literal hex by `themeIconSvg` when the shell draws it. */
+/** The plate behind a picker-written glyph: the `--bg-alt` pair (tokens.css),
+ *  the sidebar's own background, so on the Projects row the plate dissolves
+ *  into the surface and the glyph reads as if drawn straight on it (owner,
+ *  2026-09-20; was white / black). Written into the file as `var(--fused-bg)`
+ *  (declared in the svg's own `<style>` with a prefers-color-scheme flip, for
+ *  standalone readers) and swapped for the literal hex by `themeIconSvg` when
+ *  the shell draws it — so files already on disk follow this change. */
 export const ICON_BG_HEX: { light: string; dark: string } = {
-  light: "#ffffff",
-  dark: "#000000",
+  light: "#f4f5f7",
+  dark: "#1b1d21",
 };
 
 /** The `<style>` block a picker-written icon.svg carries so it reads right
@@ -109,10 +112,18 @@ export function readIconColor(svg: string): IconColor | null {
 export function themeIconSvg(svg: string, theme: Theme): string {
   const color = readIconColor(svg);
   if (!color) return svg;
+  // An emoji file written before 2026-09-20 carries the plate the picker no
+  // longer draws (app-icon.ts emojiIconSvg); drop it at render so those apps
+  // match a fresh pick without a re-pick. Only a picker-written emoji has a
+  // `<text>` glyph — a lucide pick is strokes — so that is the tell.
+  if (/<text\b/.test(svg)) svg = svg.replace(PLATE_RECT_RE, "");
   return svg
     .replace(/currentColor/g, ICON_COLOR_HEX[color][theme])
     .replace(/var\(--fused-bg\)/g, ICON_BG_HEX[theme]);
 }
+
+/** The rect iconPlateRect writes, any size. */
+const PLATE_RECT_RE = /<rect [^>]*style="fill:var\(--fused-bg\)"\/>/;
 
 /** A data: URL for an svg document. encodeURIComponent, not base64: the
  *  result is readable in devtools and about a third smaller for this text. */

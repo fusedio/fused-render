@@ -1260,18 +1260,23 @@ a.bookmark-name::after {
   flex: 0 0 auto;
 }
 
+/* 18px slot, not .bookmark-glyph's 14px (owner, 2026-09-20): the icon fills
+   the row's own line box (13px name at 1.35 ≈ 17.5px) instead of sitting in
+   a 6px moat of row padding, so an authored icon.svg reads as a mark rather
+   than a speck. Bookmarks and Recents keep the 14px slot. */
 .current-app-glyph {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: 18px;
 }
 
-/* The app's own icon.svg, filling the 14px glyph slot as is — the author's
+/* The app's own icon.svg, filling the 18px glyph slot as is — the author's
    shape AND colours, untouched (owner, 2026-08-27). */
 .current-app-icon {
   display: block;
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
   object-fit: contain;
 }
 
@@ -1280,7 +1285,7 @@ a.bookmark-name::after {
    photo-like file fills the slot with no letterbox. Svg keeps the rule above. */
 .current-app-icon.is-raster {
   object-fit: cover;
-  border-radius: 3px;
+  border-radius: 4px;
 }
 
 /* The running dot sits after the name, in flow: the name gives up its
