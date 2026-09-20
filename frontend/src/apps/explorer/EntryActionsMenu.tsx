@@ -5,15 +5,18 @@
 // the bar; the mode control is what the bar is FOR, and these are things you
 // do to the app once in a while.
 //
-// Two exports. `useAppActionRows` is the hook: it owns the entry probe, the
-// App Doctor's checks and modal, the Share sheet's version logic, and returns
-// the rows as ContextMenu MenuEntry[] in two groups (`app`, `open`) plus the
-// trigger badge and the modal node. `EntryActionsMenu` is the file preview's
-// kebab built on it (BarMenu's OverflowMenu). The FOLDER LISTING does not use
-// the component: it takes the hook's groups and composes them with its own
-// folder ops into the one folder menu (bar-menus' folderMenu) that its kebab,
-// its background right-click and the crumb bar all show — so the same row is
-// never spelled twice.
+// One export that matters: `useAppActionRows`, the hook. It owns the entry
+// probe, the App Doctor's checks and modal, the Share sheet's version logic,
+// and returns the rows as ContextMenu MenuEntry[] in two groups (`app`,
+// `embed`) plus the trigger badge and the modal node. It renders no menu of its
+// own: the FOLDER LISTING composes the groups with its folder ops into the one
+// folder menu (bar-menus' folderMenu) that its kebab, its background
+// right-click and the crumb bar all show, and the FILE PREVIEW composes them
+// with its file ops into the one file menu (bar-menus' fileMenu) that its kebab
+// and the crumb bar's right-click both show — so the same row is never spelled
+// twice. (A thin `EntryActionsMenu` component wrapped the hook for the file
+// kebab until that kebab and the bar's right-click were merged; the file is
+// named after it still, since every comment in the tree points here by name.)
 //
 // ONE ENTRY PROBE. The three buttons each asked /api/apps/entry whether the
 // previewed page is its folder's app entry (the server's own entry rule, never
@@ -23,8 +26,8 @@
 // embed, MCP config — are gated on their own facts (always, and whether the parent
 // folder offers an MCP companion), so a plain html file still gets a kebab.
 //
-// The App Doctor's STATUS DOT rides the trigger's corner while the menu is shut
-// (OverflowMenu's `badge`): its whole job is to be seen without a click, and a
+// The App Doctor's STATUS DOT rides the kebab trigger's corner while the menu is
+// shut (OverflowMenu's `badge`): its whole job is to be seen without a click, and a
 // dot on a row inside a closed menu is a dot nobody sees. It repeats on the row
 // so the two agree.
 //
@@ -60,7 +63,6 @@ import { useAppVersionLabel } from "@platform/lib/appVersionLabel";
 import type { ResolvedSnapshot } from "@platform/lib/snapshot-param";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import type { MenuEntry } from "@platform/ui/ContextMenu";
-import { OverflowMenu } from "@apps/explorer/BarMenu";
 
 // lucide at MenuIcons' own weight (1.5 on a 24 grid, 16px) so the two rows that
 // have no MenuIcons glyph sit in the list at the same stroke as the rest.
@@ -113,14 +115,14 @@ export interface EntryActionsMenuProps {
 }
 
 // What the hook hands back. `app` is what this folder IS when it is an app
-// (App Doctor, Share…, Open as project, MCP config); `open` is "this page
-// elsewhere" (Open in embed) — the folder listing files each into the matching
-// group of its folder menu. `isEntry` is the probe's (or the caller's) answer,
+// (App Doctor, Share…, Open as project, MCP config); `embed` is Open in embed
+// on its own — the folder listing and the file preview file each into the
+// matching group of their menus (bar-menus' `app` and `embed`). `isEntry` is the probe's (or the caller's) answer,
 // `badge` rides the kebab trigger while the menu is shut, `modal` is the App
 // Doctor dialog to render wherever the rows are shown.
 export interface AppActionRows {
   app: MenuEntry[];
-  open: MenuEntry[];
+  embed: MenuEntry[];
   isEntry: boolean;
   badge: ReactNode;
   modal: ReactNode;
@@ -162,7 +164,12 @@ export function useAppActionRows({
   // Opening the modal re-fetches its own copy; this one is only for the dot and
   // is never reused to seed the dialog.
   const doctorChecks = useAppDoctorChecks(isEntry ? dir : null);
-  const versionLabel = useAppVersionLabel(dir, snapshotSha);
+  // Gated on `isEntry` like the doctor checks: the label is read by the Share
+  // row alone, which exists only on an entry — and this hook is mounted over
+  // every file view now (not just where a kebab rendered), so an ungated sha
+  // would fetch the parent's commit list for a snapshot-previewed folder that
+  // gets no Share row.
+  const versionLabel = useAppVersionLabel(dir, isEntry ? snapshotSha : null);
 
   // Mirrors AppPage.tsx's `shareDisabled`: a click landing mid-resolve, before
   // `snapshotResolved.dir` exists, must not fall through to exporting the LIVE
@@ -284,11 +291,11 @@ export function useAppActionRows({
     });
   }
 
-  const open: MenuEntry[] = onOpenEmbed
+  const embed: MenuEntry[] = onOpenEmbed
     ? [
-        // The fullscreen glyph the row replaced, not `newTab`: in the folder
-        // menu this row sits directly under "Open in New Tab", and two
-        // consecutive rows with one icon read as a duplicate.
+        // The fullscreen glyph the row replaced, not `newTab`: the row once
+        // sat directly under "Open in New Tab", and two consecutive rows with
+        // one icon read as a duplicate; the glyph still says what it does.
         {
           label: "Open in embed",
           icon: MenuIcons.fullscreen,
@@ -300,31 +307,9 @@ export function useAppActionRows({
 
   return {
     app,
-    open,
+    embed,
     isEntry,
     badge: isEntry ? <AppDoctorStatusDot checks={doctorChecks} /> : undefined,
     modal: doctorOpen ? <AppDoctorModal dir={dir} onClose={() => setDoctorOpen(false)} /> : null,
   };
 }
-
-// The FILE PREVIEW's kebab: the hook's rows in one `⋮`, the app group first and
-// the embed row under a separator. Renders nothing at all when nothing
-// qualifies (OverflowMenu on an empty list), so a plain html file that is not
-// an entry and whose folder publishes no MCP gets no `⋮` rather than a menu
-// that opens on nothing.
-export function EntryActionsMenu(props: EntryActionsMenuProps) {
-  const rows = useAppActionRows(props);
-  const items: MenuEntry[] = [
-    ...rows.app,
-    ...(rows.app.length && rows.open.length ? (["separator"] as MenuEntry[]) : []),
-    ...rows.open,
-  ];
-  return (
-    <>
-      <OverflowMenu items={items} title="App actions" badge={rows.badge} />
-      {rows.modal}
-    </>
-  );
-}
-
-export default EntryActionsMenu;

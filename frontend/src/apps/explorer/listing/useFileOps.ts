@@ -904,7 +904,7 @@ export function useFileOps({
         { label: "Refresh", icon: MenuIcons.refresh, onClick: refetch },
       ],
       // Reveal → Open in New Tab, then (from the view) embed and the splits, in
-      // the order the file bar's menu (bar-menus' fileBarMenu) keeps the shared
+      // the order the file menu (bar-menus' fileMenu) keeps the shared
       // pair: the two bars are one surface to the user. Here the folder is the
       // one being listed, so the new tab opens on the current directory.
       open: [

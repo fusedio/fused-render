@@ -291,9 +291,10 @@ export type OverflowEntry = MenuEntry;
 //
 // `OverflowMenu` below stays: the panel pane bars use it for their own one-shot
 // ("Open in a new tab"), the file preview's crumb bar uses it as THE kebab for
-// the app-level actions that used to stand in that bar as bordered buttons
-// (EntryActionsMenu.tsx: App Doctor, Share, Open as project, Open in embed,
-// MCP config), and the folder listing's search row uses it for the folder menu.
+// the file menu (bar-menus' fileMenu: the app-level actions that used to stand
+// in that bar as bordered buttons — App Doctor, Share, Open as project, MCP
+// config — with the file's own rows), and the folder listing's search row uses
+// it for the folder menu.
 
 // `⋮` menu for the bars. Renders nothing when it has no items, so a caller can
 // pass a conditional list without guarding the control itself.
