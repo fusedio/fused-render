@@ -1260,14 +1260,15 @@ a.bookmark-name::after {
   flex: 0 0 auto;
 }
 
-/* 18px slot, not .bookmark-glyph's 14px (owner, 2026-09-20): the icon fills
-   the row's own line box (13px name at 1.35 ≈ 17.5px), so an authored
-   icon.svg reads as a mark rather than a speck. The 4px comes out of the
-   row's left padding (10 → 8) and gap (7 → 5), so 8 + 18 + 5 = 31 and the
-   name column stays flush with Bookmarks' 10 + 14 + 7. Vertical padding is
-   untouched: 18px vs the line box is sub-pixel. */
+/* 20px slot, not .bookmark-glyph's 14px (owner, 2026-09-20, "+2px, reduce
+   padding"): the icon overfills the row's line box (13px name at 1.35 ≈
+   17.5px), so an authored icon.svg reads as a mark rather than a speck. The
+   row gives the width back from its left padding (10 → 6) and gap (7 → 5):
+   6 + 20 + 5 = 31 keeps the name column flush with Bookmarks' 10 + 14 + 7.
+   Vertical padding drops 6 → 5 so 5 + 20 + 5 = 30 stays within a pixel of
+   the Bookmarks rows' 6 + 17.5 + 6. */
 .current-app-row {
-  padding-left: 8px;
+  padding: 5px 10px 5px 6px;
   gap: 5px;
 }
 
@@ -1275,15 +1276,15 @@ a.bookmark-name::after {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
+  width: 20px;
 }
 
-/* The app's own icon.svg, filling the 18px glyph slot as is — the author's
+/* The app's own icon.svg, filling the 20px glyph slot as is — the author's
    shape AND colours, untouched (owner, 2026-08-27). */
 .current-app-icon {
   display: block;
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   object-fit: contain;
 }
 

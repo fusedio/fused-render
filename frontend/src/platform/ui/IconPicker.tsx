@@ -103,7 +103,7 @@ export function glyphIconSvg(node: IconNode, color: IconColor = "default"): stri
     // Inset 3 units a side (glyph drawn at 75%) so the 24-unit lucide art
     // sits inside the plate rather than touching its rounded corners.
     '<g transform="translate(3 3) scale(0.75)" fill="none" ' +
-    // 3 not lucide's 2: the row draws the file at 18px and the glyph is at
+    // 3 not lucide's 2: the row draws the file at 20px and the glyph is at
     // 75%, where a thinner stroke lands near a pixel and reads faint.
     'stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">' +
     inner +
