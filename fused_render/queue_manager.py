@@ -1690,20 +1690,39 @@ class QueueManager:
         tombstone over a live turn.
 
         A stale `admit:` placeholder is no process at all (`is_free` reads it
-        the same way): nothing ever came back for it, so it holds nothing."""
+        the same way): nothing ever came back for it, so it holds nothing.
+
+        TWO STATES THE SYNC CANNOT BE ASKED ABOUT, answered the way `reconcile`
+        answers them (Bugbot, PR #1254). A `starting` owner whose spawn has not
+        returned has no run id yet — there is nothing to look up, and the
+        process is being created as this is read — so it is live for as long
+        as the spawn is in flight (`_spawning`) or inside `SPAWN_GRACE`. And a
+        resume marker in the line (`card_cleared`) is not a queued message but
+        a run that already came back to life; it carries the run's names, so
+        it IS asked of the sync, like the owner it is about to become."""
         key = _text(task_key)
         if not key:
             return False
         with self._lock:
+            now = float(self._clock())
             records: list[dict] = []
             for rec in self._state["folders"].values():
                 owner = rec["owner"]
-                if (owner is not None and self._owner_matches(owner, key)
-                        and not (_is_placeholder(_text(owner.get("task")))
-                                 and self._stale_placeholder(owner))):
-                    records.append(owner)
+                if owner is not None and self._owner_matches(owner, key):
+                    if (_is_placeholder(_text(owner.get("task")))
+                            and self._stale_placeholder(owner, now)):
+                        pass
+                    elif owner.get("starting") and (
+                            owner["task"] in self._spawning
+                            or (not _text(owner.get("run_id"))
+                                and now - _number(owner.get("since")) < SPAWN_GRACE)):
+                        return True
+                    else:
+                        records.append(owner)
                 records.extend(self._as_record(item) for item in rec["blocked"]
                                if item["task"] == key)
+                records.extend(self._as_record(item) for item in rec["line"]
+                               if item["task"] == key and item.get("resumed"))
             # A held decision names the run it was raised against — the same
             # record `_prune_answers` asks the sync about when it retires one.
             records.extend({"task": key, "run_id": answer["run_id"],

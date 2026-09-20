@@ -461,6 +461,54 @@ def test_holds_live_is_false_once_the_run_behind_the_answer_is_gone():
     assert m.holds_live("a") is False
 
 
+def test_holds_live_while_the_spawn_is_still_in_flight():
+    """A `starting` owner has no run id yet, so the status sync has nothing to
+    say about it — and the door must not read that silence as "nothing
+    running" and hand the folder to the next task beside a process being
+    created right now (Bugbot, PR #1254). Probed from INSIDE the spawn, which
+    is the only moment the owner is in this state."""
+    world = World()
+    seen: list[bool] = []
+    holder: list = []
+    real_spawn = world.spawn
+
+    def probing_spawn(folder, task_key):
+        seen.append(holder[0].holds_live(task_key))
+        return real_spawn(folder, task_key)
+
+    world.spawn = probing_spawn
+    m = world.manager()
+    holder.append(m)
+    m.enqueue(F1, "a")
+    assert seen == [True]
+    # Once the spawn has returned the owner carries a run id and the sync is
+    # the authority again: nothing running says so.
+    assert m.holds_live("a") is False
+    world.running_keys.add("run")
+    assert m.holds_live("a") is True
+
+
+def test_holds_live_for_a_resume_marker_in_the_line():
+    """A card answered outside the queue turns the parked task into a resume
+    marker at the head of the line: not a message waiting for the folder but a
+    run already going. It holds the folder for as long as that run is alive,
+    and stops the moment the sync says it is gone."""
+    world = World()
+    m = world.manager()
+    m.enqueue(F1, "a")
+    m.enqueue(F1, "b")
+    m.card_raised("a")                       # b owns, a parked
+    m.card_cleared("a", "run-a")
+    assert line_of(m) == ["a"]
+    assert m.held_answer("a") is None
+    # The marker carries the parked item's own names (the sync is asked with
+    # the whole record), so the run is named by the task here.
+    world.running_keys.add("a")
+    assert m.holds_live("a") is True
+    world.running_keys.clear()
+    assert m.holds_live("a") is False
+
+
 # ------------------------------------------------------------------- started
 
 
