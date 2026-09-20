@@ -36,6 +36,10 @@ import {
 import { applyIconPick } from "@platform/lib/app-icon";
 import { AppStar } from "@platform/ui/AppStar";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
+import {
+  SECTION_BODY_CLASS,
+  useSectionContentCap,
+} from "@platform/ui/sidebar/useSectionContentCap";
 import { embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
 import { notify } from "@platform/lib/notifications";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
@@ -771,41 +775,49 @@ export default function CurrentAppsSection() {
     }
     setCollapsed(next);
   };
+  // This section and Bookmarks share the sidebar's free height (equal halves,
+  // each its own scroll; a short or folded one yields its remainder) — the
+  // hook writes the content-height cap flexbox needs for that. The rows live in
+  // the always-mounted body wrapper it measures; the pop-ups below stay out.
+  const sectionRef = useRef<HTMLDivElement>(null);
+  useSectionContentCap(sectionRef);
   return (
-    <div className="sidebar-section sidebar-current-apps">
-      <div
-        className={
-          "sidebar-heading recents-heading current-apps-heading" +
-          (collapsed ? " collapsed" : "")
-        }
-        title={collapsed ? "Show projects" : "Hide projects"}
-        onClick={toggleCollapsed}
-      >
-        Projects
-        <span className="sidebar-heading-chevron" aria-hidden="true" />
-        {collapsed && <span className="sidebar-count-chip">{apps.length}</span>}
-      </div>
-      {!collapsed && apps.map(render)}
-      {!collapsed && (
+    <div className="sidebar-section sidebar-current-apps" ref={sectionRef}>
+      <div className={SECTION_BODY_CLASS}>
         <div
-          className="bookmark-row current-app-row current-app-new"
-          role="button"
-          tabIndex={0}
-          title="New app"
-          onClick={() => setComposing(true)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              setComposing(true);
-            }
-          }}
+          className={
+            "sidebar-heading recents-heading current-apps-heading" +
+            (collapsed ? " collapsed" : "")
+          }
+          title={collapsed ? "Show projects" : "Hide projects"}
+          onClick={toggleCollapsed}
         >
-          <span className="bookmark-glyph current-app-glyph" aria-hidden="true">
-            +
-          </span>
-          <span className="bookmark-name">New app</span>
+          Projects
+          <span className="sidebar-heading-chevron" aria-hidden="true" />
+          {collapsed && <span className="sidebar-count-chip">{apps.length}</span>}
         </div>
-      )}
+        {!collapsed && apps.map(render)}
+        {!collapsed && (
+          <div
+            className="bookmark-row current-app-row current-app-new"
+            role="button"
+            tabIndex={0}
+            title="New app"
+            onClick={() => setComposing(true)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setComposing(true);
+              }
+            }}
+          >
+            <span className="bookmark-glyph current-app-glyph" aria-hidden="true">
+              +
+            </span>
+            <span className="bookmark-name">New app</span>
+          </div>
+        )}
+      </div>
       {menu && (
         <ContextMenu
           x={menu.x}

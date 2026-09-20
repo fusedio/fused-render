@@ -33,6 +33,10 @@ import { bookmarkSaveTarget } from "@platform/lib/bookmark-file";
 import { exportBookmarkFile } from "@platform/lib/api";
 import { isRowDragActive } from "@apps/explorer/listing/row-drag";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
+import {
+  SECTION_BODY_CLASS,
+  useSectionContentCap,
+} from "@platform/ui/sidebar/useSectionContentCap";
 import type { Bookmark, BookmarkFolder, BookmarkItem } from "@platform/lib/bookmarks";
 import {
   useUrlVersion,
@@ -357,6 +361,12 @@ export default function BookmarksSection() {
     localStorage.setItem(BOOKMARKS_COLLAPSED_KEY, next ? "1" : "0");
     setSectionCollapsed(next);
   };
+  // Shares the sidebar's free height with Projects (equal halves, each its own
+  // scroll; a short or folded one yields its remainder) — the hook writes the
+  // content-height cap flexbox needs. Rows live in the body wrapper it
+  // measures; the tooltip and icon picker below stay out.
+  const sectionRef = useRef<HTMLDivElement>(null);
+  useSectionContentCap(sectionRef);
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
   // Bookmark just exported to disk: its save button shows ✓ for a moment.
@@ -902,27 +912,29 @@ export default function BookmarksSection() {
     });
 
   return (
-    <div className="sidebar-section sidebar-bookmarks">
-      <div
-        className={"sidebar-heading recents-heading" + (sectionCollapsed ? " collapsed" : "")}
-        title={sectionCollapsed ? "Show bookmarks" : "Hide bookmarks"}
-        onClick={toggleSectionCollapsed}
-      >
-        Bookmarks
-        <span className="sidebar-heading-chevron" aria-hidden="true" />
-        {/* `.sidebar-count-chip` is the shared skin every count in this sidebar
-            wears — the folder rows' nested count and the Tasks entry's unread
-            count are the same element (sidebar.css). */}
-        {sectionCollapsed && (
-          <span className="sidebar-count-chip recents-count">{countBookmarks(items)}</span>
-        )}
+    <div className="sidebar-section sidebar-bookmarks" ref={sectionRef}>
+      <div className={SECTION_BODY_CLASS}>
+        <div
+          className={"sidebar-heading recents-heading" + (sectionCollapsed ? " collapsed" : "")}
+          title={sectionCollapsed ? "Show bookmarks" : "Hide bookmarks"}
+          onClick={toggleSectionCollapsed}
+        >
+          Bookmarks
+          <span className="sidebar-heading-chevron" aria-hidden="true" />
+          {/* `.sidebar-count-chip` is the shared skin every count in this sidebar
+              wears — the folder rows' nested count and the Tasks entry's unread
+              count are the same element (sidebar.css). */}
+          {sectionCollapsed && (
+            <span className="sidebar-count-chip recents-count">{countBookmarks(items)}</span>
+          )}
+        </div>
+        {!sectionCollapsed &&
+          (items.length === 0 ? (
+            <div className="sidebar-empty">No bookmarks yet</div>
+          ) : (
+            renderItems(items, null)
+          ))}
       </div>
-      {!sectionCollapsed &&
-        (items.length === 0 ? (
-          <div className="sidebar-empty">No bookmarks yet</div>
-        ) : (
-          renderItems(items, null)
-        ))}
       <div id="bookmark-tooltip" ref={tooltipRef} style={hover ? { display: "block" } : undefined}>
         {hover && <TooltipContent bookmark={hover.bookmark} missing={isBookmarkMissing(hover.bookmark.id)} />}
       </div>
