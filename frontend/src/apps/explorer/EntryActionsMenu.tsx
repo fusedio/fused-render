@@ -8,7 +8,7 @@
 // One export that matters: `useAppActionRows`, the hook. It owns the entry
 // probe, the App Doctor's checks and modal, the Share sheet's version logic,
 // and returns the rows as ContextMenu MenuEntry[] in two groups (`app`,
-// `open`) plus the trigger badge and the modal node. It renders no menu of its
+// `embed`) plus the trigger badge and the modal node. It renders no menu of its
 // own: the FOLDER LISTING composes the groups with its folder ops into the one
 // folder menu (bar-menus' folderMenu) that its kebab, its background
 // right-click and the crumb bar all show, and the FILE PREVIEW composes them
@@ -115,14 +115,14 @@ export interface EntryActionsMenuProps {
 }
 
 // What the hook hands back. `app` is what this folder IS when it is an app
-// (App Doctor, Share…, Open as project, MCP config); `open` is "this page
-// elsewhere" (Open in embed) — the folder listing files each into the matching
-// group of its folder menu. `isEntry` is the probe's (or the caller's) answer,
+// (App Doctor, Share…, Open as project, MCP config); `embed` is Open in embed
+// on its own — the folder listing and the file preview file each into the
+// matching group of their menus (bar-menus' `app` and `embed`). `isEntry` is the probe's (or the caller's) answer,
 // `badge` rides the kebab trigger while the menu is shut, `modal` is the App
 // Doctor dialog to render wherever the rows are shown.
 export interface AppActionRows {
   app: MenuEntry[];
-  open: MenuEntry[];
+  embed: MenuEntry[];
   isEntry: boolean;
   badge: ReactNode;
   modal: ReactNode;
@@ -291,11 +291,11 @@ export function useAppActionRows({
     });
   }
 
-  const open: MenuEntry[] = onOpenEmbed
+  const embed: MenuEntry[] = onOpenEmbed
     ? [
-        // The fullscreen glyph the row replaced, not `newTab`: in the folder
-        // menu this row sits directly under "Open in New Tab", and two
-        // consecutive rows with one icon read as a duplicate.
+        // The fullscreen glyph the row replaced, not `newTab`: the row once
+        // sat directly under "Open in New Tab", and two consecutive rows with
+        // one icon read as a duplicate; the glyph still says what it does.
         {
           label: "Open in embed",
           icon: MenuIcons.fullscreen,
@@ -307,7 +307,7 @@ export function useAppActionRows({
 
   return {
     app,
-    open,
+    embed,
     isEntry,
     badge: isEntry ? <AppDoctorStatusDot checks={doctorChecks} /> : undefined,
     modal: doctorOpen ? <AppDoctorModal dir={dir} onClose={() => setDoctorOpen(false)} /> : null,

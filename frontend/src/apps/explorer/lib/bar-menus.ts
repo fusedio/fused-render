@@ -110,10 +110,14 @@ export function splitItems(onSplit: (dir: SplitDir) => void): MenuEntry[] {
 //           for, so they lead once the app rows are out of the way.
 //   folder  the folder itself: Rename…, Refresh.
 //   open    the same folder somewhere else: Reveal in Finder, Open in New
-//           Tab, Open in embed, Split right, Split down. One group because they
-//           all answer "show me this elsewhere"; the splits are not a special
-//           case of anything, just two more elsewheres.
+//           Tab, Split right, Split down. One group because they all answer
+//           "show me this elsewhere"; the splits are not a special case of
+//           anything, just two more elsewheres.
 //   copy    text to the clipboard: Copy path, Copy Claude session command.
+//   embed   Open in embed, LAST and alone (owner, 2026-09-20: "move open in
+//           embed to the bottom"): it leaves the explorer for the chrome-free
+//           view, so it closes the list rather than sitting among the rows
+//           that keep you here.
 //
 // Each surface fills what it may offer (a panel pane cannot split or embed; a
 // folder that is not an app has no `app` rows) and gets the same shape back
@@ -124,9 +128,17 @@ export interface FolderMenuGroups {
   folder?: MenuEntry[];
   open?: MenuEntry[];
   copy?: MenuEntry[];
+  embed?: MenuEntry[];
 }
 
-const FOLDER_GROUP_ORDER: (keyof FolderMenuGroups)[] = ["app", "create", "folder", "open", "copy"];
+const FOLDER_GROUP_ORDER: (keyof FolderMenuGroups)[] = [
+  "app",
+  "create",
+  "folder",
+  "open",
+  "copy",
+  "embed",
+];
 
 // Groups → one flat list, a separator between consecutive NON-EMPTY groups and
 // never at either end. Shared by the folder and file builders so the two menus
@@ -186,10 +198,11 @@ export function crumbMenu(actions: CrumbActions): MenuEntry[] {
 //         two inches away in the same bar), no Bin/Duplicate/Cut/Copy — a top
 //         bar is not where a file gets destroyed.
 //   open  the same file somewhere else: Reveal in Finder, Open in New Tab,
-//         Open in embed, Split right, Split down — the folder menu's `open`
-//         row for row, so the shared pair never swaps places between the two
-//         bars (they are one surface to the user).
+//         Split right, Split down — the folder menu's `open` row for row, so
+//         the shared pair never swaps places between the two bars (they are
+//         one surface to the user).
 //   copy  text to the clipboard: Copy Path, Copy Claude session command.
+//   embed Open in embed, last and alone — the folder menu's reason.
 //
 // Each surface fills what it may offer (a pane cannot split; a directory
 // previewed in a non-listing mode has no file rows at all) and gets the same
@@ -199,9 +212,10 @@ export interface FileMenuGroups {
   file?: MenuEntry[];
   open?: MenuEntry[];
   copy?: MenuEntry[];
+  embed?: MenuEntry[];
 }
 
-const FILE_GROUP_ORDER: (keyof FileMenuGroups)[] = ["app", "file", "open", "copy"];
+const FILE_GROUP_ORDER: (keyof FileMenuGroups)[] = ["app", "file", "open", "copy", "embed"];
 
 export function fileMenu(groups: FileMenuGroups): MenuEntry[] {
   return groupedMenu(FILE_GROUP_ORDER, groups);

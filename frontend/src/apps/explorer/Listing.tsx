@@ -993,10 +993,10 @@ export default function Listing({
       folder: own.folder,
       open: [
         ...(own.open ?? []),
-        ...appRows.open,
         ...(ownsBarChrome ? splitItems((dir) => enterPanel(base, dir)) : []),
       ],
       copy: own.copy,
+      embed: appRows.embed,
     });
   };
   folderMenuRef.current = buildFolderMenu;

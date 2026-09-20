@@ -614,9 +614,9 @@ function usePreviewFileMenu(
   //   the file fronts — Akshil, 2026-08-27: "if I right-click ... I want an
   //   option of add a preview"), and only on the entry page: a preview.png
   //   beside a plain html file has no card to show it;
-  //   `splits` close `open` AFTER Open in embed, matching the folder menu's
-  //   order, on the condition TemplatePreview uses for its own split
-  //   affordances: a single file, not inside a pane that already is a split.
+  //   `splits` close `open`, on the condition TemplatePreview uses for its
+  //   own split affordances: a single file, not inside a pane that already
+  //   is a split (the view's Open in embed is its own last group).
   // Rebuilt per call: `isAppEntry` lands after first paint.
   const fileGroups = (): Record<"file" | "open" | "copy" | "setPreview" | "splits", MenuEntry[]> => ({
     file: [{ label: "Rename…", icon: MenuIcons.rename, onClick: startRename }],
@@ -2044,13 +2044,14 @@ function TemplatePreview({
   // instead.
   const ownsFileBar = !!actionsInTopbar && !stat.is_dir;
   const buildFileMenu = (): MenuEntry[] => {
-    if (!ownsFileBar) return fileMenu({ app: appRows.app, open: appRows.open });
+    if (!ownsFileBar) return fileMenu({ app: appRows.app, embed: appRows.embed });
     const own = fileOps.fileGroups();
     return fileMenu({
       app: [...appRows.app, ...own.setPreview],
       file: own.file,
-      open: [...own.open, ...appRows.open, ...own.splits],
+      open: [...own.open, ...own.splits],
       copy: own.copy,
+      embed: appRows.embed,
     });
   };
   fileMenuRef.current = buildFileMenu;

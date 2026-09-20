@@ -48,6 +48,7 @@ test("folderMenu shows the groups in a fixed order with one separator between", 
   // they are passed in, and this test is what pins that contract.
   const items = folderMenu({
     copy: [{ label: "Copy path" }],
+    embed: [{ label: "Open in embed" }],
     app: [{ label: "App Doctor" }, { label: "Share…" }],
     open: [{ label: "Open in New Tab" }, { label: "Split right" }],
     create: [{ label: "New Folder…" }, { label: "Paste", disabled: true }],
@@ -67,6 +68,8 @@ test("folderMenu shows the groups in a fixed order with one separator between", 
     "Split right",
     "—",
     "Copy path",
+    "—",
+    "Open in embed",
   ]);
   // Passed through untouched, disabled state included (Paste with an empty
   // clipboard is a listed-but-dead row, not a missing one).
@@ -107,7 +110,7 @@ test("crumbMenu is exactly the two ancestor items, in the row menu's order", () 
 
 const row = (label: string, onClick?: () => void): MenuItem => ({ label, icon: null, onClick });
 
-test("fileMenu lays the groups out app → file → open → copy with one divider between", () => {
+test("fileMenu lays the groups out app → file → open → copy → embed with one divider between", () => {
   const called: string[] = [];
   const items = fileMenu({
     app: [row("App Doctor"), row("Share…"), row("Set Current View as Preview", () => called.push("shot"))],
@@ -115,14 +118,14 @@ test("fileMenu lays the groups out app → file → open → copy with one divid
     open: [
       row("Reveal in Finder", () => called.push("reveal")),
       row("Open in New Tab", () => called.push("newtab")),
-      row("Open in embed"),
       ...splitItems((dir) => called.push("split:" + dir)),
     ],
     copy: [row("Copy Path", () => called.push("copy")), row("Copy Claude session command", () => called.push("claude"))],
+    embed: [row("Open in embed")],
   });
   // The shared rows sit in the FOLDER menu's order (useFileOps.folderGroups):
-  // Reveal → Open in New Tab → embed → the splits, then the copy pair. Two
-  // bars, one surface.
+  // Reveal → Open in New Tab → the splits, then the copy pair, and Open in
+  // embed closes the list on its own. Two bars, one surface.
   expect(labels(items)).toEqual([
     "App Doctor",
     "Share…",
@@ -132,12 +135,13 @@ test("fileMenu lays the groups out app → file → open → copy with one divid
     "—",
     "Reveal in Finder",
     "Open in New Tab",
-    "Open in embed",
     "Split right",
     "Split down",
     "—",
     "Copy Path",
     "Copy Claude session command",
+    "—",
+    "Open in embed",
   ]);
   for (const label of [
     "Set Current View as Preview",
@@ -176,7 +180,7 @@ test("fileMenu draws no divider for an empty or absent group and never ends in o
   expect(items[items.length - 1]).not.toBe("separator");
   // The kebab over a directory previewed in a non-listing mode, or over a file
   // in a pane: the app rows alone, no file groups at all.
-  expect(labels(fileMenu({ app: [row("App Doctor")], open: [row("Open in embed")] }))).toEqual([
+  expect(labels(fileMenu({ app: [row("App Doctor")], embed: [row("Open in embed")] }))).toEqual([
     "App Doctor",
     "—",
     "Open in embed",
