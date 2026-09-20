@@ -9,6 +9,7 @@
 import type {
   Activity,
   AppStateRow,
+  ContextUsage,
   Decision,
   DecisionScope,
   HistoryTurn,
@@ -257,6 +258,23 @@ export interface ChatState {
    */
   adopting: boolean;
   transcript: TranscriptStat | null;
+  /**
+   * HOW FULL THE CONTEXT WINDOW IS — the latest usable `usage` the API
+   * reported for this conversation (`HistoryResponse.context`, agent.py
+   * `_context_usage`). The composer's context meter draws it.
+   *
+   * TWO WRITERS, ONE OF THEM ALLOWED TO CLEAR IT. History owns the field: it
+   * lands the reading, a refresh replaces it, opening another session clears
+   * it, and a brand-new chat has `null`. The live poll only ever RAISES a
+   * fresher reading onto it — the CLI updates its own statusline after every
+   * API response, and a turn that calls six tools is seven responses, so a
+   * meter that waited for the turn to end would sit still through the exact
+   * stretch in which the window fills. A poll with nothing to say leaves the
+   * value alone rather than blanking it.
+   *
+   * `null` is "nothing to draw": no meter, rather than a truthful-looking 0%.
+   */
+  context: ContextUsage | null;
   /** T:16411 `ownRunEndedAt` — the clock reading at which a run THIS frame was
    *  streaming last ended, or 0 if none has. D415's transcript follower (PR4)
    *  compares against it so rows this page just wrote are not read back as

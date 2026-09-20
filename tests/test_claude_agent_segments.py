@@ -902,6 +902,231 @@ def test_the_watermark_is_stat_ed_before_the_rows_are_read(agent):
     assert body.index("_transcript_stat(path)") < body.index("for line in open(path")
 
 
+# ----------------------------------------------- the context-window reading
+#
+# The parity target is Claude Code's own `d$` filter and `TNe` normalisation,
+# written down in `.claude-design/context-meter/claude-code-parity.md` §9. The
+# meter this app draws and the meter the reader has in their terminal are over
+# the same conversation, so a row the CLI skips has to be a row we skip.
+
+
+def _history_payload(agent, tmp_path, monkeypatch, rows):
+    """`_history`'s WHOLE payload (the helper above keeps only `turns`)."""
+    target = tmp_path / "proj" / "page.html"
+    os.makedirs(target.parent, exist_ok=True)
+    target.write_text("<html></html>")
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(agent, "PROJECTS", str(projects))
+    d = projects / agent._munge(str(target.parent))
+    os.makedirs(d, exist_ok=True)
+    with open(d / "sess1.jsonl", "w", encoding="utf-8") as fh:
+        for row in rows:
+            fh.write(json.dumps(row) + "\n")
+    return agent._history(str(target), "sess1")
+
+
+def _t_usage(text, usage, model="claude-sonnet-4-5"):
+    return {"type": "assistant", "message": {
+        "role": "assistant", "model": model,
+        "content": [{"type": "text", "text": text}],
+        "usage": usage}}
+
+
+def _reading(inp=0, creation=0, read=0, out=0, model="claude-sonnet-4-5",
+             compacted=False):
+    return {"input_tokens": inp, "cache_creation_input_tokens": creation,
+            "cache_read_input_tokens": read, "output_tokens": out,
+            "model": model, "compacted": compacted}
+
+
+def test_history_reports_the_latest_assistant_usage_as_context(
+        agent, tmp_path, monkeypatch):
+    """What the composer's context meter draws. The LATEST reply, never a sum:
+    each request re-sends the whole conversation, so the newest row's counts
+    already describe the whole prompt that went up the wire — adding the older
+    rows in would count the same tokens once per turn.
+
+    RAW, not summed, because the page draws two readings off them: the pill's
+    percentage is input-only (the statusline's own definition) and the
+    auto-compact arithmetic behind the warning line adds the output in."""
+    out = _history_payload(agent, tmp_path, monkeypatch, [
+        _t_user("one"),
+        _t_usage("first", {"input_tokens": 5, "cache_creation_input_tokens": 10,
+                           "cache_read_input_tokens": 100, "output_tokens": 7}),
+        _t_user("two"),
+        _t_usage("second", {"input_tokens": 3, "cache_creation_input_tokens": 20,
+                            "cache_read_input_tokens": 2000,
+                            "output_tokens": 9},
+                 model="claude-opus-5[1m]"),
+    ])
+    assert out["context"] == _reading(3, 20, 2000, 9, "claude-opus-5[1m]")
+
+
+def test_history_context_is_null_when_no_reply_carries_usage(
+        agent, tmp_path, monkeypatch):
+    """A conversation with no usage on the wire (an older transcript, a chat
+    whose first reply has not landed) says so with `None` rather than zeroes:
+    the page draws no meter at all rather than an honest-looking 0%."""
+    out = _history_payload(agent, tmp_path, monkeypatch, [
+        _t_user("hello"),
+        _t_assistant([{"type": "text", "text": "hi"}]),
+    ])
+    assert out["context"] is None
+    # ...and so does a transcript that does not exist yet, and a refused id —
+    # the key is on every shape of the payload, so the page never branches on
+    # its absence.
+    monkeypatch.setattr(agent, "PROJECTS", str(tmp_path / "nowhere"))
+    target = tmp_path / "proj" / "page.html"
+    assert agent._history(str(target), "sess1")["context"] is None
+    assert agent._history(str(target), "../escape")["context"] is None
+
+
+def test_history_context_ignores_junk_usage_without_losing_the_payload(
+        agent, tmp_path, monkeypatch):
+    """A transcript is somebody else's file format. A row whose `usage` is not
+    a dict leaves the last good reading standing, and a missing or non-numeric
+    field costs that field alone — never the whole history call."""
+    out = _history_payload(agent, tmp_path, monkeypatch, [
+        _t_usage("good", {"input_tokens": 100, "cache_read_input_tokens": 400,
+                          "output_tokens": 2}),
+        _t_usage("junk", "not-a-dict"),
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "no usage key at all"}]}},
+    ])
+    assert out["context"] == _reading(100, 0, 400, 2)
+    # A partly-numeric usage: only the fields that are numbers count, and a
+    # row with no `model` reports "" so the page falls back to the picker.
+    # `True` is deliberately not 1 token, which is what `isinstance(x, int)`
+    # would have made of it.
+    out = _history_payload(agent, tmp_path, monkeypatch, [
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "odd"}],
+            "usage": {"input_tokens": "lots", "cache_read_input_tokens": 12,
+                      "cache_creation_input_tokens": None,
+                      "output_tokens": True}}},
+    ])
+    assert out["context"] == _reading(0, 0, 12, 0, "")
+
+
+def test_history_context_skips_synthetic_and_empty_usage_rows(
+        agent, tmp_path, monkeypatch):
+    """The rows the CLI writes when there was no API call. A rate-limit or
+    api-error record is spelled `"<synthetic>"` and DOES carry a `usage`
+    object — all zeros — so it has to be skipped by the model check rather
+    than by the absence of one, and a zero usage from anywhere else says
+    nothing about the window either. Both leave the last real reading up."""
+    out = _history_payload(agent, tmp_path, monkeypatch, [
+        _t_usage("real", {"input_tokens": 10, "cache_read_input_tokens": 90,
+                          "output_tokens": 4}),
+        _t_usage("rate limited", {"input_tokens": 0, "output_tokens": 0,
+                                  "cache_creation_input_tokens": 0,
+                                  "cache_read_input_tokens": 0},
+                 model="<synthetic>"),
+        _t_usage("nothing at all", {"input_tokens": 0, "output_tokens": 0}),
+    ])
+    assert out["context"] == _reading(10, 0, 90, 4)
+
+
+def test_history_context_skips_the_interrupt_and_refusal_rows(
+        agent, tmp_path, monkeypatch):
+    """`ERROR_TEXTS` (§9): the texts the CLI writes INSTEAD of a reply. Their
+    `usage` is bookkeeping, not the state of the window — and the interrupt
+    rows in particular land at the end of a stopped turn, which is exactly
+    where the meter would read them."""
+    out = _history_payload(agent, tmp_path, monkeypatch, [
+        _t_usage("real", {"input_tokens": 1, "cache_read_input_tokens": 1000,
+                          "output_tokens": 5}),
+        _t_usage("[Request interrupted by user]",
+                 {"input_tokens": 999_999, "output_tokens": 1}),
+        _t_usage("[Request interrupted by user for tool use]",
+                 {"input_tokens": 999_999, "output_tokens": 1}),
+        _t_usage("No response requested.",
+                 {"input_tokens": 999_999, "output_tokens": 1}),
+        # Matched by PREFIX: the refusal spells out what was refused after its
+        # first sentence.
+        _t_usage("The user doesn't want to take this action right now. "
+                 "STOP what you are doing.",
+                 {"input_tokens": 999_999, "output_tokens": 1}),
+    ])
+    assert out["context"] == _reading(1, 0, 1000, 5)
+
+
+def test_history_context_reads_the_last_real_iteration(
+        agent, tmp_path, monkeypatch):
+    """`TNe`'s normalisation: when the API reports per-step `iterations`, the
+    counts that describe the request are the LAST real step's — an advisor or
+    compaction step is a detour inside the turn, not the prompt that went up
+    the wire."""
+    out = _history_payload(agent, tmp_path, monkeypatch, [
+        _t_usage("stepped", {
+            "input_tokens": 1, "output_tokens": 1,
+            "iterations": [
+                {"type": "message", "input_tokens": 5,
+                 "cache_read_input_tokens": 50, "output_tokens": 2},
+                {"type": "message", "input_tokens": 7,
+                 "cache_read_input_tokens": 700, "output_tokens": 3},
+                {"type": "advisor_message", "input_tokens": 900_000,
+                 "output_tokens": 9},
+                {"type": "compaction", "input_tokens": 900_000,
+                 "output_tokens": 9},
+            ]}),
+    ])
+    assert out["context"] == _reading(7, 0, 700, 3)
+
+
+def test_history_context_follows_a_compaction(agent, tmp_path, monkeypatch):
+    """A `compact_boundary` NEWER than the last reading replaces it. The rows
+    above the boundary counted a conversation the model no longer holds; what
+    it holds now is the summary, and only the boundary knows how big that is
+    (`postTokens`) — as an ESTIMATE, since the API has not been asked yet."""
+    boundary = {"type": "system", "subtype": "compact_boundary",
+                "content": "Conversation compacted",
+                "compactMetadata": {"trigger": "auto", "preTokens": 172718,
+                                    "postTokens": 9876}}
+    rows = [
+        _t_usage("before", {"input_tokens": 2, "cache_read_input_tokens": 172_000,
+                            "output_tokens": 700}),
+        boundary,
+    ]
+    out = _history_payload(agent, tmp_path, monkeypatch, rows)
+    assert out["context"] == _reading(9876, 0, 0, 0, "claude-sonnet-4-5",
+                                      compacted=True)
+
+    # A REAL READING AFTER THE BOUNDARY WINS, because it is the API's own count
+    # of what the summary actually cost — the estimate was only ever a stand-in
+    # for the answer this row carries.
+    out = _history_payload(agent, tmp_path, monkeypatch, rows + [
+        _t_usage("after", {"input_tokens": 3, "cache_read_input_tokens": 10_000,
+                           "output_tokens": 40}),
+    ])
+    assert out["context"] == _reading(3, 0, 10_000, 40)
+
+    # ...and a boundary with no `postTokens` leaves NOTHING to draw, which is
+    # what the CLI's own statusline reports here too (`current_usage` is null
+    # until the next API call).
+    out = _history_payload(agent, tmp_path, monkeypatch, [
+        rows[0], {"type": "system", "subtype": "compact_boundary"},
+    ])
+    assert out["context"] is None
+
+
+def test_poll_reports_the_context_reading_mid_turn():
+    """The CLI updates its statusline after every API RESPONSE, and one turn
+    that calls six tools is seven responses — so the poll carries the same
+    reading history does, off `message_start` (the earliest the input counts
+    exist) and off the finished `assistant` rows.
+
+    A source read rather than a run: `_poll` wants a live run dir and a live
+    CLI, and what is worth pinning is that both seats exist and that both go
+    through the one filter."""
+    src = open(os.path.join(TEMPLATE_DIR, "agent.py"), encoding="utf-8").read()
+    body = src[src.index("def _poll(run_id: str"):]
+    body = body[:body.index("\ndef ")]
+    assert body.count("_context_usage(") == 2
+    assert 'ev.get("message")' in body
+    assert '"context": context,' in body
+
+
 def _app_state_rows(agent):
     """A reply that reads the app once, mid-stream: text, the bridge's own
     `app_state` tool call with a reason, its result, more text, `result`."""
