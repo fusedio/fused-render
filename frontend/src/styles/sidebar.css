@@ -1301,6 +1301,16 @@ a.bookmark-name::after {
   border-radius: 4px;
 }
 
+/* A png (is-raster, CurrentAppsSection) sits 2px smaller inside the same
+   24px slot: 1px of air each side so a photo-like file edge-to-edge does not
+   read heavier than the svg glyphs around it. Margin, not a smaller slot, so
+   the row's geometry does not move. */
+.current-app-icon.is-raster {
+  width: 22px;
+  height: 22px;
+  margin: 1px;
+}
+
 /* The running dot sits after the name, in flow: the name gives up its
    stretch so the dot hugs the text instead of drifting to the row's end
    (under the hover-only actions). */
