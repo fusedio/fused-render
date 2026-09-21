@@ -1,8 +1,20 @@
-"""The `defaults` action: preselecting the model/effort the user ACTUALLY last
-used with Claude Code for this project — read from the project's session
-transcripts (shared by the CLI and this template, both key sessions on the same
-cwd munge) and, failing that, from settings files. A hardcoded "default" in the
-selector tells the user nothing; the real config does.
+"""The `defaults` action for a chat with NO SESSION YET — a brand-new chat,
+from the file explorer composer or from the New task modal.
+
+It answers with the GLOBAL Claude preference and nothing else: `model` and
+`effortLevel` in ~/.claude/settings.json, the pair the app's Claude settings
+page writes (Akshil, 2026-09-21: "only factor in global model/effort for all
+new chats … model and effort picked from global config").
+
+It used to walk a folder ladder first — the newest five transcripts in the
+folder's project store, then that folder's .claude/settings.local.json, then
+its .claude/settings.json — so a new chat inherited whatever the last chat in
+that folder happened to run with, or whatever Claude Code's own per-project
+config said. These tests pin that ladder GONE: a hardcoded "default" in the
+selector tells the user nothing, and neither does a neighbour's model.
+
+A chat that names a session is a different question and is answered from that
+conversation alone (tests/test_claude_sessions_merged.py).
 """
 import importlib.util
 import json
@@ -52,37 +64,109 @@ def _write_transcript(agent, workdir, rows, name="s1.jsonl"):
     return path
 
 
-def test_last_used_comes_from_the_newest_transcript_rows(tmp_path, monkeypatch):
+def _write_global(agent, **keys):
+    os.makedirs(agent.CLAUDE_DIR, exist_ok=True)
+    with open(os.path.join(agent.CLAUDE_DIR, "settings.json"), "w") as f:
+        json.dump(keys, f)
+
+
+def test_the_global_settings_file_is_what_a_new_chat_opens_on(tmp_path,
+                                                              monkeypatch):
     agent = _agent_in(tmp_path, monkeypatch)
-    file, workdir = _target(tmp_path)
-    _write_transcript(agent, workdir, [
-        {"effort": "medium", "message": {"model": "claude-sonnet-5"}},
-        # sidechain rows are subagents — the user never chose their model
-        {"isSidechain": True, "message": {"model": "claude-haiku-4-5-20251001"}},
-        {"effort": "xhigh", "message": {"model": "claude-fable-5"}},
-    ])
+    file, _ = _target(tmp_path)
+    _write_global(agent, model="opusplan", effortLevel="low")
     out = agent.main(action="defaults", file=file)
-    # `recorded` is the app's OWN per-session record, and this chat is asked
-    # about as a folder — there is no conversation to have one.
-    assert out == {"model": "fable", "effort": "xhigh", "source": "session",
+    # The alias is collapsed to the name the picker actually offers, and
+    # `recorded` is the app's OWN per-session record — there is no conversation
+    # here to have one.
+    assert out == {"model": "opus", "effort": "low", "source": "settings",
                    "recorded": {"model": "", "effort": ""}}
 
 
-def test_settings_fill_in_when_no_transcript_speaks(tmp_path, monkeypatch):
+def test_transcripts_in_the_folder_no_longer_speak_for_a_new_chat(tmp_path,
+                                                                  monkeypatch):
+    """THE LADDER'S FIRST RUNG, GONE. One experiment on Fable in this folder
+    used to pin every later chat opened there to Fable."""
     agent = _agent_in(tmp_path, monkeypatch)
     file, workdir = _target(tmp_path)
-    # project settings outrank the global file, most-specific first
+    _write_transcript(agent, workdir, [
+        {"effort": "xhigh", "message": {"model": "claude-fable-5"}},
+    ])
+    _write_global(agent, model="sonnet", effortLevel="low")
+    out = agent.main(action="defaults", file=file)
+    assert (out["model"], out["effort"]) == ("sonnet", "low")
+    assert out["source"] == "settings"
+
+
+def test_a_folder_settings_file_is_ignored_even_when_the_global_one_answers(
+        tmp_path, monkeypatch):
+    """THE LADDER'S OTHER RUNGS, GONE. `.claude/settings.json` (and its
+    `.local` sibling) beside the project is Claude Code's own per-project
+    config, not a statement about what the reader wants THIS new chat to run."""
+    agent = _agent_in(tmp_path, monkeypatch)
+    file, workdir = _target(tmp_path)
     proj_cfg = os.path.join(workdir, ".claude")
     os.makedirs(proj_cfg)
     with open(os.path.join(proj_cfg, "settings.json"), "w") as f:
-        json.dump({"model": "opusplan"}, f)
+        json.dump({"model": "haiku", "effortLevel": "max"}, f)
+    with open(os.path.join(proj_cfg, "settings.local.json"), "w") as f:
+        json.dump({"model": "opus", "effortLevel": "high"}, f)
+    _write_global(agent, model="fable", effortLevel="low")
+    out = agent.main(action="defaults", file=file)
+    assert (out["model"], out["effort"]) == ("fable", "low")
+
+
+def test_a_field_the_global_file_omits_stays_empty(tmp_path, monkeypatch):
+    """PER FIELD, and nothing backfills the other half — not the folder's
+    settings, not a neighbour chat. "" leaves the page's own constant
+    speaking."""
+    agent = _agent_in(tmp_path, monkeypatch)
+    file, workdir = _target(tmp_path)
+    proj_cfg = os.path.join(workdir, ".claude")
+    os.makedirs(proj_cfg)
+    with open(os.path.join(proj_cfg, "settings.json"), "w") as f:
+        json.dump({"effortLevel": "max"}, f)
+    _write_transcript(agent, workdir, [
+        {"effort": "xhigh", "message": {"model": "claude-fable-5"}},
+    ])
+    _write_global(agent, model="sonnet")
+    out = agent.main(action="defaults", file=file)
+    assert (out["model"], out["effort"]) == ("sonnet", "")
+
+
+def test_one_reader_answers_the_new_task_card_too(tmp_path, monkeypatch):
+    """`GET /api/claude-sessions/defaults` reads the same file through the same
+    helper, so the card and the chat it books cannot disagree."""
+    agent = _agent_in(tmp_path, monkeypatch)
+    _write_global(agent, model="claude-fable-5-1", effortLevel="high")
+    assert agent._global_defaults() == ("fable", "high")
+
+
+def test_the_new_task_endpoint_answers_off_the_same_helper(tmp_path,
+                                                           monkeypatch):
+    """`GET /api/claude-sessions/defaults` — what the New task modal asks — is
+    the same read, not a second copy of it. Two readers of one file drift, and
+    a card that promises a model the chat it books then opens on something else
+    is exactly that drift showing."""
+    from fused_render.server.routers import claude_sessions, tasks
+
+    agent = _agent_in(tmp_path, monkeypatch)
+    _write_global(agent, model="claude-fable-5-1", effortLevel="xhigh")
+    monkeypatch.setattr(tasks, "_agent_module", lambda: agent)
+    assert claude_sessions.claude_defaults() == {"model": "fable",
+                                                 "effort": "xhigh"}
+
+
+def test_a_broken_or_absent_global_file_is_not_a_crash(tmp_path, monkeypatch):
+    agent = _agent_in(tmp_path, monkeypatch)
+    assert agent._global_defaults() == ("", "")
     os.makedirs(agent.CLAUDE_DIR, exist_ok=True)
     with open(os.path.join(agent.CLAUDE_DIR, "settings.json"), "w") as f:
-        json.dump({"model": "sonnet", "effortLevel": "low"}, f)
-    out = agent.main(action="defaults", file=file)
-    assert out["model"] == "opus"      # project wins, alias collapsed
-    assert out["effort"] == "low"      # global fills what the project omits
-    assert out["source"] == "settings"
+        f.write("{not json")
+    assert agent._global_defaults() == ("", "")
+    with open(os.path.join(agent.CLAUDE_DIR, "settings.json"), "w") as f:
+        f.write("[]")
+    assert agent._global_defaults() == ("", "")
 
 
 def test_nothing_detected_returns_empty_not_a_guess(tmp_path, monkeypatch):
@@ -97,12 +181,11 @@ def test_nothing_detected_returns_empty_not_a_guess(tmp_path, monkeypatch):
 
 def test_unknown_values_never_leak_into_the_answer(tmp_path, monkeypatch):
     agent = _agent_in(tmp_path, monkeypatch)
-    file, workdir = _target(tmp_path)
-    _write_transcript(agent, workdir, [
-        {"effort": "turbo", "message": {"model": "gpt-42"}},
-    ])
+    file, _ = _target(tmp_path)
+    _write_global(agent, model="gpt-42", effortLevel="turbo")
     out = agent.main(action="defaults", file=file)
     assert out["model"] == "" and out["effort"] == ""
+    assert out["source"] == ""
 
 
 def test_short_model_collapses_every_spelling(tmp_path, monkeypatch):
@@ -120,10 +203,9 @@ def test_the_page_asks_and_ranks_detection_below_an_explicit_choice():
                              "template.html"), encoding="utf-8").read()
     assert '{ action: "defaults", file: FILE }' in html
     # explicit pane param > detected config > user preference > hardcoded
-    # fallback. The preference sits BELOW detection on purpose: what this
-    # project is actually worked in says more about this chat than a global
-    # setting does, and the preference is what fills the gap when there is
-    # nothing to detect.
+    # fallback. Detection is this chat's own record and transcript when it names
+    # a session, and ~/.claude/settings.json when it does not; the app's own
+    # preference is what fills the gap when neither says anything.
     assert (
         'fused.params.get("model") || detectedModel || prefModel || DEFAULT_MODEL' in html
     )

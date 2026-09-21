@@ -227,12 +227,14 @@ export function useComposerDefaults(
   // and from nothing else — a field neither knows comes back "" and the
   // constants below speak, rather than a neighbour chat's value.
   //
-  // "" — a chat with no session yet — is the one case that still asks the folder
-  // question, because there is no conversation to ask instead. It is also the
-  // case a host may seed (`ChatMount`'s `model`/`effort`, from the task's own
-  // stored setting), and the case a pick cannot record: there is nothing to key
-  // a record on until the first send mints an id, and that send records the pair
-  // server-side (`agent._start`).
+  // "" — a chat with no session yet — is answered from the GLOBAL Claude
+  // preference (~/.claude/settings.json's `model`/`effortLevel`), because there
+  // is no conversation to ask instead and nothing about the folder is a
+  // statement about what this window should run (Akshil, 2026-09-21). It is
+  // also the case a host may seed (`ChatMount`'s `model`/`effort`, from the
+  // task's own stored setting), and the case a pick cannot record: there is
+  // nothing to key a record on until the first send mints an id, and that send
+  // records the pair server-side (`agent._start`).
   const sessionId = snapshot.session_id || "";
 
   // PICKS MADE WHILE A `defaults` READ IS IN FLIGHT. The read is asked at mount

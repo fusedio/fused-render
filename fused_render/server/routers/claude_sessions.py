@@ -518,22 +518,18 @@ def claude_defaults():
     instead (Akshil, 2026-09-21: "remove the default field … show the model and
     effort"). "" for a field the file does not set: the card keeps its own
     first option then, which is the same thing the CLI would have picked.
+
+    THE READ ITSELF IS `agent._global_defaults`, which is also what a brand-new
+    chat's `defaults` action answers with. One file, one reader: a card that
+    promised a model the chat it books then opened on something else is the
+    exact bug two readers of one file drift into.
     """
     from fused_render.server.routers import tasks as _tasks
     agent = _tasks._agent_module()
     if agent is None:
         raise HTTPException(status_code=503,
                             detail="the claude agent module did not load")
-    model = effort = ""
-    try:
-        with open(os.path.join(agent.CLAUDE_DIR, "settings.json"), encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        data = {}
-    if isinstance(data, dict):
-        model = agent._short_model(str(data.get("model") or ""))
-        e = str(data.get("effortLevel") or "").lower()
-        effort = e if e in agent._EFFORT_LEVELS else ""
+    model, effort = agent._global_defaults()
     return {"model": model, "effort": effort}
 
 
