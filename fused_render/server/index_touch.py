@@ -197,7 +197,7 @@ class RescanQueue:
         except Exception:  # noqa: BLE001 - a mutation must not fail over this
             logger.exception("could not queue an index rescan")
 
-    def note_folders(self, *folders: str) -> None:
+    def note_folders(self, *folders: str, hinted: bool = True) -> None:
         """Record that `folders` themselves (not their contents' parents) need
         a rescan. Returns at once; never raises.
 
@@ -210,12 +210,19 @@ class RescanQueue:
         PARENT, and a watcher forwarding `{root}` on overflow or the periodic
         safety net must have `root` scanned, not `root`'s parent.
 
-        Unlike `note()`, folders noted this way are eligible for a `forced`
-        hint (SPEC-scan-cost.md part 2) instead of a full recursive scan —
-        the watcher already observed exactly these dirs changing, in
-        process, with no journal replay needed."""
+        Unlike `note()`, folders noted this way default to eligible for a
+        `forced` hint (SPEC-scan-cost.md part 2) instead of a full recursive
+        scan — the watcher already observed exactly these dirs changing, in
+        process, with no journal replay needed. `hinted=False` is the
+        watcher's own escape hatch for the two calls where that is NOT true —
+        the burst-overflow and periodic-backstop forwards of `{root}` alone
+        (index_watch.py) carry no observed dirs at all, and a forced,
+        non-recursive hint of just `root` would silently miss everything
+        changed deeper in the tree that a real scan (or a journal-derived
+        hint) would have found."""
         try:
-            self._note_folders((_canon_folder(f) for f in folders), hinted=True)
+            self._note_folders((_canon_folder(f) for f in folders),
+                               hinted=hinted)
         except Exception:  # noqa: BLE001 - same contract as note()
             logger.exception("could not queue an index rescan")
 
@@ -443,13 +450,18 @@ def note_index_mutation(*paths: str | None) -> None:
     _queue.note(*[p for p in paths if isinstance(p, str) and p])
 
 
-def note_index_folders(*folders: str | None) -> None:
+def note_index_folders(*folders: str | None, hinted: bool = True) -> None:
     """The watcher (index_watch.py) saw `folders` change out of band; rescan
     them, shortly. Mirrors `note_index_mutation`'s gate for the same reason:
     queueing while indexing is disabled just grows `_pending` and re-arms
-    `fire()` forever."""
+    `fire()` forever.
+
+    `hinted` passes straight through to `RescanQueue.note_folders` — see its
+    docstring for why the watcher's burst-overflow and periodic-backstop
+    forwards of `{root}` alone must pass `hinted=False`."""
     from fused_render.shell import index_gate
 
     if not index_gate.indexing_allowed():
         return
-    _queue.note_folders(*[f for f in folders if isinstance(f, str) and f])
+    _queue.note_folders(*[f for f in folders if isinstance(f, str) and f],
+                        hinted=hinted)

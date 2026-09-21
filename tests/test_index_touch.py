@@ -340,6 +340,21 @@ def test_the_same_folder_noted_both_ways_falls_back_to_no_hint():
     assert f.start_hints == [None]
 
 
+def test_note_folders_hinted_false_forces_a_normal_scan():
+    """The watcher's own escape hatch (index_watch.py's burst-overflow and
+    periodic-backstop forwards of `{root}` alone): even a single folder
+    noted through `note_folders` must not be hinted when the caller says
+    `hinted=False`, since neither of those forwards carries any real
+    observed-dirs information — root is a stand-in for "something,
+    somewhere, may have changed"."""
+    f = Fake()
+    q = f.queue()
+    q.note_folders("/home/me/proj", hinted=False)
+    f.fire()
+    assert f.started == [canonical_root("/home/me/proj")]
+    assert f.start_hints == [None]
+
+
 def test_disjoint_watcher_folders_each_get_their_own_hint():
     f = Fake()
     q = f.queue()
@@ -493,7 +508,7 @@ def test_note_index_folders_no_ops_while_indexing_is_off(monkeypatch, tmp_path):
     monkeypatch.setattr(prefs_mod, "indexing_enabled", lambda: False)
     noted = []
     monkeypatch.setattr(index_touch._queue, "note_folders",
-                        lambda *f: noted.append(f))
+                        lambda *f, **kw: noted.append(f))
     index_touch.note_index_folders(str(tmp_path))
     assert noted == []
 
@@ -506,10 +521,29 @@ def test_note_index_folders_queues_normally_while_indexing_is_on(monkeypatch,
     monkeypatch.setattr(prefs_mod, "indexing_enabled", lambda: True)
     noted = []
     monkeypatch.setattr(index_touch._queue, "note_folders",
-                        lambda *f: noted.append(f))
+                        lambda *f, **kw: noted.append(f))
     folder = str(tmp_path)
     index_touch.note_index_folders(folder)
     assert noted == [(folder,)]
+
+
+def test_note_index_folders_passes_hinted_through(monkeypatch, tmp_path):
+    """The watcher's burst-overflow and periodic-backstop forwards pass
+    `hinted=False` (SPEC-scan-cost.md part 2) — this is the one seam that has
+    to carry it from `note_index_folders` down to `RescanQueue.note_folders`,
+    since `_queue` is a module-level singleton neither caller constructs."""
+    import fused_render.shell.prefs as prefs_mod
+    from fused_render.server import index_touch
+
+    monkeypatch.setattr(prefs_mod, "indexing_enabled", lambda: True)
+    seen_hinted = []
+    monkeypatch.setattr(
+        index_touch._queue, "note_folders",
+        lambda *f, hinted=True: seen_hinted.append(hinted))
+    index_touch.note_index_folders(str(tmp_path), hinted=False)
+    assert seen_hinted == [False]
+    index_touch.note_index_folders(str(tmp_path))
+    assert seen_hinted == [False, True]
 
 
 # ---------------------------------------------- the bridge wake (D732)
