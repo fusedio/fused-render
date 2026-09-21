@@ -150,6 +150,46 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* ---- Terminal drawer (PLAN-status-bar-terminal.md Task 5) ---------------- */
+/* A sibling of `.status-bar` inside `#main`, deliberately NOT a `.dl-panel`:
+   the panel family tops out around 340px (see its own comment further below)
+   and floats over content — exactly what this drawer exists to avoid for a
+   surface meant to stay open for minutes at a time. `flex: 0 0 auto` plus an
+   explicit pixel `height` (set inline by TerminalDrawer.tsx from its
+   localStorage-persisted state) reserves that much of `#main`'s column for
+   real, the same way `.status-bar` itself does one row below it — nothing
+   may overlap while the drawer is open, the identical "nothing may overlap"
+   rule `.status-bar`'s own header argues for the bar. */
+.term-drawer {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 120px;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+
+/* The drag handle rides the drawer's own TOP edge — dragging it up grows the
+   drawer, matching the direction the pointer actually moves the boundary it
+   is holding. A thin hit strip straddling the border above, not a visible
+   bar of its own: the border already reads as the seam, this only needs to
+   be aimed at. */
+.term-drawer-handle {
+  position: absolute;
+  top: -3px;
+  left: 0;
+  right: 0;
+  height: 6px;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.term-view {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 /* ---- Activity card (SPEC §36) -------------------------------------------- */
 /* ONE card for work in progress: every long-running operation a page reported
    (.dl-row). A scheduled message's own run draws no row here at all (D661) —

@@ -283,3 +283,51 @@ overlaps the Claude composer.
   thread, or an fd running past itself — checked by running the full trio of terminal
   test files together and confirming a clean, prompt process exit under both `-n 0` and
   the default `-n auto`.
+- **Task 4 done and committed** (`Terminal: xterm client and session protocol`):
+  `platform/lib/terminalSession.ts` (framing, backoff, exit-stops-reconnect, no DOM
+  dependency — everything DOM-touching lives in the untested `TerminalView.tsx`) plus
+  10 passing tests in `terminalSession.test.ts`, `@xterm/xterm`/`@xterm/addon-fit`
+  added via `bun add`. Three TypeScript traps hit and fixed, worth flagging for anyone
+  writing a similar test: (1) a static import of a module that transitively reaches
+  `router.ts`'s module-scope `location` read needs `installDomShim()` + a *dynamic*
+  `await import(...)`, exactly like `api.test.ts`'s own documented workaround; (2) a
+  value destructured from that dynamic import loses its type binding, so a
+  `let x: ThatClass` annotation needs a separate `import type { ThatClass as
+  ThatClassType }`; (3) a bare `let requested: string | null = null` mutated only
+  inside a nested callback gets narrowed back to literal `null` at a later read by
+  TS's control-flow analysis — a boxed `{ url: string | null }` has no such narrowing.
+  Also caught and fixed before pushing: the first commit was missing the
+  `Co-Authored-By` trailer, amended immediately (own just-made, unpushed, nothing
+  stacked on top — not a "never amend" violation).
+- **Task 5 done and committed** (`Terminal: status-bar chip and resizable drawer`):
+  `shell/terminalDockStore.ts` (a bespoke `useSyncExternalStore` boolean, deliberately
+  not `useStatusChip`/`useExclusiveSection` — see its own header), `shell/TerminalDock.tsx`
+  (`TerminalDockView`/`TerminalDock` split, mirroring `ModelsDock.tsx`), `shell/TerminalDrawer.tsx`
+  (owns the session id's lifecycle and the height drag, stays mounted while closed so a
+  live session survives a close/reopen cycle within one page load), `.term-drawer`/
+  `.term-drawer-handle`/`.term-view` CSS next to `.status-bar`, and the `StatusBar.tsx`/
+  `App.tsx` wiring (`terminalDock` prop, never a bare `terminal` — that name is already
+  taken by terminal-*job-state* props on `RepoUpdatesDock`/`ActivityDock` in the same
+  JSX block).
+  - **Deviation from the plan's chip-label text**: "Terminal" in both states, not "the
+    running foreground command or shell name when open, count from 2 sessions" — this
+    round only ever keeps one live drawer session, so there is no multi-session list to
+    count or a foreground command to read off yet. Noted in `TerminalDock.tsx`'s own
+    header for whoever adds multi-session support later.
+  - **Extra defensive behavior beyond the plan's literal text**: before reusing a
+    cached session id from localStorage, `TerminalDrawer` checks it against `GET
+    /api/terminal`'s live list rather than trusting it blindly. Reasoning: the WS
+    stream route rejects an unknown id by closing before `accept()` — no `{"exit":...}`
+    frame is ever sent, so `TerminalSession` cannot tell "this id is gone" from "the
+    network hiccuped" and would otherwise reconnect-loop forever against a dead id
+    after a server restart (a real gap in the `TerminalSession`/route contract as
+    written in Tasks 3-4, out of scope to fix at the protocol level this round).
+  - **`bun run build` warns about two dynamic/static import splits** (`router.ts`,
+    `api.ts`) — pre-existing (the same modules were already both statically and
+    dynamically imported elsewhere before this feature; `terminalSession.ts`'s own
+    dynamic-import-avoidance only applies inside its *test* file, not runtime code) and
+    not a new warning introduced by this feature; the build still succeeds.
+  - Two `useSyncExternalStore`-in-`react-test-renderer` `act()` fixes were needed in
+    `TerminalDock.test.tsx` (documented in that file's own comments): the initial
+    `create()` call itself has to be wrapped in `act()`, not just the click, because the
+    subscription is registered in a passive effect that only flushes inside `act()`.
