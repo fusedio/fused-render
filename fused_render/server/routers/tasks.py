@@ -6706,11 +6706,18 @@ def api_queue_force(body: dict = Body(...),
 
     # WHERE TO PUT IT BACK if the dispatch is refused — read off the ENTRY and
     # never off the key, the same rule everything else in this router files a
-    # waiting message under (`_queue_pending_due`). Taken from the collection
-    # already in hand rather than re-reading the store.
-    entry = next((row for row in task["entries"]
-                  if str(row.get("id") or "") == entry_id), {})
+    # waiting message under (`_queue_pending_due`). Read from the LIVE store
+    # first — `_oldest_due_entry` just read it, and an entry created between
+    # `_collect()` above and that read is in the store but not in the
+    # snapshot; the snapshot is the fallback. An empty folder here would
+    # orphan the message on a refused dispatch (review, 2026-09-21), so it is
+    # refused before anything leaves the line.
+    entry = _by_entry_id().get(entry_id) or next(
+        (row for row in task["entries"]
+         if str(row.get("id") or "") == entry_id), {})
     folder = project_queue.queue_key(str(entry.get("target") or ""))
+    if not folder:
+        return _error("nothing waiting to start", status=400)
 
     # OUT OF THE LINE FIRST, and BY ENTRY: `remove` would also release the
     # folder when this task happens to own it — a user forcing the second thing
