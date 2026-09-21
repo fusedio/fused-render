@@ -1063,6 +1063,16 @@ class QueueManager:
         `forget_entry` is the verb for one MESSAGE of a task that may still be
         running."""
         with self._txn() as keys:
+            # A FORCED MARK LIVES AS LONG AS THE CONVERSATION (Bugbot, PR
+            # #1296): it is the only thing keeping that chat's later messages
+            # off the line, so nothing but deleting the task drops it — not
+            # an idle gap between turns, not a finished run. Names are unique
+            # (session/run uuids, entry ids), so a stale one never matches a
+            # new chat.
+            forced = self._state.get("forced")
+            if isinstance(forced, set) and task_key in forced:
+                forced.discard(task_key)
+                keys.add(task_key)
             if self._state["answers"].pop(task_key, None) is not None:
                 keys.add(task_key)
             for folder, rec in list(self._state["folders"].items()):
@@ -1832,7 +1842,6 @@ class QueueManager:
             # Rebuilding a line from them here would undo the force on the
             # very next pass.
             forced: set[str] = self._state.get("forced") or set()
-            alive_forced: set[str] = set()
             for row in due:
                 try:
                     folder, task_key, entry_id = row
@@ -1844,9 +1853,6 @@ class QueueManager:
                 if entry_id:
                     names.add(tasks_store.pending_key(_text(entry_id)))
                 if names & forced:
-                    # …and the names it is still owed work under are the ones
-                    # the prune below must not drop.
-                    alive_forced |= names & forced
                     continue
                 due_keys.add(task_key)
                 if task_key in known:
@@ -1894,23 +1900,8 @@ class QueueManager:
                     keys.add(owner["task"])
                     rec["owner"] = None
             self._prune_answers(keys)
-            self._prune_forced(alive_forced)
             for folder in list(self._state["folders"]):
                 self._pump(folder, keys)
-
-    def _prune_forced(self, still_due: set) -> None:
-        """Forget a forced name whose conversation is over: nothing due under
-        it and nothing the status sync can find. Kept simple on purpose — a
-        name that survives one pass too long costs one door the queue would
-        have closed on a chat that has already gone, and dropping a live one
-        would put a running conversation back in a line."""
-        forced = self._state.get("forced") or set()
-        for name in list(forced):
-            if name in still_due:
-                continue
-            if self._alive({"task": name, "run_id": "", "session_id": ""}):
-                continue
-            forced.discard(name)
 
     def _prune_answers(self, keys: set) -> None:
         """A decision whose task the index no longer points at anywhere, and

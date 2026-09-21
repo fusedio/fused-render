@@ -1094,20 +1094,24 @@ def test_a_forced_task_is_never_rebuilt_into_a_line():
     assert owner_key(m) == "sess-c"
 
 
-def test_a_forced_name_is_kept_while_it_is_owed_a_message_and_dropped_after():
-    """The prune: a forced name whose conversation is neither alive nor owed a
-    due message is forgotten, so the set cannot grow for ever."""
+def test_a_forced_name_outlives_idle_gaps_and_only_remove_drops_it():
+    """The mark is for the life of the conversation (Bugbot, PR #1296): a chat
+    that finished its forced turn and has nothing due must stay forced, or its
+    very next message would line up again. Deleting the task is what forgets
+    it."""
     world = idle_world(due=[(F1, "pending:e1", "e1")])
     m = world.manager()
     m.mark_forced("pending:e1", "sess-live", "sess-gone")
-    world.running_keys.add("sess-live")
     m.reconcile()
-    assert m.forced_names() == {"pending:e1", "sess-live"}
+    assert m.forced_names() == {"pending:e1", "sess-live", "sess-gone"}
 
     world.due.clear()
     world.running_keys.clear()
     m.reconcile()
-    assert m.forced_names() == set()
+    assert m.forced_names() == {"pending:e1", "sess-live", "sess-gone"}
+
+    m.remove("sess-gone")
+    assert m.forced_names() == {"pending:e1", "sess-live"}
 
 
 def test_the_forced_set_persists_across_a_fresh_instance(state):
