@@ -17,6 +17,7 @@ import { navigateUrl } from "@platform/lib/router";
 export function EmptyResultMessage({
   reason,
   scanning,
+  ourScanRunning,
   filesScanned,
 }: {
   /** The server's reason for the last settled answer, "" when it simply
@@ -24,20 +25,29 @@ export function EmptyResultMessage({
   reason: RankReason;
   /** The LIVE index-status poll's own `scanning` flag, tri-state so a
    * definite `false` can contradict a `reason` frozen at rank time (see
-   * `indexGap`'s own doc comment for why this matters in both directions). */
+   * `indexGap`'s own doc comment for why this matters in both directions).
+   * Feeds `indexGap` for the UNCOVERED case only — see `ourScanRunning`
+   * below for why the covered-but-empty case can't reuse this. */
   scanning: boolean | null;
+  /** Whether THIS box's own covered-but-empty scan trigger
+   * (`useListingSearch`, SPEC-empty-search-scan.md) has confirmed — via
+   * `requestFolderScan`'s own `started` reply — that a scan of this exact
+   * root is running right now. Deliberately NOT the same signal as
+   * `scanning` above: that poll is machine-wide (true for ANY scan of ANY
+   * root), and code review finding 2 caught that using it here made an
+   * unrelated scan elsewhere claim a build was in progress for a root
+   * nothing is scanning. `started` is the one signal that actually means
+   * "a scan we asked for, for THIS root, is running". */
+  ourScanRunning: boolean;
   /** `indexScan.files`, for the "still building" progress note. */
   filesScanned: number;
 }) {
   // "" (covered) normally means what "No matches" already says. The one
   // exception: a scan this box itself asked for (the covered-but-empty
-  // trigger in useListingSearch/FilesHome) can be running right now, and the
-  // live poll is the only thing that knows that — `reason` was frozen at
-  // rank time and can't say so. Only a STRICT `true` admits this; `null`
-  // (poll hasn't answered yet) and `false` both fall through to plain "No
-  // matches", so a fresh page load never shows "still building" before the
-  // poll has actually confirmed anything is running.
-  const gap = reason !== "" ? indexGap(reason, scanning) : scanning === true ? "scanning" : null;
+  // trigger in useListingSearch) can be running right now — `ourScanRunning`
+  // is that confirmation, and `reason` (frozen at rank time) can't say so on
+  // its own.
+  const gap = reason !== "" ? indexGap(reason, scanning) : ourScanRunning ? "scanning" : null;
   if (gap === "disabled") {
     return (
       <>

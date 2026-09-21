@@ -455,6 +455,70 @@ describe("a covered folder with a genuinely empty answer: fire a scan (SPEC-empt
     expect(bumped).toBe(1);
     box.unmount();
   });
+
+  // Code review finding 5: the dedup key is the TRIMMED query, not the raw
+  // one — "newfile" and "newfile " must be treated as the same episode even
+  // though A1 keeps them different `indexRank` requests.
+  test("a query that differs only by surrounding whitespace does not refire the scan", async () => {
+    const box = await search("newfile");
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    expect(scanCalls).toEqual(["/d"]);
+
+    await flush(() => box.current().setQuery("newfile "));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(2);
+    await flush(() => rankCalls[1].reply.resolve(answer()));
+    expect(scanCalls).toEqual(["/d"]); // not fired a second time
+    box.unmount();
+  });
+
+  // Code review finding 1: FileSearchField.tsx passes `fireEmptyScan=false`
+  // — this instance never renders a result, so it must never ask for a scan
+  // at all.
+  test("fireEmptyScan=false (FileSearchField.tsx's non-displaying instance) never fires", async () => {
+    const box = renderHook(
+      (p: string, r: number) => useListingSearch(p, undefined, r, false, undefined, false),
+      "/d",
+      0,
+    );
+    await flush(() => box.current().setQuery("newfile"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    expect(scanCalls).toEqual([]);
+    box.unmount();
+  });
+
+  // Code review findings 2 & 3: the caller's "still building" copy is gated
+  // on `ourScanRunning`, which must only flip true once `requestFolderScan`
+  // confirms `started` — a refusal must not claim a build is in progress.
+  test("ourScanRunning stays false when the scan request is refused", async () => {
+    scanReply = { started: false, why: "debounced" };
+    const box = await search("newfile");
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    await flush(() => {});
+    expect(box.current().ourScanRunning).toBe(false);
+    box.unmount();
+  });
+
+  test("ourScanRunning flips true once the scan request confirms started", async () => {
+    const box = await search("newfile");
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    await flush(() => {});
+    expect(box.current().ourScanRunning).toBe(true);
+    box.unmount();
+  });
+
+  // Code review finding 4: the new reply handler needed the same epoch guard
+  // its sibling (the uncovered-scan handler) already had.
+  test("a scan reply for the previous folder does not set ourScanRunning for the new one", async () => {
+    const box = await search("newfile");
+    box.rerender("/other", 0); // navigate before the scan reply lands
+    await flush(() => {});
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    await flush(() => {});
+    expect(box.current().ourScanRunning).toBe(false);
+    box.unmount();
+  });
 });
 
 describe("replies that outlive what they were asked for", () => {

@@ -294,6 +294,7 @@ export default function Listing({
     rowsAnswerQuery,
     cappedAway,
     reason,
+    ourScanRunning,
     mode,
     gateOpen,
     commitSearch,
@@ -1684,6 +1685,7 @@ export default function Listing({
               <EmptyResultMessage
                 reason={reason}
                 scanning={indexScan === null ? null : indexScan.scanning}
+                ourScanRunning={ourScanRunning}
                 filesScanned={indexScan?.files ?? 0}
               />
             </td>
