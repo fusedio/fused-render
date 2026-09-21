@@ -100,6 +100,10 @@
  *     opts.images: absolute paths to base images for a vision-language model,
  *     on THIS turn only.
  *     opts.temperature / opts.maxTokens / opts.topP: sampling.
+ *     opts.thinking: boolean, local text models only (mlx and llama.cpp/GGUF)
+ *     — tri-state, unset/true/false. Local models default to thinking ON
+ *     (D886); set false when a model's own card requires it off. Dropped
+ *     with a `warnings[]` entry on Claude and apple (no such flag there).
  *     history/raw/images are LOCAL-MODEL ONLY and are refused (400) on the
  *     Claude path — dropping them would answer a different question. The
  *     apple tier honours `history`, refuses `raw` (the framework owns its
