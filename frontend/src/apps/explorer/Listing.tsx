@@ -264,6 +264,13 @@ export default function Listing({
   // until it does.
   const home = useHome();
 
+  // Bumped once the covered-but-empty scan trigger (useListingSearch,
+  // SPEC-empty-search-scan.md) actually asks for a scan — restarts
+  // useIndexStatus's poll below so it looks immediately rather than waiting
+  // out its idle beat, the same `indexNonce`/`onScanRequested` pairing
+  // FilesHome.tsx's own search box already uses (FilesHome.tsx:1455,:1544).
+  const [indexNonce, setIndexNonce] = useState(0);
+
   const {
     query,
     q,
@@ -291,7 +298,7 @@ export default function Listing({
     gateOpen,
     commitSearch,
     rerunQuery,
-  } = useListingSearch(fsPath, home, refresh);
+  } = useListingSearch(fsPath, home, refresh, true, () => setIndexNonce((n) => n + 1));
 
   // Decision 5: is the typed query itself a filesystem address? Resolved
   // independently of the ranked search above — Enter checks this first.
@@ -308,7 +315,7 @@ export default function Listing({
 
   // Scan state for the search box's "indexing…" caveat. Gated on `searching`
   // so an idle listing never polls.
-  const indexScan = useIndexStatus(searching);
+  const indexScan = useIndexStatus(searching, indexNonce);
 
   // Search hits vs. the folder's own rows (listing/search-body-mode) — the
   // one place this choice is made, computed once here (not re-derived per
