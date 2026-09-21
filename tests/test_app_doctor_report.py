@@ -728,7 +728,85 @@ def test_pull_is_not_offered_over_a_dirty_tree_and_the_row_says_why(workspace):
     assert row["behind"] == 1
     assert row["onDefault"] is True
     assert row["clean"] is False
-    assert "commit or stash" in row["detail"]
+    # G2 (FIXES-round-3.md): this app's own uncommitted README.md makes BOTH
+    # `commit` (this row's own path-scoped bit) and `clean` (the whole-repo
+    # signal the "stash" blocker reads) fire from the very same dirty file —
+    # the advice must still say "commit" once, not "commit or commit".
+    assert row["detail"] == (
+        "1 uncommitted path, 1 commit behind origin — "
+        "commit or stash your changes to pull so what you share matches what you tested"
+    )
+
+
+def test_repo_health_advice_names_only_what_actually_failed_no_git_needed():
+    """G2 (FIXES-round-3.md): the bug was clause duplication — "commit or
+    commit or stash your changes to pull..." — introduced when both the
+    top-level `commit` bit and the dirty-tree blocker fired off the SAME
+    uncommitted path (see the real-git-repo test just above, which caught the
+    dirty-AND-behind case with a live repo). One combination reading right
+    proves nothing about the others, since the bug is in how clauses join —
+    so this exercises `_repo_health_advice` directly, bit by bit, over every
+    single-bit case, the exact combination that used to duplicate, and a
+    three-bit case that exercises every join branch (", " and ", or ") and
+    both blocker phrases at once.
+    """
+    advice = app_doctor._repo_health_advice
+
+    # uncommitted-only
+    assert advice(commit=True, push=False, behind=0, can_pull=False,
+                   on_default=True, clean=True, default_branch=None) == (
+        "commit so what you share matches what you tested")
+
+    # unpushed-only
+    assert advice(commit=False, push=True, behind=0, can_pull=False,
+                   on_default=True, clean=True, default_branch=None) == (
+        "push so what you share matches what you tested")
+
+    # behind-only, and a direct Pull would actually succeed
+    assert advice(commit=False, push=False, behind=1, can_pull=True,
+                   on_default=True, clean=True, default_branch=None) == (
+        "pull so what you share matches what you tested")
+
+    # behind, blocked by being off the default branch alone
+    assert advice(commit=False, push=False, behind=1, can_pull=False,
+                   on_default=False, clean=True, default_branch="main") == (
+        "switch to main to pull so what you share matches what you tested")
+
+    # behind, blocked by a dirty repo that is NOT this row's own commit bit
+    # (e.g. a sibling app's uncommitted change) — "commit or stash" keeps
+    # its own "commit" here, since nothing else already said it.
+    assert advice(commit=False, push=False, behind=1, can_pull=False,
+                   on_default=True, clean=False, default_branch=None) == (
+        "commit or stash your changes to pull so what you share matches "
+        "what you tested")
+
+    # G2's exact bug case: dirty AND behind, where the SAME uncommitted path
+    # trips both `commit` and the dirty-repo blocker — must read "commit or
+    # stash your changes to pull...", never "commit or commit or stash...".
+    assert advice(commit=True, push=False, behind=1, can_pull=False,
+                   on_default=True, clean=False, default_branch=None) == (
+        "commit or stash your changes to pull so what you share matches "
+        "what you tested")
+
+    # multi-bit: commit + push, nothing behind
+    assert advice(commit=True, push=True, behind=0, can_pull=False,
+                   on_default=True, clean=True, default_branch=None) == (
+        "commit or push so what you share matches what you tested")
+
+    # multi-bit: commit + push + behind, blocked by BOTH not-on-default and
+    # the same dirty path already counted as `commit` — exercises the
+    # 3-item ", or" join and the " and " join between two blockers together.
+    assert advice(commit=True, push=True, behind=1, can_pull=False,
+                   on_default=False, clean=False, default_branch="main") == (
+        "commit, push, or switch to main and stash your changes to pull "
+        "so what you share matches what you tested")
+
+    # nothing failed at all — the defensive fallback a live report should
+    # never actually reach (no bits means no failing_bits, means the caller
+    # never calls this), but the sentence must still stay sane if it did.
+    assert advice(commit=False, push=False, behind=0, can_pull=False,
+                   on_default=True, clean=True, default_branch=None) == (
+        "pull, commit, or push so what you share matches what you tested")
 
 
 @pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")

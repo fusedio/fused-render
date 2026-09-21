@@ -721,7 +721,13 @@ def _repo_health_advice(*, commit, push, behind, can_pull, on_default, clean,
     When origin has moved on (`behind`) but the row's own on_default/clean
     signals mean a direct Pull would be refused (B1), this says what has to
     change FIRST — the same fact `showsPullAction` uses to hide the button —
-    rather than telling the user to "pull" into a button that is not shown."""
+    rather than telling the user to "pull" into a button that is not shown.
+
+    `clean` is the WHOLE-repo dirty signal (Pull's own preflight), while
+    `commit` is this row's own PATH-scoped one — a dirty path always implies
+    a dirty whole repo, so when both fire the blocker must not re-mention
+    "commit" a second time (G2 in FIXES-round-3.md: this used to read
+    "commit or commit or stash your changes to pull...")."""
     bits = []
     if commit:
         bits.append("commit")
@@ -735,7 +741,7 @@ def _repo_health_advice(*, commit, push, behind, can_pull, on_default, clean,
             if on_default is not True:
                 blockers.append(f"switch to {default_branch or 'the default branch'}")
             if clean is not True:
-                blockers.append("commit or stash your changes")
+                blockers.append("stash your changes" if commit else "commit or stash your changes")
             bits.append(" and ".join(blockers) + " to pull" if blockers else "pull")
     if not bits:
         return "pull, commit, or push so what you share matches what you tested"
