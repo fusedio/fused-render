@@ -90,17 +90,16 @@ Real: a line the skill's trap table names, in a view this app ships, with no fal
 
 **Fix.** Invoke **`fused-render-cross-browser`** and apply its paste-in baseline and trap table to exactly the cited lines — prefix, `@supports` fallback, or the replacement the table names. Never restructure the view; never add a build step or autoprefixer (the authoring contract has none). Say in one line per finding what changed.
 
-## `git` — every change is committed
+## `git` — repo in sync
 
-**fact** — `git status --porcelain`, scoped to the app folder. Skip means no readable git repo or no git; unanswerable, not failing.
+**fact** — one consolidated row covering three things: every change committed (`git status --porcelain`, scoped to the app folder), every commit pushed (`git rev-list --count @{upstream}..HEAD` — no network call, so as stale as the last fetch), and not behind origin (a real background `git fetch`, dispatched when App Doctor opens and read from cache here — never run inline, so it can be unresolved). The row's `detail` names whichever of the three apply; its findings mix uncommitted paths and unpushed commit subjects. Skip means no readable git repo, no git, no upstream configured, or the remote check hasn't resolved (offline, unreachable, or just not checked yet) — none of those are a defect in the app.
 
-**Fix.** Commit the listed paths, or `.gitignore` them if they shouldn't be tracked — and commit that `.gitignore` edit too, or it is itself an uncommitted change and this row fails again — so what you share is what you tested.
+**Fix.** Handle whichever the row names:
+- **Uncommitted paths** — commit them, or `.gitignore` them if they shouldn't be tracked — and commit that `.gitignore` edit too, or it is itself an uncommitted change and this row fails again.
+- **Unpushed commits** — push the branch. The findings are the unpushed subject lines — if any read as work-in-progress, say so instead of pushing blindly. The row knows the commits exist, not that they're ready.
+- **Behind origin** — this is exactly what the row's own "Pull" action (in the App Doctor panel, not this skill) is for; a fix session should pull (fast-forward only) rather than force anything, and stop and say so if a pull cannot fast-forward.
 
-## `pushed` — every commit is pushed
-
-**fact** — `git rev-list --count @{upstream}..HEAD`. No network call, so it is as stale as the last fetch. Skip means no upstream or no remote; nothing to compare against.
-
-**Fix.** Push the branch. The findings are the unpushed subject lines — if any read as work-in-progress, say so instead of pushing blindly. The row knows the commits exist, not that they're ready.
+So what you share is what you tested, matches what you pushed, and matches what origin has.
 
 ## `generated` — no generated files outside .fused/
 
@@ -143,7 +142,7 @@ Asked to set up CI: write the files yourself, don't tell the user to copy them.
 
 That workflow is a floor, not a substitute for this review. It runs `app_check.py` (stdlib-only, nothing to install) per app folder and exits 1 only on a **fact** finding of severity **critical** or **warning**. It prints without failing: every **candidate** (all 40 in the measurement above were false positives, so one must never block a push) and a **suggested** fact — a missing README or `preview.png`, real but cosmetic. `suggested` exists only for this exit-code decision; the checklist itself has no such tier. Gating on `kind == "fact"` alone would fail a build over a thumbnail while a leaked-credential candidate exited 0.
 
-The floor is deliberately a subset — no `entry`/`api-version`/`git`/`pushed`/`generated`, which need the runtime's own knowledge or a live repo a fresh checkout may not have, and no `cross-browser`, which needs a model.
+The floor is deliberately a subset — no `entry`/`api-version`/`git`/`generated`, which need the runtime's own knowledge or a live repo a fresh checkout may not have, and no `cross-browser`, which needs a model.
 
 ## No panel
 

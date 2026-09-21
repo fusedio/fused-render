@@ -30,10 +30,17 @@ def _clean_state(monkeypatch):
     next."""
     monkeypatch.setattr(git_upstream, "_checked", {})
     monkeypatch.setattr(git_upstream, "_state", {})
-    # The slot is a real Lock; a test that acquired it and never released
-    # (an exception mid-check) must not wedge every test after it.
-    if git_upstream._check_slot.locked():
-        git_upstream._check_slot.release()
+    # NOTE: deliberately no defensive `_check_slot` release here. Every test
+    # in this file that acquires the slot directly does so in its own
+    # `try/finally` (see test_a_busy_slot_does_not_stamp_the_throttle_for_a_
+    # different_repo), and `_background_check`'s own `finally` guarantees
+    # exactly one release per real dispatch — so a "just in case" release
+    # here has no legitimate target. It used to have an illegitimate one:
+    # when this file runs in the same session as tests/test_app_doctor_report.py
+    # (which — unlike this file — dispatches REAL background threads), a
+    # still-running thread from that file can still hold the slot when this
+    # fixture runs; force-releasing it here races that thread's own
+    # guaranteed release into `RuntimeError: release unlocked lock`.
 
 
 def _clone_with_remote_ahead(tmp_path, name="repo"):
@@ -497,6 +504,37 @@ def test_is_known_repo_stays_true_after_the_repo_is_brought_up_to_date(tmp_path)
                           "on_default": True, "behind": 0, "checked_at": 0.0})
     assert not any(r["root"] == root for r in git_upstream.known_repos())
     assert git_upstream.is_known_repo(root)
+
+
+# --------------------------------------------------------------- repo_state_for
+
+
+def test_repo_state_for_is_none_for_a_root_never_checked(tmp_path):
+    assert git_upstream.repo_state_for(str(tmp_path / "never-seen")) is None
+
+
+def test_repo_state_for_returns_the_recorded_result(tmp_path):
+    local = _clone_with_remote_ahead(tmp_path)
+    assert git_upstream.note_app_opened(local, _runner=_sync)
+    root = os.path.realpath(local)
+    state = git_upstream.repo_state_for(root)
+    assert state is not None
+    assert state["root"] == root
+    assert state["behind"] > 0
+
+
+def test_repo_state_for_sees_a_zero_behind_result_unlike_known_repos(tmp_path):
+    # known_repos() filters out behind == 0; repo_state_for must not, since a
+    # caller here (App Doctor) needs to tell "confirmed up to date" apart
+    # from "never checked" — both would otherwise read as "unknown".
+    local = _clone_with_remote_ahead(tmp_path)
+    root = os.path.realpath(local)
+    git_upstream._record({"root": root, "branch": "main", "default_branch": "main",
+                          "on_default": True, "behind": 0, "ahead": 0, "checked_at": 0.0})
+    assert git_upstream.repo_state_for(root) == {
+        "root": root, "branch": "main", "default_branch": "main",
+        "on_default": True, "behind": 0, "ahead": 0, "checked_at": 0.0,
+    }
 
 
 # ---------------------------------------------------------- POST /api/git-upstream

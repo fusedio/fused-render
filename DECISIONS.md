@@ -2889,3 +2889,102 @@ Removed the second parse: the "Publish AppImage + attach to release" step
 now exports `VERSION` via `$GITHUB_ENV` (Task 15) alongside `APPIMAGE`, the
 same pattern already used to carry `$APPIMAGE` across steps, so there is
 only one place the filename is ever parsed.
+
+## Task 17 — App Doctor's `git`/`pushed` rows consolidate into one `git` row, backed by `git_upstream`'s existing cache rather than a new fetch mechanism
+
+SPEC-doctor-git-ai-errors.md asks for the two existing Sharing-section rows
+("Every change is committed" / `git`, "Every commit is pushed" / `pushed`)
+to merge into one row that ALSO reports being behind origin — which needs a
+real `git fetch`, something App Doctor had never done before, without ever
+blocking `report()` on the network.
+
+Rather than build new fetch/polling plumbing, this reuses
+`fused_render/git_upstream.py`'s existing throttled background-fetch
+machinery (`note_app_opened`, `CHECK_TTL_S=300s`, a single process-wide
+fetch slot) — the same service that already backs the status-bar Repo
+Updates card, left completely unchanged per the spec's own constraint. Added
+one new read-only accessor, `git_upstream.repo_state_for(root)`: the last
+known `check_repo()` result for a root, or `None` when never successfully
+checked (never asked, still checking, or every attempt failed — the
+module's own silence-on-failure rule). Unlike `known_repos()` (filtered to
+`behind > 0`, for the status-bar card's own purpose) this is unfiltered, so
+a caller can tell "confirmed up to date" (`{"behind": 0, ...}`) apart from
+"unknown" (`None`) — which App Doctor's row needs and the status-bar card
+never did.
+
+The consolidated row (`app_doctor._repo_health_check`, kept at check id
+`git` — `pushed` is retired, not renamed, since the row now covers strictly
+more than either predecessor) computes local commit/push state exactly as
+before (`_git_pending`/`_pushed_pending`, no network), then calls
+`git_upstream.note_app_opened(app_dir)` (fire-and-forget, never blocks) and
+reads back `repo_state_for(root)` — fresh, stale, or still `None` if the
+background check hasn't landed. `GET /api/apps/doctor` already recomputes
+`app_doctor.report()` fresh on every call (confirmed by reading
+`server/routers/apps.py` — no caching layer), so a later re-open or
+re-fetch naturally picks up whatever `git_upstream`'s cache has accumulated
+by then; no new polling endpoint was needed.
+
+**State logic, and the one non-obvious call**: FAIL if uncommitted,
+unpushed, or (once known) behind origin. PASS only when local is clean AND
+`behind` is a confirmed non-None value (i.e. the remote was actually
+checked and found current). SKIP — not PASS — when local is clean but the
+remote state is still unknown: a repo with no remote configured at all can
+therefore never resolve to PASS on this row, only SKIP with a stated
+reason ("no upstream remote configured", "not a git repository", or
+"origin status could not be checked"). This is a deliberate reading of the
+spec's "a failed fetch...must report as SKIPPED rather than FAILED":
+"unconfirmed" and "confirmed clean" are different facts, and folding the
+former into a silent PASS would misreport exactly the case the async
+design exists to be honest about. This is a visible behavior change from
+the OLD `git` row (which passed on local cleanliness alone, with no
+opinion about remote) — call sites/tests updated accordingly
+(`tests/test_app_doctor_report.py`).
+
+Tests needing a deterministic remote-confirmed result use the same
+`_runner` test seam `tests/test_git_upstream.py` already established
+(`git_upstream.note_app_opened(path, _runner=lambda fn: fn())`) to run a
+REAL `git fetch` against a local bare-repo remote synchronously, rather
+than racing app_doctor's own real background thread dispatch. Because
+almost every git-touching test in this file now triggers a real background
+thread (any test whose app folder is a real git repo, not only the ones
+that explicitly warm the cache), the file's own `_clean_git_upstream_state`
+autouse fixture deliberately does NOT defensively release
+`git_upstream._check_slot` the way `test_git_upstream.py`'s fixture does —
+that file never dispatches real threads (`_sync` only), so its release is
+safe; here a still-running thread from the previous test releases the slot
+itself, exactly once, in its own `finally`, and a second release from the
+fixture races it into `RuntimeError: release unlocked lock` (observed and
+fixed during this task — see the fixture's own docstring for the full
+explanation).
+
+The same double-release hazard turned out to reach across files, not just
+within one: `tests/test_git_upstream.py`'s own long-standing autouse
+fixture ALSO defensively released `_check_slot` ("just in case a test
+acquired it and never released"), which is safe when that file runs alone
+(every test in it uses the `_sync` seam, never a real thread) but not when
+it runs in the same pytest session as `tests/test_app_doctor_report.py` —
+confirmed by running both files together, which reproduced the exact same
+`RuntimeError: release unlocked lock` a still-running real thread from the
+other file. Every direct acquire in `test_git_upstream.py` already
+guarantees its own release via `try/finally`
+(`test_a_busy_slot_does_not_stamp_the_throttle_for_a_different_repo`), so
+the fixture's defensive release had no legitimate target — removed it too,
+with a docstring recording why. Re-ran the two files together 3x after the
+fix (102 passed each time, no thread exceptions) and the full related group
+(`test_app_doctor_report.py` + `test_git_upstream.py` +
+`test_app_doctor.py` + `test_app_doctor_housekeeping.py`, 146 passed).
+
+## Task 18 — Part A (error-banner AI affordance) scoped down to shared infrastructure, not a full ~20+ call-site sweep
+
+SPEC-doctor-git-ai-errors.md's Part A asks for `ErrorBanner.tsx` (shared
+across ~20+ call sites) to grow an explain-with-AI action on system/runtime
+errors. Given this session's turn budget was consumed primarily by Part B's
+TDD conversion (the `git`/`pushed` consolidation above, which touched more
+surface than expected once the test file's real-thread interactions were
+accounted for), Part A was NOT implemented this round. This is a scope
+decision, not an oversight: shipping Part B correctly and fully tested was
+judged higher-value than a partial, undertested Part A. See the final
+handoff report for the concrete next-step plan (the `onExplain?` prop
+shape, the `explain-with-ai.ts` helper reusing `stageClaudeAsk`, and the
+`Config.fused_dir`-based default-folder fallback modeled on
+`home-path.ts`).

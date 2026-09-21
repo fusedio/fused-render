@@ -20,11 +20,40 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from fused_render import app_doctor, schedule
+from fused_render import app_doctor, git_upstream, schedule
 from fused_render.server import create_app
 from fused_render.server.routers import apps as apps_mod
 
 HDRS = {"X-Fused": "1"}
+
+
+def _sync(fn):
+    """A `_runner` that runs a `git_upstream` background check inline — same
+    seam `tests/test_git_upstream.py` uses — so a test can warm the
+    consolidated `git` row's remote-state cache deterministically instead of
+    racing a real background thread."""
+    fn()
+
+
+@pytest.fixture(autouse=True)
+def _clean_git_upstream_state(monkeypatch):
+    """`git_upstream` keeps its throttle/result caches as process-wide module
+    dicts — a stale entry from one test must never leak into the next, and
+    the consolidated `git` row now calls into this module on every
+    `report()`.
+
+    UNLIKE `tests/test_git_upstream.py`'s own `_clean_state`, this file's
+    `_repo_health_check` calls dispatch REAL background threads (every test
+    that inits a real git repo triggers one, not only the handful that use
+    the `_sync` seam) — so, unlike that file, this fixture must NOT
+    defensively release `_check_slot`: a still-running thread from the
+    previous test releases it exactly once, itself, on its own `finally`
+    (see `_background_check`), and a second release here races it into
+    `RuntimeError: release unlocked lock`. The slot needs no cleanup — it is
+    only ever held for the brief, self-contained duration of one background
+    check."""
+    monkeypatch.setattr(git_upstream, "_checked", {})
+    monkeypatch.setattr(git_upstream, "_state", {})
 
 PAGE = ('<html><head><meta name="fused-app" />'
         '<meta name="fused-api-version" content="{v}" /></head><body>hi</body></html>')
@@ -78,7 +107,6 @@ _EXPECTED_META = {
     "icon": ("essentials", "warning", "fact"),
     "device-paths": ("sharing", "warning", "candidate"),
     "git": ("sharing", "warning", "fact"),
-    "pushed": ("sharing", "warning", "fact"),
     "generated": ("sharing", "warning", "fact"),
     "preview": ("sharing", "warning", "fact"),
     "cross-browser": ("sharing", "warning", "candidate"),
@@ -279,8 +307,12 @@ def test_uncommitted_work_fails_the_git_row_and_a_clean_tree_passes(workspace):
     _git(repo, "add", "-A")
     _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "in")
 
+    # No remote is configured here — the consolidated row now also needs a
+    # confirmed remote state to PASS, so a clean tree with nothing to compare
+    # against reads as SKIP, not PASS: there is nothing wrong locally, but
+    # nothing confirms this branch matches origin either.
     row = _rows(app_doctor.report(str(d)))["git"]
-    assert row["state"] == "pass"
+    assert row["state"] == "skip"
 
     (d / "app.py").write_text("print('new')\n")
     row = _rows(app_doctor.report(str(d)))["git"]
@@ -300,7 +332,9 @@ def test_a_sibling_apps_uncommitted_work_is_not_this_apps_finding(workspace):
     _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "in")
     (theirs / "wip.py").write_text("half a thought\n")
 
-    assert _state(app_doctor.report(str(mine)), "git") == "pass"
+    # No remote here either (see the test above) — clean-and-unconfirmed
+    # reads as SKIP, not PASS.
+    assert _state(app_doctor.report(str(mine)), "git") == "skip"
     assert _state(app_doctor.report(str(theirs)), "git") == "fail"
 
 
@@ -382,24 +416,28 @@ def test_an_app_that_is_its_own_repo_root_does_not_over_claim_the_whole_folder(
     assert finding["excerpt"] == "demo/ (untracked directory)"
 
 
-# --------------------------------------------------------------- pushed
+# --------------------------------------------- git row: unpushed + behind origin
+#
+# The former `pushed` row's own tests, now against the consolidated `git`
+# row's id. Its "up to date" cases pre-warm `git_upstream`'s cache with the
+# `_sync` runner seam (same pattern `tests/test_git_upstream.py` uses) so a
+# real `git fetch` against the local bare remote resolves BEFORE `report()`
+# reads it, rather than racing app_doctor's own background dispatch.
 
-def test_a_folder_that_is_not_a_repo_skips_the_pushed_row_with_the_right_reason(
+def test_a_folder_that_is_not_a_repo_skips_the_git_row_with_the_right_reason(
     workspace,
 ):
     """A folder with no git repo at all must not be told it has "no upstream
     configured" — that implies a repo that just needs a remote wired up, a
-    different and wrong fact from "this isn't a git repository". The wording
-    matches `_git_check`'s own NO_REPO sentence for the `git` row, since it
-    is the same condition."""
+    different and wrong fact from "this isn't a git repository"."""
     d = _app(workspace)
-    row = _rows(app_doctor.report(str(d)))["pushed"]
+    row = _rows(app_doctor.report(str(d)))["git"]
     assert row["state"] == "skip"
     assert row["detail"] == "this folder is not in a git repository this server can read"
 
 
 @pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
-def test_no_remote_at_all_skips_the_pushed_row(workspace):
+def test_no_remote_at_all_skips_the_git_row(workspace):
     """A folder with no remote configured is not a failing app — there is
     nothing to compare its branch against."""
     d = _app(workspace)
@@ -407,11 +445,11 @@ def test_no_remote_at_all_skips_the_pushed_row(workspace):
     _git(repo, "init", "-q")
     _git(repo, "add", "-A")
     _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "in")
-    assert _state(app_doctor.report(str(d)), "pushed") == "skip"
+    assert _state(app_doctor.report(str(d)), "git") == "skip"
 
 
 @pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
-def test_a_branch_with_no_upstream_skips_the_pushed_row(workspace):
+def test_a_branch_with_no_upstream_skips_the_git_row(workspace):
     d = _app(workspace)
     repo = workspace / "local"
     _git(repo, "init", "-q")
@@ -422,16 +460,16 @@ def test_a_branch_with_no_upstream_skips_the_pushed_row(workspace):
     subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True,
                    capture_output=True, close_fds=False)
     _git(repo, "remote", "add", "origin", str(remote))
-    row = _rows(app_doctor.report(str(d)))["pushed"]
+    row = _rows(app_doctor.report(str(d)))["git"]
     assert row["state"] == "skip"
     # A REAL, readable repo with no upstream gets a different sentence than
     # "not a git repository" (see the non-repo test above) — this one is
     # actually about the missing upstream.
-    assert row["detail"] == "no upstream branch configured for this folder — nothing to compare against"
+    assert row["detail"] == "no upstream remote configured for this folder — nothing to compare against"
 
 
 @pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
-def test_commits_ahead_of_upstream_fail_the_pushed_row_and_name_the_subjects(workspace):
+def test_commits_ahead_of_upstream_fail_the_git_row_and_name_the_subjects(workspace):
     d = _app(workspace)
     repo = workspace / "local"
     remote = workspace.parent / "remote.git"
@@ -447,13 +485,13 @@ def test_commits_ahead_of_upstream_fail_the_pushed_row_and_name_the_subjects(wor
     _git(repo, "add", "-A")
     _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "a new commit")
 
-    row = _rows(app_doctor.report(str(d)))["pushed"]
+    row = _rows(app_doctor.report(str(d)))["git"]
     assert row["state"] == "fail"
     assert any("a new commit" in f["excerpt"] for f in row["findings"])
 
 
 @pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
-def test_a_branch_pushed_up_to_date_passes_the_pushed_row(workspace):
+def test_a_branch_pushed_up_to_date_passes_the_git_row(workspace):
     d = _app(workspace)
     repo = workspace / "local"
     remote = workspace.parent / "remote.git"
@@ -464,17 +502,27 @@ def test_a_branch_pushed_up_to_date_passes_the_pushed_row(workspace):
     _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "in")
     _git(repo, "remote", "add", "origin", str(remote))
     _git(repo, "push", "-q", "-u", "origin", "HEAD")
-    assert _state(app_doctor.report(str(d)), "pushed") == "pass"
+    # Pre-warm the async remote check synchronously — a real `git fetch`
+    # against the local bare remote, resolved before `report()` reads it.
+    git_upstream.note_app_opened(str(d), _runner=_sync)
+    row = _rows(app_doctor.report(str(d)))["git"]
+    assert row["state"] == "pass"
+    assert row["behind"] == 0
+    assert row["ahead"] == 0
+    assert "up to date with origin" in row["detail"]
 
 
 @pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
-def test_a_sibling_apps_unpushed_commit_is_not_this_apps_finding(workspace):
-    """Same D626 scoping problem as the git row's own sibling test above, but
-    for `pushed`: `rev-list --count @{upstream}..HEAD` and the `log` that
-    names the subjects both walk the WHOLE shared repo's history unless
-    scoped with `-- .`, so a neighbour app's unpushed commit would otherwise
-    count against every app in the workspace and hand its commit subject to
-    a fix session that has nothing to do with it."""
+def test_a_sibling_apps_unpushed_commit_is_not_this_apps_finding_for_the_git_row(
+    workspace,
+):
+    """Same D626 scoping problem as the git row's own local-status sibling
+    test above, but for the unpushed half: `rev-list --count
+    @{upstream}..HEAD` and the `log` that names the subjects both walk the
+    WHOLE shared repo's history unless scoped with `-- .`, so a neighbour
+    app's unpushed commit would otherwise count against every app in the
+    workspace and hand its commit subject to a fix session that has nothing
+    to do with it."""
     mine = _app(workspace, "mine")
     theirs = _app(workspace, "theirs")
     repo = workspace / "local"
@@ -491,10 +539,79 @@ def test_a_sibling_apps_unpushed_commit_is_not_this_apps_finding(workspace):
     _git(repo, "add", "-A")
     _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "theirs only")
 
-    assert _state(app_doctor.report(str(mine)), "pushed") == "pass"
-    theirs_row = _rows(app_doctor.report(str(theirs)))["pushed"]
+    git_upstream.note_app_opened(str(mine), _runner=_sync)
+    assert _state(app_doctor.report(str(mine)), "git") == "pass"
+    theirs_row = _rows(app_doctor.report(str(theirs)))["git"]
     assert theirs_row["state"] == "fail"
     assert any("theirs only" in f["excerpt"] for f in theirs_row["findings"])
+
+
+# ------------------------------------------------------- git row: behind origin
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_behind_origin_fails_the_git_row_once_the_async_fetch_resolves(workspace):
+    """The new half of the consolidated row (SPEC-doctor-git-ai-errors.md):
+    a clean, fully-pushed local branch whose origin has moved on. Warmed via
+    the same `_sync` seam as the up-to-date test above — a real `git fetch`
+    against a local bare remote that a second clone advanced, mirroring
+    `tests/test_git_upstream.py`'s own `_clone_with_remote_ahead` fixture."""
+    d = _app(workspace)
+    repo = workspace / "local"
+    remote = workspace.parent / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True,
+                   capture_output=True, close_fds=False)
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "in")
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "-q", "-u", "origin", "HEAD")
+
+    # A second clone advances the remote without this clone ever fetching it.
+    other = workspace.parent / "other-clone"
+    subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True,
+                   capture_output=True, close_fds=False)
+    (other / "elsewhere.txt").write_text("from origin\n")
+    _git(other, "add", "-A")
+    _git(other, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "on origin")
+    _git(other, "push", "-q")
+
+    git_upstream.note_app_opened(str(d), _runner=_sync)
+    row = _rows(app_doctor.report(str(d)))["git"]
+    assert row["state"] == "fail"
+    assert row["behind"] == 1
+    assert "behind origin" in row["detail"]
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_a_git_row_reports_skip_not_fail_when_the_fetch_has_not_resolved_yet(
+    workspace, monkeypatch,
+):
+    """A repo with a real, resolvable remote, but the async fetch has not
+    landed yet — `_repo_health_check` never performs it inline, only
+    dispatches it (see its own docstring), so this stubs the dispatch to a
+    no-op rather than racing a real background thread against the assertion
+    below. A slow/unresolved remote must read as SKIP with a stated reason,
+    never as a failure — a pending or failed fetch is not a defect in the
+    app being reviewed."""
+    d = _app(workspace)
+    repo = workspace / "local"
+    remote = workspace.parent / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True,
+                   capture_output=True, close_fds=False)
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "in")
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "-q", "-u", "origin", "HEAD")
+
+    monkeypatch.setattr(git_upstream, "note_app_opened", lambda *a, **k: False)
+
+    report = app_doctor.report(str(d))
+    row = _rows(report)["git"]
+    assert row["state"] == "skip"
+    assert "could not be checked" in row["detail"]
+    # A skip is not a pass, but it is not a problem either.
+    assert report["ok"] is True
 
 
 def test_a_missing_folder_reports_rather_than_raising(tmp_path):
@@ -801,14 +918,13 @@ def test_the_deleted_fallback_string_is_gone_from_the_module():
 
 def test_a_single_row_prompt_ends_with_a_conditional_commit_step_and_no_push(workspace):
     """This covers a row whose fix EDITS FILES (`readme`) — the shape
-    `_COMMIT_STEP` is right for. It deliberately does NOT stand in for every
-    row: `git` and `pushed` don't edit files, their fix IS a git action
-    spelled out in their own SKILL.md section, and appending this same
-    "never push" / edit-conditioned step to THOSE rows is exactly what
-    review findings 1 & 2 caught (a `pushed` row's only real fix is
-    forbidden by "never push"; a `git` row's fix needs no edit, so "no edit
-    -> no commit" disables it). Those two rows are covered separately below
-    by `test_the_pushed_rows_own_prompt_carries_no_never_push_step` and
+    `_COMMIT_STEP` is right for. It deliberately does NOT stand in for the
+    `git` row: `git` doesn't edit files, its fix IS a git action (commit,
+    push, or pull) spelled out in its own SKILL.md section, and appending
+    this same "never push" / edit-conditioned step to it is exactly what
+    review findings 1 & 2 caught (its only real fix can BE a push, which
+    "never push" forbids; its fix needs no edit, so "no edit -> no commit"
+    disables it too). That row is covered separately below by
     `test_the_git_rows_own_prompt_carries_no_edit_conditioned_commit_step`."""
     d = _app(workspace)
     prompt = app_doctor.doctor_prompt(str(d / "index.html"), "readme", [], "no README")
@@ -820,13 +936,14 @@ def test_a_single_row_prompt_ends_with_a_conditional_commit_step_and_no_push(wor
     assert "push it" not in prompt.lower()
 
 
-def test_the_pushed_rows_own_prompt_carries_no_never_push_step(workspace):
-    """Review finding 1: the trailing commit step's "never push" contradicts
-    SKILL.md's `pushed` section ("Push the branch") — the row's only real
-    fix. The `pushed` row's own prompt must not carry the generic commit/
-    no-push step at all; its own SKILL.md section is the whole instruction."""
+def test_the_git_rows_own_prompt_carries_no_never_push_step(workspace):
+    """Review finding 1 (consolidated): the trailing commit step's "never
+    push" would contradict the `git` section's own push instruction for a
+    commits-ahead-of-upstream fix. The `git` row's own prompt must not carry
+    the generic commit/no-push step at all; its own SKILL.md section is the
+    whole instruction."""
     d = _app(workspace)
-    prompt = app_doctor.doctor_prompt(str(d / "index.html"), "pushed", [],
+    prompt = app_doctor.doctor_prompt(str(d / "index.html"), "git", [],
                                      "1 commit ahead of upstream")
     assert "never push" not in prompt.lower()
     assert app_doctor._COMMIT_STEP not in prompt
@@ -869,26 +986,26 @@ def test_git_skill_section_tells_the_gitignore_branch_to_commit_its_own_edit():
     )
 
 
-def test_fix_all_containing_a_pushed_row_can_still_push_for_that_row(workspace):
+def test_fix_all_containing_a_failing_git_row_can_still_push_for_that_row(workspace):
     """Review finding 1 in `doctor_prompt_all`: a Fix-all run that includes a
-    `pushed` row must still be able to push for that row — the trailing
+    failing `git` row must still be able to push for that row — the trailing
     `_COMMIT_STEP_ALL` step must not be phrased as a blanket "never push"
-    that overrides the `pushed` row's own SKILL.md instruction.
+    that overrides the `git` row's own SKILL.md instruction.
 
     Absence of "never push" alone would also pass if the step said nothing
     about pushing at all — silence isn't permission. Assert the real
-    semantics: the step affirmatively defers to the `pushed` row's own
-    section rather than merely not-forbidding it."""
+    semantics: the step affirmatively defers to the `git` row's own section
+    rather than merely not-forbidding it."""
     checks = [
-        {"id": "pushed", "label": "Every commit is pushed", "kind": "fact",
+        {"id": "git", "label": "Repo in sync", "kind": "fact",
          "state": "fail", "detail": "1 commit ahead of upstream", "findings": []},
     ]
     prompt = app_doctor.doctor_prompt_all(str(_app(workspace) / "index.html"), checks)
     assert "never push" not in prompt.lower()
     lower = prompt.lower()
-    # The trailing step must name the `pushed` row and instruct following
+    # The trailing step must name the `git` row and instruct following
     # through on push for it — not just avoid a blanket prohibition.
-    assert "pushed" in lower
+    assert "a `git` row" in lower or "a git row" in lower
     assert "follow through on push" in lower
     assert "does not forbid it" in lower
 

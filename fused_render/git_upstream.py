@@ -761,6 +761,22 @@ def known_repos():
         return [dict(v) for v in _state.values() if v.get("behind", 0) > 0]
 
 
+def repo_state_for(root):
+    """The last known `check_repo()` result for `root`, or None when this
+    module has never successfully checked it — never yet asked, still
+    checking in the background, or every attempt so far failed (offline, no
+    remote, expired auth: the module docstring's silence-on-failure rule).
+    Read-only, no subprocess, and never blocks — for a caller (App Doctor)
+    that wants to SHOW cached upstream state without itself triggering or
+    waiting on a fetch. Unlike `known_repos()` this is not filtered to
+    `behind > 0`: a caller here needs to tell "confirmed up to date" apart
+    from "unknown", which a `None`-vs-`{"behind": 0, ...}` return does and a
+    filtered list cannot."""
+    with _state_lock:
+        v = _state.get(root)
+        return dict(v) if v is not None else None
+
+
 def is_known_repo(root):
     """Whether `root` is a repo THIS module's own background check has
     recorded state for — the allowlist `POST /api/git-upstream` (server/
