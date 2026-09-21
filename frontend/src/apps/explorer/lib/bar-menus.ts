@@ -201,6 +201,10 @@ export function crumbMenu(actions: CrumbActions): MenuEntry[] {
 //         Split right, Split down — the folder menu's `open` row for row, so
 //         the shared pair never swaps places between the two bars (they are
 //         one surface to the user).
+//   share Share… for the file ITSELF (share-any-file-plan.md task 7) — its
+//         own group so it reads as one decision, not folded into `open` or
+//         `copy`. Own group's `app`-namesake Share… (above) is the folder's;
+//         this one is the plain file's, and only a file ever fills it.
 //   copy  text to the clipboard: Copy Path, Copy Claude session command.
 //   embed Open in embed, last and alone — the folder menu's reason.
 //
@@ -211,11 +215,12 @@ export interface FileMenuGroups {
   app?: MenuEntry[];
   file?: MenuEntry[];
   open?: MenuEntry[];
+  share?: MenuEntry[];
   copy?: MenuEntry[];
   embed?: MenuEntry[];
 }
 
-const FILE_GROUP_ORDER: (keyof FileMenuGroups)[] = ["app", "file", "open", "copy", "embed"];
+const FILE_GROUP_ORDER: (keyof FileMenuGroups)[] = ["app", "file", "open", "share", "copy", "embed"];
 
 export function fileMenu(groups: FileMenuGroups): MenuEntry[] {
   return groupedMenu(FILE_GROUP_ORDER, groups);
