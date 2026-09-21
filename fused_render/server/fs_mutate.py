@@ -23,6 +23,7 @@ from fastapi.responses import (
 )
 
 from fused_render import calls as shell_calls
+from fused_render import tasks_watch
 from fused_render.server.common import _error, _require_fused
 from fused_render.server.gitignore import _is_repo_root
 from fused_render.server.index_touch import note_index_mutation
@@ -1375,6 +1376,15 @@ def _fs_rename(body: dict, x_fused: str | None, *, settle: bool = True):
             else:
                 app_state_move.rewrite_stores(s0, d0)
                 claude_session_move.relocate(s0, d0)
+            # AND SAY SO (Akshil, 2026-09-21: "cut and paste a folder — do I
+            # get the chats instantly, or do I need to reload?"). The relocate
+            # rewrote transcripts on disk, but nothing the tasks watcher ticks
+            # on changed — no registry row, no live transcript — so the Tasks
+            # listing and every chat landing kept the old folder's rows until
+            # a reload. `notify_all`, not `notify()`: the `ensure` branch names
+            # no session ids, and a bump with no keys is one the client skips
+            # (it waited for the 20 s floor — "took 10–15 seconds").
+            tasks_watch.notify_all()
         except Exception:
             # The rename itself is done and must answer OK; the chats not
             # following is worth a line in the log, not a failed move.

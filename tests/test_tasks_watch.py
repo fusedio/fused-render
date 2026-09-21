@@ -237,6 +237,23 @@ def test_wait_returns_union_since_and_full_when_too_far_back(monkeypatch):
     assert tasks_watch.wait(0, 0) == (5, None)
 
 
+def test_notify_all_makes_every_waiter_reload_the_listing():
+    """A folder move rewrites sessions the ring cannot name (2026-09-21): the
+    answer is `None` — full reload — for any window that includes it, and a
+    plain keyed union again once a client is past it."""
+    tasks_watch.tick()
+    tasks_watch.notify({"a"})
+    tasks_watch.notify_all()
+    tasks_watch.notify({"b"})
+    assert tasks_watch.wait(0, 0) == (3, None)
+    assert tasks_watch.wait(1, 0) == (3, None)
+    assert tasks_watch.wait(2, 0) == (3, frozenset({"b"}))
+    # …and the endpoint says so in the shape the client reloads on.
+    with TestClient(create_app(os.getcwd())) as client:
+        assert client.get("/api/tasks/changes?since=1&wait=0").json() == {
+            "generation": 3, "full": True}
+
+
 def test_wait_with_a_since_from_a_previous_process_asks_for_a_full_reload():
     tasks_watch.tick()
     tasks_watch.notify({"a"})
