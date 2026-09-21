@@ -49,7 +49,8 @@ test("a read that departed before a pick does not snap the pick back", async () 
   void mod.setClaudeDefaults({ model: "opus" }); // pick while it is out: PUT #1
   expect(mod.getClaudeDefaults()?.model).toBe("opus");
   s.answer(0, { model: "fable", effort: "low" }); // the stale GET lands late
-  expect(await read).toEqual({ model: "opus", effort: "" });
+  // The read's MODEL is stale (picked since); its EFFORT is not and is taken.
+  expect(await read).toEqual({ model: "opus", effort: "low" });
   expect(mod.getClaudeDefaults()?.model).toBe("opus");
   s.answer(1, { model: "opus", effort: "low" });
   await tick();
@@ -96,4 +97,30 @@ test("a write that finishes after a newer pick leaves the newer pick alone", asy
   s.answer(1, { model: "haiku", effort: "low" });
   await tick();
   expect(mod.getClaudeDefaults()).toEqual({ model: "haiku", effort: "low" });
+});
+
+test("two fields in flight: the later answer never carries the other field's old value", async () => {
+  // Bugbot on 1e4a44c: model and effort are separate PUTs. If the server
+  // processes the effort write first, its answer says the OLD model; that
+  // answer must not put the model pill back while the model write is out.
+  const s = stub();
+  void mod.setClaudeDefaults({ model: "opus" });  // PUT #0
+  void mod.setClaudeDefaults({ effort: "high" }); // PUT #1
+  s.answer(1, { model: "fable", effort: "high" }); // #1 lands first, model still old
+  await tick();
+  expect(mod.getClaudeDefaults()).toEqual({ model: "opus", effort: "high" });
+  s.answer(0, { model: "opus", effort: "high" });
+  await tick();
+  expect(mod.getClaudeDefaults()).toEqual({ model: "opus", effort: "high" });
+});
+
+test("a refused write is taken back even while the OTHER field is in flight", async () => {
+  const s = stub();
+  const bad = mod.setClaudeDefaults({ model: "gpt-42" }); // PUT #0
+  void mod.setClaudeDefaults({ effort: "high" });          // PUT #1
+  s.answer(0, { model: "", effort: "" }, 400);
+  await tick();
+  s.answer(2, { model: "fable", effort: "low" });          // re-read GET #2
+  await bad;
+  expect(mod.getClaudeDefaults()).toEqual({ model: "fable", effort: "high" });
 });
