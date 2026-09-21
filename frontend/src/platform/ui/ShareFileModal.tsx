@@ -169,19 +169,35 @@ export function useShareFile(file: ShareableFile): ShareFileHookState {
     (id: string, mode: ShareMode) => {
       stopPolling();
       pollRef.current = window.setInterval(() => {
-        void uploadStatus(id).then((s) => {
-          if (goneRef.current) return;
-          setUpload(s);
-          if (s.state === "done") {
+        void uploadStatus(id)
+          .then((s) => {
+            if (goneRef.current) return;
+            setUpload(s);
+            if (s.state === "done") {
+              stopPolling();
+              void finishPublish(mode, id);
+            } else if (s.state === "failed" || s.state === "cancelled") {
+              stopPolling();
+              setErr(s.error || `the upload was ${s.state}`);
+              setBusy(null);
+              setUpload(null);
+            }
+          })
+          .catch((e: unknown) => {
+            // Finding 10: a rejected uploadStatus() call (a transient
+            // network blip, the server briefly unreachable) previously fell
+            // through with no handler — the interval kept firing, but
+            // nothing here ever ended the "uploading" phase, so the sheet
+            // could get stuck on that spinner forever even after the
+            // underlying upload had long since finished, failed, or was
+            // cancelled. Surface it and stop polling instead of spinning
+            // silently.
+            if (goneRef.current) return;
             stopPolling();
-            void finishPublish(mode, id);
-          } else if (s.state === "failed" || s.state === "cancelled") {
-            stopPolling();
-            setErr(s.error || `the upload was ${s.state}`);
+            setErr((e as Error).message || "lost track of the upload");
             setBusy(null);
             setUpload(null);
-          }
-        });
+          });
       }, UPLOAD_POLL_MS);
     },
     [finishPublish],
@@ -207,7 +223,14 @@ export function useShareFile(file: ShareableFile): ShareFileHookState {
               if (goneRef.current) return;
               setUpload(s);
               if (s.state === "done") {
-                void finishPublish(mode, status?.file_id ?? undefined);
+                // Finding 9: `s.id` is the upload's OWN id — the one
+                // /publish will look up in share_uploads/ to find this
+                // upload's finished remote/s3_uri. `status?.file_id` is a
+                // stale snapshot from the LAST /status poll (it can be null
+                // on first share, or point at a previous file if `status`
+                // hasn't refreshed yet), so using it here risked handing
+                // /publish someone else's — or no — upload id.
+                void finishPublish(mode, s.id);
               } else {
                 pollUpload(s.id, mode);
               }
@@ -224,7 +247,7 @@ export function useShareFile(file: ShareableFile): ShareFileHookState {
         }
       })();
     },
-    [busy, file.path, finishPublish, pollUpload, status?.file_id],
+    [busy, file.path, finishPublish, pollUpload],
   );
 
   const cancelUploadNow = useCallback(() => {

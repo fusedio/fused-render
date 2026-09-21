@@ -235,6 +235,89 @@ test("a file over the inline cap falls back to the detached upload, then publish
   await h.unmount();
 });
 
+test("finding 9: an immediately-done upload publishes with the upload's OWN id, not a stale status.file_id", async () => {
+  // STATUS_BASE's file_id is "demo_abc123"; the upload this share() call
+  // starts gets a DIFFERENT id ("upload_xyz999" — a real upload's id is
+  // file_identity() of the file being uploaded, which need not equal
+  // whatever status.file_id last held, e.g. right after opening the sheet
+  // before any /status poll had a chance to land, or a stale snapshot from
+  // a previous file). finishPublish must be called with the upload's own
+  // id, or /publish 400s ("upload_id does not match this file").
+  let publishedUploadId: string | undefined;
+  stubFetch({
+    "/api/share/file/status": STATUS_BASE,
+    "/api/share/file/publish": (body: unknown) => {
+      const b = body as { upload_id?: string };
+      if (!b.upload_id) {
+        return {
+          __status: 409,
+          error: "the upload has not finished (state: none); call /api/share/file/upload first",
+        };
+      }
+      publishedUploadId = b.upload_id;
+      return { ok: true, shared: { ...SHARED_PUBLIC, mode: "public" } };
+    },
+    "/api/share/file/upload": { id: "upload_xyz999", state: "done", bytes: 999999999 },
+  });
+  const h = await mountHook(FILE);
+
+  await act(async () => {
+    h.state.share("public");
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
+  expect(publishedUploadId).toBe("upload_xyz999");
+  expect(h.state.shared).not.toBeNull();
+  await h.unmount();
+});
+
+test("finding 10: a poll that fails to reach /upload/status ends the uploading phase instead of spinning forever", async () => {
+  let statusCalls = 0;
+  const originalFetch = globalThis.fetch;
+  stubFetch({
+    "/api/share/file/status": STATUS_BASE,
+    "/api/share/file/publish": {
+      __status: 409,
+      error: "the upload has not finished (state: none); call /api/share/file/upload first",
+    },
+    "/api/share/file/upload": { id: "demo_abc123", state: "running", bytes: 999999999 },
+  });
+  const routedFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    if (url.startsWith("/api/share/file/upload/status")) {
+      statusCalls += 1;
+      // A transient failure — network drop, server briefly unreachable —
+      // getJson() throws on a non-ok response the same way a fetch()
+      // rejection would.
+      return new Response(JSON.stringify({ error: "network blip" }), { status: 500 });
+    }
+    return routedFetch(url, init);
+  }) as unknown as typeof fetch;
+
+  const h = await mountHook(FILE);
+  await act(async () => {
+    h.state.share("public");
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  expect(h.state.phase).toBe("uploading");
+
+  // Let the poll interval (UPLOAD_POLL_MS = 1200ms, private to the module)
+  // fire at least once.
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 1400));
+  });
+
+  globalThis.fetch = originalFetch;
+  expect(statusCalls).toBeGreaterThan(0);
+  expect(h.state.phase).not.toBe("uploading");
+  expect(h.state.upload).toBeNull();
+  expect(h.state.err).toBeTruthy();
+  await h.unmount();
+});
+
 test("a still-running detached upload shows the uploading phase, and cancelUploadNow calls /upload/cancel", async () => {
   let cancelCalled = false;
   stubFetch({
