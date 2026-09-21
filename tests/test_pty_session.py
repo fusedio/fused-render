@@ -67,8 +67,18 @@ def test_write_exit_ends_the_session(registry, tmp_path, monkeypatch):
 def test_scrollback_is_capped_and_keeps_the_tail(registry, tmp_path, monkeypatch):
     # A distinguishable, non-repeating payload so a byte-for-byte tail
     # comparison actually proves something (uniform bytes could pass by luck).
-    body = "".join(f"{i:06d}" for i in range(60_000))  # 360000 bytes, no '\n'
-    code = f"import sys; sys.stdout.write({body!r}); sys.stdout.flush()"
+    #
+    # The payload used to be embedded as a literal in the `python -c`
+    # argument (`{body!r}`), which put a 360000-byte string into a single
+    # argv element. Linux caps one argv element at MAX_ARG_STRLEN (128 KiB)
+    # regardless of the total ARG_MAX, so the spawn raised
+    # `OSError: [Errno 7] Argument list too long` on every Linux CI lane
+    # (macOS has no comparable per-argument cap, so it passed there). The
+    # child now GENERATES the same non-repeating bytes itself from a short
+    # loop, so the argv element stays tiny; `count` is shared with the
+    # `full` computation below so the two can't drift apart.
+    count = 60_000  # 360000 bytes, no '\n'
+    code = f"import sys; [sys.stdout.write('%06d' % i) for i in range({count})]; sys.stdout.flush()"
     monkeypatch.setattr(
         pty_session, "resolve_profile",
         lambda cwd=None: _profile(tmp_path, [sys.executable, "-c", code]))
@@ -76,7 +86,7 @@ def test_scrollback_is_capped_and_keeps_the_tail(registry, tmp_path, monkeypatch
     assert _wait_until(lambda: not session.alive, timeout=10.0)
     tail = bytes(session.scrollback())
     assert 0 < len(tail) <= pty_session.SCROLLBACK_CAP
-    full = body.encode()
+    full = "".join(f"{i:06d}" for i in range(count)).encode()
     assert tail == full[-len(tail):]
 
 

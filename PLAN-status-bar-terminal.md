@@ -451,3 +451,31 @@ overlaps the Claude composer.
     `Terminal: send resize once the socket is OPEN and reset xterm on reconnect (findings
     3, 8)`, then `Terminal: rework session-id lifecycle (findings 2, 4, 7, 10
     client-side)`.
+
+## Follow-up: Linux-only CI failure in test_scrollback_is_capped_and_keeps_the_tail
+
+After all 12 commits above landed, CI stayed red on exactly one test, deterministically,
+on all four Linux lanes (test-python 3.11/3.12/3.13, fused-engine), while passing on
+macOS locally and on test-python-windows:
+
+```
+FAILED tests/test_pty_session.py::test_scrollback_is_capped_and_keeps_the_tail
+  OSError: [Errno 7] Argument list too long: '/opt/hostedtoolcache/Python/3.13.15/x64/bin/python'
+```
+
+Root cause: the test built a 360000-byte non-repeating `body` string and embedded it
+via `{body!r}` into a `python -c <program>` invocation, putting the whole 360KB+
+program into a single argv element. Linux's `MAX_ARG_STRLEN` caps any *one* argv
+element at 128 KiB (32 pages), independent of the total `ARG_MAX` budget — so the
+`subprocess.Popen`/`posix_spawn` call raised E2BIG. macOS has no equivalent
+per-argument cap, so the same test always passed there — the CI-only failure was
+invisible to every macOS-local run and every prior builder in this branch.
+
+Fix: kept the non-repeating >`SCROLLBACK_CAP`-byte payload and the byte-for-byte tail
+comparison (both load-bearing — see the test's own comment), but had the child
+*generate* the bytes itself from a short loop (`[sys.stdout.write('%06d' % i) for i in
+range(count)]`) instead of receiving them as an argv literal. The generating
+expression is a `count` constant shared with the test's own `full` computation, so the
+two can't drift apart. Max single argv element after the fix: 84 bytes (was
+360000+ before) — comfortably under the 131072-byte Linux cap. Did not touch
+`pty_session.py`; the 128 KiB argv limit is a real OS constraint, not a product bug.
