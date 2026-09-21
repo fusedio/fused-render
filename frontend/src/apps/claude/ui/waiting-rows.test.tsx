@@ -242,18 +242,18 @@ describe("the card over the composer", () => {
       />,
     );
     const out = textOf(r);
-    expect(out).toContain("2 messages waiting");
+    expect(out).toContain("2 messages queued");
     expect(out).toContain("TASK-038");
     expect(out).toContain("Run next");
     act(() => r.unmount());
   });
 
-  it("says '1 message waiting' for one, and draws nothing for none", () => {
+  it("says '1 message queued' for one, and draws nothing for none", () => {
     const one = render(<WaitingCard count={1} facts={{}} onRunNext={() => {}} />);
-    expect(textOf(one)).toContain("1 message waiting");
+    expect(textOf(one)).toContain("1 message queued");
     expect(textOf(one)).not.toContain("messages");
     act(() => one.unmount());
-    // "0 messages waiting" is a card about nothing sitting on top of the box.
+    // "0 messages queued" is a card about nothing sitting on top of the box.
     const none = render(<WaitingCard count={0} facts={{}} onRunNext={() => {}} />);
     expect(none.toJSON()).toBe(null);
     act(() => none.unmount());
@@ -279,7 +279,7 @@ describe("the card over the composer", () => {
       />,
     );
     expect(head.root.findAllByType("button")).toHaveLength(0);
-    expect(textOf(head)).toContain("1 message waiting");
+    expect(textOf(head)).toContain("1 message queued");
     expect(textOf(head)).toContain("after ");
     expect(textOf(head)).toContain("TASK-056");
     expect(textOf(head)).not.toContain("next in this folder");
@@ -298,7 +298,7 @@ describe("the card over the composer", () => {
       />,
     );
     const out = textOf(after);
-    expect(out).toContain("2 messages waiting");
+    expect(out).toContain("2 messages queued");
     expect(out).toContain("next in this folder");
     expect(out).not.toContain("Run next");
     act(() => after.unmount());
@@ -357,7 +357,7 @@ describe("the card over the composer", () => {
     act(() => r.unmount());
   });
 
-  it("reads `N messages waiting · next in this folder` once the press has landed", () => {
+  it("reads `N messages queued · next in this folder` once the press has landed", () => {
     // What a reader sees immediately after pressing Run next: the claim on the
     // spot (`queue_priority`) is the ONLY thing that replaces "behind …", and it
     // takes the button with it because there is nothing left to get in front of.
@@ -378,7 +378,7 @@ describe("the card over the composer", () => {
         />,
       );
     });
-    expect(textOf(r)).toContain("2 messages waiting");
+    expect(textOf(r)).toContain("2 messages queued");
     expect(textOf(r)).toContain("next in this folder");
     expect(textOf(r)).not.toContain("after ");
     expect(r.root.findAllByType("button")).toHaveLength(0);
@@ -889,7 +889,7 @@ describe("the card's count is the server's", () => {
   it("reads `queue_waiting` and never the rows on screen", () => {
     // The rows include a message scheduled for next Tuesday and a seed no poll
     // has confirmed; neither is something anybody is waiting behind, and counting
-    // them said "1 message waiting" for six days (Bugbot PR #1124).
+    // them said "1 message queued" for six days (Bugbot PR #1124).
     expect(CHAT).toContain("const said = sched.rec?.queue_waiting;");
     // ZERO IS AN ANSWER, so the test is on the TYPE and not on the number: a row
     // saying nothing is waiting takes the card down, and only a server too old to

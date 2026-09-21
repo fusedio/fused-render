@@ -615,8 +615,17 @@ def _last_message(messages: list[dict], queued: bool = False,
             continue
         text = _one_line(message.get("body"))
         if text:
-            return {"role": "user", "text": text,
-                    "at": float(message.get("at") or 0.0)}
+            # WHEN IT WAS SAID, not when it was asked for: a scheduled message's
+            # `at` is its calendar due time and never moves, so a Run-now on a
+            # later-dated message would carry a stamp still in the future and
+            # `_last_reply` would hide Claude's answer until that day came
+            # (Bugbot, PR #1295). `ran_at` is when it actually reached the
+            # session; a queued one has not yet, and `queue_at` is when it
+            # joined the line. A chat prompt has neither and keeps `at`.
+            at = (float(message.get("ran_at") or 0.0)
+                  or float(message.get("queue_at") or 0.0)
+                  or float(message.get("at") or 0.0))
+            return {"role": "user", "text": text, "at": at}
     return None
 
 

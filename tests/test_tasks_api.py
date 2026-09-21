@@ -775,6 +775,26 @@ def test_the_reply_shown_is_the_one_to_the_newest_message(
     assert row["last_reply"] == "Tidied."
 
 
+def test_a_run_now_on_a_later_dated_message_does_not_hide_its_reply(
+        client, projects_dir):
+    """`last_message.at` is when the message was SAID (Bugbot, PR #1295): a
+    scheduled message's due time never moves, so a Run-now on one dated for
+    next week must not leave the reply hidden until then."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("the first ask", T9),
+        _user("run the weekly report", T11),
+        _assistant("Report ready", T12),
+    ])
+    schedule._write([_entry("e1", "run the weekly report", "2026-08-23T09:00:00Z",
+                            session_id="sess-a", state=schedule.SENT,
+                            fired=T11, run_now_at=T11, turn="done",
+                            claude_session_id="sess-a")])
+    row = _tasks(client)[0]
+    assert row["last_message"]["text"] == "run the weekly report"
+    assert row["last_message"]["at"] == tasks_store.epoch(T11)
+    assert row["last_reply"] == "Report ready"
+
+
 def test_the_last_message_agrees_with_the_rows_newest_message(
         client, projects_dir):
     """Read off the same merged thread `messages` is cut from (review,

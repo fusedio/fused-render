@@ -2,7 +2,7 @@
 // has always worn, in the pane that is actually waiting.
 //
 // The bug (Akshil, 2026-09-17): a send into a busy folder drew the dashed bubble
-// and the "1 message waiting" pill, and the header above them — `Claude · alpha
+// and the "1 message queued" pill, and the header above them — `Claude · alpha
 // · T048` — said nothing at all. A chat waiting behind somebody else's run
 // looked exactly like an idle one, while the Tasks list three pixels away showed
 // the state plainly.
