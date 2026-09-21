@@ -3227,3 +3227,111 @@ macOS; the fix and its regression test are reasoned from `os.path.abspath`'s
 documented Windows behavior (drive-letter resolution of a POSIX-style
 absolute path) and `norm()`'s own `WINDOWS`-gated backslash conversion, not
 from an actual Windows run.
+
+## SPEC-empty-search-scan.md — 2026-09-21
+
+Same branch (`index-live-watch`, PR #1279 — folds into it, no new PR).
+Status: tree clean, 4 commits landed (`b0f338bad`, `398f08eec`, plus two
+more this round: `824ec55b0`, `a137ca73b`). All in-scope.
+
+**What was built.** A settled search answer that says its root IS covered
+(`reason === ""`) but finds zero file hits now asks for a background scan
+of the answer's own root via the existing `requestFolderScan`
+(`POST /api/index/scan-folder`), once per distinct trimmed query, silently
+(a route refusal or a thrown fetch are both swallowed — no error surface,
+no retry). Re-querying once the scan lands needed no new code in either
+box: both fetch effects already depend on `lifecycle`
+(`subscribeIndexLifecycle`), bumped whenever the shared `useIndexStatus`
+poller notices `last_completed_at` move. The "No matches" copy switches to
+"the index is still building" while that scan is confirmed running, in
+both the in-folder box (`empty-result.tsx`'s `gap` computation) and the
+home box (`FilesHome.tsx`'s own, separate `gap` computation) — both had the
+identical blind spot: `gap` was only ever computed for an UNcovered
+answer, so a covered-but-empty answer had no way to say a scan it itself
+triggered was running.
+
+**Attribution deviation (flagged per orchestrator instruction).** The
+original task spec asked for `Co-Authored-By: Claude Opus 5 (1M context)
+<noreply@anthropic.com>` on every commit. A system-reminder mid-session
+stated it "replaces Claude Code's own earlier attribution guidance" and to
+use `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` instead. All
+four commits on this branch (across both build sessions) used the Sonnet 5
+line per that later, more explicit override.
+
+**Spec imprecision, not a defect.** The spec described `requestFolderScan`
+as having no call site anywhere. It already has one: the home page's own
+"uncovered, no scan running" note already calls it via a different path
+(`gap === "buildable"`'s on-demand affordance) — confirmed by reading
+`FilesHome.tsx` before writing any code, and covered by an explicit test
+("does not ALSO fire for uncovered — the existing on-demand-scan affordance
+already asked, exactly once") so the two triggers were verified not to
+double-fire. The core gap the spec describes — no trigger for the
+COVERED-but-empty case specifically — was real and is what this round
+fixes.
+
+**Deliberately not done:**
+- `nextStep()`/`SearchStep` (`apps/explorer/listing/index-source.ts`) was
+  not touched or widened — the trigger lives entirely in the two
+  components' own fetch-success handlers, not in the shared classifier.
+- No new client-side debounce/timer was added; the server's own
+  `SCAN_DEBOUNCE_S` is the only cross-query floor, matched by a plain
+  per-query `Set` (`firedEmptyScan`) on each side.
+- The four open PR #1279 items (Windows test portability, Linux ENOSPC
+  fallback, startup-frozen ignore rules, unidentified `$HOME` churn source)
+  were left alone, out of scope for this spec.
+
+**Test-pollution artifact (self-resolving, not a real bug).** While the
+`useListingSearch.render.test.ts` tests were still red (TDD's expected
+first state), the full file showed up to 12 failures in UNRELATED describe
+blocks (`ReferenceError: window is not defined`, wrong array lengths in
+the ranked-search-preference tests). Root cause: an assertion throwing
+mid-test skips that test's own `box.unmount()` call (written after the
+assertion), leaking a mounted hook's subscriptions into later tests
+sharing the same process-global `Clock` and module-level pub-sub
+registries (`subscribeIndexLifecycle`, `subscribeFsMutations`). Confirmed
+by reverting to the pre-edit file (45/45 pass) and by rechecking after the
+real implementation made the new assertions pass instead of throw (0/56
+failures, no harness change needed).
+
+**`Listing.test.tsx` standalone-run anomaly — confirmed pre-existing,
+unrelated.** Running `bun test src/apps/explorer/Listing.test.tsx` alone
+throws `ReferenceError: location is not defined` at
+`platform/lib/router.ts:54` (a module-init-time `/embed/` rewrite that
+reads the global `location` before any test's `beforeEach` can stub it).
+Reproduced identically against a stash of this round's own diff
+(`git stash push -u -m` on `Listing.tsx`/`FilesHome.tsx` only, `git stash
+apply`, never `pop`) — same error, same line, with or without this
+feature's changes. Passes cleanly (140/140) when run in the same `bun
+test` invocation as `FilesHome.render.test.tsx`, which stubs `location` at
+module scope before importing anything that reaches `router.ts`. This is
+an existing test-ordering dependency in the suite, not something this
+diff introduced or fixed (out of scope — `router.ts` was never touched).
+
+**Verification run (this round's touched files, one invocation):**
+`bun test src/apps/explorer/FilesHome.render.test.tsx
+src/apps/explorer/listing/empty-result.test.tsx
+src/apps/explorer/listing/useListingSearch.render.test.ts
+src/apps/explorer/Listing.test.tsx` → **140 pass, 0 fail, 345 expect()
+calls**. `bunx tsc --noEmit -p .` → clean. Grepped `tests/` (the Python
+suite) for every symbol/line touched this round (`indexGap`,
+`firedEmptyScan`, `requestFolderScan`, `onScanRequested`, `gap ===
+"scanning"`, `"No matches"`, `"still building"`) — the only hits are
+pre-existing, unrelated string literals in `test_tasks_api.py` and
+`test_git_repos_api.py` (chat/task copy, not this feature's).
+
+**TDD check on the FilesHome.tsx note fix specifically.** Reverted just the
+`gap` computation's new branch, reran `FilesHome.render.test.tsx`: the new
+"switches to the 'still building' copy…" test failed as expected (note
+stayed "No file name matched" instead), the other 66 tests stayed green.
+Restored the fix; all 67 pass again. This is the same TDD confirmation the
+`empty-result.tsx` fix already had from the prior round, extended to the
+home page's independent implementation.
+
+**To verify (browser/layout, not exercised by these tests):**
+- The actual visual appearance of the "still building" copy in both boxes —
+  these are `react-test-renderer` assertions on flattened text content, not
+  a rendered/screenshotted page.
+- The real end-to-end timing: a real `/api/index/scan-folder` POST, a real
+  scan run, and the real `useIndexStatus` poll noticing `last_completed_at`
+  move — this round's tests drive all of that through fake timers and a
+  stubbed poll prop, never a live server.
