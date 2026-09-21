@@ -10246,21 +10246,31 @@ def test_a_non_boolean_thinking_is_refused(client):
     assert "'thinking' must be a boolean" in response.json()["error"]["message"]
 
 
-def test_thinking_on_claude_is_a_warning_not_a_refusal(client, monkeypatch):
+def test_thinking_on_claude_is_a_warning_not_a_refusal(monkeypatch):
     """The same D631 shape as `temperature` — a tunable the CLI lacks is
-    dropped and named in `warnings[]`, not refused."""
+    dropped and named in `warnings[]`, not refused.
+
+    Unlike the other Claude-tier warning tests in this file (which leave
+    `_claude_bin` unresolved and so can only ever reach the `ok is False`
+    branch below — an `if body.get("ok"):` on a body that is NEVER `ok`,
+    which made the `warnings[]` assertion dead code), this one drives the
+    real success path: `_claude_bin` resolves and the CLI subprocess hop is
+    stubbed to answer successfully (`test_server_ai.py`'s `_cli_ok`/
+    `_FakeProc`, the "avoid starlette TestClient" discipline that module's
+    own docstring names — `_ai_relay` is called directly rather than
+    through `client.post`, same as `test_ai_metrics.py` already does for
+    the Claude tier)."""
+    import asyncio
+
     from fused_render.server import ai as ai_mod
-    monkeypatch.setattr(ai_mod, "_claude_bin", lambda: None)
-    response = client.post("/api/ai", json={
-        "prompt": "hi", "thinking": False,
-    }, headers={"X-Fused": "1"})
-    body = response.json()
-    assert response.status_code != 400
-    if body.get("ok"):
-        assert [w["setting"] for w in body["result"]["warnings"]] == ["thinking"]
-        assert body["result"]["warnings"][0]["type"] == "unsupported-setting"
-    else:
-        assert "'thinking'" not in body["error"]["message"]
+    from test_server_ai import _cli_ok
+
+    _cli_ok(monkeypatch)
+    response = asyncio.run(ai_mod._ai_relay({"prompt": "hi", "thinking": False}))
+    body = json.loads(bytes(response.body))
+    assert body["ok"] is True
+    assert [w["setting"] for w in body["result"]["warnings"]] == ["thinking"]
+    assert body["result"]["warnings"][0]["type"] == "unsupported-setting"
 
 
 # -- images: a current-turn attachment for a local VLM (D467's shape reused) --

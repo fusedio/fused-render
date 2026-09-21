@@ -79,6 +79,29 @@ note to stderr naming the dropped flag, matching
 `llama_text._prompt_text`'s existing discipline for a failed template
 render.
 
+## `test_thinking_on_claude_is_a_warning_not_a_refusal` was vacuous; an older test shares the defect
+
+Code review finding 4. The test monkeypatched `_claude_bin` to `None`, so
+`_ai_relay` always answered `ok: False` and the `if body.get("ok"):` branch
+holding the `warnings[]` assertion was unreachable dead code — the test
+could only ever assert that a bad-request error message doesn't mention
+`'thinking'`, never that the warning actually appears.
+
+Fixed by driving `_ai_relay` directly (not through `client.post`/starlette
+TestClient) with `test_server_ai.py`'s `_cli_ok`/`_FakeProc` stubbing both
+`_claude_bin` resolution and the CLI subprocess hop to a scripted success —
+the same "avoid starlette TestClient" discipline that module's docstring
+names, already reused this way by `test_ai_metrics.py`. Verified the fix is
+not itself vacuous: temporarily removed the `thinking` warning append in
+`server/ai.py`, confirmed the test fails (`assert [] == ['thinking']`), then
+restored it.
+
+**`test_sampling_on_claude_is_a_warning_not_a_refusal` (two tests up, same
+file) has the identical defect** — also leaves `_claude_bin` unresolved, so
+its `warnings[]` assertion is equally dead code today. Left unfixed per the
+brief's scope (fix only the `thinking` test), but it should get the same
+treatment.
+
 ## Order of file-touching, for anyone resuming
 
 Wire surface first (`server/ai.py` + `runtime.js` + `test_ai_runtime.py`,
