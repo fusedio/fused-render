@@ -2889,3 +2889,132 @@ Removed the second parse: the "Publish AppImage + attach to release" step
 now exports `VERSION` via `$GITHUB_ENV` (Task 15) alongside `APPIMAGE`, the
 same pattern already used to carry `$APPIMAGE` across steps, so there is
 only one place the filename is ever parsed.
+
+## index-live-watch — 2026-09-21
+
+Branch `index-live-watch`, built against `SPEC-index-live-watch.md` (worktree
+root). Status: **tree clean, 5 commits landed**, all in-scope. What follows
+is what the next reader needs that isn't in the commits themselves.
+
+**What was built.** `fused_render/server/index_watch.py`: a `WatchLoop`
+policy class (fully dependency-injected — event source, clock, sleeper,
+forward call, gate — same convention as `index_touch.RescanQueue`'s tests)
+that filters watchfiles events at arrival, reduces to parent folders,
+forwards to `index_touch.note_index_folders` no more than every
+`WATCH_FLUSH_FLOOR_S` (30s), collapses a >`MAX_FOLDERS` burst to the whole
+root, runs an hourly (`WATCH_RESCAN_S`) per-root safety net on idle ticks,
+and backs off (5/30/120s) on a raising source. Wired into `create_app` as
+paired `_startup_index_watch` / `_shutdown_index_watch` hooks right after
+the existing index-scan hook. `index_touch.outermost_folders` was extracted
+from `RescanQueue._outermost` so both the mutation-endpoint queue and the
+watcher's MAX_FOLDERS collapse share one "does folder A cover folder B"
+definition. Three stale "there is no filesystem watcher" claims were
+corrected (`index_touch.py`'s module docstring, `fs_mutate.py`'s
+`_note_index_mutation`, `query.py`'s `FRESH_MAX_AGE_S` comment), and
+`scan-incremental.md` gained a §6 documenting the design.
+
+**Verified, not reasoned (per spec's explicit instruction):**
+- `watchfiles.watch` ends its generator cleanly (no exception) when
+  `stop_event` is set — confirmed by running it, not by reading the source.
+  `WatchLoop._run_one_watch` relies on this: a clean end forwards nothing and
+  backs off nothing.
+- `watch_filter` dropping every raw change in a batch does **not** make the
+  generator yield an empty set — only a genuine `rust_timeout` does (with
+  `yield_on_timeout=True`). This is why the periodic-safety-net check in
+  `_run_one_watch` keys off `batch` being empty (a real tick with nothing in
+  it), not off "nothing survived the filter."
+- `setup_py2app.py`'s `bundled_force_lists()` was run live in the venv after
+  adding `watchfiles>=1.0` to `pyproject.toml`'s core `dependencies`:
+  `watchfiles in packages: True`, `watchfiles in includes: False` — it is
+  forced as a `package` (has `__init__.py` on disk) automatically through the
+  existing transitive-closure derivation. **No `setup_py2app.py` code change
+  was needed**, confirmed by running the derivation rather than assuming it.
+
+**Live measurement (spec §6).** Ran a throwaway script
+(`WatchLoop._run_one_watch` against the real `watchfiles.watch`, real filter,
+`flush_floor_s=30.0`) over the real `~` (`/Users/iamsdas`) for the full
+5 minutes the spec asks for:
+
+```
+[   30.4s] raw~ 2617  folders=  1  ['/Users/iamsdas']
+[   60.5s] raw~ 3693  folders=  1  ['/Users/iamsdas']
+[   90.9s] raw~ 3789  folders=  1  ['/Users/iamsdas']
+[  121.0s] raw~ 3205  folders=  1  ['/Users/iamsdas']
+[  151.2s] raw~ 2653  folders=  1  ['/Users/iamsdas']
+[  181.2s] raw~ 2828  folders=  1  ['/Users/iamsdas']
+[  211.9s] raw~ 3016  folders=  1  ['/Users/iamsdas']
+[  242.2s] raw~ 3796  folders=  1  ['/Users/iamsdas']
+[  272.5s] raw~ 2736  folders=  1  ['/Users/iamsdas']
+9 flushes total, ~28,300 post-filter raw events over ~272s
+```
+
+Every flush's outermost-folder set was `{~}` — the whole root — for the
+**entire run**. My first read of this (now corrected — see the superseded
+code comments removed in commit `85be45c4c`) was "MAX_FOLDERS(16) is being
+exceeded on every flush." That's wrong. Two follow-up diagnostics (60s each,
+same filter, aggregating `outermost_folders()` over the whole window instead
+of per-30s-tick) showed the real cause: **something writes directly inside
+`$HOME` on almost every tick**, and `outermost_folders()` correctly collapses
+every other candidate folder into that single root entry the moment the root
+itself is in the pending set (any folder under it necessarily starts with
+`~/`). It is not an overflow; `len(outermost)` was **1**, not >16.
+
+`stat` on `~/.claude.json` during the run showed its mtime matching "now" —
+**this Claude Code CLI session's own state file**, written directly into
+`$HOME` on effectively every tool call, was itself a large source of the
+churn (measured separately: 77.9% of a 60s sample's raw post-filter event
+count, 2540/3260). This is the same class of problem as the "instrumenting
+kills the repro" lesson: the agent doing the measuring is also writing to
+the disk being measured. Excluding `~/.claude.json` and `~/.claude/*`
+explicitly from a repeat 60s sample **still** left the outermost set as
+`{~}` — so at least one more thing (unidentified; a `.DS_Store`, Spotlight,
+iCloud, or some other always-on macOS/user-tool file directly under `$HOME`)
+also churns there, independent of this CLI session.
+
+**What this means for the design, and what it does not:** the 30s flush
+floor is doing real work — it is the only thing standing between this
+level of churn and a rescan storm — and collapsing to a whole-root rescan
+when the root itself is touched is *correct*, not a bug: the root's own
+listing did change. What the numbers don't establish is whether the
+`MAX_FOLDERS` collapse path is ever actually exercised on a normal desktop
+by folder-scoped churn (as opposed to root-scoped churn) — this measurement
+never got a clean read on that, because root-scoped churn dominates every
+window. **Not resolved, left for whoever picks this up next:** identify the
+second (non-CLI) source of direct-`$HOME` writes, and re-measure with a
+Claude Code session NOT running concurrently (impossible for me to do, since
+I am that session) to see real per-folder batching behavior. Per spec's
+"propose, do not apply" instruction: `~/.claude.json` and `~/.claude/`
+becoming default-ignored is worth proposing once the index team decides
+whether AI-tool session state belongs in the index at all (today it isn't
+excluded, so it isn't excluded from the watcher either — consistent, just
+maybe not intended).
+
+**Scope deviation from spec §7's commit plan:** the spec lists commit 5 as
+"hourly safety-net rescan; docs and spec prose updated," implying the
+periodic safety net is a separate commit from the core watcher (commit 3).
+In practice `_maybe_periodic_rescan` is a few lines inside the same
+per-tick loop `_run_one_watch` already has to walk for filtering and
+flushing — splitting it into its own commit would mean writing the same
+scaffolding twice (once inert, once wired) for no reviewable benefit. It
+shipped as part of commit 3 (`2e6daa4b6`) with its own tests
+(`test_a_stale_root_is_rescanned_on_an_idle_tick` and its three siblings).
+Commit 5 (`f82620a57`) is docs/prose only, as the spec's commit 5 title
+already half-describes.
+
+**Extra prose fixes beyond the spec's explicit list:** the spec named
+`index_touch.py`'s docstring for the "no filesystem watcher" fix. Grepping
+for the same claim elsewhere found two more instances
+(`fs_mutate.py:_note_index_mutation`, `query.py`'s `FRESH_MAX_AGE_S`
+comment) that were equally stale once `index_watch.py` existed; both fixed
+in commit `f82620a57` alongside the specced one.
+
+**Not verified — the true end-to-end check is the user's, with `dev.sh`:**
+the Linux non-recursive fallback (`_shallow_watch_paths`,
+`_is_watch_limit_error`) is code-reviewed only — this dev machine is macOS,
+so the `errno.ENOSPC` branch never actually ran. `start()`/`stop()` were
+exercised directly (not through a running server): calling `index_watch.start()`
+spawned a real thread watching `/Users/iamsdas` through the real
+`watchfiles.watch`, and `index_watch.stop()` stopped it within 1s — but this
+was never driven through an actual `dev.sh`-started app, an actual file
+mutation reaching the explorer's search results, or the indexing-pref
+toggle's live effect on a running watch thread.
