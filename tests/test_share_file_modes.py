@@ -168,6 +168,13 @@ def test_is_expired_parses_an_iso8601_string():
     assert not share_file_mod.is_expired({"mode": "temporary", "session_expires": future})
 
 
+@pytest.mark.skipif(
+    not hasattr(time, "tzset"),
+    reason="time.tzset doesn't exist on Windows, so this test can't pin the "
+           "process to a non-UTC zone there; finding 7 (naive ISO string "
+           "misread in the server's local zone) goes untested on that "
+           "platform — see share-any-file-plan.md build notes.",
+)
 def test_is_expired_treats_a_naive_iso8601_string_as_utc(monkeypatch):
     # Finding 7: the SDK returns a NAIVE iso string (no "Z", no offset) in
     # practice. `.timestamp()` on a naive datetime reads it in the SERVER'S

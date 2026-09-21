@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 import threading
 import time
 
@@ -55,13 +57,14 @@ def seed(upload_id, *, size=1234, started_at=None, pid=None, done=None, log=None
 
 
 def a_dead_pid():
-    """A pid that is very unlikely to be alive: fork, exit immediately,
-    reap it, and hand back the now-dead pid."""
-    pid = os.fork()
-    if pid == 0:
-        os._exit(0)
-    os.waitpid(pid, 0)
-    return pid
+    """A pid that is very unlikely to be alive: spawn a subprocess that
+    exits immediately, wait for it to finish, and hand back its now-dead
+    pid. `os.fork` doesn't exist on Windows, so this goes through
+    `subprocess` (portable everywhere the interpreter itself runs) rather
+    than forking directly."""
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    return proc.pid
 
 
 # -- read_upload_state ----------------------------------------------------------
