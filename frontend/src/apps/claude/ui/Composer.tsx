@@ -63,8 +63,12 @@ export const BLOCKED_SEND_TITLE = "Waiting on a scheduled message";
 /** Where the composer's own controls open: shadcn/Base UI popovers and menus
  *  (`platform/shadcn/ui/popover`, `dropdown-menu`) and any dialog. Focus
  *  landing in one of these is still "in the composer" for the idle fold. */
+// OPEN SURFACES ONLY: the content slots, never `dropdown-menu-trigger` — the
+// chat kebab's trigger is always mounted, and a `[data-slot^="dropdown-menu"]`
+// prefix made every "is a popup up?" `querySelector` below answer yes for good
+// (Bugbot on 9868a6f: a pointer leaving the window kept the hover alive).
 const POPUP_SURFACE =
-  '[data-slot="popover-content"], [data-slot^="dropdown-menu"], [role="menu"], [role="listbox"], [role="dialog"]';
+  '[data-slot="popover-content"], [data-slot="dropdown-menu-content"], [data-slot="dropdown-menu-sub-content"], [role="menu"], [role="listbox"], [role="dialog"]';
 
 
 /** Everything the three pills need, from `useComposerDefaults`. */
