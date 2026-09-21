@@ -228,6 +228,21 @@ def test_note_folders_still_collapses_to_the_outermost():
     assert f.started == [canonical_root("/home/me/proj")]
 
 
+def test_note_folders_never_queues_the_filesystem_root():
+    """`note()` routes through `_folder_of`, which refuses a bare "/" (and a
+    bare Windows drive root). `note_folders` routes through `_canon_folder`
+    instead, whose last line is `return norm(...).rstrip("/") or "/"` — it
+    PRODUCES "/" for a root-ish input rather than refusing it. Without the
+    same refusal, `note_folders("/")` queues a whole-disk crawl, exactly the
+    thing the module docstring says never happens ("Never a mount, never
+    `/`")."""
+    f = Fake()
+    q = f.queue()
+    q.note_folders("/")
+    assert f.armed == []  # refused before it was ever queued, nothing to fire
+    assert f.started == []
+
+
 def _mutating_routes():
     """Every POST handler on the fs-mutation router, by name.
 

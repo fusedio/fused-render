@@ -137,11 +137,24 @@ def _canon_folder(path: str) -> str:
     opposed to `_folder_of`, whose job is finding the parent of a touched
     path). Same normalization `_folder_of` and `runner.canonical_root` both
     do, so a folder noted this way matches store keys and the other queueing
-    path's spelling."""
+    path's spelling.
+
+    Refuses a bare filesystem root the same way `_folder_of` does ("never a
+    mount, never `/`" — module docstring). `_folder_of` naturally lands on
+    `""` there (`os.path.dirname("/x") == "/"`, guarded explicitly), but
+    this function's job is different: it is handed the folder itself, not a
+    touched path inside it, so plain `norm(...).rstrip("/") or "/"` would
+    PRODUCE `/` for a root-ish input instead of refusing it — and unlike
+    `note()`, `note_folders()`'s caller (the live watcher) can legitimately
+    be told to rescan a `root` that, on a misconfiguration or a Windows
+    drive letter, canonicalizes to the bare root."""
     raw = str(path or "").strip()
     if not raw:
         return ""
-    return norm(os.path.abspath(raw)).rstrip("/") or "/"
+    p = norm(os.path.abspath(raw)).rstrip("/")
+    if not p or p == "/" or _DRIVE_ROOT.match(p):
+        return ""
+    return p
 
 
 class RescanQueue:
