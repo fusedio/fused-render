@@ -350,7 +350,8 @@
 
 /* ---- IDLE: ONE LINE (Akshil, 2026-09-16) ----------------------------------
    The chat composer is one line — the box and Send — whenever focus is not in
-   it, and the full card only while the reader is (`ui/Composer.tsx`, `is-idle`).
+   it and the pointer is not over it, and the full card while the reader is in
+   it or hovering it (`ui/Composer.tsx`, `is-idle`).
    Same surface, same border, same 20px radius on both sides: what moves is the
    padding and the tools' shelf, together over 240ms on one ease, and the caret
    never leaves the box.
