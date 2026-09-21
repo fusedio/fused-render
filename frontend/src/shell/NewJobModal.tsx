@@ -3195,8 +3195,12 @@ export default function NewJobModal({
       setModel(value);
       if (!globalEditor) return;
       pickInFlight.current.model += 1;
-      void setClaudeDefaults({ model: value }).finally(() => {
+      // The answer is painted from the PROMISE, not from the subscription the
+      // guard above is holding off: a refused write's correction arrives this
+      // way, so the card that made the pick hears it too (Bugbot, 2026-09-21).
+      void setClaudeDefaults({ model: value }).then((d) => {
         pickInFlight.current.model -= 1;
+        if (d.model) setModel(d.model);
       });
     },
     [globalEditor],
@@ -3206,8 +3210,9 @@ export default function NewJobModal({
       setEffort(value);
       if (!globalEditor) return;
       pickInFlight.current.effort += 1;
-      void setClaudeDefaults({ effort: value }).finally(() => {
+      void setClaudeDefaults({ effort: value }).then((d) => {
         pickInFlight.current.effort -= 1;
+        if (d.effort) setEffort(d.effort);
       });
     },
     [globalEditor],

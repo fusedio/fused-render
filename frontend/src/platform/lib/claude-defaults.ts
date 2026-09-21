@@ -46,6 +46,20 @@ const EMPTY: ClaudeDefaults = { model: "", effort: "" };
  *  different, and a pill must not paint the second while it is in the first. */
 let current: ClaudeDefaults | null = null;
 let reading: Promise<ClaudeDefaults> | null = null;
+/** Bumped by every LOCAL write. An answer from the server — a read's, a
+ *  write's, a refused write's re-read — is applied only if nothing was picked
+ *  here since it departed; otherwise the pick that came later is the truth and
+ *  its own round trip will settle the pair (Bugbot, 2026-09-21: a GET fired at
+ *  mount used to land on top of a pick made while it was in flight and snap the
+ *  pill back). */
+let generation = 0;
+
+function fromServer(d: { model?: unknown; effort?: unknown } | null | undefined): ClaudeDefaults {
+  return {
+    model: typeof d?.model === "string" ? d.model : "",
+    effort: typeof d?.effort === "string" ? d.effort : "",
+  };
+}
 const listeners = new Set<(next: ClaudeDefaults) => void>();
 
 /** The `localStorage` key a write announces itself on, so every OTHER tab hears
@@ -101,8 +115,14 @@ function announce(next: ClaudeDefaults, broadcast: boolean): ClaudeDefaults {
  *  unhandled rejection in a mount effect is a worse bug than a stale pill. */
 export function readClaudeDefaults(): Promise<ClaudeDefaults> {
   if (reading) return reading;
+  const departed = generation;
   reading = getTaskDefaults()
-    .then((d) => announce({ model: d?.model || "", effort: d?.effort || "" }, false))
+    .then((d) => {
+      // A pick made while this read was out outranks what the read brought
+      // back; the store's current answer is what the caller gets.
+      if (generation !== departed) return current ?? fromServer(d);
+      return announce(fromServer(d), false);
+    })
     .catch(() => current ?? EMPTY)
     .finally(() => {
       reading = null;
@@ -132,19 +152,31 @@ export function setClaudeDefaults(
     model: patch.model ?? current?.model ?? "",
     effort: patch.effort ?? current?.effort ?? "",
   };
+  generation += 1;
+  const mine = generation;
   announce(optimistic, true);
+  // ONLY THE LATEST PICK'S ANSWER SETTLES THE PAIR. A write that finishes after
+  // a newer pick was made says nothing about the file the newer pick is still
+  // writing; that pick's own answer carries the whole pair and lands last. The
+  // resolved value is always the store's current truth, so a caller that
+  // paints from it (the New task card) is right either way.
+  const settle = (d: unknown, broadcast: boolean): ClaudeDefaults =>
+    generation === mine
+      ? announce(fromServer(d as { model?: unknown; effort?: unknown }), broadcast)
+      : current ?? optimistic;
   return putTaskDefaults(patch)
-    .then((d) => announce({ model: d?.model || "", effort: d?.effort || "" }, true))
+    .then((d) => settle(d, true))
     .catch(() =>
       // A REFUSED WRITE IS TAKEN BACK, HERE AND IN EVERY OTHER TAB (review,
       // 2026-09-21). The optimistic announce above already went out over the
       // broadcast, so leaving `current` at the rejected pair would keep this
       // pill and every listening tab on a value the file never took. Ask the
       // server what it holds and announce THAT — with a broadcast, so the tabs
-      // that heard the optimistic value hear the correction too. A read that
-      // also fails keeps whatever was known before the click.
+      // that heard the optimistic value hear the correction too — unless a
+      // newer pick has since taken over (`settle`). A read that also fails
+      // keeps whatever was known before the click.
       getTaskDefaults()
-        .then((d) => announce({ model: d?.model || "", effort: d?.effort || "" }, true))
+        .then((d) => settle(d, true))
         .catch(() => current ?? optimistic),
     );
 }
@@ -175,5 +207,6 @@ if (typeof window !== "undefined") {
 export function resetClaudeDefaultsForTests(): void {
   current = null;
   reading = null;
+  generation = 0;
   listeners.clear();
 }
