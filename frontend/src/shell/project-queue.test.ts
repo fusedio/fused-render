@@ -9,7 +9,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { canRunNext, waitingCardText } from "@platform/lib/queue";
+import { canForceStart, canRunNext, waitingCardText } from "@platform/lib/queue";
 
 const SHELL = new URL(".", import.meta.url).pathname;
 const API = readFileSync(join(SHELL, "../platform/lib/api.ts"), "utf8");
@@ -188,17 +188,23 @@ describe("the Board's waiting cards", () => {
     expect(VIEWS).not.toContain("Skip the queue");
   });
 
-  it("offers NO queue verb as a button — the drag is the whole of it", () => {
-    // RUN NEXT IS OUT OF THE UI (Akshil, 2026-09-21). The card carried a ⤒
-    // button in its act strip until then; the endpoint, the manager and the
-    // performer all stay (a follow-up removes them), and what goes is every
-    // press. The DRAG is untouched — a queued card dropped on In Progress still
-    // goes to the head of its lane — and `onSkip` stays as the seat the next
-    // queue verb lands in.
-    expect(CARD).not.toContain("tasks-act--skip");
+  it("offers FORCE START as its one queue button, and Run next as none", () => {
+    // TWO VERBS, NOT ONE RENAMED (2026-09-21). The DRAG is still the promotion
+    // — a queued card dropped on In Progress goes to the head of its lane and
+    // interrupts nothing — and the BUTTON is now the other verb entirely: it
+    // takes the message out of the line and starts it beside the folder's
+    // owner. The card wears the same seat the ⤒ did (`.tasks-act--skip`, kept
+    // with its skin) and reads its condition from the one place all three
+    // surfaces read it.
+    expect(CARD).toContain("tasks-act--skip");
+    expect(CARD).toContain("canForceStart(task)");
+    expect(CARD).toContain("FORCE_START_LABEL");
+    expect(CARD).toContain("onForceStart()");
+    // AND NOT THE DEAD VERB'S CONDITION, which was the thing that hid it at the
+    // head of a line — the one position this button most has to appear at.
     expect(CARD).not.toContain("canRunNext");
     expect(CARD).not.toContain("queue.runsNext");
-    expect(CARD).toContain("onSkip");
+    expect(CARD).not.toContain("onSkip");
   });
 });
 
@@ -228,28 +234,37 @@ describe("the List's waiting row", () => {
     expect(span).toContain("if (e.button === 1 && href) e.preventDefault();");
   });
 
-  it("grows NO Run next — the row is a sentence, not a control", () => {
-    // The ⤒ button lived in this row's hover strip until 2026-09-21. It is gone
-    // from the row and from the card above, so the queue has no press on this
-    // page at all; the performer (`performSkip`) stays for the Board's drag.
-    expect(ROW).not.toContain("tasks-act--skip");
-    expect(ROW).not.toContain("canRunNext");
-    expect(ROW).not.toContain("void skip();");
+  it("grows FORCE START in the hover strip, and NO Run next anywhere", () => {
+    // The ⤒ button lived in this strip until 2026-09-21 and Force start took the
+    // seat. What must not come back is the CONDITION: `canRunNext` hid the
+    // control at position 1, which is the position a reader most wants this one
+    // at (standing 1st is still waiting on a turn with an hour left in it).
+    expect(ROW).toContain("tasks-act--skip");
+    expect(ROW).toContain("canForceStart(task)");
+    expect(ROW).toContain("FORCE_START_LABEL");
+    expect(ROW).toContain("void force();");
     expect(VIEWS).not.toContain("canRunNext");
+    expect(VIEWS).not.toContain("void skip();");
+    // …and the DRAG's own performer is untouched: that gesture is still a
+    // promotion and still spends the skip endpoint.
     expect(BOARD).toContain("onQueued?.(await performSkip(task));");
     // The row is mounted and its buttons counted in queue-caption-press.test.tsx
-    // — source strings cannot say a control is unreachable, only that it is
-    // unwritten.
+    // — source strings cannot say a control is reachable, only that it is
+    // written.
   });
 
   it("still SAYS where it stands, which the button never carried anyway", () => {
-    // THE CAPTION WAS NEVER GATED ON THE BUTTON, and that is why taking the
-    // button out changes no sentence: `1 message queued · after TASK-056` is
-    // true at the head of the line and stays printed. `canRunNext` — the
-    // button's whole condition — survives in platform/lib/queue for the
-    // follow-up that removes the endpoint with it, and is tested there.
+    // THE CAPTION WAS NEVER GATED ON A BUTTON, and that is why swapping the verb
+    // in the seat changes no sentence: `1 message queued · after TASK-056` is
+    // true at the head of the line and stays printed whether or not a press is
+    // drawn beside it. `canRunNext` survives in platform/lib/queue for the
+    // follow-up that removes the skip endpoint with it, and both conditions are
+    // tested there — including the one position they disagree at.
     expect(canRunNext({ status: "queued", queue_position: 2, queue_ahead: "TASK-056" })).toBe(true);
     expect(canRunNext({ status: "queued", queue_position: 1, queue_ahead: "TASK-056" })).toBe(false);
+    expect(canForceStart({ status: "queued", queue_position: 1, queue_ahead: "TASK-056" })).toBe(
+      true,
+    );
     expect(waitingCardText(1, { status: "queued", queue_position: 1, queue_ahead: "TASK-056" })).toBe(
       "1 message queued · after TASK-056",
     );
@@ -379,7 +394,8 @@ describe("the queue's ink", () => {
     );
     expect(card).toContain("overflow-wrap: anywhere");
     expect(card).not.toMatch(/(?<!-)\bwidth:\s*\d/);
-    // …AND NEITHER DOES THE RUN NEXT BUTTON, which is the queue's other piece of
+    // …AND NEITHER DOES THE QUEUE BUTTON in the strip (Run next's seat until
+    // 2026-09-21, Force start's since), which is the queue's other piece of
     // permanent row chrome. `.tasks-act` reserves a 22px box at rest so a row
     // does not reflow under the pointer — right for actions that exist on no row
     // while SHOW_ROW_ACTIONS is down, and wrong for one drawn on every waiting

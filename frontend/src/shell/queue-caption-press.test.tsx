@@ -175,7 +175,11 @@ test("a skipped row is drawn exactly like every other waiting row", () => {
   // before that deploy, which still carries `queue_priority` in the index, comes
   // back as an ordinary waiting row wearing nothing.
   expect(said).not.toContain("⤒");
-  expect(byClass(r, "tasks-act--skip")).toHaveLength(0);
+  // The seat itself is NOT empty any more: Force start wears it (`.tasks-act--skip`
+  // is that seat's class, kept with its skin — see styles/tasks.css). What a
+  // promoted row must not grow is a SECOND mark in the caption, which is what
+  // the assertions above are about.
+  expect(byClass(r, "tasks-act--skip")).toHaveLength(1);
 });
 
 test("a QUEUED ROW OFFERS NO RUN NEXT, mounted (Akshil, 2026-09-21)", () => {
@@ -194,4 +198,72 @@ test("a QUEUED ROW OFFERS NO RUN NEXT, mounted (Akshil, 2026-09-21)", () => {
   // …and the SENTENCE is untouched, which is the whole of what this row now says
   // about the line it is in.
   expect(text(r)).toContain("after TASK-046 | 3rd");
+});
+
+/** Every Force start button on this row, found the way a reader finds it: by the
+ *  name the label reads out. */
+function forceButtons(r: ReactTestRenderer): ReactTestInstance[] {
+  return r.root.findAll(
+    (n) =>
+      n.type === "button" &&
+      String((n.props as { "aria-label"?: string })["aria-label"] ?? "").startsWith(
+        "Force start",
+      ),
+  );
+}
+
+test("a queued row offers FORCE START at the head of the line too, mounted", () => {
+  // POSITION 1 IS THE CASE (Akshil, 2026-09-21): it is the arrangement Run next
+  // was hidden in, and the one this verb exists for — a row standing 1st is
+  // still waiting on a turn that may have an hour left in it.
+  const r = row(queued({ queue_position: 1 } as Partial<Task>), []);
+  const buttons = forceButtons(r);
+  expect(buttons).toHaveLength(1);
+  expect(buttons[0]!.props["aria-label"]).toBe("Force start for TASK-099");
+  expect(buttons[0]!.props.title).toBe("Run immediately");
+  // THE SEAT SAYS THE WORDS, not a glyph: the strip beside it already holds a
+  // play triangle, and two start-ish shapes one press apart is a hover a reader
+  // should not have to spend (Akshil, 2026-09-21).
+  expect(text(r)).toContain("Force start");
+  // …and at 3rd as well, which is the only position the old verb had.
+  expect(forceButtons(row(queued(), []))).toHaveLength(1);
+});
+
+test("a row that is NOT queued offers it nowhere", () => {
+  // Hidden rather than disabled: a control that is present-but-dead on every row
+  // is what makes the rows it works on hard to find.
+  for (const status of ["in_progress", "done", "blocked", "upcoming"]) {
+    const r = row(queued({ status, queue_position: 0 } as Partial<Task>), []);
+    expect(forceButtons(r)).toHaveLength(0);
+  }
+  // …AND NEITHER DOES A QUEUED ROW THE SERVER PLACED NOWHERE (`canForceStart`):
+  // position 0 is not a claim that this is standing in a line.
+  expect(forceButtons(row(queued({ queue_position: 0 } as Partial<Task>), []))).toHaveLength(
+    0,
+  );
+});
+
+test("the press posts to /api/tasks/queue/force, and names this row's task", async () => {
+  const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const realFetch = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = async (url: string, init: RequestInit) => {
+    calls.push({ url, body: JSON.parse(String(init.body)) as Record<string, unknown> });
+    return {
+      ok: true,
+      json: async () => ({ ok: true, started: true, run_id: "r1", session_id: "s1" }),
+    } as unknown as Response;
+  };
+  try {
+    const r = row(queued({ queue_position: 1 } as Partial<Task>), []);
+    click(forceButtons(r)[0]!);
+    // The call is awaited inside the handler, so let the microtask queue drain.
+    await act(async () => {});
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("/api/tasks/queue/force");
+    // BY TASK KEY on a row that IS a task — the server resolves that task's
+    // oldest due message itself (`performForceStart`).
+    expect(calls[0]!.body).toEqual({ key: "sess-1" });
+  } finally {
+    (globalThis as { fetch: unknown }).fetch = realFetch;
+  }
 });

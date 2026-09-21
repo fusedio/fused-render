@@ -10,9 +10,11 @@
 //     The chip was client state; a refresh, a navigation or the session adoption
 //     this feature itself causes dropped every card while the entries sat in the
 //     line.
-//   * One summary card over the composer carries the count and what is in front.
-//     It carried Run next too until 2026-09-21, when that verb left the UI; the
-//     card is now purely the sentence, and offers no press at all.
+//   * One summary card over the composer carries the count, what is in front,
+//     and Force start — which is offered on EVERY waiting card, including one
+//     standing 1st, because it does not reorder the line, it leaves it. (Run
+//     next held that seat until 2026-09-21 and was hidden at position 1: it
+//     could not get in front of the run holding the folder.)
 //   * A follow-up into this chat's OWN running turn draws nothing at all: no row,
 //     no card, and under the flag not even the composer's old footnote.
 import { installDomShim } from "@platform/lib/testDomShim";
@@ -238,7 +240,7 @@ describe("the card over the composer", () => {
       <WaitingCard
         count={2}
         facts={{ queue_position: 2, queue_ahead: "TASK-038" }}
-        onRunNext={() => {}}
+        onForceStart={() => {}}
       />,
     );
     const out = textOf(r);
@@ -247,58 +249,78 @@ describe("the card over the composer", () => {
     act(() => r.unmount());
   });
 
-  it("carries NO button, at the position that used to grow one", () => {
-    // RUN NEXT IS OUT OF THE UI (Akshil, 2026-09-21). `queue_position: 2` with a
-    // waiting task ahead is exactly the arrangement `canRunNext` was true for,
-    // and it is the one this card has to draw nothing in.
+  it("offers Force start at the head of the line AND behind another waiting task", () => {
+    // THE WHOLE DIFFERENCE FROM RUN NEXT (Akshil, 2026-09-21). Position 1 is the
+    // arrangement the old verb was hidden in — it could not get in front of the
+    // run holding the folder — and it is the one a reader most wants this press
+    // for: standing 1st still means waiting on a turn that may have an hour left.
+    for (const at of [1, 2]) {
+      const r = render(
+        <WaitingCard
+          count={2}
+          facts={{ queue_position: at, queue_ahead: "TASK-038" }}
+          onForceStart={() => {}}
+        />,
+      );
+      const buttons = r.root.findAllByType("button");
+      expect(buttons).toHaveLength(1);
+      expect(textOf(r)).toContain("Force start");
+      // …AND NEVER THE DEAD VERB, on either surface it used to be said on.
+      expect(textOf(r)).not.toContain("Run next");
+      expect(textOf(r)).not.toContain("⤒");
+      // The sentence the card exists for is untouched by the button.
+      expect(textOf(r)).toContain("2 messages queued");
+      expect(textOf(r)).toContain("TASK-038");
+      act(() => r.unmount());
+    }
+  });
+
+  it("calls back once, and goes dead while the press is in flight", () => {
+    let pressed = 0;
     const r = render(
       <WaitingCard
-        count={2}
-        facts={{ queue_position: 2, queue_ahead: "TASK-038" }}
-        onRunNext={() => {}}
+        count={1}
+        facts={{ queue_position: 1, queue_ahead: "TASK-038" }}
+        onForceStart={() => { pressed += 1; }}
       />,
     );
-    expect(r.root.findAllByType("button")).toHaveLength(0);
-    expect(textOf(r)).not.toContain("Run next");
-    expect(textOf(r)).not.toContain("⤒");
-    // …and the sentence it exists for is untouched.
-    expect(textOf(r)).toContain("2 messages queued");
-    expect(textOf(r)).toContain("TASK-038");
+    act(() => r.root.findAllByType("button")[0].props.onClick());
+    expect(pressed).toBe(1);
     act(() => r.unmount());
   });
 
   it("says '1 message queued' for one, and draws nothing for none", () => {
-    const one = render(<WaitingCard count={1} facts={{}} onRunNext={() => {}} />);
+    const one = render(<WaitingCard count={1} facts={{}} onForceStart={() => {}} />);
     expect(textOf(one)).toContain("1 message queued");
     expect(textOf(one)).not.toContain("messages");
     act(() => one.unmount());
     // "0 messages queued" is a card about nothing sitting on top of the box.
-    const none = render(<WaitingCard count={0} facts={{}} onRunNext={() => {}} />);
+    const none = render(<WaitingCard count={0} facts={{}} onForceStart={() => {}} />);
     expect(none.toJSON()).toBe(null);
     act(() => none.unmount());
   });
 
-  it("names what is in front, or says the spot is claimed — and never a press", () => {
-    // The card was a count, a thing-in-front and a verb; it is the first two
-    // now, and the button count is asserted in every arm because "nothing is
-    // drawn here" is the claim this whole file's queue half now makes.
-    const free = render(<WaitingCard count={2} facts={{}} onRunNext={() => {}} />);
+  it("names what is in front, and offers no press where the server placed nothing", () => {
+    // POSITION 0 IS THE ONE ARM WITH NO BUTTON (`canForceStart`): the server
+    // placed this row nowhere — an older server, or a row it could not place —
+    // and a press whose subject the server could not name can only 400.
+    const free = render(<WaitingCard count={2} facts={{}} onForceStart={() => {}} />);
     expect(free.root.findAllByType("button")).toHaveLength(0);
     expect(textOf(free)).toContain("next in this folder");
     act(() => free.unmount());
 
     // AT THE HEAD OF THE LINE the only thing in front is the run HOLDING the
-    // folder, and this press never interrupts a run — so there is no button, and
-    // the sentence still says what is in front, because that is true (Akshil,
-    // 2026-09-12).
+    // folder. The sentence still says so, because it is true (Akshil,
+    // 2026-09-12) — and the press is offered, because this verb starts beside
+    // that run rather than trying to get in front of it.
     const head = render(
       <WaitingCard
         count={1}
         facts={{ queue_position: 1, queue_ahead: "TASK-056" }}
-        onRunNext={() => {}}
+        onForceStart={() => {}}
       />,
     );
-    expect(head.root.findAllByType("button")).toHaveLength(0);
+    expect(head.root.findAllByType("button")).toHaveLength(1);
     expect(textOf(head)).toContain("1 message queued");
     expect(textOf(head)).toContain("after ");
     expect(textOf(head)).toContain("TASK-056");
@@ -314,7 +336,7 @@ describe("the card over the composer", () => {
       <WaitingCard
         count={2}
         facts={{ queue_position: 2, queue_ahead: "TASK-038", queue_priority: true }}
-        onRunNext={() => {}}
+        onForceStart={() => {}}
       />,
     );
     const out = textOf(after);
@@ -324,22 +346,21 @@ describe("the card over the composer", () => {
     act(() => after.unmount());
   });
 
-  it("draws no press even while the seat's props say busy", () => {
-    // `busy` and `onRunNext` are still handed in — the seat is kept for whatever
-    // queue verb lands in it next — and neither of them may put a control on the
-    // card while nothing is drawn there.
-    let pressed = 0;
-    const r = render(
+  it("is drawn and DEAD while a press of it is in flight", () => {
+    // Dead rather than dropped: the card would otherwise lose its control on
+    // the very press that worked, and the reader would have nothing to read the
+    // outcome against.
+    const busy = render(
       <WaitingCard
         count={1}
         facts={{ queue_position: 3, queue_ahead: "TASK-038" }}
         busy
-        onRunNext={() => { pressed += 1; }}
+        onForceStart={() => {}}
       />,
     );
-    expect(r.root.findAllByType("button")).toHaveLength(0);
-    expect(pressed).toBe(0);
-    act(() => r.unmount());
+    const button = busy.root.findAllByType("button")[0];
+    expect(button.props.disabled).toBe(true);
+    act(() => busy.unmount());
   });
 
   it("re-reads the facts it is handed and derives nothing of its own", () => {
@@ -351,7 +372,7 @@ describe("the card over the composer", () => {
       <WaitingCard
         count={1}
         facts={{ queue_position: 1, queue_ahead: "TASK-056" }}
-        onRunNext={() => {}}
+        onForceStart={() => {}}
       />,
     );
     expect(textOf(r)).toContain("TASK-056");
@@ -360,11 +381,13 @@ describe("the card over the composer", () => {
         <WaitingCard
           count={1}
           facts={{ queue_position: 2, queue_ahead: "TASK-041" }}
-          onRunNext={() => {}}
+          onForceStart={() => {}}
         />,
       );
     });
-    expect(r.root.findAllByType("button")).toHaveLength(0);
+    // The button is there at both positions — it is the SENTENCE this case is
+    // about, and the press does not depend on who is in front.
+    expect(r.root.findAllByType("button")).toHaveLength(1);
     expect(textOf(r)).toContain("after ");
     expect(textOf(r)).toContain("TASK-041");
     act(() => r.unmount());
@@ -378,7 +401,7 @@ describe("the card over the composer", () => {
       <WaitingCard
         count={2}
         facts={{ queue_position: 2, queue_ahead: "TASK-041" }}
-        onRunNext={() => {}}
+        onForceStart={() => {}}
       />,
     );
     expect(textOf(r)).toContain("after ");
@@ -387,14 +410,16 @@ describe("the card over the composer", () => {
         <WaitingCard
           count={2}
           facts={{ queue_position: 1, queue_ahead: "TASK-041", queue_priority: true }}
-          onRunNext={() => {}}
+          onForceStart={() => {}}
         />,
       );
     });
     expect(textOf(r)).toContain("2 messages queued");
     expect(textOf(r)).toContain("next in this folder");
     expect(textOf(r)).not.toContain("after ");
-    expect(r.root.findAllByType("button")).toHaveLength(0);
+    // A CLAIMED SPOT IS STILL A WAITING ONE: `queue_priority` silences the
+    // "after …" half and takes no button with it, because "next" is not "now".
+    expect(r.root.findAllByType("button")).toHaveLength(1);
     act(() => r.unmount());
   });
 });
@@ -481,48 +506,35 @@ describe("the rows come from the server, which is what a reload reads", () => {
   });
 });
 
-// THE CARD'S QUEUE SEAT, which nothing presses since 2026-09-21: Run next is
-// out of the UI and `WaitingCard` draws no button. The performer, the claim and
-// the endpoint all stay (a follow-up removes them together), so what is pinned
-// here is the WIRING — which id the call names, and what the answer paints.
-describe("the card's queue seat", () => {
-  it("promotes the TASK when there is a fresh key, and one entry otherwise", () => {
-    // `sched.rec.key` is read off a listing the poll just took, so it cannot be
-    // the stale `pending:<leader>` key the admission answered and the store has
-    // since rekeyed — and the task form promotes every message this chat has
-    // waiting, which is what the card is a summary of.
+// FORCE START, FROM THE CARD — the wiring, which is what this file can see of
+// it: which id the press names, that it paints no claim, and the body it posts.
+describe("Force start, from the card", () => {
+  it("names the OLDEST waiting entry, and the task key only with no rows", () => {
+    // THE ENTRY AND NOT THE TASK, because an entry id is minted once and never
+    // rekeyed: a queued chat's key is `pending:<leader>` until the leader's run
+    // mints a session, and the whole row then rekeys onto it. The server
+    // resolves the oldest due message either way, so the name only has to be
+    // one it can still find — and the key is the honest fallback for a chat
+    // drawing no rows yet.
     const run = CHAT.slice(
-      CHAT.indexOf("const runNext = useCallback("),
+      CHAT.indexOf("const forceStartNow = useCallback("),
       CHAT.indexOf("const deleteWaiting = useCallback("),
     );
+    expect(run).toContain('waiting.find((r) => r.word === "queued")?.entryId');
     expect(run).toContain('const key = sched.rec?.key || "";');
-    expect(run).toContain("const said = await skipQueue(key ? { key } : { entry_id: first });");
-    // …AND THE LINE THE PRESS JUST CHANGED, off the same answer (🟡 review,
-    // 2026-09-12). Painting only the claim left "behind TASK-041" naming
-    // whatever was ahead BEFORE the press until the next listing landed — the
-    // one sentence on the card the press is supposed to change.
-    expect(run).toContain("said.ahead_key === undefined");
-    for (const field of ["queue_ahead: said.ahead", "queue_ahead_title: said.ahead_title",
-                         "queue_ahead_session: said.ahead_session",
-                         "queue_ahead_target: said.ahead_target",
-                         "queue_ahead_key: said.ahead_key",
-                         "queue_position: said.position"]) {
-      expect(run).toContain(field);
-    }
-    // The claim is painted onto the card: this pane has no listing to correct it
-    // from, and the server's answer is the position it just set. It goes on the
-    // FACTS as well as on the fallback, because the facts prefer the server's row
-    // whenever there is one and that row was read before the press.
-    expect(run).toContain("queue_priority: true");
-    expect(run).toContain("setNextClaim(sched.recGen);");
-    expect(CHAT).toContain(
-      "const claimedNext = nextClaim !== null && nextClaim === sched.recGen;",
-    );
-    // …and a refusal is said out loud, in the verb's own words.
+    expect(run).toContain("await forceStart(first ? { entry_id: first } : { key });");
+    // NO CLAIM IS PAINTED, unlike the skip this replaced (which had to: it
+    // produced a POSITION no listing would report for a while). This produces a
+    // RUN, and the schedule poll is what draws one — so the press asks for a lap
+    // and lets the row say "starting" on its own.
+    expect(run).toContain("schedRefresh();");
+    expect(run).not.toContain("queue_priority: true");
+    expect(run).not.toContain("setNextClaim(");
+    // …and a refusal is said out loud, in the words the queue uses for it.
     expect(run).toContain('"The queue did not take that: " + t.message');
-    // AND NOT IN THE DEAD VERB'S NAME (Akshil, 2026-09-21): Run next is out of
-    // the UI, so no sentence a reader can be shown may still say it.
+    // AND NEVER IN THE DEAD VERB'S NAME (Akshil, 2026-09-21).
     expect(CHAT).not.toContain("Run next did not go through");
+    expect(CHAT).not.toContain("skipQueue");
   });
 
   it("posts exactly that body, and only that", async () => {
@@ -530,15 +542,18 @@ describe("the card's queue seat", () => {
     const realFetch = globalThis.fetch;
     (globalThis as { fetch: unknown }).fetch = async (url: string, init: RequestInit) => {
       bodies.push({ url, ...(JSON.parse(String(init.body)) as Record<string, unknown>) });
-      return { ok: true, json: async () => ({ ok: true, position: 1 }) } as unknown as Response;
+      return {
+        ok: true,
+        json: async () => ({ ok: true, started: true, run_id: "r1", session_id: "s1" }),
+      } as unknown as Response;
     };
     try {
-      const { skipQueue } = await import("@platform/lib/api");
-      await skipQueue({ entry_id: "e7" });
-      expect(bodies[0].url).toBe("/api/tasks/queue/skip");
+      const { forceStart } = await import("@platform/lib/api");
+      await forceStart({ entry_id: "e7" });
+      expect(bodies[0].url).toBe("/api/tasks/queue/force");
       expect(bodies[0].entry_id).toBe("e7");
       expect(bodies[0]).not.toHaveProperty("key");
-      await skipQueue({ key: "TASK-041" });
+      await forceStart({ key: "TASK-041" });
       expect(bodies[1].key).toBe("TASK-041");
       expect(bodies[1]).not.toHaveProperty("entry_id");
     } finally {

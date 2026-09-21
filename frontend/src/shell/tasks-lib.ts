@@ -2201,6 +2201,7 @@ export function isQueued(task: { status: string }): boolean {
  * tasks-lib like everything else about a row.
  */
 export {
+  canForceStart,
   canRunNext,
   chatUrl,
   CHAT_ENTRY_ORIGIN,
@@ -2218,6 +2219,8 @@ export {
   runningWaitingLabel,
   waitingCount,
   waitingLabel,
+  FORCE_START_HINT,
+  FORCE_START_LABEL,
   QUEUE_PRIORITY_GLYPH,
   RUN_NEXT_DONE_HINT,
   RUN_NEXT_HINT,

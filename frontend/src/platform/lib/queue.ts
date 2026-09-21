@@ -394,9 +394,31 @@ export const RUN_NEXT_DONE_HINT = "Already next in this folder";
  * actually puts a second process in one working tree, which is the single thing
  * the project queue exists to prevent.
  */
+/**
+ * Is there anything for Force start to DO?
+ *
+ * EVERY WAITING ROW, INCLUDING THE FIRST — which is the whole line between this
+ * verb and Run next (`canRunNext` above, whose note carries its own why). Run
+ * next changes the ORDER of what is waiting, so at position 1 it had nothing to
+ * get in front of and was correctly hidden. This one does not reorder anything:
+ * it takes the message OUT of the line and runs it beside whatever owns the
+ * folder, and a task standing 1st is still waiting on a turn that may have an
+ * hour left in it. "Next" and "now" are different promises, so the control that
+ * makes the second one is offered wherever the first is not enough.
+ *
+ * WHO IS AHEAD IS NOT READ, for the same reason: the press does not pass them,
+ * it leaves the line they are standing in.
+ *
+ * POSITION 0 IS STILL NO BUTTON. The server placed this row nowhere — an older
+ * server, or a row it could not place — and a press whose subject the server
+ * could not name is one that can only 400.
+ */
+export function canForceStart(facts: QueueFacts): boolean {
+  return queuePosition(facts) >= 1;
+}
+
 export const FORCE_START_LABEL = "Force start";
-export const FORCE_START_HINT =
-  "Start now, beside the task running in this folder";
+export const FORCE_START_HINT = "Run immediately";
 
 /**
  * THE RUN NEXT BUTTON'S FACE — and, since 2026-09-19, nothing else's.
