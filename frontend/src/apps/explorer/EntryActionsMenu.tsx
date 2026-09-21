@@ -10,9 +10,9 @@
 // and returns the rows as ContextMenu MenuEntry[] in two groups (`app`,
 // `embed`) plus the trigger badge and the modal node. It renders no menu of its
 // own: the FOLDER LISTING composes the groups with its folder ops into the one
-// folder menu (bar-menus' folderMenu) that its kebab, its background
+// folder menu (bar-menus' entryMenu) that its kebab, its background
 // right-click and the crumb bar all show, and the FILE PREVIEW composes them
-// with its file ops into the one file menu (bar-menus' fileMenu) that its kebab
+// with its file ops into the one file menu (bar-menus' entryMenu) that its kebab
 // and the crumb bar's right-click both show — so the same row is never spelled
 // twice. (A thin `EntryActionsMenu` component wrapped the hook for the file
 // kebab until that kebab and the bar's right-click were merged; the file is
