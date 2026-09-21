@@ -266,8 +266,9 @@ def test_a_source_that_ends_with_stop_set_neither_forwards_nor_backs_off():
 
 
 def test_a_healthy_tick_resets_the_backoff_counter():
-    """One good watch after failures means the NEXT failure starts the
-    schedule over, rather than picking up where it left off."""
+    """One good watch that actually delivers a change after failures means
+    the NEXT failure starts the schedule over, rather than picking up where
+    it left off."""
     f = Fake()
     calls = {"n": 0}
 
@@ -276,13 +277,33 @@ def test_a_healthy_tick_resets_the_backoff_counter():
         if calls["n"] in (1, 3):
             raise RuntimeError("boom")
             yield  # pragma: no cover
-        yield set()  # a healthy tick
+        yield {_added("/home/me/a.txt")}  # a healthy tick with a real change
 
     loop = f.loop("/home/me", flaky_source, flush_floor_s=0.0)
     loop._run_one_watch()  # fails -> sleeps BACKOFF_SCHEDULE_S[0]
     loop._run_one_watch()  # succeeds -> resets
     loop._run_one_watch()  # fails again -> sleeps BACKOFF_SCHEDULE_S[0] again
     assert f.slept == [BACKOFF_SCHEDULE_S[0], BACKOFF_SCHEDULE_S[0]]
+
+
+def test_empty_timeout_ticks_do_not_reset_the_backoff_counter():
+    """Real `watchfiles.watch` runs with `yield_on_timeout=True,
+    rust_timeout=5000` — an EMPTY tick every 5s even when nothing changed. A
+    watch that opens, gets one such timeout tick, then raises (a vanished
+    mount, a permissions change) must escalate through the backoff schedule
+    like any other repeated failure, not restart at the first rung forever
+    because each attempt "survived" one empty tick before dying."""
+    f = Fake()
+
+    def flaky_source(root):
+        yield set()  # one empty timeout tick — nothing actually changed
+        raise RuntimeError("mount vanished")
+
+    loop = f.loop("/home/me", flaky_source, flush_floor_s=0.0)
+    for _ in range(len(BACKOFF_SCHEDULE_S) + 1):
+        loop._run_one_watch()
+    expected = list(BACKOFF_SCHEDULE_S) + [BACKOFF_SCHEDULE_S[-1]]
+    assert f.slept == expected
 
 
 # ------------------------------------------------------- periodic safety net

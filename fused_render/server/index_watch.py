@@ -173,7 +173,15 @@ class WatchLoop:
             for batch in self.open_source(self.root):
                 if self.stop_event.is_set():
                     return
-                self._backoff_i = 0  # a tick was delivered; the watch is healthy
+                if batch:
+                    # A REAL change was delivered, not just an empty
+                    # `yield_on_timeout=True` tick (the real source ticks
+                    # every `rust_timeout=5000` ms regardless of activity).
+                    # Resetting on every tick would mean a watch that opens,
+                    # gets one empty timeout tick, then raises (a vanished
+                    # mount, a permissions change) restarts at the first
+                    # backoff rung forever instead of escalating.
+                    self._backoff_i = 0
                 folders = set()
                 for _change, path in batch:
                     if self.dropped(path):
