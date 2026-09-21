@@ -3230,3 +3230,88 @@ codebase's existing pattern of not mounting these heavy stateful components
 under `react-test-renderer`) — both need human/manual verification that
 clicking "Explain with AI" actually opens the right chat with the right
 prompt.
+
+## Fix round 1 (FIXES-round-1.md) — builder session, sha range 8cb5895dd..285de6281
+
+Worked every item top-down. Summary of design decisions worth remembering:
+
+**B1/B2/F2 (`app_doctor.py::_repo_health_check`)**: `git_upstream`'s cached
+`behind`/`ahead` compare `HEAD...origin/<default_branch>` — a DIFFERENT
+number from `_pushed_pending`'s path-scoped `@{upstream}..HEAD -- .`
+count, which feeds the row's `state`/`detail` on its own. This meant (a) a
+no-upstream branch with a stale cached `behind: 0` could read PASS despite
+real unpushed commits (`_SKIP_NO_UPSTREAM` now short-circuits PASS, checked
+before the `behind is not None` branch), and (b) a Pull button gated on
+`behind > 0` alone was a guaranteed `update_repo` refusal off the default
+branch or over a dirty tree — the two most common failure shapes for this
+row. Fixed by computing `on_default`/`clean` server-side (the exact same
+`_is_clean(root, include_untracked=False)` check the preflight itself
+uses) and exposing them as `onDefault`/`clean` on the row/`AppCheck`;
+`can_pull = bool(behind) and on_default is True and clean is True` drives
+both the extracted `_repo_health_advice()` helper's wording and the
+frontend's `showsPullAction` gate (`appdoctor-lib.ts`). Per the user's
+prior decision, Pull is never silently hidden — the row's own `detail`
+names the specific blocker ("switch to <default>" / "commit or stash your
+changes") instead.
+
+**C1/C2 (test isolation)**: `note_app_opened`'s non-blocking
+`_check_slot.acquire` means a real background fetch thread from ONE test
+file can silently starve another file's `_sync`-warmed assertions when
+they share a pytest-xdist worker. Fixed with two changes: a `_warm()`
+helper in `test_app_doctor_report.py` that populates the cache directly
+via `git_upstream._record(git_upstream.check_repo(root))`, bypassing the
+slot entirely (replaces three `note_app_opened(..., _runner=_sync)` call
+sites); and `test_git_upstream.py`'s autouse fixture now blocks
+(`_check_slot.acquire(timeout=TIMEOUT_S + 5)` then immediately releases)
+to drain any foreign in-flight holder before resetting its own module
+state, rather than only avoiding a double-release. Verified stable across
+5+ repeated combined runs of both files (105 passed every time, up from
+103 after adding 2 more B1 regression tests).
+
+**B3 (`AppDoctorModal.tsx`, git-row retry)**: the one-shot retry effect set
+its "used" ref the moment the timer was SCHEDULED, not when it fired. Any
+OTHER row's `runCheck` completing within the 2s window calls `setReport`
+with a new object, which cancels the pending timer via the effect's own
+cleanup and re-runs the effect — but the ref was already flipped, so the
+re-armed effect bailed immediately and the git row was permanently
+stranded on SKIP. Fix: move the ref-set inside the `setTimeout` callback
+itself, so a cancelled attempt leaves the ref untouched and a later re-run
+gets to reschedule.
+
+**B4/D1 (`AppDoctorModal.tsx`, Open-in-git)**: `onDone` (which the dialog
+passes as `onClose` to `useAppDoctorReport`, but the hook previously did
+NOT return in its result object) had to be added to the hook's return
+value, then threaded through `AppDoctorChecklist` -> `CheckRow` as a new
+optional prop, so "Open in git" could call it after `navigate()` — matching
+`fixRow`/`followLive`/`runFix`'s existing idiom. D1 (user decision, same
+click handler) restyled the button from a bare ghost icon to a secondary
+text button ("Open in git") matching Fix's size/variant, moved to sit
+BEFORE Fix in JSX order.
+
+**B5 (`explain-with-ai.ts`)**: `fetchDefaultFolder`'s module-level
+`inFlight` promise was only cleared on `.catch`. A SUCCESSFUL fetch that
+resolves an empty/falsy `fused_dir` leaves `cachedDefaultFolder` at
+`undefined` (the sentinel this module reads as "still unresolved") while
+`inFlight` keeps pointing at that already-settled promise forever — so
+every later call re-enters `fetchDefaultFolder`, sees `inFlight` truthy,
+and hands back the SAME stale (still-falsy) promise with no way to ever
+retry, even once a real value becomes available. Fixed by moving the
+`inFlight = null` clear into a `.finally()` so every settlement (success
+or failure) releases the slot.
+
+**E (`SKILL.md`)**: added a third mode alongside the existing single-row
+and no-panel modes, for a task naming check `` `all` `` with one `##`
+block per failing row (`doctor_prompt_all`) — work every block in order,
+one end-of-run commit, still scoped to exactly the blocks handed over
+(never re-derive the checklist, never invent a check). The git/pushed
+consolidation's own SKILL.md edit (already landed earlier in this branch)
+needed no further reconciliation — it already described the single
+consolidated row correctly.
+
+No test harness exists for `AppDoctorModal.tsx` itself (component-level
+render tests) in this repo — only `appdoctor-lib.ts`'s pure helpers are
+unit-tested. B3/B4 (both localized to that file) shipped without new
+component tests as a result; verified by reading the effect/handoff logic
+against the described repro rather than by an automated assertion. Flagged
+in the final report rather than building new render-test infra for this
+round.
