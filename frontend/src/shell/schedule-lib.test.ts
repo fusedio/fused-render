@@ -2419,18 +2419,22 @@ describe("the popover's header rail (Akshil, 2026-08-19)", () => {
 // rule that is not obvious about them: an unrecognised stored value stays
 // selectable instead of collapsing onto "Default".
 describe("what a task can be run with", () => {
-  it("offers Default first, then one row per model", () => {
-    // "" leads because it is the answer for almost every task — no flag, let
-    // the run detect the project's own config — and it has to be reachable
-    // again after someone picks a model.
-    expect(TASK_MODELS[0]).toEqual({ key: "", label: "Default" });
+  it("offers one row per model and no Default row", () => {
+    // NO "" ROW (Akshil, 2026-09-21): the card opens on the global preference
+    // it fetches, so "Default" — an empty value the CLI resolved out of sight —
+    // is not a thing a reader can pick any more.
     // ONE ROW PER MODEL. A pinned full id ("claude-fable-5-1") used to lead the
     // four, above the alias naming the same model — the same thing twice, so
     // the menu asked a question with one answer (Akshil, 2026-09-18).
     expect(TASK_MODELS.map((o) => o.key)).toEqual([
-      "", "fable", "opus", "sonnet", "haiku",
+      "fable", "opus", "sonnet", "haiku",
+    ]);
+    expect(TASK_EFFORTS.map((o) => o.key)).toEqual([
+      "low", "medium", "high", "xhigh", "max",
     ]);
     expect(taskRunLabel(TASK_MODELS, "fable")).toBe("Fable");
+    // "" is "still asking", not a value: no row is invented for it.
+    expect(taskRunOptions(TASK_MODELS, "")).toEqual([...TASK_MODELS]);
   });
 
   it("says Fable for a task still booked under the retired pinned id", () => {
@@ -2448,7 +2452,7 @@ describe("what a task can be run with", () => {
 
   it("offers the five --effort levels, cheapest first, said in English", () => {
     expect(TASK_EFFORTS.map((o) => o.key)).toEqual([
-      "", "low", "medium", "high", "xhigh", "max",
+      "low", "medium", "high", "xhigh", "max",
     ]);
     // The flag's word is "xhigh"; the card's word is "Extra high". The key is
     // what goes on the wire, so the label is free to be readable.

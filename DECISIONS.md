@@ -1920,6 +1920,7 @@ re-run (nothing in it could have changed).
 |---|---|---|---|
 | D884 | **An app's stable identity is a `<meta name="fused-app-id" content="<kebab name>-<8 hex>" />` tag in its ENTRY PAGE (`fused_render/app_id.py`), minted ONCE on the app's first `.fused` export and never rewritten; `export_app_file` copies it into the container index as `app_id`, and `open_app_file`/`clone_target` answer it** | Owner asked for one identifier that tells "an update of the same app" from "a different app that happens to share a name" — D397's slug (the folder basename) is neither: two people's `dashboard/` collide, a rename loses lineage. Where the id lives was the decision. **Rejected: `.fused/appfile.json`** (PR #1136's stamp) — the owner's call: `.fused/` is gitignored and rebuilt at will, so nothing tracking identity may live there. **Rejected: a new `fused.json`/`app.json` manifest at the app root** — a whole new file convention (explorer noise, docs, "what is this file") to carry one field, worth it only if a manifest is wanted for other reasons. **Rejected: git root-commit sha** — no repo for clones (D397) and one shared root for every app in the `local` monorepo (D626). **Chosen: the entry page**, because it is the one file every app must have, it is committed with the app, it ships in every `.fused`, and it already carries two markers read through the same 4 KiB head budget (`fused-app`, `fused-api-version`) — same parser shape, same migration path, zero new files. **Id shape by owner**: readable name part plus 8 random hex, not a bare uuid; validated by `ID_RE` on every read (untrusted file) and NEVER joined into a path — `_slug` stays the only path-maker. **Minted at export, not at app creation**: an identity exists to outlive the folder, and a folder that never left the machine needs none; the starter template therefore carries NO tag (a fixed id there would be copied into every new app). **Invariant**: `app_id` in a manifest ⇔ the tag is in the shipped entry — when the page cannot take the tag (read-only extract of an older `.fused`, no `<head>` anchor, or a folder that HEADS its own repo with a REMOTE — `app_git._repo_scope` resolves only an app's own `.git` or the shared `local` repo, so this is `meta_migration._has_remote`'s hands-off rule for showcase/deeplink clones, and an app nested deeper inside a user's bigger checkout IS stamped and left for them to commit) the export goes out with no `app_id` rather than a manifest-only id the next export would mint differently. **The unguarded GET `/api/appfile/export` now performs this one write** — deliberate: `downloadAppFile` (api.ts) still takes the GET whenever there is no preview capture, so gating the stamp behind the X-Fused POST would leave most real exports without an id; the write is a server-minted random tag into a folder the caller already named, never caller-chosen bytes. **Sniffable without extraction** (owner's ask): the id rides in the deflated index, one bounded `read_manifest` away; a raw-bytes `strings` grep would need a plaintext container header field (a v3 format, two hardened readers) and was not done. `clone_target` now prefers identity to slug: a `local/` folder whose entry declares the file's id is "already cloned" whatever it is named. **Known cost**: copying an app folder to start a new app copies the id; a "Duplicate app" action that re-mints is the follow-up. PR #1136 (unmerged) keys prior-version matching on the slug and should rekey on `app_id` when it rebases. | Scratch round-trip against a tmp app: first export mints `my-app-test-<8hex>` and inserts the tag right after `fused-api-version`; `has_fused_meta`/`app_entry` still hold on the stamped page; second export and an export after renaming the folder answer the SAME `app_id`; `read_manifest(...)["app_id"]` reads it with nothing extracted; a 0o444 entry exports with no `app_id`; `open_app_file` returns it. `tsc --noEmit` over `frontend/`: only pre-existing missing-module errors in `apps/claude/protocol/markdown.ts`, none in touched files. |
 | D885 | **A self-update that installs cleanly now REMOVES its Activity row from the registry (`jobs.forget`, new) instead of finishing it; there is no success row, no `DONE_MESSAGE`, and no `done` upsert at any tier. Error and cancelled rows are untouched.** The row used to end on "Installed — restart to finish" — moved to `jobs.SILENT` by #1214 so it at least stopped popping a card, but still a row in Notifications with a click. That click was the bug (Akshil, 2026-09-19): its destination was `_job_report`'s `/preferences` fallback, a LAZY CHUNK, and by the time the row existed the installer had already swapped the `.app` on disk — so the old window's fetch of that chunk 404'd and the page went blank. No tier fixes a row whose only affordance is a trap, and the row had nothing to say either: reaching "installed" is exactly what raises the blocking restart dialog (D2), which carries the same sentence AND the button. `jobs.forget(job_id)` is a third verb beside `dismiss` (a user's ✕, which refuses live work) and `_sweep`'s age-out (a clock): the PRODUCER saying its row has nothing left to say, so it may take a row that is still `RUNNING`. It funnels through the same `_forget`, so the id is remembered and a straggling tick cannot re-create the row, while a genuinely fresh attempt (an opening report stating `state: "running"`) reopens it. There is no HTTP route into it — a page reports, it never deletes. **The running row is unchanged** (bytes, phase, ✕, heartbeat) and so are the `error`/`cancelled` rows: those carry information nothing else on screen does, and neither path has swapped the app, so their `/preferences` destination still loads. **`page="/preferences"` is therefore KEPT**, not dropped with the success row: a terminal notification with neither `action` nor `page` resolves to `transient` (`notifications.ts::isTransient`), so dropping it would quietly stop a cancelled update from being KEPT in the list. **Second half, the modal:** `ServerStatusBanner` now probes `/api/config` the instant the shared update store transitions to `installed`, instead of waiting out its own 5 s `POLL_MS`. `bannerSurface` already opened the dialog on either door (D2), but only the probe carries `installed_version` — the version the dialog's title is made of — so the seconds between the two clocks were spent on a title falling back to `latest_version`. One probe per transition INTO `installed` (a ref re-arms only when the state leaves it), and it only ASKS: no restart is started and `restart-store`'s wake semantics are untouched. | `fused_render/jobs.py::forget`, `update/_manager.py::_install`/`_job_forget` (shared by mac and linux — neither platform writes its own terminal row), `frontend/src/platform/ui/ServerStatusBanner.tsx`. Tests: `tests/test_mac_update.py::test_a_successful_install_leaves_no_row_behind` / `test_a_removed_row_cannot_be_resurrected_by_a_late_tick` / `test_the_running_download_row_is_untouched_by_the_removal`, `tests/test_linux_update.py::test_a_successful_install_swaps_the_appimage_and_writes_the_stamp`, `tests/test_jobs_api.py::test_forget_takes_a_running_row_a_dismiss_would_refuse` / `test_a_forgotten_row_refuses_late_ticks_but_not_a_fresh_start`, and the new `frontend/src/platform/ui/ServerStatusBanner.test.tsx` (the probe fires on the transition, once, with no timer advanced). |
+| D886 | **A per-request `thinking` boolean, threaded client -> wire -> worker -> chat template, unifies the two local text runners under ONE default: thinking ON when unset. This reverses AI-11d's "off by default".** | `mlx-community/S1-mini-MLX-4bit` (a Qwen3-0.6B transcript normalizer used by the OpenWhisper app) was unusable through `mlx_text/worker.py`: its model card requires `enable_thinking=False`, and that runner's text path passed no such kwarg at all, so the template's own default (ON for Qwen3-family models) always won — there was no way for a caller to ask for anything else. Investigating turned up that the two local runners already silently disagreed: `mlx_text/worker.py` defaulted thinking ON (by omission), `runners/llama_text.py` passed `enable_thinking=False` unconditionally (AI-11d's choice). The GGUF build of S1-mini therefore worked BY ACCIDENT while the MLX build was broken. Owner decision (2026-09-21): unify on ON by default in BOTH runners, accepting the two costs AI-11d originally weighed against this — S1-mini's GGUF build (which worked by accident) now needs `thinking: false` passed explicitly, same as its MLX build always will; and a slow CPU machine gets think tokens (invisible latency) by default unless a caller opts out. Wire/client name is `thinking` (boolean); the worker's own vocabulary stays `enable_thinking` — `server/ai.py`'s `_local_relay` is the one place camelCase meets snake_case (D633), same as `maxTokens`/`topP`. Tri-state throughout: unset/`true`/`false`, with unset kept distinguishable from `false` end-to-end (the `{k: v for k, v in d.items() if v is not None}` filter in `_local_relay` already gives this for free; `mlx_text/worker.py::_messages_to_prompt` passes NO `enable_thinking` kwarg at all when unset, so the templated prompt stays byte-identical to before this flag existed). `_TEXT_OPTIONS`/`_OPTION_NAMES` (`server/ai.py`) validate the type (400 on non-bool) and treat it as a D631 *tunable*, not a *semantic* flag: Apple and Claude tiers warn (`{type: "unsupported-setting", ...}`) rather than 400. `mlx_text/worker.py`'s retry-on-`TypeError` (a tokenizer whose `apply_chat_template` rejects an unexpected keyword) is carried over from the removed transformers runner (AI-11d); `runners/llama_text.py` needs no such retry since Jinja silently ignores a context variable a template never reads. Client surfaces kept 1:1 (D470): `runtime.js`'s `textKeys`/body-population and `fused_ai.py`'s `text()`/`stream()` both gained `thinking`, and a new drift-guard test (`test_the_bridges_accepted_text_keys_match_the_servers_constant`) now pins `textKeys` against `_TEXT_OPTIONS` — the guard the other three AI capabilities (`imageKeys`, `transcribeKeys`, `videoKeys`) already had but text never did. **Rejected: keep the per-runner status quo** (MLX thinking ON, GGUF thinking OFF) — the bug this fixes IS that disagreement; a caller cannot reason about one setting that means opposite things depending on which runner happened to load the model. **Rejected: unify OFF, matching AI-11d's original reasoning** — the owner's call: the invisible-CPU-latency cost is real but is now something a caller can opt out of per-request, where OFF-by-default would have left `mlx_text/worker.py` with the SAME structural gap this bug report is about (never mind that it currently defaults on by omission — a hardcoded OFF would remove the freedom to turn it back on for a model that benefits from it). **Rejected: per-model catalog metadata that sets the flag automatically** — a real alternative design, not chosen; out of scope for this build, and left as a candidate follow-up (S1-mini's catalog entry could carry `thinking: false` as a default the page needn't specify itself). | `tests/test_ai_runtime.py` (wire validation, drift guard, tri-state reaching the worker as `enable_thinking`, Apple/Claude-tier warnings) — 577 passed; `tests/test_fused_ai_client.py` (client mirror) — 50 passed; `tests/test_ai_mlx_worker.py` (unset passes no kwarg, explicit true/false, `TypeError` retry, image-path default+override) — 34 passed; `tests/test_ai_llamacpp_worker.py` (default flip to `True`, explicit override, threaded from `generate`) — 64 passed. |
 
 ## Search grammar follow-up: trailing space + icon*copy agreement (2026-09-17, worktree-search-trailing-space)
 
@@ -3315,3 +3316,217 @@ component tests as a result; verified by reading the effect/handoff logic
 against the described repro rather than by an automated assertion. Flagged
 in the final report rather than building new render-test infra for this
 round.
+
+## Task 22 — git template confirmations: inline `.confirm` bars → centered modals
+
+Every destructive confirmation in `fused_render/templates/git/template.html` used to
+render as an inline `.confirm` bar spliced into the section/pane the question was
+about (discard, discard-all, stash-drop, resolve, app-restore/checkout, revert, reset).
+In practice the bar often landed below the fold — under a long inline diff, at the
+bottom of a list — so a click on "Discard" produced no visible reaction. Converted
+every one of the seven `DESTRUCTIVE` ops to a single centered modal over a scrim,
+reusing the existing `stashModal`/`publishModal` pattern (`.scrim` + `.modal` +
+`.panel`, mounted once at the page root). Only *where/how* the question renders
+changed — the `ask=` URL grammar and the `DESTRUCTIVE` set are untouched.
+
+- `confirmBar(question, run, verb)` → `confirmModal(question, run, verb)`, same `wrap`
+  shape as the other two modals: scrim (click cancels via `setParams({ ask: null })`),
+  `.panel.danger` with a `.panel-head` (title = `verb`), the question as body text, and
+  a foot with the danger confirm button then Cancel. `role="alertdialog"`,
+  `aria-modal="true"`, `aria-labelledby` set via `setAttribute` (not reliable as plain
+  `el()` props). `focusSoon()` lands on Cancel, never Confirm, so a stray Enter can't
+  fire the destructive action.
+- `pendingConfirm(data, stashes)` now owns all seven keys and returns the modal node
+  directly (or `null`) — no more `{ where, node }`, `askIn`, `folded.delete(ask.where)`,
+  or `|| changesAsk` / `|| stashesAsk` guards that existed only to keep a section
+  rendered around a confirmation. A section may render empty again while its
+  confirmation is open; that's correct now, the question isn't inside it any more.
+  `stashes` isn't module-level (it's threaded `draw()` → `render(data, stashes, diff)`),
+  so it became `pendingConfirm`'s second parameter, needed for `stash_drop`'s message
+  lookup.
+- `resolve`, `app_restore`, `revert`, `reset` used to return `null` from
+  `pendingConfirm` and build their own bar at their own call site
+  (`resolveConfirmBar()`, the checkout banner, the commit pane). All four guards moved
+  into `pendingConfirm` UNCHANGED — every one of them is load-bearing (a stale `ask=`
+  in the URL must not arm a confirmation for a commit/preview the user never actually
+  selected: `rest !== proposal.path`, `rest !== previewed`, `sha !== selectedRev()`).
+  This was fully achievable because every guard's inputs (`proposal`, `previewed`,
+  `selectedRev()`, `canPreview`) are module-level and reachable by closure from
+  anywhere in the file — no site needed the spec's "guard cannot move" escape hatch.
+  `resolveConfirmBar()` was deleted outright; its logic is now `pendingConfirm`'s
+  `resolve` branch.
+- Button call sites (`confirmable(...)`) were left exactly where they were (proposal
+  panel foot, preview banner, commit pane) — only the inline `confirmBar`/`run(...)`
+  append at each was deleted. Their local question-text variables
+  (`checkoutQuestion`/`revertQuestion`/`resetQuestion`) were kept, now used only as
+  button tooltip text; the modal's actual (richer, subject-enriched) question text is
+  built independently inside `pendingConfirm`. Accepted as minor, deliberate
+  duplication rather than exporting a helper across an odd boundary — the spec allows
+  this explicitly.
+- Precedence: `askModal` (from `pendingConfirm`) wins at the page-root mount over
+  `panel=stash`/`panel=publish` — if a confirmation is pending, neither other modal
+  mounts. `publishOpen` became `!askModal && param("panel") === "publish"`, with
+  `ghStartPolling`/`ghStopPolling` gated on it.
+- Danger styling needed no dark-mode-specific rule: `--danger` / `--danger-bg` /
+  `--danger-line` were already defined once in the default (dark) `:root` block and
+  overridden in `:root[data-theme="light"]`, so `.panel.danger` inherits
+  theme-correctness for free.
+- Question-text pass: `stash_drop` now names the stash's own message when available
+  (`stash@{N} (message)`); `resolve`/`app_restore`/`revert`/`reset` add the path or the
+  commit's short sha + subject when not already implied. Long paths wrap via
+  `overflow-wrap: anywhere` on `.modal .q` instead of widening the modal.
+- Deleted the `.confirm` CSS block, `@keyframes confirm-in`, its `@media (max-width:
+  560px)` rule, and its reduced-motion rule; verified by grep that no `.confirm`
+  selector/className remains anywhere in the file.
+
+Tests: `tests/test_git_conflicts.py::test_view_never_applies_a_resolution_without_the_confirmation`
+had two literal-source-grep assertions anchored on `function resolveConfirmBar()` and
+`confirmBar(`; both needed updating for the rename and the deleted function — replaced
+the anchor with `pendingConfirm`'s `if (op === "resolve") { ... }` branch bounds, same
+guarantee (one `{ op: "resolve" }` call site, reached only through the confirmation).
+
+Two more tests in `tests/test_git_view.py` broke for a reason beyond a simple rename:
+`test_checkout_lives_in_the_previewing_banner_and_sends_app_restore` and
+`test_revert_appears_on_the_expanded_commit_and_sends_its_own_sha` asserted the actual
+`{ op: "app_restore" }` / `{ op: "revert" }` write happened at the button's own call
+site — true under the old inline-bar architecture, false now that the write lives in
+`pendingConfirm`. Rewrote both to check the button still lives at its original site
+and that the write + its guard now live in `pendingConfirm`'s matching branch.
+
+Grepped all of `tests/` for `confirmBar`, `askIn`, `folded.delete(ask`, `ask.where`,
+`where:` after finishing — zero real matches (a few `where`-adjacent hits are
+unrelated prose like "anywhere:"/"elsewhere:").
+
+`.venv/bin/python -m pytest -q tests/test_git_view.py tests/test_git_conflicts.py`:
+45 passed.
+
+Note for future readers: a builder note file for this specific task briefly
+overwrote this file's entire prior content (Write tool, no Read-before-overwrite
+guard caught it because the file existed but the mistake was made anyway) before
+being caught and reverted via `git checkout -- DECISIONS.md`; this Task 22 section is
+the only change that survived. If a future session finds this file suspiciously
+short, that is a sign the same mistake happened again and was not caught.
+
+### Task 22 follow-up — fixing the two failing tests and three review findings
+
+Two `tests/test_git_view_renders.py` tests were red 3/3: they asserted the OLD
+inline `.confirm` bar's copy verbatim (`REVERT_QUESTION`/`CHECKOUT_QUESTION` module
+constants), and the earlier symbol-only grep (`confirmBar`, `askIn`, `where:`) never
+caught them because they assert rendered STRINGS, not identifiers. `confirmModal`'s
+question text for `revert`/`app_restore` is richer than the button's own tooltip
+(it now names the commit's own short sha + subject, since a modal has no adjacent
+row to supply that) — the old constants were fixed strings with no subject at all,
+so a straight copy-paste update would not have worked; they had to become functions
+(`_revert_question(commit)` / `_checkout_question(commit)`) that build the expected
+text the same way `pendingConfirm` does, from the same commit fields. The
+regression guarantee both tests exist for — a stale armed `ask=` must not follow the
+user to a commit/preview they never confirmed it against — is unchanged: the
+"not in" assertion still checks for the SPECIFIC armed commit's question text, so a
+guard failure that re-armed the wrong commit's modal would still be caught.
+Re-swept `tests/` for the old literal copy (`"Revert this commit? This adds a new
+commit"`, `"Commit the app folder back to this version? Other folders"`,
+`"Reset history to this commit? Every commit made"`) — the only remaining hits are
+the button-tooltip `titleIncludes` click actions in these same two tests, which are
+still correct because the button's own tooltip text (`revertQuestion`/
+`checkoutQuestion` in `template.html`) was deliberately left unchanged; only the
+modal's body text is new and richer.
+
+Three code-review findings fixed in `fused_render/templates/git/template.html`:
+
+- `focusSoon()` (~line 2127) called `input.setSelectionRange(...)` unconditionally.
+  Every pre-existing call site passed a text input; `confirmModal` (this task) is
+  the first to pass a `<button>` (Cancel), which has no `setSelectionRange` —
+  every confirmation threw inside the rAF callback, silently (focus itself still
+  landed), and the window error handler turned each throw into a repeating
+  page-error POST for as long as the modal stayed open. Fixed by guarding the call
+  with `typeof input.setSelectionRange === "function"` rather than skipping the
+  focus — Cancel keeping focus is deliberate (a stray Enter must not fire the
+  destructive action).
+- `.modal` (~line 276) had no `max-height`/`overflow`, so `confirmModal`'s plain
+  `.q` paragraph (unbounded, unlike the stash/publish dialogs' `.rows`, which are
+  already capped at `40vh`) could push the Confirm/Cancel row below the fold on a
+  short viewport — the exact bug this whole PR exists to fix, relocated from the
+  section into the modal. Capped `.modal` itself at `calc(82vh - 24px)` (82% being
+  what's left below its `top: 18%`) with `overflow-y: auto`, so the WHOLE dialog
+  scrolls and the button row stays reachable, for any dialog sharing `.modal`
+  (stash/publish included — their `.rows` sub-scroll is untouched and sits well
+  under this new outer cap in practice).
+- `listSection`'s doc comment (~line 3807) still described `footer` as carrying
+  "the confirm bar directly under the rows it is about" — no longer true, sections
+  never own a confirmation now. Rewrote it to say what `footer` actually is: a
+  trailing element appended inside the rows box, used today for the truncation
+  note (Changes), the "load more"/end-of-history note (Commits), or `null`
+  (Stashes). Not collapsed to a single use as speculated in the handoff — Commits
+  still passes `loadMore`, not `truncNote` — so the comment says that plainly
+  instead of claiming a generality (or a single-use fact) that isn't true either.
+
+Coverage investigation (finding 1, `focusSoon`/Cancel): checked whether
+`tests/_git_view_probe.mjs` can observe the TypeError. Its `requestAnimationFrame`
+stub is `setTimeout(fn, 0)`, and Node genuinely crashes (non-zero exit) on an
+uncaught synchronous throw inside a timer callback — confirmed empirically with a
+throwaway `node -e` script — and `tests/test_git_view_renders.py`'s `render()`
+helper already asserts `proc.returncode == 0`, so a probe crash IS a test failure,
+not a silently swallowed one. So the crash mechanism itself is observable. But the
+probe's `El` stub never implements `isConnected` at all (grepped for it — zero
+hits), so `!input.isConnected` inside `focusSoon` is always `true` for every node in
+this harness, and the function returns before ever reaching the buggy
+`setSelectionRange` line — for every call site, not just Cancel. Verified this is
+the actual blocker, not a guess: temporarily reverted the `focusSoon` fix, ran the
+probe, and it passed (bug unreachable); then temporarily added a one-line
+`get isConnected() { return true; }` to the stub's `El` class (throwaway, not kept)
+with the same reverted fix, re-ran, and got the exact expected crash:
+`TypeError: input.setSelectionRange is not a function` inside the timer callback,
+`proc.returncode == 1`. That confirms the mechanism and pinpoints the reason
+today's probe can't see it. Did not add `isConnected` to the shared stub to make
+this observable — the spec's own instruction is "if it CANNOT, do not contort the
+harness," and faking `isConnected` for every node changes behavior for every other
+`focusSoon` call site (filter/message/branch-name inputs) and every other test that
+happens to run one, well past this fix's scope. Restored both files to their
+pre-investigation state (verified with `diff`) and left the real
+`typeof input.setSelectionRange === "function"` guard as the only surviving change.
+Recorded as a genuine coverage gap: this probe cannot catch a `focusSoon` bug of any
+kind, on any element, because it never marks anything connected to the document.
+
+`.venv/bin/python -m pytest tests/test_git_view_renders.py tests/test_git_view.py tests/test_git_conflicts.py`:
+58 passed.
+
+#### `test-python-windows` red: the probe's stdout decode, not the assertion
+
+CI's Windows lane failed on
+`test_revert_confirm_bar_only_shows_for_the_commit_it_was_armed_on` with the expected
+question text — em dash and all — missing from `proc.stdout`, even though the failure
+message showed that exact sentence rendered correctly inside the HTML. Not a logic
+bug: `subprocess.run([node, PROBE, ...], capture_output=True, text=True, timeout=90)`
+at line ~204 (and three siblings at ~387/425/618) never pinned `encoding=`. `text=True`
+alone falls back to `locale.getpreferredencoding(False)`, which on a Windows CI runner
+with no LANG/LC_ALL resolves to the ANSI codepage (cp1252), not UTF-8. The Node probe
+writes its JSON as real UTF-8, and `_revert_question(commit)`/`_checkout_question(commit)`
+(added in the Task 22 follow-up above) build the first non-ASCII string this file has
+ever compared — the earlier `REVERT_QUESTION`/`CHECKOUT_QUESTION` constants were
+ASCII-only, so `origin/main` never exercised this path. Confirmed the mechanism
+directly: encoding `"Revert 3541e7e — second commit?"` as UTF-8 and decoding those
+bytes as cp1252 yields `'Revert 3541e7e â€” second commit? ...'` — the same mojibake
+shape as the CI failure — while decoding as UTF-8 round-trips correctly.
+
+Fix is the harness, not the assertion: added `encoding="utf-8"` to all four
+`subprocess.run` calls in `tests/test_git_view_renders.py` (the ones invoking
+`PROBE`/`_git_view_probe.mjs` and the inline `node -e` check at ~line 618), plus a
+comment at the first call site naming the Windows cp1252 failure this prevents, in the
+voice of the existing UnicodeEncodeError comments a few lines below it (~line
+373–378, `test_the_probe_fails_on_a_template_that_throws`). `_revert_question` /
+`_checkout_question` were left exactly as they are — weakening them back to an
+ASCII-only prefix would have thrown away the sha/subject assertion those two tests
+exist for.
+
+Blast radius: `_git_view_probe.mjs` is imported/invoked only from
+`tests/test_git_view_renders.py` — no other test file spawns it, so nothing else needed
+touching. Swept the rest of `tests/` for other `subprocess.run([node, ...])` calls
+decoding a similar probe; several other files (`test_claude_permission_bridge.py`,
+`test_claude_live_run.py`, `test_annotate_template.py`, `test_map_template_escaping.py`,
+`test_claude_config_api.py`, and others) run `node -e <script>` with bare `text=True`
+and no `encoding=`. These are the same latent Windows-decode risk, but each is a
+different probe/file with its own author and scope; per this task's instructions they
+are reported here, not fixed — fixing them is out of scope for the confirm-modal branch.
+
+`.venv/bin/python -m pytest -q tests/test_git_view_renders.py tests/test_git_view.py tests/test_git_conflicts.py`:
+58 passed.

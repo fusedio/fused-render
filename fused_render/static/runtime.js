@@ -100,6 +100,10 @@
  *     opts.images: absolute paths to base images for a vision-language model,
  *     on THIS turn only.
  *     opts.temperature / opts.maxTokens / opts.topP: sampling.
+ *     opts.thinking: boolean, local text models only (mlx and llama.cpp/GGUF)
+ *     — tri-state, unset/true/false. Local models default to thinking ON
+ *     (D886); set false when a model's own card requires it off. Dropped
+ *     with a `warnings[]` entry on Claude and apple (no such flag there).
  *     history/raw/images are LOCAL-MODEL ONLY and are refused (400) on the
  *     Claude path — dropping them would answer a different question. The
  *     apple tier honours `history`, refuses `raw` (the framework owns its
@@ -3527,7 +3531,7 @@
     // option and a missing prompt must learn about the option, or "add a
     // prompt" fixes the visible error and lands the same typo again.
     const textKeys = ["prompt", "provider", "model", "systemPrompt", "effort", "history",
-                      "raw", "images", "temperature", "maxTokens", "topP"];
+                      "raw", "images", "temperature", "maxTokens", "topP", "thinking"];
     const textUnknownErr = rejectUnknownOptions(opts, textKeys, ["onChunk", "abortSignal"], "fused.ai.text");
     if (textUnknownErr) return Promise.reject(textUnknownErr);
     const prompt = opts.prompt;
@@ -3581,6 +3585,12 @@
     if (opts.temperature !== undefined) body.temperature = opts.temperature;
     if (opts.maxTokens !== undefined) body.maxTokens = opts.maxTokens;
     if (opts.topP !== undefined) body.topP = opts.topP;
+    // Tri-state (D886): unset/true/false, so this must not collapse a caller's
+    // explicit `false` into "not sent" the way `!== undefined` on the others
+    // already avoids for `0`-valued sampling knobs. Local models only, like
+    // every other tunable above — a non-local tier warns rather than 400s
+    // (`server/ai.py`'s `_unsupported`), it does not need the key withheld.
+    if (opts.thinking !== undefined) body.thinking = opts.thinking;
     const onChunk = typeof opts.onChunk === "function" ? opts.onChunk : null;
     if (onChunk) body.stream = true;
     const signal = abortSignalOf(opts);

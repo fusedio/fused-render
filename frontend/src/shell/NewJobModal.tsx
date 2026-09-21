@@ -17,6 +17,7 @@ import {
   cancelScheduledMessage,
   getClaudeSessionFolders,
   getConfig,
+  getTaskDefaults,
   getTasks,
   listDir,
   rawUrl,
@@ -3131,6 +3132,31 @@ export default function NewJobModal({
     return listedModelIn(stored, TASK_MODELS.map((o) => o.key)) || normalizeModel(stored);
   });
   const [effort, setEffort] = useState(saved.effort ?? editing?.effort ?? "");
+  // A FIELD NOBODY CHOSE OPENS ON WHAT THE RUN WILL GET (Akshil, 2026-09-21:
+  // "remove the default field … show the model and effort"). "" used to be the
+  // leading "Default" row — no flag, the CLI decides at spawn. The row is gone;
+  // the card asks the server for the global Claude preference instead and
+  // writes it into whichever of the pair is still "" — per field, so a draft
+  // that chose a model keeps it and only its thinking is filled in. One read
+  // per open, and a read that fails leaves "" — the dropdown then shows its
+  // first option's label and the spawn still resolves as it always did.
+  const askedDefaults = useRef(false);
+  useEffect(() => {
+    if (askedDefaults.current || (model && effort)) return;
+    askedDefaults.current = true;
+    let live = true;
+    getTaskDefaults().then(
+      (d) => {
+        if (!live) return;
+        setModel((m) => m || d.model);
+        setEffort((e) => e || d.effort);
+      },
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [model, effort]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);

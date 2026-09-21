@@ -54,7 +54,6 @@ import {
   putCanvasesEnabled,
   putProjectQueueEnabled,
   putTaskNotifyTerminalSessionsEnabled,
-  putChatRecapEnabled,
   putLanEnabled,
   getLanPairToken,
   getLanDevices,
@@ -67,10 +66,7 @@ import {
 import qrcode from "qrcode-generator";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
-import {
-  publishChatRecapEnabled,
-  publishProjectQueueEnabled,
-} from "@apps/claude/feature-flag";
+import { publishProjectQueueEnabled } from "@apps/claude/feature-flag";
 import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -277,55 +273,6 @@ function AppSharingSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pr
   );
 }
 
-// Chat: the one chat setting a person still chooses. The "Native chat" switch
-// that headed this section left the page on 2026-09-19 (Akshil: "hide that
-// flag, default on") — the React chat is simply what the app renders now, and a
-// switch whose only job was the way back to the legacy iframe is not a
-// preference. `native_chat_enabled` stays a stored pref server-side for the env
-// override and old installs (shell/prefs.py); nothing on this page writes it.
-// The recap box that lived inside that section keeps its place and its shape.
-function ChatSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [error, setError] = useState<string | null>(null);
-  // DEFAULT ON, so the fallback is `true` and the read is `!== false`: a server
-  // that predates the field is a server whose chat shows the fold.
-  const recap = prefs.chat?.recap !== false;
-  const [recapBusy, setRecapBusy] = useState(false);
-
-  const toggleRecap = async () => {
-    if (recapBusy) return;
-    setRecapBusy(true);
-    setError(null);
-    try {
-      const next = await putChatRecapEnabled(!recap);
-      onChange(next);
-      publishChatRecapEnabled(next.chat?.recap !== false);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setRecapBusy(false);
-    }
-  };
-
-  return (
-    <section className="prefs-section">
-      <h2>Chat</h2>
-      <label className="prefs-radio">
-        <input
-          type="checkbox"
-          checked={recap}
-          disabled={recapBusy}
-          onChange={toggleRecap}
-        />
-        <span>
-          <b>Session recap</b> — after you have been away a minute, one line at the
-          bottom of the chat saying where the conversation stands.
-        </span>
-      </label>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
-  );
-}
-
 // The project queue: one task in progress per folder. Off by default, and this
 // is the only place it turns on. Same one-checkbox section shape as the two
 // above.
@@ -342,7 +289,7 @@ function ProjectQueueSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // `=== true`: OPT-IN, so a server that predates the field is a server with no
-  // queue — the opposite polarity from the recap switch above, which defaults on.
+  // queue — the opposite polarity from the native-chat switch, which defaults on.
   const enabled = prefs.queue?.enabled === true;
 
   const toggle = async () => {
@@ -1137,7 +1084,6 @@ export default function Preferences() {
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
                 <CanvasesSection prefs={prefs} onChange={setPrefs} />
                 <AppSharingSection prefs={prefs} onChange={setPrefs} />
-                <ChatSection prefs={prefs} onChange={setPrefs} />
                 <ProjectQueueSection prefs={prefs} onChange={setPrefs} />
                 <TaskNotifyTerminalSection prefs={prefs} onChange={setPrefs} />
               </>

@@ -142,7 +142,6 @@ import { recapAnchor } from "./protocol/recap";
 import {
   queueEnabled,
   queueFlagReady,
-  useChatRecapEnabled,
   useProjectQueueEnabled,
 } from "./feature-flag";
 import { WaitingCard, WaitingRow } from "./ui/Waiting";
@@ -3943,11 +3942,8 @@ function ChatBody(props: ChatBodyProps) {
    *     is its own `useState` and only that component can see it (Composer's
    *     `submitRef` note says so in as many words), and `boxRef` is the seat
    *     this file already holds for exactly that reason. A function, sampled at
-   *     the moment of the check, so nothing here re-renders per keystroke;
-   *   * `enabled` — `prefs.chat.recap`, off the one prefs read every chat embed
-   *     already makes (`feature-flag.ts`).
+   *     the moment of the check, so nothing here re-renders per keystroke.
    */
-  const recapEnabled = useChatRecapEnabled();
   const recapFor = useMemo(() => recapAnchor(state.turns), [state.turns]);
   const hasDraft = useCallback(
     () => !!boxRef.current && boxRef.current.value.trim().length > 0,
@@ -3963,10 +3959,11 @@ function ChatBody(props: ChatBodyProps) {
     forUuid: recapFor,
     running,
     hasDraft,
-    // THREE facts, and the host's is the one that is new: the pref, this mount
-    // being a conversation rather than the landing, and the host having said
-    // this is the chat the reader opened (`recap`, above).
-    enabled: recapEnabled && inChat && !!props.recap,
+    // TWO facts: this mount being a conversation rather than the landing, and
+    // the host having said this is the chat the reader opened (`recap`,
+    // above). The Preferences switch that used to sit in front of these left
+    // on 2026-09-21 — the recap is simply on.
+    enabled: inChat && !!props.recap,
     root: recapRoot,
   });
   // The task number this session is (`#session`, T:12696 showSession). Read here

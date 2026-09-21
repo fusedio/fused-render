@@ -1208,12 +1208,7 @@ export interface Prefs {
   // field existed) answers without it. A required field here would only make
   // every `Prefs` literal in the suites over-constrained while the runtime read
   // stayed defensive anyway.
-  //
-  // `recap` is the native chat's "While you were away" fold, also default ON
-  // (shell/prefs.py `chat_recap_enabled`). Every reader of this object asks
-  // `!== false` rather than `=== true` for the same reason: an older server
-  // answers without the field, and the default is what it would have said.
-  chat?: { native: boolean; forced_by?: string | null; recap?: boolean };
+  chat?: { native: boolean; forced_by?: string | null };
   // ONE TASK IN PROGRESS PER FOLDER (`project_queue_enabled`, shell/prefs.py).
   // Everything that wants to run in a folder somebody else's task is already
   // running in waits its turn in the scheduler's pending list instead — chat
@@ -1469,10 +1464,6 @@ export function putNativeChatEnabled(enabled: boolean): Promise<Prefs> {
  *  off). See `Prefs.task_notify`'s own doc comment. */
 export function putTaskNotifyTerminalSessionsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { task_notify_terminal_sessions: enabled });
-}
-
-export function putChatRecapEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { chat_recap_enabled: enabled });
 }
 
 export function putProjectQueueEnabled(enabled: boolean): Promise<Prefs> {
@@ -3479,6 +3470,13 @@ export type TaskPulseTask = Pick<
   | "next_run_repeats"
   | "entrypoint"
 >;
+
+/** The model / thinking a NEW task opens on: the global Claude preference
+ *  (`~/.claude/settings.json` `model` / `effortLevel`, the pair the Claude
+ *  settings page writes). "" for a field the file leaves unset. */
+export function getTaskDefaults(): Promise<{ model: string; effort: string }> {
+  return getJson<{ model: string; effort: string }>("/api/claude-sessions/defaults");
+}
 
 export function getTasks(): Promise<{ tasks: Task[]; generation?: number }> {
   return getJson<{ tasks: Task[]; generation?: number }>("/api/tasks");
