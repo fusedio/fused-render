@@ -166,9 +166,15 @@ def transcript_running(path: str, now: float) -> tuple[bool, float]:
     return running, (last.timestamp() if last is not None else mtime)
 
 
-def _user_text(obj: dict) -> str:
-    """The words of a `type: user` record — a string body, or the `text` blocks
-    of a list body joined, PLUS the string body of any `tool_result` block.
+def _user_parts(obj: dict) -> list[str]:
+    """The words of a `type: user` record, ONE ENTRY PER BLOCK — a string body
+    as a single entry; for a list body every `text` block and every
+    `tool_result` (its string body, or its own `text` blocks joined).
+
+    Per block rather than joined, because the interrupt marker is matched
+    exactly and a Stop that cuts off several PARALLEL tools writes one user row
+    with one marker per tool (Bugbot, PR #1285): joined, that text matches
+    nothing and the turn read as open for STALE_TAIL_SEC — the bug again.
 
     The tool_result half is for the interrupt marker: Esc during a tool call is
     written by Claude Code as `[{"type": "tool_result", "content": "[Request
@@ -180,23 +186,24 @@ def _user_text(obj: dict) -> str:
     message = obj.get("message")
     content = message.get("content") if isinstance(message, dict) else None
     if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for b in content:
-            if not isinstance(b, dict):
-                continue
-            if b.get("type") == "text":
-                parts.append(str(b.get("text") or ""))
-            elif b.get("type") == "tool_result":
-                inner = b.get("content")
-                if isinstance(inner, str):
-                    parts.append(inner)
-                elif isinstance(inner, list):
-                    parts.extend(str(x.get("text") or "") for x in inner
-                                 if isinstance(x, dict) and x.get("type") == "text")
-        return "\n".join(parts)
-    return ""
+        return [content]
+    if not isinstance(content, list):
+        return []
+    parts: list[str] = []
+    for b in content:
+        if not isinstance(b, dict):
+            continue
+        if b.get("type") == "text":
+            parts.append(str(b.get("text") or ""))
+        elif b.get("type") == "tool_result":
+            inner = b.get("content")
+            if isinstance(inner, str):
+                parts.append(inner)
+            elif isinstance(inner, list):
+                parts.append("\n".join(
+                    str(x.get("text") or "") for x in inner
+                    if isinstance(x, dict) and x.get("type") == "text"))
+    return parts
 
 
 # THE CLI'S OWN ENVELOPE ROWS, recorded as `type: user`: a slash command
@@ -214,16 +221,19 @@ def _user_text(obj: dict) -> str:
 _OPENS_A_TURN = frozenset(("task-notification",))
 
 
-def _turn_open_by_user_row(text: str) -> bool | None:
+def _turn_open_by_user_row(parts: list[str]) -> bool | None:
     """What a `type: user` row says about the turn: True (open), False (closed),
     or None (housekeeping — keep walking).
 
-    * the interrupt marker: a turn that ENDED (see `transcript_turn_open`),
+    * ANY block that is the interrupt marker: a turn that ENDED (see
+      `transcript_turn_open`) — one Stop cuts off every tool that was in
+      flight, and the row carries a marker per tool,
     * a CLI envelope other than a task-notification: skip,
     * anything else — typed words, a `tool_result` being fed back: open.
     """
-    if is_interrupt_mark(text):
+    if any(is_interrupt_mark(part) for part in parts):
         return False
+    text = "\n".join(parts)
     tag = leading_machinery_tag(text)
     if tag and tag not in _OPENS_A_TURN:
         return None
@@ -303,7 +313,7 @@ def transcript_turn_open(path: str, now: float, *,
                 continue
             if not interrupt_closes:
                 return True   # the strict reading: any user row is a turn
-            text = _user_text(obj)
+            parts = _user_parts(obj)
             # THE STOP BUTTON'S OWN ROW IS A TURN THAT ENDED, NOT ONE IN FLIGHT
             # (Akshil, 2026-09-21: "I make a new task, then stop it, then it
             # shows me Running outside the app"). Claude Code answers an
@@ -322,7 +332,7 @@ def transcript_turn_open(path: str, now: float, *,
             # (`session_turn_open`) deliberately takes the default: a due
             # message for a session whose reader just pressed stop should GO,
             # not wait out STALE_TAIL_SEC.
-            verdict = _turn_open_by_user_row(text)
+            verdict = _turn_open_by_user_row(parts)
             if verdict is None:
                 continue
             return verdict

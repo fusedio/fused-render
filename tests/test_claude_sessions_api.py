@@ -386,6 +386,17 @@ def test_the_stop_buttons_interrupt_marker_ends_the_turn(client, projects_dir,
                    {"type": "text",
                     "text": "[Request interrupted by user for tool use]"}]}]}})
     assert _liveness(client, path).json()["running"] is False
+    # ...and ONE marker PER TOOL when the Stop cut off parallel calls (Bugbot,
+    # PR #1285) — the row must be read block by block, not joined.
+    _rows(path, _user_text_row("do the thing"),
+          _assistant("text", "tool_use", "tool_use"),
+          {"type": "user", "timestamp": "2026-01-01T00:00:00Z",
+           "message": {"role": "user", "content": [
+               {"type": "tool_result", "tool_use_id": "t1",
+                "content": "[Request interrupted by user for tool use]"},
+               {"type": "tool_result", "tool_use_id": "t2",
+                "content": "[Request interrupted by user for tool use]"}]}})
+    assert _liveness(client, path).json()["running"] is False
     # ...while a real tool result being fed back is a turn in flight.
     _rows(path, _user_text_row("do the thing"), _assistant("text", "tool_use"),
           {"type": "user", "timestamp": "2026-01-01T00:00:00Z",
