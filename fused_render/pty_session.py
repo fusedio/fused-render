@@ -167,20 +167,43 @@ class PtySession:
     def kill(self) -> None:
         """SIGHUP the process group, then SIGKILL after a grace period. Safe
         to call more than once, and safe to call after the child has already
-        exited on its own."""
-        pgid = self.proc.pid  # setsid() in the helper makes this its own pgid
-        try:
-            os.killpg(pgid, signal.SIGHUP)
-        except ProcessLookupError:
-            return
+        exited on its own.
+
+        The helper's `os.setsid()` makes the child its own process group
+        leader, so `killpg(self.proc.pid, ...)` is normally correct — but
+        there is a real race between Popen() returning (as soon as
+        posix_spawn's exec syscall completes) and the child actually running
+        that setsid(), during which the child is still a member of the
+        SERVER's own process group. `killpg` on that pid before setsid() has
+        landed would target zero processes (a stale group; caught below as
+        ProcessLookupError) or, in the worst case if pid ever happened to
+        collide with a live pgid, someone else's group — so this checks the
+        child's ACTUAL current group with `os.getpgid` and only calls
+        `killpg` once that equals its own pid; otherwise it signals the pid
+        alone, which is always safe."""
+        pid = self.proc.pid
+        self._signal(pid, signal.SIGHUP)
         deadline = time.time() + _KILL_GRACE_S
         while time.time() < deadline and self.alive:
             time.sleep(0.05)
         if self.alive:
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            self._signal(pid, signal.SIGKILL)
+
+    @staticmethod
+    def _signal(pid: int, sig: int) -> None:
+        try:
+            pgid = os.getpgid(pid)
+        except ProcessLookupError:
+            return
+        try:
+            if pgid == pid:
+                os.killpg(pgid, sig)
+            else:
+                # setsid() hasn't landed in the child yet — signal only the
+                # pid, never the group (which right now is the SERVER's own).
+                os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
 
     def join(self, timeout: Optional[float] = None) -> None:
         self._reader.join(timeout=timeout)
