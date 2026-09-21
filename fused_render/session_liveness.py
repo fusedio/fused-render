@@ -42,7 +42,10 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 from datetime import datetime, timezone
+
+from fused_render.tasks_store import is_interrupt_mark, leading_machinery_tag
 
 # CLAUDE_CONFIG_DIR wins where set — the same rule (and the same deliberate
 # local copy) as claude_artifacts.py, tasks_store.py and the claude template's
@@ -163,7 +166,82 @@ def transcript_running(path: str, now: float) -> tuple[bool, float]:
     return running, (last.timestamp() if last is not None else mtime)
 
 
-def transcript_turn_open(path: str, now: float) -> bool:
+def _user_parts(obj: dict) -> list[str]:
+    """The words of a `type: user` record, ONE ENTRY PER BLOCK — a string body
+    as a single entry; for a list body every `text` block and every
+    `tool_result` (its string body, or its own `text` blocks joined).
+
+    Per block rather than joined, because the interrupt marker is matched
+    exactly and a Stop that cuts off several PARALLEL tools writes one user row
+    with one marker per tool (Bugbot, PR #1285): joined, that text matches
+    nothing and the turn read as open for STALE_TAIL_SEC — the bug again.
+
+    The tool_result half is for the interrupt marker: Esc during a tool call is
+    written by Claude Code as `[{"type": "tool_result", "content": "[Request
+    interrupted by user for tool use]"}]` — the marker travels as the result of
+    the tool it cut off, not as a text block — as a string, or as a list with
+    one text block (both shapes seen in local transcripts, review 2026-09-21).
+    A real tool_result carries the tool's output, which is never equal to the
+    marker after a strip."""
+    message = obj.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return [content]
+    if not isinstance(content, list):
+        return []
+    parts: list[str] = []
+    for b in content:
+        if not isinstance(b, dict):
+            continue
+        if b.get("type") == "text":
+            parts.append(str(b.get("text") or ""))
+        elif b.get("type") == "tool_result":
+            inner = b.get("content")
+            if isinstance(inner, str):
+                parts.append(inner)
+            elif isinstance(inner, list):
+                parts.append("\n".join(
+                    str(x.get("text") or "") for x in inner
+                    if isinstance(x, dict) and x.get("type") == "text"))
+    return parts
+
+
+# THE CLI'S OWN ENVELOPE ROWS, recorded as `type: user`: a slash command
+# (`<command-name>/model`), what it printed (`<local-command-stdout>`), a `!`
+# shell line and its output (`<bash-input>`/`<bash-stdout>`). Housekeeping,
+# not a prompt — a row that leads with one is stepped over like a `mode`
+# record. The table is tasks_store's (`_MACHINERY_DROP`, measured there), read
+# through `leading_machinery_tag` so the two readers cannot drift; the ONE
+# exception is named here: `<task-notification>` is the harness waking the
+# agent, and that IS a turn. Measured on the local corpus (review, 2026-09-21,
+# 1328 transcripts): every `<command-name>` row is a built-in, and `/clear` —
+# the one that most often ends a file — writes no output row after itself, so
+# it has to be skipped on its own or every `/clear` reads as a turn awaiting a
+# reply for STALE_TAIL_SEC.
+_OPENS_A_TURN = frozenset(("task-notification",))
+
+
+def _turn_open_by_user_row(parts: list[str]) -> bool | None:
+    """What a `type: user` row says about the turn: True (open), False (closed),
+    or None (housekeeping — keep walking).
+
+    * ANY block that is the interrupt marker: a turn that ENDED (see
+      `transcript_turn_open`) — one Stop cuts off every tool that was in
+      flight, and the row carries a marker per tool,
+    * a CLI envelope other than a task-notification: skip,
+    * anything else — typed words, a `tool_result` being fed back: open.
+    """
+    if any(is_interrupt_mark(part) for part in parts):
+        return False
+    text = "\n".join(parts)
+    tag = leading_machinery_tag(text)
+    if tag and tag not in _OPENS_A_TURN:
+        return None
+    return True
+
+
+def transcript_turn_open(path: str, now: float, *,
+                         interrupt_closes: bool = True) -> bool:
     """Is a turn open in this transcript RIGHT NOW — by its last message, not a
     window (D415).
 
@@ -188,6 +266,10 @@ def transcript_turn_open(path: str, now: float) -> bool:
       makes `done` per-turn there,
     * an **assistant** row carrying `tool_use`, or a **user** row (a prompt, or
       a `tool_result` being fed back), is a turn still in flight,
+    * EXCEPT the CLI's own interrupt marker ("[Request interrupted by user]",
+      a `user` row the stop button leaves as the last word): that is a turn
+      that ENDED, and a slash command's envelope rows are housekeeping to skip
+      (`_turn_open_by_user_row`) — both only when `interrupt_closes` is True,
     * no message at all in the tail is not evidence of one running.
 
     `now` still matters for exactly one thing: a turn that was OPEN when its
@@ -223,7 +305,37 @@ def transcript_turn_open(path: str, now: float) -> bool:
             return True
         kind = obj.get("type")
         if kind == "user":
-            return True
+            # The CLI's own notes to itself — the "Caveat: the messages below
+            # were generated while running local commands" row is `isMeta`,
+            # a subagent's brief is `isSidechain`. Neither is the reader
+            # speaking; every other transcript reader here skips them too.
+            if obj.get("isMeta") or obj.get("isSidechain"):
+                continue
+            if not interrupt_closes:
+                return True   # the strict reading: any user row is a turn
+            parts = _user_parts(obj)
+            # THE STOP BUTTON'S OWN ROW IS A TURN THAT ENDED, NOT ONE IN FLIGHT
+            # (Akshil, 2026-09-21: "I make a new task, then stop it, then it
+            # shows me Running outside the app"). Claude Code answers an
+            # interrupt by writing "[Request interrupted by user]" as a
+            # `type: user` record — so every stopped run left a user row as the
+            # file's last word, and this read it as a prompt awaiting its reply
+            # for the whole of STALE_TAIL_SEC. Nobody is writing anything after
+            # that marker; the turn is closed the way a plain reply closes it.
+            #
+            # `interrupt_closes=False` is the STRICT reading — every user row,
+            # marker or envelope, is a turn — for the one caller where a wrong
+            # "closed" destroys a file rather than mispainting a line:
+            # claude_session_move relocates transcripts that are not mid-turn,
+            # and a reader who just pressed stop or typed `/model` in an
+            # INTERACTIVE session is still sitting at that prompt. The scheduler
+            # (`session_turn_open`) deliberately takes the default: a due
+            # message for a session whose reader just pressed stop should GO,
+            # not wait out STALE_TAIL_SEC.
+            verdict = _turn_open_by_user_row(parts)
+            if verdict is None:
+                continue
+            return verdict
         if kind != "assistant":
             continue   # attachments, mode records, housekeeping: not the reply
         message = obj.get("message")
