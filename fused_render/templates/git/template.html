@@ -3223,53 +3223,29 @@ function proposalPanel() {
   wrap.append(el("pre", { className: "text",
                           textContent: (proposal ? proposal.text : streamed) || "" }));
   if (proposal) {
-    const pending = resolveConfirmBar();
-    if (pending) {
-      wrap.append(pending);
-    } else {
-      const foot = el("div", { className: "foot" });
-      foot.append(el("span", { className: "note", textContent: proposal.note }));
-      /* An Apply exists only when the model produced something it called a
-         resolution. An UNRESOLVABLE answer is the model declining — offering to
-         write that sentence into the user's source would be the worst button in
-         the view. */
-      if (!proposal.unresolvable) {
-        foot.append(confirmable("resolve:" + proposal.path, "Apply to file",
-          "Overwrite " + proposal.path + " with the proposed resolution.",
-          { label: "Apply the proposed resolution to " + proposal.path }));
-      }
-      foot.append(action("resolve-dismiss", "Dismiss", {
-        onClick: () => { proposal = null; streamed = ""; draw(true); },
-      }));
-      wrap.append(foot);
+    /* The Apply confirmation used to render here instead of this foot, in
+       place of it, while `ask=resolve:…` was armed — the panel was the
+       nearest thing to a row this question had, so it answered right where
+       the text being written already was. Now it is a modal (`pendingConfirm`
+       returns it, `render` mounts it at the page root), so this foot always
+       renders, armed or not: Apply is still just the button that arms it. */
+    const foot = el("div", { className: "foot" });
+    foot.append(el("span", { className: "note", textContent: proposal.note }));
+    /* An Apply exists only when the model produced something it called a
+       resolution. An UNRESOLVABLE answer is the model declining — offering to
+       write that sentence into the user's source would be the worst button in
+       the view. */
+    if (!proposal.unresolvable) {
+      foot.append(confirmable("resolve:" + proposal.path, "Apply to file",
+        "Overwrite " + proposal.path + " with the proposed resolution.",
+        { label: "Apply the proposed resolution to " + proposal.path }));
     }
+    foot.append(action("resolve-dismiss", "Dismiss", {
+      onClick: () => { proposal = null; streamed = ""; draw(true); },
+    }));
+    wrap.append(foot);
   }
   return wrap;
-}
-
-/* The confirmation for an Apply, when one is pending. Answered here rather than
-   through `pendingConfirm` (which returns null for `resolve`) because the panel
-   is where the text being written is.
-
-   Only ever built when the ON-SCREEN proposal is the one the question names: the
-   resolved text lives in memory, not in the URL, so an `ask=resolve:…` that
-   survived a refresh has nothing to apply, and rendering the question anyway
-   would offer a Yes that could only fail. */
-function resolveConfirmBar() {
-  const ask = param("ask");
-  if (!proposal || proposal.unresolvable) return null;
-  if (ask !== "resolve:" + proposal.path) return null;
-  const path = proposal.path;
-  return confirmBar(
-    "Overwrite " + path + " with the proposed resolution? The conflicted version "
-    + "git left there is replaced, and getting it back means `git checkout "
-    + "--merge " + path + "`. Nothing is staged and nothing is committed.",
-    () => {
-      const content = proposal.text;
-      run("resolve:" + path, { op: "resolve", paths: [path], content },
-          () => { proposal = null; streamed = ""; });
-    },
-    "Overwrite file");
 }
 
 function resolveFailed(message) {
@@ -4087,7 +4063,18 @@ function renderRefusal(payload) {
   announce(titles[payload.reason] || "No git history");
 }
 
-/* The pending confirmation, if any, rendered inside the section it belongs to.
+/* The pending confirmation, if any — a modal (see `confirmModal`) mounted once
+ * at the page root by `render`, never spliced into a section or a pane.
+ *
+ * It used to be the latter, and this function used to answer only three of
+ * the seven destructive ops for exactly that reason: `resolve`, `app_restore`,
+ * `revert` and `reset` each ask about something that is not a list row here
+ * (the proposed text, the previewed version, the expanded commit), so each
+ * built and appended its own bar at its own call site instead. That split
+ * existed to put the question "next to the thing it is about". Now that the
+ * question is a modal rather than a bar, there is nothing left to be next to
+ * — every one of the seven answers through this one function, and `render`
+ * mounts whatever it returns in exactly one place.
  *
  * `ask` is a key the button wrote and this reads back, so the URL never carries
  * a callable. Its GRAMMAR is the fix for two bugs that were both "the key did
@@ -4097,17 +4084,25 @@ function renderRefusal(payload) {
  *   discard:staged:<path>      the row in STAGED CHANGES
  *   discard:worktree:<path>    the row in CHANGES or UNTRACKED
  *   stash_drop:<index>:<sha>
+ *   resolve:<path>
+ *   app_restore:<sha>
+ *   revert:<sha>
+ *   reset:<sha>
  *
  * The section is IN the key rather than re-derived from the entry, because an
  * `MM` file appears in both lists and the two rows were building the same key.
  * The stash's commit id is in the key for the same reason ops.py wants it: a
  * confirmation can sit in the URL indefinitely, and a `stash push` in the
- * meantime renumbers every entry.
+ * meantime renumbers every entry. `app_restore`/`revert`/`reset` carry a sha
+ * for the identical reason, one level up: the URL can survive a refresh, but
+ * the previewed commit or the selected row can change underneath it, and a
+ * key with no sha in it would go on arming a question about whichever one
+ * happens to be current rather than the one actually asked about.
  *
  * Fields are split off the FRONT, never with a plain `split(":")`, because the
  * last field is a path and a path may contain a colon.
  */
-function pendingConfirm(data) {
+function pendingConfirm(data, stashes) {
   const ask = param("ask");
   if (!ask) return null;
   const cut = ask.indexOf(":");
@@ -4119,35 +4114,81 @@ function pendingConfirm(data) {
     return null;
   }
   if (op === "discard_all") {
-    return {
-      where: "changes",
-      node: confirmBar(
-        "Discard every change under " + (data.repo.rel || "this repository")
-        + "? Edited files go back to their last staged or committed version and "
-        + "new untracked files are deleted. Ignored files are never touched. "
-        + "This cannot be undone.",
-        () => run("discard_all", { op: "discard_all" }),
-        "Discard everything"),
-    };
+    return confirmModal(
+      "Discard every change under " + (data.repo.rel || "this repository")
+      + "? Edited files go back to their last staged or committed version and "
+      + "new untracked files are deleted. Ignored files are never touched. "
+      + "This cannot be undone.",
+      () => run("discard_all", { op: "discard_all" }),
+      "Discard everything");
   }
   if (op === "resolve") {
-    /* Answered inside the PROPOSAL PANEL, not in a list section, so this returns
-       nothing here — see `resolveConfirmBar`. Every other question in this view
-       belongs to a row, and the principle behind that ("the question sits next to
-       the thing it is about") points at the panel for this one: the thing it is
-       about is the proposed text, which is in the panel and nowhere else. A
-       conflicted file is also listed in BOTH the staged and the changes section,
-       so there is no single row to attach it to. */
-    return null;
+    /* Only ever armed when the ON-SCREEN proposal is the one the question
+       names: the resolved text lives in memory (`proposal`), not in the URL,
+       so an `ask=resolve:…` that survived a refresh has nothing to apply, and
+       showing the question anyway would offer a Yes that could only fail. */
+    if (!proposal || proposal.unresolvable || rest !== proposal.path) return null;
+    const path = proposal.path;
+    return confirmModal(
+      "Overwrite " + path + " with the proposed resolution? The conflicted "
+      + "version git left there is replaced, and getting it back means "
+      + "`git checkout --merge " + path + "`. Nothing is staged and nothing "
+      + "is committed.",
+      () => {
+        const content = proposal.text;
+        run("resolve:" + path, { op: "resolve", paths: [path], content },
+            () => { proposal = null; streamed = ""; });
+      },
+      "Overwrite file");
   }
-  if (op === "app_restore" || op === "revert" || op === "reset") {
-    /* Answered INLINE, not in a list section, for the same reason `resolve`
-       is: the thing each question is about (the previewed version; the
-       expanded commit) is not a row in any list here — it is the banner, or
-       the pane under the selected row — so that is where the confirm bar
-       renders. See the banner block and `loadDiff`'s `rev` branch (Reset,
-       D745, renders beside Revert there). */
-    return null;
+  if (op === "app_restore") {
+    /* Keyed to THIS banner's own sha (finding 5, D703 second review round):
+       `ask=app_restore` alone carried no subject, so previewing a DIFFERENT
+       commit while a Checkout was armed would arm a rollback to a version the
+       user never actually confirmed. Requiring `ask` to still name exactly the
+       commit being previewed closes that; a reload with a bare
+       `?ask=app_restore` (no sha) or a preview that has since changed no
+       longer arms anything. */
+    if (!previewed || rest !== previewed) return null;
+    const known = (data.commits || []).find((c) => c.sha === previewed);
+    const shortSha = known ? known.short : previewed.slice(0, 7);
+    const subject = known && known.subject ? "  " + known.subject : "";
+    return confirmModal(
+      "Commit the app folder back to " + shortSha + subject + "? Other "
+      + "folders in the repository are not touched, and this makes a new "
+      + "commit you can revert.",
+      () => run("app_restore:" + previewed, { op: "app_restore", sha: previewed },
+                () => { preview(null); }),
+      "Checkout");
+  }
+  if (op === "revert" || op === "reset") {
+    /* Keyed to THIS commit's own sha (finding 4, D703 second review round):
+       `select()` never clears `ask`, so arming a button on one commit and
+       then selecting a DIFFERENT row left a stale `ask` still true. Requiring
+       `ask` to still name the commit actually selected closes it; a stale
+       `ask=revert:<oldSha>` / `ask=reset:<oldSha>` left over from a prior
+       selection (or a reload) arms nothing here any more. */
+    const sha = rest;
+    if (!sha || sha !== selectedRev()) return null;
+    const known = (data.commits || []).find((c) => c.sha === sha);
+    const shortId = known ? known.short : sha.slice(0, 7);
+    const subject = known && known.subject ? "  " + known.subject : "";
+    if (op === "revert") {
+      return confirmModal(
+        "Revert " + shortId + subject + "? This adds a new commit undoing it "
+        + "across the whole repository — not just this scope. This cannot "
+        + "be merged away.",
+        () => run("revert:" + sha, { op: "revert", sha }),
+        "Revert");
+    }
+    return confirmModal(
+      "Reset history to " + shortId + subject + "? Every commit made after "
+      + "this one is discarded from the branch, across the whole repository "
+      + "— not just this scope. The only way back is git's reflog, and that "
+      + "fades over time. If this branch has already been pushed anywhere, "
+      + "you will need to force-push after this.",
+      () => run("reset:" + sha, { op: "reset", sha }),
+      "Reset");
   }
   if (op === "stash_drop") {
     const split = rest.indexOf(":");
@@ -4155,13 +4196,17 @@ function pendingConfirm(data) {
     const index = parseInt(rest.slice(0, split), 10);
     const sha = rest.slice(split + 1);
     if (!Number.isFinite(index) || !sha) return null;
-    return {
-      where: "stashes",
-      node: confirmBar("Delete this set-aside work (stash@{" + index + "})? The "
-                       + "stashed changes are gone for good.",
-                       () => run("stash_drop", { op: "stash_drop", index, sha }),
-                       "Delete stash"),
-    };
+    /* Named by its own message where it still has one: a modal has no row
+       beside it to supply "whose work this is" the way the inline bar's row
+       did, and "stash@{N}" alone answers only "which slot", not "which
+       work". */
+    const stash = (stashes || []).find((s) => s.index === index && s.sha === sha);
+    const named = stash && stash.message ? " (" + stash.message + ")" : "";
+    return confirmModal(
+      "Delete this set-aside work — stash@{" + index + "}" + named + "? The "
+      + "stashed changes are gone for good.",
+      () => run("stash_drop", { op: "stash_drop", index, sha }),
+      "Delete stash");
   }
   const split = rest.indexOf(":");
   if (split === -1) return null;
@@ -4169,52 +4214,50 @@ function pendingConfirm(data) {
   const path = rest.slice(split + 1);
   if (which !== "staged" && which !== "worktree") return null;
   const entry = data.changes.find((c) => c.path === path);
-  return {
-    /* One Changes section now — every per-path question renders under it. The
-       staged/worktree split lives on in the KEY (it decides which act runs),
-       not in where the question is shown. */
-    where: "changes",
-    node: confirmBar(
-      which === "staged"
-        ? "Unstage and discard " + path + "? Both the staged version and the "
-          + "working-tree version go. This cannot be undone."
-        : (entry && entry.untracked)
-          ? "Delete the new file " + path + "? This cannot be undone."
-          : "Discard the unstaged changes in " + path + "? Anything staged for "
-            + "it is kept. This cannot be undone.",
-      () => {
-        /* Two calls for the staged row, deliberately. `discard` restores from
-           the INDEX, so a staged change has to leave the index first or the
-           discard silently restores the very content being thrown away. Each
-           half is its own addressable op in ops.py — the view composes them
-           behind ONE confirmation, it does not ask the backend for a compound
-           verb. The CHANGES row does exactly one of them, which is why the two
-           rows can no longer share a key. */
-        if (which === "staged") {
-          run("discard:" + path, { op: "unstage", paths: [path] }, () => {
-            run("discard:" + path, { op: "discard", paths: [path] },
-                null, "The change was unstaged, but discarding it failed");
-            return true;
-          });
-        } else {
-          run("discard:" + path, { op: "discard", paths: [path] });
-        }
-      },
-      (entry && entry.untracked && which !== "staged") ? "Delete file"
-                                                       : "Discard changes"),
-  };
+  return confirmModal(
+    which === "staged"
+      ? "Unstage and discard " + path + "? Both the staged version and the "
+        + "working-tree version go. This cannot be undone."
+      : (entry && entry.untracked)
+        ? "Delete the new file " + path + "? This cannot be undone."
+        : "Discard the unstaged changes in " + path + "? Anything staged for "
+          + "it is kept. This cannot be undone.",
+    () => {
+      /* Two calls for the staged row, deliberately. `discard` restores from
+         the INDEX, so a staged change has to leave the index first or the
+         discard silently restores the very content being thrown away. Each
+         half is its own addressable op in ops.py — the view composes them
+         behind ONE confirmation, it does not ask the backend for a compound
+         verb. The CHANGES row does exactly one of them, which is why the two
+         rows can no longer share a key. */
+      if (which === "staged") {
+        run("discard:" + path, { op: "unstage", paths: [path] }, () => {
+          run("discard:" + path, { op: "discard", paths: [path] },
+              null, "The change was unstaged, but discarding it failed");
+          return true;
+        });
+      } else {
+        run("discard:" + path, { op: "discard", paths: [path] });
+      }
+    },
+    (entry && entry.untracked && which !== "staged") ? "Delete file"
+                                                     : "Discard changes");
 }
 
 function render(data, stashes, diff) {
   const wt = selectedWt();
   const rev = selectedRev();
   const pages = num("pages", 1);
-  const ask = pendingConfirm(data);
+  /* The one pending-confirmation modal for this whole page, if any — see
+     `pendingConfirm`. It no longer names a section to force open or a row to
+     splice into: it is mounted once, at the page root, alongside `stashModal`
+     and `publishModal` (below). A section that has nothing else to show is
+     therefore free to render empty again while a confirmation about it is
+     open, which is correct — the question is no longer inside it. */
+  const askModal = pendingConfirm(data, stashes);
 
-  /* A pending confirmation or an open inline diff FORCES its section open: a
-     question (or an answer) inside a folded accordion would be invisible at
-     the exact moment it matters. */
-  if (ask) folded.delete(ask.where);
+  /* An open inline diff still FORCES its section open: the answer appears
+     where the question was asked, and nothing above the click should move. */
   if (wt) folded.delete("changes");
   if (rev) folded.delete("commits");
 
@@ -4228,17 +4271,9 @@ function render(data, stashes, diff) {
     : null;
 
   /* Each block is built only when it has something to say; a section still
-     renders while empty when it CARRIES something (a pending confirmation, the
-     truncation note), because hiding the block would hide the prompt. */
+     renders while empty when it CARRIES something (the truncation note),
+     because hiding the block would hide the prompt. */
   const sections = [];
-  const askIn = (where) => (ask && ask.where === where ? ask.node : null);
-  const footer = (...nodes) => {
-    const kept = nodes.filter(Boolean);
-    if (kept.length < 2) return kept[0] || null;
-    const frag = document.createDocumentFragment();
-    frag.append(...kept);
-    return frag;
-  };
 
   /* The INLINE diff: wrapped and spliced into its own section's rows, directly
      under the selected line — the answer appears where the question was asked,
@@ -4255,8 +4290,7 @@ function render(data, stashes, diff) {
      stash dialog ride the header as icon+word buttons whose words give way in
      a narrow pane. */
   const changes = data.changes;
-  const changesAsk = askIn("changes");
-  const showChanges = changes.length || changesAsk || truncNote;
+  const showChanges = changes.length || truncNote;
 
   /* "Select all" is a header BUTTON beside "Discard all", not a master tick
      heading the list: the two are the section's opposite verbs over the same
@@ -4308,18 +4342,17 @@ function render(data, stashes, diff) {
      selectAll],
     changeRows,
     data.repo.dirty ? "No changes under this path." : "Working tree is clean.",
-    footer(changesAsk, truncNote),
+    truncNote,
     /* No branch name here — the chip in the toolbar already says it, and a
        second copy beside the count read as a filter on the list. */
     data.repo.has_commits ? null : "no commits yet",
     "changes"));
 
-  const stashAsk = askIn("stashes");
-  if (stashes.length || stashAsk) sections.push(listSection(
+  if (stashes.length) sections.push(listSection(
     "Stashes", String(stashes.length), null,
     stashes.map(stashLine),
     "Nothing stashed.",
-    stashAsk,
+    null,
     null,
     "stashes"));
 
@@ -4444,31 +4477,11 @@ function render(data, stashes, diff) {
         label: "Stop previewing and show the current files",
         onClick: () => preview(null),
       })));
-    /* Keyed to THIS banner's own sha (finding 5, D703 second review round):
-       `ask=app_restore` alone carried no subject, so previewing a DIFFERENT
-       commit while a Checkout was armed re-rendered this same bar pointing
-       at the new commit — one click would commit a rollback to a version
-       the user never actually confirmed. Requiring `ask` to still name
-       exactly the commit being previewed closes that; a reload with a bare
-       `?ask=app_restore` (no sha, or the previewed commit changed) also no
-       longer arms anything, matching finding 5's own reload complaint. */
-    if (param("ask") === "app_restore:" + previewed) {
-      /* Success leaves the app folder matching HEAD already, so the preview
-         it was showing is now stale — clearing it (`preview(null)`) is what
-         moves the view from "previewing a version" back to "now", rather
-         than continuing to claim a preview of what is already current. */
-      page.append(confirmBar(checkoutQuestion,
-        /* Keyed the same as the `confirmable` button above (finding 5,
-           second review round): `confirmBar`'s own click handler clears
-           `ask` BEFORE calling `run`, so by the time the redraw shows
-           `busy` set, this confirmable button (not the confirm bar) is
-           what's back on screen — its spinner only paints if `run`'s own
-           key still matches the one it was drawn with. A bare
-           "app_restore" left every button disabled with nothing moving. */
-        () => run("app_restore:" + previewed, { op: "app_restore", sha: previewed },
-                  () => { preview(null); }),
-        "Checkout"));
-    }
+    /* The confirmation this button arms is no longer built here — it is a
+       modal, and `pendingConfirm` (mounted once at the page root, below)
+       re-derives the same "still the commit being previewed" guard from
+       `ask` and `previewed` on its own. Nothing left to append at this call
+       site. */
   }
   /* The proposal (or the call that will become one) sits above the toolbar: it
      is the thing the user is being asked to read. */
@@ -4478,18 +4491,29 @@ function render(data, stashes, diff) {
   const box = commitBox(data);
   if (box) page.append(box);
   page.append(cols);
-  /* The stash dialog rides the page root: it is a fixed overlay, not a section
-     of any list. */
-  if (param("panel") === "stash") page.append(stashModal(data));
+  /* At most one of these three overlays mounts. A pending confirmation wins:
+     it is a question about something already in flight (a stash push that
+     already ran, a publish already reachable through `panel=publish`), and
+     answering it takes priority over starting a second, unrelated dialog on
+     top of it. `panel` and `ask` can otherwise both sit in the URL at once —
+     nothing clears one when the other is set — so this order is the only
+     thing keeping two modals from stacking. */
+  const publishOpen = !askModal && param("panel") === "publish";
+  if (askModal) {
+    page.append(askModal);
+  } else if (param("panel") === "stash") {
+    /* The stash dialog rides the page root: it is a fixed overlay, not a
+       section of any list. */
+    page.append(stashModal(data));
+  } else if (publishOpen) {
+    page.append(publishModal(data));
+  }
   /* The publish dialog drives its own poll while it is open (`ghTick`), and
      nothing else in this view needs one — starting/stopping it here, next to
      the one place that mounts the modal, is what keeps it from outliving the
      panel that owns it. */
-  if (param("panel") === "publish") {
-    ghStartPolling(data.repo.root);
-    page.append(publishModal(data));
-  }
-  else { ghStopPolling(); }
+  if (publishOpen) ghStartPolling(data.repo.root);
+  else ghStopPolling();
   show(page);
 }
 
@@ -4666,26 +4690,10 @@ async function loadDiff(data) {
        says the subject. The identity line (commitMeta) still answers "which
        commit exactly?", and now carries Revert/Reset opposite the sha. */
     const pane = diffPane(null, null, payload, commitMeta(meta, rev, actions));
-    /* Keyed to THIS commit's own sha (finding 4, D703 second review round):
-       `select()` never clears `ask`, so arming a button on one commit and
-       then expanding a DIFFERENT row left a stale `ask` still true — this
-       pane would render an ARMED confirmation for a commit the user never
-       confirmed. Requiring `ask` to still name the commit actually selected
-       closes it; a stale `ask=revert:<oldSha>`/`ask=reset:<oldSha>` left
-       over from a prior selection (or a reload) simply arms nothing here any
-       more. Reset follows the identical `reset:<sha>` keying, never a bare
-       `"reset"` — the same discipline, for the same reason. */
-    if (param("ask") === "revert:" + rev) {
-      pane.append(confirmBar(revertQuestion,
-        /* Keyed the same as the `confirmable` button above (finding 5,
-           second review round) for the same reason as app_restore's own
-           call just above: after `ask` clears, `busy` has to match the
-           button that reappears, not the bare op name. */
-        () => run("revert:" + rev, { op: "revert", sha: rev }), "Revert"));
-    } else if (param("ask") === "reset:" + rev) {
-      pane.append(confirmBar(resetQuestion,
-        () => run("reset:" + rev, { op: "reset", sha: rev }), "Reset"));
-    }
+    /* The confirmation either button arms is no longer built here — it is a
+       modal, and `pendingConfirm` (mounted once at the page root) re-derives
+       the same "still the commit actually selected" guard from `ask` and
+       `selectedRev()` on its own. Nothing left to append at this call site. */
     return pane;
   }
   if (wt) {
