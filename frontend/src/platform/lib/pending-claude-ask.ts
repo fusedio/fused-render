@@ -7,6 +7,15 @@
 // `claudeAskActionRef` mechanism a click inside that surface's own git
 // companion would use (claude-ask.ts).
 //
+// Lives in `platform/lib` (moved from `apps/explorer/lib`,
+// SPEC-doctor-git-ai-errors.md Part A) rather than under the one app whose
+// own surfaces happen to consume it: `platform/lib/explain-with-ai.ts`
+// reuses this exact mechanism for the ErrorBanner "explain with AI" action,
+// and that helper is called from OTHER apps (e.g. `apps/ai_models`) that
+// the import-boundary check (`scripts/check-boundaries.mjs`) forbids from
+// reaching into `apps/explorer` directly. This module has no dependencies
+// of its own — a plain module-level store — so the move costs nothing.
+//
 // This is deliberately a SEPARATE store from that file's `takeClaudeAsk`,
 // not a second caller of it: `takeClaudeAsk` reads a per-COMPONENT-INSTANCE
 // ref that only exists once a target surface's Claude sidebar is already

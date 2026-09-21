@@ -665,8 +665,19 @@ def api_app_doctor(path: str):
     own task, and the modal's per-row Fix/Review button and its footer must
     both read that as in-progress rather than idle (see `_live_doctor_tasks`:
     `"all"` is never a real check id, so a naive `live.get(c["id"])` would
-    silently drop a live Fix-all session for every row)."""
-    from fused_render import app_doctor
+    silently drop a live Fix-all session for every row).
+
+    OPENING DOCTOR FORCES A FETCH: unlike every other caller of the `git` row
+    (which only ever reads `git_upstream`'s own throttled background cache),
+    this GET is the modal's own "load" — the one moment a person is actually
+    looking at "Repo in sync" and deciding whether to trust it. So this calls
+    `git_upstream.force_check` first, bypassing the normal five-minute
+    throttle, bounded to `DOCTOR_TIMEOUT_S` so a slow or unreachable remote
+    never makes the modal hang: past that budget it just proceeds with
+    whatever's cached (fresh or stale) while the fetch keeps running in the
+    background, and `app_doctor.report`'s own `_repo_health_check` reads
+    whatever `force_check` managed to land."""
+    from fused_render import app_doctor, git_upstream
 
     folder, err = _doctor_folder(path)
     if err is not None:
@@ -679,6 +690,7 @@ def api_app_doctor(path: str):
     live = _live_doctor_tasks(entry_html)
     all_task = live.get(app_doctor.ALL)
 
+    git_upstream.force_check(folder)
     report = app_doctor.report(folder)
     for c in report["checks"]:
         c["task"] = live.get(c["id"]) or all_task

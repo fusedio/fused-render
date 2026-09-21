@@ -83,9 +83,19 @@
 // importing either app's helpers (an app may not import the shell — the same
 // reason Preview.tsx spells `/apps/<folder>?_tab=tasks` by hand).
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, CircleAlert, CircleMinus, CirclePlay, RotateCw, TriangleAlert, X } from "lucide-react";
+import {
+  Check,
+  CircleAlert,
+  CircleMinus,
+  CirclePlay,
+  GitPullRequest,
+  RotateCw,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 import {
   getAppDoctor,
+  postJson,
   runAppDoctorAll,
   runAppDoctorCheck,
   runAppDoctorOnDemand,
@@ -96,6 +106,7 @@ import {
 } from "@platform/lib/api";
 import {
   findingWhere,
+  gitRowFetchPending,
   groupBySection,
   rowActionLabel,
   failingCount,
@@ -105,6 +116,8 @@ import {
   rowStateAccessibleLabel,
   rowVisibleDetailText,
   SECTION_LABEL,
+  showsOpenInGitAction,
+  showsPullAction,
   sortByAttention,
   splitFindings,
   tasksTabUrl,
@@ -123,8 +136,17 @@ import { cn } from "@platform/lib/utils";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { appLandingUrl } from "@platform/lib/appLanding";
-import { navigateUrl } from "@platform/lib/router";
+import { navigate, navigateUrl } from "@platform/lib/router";
 import { announceAppDoctorChanged, announceTasksChanged } from "@platform/lib/tasksChanged";
+
+// The Pull button's own mutation result — same minimal shape
+// shell/RepoUpdatesDock.tsx's own `MutationResult` keeps local rather than
+// exported, since neither surface needs the other's. Pull reuses that same
+// `POST /api/git-upstream {action: "update", root}` endpoint (never a new
+// one): by the time this row can show Pull at all, `behind > 0` was read
+// from `git_upstream`'s own state cache, so that root is already a
+// "known repo" the endpoint's own allowlist (`is_known_repo`) accepts.
+type PullResult = { ok: boolean; reason?: string; message?: string };
 
 // A FAILING state draws by severity, not just by colour: a critical failure
 // is an alert circle, a warning is a triangle (the shape everyone already
@@ -154,8 +176,12 @@ function CheckRow({
   otherTaskLive,
   checking,
   anyChecking,
+  pulling,
   onFix,
   onCheck,
+  onPull,
+  onDone,
+  onOpenGit,
 }: {
   check: AppCheck;
   busy: boolean;
@@ -168,16 +194,41 @@ function CheckRow({
   /** Some on-demand row's model call is in flight — one at a time, so the
    *  server's per-folder single-flight never has a second press to queue. */
   anyChecking: boolean;
+  /** THIS row's Pull is in flight — `git`-only, never true for another row. */
+  pulling: boolean;
   onFix: (check: AppCheck) => void;
   /** `force` is Re-check: run again although the cached verdict still matches. */
   onCheck: (check: AppCheck, force?: boolean) => void;
+  onPull: (check: AppCheck) => void;
+  /** Fires after a navigating action — "Open in git" included (B4,
+   *  FIXES-round-1.md) — the same idiom `fixRow`/`followLive`/`runFix`
+   *  already use to dismiss the dialog once the user has actually landed
+   *  somewhere else. `undefined` from the tab, which has nothing to close. */
+  onDone?: () => void;
+  /** G1 (FIXES-round-3.md): "Open in git" no longer navigates to a separate
+   *  page — it opens the CALLER's own right-hand sidebar (Preview's `_side`
+   *  over a file, the listing pane's over a folder) and selects its Git tab,
+   *  staying on the page the user was already looking at. Owned by the
+   *  caller because only the caller (Listing.tsx, Preview.tsx) knows which
+   *  `_side`-writer is its own — this component has no sidebar of its own to
+   *  open. `undefined` where the surface HAS no such sidebar (AppPage.tsx's
+   *  `AppDoctorPanel`: read-only about git, no Git tab exists there — see its
+   *  own header — and a snapshot/panel pane, which owns no address bar to
+   *  write `_side` on), in which case the row falls back to the old
+   *  navigate-to-the-git-mode behaviour so the action still does something
+   *  rather than silently no-op. */
+  onOpenGit?: () => void;
 }) {
   const { shown, hidden } = splitFindings(check.findings);
   const failing = check.state === "fail";
+  const openInGit = showsOpenInGitAction(check);
   // An on-demand row always has something to press — Check when it has not
   // been run on this content, Re-check once it has — so it takes the fuller
-  // box a row with an action wears, even when it passed.
-  const hasAction = failing || check.ondemand;
+  // box a row with an action wears, even when it passed. So does the `git`
+  // row once it has resolved a real repo root: "Open in git" is worth
+  // offering even on a PASSING row (there is nothing to fix, but there is
+  // still somewhere to look).
+  const hasAction = failing || check.ondemand || openInGit;
   return (
     <li
       className={cn(
@@ -261,6 +312,64 @@ function CheckRow({
             </Button>
           ) : (
             <>
+              {/* Prominent and FIRST — a repo behind origin is the one
+                  finding here a person is likely to act on immediately, and
+                  unlike Fix/Review it never needs a Claude session: it is a
+                  fast-forward `git pull`, nothing to judge. Shown alongside
+                  Fix, not instead of it — being behind origin and having
+                  uncommitted work are independent facts about the same
+                  folder (see appdoctor-lib.ts's `showsPullAction`). */}
+              {showsPullAction(check) && (
+                <Button
+                  variant="default"
+                  size="sm"
+                  disabled={pulling || busy || otherTaskLive}
+                  title="Fast-forward this repo to match origin"
+                  onClick={() => onPull(check)}
+                >
+                  <GitPullRequest aria-hidden />
+                  {pulling ? "Pulling…" : "Pull"}
+                </Button>
+              )}
+              {/* D1 (FIXES-round-1.md): a secondary text button matching
+                  Fix's own size/variant, sitting BEFORE Fix — "Repo in sync
+                  [Open in git] [Fix]". Styling unchanged since D1 (G1,
+                  FIXES-round-3.md — the user approved this look). Never a fix
+                  action: it opens the IN-APP git mode (never an external
+                  client — out of scope per the spec), so it draws quietly
+                  even on a passing row — there is nothing to fix, only
+                  somewhere to look. Previously a bare ghost icon-only
+                  button, which read as a stray mark next to Fix's solid
+                  pill.
+
+                  G1: what "opens" changed. It used to `navigate()` to this
+                  row's repo root in `_mode=git` — a whole separate page,
+                  leaving `index.html` (or wherever the user was) behind. Per
+                  the user's own words ("open in git should just ensure the
+                  sidebar is not turned off and the git tab is selected. no
+                  need to open separate page"), it now stays put and opens the
+                  CALLER's own sidebar on its Git tab (`onOpenGit`) — the
+                  row's `gitRoot` already decided WHICH repo this row is
+                  about; the sidebar it opens is scoped to the folder/file the
+                  user is already on, which is that same repo (Doctor never
+                  renders for a path outside it). Where no such sidebar exists
+                  (`onOpenGit` undefined — AppPage.tsx's read-only-about-git
+                  tab, or a snapshot/panel pane with no address bar of its
+                  own), falls back to the old cross-page navigation so the
+                  action still does something instead of silently no-op'ing. */}
+              {openInGit && check.gitRoot && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    if (onOpenGit) onOpenGit();
+                    else navigate(check.gitRoot as string, { isDir: true, mode: "git" });
+                    onDone?.();
+                  }}
+                >
+                  Open in git
+                </Button>
+              )}
               {failing &&
                 (check.task ? (
                   <Button
@@ -327,13 +436,18 @@ export function useAppDoctorReport(dir: string, onDone?: () => void) {
   const [report, setReport] = useState<AppDoctorReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pulling, setPulling] = useState<string | null>(null);
   const alive = useRef(true);
+  // The `git` row's own async remote fetch: at most one silent retry per
+  // mount (see the effect below) — never a poll loop.
+  const gitRetried = useRef(false);
   useEffect(() => {
     // Re-arm on every mount: a remount (or React's dev double-invoke under
     // StrictMode) would otherwise leave this false forever, and every
     // setReport/setError below would be skipped — the checklist stuck on
     // SkeletonLines with no error shown.
     alive.current = true;
+    gitRetried.current = false;
     return () => {
       alive.current = false;
     };
@@ -356,6 +470,54 @@ export function useAppDoctorReport(dir: string, onDone?: () => void) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Doctor never blocks the initial paint on the `git` row's async remote
+  // fetch (git_upstream's own throttled background dispatch) — the panel
+  // paints immediately with that row reading SKIP, "not checked yet". This
+  // is the one place that notices when the fetch has actually landed,
+  // without the person having to press Re-run themselves: a SINGLE delayed
+  // re-ask, patching only the `git` row in place (never `load()`'s own
+  // reset-to-null, which would re-skeleton the whole panel over one row's
+  // late answer). Fires at most once per mount — a repo with no remote at
+  // all reads exactly like a fetch still pending (appdoctor-lib.ts's
+  // `gitRowFetchPending`), and would never resolve no matter how many times
+  // this asked again.
+  useEffect(() => {
+    if (!report || gitRetried.current || !gitRowFetchPending(report.checks)) return;
+    const timer = setTimeout(() => {
+      // Set the ref only once the timer actually FIRES (B3, FIXES-round-1.md)
+      // — not when the effect merely schedules it. `runCheck` on any OTHER
+      // row calls `setReport` with a new object, which cancels this timer via
+      // the cleanup below and re-runs the effect; setting the ref up front
+      // would have already marked the retry "used" on the cancelled attempt,
+      // stranding the git row on SKIP forever. Deferring the flag lets the
+      // re-armed effect schedule a fresh timer instead.
+      gitRetried.current = true;
+      void (async () => {
+        try {
+          const fresh = await getAppDoctor(dir);
+          const freshGit = fresh.checks.find((c) => c.id === "git");
+          if (alive.current && freshGit) {
+            setReport((cur) =>
+              cur
+                ? {
+                    ...cur,
+                    checks: cur.checks.map((c) =>
+                      c.id === "git" ? { ...freshGit, task: c.task } : c,
+                    ),
+                  }
+                : cur,
+            );
+          }
+        } catch {
+          // Silent: the row just keeps its current (SKIP) reading — the
+          // tab/dialog's own Re-run still works if the person wants another
+          // try right away.
+        }
+      })();
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [report, dir]);
 
   // Any row's live task is the whole app's live task — the server allows
   // exactly one at a time, so whichever row (or "Fix all") is running is the
@@ -394,6 +556,38 @@ export function useAppDoctorReport(dir: string, onDone?: () => void) {
   };
 
   const fixAll = () => void runFix(() => runAppDoctorAll(dir));
+
+  // Pull: a fast-forward-only `git fetch && merge`, not a fix session — no
+  // Claude task, no navigation away from the panel. Reuses the SAME
+  // `POST /api/git-upstream {action: "update", root}` mutation
+  // shell/RepoUpdatesDock.tsx's own Update button calls; that endpoint's
+  // allowlist (`git_upstream.is_known_repo`) already accepts this root,
+  // since the row could only be showing Pull because `git_upstream` itself
+  // just reported it behind. On success (or failure) re-`load()`s the whole
+  // report — a pull can change more than the one row (a `.gitignore` that
+  // just arrived from origin could turn an uncommitted-path failure into a
+  // pass, for instance), so a full reset-and-reload is correct here in a way
+  // it would not be for the silent remote-fetch retry above.
+  const pullRow = async (check: AppCheck) => {
+    if (pulling || !check.gitRoot) return;
+    setPulling(check.id);
+    setError(null);
+    try {
+      const res = await postJson<PullResult>("/api/git-upstream", {
+        action: "update",
+        root: check.gitRoot,
+      });
+      if (!res.ok) {
+        if (alive.current) setError(res.message || "pull failed");
+      } else {
+        await load();
+      }
+    } catch (e) {
+      if (alive.current) setError((e as Error).message);
+    } finally {
+      if (alive.current) setPulling(null);
+    }
+  };
 
   const followLive = () => {
     navigateUrl(tasksTabUrl(dir));
@@ -439,7 +633,21 @@ export function useAppDoctorReport(dir: string, onDone?: () => void) {
     }
   };
 
-  return { report, error, busy, liveTask, load, fixRow, fixAll, followLive, checking, runCheck };
+  return {
+    report,
+    error,
+    busy,
+    liveTask,
+    load,
+    fixRow,
+    fixAll,
+    followLive,
+    checking,
+    runCheck,
+    pulling,
+    pullRow,
+    onDone,
+  };
 }
 
 type Report = ReturnType<typeof useAppDoctorReport>;
@@ -457,7 +665,24 @@ function SummaryText({ report }: { report: AppDoctorReport }) {
 }
 
 // The grouped checklist, skeleton while loading, error banner above.
-function AppDoctorChecklist({ report, error, busy, liveTask, fixRow, checking, runCheck }: Report) {
+function AppDoctorChecklist({
+  report,
+  error,
+  busy,
+  liveTask,
+  fixRow,
+  checking,
+  runCheck,
+  pulling,
+  pullRow,
+  onDone,
+  onOpenGit,
+}: Report & {
+  /** G1 — see CheckRow's own doc comment. Not part of `useAppDoctorReport`'s
+   *  state (it knows nothing about any sidebar); threaded in separately by
+   *  each caller of `AppDoctorChecklist`. */
+  onOpenGit?: () => void;
+}) {
   return (
     <>
       <ErrorBanner>{error}</ErrorBanner>
@@ -482,8 +707,12 @@ function AppDoctorChecklist({ report, error, busy, liveTask, fixRow, checking, r
                   otherTaskLive={!!liveTask && !c.task}
                   checking={checking === c.id}
                   anyChecking={checking !== null}
+                  pulling={pulling === c.id}
                   onFix={fixRow}
                   onCheck={(check, force) => void runCheck(check, force)}
+                  onPull={(check) => void pullRow(check)}
+                  onDone={onDone}
+                  onOpenGit={onOpenGit}
                 />
               ))}
             </ul>
@@ -544,6 +773,11 @@ function AppDoctorFixAllButton({ report, busy, liveTask, fixAll, followLive }: R
 // so this panel ignores `_snapshot` rather than reporting on a copy.
 export function AppDoctorPanel({ dir }: { dir: string }) {
   const r = useAppDoctorReport(dir);
+  // G1: no `onOpenGit` here on purpose. This page (AppPage.tsx) is
+  // deliberately read-only about git — no Git tab exists on it at all (see
+  // that file's own header) — so there is no sidebar for "Open in git" to
+  // open. CheckRow's fallback (the old cross-page navigate) is the correct,
+  // sensible degrade for this surface, not a gap to fill in.
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-x-hidden overflow-y-auto">
@@ -583,10 +817,18 @@ export function AppDoctorPanel({ dir }: { dir: string }) {
 export function AppDoctorModal({
   dir,
   onClose,
+  onOpenGit,
 }: {
   /** The app FOLDER (canonical forward-slash), not its entry page. */
   dir: string;
   onClose: () => void;
+  /** G1 (FIXES-round-3.md) — see CheckRow's own doc comment. Handed down by
+   *  `useAppActionRows` (EntryActionsMenu.tsx), which gets it from whichever
+   *  of Listing.tsx/Preview.tsx mounted it — each owns its own `_side`
+   *  writer, this dialog owns none. `undefined` on a surface with no
+   *  sidebar of its own (a snapshot/panel pane), where the row falls back to
+   *  navigating instead. */
+  onOpenGit?: () => void;
 }) {
   const r = useAppDoctorReport(dir, onClose);
   return (
@@ -630,7 +872,7 @@ export function AppDoctorModal({
           )}
         </DialogHeader>
         <div className="flex min-h-0 min-w-0 flex-col gap-5 overflow-x-hidden overflow-y-auto">
-          <AppDoctorChecklist {...r} />
+          <AppDoctorChecklist {...r} onOpenGit={onOpenGit} />
         </div>
         {/* The footer's hairline is the dialog's own border colour, not the
             button ground's — it separates the list from the action without

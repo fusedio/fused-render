@@ -2891,7 +2891,433 @@ now exports `VERSION` via `$GITHUB_ENV` (Task 15) alongside `APPIMAGE`, the
 same pattern already used to carry `$APPIMAGE` across steps, so there is
 only one place the filename is ever parsed.
 
-## Task 17 — git template confirmations: inline `.confirm` bars → centered modals
+## Task 17 — App Doctor's `git`/`pushed` rows consolidate into one `git` row, backed by `git_upstream`'s existing cache rather than a new fetch mechanism
+
+SPEC-doctor-git-ai-errors.md asks for the two existing Sharing-section rows
+("Every change is committed" / `git`, "Every commit is pushed" / `pushed`)
+to merge into one row that ALSO reports being behind origin — which needs a
+real `git fetch`, something App Doctor had never done before, without ever
+blocking `report()` on the network.
+
+Rather than build new fetch/polling plumbing, this reuses
+`fused_render/git_upstream.py`'s existing throttled background-fetch
+machinery (`note_app_opened`, `CHECK_TTL_S=300s`, a single process-wide
+fetch slot) — the same service that already backs the status-bar Repo
+Updates card, left completely unchanged per the spec's own constraint. Added
+one new read-only accessor, `git_upstream.repo_state_for(root)`: the last
+known `check_repo()` result for a root, or `None` when never successfully
+checked (never asked, still checking, or every attempt failed — the
+module's own silence-on-failure rule). Unlike `known_repos()` (filtered to
+`behind > 0`, for the status-bar card's own purpose) this is unfiltered, so
+a caller can tell "confirmed up to date" (`{"behind": 0, ...}`) apart from
+"unknown" (`None`) — which App Doctor's row needs and the status-bar card
+never did.
+
+The consolidated row (`app_doctor._repo_health_check`, kept at check id
+`git` — `pushed` is retired, not renamed, since the row now covers strictly
+more than either predecessor) computes local commit/push state exactly as
+before (`_git_pending`/`_pushed_pending`, no network), then calls
+`git_upstream.note_app_opened(app_dir)` (fire-and-forget, never blocks) and
+reads back `repo_state_for(root)` — fresh, stale, or still `None` if the
+background check hasn't landed. `GET /api/apps/doctor` already recomputes
+`app_doctor.report()` fresh on every call (confirmed by reading
+`server/routers/apps.py` — no caching layer), so a later re-open or
+re-fetch naturally picks up whatever `git_upstream`'s cache has accumulated
+by then; no new polling endpoint was needed.
+
+**State logic, and the one non-obvious call**: FAIL if uncommitted,
+unpushed, or (once known) behind origin. PASS only when local is clean AND
+`behind` is a confirmed non-None value (i.e. the remote was actually
+checked and found current). SKIP — not PASS — when local is clean but the
+remote state is still unknown: a repo with no remote configured at all can
+therefore never resolve to PASS on this row, only SKIP with a stated
+reason ("no upstream remote configured", "not a git repository", or
+"origin status could not be checked"). This is a deliberate reading of the
+spec's "a failed fetch...must report as SKIPPED rather than FAILED":
+"unconfirmed" and "confirmed clean" are different facts, and folding the
+former into a silent PASS would misreport exactly the case the async
+design exists to be honest about. This is a visible behavior change from
+the OLD `git` row (which passed on local cleanliness alone, with no
+opinion about remote) — call sites/tests updated accordingly
+(`tests/test_app_doctor_report.py`).
+
+Tests needing a deterministic remote-confirmed result use the same
+`_runner` test seam `tests/test_git_upstream.py` already established
+(`git_upstream.note_app_opened(path, _runner=lambda fn: fn())`) to run a
+REAL `git fetch` against a local bare-repo remote synchronously, rather
+than racing app_doctor's own real background thread dispatch. Because
+almost every git-touching test in this file now triggers a real background
+thread (any test whose app folder is a real git repo, not only the ones
+that explicitly warm the cache), the file's own `_clean_git_upstream_state`
+autouse fixture deliberately does NOT defensively release
+`git_upstream._check_slot` the way `test_git_upstream.py`'s fixture does —
+that file never dispatches real threads (`_sync` only), so its release is
+safe; here a still-running thread from the previous test releases the slot
+itself, exactly once, in its own `finally`, and a second release from the
+fixture races it into `RuntimeError: release unlocked lock` (observed and
+fixed during this task — see the fixture's own docstring for the full
+explanation).
+
+The same double-release hazard turned out to reach across files, not just
+within one: `tests/test_git_upstream.py`'s own long-standing autouse
+fixture ALSO defensively released `_check_slot` ("just in case a test
+acquired it and never released"), which is safe when that file runs alone
+(every test in it uses the `_sync` seam, never a real thread) but not when
+it runs in the same pytest session as `tests/test_app_doctor_report.py` —
+confirmed by running both files together, which reproduced the exact same
+`RuntimeError: release unlocked lock` a still-running real thread from the
+other file. Every direct acquire in `test_git_upstream.py` already
+guarantees its own release via `try/finally`
+(`test_a_busy_slot_does_not_stamp_the_throttle_for_a_different_repo`), so
+the fixture's defensive release had no legitimate target — removed it too,
+with a docstring recording why. Re-ran the two files together 3x after the
+fix (102 passed each time, no thread exceptions) and the full related group
+(`test_app_doctor_report.py` + `test_git_upstream.py` +
+`test_app_doctor.py` + `test_app_doctor_housekeeping.py`, 146 passed).
+
+## Task 18 — Part A (error-banner AI affordance) scoped down to shared infrastructure, not a full ~20+ call-site sweep
+
+SPEC-doctor-git-ai-errors.md's Part A asks for `ErrorBanner.tsx` (shared
+across ~20+ call sites) to grow an explain-with-AI action on system/runtime
+errors. Given this session's turn budget was consumed primarily by Part B's
+TDD conversion (the `git`/`pushed` consolidation above, which touched more
+surface than expected once the test file's real-thread interactions were
+accounted for), Part A was NOT implemented this round. This is a scope
+decision, not an oversight: shipping Part B correctly and fully tested was
+judged higher-value than a partial, undertested Part A. See the final
+handoff report for the concrete next-step plan (the `onExplain?` prop
+shape, the `explain-with-ai.ts` helper reusing `stageClaudeAsk`, and the
+`Config.fused_dir`-based default-folder fallback modeled on
+`home-path.ts`).
+
+## Task 19 — App Doctor's git row: Pull/Open-in-git UI reuses the status-bar card's own mutation endpoint; no GitHub brand icon ships in this lucide-react version
+
+Frontend half of Task 17's consolidation: `frontend/src/platform/lib/api.ts`'s
+`AppCheck` grew `behind?`/`ahead?`/`gitRoot?`; `appdoctor-lib.ts` grew three
+pure helpers (`showsPullAction`, `showsOpenInGitAction`,
+`gitRowFetchPending`), each unit-tested (appdoctor-lib.test.ts); and
+`AppDoctorModal.tsx`'s `CheckRow` draws up to three simultaneous actions on
+the `git` row — Pull, Fix (unchanged), and a new icon-only "Open in git" —
+per the spec's "every applicable action simultaneously" requirement.
+
+Pull does NOT call a new endpoint. It reuses the exact
+`POST /api/git-upstream {action: "update", root}` mutation
+`shell/RepoUpdatesDock.tsx`'s own Update button already calls
+(`fused_render/server/routers/git_upstream.py`) — the status-bar card stays
+completely unchanged (spec constraint), and this is what makes the reuse
+sound: `git_upstream.is_known_repo(root)`, that endpoint's own allowlist,
+checks membership in `_state`, the same cache `_repo_health_check` reads via
+`repo_state_for`. By the time a Doctor row can show Pull at all (`behind >
+0`, a CONFIRMED value), `_state` already holds that root, so the allowlist
+always accepts it — no new guard needed, and no risk of the two surfaces'
+mutation paths drifting apart. On success the whole report is re-`load()`ed
+(a pull can change more than the one row — e.g. an incoming `.gitignore`
+turning an uncommitted-path failure into a pass), unlike the async-fetch
+retry below, which patches only the `git` row in place.
+
+"Open in git" calls the confirmed mechanism from the prior session's
+research, `navigate(check.gitRoot, { isDir: true, mode: "git" })` — the
+in-app git mode, never an external client (explicitly out of scope). Shown
+on ANY row that resolved a real repo root, passing or failing: there is
+always somewhere to look even when there is nothing to fix, so
+`CheckRow`'s `hasAction` gate was widened to include
+`showsOpenInGitAction(check)`, not just `failing || check.ondemand`.
+
+**Deviation from the spec's literal wording**: it asks for a "Pull button
+(GitHub icon)". This version of `lucide-react` (1.34.0) ships no GitHub
+brand icon — lucide dropped brand/logo glyphs some releases back — and no
+other icon package is installed. Used `GitPullRequest` instead (semantically
+apt for "Pull" and already in the dependency), and `GitBranch` for
+"Open in git". Flagged for human review in the final report rather than
+adding a new icon dependency for one button without asking.
+
+**The async-fetch UI resolution**: `useAppDoctorReport` never blocks its
+initial paint on `git_upstream`'s background fetch — the row lands SKIP
+("not checked yet") on first paint. A new effect
+(`appdoctor-lib.ts`'s `gitRowFetchPending` reads the landed report) fires
+AT MOST ONE delayed silent re-ask (2s, via a `gitRetried` ref reset once per
+mount) that patches only the `git` row into the existing report — never
+`load()`'s reset-to-null, which would re-skeleton the whole panel over one
+row's late answer. Deliberately not a poll loop: a repo with no remote at
+all reads identically to "fetch still pending" (both are `gitRoot` set,
+`behind`/`ahead` both null) and would never resolve no matter how many times
+this asked again, so the retry is bounded to exactly one attempt per mount,
+and a still-unresolved row after that one retry simply stays SKIP until the
+person presses the panel's own Re-run.
+
+Frontend tests: `bun test src/platform/ui/appdoctor-lib.test.ts` — 30 pass
+(15 new, covering the three helpers above; no dedicated `AppDoctorModal.tsx`
+component test exists or was added — that file's own header comment
+explains why: it renders through a portal chassis `react-test-renderer`
+cannot mount, which is exactly why every decision worth pinning was already
+split out into `appdoctor-lib.ts`, and the same rule applies to this
+round's new UI wiring). `bunx tsc --noEmit` clean; `bun run build` succeeds.
+The Pull/Open-in-git BUTTONS THEMSELVES (their exact placement, the "Pull"
+label copy, the icon substitution above) were not visually/interactively
+verified in a running app and are called out in the final report's NEEDS
+HUMAN VERIFICATION list.
+
+## Task 20 — Part A implemented: `explain-with-ai.ts` helper + `ErrorBanner`'s `onExplain` prop (shared infrastructure landed; call-site sweep still scoped down)
+
+Following on from Task 18's scope-down, this round actually lands Part A's
+shared plumbing:
+
+**`frontend/src/platform/lib/explain-with-ai.ts`** (new): `explainErrorPrompt(message,
+context?)` builds the seeded prompt — modeled on `repo-updates-lib.ts`'s own
+`repoFixPrompt` for style/structure, but deliberately NOT a copy of its
+behavior: `repoFixPrompt` ends with "Explain what the error means, then fix
+it"; this one ends with "Explain what this means... Do not fix anything or
+make any changes yet — just help me understand the error first." A single
+click must never start edits, per spec.
+
+`resolveDefaultFolder()` / `resetDefaultFolderCache()`: a module-level cache
+for `Config.fused_dir`, modeled on `home-path.ts`'s `cachedHome`/`inFlight`
+pair (same rationale — several folderless call sites resolving "the default
+folder" at once should share one `/api/config` round trip, not each fire
+their own). A failed fetch resolves to `undefined` and does NOT poison the
+cache — `inFlight` is nulled so a later call gets to retry.
+
+`explainWithAi(prompt, folderPath?)`: the actual hand-off. Given a
+`folderPath` (a surface with its own folder-scoped chat), it stages+navigates
+straight there. Given none (a folderless surface — AI Models, settings), it
+awaits `resolveDefaultFolder()` first. If that resolves to nothing (no
+config, no fused_dir, network down), this is a SILENT no-op — there is no
+sensible folder to open a chat in, and failing loudly over an "explain this"
+click would just be a second, more confusing error on top of the first.
+Reuses `stageClaudeAsk`+`navigate` (pending-claude-ask.ts) — the same
+cross-navigation staging primitive `RepoUpdatesDock.tsx`'s own "Fix with
+Claude" button already uses to hand an ask to whichever Listing/Preview
+surface mounts next; not `claude-ask.ts`'s `takeClaudeAsk`/
+`claudeEntryReady`, which is explorer-surface-INTERNAL plumbing for once a
+target surface is already mounted, not a cross-navigation entry point.
+
+**`frontend/src/platform/ui/ErrorBanner.tsx`**: gained an optional
+`onExplain?: () => void` prop. The component itself still knows nothing
+about what its `children` describe (it never has — a bare `{children}`
+wrapper), so the validation-vs-system distinction is entirely a CALL-SITE
+decision: pass `onExplain` for a system/runtime error, never for a plain
+input-validation message. When passed, renders a small `Button`
+(`variant="ghost"`, `size="xs"`, a `Sparkles` icon, "Explain with AI" label)
+below the existing children, inside the same bordered card — the exact
+`<div className="flex gap-2 pt-2">` action-row shape `Preview.tsx`'s own
+snapshot-error banner already uses for its Retry/Back-to-Live buttons, so
+this isn't a new layout idiom.
+
+**Deviation from a strict TDD write-test-first-and-watch-it-fail ceremony**:
+for `explain-with-ai.ts` specifically, the module and its test file were
+written in the same pass rather than red-then-green — a lapse under turn
+pressure, caught and corrected in spirit immediately after by actually
+running the tests before wiring anything else in and fixing two real bugs
+the tests caught (see below), so the tests did their job even though the
+strict ordering slipped. `ErrorBanner.tsx`'s test file WAS written test-first
+in the conventional sense (written once the prop's shape was decided, run
+against the pre-existing 13-line component to confirm it would fail to find
+an explain action, then the prop was added and the same run turned green).
+
+**Two real bugs the tests caught before commit**:
+1. `router.ts` reads `location` at MODULE INIT (its legacy `/embed/` rewrite,
+   line 54) — since `explain-with-ai.ts` transitively imports `router.ts`, a
+   plain static `import` at the top of the test file (even just to reach
+   `explainErrorPrompt`, which never touches routing) blew up with
+   `ReferenceError: location is not defined`, because static imports are
+   hoisted ahead of ANY top-level statement regardless of where they're
+   written textually — so a `beforeEach`-time global stub is always too
+   late. Fixed the same way `RepoUpdatesDock.test.tsx` already documents:
+   stub `location`/`window`/`history` as top-level statements FIRST, then
+   load the module under test via a dynamic `await import(...)` (which runs
+   in written order, not hoisted).
+2. A test-hygiene bug in the `explainWithAi` describe block itself: its
+   `beforeEach` cleared `pending-claude-ask.ts`'s one-slot store with a fixed
+   `takePendingClaudeAsk("/anything")` guess (mirroring
+   `pending-claude-ask.test.ts`'s own convention) — but that call only clears
+   the slot when the path MATCHES, by design (a mismatched take must not
+   consume an ask still waiting for its own target). Since this describe's
+   own tests stage real, DIFFERENT paths across tests, a stale ask from one
+   test survived into the next and made an unrelated assertion fail
+   (`peekPendingClaudeAsk()` returned the PREVIOUS test's path instead of
+   `null`). Fixed by peeking the actual pending path (if any) and clearing
+   that one specifically, instead of guessing a fixed sentinel path.
+
+**Also fixed for the type checker**: `globalThis.fetch = fakeImpl as typeof
+fetch` fails on this TS/lib version — `typeof fetch` now carries a
+`preconnect` static property real mock functions don't have — so every fetch
+stub in the new test file casts through `as unknown as typeof fetch` instead
+(the same double-cast TS's own error message suggests), matching what
+`FilesHome.render.test.tsx`'s `fakeFetch` already does.
+
+**Verification**: `bun test src/platform/lib/explain-with-ai.test.ts` — 11
+pass; `bun test src/platform/ui/ErrorBanner.test.tsx` — 3 pass; `bunx tsc
+--noEmit -p .` clean.
+
+**Still not done, still out of scope for this round**: no ErrorBanner call
+site has been wired to pass `onExplain` yet. The next step (if turns
+remain) is at least one folder-scoped call site (a candidate: `Preview.tsx`'s
+own snapshot-error banner, or `AppFiles.tsx`'s file-listing error) and one
+folderless call site (AI Models' `PlaygroundTab.tsx`), each with its own
+test. A full sweep of the ~20+ remaining `ErrorBanner` call sites is
+explicitly NOT attempted — each one needs a real judgment call about
+whether its message is a system/runtime error or plain validation, which is
+exactly the kind of per-call-site review this task's turn budget cannot
+absorb in one pass without risking a rushed, wrong classification on some
+of them.
+
+## Task 21 — Part A: two representative call sites wired + an import-boundary fix
+
+Wired `onExplain` at exactly the two representative call sites picked in
+Task 20's plan, deliberately NOT sweeping the rest (same rationale as
+above — per-call-site classification judgment doesn't fit this round):
+
+1. **Folder-scoped**: `Preview.tsx`'s snapshot-error banner (the "Could not
+   load this commit" error). Passes `parentDir` (already in scope, `=
+   dirname(fsPath)`) as `explainWithAi`'s `folderPath` — Preview.tsx is
+   already showing `fsPath` inside that folder, so this reuses the
+   "already mounted at this path" `stagedVersion` mechanism rather than a
+   fresh navigation.
+2. **Folderless**: `PlaygroundTab.tsx` (AI Models has no folder-scoped
+   chat) at both its `catalog.status === "error"` banner and its
+   `actionError` banner. Neither passes a `folderPath`, so `explainWithAi`
+   resolves `Config.fused_dir` via `resolveDefaultFolder()`.
+
+**Import-boundary violation found and fixed**: `bun run build` (which runs
+`scripts/check-boundaries.mjs` first) failed once `explain-with-ai.ts`
+(a `platform/lib` module) imported `stageClaudeAsk` from
+`@apps/explorer/lib/pending-claude-ask` — `platform/**` may only import
+`platform`. This wasn't a false positive: `pending-claude-ask.ts` really is
+now needed from `platform` (via `explain-with-ai.ts`) and, transitively,
+from apps other than `explorer` (`ai_models`) that the boundary rules
+already forbid from reaching into `apps/explorer` directly. Rather than
+work around the check, relocated the module: `git mv
+src/apps/explorer/lib/pending-claude-ask.ts
+src/platform/lib/pending-claude-ask.ts` (+ its test file likewise), and
+updated the import specifier in all six referencing files
+(`RepoUpdatesDock.tsx`, `explain-with-ai.ts`, `explain-with-ai.test.ts`,
+`pending-claude-ask.test.ts`'s own self-import, `Listing.tsx`,
+`Preview.tsx`'s pre-existing unrelated import of the same module). This is
+a principled fix, not a workaround: the module has zero dependencies of its
+own (a plain module-level store) and was already consumed by both `shell/`
+and `apps/explorer/`, so `platform/lib` is a better-fitting home than either
+app. Added a paragraph to the module's header comment explaining the move
+and why (quoted in the module itself, not repeated here).
+
+**Pre-existing, unrelated test failure ruled out**: running
+`RepoUpdatesDock.test.tsx` together with the new test files surfaced `bun
+test`'s error: `window.addEventListener is not a function`, thrown from
+`apps/claude/feature-flag.ts:289` (a module-init-time
+`window.addEventListener("storage", ...)` call against that test file's own
+minimal `window` stub, which lacks `addEventListener`). Verified this is
+pre-existing and unrelated to this task's changes by stashing
+`Preview.tsx`/`PlaygroundTab.tsx` (`git stash push -u -m
+"wip-explain-ai-check" -- <two files>`, captured the SHA via `git stash
+list --format='%H %gs'`) and re-running `bun test
+src/shell/RepoUpdatesDock.test.tsx` alone — it failed identically with none
+of this task's new files even present. Restored via `git stash apply
+<sha>` (never `pop`, shared stash stack), confirmed via `git status
+--short`, then dropped the entry via `git stash drop stash@{0}` (re-found
+by index, since `drop` — unlike `apply` — doesn't take a bare full SHA).
+Excluded `RepoUpdatesDock.test.tsx` from this task's own verification runs
+accordingly; it is NOT caused by this work and is not this task's to fix.
+
+**Verification**: `bunx tsc --noEmit -p .` clean. `bun test
+src/platform/lib/pending-claude-ask.test.ts
+src/platform/lib/explain-with-ai.test.ts src/platform/ui/ErrorBanner.test.tsx
+src/shell/repo-updates-lib.test.ts` → 52 pass, 0 fail. `bun run build` →
+boundaries OK (864 files), tsc clean, vite build succeeds (remaining build
+warnings — dynamic-vs-static import overlap on `router.ts`/`api.ts`, and the
+500kB+ chunk-size notice — are pre-existing and unrelated to this change).
+
+**Not done, flagged for the final report**: neither `Preview.tsx`'s nor
+`PlaygroundTab.tsx`'s wiring has a component-mount test (matching this
+codebase's existing pattern of not mounting these heavy stateful components
+under `react-test-renderer`) — both need human/manual verification that
+clicking "Explain with AI" actually opens the right chat with the right
+prompt.
+
+## Fix round 1 (FIXES-round-1.md) — builder session, sha range 8cb5895dd..285de6281
+
+Worked every item top-down. Summary of design decisions worth remembering:
+
+**B1/B2/F2 (`app_doctor.py::_repo_health_check`)**: `git_upstream`'s cached
+`behind`/`ahead` compare `HEAD...origin/<default_branch>` — a DIFFERENT
+number from `_pushed_pending`'s path-scoped `@{upstream}..HEAD -- .`
+count, which feeds the row's `state`/`detail` on its own. This meant (a) a
+no-upstream branch with a stale cached `behind: 0` could read PASS despite
+real unpushed commits (`_SKIP_NO_UPSTREAM` now short-circuits PASS, checked
+before the `behind is not None` branch), and (b) a Pull button gated on
+`behind > 0` alone was a guaranteed `update_repo` refusal off the default
+branch or over a dirty tree — the two most common failure shapes for this
+row. Fixed by computing `on_default`/`clean` server-side (the exact same
+`_is_clean(root, include_untracked=False)` check the preflight itself
+uses) and exposing them as `onDefault`/`clean` on the row/`AppCheck`;
+`can_pull = bool(behind) and on_default is True and clean is True` drives
+both the extracted `_repo_health_advice()` helper's wording and the
+frontend's `showsPullAction` gate (`appdoctor-lib.ts`). Per the user's
+prior decision, Pull is never silently hidden — the row's own `detail`
+names the specific blocker ("switch to <default>" / "commit or stash your
+changes") instead.
+
+**C1/C2 (test isolation)**: `note_app_opened`'s non-blocking
+`_check_slot.acquire` means a real background fetch thread from ONE test
+file can silently starve another file's `_sync`-warmed assertions when
+they share a pytest-xdist worker. Fixed with two changes: a `_warm()`
+helper in `test_app_doctor_report.py` that populates the cache directly
+via `git_upstream._record(git_upstream.check_repo(root))`, bypassing the
+slot entirely (replaces three `note_app_opened(..., _runner=_sync)` call
+sites); and `test_git_upstream.py`'s autouse fixture now blocks
+(`_check_slot.acquire(timeout=TIMEOUT_S + 5)` then immediately releases)
+to drain any foreign in-flight holder before resetting its own module
+state, rather than only avoiding a double-release. Verified stable across
+5+ repeated combined runs of both files (105 passed every time, up from
+103 after adding 2 more B1 regression tests).
+
+**B3 (`AppDoctorModal.tsx`, git-row retry)**: the one-shot retry effect set
+its "used" ref the moment the timer was SCHEDULED, not when it fired. Any
+OTHER row's `runCheck` completing within the 2s window calls `setReport`
+with a new object, which cancels the pending timer via the effect's own
+cleanup and re-runs the effect — but the ref was already flipped, so the
+re-armed effect bailed immediately and the git row was permanently
+stranded on SKIP. Fix: move the ref-set inside the `setTimeout` callback
+itself, so a cancelled attempt leaves the ref untouched and a later re-run
+gets to reschedule.
+
+**B4/D1 (`AppDoctorModal.tsx`, Open-in-git)**: `onDone` (which the dialog
+passes as `onClose` to `useAppDoctorReport`, but the hook previously did
+NOT return in its result object) had to be added to the hook's return
+value, then threaded through `AppDoctorChecklist` -> `CheckRow` as a new
+optional prop, so "Open in git" could call it after `navigate()` — matching
+`fixRow`/`followLive`/`runFix`'s existing idiom. D1 (user decision, same
+click handler) restyled the button from a bare ghost icon to a secondary
+text button ("Open in git") matching Fix's size/variant, moved to sit
+BEFORE Fix in JSX order.
+
+**B5 (`explain-with-ai.ts`)**: `fetchDefaultFolder`'s module-level
+`inFlight` promise was only cleared on `.catch`. A SUCCESSFUL fetch that
+resolves an empty/falsy `fused_dir` leaves `cachedDefaultFolder` at
+`undefined` (the sentinel this module reads as "still unresolved") while
+`inFlight` keeps pointing at that already-settled promise forever — so
+every later call re-enters `fetchDefaultFolder`, sees `inFlight` truthy,
+and hands back the SAME stale (still-falsy) promise with no way to ever
+retry, even once a real value becomes available. Fixed by moving the
+`inFlight = null` clear into a `.finally()` so every settlement (success
+or failure) releases the slot.
+
+**E (`SKILL.md`)**: added a third mode alongside the existing single-row
+and no-panel modes, for a task naming check `` `all` `` with one `##`
+block per failing row (`doctor_prompt_all`) — work every block in order,
+one end-of-run commit, still scoped to exactly the blocks handed over
+(never re-derive the checklist, never invent a check). The git/pushed
+consolidation's own SKILL.md edit (already landed earlier in this branch)
+needed no further reconciliation — it already described the single
+consolidated row correctly.
+
+No test harness exists for `AppDoctorModal.tsx` itself (component-level
+render tests) in this repo — only `appdoctor-lib.ts`'s pure helpers are
+unit-tested. B3/B4 (both localized to that file) shipped without new
+component tests as a result; verified by reading the effect/handoff logic
+against the described repro rather than by an automated assertion. Flagged
+in the final report rather than building new render-test infra for this
+round.
+
+## Task 22 — git template confirmations: inline `.confirm` bars → centered modals
 
 Every destructive confirmation in `fused_render/templates/git/template.html` used to
 render as an inline `.confirm` bar spliced into the section/pane the question was
@@ -2977,11 +3403,11 @@ unrelated prose like "anywhere:"/"elsewhere:").
 Note for future readers: a builder note file for this specific task briefly
 overwrote this file's entire prior content (Write tool, no Read-before-overwrite
 guard caught it because the file existed but the mistake was made anyway) before
-being caught and reverted via `git checkout -- DECISIONS.md`; this Task 17 section is
+being caught and reverted via `git checkout -- DECISIONS.md`; this Task 22 section is
 the only change that survived. If a future session finds this file suspiciously
 short, that is a sign the same mistake happened again and was not caught.
 
-### Task 17 follow-up — fixing the two failing tests and three review findings
+### Task 22 follow-up — fixing the two failing tests and three review findings
 
 Two `tests/test_git_view_renders.py` tests were red 3/3: they asserted the OLD
 inline `.confirm` bar's copy verbatim (`REVERT_QUESTION`/`CHECKOUT_QUESTION` module
@@ -3075,7 +3501,7 @@ at line ~204 (and three siblings at ~387/425/618) never pinned `encoding=`. `tex
 alone falls back to `locale.getpreferredencoding(False)`, which on a Windows CI runner
 with no LANG/LC_ALL resolves to the ANSI codepage (cp1252), not UTF-8. The Node probe
 writes its JSON as real UTF-8, and `_revert_question(commit)`/`_checkout_question(commit)`
-(added in the Task 17 follow-up above) build the first non-ASCII string this file has
+(added in the Task 22 follow-up above) build the first non-ASCII string this file has
 ever compared — the earlier `REVERT_QUESTION`/`CHECKOUT_QUESTION` constants were
 ASCII-only, so `origin/main` never exercised this path. Confirmed the mechanism
 directly: encoding `"Revert 3541e7e — second commit?"` as UTF-8 and decoding those
@@ -3104,3 +3530,168 @@ are reported here, not fixed — fixing them is out of scope for the confirm-mod
 
 `.venv/bin/python -m pytest -q tests/test_git_view_renders.py tests/test_git_view.py tests/test_git_conflicts.py`:
 58 passed.
+
+### Fix round 2 — the 22 CI frontend failures: a hand-rolled, torn-down DOM stub
+
+Root cause confirmed, not assumed. `explain-with-ai.test.ts` (added by this branch)
+needed `location`/`window`/`history` in place before its dynamic import of
+`@platform/lib/explain-with-ai` (which transitively imports `@platform/lib/router`,
+whose module-init reads `location` once). The committed version hand-rolled a
+3-property partial stub (`window: { parent, top, dispatchEvent }`, no `setInterval`,
+no `Element`/`HTMLElement`) with no teardown. Since `bun test` shares one
+`globalThis` across every file in a run but does NOT share the module cache (each
+file gets its own fresh module instances), that partial `window` survived into
+whichever suite ran next and exploded the moment that suite's own module-init code
+or a React effect touched a member the stub never provided —
+`TypeError: window.setInterval is not a function` in `ServerStatusBanner.tsx` /
+`update-status.ts` (`scheduleEvents.test.ts`'s own narrator-tick timer), and
+`@base-ui`'s `isHTMLElement`/`isButtonElement` throwing on a `window` with no
+`Element`/`HTMLElement` (`ErrorBanner.test.tsx`'s `Button`). Reproduced directly:
+`bun test src/platform/lib/explain-with-ai.test.ts src/platform/ui/ErrorBanner.test.tsx
+src/platform/ui/NotificationHost.test.tsx src/platform/ui/UpdateBadge.render.test.tsx
+src/platform/lib/scheduleEvents.test.ts src/platform/lib/restart-store.test.ts
+src/platform/ui/ServerStatusBanner.test.tsx` on the committed HEAD version threw
+`window.setInterval is not a function` inside `scheduleEvents.test.ts`'s narrator
+effect — 6 of 42 tests failing, 36 passing.
+
+The previous builder's UNCOMMITTED candidate fix (three `delete (globalThis as
+...)` lines right after the import, mirroring `RepoUpdatesDock.test.tsx`'s
+documented install/delete pattern) was itself broken and was NOT used: `bun test
+src/platform/lib/explain-with-ai.test.ts` alone failed 2 of its own 12 tests with
+`ReferenceError: location is not defined` inside `router.ts`'s `navigate()`, because
+`explainWithAi()` calls `navigate()` at *test-call* time (`explain-with-ai.ts:87`),
+not just at the one-shot module-init read the comment described — deleting the
+globals right after the import pulled the rug out from under the file's own later
+test bodies. Deleting also risked stranding suites like `DownloadManager.test.tsx`'s
+`useJobs` describe block, which reads `globalThis.window` without installing it
+itself, relying on an earlier file's shim already being up (verified this file
+crashes standalone too, for an unrelated, pre-existing, order-dependent reason —
+its own static `jobs.ts → api.ts → presence.ts → router.ts` import chain resolves
+before its own `installDomShim()` call runs; left alone, out of scope for this
+round).
+
+Fix actually shipped: replaced the hand-rolled stub + delete with the shared,
+idempotent `installDomShim()` helper from `@platform/lib/testDomShim.ts` — the same
+one `UpdateBadge.render.test.tsx`, `restart-store.test.ts`, `scheduleEvents.test.ts`,
+and `ServerStatusBanner.test.tsx` already call. It provides the full member set
+(`setInterval`/`clearInterval`, `Element`/`HTMLElement`/`HTMLIFrameElement`,
+`requestAnimationFrame`, etc.) every suite in the process actually needs, uses `??=`
+so it never overwrites a shim another file already installed, and is deliberately
+never torn down — exactly the design its own header documents. This fixes both
+symptoms at once and needs no delete: the file's own `navigate()` calls keep working
+for the file's whole run, and later suites see a complete `window` instead of a
+partial one.
+
+Verified both orders clean post-fix (same 7-file set, forward and reversed):
+`42 pass, 0 fail` in both directions, and `explain-with-ai.test.ts` alone: `12 pass,
+0 fail`. `bunx tsc --noEmit`: clean. `ErrorBanner.test.tsx`'s `onExplain` test also
+now passes in every combination tried — the diagnosis's "second, independent
+problem" turned out to be the same partial-stub cause once `installDomShim()`
+supplies `Element`/`HTMLElement`.
+
+Excluded `DownloadManager.test.tsx` from the both-orders repro set after confirming
+it fails even fully standalone, unmodified, unrelated to this branch — logged above
+as a pre-existing, out-of-scope, order-dependent local issue (its own static import
+chain resolves `router.ts` before its own `installDomShim()` call), not one of the
+things this round is meant to fix.
+
+Commands run: `bun test <7-file set>` (both orders), `bun test
+src/platform/lib/explain-with-ai.test.ts` (alone), `bun test
+src/platform/ui/ErrorBanner.test.tsx` (alone), `bunx tsc --noEmit`.
+
+## FIXES-round-3: G1 (Open in git → sidebar Git tab) and G2 (duplicate advice clause) — both landed
+
+G1: "Open in git" no longer navigates to a separate page. Threaded an `onOpenGit`
+callback from whichever surface owns the live `_side` state (Listing.tsx's
+confirm-leave-aware `setSide`, Preview.tsx's `applySide`) down through
+`useAppActionRows` → `AppDoctorModal` → `AppDoctorChecklist` → `CheckRow`, which
+calls it (then `onDone?.()`) in place of `navigate(...)` when provided. Falls back
+to the old cross-page `navigate()` only where there is no sidebar to open:
+`AppPage.tsx` (architecturally has no Git tab at all) and split-incapable
+panes/snapshots. Button styling unchanged. Commit `776e6e390`.
+
+G2: fixed `_repo_health_advice()` in `fused_render/app_doctor.py` duplicating
+"commit" — it read "commit or commit or stash your changes to pull..." whenever
+this row's own uncommitted path was ALSO the thing making the whole-repo `clean`
+signal false (the normal case, since a dirty subpath always dirties the whole
+repo). Now: `"stash your changes" if commit else "commit or stash your changes"`.
+Added a direct unit test over every single- and multi-bit combination
+(`test_repo_health_advice_names_only_what_actually_failed_no_git_needed`) and
+tightened the real-git dirty+behind test to the full fixed string. `65 passed` in
+`tests/test_app_doctor_report.py` before this note was written (the coordinator's
+wrap-up message afterward asked for no further test runs this round — none were
+run past that point). Commit `e28ae4890`.
+
+Nothing left unfinished from FIXES-round-3.md's G1/G2 scope. Not done in this
+round (out of scope per the brief): Pull gating, skip reasons, the consolidated
+check's state logic, the ErrorBanner call-site sweep, a Switch action.
+
+## FIXES-round-4: mixed ref bases in the "Repo in sync" row, and fetch-on-Doctor-open
+
+Reported bug: the in-app Git panel's "Send 1" and Doctor's green "Repo in sync"
+PASS on the same folder contradicted each other. Traced the panel's count first
+(read-only): `fused_render/templates/git/log.py:844-845` —
+`git rev-list --left-right --count HEAD...@{upstream}`, whole-repo, no pathspec,
+rendered at `template.html:1999`/`2033` as `"Send " + plural(ahead, "commit")`.
+`app_doctor._pushed_pending` (app_doctor.py:405) already used the SAME `@{upstream}`
+base for its ahead count — the only difference is `-- .` path scoping (D626:
+sibling apps share one `local` repo; an unscoped count would quote a neighbour
+app's commits into this app's fix prompt).
+
+The user ruled the path-scoped verdict itself is CORRECT, not the bug: a
+folder's own row should read PASS when the only unpushed work is elsewhere in
+the same shared repo ("if the issue was outside of the project, then it is
+fine"). No change was made to `_pushed_pending`'s scoping or to `_repo_health_check`'s
+verdict logic — D626 stands exactly as before.
+
+What WAS a real "doctor should never lie" defect: `_repo_health_check` folded
+two different ref-base comparisons into one sentence without saying so.
+`p_state`/`p_subjects` (unpushed) compare `@{upstream}..HEAD` — this branch's own
+tracking ref. `behind`/`ahead` (from `git_upstream.check_repo`) compare
+`HEAD...origin/<default_branch>` — deliberately, since the row's Pull button
+always fast-forwards onto the default branch, never onto `@{upstream}`. On the
+default branch these two usually coincide, so the row says "behind origin". Off
+the default branch they answer different questions on purpose, and the old
+"N commits behind origin" wording there misleadingly implied the same base as
+the unpushed count. Fixed by naming the real target: `behind_target = "origin"
+if on_default else (default_branch or "the default branch")`, used in both the
+FAIL detail ("N commits behind main") and the PASS detail ("up to date with
+main"). No ref base was changed — this is a wording-only fix so the row states
+what it actually checked. Test: extended
+`test_pull_is_not_offered_off_the_default_branch_and_the_row_says_why` to assert
+`"behind origin" not in detail` and `"1 commit behind main" in detail`.
+
+Fetch-on-Doctor-open (item 3): added `git_upstream.force_check(path, *, _runner=None)`
+— an explicit, throttle-bypassing fetch+check, bounded by a new
+`DOCTOR_TIMEOUT_S = 3.0` constant. It acquires the process-wide check slot
+non-blocking (falls straight back to `repo_state_for` if another check already
+holds it — never piles a second `git fetch` onto one repo), dispatches the real
+`check_repo` on a background thread, and blocks the caller for at most 3s via
+`threading.Event.wait(DOCTOR_TIMEOUT_S)`. Past that budget it returns whatever
+`repo_state_for` has (fresh, stale, or None) while the fetch keeps running;
+`check_repo`'s own existing silence-on-failure (`fused_render/git_upstream.py`)
+already covers offline/no-remote/auth-failure by returning None, which
+`_repo_health_check` already turned into SKIP-with-reason — untouched.
+Wired in at `fused_render/server/routers/apps.py`'s `GET /api/apps/doctor`
+handler (the modal's own "load" call), calling `git_upstream.force_check(folder)`
+before `app_doctor.report(folder)` so `_repo_health_check` reads whatever landed.
+
+Live-update after the modal's first render: already existed and needed no
+change — `AppDoctorModal.tsx`'s `useAppDoctorReport` already does a single
+delayed (2s) re-`getAppDoctor` when `gitRowFetchPending` (behind/ahead both
+still null), patching only the `git` row in place. Since the initial GET itself
+now blocks up to 3s for a fresh answer, most cases resolve before that retry
+even fires; the retry remains the catch-all for the slow-remote case where
+`force_check`'s own budget expired first.
+
+Tests added: `tests/test_git_upstream.py` —
+`test_force_check_bypasses_the_throttle` (proves it re-fetches inside
+CHECK_TTL_S, unlike `note_app_opened`), `test_force_check_falls_back_to_cache_when_the_slot_is_already_held`,
+`test_force_check_on_a_path_outside_any_repo_returns_none`, and
+`test_force_check_gives_up_after_its_own_budget_and_the_fetch_finishes_later`
+(DOCTOR_TIMEOUT_S monkeypatched to 0, proves the background thread still lands
+the state after `force_check` itself already returned None). `tests/test_app_doctor_report.py`
+got the wording assertion above. Ran `tests/test_git_upstream.py`,
+`tests/test_app_doctor_report.py`, and the doctor-scoped subset of
+`tests/test_apps_api.py`: 114 passed. No TypeScript touched, so no `bunx tsc`
+run.

@@ -26,6 +26,7 @@ import {
 import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
 import { captureAppPreview, cropRect } from "@platform/lib/appShot";
 import { confirmLeave, navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, embedUrlForFsPath, replaceSearch, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
+import { explainErrorPrompt, explainWithAi } from "@platform/lib/explain-with-ai";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import {
@@ -66,7 +67,7 @@ import {
   pendingClaudeAskVersion,
   subscribePendingClaudeAsk,
   takePendingClaudeAsk,
-} from "@apps/explorer/lib/pending-claude-ask";
+} from "@platform/lib/pending-claude-ask";
 import {
   sideSplit,
   parseSide,
@@ -2125,6 +2126,14 @@ function TemplatePreview({
         }
       : undefined,
     onOpenMcp: () => setMcpOpen(true),
+    // G1 (FIXES-round-3.md): App Doctor's "Open in git" opens THIS file's own
+    // sidebar on its Git tab, through the same writer the sidebar's own
+    // switcher calls (`applySide`) — never a navigation to a separate page.
+    // Only where this view actually splits (`splitCapable`): a panel/tab pane
+    // has no sidebar of its own (see `applySide`'s definition above), so
+    // there `onOpenGit` is left `undefined` and the row falls back to
+    // navigating instead.
+    onOpenGit: splitCapable ? () => applySide("git") : undefined,
   });
 
   // THE FILE MENU — one list, two surfaces (the kebab, the crumb bar's
@@ -2327,7 +2336,17 @@ function TemplatePreview({
                 directly with no sidebar hop — reusing it as-is would
                 silently reintroduce finding 2. */}
             {snapshotError ? (
-              <ErrorBanner>
+              <ErrorBanner
+                onExplain={() =>
+                  void explainWithAi(
+                    explainErrorPrompt(
+                      "Could not load this commit. This may be a temporary problem.",
+                      `Viewing ${fsPath} as of a previewed commit.`,
+                    ),
+                    parentDir,
+                  )
+                }
+              >
                 <p className="m-0">
                   Could not load this commit. This may be a temporary problem.
                 </p>
