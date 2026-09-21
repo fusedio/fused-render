@@ -29,13 +29,11 @@ this code.
 """
 from __future__ import annotations
 
-import fcntl
 import os
 import signal
 import struct
 import subprocess
 import sys
-import termios
 import threading
 import time
 import uuid
@@ -141,6 +139,17 @@ class PtySession:
     def resize(self, rows: int, cols: int) -> None:
         if not self.alive:
             return
+        # fcntl/termios imported here, not at module scope: both are
+        # POSIX-only and would raise ImportError on Windows the moment
+        # ANYTHING imports this module — including `server/app.py`'s
+        # unconditional `from ...routers.terminal import router`, which
+        # would then take the whole app down before `resolve_profile()`'s
+        # `os.name == "nt"` guard ever got a chance to degrade gracefully
+        # (see `_pty_exec_helper.py` and `_env_install_worker.py`'s own
+        # local `import fcntl` for the same reason). No live session is ever
+        # constructed on Windows, so this line is simply never reached there.
+        import fcntl
+        import termios
         try:
             fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ,
                         struct.pack("HHHH", rows, cols, 0, 0))
