@@ -14,6 +14,7 @@ behaviour, the periodic safety net, and the indexing gate. The real
 filesystem (the last test in this file).
 """
 import os
+import re
 import threading
 import time
 
@@ -81,6 +82,19 @@ def _added(path):
     return (Change.added, path)
 
 
+def _canon(path):
+    """The same canonicalization `_folder_of`/`_clamp_to_root` apply to a
+    folder before it ever reaches `forward()` — `norm(os.path.abspath(...))`.
+    A hardcoded POSIX literal like "/home/me/proj" is only that pipeline's
+    OUTPUT on POSIX; on Windows `os.path.abspath` resolves a leading "/"
+    against the current drive (which GitHub's Windows runners check out onto
+    D:, not C:), so the literal and the real output disagree in exactly the
+    way this whole regression is about. Routing every expectation through
+    the same pipeline instead keeps these tests platform-agnostic without
+    weakening what they pin."""
+    return index_touch._canon_folder(path)
+
+
 # --------------------------------------------------------------- filtering
 
 
@@ -92,7 +106,7 @@ def test_a_batch_of_file_paths_is_reduced_to_parent_folders_and_forwarded():
 
     loop = f.loop("/home/me/proj", source, flush_floor_s=0.0)
     loop._run_one_watch()
-    assert f.forwarded == [{"/home/me/proj"}]
+    assert f.forwarded == [{_canon("/home/me/proj")}]
 
 
 def test_paths_under_an_ignored_tree_or_the_store_dir_are_dropped():
@@ -205,14 +219,27 @@ def test_clamp_to_root_compares_root_and_folder_in_the_same_canonical_form(
 
     Simulated on any OS by making `os.path.abspath` prepend "C:" the way
     Windows' real one does, and forcing `norm`'s backslash conversion on
-    (a no-op off Windows otherwise)."""
+    (a no-op off Windows otherwise).
+
+    The prepend has to strip any drive letter the HOST's own `abspath`
+    already attached before adding the synthetic one, not just skip
+    prepending when one happens to start with "C:" already: on this
+    machine (macOS) the real `abspath` never adds a drive, so a naive
+    "skip if it already starts with C:" version works here — but running
+    the identical monkeypatch for real on a GitHub-hosted Windows runner
+    (whose checkout sits on D:, not C:) it would append "C:" onto a real
+    "D:/..." and produce "C:D:/home/me", the duplicate-drive symptom CI
+    actually reported. Stripping first makes the simulation deterministic
+    regardless of which drive the process this runs under happens to use."""
     import fused_render.index.ignore as ignore_mod
 
     real_abspath = os.path.abspath
+    drive_prefix = re.compile(r"^[A-Za-z]:")
 
     def windows_style_abspath(p):
         p = real_abspath(p).replace("\\", "/")
-        return p if p.startswith("C:") else "C:" + p
+        p = drive_prefix.sub("", p)
+        return "C:" + p
 
     monkeypatch.setattr(index_touch.os.path, "abspath", windows_style_abspath)
     monkeypatch.setattr(ignore_mod, "WINDOWS", True)
@@ -252,7 +279,7 @@ def test_two_batches_inside_the_floor_forward_once_with_the_union():
                      live_run_covers=f.live_run_covers, gate_open=f.gate_open,
                      sleep=f.sleep, stop_event=threading.Event())
     loop._run_one_watch()
-    assert f.forwarded == [{"/home/me/proj", "/home/me/other"}]
+    assert f.forwarded == [{_canon("/home/me/proj"), _canon("/home/me/other")}]
 
 
 # ------------------------------------------------------- MAX_FOLDERS collapse
@@ -283,7 +310,7 @@ def test_max_folders_or_fewer_forward_the_actual_set():
 
     loop = f.loop("/home/me", source, flush_floor_s=0.0)
     loop._run_one_watch()
-    assert f.forwarded == [{f"/home/me/d{i}" for i in range(MAX_FOLDERS)}]
+    assert f.forwarded == [{_canon(f"/home/me/d{i}") for i in range(MAX_FOLDERS)}]
     assert f.forwarded_hinted == [True]
 
 
@@ -304,7 +331,11 @@ def test_a_root_level_change_alongside_a_deep_one_forwards_both_not_just_the_roo
 
     loop = f.loop("/home/me", source, flush_floor_s=0.0)
     loop._run_one_watch()
-    assert f.forwarded == [{"/home/me", "/home/me/proj/deep"}]
+    # The root-level touch's folder (the root's PARENT) falls outside the
+    # root and hits `_clamp_to_root`'s fallback, which returns `self.root`
+    # RAW, unlike the deep folder below (already inside the root, returned
+    # as `_folder_of` canonicalized it) — see `_clamp_to_root`'s docstring.
+    assert f.forwarded == [{"/home/me", _canon("/home/me/proj/deep")}]
     assert f.forwarded_hinted == [True]
 
 
@@ -674,4 +705,7 @@ def test_a_real_change_arrives_through_the_real_filter(tmp_path):
     writer.join(timeout=5)
 
     assert seen, "the real watch never saw the created file within the timeout"
-    assert seen[0] == {str(tmp_path)}
+    # `str(tmp_path)` is native-separator (backslashed on Windows); what
+    # actually reaches `forward()` went through `_folder_of`'s
+    # `norm(os.path.abspath(...))` canonicalization first.
+    assert seen[0] == {_canon(str(tmp_path))}

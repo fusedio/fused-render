@@ -3687,3 +3687,80 @@ Combined final run, `.venv/bin/pytest tests/test_index_touch.py tests/test_index
 
 Not run this session: the full suite (orchestrator's job, per the working rules —
 "run only the touched test files while iterating").
+
+### Windows CI still red after c92d8045b — the tests, not the code, were wrong — 2026-09-21
+
+`c92d8045b` fixed the one real production bug (`_clamp_to_root` comparing an
+un-canonicalized `root`), but PR #1279's `test-python-windows` lane still
+failed the SAME 9 tests afterward, deterministically. Six were in
+`tests/test_index_watch.py`.
+
+**Root cause: none of the six was a remaining production bug.** Every one
+was a test that hardcoded a POSIX-literal path (`"/home/me/proj"`, or
+`str(tmp_path)` compared without canonicalizing it) as the *expected* side
+of an equality assertion, against folders that `_folder_of`/`_clamp_to_root`
+correctly ran through `norm(os.path.abspath(...))` before forwarding. On
+POSIX that pipeline is a no-op on an already-absolute path, so the literal
+and the real output happened to agree. On Windows, `os.path.abspath` of a
+leading-`/` path resolves against the CURRENT DRIVE — and GitHub-hosted
+Windows runners check the repo out onto `D:`, not `C:` — so the literal
+(`"/home/me/proj"`) and the real output (`"D:/home/me/proj"`) disagreed.
+That is the reported "separator mismatch" symptom
+(`test_a_batch_of_file_paths_is_reduced_to_parent_folders_and_forwarded`,
+`test_two_batches_inside_the_floor_forward_once_with_the_union`,
+`test_max_folders_or_fewer_forward_the_actual_set`,
+`test_a_root_level_change_alongside_a_deep_one_forwards_both_not_just_the_root`,
+`test_a_real_change_arrives_through_the_real_filter`).
+
+The sixth, `c92d8045b`'s own regression test
+(`test_clamp_to_root_compares_root_and_folder_in_the_same_canonical_form`),
+carried a DIFFERENT bug: its `windows_style_abspath` monkeypatch simulated
+Windows by prepending `"C:"` only when the string didn't already start with
+`"C:"` — a check that is a no-op on this (macOS) machine, where the
+captured `real_abspath` never adds a drive letter at all. Run for real on a
+Windows runner, `real_abspath` is the genuine `ntpath.abspath`, which
+resolves the test's leading-`/` input against the runner's actual current
+drive (`D:` on GitHub Actions) BEFORE the mock's own prepend ever runs —
+producing `"D:/home/me/proj"`, which does not start with `"C:"`, so the mock
+prepended `"C:"` anyway: `"C:D:/home/me/proj"`. That is exactly the
+"duplicate drive letter" symptom CI reported for this test.
+
+**Fix — tests only, `tests/test_index_watch.py`, no production code
+touched.** Added a `_canon(path)` helper that calls
+`index_touch._canon_folder(path)` (the exact pipeline `_folder_of`/
+`_clamp_to_root` already use) and routed every hardcoded-literal expectation
+through it, so the expected side is canonicalized the same way the real
+side is, on whatever OS/drive the test actually runs under. Fixed the
+`windows_style_abspath` mock to strip any drive letter the HOST's real
+`abspath` already attached (via `re.sub(r"^[A-Za-z]:", "", p)`) before
+applying its own synthetic `"C:"`, so the simulation is deterministic
+regardless of which drive the process actually runs on — verified by
+re-simulating a `D:`-drive host locally (monkeypatching `abspath` to prepend
+`"D:"` the way a GitHub Windows runner's cwd would) and confirming
+`WatchLoop`'s real forwarded output matches `_canon_folder`'s output
+exactly, not just trivially by construction.
+
+This is a **test-expectation fix, not a behavior fix**: `index_watch.py` is
+byte-for-byte unchanged from `c92d8045b`. The tests' own hardcoded
+literals/mock were the thing wrong on Windows, per the working rules'
+explicit carve-out for that case.
+
+**The two NOT-proven failures — verdict: neither is branch-caused.**
+- `tests/test_tasks_sent_mark.py::test_the_row_lands_in_the_project_the_send_named`
+  — `git diff origin/main...HEAD` is empty for
+  `fused_render/server/tasks_watch.py`, `fused_render/server/routers/
+  tasks.py`, and `tests/test_tasks_sent_mark.py` itself. This branch touches
+  none of them. Pre-existing Windows-lane issue on `main`, out of scope here.
+- `tests/test_appfile.py::test_export_to_disk_writes_the_real_file_and_notes_the_mutation`
+  — `git diff origin/main...HEAD -- fused_render/server/fs_mutate.py` shows
+  only a docstring edit to `_note_index_mutation` (explaining the watcher's
+  relationship to the explicit notify call); zero logic changed. The test
+  file itself has zero diff from `origin/main` and already canonicalizes
+  both sides of its one path comparison via `canonical_fs_path`. A
+  docstring-only change cannot alter runtime behavior. Pre-existing
+  Windows-lane issue, out of scope here.
+
+**Verification.** `.venv/bin/pytest tests/test_index_watch.py -q`: 28
+passed (macOS — this machine cannot run the Windows lane; CI is the real
+signal for this fix, per the working rules). Pushed and watched
+`gh pr checks 1279`'s `test-python-windows` lane for the actual verdict.
