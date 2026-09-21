@@ -138,7 +138,16 @@ export function TaskPeekFrame({
         // portalled over the page is neither. What is left is page background.
         onClick={(e) => {
           if (!layout.open) return;
-          if (frameClickCloses(e.target as Element | null)) closePeek();
+          // A CLICK FROM THE PANEL IS NOT A CLICK ON THE FRAME. On the app page
+          // the panel is portalled here from a Scheduled mounted INSIDE this
+          // frame, and React bubbles a portal's events up its component tree,
+          // not the DOM's — so a press on the panel's own seam (the click a
+          // drag ends with) arrived here as if it were page background and
+          // closed the peek the reader had just resized (Akshil, 2026-09-21).
+          // The DOM is the truth about where a click landed.
+          const hit = e.target as Element | null;
+          if (hit && !frameRef.current?.contains(hit)) return;
+          if (frameClickCloses(hit)) closePeek();
         }}
       >
         <PeekSlotContext.Provider value={host}>{children}</PeekSlotContext.Provider>

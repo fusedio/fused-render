@@ -62,6 +62,8 @@ const nodeMock = (el: ReactElement) => ({
 });
 
 let box: ReactTestRenderer | null = null;
+/** A stand-in for "an element inside the frame" for the containment test. */
+const INSIDE = { nodeType: 1, tag: "p" };
 
 /** The frame, whose class also carries `is-instant` when the store says so. */
 const findFrame = (host: ReactTestInstance) =>
@@ -114,6 +116,23 @@ describe("TaskPeekFrame", () => {
     // …and the slot a child sees IS the row — the element a portalled panel
     // mounts into, so it lands as the frame's sibling.
     expect(seenSlot).toMatchObject({ nodeType: 1, className: "tasks-peek-host" });
+  });
+
+  it("ignores a click whose DOM target is outside the frame — a portalled panel's own clicks", () => {
+    // React bubbles a portal's events up the COMPONENT tree: on the app page the
+    // panel is portalled from a Scheduled inside the frame, so its clicks reach
+    // the frame's handler. The DOM says where the click landed; only that counts.
+    act(() => {
+      box = create(createElement(TaskPeekFrame, { peekable: true, children: createElement(SlotReader) }), {
+        createNodeMock: (el) => ({ ...nodeMock(el), contains: (node: unknown) => node === INSIDE }),
+      });
+    });
+    const frame = findFrame(box!.root.findByProps({ className: "tasks-peek-host" }));
+    // `frameClickCloses` is only consulted for a hit the frame contains — the
+    // pin is on the source, since the store is not mocked here.
+    expect(read("TaskPeekFrame.tsx")).toContain("if (hit && !frameRef.current?.contains(hit)) return;");
+    expect(read("TaskPeekFrame.tsx")).toContain("if (frameClickCloses(hit)) closePeek();");
+    expect(typeof frame.props.onClick).toBe("function");
   });
 
   it("puts a panel handed in as `peek` beside the frame, not inside it", () => {

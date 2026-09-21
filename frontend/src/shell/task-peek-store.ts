@@ -1104,7 +1104,18 @@ export function measureTasksBaseline(): number | null {
         : (Number.parseFloat(cs.paddingLeft) || 0) + (Number.parseFloat(cs.paddingRight) || 0);
     const content = host.clientWidth;
     if (!(content > 0)) return null;
-    const cap = Number.parseFloat(getComputedStyle(main).maxWidth);
+    // THE CAP, and where it comes from. On `/tasks` it is the column's own
+    // `max-width` (1050px, styles/schedule.css). The app page's Tasks tab lets
+    // its list FILL the page (Akshil, 2026-09-21: the page follows its parent,
+    // no centred column) and so carries no max-width — but it still wants the
+    // same arithmetic as `/tasks`, or its floors and default width would drift
+    // with the window. `--tasks-column-max` (styles/app-page.css) is that cap
+    // stated without laying anything out; the rendered max-width is the
+    // fallback for the page that never declared it.
+    const mainStyle = getComputedStyle(main);
+    const capVar = Number.parseFloat(mainStyle.getPropertyValue("--tasks-column-max"));
+    const cap =
+      Number.isFinite(capVar) && capVar > 0 ? capVar : Number.parseFloat(mainStyle.maxWidth);
     // A page with no cap at all (`max-width: none` parses to NaN) is one whose
     // column IS the room it is given, which is what `tasksBaselineFrom` falls
     // back to — but only the rendered box can confirm the element is laid out
