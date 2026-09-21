@@ -187,7 +187,7 @@ describe("the two hosts", () => {
 
   it("the Tasks page arms the peek scoped or not, and portals its panel into a frame someone else drew", () => {
     // The scope used to be half the gate; the app page's Tasks tab is a host now.
-    expect(PAGE).toContain("const peekable = scope ? peekOn && projectPeekOn : peekOn;");
+    expect(PAGE).toContain("const peekable = peekOn;");
     expect(PAGE).not.toContain("!scope && peekOn");
     expect(PAGE).toContain("const slot = useTaskPeekSlot();");
     expect(PAGE).toContain("{slot ? createPortal(panel, slot) : null}");
@@ -202,7 +202,7 @@ describe("the two hosts", () => {
   });
 
   it("the app page frames the WHOLE page, only on the Tasks tab, only with the flag", () => {
-    expect(APP).toContain('const peekable = peekOn === true && projectPeekOn === true && tab === "tasks";');
+    expect(APP).toContain('const peekable = peekOn === true && tab === "tasks";');
     // The wrap encloses `.app-page` — header, tab strip and panels alike.
     expect(APP).toContain('<TaskPeekFrame peekable={peekable}>\n    <div className="app-page">');
   });

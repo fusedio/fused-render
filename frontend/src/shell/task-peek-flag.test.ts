@@ -173,12 +173,12 @@ describe("the markup adds nothing when the feature is off", () => {
     // Since 2026-09-20 the scope no longer disarms the peek — the app page's
     // Tasks tab hosts the same panel (TaskPeekFrame.tsx) — so the flag is the
     // whole gate on the Tasks page, and the app page adds its own tab test.
-    expect(PAGE).toContain("const peekable = scope ? peekOn && projectPeekOn : peekOn;");
+    expect(PAGE).toContain("const peekable = peekOn;");
     expect(PAGE).toContain("if (!peekable) return page;");
     expect(FRAME).toContain('<div className="peek-shell">');
     // …and the OFF shells share no name with the peek's host, so no rule reaches them.
     expect(FRAME).toContain('<div ref={frameRef} className="peek-shell-frame">');
-    expect(read("AppPage.tsx")).toContain('const peekable = peekOn === true && projectPeekOn === true && tab === "tasks";');
+    expect(read("AppPage.tsx")).toContain('const peekable = peekOn === true && tab === "tasks";');
     // Which also means no param-boundary claim from this page: the claim lives
     // in TaskPeek, and TaskPeek is inside the branch above.
     expect(read("TaskPeek.tsx")).toContain("useParamBoundary(nativeChat === false && !!src)");

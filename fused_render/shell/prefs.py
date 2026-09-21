@@ -235,15 +235,14 @@ def task_peek_enabled() -> bool:
 
 def project_peek_enabled() -> bool:
     """Whether the APP PAGE's Tasks tab (`/apps/<folder>?_tab=tasks`) opens a
-    task in the same side panel `/tasks` does, instead of navigating to the
-    Explorer as that tab always has (default off — a feature flag while the
-    surface settles, 2026-09-21). `/tasks` itself is not gated by this; see
-    `task_peek_enabled` above.
-
-    Same idiom as `notify_terminal_sessions_enabled` below: only a stored
-    `true` is on, everything else (missing, legacy, junk) stays off.
+    task in the same side panel `/tasks` does — ALWAYS, since 2026-09-21
+    (Akshil: the flag came off once the surface settled). The switch is gone
+    from Preferences and the PUT no longer accepts `project_peek_enabled`; a
+    stored value from the flagged build is ignored. Kept as a function, and
+    kept in the GET payload as `task_peek.project`, because the client's type
+    still names it — a server that sends nothing reads as ON there too.
     """
-    return read_prefs().get("project_peek_enabled") is True
+    return True
 
 
 def notify_terminal_sessions_enabled() -> bool:
@@ -601,9 +600,9 @@ def _prefs_response() -> dict:
         # A task on the Tasks page opens in a side panel beside the list —
         # always, since 2026-09-20 (`task_peek_enabled`). Still sent, because
         # the client's flag module reads it.
-        # …and `project` says whether the APP PAGE's Tasks tab does the same
-        # (default off, `project_peek_enabled`) — a flag on that one surface,
-        # under the key the client's peek flag module already reads.
+        # …and `project`: the APP PAGE's Tasks tab does the same — always,
+        # since 2026-09-21 (`project_peek_enabled`). Still sent, because the
+        # client's type names it.
         "task_peek": {"enabled": task_peek_enabled(), "project": project_peek_enabled()},
         # Whether a finished-task notification fires for a session that
         # entered from an interactive terminal (default off, opt-in) — see
@@ -788,12 +787,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'native_chat_enabled' must be a boolean"}, status_code=400)
         prefs["native_chat_enabled"] = value
         changed = True
-    if "project_peek_enabled" in body:
-        value = body.get("project_peek_enabled")
-        if not isinstance(value, bool):
-            return JSONResponse({"error": "'project_peek_enabled' must be a boolean"}, status_code=400)
-        prefs["project_peek_enabled"] = value
-        changed = True
     if "task_notify_terminal_sessions" in body:
         value = body.get("task_notify_terminal_sessions")
         if not isinstance(value, bool):
@@ -911,7 +904,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             {"error": "no known preference in request (expected 'engine', "
                       "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'native_chat_enabled', "
                       "'task_notify_terminal_sessions', "
-                      "'project_peek_enabled', "
                       "'project_queue_enabled', "
                       "'lan_enabled', "
                       "'default_model', 'indexing_enabled', 'ranked_search_enabled', "
