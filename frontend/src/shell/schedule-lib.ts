@@ -318,7 +318,7 @@ export function assignLanes<T extends { time: Date }>(
 //     firmly: running cards first in the running amber, then a dashed "waiting"
 //     divider, then the waiting ones by their place in the line in the same yellow
 //     (tasks-lib.groupByColumn, and the lane header counts the two halves
-//     separately — "1 running · 2 waiting").
+//     separately — "1 running · 2 queued").
 //
 // It is still a STATUS of its own for everything else — its own word on a row,
 // its own ring, its own rank — for the reason it was made one: "Upcoming" means a
@@ -399,7 +399,7 @@ export function laneOf(column: BoardColumn): BoardLane {
   // DUE, ASKED FOR, AND ABOUT TO RUN IS IN PROGRESS. The only thing between a
   // queued task and a running one is which second its folder frees; the two are
   // told apart INSIDE the lane (groupByColumn's partition, the lane header's
-  // "1 running · 2 waiting", and the ring's own hue), which is a far better fit
+  // "1 running · 2 queued", and the ring's own hue), which is a far better fit
   // for how often a card crosses between them than a column boundary was.
   if (column === "queued") return "in_progress";
   // An unfinished task is the most upcoming thing there is (design.md), and it

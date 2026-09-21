@@ -3691,7 +3691,7 @@ export function groupByColumn(
 }
 
 /**
- * WHAT A LANE HEADER COUNTS — "7", or "1 running · 2 waiting".
+ * WHAT A LANE HEADER COUNTS — "7", or "1 running · 2 queued".
  *
  * Only In Progress ever says the second thing, and only when it holds both kinds.
  * That is the price of folding `queued` into this lane (schedule-lib.laneOf): a
@@ -3711,12 +3711,12 @@ export function laneCountLabel(lane: BoardLane, tasks: readonly Task[]): string 
 }
 
 /**
- * WHERE THE DASHED "waiting" DIVIDER GOES inside the In Progress lane, or -1 for
+ * WHERE THE DASHED "queued" DIVIDER GOES inside the In Progress lane, or -1 for
  * "nothing to divide".
  *
  * The index of the first waiting card, and only when running cards precede it:
  * a lane that is ALL waiting needs no line across the top of itself (the header
- * already says "3 waiting"), and neither does one with nothing waiting at all.
+ * already says "3 queued"), and neither does one with nothing waiting at all.
  * Read off the same array the lane draws, so the divider cannot land anywhere but
  * on the seam `groupByColumn` put there.
  */
@@ -3728,7 +3728,7 @@ export function laneSplitAt(lane: BoardLane, tasks: readonly Task[]): number {
 
 /** The word on that divider. The reader's word, not the enum's — see
  *  `queuedLabel` for the whole of that distinction. */
-export const LANE_SPLIT_LABEL = "waiting";
+export const LANE_SPLIT_LABEL = "queued";
 
 // ---- which lanes are rolled up -----------------------------------------------
 // A lane is either an open column or a 52px rail. Two things decide which, in
@@ -5007,16 +5007,15 @@ export function attentionLabel(n: number): string {
 }
 
 /**
- * "2 waiting" — the project queue's readout, worded like the two above it. No
+ * "2 queued" — the project queue's readout, worded like the two above it. No
  * noun and no plural fork, for `attentionLabel`'s reason: one word names one
  * state on every surface that says it.
  *
- * THE WORD IS "waiting", NOT "queued" (Akshil, 2026-09-12). `queued` is the
- * status word — the enum, the ring, the filter, what a row says about itself —
- * and it stays exactly that everywhere in the code and on a row. A COUNT beside
- * "1 running" is a different register: it is a person being told what their
- * machine is doing, and "2 waiting" is the sentence they would say. Re-exported
- * from `platform/lib/queue.waitingLabel` so the chat's own card, the lane header
+ * THE WORD IS "queued" (Akshil, 2026-09-21; it was "waiting" from 2026-09-12).
+ * It is the status word — the enum, the ring, the filter — and the count now
+ * says the same word, so a reader meets one name for one state on the row, in
+ * the rail and in the lane header. Re-exported from
+ * `platform/lib/queue.waitingLabel` so the chat's own card, the lane header
  * and this rail cannot spell it three ways.
  */
 export function queuedLabel(n: number): string {

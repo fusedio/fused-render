@@ -243,7 +243,7 @@ describe("runs next", () => {
     // BUTTON is what goes.
     expect(canRunNext({ queue_position: 1, queue_ahead: "TASK-056" })).toBe(false);
     expect(waitingCardText(1, queued({ queue_position: 1, queue_ahead: "TASK-056" }))).toBe(
-      "1 message waiting · after TASK-056",
+      "1 message queued · after TASK-056",
     );
     // A server that placed nothing (0, or absent) is not CLAIMING anything is
     // ahead, so it offers no button either — even when it named a holder.
@@ -268,7 +268,7 @@ describe("runs next", () => {
     expect(canRunNext(nowSecond)).toBe(true);
     // And the sentence a press produces is the same one a free folder reads.
     expect(waitingCardText(2, { ...nowSecond, queue_priority: true })).toBe(
-      "2 messages waiting · next in this folder",
+      "2 messages queued · next in this folder",
     );
   });
 
@@ -292,34 +292,34 @@ describe("runs next", () => {
 
 describe("counting what is waiting", () => {
   it("says the noun once, where the noun is spoken", () => {
-    expect(waitingCount(1)).toBe("1 message waiting");
-    expect(waitingCount(2)).toBe("2 messages waiting");
+    expect(waitingCount(1)).toBe("1 message queued");
+    expect(waitingCount(2)).toBe("2 messages queued");
   });
 
   it("says 'waiting' and not 'queued' wherever a person is being told a number", () => {
     // `queued` is the STATUS WORD — the enum, the ring, the filter. A count
     // beside "1 running" is a different register (Akshil, 2026-09-12).
-    expect(waitingLabel(2)).toBe("2 waiting");
-    expect(runningWaitingLabel(1, 2)).toBe("1 running · 2 waiting");
+    expect(waitingLabel(2)).toBe("2 queued");
+    expect(runningWaitingLabel(1, 2)).toBe("1 running · 2 queued");
     // Either half alone when the other is empty, so a lane with nothing waiting
     // reads exactly as it always did.
     expect(runningWaitingLabel(3, 0)).toBe("3 running");
-    expect(runningWaitingLabel(0, 3)).toBe("3 waiting");
+    expect(runningWaitingLabel(0, 3)).toBe("3 queued");
     expect(runningWaitingLabel(0, 0)).toBe("");
   });
 
   it("builds the chat card's whole sentence, in its three states", () => {
     expect(waitingCardText(1, { queue_ahead: "TASK-038" })).toBe(
-      "1 message waiting · after TASK-038",
+      "1 message queued · after TASK-038",
     );
     // After Run next: the spot is claimed, so nothing is in front any more even
     // though TASK-038 is still holding the folder.
     expect(waitingCardText(2, { queue_ahead: "TASK-038", queue_priority: true })).toBe(
-      "2 messages waiting · next in this folder",
+      "2 messages queued · next in this folder",
     );
     // …and the same sentence for a chat whose folder was never busy at all: one
     // wording for one fact, whichever road reached it.
-    expect(waitingCardText(2, {})).toBe("2 messages waiting · next in this folder");
+    expect(waitingCardText(2, {})).toBe("2 messages queued · next in this folder");
     expect(NEXT_IN_FOLDER).toBe("next in this folder");
   });
 });

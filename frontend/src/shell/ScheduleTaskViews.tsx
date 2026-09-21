@@ -5212,7 +5212,7 @@ export function TaskBoard({
                     unread, and naming the number on hover. */}
                 <StatusIcon status={col.key} unread={news > 0} count={news} />
                 <span className="schedule-tv-lane-label">{col.label}</span>
-                {/* "7", or "1 running · 2 waiting" on the one lane that now holds
+                {/* "7", or "1 running · 2 queued" on the one lane that now holds
                     two statuses (tasks-lib.laneCountLabel). A bare total over a
                     column of three running tasks and four waiting ones answers a
                     question nobody asked. */}
