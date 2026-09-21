@@ -318,6 +318,28 @@ function CheckRow({
                   {pulling ? "Pulling…" : "Pull"}
                 </Button>
               )}
+              {/* D1 (FIXES-round-1.md): a secondary text button matching
+                  Fix's own size/variant, sitting BEFORE Fix — "Repo in sync
+                  [Open in git] [Fix]". Never a fix action: opens the
+                  IN-APP git mode on this row's repo root (never an external
+                  client — out of scope per the spec), so it draws quietly
+                  even on a passing row — there is nothing to fix, only
+                  somewhere to look. Previously a bare ghost icon-only
+                  button, which read as a stray mark next to Fix's solid
+                  pill. */}
+              {openInGit && check.gitRoot && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    navigate(check.gitRoot as string, { isDir: true, mode: "git" });
+                    onDone?.();
+                  }}
+                >
+                  <GitBranch aria-hidden />
+                  Open in git
+                </Button>
+              )}
               {failing &&
                 (check.task ? (
                   <Button
@@ -366,26 +388,6 @@ function CheckRow({
                   onClick={() => onCheck(check, true)}
                 >
                   <RotateCw aria-hidden className={checking ? "animate-spin" : undefined} />
-                </Button>
-              )}
-              {/* Never a fix action: opens the IN-APP git mode on this row's
-                  repo root (never an external client — out of scope per the
-                  spec), so it draws quietly even on a passing row — there is
-                  nothing to fix, only somewhere to look. Icon-only for the
-                  same reason the on-demand Re-check button above is: it must
-                  never compete with Pull/Fix for attention. */}
-              {openInGit && check.gitRoot && (
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  title="Open in git"
-                  aria-label="Open in git"
-                  onClick={() => {
-                    navigate(check.gitRoot as string, { isDir: true, mode: "git" });
-                    onDone?.();
-                  }}
-                >
-                  <GitBranch aria-hidden />
                 </Button>
               )}
             </>
