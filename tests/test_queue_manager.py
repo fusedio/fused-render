@@ -1064,6 +1064,90 @@ def test_reconcile_keeps_an_item_whose_status_read_raises():
     assert line_of(m) == ["b"]
 
 
+# ------------------------------------------------------------- forced tasks
+
+
+def test_a_forced_task_is_never_rebuilt_into_a_line():
+    """Force start takes a conversation OUT of the queue for good (Akshil,
+    2026-09-21), and `reconcile` is the one thing that could put it back: it
+    rebuilds every line from the scheduler's own pending list. So a due row
+    whose task — or whose message's own `pending:` key — is forced is skipped,
+    and the scheduler's tick dispatches it straight instead."""
+    world = World(due=[(F1, "pending:e1", "e1"), (F1, "sess-b", "e2")])
+    m = world.manager()
+    assert owner_key(m) == "pending:e1"
+    assert line_of(m) == ["sess-b"]
+
+    world = World(due=[(F1, "pending:e1", "e1"), (F1, "sess-b", "e2")])
+    m = loaded(world)
+    m.mark_forced("pending:e1", "sess-b")
+    world.spawned.clear()
+    m.reconcile()
+    # NOTHING queued and NOTHING spawned by the pump: both messages belong to
+    # forced tasks and the tick owns them now.
+    assert owner_key(m) is None
+    assert line_of(m) == []
+    assert world.spawned == []
+    # …and a task that was NOT forced still lines up beside them.
+    world.due.append((F1, "sess-c", "e3"))
+    m.reconcile()
+    assert owner_key(m) == "sess-c"
+
+
+def test_a_forced_name_outlives_idle_gaps_and_only_forget_forced_drops_it():
+    """The mark is for the life of the conversation (Bugbot, PR #1296): a chat
+    that finished its forced turn and has nothing due must stay forced, or its
+    very next message would line up again. Deleting the task is what forgets
+    it."""
+    world = idle_world(due=[(F1, "pending:e1", "e1")])
+    m = world.manager()
+    m.mark_forced("pending:e1", "sess-live", "sess-gone")
+    m.reconcile()
+    assert m.forced_names() == {"pending:e1", "sess-live", "sess-gone"}
+
+    world.due.clear()
+    world.running_keys.clear()
+    m.reconcile()
+    assert m.forced_names() == {"pending:e1", "sess-live", "sess-gone"}
+
+    # `remove` is what the force endpoint itself calls after delivering a
+    # held answer, so it must NOT un-force (Bugbot, PR #1296)…
+    m.remove("sess-gone")
+    assert m.forced_names() == {"pending:e1", "sess-live", "sess-gone"}
+    # …only the delete door's verb does.
+    m.forget_forced("sess-gone")
+    assert m.forced_names() == {"pending:e1", "sess-live"}
+
+
+def test_learn_forced_teaches_a_forced_run_its_minted_session():
+    """A new chat is forced under `pending:` + run id; the session comes later
+    (Bugbot, PR #1296). Seeing the two names together marks the session; two
+    names of an unforced chat teach nothing; placeholders never count."""
+    m = idle_world().manager()
+    m.mark_forced("pending:e1", "run-1")
+    assert m.learn_forced("sess-1", "run-1") is True
+    assert m.is_forced("sess-1") is True
+    assert m.learn_forced("sess-9", "run-9") is False
+    assert m.is_forced("sess-9") is False
+    assert m.learn_forced("admit:tok", "run-1") is False
+    assert m.is_forced("admit:tok") is False
+    assert m.learn_forced("sess-1") is False
+
+
+def test_the_forced_set_persists_across_a_fresh_instance(state):
+    world = idle_world(due=[(F1, "pending:e1", "e1")])
+    m = world.manager()
+    m.mark_forced("sess-a", "pending:e1")
+    assert m.is_forced("nobody", "sess-a") is True
+
+    second = idle_world(due=[(F1, "pending:e1", "e1")])
+    second.running_keys.add("sess-a")
+    fresh = second.manager()
+    assert fresh.is_forced("sess-a") is True
+    assert fresh.is_forced("pending:e1") is True
+    assert fresh.is_forced("sess-b") is False
+
+
 # --------------------------------------------------------------- persistence
 
 
@@ -1124,7 +1208,7 @@ def test_a_corrupt_index_is_not_an_error(state):
     with open(os.path.join(str(state), qm.INDEX_FILE), "w", encoding="utf-8") as f:
         f.write("{not json")
     m = idle_world().manager()
-    assert m.snapshot() == {"folders": {}, "answers": {}}
+    assert m.snapshot() == {"folders": {}, "answers": {}, "forced": set()}
 
 
 def test_snapshot_is_a_copy():

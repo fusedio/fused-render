@@ -4241,15 +4241,16 @@ describe("the archive action", () => {
     // what the flag has to come back to.
     // …and the quick door out, which is on every card that HAS a page — the
     // fourth member of the strip since 2026-09-13; Discard, the draft card's
-    // one action, the fifth since 2026-09-15; and `queue`, which joined the
-    // guard on 2026-09-12 because a queued card grows a Run next in the same
-    // strip and (like Archive) it is NOT behind SHOW_ROW_ACTIONS — with that
-    // flag down it would otherwise be the Board's only way to reach the front
-    // of a line other than dragging a card out of a lane that is rolled up
-    // whenever it is empty.
+    // one action, the fifth since 2026-09-15; and Force start, which joined the
+    // guard on 2026-09-12 (as `queue`, the caption, until 2026-09-21 — the
+    // caption is gone from the card and the BUTTON's own condition is what the
+    // strip now asks) because, like Archive, it is NOT behind SHOW_ROW_ACTIONS:
+    // with that flag down it would otherwise be the Board's only way to start a
+    // waiting message other than dragging a card out of a lane that is rolled
+    // up whenever it is empty.
     expect(card).toContain(
-      "{((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek) || queue\n"
-      + "        || (SHOW_ROW_ACTIONS && run)) && (",
+      "{((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek)\n"
+      + "        || canForceStart(task) || (SHOW_ROW_ACTIONS && run)) && (",
     );
     expect(card).toContain('className="tasks-card-acts"');
     expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*position: absolute/);
@@ -4557,8 +4558,8 @@ describe("the delete affordance", () => {
     expect(strip.indexOf("ICON_TRASH")).toBeLessThan(strip.indexOf("ICON_ARCHIVE"));
     // The strip is drawn for a gone folder even with nothing to file.
     expect(VIEWS_SRC).toContain(
-      "{((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek) || queue\n"
-      + "        || (SHOW_ROW_ACTIONS && run)) && (",
+      "{((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek)\n"
+      + "        || canForceStart(task) || (SHOW_ROW_ACTIONS && run)) && (",
     );
     // And the foot is back to the sentence alone — no trash before it there.
     const foot = VIEWS_SRC.slice(

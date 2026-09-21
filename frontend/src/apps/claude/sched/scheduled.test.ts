@@ -334,6 +334,18 @@ describe("pollScheduledRuns", () => {
     expect(h.resumed).toEqual([]);
   });
 
+  test("a CHAT-ORIGIN run (queued or Force-started send) attaches with no note", async () => {
+    const h = harness({
+      entries: [[], [fired({ id: "new", session_id: "s1", origin: "chat" })]],
+    });
+    await h.watcher.tick();
+    await h.watcher.tick();
+    // The reader's own bubble is finally going; there is nothing to announce.
+    expect(h.notes).toEqual([]);
+    expect(h.runParams).toEqual(["r-new"]);
+    expect(h.resumed).toEqual(["r-new"]);
+  });
+
   test("a run that fires AFTER the baseline is announced, put on the URL and streamed", async () => {
     const h = harness({
       entries: [[], [fired({ id: "new", session_id: "s1" })]],

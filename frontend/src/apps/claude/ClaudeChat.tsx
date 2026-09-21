@@ -168,8 +168,8 @@ import { createLiveWatch } from "./live/watch";
 import {
   admitQueueSend,
   cancelScheduledMessage,
+  forceStart,
   getClaudeSessionLiveness,
-  skipQueue,
   type Task,
 } from "@platform/lib/api";
 import { GATE_FALLBACK_MS, useFallbackAfter } from "@platform/lib/clock";
@@ -897,8 +897,9 @@ function ChatBody(props: ChatBodyProps) {
    * (Akshil, 2026-09-12). Ordering against the two listings is `headerTaskId`.
    */
   const [admitTaskId, setAdmitTaskId] = useState("");
-  /** Run next is in flight, or already spent: the card's one button is dead. */
-  const [runningNext, setRunningNext] = useState(false);
+  /** Force start is in flight: the card's one button is dead for its
+   *  duration. */
+  const [forcing, setForcing] = useState(false);
   /**
    * RUN NEXT WAS ACCEPTED, AND NO ROW HAS ANSWERED SINCE — the row generation as
    * it stood at the press (`useSchedule.recGen`), or null for "no claim".
@@ -2907,10 +2908,12 @@ function ChatBody(props: ChatBodyProps) {
     // this screen, and the next conversation's waiting messages are its own.
     setDroppedEntries(NO_DROPPED);
     paneEpoch.current += 1;
-    // …AND THE RUN NEXT CLAIM (Bugbot, PR #1124). `claimedNext` reads as true
+    // …AND THE PROMOTION CLAIM (Bugbot, PR #1124). `claimedNext` reads as true
     // until `recGen` moves, so a claim left standing here would paint
-    // `queue_priority` on the NEXT conversation's waiting card and hide its own
-    // Run next until that row re-read.
+    // `queue_priority` on the NEXT conversation's waiting card until that row
+    // re-read. Nothing in this pane SETS it since 2026-09-21 (Run next is gone
+    // and Force start claims no spot — it leaves the line), and it is still
+    // cleared here because the row it reads is the server's.
     setNextClaim(null);
     leader.forget();
     // AND THE DOOR THIS PANE CAME IN BY. `?queued=` names the conversation that
@@ -3403,68 +3406,63 @@ function ChatBody(props: ChatBodyProps) {
   }, [sched.rec, waiting]);
 
   /**
-   * THE CARD'S ACTION SEAT — this conversation's waiting work to the front of its
-   * folder's line. The same endpoint the Board's drag spends, and it interrupts
-   * NOTHING: the run holding the folder keeps running and this goes when it ends.
+   * FORCE START — run this conversation's OLDEST waiting message right now,
+   * beside whatever is holding its folder.
    *
-   * NOTHING PRESSES IT AS OF 2026-09-21. Run next — the button `WaitingCard`
-   * used to draw in this seat — is out of the UI; the performer, the claim and
-   * the endpoint are all still here, untouched, for the verb that lands in the
-   * seat next. The follow-up that decides what that verb is owns the wording.
+   * IT IS THE FLAG-OFF BEHAVIOUR FOR ONE MESSAGE (`POST /api/tasks/queue/force`,
+   * whose docstring carries the whole rule). Run next held this seat until
+   * 2026-09-21 and was a statement about the ORDER of the line; this takes the
+   * message out of the line altogether. The run holding the folder is NOT
+   * interrupted — it keeps running, and for a while two turns are live in one
+   * tree, which is exactly what the pref exists to stop happening by accident
+   * and what this press exists to allow on purpose.
    *
-   * THE TASK WHEN THERE IS ONE, THE ENTRY OTHERWISE. `sched.rec.key` is read off
-   * a listing the poll just took, so it cannot be the stale `pending:<leader>`
-   * key the admission answered and the store has since rekeyed — and the task
-   * form promotes every message this chat has waiting, which is what the card
-   * over the composer is a summary of. With no row yet there is no key to trust,
-   * and one entry id — minted once, never rekeyed — is the honest fallback.
+   * THE ENTRY, NOT THE TASK. The server resolves the oldest due message either
+   * way, so the name only has to be one it can still find — and an entry id is
+   * minted once and never rekeyed, while a key frozen at admission time
+   * (`pending:<leader>`) is stale the moment the leader's run mints a session
+   * (`api.forceStart`). The key is the fallback for a chat drawing no rows yet.
+   *
+   * NOTHING IS PAINTED ON THE ANSWER, unlike the skip this replaces. A skip
+   * produced a CLAIM the card had to show (`queue_priority`, "next in this
+   * folder") because no listing would say it for a while. This produces a RUN,
+   * and the schedule poll is already the thing that draws one: `schedRefresh`
+   * asks for a lap immediately, the entry comes back `sending`, and the row
+   * reads "starting" — the same word, on the same road, as a message the pump
+   * dispatched (`sched/waiting.waitingRows`).
    */
-  const runNext = useCallback(async () => {
+  const forceStartNow = useCallback(async () => {
+    // THE OLDEST WAITING ONE, which is the message the server will start: a
+    // scheduled row further down the list is not in the line at all, and naming
+    // it would be this press asking about the wrong message. `waiting` is in the
+    // server's own due order (`sched/waiting.waitingRows`).
+    // No queued row → name the TASK (the server resolves its oldest due
+    // message itself) rather than a future-dated row the line never held.
+    const first = waiting.find((r) => r.word === "queued")?.entryId || "";
     const key = sched.rec?.key || "";
-    const first = waiting[0]?.entryId || "";
-    if (!key && !first) return;
-    setRunningNext(true);
+    if (!first && !key) return;
+    setForcing(true);
     try {
-      const said = await skipQueue(key ? { key } : { entry_id: first });
-      // The claim is painted straight onto the card — on the FACTS rather than on
-      // the fallback, because the facts prefer the server's row whenever there is
-      // one and the row in hand was read before this press. It is held only until
-      // a fresher row lands, which is what `schedRefresh` goes and asks for.
-      //
-      // …AND WHO IS IN FRONT NOW, off the same answer (🟡 review,
-      // 2026-09-12). The press changed the line and the server re-derived it;
-      // painting only the claim left "behind TASK-041" naming whatever was ahead
-      // BEFORE the press until the next listing landed, which is the one sentence
-      // on the card the press was supposed to change. A server too old to send
-      // them changes nothing: the fields fall away and the claim stands alone.
-      setAdmitAhead((cur) => ({
-        ...(cur ?? {}),
-        status: "queued",
-        queue_priority: true,
-        ...(said.ahead_key === undefined
-          ? {}
-          : {
-              queue_position: said.position,
-              queue_ahead: said.ahead ?? "",
-              queue_ahead_title: said.ahead_title ?? "",
-              queue_ahead_session: said.ahead_session ?? "",
-              queue_ahead_target: said.ahead_target ?? "",
-              queue_ahead_key: said.ahead_key ?? "",
-            }),
-      }));
-      setNextClaim(sched.recGen);
+      await forceStart(first ? { entry_id: first } : { key });
+      // THE SEED IS SPENT. It is this pane's optimistic memory of a message the
+      // server now has AND has dispatched, and a seed that outlived its entry
+      // would re-draw the row the poll is about to replace.
+      if (first) setWaitingSeeds((cur) => cur.filter((q) => q.entryId !== first));
       schedRefresh();
     } catch (err) {
       // AND A REFUSAL IS SAID OUT LOUD. The press has a visible control behind
-      // it, so silence is a button that did nothing — and the failure that
-      // actually happened in review was a 404 on a stale key, invisible for
-      // exactly as long as nobody was reading the network tab.
+      // it, so silence is a button that did nothing. What is left here is a
+      // real failure — a stale row (404), a task with nothing waiting (400) —
+      // since a conversation that cannot take the message YET is a 200 with
+      // the scheduler's sentence as `reason` (2026-09-21): that message is out
+      // of the queue for good and the next tick sends it, so the poll below is
+      // the honest answer rather than an error about work that is on its way.
       const t = troubleFromError(err);
       controller.reportTrouble({ ...t, message: "The queue did not take that: " + t.message });
     } finally {
-      setRunningNext(false);
+      setForcing(false);
     }
-  }, [controller, schedRefresh, sched.rec, sched.recGen, waiting]);
+  }, [controller, schedRefresh, sched.rec, waiting]);
 
   /**
    * DELETE, from a waiting row: the words are dropped and nothing runs.
@@ -4397,8 +4395,8 @@ function ChatBody(props: ChatBodyProps) {
               <WaitingCard
                 count={waitCount}
                 facts={waitFacts}
-                busy={runningNext}
-                onRunNext={() => void runNext()}
+                busy={forcing}
+                onForceStart={() => void forceStartNow()}
               />
             ) : null}
             {/* DIRECTLY ABOVE THE COMPOSER and kept by BOTH host cuts, which is

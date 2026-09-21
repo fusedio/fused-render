@@ -945,7 +945,13 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
       // turn that never appears at all. Returning leaves the entry unmarked for
       // the next tick (T:17423-17429).
       if (deps.busy()) return;
-      deps.addNote(NOTE_OURS);
+      // NO NOTE FOR A CHAT-ORIGIN ENTRY (Akshil, 2026-09-21). A message the
+      // reader typed into this chat and the queue admitted later — pumped or
+      // Force-started — is their own bubble finally going; "Your scheduled
+      // message is running now" is a sentence about the calendar, and it
+      // read as noise above a turn they had just pressed for. `schedIsCalendar`
+      // is the same classifier the composer lock uses.
+      if (schedIsCalendar(entry)) deps.addNote(NOTE_OURS);
       attached.add(runId);
       deps.setRunParam(runId);
       await deps.resumeRun(runId);

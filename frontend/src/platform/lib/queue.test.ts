@@ -7,6 +7,7 @@
 // isolation is exactly the kind of thing that drifts back.
 import { describe, expect, it } from "bun:test";
 import {
+  canForceStart,
   canRunNext,
   chatUrl,
   PENDING_KEY_PREFIX,
@@ -14,6 +15,8 @@ import {
   QUEUED_PARAM,
   NEXT_IN_FOLDER,
   QUEUE_CAPTION_SEP,
+  FORCE_START_HINT,
+  FORCE_START_LABEL,
   QUEUE_PRIORITY_GLYPH,
   QUEUED_WORD,
   queueAfter,
@@ -270,6 +273,48 @@ describe("runs next", () => {
     expect(waitingCardText(2, { ...nowSecond, queue_priority: true })).toBe(
       "2 messages queued · next in this folder",
     );
+  });
+
+  it("offers FORCE START at every place in a line, including the first", () => {
+    // THE WHOLE LINE BETWEEN THE TWO VERBS (Akshil, 2026-09-21). Run next
+    // changes the ORDER of what is waiting, so at position 1 it had nothing to
+    // get in front of. Force start does not reorder anything — it takes the
+    // message out of the line and runs it beside the folder's owner — and a task
+    // standing 1st is still waiting on a turn that may have an hour left in it.
+    expect(canForceStart({ queue_position: 1, queue_ahead: "TASK-056" })).toBe(true);
+    expect(canForceStart({ queue_position: 3, queue_ahead: "TASK-041" })).toBe(true);
+    // …and the two disagree exactly there, which is the point of having both.
+    expect(canRunNext({ queue_position: 1, queue_ahead: "TASK-056" })).toBe(false);
+
+    // POSITION 0 IS STILL NO PRESS: the server placed this row nowhere, so the
+    // press would have no subject and could only 400.
+    expect(canForceStart({ queue_position: 0, queue_ahead: "TASK-038" })).toBe(false);
+    expect(canForceStart({ queue_ahead: "TASK-038" })).toBe(false);
+    expect(canForceStart({})).toBe(false);
+
+    // A CLAIMED SPOT IS STILL A WAITING ONE, unlike Run next, which was done the
+    // moment `queue_priority` landed: "next" is not "now".
+    expect(
+      canForceStart({ queue_position: 1, queue_ahead: "TASK-038", queue_priority: true }),
+    ).toBe(true);
+    expect(
+      canRunNext({ queue_position: 1, queue_ahead: "TASK-038", queue_priority: true }),
+    ).toBe(false);
+  });
+
+  it("says what Force start costs, because the label cannot", () => {
+    // "Force" and not "Run now": the press puts a SECOND turn in one working
+    // tree, which is the thing the project queue exists to prevent by default —
+    // so the LABEL carries the cost and the hint says, in two words, when it
+    // happens. The hint used to name the run it starts beside; the label's own
+    // word already carries that, and a tooltip nobody finishes reading is worse
+    // than a short one (Akshil, 2026-09-21).
+    expect(FORCE_START_LABEL).toBe("Force start");
+    expect(FORCE_START_HINT).toBe("Run immediately");
+    // AND IT IS NOT RUN NEXT'S SENTENCE. That one promises the opposite, and the
+    // two must never be readable as the same press.
+    expect(FORCE_START_HINT).not.toContain("nothing is interrupted");
+    expect(FORCE_START_LABEL).not.toContain("Run next");
   });
 
   it("is the verb every surface says, in one place", () => {
