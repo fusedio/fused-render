@@ -125,8 +125,14 @@ function fakeFetch(url: string | URL, init?: RequestInit): Promise<Response> {
   // (`indexScan`, a prop here), not from this reply.
   if (u.startsWith("/api/index/scan-folder")) {
     const path = (JSON.parse(String(init?.body ?? "{}")) as { path: string }).path;
-    if (folderScanThrows) return Promise.reject(new Error("network down"));
+    // Pushed BEFORE the throw check (code review finding 8): the call was
+    // still ATTEMPTED even when the fetch itself is about to reject, and a
+    // test asserting the trigger is silent needs to first prove the call
+    // happened at all — otherwise "no error" and "never fired" are
+    // indistinguishable, which is exactly the bug that let the "thrown
+    // fetch is silent" test below pass with the trigger deleted.
     folderScanCalls.push(path);
+    if (folderScanThrows) return Promise.reject(new Error("network down"));
     return Promise.resolve(
       new Response(JSON.stringify({ ...folderScanReply, run_id: "r1", root: path }), {
         status: 200,
@@ -1280,9 +1286,15 @@ describe("a covered folder with a genuinely empty answer: fire a scan (SPEC-empt
     const box = mount();
     await type(box, "report");
     // The rank resolve itself must not throw/reject the render even though
-    // the scan POST it triggers does.
+    // the scan POST it triggers does. `folderScanCalls` still gets the
+    // attempted call (the fake `fetch` pushes to it BEFORE deciding whether
+    // to reject — code review finding 8): a bare `toEqual([])` here would
+    // pass just as well with the whole trigger deleted, which is exactly
+    // the "worthless test" the finding called out. Proving the call
+    // happened AND that the render stayed healthy is what actually verifies
+    // the rejection was swallowed rather than never attempted.
     await flush(() => rankCalls[0].resolve(answer()));
-    expect(folderScanCalls).toEqual([]);
+    expect(folderScanCalls).toEqual([HOME]);
     expect(noteText(box)).toContain("No file name matched");
     box.unmount();
   });
@@ -1306,21 +1318,41 @@ describe("a covered folder with a genuinely empty answer: fire a scan (SPEC-empt
 
   // Part 3 of the spec: the note's own copy while the triggered scan runs.
   // `displayAnswer.reason` is "" (covered) and was frozen at rank time; only
-  // the live poll can say a scan is running for this exact root right now.
-  test("switches to the 'still building' copy once the poll confirms the triggered scan is running", async () => {
+  // a CONFIRMED-started scan of THIS root can say a build is in progress
+  // (code review findings 2 & 3 — gated on `emptyScanRunning`, set from
+  // `requestFolderScan`'s own `started` reply, never the live status poll's
+  // machine-wide `scanning`). With the default `folderScanReply = {started:
+  // true}`, that confirmation lands in the SAME flush as the rank reply —
+  // no separate `box.poll(...)` needed, unlike the old (wrong) design this
+  // test used to verify.
+  test("switches to the 'still building' copy the moment the scan request confirms started", async () => {
     const box = mount(scanStatus({ scanning: false }));
     await type(box, "report");
     await flush(() => rankCalls[0].resolve(answer()));
     expect(folderScanCalls).toEqual([HOME]);
-    expect(noteText(box)).toContain("No file name matched");
-
-    box.poll(scanStatus({ scanning: true, files: 42 }));
     expect(noteText(box)).toContain("still building");
-    expect(noteText(box)).toContain("42");
     box.unmount();
   });
 
-  test("stays plain when the poll has not answered yet (null) — no false positive on load", async () => {
+  test("code review finding 2 regression: an unrelated machine-wide scan must not claim OUR root is building", async () => {
+    // The live poll (`scanning: true`) reports some scan running somewhere
+    // on the machine, but OUR OWN `requestFolderScan` was refused
+    // (`started: false`) — the note must stay plain, not read the unrelated
+    // scan as evidence a build is in progress for THIS root.
+    folderScanReply = { started: false, why: "debounced" };
+    const box = mount(scanStatus({ scanning: true, files: 42 }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer()));
+    expect(folderScanCalls).toEqual([HOME]);
+    expect(noteText(box)).toContain("No file name matched");
+    expect(noteText(box)).not.toContain("still building");
+    box.unmount();
+  });
+
+  test("stays plain when the poll has not answered yet (null) and no scan of our own was confirmed", async () => {
+    // No confirmed scan of our own (a refusal) means no "still building",
+    // whatever the poll — here, absent (null) entirely — says.
+    folderScanReply = { started: false, why: "debounced" };
     const box = mount(null);
     await type(box, "report");
     await flush(() => rankCalls[0].resolve(answer()));
@@ -1333,6 +1365,27 @@ describe("a covered folder with a genuinely empty answer: fire a scan (SPEC-empt
     const box = mount(scanStatus({ scanning: true, files: 5 }));
     await type(box, "report");
     await flush(() => rankCalls[0].resolve(answer({ hits: [hit("report.csv")] })));
+    expect(noteText(box)).not.toContain("still building");
+    box.unmount();
+  });
+
+  // Code review finding 6: the covered branch used to read `displayAnswer`
+  // (which can hold a PREVIOUS query's answer across a failed request)
+  // rather than testing the current request's own outcome. A held
+  // covered-but-empty answer plus a now-failed request for a DIFFERENT
+  // query must never read as "our new query's scan is still building".
+  test("finding 6: a failed request does not read a held empty answer as evidence for the new query", async () => {
+    const box = mount();
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer())); // covered, empty -> held
+    expect(folderScanCalls).toEqual([HOME]);
+    expect(noteText(box)).toContain("still building");
+
+    await type(box, "reportx");
+    await flush(() => rankCalls[rankCalls.length - 1].reject("network error"));
+    // The held answer is still "" / empty, but THIS query's request failed —
+    // `failure !== ""` must keep the note from claiming a build is running
+    // for a query that never actually got a covered-but-empty verdict.
     expect(noteText(box)).not.toContain("still building");
     box.unmount();
   });
