@@ -233,7 +233,14 @@ class RescanQueue:
             self._pending.clear()
         now = self._now()
         defer = {}
-        for folder in self._outermost(pending):
+        outermost, excess = self._outermost(pending)
+        for folder in excess:
+            # Past MAX_FOLDERS for this cycle, not dropped: kept pending so
+            # the next cycle scans them. `waited` is preserved via `pending`
+            # (never overwritten below), so a folder that keeps landing in
+            # the excess still hits `deadline_s` like any other deferral.
+            defer[folder] = pending[folder]
+        for folder in outermost:
             if self._blocked(folder):
                 logger.info("index: not rescanning %s (nothing may scan it)",
                             folder)
@@ -262,14 +269,24 @@ class RescanQueue:
                     self._pending.setdefault(folder, first)
                 self._arm_locked()
 
-    def _outermost(self, pending: dict) -> list:
-        """The pending folders no other pending folder already covers."""
+    def _outermost(self, pending: dict) -> tuple[list, list]:
+        """The pending folders no other pending folder already covers, split
+        into (this cycle's folders, the excess past MAX_FOLDERS).
+
+        The excess is NOT dropped — `_fire` defers it to the next cycle
+        instead. `MAX_FOLDERS` still caps how many scans one cycle starts (a
+        hundred distinct folders is still a pathological burst, and this
+        caller ISN'T the pathological one any more: `note_folders`'s only
+        caller today, the live watcher, has already collapsed anything that
+        big to the whole root before it ever reaches `note_folders` — see
+        `index_watch.py`'s `_flush`)."""
         out = outermost_folders(pending)
         if len(out) > MAX_FOLDERS:
-            logger.info("index: %d folders mutated at once; rescanning the "
-                        "first %d", len(out), MAX_FOLDERS)
-            out = out[:MAX_FOLDERS]
-        return out
+            logger.info("index: %d folders mutated at once; scanning the "
+                        "first %d this cycle, deferring the rest",
+                        len(out), MAX_FOLDERS)
+            return out[:MAX_FOLDERS], out[MAX_FOLDERS:]
+        return out, []
 
 
 def _real_start(root: str) -> None:

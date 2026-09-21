@@ -181,6 +181,33 @@ def test_nothing_is_armed_when_there_is_nothing_to_do():
     assert f.armed == []
 
 
+def test_more_than_max_folders_defers_the_rest_instead_of_losing_them():
+    """`_outermost` used to truncate with `out[:MAX_FOLDERS]` AFTER `_fire`
+    had already cleared `self._pending` — so folders past the sixteenth
+    were dropped permanently, never scanned. This needed a pathological
+    caller before RescanQueue.note_folders existed; the live watcher makes
+    exceeding MAX_FOLDERS in one burst ordinary. The excess must stay
+    pending for the next cycle, the same as a folder deferred for a live
+    run or a floor."""
+    from fused_render.server.index_touch import MAX_FOLDERS
+
+    f = Fake()
+    q = f.queue()
+    many = [f"/home/me/d{i:03d}" for i in range(MAX_FOLDERS + 3)]
+    q.note_folders(*many)
+    f.fire()
+    assert len(f.started) == MAX_FOLDERS, (
+        "one cycle still scans at most MAX_FOLDERS — the rest defer, they "
+        "don't all fire at once")
+    assert f.armed[-1] == q.coalesce_s  # re-armed for the deferred excess
+
+    f.fire()  # the deferred cycle
+    assert len(f.started) == MAX_FOLDERS + 3, (
+        "the folders past the sixteenth must eventually be scanned too, "
+        "not lost")
+    assert sorted(f.started) == sorted(canonical_root(p) for p in many)
+
+
 def test_a_start_that_fails_does_not_strand_the_rest():
     """One bad folder (gone between the mutation and the scan) must not stop
     the others, and must not raise into a request thread."""
