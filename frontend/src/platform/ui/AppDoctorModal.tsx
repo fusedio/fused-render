@@ -181,6 +181,7 @@ function CheckRow({
   onFix,
   onCheck,
   onPull,
+  onDone,
 }: {
   check: AppCheck;
   busy: boolean;
@@ -199,6 +200,11 @@ function CheckRow({
   /** `force` is Re-check: run again although the cached verdict still matches. */
   onCheck: (check: AppCheck, force?: boolean) => void;
   onPull: (check: AppCheck) => void;
+  /** Fires after a navigating action — "Open in git" included (B4,
+   *  FIXES-round-1.md) — the same idiom `fixRow`/`followLive`/`runFix`
+   *  already use to dismiss the dialog once the user has actually landed
+   *  somewhere else. `undefined` from the tab, which has nothing to close. */
+  onDone?: () => void;
 }) {
   const { shown, hidden } = splitFindings(check.findings);
   const failing = check.state === "fail";
@@ -374,7 +380,10 @@ function CheckRow({
                   size="icon-sm"
                   title="Open in git"
                   aria-label="Open in git"
-                  onClick={() => navigate(check.gitRoot as string, { isDir: true, mode: "git" })}
+                  onClick={() => {
+                    navigate(check.gitRoot as string, { isDir: true, mode: "git" });
+                    onDone?.();
+                  }}
                 >
                   <GitBranch aria-hidden />
                 </Button>
@@ -443,8 +452,15 @@ export function useAppDoctorReport(dir: string, onDone?: () => void) {
   // this asked again.
   useEffect(() => {
     if (!report || gitRetried.current || !gitRowFetchPending(report.checks)) return;
-    gitRetried.current = true;
     const timer = setTimeout(() => {
+      // Set the ref only once the timer actually FIRES (B3, FIXES-round-1.md)
+      // — not when the effect merely schedules it. `runCheck` on any OTHER
+      // row calls `setReport` with a new object, which cancels this timer via
+      // the cleanup below and re-runs the effect; setting the ref up front
+      // would have already marked the retry "used" on the cancelled attempt,
+      // stranding the git row on SKIP forever. Deferring the flag lets the
+      // re-armed effect schedule a fresh timer instead.
+      gitRetried.current = true;
       void (async () => {
         try {
           const fresh = await getAppDoctor(dir);
@@ -598,6 +614,7 @@ export function useAppDoctorReport(dir: string, onDone?: () => void) {
     runCheck,
     pulling,
     pullRow,
+    onDone,
   };
 }
 
@@ -626,6 +643,7 @@ function AppDoctorChecklist({
   runCheck,
   pulling,
   pullRow,
+  onDone,
 }: Report) {
   return (
     <>
@@ -655,6 +673,7 @@ function AppDoctorChecklist({
                   onFix={fixRow}
                   onCheck={(check, force) => void runCheck(check, force)}
                   onPull={(check) => void pullRow(check)}
+                  onDone={onDone}
                 />
               ))}
             </ul>

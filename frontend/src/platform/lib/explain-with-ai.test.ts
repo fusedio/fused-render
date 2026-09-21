@@ -114,6 +114,28 @@ describe("resolveDefaultFolder", () => {
       })) as unknown as typeof fetch;
     expect(await resolveDefaultFolder()).toBe("/Users/me/Fused");
   });
+
+  test("B5 (FIXES-round-1.md): an empty fused_dir does not permanently strand later calls", async () => {
+    // A SUCCESSFUL config fetch that resolves an empty `fused_dir` — this is
+    // NOT the `.catch` path, so before the fix `inFlight` was never cleared
+    // and `resolveDefaultFolder` (seeing `cachedDefaultFolder === undefined`,
+    // since an empty string was never assigned here) would keep handing back
+    // the SAME stale resolved promise on every later call, forever, even
+    // once a real value became available.
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch;
+    expect(await resolveDefaultFolder()).toBeUndefined();
+
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ fused_dir: "/Users/me/Fused" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch;
+    expect(await resolveDefaultFolder()).toBe("/Users/me/Fused");
+  });
 });
 
 describe("explainWithAi", () => {

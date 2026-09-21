@@ -43,9 +43,17 @@ function fetchDefaultFolder(): Promise<string | undefined> {
       cachedDefaultFolder = c.fused_dir;
       return cachedDefaultFolder;
     })
-    .catch(() => {
+    .catch(() => undefined)
+    .finally(() => {
+      // B5 (FIXES-round-1.md): clear on EVERY settlement, not just the
+      // failure path. If `fused_dir` ever resolves empty/falsy,
+      // `cachedDefaultFolder !== undefined` stays false above (`undefined`
+      // reads as "unresolved"), so `resolveDefaultFolder` re-enters this
+      // function on the next call — and without this, it would get handed
+      // back the SAME already-settled (still-falsy) promise, making every
+      // later click on a folderless surface a permanent silent no-op with
+      // no way to ever retry.
       inFlight = null;
-      return undefined;
     });
   return inFlight;
 }
