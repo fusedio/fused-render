@@ -77,20 +77,30 @@ class PtySession:
         master_fd, slave_fd = os.openpty()
         self.master_fd = master_fd
         try:
-            # See module docstring: close_fds=False, absolute interpreter
-            # path, no cwd=, no start_new_session=True, no preexec_fn. This
-            # combination is what keeps this Popen on the posix_spawn path.
-            self.proc = subprocess.Popen(
-                [sys.executable, _HELPER, profile.cwd, *profile.argv],
-                stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
-                env=profile.env,
-                close_fds=False,
-            )
-        finally:
-            # The parent's copy of the slave fd must close so the master's
-            # read() only sees EOF once the CHILD's copies are gone too
-            # (the child inherited its own via stdin/stdout/stderr).
-            os.close(slave_fd)
+            try:
+                # See module docstring: close_fds=False, absolute interpreter
+                # path, no cwd=, no start_new_session=True, no preexec_fn.
+                # This combination is what keeps this Popen on the
+                # posix_spawn path.
+                self.proc = subprocess.Popen(
+                    [sys.executable, _HELPER, profile.cwd, *profile.argv],
+                    stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+                    env=profile.env,
+                    close_fds=False,
+                )
+            finally:
+                # The parent's copy of the slave fd must close so the
+                # master's read() only sees EOF once the CHILD's copies are
+                # gone too (the child inherited its own via
+                # stdin/stdout/stderr).
+                os.close(slave_fd)
+        except BaseException:
+            # Popen itself raised (ENOENT on the helper, EAGAIN under load):
+            # no `proc` exists, no registry entry will ever be created for
+            # this instance, so nothing else will ever close `master_fd`.
+            # Without this, each failed create leaks a pty master.
+            os.close(master_fd)
+            raise
 
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
@@ -160,6 +170,27 @@ class PtySession:
         with self._lock:
             return bytes(self._scrollback)
 
+    def attach(self) -> tuple[bytes, bool, Optional[int], SimpleQueue]:
+        """Snapshot scrollback, the alive/exit_code pair, and register a new
+        subscriber queue — all under one lock acquisition.
+
+        This exists because a WS route that called `scrollback()`,
+        `alive`, and `subscribe()` as three separate calls (with `await`s
+        between them) had a real gap: output the reader thread produced in
+        that window landed after the scrollback snapshot but before the
+        subscriber queue existed, so it reached neither and was lost to that
+        client entirely. Worse, if the child exited in that window, the
+        `("exit", code)` broadcast could predate the subscription AND the
+        earlier `alive` check could have already passed, so the client would
+        never learn the shell died. One lock hold closes both gaps."""
+        q: SimpleQueue = SimpleQueue()
+        with self._lock:
+            snapshot = bytes(self._scrollback)
+            alive = self.alive
+            exit_code = self.exit_code
+            self._subscribers.append(q)
+        return snapshot, alive, exit_code, q
+
     def subscribe(self) -> SimpleQueue:
         q: SimpleQueue = SimpleQueue()
         with self._lock:
@@ -190,6 +221,16 @@ class PtySession:
         child's ACTUAL current group with `os.getpgid` and only calls
         `killpg` once that equals its own pid; otherwise it signals the pid
         alone, which is always safe."""
+        if not self.alive:
+            # The reader thread has already called `self.proc.wait()` and
+            # reaped the child by the time `alive` goes False — the pid is
+            # therefore free for the OS to hand to an unrelated process.
+            # Without this check, `shutdown_all()`/`registry.kill()` calling
+            # `kill()` on every session (including long-dead ones) could
+            # resolve a recycled pid's `os.getpgid()` as a live process and
+            # SIGHUP/SIGKILL it (or its whole group, if it happens to be a
+            # group leader) — a process this code has nothing to do with.
+            return
         pid = self.proc.pid
         self._signal(pid, signal.SIGHUP)
         deadline = time.time() + _KILL_GRACE_S
@@ -228,6 +269,7 @@ class PtySessionRegistry:
 
     def create(self, cwd: Optional[str] = None) -> PtySession:
         with self._lock:
+            self._reap_dead_locked()
             live = sum(1 for s in self._sessions.values() if s.alive)
             if live >= MAX_SESSIONS:
                 raise SessionLimitError(
@@ -245,6 +287,7 @@ class PtySessionRegistry:
 
     def list(self) -> list[PtySession]:
         with self._lock:
+            self._reap_dead_locked()
             return list(self._sessions.values())
 
     def kill(self, sid: str) -> bool:
@@ -258,11 +301,20 @@ class PtySessionRegistry:
         """Drop sessions whose child has exited from the registry so a new
         session can be created in their place. Live subscribers already got
         the {"exit": code} frame from the reader thread; this only affects
-        `create`'s cap accounting."""
+        `create`'s cap accounting and what `list()` reports.
+
+        Called from both `create()` and `list()` (each under the same lock
+        this acquires, via `_reap_dead_locked`) — a dead session otherwise
+        lingered in the registry for the life of the process, kept
+        appearing in `GET /api/terminal`, and let a client "verify" a cached
+        id that actually belonged to an exited shell."""
         with self._lock:
-            dead = [sid for sid, s in self._sessions.items() if not s.alive]
-            for sid in dead:
-                del self._sessions[sid]
+            self._reap_dead_locked()
+
+    def _reap_dead_locked(self) -> None:
+        dead = [sid for sid, s in self._sessions.items() if not s.alive]
+        for sid in dead:
+            del self._sessions[sid]
 
     def shutdown_all(self) -> None:
         """Kill every live session and wait for its reader thread to notice.

@@ -95,6 +95,23 @@ def test_resize_control_frame_reaches_the_session(client, scratch_registry):
         _read_until(ws, b"40 120")
 
 
+def test_malformed_resize_values_do_not_kill_the_session(client, scratch_registry):
+    """Regression guard for finding 9 (code review, PR #1290): the route
+    validated that `resize` is a 2-element list but not that the elements
+    are numeric. `int("a")` raising ValueError used to propagate out of the
+    handler (not caught by `except WebSocketDisconnect`), tearing down an
+    otherwise healthy terminal over one bad control frame."""
+    sid = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
+
+    with client.websocket_connect(f"/api/terminal/{sid}/stream") as ws:
+        ws.receive_bytes()
+        ws.send_text(json.dumps({"resize": ["a", "b"]}))
+        # The session must still be usable afterward — this would hang/raise
+        # if the handler had already torn the socket down.
+        ws.send_bytes(b"echo still-alive\n")
+        _read_until(ws, b"still-alive")
+
+
 def test_delete_kills_the_session(client, scratch_registry):
     sid = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
 

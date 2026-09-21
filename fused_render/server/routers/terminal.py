@@ -103,14 +103,19 @@ async def api_terminal_stream(ws: WebSocket, sid: str):
         return
 
     await ws.accept()
+    # `attach()` snapshots scrollback, the alive/exit_code pair, and
+    # registers the subscriber queue all under one lock hold (PtySession's
+    # own docstring explains why: three separate lock acquisitions here,
+    # with awaits between them, used to lose output the reader thread
+    # produced in that window — and, worse, could miss the child's exit
+    # entirely if it died during the gap).
+    scrollback, alive, exit_code, out_queue = session.attach()
     # Replay scrollback first so a reattach repaints the screen before any
     # new output arrives; a plain empty bytes frame for a session with none
     # yet is harmless (xterm.js writes zero bytes and moves on).
-    await ws.send_bytes(session.scrollback())
-    if not session.alive:
-        await ws.send_text(json.dumps({"exit": session.exit_code}))
-
-    out_queue = session.subscribe()
+    await ws.send_bytes(scrollback)
+    if not alive:
+        await ws.send_text(json.dumps({"exit": exit_code}))
 
     async def pump_output():
         # A plain `await asyncio.to_thread(out_queue.get)` would block a
@@ -156,7 +161,17 @@ async def api_terminal_stream(ws: WebSocket, sid: str):
             resize = control.get("resize")
             if isinstance(resize, list) and len(resize) == 2:
                 rows, cols = resize
-                session.resize(int(rows), int(cols))
+                try:
+                    rows, cols = int(rows), int(cols)
+                except (TypeError, ValueError):
+                    # Malformed input is ignored, not fatal — same intent as
+                    # the JSONDecodeError guard above it. `int()` on a
+                    # non-numeric value (or None) previously raised straight
+                    # out of this handler, which `except WebSocketDisconnect`
+                    # does not catch, tearing down an otherwise healthy
+                    # terminal over a single bad control frame.
+                    continue
+                session.resize(rows, cols)
     except WebSocketDisconnect:
         pass
     finally:
