@@ -1,10 +1,17 @@
 """Keeping the file index honest about the changes THIS APP makes.
 
-There is no filesystem watcher (index/specs/scan.md), so the index is a
-snapshot: rename a file in the explorer and the index keeps offering the old
-name and cannot offer the new one until something scans that folder again. For
-out-of-band edits that is the documented trade. For an edit the user just made
-in this window it is not a trade, it is a visible lie.
+`index_watch.py` is the filesystem watcher that keeps the index honest about
+changes made OUTSIDE this app (a download, `touch ~/a.txt`, a sync client) —
+it observes the real change stream and feeds folders into this module's
+queue the same way a mutation endpoint does. This module is narrower: it is
+the policy for edits THIS process makes through its own endpoints, and it
+runs synchronously with the request rather than through a watch loop,
+because a rename in the explorer must not wait on a filesystem event round
+trip to stop lying about the old name. Without either mechanism the index is
+a pure snapshot: rename a file in the explorer and the index keeps offering
+the old name and cannot offer the new one until something scans that folder
+again. For an edit the user just made in this window that is not a trade, it
+is a visible lie.
 
 The in-folder search used to route around it — the mutated folder, its
 ancestors and its descendants were pinned to a live streamed walk for the rest
