@@ -353,27 +353,6 @@
   --tasks-column-max: 1050px;
 }
 
-/* THE APP PAGE UNDER A TIGHT PEEK (styles/task-peek.css, `data-tight`): once
-   the frame is narrower than the column plus its gutters, the 24px either
-   side of the header and the body are two dark bands. The BODY goes to the
-   full width and no further: the Tasks section inside it already takes the
-   4px inset the tight rule gives `.schedule-page > .prefs-section`, and an
-   inset on the body as well would put the app page's rows 4px further in
-   than `/tasks`'s at the same width (reviewer, 2026-09-20). The header and
-   the tab strip have no such section under them, so they keep their own 4px
-   here. */
-.tasks-frame[data-tight="1"] .app-page-body {
-  width: 100%;
-}
-
-.tasks-frame[data-tight="1"] .app-page-head {
-  width: calc(100% - 8px);
-}
-
-.tasks-frame[data-tight="1"] .app-page-tabbar {
-  padding-inline: 4px;
-}
-
 .app-page-empty {
   margin: 0;
   padding: 24px 0;
