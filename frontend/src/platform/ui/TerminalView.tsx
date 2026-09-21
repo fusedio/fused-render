@@ -51,21 +51,37 @@ export default function TerminalView({ id, onExit, onStatus }: TerminalViewProps
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(el);
+
+    const dataSub = term.onData((data) => session.write(data));
+    const resizeSub = term.onResize(({ rows, cols }) => session.resize(rows, cols));
+
     fit.fit();
 
     const session = new TerminalSession({
       id,
       onData: (chunk) => term.write(chunk),
       onExit: (code) => onExit?.(code),
-      onStatus: (status) => onStatus?.(status),
+      onStatus: (status) => {
+        if (status === "open") {
+          // The server replays the full scrollback on EVERY attach
+          // (fused_render/server/routers/terminal.py), and `connect()` is
+          // also the reconnect path — nothing else clears xterm's buffer
+          // between attempts, so a bare reconnect would paint that replay
+          // on top of whatever is already on screen. `reset()` here is a
+          // no-op the first time (the pane is already empty) and prevents
+          // duplicated output on every subsequent one. Re-send the current
+          // size right after: the pty keeps whatever size it had across a
+          // reattach, but the SOCKET does not, so every open (first
+          // connect and reconnect alike) has to resend it — sending it
+          // eagerly right after `new TerminalSession(...)` (the previous
+          // code) silently dropped the frame, since `TerminalSession.resize`
+          // no-ops until the socket reaches OPEN.
+          term.reset();
+          session.resize(term.rows, term.cols);
+        }
+        onStatus?.(status);
+      },
     });
-    // Send the initial size once the pty exists on the other end, and again
-    // on every subsequent xterm-driven resize (a wrap change from `fit()`,
-    // not just a user keystroke).
-    session.resize(term.rows, term.cols);
-
-    const dataSub = term.onData((data) => session.write(data));
-    const resizeSub = term.onResize(({ rows, cols }) => session.resize(rows, cols));
 
     const observer = new ResizeObserver(() => {
       fit.fit();
