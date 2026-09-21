@@ -281,3 +281,49 @@ export function reviewNote(checks: AppCheck[]): string {
 export function failingCount(checks: AppCheck[]): number {
   return checks.filter((c) => c.state === "fail").length;
 }
+
+// --------------------------------------------------------------- git row
+
+/** The consolidated `git` row draws up to THREE simultaneous actions
+ *  (Fix stays generic and is handled by `rowActionLabel`/`onFix` already) —
+ *  these two are new, `git`-only, and both read off fields ONLY that row
+ *  carries (`behind`/`ahead`/`gitRoot`, api.ts), so neither has any meaning
+ *  for another check id.
+ *
+ *  A row can show Pull AND Fix AND Open-in-git all at once: being behind
+ *  origin, having uncommitted work, and simply wanting to look at the repo
+ *  are three independent facts about the same folder — see
+ *  app_doctor.py's `_repo_health_check`, which folds all three into one
+ *  `failing_bits` list rather than three separate rows. */
+
+/** Origin is ahead of the local branch by a confirmed, nonzero count — the
+ *  one condition worth a "Pull" button. `behind` is `null`/`undefined`
+ *  until the async fetch resolves (or forever, with no remote to compare
+ *  against), and `0` reads as confirmed up to date — neither shows Pull. */
+export function showsPullAction(check: AppCheck): boolean {
+  return check.id === "git" && !!check.behind && check.behind > 0;
+}
+
+/** The row checked a real, readable git repository — "Open in git" opens
+ *  that repo's root in the in-app git mode regardless of whether anything
+ *  is wrong with it, so this is available on a passing row too. False when
+ *  the folder isn't in a repo this server can read (`gitRoot: null`). */
+export function showsOpenInGitAction(check: AppCheck): boolean {
+  return check.id === "git" && !!check.gitRoot;
+}
+
+/** The `git` row's own remote check has not landed yet: local state is
+ *  known (the row exists, and it names a real repo) but `behind`/`ahead`
+ *  are both still unset. `useAppDoctorReport` uses this once, right after a
+ *  report lands, to decide whether a single delayed re-`load()` is worth
+ *  scheduling — Doctor never blocks the initial paint on the fetch, so this
+ *  is the only way the panel notices the fetch finished without the person
+ *  pressing Re-run themselves. Deliberately not a bounded "will this ever
+ *  resolve" prediction (a repo with no remote also reads this way, and
+ *  never resolves) — one extra fetch that lands on an unchanged SKIP is a
+ *  cheap, one-time cost, and the caller only fires it once, not on a
+ *  timer. */
+export function gitRowFetchPending(checks: AppCheck[]): boolean {
+  const git = checks.find((c) => c.id === "git");
+  return !!git && !!git.gitRoot && git.behind == null && git.ahead == null;
+}

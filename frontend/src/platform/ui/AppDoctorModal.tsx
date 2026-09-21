@@ -83,9 +83,20 @@
 // importing either app's helpers (an app may not import the shell — the same
 // reason Preview.tsx spells `/apps/<folder>?_tab=tasks` by hand).
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, CircleAlert, CircleMinus, CirclePlay, RotateCw, TriangleAlert, X } from "lucide-react";
+import {
+  Check,
+  CircleAlert,
+  CircleMinus,
+  CirclePlay,
+  GitBranch,
+  GitPullRequest,
+  RotateCw,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 import {
   getAppDoctor,
+  postJson,
   runAppDoctorAll,
   runAppDoctorCheck,
   runAppDoctorOnDemand,
@@ -96,6 +107,7 @@ import {
 } from "@platform/lib/api";
 import {
   findingWhere,
+  gitRowFetchPending,
   groupBySection,
   rowActionLabel,
   failingCount,
@@ -105,6 +117,8 @@ import {
   rowStateAccessibleLabel,
   rowVisibleDetailText,
   SECTION_LABEL,
+  showsOpenInGitAction,
+  showsPullAction,
   sortByAttention,
   splitFindings,
   tasksTabUrl,
@@ -123,8 +137,17 @@ import { cn } from "@platform/lib/utils";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { appLandingUrl } from "@platform/lib/appLanding";
-import { navigateUrl } from "@platform/lib/router";
+import { navigate, navigateUrl } from "@platform/lib/router";
 import { announceAppDoctorChanged, announceTasksChanged } from "@platform/lib/tasksChanged";
+
+// The Pull button's own mutation result — same minimal shape
+// shell/RepoUpdatesDock.tsx's own `MutationResult` keeps local rather than
+// exported, since neither surface needs the other's. Pull reuses that same
+// `POST /api/git-upstream {action: "update", root}` endpoint (never a new
+// one): by the time this row can show Pull at all, `behind > 0` was read
+// from `git_upstream`'s own state cache, so that root is already a
+// "known repo" the endpoint's own allowlist (`is_known_repo`) accepts.
+type PullResult = { ok: boolean; reason?: string; message?: string };
 
 // A FAILING state draws by severity, not just by colour: a critical failure
 // is an alert circle, a warning is a triangle (the shape everyone already
@@ -154,8 +177,10 @@ function CheckRow({
   otherTaskLive,
   checking,
   anyChecking,
+  pulling,
   onFix,
   onCheck,
+  onPull,
 }: {
   check: AppCheck;
   busy: boolean;
@@ -168,16 +193,23 @@ function CheckRow({
   /** Some on-demand row's model call is in flight — one at a time, so the
    *  server's per-folder single-flight never has a second press to queue. */
   anyChecking: boolean;
+  /** THIS row's Pull is in flight — `git`-only, never true for another row. */
+  pulling: boolean;
   onFix: (check: AppCheck) => void;
   /** `force` is Re-check: run again although the cached verdict still matches. */
   onCheck: (check: AppCheck, force?: boolean) => void;
+  onPull: (check: AppCheck) => void;
 }) {
   const { shown, hidden } = splitFindings(check.findings);
   const failing = check.state === "fail";
+  const openInGit = showsOpenInGitAction(check);
   // An on-demand row always has something to press — Check when it has not
   // been run on this content, Re-check once it has — so it takes the fuller
-  // box a row with an action wears, even when it passed.
-  const hasAction = failing || check.ondemand;
+  // box a row with an action wears, even when it passed. So does the `git`
+  // row once it has resolved a real repo root: "Open in git" is worth
+  // offering even on a PASSING row (there is nothing to fix, but there is
+  // still somewhere to look).
+  const hasAction = failing || check.ondemand || openInGit;
   return (
     <li
       className={cn(
@@ -261,6 +293,25 @@ function CheckRow({
             </Button>
           ) : (
             <>
+              {/* Prominent and FIRST — a repo behind origin is the one
+                  finding here a person is likely to act on immediately, and
+                  unlike Fix/Review it never needs a Claude session: it is a
+                  fast-forward `git pull`, nothing to judge. Shown alongside
+                  Fix, not instead of it — being behind origin and having
+                  uncommitted work are independent facts about the same
+                  folder (see appdoctor-lib.ts's `showsPullAction`). */}
+              {showsPullAction(check) && (
+                <Button
+                  variant="default"
+                  size="sm"
+                  disabled={pulling || busy || otherTaskLive}
+                  title="Fast-forward this repo to match origin"
+                  onClick={() => onPull(check)}
+                >
+                  <GitPullRequest aria-hidden />
+                  {pulling ? "Pulling…" : "Pull"}
+                </Button>
+              )}
               {failing &&
                 (check.task ? (
                   <Button
@@ -311,6 +362,23 @@ function CheckRow({
                   <RotateCw aria-hidden className={checking ? "animate-spin" : undefined} />
                 </Button>
               )}
+              {/* Never a fix action: opens the IN-APP git mode on this row's
+                  repo root (never an external client — out of scope per the
+                  spec), so it draws quietly even on a passing row — there is
+                  nothing to fix, only somewhere to look. Icon-only for the
+                  same reason the on-demand Re-check button above is: it must
+                  never compete with Pull/Fix for attention. */}
+              {openInGit && check.gitRoot && (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  title="Open in git"
+                  aria-label="Open in git"
+                  onClick={() => navigate(check.gitRoot as string, { isDir: true, mode: "git" })}
+                >
+                  <GitBranch aria-hidden />
+                </Button>
+              )}
             </>
           )}
         </div>
@@ -327,13 +395,18 @@ export function useAppDoctorReport(dir: string, onDone?: () => void) {
   const [report, setReport] = useState<AppDoctorReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pulling, setPulling] = useState<string | null>(null);
   const alive = useRef(true);
+  // The `git` row's own async remote fetch: at most one silent retry per
+  // mount (see the effect below) — never a poll loop.
+  const gitRetried = useRef(false);
   useEffect(() => {
     // Re-arm on every mount: a remount (or React's dev double-invoke under
     // StrictMode) would otherwise leave this false forever, and every
     // setReport/setError below would be skipped — the checklist stuck on
     // SkeletonLines with no error shown.
     alive.current = true;
+    gitRetried.current = false;
     return () => {
       alive.current = false;
     };
@@ -356,6 +429,47 @@ export function useAppDoctorReport(dir: string, onDone?: () => void) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Doctor never blocks the initial paint on the `git` row's async remote
+  // fetch (git_upstream's own throttled background dispatch) — the panel
+  // paints immediately with that row reading SKIP, "not checked yet". This
+  // is the one place that notices when the fetch has actually landed,
+  // without the person having to press Re-run themselves: a SINGLE delayed
+  // re-ask, patching only the `git` row in place (never `load()`'s own
+  // reset-to-null, which would re-skeleton the whole panel over one row's
+  // late answer). Fires at most once per mount — a repo with no remote at
+  // all reads exactly like a fetch still pending (appdoctor-lib.ts's
+  // `gitRowFetchPending`), and would never resolve no matter how many times
+  // this asked again.
+  useEffect(() => {
+    if (!report || gitRetried.current || !gitRowFetchPending(report.checks)) return;
+    gitRetried.current = true;
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const fresh = await getAppDoctor(dir);
+          const freshGit = fresh.checks.find((c) => c.id === "git");
+          if (alive.current && freshGit) {
+            setReport((cur) =>
+              cur
+                ? {
+                    ...cur,
+                    checks: cur.checks.map((c) =>
+                      c.id === "git" ? { ...freshGit, task: c.task } : c,
+                    ),
+                  }
+                : cur,
+            );
+          }
+        } catch {
+          // Silent: the row just keeps its current (SKIP) reading — the
+          // tab/dialog's own Re-run still works if the person wants another
+          // try right away.
+        }
+      })();
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [report, dir]);
 
   // Any row's live task is the whole app's live task — the server allows
   // exactly one at a time, so whichever row (or "Fix all") is running is the
@@ -394,6 +508,38 @@ export function useAppDoctorReport(dir: string, onDone?: () => void) {
   };
 
   const fixAll = () => void runFix(() => runAppDoctorAll(dir));
+
+  // Pull: a fast-forward-only `git fetch && merge`, not a fix session — no
+  // Claude task, no navigation away from the panel. Reuses the SAME
+  // `POST /api/git-upstream {action: "update", root}` mutation
+  // shell/RepoUpdatesDock.tsx's own Update button calls; that endpoint's
+  // allowlist (`git_upstream.is_known_repo`) already accepts this root,
+  // since the row could only be showing Pull because `git_upstream` itself
+  // just reported it behind. On success (or failure) re-`load()`s the whole
+  // report — a pull can change more than the one row (a `.gitignore` that
+  // just arrived from origin could turn an uncommitted-path failure into a
+  // pass, for instance), so a full reset-and-reload is correct here in a way
+  // it would not be for the silent remote-fetch retry above.
+  const pullRow = async (check: AppCheck) => {
+    if (pulling || !check.gitRoot) return;
+    setPulling(check.id);
+    setError(null);
+    try {
+      const res = await postJson<PullResult>("/api/git-upstream", {
+        action: "update",
+        root: check.gitRoot,
+      });
+      if (!res.ok) {
+        if (alive.current) setError(res.message || "pull failed");
+      } else {
+        await load();
+      }
+    } catch (e) {
+      if (alive.current) setError((e as Error).message);
+    } finally {
+      if (alive.current) setPulling(null);
+    }
+  };
 
   const followLive = () => {
     navigateUrl(tasksTabUrl(dir));
@@ -439,7 +585,20 @@ export function useAppDoctorReport(dir: string, onDone?: () => void) {
     }
   };
 
-  return { report, error, busy, liveTask, load, fixRow, fixAll, followLive, checking, runCheck };
+  return {
+    report,
+    error,
+    busy,
+    liveTask,
+    load,
+    fixRow,
+    fixAll,
+    followLive,
+    checking,
+    runCheck,
+    pulling,
+    pullRow,
+  };
 }
 
 type Report = ReturnType<typeof useAppDoctorReport>;
@@ -457,7 +616,17 @@ function SummaryText({ report }: { report: AppDoctorReport }) {
 }
 
 // The grouped checklist, skeleton while loading, error banner above.
-function AppDoctorChecklist({ report, error, busy, liveTask, fixRow, checking, runCheck }: Report) {
+function AppDoctorChecklist({
+  report,
+  error,
+  busy,
+  liveTask,
+  fixRow,
+  checking,
+  runCheck,
+  pulling,
+  pullRow,
+}: Report) {
   return (
     <>
       <ErrorBanner>{error}</ErrorBanner>
@@ -482,8 +651,10 @@ function AppDoctorChecklist({ report, error, busy, liveTask, fixRow, checking, r
                   otherTaskLive={!!liveTask && !c.task}
                   checking={checking === c.id}
                   anyChecking={checking !== null}
+                  pulling={pulling === c.id}
                   onFix={fixRow}
                   onCheck={(check, force) => void runCheck(check, force)}
+                  onPull={(check) => void pullRow(check)}
                 />
               ))}
             </ul>

@@ -2677,6 +2677,19 @@ export interface AppCheck {
    *  (fused_render/app_doctor_ai.py). `state: "unrun"` only ever appears on
    *  one of these: never run, or the app changed since. */
   ondemand: boolean;
+  /** `git` row only: commits the local branch is behind/ahead of origin, or
+   *  `null` when the remote hasn't been checked yet (never fetched, still
+   *  fetching, or every attempt failed) or there's no remote to compare
+   *  against. `ahead` here is the LOCAL branch ahead of its upstream (same
+   *  thing the row's own `state`/`detail` already fold in) — present
+   *  alongside `behind` so the UI can decide whether to show Pull without
+   *  re-deriving it from prose. */
+  behind?: number | null;
+  ahead?: number | null;
+  /** The repo root this row checked, or `null` when the folder isn't in a
+   *  git repository this server can read. Used for "Open in git" — the
+   *  in-app git mode opens scoped to this root, not the app subfolder. */
+  gitRoot?: string | null;
 }
 
 export interface AppDoctorReport {

@@ -2988,3 +2988,70 @@ handoff report for the concrete next-step plan (the `onExplain?` prop
 shape, the `explain-with-ai.ts` helper reusing `stageClaudeAsk`, and the
 `Config.fused_dir`-based default-folder fallback modeled on
 `home-path.ts`).
+
+## Task 19 — App Doctor's git row: Pull/Open-in-git UI reuses the status-bar card's own mutation endpoint; no GitHub brand icon ships in this lucide-react version
+
+Frontend half of Task 17's consolidation: `frontend/src/platform/lib/api.ts`'s
+`AppCheck` grew `behind?`/`ahead?`/`gitRoot?`; `appdoctor-lib.ts` grew three
+pure helpers (`showsPullAction`, `showsOpenInGitAction`,
+`gitRowFetchPending`), each unit-tested (appdoctor-lib.test.ts); and
+`AppDoctorModal.tsx`'s `CheckRow` draws up to three simultaneous actions on
+the `git` row — Pull, Fix (unchanged), and a new icon-only "Open in git" —
+per the spec's "every applicable action simultaneously" requirement.
+
+Pull does NOT call a new endpoint. It reuses the exact
+`POST /api/git-upstream {action: "update", root}` mutation
+`shell/RepoUpdatesDock.tsx`'s own Update button already calls
+(`fused_render/server/routers/git_upstream.py`) — the status-bar card stays
+completely unchanged (spec constraint), and this is what makes the reuse
+sound: `git_upstream.is_known_repo(root)`, that endpoint's own allowlist,
+checks membership in `_state`, the same cache `_repo_health_check` reads via
+`repo_state_for`. By the time a Doctor row can show Pull at all (`behind >
+0`, a CONFIRMED value), `_state` already holds that root, so the allowlist
+always accepts it — no new guard needed, and no risk of the two surfaces'
+mutation paths drifting apart. On success the whole report is re-`load()`ed
+(a pull can change more than the one row — e.g. an incoming `.gitignore`
+turning an uncommitted-path failure into a pass), unlike the async-fetch
+retry below, which patches only the `git` row in place.
+
+"Open in git" calls the confirmed mechanism from the prior session's
+research, `navigate(check.gitRoot, { isDir: true, mode: "git" })` — the
+in-app git mode, never an external client (explicitly out of scope). Shown
+on ANY row that resolved a real repo root, passing or failing: there is
+always somewhere to look even when there is nothing to fix, so
+`CheckRow`'s `hasAction` gate was widened to include
+`showsOpenInGitAction(check)`, not just `failing || check.ondemand`.
+
+**Deviation from the spec's literal wording**: it asks for a "Pull button
+(GitHub icon)". This version of `lucide-react` (1.34.0) ships no GitHub
+brand icon — lucide dropped brand/logo glyphs some releases back — and no
+other icon package is installed. Used `GitPullRequest` instead (semantically
+apt for "Pull" and already in the dependency), and `GitBranch` for
+"Open in git". Flagged for human review in the final report rather than
+adding a new icon dependency for one button without asking.
+
+**The async-fetch UI resolution**: `useAppDoctorReport` never blocks its
+initial paint on `git_upstream`'s background fetch — the row lands SKIP
+("not checked yet") on first paint. A new effect
+(`appdoctor-lib.ts`'s `gitRowFetchPending` reads the landed report) fires
+AT MOST ONE delayed silent re-ask (2s, via a `gitRetried` ref reset once per
+mount) that patches only the `git` row into the existing report — never
+`load()`'s reset-to-null, which would re-skeleton the whole panel over one
+row's late answer. Deliberately not a poll loop: a repo with no remote at
+all reads identically to "fetch still pending" (both are `gitRoot` set,
+`behind`/`ahead` both null) and would never resolve no matter how many times
+this asked again, so the retry is bounded to exactly one attempt per mount,
+and a still-unresolved row after that one retry simply stays SKIP until the
+person presses the panel's own Re-run.
+
+Frontend tests: `bun test src/platform/ui/appdoctor-lib.test.ts` — 30 pass
+(15 new, covering the three helpers above; no dedicated `AppDoctorModal.tsx`
+component test exists or was added — that file's own header comment
+explains why: it renders through a portal chassis `react-test-renderer`
+cannot mount, which is exactly why every decision worth pinning was already
+split out into `appdoctor-lib.ts`, and the same rule applies to this
+round's new UI wiring). `bunx tsc --noEmit` clean; `bun run build` succeeds.
+The Pull/Open-in-git BUTTONS THEMSELVES (their exact placement, the "Pull"
+label copy, the icon substitution above) were not visually/interactively
+verified in a running app and are called out in the final report's NEEDS
+HUMAN VERIFICATION list.
