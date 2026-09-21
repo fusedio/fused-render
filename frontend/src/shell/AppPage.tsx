@@ -114,6 +114,7 @@ import { useAppVersionLabel } from "@platform/lib/appVersionLabel";
 import SnapshotError from "./SnapshotError";
 import { useAppPageSnapshot, type AppPageSnapshotState } from "./useAppPageSnapshot";
 import { TaskPeekFrame } from "./TaskPeekFrame";
+import { APP_PAGE_FIT_LABEL, useAppHeadFit, useAppTabbarFit } from "./app-page-fit";
 import { useTaskPeekEnabled } from "./task-peek-flag";
 import { useProjectPeekEnabled } from "./project-peek-flag";
 import { peekSearch } from "./task-peek-store";
@@ -461,6 +462,11 @@ export default function AppPage({
   // exactly as it does there. Only the Tasks tab can open one, and only while
   // the feature is on; any other tab (and the flag's first null frames) leaves
   // the page bare.
+  // THE HEADER AND THE TAB STRIP FOLD TO ICONS when the room runs out
+  // (shell/app-page-fit.ts): measured, never a breakpoint. `data-fit` is how
+  // many rungs have had to go; the stylesheet hides the words by it.
+  const [headFit, headRef] = useAppHeadFit();
+  const [tabbarFit, tabbarRef] = useAppTabbarFit();
   const peekOn = useTaskPeekEnabled();
   // …AND THE PROJECT FLAG (project-peek-flag.ts, `project_peek_enabled`,
   // default off): the peek on THIS page is a feature flag of its own while
@@ -539,7 +545,7 @@ export default function AppPage({
   return (
     <TaskPeekFrame peekable={peekable}>
     <div className="app-page">
-      <header className="app-page-head">
+      <header className="app-page-head" ref={headRef} data-fit={headFit}>
         <div className="app-page-title">
           {/* The app's mark, and the way to change it: a click opens the same
               icon picker the sidebar's Projects row does (below). The app's
@@ -615,12 +621,12 @@ export default function AppPage({
             >
               {sharing ? (
                 <>
-                  Share
+                  <span className={APP_PAGE_FIT_LABEL}>Share</span>
                   <Share2 data-icon="inline-end" />
                 </>
               ) : (
                 <>
-                  {exporting ? "Exporting…" : "Export"}
+                  <span className={APP_PAGE_FIT_LABEL}>{exporting ? "Exporting…" : "Export"}</span>
                   {exporting ? (
                     <Loader2 data-icon="inline-end" className="animate-spin" />
                   ) : (
@@ -639,9 +645,10 @@ export default function AppPage({
               size="sm"
               variant="default"
               className="app-page-open"
+              title="Open the app in the Explorer"
               onClick={() => navigateUrl(urlForFsPath(entry), { isDir: false })}
             >
-              Open
+              <span className={APP_PAGE_FIT_LABEL}>Open</span>
               <FolderOpen data-icon="inline-end" />
             </Button>
           </div>
@@ -661,7 +668,7 @@ export default function AppPage({
             page-wide state (task 3 puts all three visible tabs on the
             selected commit), so it sits beside the strip rather than inside
             any one panel. */}
-        <div className="app-page-tabbar flex-none">
+        <div className="app-page-tabbar flex-none" ref={tabbarRef} data-fit={tabbarFit}>
           {/* Controlled by the URL and ONLY the URL: no onValueChange, so a
               ctrl/middle-click on a trigger opens the address elsewhere without
               also switching this page. Real anchors under the triggers (base-ui's
@@ -686,6 +693,10 @@ export default function AppPage({
                     render={
                       <a
                         href={tabUrl(id)}
+                        // The word is what the fold hides; the tooltip and the
+                        // accessible name keep saying it (app-page-fit.ts).
+                        title={label}
+                        aria-label={label}
                         onClick={(e) => pickTab(e, id)}
                       />
                     }
@@ -702,7 +713,7 @@ export default function AppPage({
                     ) : (
                       <Icon data-icon="inline-start" />
                     )}
-                    {label}
+                    <span className={APP_PAGE_FIT_LABEL}>{label}</span>
                   </TabsTrigger>
                 );
               })}

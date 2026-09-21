@@ -668,3 +668,35 @@
 .app-page-body > .skeleton-lines {
   margin: 0;
 }
+
+/* ---- the header and the tab strip fold to icons (shell/app-page-fit.ts) ----
+   `data-fit` is how many rungs have had to go for the row to fit the width
+   it has — measured, never a breakpoint. EVERY selector names `[data-fit]`
+   and a non-zero level, so a page that has room (level 0) is exactly the
+   page it was. The tooltips and aria-labels keep the words. */
+.app-page-head[data-fit]:not([data-fit="0"]) .app-page-actions .app-page-fit-lbl,
+.app-page-tabbar[data-fit]:not([data-fit="0"]) .app-page-tabs .app-page-fit-lbl {
+  display: none;
+}
+
+/* An icon-only button is square-ish: the word's trailing-icon gap goes too. */
+.app-page-head[data-fit]:not([data-fit="0"]) .app-page-actions > button {
+  padding-inline: 10px;
+}
+
+.app-page-head[data-fit]:not([data-fit="0"]) .app-page-actions > button [data-icon="inline-end"] {
+  margin-inline-start: 0;
+}
+
+.app-page-tabbar[data-fit]:not([data-fit="0"]) .app-page-tabs a {
+  padding-inline: 12px;
+}
+
+.app-page-tabbar[data-fit]:not([data-fit="0"]) .app-page-tabs a [data-icon="inline-start"] {
+  margin-inline-end: 0;
+}
+
+/* Rung 1 of the tab bar: the "Version" eyebrow goes; the picker itself stays. */
+.app-page-tabbar[data-fit="2"] .app-version-picker-eyebrow {
+  display: none;
+}
