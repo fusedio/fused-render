@@ -2044,10 +2044,10 @@ function TemplatePreview({
   // instead.
   const ownsFileBar = !!actionsInTopbar && !stat.is_dir;
   const buildFileMenu = (): MenuEntry[] => {
-    if (!ownsFileBar) return fileMenu({ app: appRows.app, embed: appRows.embed });
+    if (!ownsFileBar) return fileMenu({ app: [...appRows.app, ...appRows.doctor], embed: appRows.embed });
     const own = fileOps.fileGroups();
     return fileMenu({
-      app: [...appRows.app, ...own.setPreview],
+      app: [...appRows.app, ...own.setPreview, ...appRows.doctor],
       file: own.file,
       open: [...own.open, ...own.splits],
       copy: own.copy,
