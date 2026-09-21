@@ -1760,8 +1760,10 @@ describe("the unarchive drag", () => {
     expect(handler).not.toMatch(/performUnarchive\(task\.key,/);
     expect(VIEWS).toContain("async function performUnarchive(key: string)");
     expect(VIEWS).toContain("await unarchiveTask(key)");
-    // And it says where the card actually went, because it may not be here.
-    expect(VIEWS).toContain("statusColumn(said.status)");
+    // And it says NOTHING on success (Akshil, 2026-09-21): the ring redrawing
+    // is the receipt, on the List, the card and the drag alike.
+    expect(VIEWS).not.toContain("Unarchived — back in");
+    expect(VIEWS).not.toContain("Nothing to unarchive");
   });
 });
 
@@ -4114,11 +4116,12 @@ describe("the archive action", () => {
     // was is why this button is shaped the way it is.
     expect(VIEWS).not.toMatch(/^\s*(const|let)\s+SHOW_UNARCHIVE/m);
     expect(VIEWS).not.toMatch(/SHOW_UNARCHIVE\s*&&/);
-    // Once per view. The ROW's is guarded for the row lent to another surface
-    // (`variant`), which has no filing to offer; the CARD's is unconditional.
-    expect((VIEWS.match(/const file = (chatVariant \? null : )?filingIntent\(task\);/g) ?? []).length)
-      .toBe(2);
-    expect(VIEWS).toContain("const file = chatVariant ? null : filingIntent(task);");
+    // Once per view, and UNCONDITIONAL on both — including the row lent to the
+    // chat landing's Recent chats (`variant`), which withheld it for a round
+    // (Akshil, 2026-09-21: "when I hover over the status allow me to archive,
+    // similar to the list item view in tasks page").
+    expect((VIEWS.match(/const file = filingIntent\(task\);/g) ?? []).length).toBe(2);
+    expect(VIEWS).not.toContain("chatVariant ? null : filingIntent(task)");
     for (const src of [ROW, CARD]) {
       expect(src).toContain("{file && (");
       // One button per view, branching on the direction rather than two buttons

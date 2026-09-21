@@ -2668,6 +2668,33 @@ export interface AppCheck {
    *  (fused_render/app_doctor_ai.py). `state: "unrun"` only ever appears on
    *  one of these: never run, or the app changed since. */
   ondemand: boolean;
+  /** `git` row only: commits HEAD is behind/ahead of
+   *  `origin/<default_branch>` (`git_upstream.check_repo`'s
+   *  `HEAD...origin/<default_branch>` count), or `null` when the remote
+   *  hasn't been checked yet (never fetched, still fetching, or every
+   *  attempt failed) or there's no remote to compare against. This is a
+   *  DIFFERENT quantity from the row's own `state`/`detail`, which fold in
+   *  `_pushed_pending`'s path-scoped `@{upstream}..HEAD -- .` unpushed
+   *  count against the branch's OWN upstream — on a feature branch the two
+   *  numbers routinely disagree (F1, FIXES-round-1.md). `behind`/`ahead`
+   *  exist so the UI can decide whether to show Pull without re-deriving it
+   *  from prose. */
+  behind?: number | null;
+  ahead?: number | null;
+  /** `git` row only: whether HEAD is on the repo's resolved default branch,
+   *  and whether the working tree is clean enough to fast-forward — the
+   *  same two preconditions `git_upstream.update_repo`'s preflight enforces
+   *  (refusing with `not-default` / `dirty` otherwise). `null` alongside
+   *  `behind`/`ahead` whenever those are unknown. Used to gate Pull (B1,
+   *  FIXES-round-1.md): a feature branch or a dirty tree would make
+   *  `update_repo` refuse every time, so the row should not dangle a button
+   *  that always dead-ends. */
+  onDefault?: boolean | null;
+  clean?: boolean | null;
+  /** The repo root this row checked, or `null` when the folder isn't in a
+   *  git repository this server can read. Used for "Open in git" — the
+   *  in-app git mode opens scoped to this root, not the app subfolder. */
+  gitRoot?: string | null;
 }
 
 export interface AppDoctorReport {
@@ -3449,6 +3476,23 @@ export type TaskPulseTask = Pick<
  *  settings page writes). "" for a field the file leaves unset. */
 export function getTaskDefaults(): Promise<{ model: string; effort: string }> {
   return getJson<{ model: string; effort: string }>("/api/claude-sessions/defaults");
+}
+
+/** WRITE that same global pair — the New task card's dropdowns and the
+ *  composer's pills for a chat with no session yet are both EDITORS of it, not
+ *  just readers (Akshil, 2026-09-21). A field left out is left alone, so moving
+ *  one of the two cannot restate the other. Answers with what the file says
+ *  AFTER the write, which is not always what was asked for: the settings page's
+ *  vocabulary has spellings (`opus[1m]`) the pills read back as the family name.
+ *
+ *  Callers should go through `platform/lib/claude-defaults`, which is what tells
+ *  the other open surfaces about the change; this is the bare wire call. */
+export function putTaskDefaults(
+  patch: { model?: string; effort?: string },
+): Promise<{ model: string; effort: string }> {
+  return putJson<{ model: string; effort: string }>(
+    "/api/claude-sessions/defaults", patch,
+  );
 }
 
 export function getTasks(): Promise<{ tasks: Task[]; generation?: number }> {

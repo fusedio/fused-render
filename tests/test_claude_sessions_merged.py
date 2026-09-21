@@ -1092,9 +1092,10 @@ def test_the_named_session_answers_for_itself(agent, target):
     _cli_transcript(agent, workdir, "newer",
                     [_ran("claude-haiku-4-5", "low", workdir)], mtime=9000)
 
-    # Asked about the folder, the NEWEST wins — unchanged, and right for a chat
-    # somebody opened on a folder.
-    assert agent._defaults(file)["model"] == "haiku"
+    # Asked with NO session — a brand-new chat — neither transcript is read at
+    # all: the global preference answers, and here there is none
+    # (tests/test_claude_defaults.py owns that half).
+    assert agent._defaults(file)["model"] == ""
     # Asked about a conversation, that conversation wins.
     mine = agent._defaults(file, "older")
     assert (mine["model"], mine["effort"]) == ("opus", "max")
@@ -1106,9 +1107,14 @@ def test_a_pill_the_reader_changed_mid_CHAT_is_what_comes_back(agent, target):
     is what the following turns run with, so it is what the transcript's NEWEST
     rows say — and `_scan_transcript` reads from the tail."""
     file, workdir = target
+    # The NEWEST row is a subagent's (`isSidechain`), on a model the reader
+    # never picked: `_scan_transcript` must step over it — this is the one place
+    # that rule is still exercised now that the folder ladder is gone.
+    side = dict(_ran("claude-haiku-4-5", "low", workdir), isSidechain=True)
     _cli_transcript(agent, workdir, "s1", [
         _ran("claude-sonnet-4-5", "medium", workdir),
         _ran("claude-opus-4-6-20260514", "high", workdir),
+        side,
     ])
     picked = agent._defaults(file, "s1")
     assert (picked["model"], picked["effort"]) == ("opus", "high")
@@ -1225,20 +1231,31 @@ def test_a_chat_with_no_record_still_reads_its_own_transcript(agent, target):
     assert answer["recorded"] == {"model": "", "effort": ""}
 
 
-def test_an_unusable_session_id_is_never_turned_into_a_path(agent, target):
+def test_an_unusable_session_id_is_never_turned_into_a_path(agent, target,
+                                                            tmp_path):
     """The id becomes a filename here. `_bad_id` guards every other reader that
-    does that, and this one is no different — a traversal must read the folder's
-    answer, not somebody else's file."""
+    does that, and this one is no different — a traversal must be answered like
+    a chat with no id at all, never off somebody else's file."""
     file, workdir = target
     _cli_transcript(agent, workdir, "ok", [_ran("claude-haiku-4-5", "low", workdir)])
+    os.makedirs(agent.CLAUDE_DIR, exist_ok=True)
+    with open(os.path.join(agent.CLAUDE_DIR, "settings.json"), "w") as f:
+        json.dump({"model": "sonnet", "effortLevel": "high"}, f)
     for bad in ("../../etc/passwd", "a/b", ""):
         answer = agent._defaults(file, bad)
-        assert answer["model"] == "haiku", bad
+        assert (answer["model"], answer["effort"]) == ("sonnet", "high"), bad
 
 
-def test_the_folder_question_is_unchanged_when_nothing_is_named(agent, target):
-    """Every chat that is not about one conversation — and every caller that
-    predates this — still gets exactly what it got."""
+def test_a_chat_with_no_session_reads_the_GLOBAL_preference_only(agent, target):
+    """A brand-new chat — the composer's first open, the New task modal — takes
+    ~/.claude/settings.json and nothing from the folder (Akshil, 2026-09-21).
+    An empty id is the same question as no id at all."""
     file, workdir = target
     _cli_transcript(agent, workdir, "s1", [_ran("claude-sonnet-4-5", "low", workdir)])
+    os.makedirs(agent.CLAUDE_DIR, exist_ok=True)
+    with open(os.path.join(agent.CLAUDE_DIR, "settings.json"), "w") as f:
+        json.dump({"model": "fable", "effortLevel": "max"}, f)
     assert agent._defaults(file) == agent._defaults(file, "")
+    answer = agent._defaults(file)
+    assert (answer["model"], answer["effort"]) == ("fable", "max")
+    assert answer["source"] == "settings"

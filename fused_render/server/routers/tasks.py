@@ -4097,10 +4097,11 @@ def _run_settings(task: dict) -> tuple[str, str]:
     WHY THE ROW CARRIES THEM AT ALL, when the design says the card asks and the
     list stays quiet (NewJobModal's own note): nothing here DRAWS them. They are
     for the side peek, whose composer is a real chat — and a chat with no
-    opinion handed to it detects the model last used in that FOLDER
-    (`agent._defaults`), which is the right answer for a chat somebody opened on
-    a folder and the wrong one for a task that was set up with a model. The peek
-    showed a reader settings they had not chosen (Akshil, 2026-09-18).
+    opinion handed to it opens on the GLOBAL Claude preference
+    (`agent._defaults` → `_global_defaults`, ~/.claude/settings.json), which is
+    the right answer for a chat somebody opened by hand and the wrong one for a
+    task that was set up with a model of its own. The peek showed a reader
+    settings they had not chosen (Akshil, 2026-09-18).
 
     NEWEST FIRST, and PER FIELD. A task is a thread and a thread can hold
     several scheduled messages; the newest that names a setting is the one a

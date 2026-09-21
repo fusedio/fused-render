@@ -40,11 +40,12 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
 from fused_render import session_liveness, tasks_store
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render.server.common import _require_fused
 
 try:
     import fcntl  # POSIX only — Windows falls back to no inter-process lock,
@@ -518,23 +519,108 @@ def claude_defaults():
     instead (Akshil, 2026-09-21: "remove the default field … show the model and
     effort"). "" for a field the file does not set: the card keeps its own
     first option then, which is the same thing the CLI would have picked.
+
+    THE READ ITSELF IS `agent._global_defaults`, which is also what a brand-new
+    chat's `defaults` action answers with. One file, one reader: a card that
+    promised a model the chat it books then opened on something else is the
+    exact bug two readers of one file drift into.
     """
     from fused_render.server.routers import tasks as _tasks
     agent = _tasks._agent_module()
     if agent is None:
         raise HTTPException(status_code=503,
                             detail="the claude agent module did not load")
-    model = effort = ""
-    try:
-        with open(os.path.join(agent.CLAUDE_DIR, "settings.json"), encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        data = {}
-    if isinstance(data, dict):
-        model = agent._short_model(str(data.get("model") or ""))
-        e = str(data.get("effortLevel") or "").lower()
-        effort = e if e in agent._EFFORT_LEVELS else ""
+    model, effort = agent._global_defaults()
     return {"model": model, "effort": effort}
+
+
+class DefaultsPatch(BaseModel):
+    """One or both halves of the global pair. A field left out is left alone —
+    moving the Thinking dropdown must not restate the model."""
+    model: str | None = None
+    effort: str | None = None
+
+
+@router.put("/api/claude-sessions/defaults")
+def set_claude_defaults(patch: DefaultsPatch, x_fused: str | None = Header(default=None)):
+    """Write the GLOBAL model/effort — the pair every NEW chat and every new
+    task opens on.
+
+    ONE VALUE, TWO SURFACES THAT BOTH READ AND WRITE IT (Akshil, 2026-09-21,
+    after testing #1281: "I don't see this being followed"). The Explorer
+    composer's pills for a chat that has no session yet, and the New task
+    card's Model / Thinking dropdowns, are two views of the same setting. A
+    pick on either is a statement about what this machine runs next, so it goes
+    where the reader's deliberate choice already lives — `model` and
+    `effortLevel` in ~/.claude/settings.json, the pair the app's own Claude
+    settings page edits. Before this the composer's pick for a new chat went
+    into the ADDRESS BAR (`?model=`/`?effort=`) and nowhere else, which is why
+    one surface could show Opus / high while the other showed Fable / low.
+
+    THE WRITER IS `claude_config.preferences.main("patch", …)` — the settings
+    page's own, not a second copy of it. That is what keeps the read-modify-
+    write atomic, serialized by the config lock, and committed to the config
+    repo, and it is what preserves every other key in the file. Hand-rolling a
+    second writer over the same file is how two writers lose each other's edits.
+
+    A chat that HAS a session id is untouched by this route: its pill keeps
+    writing that conversation's own record (`/api/tasks/settings`), because a
+    running conversation's model is a fact about that conversation.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render.claude_config import preferences
+    from fused_render.server.routers import tasks as _tasks
+    agent = _tasks._agent_module()
+    if agent is None:
+        raise HTTPException(status_code=503,
+                            detail="the claude agent module did not load")
+    body: dict = {}
+    if patch.model is not None:
+        # The SETTINGS PAGE'S OWN vocabulary, not the composer's four names:
+        # this writes the field that page writes, and it offers the `[1m]`
+        # spellings too. `_global_defaults` collapses whatever lands here back
+        # to a short family name on the way out, so a pill that cannot say
+        # "opus[1m]" still reads a file that does.
+        model = patch.model.strip()
+        if model and model not in _settings_model_options():
+            raise HTTPException(status_code=400, detail=f"unknown model {model!r}")
+        body["model"] = model or None  # "" resets the key, as the page's own does
+    if patch.effort is not None:
+        effort = patch.effort.strip().lower()
+        if effort and effort not in agent._EFFORT_LEVELS:
+            raise HTTPException(status_code=400, detail=f"unknown effort {effort!r}")
+        body["effortLevel"] = effort or None
+    if body:
+        out = preferences.main("patch", json.dumps(body))
+        if not (isinstance(out, dict) and out.get("ok")):
+            detail = (out or {}).get("error") if isinstance(out, dict) else None
+            raise HTTPException(status_code=500,
+                                detail=detail or "could not write the Claude settings")
+    # READ BACK, never echo: what the caller asked for and what the file now
+    # says can differ (an `opus[1m]` written, an `opus` read back), and the two
+    # surfaces have to agree with the file rather than with each other.
+    model, effort = agent._global_defaults()
+    return {"model": model, "effort": effort}
+
+
+def _settings_model_options() -> set:
+    """The `model` row's own options in the Claude settings catalog — the list
+    the settings page renders. Read per call for `preferences._catalog`'s
+    reason: a catalog refresh rewrites the override mid-process. A catalog that
+    cannot be read at all accepts nothing but the four short names, which is
+    the vocabulary of the pills doing the writing."""
+    from fused_render.claude_config import lib as _cfg_lib
+    try:
+        for row in _cfg_lib.load_catalog():
+            if isinstance(row, dict) and row.get("key") == "model":
+                opts = row.get("options")
+                if isinstance(opts, list) and opts:
+                    return {str(o) for o in opts}
+    except Exception:  # noqa: BLE001 — a missing catalog is not a failed write
+        logger.debug("could not read the settings catalog", exc_info=True)
+    return {"fable", "opus", "sonnet", "haiku"}
 
 
 @router.get("/api/claude-sessions/history")
@@ -650,6 +736,8 @@ _RECAP_TIMEOUT = 25.0
 # when it picks `for_uuid` (`recapAnchor`), spends that position on whatever
 # comes back, and never asks again, so an empty answer here is permanent.
 _INTERRUPT_MARK = "[Request interrupted by user]"
+_INTERRUPT_MARKS = frozenset((_INTERRUPT_MARK,
+                              "[Request interrupted by user for tool use]"))
 
 # Cache: (file, session_id, for_uuid) -> (text, expires_at).
 #
@@ -738,7 +826,7 @@ def _recap_tail(turns: list) -> str:
         # The interrupt marker is not something the reader said (_INTERRUPT_MARK
         # above): it is skipped rather than labelled, and above all it does not
         # count as the user having spoken last.
-        if text == _INTERRUPT_MARK:
+        if text in _INTERRUPT_MARKS:
             continue
         parts.append("%s: %s" % (label, text[:_RECAP_TURN_CHARS]))
         last_role = turn["role"]

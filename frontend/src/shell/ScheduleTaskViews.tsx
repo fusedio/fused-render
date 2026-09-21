@@ -59,7 +59,7 @@ import { announceDraftsGone, dropListingKeys, restoreListingRows } from "./tasks
 import type { Task, TaskMessage } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { useMarginWheel } from "./useMarginWheel";
-import { BOARD_COLUMNS, BOARD_LANES, columnLabel, laneOf } from "./schedule-lib";
+import { BOARD_COLUMNS, BOARD_LANES, laneOf } from "./schedule-lib";
 import type { BoardColumn, BoardLane } from "./schedule-lib";
 import {
   EMPTY_FILTERS,
@@ -95,7 +95,6 @@ import {
   sortForList,
   taskListKeys,
   showsRowActions,
-  statusColumn,
   markAllRead,
   markRead,
   markReadIntent,
@@ -1811,20 +1810,17 @@ async function dropDraft(chatKey: string, taskId: string): Promise<boolean> {
  * reader did not choose and cannot predict — a different lane on the Board, a
  * different rank on the List, quite possibly off screen. Three gestures reach
  * this (the List's button, the card's button, the drag out of the lane) and all
- * three need the same sentence; three copies of it is how they start telling the
- * reader three different things.
+ * three go through one call so they cannot drift.
  *
  * Refusals THROW, exactly like performRun, so each caller puts them in its own
- * note line.
+ * note line. Success says nothing — see the body.
  */
-async function performUnarchive(key: string): Promise<string> {
-  const said = await unarchiveTask(key);
-  // `unfiled: false` is the server saying NOTHING CHANGED — no filing to clear,
-  // or a cancelled-only thread whose derived status is still Archive. Claiming
-  // "Unarchived — back in Archive" for that would be the note lying about a
-  // move that never happened (Bugbot, 2026-08-18).
-  if (!said.unfiled) return `Nothing to unarchive — still ${columnLabel(statusColumn(said.status))}.`;
-  return `Unarchived — back in ${columnLabel(statusColumn(said.status))}.`;
+async function performUnarchive(key: string): Promise<void> {
+  // NO SENTENCE (Akshil, 2026-09-21: "I don't need this message, I know what I
+  // did"). The ring redrawing in its new state IS the receipt, on every surface
+  // that can press this. `unfiled: false` — the server saying nothing changed —
+  // is likewise left to the unchanged ring. Refusals still throw.
+  await unarchiveTask(key);
 }
 
 /**
@@ -2059,9 +2055,6 @@ export function TaskList({
   const [loaded, setLoaded] = useState<Record<string, TaskMessage[]>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
-  // An unarchive's destination sentence, held by the PAGE: a status filter can
-  // unmount the very row the sentence sits on (see the render below).
-  const [pageNote, setPageNote] = useState("");
   const { read, clear, clearAll, carryAll, restoreAll, settleAll } = useReadSet();
 
   // The latest poll's tasks, readable from ACROSS an await. showMore closes over
@@ -2381,12 +2374,6 @@ export function TaskList({
 
   return (
     <>
-      {/* WHERE AN UNARCHIVE WENT, at page level — the row's own note dies with
-          the row when a status filter unmounts it (an Archive-only filter always
-          does), and then the move reads as a disappearance (Bugbot, 2026-08-18).
-          The Board keeps this same sentence above its lanes for the same
-          reason. */}
-      {pageNote && <p className="schedule-tv-note tasks-list-note">{pageNote}</p>}
       {/* `data-fit` is how many of the row's meta marks have had to go for the
           rows to fit the width the list actually has — measured, never a
           breakpoint (shell/row-fit.ts states the rule and the reason). The
@@ -2453,7 +2440,6 @@ export function TaskList({
           pinned={pinnedProjects.includes(task.project)}
           onPickDraft={onPickDraft}
           draftOn={draftOn}
-          onPageNote={setPageNote}
           read={read}
           onRead={clear}
           onReadAll={clearAll}
@@ -2531,7 +2517,6 @@ export function TaskRowItem({
       onToggle={NO_OP}
       loading={false}
       onRetry={NO_OP}
-      onPageNote={NO_OP}
       read={NO_READ}
       onRead={NO_OP}
       onReadAll={NO_OP}
@@ -2579,7 +2564,6 @@ function TaskNode({
   pinned,
   onPickDraft,
   draftOn,
-  onPageNote,
   read,
   onRead,
   onReadAll,
@@ -2603,20 +2587,19 @@ function TaskNode({
    * does NOT have (`TaskRowItem` above is the one caller that asks for anything
    * but `"task"`, and the Tasks page never passes it at all).
    *
-   * `"chat"` takes four things off the row, each because the surface borrowing
+   * `"chat"` takes three things off the row, each because the surface borrowing
    * it has no answer for them: the disclosure AND ITS GUTTER (a landing list is
    * not an accordion — there is no thread fetch behind it, and with no chevron
    * on any row of the list there is no rail for the empty slot to hold open),
-   * the Archive press in the mark slot (filing is the Tasks page's verb, and a
-   * row action one flick from "open the chat I was just in" is not what that
-   * panel is for), the folder chip and the draft chip's filter arm
+   * the folder chip and the draft chip's filter arm
    * (`showProject`/`onPickProject`/`onPickDraft` are the List's own, and the
    * borrowed list has no filters to set), and the side peek (`peekOn`, off by
    * default).
    *
-   * It takes NOTHING ELSE off: the id chip, the status ring, the outcome pill
-   * and the title line are the same marks in the same seats, because the two
-   * lists are meant to be one row (Akshil, 2026-09-14).
+   * It takes NOTHING ELSE off: the id chip, the status ring, the outcome pill,
+   * the title line AND the Archive press in the mark slot (Akshil, 2026-09-21 —
+   * it was withheld for a round) are the same marks in the same seats, because
+   * the two lists are meant to be one row (Akshil, 2026-09-14).
    *
    * And it takes ONE thing over: the press. See `chatHref` / `onChatPress`.
    */
@@ -2672,9 +2655,6 @@ function TaskNode({
   onPickDraft?: () => void;
   /** Is that filter on? The chip wears it, for the folder chip's reason. */
   draftOn?: boolean;
-  /** The List's page-level note — the only holder that survives this row being
-   * filtered out by the very move it announces (see TaskList's render). */
-  onPageNote: (s: string) => void;
   read: Set<string>;
   onRead: (taskKey: string, m: TaskMessage) => void;
   /** Clear this whole task's unread locally — the optimistic half of Mark read,
@@ -2881,11 +2861,14 @@ function TaskNode({
   // everything, by asking dropAction the same questions the drag does, so a row
   // draws the button exactly when the card would take the drop.
   //
-  // NOT ON A BORROWED ROW (see `variant`). Filing is the Tasks page's verb, and
-  // this is the one row action that is live without SHOW_ROW_ACTIONS: a hover
-  // reveal here would put "put this away" one flick from "open the chat I was
-  // just in", on a panel whose whole subject is the chats about one file.
-  const file = chatVariant ? null : filingIntent(task);
+  // ON A BORROWED ROW TOO (Akshil, 2026-09-21: "when I hover over the status
+  // allow me to archive, similar to the list item view in tasks page"). It was
+  // withheld from the chat variant for a round, on the argument that "put this
+  // away" sat one flick from "open the chat I was just in" — but Recent chats
+  // is the list a reader tidies from, and a row that cannot be filed there sends
+  // them to the Tasks page for a gesture this same row already knows. Same
+  // slot, same reveal, same verb: `.tasks-act` on hover over the status ring.
+  const file = filingIntent(task);
   // Mark read — the whole task at once, so clearing 89 unread messages is not 89
   // clicks through 89 transcripts. Asked of the count this row is DRAWING, so
   // the button leaves on its own press rather than on the next poll.
@@ -3015,12 +2998,8 @@ function TaskNode({
       if (intent.kind === "archive") {
         await archiveTask(task.key);
       } else {
-        // WHERE IT WENT, said out loud — see performUnarchive. On a list sorted
-        // by lane the row is about to move somewhere the reader did not point
-        // at, and may even leave the current FILTER: the sentence goes to the
-        // page, because a note on the row dies with the row (Bugbot,
-        // 2026-08-18).
-        onPageNote(await performUnarchive(task.key));
+        // Silent on success (see performUnarchive): the ring is the receipt.
+        await performUnarchive(task.key);
       }
     } catch (e) {
       // The server's own sentence, in the same quiet line run-now uses. A
@@ -3391,17 +3370,20 @@ function TaskNode({
           // `o` OPENS THE FOCUSED ROW (.claude-design/task-side-peek/design.md,
           // Keyboard). Handled on the row rather than on the stretched link
           // because the link is the tab stop but the row is what the key is
-          // about, and a keydown from inside bubbles here either way. Enter is
-          // already the link's own, natively, on every row that has one — which
-          // is why the branch below is still only for the rows that do not.
+          // about, and a keydown from the link bubbles here. Enter is already
+          // the link's own, natively, on every row that has one — which is why
+          // the branch below is still only for the rows that do not.
+          //
+          // A KEY ON A CONTROL INSIDE THE ROW IS THE CONTROL'S — for every
+          // branch: the hover-revealed Archive is a real tab stop, and Enter
+          // (and `o`) on it bubbled here and opened the chat instead (review,
+          // 2026-09-21). By WHAT the target is, not by identity with the row —
+          // on a row with an href the focused element is the stretched link,
+          // and `o` from it must still open. Fields for the same reason as
+          // ever: eating a letter someone is typing is the worst shortcut.
+          const el = e.target as HTMLElement | null;
+          if (el && el.closest?.("button, input, textarea, [contenteditable]")) return;
           if (e.key === "o" && !e.metaKey && !e.ctrlKey && !e.altKey) {
-            const el = e.target as HTMLElement | null;
-            // Never while something is being typed into: a row can hold a
-            // field once a thread is expanded, and eating a letter would be
-            // the worst kind of shortcut.
-            if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) {
-              return;
-            }
             e.preventDefault();
             activate();
             return;
@@ -4950,12 +4932,10 @@ export function TaskBoard({
         // output, not a state a reader can assert, so the card goes there only
         // if a turn genuinely is live.
         //
-        // So the note says where it actually went — the same sentence the two
-        // buttons show (performUnarchive). There is no flash or scroll on this
-        // board to point at the card with, and a card that silently reappears in
-        // a lane the person was not looking at is a gesture that seems to have
-        // done nothing.
-        setNote(await performUnarchive(task.key));
+        // The card redrawing in the lane it derives to is the whole receipt
+        // (Akshil, 2026-09-21 — the destination sentence is gone from every
+        // surface); only a refusal gets a note.
+        await performUnarchive(task.key);
       } else {
         // → Archive. ONE call for both halves — the pending work is cancelled
         // and the session is filed — because a card dropped here that still
@@ -4980,9 +4960,8 @@ export function TaskBoard({
   // The same two calls the drop above makes, asked for by a card's own button
   // instead of a gesture. It lives up here rather than in TaskCard so the refusal
   // lands in the board's ONE note line, beside the drag's: a sentence tucked
-  // inside a 260px lane under one card is a sentence nobody reads. The unarchive
-  // note is the same one the drop writes, for the same reason — the card is about
-  // to appear in a lane nobody pointed at.
+  // inside a 260px lane under one card is a sentence nobody reads. Unarchive
+  // itself says nothing on success (performUnarchive), here as everywhere.
   // Skip from a card's own button, which is the drop above without the drag —
   // and up here for `refile`'s reason: the refusal (a 400 when the folder freed
   // while the pointer was moving) belongs in the board's ONE note line.
@@ -5002,7 +4981,7 @@ export function TaskBoard({
       if (intent.kind === "archive") {
         await archiveTask(task.key);
       } else {
-        setNote(await performUnarchive(task.key));
+        await performUnarchive(task.key);
       }
     } catch (e) {
       setNote((e as Error).message);
