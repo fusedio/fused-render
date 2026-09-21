@@ -130,6 +130,109 @@ def test_shutdown_all_reaps_every_live_session(registry, tmp_path, monkeypatch):
             os.kill(pid, 0)
 
 
+def test_shell_does_not_inherit_pythonhome_or_pythonpath(registry, tmp_path, monkeypatch):
+    """Regression guard for finding 1 (code review, PR #1290): the profile's
+    env keeps PYTHONHOME/PYTHONPATH (terminal_profiles.py no longer scrubs
+    them — the immediate Popen target there is `sys.executable`, which in a
+    packaged build needs them). The scrub has to happen one process later,
+    in `_pty_exec_helper.py` right before `execv`, so the actual SHELL never
+    sees either var. This spawns a real shell through the real helper (no
+    mocking of `resolve_profile`'s env) and asserts both are empty in the
+    shell's own environment.
+
+    PYTHONHOME is set to `sys.base_prefix` (the running interpreter's own,
+    real prefix) rather than a made-up path: an invalid PYTHONHOME crashes
+    the interpreter running the helper script before it ever reaches
+    execv (that IS finding 1's bug, reproduced by hand while writing this
+    test) — this test is about what the SHELL inherits, one process later,
+    so the helper's own interpreter needs to actually start."""
+    env = dict(os.environ)
+    env["PYTHONHOME"] = sys.base_prefix
+    env["PYTHONPATH"] = "/some/bundled/site-packages"
+    monkeypatch.setattr(
+        pty_session, "resolve_profile",
+        lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c",
+                                              'echo "[$PYTHONHOME|$PYTHONPATH]"'],
+                                   env=env))
+    session = registry.create()
+    assert _wait_until(lambda: b"[|]" in bytes(session.scrollback()))
+
+
+def test_kill_on_an_already_dead_session_signals_nothing(registry, tmp_path, monkeypatch):
+    """Regression guard for finding 6 (code review, PR #1290): once the
+    reader thread has reaped the child (`alive` False), its pid is free for
+    the OS to hand to an unrelated process. `kill()` must not call
+    `os.getpgid`/`os.kill` at all in that case — this asserts `_signal` (the
+    only thing that would ever touch a pid) is never invoked."""
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "printf hi"]))
+    session = registry.create()
+    assert _wait_until(lambda: not session.alive)
+
+    called = []
+    monkeypatch.setattr(pty_session.PtySession, "_signal",
+                         staticmethod(lambda pid, sig: called.append((pid, sig))))
+    session.kill()
+    assert called == []
+
+
+def test_reap_dead_runs_on_create_and_list(registry, tmp_path, monkeypatch):
+    """Regression guard for finding 10 (code review, PR #1290): `reap_dead`
+    had no callers anywhere, so a dead session lingered in the registry
+    forever and kept appearing in `list()`. This asserts `create()` and
+    `list()` each drop it."""
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "printf hi"]))
+    dead = registry.create()
+    assert _wait_until(lambda: not dead.alive)
+    # `list()` itself reaps on every call, so the dead session is already
+    # gone by the time this reads it back.
+    assert dead.id not in [s.id for s in registry.list()]
+
+    live = registry.create()
+    assert live.id in [s.id for s in registry.list()]
+    assert dead.id not in [s.id for s in registry.list()]
+
+
+def test_failed_popen_does_not_leak_the_master_fd(tmp_path, monkeypatch):
+    """Regression guard for finding 11 (code review, PR #1290): if Popen
+    raises, `master_fd` (already assigned to `self.master_fd`) must still be
+    closed on that path, or each failed create leaks a pty master."""
+    profile = _profile(tmp_path, ["/bin/sh"])
+
+    def boom(*args, **kwargs):
+        raise OSError("simulated ENOENT")
+
+    monkeypatch.setattr(pty_session.subprocess, "Popen", boom)
+    closed = []
+    real_close = os.close
+    monkeypatch.setattr(pty_session.os, "close",
+                         lambda fd: (closed.append(fd), real_close(fd)))
+
+    with pytest.raises(OSError):
+        pty_session.PtySession("scratch-sid", profile)
+
+    # Two closes: the slave fd (existing `finally`) and the master fd (the
+    # fix) — neither leaked.
+    assert len(closed) == 2
+
+
+def test_attach_snapshot_alive_and_subscribe_are_atomic(registry, tmp_path, monkeypatch):
+    """Regression guard for finding 5 (code review, PR #1290): `attach()`
+    returns a scrollback snapshot, the alive/exit_code pair, and a
+    subscriber queue from a single lock hold, so a client can never see a
+    scrollback snapshot that is stale relative to `alive`."""
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "printf hi"]))
+    session = registry.create()
+    assert _wait_until(lambda: not session.alive)
+    snapshot, alive, exit_code, q = session.attach()
+    assert b"hi" in snapshot
+    assert alive is False
+    assert exit_code is not None
+    assert q is not None
+
+
 def test_popen_kwargs_are_fork_safe(registry, tmp_path, monkeypatch):
     """The regression guard for the SIGSEGV: a Popen with cwd=,
     start_new_session=True, or close_fds=True (the default) takes the fork

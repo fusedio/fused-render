@@ -6,15 +6,23 @@ Windows plus WSL; this app has exactly one platform family in scope this
 round (macOS + Linux, see Task in PLAN-status-bar-terminal.md) and `$SHELL`
 is right by default. Revisit if someone asks for fish-vs-zsh switching.
 
-Ports two rules already proven in `fused_render/claude_health.py` rather than
-re-deriving them:
+Ports a rule already proven in `fused_render/claude_health.py` rather than
+re-deriving it:
 
   * `$SHELL` or `/bin/bash` as the fallback (claude_health.py:281), checked
     with the same `executable()` used there so a non-executable value never
     gets spawned.
-  * PYTHONHOME/PYTHONPATH scrubbed from the child env (claude_health.py:283)
-    — the bundled interpreter exports both, and a non-Python child that
-    inherits them dies with "No module named 'encodings'".
+
+Deliberately does NOT scrub PYTHONHOME/PYTHONPATH here, unlike
+claude_health.py:283. There, the immediate Popen target IS the shell, so
+scrubbing in the env handed to Popen is correct. Here, `pty_session.py`'s
+immediate Popen target is `sys.executable` running `_pty_exec_helper.py` — in
+a packaged (py2app) build that IS the bundled interpreter, which per
+`engine.py`'s documented failure mode needs PYTHONHOME to find its own
+runtime; stripped, it reports the build machine's Homebrew framework as its
+prefix and fails to start. The scrub belongs one process later, in the
+helper, right before it execs the actual shell — see
+`_pty_exec_helper.py`.
 
 `-l` (login shell) is added on darwin only. macOS GUI apps inherit launchd's
 environment, not the user's shell profile — PATH has none of nvm/volta/asdf's
@@ -62,11 +70,11 @@ def resolve_profile(cwd: Optional[str] = None) -> Optional[TerminalProfile]:
     if not executable(shell):
         return None
 
-    env = {k: v for k, v in os.environ.items()
-           if k not in ("PYTHONHOME", "PYTHONPATH")}
-    # FUSED_RENDER_ORIGIN and friends are left to the default (inherit) —
-    # no passthrough decision to make; the child gets whatever the server
-    # process already has, minus the two scrubbed keys above.
+    env = dict(os.environ)
+    # FUSED_RENDER_ORIGIN and friends (and PYTHONHOME/PYTHONPATH — see the
+    # module docstring for why those two are NOT scrubbed here) are left to
+    # the default (inherit); the child gets whatever the server process
+    # already has.
     env["TERM"] = "xterm-256color"
     env["COLORTERM"] = "truecolor"
 

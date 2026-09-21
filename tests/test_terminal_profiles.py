@@ -43,7 +43,15 @@ def test_linux_argv_has_no_login_flag(monkeypatch):
     assert profile.argv == ["/bin/zsh"]
 
 
-def test_pythonhome_and_pythonpath_are_scrubbed(monkeypatch):
+def test_pythonhome_and_pythonpath_are_kept(monkeypatch):
+    # Regression guard for finding 1 (code review, PR #1290): the immediate
+    # Popen target for this profile is `sys.executable` running
+    # `_pty_exec_helper.py`, not the shell itself. In a packaged build that
+    # IS the bundled interpreter, which needs PYTHONHOME to find its own
+    # runtime (see engine.py's documented failure mode) — scrubbing it here,
+    # one process too early, would kill the helper before it ever reaches
+    # execv. The scrub belongs in the helper, right before execv; see
+    # test_pty_session.py's coverage of `_pty_exec_helper.main`.
     monkeypatch.setenv("SHELL", "/bin/bash")
     monkeypatch.setenv("PYTHONHOME", "/some/bundled/interpreter")
     monkeypatch.setenv("PYTHONPATH", "/some/bundled/site-packages")
@@ -52,8 +60,8 @@ def test_pythonhome_and_pythonpath_are_scrubbed(monkeypatch):
     monkeypatch.setattr(terminal_profiles, "executable", lambda p: True)
     profile = terminal_profiles.resolve_profile()
     assert profile is not None
-    assert "PYTHONHOME" not in profile.env
-    assert "PYTHONPATH" not in profile.env
+    assert profile.env["PYTHONHOME"] == "/some/bundled/interpreter"
+    assert profile.env["PYTHONPATH"] == "/some/bundled/site-packages"
 
 
 def test_term_and_colorterm_are_set(monkeypatch):
