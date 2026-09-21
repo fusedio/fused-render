@@ -401,6 +401,22 @@ def test_a_template_that_rejects_the_kwarg_is_retried_without_it(worker):
     assert processor.calls == [{}]
 
 
+def test_a_rejected_kwarg_retry_prints_a_stderr_note_naming_the_dropped_flag(
+        worker, capsys):
+    """The retry is silent to the CALLER by design (the generation still
+    succeeds) but must not be silent to a maintainer: a caller's explicit
+    `thinking` being discarded with no trace anywhere is exactly the
+    undiagnosable S1-mini degenerate-output failure this flag exists to
+    prevent. Matches `llama_text._prompt_text`'s discipline of printing a
+    note to stderr when its own template path falls back."""
+    processor = _ProcessorWithTemplate(reject_kwarg="enable_thinking")
+    worker._messages_to_prompt(processor, [{"role": "user", "content": "hi"}], "",
+                               enable_thinking=False)
+    err = capsys.readouterr().err
+    assert "enable_thinking" in err
+    assert "False" in err
+
+
 def test_a_templateless_processor_is_unaffected_by_the_new_parameter(worker):
     """A processor with no `apply_chat_template` at all (the ordinary mlx-vlm
     shape, `_ProcessorWrappingATokenizer`) must still fall back to the plain
@@ -658,6 +674,30 @@ def test_generate_threads_enable_thinking_into_the_text_path(worker, monkeypatch
                      "enable_thinking": False}, frames.append)
 
     assert processor.calls == [{"enable_thinking": False}]
+    assert frames[-1]["ok"] is True
+
+
+def test_generate_defaults_unset_thinking_to_true(worker, monkeypatch):
+    """D886 correction: `generate()` itself resolves an unset `thinking` to
+    `True` (mirroring `llama_text.py`'s identical default at its own
+    `generate()`), rather than leaving `_messages_to_prompt` to pass no
+    kwarg and let the template's own default decide. The two local text
+    runners must agree on what "unset" means — this is the case a model
+    whose template itself defaults thinking OFF would otherwise disagree
+    on between its GGUF and MLX builds."""
+
+    class _Response:
+        text = "hi"
+
+    _fake_mlx_vlm_with_config(monkeypatch, responses=[_Response()])
+    processor = _ProcessorWithTemplate()
+    worker._loaded.update(model=_FakeVlmModel(), processor=processor,
+                          config={"model_type": "qwen3_5"})
+
+    frames = []
+    worker.generate({"messages": [{"role": "user", "content": "hi"}]}, frames.append)
+
+    assert processor.calls == [{"enable_thinking": True}]
     assert frames[-1]["ok"] is True
 
 

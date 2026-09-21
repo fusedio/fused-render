@@ -426,12 +426,20 @@ def _messages_to_prompt(processor, messages, prompt, enable_thinking=None):
     `chat_template` itself (forwarding to the tokenizer it wraps), the same
     shape mlx-lm's plain tokenizer had.
 
-    `enable_thinking` (D886, reversing AI-11d) is tri-state: `None` (the
-    caller left it unset) passes NO such kwarg at all, so the templated
-    prompt is byte-identical to what this returned before this flag existed
-    — the template's own default decides, which for Qwen3-family models is
-    thinking ON. An explicit `True`/`False` passes `enable_thinking=<bool>`
-    to the template call.
+    `enable_thinking` (D886, reversing AI-11d) is tri-state at THIS layer:
+    `None` passes no such kwarg at all, and an explicit `True`/`False` passes
+    `enable_thinking=<bool>` to the template call. **The caller-facing
+    default is no longer decided here.** `generate()` (mirroring
+    `llama_text.py`'s `_render_chat` caller) resolves an unset wire-level
+    `thinking` to `True` before it ever reaches this function, so in
+    practice a real request always arrives with an explicit bool and this
+    function's own `None` branch is exercised only by a caller that
+    deliberately wants the template's raw, un-overridden default (tests, and
+    any future direct caller). This function no longer argues for
+    byte-identical-when-unset output — that was this build's original
+    design and D886 replaced it: `mlx_text` and `llama_text` must resolve
+    "unset" the same way (thinking ON) instead of disagreeing, which is what
+    let the same model behave oppositely on its GGUF and MLX builds.
 
     **Retry hazard.** Not every tokenizer's `apply_chat_template` accepts an
     `enable_thinking` kwarg — a template that never references it can still
@@ -443,7 +451,14 @@ def _messages_to_prompt(processor, messages, prompt, enable_thinking=None):
     reject an unexpected keyword outright.) So a kwarg is only ever added when
     one was actually requested, and if the templated call then raises
     `TypeError`, this retries once without it rather than failing the whole
-    generation over a flag the template cannot honour.
+    generation over a flag the template cannot honour — noisily: since
+    `generate()` now defaults to `True`, this retry is the ROUTINE path for
+    any tokenizer that rejects the kwarg, and a caller's explicit `thinking`
+    would otherwise be silently discarded with nothing to diagnose it by (the
+    exact S1-mini degenerate-output failure mode this flag exists to
+    prevent) — so it prints a note to stderr naming the dropped flag, the
+    same discipline `llama_text._prompt_text` already follows for a failed
+    template render.
     """
     if prompt:
         return prompt
@@ -458,6 +473,8 @@ def _messages_to_prompt(processor, messages, prompt, enable_thinking=None):
         except TypeError:
             if not kwargs:
                 raise
+            print(f"mlx-text: chat template rejected enable_thinking="
+                  f"{enable_thinking!r}, retrying without it", file=sys.stderr)
             return template(messages, tokenize=False, add_generation_prompt=True)
     return "\n\n".join(m.get("content", "") for m in messages if isinstance(m, dict))
 
@@ -519,6 +536,19 @@ def generate(body, write):
     if model is None or processor is None:
         write({"type": "done", "ok": False, "error": "no model is loaded"})
         return
+
+    # D886: the wire's `thinking` (here `enable_thinking`, server/ai.py's
+    # camelCase/snake_case seam) defaults to `True` when the caller leaves it
+    # unset — resolved ONCE, here, mirroring where `llama_text.py`'s
+    # `generate()` resolves the identical default for `_render_chat`/
+    # `_prompt_text`, so the two runners read the same way side by side
+    # instead of disagreeing on what "unset" means (that disagreement was
+    # this build's original bug: a model whose template itself defaults
+    # thinking OFF behaved oppositely on its GGUF and MLX builds for the
+    # same unset request).
+    enable_thinking = body.get("enable_thinking")
+    if enable_thinking is None:
+        enable_thinking = True
 
     messages = body.get("messages") if isinstance(body.get("messages"), list) else []
     # A list of absolute paths (`server/ai.py`'s `_images_problem` validates the
@@ -622,26 +652,24 @@ def generate(body, write):
         # the helper picks this checkpoint's own message format
         # (`prompt_utils.MODEL_CONFIG`).
         #
-        # **`enable_thinking` defaults `True`, explicitly** — mlx-vlm's helper
-        # (verified against the installed 0.6.15 source) defaults this to
-        # `False` on any template that accepts the kwarg, which closes the
-        # think block the same way `_messages_to_prompt`'s docstring says the
-        # OTHER helper must never be reached for: a reasoning model (Qwen3.5
-        # and friends) would silently drop visible thinking the moment an
-        # image is attached, with no error and nothing for
-        # `playground/think.ts` to render. Passing `True` here keeps the
-        # image path's default thinking behaviour identical to the text
-        # path's (D886) — but an explicit caller flag is honoured here too,
-        # same as the text path.
+        # **`enable_thinking` defaults `True`** — mlx-vlm's helper (verified
+        # against the installed 0.6.15 source) defaults this to `False` on
+        # any template that accepts the kwarg, which closes the think block
+        # the same way `_messages_to_prompt`'s docstring says the OTHER
+        # helper must never be reached for: a reasoning model (Qwen3.5 and
+        # friends) would silently drop visible thinking the moment an image
+        # is attached, with no error and nothing for `playground/think.ts`
+        # to render. `enable_thinking` here is the same resolved value
+        # (defaulted above, D886) the text path below uses — an explicit
+        # caller flag is honoured identically on both paths.
         from mlx_vlm.prompt_utils import apply_chat_template
 
-        enable_thinking = body.get("enable_thinking")
         text = apply_chat_template(
             processor, config, messages, num_images=len(images),
-            enable_thinking=enable_thinking if enable_thinking is not None else True)
+            enable_thinking=enable_thinking)
     else:
         text = _messages_to_prompt(processor, messages, body.get("prompt") or "",
-                                   enable_thinking=body.get("enable_thinking"))
+                                   enable_thinking=enable_thinking)
     max_tokens = int(body.get("max_tokens") or 1024)
     sampler = make_sampler(
         temp=float(body.get("temperature", 0.7)),
