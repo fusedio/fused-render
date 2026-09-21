@@ -1912,3 +1912,26 @@ test("the idle line opens under the pointer and folds when it leaves; touch is i
   const home = mount({ variant: "home" });
   expect(String(home.root.findByType("form").props.className)).not.toContain("is-idle");
 });
+
+test("focus alone opens the idle line — no click or key needed — and focus on Send does not (Akshil, 2026-09-21)", () => {
+  const m = mount();
+  const form = () => m.root.findByType("form");
+  const cls = () => String(form().props.className);
+  const textarea = { closest: () => null };
+  const send = { closest: (sel: string) => (sel === ".c-send" ? {} : null) };
+  expect(cls()).toContain("is-idle");
+  // The focus a pressed Send button gets is not the reader reaching for the card.
+  act(() => form().props.onFocus({ target: send }));
+  expect(cls()).toContain("is-idle");
+  // The caret landing in the box — by click, Tab, or `autoFocus` on arrival — is.
+  act(() => form().props.onFocus({ target: textarea }));
+  expect(cls()).not.toContain("is-idle");
+  // Focus leaving the form folds it back.
+  act(() =>
+    form().props.onBlur({
+      relatedTarget: null,
+      currentTarget: { contains: () => false, ownerDocument: { querySelector: () => null } },
+    }),
+  );
+  expect(cls()).toContain("is-idle");
+});
