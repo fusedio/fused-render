@@ -41,6 +41,8 @@ import {
   claudeTerminalCommand,
 } from "@apps/explorer/lib/fs-actions";
 import { crumbMenu, fileMenu, splitItems } from "@apps/explorer/lib/bar-menus";
+import { getShareFileStatus, openShareFile } from "@platform/lib/share-file";
+import { useAppSharingFeature } from "@platform/lib/share-app-flag";
 import { enterPanel } from "@apps/explorer/lib/split-actions";
 import { publishTopbarMenu } from "@apps/explorer/topbar-menu";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
@@ -332,6 +334,53 @@ export function CloneAppFileButton({ fsPath, toView }: { fsPath: string; toView?
   );
 }
 
+/** Whether the open file can be shared, and why not when it can't —
+ *  `share_file.py`'s `/status`, which resolves the extension against the
+ *  Fused catalog (share_file_rules.py). Loading/unknown reads the same as
+ *  `canShare: false`, so the row starts disabled and only turns on once the
+ *  server actually says yes. */
+export interface ShareRowEligibility {
+  canShare: boolean;
+  refusal: string | null;
+}
+
+/**
+ * The Share… row's exact shape (share-any-file-plan.md task 7), pulled out of
+ * `fileGroups()` as a pure function so the decision — hidden vs. present,
+ * enabled vs. disabled-with-a-reason — is testable without mounting the rest
+ * of this (very large) component.
+ *
+ * ABSENT ENTIRELY, not merely disabled, when the flag is off or the entry is
+ * a directory: a directory's Share row is the app sheet's (EntryActionsMenu
+ * .tsx — a different concept, "a folder is not a file"), and the flag off
+ * means the feature does not exist on this machine yet, the same as every
+ * other surface `share-app-flag.ts` gates.
+ *
+ * PRESENT BUT DISABLED, never silently missing, for an extension the catalog
+ * has no viewer for — the reason rides the row's tooltip (`title`) rather
+ * than requiring a click to discover it.
+ */
+export function shareRow(args: {
+  sharingEnabled: boolean;
+  isDir: boolean;
+  name: string;
+  eligibility: ShareRowEligibility;
+  onClick: () => void;
+}): MenuEntry[] {
+  if (!args.sharingEnabled || args.isDir) return [];
+  return [
+    {
+      label: "Share…",
+      icon: MenuIcons.share,
+      disabled: !args.eligibility.canShare,
+      title: args.eligibility.canShare
+        ? "Share " + args.name + " — public link or 30-minute link"
+        : (args.eligibility.refusal ?? "This file type can't be shared yet"),
+      onClick: args.onClick,
+    },
+  ];
+}
+
 // One open modal for the preview file menu: a Rename prompt or a Delete confirm
 // (the trash-unsupported fallback). Mirrors Listing's DialogState, kept local
 // so the two views don't couple through a shared dialog type.
@@ -550,6 +599,40 @@ function usePreviewFileMenu(
     };
   }, [fsPath, parent, stat.is_dir]);
 
+  // SHARE, FOR THE FILE ITSELF — same flag as the app sheet (share-app-flag.ts:
+  // "ON, each surface shows ONE Share entry"), reused here so a reader flips
+  // one switch for both. `can_share`/`refusal` come from the server
+  // (share_file.py's /status, resolved against the Fused catalog — see
+  // share_file_rules.py) because "does this extension have a viewer" is not a
+  // fact the frontend can know without asking; a directory never asks at all
+  // (its own Share row is the app sheet, EntryActionsMenu.tsx, a different
+  // concept — "a folder is not a file").
+  const sharingFilesEnabled = useAppSharingFeature();
+  const [shareEligibility, setShareEligibility] = useState<{ canShare: boolean; refusal: string | null }>({
+    canShare: false,
+    refusal: null,
+  });
+  useEffect(() => {
+    setShareEligibility({ canShare: false, refusal: null });
+    if (!sharingFilesEnabled || stat.is_dir) return;
+    let alive = true;
+    getShareFileStatus(fsPath)
+      .then((s) => {
+        if (alive) setShareEligibility({ canShare: s.can_share, refusal: s.refusal });
+      })
+      .catch(() => {
+        /* indeterminate reads as "can't share yet" — the row stays disabled
+           rather than claiming a wrong reason */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [fsPath, stat.is_dir, sharingFilesEnabled]);
+  const doShareFile = () => {
+    if (!shareEligibility.canShare) return;
+    openShareFile({ path: fsPath, name: stat.name });
+  };
+
   // "Set Current View as Preview" (Akshil, 2026-08-27): photograph what the
   // frame is showing and write it as the folder's preview.png — the ONE
   // place a preview is photographed (appShot.captureAppPreview; Share no
@@ -617,8 +700,13 @@ function usePreviewFileMenu(
   //   `splits` close `open`, on the condition TemplatePreview uses for its
   //   own split affordances: a single file, not inside a pane that already
   //   is a split (the view's Open in embed is its own last group).
-  // Rebuilt per call: `isAppEntry` lands after first paint.
-  const fileGroups = (): Record<"file" | "open" | "copy" | "setPreview" | "splits", MenuEntry[]> => ({
+  //   `share` is its own group ahead of `copy` (share-any-file-plan.md task
+  //   7): a plain file, never a directory (that is the app sheet's row,
+  //   EntryActionsMenu.tsx — a different concept), behind the same flag the
+  //   app sheet uses. Present but disabled — never silently missing — for an
+  //   extension the Fused catalog has no viewer for, naming the reason.
+  // Rebuilt per call: `isAppEntry`/`shareEligibility` land after first paint.
+  const fileGroups = (): Record<"file" | "open" | "share" | "copy" | "setPreview" | "splits", MenuEntry[]> => ({
     file: [{ label: "Rename…", icon: MenuIcons.rename, onClick: startRename }],
     open: [
       { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: doReveal },
@@ -628,6 +716,13 @@ function usePreviewFileMenu(
         onClick: () => window.open(urlForFsPath(fsPath), "_blank", "noopener"),
       },
     ],
+    share: shareRow({
+      sharingEnabled: sharingFilesEnabled,
+      isDir: stat.is_dir,
+      name: stat.name,
+      eligibility: shareEligibility,
+      onClick: doShareFile,
+    }),
     copy: [
       { label: "Copy Path", icon: MenuIcons.copyPath, onClick: doCopyPath },
       { label: "Copy Claude session command", icon: MenuIcons.openWith, onClick: doOpenInClaude },
@@ -648,6 +743,7 @@ function usePreviewFileMenu(
       app: own.setPreview,
       file: own.file,
       open: [...own.open, ...own.splits],
+      share: own.share,
       copy: own.copy,
     });
   };
@@ -2050,6 +2146,7 @@ function TemplatePreview({
       app: [...appRows.app, ...own.setPreview, ...appRows.doctor],
       file: own.file,
       open: [...own.open, ...own.splits],
+      share: own.share,
       copy: own.copy,
       embed: appRows.embed,
     });

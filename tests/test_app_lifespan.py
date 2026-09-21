@@ -128,6 +128,10 @@ EXPECTED_STARTUP = [
     "_startup_ai_hardware_refresh",
     "_startup_ai_hub_metadata_refresh",
     "_startup_gc_project_venvs",
+    # Added: code review finding 1 — nothing else ever called the shim's
+    # `rules` action, so share_file's catalog cache was never built and
+    # every extension but the built-in `.fused` refused to share.
+    "_startup_warm_share_rules",
     "_startup_index_scan",
     "_startup_update_dev_manager",
 ]
