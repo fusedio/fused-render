@@ -365,6 +365,18 @@ test("THE COMEBACK IS NOT BLOCKED: the card says the chat resumes itself, and wh
   expect(stop.props.title).toBe("Cancels the automatic resume, and this chat reopens now");
 });
 
+test("…but a LATER message in a rescued chat is an ordinary block", async () => {
+  // The task row keeps "Continue after usage limit" as the conversation's name;
+  // only the entry's own marks decide (Bugbot, #1292).
+  entries = [{ id: "e2", state: "pending", session_id: "s1", due: "2099-01-01T09:00:00", message: "Nightly tidy" }];
+  tasks = [{ key: "s1", task_id: "TASK-007", title: "Continue after usage limit", status: "upcoming" }];
+  const m = mount();
+  await flush();
+  expect(texts(m.tree, "sb-when")).toEqual(["Blocked — a scheduled message runs in this chat."]);
+  expect(acts(m.tree).props.children).toBe("Cancel this message");
+  expect(m.api.placeholder).toBe("Waiting on a scheduled message…");
+});
+
 test("N MORE AFTER IT: the soonest is named, the rest counted", async () => {
   entries = [
     { id: "a", state: "pending", session_id: "s1", due: "2099-01-01T09:00:00Z" },

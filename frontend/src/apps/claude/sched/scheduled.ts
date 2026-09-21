@@ -23,7 +23,7 @@
 // pollution the lock prevents, and the schedule is the only thing that could
 // ever have explained it (T:17383-17390).
 
-import { CONTINUE_TITLE } from "../protocol/quota";
+import { CONTINUE_PROMPT, CONTINUE_TITLE } from "../protocol/quota";
 
 /** The `/api/schedule` entry, narrowed to what these rules read (T:16892-16899,
  *  17061-17070, 17395). Structurally satisfied by `platform/lib/api`'s
@@ -478,17 +478,21 @@ export function schedStopTarget(entry: SchedEntry | null | undefined): string {
 
 /**
  * THE CHAT'S OWN COMEBACK — the follow-up `scheduleComeback` posts when a turn
- * dies on the plan limit (`protocol/run-controller`), told apart by the one
- * mark it carries, its title (the same test `tasks.py _comeback_at` spends).
- * `rec` is the `/api/tasks` row, which repeats the title for an entry the
- * schedule listing spelled without one.
+ * dies on the plan limit (`protocol/run-controller`), told apart by the two
+ * fixed marks it carries: its title (the same test `tasks.py _comeback_at`
+ * spends) or, for a listing that spelled no title, its prompt — both are
+ * constants the chat wrote, never the reader.
+ *
+ * READ OFF THE ENTRY ONLY. The `/api/tasks` row is the CONVERSATION's, and a
+ * conversation once rescued keeps that title for every later message a person
+ * schedules into it; testing the row would dress each of those as a
+ * usage-limit pause, stop control included (Bugbot, PR #1292).
  */
-export function schedIsComeback(
-  entry: SchedEntry | null | undefined,
-  rec?: SchedTask | null,
-): boolean {
-  const title = String((entry && entry.title) || (rec && rec.title) || "").trim();
-  return title === CONTINUE_TITLE;
+export function schedIsComeback(entry: SchedEntry | null | undefined): boolean {
+  if (!entry) return false;
+  if (String(entry.title || "").trim() === CONTINUE_TITLE) return true;
+  const said = String(entry.message || "").replace(/\s+/g, " ").trim();
+  return said === CONTINUE_PROMPT.replace(/\s+/g, " ").trim();
 }
 
 /** T:17082-17086 — WHY the box is shut, in one sentence, and it has one author:
@@ -504,10 +508,9 @@ export function schedIsComeback(
  *  (Akshil, 2026-09-21). */
 export function schedBlockReason(
   entry: SchedEntry | null | undefined,
-  rec?: SchedTask | null,
   now: Date = new Date(),
 ): string {
-  if (schedIsComeback(entry, rec)) {
+  if (schedIsComeback(entry)) {
     return `Paused on your usage limit — this chat picks up again by itself ${schedWhenText(entry?.due, now)}.`;
   }
   return schedIsRepeat(entry)
@@ -518,15 +521,11 @@ export function schedBlockReason(
 /** The whole reason line: the soonest is NAMED by the row below and the rest are
  *  counted here, because naming one answers "what is coming?" and a list of five
  *  would be the Tasks page in a strip above a chat (T:17111-17113). */
-export function schedWhyLine(
-  blockers: readonly SchedEntry[],
-  rec?: SchedTask | null,
-  now: Date = new Date(),
-): string {
+export function schedWhyLine(blockers: readonly SchedEntry[], now: Date = new Date()): string {
   const next = blockers[0];
   if (!next) return "";
   const others = blockers.length - 1;
-  return schedBlockReason(next, rec, now) + (others > 0 ? " " + others + " more after it." : "");
+  return schedBlockReason(next, now) + (others > 0 ? " " + others + " more after it." : "");
 }
 
 /** T:16904-16908 — local calendar days apart, computed from MIDNIGHTS rather

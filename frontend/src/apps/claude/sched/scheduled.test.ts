@@ -89,16 +89,28 @@ describe("what blocks this chat", () => {
       "Blocked — a repeating message runs in this chat.",
     );
     expect(schedWhyLine([])).toBe("");
-    // The chat's own comeback, known by its title alone, says the rescue and
-    // when — from the entry's title or, failing that, the task row's.
+    // The chat's own comeback says the rescue and when. It is known by the
+    // ENTRY's fixed title, or its fixed prompt when the listing spelled no
+    // title — never by the conversation's task row, which keeps the comeback's
+    // name for every later message a person schedules into it (Bugbot, #1292).
     const at = new Date(2099, 0, 1, 9, 0);
     const now = new Date(2098, 11, 31, 9, 0);
-    const comeback = entry({ title: "Continue after usage limit", due: at.toISOString() });
-    expect(schedWhyLine([comeback], null, now)).toBe(
-      "Paused on your usage limit — this chat picks up again by itself 09:00 tomorrow.",
-    );
-    expect(schedWhyLine([entry({ due: at.toISOString() })], { key: "k", title: "Continue after usage limit" }, now)).toBe(
-      "Paused on your usage limit — this chat picks up again by itself 09:00 tomorrow.",
+    const line = "Paused on your usage limit — this chat picks up again by itself 09:00 tomorrow.";
+    expect(schedWhyLine([entry({ title: "Continue after usage limit", due: at.toISOString() })], now)).toBe(line);
+    expect(
+      schedWhyLine(
+        [
+          entry({
+            due: at.toISOString(),
+            message:
+              "Your usage limit has reset. Continue the task you were working on where it stopped. Do not repeat steps that were already completed.",
+          }),
+        ],
+        now,
+      ),
+    ).toBe(line);
+    expect(schedWhyLine([entry({ due: at.toISOString(), message: "Nightly tidy" })], now)).toBe(
+      "Blocked — a scheduled message runs in this chat.",
     );
   });
 });

@@ -92,7 +92,7 @@ export function SchedBlock({
   }, []);
 
   const repeat = next ? schedIsRepeat(next) : false;
-  const comeback = schedIsComeback(next, rec);
+  const comeback = schedIsComeback(next);
   /** THE ENTRY, NOT THE TASK. `rec` is the row for the whole task and answers
    *  `done` for a task holding a finished run and a future pending message —
    *  which is a true sentence about the board and a false one about the message
@@ -132,7 +132,7 @@ export function SchedBlock({
             ⏱
           </span>
           <span className="sb-when">
-            {schedWhyLine(blockers, rec, new Date(tick || Date.now()))}
+            {schedWhyLine(blockers, new Date(tick || Date.now()))}
           </span>
         </div>
         {/* A READING, not a control: a `div`, so nothing here looks pressable

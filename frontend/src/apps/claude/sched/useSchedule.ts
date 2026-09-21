@@ -968,7 +968,7 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
   }, [next, armedId, watcher, api]);
 
   const locked = !blocked && !!navLocked;
-  const reason = blocked ? schedBlockReason(blockAbout, rec) : locked ? NAV_LOCKED_REASON : "";
+  const reason = blocked ? schedBlockReason(blockAbout) : locked ? NAV_LOCKED_REASON : "";
 
   return {
     blockers,
@@ -978,7 +978,7 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     pendingIds,
     ranSessions,
     reason,
-    placeholder: schedIsComeback(blockAbout, rec) ? COMEBACK_PLACEHOLDER : BLOCKED_PLACEHOLDER,
+    placeholder: schedIsComeback(blockAbout) ? COMEBACK_PLACEHOLDER : BLOCKED_PLACEHOLDER,
     schedDisabled: blocked || locked,
     rec,
     row: liveRow,
