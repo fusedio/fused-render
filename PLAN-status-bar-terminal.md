@@ -237,3 +237,49 @@ drawer says the process exited and Enter starts a new one.
 To verify by hand (cannot be asserted in a test): dragging the drawer handle resizes it
 and the size survives a reload; `vim`/`htop` render and take arrow keys; the drawer never
 overlaps the Claude composer.
+
+## Build notes (appended as work landed)
+
+- **Tasks 1-3 done and committed** (`Terminal: resolve the user's shell into a spawn
+  profile`, `Terminal: pty session registry with a fork-safe exec helper`,
+  `Terminal: /api/terminal session routes and byte stream`).
+- **Task 6's shutdown wiring was front-loaded into Task 3's commit**: app.py's
+  `include_router(terminal_router)` block already registers `@on_shutdown
+  _shutdown_terminal_sessions()` calling `pty_session.REGISTRY.shutdown_all()` via
+  `asyncio.to_thread`. Task 6 still owes: the extra `test_pty_session.py` shutdown-specific
+  test (two sessions, run the hook, both reaped) and the frontend "Process exited (N) —
+  press Enter" restart behavior in `TerminalDrawer.tsx`.
+- **Two real bugs found and fixed by the route tests (not flakiness — both would leak
+  in production)**:
+  1. `pump_output()` in `routers/terminal.py` originally did a bare
+     `await asyncio.to_thread(out_queue.get)` (no timeout). Cancelling that task on
+     disconnect does NOT stop the already-running thread-pool worker (a blocking
+     `Future.cancel()` on a running item is a no-op), so a disconnect from a still-alive
+     session leaked a thread parked on `queue.get()` forever. In a test, this hung
+     asyncio's executor shutdown (`loop.shutdown_default_executor`) forever — the whole
+     test process would never exit. Fixed with `out_queue.get(timeout=0.2)` + `except
+     Empty: continue`, so a cancelled task's current call returns well within one tick.
+  2. `PtySession.kill()` assumed `os.killpg(self.proc.pid, ...)` is always correct because
+     the helper's `os.setsid()` makes the child its own process-group leader. There is a
+     real race between `Popen()` returning (as soon as the posix_spawn exec syscall
+     completes) and the child actually reaching that `setsid()` call — during that window
+     the child is still a member of the SERVER's own process group. `killpg` there is a
+     no-op (a stale/empty group from the OS's point of view) rather than actually killing
+     anything, and worse, would be catastrophic to fire against the server's own group if
+     that identity check weren't there. Fixed with `os.getpgid(pid)` checked against `pid`
+     before calling `killpg`; falls back to a plain `os.kill(pid, sig)` (never `killpg`)
+     until the child's own session is confirmed.
+- **Environment note for the next person**: on this dev machine, `pytest -n auto` (the
+  project default) sometimes takes 60-100+ seconds just for xdist worker bring-up under
+  load from other running dev.sh/claude processes, with ZERO output printed until it's
+  done (no partial "bringing up nodes..." line makes it to the log if you're tailing a
+  redirected file — block buffering). Don't conclude "hung" from that alone; either wait
+  it out with a generous timeout, or pass `-n 0` while iterating (same test semantics,
+  starts in under a second, and is what surfaced the two bugs above — a real deadlock
+  looks identical to "still bringing up nodes" if you only give it 15-20s).
+- **pytest fixtures close every pty fd / reap every child.** Every `PtySessionRegistry`
+  test fixture calls `reg.shutdown_all()` at teardown (kills + joins every reader
+  thread, which is what actually closes the master fd). No test leaves a session, a
+  thread, or an fd running past itself — checked by running the full trio of terminal
+  test files together and confirming a clean, prompt process exit under both `-n 0` and
+  the default `-n auto`.
