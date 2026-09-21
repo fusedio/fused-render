@@ -20,6 +20,7 @@ import {
   getClaudeSessionFolders,
   getGitRepos,
   indexRank,
+  requestFolderScan,
   startIndexScan,
   statPath,
 } from "@platform/lib/api";
@@ -592,6 +593,15 @@ export function FilesSearch({
   // failure was terminal: none of the other deps is something a user can move,
   // so search stayed dead until a reload.
   const [retryNonce, setRetryNonce] = useState(0);
+  // Per-query dedup for the covered-but-empty scan trigger below
+  // (SPEC-empty-search-scan.md): a query already asked for a scan must not
+  // ask again just because the same text comes back around (backspacing and
+  // retyping, or a lifecycle bump re-asking the identical query). Reset with
+  // `home` — a different root is a different session for this purpose.
+  const firedEmptyScan = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    firedEmptyScan.current = new Set();
+  }, [home]);
 
   // A scan finishing or the index being deleted changes what a query ANSWERS
   // to, and no other signal reports it — the filesystem did not change (see
@@ -680,6 +690,22 @@ export function FilesSearch({
           setAnswer(next);
           setFailure("");
           setPending(false);
+          // The covered-but-empty scan trigger (SPEC-empty-search-scan.md):
+          // a settled answer that says the root IS covered (reason === "")
+          // but found no files is real evidence the index may be behind
+          // this exact query — ask for a background scan of the answer's
+          // OWN root (`next.base`, never a hardcoded `home`: a leading
+          // "~"/"/" query can resolve elsewhere). `searchable` gates this
+          // whole effect, which already enforces MIN_QUERY_CHARS, so no
+          // extra length check is needed here. `firedEmptyScan` is the
+          // per-query dedup the spec requires; the server's own
+          // SCAN_DEBOUNCE_S is the cross-query floor and is not duplicated
+          // here. A refusal or a thrown fetch are both silent — a search
+          // must never fail over housekeeping (routers/index.py:627).
+          if (next.reason === "" && next.hits.length === 0 && !firedEmptyScan.current.has(q)) {
+            firedEmptyScan.current.add(q);
+            void requestFolderScan(next.base || home).then(onScanRequested, () => {});
+          }
         },
         (err: Error) => {
           if (ctl.signal.aborted || err.name === "AbortError") return;
@@ -928,10 +954,27 @@ export function FilesSearch({
   // earlier branches: `showOpenRow` and `!searchable` short-circuit it before
   // any `gap === …` case — the "Open" note (below) already owns that row's
   // real estate, and a query under MIN_QUERY_CHARS never asked anything.
+  // A covered (`reason === ""`) answer normally means the ternary below's
+  // plain "No file name matched" is the whole story. The one exception: the
+  // covered-but-empty scan trigger (SPEC-empty-search-scan.md, in the fetch
+  // effect above) can have a scan running RIGHT NOW for this exact root, and
+  // `displayAnswer.reason` was frozen at rank time — it cannot say so, only
+  // the live poll (`liveScanning`) can. Gated on `hits.length === 0` so a
+  // covered answer that DOES have rows never loses them to a "still
+  // building" note over an unrelated scan (e.g. the whole-index button)
+  // happening to be running at the same time.
   const gap =
     displayAnswer !== null && !displayAnswer.covered && !showOpenRow && searchable
       ? indexGap(displayAnswer.reason, liveScanning)
-      : null;
+      : displayAnswer !== null &&
+          displayAnswer.covered &&
+          !showOpenRow &&
+          searchable &&
+          settled &&
+          hits.length === 0 &&
+          liveScanning === true
+        ? "scanning"
+        : null;
   // The `buildable` and `fda` branches yield nothing — the `.fh-index-cta`
   // callout is the message for those states — so the note paragraph is empty
   // and the suffix's leading "·" would separate nothing.
