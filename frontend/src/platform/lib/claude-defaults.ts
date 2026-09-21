@@ -135,7 +135,18 @@ export function setClaudeDefaults(
   announce(optimistic, true);
   return putTaskDefaults(patch)
     .then((d) => announce({ model: d?.model || "", effort: d?.effort || "" }, true))
-    .catch(() => current ?? optimistic);
+    .catch(() =>
+      // A REFUSED WRITE IS TAKEN BACK, HERE AND IN EVERY OTHER TAB (review,
+      // 2026-09-21). The optimistic announce above already went out over the
+      // broadcast, so leaving `current` at the rejected pair would keep this
+      // pill and every listening tab on a value the file never took. Ask the
+      // server what it holds and announce THAT — with a broadcast, so the tabs
+      // that heard the optimistic value hear the correction too. A read that
+      // also fails keeps whatever was known before the click.
+      getTaskDefaults()
+        .then((d) => announce({ model: d?.model || "", effort: d?.effort || "" }, true))
+        .catch(() => current ?? optimistic),
+    );
 }
 
 /** One `storage` event, as the listener below sees it. Exported so the rule can

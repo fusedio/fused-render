@@ -3177,24 +3177,38 @@ export default function NewJobModal({
   // already has a session: what that task runs with is a fact about that task,
   // and changing it must not re-aim every future chat on the machine.
   const globalEditor = !editing;
+  // A PICK IN FLIGHT OUTRANKS A BROADCAST (review, 2026-09-21). Another tab's
+  // announcement landing between this card's click and its PUT settling used
+  // to overwrite the reader's own choice for a frame; the server's answer then
+  // put it back, but the flicker was real. Per field: a model pick does not
+  // hold the effort half still.
+  const pickInFlight = useRef({ model: 0, effort: 0 });
   useEffect(() => {
     if (!globalEditor) return;
     return subscribeClaudeDefaults((d) => {
-      if (tookGlobal.current?.model && d.model) setModel(d.model);
-      if (tookGlobal.current?.effort && d.effort) setEffort(d.effort);
+      if (tookGlobal.current?.model && d.model && !pickInFlight.current.model) setModel(d.model);
+      if (tookGlobal.current?.effort && d.effort && !pickInFlight.current.effort) setEffort(d.effort);
     });
   }, [globalEditor]);
   const pickModel = useCallback(
     (value: string) => {
       setModel(value);
-      if (globalEditor) void setClaudeDefaults({ model: value });
+      if (!globalEditor) return;
+      pickInFlight.current.model += 1;
+      void setClaudeDefaults({ model: value }).finally(() => {
+        pickInFlight.current.model -= 1;
+      });
     },
     [globalEditor],
   );
   const pickEffort = useCallback(
     (value: string) => {
       setEffort(value);
-      if (globalEditor) void setClaudeDefaults({ effort: value });
+      if (!globalEditor) return;
+      pickInFlight.current.effort += 1;
+      void setClaudeDefaults({ effort: value }).finally(() => {
+        pickInFlight.current.effort -= 1;
+      });
     },
     [globalEditor],
   );
