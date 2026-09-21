@@ -88,7 +88,6 @@ import {
   CircleAlert,
   CircleMinus,
   CirclePlay,
-  GitBranch,
   GitPullRequest,
   RotateCw,
   TriangleAlert,
@@ -368,7 +367,6 @@ function CheckRow({
                     onDone?.();
                   }}
                 >
-                  <GitBranch aria-hidden />
                   Open in git
                 </Button>
               )}
