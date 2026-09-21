@@ -197,18 +197,25 @@ def _workbench_url(handle: str, name: str) -> str:
 
 
 def publish(req: dict) -> dict:
-    share_id, name, local = req["share_id"], req["name"], req["file"]
+    """Upload (unless a caller already did — `s3_uri` handed in means the
+    canvas work only, bounded and safe under PUBLISH_TIMEOUT even for a file
+    whose transfer alone would have blown it) then push the wrapper canvas."""
+    share_id, name = req["share_id"], req["name"]
     viewer_token = req["viewer_token"]
-    if not os.path.isfile(local):
-        raise ShareError(f"no such file: {local}")
     api = get_api()
     handle = _handle()
     cname = canvas_name(share_id)
     slug = udf_slug(share_id)
 
-    remote = f"{_remote_prefix(handle, share_id)}{_sha10(local)}/{os.path.basename(local)}"
-    fused.api.upload(local, remote)
-    s3_uri = _resolve_remote(remote)
+    s3_uri = req.get("s3_uri")
+    remote = req.get("remote")
+    if not s3_uri:
+        local = req["file"]
+        if not os.path.isfile(local):
+            raise ShareError(f"no such file: {local}")
+        remote = f"{_remote_prefix(handle, share_id)}{_sha10(local)}/{os.path.basename(local)}"
+        fused.api.upload(local, remote)
+        s3_uri = _resolve_remote(remote)
 
     existing = _find_collection(api, cname)
     if existing:
@@ -302,6 +309,21 @@ def remove(req: dict) -> dict:
     return {"ok": True, "deleted_canvas": deleted_canvas}
 
 
+def upload(req: dict) -> dict:
+    """Just the transfer + resolve half of `publish` (§4.1's detached
+    upload): `share_file.py` spawns this action so a large file's transfer
+    runs unbounded, outside any request timeout, and `publish` above can stay
+    bounded by handing it the `remote`/`s3_uri` this returns."""
+    share_id, local = req["share_id"], req["file"]
+    if not os.path.isfile(local):
+        raise ShareError(f"no such file: {local}")
+    handle = _handle()
+    remote = f"{_remote_prefix(handle, share_id)}{_sha10(local)}/{os.path.basename(local)}"
+    fused.api.upload(local, remote)
+    s3_uri = _resolve_remote(remote)
+    return {"remote": remote, "s3_uri": s3_uri}
+
+
 def rules(req: dict) -> dict:
     """The file-preview rule table (share_file_rules.py), rebuilt from the
     catalog when the cache is missing or older than `ttl`. Runs here, not in
@@ -314,12 +336,20 @@ def rules(req: dict) -> dict:
     return {"rules": share_file_rules.load_rules(ttl=float(ttl))}
 
 
-ACTIONS = {"publish": publish, "lookup": lookup, "remove": remove, "rules": rules}
+ACTIONS = {"publish": publish, "lookup": lookup, "remove": remove, "rules": rules,
+           "upload": upload}
 
 
 def main() -> int:
     try:
-        req = json.load(sys.stdin)
+        # A detached upload (share_file.py's start_upload) has no live stdin
+        # to write to once it is spawned under `sh -c … &`; the request is a
+        # file on disk instead, named as the one CLI argument.
+        if len(sys.argv) > 1:
+            with open(sys.argv[1], encoding="utf-8") as f:
+                req = json.load(f)
+        else:
+            req = json.load(sys.stdin)
         action = ACTIONS.get(req.get("action") or "")
         if action is None:
             raise ShareError(f"unknown action {req.get('action')!r}")
