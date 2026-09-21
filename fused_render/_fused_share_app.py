@@ -196,12 +196,37 @@ def _workbench_url(handle: str, name: str) -> str:
     return f"{OPTIONS.base_web_url}/workbench/{handle}/{name}"
 
 
+SESSION_MAX_AGE_S = 30 * 60  # 30 minutes — the plan's only non-public option
+
+
+def _mint_session(api, token: str) -> tuple[str, object]:
+    """`_session_token`, mirroring artifact-sharing.md §3/§4. A mint can fail
+    with "Session tokens are only supported for team-scoped tokens" when the
+    token predates a scope flip; `publish` below retries this once after a
+    fresh `new_token=True` re-share, the documented self-heal."""
+    session = api._session_token(token, session_max_age=SESSION_MAX_AGE_S)
+    return session.session_token, session.expires_at
+
+
 def publish(req: dict) -> dict:
     """Upload (unless a caller already did — `s3_uri` handed in means the
     canvas work only, bounded and safe under PUBLISH_TIMEOUT even for a file
-    whose transfer alone would have blown it) then push the wrapper canvas."""
+    whose transfer alone would have blown it) then push the wrapper canvas.
+
+    `mode` is `public` (the default) or `temporary`: `public` keeps the scope
+    `public` and never touches a session token; `temporary` sets the canvas
+    team-scoped and mints a 30-minute session token appended to the link
+    (artifact-sharing.md §1-§2). A scope change always re-issues the share
+    token — a token keeps the scope it was issued under, so a flip leaves
+    the old one unable to serve *or* to mint.
+    """
     share_id, name = req["share_id"], req["name"]
     viewer_token = req["viewer_token"]
+    mode = req.get("mode") or "public"
+    if mode not in ("public", "temporary"):
+        raise ShareError(f"unknown share mode {mode!r}")
+    target_scope = "team" if mode == "temporary" else "public"
+
     api = get_api()
     handle = _handle()
     cname = canvas_name(share_id)
@@ -220,25 +245,44 @@ def publish(req: dict) -> dict:
     existing = _find_collection(api, cname)
     if existing:
         collection_id = existing["id"]
-        was_public = _scope(existing.get("access_scope")) == "public"
+        current_scope = _scope(existing.get("access_scope"))
     else:
-        created = api.create_collection(name=cname, access_scope="public")
+        created = api.create_collection(name=cname, access_scope=target_scope)
         collection_id = created.id
-        was_public = _scope(created.access_scope) == "public"
+        current_scope = _scope(created.access_scope)
 
     api.import_collection_toml_zip(collection_id, _canvas_zip(cname, slug, name, s3_uri, viewer_token))
 
-    if not was_public:
+    if current_scope != target_scope:
         # The real name is required by update_collection; passing anything
         # else would rename the canvas. A token keeps the scope it was
         # issued under, so the flip needs a fresh one.
-        api.update_collection(collection_id, name=cname, access_scope="public")
+        api.update_collection(collection_id, name=cname, access_scope=target_scope)
         shared = api.share_collection(collection_id, new_token=True)
     else:
         shared = api.share_collection(collection_id)
     token = shared.share_token
     if not token:
         raise ShareError("Fused shared the canvas but returned no share token.")
+
+    url = _share_url(token, slug)
+    session_token = session_expires = None
+    if mode == "temporary":
+        try:
+            session_token, session_expires = _mint_session(api, token)
+        except Exception as exc:
+            if "team-scoped" in str(exc).lower():
+                # Self-heal once (artifact-sharing.md §3): re-share for a
+                # fresh token and mint again.
+                shared = api.share_collection(collection_id, new_token=True)
+                token = shared.share_token
+                if not token:
+                    raise ShareError("Fused shared the canvas but returned no share token.")
+                url = _share_url(token, slug)
+                session_token, session_expires = _mint_session(api, token)
+            else:
+                raise
+        url = f"{url}?fused_session_token={session_token}"
 
     previous = req.get("previous_remote")
     if previous and previous != remote:
@@ -248,7 +292,7 @@ def publish(req: dict) -> dict:
             print(f"could not delete the previous upload {previous}: {exc}", file=sys.stderr)
 
     return {
-        "url": _share_url(token, slug),
+        "url": url,
         "canvas_id": collection_id,
         "canvas_name": cname,
         "share_token": token,
@@ -256,6 +300,9 @@ def publish(req: dict) -> dict:
         "remote": remote,
         "handle": handle,
         "workbench_url": _workbench_url(handle, cname),
+        "mode": mode,
+        "session_token": session_token,
+        "session_expires": session_expires,
     }
 
 

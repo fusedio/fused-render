@@ -115,6 +115,42 @@ def _refusal_for(path: str, rule: dict | None) -> str | None:
     return "no Fused viewer opens files with no extension"
 
 
+MODES = ("public", "temporary")
+
+
+def _parse_expiry(value) -> float | None:
+    """`session_expires` as the shim hands it back — an ISO 8601 string in
+    the common case, but treated generically since the SDK's own type is not
+    pinned in the spec (artifact-sharing.md §3: `.expires_at`)."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            pass
+        try:
+            import datetime
+
+            return datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def is_expired(record: dict) -> bool:
+    """A `temporary` share's session token past its `session_expires` — the
+    sheet uses this to offer a fresh link without a round trip (task 5)."""
+    if record.get("mode") != "temporary":
+        return False
+    expiry = _parse_expiry(record.get("session_expires"))
+    if expiry is None:
+        return False
+    return expiry <= time.time()
+
+
 def _resolve_path(path: str) -> tuple[str | None, str | None]:
     """(abs path, refusal). A directory is refused the same as a missing one
     — Share is a file action, not a folder one (§7's `.fused` app stays on
@@ -313,6 +349,9 @@ def api_share_file_status(path: str = ""):
     rule = resolve_viewer(abspath)
     refusal = _refusal_for(abspath, rule)
     file_id = file_identity(abspath)
+    shared = _record_for(file_id)
+    if shared is not None:
+        shared = {**shared, "expired": is_expired(shared)}
     return {
         "file_id": file_id,
         "can_share": refusal is None,
@@ -321,7 +360,7 @@ def api_share_file_status(path: str = ""):
         "cli_found": fused_cli() is not None,
         "logged_in": _logged_in(),
         "creds_stamp": _creds_stamp(),
-        "shared": _record_for(file_id),
+        "shared": shared,
     }
 
 
@@ -344,6 +383,10 @@ def api_share_file_publish(body: dict = Body(...), x_fused: str | None = Header(
     if not _logged_in():
         return _not_signed_in()
 
+    mode = body.get("mode") if isinstance(body.get("mode"), str) else "public"
+    if mode not in MODES:
+        return _error(f"unknown share mode {mode!r}; expected one of {MODES}")
+
     file_id = file_identity(abspath)
     size = os.path.getsize(abspath)
     upload_id = body.get("upload_id") if isinstance(body.get("upload_id"), str) else None
@@ -365,7 +408,7 @@ def api_share_file_publish(body: dict = Body(...), x_fused: str | None = Header(
         name = os.path.basename(abspath)
         previous = get_record(key) or {}
         request = {"action": "publish", "share_id": file_id, "viewer_token": rule["token"],
-                   "name": name, "previous_remote": previous.get("remote")}
+                   "name": name, "previous_remote": previous.get("remote"), "mode": mode}
         if s3_uri:
             request["remote"], request["s3_uri"] = remote, s3_uri
         else:
@@ -386,11 +429,14 @@ def api_share_file_publish(body: dict = Body(...), x_fused: str | None = Header(
             "slug": out.get("slug"),
             "remote": out.get("remote"),
             "workbench_url": out.get("workbench_url"),
+            "mode": out.get("mode", mode),
+            "session_token": out.get("session_token"),
+            "session_expires": out.get("session_expires"),
             "shared_at": previous.get("shared_at") or now,
             "updated_at": now,
         }
         put_record(key, record)
-        return {"ok": True, "shared": record}
+        return {"ok": True, "shared": {**record, "expired": is_expired(record)}}
     finally:
         lock.release()
 

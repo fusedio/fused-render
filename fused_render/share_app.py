@@ -336,7 +336,10 @@ def api_share_publish(
         previous = get_record(aid) or {}
         out, err = _run_shim(
             {"action": "publish", "share_id": aid, "viewer_token": "UDF_Fused_App_File",
-             "name": name, "file": out_path, "previous_remote": previous.get("remote")},
+             "name": name, "file": out_path, "previous_remote": previous.get("remote"),
+             # Apps stay public-only, by decision — no mode control here
+             # (share_file.py's publish is where `mode` is a caller choice).
+             "mode": "public"},
             PUBLISH_TIMEOUT)
         if err is not None:
             return err
