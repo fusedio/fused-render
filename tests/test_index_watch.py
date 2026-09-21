@@ -455,6 +455,66 @@ def test_a_real_flush_actually_reaches_the_rescan_queue(tmp_path, monkeypatch):
         "got an empty _pending, meaning the forward call queued nothing")
 
 
+# ------------------------------------------------------------- start()/stop()
+
+
+def test_start_survives_a_partial_failure_and_stays_stoppable(monkeypatch):
+    """`_stop_event`/`_threads` used to be assigned only AFTER the per-root
+    loop. A raise on the second root (or from load_config()/scan_roots())
+    left already-started threads running with `_stop_event` still `None`,
+    so `stop()` returned immediately and did nothing, and the next
+    `start()` was no longer idempotent against those orphaned threads. The
+    stop event must be assigned before the loop, and one bad root must not
+    stop the good ones from starting."""
+    import fused_render.server.index_watch as iw
+
+    monkeypatch.setattr(iw, "_stop_event", None)
+    monkeypatch.setattr(iw, "_threads", [])
+
+    class FakeLoop:
+        def run(self):
+            return  # returns at once; the thread just ends
+
+    def fake_make_loop(root, stop_event):
+        if root == "/bad":
+            raise RuntimeError("boom making loop")
+        assert stop_event is not None
+        return FakeLoop()
+
+    monkeypatch.setattr(iw, "_make_loop", fake_make_loop)
+    monkeypatch.setattr("fused_render.server.routers.index.scan_roots",
+                        lambda cfg, start_dir=None: ["/good", "/bad"])
+    monkeypatch.setattr("fused_render.index.config.load_config",
+                        lambda dir=None: object())
+
+    iw.start()
+    try:
+        assert iw._stop_event is not None, (
+            "the stop event must be assigned even when a root fails, or "
+            "stop() cannot ever reach the threads that DID start")
+        assert len(iw._threads) == 1  # only /good's thread started
+    finally:
+        iw.stop()
+    assert iw._stop_event is None
+
+
+def test_start_degrades_instead_of_raising_when_roots_cannot_be_determined(monkeypatch):
+    """`_lifespan` awaits every startup handler with no try (app.py) — a
+    raise here would stop the whole server from booting, for an optional
+    background feature. `start()` must degrade (log, do nothing) rather
+    than propagate."""
+    import fused_render.server.index_watch as iw
+
+    monkeypatch.setattr(iw, "_stop_event", None)
+    monkeypatch.setattr(iw, "_threads", [])
+    monkeypatch.setattr("fused_render.index.config.load_config",
+                        lambda dir=None: (_ for _ in ()).throw(
+                            RuntimeError("config is unreadable")))
+
+    iw.start()  # must not raise
+    assert iw._threads == []
+
+
 # --------------------------------------------------------- real filesystem
 
 def test_a_real_change_arrives_through_the_real_filter(tmp_path):

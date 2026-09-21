@@ -375,25 +375,45 @@ def start() -> None:
     singleton start in this codebase follows (e.g. `shell_mounts.
     start_health_monitor`). Never starts anything a test can see: tests
     build apps without running lifespan, so this is only ever called from
-    `create_app`'s startup handler."""
+    `create_app`'s startup handler.
+
+    Never raises. `_lifespan` (app.py) awaits every startup handler with no
+    try, so a raise here would stop the whole server from booting over an
+    optional background feature — this degrades (log, start what it can)
+    instead. `_stop_event` is assigned BEFORE the per-root loop, and each
+    root's setup is caught individually, so a bad root neither orphans the
+    good roots' threads (with `_stop_event` still `None`, `stop()` would
+    return immediately and never reach them) nor stops the rest from
+    starting."""
     global _stop_event, _threads
 
     if _stop_event is not None:
         return
 
-    from fused_render.index.config import load_config
-    from fused_render.server.routers import index as index_routes
-
     stop = threading.Event()
-    threads = []
-    for root in index_routes.scan_roots(load_config()):
-        loop = _make_loop(root, stop)
-        t = threading.Thread(target=loop.run, name=f"index-watch-{root}",
-                             daemon=True)
-        t.start()
-        threads.append(t)
     _stop_event = stop
-    _threads = threads
+    _threads = []
+
+    try:
+        from fused_render.index.config import load_config
+        from fused_render.server.routers import index as index_routes
+
+        roots = index_routes.scan_roots(load_config())
+    except Exception:
+        logger.exception("index watch: could not determine which roots to "
+                         "watch; the live watcher will not run")
+        return
+
+    for root in roots:
+        try:
+            loop = _make_loop(root, stop)
+            t = threading.Thread(target=loop.run, name=f"index-watch-{root}",
+                                 daemon=True)
+            t.start()
+            _threads.append(t)
+        except Exception:
+            logger.exception("index watch: could not start a watcher for "
+                             "%s; the other roots are unaffected", root)
 
 
 def stop() -> None:
