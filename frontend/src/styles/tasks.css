@@ -1212,7 +1212,12 @@ button.tasks-caret,
   border-color: color-mix(in srgb, var(--activity) 32%, transparent);
 }
 
-/* RUN NEXT (the verb was "Skip the queue" until 2026-09-12 — see
+/* NOTHING WEARS `.tasks-act--skip` SINCE 2026-09-21: Run next is out of the UI
+   and no row or card draws the button these rules were written for. They are
+   kept, unchanged, for the queue verb that lands in the same seat next — and go
+   with the endpoint if none does. Everything below is that button's skin.
+
+   RUN NEXT (the verb was "Skip the queue" until 2026-09-12 — see
    platform/lib/queue.RUN_NEXT_LABEL for why it changed). Same group, same size,
    same silence at rest — and NEUTRAL under the pointer, deliberately NOT Run
    now's `--activity` blue. That hue is the page's "this STARTS something", and

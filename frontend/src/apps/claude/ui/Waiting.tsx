@@ -23,12 +23,9 @@
 import "../styles/sched.css";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  canRunNext,
   queueAheadHref,
   queueAfter,
   queueRunsNext,
-  RUN_NEXT_HINT,
-  RUN_NEXT_LABEL,
   waitingCardText,
   waitingCount,
   NEXT_IN_FOLDER,
@@ -253,7 +250,10 @@ export interface WaitingCardProps {
    *  nothing sitting on top of the box. */
   count: number;
   facts: QueueFacts;
-  /** Run next is in flight, or already spent: the button is dead either way. */
+  /** The card's action seat is in flight, or already spent: whatever sits there
+   *  is dead either way. Nothing is drawn in it right now — Run next was taken
+   *  out of the UI on 2026-09-21 — and the caller still hands both in, because
+   *  the seat is what the next verb to land there will use. */
   busy?: boolean;
   onRunNext(): void;
 }
@@ -268,17 +268,17 @@ export interface WaitingCardProps {
  * composer is, and it is deliberately a SUMMARY: one count, one thing in front,
  * one verb. Everything per-message (the words, the delete) is on the row.
  *
- * RUN NEXT ONLY WHEN ANOTHER WAITING TASK IS AHEAD (`canRunNext`, and its note
- * carries the why). The press can never touch the run holding the folder, so at
- * the head of the line there is nothing for it to get in front of — and a
- * control whose only possible outcome is the state you are already in is a
- * control that teaches the reader it does nothing.
+ * NO VERB IN IT AT THE MOMENT (Akshil, 2026-09-21). Run next — the one press
+ * this card used to carry — is out of the UI, so the card is purely the
+ * SENTENCE: one count and one thing in front. The action seat is still here
+ * (`.wc-grow` and the props above) because a card that is re-laid-out to drop a
+ * button and re-laid-out again to grow the next one moves twice for no reason.
  *
- * THE SENTENCE IS UNAFFECTED. `behind TASK-056` stays printed at the head of the
- * line, because it is true there; only `queue_priority` — the spot actually
- * claimed — replaces it with "next in this folder".
+ * THE SENTENCE IS UNAFFECTED by any of that. `behind TASK-056` stays printed at
+ * the head of the line, because it is true there; only `queue_priority` — the
+ * spot actually claimed — replaces it with "next in this folder".
  */
-export function WaitingCard({ count, facts, busy, onRunNext }: WaitingCardProps) {
+export function WaitingCard({ count, facts }: WaitingCardProps) {
   if (count <= 0) return null;
   /**
    * WHAT IS IN FRONT is a different question from WHETHER THERE IS A PRESS, and
@@ -287,10 +287,9 @@ export function WaitingCard({ count, facts, busy, onRunNext }: WaitingCardProps)
    * folder is genuinely in front — and the card used to swap it for "next in
    * this folder" purely because no button was going to be drawn. So the sentence
    * now follows `waitingCardText`'s own rule (`queue_priority` alone silences
-   * it) and the button follows `canRunNext`.
+   * it) and nothing else.
    */
   const behind = queueRunsNext(facts) ? "" : queueAfter(facts);
-  const showRun = canRunNext(facts);
   const href = queueAheadHref(facts);
   return (
     <div className="c-waitcard">
@@ -321,17 +320,10 @@ export function WaitingCard({ count, facts, busy, onRunNext }: WaitingCardProps)
             <span className="wc-behind">{NEXT_IN_FOLDER}</span>
           )}
         </span>
+        {/* THE ACTION SEAT, EMPTY. The grower stays so the sentence keeps its
+            left edge whether or not anything is ever drawn on the right — see
+            the note on this component. */}
         <span className="wc-grow" />
-        {/* RUN NEXT ONLY WHEN ANOTHER WAITING TASK IS AHEAD (`canRunNext`).
-            Behind the folder's own holder there is nothing for this press to get
-            in front of — it never interrupts a run — and a control whose only
-            outcome is the state you are already in teaches the reader that it
-            does nothing. */}
-        {showRun ? (
-          <button type="button" className="wc-run" disabled={busy} title={RUN_NEXT_HINT} onClick={onRunNext}>
-            {RUN_NEXT_LABEL}
-          </button>
-        ) : null}
       </div>
     </div>
   );

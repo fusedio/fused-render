@@ -3403,10 +3403,14 @@ function ChatBody(props: ChatBodyProps) {
   }, [sched.rec, waiting]);
 
   /**
-   * RUN NEXT — this conversation's waiting work to the front of its folder's
-   * line. The same endpoint the Tasks row and the Board's drag spend, so one verb
-   * cannot mean two things in two places, and it interrupts NOTHING: the run
-   * holding the folder keeps running and this goes when it ends.
+   * THE CARD'S ACTION SEAT — this conversation's waiting work to the front of its
+   * folder's line. The same endpoint the Board's drag spends, and it interrupts
+   * NOTHING: the run holding the folder keeps running and this goes when it ends.
+   *
+   * NOTHING PRESSES IT AS OF 2026-09-21. Run next — the button `WaitingCard`
+   * used to draw in this seat — is out of the UI; the performer, the claim and
+   * the endpoint are all still here, untouched, for the verb that lands in the
+   * seat next. The follow-up that decides what that verb is owns the wording.
    *
    * THE TASK WHEN THERE IS ONE, THE ENTRY OTHERWISE. `sched.rec.key` is read off
    * a listing the poll just took, so it cannot be the stale `pending:<leader>`
@@ -3456,7 +3460,7 @@ function ChatBody(props: ChatBodyProps) {
       // actually happened in review was a 404 on a stale key, invisible for
       // exactly as long as nobody was reading the network tab.
       const t = troubleFromError(err);
-      controller.reportTrouble({ ...t, message: "Run next did not go through: " + t.message });
+      controller.reportTrouble({ ...t, message: "The queue did not take that: " + t.message });
     } finally {
       setRunningNext(false);
     }

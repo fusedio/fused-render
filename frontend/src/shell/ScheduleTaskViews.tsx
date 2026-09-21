@@ -114,15 +114,10 @@ import {
   laneCountLabel,
   laneSplitAt,
   LANE_SPLIT_LABEL,
-  canRunNext,
   messageState,
   queueCaption,
   QUEUED_WORD,
   QUEUE_CAPTION_SEP,
-  QUEUE_PRIORITY_GLYPH,
-  RUN_NEXT_DONE_HINT,
-  RUN_NEXT_HINT,
-  RUN_NEXT_LABEL,
   skippedOverride,
   usageLimitCaption,
   projectMatches,
@@ -2947,7 +2942,7 @@ function TaskNode({
       // the row Upcoming would read as a press that did nothing.
       if (said.queued) {
         onQueued?.({ ...said.queued, key: task.key });
-        setNote(`Waiting — ${queueCaption({ ...task, ...said.queued })?.text ?? RUN_NEXT_LABEL}.`);
+        setNote(`Waiting — ${queueCaption({ ...task, ...said.queued })?.text ?? QUEUED_WORD}.`);
       }
     } catch (e) {
       // The server's own sentence, verbatim. Its common refusal is a 409
@@ -2956,25 +2951,6 @@ function TaskNode({
       // happen — and that reads as "wait", not as "broken", which is why it is
       // said in the quiet note the board's drag already uses rather than in the
       // red line a failed cancel gets.
-      setNote((e as Error).message);
-    } finally {
-      setActing(false);
-      onReload?.();
-    }
-  };
-
-  // Run next: this row's pending work to the head of its folder's line.
-  // The same performer the Board's drag and its card button spend, so one
-  // gesture cannot mean two things on two views — and it NEVER interrupts the
-  // run holding the folder, which is why the sentence it leaves says so.
-  const skip = async () => {
-    setActing(true);
-    setNote("");
-    try {
-      onQueued?.(await performSkip(task));
-    } catch (e) {
-      // Usually a 400: the folder freed while the pointer was travelling, so the
-      // row is not queued any more. The server's own words, in the quiet note.
       setNote((e as Error).message);
     } finally {
       setActing(false);
@@ -3863,46 +3839,12 @@ function TaskNode({
             has unread (tasks-lib.markReadIntent): every other row would carry a
             button whose press does nothing, which is what makes the rows where
             it matters hard to pick out. */}
-        {/* SKIP THE QUEUE — the one row action this page grows for the project
-            queue, and only on a row that is actually queued (hidden, not
-            disabled, everywhere else: a control that is present-but-dead on
-            every row is what makes the rows it works on hard to find).
-
-            NOT BEHIND SHOW_ROW_ACTIONS, for the reason Archive is not: with that
-            flag down this would otherwise be the List's only missing
-            CAPABILITY rather than a missing shortcut, and a reader would have to
-            switch to the Board and drag a card to get to the front of a line.
-            Hover-revealed all the same (`.tasks-act`), so a list at rest grows no
-            chrome — and by opacity rather than display, so a keyboard still
-            reaches it.
-
-            Drawn and DISABLED at the head of the line: dropping it on the press
-            that worked would take the control away at the moment it is most
-            obvious what it did.
-
-            AND ONLY WHEN ANOTHER WAITING TASK IS AHEAD (`canRunNext`, whose note
-            carries the why): behind nothing but the run holding the folder there
-            is nothing to get in front of, because this press never interrupts
-            anything. `runsNext` keeps the disabled draw described above. */}
-        {queue && (canRunNext(task) || queue.runsNext) && (
-          <button
-            type="button"
-            className="tasks-act tasks-act--skip"
-            title={
-              queue.runsNext
-                ? RUN_NEXT_DONE_HINT
-                : RUN_NEXT_HINT
-            }
-            aria-label={`${RUN_NEXT_LABEL} for ${task.task_id}`}
-            disabled={acting || queue.runsNext}
-            onClick={(e) => {
-              e.stopPropagation();
-              void skip();
-            }}
-          >
-            {QUEUE_PRIORITY_GLYPH}
-          </button>
-        )}
+        {/* NO QUEUE VERB IN THIS STRIP ANY MORE (Akshil, 2026-09-21). Run next
+            — "⤒", the one row action this page grew for the project queue — is
+            out of the UI. A queued row still SAYS where it stands (the caption
+            above), it just offers no press for changing it from here. The seat
+            is this spot in the strip, between the marks and Mark read, and it
+            is where the next queue verb goes. */}
         {SHOW_ROW_ACTIONS && seen && (
           <button
             type="button"
@@ -4664,11 +4606,12 @@ const RUN_DROP_WORDS = {
   // queued card dropped on In Progress lands on the same lane the Upcoming drag
   // lands on, so without a wording of its own the card would promise "Run now"
   // for a gesture that starts nothing — and the one thing a queued card must
-  // never claim is that it can interrupt the run holding its folder. Both words
-  // are RUN_NEXT_HINT, the same sentence the Run next button carries.
+  // never claim is that it can interrupt the run holding its folder. Its own
+  // sentence since 2026-09-21: the Run next button that used to share the
+  // wording is out of the UI, and the DRAG is now the only thing that says it.
   skip: {
-    title: RUN_NEXT_HINT,
-    hint: RUN_NEXT_HINT,
+    title: "Next in this folder — nothing is interrupted",
+    hint: "Next in this folder — nothing is interrupted",
   },
 } as const;
 
@@ -5010,7 +4953,7 @@ export function TaskBoard({
       if (said.note) setNote(said.note);
       if (said.queued) {
         onQueued?.({ ...said.queued, key: task.key });
-        setNote(`Waiting — ${queueCaption({ ...task, ...said.queued })?.text ?? RUN_NEXT_LABEL}.`);
+        setNote(`Waiting — ${queueCaption({ ...task, ...said.queued })?.text ?? QUEUED_WORD}.`);
       }
     } catch (e) {
       setNote((e as Error).message);
@@ -5850,37 +5793,11 @@ function TaskCard({
               {OPEN_DOOR_LABEL}
             </a>
           )}
-          {/* SKIP THE QUEUE, on a queued card and nowhere else — and NOT behind
-              SHOW_ROW_ACTIONS, for the reason Archive is not: while that flag is
-              down this would be the only way to skip from the Board other than
-              dragging a card out of a lane that is rolled up whenever it is
-              empty, and a capability with no press is a capability the page does
-              not really have. Already at the head (`runsNext`) it is drawn and
-              DISABLED rather than dropped: the card would otherwise lose a
-              control on the very press that worked.
-
-              ONLY WITH ANOTHER WAITING TASK AHEAD (`canRunNext`) — the same rule
-              the List row and the chat's own card read, so one verb cannot be
-              offered on three surfaces under three conditions. */}
-          {queue && (canRunNext(task) || queue.runsNext) && (
-            <button
-              type="button"
-              className="tasks-act tasks-card-act tasks-act--skip"
-              title={
-                queue.runsNext
-                  ? RUN_NEXT_DONE_HINT
-                  : RUN_NEXT_HINT
-              }
-              aria-label={`${RUN_NEXT_LABEL} for ${task.task_id}`}
-              disabled={busy || queue.runsNext}
-              onClick={() => {
-                setBusy(true);
-                void onSkip().finally(() => setBusy(false));
-              }}
-            >
-              {QUEUE_PRIORITY_GLYPH}
-            </button>
-          )}
+          {/* NO QUEUE VERB ON THE CARD ANY MORE (Akshil, 2026-09-21), the same
+              cut the List row above took: Run next is out of the UI. The DRAG
+              still moves a queued card to the head of its lane — that gesture is
+              untouched — and `onSkip` below is the seat this card keeps for
+              whatever queue verb lands here next. */}
           {SHOW_ROW_ACTIONS && run && (
             <button
               type="button"

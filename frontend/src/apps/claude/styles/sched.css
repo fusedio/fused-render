@@ -499,6 +499,9 @@ a.c-waitcard .wc-ahead:hover,
    NEUTRAL, deliberately: this starts nothing — the run holding the folder keeps
    running — and a primary-coloured button here would promise the one thing the
    press must never be read as offering. */
+/* NOTHING WEARS `.wc-run` SINCE 2026-09-21, for the reason `.tasks-act--skip`
+   does not (styles/tasks.css): Run next is out of the UI and the card draws no
+   button. Kept for the verb that lands in the same seat next. */
 .c-waitcard .wc-run {
   flex: 0 0 auto;
   appearance: none;
