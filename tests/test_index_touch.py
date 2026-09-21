@@ -35,6 +35,7 @@ class Fake:
     def __init__(self, live=(), blocked=(), last_scan=None):
         self.t = 1000.0
         self.started = []
+        self.start_hints = []
         self.armed = []
         self.live = list(live)
         self.blocked = set(blocked)
@@ -48,8 +49,9 @@ class Fake:
         self.armed.append(delay)
         self._fn = fn
 
-    def start(self, root):
+    def start(self, root, hint=None):
         self.started.append(root)
+        self.start_hints.append(hint)
 
     def live_run_covers(self, root):
         return any(r == root or root.startswith(r + "/") or r.startswith(root + "/")
@@ -270,6 +272,85 @@ def test_note_folders_never_queues_the_filesystem_root():
     assert f.started == []
 
 
+# --------------------------------------------------------- hint wiring
+# (SPEC-scan-cost.md part 2: a folder noted through `note_folders` — the
+# watcher already observed it change, in process — is scanned with a
+# `forced` hint instead of an unhinted (journal-replaying, or full) scan. A
+# folder noted through `note()` (an app mutation) never is: a rename needs a
+# real recursive walk of the new name's subtree, which nothing "hints" at.
+
+def test_a_single_watcher_folder_is_started_with_itself_as_the_hint():
+    f = Fake()
+    q = f.queue()
+    q.note_folders("/home/me/proj")
+    f.fire()
+    assert f.started == [canonical_root("/home/me/proj")]
+    assert f.start_hints == [([canonical_root("/home/me/proj")], [])]
+
+
+def test_a_mutation_folder_is_started_with_no_hint():
+    f = Fake()
+    q = f.queue()
+    q.note("/home/me/proj/notes.txt")
+    f.fire()
+    assert f.started == [canonical_root("/home/me/proj")]
+    assert f.start_hints == [None]
+
+
+def test_collapsed_watcher_folders_hint_every_absorbed_folder_not_just_the_root():
+    """`proj` and `proj/sub` both come from the watcher and collapse to one
+    scan of `proj` (outermost-only). A hint of `[proj]` alone would miss
+    `sub`: `_run_fsevents` only force-visits a dir it is told about, or a
+    brand-new one discovered under a forced dir — `sub`, already in the dir
+    cache, is neither. The hint must carry both originally-noted folders."""
+    f = Fake()
+    q = f.queue()
+    q.note_folders("/home/me/proj", "/home/me/proj/sub")
+    f.fire()
+    assert f.started == [canonical_root("/home/me/proj")]
+    assert f.start_hints == [
+        (sorted([canonical_root("/home/me/proj"),
+                canonical_root("/home/me/proj/sub")]), [])]
+
+
+def test_a_mutation_absorbed_into_a_watcher_folder_falls_back_to_no_hint():
+    """`proj` (watcher) and `proj/sub` (an app mutation, e.g. a rename)
+    collapse to one scan of `proj`. `sub`'s new name has no "originally
+    noted" dir a hint could name, so the whole thing must fall back to a
+    real recursive scan rather than a forced hint that would miss it."""
+    f = Fake()
+    q = f.queue()
+    q.note_folders("/home/me/proj")
+    q.note("/home/me/proj/sub/renamed.txt")
+    f.fire()
+    assert f.started == [canonical_root("/home/me/proj")]
+    assert f.start_hints == [None]
+
+
+def test_the_same_folder_noted_both_ways_falls_back_to_no_hint():
+    """A folder noted via `note_folders` AND via `note` in the same
+    coalescing window is poisoned back to unhinted — the mutation's own
+    reason (a possible rename) applies regardless of note order."""
+    f = Fake()
+    q = f.queue()
+    q.note("/home/me/proj/notes.txt")  # folder is /home/me/proj
+    q.note_folders("/home/me/proj")
+    f.fire()
+    assert f.started == [canonical_root("/home/me/proj")]
+    assert f.start_hints == [None]
+
+
+def test_disjoint_watcher_folders_each_get_their_own_hint():
+    f = Fake()
+    q = f.queue()
+    q.note_folders("/home/me/proj", "/home/me/other")
+    f.fire()
+    assert sorted(f.started) == sorted(
+        [canonical_root("/home/me/proj"), canonical_root("/home/me/other")])
+    for root, hint in zip(f.started, f.start_hints):
+        assert hint == ([root], [])
+
+
 def _mutating_routes():
     """Every POST handler on the fs-mutation router, by name.
 
@@ -443,7 +524,8 @@ def test_real_start_wakes_the_index_job_bridge(monkeypatch, tmp_path):
     from fused_render.server import index_touch
     from fused_render.server.routers import index as index_router
 
-    monkeypatch.setattr(runner, "start", lambda cfg, root: {"run_id": "r1"})
+    monkeypatch.setattr(runner, "start",
+                        lambda cfg, root, hint=None: {"run_id": "r1"})
     woke = []
     monkeypatch.setattr(index_router, "_wake_index_job_bridge",
                         lambda: woke.append(True))

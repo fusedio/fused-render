@@ -177,12 +177,23 @@ class RescanQueue:
         self._lock = threading.Lock()
         # folder -> the time it was first noted, for the deferral ceiling.
         self._pending: dict = {}
+        # folder -> whether every note it has received so far is one that may
+        # be answered with a `forced` hint instead of a full recursive scan
+        # (SPEC-scan-cost.md part 2). ANDed across every note the folder gets
+        # before it fires: `note()` (an app mutation, e.g. a rename) needs a
+        # real recursive walk — see the module docstring on why a scan of the
+        # folder is the whole mechanism — so one `note()` call for a folder
+        # poisons it back to unhinted even if `note_folders()` (the watcher)
+        # also touched it in the same coalescing window. Missing means
+        # "not noted yet", which must AND to True (a folder note_folders()
+        # alone has touched stays hinted).
+        self._hinted: dict = {}
         self._armed = False
 
     def note(self, *paths: str) -> None:
         """Record that the app changed `paths`. Returns at once; never raises."""
         try:
-            self._note_folders(_folder_of(p) for p in paths)
+            self._note_folders((_folder_of(p) for p in paths), hinted=False)
         except Exception:  # noqa: BLE001 - a mutation must not fail over this
             logger.exception("could not queue an index rescan")
 
@@ -197,13 +208,18 @@ class RescanQueue:
         a folder back through `_folder_of` a second time here would be wrong
         for the one case that matters: `_folder_of` always returns the
         PARENT, and a watcher forwarding `{root}` on overflow or the periodic
-        safety net must have `root` scanned, not `root`'s parent."""
+        safety net must have `root` scanned, not `root`'s parent.
+
+        Unlike `note()`, folders noted this way are eligible for a `forced`
+        hint (SPEC-scan-cost.md part 2) instead of a full recursive scan —
+        the watcher already observed exactly these dirs changing, in
+        process, with no journal replay needed."""
         try:
-            self._note_folders(_canon_folder(f) for f in folders)
+            self._note_folders((_canon_folder(f) for f in folders), hinted=True)
         except Exception:  # noqa: BLE001 - same contract as note()
             logger.exception("could not queue an index rescan")
 
-    def _note_folders(self, folders) -> None:
+    def _note_folders(self, folders, hinted: bool) -> None:
         folders = {f for f in folders if f}
         if not folders:
             return
@@ -211,6 +227,7 @@ class RescanQueue:
             now = self._now()
             for f in folders:
                 self._pending.setdefault(f, now)
+                self._hinted[f] = self._hinted.get(f, True) and hinted
             self._arm_locked()
 
     def _arm_locked(self) -> None:
@@ -230,7 +247,9 @@ class RescanQueue:
         with self._lock:
             self._armed = False
             pending = dict(self._pending)
+            hinted = dict(self._hinted)
             self._pending.clear()
+            self._hinted.clear()
         now = self._now()
         defer = {}
         outermost, excess = self._outermost(pending)
@@ -259,14 +278,37 @@ class RescanQueue:
             if (live or recent) and waited < self.deadline_s:
                 defer[folder] = pending[folder]
                 continue
+            # `outermost_folders` (index_touch.py, shared with index_watch.py)
+            # can collapse several separately-noted folders into one scan
+            # root (a watcher flush of `{proj, proj/sub}` starts only
+            # `proj`). A forced hint of `[proj]` alone would miss `sub` —
+            # `_run_fsevents` only force-visits a dir it is TOLD about, or a
+            # brand-new one it discovers under a forced dir; `sub` is neither
+            # if it was already in the dir cache. So the hint carries every
+            # ORIGINALLY noted folder this scan root absorbed, not just the
+            # root itself, and it is offered only when every one of them
+            # arrived hinted-eligible (`note_folders`, never `note`) — one
+            # `note()` in the mix means a real recursive walk is required
+            # (a rename's new-name subtree has no "originally noted" dir to
+            # hint at), so the whole root falls back to an unhinted scan.
+            members = [f for f in pending
+                      if f == folder or f.startswith(folder + "/")]
+            hint = ((sorted(members), []) if all(hinted.get(m, False)
+                                                  for m in members)
+                    else None)
             try:
-                self._start(folder)
+                if hint is not None:
+                    self._start(folder, hint=hint)
+                else:
+                    self._start(folder)
             except Exception as e:  # noqa: BLE001 - one bad folder, not the rest
                 logger.info("index: not rescanning %s (%s)", folder, e)
         if defer:
             with self._lock:
                 for folder, first in defer.items():
                     self._pending.setdefault(folder, first)
+                    self._hinted[folder] = (self._hinted.get(folder, True)
+                                            and hinted.get(folder, False))
                 self._arm_locked()
 
     def _outermost(self, pending: dict) -> tuple[list, list]:
@@ -289,12 +331,12 @@ class RescanQueue:
         return out, []
 
 
-def _real_start(root: str) -> None:
+def _real_start(root: str, hint=None) -> None:
     from fused_render.index import runner
     from fused_render.index.config import load_config
     from fused_render.server.routers.index import _wake_index_job_bridge
 
-    started = runner.start(load_config(), root)
+    started = runner.start(load_config(), root, hint=hint)
     _wake_index_job_bridge()
     logger.info("index: rescanning %s after an in-app change (run %s)",
                 root, (started or {}).get("run_id"))
