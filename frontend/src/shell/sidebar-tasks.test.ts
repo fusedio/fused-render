@@ -742,18 +742,15 @@ describe("the sidebar's queued count", () => {
     // The order is the order the two happen in: the waiting work is what runs
     // when the running work stops.
     //
-    // THE WORD IS "waiting", NOT "queued" (Akshil, 2026-09-12). `queued` is the
-    // status word — the enum, the ring, the filter, what a row says about itself
-    // — and it stays exactly that in the code, including the field this reads. A
-    // COUNT beside "2 running" is a different register: it is a person being told
-    // what their machine is doing, and "2 waiting" is the sentence they would
-    // say. One builder for the word (platform/lib/queue.waitingLabel) so the
-    // rail, the lane header and the chat's own card cannot spell it three ways.
-    expect(queuedLabel(2)).toBe("2 waiting");
+    // THE WORD IS "queued" (Akshil, 2026-09-21) — the status word, the ring, the
+    // filter and now the count too, so one state has one name on every surface.
+    // One builder for the word (platform/lib/queue.waitingLabel) so the rail,
+    // the lane header and the chat's own card cannot spell it three ways.
+    expect(queuedLabel(2)).toBe("2 queued");
     expect(pulseTitle({ running: 2, attention: 0, queued: 1, doneUnread: 0, unseen: 0 }))
-      .toBe("2 running · 1 waiting");
+      .toBe("2 running · 1 queued");
     expect(pulseTitle({ running: 0, attention: 0, queued: 0, doneUnread: 1, unseen: 0 }))
-      .not.toContain("waiting");
+      .not.toContain("queued");
   });
 
   it("is part of what makes two pulses the same", () => {

@@ -245,10 +245,10 @@ describe("the List's waiting row", () => {
     // not take its own control off the row.
     expect(ROW).toContain("disabled={acting || queue.runsNext}");
     expect(CARD).toContain("disabled={busy || queue.runsNext}");
-    // THE CAPTION IS NOT GATED ON IT. `1 message waiting · behind TASK-056` is
+    // THE CAPTION IS NOT GATED ON IT. `1 message queued · behind TASK-056` is
     // true at the head of the line and stays printed; only the button goes.
     expect(waitingCardText(1, { status: "queued", queue_position: 1, queue_ahead: "TASK-056" })).toBe(
-      "1 message waiting · after TASK-056",
+      "1 message queued · after TASK-056",
     );
   });
 
@@ -462,11 +462,11 @@ describe("the page holds the optimistic claims, not the view", () => {
 });
 
 describe("the sidebar", () => {
-  it("says '· 2 waiting' in words, and keeps its one dot for running", () => {
+  it("says '· 2 queued' in words, and keeps its one dot for running", () => {
     // The row already spends its one dot slot on running-or-unread, and what a
     // reader wants from a queue is the NUMBER, which a dot cannot say. The WORD
-    // is "waiting" — `queued` is the status word, and a count beside "1 running"
-    // is a person being told what their machine is doing (tasks-lib.queuedLabel).
+    // is "queued" — the status word, said the same way in the count
+    // (tasks-lib.queuedLabel, Akshil 2026-09-21).
     expect(APPS).toContain('<span className="current-app-queued">{"· " + queuedLabel(app.queued)}</span>');
     expect(APPS).toContain("{app.queued > 0 && (");
     expect(APPS).toContain("rows.filter((r) => isQueued(r)).map((r) => r.project");

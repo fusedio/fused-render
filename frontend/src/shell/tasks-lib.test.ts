@@ -1063,7 +1063,7 @@ describe("taskColumn", () => {
     // separating a queued task from a running one is which second its folder
     // frees, and a column boundary is far too strong a line between two states
     // that swap every few minutes. They are told apart INSIDE the lane instead:
-    // running first, then a dashed "waiting" rule, then the waiting ones by their
+    // running first, then a dashed "queued" rule, then the waiting ones by their
     // place in the line (groupByColumn, laneCountLabel, laneSplitAt).
     expect(laneOf("queued")).toBe("in_progress");
     for (const col of BOARD_LANES) expect(laneOf(col.key)).toBe(col.key);
@@ -10878,11 +10878,11 @@ describe("the waiting half of the In Progress lane", () => {
     // A bare total over a column of three running tasks and four waiting ones
     // answers a question nobody asked.
     const both = [running("r", 1), waiting("a", 1, 1), waiting("b", 2, 1)];
-    expect(laneCountLabel("in_progress", both)).toBe("1 running · 2 waiting");
+    expect(laneCountLabel("in_progress", both)).toBe("1 running · 2 queued");
     // …and every other shape keeps the plain number it has always had, which is
     // every board on a machine that has not turned the queue on.
     expect(laneCountLabel("in_progress", [running("r", 1), running("s", 1)])).toBe("2");
-    expect(laneCountLabel("in_progress", [waiting("a", 1, 1)])).toBe("1 waiting");
+    expect(laneCountLabel("in_progress", [waiting("a", 1, 1)])).toBe("1 queued");
     expect(laneCountLabel("upcoming", both)).toBe("3");
   });
 
@@ -10890,12 +10890,12 @@ describe("the waiting half of the In Progress lane", () => {
     const both = [running("r", 1), waiting("a", 1, 1)];
     expect(laneSplitAt("in_progress", both)).toBe(1);
     // A lane that is ALL waiting needs no line across the top of itself — the
-    // header already says "2 waiting" — and neither does one with nothing
+    // header already says "2 queued" — and neither does one with nothing
     // waiting at all.
     expect(laneSplitAt("in_progress", [waiting("a", 1, 1), waiting("b", 2, 1)])).toBe(-1);
     expect(laneSplitAt("in_progress", [running("r", 1)])).toBe(-1);
     expect(laneSplitAt("upcoming", both)).toBe(-1);
-    expect(LANE_SPLIT_LABEL).toBe("waiting");
+    expect(LANE_SPLIT_LABEL).toBe("queued");
   });
 
   it("takes nothing out of the other lanes", () => {

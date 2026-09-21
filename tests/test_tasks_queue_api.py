@@ -825,6 +825,55 @@ def test_a_held_answer_reads_queued_and_not_needs_attention(
     assert row["queue_ahead"] == rows["sess-holder"]["task_id"]
 
 
+def test_a_queued_row_is_titled_by_the_queued_message_and_says_queued(
+        client, projects_dir, folders, monkeypatch, flag, manager):
+    """A queued task IS the message in the line (Akshil, 2026-09-21): the row's
+    title is that message, not the send before it, and where the last reply
+    would go it says `Queued` — the old answer is not about this message."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    path = _transcript(projects_dir, "sess-wait", alpha, "the first ask")
+    with path.open("a") as fh:
+        fh.write(json.dumps({
+            "type": "assistant", "timestamp": _iso(-500),
+            "sessionId": "sess-wait", "uuid": "sess-wait-1",
+            "message": {"role": "assistant",
+                        "content": [{"type": "text", "text": "done the first"}]},
+        }) + "\n")
+    schedule._write([_entry("e-wait", "the queued ask", alpha,
+                            session_id="sess-wait")])
+    _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, "sess-wait", holder="sess-holder")
+
+    row = _rows(client)["sess-wait"]
+    assert row["status"] == "queued"
+    assert row["last_message"]["text"] == "the queued ask"
+    assert row["last_reply"] == "Queued"
+
+
+def test_a_message_scheduled_for_later_does_not_title_a_queued_row(
+        client, projects_dir, folders, monkeypatch, flag, manager):
+    """Only the message whose time has COME is the queued one: a second message
+    scheduled into the same conversation for tomorrow is newer, and is not what
+    is waiting to run."""
+    flag()
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha, "holding the folder")
+    _transcript(projects_dir, "sess-wait", alpha, "the first ask")
+    schedule._write([
+        _entry("e-wait", "the queued ask", alpha, session_id="sess-wait"),
+        _entry("e-later", "tomorrow's ask", alpha, due=_iso(86400),
+               session_id="sess-wait"),
+    ])
+    _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, "sess-wait", holder="sess-holder")
+
+    row = _rows(client)["sess-wait"]
+    assert row["status"] == "queued"
+    assert row["last_message"]["text"] == "the queued ask"
+
+
 def test_a_queued_task_that_still_reads_live_is_queued_not_running(
         client, projects_dir, folders, monkeypatch, flag, manager):
     """The manager's line outranks a stale `live` signal (review round,

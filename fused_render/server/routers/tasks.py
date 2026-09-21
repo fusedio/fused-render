@@ -480,7 +480,7 @@ def _new_scan() -> dict:
     # before the assistant reply was dropped from this scan may still carry its
     # condensed `reply`; nothing reads it any more, so it is inert.
     return {"offset": 0, "size": -1, "count": 0, "tail": [], "title": "",
-            "command": "", "reply_line": "", "reply": ""}
+            "command": "", "reply_line": "", "reply": "", "reply_at": 0.0}
 
 
 def _condense_reply(rec: dict) -> None:
@@ -505,6 +505,10 @@ def _condense_reply(rec: dict) -> None:
         text = raw.strip()
         if text:
             rec["reply"] = text[:600]
+            # WHEN it was said, so the row can tell a reply to THIS turn from
+            # one left over from the last (`_last_reply`). 0.0 for a record
+            # without a stamp, which the row reads as "cannot tell — show it".
+            rec["reply_at"] = tasks_store.epoch(obj.get("timestamp")) or 0.0
             return
 
 
@@ -570,9 +574,20 @@ def _one_line(text: str) -> str:
 _SAID_STATES = (schedule.SENT, schedule.SENDING, "error")
 
 
-def _last_message(messages: list[dict]) -> dict | None:
+def _last_message(messages: list[dict], queued: bool = False,
+                  now: float = 0.0) -> dict | None:
     """THE NEWEST MESSAGE THE USER SENT IN THIS TASK — `{role, text, at}` with
     `role` always `"user"` — or None for a task nobody has said anything in yet.
+
+    A QUEUED MESSAGE COUNTS AS SENT (Akshil, 2026-09-21: "give the name to be
+    the name of the queued task"). While a folder's run keeps a message in the
+    line, that message is still `pending` on disk, so the row kept the PREVIOUS
+    send as its title and read as the old task with a dashed ring. The reader's
+    model is the other way round — a queued task is simply an in-progress one
+    that will take longer — so with `queued` set, a pending entry whose time
+    has come (`queue_at` <= `now`) is a candidate too. One that has NOT come is not:
+    a message scheduled for tomorrow into the same conversation is newer than
+    the queued one and is not what is waiting to run.
 
     Read off the MERGED thread (`_merge` + `_fold_sent_mark`), the same list
     the row's `messages` are cut from, so the two can never disagree: the send
@@ -592,13 +607,56 @@ def _last_message(messages: list[dict]) -> dict | None:
     reading the field the same way; it is simply never `"assistant"` now.
     """
     for message in reversed(messages):
-        if str(message.get("state") or "") not in _SAID_STATES:
+        state = str(message.get("state") or "")
+        if state not in _SAID_STATES and not (
+                queued and state == schedule.PENDING
+                and float(message.get("queue_at") or message.get("at") or 0.0)
+                <= now):
             continue
         text = _one_line(message.get("body"))
         if text:
             return {"role": "user", "text": text,
                     "at": float(message.get("at") or 0.0)}
     return None
+
+
+#: What a queued row prints where a reply would go. The status word, said once
+#: more in the reply's slot (Akshil, 2026-09-21: "Queued") — the reader asked
+#: for the row to stop quoting the previous turn's answer under a new task.
+_QUEUED_REPLY = "Queued"
+
+
+def _last_reply(rec: dict | None, status: str, said: dict | None) -> str:
+    """The first line of Claude's newest reply, or what stands in for it.
+
+    THE REPLY BELONGS TO A TURN (Akshil, 2026-09-21: "when the task starts, it
+    is a new task but the response is from the older task"). A row titled by
+    the reader's newest message used to print, after it, the answer to the
+    message BEFORE — the transcript's last assistant line, which a new send
+    does not erase. So:
+
+    * a `queued` row says `Queued` — its message has not been answered and
+      the old answer is not about it;
+    * any other row prints the reply only if it is NEWER than the message the
+      row is titled by. Blank until Claude answers this turn, on every status,
+      not only the one after a queue promotion: a running chat's second send
+      has exactly the same stale answer under it.
+
+    A reply with no stamp (a scan record from before `reply_at`, hot-reloaded)
+    is shown: "cannot tell" must not read as "hidden".
+    """
+    if status == "queued":
+        return _QUEUED_REPLY
+    if rec is None:
+        return ""
+    reply = str(rec.get("reply") or "")
+    if not reply or said is None:
+        return reply
+    reply_at = float(rec.get("reply_at") or 0.0)
+    said_at = float(said.get("at") or 0.0)
+    if reply_at and said_at and reply_at < said_at:
+        return ""
+    return reply
 
 
 def _full_prompts(path: str) -> list[dict]:
@@ -772,6 +830,11 @@ def _scheduled_message(entry: dict, at: float, ran_at: float,
         # was asked for; `ran_at` is what happened. See `_entry_at`.
         "at": at,
         "ran_at": ran_at,
+        # When it joined the folder's LINE — `at`, or the Run-now press if that
+        # came first (`_queue_at`). `_last_message` reads this, not `at`, to
+        # tell a queued message from one scheduled for later: a Run-now on
+        # tomorrow's message is in the line today.
+        "queue_at": _queue_at(entry),
         "state": _entry_state(entry),
         # One shape for both kinds. A scheduled run's verdict comes from the
         # watcher and not from the transcript, so nothing sets this on that
@@ -3067,6 +3130,13 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     entry_origin = _leader_origin(task, entry_id) if entry_id else ''
     status = _status(merged, filed, task["session_id"], live, busy,
                      parked=waiting is not None, queued=bool(queued))
+    # THE NEWEST MESSAGE THE USER SENT — one line of it — or None for a task
+    # nothing has been said in. Asked once, here, after the status, because a
+    # queued row is titled by the message in the line (`_last_message`), and
+    # read twice below: as `last_message` and as the clock `last_reply` is
+    # measured against. Off the whole merged thread, not the cut tail, so it
+    # can never name a message the tail dropped.
+    said = _last_message(merged, queued=status == "queued", now=now)
     failed = _failed(speaker)
     # THE ONE FAILURE THAT IS NOT A FAULT. Read off the message the status is
     # reading off, so the reason and the lane cannot describe different runs.
@@ -3106,9 +3176,11 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         "session_id": task["session_id"],
         "title": title,
         "title_source": source,
-        # First line of Claude's newest reply, "" when none. The List row
-        # prints it, grey and italic, in the space after the title.
-        "last_reply": (rec.get("reply") or "") if rec else "",
+        # First line of Claude's newest reply to THIS turn, "" while it has
+        # not come, `Queued` on a row still in the line — see `_last_reply`.
+        # The List row prints it, grey and italic, after the title; the Board
+        # card's hover says the same.
+        "last_reply": _last_reply(rec, status, said),
         # Deferred by §12 — Claude Code stores no summary, so filling this needs
         # an LLM call. Read from the entry so a store that grows the field later
         # starts working without a change here.
@@ -3285,11 +3357,9 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         "messages": list(reversed(tail)),
     }
     if last_message:
-        # THE NEWEST MESSAGE THE USER SENT — one line of it — or None for a task
-        # nothing has been said in. The peek header's hint reads it. Read off
-        # the whole merged thread, not the cut tail, so it can never name a
-        # message the tail dropped; it costs no read of its own either way.
-        row["last_message"] = _last_message(merged)
+        # The peek header's hint and every view's title line read it — see
+        # `said` above for where it is decided.
+        row["last_message"] = said
     return row
 
 

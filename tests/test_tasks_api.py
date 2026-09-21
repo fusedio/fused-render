@@ -751,6 +751,30 @@ def test_the_last_message_is_the_prompt_while_the_answer_is_still_coming(
     assert said["text"] == "now do the other one"
 
 
+def test_the_reply_shown_is_the_one_to_the_newest_message(
+        client, projects_dir):
+    """`last_reply` belongs to a turn (Akshil, 2026-09-21: "the response is from
+    the older task"): a row titled by the reader's newest send prints Claude's
+    reply only if it came AFTER that send. Blank until it does."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("run the migration", T9),
+        _assistant("Ran the migration, 3 tables updated", T10),
+        _user("now tidy up", T11),
+    ])
+    row = _tasks(client)[0]
+    assert row["last_message"]["text"] == "now tidy up"
+    assert row["last_reply"] == ""
+
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("run the migration", T9),
+        _assistant("Ran the migration, 3 tables updated", T10),
+        _user("now tidy up", T11),
+        _assistant("Tidied.", T12),
+    ])
+    row = _tasks(client)[0]
+    assert row["last_reply"] == "Tidied."
+
+
 def test_the_last_message_agrees_with_the_rows_newest_message(
         client, projects_dir):
     """Read off the same merged thread `messages` is cut from (review,
@@ -1575,7 +1599,8 @@ def test_a_windowed_message_is_the_whole_task_message(client, tmp_path):
     assert item["task_key"] == "pending:e1"
     assert set(item["message"]) == {
         "message_id", "kind", "body", "at", "ran_at", "state", "turn_at",
-        "unread", "limited", "entry_id", "template_id", "turn", "anchor", "immediate"}
+        "unread", "limited", "entry_id", "template_id", "turn", "anchor", "immediate",
+        "queue_at"}
     assert item["message"]["kind"] == "scheduled"
     assert item["message"]["message_id"] == "MSG-001"
     assert item["message"]["entry_id"] == "e1"
