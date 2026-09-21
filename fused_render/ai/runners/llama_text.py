@@ -162,13 +162,16 @@ the other side of the comparison is deleted — only unvisitable:
   reply is OpenAI-delta-shaped and would need reshaping back into this app's
   `{"type": "chunk"}` frames anyway, so rendering the prompt ourselves and
   calling the low-level completion API keeps one code path instead of two.
-  `enable_thinking=False` is passed into the render context unconditionally,
-  the same default the removed `torch_text._apply_template` chose and for the
-  same reason (AI-11d): three of this runner's curated models are Qwen3.5
-  GGUFs, whose upstream template defaults reasoning ON. Jinja simply ignores a
+  `enable_thinking` is passed into the render context, defaulting to `True`
+  when the caller leaves it unset (D886, reversing AI-11d's "off by default"
+  — an explicit owner decision, 2026-09-21, taken with the known cost that
+  `mlx-community/S1-mini-MLX-4bit`'s GGUF build, which worked BY ACCIDENT
+  under the old unconditional `False`, now needs `thinking: false` passed
+  explicitly, same as its MLX build always did). Jinja simply ignores a
   context variable a template never references, so — unlike transformers'
   `apply_chat_template`, which can raise on an unexpected keyword — no retry
-  is needed here.
+  is needed here, and this runner threads the caller's flag straight through
+  rather than needing `mlx_text/worker.py`'s catch-and-retry dance.
 * **Cancelling needs no thread.** transformers' `model.generate` owned its own
   loop, so a `StoppingCriteria` callback was the only interruption point and a
   producer thread was required to let `TextIteratorStreamer` hand tokens back
@@ -990,13 +993,15 @@ def _eos_token_for_template(llm):
     return _token_text(llm, llm.token_eos())
 
 
-def _render_chat(template_str, llm, messages):
-    """The model's own chat template, with reasoning OFF by default.
+def _render_chat(template_str, llm, messages, enable_thinking=True):
+    """The model's own chat template, with reasoning ON by default (D886,
+    reversing AI-11d).
 
-    See the module docstring for why `enable_thinking=False` needs no retry
-    here, where the removed `torch_text._apply_template` needed one: a Jinja
-    template that never reads the variable simply never sees it, where
-    transformers' `apply_chat_template` can raise on an unexpected keyword.
+    See the module docstring for why an `enable_thinking` that a template
+    never reads needs no retry here, where the removed
+    `torch_text._apply_template` needed one: a Jinja template that never
+    reads the variable simply never sees it, where transformers'
+    `apply_chat_template` can raise on an unexpected keyword.
     """
     from jinja2 import Environment
 
@@ -1009,7 +1014,7 @@ def _render_chat(template_str, llm, messages):
     return template.render(
         messages=messages, add_generation_prompt=True,
         bos_token=_bos_token_for_template(llm),
-        eos_token=_eos_token_for_template(llm), enable_thinking=False)
+        eos_token=_eos_token_for_template(llm), enable_thinking=enable_thinking)
 
 
 def _content_text(content):
@@ -1031,7 +1036,7 @@ def _content_text(content):
     return ""
 
 
-def _prompt_text(llm, messages, raw_prompt):
+def _prompt_text(llm, messages, raw_prompt, enable_thinking=True):
     """The text to hand `create_completion`: raw, templated, or a plain join.
 
     Three paths, in the order the removed `torch_text._encode` tried them
@@ -1060,7 +1065,8 @@ def _prompt_text(llm, messages, raw_prompt):
         import jinja2.exceptions
 
         try:
-            return _render_chat(template_str, llm, messages)
+            return _render_chat(template_str, llm, messages,
+                                enable_thinking=enable_thinking)
         except jinja2.exceptions.TemplateError as error:
             print(f"llamacpp-text: chat template failed to render, falling back "
                   f"to a plain join: {error}", file=sys.stderr)
@@ -1133,7 +1139,15 @@ def generate(body, write):
         return
 
     messages = body.get("messages") if isinstance(body.get("messages"), list) else []
-    prompt = _prompt_text(llm, messages, body.get("prompt") or "")
+    # Tri-state (D886): unset (key absent, OR explicitly None) defaults to
+    # True — the request dict this worker receives already had `None` values
+    # filtered out by `server/ai.py`'s relay, but this runner's own contract
+    # should not depend on that filtering happening upstream.
+    enable_thinking = body.get("enable_thinking")
+    if enable_thinking is None:
+        enable_thinking = True
+    prompt = _prompt_text(llm, messages, body.get("prompt") or "",
+                          enable_thinking=enable_thinking)
     # What the model READ, reported as `input_tokens` (SPEC AI-3) — counted
     # before the first token, so a cancelled generation still reports it.
     prompt_tokens = _prompt_tokens(llm, prompt)
