@@ -201,8 +201,14 @@ def render(reader, repo, tmp_path, params=None, github=None, repo_patch=None,
     if git_app_folder is not None:
         fixture_obj["gitAppFolder"] = git_app_folder
     fixture.write_text(json.dumps(fixture_obj))
+    # `encoding="utf-8"` is explicit here, not implied by `text=True`: the
+    # confirm-modal question text now carries a real em dash, and on a
+    # Windows runner `text=True` alone decodes the probe's UTF-8 stdout with
+    # the ANSI codepage (cp1252), mangling it into mojibake before this
+    # string ever reaches an assertion.
     proc = subprocess.run([node, PROBE, TEMPLATE, str(fixture)],
-                          capture_output=True, text=True, timeout=90)
+                          capture_output=True, text=True, encoding="utf-8",
+                          timeout=90)
     assert proc.returncode == 0, f"probe crashed:\n{proc.stderr[-3000:]}"
     return json.loads(proc.stdout)
 
@@ -385,7 +391,7 @@ def test_the_probe_fails_on_a_template_that_throws(reader, tmp_path):
     if not node:  # pragma: no cover
         pytest.skip("node is required")
     proc = subprocess.run([node, PROBE, str(broken), str(fixture)],
-                          capture_output=True, text=True, timeout=90)
+                          capture_output=True, text=True, encoding="utf-8", timeout=90)
     out = json.loads(proc.stdout)
     assert out["error"] is not None, "the probe did not notice a duplicate `let`"
     assert "streamed" in out["error"], out["error"]
@@ -423,7 +429,7 @@ def test_the_probe_fails_on_a_template_that_paints_nothing(reader, tmp_path):
     if not node:  # pragma: no cover
         pytest.skip("node is required")
     proc = subprocess.run([node, PROBE, str(broken), str(fixture)],
-                          capture_output=True, text=True, timeout=90)
+                          capture_output=True, text=True, encoding="utf-8", timeout=90)
     out = json.loads(proc.stdout)
     assert out["error"] is None, "this control is about a SILENT blank"
     assert not out["unhandled"], out["unhandled"]
@@ -615,6 +621,6 @@ if (failures.length) {
 }
 console.log("OK");
 """
-    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert proc.returncode == 0 and "OK" in proc.stdout, (
         f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")

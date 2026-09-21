@@ -3062,3 +3062,44 @@ kind, on any element, because it never marks anything connected to the document.
 
 `.venv/bin/python -m pytest tests/test_git_view_renders.py tests/test_git_view.py tests/test_git_conflicts.py`:
 58 passed.
+
+#### `test-python-windows` red: the probe's stdout decode, not the assertion
+
+CI's Windows lane failed on
+`test_revert_confirm_bar_only_shows_for_the_commit_it_was_armed_on` with the expected
+question text — em dash and all — missing from `proc.stdout`, even though the failure
+message showed that exact sentence rendered correctly inside the HTML. Not a logic
+bug: `subprocess.run([node, PROBE, ...], capture_output=True, text=True, timeout=90)`
+at line ~204 (and three siblings at ~387/425/618) never pinned `encoding=`. `text=True`
+alone falls back to `locale.getpreferredencoding(False)`, which on a Windows CI runner
+with no LANG/LC_ALL resolves to the ANSI codepage (cp1252), not UTF-8. The Node probe
+writes its JSON as real UTF-8, and `_revert_question(commit)`/`_checkout_question(commit)`
+(added in the Task 17 follow-up above) build the first non-ASCII string this file has
+ever compared — the earlier `REVERT_QUESTION`/`CHECKOUT_QUESTION` constants were
+ASCII-only, so `origin/main` never exercised this path. Confirmed the mechanism
+directly: encoding `"Revert 3541e7e — second commit?"` as UTF-8 and decoding those
+bytes as cp1252 yields `'Revert 3541e7e â€” second commit? ...'` — the same mojibake
+shape as the CI failure — while decoding as UTF-8 round-trips correctly.
+
+Fix is the harness, not the assertion: added `encoding="utf-8"` to all four
+`subprocess.run` calls in `tests/test_git_view_renders.py` (the ones invoking
+`PROBE`/`_git_view_probe.mjs` and the inline `node -e` check at ~line 618), plus a
+comment at the first call site naming the Windows cp1252 failure this prevents, in the
+voice of the existing UnicodeEncodeError comments a few lines below it (~line
+373–378, `test_the_probe_fails_on_a_template_that_throws`). `_revert_question` /
+`_checkout_question` were left exactly as they are — weakening them back to an
+ASCII-only prefix would have thrown away the sha/subject assertion those two tests
+exist for.
+
+Blast radius: `_git_view_probe.mjs` is imported/invoked only from
+`tests/test_git_view_renders.py` — no other test file spawns it, so nothing else needed
+touching. Swept the rest of `tests/` for other `subprocess.run([node, ...])` calls
+decoding a similar probe; several other files (`test_claude_permission_bridge.py`,
+`test_claude_live_run.py`, `test_annotate_template.py`, `test_map_template_escaping.py`,
+`test_claude_config_api.py`, and others) run `node -e <script>` with bare `text=True`
+and no `encoding=`. These are the same latent Windows-decode risk, but each is a
+different probe/file with its own author and scope; per this task's instructions they
+are reported here, not fixed — fixing them is out of scope for the confirm-modal branch.
+
+`.venv/bin/python -m pytest -q tests/test_git_view_renders.py tests/test_git_view.py tests/test_git_conflicts.py`:
+58 passed.
