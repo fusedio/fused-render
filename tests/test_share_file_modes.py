@@ -168,6 +168,64 @@ def test_is_expired_parses_an_iso8601_string():
     assert not share_file_mod.is_expired({"mode": "temporary", "session_expires": future})
 
 
+def test_is_expired_treats_a_naive_iso8601_string_as_utc(monkeypatch):
+    # Finding 7: the SDK returns a NAIVE iso string (no "Z", no offset) in
+    # practice. `.timestamp()` on a naive datetime reads it in the SERVER'S
+    # local zone, but the SDK means UTC — on a server set to UTC+2 a fresh
+    # 30-minute token was read as already ~90 minutes expired. Pin the
+    # server to a non-UTC zone so this genuinely exercises the bug rather
+    # than accidentally passing on a UTC test machine.
+    import datetime
+    import time as time_mod
+
+    monkeypatch.setenv("TZ", "Etc/GMT-2")  # UTC+2, POSIX sign is inverted
+    time_mod.tzset()
+    try:
+        # A session that expires in 25 minutes if read as UTC (correct) but
+        # would already look ~95 minutes expired if misread as local time.
+        naive_future = (datetime.datetime.utcnow()
+                        + datetime.timedelta(minutes=25)).isoformat()
+        assert "Z" not in naive_future and "+" not in naive_future
+        assert not share_file_mod.is_expired(
+            {"mode": "temporary", "session_expires": naive_future})
+
+        naive_past = (datetime.datetime.utcnow()
+                      - datetime.timedelta(seconds=5)).isoformat()
+        assert share_file_mod.is_expired(
+            {"mode": "temporary", "session_expires": naive_past})
+    finally:
+        monkeypatch.delenv("TZ", raising=False)
+        time_mod.tzset()
+
+
+# -- finding 8: lookup must not clobber a temporary share's session URL -------
+
+
+def test_lookup_preserves_the_stored_session_url_for_a_temporary_share(client, tmp_path,
+                                                                        monkeypatch):
+    path = make_file(tmp_path)
+    monkeypatch.setattr(share_app_mod, "_run_shim", fake_shim_for([]))
+    published = client.post("/api/share/file/publish",
+                            json={"path": path, "mode": "temporary"},
+                            headers=GUARD).json()["shared"]
+    assert "fused_session_token=" in published["url"]
+
+    # `lookup`'s shim call only ever returns the bare, session-less
+    # _share_url() (unlike `publish`/`status`) — it must not silently swap
+    # the stored session URL out for that dead link.
+    def bare_lookup_shim(request, timeout):
+        return {"found": True, "url": "https://udf.fused.ai/tok-temporary/demo.html",
+                "canvas_id": "c1", "canvas_name": "demo_abc123", "share_token": "tok-temporary",
+                "slug": "demo_abc123"}, None
+
+    monkeypatch.setattr(share_app_mod, "_run_shim", bare_lookup_shim)
+    looked_up = client.post("/api/share/file/lookup", json={"path": path},
+                            headers=GUARD).json()
+    assert looked_up["found"] is True
+    assert looked_up["shared"]["url"] == published["url"]
+    assert "fused_session_token=" in looked_up["shared"]["url"]
+
+
 # -- shim's mode branching (stubbed fused SDK) -----------------------------------
 
 

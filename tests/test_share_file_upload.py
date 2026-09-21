@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 
 import pytest
@@ -272,3 +273,109 @@ def test_upload_cancel_signals_a_running_job(client, tmp_path, monkeypatch):
     resp = client.post("/api/share/file/upload/cancel", json={"id": "job-x"}, headers=GUARD)
     assert resp.status_code == 200
     assert calls == [(777, share_file_mod.signal.SIGTERM)]
+
+
+# -- finding 3: upload id path traversal --------------------------------------
+
+
+def test_upload_status_rejects_a_path_traversal_id(client):
+    resp = client.get("/api/share/file/upload/status", params={"id": "../../../etc/passwd"})
+    assert resp.status_code == 400
+    assert "error" in resp.json()
+
+
+def test_upload_status_rejects_an_id_with_a_path_separator(client):
+    # Not just "..": ANY id that could steer os.path.join(share_uploads/, id)
+    # outside share_uploads/ must be refused, not merely dot-dot sequences.
+    resp = client.get("/api/share/file/upload/status", params={"id": "sub/dir"})
+    assert resp.status_code == 400
+
+
+def test_upload_status_still_accepts_a_real_minted_id(client, tmp_path):
+    # A real id (file_identity()'s shape: slug + "_" + 6 hex chars) must keep
+    # working — the guard must not be so tight it rejects legitimate ids.
+    seed("job-running", pid=os.getpid())
+    resp = client.get("/api/share/file/upload/status", params={"id": "job-running"})
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "running"
+
+
+def test_upload_cancel_rejects_a_path_traversal_id(client):
+    resp = client.post("/api/share/file/upload/cancel", json={"id": "../../../etc/passwd"},
+                       headers=GUARD)
+    assert resp.status_code == 400
+    assert "error" in resp.json()
+
+
+def test_upload_cancel_still_signals_a_real_minted_id(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: calls.append((pgid, sig)))
+    monkeypatch.setattr(os, "getpgid", lambda pid: 777)
+    seed("job-x", pid=12345)
+    resp = client.post("/api/share/file/upload/cancel", json={"id": "job-x"}, headers=GUARD)
+    assert resp.status_code == 200
+    assert calls == [(777, share_file_mod.signal.SIGTERM)]
+
+
+# -- finding 4: publish must not trust a mismatched upload_id ------------------
+
+
+def test_publish_rejects_an_upload_id_for_a_different_file(client, tmp_path):
+    path = make_big_file(tmp_path, "big.fused")
+    other_path = make_big_file(tmp_path, "other.fused")
+    other_id = share_file_mod.file_identity(os.path.abspath(other_path))
+    # Seed a finished upload under OTHER file's id, then try to publish
+    # `big.fused` while claiming that upload as its own — this must not let
+    # big.fused's canvas point at other.fused's uploaded remote (finding 4).
+    seed(other_id, done=0, result={"remote": "fd://h/x/other.fused", "s3_uri": "s3://b/other.fused"})
+    resp = client.post("/api/share/file/publish", json={"path": path, "upload_id": other_id},
+                       headers=GUARD)
+    assert resp.status_code == 400
+    assert "upload_id" in resp.json()["error"]
+
+
+def test_publish_still_accepts_the_uploads_own_matching_id(client, tmp_path, monkeypatch):
+    path = make_big_file(tmp_path, "big.fused")
+    file_id = share_file_mod.file_identity(os.path.abspath(path))
+    seed(file_id, done=0, result={"remote": "fd://h/x/big.fused", "s3_uri": "s3://b/big.fused"})
+
+    def fake_run_shim(request, timeout):
+        return {"url": "https://udf.fused.ai/tok/big.html", "canvas_id": "c1",
+                "canvas_name": "big_abc123", "share_token": "tok", "slug": "big_abc123",
+                "remote": "fd://h/x/big.fused", "workbench_url": "https://x"}, None
+
+    monkeypatch.setattr(share_app_mod, "_run_shim", fake_run_shim)
+    resp = client.post("/api/share/file/publish", json={"path": path, "upload_id": file_id},
+                       headers=GUARD)
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+
+# -- finding 11: the upload subprocess must not become a zombie ---------------
+
+
+def test_spawn_upload_reaps_its_subprocess_instead_of_leaving_a_zombie(monkeypatch, tmp_path):
+    # Nothing else ever calls proc.wait() — the state machine reads the
+    # `done` marker file, not the child's exit as this process sees it — so
+    # without a reaper thread the shell wrapper becomes a zombie child of the
+    # server the instant it exits, and `_pid_alive` (os.kill(pid, 0)) reports
+    # a zombie as alive: a cancelled upload could read "running" forever.
+    waited = threading.Event()
+
+    class FakeProc:
+        pid = 424242
+
+        def wait(self):
+            waited.set()
+
+    monkeypatch.setattr(share_app_mod, "_shim_command", lambda: (["true"], None))
+    monkeypatch.setattr(share_file_mod, "fused_cli", lambda: "true")
+    monkeypatch.setattr(share_file_mod, "child_env", lambda cli: {})
+    monkeypatch.setattr(share_file_mod, "workbench_env", lambda: "prod")
+    monkeypatch.setattr(share_file_mod.subprocess, "Popen", lambda *a, **k: FakeProc())
+
+    f = tmp_path / "demo.fused"
+    f.write_bytes(b"x")
+    share_file_mod._spawn_upload("job-reap", str(f), "job-reap")
+
+    assert waited.wait(timeout=2), "proc.wait() was never called — the child is never reaped"

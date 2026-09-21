@@ -29,6 +29,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import threading
 import time
 
 from fastapi import APIRouter, Body, Header
@@ -80,6 +81,24 @@ def file_identity(path: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9]+", "_", stem).strip("_").lower()[:40] or "file"
     h6 = hashlib.sha1(os.path.abspath(path).encode("utf-8")).hexdigest()[:6]
     return f"{slug}_{h6}"
+
+
+# file_identity() itself only ever mints `[a-z0-9_]{1,40}_[0-9a-f]{6}` (the
+# slug, lower-cased and truncated, plus 6 hex chars) — no "-", no ".", no
+# "/". Hyphens are allowed here too even though file_identity() never
+# produces one, since nothing about them can escape share_uploads/ and other
+# id-minting call sites in this codebase (and its tests) use them freely.
+# What must never pass is anything that can steer
+# os.path.join(_uploads_root(), upload_id) outside share_uploads/ — no "..",
+# no "/", no "." — so a caller-supplied upload/share id is rejected outright
+# unless it is built only from that safe alphabet (finding 3: cancel_upload
+# SIGTERMs a process group named by that id, and the same traversal reaches
+# /upload/status?id=).
+_UPLOAD_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _valid_upload_id(upload_id: str) -> bool:
+    return bool(upload_id) and bool(_UPLOAD_ID_RE.match(upload_id))
 
 
 def _record_key(file_id: str) -> str:
@@ -158,7 +177,15 @@ def _parse_expiry(value) -> float | None:
         try:
             import datetime
 
-            return datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+            parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                # A naive ISO string is what the SDK returns in practice — no
+                # `Z`, no offset. `.timestamp()` on a naive datetime reads it
+                # in the SERVER'S local zone; the SDK means UTC (finding 7).
+                # On UTC+2 a fresh 30-minute token read as ~90 minutes
+                # expired, so /status flagged a working link "Expired".
+                parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+            return parsed.timestamp()
         except ValueError:
             return None
     return None
@@ -317,6 +344,17 @@ def _spawn_upload(upload_id: str, path: str, share_id: str) -> None:
                             start_new_session=True, close_fds=True)
     with open(paths["pid"], "w", encoding="utf-8") as f:
         f.write(str(proc.pid))
+    # `proc` is never otherwise waited on — the state machine reads the
+    # `done` marker file, not the child's exit as seen by this process — so
+    # without this the shell wrapper becomes a zombie child of the server
+    # the moment it exits (normally, or SIGTERMed by cancel_upload), and
+    # `_pid_alive` (`os.kill(pid, 0)`) reports a zombie as alive: a cancelled
+    # upload could read `running` forever instead of `cancelled` until
+    # CPython's own opportunistic subprocess._cleanup() happened to reap it
+    # (finding 11). A daemon reaper thread, not a blocking wait() here: this
+    # function returns immediately to the request that spawned it.
+    threading.Thread(target=proc.wait, daemon=True,
+                     name=f"share-upload-reap-{upload_id}").start()
 
 
 def start_upload(path: str, upload_id: str) -> dict:
@@ -414,6 +452,15 @@ def api_share_file_publish(body: dict = Body(...), x_fused: str | None = Header(
     file_id = file_identity(abspath)
     size = os.path.getsize(abspath)
     upload_id = body.get("upload_id") if isinstance(body.get("upload_id"), str) else None
+    if upload_id is not None and upload_id != file_id:
+        # The only upload_id /upload ever mints for a file is file_identity(
+        # abspath) itself (api_share_file_upload calls start_upload(abspath,
+        # file_id)) — a caller-supplied id that disagrees is either stale (a
+        # second tab, an old sheet) or crafted, and blindly trusting it would
+        # hand THIS file's canvas another upload's remote/s3_uri (finding 4:
+        # publishing one file's uploaded object under a different file's
+        # name and canvas).
+        return _error("upload_id does not match this file", 400)
     remote = s3_uri = None
     if upload_id is not None or size > INLINE_PUBLISH_MAX_BYTES:
         upload_state = read_upload_state(upload_id or file_id)
@@ -489,12 +536,22 @@ def api_share_file_lookup(body: dict = Body(...), x_fused: str | None = Header(d
         return {"found": False, "file_id": file_id}
     now = time.time()
     existing = get_record(key) or {}
+    # The shim's `lookup` only ever returns the bare, session-less
+    # _share_url() — it never mints a fresh session token (finding 8). For a
+    # `temporary` share that bare URL 403s for the recipient; keep the
+    # stored one (which still carries `?fused_session_token=...`) instead of
+    # letting a lookup silently swap in a dead link while `status` keeps
+    # showing it as live.
+    if existing.get("mode") == "temporary":
+        url = existing.get("url")
+    else:
+        url = out.get("url") or existing.get("url")
     record = {
         **existing,
         "file_id": file_id,
         "path": abspath,
         "name": name,
-        "url": out.get("url") or existing.get("url"),
+        "url": url,
         "canvas_id": out.get("canvas_id"),
         "canvas_name": out.get("canvas_name"),
         "share_token": out.get("share_token"),
@@ -572,6 +629,8 @@ def api_share_file_upload(body: dict = Body(...), x_fused: str | None = Header(d
 def api_share_file_upload_status(id: str = ""):
     if not id:
         return _error("missing id")
+    if not _valid_upload_id(id):
+        return _error("invalid id")
     return read_upload_state(id)
 
 
@@ -583,4 +642,6 @@ def api_share_file_upload_cancel(body: dict = Body(...), x_fused: str | None = H
     upload_id = body.get("id") if isinstance(body.get("id"), str) else ""
     if not upload_id:
         return _error("missing id")
+    if not _valid_upload_id(upload_id):
+        return _error("invalid id")
     return cancel_upload(upload_id)
