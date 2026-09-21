@@ -891,6 +891,12 @@ def create_app(start_dir: str) -> FastAPI:
     from fused_render.share_app import router as share_app_router
 
     app.include_router(share_app_router)
+    # Share any file whose extension resolves to a Fused catalog file-preview
+    # UDF (share_file.py) — the generalised sibling of share_app_router
+    # above, reusing its record store, lock and shim plumbing.
+    from fused_render.share_file import router as share_file_router
+
+    app.include_router(share_file_router)
     # Template management (templates_api.py) — the Templates view backend:
     # inventory across sources, registry bindings edit, import/export. It owns
     # GET /api/templates/registry (the extended §2.2 shape). Imported here
