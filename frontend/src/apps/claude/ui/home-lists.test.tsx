@@ -345,13 +345,14 @@ test("a FAILED snapshots read keeps its place in the block, holding the retry", 
   expect(text(all(json, "c-snapsnote")[0])).toContain("store unreadable");
 });
 
-// RUN NEXT ON A RECENT ROW (Akshil QA, 2026-09-16: "the skip button does
-// nothing"). `TaskNode.skip` is one call and two answers — the claim to paint
-// until the server speaks (`onQueued`) and the re-read that fetches the truth
-// (`onReload`) — and this list forwarded neither, so the press put a request on
-// the wire and then had nothing to show for it until the next full listing, up
-// to a poll later. A control that answers a press with nothing IS a dead one.
-test("a Recent row carries Run next's two handles", () => {
+// A QUEUE ANSWER ON A RECENT ROW (Akshil QA, 2026-09-16: "the skip button does
+// nothing"). A row's queue call is one request and two answers — the claim to
+// paint until the server speaks (`onQueued`) and the re-read that fetches the
+// truth (`onReload`) — and this list forwarded neither, so a press put a request
+// on the wire and then had nothing to show for it until the next full listing,
+// up to a poll later. The ⤒ that found this is gone (2026-09-21) and the two
+// handles are not: Run now's own queued answer paints through the same pair.
+test("a Recent row carries the queue's two handles", () => {
   const r = mount(
     <Lists
       file="/repo/x.py"

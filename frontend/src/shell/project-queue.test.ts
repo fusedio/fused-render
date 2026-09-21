@@ -126,12 +126,18 @@ describe("the Board's waiting cards", () => {
     // the ⤒ and repaint the sentence in the queued hue, which made one card in a
     // lane of waiting cards read as a different KIND of thing — where all a skip
     // does is change the ORDER, and the order is what the caption already says.
-    // The glyph survives as the Run next BUTTON's face and decorates nothing.
+    //
+    // …AND THE GLYPH IS DRAWN NOWHERE AT ALL SINCE 2026-09-21, because the Run
+    // next button whose face it was is out of the UI. Rows promoted before that
+    // deploy still carry `queue_priority` in the index, so this is the guard that
+    // they come back as ordinary waiting rows and not as decorated ones.
     for (const src of [CARD, ROW]) {
       expect(src).not.toContain("is-next");
       expect(src).not.toContain("tasks-queue-glyph");
       expect(src).not.toContain("{queue.runsNext && (");
+      expect(src).not.toContain("QUEUE_PRIORITY_GLYPH");
     }
+    expect(VIEWS).not.toContain("QUEUE_PRIORITY_GLYPH");
     expect(css(TASKS_CSS)).not.toContain("is-next");
     expect(css(TASKS_CSS)).not.toContain(".tasks-queue-glyph");
     // …and the caption's one actionable token is a LINK into the conversation
@@ -166,8 +172,15 @@ describe("the Board's waiting cards", () => {
     expect(BOARD).toContain("onQueued?.(await performSkip(task));");
     // …and the warning under the cursor says so, in the verb's own words rather
     // than borrowing "Run now": `skip` is a drop kind of its own in the one
-    // wording table every run-shaped drop reads (`RUN_DROP_WORDS`).
-    expect(VIEWS).toMatch(/skip: \{\s*title: RUN_NEXT_HINT,\s*hint: RUN_NEXT_HINT,\s*\}/);
+    // wording table every run-shaped drop reads (`RUN_DROP_WORDS`). It said
+    // RUN_NEXT_HINT until 2026-09-21 and says the sentence itself now, because
+    // the drag is the only surface left that offers this.
+    expect(VIEWS).toMatch(
+      /skip: \{\s*title: "Next in this folder — nothing is interrupted",\s*hint: "Next in this folder — nothing is interrupted",\s*\}/,
+    );
+    // AND NO "Run next" ANYWHERE A READER CAN SEE IT (Akshil, 2026-09-21).
+    expect(VIEWS).not.toContain("Run next —");
+    expect(VIEWS).not.toContain("RUN_NEXT_");
     expect(BOARD).toContain('RUN_DROP_WORDS[runDrop?.kind ?? "run"]');
     // The one wording, from the one place — never a literal in a view. (The
     // file's other "Skip" is the repeat-occurrence verb on a message row, which
@@ -175,22 +188,17 @@ describe("the Board's waiting cards", () => {
     expect(VIEWS).not.toContain("Skip the queue");
   });
 
-  it("offers the same verb as a button, unguarded by the hover-actions flag", () => {
-    // Archive's precedent: while SHOW_ROW_ACTIONS is down this would otherwise be
-    // the Board's only route to the front of a line other than dragging a card
-    // out of a lane that is rolled up whenever it is empty.
-    expect(CARD).toContain('className="tasks-act tasks-card-act tasks-act--skip"');
-    const strip = css(CARD).slice(css(CARD).indexOf('<span className="tasks-card-acts">'));
-    const at = strip.indexOf("tasks-act--skip");
-    expect(at).toBeGreaterThan(0);
-    // Its own guard is `{queue && (`, with no flag in front of it — read off the
-    // source with the prose stripped, since the comment above it NAMES the flag.
-    expect(strip.slice(0, at)).not.toContain("SHOW_ROW_ACTIONS");
-    expect(strip.slice(0, at)).toContain("{queue && (");
-    // Drawn and disabled at the head, not dropped: taking a control away on the
-    // press that worked is how a reader ends up unsure anything happened.
-    expect(strip).toContain("disabled={busy || queue.runsNext}");
-    expect(strip).toContain("RUN_NEXT_DONE_HINT");
+  it("offers NO queue verb as a button — the drag is the whole of it", () => {
+    // RUN NEXT IS OUT OF THE UI (Akshil, 2026-09-21). The card carried a ⤒
+    // button in its act strip until then; the endpoint, the manager and the
+    // performer all stay (a follow-up removes them), and what goes is every
+    // press. The DRAG is untouched — a queued card dropped on In Progress still
+    // goes to the head of its lane — and `onSkip` stays as the seat the next
+    // queue verb lands in.
+    expect(CARD).not.toContain("tasks-act--skip");
+    expect(CARD).not.toContain("canRunNext");
+    expect(CARD).not.toContain("queue.runsNext");
+    expect(CARD).toContain("onSkip");
   });
 });
 
@@ -220,33 +228,28 @@ describe("the List's waiting row", () => {
     expect(span).toContain("if (e.button === 1 && href) e.preventDefault();");
   });
 
-  it("grows a Run next only on a waiting row, and not behind the hover-actions flag", () => {
-    expect(ROW).toContain('className="tasks-act tasks-act--skip"');
-    const at = ROW.indexOf("tasks-act--skip");
-    // The guard immediately above it is the queue's, not SHOW_ROW_ACTIONS's.
-    expect(ROW.slice(at - 400, at)).toContain("{queue && (");
-    expect(ROW).toContain("aria-label={`${RUN_NEXT_LABEL} for ${task.task_id}`}");
-    expect(ROW).toContain("void skip();");
-    expect(ROW).toContain("onQueued?.(await performSkip(task));");
+  it("grows NO Run next — the row is a sentence, not a control", () => {
+    // The ⤒ button lived in this row's hover strip until 2026-09-21. It is gone
+    // from the row and from the card above, so the queue has no press on this
+    // page at all; the performer (`performSkip`) stays for the Board's drag.
+    expect(ROW).not.toContain("tasks-act--skip");
+    expect(ROW).not.toContain("canRunNext");
+    expect(ROW).not.toContain("void skip();");
+    expect(VIEWS).not.toContain("canRunNext");
+    expect(BOARD).toContain("onQueued?.(await performSkip(task));");
+    // The row is mounted and its buttons counted in queue-caption-press.test.tsx
+    // — source strings cannot say a control is unreachable, only that it is
+    // unwritten.
   });
 
-  it("offers it only when ANOTHER WAITING TASK is ahead — one rule, three surfaces", () => {
-    // Every queued task has something in front of it; usually it is the run
-    // HOLDING the folder, which this press can never touch. So at position 1 the
-    // button's only possible outcome was the state the reader was already in
-    // (Akshil, 2026-09-12). `canRunNext` is `queue_position > 1`, and the List
-    // row, the Board card and the chat's own card all read that one function.
+  it("still SAYS where it stands, which the button never carried anyway", () => {
+    // THE CAPTION WAS NEVER GATED ON THE BUTTON, and that is why taking the
+    // button out changes no sentence: `1 message queued · after TASK-056` is
+    // true at the head of the line and stays printed. `canRunNext` — the
+    // button's whole condition — survives in platform/lib/queue for the
+    // follow-up that removes the endpoint with it, and is tested there.
     expect(canRunNext({ status: "queued", queue_position: 2, queue_ahead: "TASK-056" })).toBe(true);
     expect(canRunNext({ status: "queued", queue_position: 1, queue_ahead: "TASK-056" })).toBe(false);
-    for (const src of [ROW, CARD]) {
-      expect(src).toContain("{queue && (canRunNext(task) || queue.runsNext) && (");
-    }
-    // …and `runsNext` still keeps the DISABLED draw, so a press that worked does
-    // not take its own control off the row.
-    expect(ROW).toContain("disabled={acting || queue.runsNext}");
-    expect(CARD).toContain("disabled={busy || queue.runsNext}");
-    // THE CAPTION IS NOT GATED ON IT. `1 message queued · behind TASK-056` is
-    // true at the head of the line and stays printed; only the button goes.
     expect(waitingCardText(1, { status: "queued", queue_position: 1, queue_ahead: "TASK-056" })).toBe(
       "1 message queued · after TASK-056",
     );

@@ -170,9 +170,28 @@ test("a skipped row is drawn exactly like every other waiting row", () => {
   expect(byClass(r, "tasks-queue-glyph")).toHaveLength(0);
   expect(said).not.toContain("is-next");
   expect(text(r)).toContain("after TASK-046 | 1st");
-  // The ⤒ that IS still drawn is the Run next BUTTON's face, which is an action
-  // and not a highlight — and at the head of the line it is disabled, not gone.
-  const skip = byClass(r, "tasks-act--skip");
-  expect(skip).toHaveLength(1);
-  expect(skip[0]!.props.disabled).toBe(true);
+  // …AND NO ⤒ ANYWHERE ELSE ON THE ROW EITHER (Akshil, 2026-09-21). It was the
+  // Run next button's face, and Run next is out of the UI — so a row promoted
+  // before that deploy, which still carries `queue_priority` in the index, comes
+  // back as an ordinary waiting row wearing nothing.
+  expect(said).not.toContain("⤒");
+  expect(byClass(r, "tasks-act--skip")).toHaveLength(0);
+});
+
+test("a QUEUED ROW OFFERS NO RUN NEXT, mounted (Akshil, 2026-09-21)", () => {
+  // The source guard is read in project-queue.test.ts; this is the one that says
+  // the control is not REACHABLE — the row is mounted with the queue on, at the
+  // position (`3`) that used to grow the button, and counted.
+  const r = row(queued(), []);
+  expect(text(r)).not.toContain("Run next");
+  expect(text(r)).not.toContain("⤒");
+  const labelled = r.root.findAll(
+    (n) =>
+      n.type === "button" &&
+      String((n.props as { "aria-label"?: string })["aria-label"] ?? "").includes("Run next"),
+  );
+  expect(labelled).toHaveLength(0);
+  // …and the SENTENCE is untouched, which is the whole of what this row now says
+  // about the line it is in.
+  expect(text(r)).toContain("after TASK-046 | 3rd");
 });
