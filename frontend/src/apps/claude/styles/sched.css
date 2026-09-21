@@ -73,14 +73,6 @@
     background-color 0.12s,
     border-color 0.12s;
 }
-.c-schedblock .sb-row:hover {
-  background: var(--c-surface);
-  border-color: var(--c-border-strong);
-}
-.c-schedblock .sb-row:focus-visible {
-  outline: 2px solid var(--c-accent);
-  outline-offset: 2px;
-}
 /* THE spacer, and there is exactly one. */
 .c-schedblock .sb-grow {
   flex: 1 1 auto;

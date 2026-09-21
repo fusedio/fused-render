@@ -8,7 +8,13 @@
 // helpers, so `fit.test.ts` can prove the ladder without a browser.
 
 /** The row's four states, in the order the width is spent (T:12203-12228). */
-export type RowFit = "full" | "compact" | "tight" | "stack";
+/** The ladder's rungs, top to bottom. `slim` and `bare` drop low-priority
+ *  seats (the context ring and the screenshot group, then the calendar) so the
+ *  row stays ONE LINE as long as the pills and Send fit; `stack` — the send
+ *  group wrapping under the pills — is the last resort and nothing else
+ *  (Akshil, 2026-09-21: "in min width it should be one line, we can hide low
+ *  priority icons"). */
+export type RowFit = "full" | "compact" | "tight" | "slim" | "bare" | "stack";
 
 /** One laid-out child of the control row, as the sum needs it (T:12262). */
 export interface Seat {
@@ -54,6 +60,8 @@ export function pickRowFit(box: number, need: (fit: RowFit) => number): RowFit {
   if (need("full") <= box) return "full";
   if (need("compact") <= box) return "compact";
   if (need("tight") <= box) return "tight";
+  if (need("slim") <= box) return "slim";
+  if (need("bare") <= box) return "bare";
   return "stack";
 }
 
@@ -62,11 +70,16 @@ export function pickRowFit(box: number, need: (fit: RowFit) => number): RowFit {
 export function fitFlags(fit: RowFit): {
   compact: boolean;
   tight: boolean;
+  slim: boolean;
+  bare: boolean;
   stack: boolean;
 } {
+  const slim = fit === "slim" || fit === "bare" || fit === "stack";
   return {
     compact: fit !== "full",
-    tight: fit === "tight" || fit === "stack",
+    tight: fit !== "full" && fit !== "compact",
+    slim,
+    bare: fit === "bare" || fit === "stack",
     stack: fit === "stack",
   };
 }

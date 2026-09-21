@@ -1,21 +1,21 @@
 // HOW FULL THE MODEL'S HEAD IS, in the composer's control row.
 //
-// Claude Code prints this in two places and this pill is both of them at once:
-// the statusline's percentage (input-only, over the full model window) is the
-// RING and the digits inside it, and `/context`'s block chart is what a press
-// opens. The one number a reader needs is "can I keep going in this chat" —
-// unanswered, the conversation compacts mid-thought.
+// The ring is ONE number — the conversation over the point where the CLI
+// auto-compacts it (`usedPct`, 100% = compaction) — and `/context`'s block
+// chart is what a press opens. The line above the box says the same number in
+// words; they can no longer disagree, because they are one function.
 //
-// THE NUMBER LIVES INSIDE THE RING. A ring beside a percentage is two readings
-// of one fact competing for the same 40px; a ring AROUND the percentage is one
-// object, and it survives the composer's tightest rungs without dropping the
-// digits — there is nothing left to drop.
+// A RING AND NOTHING INSIDE IT, drawn at icon size (16px) in a pill-height
+// (24px) button. The digits used to sit in the middle, which made the coin
+// 28px against 24px pills and said the number a third time (the tooltip and
+// the popover already do). The arc's fill is the reading, and the exact number
+// is one hover away; what the ring adds is a glance.
 //
-// AND IT STAYS DIM AT EVERY LEVEL, which is parity and not an oversight: the
-// CLI has no colour ramp while auto-compact is on (spec §4). Red there means
-// "this conversation is about to hit a wall", and auto-compact means it is
-// about to hit a SUMMARY instead. A pill that turns red on every long chat is
-// a pill people stop reading; the dim line above the box is what speaks up.
+// AND IT CHANGES COLOUR AS IT FILLS: dim until three quarters, then yellow
+// (`is-warn`, 75%+), then red (`is-high`, 90%+). Three steps rather than a
+// gradient because a gradient asks the reader to compare shades; a step asks
+// nothing. The thresholds are on the ring's own percentage, so red means
+// "auto-compact is 10% away", not "the model's head is 90% full".
 import { useCallback, useState } from "react";
 import {
   Popover,
@@ -40,11 +40,28 @@ export interface ContextMeterProps {
   model: string;
 }
 
-/** The ring's geometry in its own 28-unit box — the height of the pills
- *  beside it. r=12 keeps the 2-wide stroke inside the viewBox at every angle. */
-const R = 12;
+/** The ring's geometry. The box is 24 units — the pills' height, so the seat
+ *  is the row's height and a whole hit target — but the ring itself is 16px
+ *  across (r=7 plus the 2-wide stroke), the size of the calendar glyph beside
+ *  it: a circle the full height of a text pill reads as a coin, not an icon. */
+const R = 7;
 /** …and its centre. */
-const C = 14;
+const C = 12;
+/** Yellow from here… */
+export const WARN_PCT = 75;
+/** …and red from here. */
+export const HIGH_PCT = 90;
+
+/** The colour step the ring is at: "" (dim), "is-warn" or "is-high". */
+export function ringLevel(pct: number): "" | "is-warn" | "is-high" {
+  if (pct >= HIGH_PCT) return "is-high";
+  if (pct >= WARN_PCT) return "is-warn";
+  return "";
+}
+
+/** The second line of the tooltip, so the ring reads as a button and not as a
+ *  gauge: nothing about a plain ring says it opens anything. */
+export const CLICK_HINT = "Click for details";
 const CIRCUMFERENCE = 2 * Math.PI * R;
 
 /**
@@ -65,6 +82,7 @@ export function ContextMeter({ usage, model }: ContextMeterProps) {
 
   const pct = usedPct(model, usage);
   const hint = contextHint(model, usage);
+  const level = ringLevel(pct);
   // Drawn from 12 o'clock clockwise: the arc is a dashed stroke whose first
   // dash is the filled part — one element, rather than an arc path and its
   // large-arc-flag arithmetic, and it degrades to an empty ring at 0.
@@ -82,13 +100,13 @@ export function ContextMeter({ usage, model }: ContextMeterProps) {
           render={
             <button
               type="button"
-              className="c-ctxmeter"
-              data-hint={hint}
+              className={level ? `c-ctxmeter ${level}` : "c-ctxmeter"}
+              data-hint={`${hint}\n${CLICK_HINT}`}
               aria-label={hint}
             >
               <svg
                 className="c-ctxmeter-ring"
-                viewBox="0 0 28 28"
+                viewBox="0 0 24 24"
                 aria-hidden="true"
                 focusable="false"
               >
@@ -106,11 +124,6 @@ export function ContextMeter({ usage, model }: ContextMeterProps) {
                   transform={`rotate(-90 ${C} ${C})`}
                 />
               </svg>
-              {/* The sentence above already says the number; saying it twice is
-                  what an unhidden label here would do. */}
-              <span className="c-ctxmeter-pct" aria-hidden="true">
-                {pct}
-              </span>
             </button>
           }
         />
@@ -142,9 +155,12 @@ export function ContextReportView({ usage, model }: ContextMeterProps) {
     <div className="c-ctxpop-body">
       <div className="c-ctxpop-title">Context Usage</div>
       {report.model ? <div className="c-ctxpop-dim">{report.model}</div> : null}
+      {/* The headline is the ring's number in full digits; the grid and legend
+          below are `/context`'s own picture of the whole model window, buffer
+          and all, which is why their per-row percentages are of the window. */}
       <div className="c-ctxpop-dim">
-        {groupDigits(report.used)}/{groupDigits(report.window)} tokens (
-        {report.pct}%)
+        {groupDigits(report.total)}/{groupDigits(report.compactAt)} tokens before
+        auto-compact ({report.pct}%)
       </div>
       <div
         className="c-ctxpop-grid"

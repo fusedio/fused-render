@@ -6,9 +6,12 @@
 // actually reopens the box — cancel for a one-off, stop-the-repeat for a repeat
 // (cancelling an occurrence of a repeat unblocks nothing, because `_materialize`
 // arms the next one and it blocks again). "Edit schedule" used to sit beside it
-// and is GONE: the row now lands on the task where Edit lives with its whole
-// popover, so the banner was two doors to one room and its own door did not
-// unblock (Akshil, 2026-08-17).
+// and is GONE (Akshil, 2026-08-17), and so is the row's own press: it used to
+// hop to the Tasks page, first onto the calendar and then into this task's side
+// peek — which is the chat the reader is already in. "What's the point of
+// linking it if it opens the same task?" (Akshil, 2026-09-21). So the row is a
+// READING — what is coming and when — and the button beside it is the one
+// control on the card.
 //
 // WHAT IT SHOWS is the Tasks LIST view's own row — a status ring, TASK-nnn, the
 // name, and the state and time at the right end — because a reader who knows
@@ -25,7 +28,7 @@ import {
   schedRefusalNote,
   schedRowName,
   schedRowState,
-  schedRowTitle,
+  schedIsComeback,
   schedStopLabel,
   schedStopTitle,
   schedWhenText,
@@ -54,8 +57,6 @@ export interface SchedBlockProps {
    *  the entry happens to trigger. */
   tick?: number;
   onStop(): void;
-  /** The row's hop: the Tasks page, on the calendar. */
-  onRow(): void;
   /** The card's own node, for the outside-press disarm (`useSchedule`). */
   cardRef?: React.MutableRefObject<HTMLDivElement | null>;
 }
@@ -68,7 +69,6 @@ export function SchedBlock({
   stopping,
   tick,
   onStop,
-  onRow,
   cardRef,
 }: SchedBlockProps) {
   const nameRef = useRef<HTMLSpanElement | null>(null);
@@ -92,6 +92,7 @@ export function SchedBlock({
   }, []);
 
   const repeat = next ? schedIsRepeat(next) : false;
+  const comeback = schedIsComeback(next, rec);
   /** THE ENTRY, NOT THE TASK. `rec` is the row for the whole task and answers
    *  `done` for a task holding a finished run and a future pending message —
    *  which is a true sentence about the board and a false one about the message
@@ -130,17 +131,15 @@ export function SchedBlock({
           <span className="sb-ic" aria-hidden="true">
             ⏱
           </span>
-          <span className="sb-when">{schedWhyLine(blockers)}</span>
+          <span className="sb-when">
+            {schedWhyLine(blockers, rec, new Date(tick || Date.now()))}
+          </span>
         </div>
-        {/* A BUTTON because the hop is a pushState into the React shell rather
-            than a document load — an <a href> here would be a link that cannot
-            be trusted to a middle click. First in the DOM, so it is first in tab
-            order too, ahead of the destructive control. */}
-        <button
-          type="button"
+        {/* A READING, not a control: a `div`, so nothing here looks pressable
+            beside the one button that is. First in the DOM so the Cancel that
+            follows it is read after the thing it cancels. */}
+        <div
           className="sb-row"
-          title={schedRowTitle(rec)}
-          onClick={onRow}
           onPointerEnter={nameTitle}
           onFocus={nameTitle}
         >
@@ -157,17 +156,17 @@ export function SchedBlock({
               it (tasks.css's own house rule). */}
           <span className="sb-grow" />
           <span className="sb-meta">{label + " · " + when}</span>
-        </button>
+        </div>
         <div className="sb-note">{refused ? schedRefusalNote(repeat) : ""}</div>
         <div className="sb-acts">
           <button
             type="button"
             className={armed ? "armed" : undefined}
-            title={schedStopTitle(repeat)}
+            title={schedStopTitle(repeat, comeback)}
             disabled={stopping}
             onClick={onStop}
           >
-            {schedStopLabel(repeat, armed)}
+            {schedStopLabel(repeat, armed, comeback)}
           </button>
         </div>
       </div>
