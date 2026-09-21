@@ -495,7 +495,7 @@ export function ShareFileModal({
               </DialogClose>
             </div>
             <DialogDescription
-              className="truncate text-[12px] text-muted-foreground"
+              className="truncate text-left text-[12px] text-muted-foreground"
               dir="rtl"
               title={dirname(file.path)}
             >
