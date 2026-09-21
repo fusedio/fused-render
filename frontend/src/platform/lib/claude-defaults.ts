@@ -46,13 +46,6 @@ const EMPTY: ClaudeDefaults = { model: "", effort: "" };
  *  different, and a pill must not paint the second while it is in the first. */
 let current: ClaudeDefaults | null = null;
 let reading: Promise<ClaudeDefaults> | null = null;
-/** Bumped by every LOCAL write. An answer from the server — a read's, a
- *  write's, a refused write's re-read — is applied only if nothing was picked
- *  here since it departed; otherwise the pick that came later is the truth and
- *  its own round trip will settle the pair (Bugbot, 2026-09-21: a GET fired at
- *  mount used to land on top of a pick made while it was in flight and snap the
- *  pill back). */
-let generation = 0;
 /** PER FIELD, because the two are written by SEPARATE requests (Bugbot on
  *  1e4a44c): a model pick and an effort pick in flight together can be
  *  processed by the server in either order, so the effort write's answer can
@@ -175,7 +168,6 @@ export function setClaudeDefaults(
     model: patch.model ?? current?.model ?? "",
     effort: patch.effort ?? current?.effort ?? "",
   };
-  generation += 1;
   const wrote: Partial<Record<Field, boolean>> = {};
   for (const f of FIELDS) {
     if (patch[f] === undefined) continue;
@@ -225,7 +217,11 @@ export function applyClaudeDefaultsBroadcast(
   if (key !== CLAUDE_DEFAULTS_BROADCAST_KEY || !newValue) return;
   try {
     const d = JSON.parse(newValue) as Partial<ClaudeDefaults>;
-    announce({ model: d.model || "", effort: d.effort || "" }, false);
+    // Through `take`, like every other arrived value: another tab's word about
+    // a field this tab is still writing must not snap the pill back for a
+    // frame (review, 2026-09-21). Nothing here departed, so the current
+    // generations are the departure point.
+    announce(take(fromServer(d), { ...fieldGen }, {}), false);
   } catch {
     // A malformed broadcast is ignored; the next open re-reads.
   }
@@ -242,7 +238,6 @@ if (typeof window !== "undefined") {
 export function resetClaudeDefaultsForTests(): void {
   current = null;
   reading = null;
-  generation = 0;
   fieldGen.model = fieldGen.effort = 0;
   inFlight.model = inFlight.effort = 0;
   listeners.clear();

@@ -298,6 +298,10 @@ export function useComposerDefaults(
       setGlobalReady(true);
       return;
     }
+    // Back to a chat with NO session ("Fix with AI" clears `session_id` on
+    // boot): the `true` the branch above set is not an answer for this chat.
+    // Settled only if some surface in this document has already read.
+    setGlobalReady(getClaudeDefaults() !== null);
     let live = true;
     const off = subscribeClaudeDefaults(setGlob);
     // Always re-asked on open, never served purely from the module cache: this

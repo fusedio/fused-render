@@ -1107,9 +1107,14 @@ def test_a_pill_the_reader_changed_mid_CHAT_is_what_comes_back(agent, target):
     is what the following turns run with, so it is what the transcript's NEWEST
     rows say — and `_scan_transcript` reads from the tail."""
     file, workdir = target
+    # The NEWEST row is a subagent's (`isSidechain`), on a model the reader
+    # never picked: `_scan_transcript` must step over it — this is the one place
+    # that rule is still exercised now that the folder ladder is gone.
+    side = dict(_ran("claude-haiku-4-5", "low", workdir), isSidechain=True)
     _cli_transcript(agent, workdir, "s1", [
         _ran("claude-sonnet-4-5", "medium", workdir),
         _ran("claude-opus-4-6-20260514", "high", workdir),
+        side,
     ])
     picked = agent._defaults(file, "s1")
     assert (picked["model"], picked["effort"]) == ("opus", "high")

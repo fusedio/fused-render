@@ -3200,7 +3200,9 @@ export default function NewJobModal({
       // way, so the card that made the pick hears it too (Bugbot, 2026-09-21).
       void setClaudeDefaults({ model: value }).then((d) => {
         pickInFlight.current.model -= 1;
-        if (d.model) setModel(d.model);
+        // Unconditional: "" is the server saying the key was RESET, and the
+        // card must not go on showing a value the file no longer holds.
+        setModel(d.model);
       });
     },
     [globalEditor],
@@ -3212,7 +3214,7 @@ export default function NewJobModal({
       pickInFlight.current.effort += 1;
       void setClaudeDefaults({ effort: value }).then((d) => {
         pickInFlight.current.effort -= 1;
-        if (d.effort) setEffort(d.effort);
+        setEffort(d.effort);
       });
     },
     [globalEditor],
