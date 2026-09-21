@@ -2,6 +2,9 @@
 // 2026-09-21): an answer from the server never lands on top of a pick made
 // after it departed, and a refused write is taken back — unless a newer pick
 // has already taken over.
+import { installDomShim } from "@platform/lib/testDomShim";
+installDomShim();
+
 import { afterEach, beforeEach, expect, test } from "bun:test";
 
 const realFetch = globalThis.fetch;
