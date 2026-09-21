@@ -3164,3 +3164,66 @@ entry above): the Linux `errno.ENOSPC` shallow-fallback branch
 unit tests with faked `load_config`/`scan_roots`/thread-creation failures,
 not through an actual `dev.sh`-started server hitting a real partial
 failure.
+
+### Windows-only CI failure fix — 2026-09-21
+
+The macOS local suite and every CI lane went green except
+`test-python-windows`, where exactly two `tests/test_index_watch.py` tests
+failed: the forwarded folder set collapsed to the bare watched root instead
+of the expected per-folder union.
+
+**Root cause.** `WatchLoop._clamp_to_root` compared `folder` (which arrived
+through `_folder_of`'s `norm(os.path.abspath(...))` canonicalization
+pipeline) against `self.root` RAW — `root` is handed to `WatchLoop` exactly
+as `_make_loop`/tests pass it, never canonicalized. On POSIX this
+coincidentally worked, because `os.path.abspath` of an already-absolute
+path is a no-op. On Windows it does not: `os.path.abspath("/home/me/proj/
+a.txt")` resolves against the current drive and prepends it (`C:\home\me\
+proj\a.txt`), which `norm()` then converts to `C:/home/me/proj`. `self.
+root` stayed `"/home/me"` — a prefix the canonicalized folder no longer
+shares — so `folder == root or folder.startswith(root + "/")` failed for
+every real folder, and `_clamp_to_root` fell through to its "not under the
+root" fallback, replacing every folder with the bare root. That the whole
+union collapsed to `{root}` (not just one clamp) is exactly the CI
+assertion failure.
+
+**Fix.** `WatchLoop.__init__` now computes `self._root_canon =
+_canon_folder(root) or root` once (`_canon_folder`, imported from
+`index_touch.py`, is the *same* `norm(os.path.abspath(...)).rstrip("/")`
+pipeline `_folder_of` already uses — the established convention this
+module's own docstring points at, not a new one), and `_clamp_to_root`
+compares `folder` against `self._root_canon` instead of raw `self.root`.
+The fallback still returns the original `self.root` (unchanged) — forwarded
+folders are re-canonicalized downstream by `note_folders`/`_canon_folder`
+regardless of which spelling reaches it, so this only had to fix the
+*comparison*, not what gets forwarded.
+
+**Blast radius.** Touched `index_watch.py` only (`WatchLoop.__init__`,
+`_clamp_to_root`, plus importing `_canon_folder`). `_folder_of`,
+`_canon_folder`, and `norm` themselves are unchanged — the shared mutation
+path (`note_index_mutation`) and `RescanQueue` are unaffected.
+
+**Test.** This machine is macOS and cannot run the Windows lane, so the
+regression test does not rely on Windows actually running it — it
+reproduces the underlying disagreement directly: `os.path.abspath` is
+monkeypatched to prepend `"C:"` the way Windows' real one does, and
+`ignore.WINDOWS` is forced on so `norm()`'s backslash conversion (normally
+a no-op off Windows) engages too. Against the unfixed code this
+monkeypatched test failed with the identical symptom the Windows lane
+reported — a two-folder union collapsed to `{"/home/me"}`. Confirmed
+failing before the fix, passing after
+(`test_clamp_to_root_compares_root_and_folder_in_the_same_canonical_form`).
+
+**Verification.** `tests/test_index_watch.py`, `tests/test_index_touch.py`,
+`tests/test_index_ignore.py`, `tests/test_app_lifespan.py` — 83 passed.
+Both previously Windows-failing tests
+(`test_two_batches_inside_the_floor_forward_once_with_the_union`,
+`test_max_folders_or_fewer_forward_the_actual_set`) also pass locally, as
+they already did before this fix (macOS never reproduced the bug) — the
+new monkeypatched test is what actually pins this defect.
+
+**Not verified from here:** the Windows CI lane itself. This machine is
+macOS; the fix and its regression test are reasoned from `os.path.abspath`'s
+documented Windows behavior (drive-letter resolution of a POSIX-style
+absolute path) and `norm()`'s own `WINDOWS`-gated backslash conversion, not
+from an actual Windows run.

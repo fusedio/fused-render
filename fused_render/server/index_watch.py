@@ -38,6 +38,7 @@ from fused_render.index.ignore import (
 )
 from fused_render.server.index_touch import (
     MAX_FOLDERS,
+    _canon_folder,
     _folder_of,
     note_index_folders,
     outermost_folders,
@@ -146,6 +147,16 @@ class WatchLoop:
                  gate_poll_s: float = GATE_POLL_S,
                  backoff_schedule=BACKOFF_SCHEDULE_S):
         self.root = root
+        # `_folder_of` (used on every touched path below) canonicalizes
+        # through `norm(os.path.abspath(...))` before `_clamp_to_root` ever
+        # sees the result — on Windows that adds a drive letter, turning
+        # "/home/me/proj/a.txt" into "C:/home/me/proj". `root` is handed to
+        # this class as-is and never goes through that same pipeline, so
+        # comparing a folder against raw `root` compares two different
+        # canonical forms on Windows and every folder fails containment
+        # (see DECISIONS.md for the CI failure this fixed). Canonicalize
+        # once, the same way, so the comparison is apples to apples.
+        self._root_canon = _canon_folder(root) or root
         self.open_source = open_source
         self.dropped = dropped
         self.forward = forward
@@ -237,7 +248,8 @@ class WatchLoop:
         one broader than any configured root. Clamp it back to the root
         rather than let one such event buy a scan wider than the watcher is
         allowed to trigger."""
-        if folder == self.root or folder.startswith(self.root + "/"):
+        root = self._root_canon
+        if folder == root or folder.startswith(root + "/"):
             return folder
         return self.root
 
