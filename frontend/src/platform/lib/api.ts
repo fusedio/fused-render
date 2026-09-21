@@ -1226,10 +1226,10 @@ export interface Prefs {
    *  a server that predates the field sends nothing — which reads as ON too. */
   task_peek?: {
     enabled: boolean;
-    /** …and whether the APP PAGE's Tasks tab opens the same panel instead of
-     *  navigating to the Explorer (shell/prefs.py `project_peek_enabled`,
-     *  default off — a feature flag on that one surface). Optional: a server
-     *  that predates it sends nothing, and nothing reads as off. */
+    /** …and the APP PAGE's Tasks tab does the same — always `true` since
+     *  2026-09-21 (shell/prefs.py `project_peek_enabled`); the flag and its
+     *  Preferences switch are gone. Optional: a server that predates the
+     *  field sends nothing, and nothing reads as on too. */
     project?: boolean;
   };
   /** Whether a finished-task notification fires for a session that entered
@@ -1464,13 +1464,6 @@ export function putAppSharingEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putNativeChatEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { native_chat_enabled: enabled });
-}
-
-/** Whether the app page's Tasks tab opens a task in the side peek
- *  (shell/prefs.py `project_peek_enabled`, default off). See
- *  `Prefs.task_peek.project`'s own doc comment. */
-export function putProjectPeekEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { project_peek_enabled: enabled });
 }
 
 /** Whether a finished-task notification fires for an interactive-terminal

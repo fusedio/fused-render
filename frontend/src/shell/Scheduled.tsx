@@ -115,7 +115,6 @@ import { TasksSkeleton } from "./TasksSkeleton";
 import { useMissingFolders } from "./useMissingFolders";
 import { TOOLBAR_MERGE_LEVEL, useToolbarFit } from "./row-fit";
 import { useTaskPeekEnabled } from "./task-peek-flag";
-import { useProjectPeekEnabled } from "./project-peek-flag";
 import { TaskPeek, useTaskPeekHost, useTaskPeekLayout } from "./TaskPeek";
 import { TaskPeekFrame, useTaskPeekSlot } from "./TaskPeekFrame";
 import { openPeek } from "./task-peek-store";
@@ -909,11 +908,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // the very same panel, portalled into the frame the app page draws around
   // itself (TaskPeekFrame.tsx `useTaskPeekSlot`). The sidebar's task list and
   // the notifications are still outside any frame and still navigate.
-  // …behind a flag of its own on the app page (`project_peek_enabled`,
-  // project-peek-flag.ts, default off): scoped, both switches have to be on;
-  // unscoped the Tasks page's own answer is the whole gate.
-  const projectPeekOn = useProjectPeekEnabled();
-  const peekable = scope ? peekOn && projectPeekOn : peekOn;
+  const peekable = peekOn;
   useTaskPeekHost(peekable);
   const peek = useTaskPeekLayout(peekable);
   // Where a Scheduled mounted inside SOMEONE ELSE'S frame puts its panel: the

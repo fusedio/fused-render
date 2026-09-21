@@ -116,7 +116,6 @@ import { useAppPageSnapshot, type AppPageSnapshotState } from "./useAppPageSnaps
 import { TaskPeekFrame } from "./TaskPeekFrame";
 import { APP_PAGE_FIT_LABEL, useAppHeadFit, useAppTabbarFit } from "./app-page-fit";
 import { useTaskPeekEnabled } from "./task-peek-flag";
-import { useProjectPeekEnabled } from "./project-peek-flag";
 import { peekSearch } from "./task-peek-store";
 
 // ---- the tabs, as ONE registry -----------------------------------------------
@@ -468,11 +467,7 @@ export default function AppPage({
   const [headFit, headRef] = useAppHeadFit();
   const [tabbarFit, tabbarRef] = useAppTabbarFit();
   const peekOn = useTaskPeekEnabled();
-  // …AND THE PROJECT FLAG (project-peek-flag.ts, `project_peek_enabled`,
-  // default off): the peek on THIS page is a feature flag of its own while
-  // it settles, over and above the Tasks page's.
-  const projectPeekOn = useProjectPeekEnabled();
-  const peekable = peekOn === true && projectPeekOn === true && tab === "tasks";
+  const peekable = peekOn === true && tab === "tasks";
 
   // Folded ONCE for every tilde below: `home` is raw expanduser (backslashed on
   // Windows) while `dir` and the root are forward-slash, and a prefix test

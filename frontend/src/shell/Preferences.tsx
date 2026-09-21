@@ -54,7 +54,6 @@ import {
   putCanvasesEnabled,
   putProjectQueueEnabled,
   putTaskNotifyTerminalSessionsEnabled,
-  putProjectPeekEnabled,
   putLanEnabled,
   getLanPairToken,
   getLanDevices,
@@ -72,7 +71,6 @@ import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/ap
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { publishTaskNotifyTerminalSessions } from "./task-notify-terminal-flag";
-import { publishProjectPeekEnabled } from "./project-peek-flag";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { useThemePref } from "@platform/lib/theme";
 import { IndexingPanel } from "@shell/Indexing";
@@ -344,51 +342,6 @@ function ProjectQueueSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: 
 // plain `claude` session typed by hand in a terminal, nothing to do with
 // fused-render, raising a fused-render "Finished" notice). This is the
 // opt-BACK-in for an interactive terminal session too — default off, same
-// The app page's Tasks tab hosting the side peek (project-peek-flag.ts,
-// default off) — a feature flag on that one surface. Same one-checkbox
-// section shape as the sections around it.
-function ProjectPeekSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // `?? false`: a server that predates the switch sends nothing, which is off
-  // — the pref's own default, and the tab's behaviour before the flag.
-  const enabled = prefs.task_peek?.project ?? false;
-
-  const toggle = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const next = await putProjectPeekEnabled(!enabled);
-      onChange(next);
-      // Published so an open app page picks it up on its next render rather
-      // than on a reload — the same hand-over the switches around this make.
-      publishProjectPeekEnabled(next.task_peek?.project === true);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="prefs-section">
-      <h2>Projects: open tasks in a side peek</h2>
-      <p className="deploy-muted">
-        On a project page&apos;s Tasks tab, clicking a task opens it in a side panel beside the
-        page — the same peek the Tasks page has — instead of leaving for the Explorer.
-      </p>
-      <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
-        <span>
-          <b>Side peek on project pages</b> — off by default while it settles.
-        </span>
-      </label>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
-  );
-}
-
 // one-checkbox section shape as Native chat above.
 function TaskNotifyTerminalSection({
   prefs,
@@ -1133,7 +1086,6 @@ export default function Preferences() {
                 <AppSharingSection prefs={prefs} onChange={setPrefs} />
                 <ProjectQueueSection prefs={prefs} onChange={setPrefs} />
                 <TaskNotifyTerminalSection prefs={prefs} onChange={setPrefs} />
-                <ProjectPeekSection prefs={prefs} onChange={setPrefs} />
               </>
             )}
             {tab === "lan" && <LanSection prefs={prefs} onChange={setPrefs} />}
