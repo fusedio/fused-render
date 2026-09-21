@@ -19,7 +19,7 @@
  *     pressed paints the new value in the same tick;
  *   * ANNOUNCES every change to the subscribers in this document AND, through
  *     one `localStorage` write, to every other tab of the app — the same
- *     mechanism and the same reason as `apps/claude/feature-flag.ts`'s
+ *     mechanism and the same reason as `apps/claude/chat-prefs.ts`'s
  *     `publishProjectQueueEnabled`: a surface that was already open must not go
  *     on showing the answer it read at mount.
  *

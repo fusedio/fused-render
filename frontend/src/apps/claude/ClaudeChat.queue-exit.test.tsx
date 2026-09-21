@@ -57,7 +57,7 @@ function stubFetch(): void {
       return jsonRes({
         path: "/w/p",
         is_dir: true,
-        templates: [{ mode: "claude", path: "/w/p/.claude/template.html" }],
+        templates: [{ mode: "claude", path: "/w/p/.claude/agent.py" }],
       });
     }
     if (url === "/api/prefs") return jsonRes({ queue: { enabled: true } });
