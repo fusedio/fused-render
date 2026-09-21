@@ -537,10 +537,11 @@ export function ComposerCard({
    * it is not active, even if there is text inside").
    *
    * The chat's composer is ONE LINE — the box and Send — whenever the reader's
-   * attention is elsewhere, and the full card only while they are in it. Two
-   * facts make "in it": focus is inside the form (`within`, from the form's own
-   * focus/blur), AND the reader put it there (`gestured` — a pointer on the
-   * form or a key in its box). The second guard is for `autoFocus` and the
+   * attention is elsewhere, and the full card only while they are in it, or
+   * their pointer is over it (`hovered`, below). Two facts make "in it": focus
+   * is inside the form (`within`, from the form's own focus/blur), AND the
+   * reader put it there (`gestured` — a pointer on the form or a key in its
+   * box). The second guard is for `autoFocus` and the
    * caret-taking effects, which focus the box on arrival: a card that opened
    * on its own the moment the page loaded would not be an idle line. A blur
    * that leaves the form clears both, so a click on the transcript folds the
@@ -564,6 +565,25 @@ export function ComposerCard({
     setGestured(true);
   }, []);
   const onFormFocus = useCallback(() => setWithin(true), []);
+  /**
+   * …OR THE READER'S POINTER IS OVER IT (Akshil, 2026-09-21: "show it in
+   * expanded state if the input inside it is focused or if I hover on it").
+   * A mouse or pen resting on the folded line opens the card, and leaving it
+   * folds the card back unless the reader is in it by focus. Touch is left
+   * out: a finger has no hover, and the `pointerenter` a tap fires would
+   * stick the card open with nothing to clear it. Hover is not a gesture —
+   * it never sets `gestured`, so the outside-press listener below and the
+   * blur fold stay exactly as they are.
+   */
+  const [hovered, setHovered] = useState(false);
+  const onFormPointerEnter = useCallback((ev: React.PointerEvent<HTMLFormElement>) => {
+    if (ev.pointerType === "touch") return;
+    setHovered(true);
+  }, []);
+  const onFormPointerLeave = useCallback((ev: React.PointerEvent<HTMLFormElement>) => {
+    if (ev.pointerType === "touch") return;
+    setHovered(false);
+  }, []);
   const formRef = useRef<HTMLFormElement | null>(null);
   /**
    * …AND A PRESS OUTSIDE FOLDS IT EVEN WHEN FOCUS DOES NOT MOVE (Akshil,
@@ -1810,7 +1830,7 @@ export function ComposerCard({
   );
 
   const count = queued?.length ?? 0;
-  const collapsed = variant === "chat" && !active && !blocked;
+  const collapsed = variant === "chat" && !active && !hovered && !blocked;
 
   return (
     <>
@@ -1839,6 +1859,8 @@ export function ComposerCard({
         // card back (`onFormBlur`). Focus arriving is NOT enough on its own:
         // `autoFocus` and the caret-taking effects focus this box on arrival.
         onPointerDown={variant === "chat" ? onFormPointerDown : undefined}
+        onPointerEnter={variant === "chat" ? onFormPointerEnter : undefined}
+        onPointerLeave={variant === "chat" ? onFormPointerLeave : undefined}
         onFocus={variant === "chat" ? onFormFocus : undefined}
         onBlur={variant === "chat" ? onFormBlur : undefined}
         onSubmit={(ev) => {

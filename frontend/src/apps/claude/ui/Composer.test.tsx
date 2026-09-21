@@ -1876,3 +1876,20 @@ test("a host that states no `ready` at all is stating a settled pair", () => {
   expect(modelPill(c).wrap.props.className).toBe("c-pillwrap");
   expect(modelPill(c).sel.props.disabled).toBe(false);
 });
+
+test("the idle line opens under the pointer and folds when it leaves; touch is ignored (Akshil, 2026-09-21)", () => {
+  const m = mount();
+  const form = () => m.root.findByType("form");
+  const cls = () => String(form().props.className);
+  expect(cls()).toContain("is-idle");
+  act(() => form().props.onPointerEnter({ pointerType: "mouse" }));
+  expect(cls()).not.toContain("is-idle");
+  act(() => form().props.onPointerLeave({ pointerType: "mouse" }));
+  expect(cls()).toContain("is-idle");
+  // A finger has no hover: a tap's pointerenter must not stick the card open.
+  act(() => form().props.onPointerEnter({ pointerType: "touch" }));
+  expect(cls()).toContain("is-idle");
+  // The landing card never folds, hovered or not.
+  const home = mount({ variant: "home" });
+  expect(String(home.root.findByType("form").props.className)).not.toContain("is-idle");
+});
