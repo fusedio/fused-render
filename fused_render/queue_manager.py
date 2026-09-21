@@ -325,7 +325,14 @@ class QueueManager:
             records = _answer_list(value) if isinstance(key, str) and key else []
             if records:
                 answers[key] = records
-        return {"folders": folders, "answers": answers}
+        # THE TASKS THAT LEFT THE QUEUE FOR GOOD (`mark_forced`). A list on
+        # disk and a set in memory: every read of it is a membership test, and
+        # the file has to stay json.
+        forced: set[str] = set()
+        for name in raw.get("forced") if isinstance(raw.get("forced"), list) else []:
+            if isinstance(name, str) and name:
+                forced.add(name)
+        return {"folders": folders, "answers": answers, "forced": forced}
 
     def _save(self) -> None:
         """Whole-index write through `tasks_store._update` — the same sibling
@@ -333,6 +340,9 @@ class QueueManager:
         read-modify-write. An unwritable state dir costs the write and nothing
         else: the in-memory index is still right and `reconcile` rebuilds it."""
         snapshot = copy.deepcopy(self._state)
+        # `forced` is a set in memory and a sorted list on disk — the only
+        # field of the index that is not already json.
+        snapshot["forced"] = sorted(self._state.get("forced") or ())
 
         def mutate(data: dict):
             data.clear()
@@ -1662,6 +1672,52 @@ class QueueManager:
             rows = self._answers_of(task_key)
             return copy.deepcopy(rows[0]) if rows else None
 
+    # ---------------------------------------------------------- forced tasks
+
+    def mark_forced(self, *names: str) -> None:
+        """THIS CONVERSATION HAS LEFT THE QUEUE, AND IT NEVER COMES BACK
+        (Akshil, 2026-09-21).
+
+        `POST /api/tasks/queue/force` is the flag-off behaviour for one
+        message, and one message is not what the user asked for: "once a task
+        is force-started it never enters the queue again — no matter if it is
+        blocked or has multiple messages". So the fact is recorded against the
+        TASK rather than spent on the dispatch, and every door reads it —
+        admission answers `run: true`, the run gate lets the send through, a
+        card decision goes straight to the agent and `reconcile` never puts the
+        task's entries back in a line.
+
+        **EVERY NAME THE CHAT ANSWERS TO**, because a forced conversation is
+        renamed by the very dispatch that forces it: the row is
+        `pending:<entry>` when the button is pressed and a session id a second
+        later, and a door that could only match the name it happens to hold
+        would refuse the same chat it just let through. `is_forced` hits on any
+        of them.
+
+        Persisted (the index survives a restart) and pruned by `reconcile`
+        once the conversation is neither alive nor owed a message."""
+        keep = {str(name) for name in names if name}
+        if not keep:
+            return
+        with self._lock:
+            forced = self._state.setdefault("forced", set())
+            if keep <= forced:
+                return
+            forced |= keep
+            self._save()
+
+    def is_forced(self, *names: str) -> bool:
+        """Does any of these names belong to a task that was force-started —
+        the one question the two doors, the gate and the tick ask."""
+        with self._lock:
+            forced = self._state.get("forced") or set()
+            return any(str(name) in forced for name in names if name)
+
+    def forced_names(self) -> set:
+        """The whole set, for a test and for the listing's sake. A copy."""
+        with self._lock:
+            return set(self._state.get("forced") or ())
+
     def held_answers(self, task_key: str) -> list[dict]:
         with self._lock:
             return copy.deepcopy(self._answers_of(task_key))
@@ -1769,12 +1825,28 @@ class QueueManager:
                 due = []
             known: set[str] = self._standing()
             due_keys: set[str] = set()
+            # A FORCED TASK IS NOT IN ANY LINE AND NEVER GOES BACK IN ONE
+            # (`mark_forced`). Its messages are still pending in the
+            # scheduler's store — that is what keeps them safe — and the tick
+            # dispatches them straight, exactly as it does with the flag off.
+            # Rebuilding a line from them here would undo the force on the
+            # very next pass.
+            forced: set[str] = self._state.get("forced") or set()
+            alive_forced: set[str] = set()
             for row in due:
                 try:
                     folder, task_key, entry_id = row
                 except (TypeError, ValueError):
                     continue
                 if not folder or not task_key:
+                    continue
+                names = {task_key}
+                if entry_id:
+                    names.add(tasks_store.pending_key(_text(entry_id)))
+                if names & forced:
+                    # …and the names it is still owed work under are the ones
+                    # the prune below must not drop.
+                    alive_forced |= names & forced
                     continue
                 due_keys.add(task_key)
                 if task_key in known:
@@ -1822,8 +1894,23 @@ class QueueManager:
                     keys.add(owner["task"])
                     rec["owner"] = None
             self._prune_answers(keys)
+            self._prune_forced(alive_forced)
             for folder in list(self._state["folders"]):
                 self._pump(folder, keys)
+
+    def _prune_forced(self, still_due: set) -> None:
+        """Forget a forced name whose conversation is over: nothing due under
+        it and nothing the status sync can find. Kept simple on purpose — a
+        name that survives one pass too long costs one door the queue would
+        have closed on a chat that has already gone, and dropping a live one
+        would put a running conversation back in a line."""
+        forced = self._state.get("forced") or set()
+        for name in list(forced):
+            if name in still_due:
+                continue
+            if self._alive({"task": name, "run_id": "", "session_id": ""}):
+                continue
+            forced.discard(name)
 
     def _prune_answers(self, keys: set) -> None:
         """A decision whose task the index no longer points at anywhere, and

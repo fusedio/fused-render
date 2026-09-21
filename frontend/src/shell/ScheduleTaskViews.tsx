@@ -2847,11 +2847,6 @@ function TaskNode({
   // (tasks-lib.scheduledMark). No chip beside the time any more (Akshil,
   // 2026-09-11: "we don't need to show time 2 times on the right side").
   const sched = scheduledMark(task);
-  // Where this row stands in its folder's line, when it is waiting on one. The
-  // SAME builder the Board card and the chat's own rows ask
-  // (tasks-lib.queueCaption), so a task's place is worded once for the whole app.
-  // Null on every other row.
-  const queue = queueCaption(task);
   /** …and the OTHER sentence a not-moving row can carry: the plan's window,
    *  named and dated ("Usage limit · resumes 4:00 AM"). "" on every row the usage
    *  limit did not stop. */
@@ -3802,32 +3797,14 @@ function TaskNode({
             the same three gestures the mark does. The `TASK-x` link inside it
             stops propagation and keeps its own destination: the caption opens
             THIS row, the id opens the holder's. */}
-        {queue && (
-          <span
-            className="tasks-row-queue"
-            data-hint={queue.aheadTitle || queue.text}
-            onClick={(e) => {
-              if (!href) return;
-              if (opensElsewhere(e)) {
-                window.open(href, "_blank", "noopener");
-                return;
-              }
-              activate();
-            }}
-            onAuxClick={(e) => {
-              if (e.button !== 1 || !href) return;
-              e.preventDefault();
-              window.open(href, "_blank", "noopener");
-            }}
-            onMouseDown={(e) => {
-              if (e.button === 1 && href) e.preventDefault();
-            }}
-          >
-            <span className="tasks-queue-text">
-              <QueueCaptionText queue={queue} />
-            </span>
-          </span>
-        )}
+        {/* NO PLACE CAPTION ON A ROW (Akshil, 2026-09-21). "after TASK-046 |
+            3rd" used to sit here, and it was the third thing on a row already
+            saying the same state twice — the dashed ring and the `queued` word
+            carry "this is waiting", which is what a reader scanning a list
+            wants; WHERE in the line it stands is a detail of one row, not a
+            column. The sentence survives where it is actually read: the chat's
+            own waiting card over the composer, and the chat header. The Force
+            start press below stays, on its own rule (`canForceStart`). */}
         {/* …AND THE PLAN'S PAUSE, in the same seat, on a blocked row the usage
             limit stopped (`usageLimitCaption`). The lane, the ring and the header
             are Blocked's — nothing is moving and nothing will move by itself —
@@ -3910,7 +3887,7 @@ function TaskNode({
             CAPABILITY rather than a missing shortcut. Hover-revealed all the
             same (`.tasks-act`), so a list at rest grows no chrome — and by
             opacity rather than display, so a keyboard still reaches it. */}
-        {queue && canForceStart(task) && (
+        {canForceStart(task) && (
           <button
             type="button"
             className="tasks-act tasks-act--skip"
@@ -5507,11 +5484,6 @@ function TaskCard({
   // "somebody has to answer this now".
   const failedOffLane = isFailedTask(task) && lane !== "blocked";
   const waiting = needsAttention(task);
-  // Where this card stands in its folder's line, when it is waiting on one —
-  // the SAME builder the List row and the chat's own rows ask
-  // (tasks-lib.queueCaption), so one task's place is described in one wording
-  // wherever it is read. Null on every other card, which draws nothing.
-  const queue = queueCaption(task);
   /** …and the OTHER sentence a not-moving row can carry: the plan's window,
    *  named and dated ("Usage limit · resumes 4:00 AM"). "" on every row the usage
    *  limit did not stop. */
@@ -5738,11 +5710,8 @@ function TaskCard({
             this card's PLACE, and the place is the sentence. One register for
             every waiting card in the lane, and the order is what tells them
             apart. */}
-        {queue && (
-          <span className="tasks-card-queue" title={queue.aheadTitle || undefined}>
-            <QueueCaptionText queue={queue} />
-          </span>
-        )}
+        {/* …AND NONE ON A CARD EITHER (Akshil, 2026-09-21) — the row's rule,
+            for the row's reason. See the List row. */}
         {/* The plan's pause, on its own line — the List row's rule and the List
             row's words (`usageLimitCaption`). */}
         {limit && <span className="tasks-card-queue">{limit}</span>}
@@ -5820,8 +5789,8 @@ function TaskCard({
           while the List shows it is exactly the divergence the shared flag exists
           to prevent (§1 — same element, same behaviour in every view). The strip
           itself is drawn whenever either survives its guard. */}
-      {((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek) || queue
-        || (SHOW_ROW_ACTIONS && run)) && (
+      {((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek)
+        || canForceStart(task) || (SHOW_ROW_ACTIONS && run)) && (
         <span className="tasks-card-acts">
           {/* DISCARD, the List row's own act in the card's hover strip — same
               glyph, same class, same caption, same silence at rest (design.md,
@@ -5860,6 +5829,38 @@ function TaskCard({
               {ICON_TRASH}
             </button>
           )}
+          {/* FORCE START, on a queued card and nowhere else — and NOT behind
+              SHOW_ROW_ACTIONS, for the reason Archive is not: while that flag is
+              down this would be the only way to reach the verb from the Board
+              other than a lane that is rolled up whenever it is empty, and a
+              capability with no press is a capability the page does not really
+              have.
+
+              ON EVERY WAITING CARD, INCLUDING THE FIRST (`canForceStart`) — the
+              same rule the List row and the chat's own card read, so one verb is
+              not offered on three surfaces under three conditions. The DRAG is
+              still the promotion and is untouched; these are two verbs, and the
+              named one is the one that starts something.
+
+              FIRST IN THE STRIP, AHEAD OF OPEN (Akshil, 2026-09-21): it is the
+              only press here that is about the state the card is IN — a message
+              that is waiting — and it is offered on so few cards that it must
+              not sit behind a door every card carries. */}
+          {canForceStart(task) && (
+            <button
+              type="button"
+              className="tasks-act tasks-card-act tasks-act--skip"
+              title={FORCE_START_HINT}
+              aria-label={`${FORCE_START_LABEL} ${shortTaskId(task.task_id)}`}
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                void onForceStart().finally(() => setBusy(false));
+              }}
+            >
+              {FORCE_START_LABEL}
+            </button>
+          )}
           {/* The List row's quick door, in the card's own hover strip — same
               act, same glyph, same caption (design.md, Round 3). A SIBLING of
               the card rather than a child, because the card IS a button; that
@@ -5879,33 +5880,6 @@ function TaskCard({
             >
               {OPEN_DOOR_LABEL}
             </a>
-          )}
-          {/* FORCE START, on a queued card and nowhere else — and NOT behind
-              SHOW_ROW_ACTIONS, for the reason Archive is not: while that flag is
-              down this would be the only way to reach the verb from the Board
-              other than a lane that is rolled up whenever it is empty, and a
-              capability with no press is a capability the page does not really
-              have.
-
-              ON EVERY WAITING CARD, INCLUDING THE FIRST (`canForceStart`) — the
-              same rule the List row and the chat's own card read, so one verb is
-              not offered on three surfaces under three conditions. The DRAG is
-              still the promotion and is untouched; these are two verbs, and the
-              named one is the one that starts something. */}
-          {queue && canForceStart(task) && (
-            <button
-              type="button"
-              className="tasks-act tasks-card-act tasks-act--skip"
-              title={FORCE_START_HINT}
-              aria-label={`${FORCE_START_LABEL} ${shortTaskId(task.task_id)}`}
-              disabled={busy}
-              onClick={() => {
-                setBusy(true);
-                void onForceStart().finally(() => setBusy(false));
-              }}
-            >
-              {FORCE_START_LABEL}
-            </button>
           )}
           {SHOW_ROW_ACTIONS && run && (
             <button

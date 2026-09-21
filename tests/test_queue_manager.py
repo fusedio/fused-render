@@ -1064,6 +1064,66 @@ def test_reconcile_keeps_an_item_whose_status_read_raises():
     assert line_of(m) == ["b"]
 
 
+# ------------------------------------------------------------- forced tasks
+
+
+def test_a_forced_task_is_never_rebuilt_into_a_line():
+    """Force start takes a conversation OUT of the queue for good (Akshil,
+    2026-09-21), and `reconcile` is the one thing that could put it back: it
+    rebuilds every line from the scheduler's own pending list. So a due row
+    whose task — or whose message's own `pending:` key — is forced is skipped,
+    and the scheduler's tick dispatches it straight instead."""
+    world = World(due=[(F1, "pending:e1", "e1"), (F1, "sess-b", "e2")])
+    m = world.manager()
+    assert owner_key(m) == "pending:e1"
+    assert line_of(m) == ["sess-b"]
+
+    world = World(due=[(F1, "pending:e1", "e1"), (F1, "sess-b", "e2")])
+    m = loaded(world)
+    m.mark_forced("pending:e1", "sess-b")
+    world.spawned.clear()
+    m.reconcile()
+    # NOTHING queued and NOTHING spawned by the pump: both messages belong to
+    # forced tasks and the tick owns them now.
+    assert owner_key(m) is None
+    assert line_of(m) == []
+    assert world.spawned == []
+    # …and a task that was NOT forced still lines up beside them.
+    world.due.append((F1, "sess-c", "e3"))
+    m.reconcile()
+    assert owner_key(m) == "sess-c"
+
+
+def test_a_forced_name_is_kept_while_it_is_owed_a_message_and_dropped_after():
+    """The prune: a forced name whose conversation is neither alive nor owed a
+    due message is forgotten, so the set cannot grow for ever."""
+    world = idle_world(due=[(F1, "pending:e1", "e1")])
+    m = world.manager()
+    m.mark_forced("pending:e1", "sess-live", "sess-gone")
+    world.running_keys.add("sess-live")
+    m.reconcile()
+    assert m.forced_names() == {"pending:e1", "sess-live"}
+
+    world.due.clear()
+    world.running_keys.clear()
+    m.reconcile()
+    assert m.forced_names() == set()
+
+
+def test_the_forced_set_persists_across_a_fresh_instance(state):
+    world = idle_world(due=[(F1, "pending:e1", "e1")])
+    m = world.manager()
+    m.mark_forced("sess-a", "pending:e1")
+    assert m.is_forced("nobody", "sess-a") is True
+
+    second = idle_world(due=[(F1, "pending:e1", "e1")])
+    second.running_keys.add("sess-a")
+    fresh = second.manager()
+    assert fresh.is_forced("sess-a") is True
+    assert fresh.is_forced("pending:e1") is True
+    assert fresh.is_forced("sess-b") is False
+
+
 # --------------------------------------------------------------- persistence
 
 
@@ -1124,7 +1184,7 @@ def test_a_corrupt_index_is_not_an_error(state):
     with open(os.path.join(str(state), qm.INDEX_FILE), "w", encoding="utf-8") as f:
         f.write("{not json")
     m = idle_world().manager()
-    assert m.snapshot() == {"folders": {}, "answers": {}}
+    assert m.snapshot() == {"folders": {}, "answers": {}, "forced": set()}
 
 
 def test_snapshot_is_a_copy():

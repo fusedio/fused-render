@@ -3450,10 +3450,12 @@ function ChatBody(props: ChatBodyProps) {
       schedRefresh();
     } catch (err) {
       // AND A REFUSAL IS SAID OUT LOUD. The press has a visible control behind
-      // it, so silence is a button that did nothing — and the refusal this one
-      // actually has is a 409: the conversation cannot take the message yet
-      // (a send in flight, a live turn), and the server's own sentence says
-      // which. The message stays in its line.
+      // it, so silence is a button that did nothing. What is left here is a
+      // real failure — a stale row (404), a task with nothing waiting (400) —
+      // since a conversation that cannot take the message YET is a 200 with
+      // the scheduler's sentence as `reason` (2026-09-21): that message is out
+      // of the queue for good and the next tick sends it, so the poll below is
+      // the honest answer rather than an error about work that is on its way.
       const t = troubleFromError(err);
       controller.reportTrouble({ ...t, message: "The queue did not take that: " + t.message });
     } finally {

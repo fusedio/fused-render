@@ -3708,8 +3708,11 @@ export function skipQueue(
  *  more, so the caller refetches rather than showing an error.
  *
  *  A conversation that cannot take the message YET — a send already in flight,
- *  a live turn — is a 409 carrying the scheduler's own sentence, and `postJson`
- *  throws it like any other refusal. The message stays in its line. */
+ *  a live turn — is the same honest 200, with the scheduler's own sentence as
+ *  `reason` (2026-09-21). The message is NOT put back in the line: forcing a
+ *  task takes it out of the queue for good, its entry is still pending in the
+ *  store and the scheduler's next tick sends it. So the caller refetches here
+ *  too rather than showing a refusal about work that is on its way. */
 export interface ForceResult {
   ok: boolean;
   started: boolean;

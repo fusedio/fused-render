@@ -1,18 +1,18 @@
-// A PRESS ON THE QUEUE CAPTION OPENS THE ROW'S OWN CHAT (Akshil, 2026-09-19).
+// WHAT A QUEUED ROW DRAWS — and, since 2026-09-21, what it does NOT.
 //
-// THE BUG. A queued row's caption (`.tasks-row-queue`) is `position: relative;
-// z-index: 2` in tasks.css — it has to be, so its tooltip is not clipped by the
-// row — and the row's navigation is an `<a>` STRETCHED OVER the whole row at
-// `z-index: 1` (`.tasks-rowlink`). So every pixel the caption covered was a dead
-// run: on the Tasks page and in Recent chats alike, clicking "after TASK-046 |
-// 3rd" did nothing at all, while clicking the title one character to its left
-// opened the conversation. It is the identical fault the file mark beside it was
-// fixed for on 2026-08-27, on the identical cause.
+// THE ROW PRINTS NO PLACE (Akshil, 2026-09-21). "after TASK-046 | 3rd" used to
+// sit at the right end of every waiting row and card; the dashed ring and the
+// `queued` word already say the state, and where in the line a row stands is a
+// detail of one row rather than a column. The sentence survives where it is
+// read on purpose — the chat's waiting card over the composer and the chat
+// header — and this file is what keeps it off the rows.
+//
+// WHAT IS LEFT HERE IS THE PRESS: Force start, on every waiting row including
+// the head of the line, reachable and posting to the one endpoint.
 //
 // WHY A RENDER TEST AND NOT A SOURCE-STRING ONE. The rest of this feature is
 // pinned by reading source (project-queue.test.ts), which is cheap and says
-// nothing about whether a handler is REACHED: the whole failure here was markup
-// that looked right sitting on top of a link. So this one mounts the row and
+// nothing about whether a control is REACHED. So this one mounts the row and
 // dispatches a press the way React would — inner handler first, outward until
 // something stops it.
 import { installDomShim } from "@platform/lib/testDomShim";
@@ -120,46 +120,21 @@ function click(from: ReactTestInstance) {
   });
 }
 
-test("the caption's ORDINARY text opens the row's own chat", () => {
-  // The words that are not the id are the row, exactly as the title is: a
-  // reader aiming at a queued row's sentence is aiming at that row.
-  const opened: string[] = [];
-  const r = row(queued(), opened);
-  const caption = byClass(r, "tasks-queue-text")[0]!;
-  expect(caption).toBeDefined();
-  click(caption);
-  expect(opened).toEqual(["sess-1"]);
-});
-
-test("…and so does the caption's own box, which sits OVER the stretched link", () => {
-  // `.tasks-row-queue` is the element with the `z-index` that caused the bug, so
-  // it is the element the handlers have to be on — a press landing on its
-  // padding rather than on the words must open the row too.
-  const opened: string[] = [];
-  const r = row(queued(), opened);
-  click(byClass(r, "tasks-row-queue")[0]!);
-  expect(opened).toEqual(["sess-1"]);
-});
-
-test("the TASK-x link opens the HOLDER and fires nothing else", () => {
-  const opened: string[] = [];
-  const r = row(queued(), opened);
-  const link = r.root.findAll(
-    (n) => n.type === "a" && String((n.props as { className?: string }).className ?? "")
-      .includes("tasks-queue-ahead"),
-  );
-  expect(link).toHaveLength(1);
-  // Where it goes is the holder's conversation and not this row's.
-  expect(String(link[0]!.props.href)).toContain("session_id=sess-46");
-  expect(String(link[0]!.props.href)).toContain("deploy.py");
-  expect(link[0]!.props.title).toBe("Nightly deploy");
-  // And the press stops there: the row it sits in must not ALSO open.
-  click(link[0]!);
-  expect(opened).toEqual([]);
-});
-
-test("the sentence is the one lingo: `after TASK-046 | 3rd`", () => {
-  expect(text(row(queued(), []))).toContain("after TASK-046 | 3rd");
+test("a waiting row prints NO place and NO holder", () => {
+  // The caption is gone from the row, ink and element both: no ordinal, no
+  // "after TASK-046", and none of the markup that carried them (`.tasks-row-queue`
+  // survives in this file only as the usage limit's seat, which is a different
+  // sentence on a different row).
+  const r = row(queued(), []);
+  expect(text(r)).not.toContain("after TASK-046");
+  expect(text(r)).not.toContain("3rd");
+  expect(byClass(r, "tasks-queue-text")).toHaveLength(0);
+  expect(
+    r.root.findAll(
+      (n) => n.type === "a" && String((n.props as { className?: string }).className ?? "")
+        .includes("tasks-queue-ahead"),
+    ),
+  ).toHaveLength(0);
 });
 
 test("a skipped row is drawn exactly like every other waiting row", () => {
@@ -169,7 +144,6 @@ test("a skipped row is drawn exactly like every other waiting row", () => {
   const said = JSON.stringify(r.toJSON());
   expect(byClass(r, "tasks-queue-glyph")).toHaveLength(0);
   expect(said).not.toContain("is-next");
-  expect(text(r)).toContain("after TASK-046 | 1st");
   // …AND NO ⤒ ANYWHERE ELSE ON THE ROW EITHER (Akshil, 2026-09-21). It was the
   // Run next button's face, and Run next is out of the UI — so a row promoted
   // before that deploy, which still carries `queue_priority` in the index, comes
@@ -195,9 +169,6 @@ test("a QUEUED ROW OFFERS NO RUN NEXT, mounted (Akshil, 2026-09-21)", () => {
       String((n.props as { "aria-label"?: string })["aria-label"] ?? "").includes("Run next"),
   );
   expect(labelled).toHaveLength(0);
-  // …and the SENTENCE is untouched, which is the whole of what this row now says
-  // about the line it is in.
-  expect(text(r)).toContain("after TASK-046 | 3rd");
 });
 
 /** Every Force start button on this row, found the way a reader finds it: by the

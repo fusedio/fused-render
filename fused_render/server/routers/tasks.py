@@ -6211,6 +6211,22 @@ def api_queue_admit(body: dict = Body(...),
     # is me" queued behind itself (Akshil, 2026-09-12).
     manager = queue_manager.get()
     chat_key = _admit_key(session_id, follow_of, by_id) or run_id
+    # A FORCED CHAT IS NEVER QUEUED AGAIN (`queue_manager.mark_forced`, and
+    # `api_queue_force`'s docstring for the rule). The folder belongs to
+    # somebody else and always will — that is what the force left behind — so
+    # the claim below can only ever refuse, and refusing would queue a
+    # conversation the user has explicitly taken out of the queue.
+    #
+    # AFTER `behind_own` AND NEVER BEFORE IT, exactly like the `own_run_alive`
+    # arm under it: a chat with an earlier message of its own still waiting is
+    # still not allowed to overtake itself. That message is waiting in the
+    # STORE rather than in a line, and the tick dispatches it down the
+    # flag-off road (`schedule._tick_queued`), so the order a conversation was
+    # typed in is what it is sent in.
+    if not behind_own and manager.is_forced(*(name for name in
+                                              (chat_key, session_id, run_id)
+                                              if name)):
+        return {"run": True}
     # THE NAME THIS SEND OWNS THE FOLDER UNDER, minted here when the send has
     # none of its own (`_owner_token`).
     owner_token = chat_key or _owner_token(body)
@@ -6641,7 +6657,18 @@ def api_queue_force(body: dict = Body(...),
     session and the whole row then REKEYS, so the entry id is the only name a
     chip painted a second ago can safely hold (see `api_queue_skip`).
 
-    Three answers:
+    **AND IT IS THE TASK'S FOR EVER, NOT THE MESSAGE'S** (Akshil, 2026-09-21:
+    "once a task is force-started it never enters the queue again — no matter
+    if it is blocked or has multiple messages"). The conversation is marked
+    forced (`queue_manager.mark_forced`) under every name it answers to BEFORE
+    anything is dispatched, and from then on the admission answers `run: true`,
+    the run gate lets its sends through, its card decisions go straight to the
+    agent and `reconcile` keeps its messages out of every line. Its remaining
+    waiting messages leave the line with it and are dispatched, in order, by
+    the scheduler's own tick — the flag-off branch (`schedule._tick_queued`),
+    which is where this verb has always sent one message.
+
+    Three answers, all of them 200:
 
     * `{"ok": true, "started": true, "run_id", "session_id"}` — it went.
     * `{"ok": true, "started": false, "reason": "already started"}` — there was
@@ -6649,17 +6676,23 @@ def api_queue_force(body: dict = Body(...),
       cancelled, or the pump claimed it in the window. A 200, because the thing
       the user asked for either happened without them or is no longer theirs to
       ask for, and the next listing says which.
-    * 409 carrying the scheduler's OWN sentence for a conversation that cannot
-      take the message YET (`schedule.SpawnBusy` — a send already in flight, a
-      live turn the user is typing into). **THE ITEM GOES BACK IN THE LINE**
-      before that answer is written: this endpoint is what took it out, and a
-      refusal that left it out would drop the user's message on the floor.
+    * `{"ok": true, "started": false, "reason": <the scheduler's sentence>}` for
+      a conversation that cannot take the message YET (`schedule.SpawnBusy` — a
+      send already in flight, a live turn the user is typing into). **NOTHING
+      GOES BACK IN THE LINE** (Bugbot, 2026-09-21): the task is forced, its
+      entries are still `pending` in the store, and the next tick sends them
+      down the same flag-off road. A 409 that re-enqueued would have been this
+      verb undoing itself and handing the user back a place in a line they had
+      just left.
 
     **A TASK WHOSE ONLY WAITING THING IS AN ANSWER** is not a message to
     dispatch — it is a held card decision, and "run it now" means DELIVER it,
     which is the same flag-off road (`_queue_deliver` → `agent._decide`, every
     rule applied against the run as it now is). The task owns nothing here, so
-    `remove` only clears its line and its answers.
+    `remove` only clears its line and its answers. A task that has BOTH is
+    delivered AND dispatched, the decision first: `forget_entry` drops a task's
+    held answers once it stands nowhere, so reading them after the entries had
+    gone would have lost them (Bugbot, 2026-09-21).
     """
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -6692,54 +6725,97 @@ def api_queue_force(body: dict = Body(...),
     # a conversation is the conversation, and a force that sent the named one
     # would run the second thing typed before the first.
     entry_id = _oldest_due_entry(key)
-    if not entry_id:
-        # NOTHING TO DISPATCH, so either this task is owed a DECISION — the
-        # other kind of waiting a line holds — or the row is stale.
-        answers = manager.held_answers(key)
-        if not answers:
+    # …AND THE DECISION IT MAY ALSO BE OWED — the other kind of waiting a line
+    # holds. Read BEFORE anything is forgotten, because `forget_entry` drops a
+    # task's held answers the moment it stands nowhere (`_forget_answers`), and
+    # a force that took a task's entries out of the line first would throw the
+    # user's answer away with them (review, 2026-09-21).
+    answers = manager.held_answers(key)
+    if not entry_id and not answers:
+        return _error("nothing waiting to start", status=400)
+
+    entry: dict = {}
+    folder = ""
+    if entry_id:
+        # The message's folder — read off the ENTRY and never off the key, the
+        # same rule everything else in this router files a waiting message
+        # under (`_queue_pending_due`). Read from the LIVE store first —
+        # `_oldest_due_entry` just read it, and an entry created between
+        # `_collect()` above and that read is in the store but not in the
+        # snapshot; the snapshot is the fallback. A message with no folder is
+        # not one this verb can be about, and it is refused before anything
+        # moves.
+        entry = _by_entry_id().get(entry_id) or next(
+            (row for row in task["entries"]
+             if str(row.get("id") or "") == entry_id), {})
+        folder = project_queue.queue_key(str(entry.get("target") or ""))
+        if not folder:
             return _error("nothing waiting to start", status=400)
-        for answer in answers:
-            _queue_deliver(answer)
+
+    # EVERY MESSAGE THIS TASK HAS WAITING, not just the one about to go: the
+    # force is a statement about the CONVERSATION ("once a task is
+    # force-started it never enters the queue again — no matter if it is
+    # blocked or has multiple messages", Akshil 2026-09-21), so the whole task
+    # leaves the line and the tick dispatches what is left, in order, into the
+    # same session (`schedule._tick_queued`'s forced branch).
+    # DUE, like every other read of a line (`_queue_pending_due`): a message
+    # scheduled for next week is waiting on a CLOCK rather than on a folder, it
+    # stands in no line, and forcing the queue off a task must not quietly
+    # bring its future work forward. When its time comes the task is forced
+    # under its session anyway, so it too skips the line.
+    now = time.time()
+    pending_ids = []
+    for row in task.get("entries") or []:
+        entry_at = _queue_at(row)
+        if (str(row.get("state") or "") == schedule.PENDING
+                and str(row.get("id") or "") and entry_at and entry_at <= now):
+            pending_ids.append(str(row.get("id")))
+    if entry_id and entry_id not in pending_ids:
+        pending_ids.append(entry_id)
+
+    # MARKED BEFORE THE DISPATCH, under every name this chat answers to — the
+    # row's key and each waiting message's own `pending:` key. The dispatch
+    # below mints a session, and the two doors this send is about to walk
+    # through (`api_queue_admit`, `routers/run._folder_busy`) ask under
+    # whichever name they happen to hold; the session and the run are added the
+    # moment they exist, below.
+    manager.mark_forced(key, *[tasks_store.pending_key(i) for i in pending_ids])
+
+    # THE HELD DECISION GOES NOW. A forced task holds nothing, so an answer
+    # that was parked for this conversation is replayed the flag-off way
+    # (`_queue_deliver` -> `agent._decide`, every rule applied against the run
+    # as it now is) before its entries move.
+    for answer in answers:
+        _queue_deliver(answer)
+
+    if not entry_id:
+        # Nothing to dispatch: the decision WAS the waiting thing. The task
+        # owns nothing here, so this only clears its line and its answers.
         manager.remove(key)
         tasks_watch.notify({key})
         return {"ok": True, "started": True, "delivered": len(answers)}
 
-    # WHERE TO PUT IT BACK if the dispatch is refused — read off the ENTRY and
-    # never off the key, the same rule everything else in this router files a
-    # waiting message under (`_queue_pending_due`). Read from the LIVE store
-    # first — `_oldest_due_entry` just read it, and an entry created between
-    # `_collect()` above and that read is in the store but not in the
-    # snapshot; the snapshot is the fallback. An empty folder here would
-    # orphan the message on a refused dispatch (review, 2026-09-21), so it is
-    # refused before anything leaves the line.
-    entry = _by_entry_id().get(entry_id) or next(
-        (row for row in task["entries"]
-         if str(row.get("id") or "") == entry_id), {})
-    folder = project_queue.queue_key(str(entry.get("target") or ""))
-    if not folder:
-        return _error("nothing waiting to start", status=400)
-
-    # OUT OF THE LINE FIRST, and BY ENTRY: `remove` would also release the
-    # folder when this task happens to own it — a user forcing the second thing
-    # they typed would take the turn that is running away from themselves — and
-    # this verb touches no owner at all. Everybody behind it shifts up, because
-    # the folder's line really is one message shorter now.
-    manager.forget_entry(entry_id)
+    # OUT OF THE LINE, and BY ENTRY: `remove` would also release the folder
+    # when this task happens to own it — a user forcing the second thing they
+    # typed would take the turn that is running away from themselves — and this
+    # verb touches no owner at all. Everybody behind it shifts up, because the
+    # folder's line really is that many messages shorter now.
+    for pending_id in pending_ids:
+        manager.forget_entry(pending_id)
     try:
         started = schedule.dispatch_entry(entry_id)
     except schedule.SpawnBusy as exc:
-        # NOT YET — and the message is still the user's.
-        if folder:
-            manager.enqueue(folder, key, entry_id)
+        # NOT YET — and NOTHING GOES BACK IN THE LINE (Bugbot, 2026-09-21).
+        # Re-enqueueing here used to be what kept the message safe; with the
+        # task forced it would be the one thing that undoes the force, and the
+        # message needs no rescuing: its entry is still `pending` in the
+        # scheduler's store, `reconcile` leaves a forced task out of every line
+        # and the next tick dispatches it down the flag-off road. So this is a
+        # 200 that says what the scheduler said, not a refusal that moves the
+        # user's place.
         tasks_watch.notify({key})
-        return _error(str(exc), status=409)
-    except Exception:
-        # Any other failure is a 500, but the message must survive it: the line
-        # is the only record that this work is still waiting.
-        if folder:
-            manager.enqueue(folder, key, entry_id)
-        tasks_watch.notify({key})
-        raise
+        return {"ok": True, "started": False, "reason": str(exc),
+                "delivered": len(answers)}
     if started is None:
         # Cancelled in the window, or the pump got there first. Either way there
         # is nothing to start and nothing to put back.
@@ -6748,6 +6824,11 @@ def api_queue_force(body: dict = Body(...),
 
     session_id = str(started.get("session_id") or "")
     run_id = str(started.get("run_id") or "")
+    # THE NAMES THE DISPATCH JUST MINTED, added to the forced set: a queued new
+    # chat is `pending:<entry>` until this moment and its session a moment
+    # later, and the doors its next message walks through know it by the new
+    # name alone.
+    manager.mark_forced(session_id, run_id)
     if session_id:
         # A TURN JUST BEGAN and nothing else knows it yet — the same mark the
         # pump's spawn site writes for the same reason (`_queue_spawn`): a stale
@@ -6891,6 +6972,15 @@ def api_queue_decide(body: dict = Body(...),
             or not session_id
             or not project_queue.run_alive(agent, run_dir)
             or _already_decided(agent, run_dir, request_id)):
+        return {"held": False, **agent._decide(**raw)}
+
+    # …AND THE FOURTH: THIS CONVERSATION LEFT THE QUEUE (`mark_forced`). A
+    # forced task runs beside whatever owns the folder by the user's own
+    # instruction, so holding its card decision would park an answer for a
+    # process that is running right now and waiting for it — the queue taking
+    # back, through the one door that is not a message, the thing Force start
+    # gave.
+    if queue_manager.get().is_forced(session_id, run_id):
         return {"held": False, **agent._decide(**raw)}
 
     # …and the one that is. `card_answered` stores nothing when the folder is

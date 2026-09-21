@@ -31,6 +31,7 @@ import pytest
 
 from fused_render import (
     claude_spawn,
+    queue_manager,
     schedule,
     schedule_wake,
     session_liveness,
@@ -278,6 +279,28 @@ def test_one_claim_takes_the_folder_for_the_rest_of_the_pass(folders, spawned,
 
     # …and with the first one's holder gone, the second goes.
     assert [e["id"] for e in schedule.tick()] == [second["id"]]
+
+
+def test_a_forced_tasks_message_is_dispatched_beside_the_holder(
+        folders, spawned, home):
+    """FORCE START IS STICKY PER TASK (Akshil, 2026-09-21). A conversation that
+    was force-started never enters the queue again, so the tick hands its
+    messages to `dispatch_entry` DIRECTLY — the flag-off branch a folderless
+    message already takes — instead of to the manager, and both entries go in
+    one pass even though they share a folder."""
+    _on(home)
+    first = schedule.create(str(folders["alpha"]), "one", _ago(60))
+    second = schedule.create(str(folders["alpha"]), "two", _ago(30))
+    # Filed under `pending:<entry>` — the name a queued chat that has never run
+    # has, and the one `api_queue_force` marks.
+    queue_manager.get().mark_forced(tasks_store.pending_key(second["id"]))
+
+    assert sorted(e["id"] for e in schedule.tick()) == sorted(
+        [first["id"], second["id"]])
+    # …and the forced one really did leave the queue: the manager was never
+    # asked to place it.
+    assert queue_manager.get().place(
+        tasks_store.pending_key(second["id"]))["position"] == 0
 
 
 def test_two_folders_run_side_by_side(folders, spawned, home, monkeypatch):

@@ -119,9 +119,18 @@ describe("the Preferences switch", () => {
 });
 
 describe("the Board's waiting cards", () => {
-  it("draws the card's place in the line, and NOTHING that marks a skip", () => {
-    expect(CARD).toContain("const queue = queueCaption(task);");
-    expect(CARD).toContain('<span className="tasks-card-queue" title={queue.aheadTitle || undefined}>');
+  it("draws NO place caption, and NOTHING that marks a skip", () => {
+    // THE CARD SAYS NOTHING ABOUT WHERE IT STANDS (Akshil, 2026-09-21). The
+    // dashed ring and the status word carry "this is waiting", which is what a
+    // reader scanning a lane wants; the ordinal was a third thing saying the
+    // same state. The sentence survives where it is actually read — the chat's
+    // waiting card over the composer and the chat header — so `queueCaption`
+    // and `QueueCaptionText` both stay, and only the rows drop them.
+    expect(CARD).not.toContain("queueCaption(task)");
+    expect(CARD).not.toContain("tasks-card-queue\" title=");
+    expect(CARD).not.toContain("<QueueCaptionText");
+    expect(ROW).not.toContain("queueCaption(task)");
+    expect(ROW).not.toContain("<QueueCaptionText");
     // NO HIGHLIGHT FOR A SKIPPED CARD (Akshil, 2026-09-19). It used to lead with
     // the ⤒ and repaint the sentence in the queued hue, which made one card in a
     // lane of waiting cards read as a different KIND of thing — where all a skip
@@ -140,13 +149,12 @@ describe("the Board's waiting cards", () => {
     expect(VIEWS).not.toContain("QUEUE_PRIORITY_GLYPH");
     expect(css(TASKS_CSS)).not.toContain("is-next");
     expect(css(TASKS_CSS)).not.toContain(".tasks-queue-glyph");
-    // …and the caption's one actionable token is a LINK into the conversation
-    // that is in the way. The same component the List row draws, because it is
-    // one sentence (ScheduleTaskViews.QueueCaptionText).
-    expect(CARD).toContain("<QueueCaptionText queue={queue} />");
+    // …and the sentence itself is still BUILT here, for the chat that draws it:
+    // the header's own caption spends this component, and its one actionable
+    // token is a LINK into the conversation that is in the way.
     expect(VIEWS).toContain("export function QueueCaptionText({ queue }: { queue: QueueCaption })");
     expect(VIEWS).toContain("href={queue.aheadHref}");
-    // The press must not also fire the card it sits in.
+    // The press must not also fire whatever it sits in.
     expect(VIEWS).toContain("onClick={(e) => e.stopPropagation()}");
   });
 
@@ -206,32 +214,29 @@ describe("the Board's waiting cards", () => {
     expect(CARD).not.toContain("queue.runsNext");
     expect(CARD).not.toContain("onSkip");
   });
+
+  it("puts FORCE START FIRST in the act strip, ahead of the Open door", () => {
+    // Akshil, 2026-09-21. Open is on every card that has a page; this is on the
+    // few that are waiting, and it is the only press in the strip that is about
+    // the state the card is IN — so it leads rather than following the door
+    // every card carries.
+    const strip = CARD.slice(CARD.indexOf('<span className="tasks-card-acts">'));
+    expect(strip.indexOf("FORCE_START_LABEL")).toBeGreaterThan(-1);
+    expect(strip.indexOf("OPEN_DOOR_LABEL")).toBeGreaterThan(-1);
+    expect(strip.indexOf("FORCE_START_LABEL")).toBeLessThan(strip.indexOf("OPEN_DOOR_LABEL"));
+  });
 });
 
 describe("the List's waiting row", () => {
-  it("says where it stands, in the flow — never as a second line", () => {
-    // Every row here is one line tall, and one row growing to two would break
-    // the rhythm the whole column is scanned down. The card is what grows.
-    expect(ROW).toContain('className="tasks-row-queue"');
-    expect(ROW).toContain("<QueueCaptionText queue={queue} />");
+  it("says nothing about where it stands — the ring and the word are the state", () => {
+    // Dropped on 2026-09-21 (Akshil). The seat's CSS stays, because the usage
+    // limit's sentence wears it on a blocked row and the chat's header wears it
+    // over the composer — one look for one kind of aside, wherever it is said.
+    expect(ROW).not.toContain("<QueueCaptionText queue={queue} />");
     expect(css(TASKS_CSS)).toContain(".tasks-row-queue {");
     expect(css(TASKS_CSS)).toContain(".tasks-card-queue {");
-  });
-
-  it("spends the row's own press, because it SITS OVER the row's link", () => {
-    // `.tasks-row-queue` is `z-index: 2` over the stretched `.tasks-rowlink`
-    // (for its tooltip), which made the whole caption a dead run of pixels —
-    // the identical fault the file mark beside it was fixed for. The three
-    // handlers are the mark's three, verbatim: plain press activates, a
-    // modified one opens a tab, a middle press does not autoscroll. The
-    // behaviour itself is mounted in queue-caption-press.test.tsx.
-    const at = ROW.indexOf('className="tasks-row-queue"');
-    expect(at).toBeGreaterThan(-1);
-    const span = ROW.slice(at, ROW.indexOf("</span>", at));
-    expect(span).toContain("if (opensElsewhere(e)) {");
-    expect(span).toContain("activate();");
-    expect(span).toContain("onAuxClick={(e) => {");
-    expect(span).toContain("if (e.button === 1 && href) e.preventDefault();");
+    // …and the seat is still drawn for the one caption a row has left.
+    expect(ROW).toContain('<span className="tasks-row-queue" data-hint={limit}>');
   });
 
   it("grows FORCE START in the hover strip, and NO Run next anywhere", () => {

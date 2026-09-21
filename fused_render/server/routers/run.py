@@ -247,6 +247,16 @@ def _folder_busy(resolved: str, params: dict, body: dict | None = None) -> str:
             from fused_render.server.routers.tasks import own_run_alive
             if own_run_alive(session_id, run_id):
                 return ""
+            # …AND THE SAME CHAT WITH NO LIVE RUN TO POINT AT (Akshil,
+            # 2026-09-21). Force start is sticky per TASK, not per message
+            # (`queue_manager.mark_forced`): a forced conversation whose turn
+            # has ended still may not be put back in the line, so its next
+            # send — which spawns a fresh run rather than absorbing into one —
+            # walks through this door with nothing alive to prove itself by.
+            # The index says who it is, and the index is what this gate reads.
+            if manager.is_forced(*(name for name in
+                                   (task_key, run_id, session_id) if name)):
+                return ""
         elif admitted:
             # A brand-new chat's first send has NO name to claim or look up
             # under yet — nothing here can tell it apart from a stranger's

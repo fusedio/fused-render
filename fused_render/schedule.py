@@ -3911,6 +3911,24 @@ def _follow_session(entry: dict, by_id: dict) -> tuple[str, bool]:
     return "", True
 
 
+def _forced(manager, task_key: str, entry_id: str) -> bool:
+    """Has this message's task left the queue for good
+    (`queue_manager.mark_forced`)? Asked under BOTH names the row answers to,
+    because a forced chat is rekeyed from `pending:<entry>` to its session by
+    the very dispatch that forced it. A manager that cannot answer (an older
+    index, a test double) answers no, which is the queue as it shipped."""
+    ask = getattr(manager, "is_forced", None)
+    if ask is None:
+        return False
+    try:
+        from fused_render import tasks_store
+
+        return bool(ask(task_key, tasks_store.pending_key(str(entry_id or ""))))
+    except Exception:  # noqa: BLE001 — an unreadable index is the ordinary road
+        logger.debug("could not read the forced set", exc_info=True)
+        return False
+
+
 def _tick_queued(manager, due: list[str], now: datetime) -> list[dict]:
     """`tick`'s whole body with the queue manager on: hand every due entry to
     the manager and let it decide what runs.
@@ -3959,13 +3977,22 @@ def _tick_queued(manager, due: list[str], now: datetime) -> list[dict]:
         if entry is None:
             continue
         folder = pq.queue_key(str(entry.get("target") or ""))
-        if not folder:
+        task_key = _task_key(entry, by_id)
+        if not folder or _forced(manager, task_key, entry_id):
+            # …AND SO IS EVERY MESSAGE OF A FORCE-STARTED TASK (Akshil,
+            # 2026-09-21). `POST /api/tasks/queue/force` takes a conversation
+            # OUT of the queue for good (`queue_manager.mark_forced`), so its
+            # remaining messages go down this very branch — the flag-off road,
+            # in `due` order, with the scheduler's own leader gate keeping a
+            # follower behind the message it was typed after. Handing them to
+            # the manager instead would put the chat straight back in the line
+            # the user just took it out of.
             try:
                 dispatch_entry(entry_id, now)
             except SpawnBusy as exc:
                 logger.debug("holding %s: %s", entry_id, exc)
             continue
-        manager.enqueue(folder, _task_key(entry, by_id), entry_id)
+        manager.enqueue(folder, task_key, entry_id)
     # Everything `dispatch_entry` claimed since `tick` opened the sink — which
     # includes anything the manager's first build dispatched on its way here.
     sent = list(_dispatch_sink.entries or ())
