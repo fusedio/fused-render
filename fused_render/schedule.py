@@ -3923,7 +3923,14 @@ def _forced(manager, task_key: str, entry_id: str) -> bool:
     try:
         from fused_render import tasks_store
 
-        return bool(ask(task_key, tasks_store.pending_key(str(entry_id or ""))))
+        names = (task_key, tasks_store.pending_key(str(entry_id or "")))
+        # THE TICK TEACHES THE MARK WHICHEVER NAME IT HOLDS: a message filed
+        # for next week has no `pending:` mark of its own, and a brand-new
+        # chat's session may not have been learned yet (review, 2026-09-21).
+        learn = getattr(manager, "learn_forced", None)
+        if learn is not None:
+            learn(*names)
+        return bool(ask(*names))
     except Exception:  # noqa: BLE001 — an unreadable index is the ordinary road
         logger.debug("could not read the forced set", exc_info=True)
         return False

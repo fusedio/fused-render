@@ -5330,10 +5330,21 @@ def _queue_drop_task(key: str) -> None:
     try:
         manager = queue_manager.get()
         manager.remove(key)
-        # Deleting the task is the ONE thing that ends a Force start.
+        # Deleting the task is the ONE thing that ends a Force start — under
+        # every name the force wrote that this door can still reach: the task
+        # key (its session) and each of its messages' `pending:` keys. Run ids
+        # are not reachable here and stay; they are uuids and match nothing.
         forget = getattr(manager, "forget_forced", None)
         if forget is not None:
-            forget(key)
+            names = [key]
+            try:
+                names += [tasks_store.pending_key(str(e.get("id") or ""))
+                          for e in schedule.list_entries()
+                          if str(e.get("session_id") or "") == key
+                          or str(e.get("claude_session_id") or "") == key]
+            except Exception:  # noqa: BLE001 — best effort, like the rest
+                pass
+            forget(*names)
     except Exception:  # noqa: BLE001 — a stale line is a pump, not a loss
         logger.debug("queue: could not drop %s from its line", key,
                      exc_info=True)
@@ -6827,8 +6838,13 @@ def api_queue_force(body: dict = Body(...),
         return {"ok": True, "started": False, "reason": str(exc),
                 "delivered": len(answers)}
     if started is None:
-        # Cancelled in the window, or the pump got there first. Either way there
-        # is nothing to start and nothing to put back.
+        # Cancelled in the window, or the pump got there first. Nothing was
+        # force-started, so the mark written above comes off again (review,
+        # 2026-09-21): a permanent bypass for a press that did nothing would
+        # spawn this chat's NEXT message beside another task's live turn.
+        forget = getattr(manager, "forget_forced", None)
+        if forget is not None:
+            forget(key, *[tasks_store.pending_key(i) for i in pending_ids])
         tasks_watch.notify({key})
         return {"ok": True, "started": False, "reason": "already started"}
 

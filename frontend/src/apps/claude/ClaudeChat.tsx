@@ -3436,8 +3436,9 @@ function ChatBody(props: ChatBodyProps) {
     // scheduled row further down the list is not in the line at all, and naming
     // it would be this press asking about the wrong message. `waiting` is in the
     // server's own due order (`sched/waiting.waitingRows`).
-    const first =
-      waiting.find((r) => r.word === "queued")?.entryId || waiting[0]?.entryId || "";
+    // No queued row → name the TASK (the server resolves its oldest due
+    // message itself) rather than a future-dated row the line never held.
+    const first = waiting.find((r) => r.word === "queued")?.entryId || "";
     const key = sched.rec?.key || "";
     if (!first && !key) return;
     setForcing(true);

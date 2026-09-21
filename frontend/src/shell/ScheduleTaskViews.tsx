@@ -3862,7 +3862,7 @@ function TaskNode({
             button whose press does nothing, which is what makes the rows where
             it matters hard to pick out. */}
         {/* FORCE START — the one row action this page grows for the project
-            queue, and only on a row that is actually queued (hidden, not
+            queue, and only on a row standing in the line — queued, or parked with a held answer (hidden, not
             disabled, everywhere else: a control that is present-but-dead on
             every row is what makes the rows it works on hard to find).
 
@@ -4853,7 +4853,6 @@ export function TaskBoard({
         // line is gone from every surface; the drop kind keeps its old name
         // only because the lane detector files queued cards under it.
         await performForceStart(task);
-        onReload?.();
       } else if (action.kind === "run") {
         // Upcoming → In Progress. The message goes out NOW and its `due` is
         // left alone, so the thread reads as a run that happened early rather
@@ -5364,9 +5363,8 @@ function TaskCard({
    * its folder — Force start. A button and not only a drop for the reason
    * Archive is: the Queued lane is rolled up whenever it is empty, and a gesture
    * that begins with "expand the lane first" is not the only way a capability
-   * may be reachable. It is NOT the drag's verb — that one promotes and
-   * interrupts nothing. The board owns the call, so its refusal lands in the one
-   * note. */
+   * may be reachable. The drag onto In Progress presses the same verb. The
+   * board owns the call, so its refusal lands in the one note. */
   onForceStart: () => Promise<void>;
   /** Open the conversation, marking the thread read on the way. The board owns
    * it because the board owns the read set — and it is only ever called with a

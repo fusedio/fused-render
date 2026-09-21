@@ -1694,8 +1694,10 @@ class QueueManager:
         would refuse the same chat it just let through. `is_forced` hits on any
         of them.
 
-        Persisted (the index survives a restart) and pruned by `reconcile`
-        once the conversation is neither alive nor owed a message."""
+        Persisted (the index survives a restart). NEVER pruned on idleness —
+        the mark is what keeps the conversation's later messages off the line
+        — only `forget_forced` (the delete/erase door) drops it. Names are
+        uuids and entry ids, so a stale one matches no new chat."""
         keep = {str(name) for name in names if name}
         if not keep:
             return
@@ -1729,6 +1731,15 @@ class QueueManager:
         clean = [_text(n) for n in names if _text(n) and not _is_placeholder(_text(n))]
         if len(clean) < 2:
             return False
+        # CHEAP NO UNLESS SOMETHING IS FORCED: this runs on every queue event
+        # and every admit, and `_txn` writes the whole index on exit (review,
+        # 2026-09-21). Read under the plain lock first.
+        with self._lock:
+            forced = self._state.get("forced") or set()
+            if not any(n in forced for n in clean):
+                return False
+            if all(n in forced for n in clean):
+                return False
         with self._txn() as keys:
             forced = self._state.setdefault("forced", set())
             if not any(n in forced for n in clean):
