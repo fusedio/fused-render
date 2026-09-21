@@ -162,7 +162,7 @@ class WatchLoop:
                         continue
                     folder = _folder_of(path)
                     if folder:
-                        folders.add(folder)
+                        folders.add(self._clamp_to_root(folder))
                 pending |= folders
                 now = self.now()
                 if last_flush is None:
@@ -187,6 +187,19 @@ class WatchLoop:
             i = min(self._backoff_i, len(self.backoff_schedule) - 1)
             self.sleep(self.backoff_schedule[i])
             self._backoff_i += 1
+
+    def _clamp_to_root(self, folder: str) -> str:
+        """`_folder_of` returns a touched path's PARENT, which for a change
+        ON the watched root itself (touch/chmod on `~`, a rename or delete
+        of the root, a top-level event under the non-recursive fallback) is
+        the root's parent — `/Users` for a root of `~`. `_real_blocked`
+        would not refuse that: it is a legitimate, unignored folder, just
+        one broader than any configured root. Clamp it back to the root
+        rather than let one such event buy a scan wider than the watcher is
+        allowed to trigger."""
+        if folder == self.root or folder.startswith(self.root + "/"):
+            return folder
+        return self.root
 
     def _flush(self, pending: set) -> None:
         outermost = outermost_folders(pending)

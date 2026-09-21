@@ -129,6 +129,22 @@ def test_the_filter_drives_what_a_watch_loop_ever_sees():
     assert f.forwarded == []
 
 
+def test_a_change_on_the_watched_root_itself_clamps_to_the_root_not_its_parent():
+    """`_folder_of` returns the PARENT. A change on the watched root itself
+    (touch/chmod on `~`, a rename or delete of the root, a top-level event in
+    the non-recursive fallback) must forward the root, never the root's
+    parent — forwarding `/Users` for a root of `~` would be a scan broader
+    than any configured root."""
+    f = Fake()
+
+    def source(root):
+        yield {_added("/home/me")}  # the root itself changed, not a child
+
+    loop = f.loop("/home/me", source, flush_floor_s=0.0)
+    loop._run_one_watch()
+    assert f.forwarded == [{"/home/me"}]
+
+
 # --------------------------------------------------------------- the floor
 
 
