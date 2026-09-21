@@ -110,6 +110,18 @@ def _folder_of(path: str) -> str:
     return "" if parent in ("", "/") or _DRIVE_ROOT.match(parent) else parent
 
 
+def _canon_folder(path: str) -> str:
+    """The canonical spelling of a folder that IS the thing to rescan (as
+    opposed to `_folder_of`, whose job is finding the parent of a touched
+    path). Same normalization `_folder_of` and `runner.canonical_root` both
+    do, so a folder noted this way matches store keys and the other queueing
+    path's spelling."""
+    raw = str(path or "").strip()
+    if not raw:
+        return ""
+    return norm(os.path.abspath(raw)).rstrip("/") or "/"
+
+
 class RescanQueue:
     """The coalescing queue. Deps are injected so the policy is testable
     without spawning a worker or waiting on a real timer."""
@@ -135,16 +147,36 @@ class RescanQueue:
     def note(self, *paths: str) -> None:
         """Record that the app changed `paths`. Returns at once; never raises."""
         try:
-            folders = {f for f in (_folder_of(p) for p in paths) if f}
-            if not folders:
-                return
-            with self._lock:
-                now = self._now()
-                for f in folders:
-                    self._pending.setdefault(f, now)
-                self._arm_locked()
+            self._note_folders(_folder_of(p) for p in paths)
         except Exception:  # noqa: BLE001 - a mutation must not fail over this
             logger.exception("could not queue an index rescan")
+
+    def note_folders(self, *folders: str) -> None:
+        """Record that `folders` themselves (not their contents' parents) need
+        a rescan. Returns at once; never raises.
+
+        For callers that already know the folder — the live watcher
+        (index_watch.py) reduces raw watched paths to their parent folder
+        itself, at the batching layer, so it can collapse the outermost-only
+        set before the flush floor decides how much churn to report. Routing
+        a folder back through `_folder_of` a second time here would be wrong
+        for the one case that matters: `_folder_of` always returns the
+        PARENT, and a watcher forwarding `{root}` on overflow or the periodic
+        safety net must have `root` scanned, not `root`'s parent."""
+        try:
+            self._note_folders(_canon_folder(f) for f in folders)
+        except Exception:  # noqa: BLE001 - same contract as note()
+            logger.exception("could not queue an index rescan")
+
+    def _note_folders(self, folders) -> None:
+        folders = {f for f in folders if f}
+        if not folders:
+            return
+        with self._lock:
+            now = self._now()
+            for f in folders:
+                self._pending.setdefault(f, now)
+            self._arm_locked()
 
     def _arm_locked(self) -> None:
         if self._armed:
@@ -320,3 +352,15 @@ def note_index_mutation(*paths: str | None) -> None:
     if not index_gate.indexing_allowed():
         return
     _queue.note(*[p for p in paths if isinstance(p, str) and p])
+
+
+def note_index_folders(*folders: str | None) -> None:
+    """The watcher (index_watch.py) saw `folders` change out of band; rescan
+    them, shortly. Mirrors `note_index_mutation`'s gate for the same reason:
+    queueing while indexing is disabled just grows `_pending` and re-arms
+    `fire()` forever."""
+    from fused_render.shell import index_gate
+
+    if not index_gate.indexing_allowed():
+        return
+    _queue.note_folders(*[f for f in folders if isinstance(f, str) and f])

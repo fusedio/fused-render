@@ -200,6 +200,34 @@ def test_a_start_that_fails_does_not_strand_the_rest():
         [canonical_root("/home/me/bad"), canonical_root("/home/me/good")])
 
 
+# ------------------------------------------------- note_folders (D-watch)
+#
+# The live filesystem watcher (index_watch.py) already knows the folder a
+# change belongs to — it reduces raw paths to `_folder_of(path)` itself, at
+# the batching layer, so it can collapse the outermost-only set BEFORE the
+# flush floor decides how much churn to report. Routing that back through
+# `_folder_of` a second time here would be a no-op for an ordinary folder but
+# wrong for a scan ROOT: `_folder_of` always returns the PARENT, so a watcher
+# forwarding `{root}` on overflow must not have it turned into the root's own
+# parent.
+
+def test_note_folders_takes_folders_as_is_not_their_parent():
+    f = Fake()
+    q = f.queue()
+    q.note_folders("/home/me/proj", "/home/me/other")
+    f.fire()
+    assert sorted(f.started) == sorted(
+        [canonical_root("/home/me/proj"), canonical_root("/home/me/other")])
+
+
+def test_note_folders_still_collapses_to_the_outermost():
+    f = Fake()
+    q = f.queue()
+    q.note_folders("/home/me/proj", "/home/me/proj/sub")
+    f.fire()
+    assert f.started == [canonical_root("/home/me/proj")]
+
+
 def _mutating_routes():
     """Every POST handler on the fs-mutation router, by name.
 
@@ -333,6 +361,32 @@ def test_note_index_mutation_queues_normally_while_indexing_is_on(monkeypatch,
     path = str(tmp_path / "a.txt")
     index_touch.note_index_mutation(path)
     assert noted == [(path,)]
+
+
+def test_note_index_folders_no_ops_while_indexing_is_off(monkeypatch, tmp_path):
+    import fused_render.shell.prefs as prefs_mod
+    from fused_render.server import index_touch
+
+    monkeypatch.setattr(prefs_mod, "indexing_enabled", lambda: False)
+    noted = []
+    monkeypatch.setattr(index_touch._queue, "note_folders",
+                        lambda *f: noted.append(f))
+    index_touch.note_index_folders(str(tmp_path))
+    assert noted == []
+
+
+def test_note_index_folders_queues_normally_while_indexing_is_on(monkeypatch,
+                                                                   tmp_path):
+    import fused_render.shell.prefs as prefs_mod
+    from fused_render.server import index_touch
+
+    monkeypatch.setattr(prefs_mod, "indexing_enabled", lambda: True)
+    noted = []
+    monkeypatch.setattr(index_touch._queue, "note_folders",
+                        lambda *f: noted.append(f))
+    folder = str(tmp_path)
+    index_touch.note_index_folders(folder)
+    assert noted == [(folder,)]
 
 
 # ---------------------------------------------- the bridge wake (D732)
