@@ -36,6 +36,7 @@ class Fake:
     def __init__(self, live=(), last_scan=None, gate=True):
         self.t = 1000.0
         self.forwarded = []
+        self.forwarded_hinted = []
         self.slept = []
         self.opened = 0
         self.live = set(live)
@@ -48,8 +49,9 @@ class Fake:
     def sleep(self, delay):
         self.slept.append(delay)
 
-    def forward(self, folders):
+    def forward(self, folders, hinted=True):
         self.forwarded.append(set(folders))
+        self.forwarded_hinted.append(hinted)
 
     def last_scan(self, root):
         return self.scans.get(root)
@@ -266,6 +268,10 @@ def test_more_than_max_folders_in_one_flush_collapses_to_the_root():
     loop = f.loop("/home/me", source, flush_floor_s=0.0)
     loop._run_one_watch()
     assert f.forwarded == [{"/home/me"}]
+    assert f.forwarded_hinted == [False], (
+        "too many distinct folders to attribute to anything narrower — a "
+        "forced hint of the root alone would cover almost none of them, so "
+        "this must ask for a real scan")
 
 
 def test_max_folders_or_fewer_forward_the_actual_set():
@@ -278,6 +284,28 @@ def test_max_folders_or_fewer_forward_the_actual_set():
     loop = f.loop("/home/me", source, flush_floor_s=0.0)
     loop._run_one_watch()
     assert f.forwarded == [{f"/home/me/d{i}" for i in range(MAX_FOLDERS)}]
+    assert f.forwarded_hinted == [True]
+
+
+def test_a_root_level_change_alongside_a_deep_one_forwards_both_not_just_the_root():
+    """SPEC-scan-cost.md part 2's whole point: `outermost_folders` would
+    collapse a root-level touch and a deep folder's change down to
+    `{root}` alone, and a forced hint of `root` alone would not reach the
+    deep, already-cached folder the way a full/journal scan would. The
+    watcher must forward BOTH observed folders raw and let
+    `RescanQueue.note_folders` (index_touch.py) do its own collapse, which
+    hints every folder a collapse absorbs — not just its own outermost
+    representative."""
+    f = Fake()
+
+    def source(root):
+        yield {_added("/home/me"),  # the root itself changed
+              _added("/home/me/proj/deep/x.txt")}
+
+    loop = f.loop("/home/me", source, flush_floor_s=0.0)
+    loop._run_one_watch()
+    assert f.forwarded == [{"/home/me", "/home/me/proj/deep"}]
+    assert f.forwarded_hinted == [True]
 
 
 # --------------------------------------------------------- errors / backoff
@@ -293,6 +321,9 @@ def test_a_source_that_raises_forwards_the_root_and_backs_off():
     loop = f.loop("/home/me", source)
     loop._run_one_watch()
     assert f.forwarded == [{"/home/me"}]
+    assert f.forwarded_hinted == [False], (
+        "the watch itself broke — nothing was observed, so this needs a "
+        "real scan to recover whatever was missed, not a forced hint")
     assert f.slept == [BACKOFF_SCHEDULE_S[0]]
 
 
@@ -377,6 +408,9 @@ def test_a_stale_root_is_rescanned_on_an_idle_tick():
     loop = f.loop("/home/me", source)
     loop._run_one_watch()
     assert f.forwarded == [{"/home/me"}]
+    assert f.forwarded_hinted == [False], (
+        "the backstop exists for changes this loop never observed — no "
+        "observed dirs to hint, so this must be a real scan")
 
 
 def test_a_live_run_over_the_root_suppresses_the_periodic_rescan():

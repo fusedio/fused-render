@@ -234,7 +234,13 @@ class WatchLoop:
                 return
             logger.warning("index watch: %s stopped unexpectedly (%s); "
                            "recrawling and reopening", self.root, e)
-            self.forward({self.root})
+            # `hinted=False`: this carries no observed dirs at all — the
+            # watch itself broke, so a real scan (or a journal-derived hint)
+            # is what recovers whatever it missed, not a forced,
+            # non-recursive visit of just the root (SPEC-scan-cost.md part
+            # 2's "correctness trap", the same reasoning as the periodic
+            # backstop below).
+            self.forward({self.root}, hinted=False)
             i = min(self._backoff_i, len(self.backoff_schedule) - 1)
             self.sleep(self.backoff_schedule[i])
             self._backoff_i += 1
@@ -259,10 +265,22 @@ class WatchLoop:
             # A whole-root incremental walk beats scanning each of a burst's
             # many folders separately, each ending in its own compaction —
             # and it is the honest answer to a burst this loop cannot
-            # attribute to anything narrower.
-            self.forward({self.root})
+            # attribute to anything narrower. `hinted=False`: with this many
+            # distinct folders involved, a forced non-recursive visit of
+            # just the root would cover almost none of them.
+            self.forward({self.root}, hinted=False)
         else:
-            self.forward(set(outermost))
+            # The RAW pending set, not `outermost` — `note_folders()`
+            # (index_touch.py's `RescanQueue`) does its OWN outermost
+            # collapse, and needs every originally-observed folder to hint
+            # each one a collapse absorbs (SPEC-scan-cost.md part 2: "stops
+            # collapsing a root-level file change into a recursive scan of
+            # the root"). Collapsing here first would throw away exactly the
+            # folders that collapse needs to hint correctly — e.g. a root
+            # touch alongside a deep change would forward only `{root}`,
+            # and a forced hint of `root` alone does not reach a deep,
+            # already-cached folder the way a full/journal scan would.
+            self.forward(set(pending))
 
     def _maybe_periodic_rescan(self, now: float) -> None:
         """The Syncthing-style backstop (spec §3.1.9). Gating on
@@ -282,7 +300,12 @@ class WatchLoop:
             last = (self._last_periodic_rescan_at if last is None
                     else max(last, self._last_periodic_rescan_at))
         if last is None or (now - last) >= self.rescan_s:
-            self.forward({self.root})
+            # `hinted=False`: the backstop exists precisely for changes this
+            # loop never observed (server was off, the kernel dropped
+            # events) — there is no observed-dirs set to hint, and a forced,
+            # non-recursive visit of just the root would not be the real
+            # scan (or journal replay) this is supposed to fall back to.
+            self.forward({self.root}, hinted=False)
             self._last_periodic_rescan_at = now
 
 
@@ -376,15 +399,19 @@ def _make_loop(root: str, stop_event: threading.Event) -> WatchLoop:
         open_source=lambda r: _real_open_source(r, stop_event),
         dropped=make_dropped(load_config().rules, runner._mounts_dir(),
                               index_dir=load_config().dir),
-        # `WatchLoop` calls `forward(folders)` with a single iterable
-        # (`self.forward({self.root})`, `self.forward(set(outermost))`).
+        # `WatchLoop` calls `forward(folders)` (or `forward(folders,
+        # hinted=False)` for the burst-overflow, error-recovery and
+        # periodic-backstop cases) with a single iterable
+        # (`self.forward({self.root})`, `self.forward(set(pending))`).
         # `note_index_folders(*folders)` wants those folders UNPACKED as
         # separate positional arguments — handing it the set itself as one
         # argument fails its `isinstance(f, str)` filter and queues nothing
         # (see tests/test_index_watch.py::
         # test_a_real_flush_actually_reaches_the_rescan_queue). Unpack here,
-        # at the one seam where the real callable's shape has to match.
-        forward=lambda folders: note_index_folders(*folders),
+        # at the one seam where the real callable's shape has to match, and
+        # pass `hinted` straight through (SPEC-scan-cost.md part 2).
+        forward=lambda folders, hinted=True: note_index_folders(
+            *folders, hinted=hinted),
         now=time.time,
         last_scan=lambda r: runner.last_scan(load_config(), r),
         live_run_covers=lambda r: _scan_in_flight(load_config(), r),
