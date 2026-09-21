@@ -10167,6 +10167,102 @@ def test_an_out_of_range_value_on_the_claude_path_still_says_unsupported(client,
         assert body["result"]["warnings"][0]["type"] == "unsupported-setting"
 
 
+def test_the_bridges_accepted_text_keys_match_the_servers_constant():
+    """The drift guard `textKeys` never had (D886): `_TEXT_OPTIONS` lives in
+    `server/ai.py`, not `routers/ai_runtime.py` where the other three
+    capabilities' whitelists live, which is exactly how this one drifted —
+    the `thinking` flag this build adds is precisely the kind of change that
+    slips when the bridge and the server whitelist are two unrelated facts."""
+    from fused_render.server import ai as ai_mod
+
+    source = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "fused_render", "static", "runtime.js"),
+                  encoding="utf-8").read()
+    start = source.index("  function aiText(opts)")
+    body = source[start:source.index("\n  }\n", start)]
+    match = re.search(r'const textKeys = \[(.*?)\];', body, re.S)
+    assert match, "could not find aiText's whitelist array in runtime.js"
+    js_keys = sorted(re.findall(r'"([^"]+)"', match.group(1)))
+    assert js_keys == sorted(ai_mod._TEXT_OPTIONS)
+
+
+# -- thinking: tri-state, per-request, defaults ON for both local runners -----
+
+
+def test_thinking_reaches_the_worker_as_enable_thinking(client, fake_runner, monkeypatch):
+    """The one place camelCase meets snake_case (D633, D886) — `thinking` on
+    the wire, `enable_thinking` in the worker's own request."""
+    seen = {}
+    real = supervisor.generate_text
+    monkeypatch.setattr(supervisor, "generate_text",
+                        lambda model, request: (seen.update(request), real(model, request))[1])
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    _wait_ready("org/chat")
+
+    client.post("/api/ai", json={
+        "prompt": "hi", "model": "org/chat", "thinking": False,
+    }, headers={"X-Fused": "1"})
+
+    assert seen["enable_thinking"] is False
+
+
+def test_thinking_true_also_reaches_the_worker(client, fake_runner, monkeypatch):
+    seen = {}
+    real = supervisor.generate_text
+    monkeypatch.setattr(supervisor, "generate_text",
+                        lambda model, request: (seen.update(request), real(model, request))[1])
+    supervisor.load("org/chat2", registry.TEXT_GENERATION)
+    _wait_ready("org/chat2")
+
+    client.post("/api/ai", json={
+        "prompt": "hi", "model": "org/chat2", "thinking": True,
+    }, headers={"X-Fused": "1"})
+
+    assert seen["enable_thinking"] is True
+
+
+def test_unset_thinking_is_not_sent_to_the_worker_at_all(client, fake_runner, monkeypatch):
+    """Tri-state: unset must stay distinguishable from `false` all the way
+    into the worker's request — the worker's own default (thinking ON,
+    D886) only applies when the key is absent, not when it is `False`."""
+    seen = {}
+    real = supervisor.generate_text
+    monkeypatch.setattr(supervisor, "generate_text",
+                        lambda model, request: (seen.update(request), real(model, request))[1])
+    supervisor.load("org/chat3", registry.TEXT_GENERATION)
+    _wait_ready("org/chat3")
+
+    client.post("/api/ai", json={"prompt": "hi", "model": "org/chat3"},
+               headers={"X-Fused": "1"})
+
+    assert "enable_thinking" not in seen
+
+
+def test_a_non_boolean_thinking_is_refused(client):
+    response = client.post("/api/ai", json={
+        "prompt": "hi", "model": "org/chat", "thinking": "off",
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "'thinking' must be a boolean" in response.json()["error"]["message"]
+
+
+def test_thinking_on_claude_is_a_warning_not_a_refusal(client, monkeypatch):
+    """The same D631 shape as `temperature` — a tunable the CLI lacks is
+    dropped and named in `warnings[]`, not refused."""
+    from fused_render.server import ai as ai_mod
+    monkeypatch.setattr(ai_mod, "_claude_bin", lambda: None)
+    response = client.post("/api/ai", json={
+        "prompt": "hi", "thinking": False,
+    }, headers={"X-Fused": "1"})
+    body = response.json()
+    assert response.status_code != 400
+    if body.get("ok"):
+        assert [w["setting"] for w in body["result"]["warnings"]] == ["thinking"]
+        assert body["result"]["warnings"][0]["type"] == "unsupported-setting"
+    else:
+        assert "'thinking'" not in body["error"]["message"]
+
+
 # -- images: a current-turn attachment for a local VLM (D467's shape reused) --
 
 
