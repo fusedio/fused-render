@@ -619,18 +619,41 @@ def _repo_health_check(app_dir: str) -> dict:
     p_state, p_subjects, p_skip_reason = _pushed_pending(app_dir)
 
     root = git_upstream.repo_root(app_dir)
-    behind = ahead = None
+    behind = ahead = on_default = clean = cached = None
     if root is not None:
         git_upstream.note_app_opened(app_dir)
         cached = git_upstream.repo_state_for(root)
         if cached is not None:
             behind = cached.get("behind") or 0
             ahead = cached.get("ahead") or 0
+            on_default = cached.get("on_default")
+        # The SAME cleanliness signal `update_repo`'s preflight refuses on
+        # (`_mutation_preflight` -> `_is_clean(root, include_untracked=False)`)
+        # — computed here, synchronously, local-only (no fetch, no network:
+        # just `git status --porcelain`), so the UI can know BEFORE the user
+        # presses Pull whether it would be refused with "dirty". This is
+        # deliberately the whole-repo signal `update_repo` actually checks,
+        # not `g_state` (this app's own `-- .`-scoped view) — a Pull button
+        # this row shows acts on the whole repo root, and a sibling app's
+        # uncommitted change also blocks a real `--ff-only` pull here even
+        # though it never fails g_state.
+        try:
+            clean = git_upstream._is_clean(root, include_untracked=False)
+        except Exception:  # noqa: BLE001 — unknown status reads as not-clean
+            clean = False
 
     findings = _git_findings(g_pending) + [
         {"rule": "pushed:unpushed", "path": ".", "line": 0, "excerpt": s}
         for s in p_subjects
     ]
+
+    # Pull is only ever a real option when the fetch confirmed a positive
+    # behind count AND the row's own on_default/clean signals say
+    # `update_repo`'s preflight (not-default / dirty) would not refuse it —
+    # see B1 in FIXES-round-1.md. `showsPullAction` (appdoctor-lib.ts) makes
+    # the identical decision from these same three fields; keep the two in
+    # sync rather than re-deriving one from the other.
+    can_pull = bool(behind) and on_default is True and clean is True
 
     failing_bits = []
     if g_state == FAIL:
@@ -644,8 +667,23 @@ def _repo_health_check(app_dir: str) -> dict:
 
     if failing_bits:
         state = FAIL
-        detail = (", ".join(failing_bits) +
-                   " — pull, commit, or push so what you share matches what you tested")
+        detail = ", ".join(failing_bits) + " — " + _repo_health_advice(
+            commit=g_state == FAIL, push=p_state == FAIL, behind=behind,
+            can_pull=can_pull, on_default=on_default, clean=clean,
+            default_branch=(cached.get("default_branch") if cached is not None
+                             else None),
+        )
+    elif p_skip_reason == _SKIP_NO_UPSTREAM:
+        # `behind`/`ahead` may still be a confirmed number here (git_upstream
+        # compares HEAD against the DEFAULT branch's origin ref regardless of
+        # this branch's own upstream — see api.ts's `ahead` doc comment) but
+        # that is not the same question as "is every commit on THIS branch
+        # pushed somewhere" — with no upstream configured, that half of the
+        # row can never be confirmed, so this must not read as PASS (the
+        # previous `pushed` row correctly SKIPped here; the consolidation
+        # regressed it — B2 in FIXES-round-1.md).
+        state = SKIP
+        detail = "no upstream remote configured for this folder — nothing to compare against"
     elif behind is not None:
         state = PASS
         detail = "the working tree is clean, nothing to push, and up to date with origin"
@@ -653,8 +691,6 @@ def _repo_health_check(app_dir: str) -> dict:
         state = SKIP
         if root is None:
             detail = "this folder is not in a git repository this server can read"
-        elif p_skip_reason == _SKIP_NO_UPSTREAM:
-            detail = "no upstream remote configured for this folder — nothing to compare against"
         else:
             detail = "origin status could not be checked (offline, unreachable, or not checked yet)"
 
@@ -666,7 +702,50 @@ def _repo_health_check(app_dir: str) -> dict:
     row["behind"] = behind
     row["ahead"] = ahead
     row["gitRoot"] = root
+    # `onDefault`/`clean` (camelCase, api.ts's `AppCheck`) — B1: the same two
+    # signals `RepoUpdatesDock` already gates its own Update button on, so
+    # `showsPullAction` can refuse the same way `update_repo`'s preflight
+    # would, instead of offering a button that is a guaranteed dead end.
+    row["onDefault"] = on_default
+    row["clean"] = clean
     return row
+
+
+def _repo_health_advice(*, commit, push, behind, can_pull, on_default, clean,
+                         default_branch):
+    """The `git` row's trailing advice sentence — F2 in FIXES-round-1.md: it
+    must name only the actions that would actually help, in `commit, push, or
+    pull` order, never a generic "pull, commit, or push" that mentions an
+    action nothing failed over.
+
+    When origin has moved on (`behind`) but the row's own on_default/clean
+    signals mean a direct Pull would be refused (B1), this says what has to
+    change FIRST — the same fact `showsPullAction` uses to hide the button —
+    rather than telling the user to "pull" into a button that is not shown."""
+    bits = []
+    if commit:
+        bits.append("commit")
+    if push:
+        bits.append("push")
+    if behind:
+        if can_pull:
+            bits.append("pull")
+        else:
+            blockers = []
+            if on_default is not True:
+                blockers.append(f"switch to {default_branch or 'the default branch'}")
+            if clean is not True:
+                blockers.append("commit or stash your changes")
+            bits.append(" and ".join(blockers) + " to pull" if blockers else "pull")
+    if not bits:
+        return "pull, commit, or push so what you share matches what you tested"
+    if len(bits) == 1:
+        joined = bits[0]
+    elif len(bits) == 2:
+        joined = f"{bits[0]} or {bits[1]}"
+    else:
+        joined = ", ".join(bits[:-1]) + f", or {bits[-1]}"
+    return joined + " so what you share matches what you tested"
 
 
 def _cross_browser_check(app_dir: str) -> dict:

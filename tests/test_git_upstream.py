@@ -30,16 +30,35 @@ def _clean_state(monkeypatch):
     next."""
     monkeypatch.setattr(git_upstream, "_checked", {})
     monkeypatch.setattr(git_upstream, "_state", {})
-    # NOTE: deliberately no defensive `_check_slot` release here. Every test
-    # in this file that acquires the slot directly does so in its own
-    # `try/finally` (see test_a_busy_slot_does_not_stamp_the_throttle_for_a_
-    # different_repo), and `_background_check`'s own `finally` guarantees
-    # exactly one release per real dispatch — so a "just in case" release
-    # here has no legitimate target. It used to have an illegitimate one:
-    # when this file runs in the same session as tests/test_app_doctor_report.py
-    # (which — unlike this file — dispatches REAL background threads), a
-    # still-running thread from that file can still hold the slot when this
-    # fixture runs; force-releasing it here races that thread's own
+    # Drain, don't release (C2, FIXES-round-1.md): this file's own tests
+    # exercise `note_app_opened(..., _runner=_sync)` and require the
+    # process-wide `_check_slot` to be free the moment they call it — a
+    # still-held slot makes `note_app_opened` a silent no-op (`_sync` never
+    # even runs), which makes the very next assertion order-dependent on
+    # whatever else happens to be sharing this worker process.
+    # `test_app_doctor_report.py` dispatches REAL background threads on
+    # every test against a real repo (not only its `_sync`-warmed ones), so
+    # when both files land in the same pytest worker, a thread that file
+    # started can still be in flight when this fixture runs. A BLOCKING
+    # acquire-then-immediately-release waits out any such foreign holder
+    # before this test's own body runs, so the slot is guaranteed free at
+    # that point — addressing the actual contention, not the symptom a bare
+    # non-blocking release/skip would just mask. This is never the
+    # "RuntimeError: release unlocked lock" bug a defensive bare `release()`
+    # used to cause: a release only ever follows an acquire THIS call itself
+    # just performed. Bounded by TIMEOUT_S so a genuinely stuck fetch can
+    # never hang the suite forever; failing to drain in time is a best-effort
+    # miss, not a fatal error — the test that follows may then flake exactly
+    # as before, no worse than today.
+    if git_upstream._check_slot.acquire(timeout=git_upstream.TIMEOUT_S + 5):
+        git_upstream._check_slot.release()
+    # NOTE: deliberately no defensive `_check_slot` release beyond the
+    # acquire/release pair above. Every test in this file that acquires the
+    # slot directly does so in its own `try/finally` (see
+    # test_a_busy_slot_does_not_stamp_the_throttle_for_a_different_repo),
+    # and `_background_check`'s own `finally` guarantees exactly one release
+    # per real dispatch — so a SECOND, unconditional "just in case" release
+    # here would still have no legitimate target and would still race a
     # guaranteed release into `RuntimeError: release unlocked lock`.
 
 

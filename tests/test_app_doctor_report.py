@@ -35,6 +35,28 @@ def _sync(fn):
     fn()
 
 
+def _warm(app_dir):
+    """Populate `git_upstream`'s remote-state cache for `app_dir` with a
+    REAL `check_repo()` result, deterministically, WITHOUT going through
+    `note_app_opened`/`_check_slot` at all (C1, FIXES-round-1.md).
+
+    `note_app_opened(..., _runner=_sync)` silently no-ops — `_sync` never
+    even runs — whenever the process-wide `_check_slot` is held by some
+    OTHER still-in-flight background thread, including one this very file's
+    own earlier tests dispatched for real (this file, unlike
+    tests/test_git_upstream.py, exercises `_repo_health_check` against real
+    git repos on every test, so it dispatches real threads throughout). A
+    caller that only wants the cache warmed for an assertion — not to test
+    `note_app_opened`'s own dispatch/throttle behaviour, which is
+    `test_git_upstream.py`'s job — has no reason to go through the slot at
+    all: record `check_repo`'s result straight into `git_upstream`'s state
+    directly, the same way `test_git_upstream.py`'s own non-dispatch tests
+    do (`git_upstream._record({...})`)."""
+    root = git_upstream.repo_root(str(app_dir))
+    assert root is not None, f"{app_dir} is not a git repo `_warm` can check"
+    git_upstream._record(git_upstream.check_repo(root))
+
+
 @pytest.fixture(autouse=True)
 def _clean_git_upstream_state(monkeypatch):
     """`git_upstream` keeps its throttle/result caches as process-wide module
@@ -469,6 +491,49 @@ def test_a_branch_with_no_upstream_skips_the_git_row(workspace):
 
 
 @pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_no_upstream_does_not_falsely_pass_even_when_confirmed_ahead_of_origin_default(
+    workspace,
+):
+    """B2 (FIXES-round-1.md): a feature branch with NO upstream tracking ref
+    must never read as PASS merely because `git_upstream`'s cache happens to
+    hold a confirmed `behind == 0` for it. `git_upstream.check_repo` compares
+    HEAD against `origin/<default_branch>` REGARDLESS of the current
+    branch's own upstream (see api.ts's `ahead` doc comment) — a branch cut
+    from main and never pushed anywhere reads there as `behind: 0, ahead:
+    N`, which says nothing about whether ITS OWN commits are pushed
+    anywhere. The OLD `pushed` row correctly SKIPped this exact case; the
+    git/pushed consolidation regressed it into a false PASS.
+
+    Repro: clone, `git checkout -b wip` with no upstream, three commits,
+    `origin/<default>` left untouched."""
+    d = _app(workspace)
+    repo = workspace / "local"
+    remote = workspace.parent / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True,
+                   capture_output=True, close_fds=False)
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "in")
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "-q", "-u", "origin", "HEAD")
+
+    # A feature branch cut from the (now-pushed) default branch, with NO
+    # upstream of its own — three commits, none of them pushed anywhere.
+    # `origin/<default>` never moves again after the push above.
+    _git(repo, "checkout", "-q", "-b", "wip")
+    for i in range(3):
+        (workspace / "local" / f"scratch{i}.txt").write_text(f"{i}\n")
+        _git(repo, "add", "-A")
+        _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", f"wip {i}")
+
+    _warm(d)
+    row = _rows(app_doctor.report(str(d)))["git"]
+    assert row["onDefault"] is False
+    assert row["state"] == "skip"
+    assert row["detail"] == "no upstream remote configured for this folder — nothing to compare against"
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
 def test_commits_ahead_of_upstream_fail_the_git_row_and_name_the_subjects(workspace):
     d = _app(workspace)
     repo = workspace / "local"
@@ -504,7 +569,7 @@ def test_a_branch_pushed_up_to_date_passes_the_git_row(workspace):
     _git(repo, "push", "-q", "-u", "origin", "HEAD")
     # Pre-warm the async remote check synchronously — a real `git fetch`
     # against the local bare remote, resolved before `report()` reads it.
-    git_upstream.note_app_opened(str(d), _runner=_sync)
+    _warm(d)
     row = _rows(app_doctor.report(str(d)))["git"]
     assert row["state"] == "pass"
     assert row["behind"] == 0
@@ -539,7 +604,7 @@ def test_a_sibling_apps_unpushed_commit_is_not_this_apps_finding_for_the_git_row
     _git(repo, "add", "-A")
     _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "theirs only")
 
-    git_upstream.note_app_opened(str(mine), _runner=_sync)
+    _warm(mine)
     assert _state(app_doctor.report(str(mine)), "git") == "pass"
     theirs_row = _rows(app_doctor.report(str(theirs)))["git"]
     assert theirs_row["state"] == "fail"
@@ -575,11 +640,95 @@ def test_behind_origin_fails_the_git_row_once_the_async_fetch_resolves(workspace
     _git(other, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "on origin")
     _git(other, "push", "-q")
 
-    git_upstream.note_app_opened(str(d), _runner=_sync)
+    _warm(d)
     row = _rows(app_doctor.report(str(d)))["git"]
     assert row["state"] == "fail"
     assert row["behind"] == 1
     assert "behind origin" in row["detail"]
+    # B1/F2 (FIXES-round-1.md): clean, on the default branch, behind by a
+    # confirmed count — Pull would actually succeed here, so the row says so
+    # (`can_pull` in `_repo_health_check`) and names only "pull", never a
+    # generic "pull, commit, or push" that mentions actions nothing failed.
+    assert row["onDefault"] is True
+    assert row["clean"] is True
+    assert row["detail"] == "1 commit behind origin — pull so what you share matches what you tested"
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_pull_is_not_offered_off_the_default_branch_and_the_row_says_why(workspace):
+    """B1 (FIXES-round-1.md): `showsPullAction` (appdoctor-lib.ts) must not
+    offer Pull off the default branch — `git_upstream.update_repo` hard
+    refuses with `not-default` there — so the row exposes `onDefault: False`
+    and the detail explains what has to happen FIRST, instead of quietly
+    dropping "pull" off a button that would just fail."""
+    d = _app(workspace)
+    repo = workspace / "local"
+    remote = workspace.parent / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True,
+                   capture_output=True, close_fds=False)
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "in")
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "-q", "-u", "origin", "HEAD")
+    # A plain, untracked branch off the same commit just pushed — `on_default`
+    # cares only about the CURRENT branch name vs. the resolved default
+    # branch, never about `@{upstream}` tracking.
+    _git(repo, "checkout", "-q", "-b", "feature")
+
+    other = workspace.parent / "other-clone"
+    subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True,
+                   capture_output=True, close_fds=False)
+    (other / "elsewhere.txt").write_text("from origin\n")
+    _git(other, "add", "-A")
+    _git(other, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "on origin")
+    _git(other, "push", "-q")
+
+    _warm(d)
+    row = _rows(app_doctor.report(str(d)))["git"]
+    assert row["state"] == "fail"
+    assert row["behind"] == 1
+    assert row["onDefault"] is False
+    assert "switch to" in row["detail"]
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_pull_is_not_offered_over_a_dirty_tree_and_the_row_says_why(workspace):
+    """B1 (FIXES-round-1.md): `update_repo`'s preflight refuses a dirty tree
+    with `dirty` — a row that is behind origin AND has uncommitted paths
+    must not dangle a Pull button that would just be refused; the row
+    exposes `clean: False` and the detail says to commit or stash first."""
+    d = _app(workspace)
+    repo = workspace / "local"
+    remote = workspace.parent / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True,
+                   capture_output=True, close_fds=False)
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "in")
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "-q", "-u", "origin", "HEAD")
+
+    other = workspace.parent / "other-clone"
+    subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True,
+                   capture_output=True, close_fds=False)
+    (other / "elsewhere.txt").write_text("from origin\n")
+    _git(other, "add", "-A")
+    _git(other, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "on origin")
+    _git(other, "push", "-q")
+
+    # A modification to an ALREADY-TRACKED file (`_app`'s own `README.md`) —
+    # `_is_clean(..., include_untracked=False)` (the same check
+    # `update_repo`'s preflight uses) ignores untracked files by design, so
+    # this has to dirty a tracked path to register.
+    (d / "README.md").write_text("uncommitted edit\n")
+
+    _warm(d)
+    row = _rows(app_doctor.report(str(d)))["git"]
+    assert row["behind"] == 1
+    assert row["onDefault"] is True
+    assert row["clean"] is False
+    assert "commit or stash" in row["detail"]
 
 
 @pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
