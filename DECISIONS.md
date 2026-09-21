@@ -3764,3 +3764,134 @@ explicit carve-out for that case.
 passed (macOS — this machine cannot run the Windows lane; CI is the real
 signal for this fix, per the working rules). Pushed and watched
 `gh pr checks 1279`'s `test-python-windows` lane for the actual verdict.
+
+---
+
+## 2026-09-21 — SPEC-empty-search-review-fixes.md: the eight review findings
+
+All eight findings are frontend-only
+(`frontend/src/apps/explorer/listing/useListingSearch.ts`,
+`frontend/src/apps/explorer/FilesHome.tsx`,
+`frontend/src/apps/explorer/listing/empty-result.tsx`,
+`frontend/src/apps/explorer/FileSearchField.tsx`), scoped to the
+covered-but-empty search scan trigger (`SPEC-empty-search-scan.md`). This
+entry records the design decisions the brief asked to be recorded rather
+than left implicit in a commit message.
+
+**Finding 1 — the third call site (`FileSearchField.tsx`).** Excluded
+deliberately, not wired up. `FileSearchField.tsx` mounts `useListingSearch`
+purely to decide WHEN to hand a query off to the parent folder's own
+Listing (`isPristineQuery`/`gateOpen`) — it never renders a single result.
+The parent folder's own `Listing.tsx` mounts its own `useListingSearch`
+instance with the trigger fully wired (`onScanRequested`, the "still
+building" copy) the moment navigation lands. Letting the file-view instance
+ALSO fire the trigger would ask the server to scan the same root a second
+time for a query no UI would ever explain. Implemented as a 6th parameter,
+`fireEmptyScan = true`, defaulting on for every real search box;
+`FileSearchField.tsx` passes `false`.
+
+**Findings 2 and 3 — "still building" must key on OUR OWN confirmed scan,
+not the machine-wide poll.** `/api/index/status`'s `scanning` flag is true
+for ANY scan of ANY root; `_scan_in_flight` applies `_covers` in both
+directions, so an unrelated scan elsewhere made a genuinely-empty result
+claim a build was in progress for a root nothing was scanning. Fixed (per
+the review's own explicit steer, NOT `reason === "scanning"`) by adding
+dedicated state — `ourScanRunning` in `useListingSearch.ts`,
+`emptyScanRunning` in `FilesHome.tsx` — set `true` only from
+`requestFolderScan`'s own reply, and only when `r.started` (finding 3: a
+`refused`/`debounced`/`joined` refusal is durable and expected, not
+evidence of a running build). Both flags reset to `false` at the start of
+every new request (a fresh query's request has nothing to say yet about
+whether it needs a scan) and on a folder/root change.
+
+**Finding 4 — epoch/staleness guard on the reply handler.**
+`useListingSearch.ts` already had `sourceEpoch` for exactly this; the new
+handler now checks it (`if (sourceEpoch.current !== epoch) return;`),
+matching its sibling twelve lines up. `FilesHome.tsx` has no epoch
+mechanism at all (a different design from the listing hook), so it got a
+narrower equivalent: a `homeRef` ref updated on every render, checked in
+the reply handler (`if (homeRef.current !== home) return;`) — a reply for
+an abandoned root is discarded the same way, without introducing a new
+epoch counter just for this one path.
+
+**Finding 5 — the dedup key and its reset scope.** Two decisions, made
+independently and then unified across both files:
+
+1. *Key*: `SPEC-empty-search-scan.md` asks for "at most once per distinct
+   TRIMMED query string". Both implementations were keying on the raw
+   query instead. Implemented as specified — both now key
+   `firedEmptyScan` on `trimmedQ`, not `q`/`deferredQuery`. This is
+   deliberately looser than the rank-request key itself (A1's `q`, which
+   stays untrimmed so `"report"` and `"report "` hit different server
+   patterns): the SCAN target is a folder (`res.base`/`next.base`), and two
+   queries that differ only by whitespace resolve to the same folder, so
+   asking twice would be a wasted duplicate request for the identical
+   evidence.
+2. *Reset scope*: the two implementations disagreed (`[fsPath, pinned]` vs
+   `[home]` alone). Decided: **root-only reset, in both files** — reset
+   only when the folder/root itself changes, never on a generation/
+   lifecycle bump. Reasoning: a scan completing is exactly the event that
+   bumps the generation/lifecycle counter that would trigger the reset;
+   resetting the dedup on that same signal would immediately re-arm the
+   very query whose scan just finished, and the very next matching
+   fetch-effect re-run (which DOES fire on a lifecycle bump, by design —
+   Part 2 of the original spec) would re-fire a scan for a root that was
+   JUST scanned. Root-only reset is the only rule under which "a lifecycle
+   bump re-asking the identical still-empty query does not refire" (an
+   existing, still-passing test in both `*.render.test.*` files) is
+   actually true rather than true by accident.
+
+**Finding 6 — the covered branch could read a stale held answer.** Traced
+`noteAnswer`/`rankingSettled`/`heldAnswerRef` in `FilesHome.tsx` and the
+`searchState.status === "error"` early-return in `Listing.tsx`/
+`useListingSearch.ts`. Verdict, per file:
+- `Listing.tsx` / `useListingSearch.ts`: **not a live bug** — `searchState`
+  computes `status: "error"` on any live failure and `Listing.tsx` already
+  gates `EmptyResultMessage` away from rendering at all in that state
+  before `reason`/`ourScanRunning` are ever read off a stale answer.
+  Confirmed by reading the render branch directly; no code change made
+  here.
+- `FilesHome.tsx`: real, if narrow — `displayAnswer` (via `noteAnswer`) can
+  hold a PREVIOUS query's covered-but-empty answer across a request that
+  has since failed for a NEW query, and the old `gap` computation read
+  `hits.length === 0` off that held state without checking the live
+  request's own outcome. Fixed cheaply per the review's own suggested
+  option: added `failure === ""` to the `gap` ternary's covered-but-empty
+  branch, so a failed request for the current query can never inherit a
+  "still building" verdict that was actually evidence about an earlier,
+  unrelated query.
+
+**Finding 7 — spec citation.** Verified, not just trusted: grepped every
+shipped comment citing `SPEC-empty-search-scan.md` across the four files in
+scope; all resolve to the filename exactly as committed at the worktree
+root (`219518870`). No stale citations found. Closed with no code change.
+
+**Finding 8 — the "thrown fetch is silent" test passed with the feature
+deleted.** Root cause: `FilesHome.render.test.tsx`'s fake `fetch` for
+`/api/index/scan-folder` pushed to `folderScanCalls` AFTER checking
+`folderScanThrows`, so a thrown-fetch test's `expect(folderScanCalls).
+toEqual([])` was trivially true whether or not the trigger code ran at all.
+(`useListingSearch.render.test.ts`'s own mock does not have this bug — its
+`scanCalls.push` already runs before the `scanThrows` check.) Fixed by
+moving the push above the throw check, and rewrote the test's assertion
+from `toEqual([])` to `toEqual([HOME])` — proving the call was attempted
+AND that the rejection was swallowed, rather than proving nothing.
+
+**Test changes beyond finding 8's fix**, all in the three touched test
+files (`empty-result.test.tsx`, `useListingSearch.render.test.ts`,
+`FilesHome.render.test.tsx`): added `ourScanRunning`/`emptyScanRunning` to
+every mount helper and rewrote every test whose premise depended on the old
+(wrong) "gate on the live poll" design, replacing the poll-based "still
+building" timing test with one asserting the confirmation arrives with the
+scan-request reply itself (no separate `box.poll(...)` needed under the new
+design), and added explicit regression tests for findings 2 (unrelated
+machine-wide scan must not claim our root is building), 5 (trimmed-key
+dedup), 1 (`fireEmptyScan=false` never fires), 3/4 (`ourScanRunning`
+gated on `started`, discarded across a folder change), and 6 (a failed
+request does not inherit a held answer's "still building" verdict).
+
+**To-verify (unverifiable headlessly).** The rendered appearance of the
+"still building" copy in both search boxes — layout, spacing, whether it
+reads naturally alongside the file count — needs a human looking at a
+browser; `react-test-renderer` confirms the TEXT is present, not that it
+renders acceptably.
