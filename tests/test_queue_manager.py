@@ -1119,6 +1119,21 @@ def test_a_forced_name_outlives_idle_gaps_and_only_forget_forced_drops_it():
     assert m.forced_names() == {"pending:e1", "sess-live"}
 
 
+def test_learn_forced_teaches_a_forced_run_its_minted_session():
+    """A new chat is forced under `pending:` + run id; the session comes later
+    (Bugbot, PR #1296). Seeing the two names together marks the session; two
+    names of an unforced chat teach nothing; placeholders never count."""
+    m = idle_world().manager()
+    m.mark_forced("pending:e1", "run-1")
+    assert m.learn_forced("sess-1", "run-1") is True
+    assert m.is_forced("sess-1") is True
+    assert m.learn_forced("sess-9", "run-9") is False
+    assert m.is_forced("sess-9") is False
+    assert m.learn_forced("admit:tok", "run-1") is False
+    assert m.is_forced("admit:tok") is False
+    assert m.learn_forced("sess-1") is False
+
+
 def test_the_forced_set_persists_across_a_fresh_instance(state):
     world = idle_world(due=[(F1, "pending:e1", "e1")])
     m = world.manager()

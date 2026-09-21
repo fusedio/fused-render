@@ -380,6 +380,14 @@ class FakeManager:
         self.answers.pop(task_key, None)
         self._release(task_key)
 
+    def learn_forced(self, *names):
+        clean = [n for n in names if n]
+        if len(clean) < 2 or not any(n in self.forced for n in clean):
+            return False
+        self.events.append(("learn_forced", *clean))
+        self.forced.update(clean)
+        return True
+
     def forget_forced(self, *names):
         self.events.append(("forget_forced", *names))
         for name in names:
@@ -3875,6 +3883,21 @@ def test_deleting_a_run_parked_on_an_answered_card_is_refused(
     assert manager.held_answer("sess-a") is not None
     assert manager.lines[alpha] == ["sess-a"]
     assert "sess-a" in _rows(client)
+
+
+def test_admit_teaches_a_forced_run_its_session_and_lets_it_through(
+        client, projects_dir, folders, flag, manager):
+    """The forced new chat's second send is the first thing that carries both
+    its run id and the session Claude Code minted (Bugbot, PR #1296)."""
+    flag(True)
+    alpha, _beta = folders
+    manager.mark_forced("pending:e1", "run-1")
+    manager.line(alpha, "sess-other", holder="sess-holder")
+    r = _post(client, "/api/tasks/queue/admit",
+              {"project": alpha, "message": "again", "session_id": "sess-1",
+               "run_id": "run-1"})
+    assert r.status_code == 200 and r.json() == {"run": True}
+    assert manager.is_forced("sess-1") is True
 
 
 def test_deleting_a_task_is_what_ends_its_force_start(

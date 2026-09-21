@@ -1718,6 +1718,29 @@ class QueueManager:
         with self._lock:
             return set(self._state.get("forced") or ())
 
+    def learn_forced(self, *names: str) -> bool:
+        """If ANY of `names` is forced, mark them all. A brand-new chat is forced
+        under `pending:<entry>` and its run id; its session id is minted inside
+        the spawn and reaches the server later — on the host's `turn_ended` /
+        `card_raised` event, or on the chat's next admit — and every door that
+        checks the session alone would call the chat un-forced (Bugbot, PR
+        #1296). So the places that see two names of one conversation together
+        teach the mark the new one. True when something was learned."""
+        clean = [_text(n) for n in names if _text(n) and not _is_placeholder(_text(n))]
+        if len(clean) < 2:
+            return False
+        with self._txn() as keys:
+            forced = self._state.setdefault("forced", set())
+            if not any(n in forced for n in clean):
+                return False
+            learned = False
+            for n in clean:
+                if n not in forced:
+                    forced.add(n)
+                    keys.add(n)
+                    learned = True
+            return learned
+
     def forget_forced(self, *names: str) -> None:
         """Drop the forced mark — ONLY the delete/erase door calls this
         (`_queue_drop_task`). `remove` deliberately does not: the force

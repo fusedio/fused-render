@@ -6228,9 +6228,14 @@ def api_queue_admit(body: dict = Body(...),
     # STORE rather than in a line, and the tick dispatches it down the
     # flag-off road (`schedule._tick_queued`), so the order a conversation was
     # typed in is what it is sent in.
-    if not behind_own and manager.is_forced(*(name for name in
-                                              (chat_key, session_id, run_id)
-                                              if name)):
+    forced_names = [name for name in (chat_key, session_id, run_id) if name]
+    # …AND THE DOOR TEACHES THE MARK ITS NEW NAME: a forced new chat was marked
+    # under its run id; this is the first send that also carries the session
+    # Claude Code minted (Bugbot, PR #1296).
+    learn = getattr(manager, "learn_forced", None)
+    if learn is not None and len(forced_names) > 1:
+        learn(*forced_names)
+    if not behind_own and manager.is_forced(*forced_names):
         return {"run": True}
     # THE NAME THIS SEND OWNS THE FOLDER UNDER, minted here when the send has
     # none of its own (`_owner_token`).
