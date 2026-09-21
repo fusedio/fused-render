@@ -620,36 +620,39 @@
   .flash.bad { border-color: var(--bad-line); background: var(--bad-bg); color: var(--bad-fg); }
 
   /* ================= confirmation ================= */
-  /* In-view and inline, never `window.confirm`: this document renders inside an
-     iframe, where a native dialog is at best chrome the user cannot place and at
-     worst suppressed entirely. Inline also puts the question next to the row it
-     is about, which is the whole reason it is being asked. */
-  .confirm {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    padding: 8px 12px;
-    border-top: 1px solid var(--danger-line);
+  /* A MODAL, over the same `.scrim` / `.modal` the stash and publish dialogs
+     already use — never `window.confirm`, which this document cannot rely on
+     inside an iframe (at best chrome the user cannot place, at worst
+     suppressed entirely). This used to be an inline bar spliced into the row
+     the question was about, on the theory that sitting next to the row would
+     supply the context. In practice the row was often below the fold — under
+     a long inline diff, at the bottom of a list — so the bar rendered
+     somewhere nobody was looking, a click on Discard appeared to do nothing,
+     and the user's own words for it were "hard to find". A modal is always
+     exactly where the eye already is, at the cost of the question having to
+     name its own subject (see `confirmModal`'s callers) rather than borrowing
+     it from a neighboring row. */
+  .panel.danger { border-color: var(--danger-line); }
+  /* Only the head tints, not the question body: `--danger-bg` under the
+     `--danger` ink this view already uses for the head reads fine as a
+     hairline border's neighbor, but stretched under the question's own text
+     it turned into a wash of two close reds with too little contrast between
+     them — exactly the text a fast reader most needs to actually read. */
+  .panel.danger .panel-head {
     background: var(--danger-bg);
     color: var(--danger);
+    border-bottom-color: var(--danger-line);
+  }
+  .modal .q {
+    margin: 0;
+    padding: 10px 12px;
     font-size: 12px;
-    /* The ONE entrance in this view that animates, and it earns it: the bar is
-       rare (destructive ops only) and it GROWS OUT of the row it questions —
-       150ms of reveal is what says "this came from here" that an instant
-       insertion cannot. A keyframe, not a transition: the node is inserted by
-       a full repaint, and a transition never fires on insertion. */
-    animation: confirm-in 150ms cubic-bezier(0.2, 0, 0, 1);
-  }
-  @keyframes confirm-in {
-    from { opacity: 0; transform: translateY(-4px); }
-  }
-  .confirm .q { flex: 1; min-width: 12ch; }
-  /* In a narrow pane the question takes a FULL line and the buttons drop under
-     it. Squeezed beside them it wrapped into a six-line ~20ch column — the most
-     safety-critical text in the view set as the least readable. */
-  @media (max-width: 560px) {
-    .confirm .q { flex-basis: 100%; }
+    line-height: 1.45;
+    color: var(--ink-2);
+    /* A path or a commit subject can run long, and this dialog has no row
+       beside it to catch the overflow the way the old inline bar's row did —
+       it wraps inside the modal's own fixed width instead of stretching it. */
+    overflow-wrap: anywhere;
   }
 
   /* ================= AI resolution (GT-19) =================
@@ -1226,7 +1229,6 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .skel-bar { animation: none; }
-    .confirm { animation: none; }
     .row, .more, .btn { transition: none; }
   }
   .skel-h2 { height: 11px; width: 120px; margin: 0 0 10px; }
@@ -1882,15 +1884,42 @@ function confirmable(key, label, question, opts) {
 
 /* `verb` NAMES THE ACT — "Discard changes", "Drop stash", "Delete file" — never
  * a generic yes. The question and the button saying the same thing is the last
- * check a fast reader gets before something irreversible. */
-function confirmBar(question, run, verb) {
-  const bar = el("div", { className: "confirm", role: "alertdialog" },
-    el("span", { className: "q", textContent: question }));
-  bar.append(action("confirm", verb || "Confirm", {
-    className: "danger", onClick: () => { setParams({ ask: null }); run(); },
-  }));
-  bar.append(action("cancel", "Cancel", { onClick: () => setParams({ ask: null }) }));
-  return bar;
+ * check a fast reader gets before something irreversible.
+ *
+ * A modal, built the same way `stashModal`/`publishModal` already are — a
+ * `.scrim` plus a fixed `.modal` holding a `.panel` — and mounted once at the
+ * page root by `render`, never spliced into a section or a pane. `verb` is
+ * both the button's label AND the dialog's title (`.panel-head`): the title
+ * names the act before the question is even read, matching the same word the
+ * button underneath repeats.
+ *
+ * The Cancel button, not Confirm, gets `focusSoon`: a dialog that opens with
+ * the irreversible action already focused turns a stray Enter — the one key
+ * every other dialog in this app answers with "yes, proceed" — into the
+ * discard nobody asked for. */
+function confirmModal(question, run, verb) {
+  const label = verb || "Confirm";
+  const close = () => setParams({ ask: null });
+
+  const scrim = el("div", { className: "scrim" });
+  scrim.addEventListener("click", close);
+
+  const cancelBtn = action("cancel", "Cancel", { onClick: close });
+  const confirmBtn = action("confirm", label, {
+    className: "danger", onClick: () => { close(); run(); },
+  });
+  const head = el("div", { className: "panel-head", id: "confirm-head", textContent: label });
+  const panel = el("div", { className: "panel danger" },
+    head,
+    el("p", { className: "q", textContent: question }),
+    el("div", { className: "panel-form" }, confirmBtn, cancelBtn));
+  panel.setAttribute("role", "alertdialog");
+  panel.setAttribute("aria-modal", "true");
+  panel.setAttribute("aria-labelledby", "confirm-head");
+
+  const wrap = el("div", null, scrim, el("div", { className: "modal" }, panel));
+  focusSoon(cancelBtn);
+  return wrap;
 }
 
 /* ------------------------------------------------------- repository state text
