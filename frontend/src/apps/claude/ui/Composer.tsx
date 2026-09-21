@@ -537,14 +537,16 @@ export function ComposerCard({
    * it is not active, even if there is text inside").
    *
    * The chat's composer is ONE LINE — the box and Send — whenever the reader's
-   * attention is elsewhere, and the full card only while they are in it. Two
-   * facts make "in it": focus is inside the form (`within`, from the form's own
-   * focus/blur), AND the reader put it there (`gestured` — a pointer on the
-   * form or a key in its box). The second guard is for `autoFocus` and the
-   * caret-taking effects, which focus the box on arrival: a card that opened
-   * on its own the moment the page loaded would not be an idle line. A blur
-   * that leaves the form clears both, so a click on the transcript folds the
-   * card back — with the draft still in the box, one line of it showing.
+   * attention is elsewhere, and the full card while they are in it. "In it"
+   * is FOCUS inside the form (`within`, from the form's own focus/blur) —
+   * however it got there. There used to be a second guard, a pointer or key
+   * on the card (`gestured`), so that `autoFocus` on arrival did not open the
+   * card by itself; it is gone (Akshil, 2026-09-21: "when I click Open from
+   * the Tasks sidebar peek to the Explorer, it should be in expanded view
+   * because it was focused"). A box with the caret in it is a box the reader
+   * is in, and a card that is focused but folded reads as broken. A blur that
+   * leaves the form folds the card back — with the draft still in the box,
+   * one line of it showing.
    *
    * `active` is DERIVED and the card's furniture is never hidden while it is
    * needed: a run in progress keeps Stop reachable (Send and Stop are one
@@ -553,17 +555,15 @@ export function ComposerCard({
    * landing card (`variant === "home"`) never folds.
    */
   const [within, setWithin] = useState(false);
-  const [gestured, setGestured] = useState(false);
-  const engage = useCallback(() => setGestured(true), []);
-  // A PRESS ON SEND IS NOT A GESTURE AT THE CARD (Akshil, 2026-09-16: "send
-  // button should work without making the whole chat active"): it sends — or
-  // stops — from the idle line and leaves it idle. Everything else in the form
-  // is the reader reaching for the card.
-  const onFormPointerDown = useCallback((ev: React.PointerEvent<HTMLFormElement>) => {
+  // FOCUS ON SEND IS NOT "IN THE CARD" (Akshil, 2026-09-16: "send button
+  // should work without making the whole chat active"): a press on it sends —
+  // or stops — from the idle line and leaves it idle, and the focus a browser
+  // gives a pressed button is not the reader reaching for the card. Focus on
+  // anything else in the form is.
+  const onFormFocus = useCallback((ev: React.FocusEvent<HTMLFormElement>) => {
     if ((ev.target as Element | null)?.closest?.(".c-send")) return;
-    setGestured(true);
+    setWithin(true);
   }, []);
-  const onFormFocus = useCallback(() => setWithin(true), []);
   const formRef = useRef<HTMLFormElement | null>(null);
   /**
    * …AND A PRESS OUTSIDE FOLDS IT EVEN WHEN FOCUS DOES NOT MOVE (Akshil,
@@ -575,7 +575,7 @@ export function ComposerCard({
    * Listened on the document only WHILE the card is open, and a press inside
    * the form or inside a surface the form opened does not count.
    */
-  const active = variant === "chat" && within && gestured;
+  const active = variant === "chat" && within;
   useEffect(() => {
     if (!active) return;
     const form = formRef.current;
@@ -586,7 +586,6 @@ export function ComposerCard({
       if (!t) return;
       if (form.contains(t) || t.closest?.(POPUP_SURFACE)) return;
       setWithin(false);
-      setGestured(false);
     };
     doc.addEventListener("pointerdown", onDocPointerDown, true);
     return () => doc.removeEventListener("pointerdown", onDocPointerDown, true);
@@ -608,7 +607,6 @@ export function ComposerCard({
     if (next && next.closest(POPUP_SURFACE)) return;
     if (!next && ev.currentTarget.ownerDocument.querySelector(POPUP_SURFACE)) return;
     setWithin(false);
-    setGestured(false);
   }, []);
 
   // ---- THE DRAFT, AND THE TWO BOXES THAT KEEP ONE DIFFERENTLY -------------
@@ -1834,11 +1832,8 @@ export function ComposerCard({
       <form
         ref={formRef}
         className={collapsed ? "c-composer is-idle" : "c-composer"}
-        // THE READER'S HAND opens the card — the pointer anywhere in it, or a
-        // key in its box (`onKeyDown` below) — and focus leaving it folds the
-        // card back (`onFormBlur`). Focus arriving is NOT enough on its own:
-        // `autoFocus` and the caret-taking effects focus this box on arrival.
-        onPointerDown={variant === "chat" ? onFormPointerDown : undefined}
+        // FOCUS opens the card — a click in it, a Tab into it, or `autoFocus`
+        // on arrival — and focus leaving it folds the card back (`onFormBlur`).
         onFocus={variant === "chat" ? onFormFocus : undefined}
         onBlur={variant === "chat" ? onFormBlur : undefined}
         onSubmit={(ev) => {
@@ -1894,10 +1889,7 @@ export function ComposerCard({
             setText(value);
             grow();
           }}
-          onKeyDown={(ev) => {
-            if (variant === "chat") engage();
-            onKeyDown(ev);
-          }}
+          onKeyDown={onKeyDown}
           // WHO HAS THE CARET, for the conflict rule above and nothing else: a
           // record that changed elsewhere is adopted into a box nobody is
           // typing in, and never over one somebody is.
