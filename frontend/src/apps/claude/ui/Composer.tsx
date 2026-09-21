@@ -580,11 +580,39 @@ export function ComposerCard({
     if (ev.pointerType === "touch") return;
     setHovered(true);
   }, []);
+  /**
+   * …AND A MENU THE CARD OPENED IS STILL THE CARD (Bugbot on d2aaf34a): the
+   * pills cancel focus on pointerdown (`PillSelect`), so a pick from a
+   * hover-opened card never makes it `active`, and their menus are portaled
+   * to the body — the pointer moving into one is a `pointerleave` that would
+   * fold the card under its own open menu. Same two reads `onFormBlur` uses:
+   * the pointer went into a popup, or it went nowhere (the gap between pill
+   * and menu) while a popup is up. The effect below is the other half: once
+   * the pointer lands on anything that is neither the card nor a popup, the
+   * hover is over — which is also how a hover kept alive through a menu ends
+   * after the menu has closed with the pointer somewhere else.
+   */
   const onFormPointerLeave = useCallback((ev: React.PointerEvent<HTMLFormElement>) => {
     if (ev.pointerType === "touch") return;
+    const next = ev.relatedTarget as Element | null;
+    if (next?.closest?.(POPUP_SURFACE)) return;
+    if (!next && ev.currentTarget.ownerDocument.querySelector(POPUP_SURFACE)) return;
     setHovered(false);
   }, []);
   const formRef = useRef<HTMLFormElement | null>(null);
+  useEffect(() => {
+    if (!hovered) return;
+    const form = formRef.current;
+    if (!form) return;
+    const doc = form.ownerDocument;
+    const onDocPointerOver = (ev: PointerEvent) => {
+      const t = ev.target as Element | null;
+      if (!t || form.contains(t) || t.closest?.(POPUP_SURFACE)) return;
+      setHovered(false);
+    };
+    doc.addEventListener("pointerover", onDocPointerOver, true);
+    return () => doc.removeEventListener("pointerover", onDocPointerOver, true);
+  }, [hovered]);
   /**
    * …AND A PRESS OUTSIDE FOLDS IT EVEN WHEN FOCUS DOES NOT MOVE (Akshil,
    * 2026-09-16: in the Explorer's side panel "it becomes active, doesn't

@@ -1884,7 +1884,26 @@ test("the idle line opens under the pointer and folds when it leaves; touch is i
   expect(cls()).toContain("is-idle");
   act(() => form().props.onPointerEnter({ pointerType: "mouse" }));
   expect(cls()).not.toContain("is-idle");
-  act(() => form().props.onPointerLeave({ pointerType: "mouse" }));
+  const doc = { querySelector: () => null };
+  const leave = (over: Record<string, unknown>) =>
+    act(() =>
+      form().props.onPointerLeave({
+        pointerType: "mouse",
+        relatedTarget: null,
+        currentTarget: { ownerDocument: doc },
+        ...over,
+      }),
+    );
+  leave({});
+  expect(cls()).toContain("is-idle");
+  // A pill's menu is portaled to the body: the pointer moving into it, or into
+  // the gap under the pill while it is up, is not a leave (Bugbot, #1298).
+  act(() => form().props.onPointerEnter({ pointerType: "mouse" }));
+  leave({ relatedTarget: { closest: (sel: string) => (sel.includes("popover") ? {} : null) } });
+  expect(cls()).not.toContain("is-idle");
+  leave({ currentTarget: { ownerDocument: { querySelector: () => ({}) } } });
+  expect(cls()).not.toContain("is-idle");
+  leave({});
   expect(cls()).toContain("is-idle");
   // A finger has no hover: a tap's pointerenter must not stick the card open.
   act(() => form().props.onPointerEnter({ pointerType: "touch" }));
