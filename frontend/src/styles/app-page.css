@@ -21,12 +21,8 @@
   justify-content: space-between;
   gap: 16px;
   /* Same column as .app-page-body below, so the heading lines up with the
-     tab strip and the frame instead of hugging the window edge. THE PAGE FILLS
-     ITS PARENT (Akshil, 2026-09-21): it used to be a 1050px column centred in
-     the window, so collapsing the sidebar moved Open and Share LEFT and left
-     two bands of nothing either side — the page did not follow the room it
-     was given. 24px each side, whatever the room. */
-  width: calc(100% - 48px);
+     tab strip and the frame instead of hugging the window edge. */
+  width: min(1050px, calc(100% - 48px));
   margin: 0 auto;
   padding: 24px 0 10px;
   /* Two lines of text on the left (name over folder), so the row is
@@ -164,10 +160,9 @@
 .app-page-body {
   flex: 1 1 auto;
   min-height: 0;
-  /* No 1050px cap any more — see .app-page-head: the page follows its
-     parent's width. The Tasks tab's peek arithmetic still counts the cap
-     `/tasks` has, as `--tasks-column-max` below. */
-  width: calc(100% - 48px);
+  /* 1050px: the Tasks page's own column cap (schedule.css), so the two pages
+     line up. tests/test_schedule_css.py reads that file's literal, not this. */
+  width: min(1050px, calc(100% - 48px));
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -352,8 +347,8 @@
 /* …but the peek's arithmetic still counts the cap `/tasks` has: the store
    reads `--tasks-column-max` off this element (`measureTasksBaseline`) where
    there is no rendered max-width, so floors, tight and the default width fall
-   at the same window widths on both pages while the list itself fills the
-   page. */
+   at the same window widths on both pages. (The body above is capped at the
+   same 1050px, so nothing on screen depends on this — only the measurement.) */
 .app-page-tasks .schedule-page > .prefs-section.schedule-main {
   --tasks-column-max: 1050px;
 }
