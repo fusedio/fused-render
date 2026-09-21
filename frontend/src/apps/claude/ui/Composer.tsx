@@ -97,6 +97,11 @@ function applyFit(row: HTMLElement, fit: RowFit): void {
   const flags = fitFlags(fit);
   row.classList.toggle("is-compact", flags.compact);
   row.classList.toggle("is-tight", flags.tight);
+  // The two seat-dropping rungs are classes because what they drop is a
+  // `display: none` the stylesheet owns — `readRow` then prices the hidden
+  // seat at nothing, gap included, and the measurement is of THAT row.
+  row.classList.toggle("is-slim", flags.slim);
+  row.classList.toggle("is-bare", flags.bare);
   row.classList.toggle("is-stack", flags.stack);
   for (const select of Array.from(
     row.querySelectorAll<HTMLSelectElement>("select.c-perm-sel"),
@@ -1538,8 +1543,8 @@ export function ComposerCard({
     // gap, which is exactly the kind of change T's MutationObserver existed to
     // catch (T:12455-12474).
     // THE METER IS IN THE KEY BY ITS PRESENCE, and only by that: it is a fixed
-    // 24px box whose digits live INSIDE the ring, so the seat appearing or
-    // leaving moves `composerRowNeed` and "9%" → "100%" does not.
+    // 24px box with nothing inside it, so the seat appearing or leaving moves
+    // `composerRowNeed` and "9%" → "100%" does not.
     `${controls.model}|${controls.effort}|${controls.permission}|${
       controls.ready === false ? 0 : 1
     }|${blocked ? 1 : 0}|${camera ? 1 : 0}|${ctxUsage ? 1 : 0}|${String(fitRevision ?? "")}`,
@@ -1952,9 +1957,10 @@ export function ComposerCard({
               what the next turn will be made with, and this says how much room
               is left to make it in — one group, read left to right. It draws
               nothing at all when the conversation has no reading yet, so the
-              landing composer and a brand-new chat are untouched, and it keeps
-              its whole 24px at every rung because there is nothing inside it to
-              drop: the digits are in the ring. */}
+              landing composer and a brand-new chat are untouched. It is the
+              FIRST seat the ladder drops (`.is-slim`): the number is one hover
+              away in the pills' own tooltip world, and a row that wraps to keep
+              a ring is the wrong trade. */}
           <ContextMeter usage={ctxUsage} model={ctxModel} />
           <span className="c-spacer" />
           {camera}

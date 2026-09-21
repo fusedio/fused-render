@@ -21,6 +21,8 @@ import { useProjectQueueEnabled } from "../feature-flag";
 import { waitingFor } from "./waiting";
 import {
   BLOCKED_PLACEHOLDER,
+  COMEBACK_PLACEHOLDER,
+  schedIsComeback,
   createScheduleWatcher,
   NAV_LOCKED_REASON,
   schedBlockReason,
@@ -30,8 +32,6 @@ import {
   schedPendingOnly,
   schedSameRow,
   schedStopTarget,
-  SCHEDULE_URL,
-  SCHEDULE_VIEW_KEY,
   type SchedEntry,
   type SchedTask,
 } from "./scheduled";
@@ -60,8 +60,6 @@ export interface UseScheduleOptions {
   /** Put a bottom-pinned transcript back at the bottom on the hidden → shown
    *  edge (T:17198-17213). */
   followBottom?(): void;
-  /** The shell hop the row makes. */
-  onNavigate?(url: string): void;
   /** `params.set("run", id, {history:"replace"})` — a fired scheduled run goes
    *  on the URL for the same reason a send's does: a reload, or a mode switch
    *  that remounts this frame, re-attaches from the param. Without it the
@@ -277,7 +275,6 @@ export interface ScheduleState {
    *  session id — see the state of the same name. */
   ranSessions: ReadonlyMap<string, string> | null;
   onStop(): void;
-  onRow(): void;
   cardRef: React.MutableRefObject<HTMLDivElement | null>;
   /** T:16776 — the visible conversation was REPLACED. */
   reset(): void;
@@ -295,7 +292,7 @@ export interface ScheduleState {
 }
 
 export function useSchedule(opts: UseScheduleOptions): ScheduleState {
-  const { controller, file, sessionId, inChat, navLocked, followBottom, onNavigate } = opts;
+  const { controller, file, sessionId, inChat, navLocked, followBottom } = opts;
   /** "" for every chat that has a session, which is all of them but one. */
   const leaderId = opts.leaderId ?? "";
   /** Read at CALL time: the poller and the row cache both outlive any one
@@ -970,32 +967,6 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     })();
   }, [next, armedId, watcher, api]);
 
-  /**
-   * Where the row LANDS: the Tasks page, on the calendar, which is the view that
-   * answers the question a blocked chat is asking — "when does this let go?"
-   * (T:17038-17058).
-   *
-   * The view is chosen by writing the shell's own remembered-view row rather
-   * than by a param, because `Scheduled.tsx` reads that preference on mount and
-   * has no URL param for it. Writing it is the same gesture as pressing that
-   * page's Calendar button, and a denied store just means the page opens on
-   * whichever view the reader last used — one press from the right one, never a
-   * dead end.
-   *
-   * It does NOT reopen the composer and does not pretend to: leaving a blocked
-   * chat to look at the thing blocking it is a different errand from unblocking
-   * it, and the button beside it is still the only control that does the second.
-   */
-  const onRow = useCallback(() => {
-    if (!next) return;
-    try {
-      localStorage.setItem(SCHEDULE_VIEW_KEY, "calendar");
-    } catch {
-      // Denied — the page keeps its own last view.
-    }
-    onNavigate?.(SCHEDULE_URL);
-  }, [next, onNavigate]);
-
   const locked = !blocked && !!navLocked;
   const reason = blocked ? schedBlockReason(blockAbout) : locked ? NAV_LOCKED_REASON : "";
 
@@ -1007,7 +978,7 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     pendingIds,
     ranSessions,
     reason,
-    placeholder: BLOCKED_PLACEHOLDER,
+    placeholder: schedIsComeback(blockAbout) ? COMEBACK_PLACEHOLDER : BLOCKED_PLACEHOLDER,
     schedDisabled: blocked || locked,
     rec,
     row: liveRow,
@@ -1017,7 +988,6 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     stopping,
     tick,
     onStop,
-    onRow,
     cardRef,
     reset,
     refresh,
