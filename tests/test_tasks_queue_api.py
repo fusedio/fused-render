@@ -378,6 +378,11 @@ class FakeManager:
         self.remove_from_line(task_key)
         self.promoted.discard(task_key)
         self.answers.pop(task_key, None)
+
+    def forget_forced(self, *names):
+        self.events.append(("forget_forced", *names))
+        for name in names:
+            self.forced.discard(name)
         self._release(task_key)
 
     def _release(self, task_key):
@@ -3870,6 +3875,22 @@ def test_deleting_a_run_parked_on_an_answered_card_is_refused(
     assert manager.held_answer("sess-a") is not None
     assert manager.lines[alpha] == ["sess-a"]
     assert "sess-a" in _rows(client)
+
+
+def test_deleting_a_task_is_what_ends_its_force_start(
+        client, projects_dir, folders, flag, manager):
+    """The delete door calls BOTH verbs: `remove` (line, answers, folder) and
+    `forget_forced`. `remove` alone must not un-force — the force endpoint
+    calls it after delivering a held answer (Bugbot, PR #1296)."""
+    flag(True)
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-a", alpha, "run the build")
+    manager.mark_forced("sess-a")
+
+    assert _post(client, "/api/tasks/delete",
+                 {"key": "sess-a"}).status_code == 200
+    assert ("forget_forced", "sess-a") in manager.events
+    assert manager.is_forced("sess-a") is False
 
 
 def test_the_flag_off_says_nothing_to_the_queue_on_delete(

@@ -5328,7 +5328,12 @@ def _queue_drop_task(key: str) -> None:
     if not project_queue.enabled():
         return
     try:
-        queue_manager.get().remove(key)
+        manager = queue_manager.get()
+        manager.remove(key)
+        # Deleting the task is the ONE thing that ends a Force start.
+        forget = getattr(manager, "forget_forced", None)
+        if forget is not None:
+            forget(key)
     except Exception:  # noqa: BLE001 — a stale line is a pump, not a loss
         logger.debug("queue: could not drop %s from its line", key,
                      exc_info=True)

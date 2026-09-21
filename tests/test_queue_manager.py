@@ -1094,7 +1094,7 @@ def test_a_forced_task_is_never_rebuilt_into_a_line():
     assert owner_key(m) == "sess-c"
 
 
-def test_a_forced_name_outlives_idle_gaps_and_only_remove_drops_it():
+def test_a_forced_name_outlives_idle_gaps_and_only_forget_forced_drops_it():
     """The mark is for the life of the conversation (Bugbot, PR #1296): a chat
     that finished its forced turn and has nothing due must stay forced, or its
     very next message would line up again. Deleting the task is what forgets
@@ -1110,7 +1110,12 @@ def test_a_forced_name_outlives_idle_gaps_and_only_remove_drops_it():
     m.reconcile()
     assert m.forced_names() == {"pending:e1", "sess-live", "sess-gone"}
 
+    # `remove` is what the force endpoint itself calls after delivering a
+    # held answer, so it must NOT un-force (Bugbot, PR #1296)…
     m.remove("sess-gone")
+    assert m.forced_names() == {"pending:e1", "sess-live", "sess-gone"}
+    # …only the delete door's verb does.
+    m.forget_forced("sess-gone")
     assert m.forced_names() == {"pending:e1", "sess-live"}
 
 

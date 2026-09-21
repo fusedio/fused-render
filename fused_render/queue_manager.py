@@ -1063,16 +1063,6 @@ class QueueManager:
         `forget_entry` is the verb for one MESSAGE of a task that may still be
         running."""
         with self._txn() as keys:
-            # A FORCED MARK LIVES AS LONG AS THE CONVERSATION (Bugbot, PR
-            # #1296): it is the only thing keeping that chat's later messages
-            # off the line, so nothing but deleting the task drops it — not
-            # an idle gap between turns, not a finished run. Names are unique
-            # (session/run uuids, entry ids), so a stale one never matches a
-            # new chat.
-            forced = self._state.get("forced")
-            if isinstance(forced, set) and task_key in forced:
-                forced.discard(task_key)
-                keys.add(task_key)
             if self._state["answers"].pop(task_key, None) is not None:
                 keys.add(task_key)
             for folder, rec in list(self._state["folders"].items()):
@@ -1727,6 +1717,24 @@ class QueueManager:
         """The whole set, for a test and for the listing's sake. A copy."""
         with self._lock:
             return set(self._state.get("forced") or ())
+
+    def forget_forced(self, *names: str) -> None:
+        """Drop the forced mark — ONLY the delete/erase door calls this
+        (`_queue_drop_task`). `remove` deliberately does not: the force
+        endpoint itself calls `remove` after delivering a held answer, and a
+        `remove` that un-forced would undo the press in the same request
+        (Bugbot, PR #1296). The mark lives as long as the conversation; names
+        are unique (session/run uuids, entry ids), so a stale one never
+        matches a new chat."""
+        with self._txn() as keys:
+            forced = self._state.get("forced")
+            if not isinstance(forced, set):
+                return
+            for name in names:
+                name = _text(name)
+                if name and name in forced:
+                    forced.discard(name)
+                    keys.add(name)
 
     def held_answers(self, task_key: str) -> list[dict]:
         with self._lock:
