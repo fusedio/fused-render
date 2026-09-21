@@ -19,6 +19,9 @@ const rankCalls: {
 }[] = [];
 const scanCalls: string[] = [];
 let scanReply: { started: boolean; why: string } = { started: true, why: "started" };
+// A thrown fetch (as opposed to a policy refusal the route answers
+// normally) — SPEC-empty-search-scan.md requires this to be silent too.
+let scanThrows = false;
 // The owner's unranked-search preference (D720) — `useRankedSearchEnabled`
 // (ranked-search-pref.ts) reads it via `getPrefs`, which this stub answers
 // synchronously-resolved rather than deferred: the pref is not this file's
@@ -34,6 +37,7 @@ mock.module("@platform/lib/api", () => ({
   },
   requestFolderScan: (path: string) => {
     scanCalls.push(path);
+    if (scanThrows) return Promise.reject(new Error("network down"));
     return Promise.resolve({ ...scanReply, run_id: "r1", root: path });
   },
   getPrefs: () =>
@@ -84,6 +88,7 @@ beforeEach(() => {
   rankCalls.length = 0;
   scanCalls.length = 0;
   scanReply = { started: true, why: "started" };
+  scanThrows = false;
   prefsRanked = true;
   publishRankedSearchEnabled(true);
   freshness.resetFsMutations();
@@ -322,6 +327,132 @@ describe("an uncoverable folder reports the index gap, not an infinite loop", ()
     const ticks = clock.pending;
     await flush(() => clock.advance(SCAN_POLL_MS * 5));
     expect(clock.pending).toBeLessThanOrEqual(ticks); // the poll loop is over
+    box.unmount();
+  });
+});
+
+describe("a covered folder with a genuinely empty answer: fire a scan (SPEC-empty-search-scan.md)", () => {
+  test("asks for a scan of the answer's own root", async () => {
+    const box = await search("newfile");
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    expect(scanCalls).toEqual(["/d"]);
+    box.unmount();
+  });
+
+  test("does not fire when the answer has at least one file hit", async () => {
+    const box = await search("widget");
+    await flush(() => rankCalls[0].reply.resolve(answer({ hits: [hit("widget.md")], total: 1 })));
+    expect(scanCalls).toEqual([]);
+    box.unmount();
+  });
+
+  test("does not fire (a second time) for mount / package / ignored / disabled / fda — no scan will ever cover them", async () => {
+    for (const reason of ["mount", "package", "ignored", "disabled", "fda"]) {
+      scanCalls.length = 0;
+      const box = await search("widget", "/d/" + reason);
+      await flush(() => rankCalls[rankCalls.length - 1].reply.resolve(answer({ covered: false, reason: reason as never })));
+      expect(scanCalls).toEqual([]);
+      box.unmount();
+    }
+  });
+
+  test("does not ALSO fire for uncovered — the existing on-demand-scan affordance already asked, exactly once", async () => {
+    const box = await search("widget", "/d/uncovered");
+    await flush(() =>
+      rankCalls[0].reply.resolve(
+        answer({ covered: false, reason: "uncovered", base: "/d/uncovered" }),
+      ),
+    );
+    // The EXISTING uncovered-scan path (index-source's "scan" step) already
+    // fires this — this new, covered-but-empty trigger must not double it.
+    expect(scanCalls).toEqual(["/d/uncovered"]);
+    box.unmount();
+  });
+
+  test("does not fire for a one-character query (never even asks the index)", async () => {
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
+    await flush(() => box.current().setQuery("w"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(0);
+    expect(scanCalls).toEqual([]);
+    box.unmount();
+  });
+
+  test("fires once for a given query, not once per re-render or a lifecycle bump re-asking it", async () => {
+    const box = await search("newfile");
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    expect(scanCalls).toEqual(["/d"]);
+
+    // A lifecycle bump re-runs the fetch effect (Part 2) — the SAME query,
+    // still empty, must not refire the scan.
+    await flush(() => freshness.noteIndexLifecycle());
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls.length).toBeGreaterThan(1);
+    await flush(() => rankCalls[rankCalls.length - 1].reply.resolve(answer()));
+    expect(scanCalls).toEqual(["/d"]);
+    box.unmount();
+  });
+
+  test("a DIFFERENT query fires its own scan", async () => {
+    const box = await search("newfile");
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    expect(scanCalls).toEqual(["/d"]);
+
+    await flush(() => box.current().setQuery("otherfile"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    await flush(() => rankCalls[1].reply.resolve(answer()));
+    expect(scanCalls).toEqual(["/d", "/d"]);
+    box.unmount();
+  });
+
+  test("a route refusal is silent — no error, no retry", async () => {
+    scanReply = { started: false, why: "debounced" };
+    const box = await search("newfile");
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    expect(scanCalls).toEqual(["/d"]);
+    expect(box.current().searchState.status).toBe("ok");
+    expect(box.current().reason).toBe("");
+    box.unmount();
+  });
+
+  test("a thrown fetch (the promise itself rejects) is silent too", async () => {
+    scanThrows = true;
+    const box = await search("newfile");
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    expect(scanCalls).toEqual(["/d"]);
+    await flush(() => {});
+    expect(box.current().searchState.status).toBe("ok");
+    box.unmount();
+  });
+
+  test("verified against a PRE-EXISTING answer object, not only a freshly created one", async () => {
+    // The same `answer()` shape reused verbatim from an existing describe
+    // block above ("never-blank / stale-while-revalidate" uses its own
+    // constructed replies) — this asserts the trigger fires off a plain,
+    // already-established `answer()` value with no bespoke fields, so a
+    // create-path-only hook (a real bug class in this repo) can't hide here.
+    const box = await search("qq");
+    const reply = answer({ base: "/d/sub" });
+    await flush(() => rankCalls[0].reply.resolve(reply));
+    expect(scanCalls).toEqual(["/d/sub"]);
+    box.unmount();
+  });
+
+  test("bumps the caller's onScanRequested once the scan request resolves, restarting the poll's idle beat", async () => {
+    let bumped = 0;
+    const box = renderHook(
+      (p: string, r: number) =>
+        useListingSearch(p, undefined, r, false, () => {
+          bumped += 1;
+        }),
+      "/d",
+      0,
+    );
+    await flush(() => box.current().setQuery("newfile"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    await flush(() => rankCalls[0].reply.resolve(answer()));
+    await flush(() => {});
+    expect(bumped).toBe(1);
     box.unmount();
   });
 });

@@ -134,6 +134,11 @@ export function useListingSearch(
   home: string | undefined,
   refresh: number,
   urlSync = true,
+  // Called once a covered-but-empty answer's on-demand scan (below) actually
+  // goes out — the caller's cue to shorten its own index-status poll's idle
+  // beat (Listing.tsx bumps the nonce it passes to `useIndexStatus`) rather
+  // than wait out its full idle interval before noticing the scan.
+  onScanRequested?: () => void,
 ) {
   // The owner's unranked-search preference (D720) — same module-level cache
   // FilesHome.tsx's home search reads; both boxes honour the one setting.
@@ -306,6 +311,14 @@ export function useListingSearch(
   const asked = useRef(false);
   const sinceAsk = useRef(0);
   const polls = useRef(0);
+  // Per-query dedup for the SEPARATE covered-but-empty scan trigger below
+  // (SPEC-empty-search-scan.md): a query already asked for a scan must not
+  // ask again just because the same text comes back around (backspacing and
+  // retyping, or a lifecycle bump re-asking the identical query). Distinct
+  // from `asked` above, which is folder+generation scoped for the uncovered
+  // path — this is scoped to the query text itself, and reset alongside
+  // `asked` for the same reason: a new folder or generation is a new episode.
+  const firedEmptyScan = useRef<Set<string>>(new Set());
   // Bumped by the poll timer to re-ask while a scan is running.
   const [pollTick, setPollTick] = useState(0);
   const [polling, setPolling] = useState(false);
@@ -322,6 +335,7 @@ export function useListingSearch(
     asked.current = false;
     sinceAsk.current = 0;
     polls.current = 0;
+    firedEmptyScan.current = new Set();
     setPolling(false);
   }, [fsPath, pinned]);
 
@@ -538,6 +552,26 @@ export function useListingSearch(
           if (ctl.signal.aborted || sourceEpoch.current !== epoch) return;
           inflightKey.current = null;
           const step = applyStep(res, epoch);
+          // The covered-but-empty scan trigger (SPEC-empty-search-scan.md):
+          // a settled answer that says the root IS covered (reason === "")
+          // but found no files is real evidence the index may be behind this
+          // exact query — ask for a background scan of the answer's OWN
+          // root (never a hardcoded fsPath fallback would be wrong here:
+          // res.base is what this answer actually searched, same reasoning
+          // as the existing uncovered-scan call above). MIN_QUERY_CHARS is
+          // already enforced by `runsSearch` gating this whole effect, so no
+          // extra length check is needed here. `firedEmptyScan` is the
+          // per-query dedup the spec requires; the server's own
+          // SCAN_DEBOUNCE_S is the cross-query floor and is not duplicated
+          // here. A refusal or a thrown fetch are both silent — a search
+          // must never fail over housekeeping (routers/index.py:627).
+          if ((res.reason ?? "") === "" && res.hits.length === 0 && !firedEmptyScan.current.has(q)) {
+            firedEmptyScan.current.add(q);
+            void requestFolderScan(res.base || fsPath).then(
+              () => onScanRequested?.(),
+              () => {},
+            );
+          }
           answerSeq.current += 1;
           answerGen.current = genRef.current;
           answerLifecycle.current = lifecycleRef.current;
