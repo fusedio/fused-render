@@ -612,6 +612,24 @@ def _repo_health_check(app_dir: str) -> dict:
 
     A remote that is unresolved reads as SKIP, with the reason stated — never
     FAIL: an unreachable remote is not a defect in the app being reviewed.
+
+    MIXED REF BASES, NAMED HONESTLY RATHER THAN UNIFIED: `p_state`/`p_subjects`
+    (the "unpushed" half, from `_pushed_pending`) compare against `@{upstream}`
+    — this branch's OWN tracking ref, whole-repo, matching the in-app Git
+    panel's "Send N" count exactly (`templates/git/log.py`'s `rev-list
+    --left-right --count HEAD...@{upstream}`). `behind`/`ahead` (the "not
+    behind origin" half, from `git_upstream.check_repo`) instead compare
+    against `origin/<default_branch>` — deliberately: the Pull button this
+    row can offer always fast-forwards onto the DEFAULT branch
+    (`git_upstream.update_repo`), never onto `@{upstream}`, so that is the
+    only base that tells the truth about what Pull would do. On the default
+    branch the two bases usually agree (its own upstream typically IS
+    `origin/<default_branch>`), so this row says "origin". Off the default
+    branch they answer different questions on purpose — "is MY branch pushed
+    anywhere" vs. "is the DEFAULT branch's tip ahead of me" — and saying
+    "behind origin" there would misname which ref that count is actually
+    against; `_behind_target` below names the real one instead of pretending
+    the two bases are one.
     """
     from fused_render import git_upstream
 
@@ -620,6 +638,7 @@ def _repo_health_check(app_dir: str) -> dict:
 
     root = git_upstream.repo_root(app_dir)
     behind = ahead = on_default = clean = cached = None
+    default_branch = None
     if root is not None:
         git_upstream.note_app_opened(app_dir)
         cached = git_upstream.repo_state_for(root)
@@ -627,6 +646,7 @@ def _repo_health_check(app_dir: str) -> dict:
             behind = cached.get("behind") or 0
             ahead = cached.get("ahead") or 0
             on_default = cached.get("on_default")
+            default_branch = cached.get("default_branch")
         # The SAME cleanliness signal `update_repo`'s preflight refuses on
         # (`_mutation_preflight` -> `_is_clean(root, include_untracked=False)`)
         # — computed here, synchronously, local-only (no fetch, no network:
@@ -655,6 +675,14 @@ def _repo_health_check(app_dir: str) -> dict:
     # sync rather than re-deriving one from the other.
     can_pull = bool(behind) and on_default is True and clean is True
 
+    # What `behind`/`ahead` are actually measured against — `origin` on the
+    # default branch (where that coincides with `@{upstream}` for almost
+    # every repo), or the default branch's own name off it, where "behind
+    # origin" would misleadingly suggest this is the same comparison
+    # `p_state` just made against this branch's own upstream (see this
+    # function's docstring).
+    behind_target = "origin" if on_default else (default_branch or "the default branch")
+
     failing_bits = []
     if g_state == FAIL:
         failing_bits.append(
@@ -663,7 +691,8 @@ def _repo_health_check(app_dir: str) -> dict:
         failing_bits.append(
             f"{len(p_subjects)} unpushed commit{'' if len(p_subjects) == 1 else 's'}")
     if behind:
-        failing_bits.append(f"{behind} commit{'' if behind == 1 else 's'} behind origin")
+        failing_bits.append(
+            f"{behind} commit{'' if behind == 1 else 's'} behind {behind_target}")
 
     if failing_bits:
         state = FAIL
@@ -686,7 +715,7 @@ def _repo_health_check(app_dir: str) -> dict:
         detail = "no upstream remote configured for this folder — nothing to compare against"
     elif behind is not None:
         state = PASS
-        detail = "the working tree is clean, nothing to push, and up to date with origin"
+        detail = f"the working tree is clean, nothing to push, and up to date with {behind_target}"
     else:
         state = SKIP
         if root is None:

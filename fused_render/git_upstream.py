@@ -101,6 +101,14 @@ TIMEOUT_S = 20.0
 # one repo (or the same app repeatedly) costs one fetch, not one per open.
 CHECK_TTL_S = 300.0
 
+# How long `force_check` (an explicit Doctor-modal open, not routine render
+# traffic) will block the calling thread waiting for a fresh fetch before
+# giving up and handing back whatever's cached. Short enough that a slow or
+# hung remote can never make the modal feel stuck; the fetch itself keeps
+# running past this budget under its own TIMEOUT_S, and `repo_state_for`
+# picks up the answer once it lands (see `force_check`'s docstring).
+DOCTOR_TIMEOUT_S = 3.0
+
 
 def _popen_kwargs():
     return {
@@ -751,6 +759,63 @@ def note_app_opened(path, *, _runner=None):
         _check_slot.release()
         return False
     return True
+
+
+def force_check(path, *, _runner=None):
+    """A Doctor-modal open's explicit ask for a fresh behind-origin fact —
+    unlike `note_app_opened` this BYPASSES `_due`'s five-minute throttle (an
+    explicit user action is not routine render traffic), but it is bounded:
+    the calling thread blocks for at most `DOCTOR_TIMEOUT_S` waiting for a
+    fetch to land, never longer, so a slow or unreachable remote can never
+    hang the modal. If nothing lands inside the budget, this returns
+    immediately with whatever `repo_state_for` already has (fresh, stale, or
+    None) and the fetch keeps running in the background exactly like
+    `note_app_opened`'s own dispatch — a later read of `repo_state_for` (the
+    next Doctor GET, or the panel's own single delayed retry —
+    `AppDoctorModal.tsx`'s `gitRowFetchPending` effect) sees the fresh answer
+    once it resolves, without this call itself blocking any longer to
+    deliver it.
+
+    Never raises. Degrades to `repo_state_for(root)` — i.e. the existing
+    SKIP-with-reason behaviour once `_repo_health_check` reads it — on every
+    failure mode: `path` not in a readable repo (`root is None`), no `origin`
+    remote or it can't be resolved, the fetch timing out past `TIMEOUT_S`,
+    offline, or an auth failure. All of those are exactly what `check_repo`
+    already reports as `None` (silence-on-failure, this module's docstring);
+    this function adds only the bounded wait on top.
+
+    If the process-wide check slot is already held (another root's
+    background check, or a concurrent Doctor open) this does not queue a
+    second `git fetch` behind it — see `_mutation_slot`'s docstring for why
+    piling on a second fetch in one repo is the thing to avoid — it just
+    reads whatever cache already exists and returns."""
+    root = repo_root(path)
+    if root is None:
+        return None
+    if not _check_slot.acquire(blocking=False):
+        return repo_state_for(root)
+    done = threading.Event()
+
+    def run():
+        try:
+            with _checked_lock:
+                _checked[root] = time.time()
+            _record(check_repo(root))
+        except Exception:  # noqa: BLE001 — best-effort, exactly like note_app_opened
+            logger.exception("git-upstream forced check failed for %s", path)
+        finally:
+            _check_slot.release()
+            done.set()
+
+    runner = _runner or (lambda fn: threading.Thread(
+        target=fn, daemon=True, name="git-upstream-doctor-check").start())
+    try:
+        runner(run)
+    except RuntimeError:  # interpreter shutting down
+        _check_slot.release()
+        return repo_state_for(root)
+    done.wait(DOCTOR_TIMEOUT_S)
+    return repo_state_for(root)
 
 
 def known_repos():

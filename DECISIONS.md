@@ -3625,3 +3625,73 @@ run past that point). Commit `e28ae4890`.
 Nothing left unfinished from FIXES-round-3.md's G1/G2 scope. Not done in this
 round (out of scope per the brief): Pull gating, skip reasons, the consolidated
 check's state logic, the ErrorBanner call-site sweep, a Switch action.
+
+## FIXES-round-4: mixed ref bases in the "Repo in sync" row, and fetch-on-Doctor-open
+
+Reported bug: the in-app Git panel's "Send 1" and Doctor's green "Repo in sync"
+PASS on the same folder contradicted each other. Traced the panel's count first
+(read-only): `fused_render/templates/git/log.py:844-845` —
+`git rev-list --left-right --count HEAD...@{upstream}`, whole-repo, no pathspec,
+rendered at `template.html:1999`/`2033` as `"Send " + plural(ahead, "commit")`.
+`app_doctor._pushed_pending` (app_doctor.py:405) already used the SAME `@{upstream}`
+base for its ahead count — the only difference is `-- .` path scoping (D626:
+sibling apps share one `local` repo; an unscoped count would quote a neighbour
+app's commits into this app's fix prompt).
+
+The user ruled the path-scoped verdict itself is CORRECT, not the bug: a
+folder's own row should read PASS when the only unpushed work is elsewhere in
+the same shared repo ("if the issue was outside of the project, then it is
+fine"). No change was made to `_pushed_pending`'s scoping or to `_repo_health_check`'s
+verdict logic — D626 stands exactly as before.
+
+What WAS a real "doctor should never lie" defect: `_repo_health_check` folded
+two different ref-base comparisons into one sentence without saying so.
+`p_state`/`p_subjects` (unpushed) compare `@{upstream}..HEAD` — this branch's own
+tracking ref. `behind`/`ahead` (from `git_upstream.check_repo`) compare
+`HEAD...origin/<default_branch>` — deliberately, since the row's Pull button
+always fast-forwards onto the default branch, never onto `@{upstream}`. On the
+default branch these two usually coincide, so the row says "behind origin". Off
+the default branch they answer different questions on purpose, and the old
+"N commits behind origin" wording there misleadingly implied the same base as
+the unpushed count. Fixed by naming the real target: `behind_target = "origin"
+if on_default else (default_branch or "the default branch")`, used in both the
+FAIL detail ("N commits behind main") and the PASS detail ("up to date with
+main"). No ref base was changed — this is a wording-only fix so the row states
+what it actually checked. Test: extended
+`test_pull_is_not_offered_off_the_default_branch_and_the_row_says_why` to assert
+`"behind origin" not in detail` and `"1 commit behind main" in detail`.
+
+Fetch-on-Doctor-open (item 3): added `git_upstream.force_check(path, *, _runner=None)`
+— an explicit, throttle-bypassing fetch+check, bounded by a new
+`DOCTOR_TIMEOUT_S = 3.0` constant. It acquires the process-wide check slot
+non-blocking (falls straight back to `repo_state_for` if another check already
+holds it — never piles a second `git fetch` onto one repo), dispatches the real
+`check_repo` on a background thread, and blocks the caller for at most 3s via
+`threading.Event.wait(DOCTOR_TIMEOUT_S)`. Past that budget it returns whatever
+`repo_state_for` has (fresh, stale, or None) while the fetch keeps running;
+`check_repo`'s own existing silence-on-failure (`fused_render/git_upstream.py`)
+already covers offline/no-remote/auth-failure by returning None, which
+`_repo_health_check` already turned into SKIP-with-reason — untouched.
+Wired in at `fused_render/server/routers/apps.py`'s `GET /api/apps/doctor`
+handler (the modal's own "load" call), calling `git_upstream.force_check(folder)`
+before `app_doctor.report(folder)` so `_repo_health_check` reads whatever landed.
+
+Live-update after the modal's first render: already existed and needed no
+change — `AppDoctorModal.tsx`'s `useAppDoctorReport` already does a single
+delayed (2s) re-`getAppDoctor` when `gitRowFetchPending` (behind/ahead both
+still null), patching only the `git` row in place. Since the initial GET itself
+now blocks up to 3s for a fresh answer, most cases resolve before that retry
+even fires; the retry remains the catch-all for the slow-remote case where
+`force_check`'s own budget expired first.
+
+Tests added: `tests/test_git_upstream.py` —
+`test_force_check_bypasses_the_throttle` (proves it re-fetches inside
+CHECK_TTL_S, unlike `note_app_opened`), `test_force_check_falls_back_to_cache_when_the_slot_is_already_held`,
+`test_force_check_on_a_path_outside_any_repo_returns_none`, and
+`test_force_check_gives_up_after_its_own_budget_and_the_fetch_finishes_later`
+(DOCTOR_TIMEOUT_S monkeypatched to 0, proves the background thread still lands
+the state after `force_check` itself already returned None). `tests/test_app_doctor_report.py`
+got the wording assertion above. Ran `tests/test_git_upstream.py`,
+`tests/test_app_doctor_report.py`, and the doctor-scoped subset of
+`tests/test_apps_api.py`: 114 passed. No TypeScript touched, so no `bunx tsc`
+run.

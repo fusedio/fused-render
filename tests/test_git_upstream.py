@@ -165,6 +165,101 @@ def test_a_second_app_in_the_same_repo_does_not_refetch_inside_the_window(tmp_pa
     assert len(calls) == 1
 
 
+# --------------------------------------------------------------- force_check
+#
+# `force_check` is the Doctor-modal-open path (SPEC-doctor-git-ai-errors.md):
+# an explicit ask for a fresh fetch, bypassing `_due`'s throttle but bounded
+# so it can never hang the caller.
+
+
+def test_force_check_bypasses_the_throttle(tmp_path, monkeypatch):
+    local = _clone_with_remote_ahead(tmp_path)
+    calls = []
+    real_check = git_upstream.check_repo
+
+    def spy(root):
+        calls.append(root)
+        return real_check(root)
+
+    monkeypatch.setattr(git_upstream, "check_repo", spy)
+
+    # Warm the cache once, well inside CHECK_TTL_S — a plain `note_app_opened`
+    # right after this would find the root not due and skip the fetch
+    # entirely (the test above proves that).
+    assert git_upstream.note_app_opened(local, _runner=_sync)
+    assert len(calls) == 1
+
+    # An explicit Doctor-modal open asks again immediately — unlike
+    # `note_app_opened`, this must NOT be throttled away.
+    state = git_upstream.force_check(local, _runner=_sync)
+
+    assert len(calls) == 2
+    assert state is not None
+    assert state["behind"] == 2
+
+
+def test_force_check_falls_back_to_cache_when_the_slot_is_already_held(tmp_path):
+    local = _clone_with_remote_ahead(tmp_path)
+    assert git_upstream.note_app_opened(local, _runner=_sync)
+    cached = git_upstream.repo_state_for(os.path.realpath(local))
+    assert cached is not None
+
+    # Simulate a check already in flight for some repo (background or a
+    # concurrent Doctor open) by holding the process-wide slot ourselves.
+    git_upstream._check_slot.acquire()
+    try:
+        state = git_upstream.force_check(local)
+    finally:
+        git_upstream._check_slot.release()
+
+    # No second fetch was piled on — the call just returned the existing
+    # cache, exactly as `_mutation_slot`'s docstring says a busy slot should
+    # be handled (never queue a second `git fetch` in the same repo).
+    assert state == cached
+
+
+def test_force_check_on_a_path_outside_any_repo_returns_none(tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+
+    assert git_upstream.force_check(str(plain), _runner=_sync) is None
+
+
+def test_force_check_gives_up_after_its_own_budget_and_the_fetch_finishes_later(
+    tmp_path, monkeypatch,
+):
+    """The whole point of the bounded wait: a fetch slower than
+    `DOCTOR_TIMEOUT_S` must not make `force_check` block past it. Here the
+    fetch is dispatched on a REAL background thread (a custom `_runner`, not
+    `_sync`) so the budget actually elapses while it's still running, then
+    the test waits for that thread itself before asserting the state landed
+    — covering "the row must reflect the answer once it resolves" without
+    involving the frontend's own retry."""
+    import threading as _threading
+
+    local = _clone_with_remote_ahead(tmp_path)
+    monkeypatch.setattr(git_upstream, "DOCTOR_TIMEOUT_S", 0.0)
+
+    threads = []
+
+    def _capture(fn):
+        t = _threading.Thread(target=fn, daemon=True, name="test-forced-check")
+        threads.append(t)
+        t.start()
+
+    state = git_upstream.force_check(local, _runner=_capture)
+
+    # A zero-second budget: the background fetch had no chance to land yet.
+    assert state is None
+
+    assert threads, "force_check must still have dispatched a background check"
+    threads[0].join(timeout=git_upstream.TIMEOUT_S + 5)
+
+    landed = git_upstream.repo_state_for(os.path.realpath(local))
+    assert landed is not None
+    assert landed["behind"] == 2
+
+
 def test_a_preview_render_triggers_no_check(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     from fused_render.server import create_app

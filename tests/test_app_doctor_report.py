@@ -690,6 +690,14 @@ def test_pull_is_not_offered_off_the_default_branch_and_the_row_says_why(workspa
     assert row["behind"] == 1
     assert row["onDefault"] is False
     assert "switch to" in row["detail"]
+    # Off the default branch, `behind` is measured against
+    # `origin/<default_branch>` — a DIFFERENT ref than the unpushed count's
+    # own `@{upstream}` base (see `_repo_health_check`'s docstring). Saying
+    # "behind origin" here would misleadingly suggest both halves of the row
+    # compare against the same thing; naming the default branch instead says
+    # what was actually checked.
+    assert "behind origin" not in row["detail"]
+    assert "1 commit behind main" in row["detail"]
 
 
 @pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
