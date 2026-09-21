@@ -302,7 +302,19 @@ def remove(req: dict) -> dict:
     return {"ok": True, "deleted_canvas": deleted_canvas}
 
 
-ACTIONS = {"publish": publish, "lookup": lookup, "remove": remove}
+def rules(req: dict) -> dict:
+    """The file-preview rule table (share_file_rules.py), rebuilt from the
+    catalog when the cache is missing or older than `ttl`. Runs here, not in
+    the server process, because building it needs the SDK."""
+    from fused_render import share_file_rules
+
+    ttl = req.get("ttl")
+    if ttl is None:
+        ttl = share_file_rules.RULES_TTL_INTERACTIVE
+    return {"rules": share_file_rules.load_rules(ttl=float(ttl))}
+
+
+ACTIONS = {"publish": publish, "lookup": lookup, "remove": remove, "rules": rules}
 
 
 def main() -> int:
