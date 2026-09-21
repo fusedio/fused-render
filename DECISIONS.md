@@ -3598,3 +3598,30 @@ things this round is meant to fix.
 Commands run: `bun test <7-file set>` (both orders), `bun test
 src/platform/lib/explain-with-ai.test.ts` (alone), `bun test
 src/platform/ui/ErrorBanner.test.tsx` (alone), `bunx tsc --noEmit`.
+
+## FIXES-round-3: G1 (Open in git → sidebar Git tab) and G2 (duplicate advice clause) — both landed
+
+G1: "Open in git" no longer navigates to a separate page. Threaded an `onOpenGit`
+callback from whichever surface owns the live `_side` state (Listing.tsx's
+confirm-leave-aware `setSide`, Preview.tsx's `applySide`) down through
+`useAppActionRows` → `AppDoctorModal` → `AppDoctorChecklist` → `CheckRow`, which
+calls it (then `onDone?.()`) in place of `navigate(...)` when provided. Falls back
+to the old cross-page `navigate()` only where there is no sidebar to open:
+`AppPage.tsx` (architecturally has no Git tab at all) and split-incapable
+panes/snapshots. Button styling unchanged. Commit `776e6e390`.
+
+G2: fixed `_repo_health_advice()` in `fused_render/app_doctor.py` duplicating
+"commit" — it read "commit or commit or stash your changes to pull..." whenever
+this row's own uncommitted path was ALSO the thing making the whole-repo `clean`
+signal false (the normal case, since a dirty subpath always dirties the whole
+repo). Now: `"stash your changes" if commit else "commit or stash your changes"`.
+Added a direct unit test over every single- and multi-bit combination
+(`test_repo_health_advice_names_only_what_actually_failed_no_git_needed`) and
+tightened the real-git dirty+behind test to the full fixed string. `65 passed` in
+`tests/test_app_doctor_report.py` before this note was written (the coordinator's
+wrap-up message afterward asked for no further test runs this round — none were
+run past that point). Commit `e28ae4890`.
+
+Nothing left unfinished from FIXES-round-3.md's G1/G2 scope. Not done in this
+round (out of scope per the brief): Pull gating, skip reasons, the consolidated
+check's state logic, the ErrorBanner call-site sweep, a Switch action.
