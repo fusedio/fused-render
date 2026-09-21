@@ -45,10 +45,8 @@ logger = logging.getLogger(__name__)
 # churn across many different folders needs one global floor for the same
 # reason RescanQueue's own per-folder floor is not enough here: this module
 # forwards folders it has never seen mutated before, from a source that can
-# emit tens of thousands of events in a few minutes (measured: 67k-78k in a
-# 5.5-minute window under a real `~`). 30s keeps the duty cycle well under
-# the ~10% ceiling the design targets — see DECISIONS.md for the measurement
-# that set it.
+# emit a large volume of raw events over a real `~` in a short window — see
+# DECISIONS.md for the live-measurement numbers that set this constant.
 WATCH_FLUSH_FLOOR_S = 30.0
 
 # The Syncthing-style backstop: if nothing forwarded a rescan of a root in
@@ -193,10 +191,10 @@ class WatchLoop:
     def _flush(self, pending: set) -> None:
         outermost = outermost_folders(pending)
         if len(outermost) > self.max_folders:
-            # A whole-root incremental walk (measured: 4.4s) beats scanning
-            # each of a burst's many folders separately, each ending in its
-            # own compaction — and it is the honest answer to a burst this
-            # loop cannot attribute to anything narrower.
+            # A whole-root incremental walk beats scanning each of a burst's
+            # many folders separately, each ending in its own compaction —
+            # and it is the honest answer to a burst this loop cannot
+            # attribute to anything narrower.
             self.forward({self.root})
         else:
             self.forward(set(outermost))
