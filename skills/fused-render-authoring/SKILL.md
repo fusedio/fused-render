@@ -40,6 +40,8 @@ No `pyproject.toml` in folder → app interpreter: stdlib plus exactly this bund
 - **Network & cloud:** `requests` `httpx` `botocore` `google-auth`
 - **Logs:** `drain3`
 
+**Render App portability:** the standalone Render App (`fused-render-app`) gives a `pyproject.toml`-less app the same set **except `botocore` and `google-auth`** (its `LEGACY_DEPS`, `fused_render_app/env.py`). Need either → declare it in a folder `pyproject.toml` (with the rest of your imports — see below), or the app opens fine in fused-render and fails in Render App.
+
 Anything else needs folder `pyproject.toml` (project root only; add `[tool.uv] package = false`). Facts:
 
 - Dependency list **complete** — bundled set NOT unioned in. Import numpy → declare numpy.
