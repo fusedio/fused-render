@@ -3018,3 +3018,149 @@ spawned a real thread watching `/Users/iamsdas` through the real
 was never driven through an actual `dev.sh`-started app, an actual file
 mutation reaching the explorer's search results, or the indexing-pref
 toggle's live effect on a running watch thread.
+
+### Follow-up fix round — 2026-09-21
+
+A second builder picked this branch up from an open PR to fix eleven
+findings from review (a full-suite regression, nine MUST-FIX defects, two
+judgement calls), strict TDD: a failing test before every code change.
+
+**A. Full-suite regression.** `tests/test_engine_requirements.py::
+test_the_import_map_covers_everything_the_app_ships` failed because
+`watchfiles` (a real, declared dependency — `pyproject.toml`'s
+`dependencies`) had no `_IMPORT_TO_DIST` entry. Added `"watchfiles":
+"watchfiles"`. Confirmed genuine (not a fake artifact): the whole file
+passes clean after.
+
+**B.1–B.9, all confirmed genuine defects** (none were dismissed — each
+reproduced with a failing test before the fix, per the TDD mandate):
+
+1. **The silent no-op.** `_make_loop`'s `forward=note_index_folders` handed
+   `WatchLoop` a callable that, called as `forward(folders)` (a single
+   iterable argument, per `WatchLoop`'s own contract — see
+   `self.forward({self.root})` / `self.forward(set(outermost))`), queued
+   nothing: `note_index_folders(*folders)` wants folders unpacked as
+   separate positional args, so the set itself became one bad argument and
+   failed `note_index_folders`'s `isinstance(f, str)` filter silently. This
+   is the textbook case the finding warned about: 15+ existing tests used a
+   `Fake.forward` with a *more permissive* shape (`forward(self, folders):
+   self.forwarded.append(set(folders))`) that could never catch this
+   mismatch. Fixed at the wiring seam only (`forward=lambda folders:
+   note_index_folders(*folders)`), not by changing `WatchLoop`'s contract —
+   that would have broken every other test relying on it. New test:
+   `test_a_real_flush_actually_reaches_the_rescan_queue`, which calls the
+   real `note_index_folders` instead of a fake.
+2. **Root-vs-parent clamp.** A change reported directly on a watched root
+   (`_folder_of` walks to the path's *parent*) could escape upward past the
+   root itself. Added `WatchLoop._clamp_to_root`, applied at the one place
+   folders are accumulated in `_run_one_watch`.
+3. **`.git` writes reached the filter.** `.git` is deliberately a
+   `LEAF_DIR_NAME`, not an ignore pattern, so `make_dropped`'s `dropped()`
+   never checked `is_inside_leaf_dir` — meaning `~/repo/.git/objects/ab/cdef`
+   survived the filter and forwarded a folder the index never indexes. An
+   active git repo writes under `.git/objects` constantly, making this the
+   hottest of the nine in practice. Fixed by adding the same
+   `is_inside_leaf_dir` check the real FSEvents journal gate
+   (`scan.py::_run_fsevents`) already uses, and correcting the docstring's
+   false claim of parity with that gate.
+4. **`_canon_folder` accepted a bare root.** Unlike `_folder_of` (used by
+   `note()`), `_canon_folder` (used by `note_folders()`/the watcher) did not
+   refuse a bare POSIX `/` or Windows drive root, so a raw root-level event
+   could queue a scan of `/` itself. Made it refuse the same way
+   `_folder_of` does.
+5. **Backoff reset on empty ticks.** The real `watchfiles.watch(...,
+   yield_on_timeout=True, rust_timeout=5000)` yields an empty `set()` every
+   5s even with zero activity. The old code reset `self._backoff_i = 0`
+   unconditionally on every tick, including empty ones — meaning a watch
+   that opens, gets one empty timeout tick, then raises (a vanished mount,
+   a permissions change) restarts at the first backoff rung forever instead
+   of ever escalating. Reset now gated on `if batch:` (a real change).
+6. **Periodic safety net re-fired every idle tick.** `_maybe_periodic_rescan`
+   asked for a rescan on every stale tick without remembering it had
+   already asked, so a refused ask (gate closed, scan in flight, whatever)
+   re-fired on the very next idle tick instead of waiting out its own
+   interval. Added `self._last_periodic_rescan_at` and folded it into the
+   staleness check.
+7. **`start()` could raise into the FastAPI lifespan.** `app.py`'s
+   `_lifespan` awaits every startup handler with no `try` — any raise from
+   `index_watch.start()` (an *optional* background feature) would have
+   killed server boot entirely. Rewrote `start()` so `_stop_event`/
+   `_threads` are assigned before determining roots, config-load/scan-roots
+   failures are caught and logged without raising, and a failure creating
+   one root's thread does not strand the others. `_lifespan` itself is
+   unchanged — the fix is entirely in the optional hook, per the finding's
+   framing.
+8. **Non-interruptible sleep.** `_make_loop` wired `sleep=time.sleep`, so a
+   thread parked in the 30s gate poll or a backoff delay ignored
+   `stop_event` for up to that long after shutdown was requested. Changed
+   to `sleep=stop_event.wait`, the same `sleep(delay)`-shaped call
+   `WatchLoop` and its tests already assume.
+9. **`MAX_FOLDERS` overflow was dropped, not deferred.** `_outermost`
+   truncated to `MAX_FOLDERS` and discarded the rest; a mutation burst
+   above the cap silently lost folders instead of catching them on a later
+   cycle, unlike every other case this same queue already defers (a folder
+   waiting out a live scan, or a floor). Care was taken (per the finding's
+   explicit warning) not to change `note()`'s existing shared-path
+   behavior beyond fixing the loss: `_outermost` now returns
+   `(this_cycle, excess)`, and `_fire` folds `excess` into the existing
+   `defer` dict rather than a new mechanism.
+
+**C.10 — judgement call, fixed.** `make_dropped`'s docstring claimed the
+index store's own directory (`cfg.dir`) was "already in `default_ignore()`"
+— false; `default_ignore()` only appends the per-home `**/mounts` patterns
+and `~/Library/Caches`. `cfg.dir` is a *settable* config key
+(`index/config.py`'s `IndexConfig.dir`), only incidentally covered by
+`MountGuard` because its default sits under the fused-render home. An index
+dir configured outside the home but under a watched root would reopen the
+exact self-trigger loop this filter exists to prevent (a scan writes
+parquet into `cfg.dir`, the watcher observes its own write, triggers the
+scan that triggered it). Took the "derive the filter from `cfg.dir`
+directly" option explicitly offered by the finding, since `cfg` is already
+in scope at every call site: `make_dropped` gained an optional `index_dir`
+parameter with an equal-or-under check, wired through all three production
+call sites (`_real_open_source`, `_shallow_watch_paths`'s fallback,
+`_make_loop`) as `index_dir=cfg.dir`. New test:
+`test_a_configured_index_dir_outside_the_fused_render_home_is_blocked`.
+
+**C.11 — judgement call, NOT fixed; documented here as a known
+limitation.** `index_watch.py:296`'s ignore filter (`make_dropped(...)`) is
+built once per watch loop at thread-start / watch-reopen time from
+`load_config()`, not re-read live. Concretely: `_make_loop` builds
+`WatchLoop.dropped` once, for the life of the thread (never rebuilt until
+process restart); `_real_open_source` rebuilds its own `dropped` fresh each
+time it is *called* — but that function is only called once per
+`watchfiles.watch(...)` open, which for a healthy watch with no errors can
+run for the process's entire lifetime. Net effect: editing the ignore list
+in the Indexing panel has no effect on an already-open live watch until
+either a reconnect (error/backoff) or a full server restart happens to
+occur.
+
+Investigated whether this is "genuinely cheap" to fix, per the finding's
+explicit permission not to force it: it is not. `load_config()` does an
+uncached disk read (`storage.read_json` on `config.json`) on every call —
+fine at "once per watch (re)open," but the only way to make the *live*
+filter honor an edit immediately is either (a) re-read config on every
+single filtered filesystem event, which adds a disk read to the hottest
+path in the module (the same path Finding #3's `.git/objects` churn
+measurement showed can run at thousands of events per minute), or (b)
+proactively interrupt and reopen every running watch thread when the
+ignore list is saved, which means wiring a new signal from the Indexing
+panel's save handler through to every live `WatchLoop`/`stop_event` pair —
+a real cross-cutting change, not a local one. Neither is "clean and cheap"
+by the finding's own bar. Left as-is: a saved ignore-list edit lags behind
+until the watch naturally reconnects or the server restarts, no worse than
+before this fix round, and explicitly flagged here rather than silently
+left unaddressed.
+
+**Verification.** Scoped tests only, per instruction:
+`tests/test_index_watch.py` (26 passed), `tests/test_index_touch.py`,
+`tests/test_index_ignore.py`, `tests/test_app_lifespan.py`,
+`tests/test_engine_requirements.py` (397 passed) — all green together.
+
+**Not verified on this macOS machine** (same caveat as the prior builder's
+entry above): the Linux `errno.ENOSPC` shallow-fallback branch
+(`_is_watch_limit_error`, `_shallow_watch_paths`) is code-reviewed only.
+`start()`/`stop()`'s new failure-isolation paths were exercised through
+unit tests with faked `load_config`/`scan_roots`/thread-creation failures,
+not through an actual `dev.sh`-started server hitting a real partial
+failure.
