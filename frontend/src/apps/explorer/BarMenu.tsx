@@ -264,7 +264,7 @@ export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
 
 // One vocabulary for every menu in the explorer: the bars' `⋮` rows are
 // ContextMenu's MenuItem, so a list built once (the folder menu, bar-menus'
-// folderMenu) renders in this dropdown and in a right-click <ContextMenu>
+// entryMenu) renders in this dropdown and in a right-click <ContextMenu>
 // without conversion. `icon` is the same 16px slot the mode rows use
 // (.bar-menu-item-icon) — a menu is all-or-nothing about icons in practice, so
 // a caller either gives every item one or none. `disabled` + `title` is a row
@@ -282,7 +282,7 @@ export type OverflowEntry = MenuEntry;
 // listing's own search row for a folder.
 //
 // Both callers took the items somewhere better. The folder's are in THE FOLDER
-// MENU (lib/bar-menus' folderMenu) — one list that the listing's kebab, its
+// MENU (lib/bar-menus' entryMenu) — one list that the listing's kebab, its
 // background right-click and the crumb bar's right-click all open. The file's
 // are in the CRUMB BAR'S RIGHT-CLICK MENU (Breadcrumb's onBarContextMenu, items
 // from lib/bar-menus), which is where the hand goes first on a bar and where
@@ -291,7 +291,7 @@ export type OverflowEntry = MenuEntry;
 //
 // `OverflowMenu` below stays: the panel pane bars use it for their own one-shot
 // ("Open in a new tab"), the file preview's crumb bar uses it as THE kebab for
-// the file menu (bar-menus' fileMenu: the app-level actions that used to stand
+// the file menu (bar-menus' entryMenu: the app-level actions that used to stand
 // in that bar as bordered buttons — App Doctor, Share, Open as project, MCP
 // config — with the file's own rows), and the folder listing's search row uses
 // it for the folder menu.

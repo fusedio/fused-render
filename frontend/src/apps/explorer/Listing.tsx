@@ -56,7 +56,7 @@ import { useFlip, FLIP_KEY_ATTR } from "@platform/lib/flip";
 import { useClipboard } from "@apps/explorer/lib/fs-clipboard";
 import ContextMenu from "@platform/ui/ContextMenu";
 import { OverflowMenu } from "@apps/explorer/BarMenu";
-import { folderMenu, splitItems } from "@apps/explorer/lib/bar-menus";
+import { entryMenu, splitItems } from "@apps/explorer/lib/bar-menus";
 import { enterPanel } from "@apps/explorer/lib/split-actions";
 import type { MenuEntry } from "@platform/ui/ContextMenu";
 import { PromptDialog, ConfirmDialog } from "@apps/explorer/FsDialogs";
@@ -991,14 +991,14 @@ export default function Listing({
   // right-click, the crumb bar's right-click through `folderMenuRef`). Built
   // per open, never memoised: Paste's enabled state tracks the clipboard and
   // the app rows track their probes. The groups and their order are
-  // bar-menus' folderMenu; this only fills them. Splits only where this
+  // bar-menus' entryMenu; this only fills them. Splits only where this
   // listing owns the bar — a panel pane already IS a split.
   const buildFolderMenu = (): MenuEntry[] => {
     const own = folderGroups();
-    return folderMenu({
+    return entryMenu({
       app: [...appRows.app, ...appRows.doctor],
       create: own.create,
-      folder: own.folder,
+      subject: own.subject,
       open: [
         ...(own.open ?? []),
         ...(ownsBarChrome ? splitItems((dir) => enterPanel(base, dir)) : []),

@@ -44,10 +44,29 @@ import { moveEntriesInto } from "@apps/explorer/lib/fs-move";
 import {
   canRenameBase,
   crumbMenu,
-  folderMenu,
-  type FolderMenuGroups,
+  entryMenu,
+  finderMenu,
+  type EntryMenuGroups,
   type RenameBaseGuard,
 } from "@apps/explorer/lib/bar-menus";
+import {
+  claudeCommandRow,
+  compressRow,
+  copyPathRow,
+  copyRow,
+  cutRow,
+  deleteRow,
+  duplicateRow,
+  newFileRow,
+  newFolderRow,
+  openInNewTabRow,
+  openRow,
+  openWithRow,
+  pasteRow,
+  refreshRow,
+  renameRow,
+  revealRow,
+} from "@apps/explorer/lib/entry-rows";
 import { publishTopbarMenu } from "@apps/explorer/topbar-menu";
 import {
   applyFsOp,
@@ -95,7 +114,7 @@ export function useFileOps({
   ownsBar?: boolean;
   // THE folder menu, as the owning view composes it — this hook's own groups
   // (`folderGroups`) plus whatever the view adds (Listing: the app rows, the
-  // embed row, the splits), through bar-menus' folderMenu. The bar's
+  // embed row, the splits), through bar-menus' entryMenu. The bar's
   // right-click opens it, so the bar, the kebab and the background all show one
   // list. A ref, because the view can only build it AFTER this hook has
   // returned the groups it composes from; read at click time, never captured.
@@ -826,105 +845,93 @@ export function useFileOps({
         },
       ];
     }
-    return [
-      { label: "Open", icon: MenuIcons.open, onClick: () => navigate(row.path, { isDir: row.isDir }) },
-      { label: "Open in New Tab", icon: MenuIcons.newTab, onClick: () => doOpenInNewTab(row.path) },
-      { label: "Open With", icon: MenuIcons.openWith, submenu: loadOpenWith(row.path) },
-      "separator",
-      { label: "Delete", icon: MenuIcons.trash, onClick: () => doTrash([row]) },
-      "separator",
-      { label: "Rename…", icon: MenuIcons.rename, onClick: () => startRename(row) },
-      { label: "Duplicate", icon: MenuIcons.duplicate, onClick: () => doDuplicate([row]) },
-      // Folders only, in Finder's position (after Duplicate, before Cut/Copy).
-      // Not on the multi-select or background menus: one archive per folder.
-      ...(row.isDir
-        ? [{ label: "Compress", icon: MenuIcons.compress, submenu: loadCompress(row) } as MenuEntry]
-        : []),
-      // Folders only, like Compress: the share sheet (ShareAppModal) — a public
-      // link or the whole folder as one .fused app file (SPEC §43 AF-4). Offered
-      // on every folder rather than probing the app entry up front — both
-      // routes validate server-side and their "not a fused app" reason is
-      // what the sheet's cards then say. Behind `app_sharing_enabled`
-      // (share-app-flag.ts, default off): flag off, the row is the plain
-      // "Export App File" it was before the sheet — straight to Downloads.
-      ...(row.isDir
-        ? [sharing
-            ? {
-                label: "Share…",
-                icon: MenuIcons.share,
-                onClick: () => openShareApp({ path: row.path, name: row.name }),
-              } as MenuEntry
-            : {
-                label: "Export App File",
-                // `download`, not `compress`: the Compress row sits directly
-                // above this one, and two rows with one glyph read as one
-                // action. Same glyph as the other flag-off surfaces.
-                icon: MenuIcons.download,
-                onClick: () => void exportAppFileOnly({ path: row.path, name: row.name }),
-              } as MenuEntry]
-        : []),
-      "separator",
-      { label: "Cut", icon: MenuIcons.cut, onClick: () => setClipboard({ paths: [row.path], op: "cut" }) },
-      { label: "Copy", icon: MenuIcons.copy, onClick: () => setClipboard({ paths: [row.path], op: "copy" }) },
-      { label: "Paste", icon: MenuIcons.paste, disabled: !clipboard, onClick: () => doPaste(dir) },
-      "separator",
-      { label: "Copy Path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(row.path) },
-      { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(row.path) },
-      {
-        label: "Copy Claude session command",
-        icon: MenuIcons.openWith,
-        onClick: () => doOpenInClaude(row.path, row.isDir, row.parentDir),
-      },
-    ];
+    // One row: the FINDER MENU (bar-menus' finderMenu), every group filled —
+    // the rows are entry-rows' factories, the clicks this hook's.
+    return finderMenu({
+      open: [
+        openRow(() => navigate(row.path, { isDir: row.isDir })),
+        openInNewTabRow(() => doOpenInNewTab(row.path)),
+        openWithRow(loadOpenWith(row.path)),
+      ],
+      delete: [deleteRow(() => doTrash([row]))],
+      edit: [
+        renameRow(() => startRename(row)),
+        duplicateRow(() => doDuplicate([row])),
+        // Folders only, in Finder's position (after Duplicate, before Cut/Copy).
+        // Not on the multi-select or background menus: one archive per folder.
+        ...(row.isDir ? [compressRow(loadCompress(row))] : []),
+        // Folders only, like Compress: the share sheet (ShareAppModal) — a public
+        // link or the whole folder as one .fused app file (SPEC §43 AF-4). Offered
+        // on every folder rather than probing the app entry up front — both
+        // routes validate server-side and their "not a fused app" reason is
+        // what the sheet's cards then say. Behind `app_sharing_enabled`
+        // (share-app-flag.ts, default off): flag off, the row is the plain
+        // "Export App File" it was before the sheet — straight to Downloads.
+        ...(row.isDir
+          ? [sharing
+              ? {
+                  label: "Share…",
+                  icon: MenuIcons.share,
+                  onClick: () => openShareApp({ path: row.path, name: row.name }),
+                } as MenuEntry
+              : {
+                  label: "Export App File",
+                  // `download`, not `compress`: the Compress row sits directly
+                  // above this one, and two rows with one glyph read as one
+                  // action. Same glyph as the other flag-off surfaces.
+                  icon: MenuIcons.download,
+                  onClick: () => void exportAppFileOnly({ path: row.path, name: row.name }),
+                } as MenuEntry]
+          : []),
+      ],
+      clip: [
+        cutRow(() => setClipboard({ paths: [row.path], op: "cut" })),
+        copyRow(() => setClipboard({ paths: [row.path], op: "copy" })),
+        pasteRow(!!clipboard, () => doPaste(dir)),
+      ],
+      copy: [
+        copyPathRow(() => doCopyPath(row.path)),
+        revealRow(() => doReveal(row.path)),
+        claudeCommandRow(() => doOpenInClaude(row.path, row.isDir, row.parentDir)),
+      ],
+    });
   };
 
-  // This hook's share of the FOLDER MENU (bar-menus' folderMenu groups) —
-  // everything that operates on the current folder through the clipboard,
-  // the dialogs and the refetch this hook owns. The owning view adds its own
-  // groups (Listing: the app rows, embed, splits) and composes the one list
-  // every surface shows; nothing here is a menu on its own.
+  // This hook's share of the ENTRY MENU over a folder (bar-menus' entryMenu
+  // groups) — everything that operates on the current folder through the
+  // clipboard, the dialogs and the refetch this hook owns. The owning view
+  // adds its own groups (Listing: the app rows, embed, splits) and composes
+  // the one list every surface shows; nothing here is a menu on its own.
   //
   // Finder order within `create`: New Folder before New File. "Rename…" is in
-  // `folder` only when canRenameBase allows renaming THIS folder — root, home
+  // `subject` only when canRenameBase allows renaming THIS folder — root, home
   // and mount roots never get it. Rebuilt per call, which is how Paste's
   // enabled state tracks the clipboard.
-  const folderGroups = (): Pick<FolderMenuGroups, "create" | "folder" | "open" | "copy"> => {
+  const folderGroups = (): Pick<EntryMenuGroups, "create" | "subject" | "open" | "copy"> => {
     loadRenameGuard(); // a failed mount-time read gets another go on every open
     const dir = normDir(base);
     return {
       create: [
-        { label: "New Folder…", icon: MenuIcons.newFolder, onClick: () => startNewFolder(base) },
-        { label: "New File…", icon: MenuIcons.newFile, onClick: () => startNewFile(base) },
-        { label: "Paste", icon: MenuIcons.paste, disabled: !clipboard, onClick: () => doPaste(base) },
+        newFolderRow(() => startNewFolder(base)),
+        newFileRow(() => startNewFile(base)),
+        pasteRow(!!clipboard, () => doPaste(base)),
       ],
-      folder: [
-        ...(canRenameBase(dir, renameGuard)
-          ? [{ label: "Rename…", icon: MenuIcons.rename, onClick: () => startRenameFolder(dir) }]
-          : []),
-        { label: "Refresh", icon: MenuIcons.refresh, onClick: refetch },
+      subject: [
+        ...(canRenameBase(dir, renameGuard) ? [renameRow(() => startRenameFolder(dir))] : []),
+        refreshRow(refetch),
       ],
       // Reveal → Open in New Tab, then (from the view) embed and the splits, in
-      // the order the file menu (bar-menus' fileMenu) keeps the shared
-      // pair: the two bars are one surface to the user. Here the folder is the
-      // one being listed, so the new tab opens on the current directory.
-      open: [
-        { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(dir) },
-        { label: "Open in New Tab", icon: MenuIcons.newTab, onClick: () => doOpenInNewTab(dir) },
-      ],
-      copy: [
-        { label: "Copy path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(dir) },
-        {
-          label: "Copy Claude session command",
-          icon: MenuIcons.openWith,
-          onClick: () => doOpenInClaude(dir, true, dir),
-        },
-      ],
+      // the order the file's fill of the same menu keeps the shared pair: the
+      // two bars are one surface to the user. Here the folder is the one being
+      // listed, so the new tab opens on the current directory.
+      open: [revealRow(() => doReveal(dir)), openInNewTabRow(() => doOpenInNewTab(dir))],
+      copy: [copyPathRow(() => doCopyPath(dir)), claudeCommandRow(() => doOpenInClaude(dir, true, dir))],
     };
   };
 
   // The list the crumb bar's right-click opens: the view's composed menu when
   // it published one, this hook's groups alone otherwise.
-  const barMenu = (): MenuEntry[] => folderMenuRef?.current?.() ?? folderMenu(folderGroups());
+  const barMenu = (): MenuEntry[] => folderMenuRef?.current?.() ?? entryMenu(folderGroups());
 
   // Hand that menu to the crumb bar for as long as this view owns it.
   //

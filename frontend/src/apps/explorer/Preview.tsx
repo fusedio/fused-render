@@ -41,7 +41,20 @@ import {
   friendlyFsError,
   claudeTerminalCommand,
 } from "@apps/explorer/lib/fs-actions";
-import { crumbMenu, fileMenu, splitItems } from "@apps/explorer/lib/bar-menus";
+import { crumbMenu, entryMenu, finderMenu, splitItems } from "@apps/explorer/lib/bar-menus";
+import {
+  claudeCommandRow,
+  copyPathRow,
+  copyRow,
+  cutRow,
+  deleteRow,
+  duplicateRow,
+  openInNewTabRow,
+  openWithRow,
+  renameRow,
+  revealRow,
+  setPreviewRow,
+} from "@apps/explorer/lib/entry-rows";
 import { getShareFileStatus, openShareFile } from "@platform/lib/share-file";
 import { useAppSharingFeature } from "@platform/lib/share-app-flag";
 import { enterPanel } from "@apps/explorer/lib/split-actions";
@@ -413,6 +426,14 @@ function usePreviewFileMenu(
   // returned the groups it composes. Absent (FallbackPreview, which has no
   // kebab), the bar shows this hook's groups alone.
   fileMenuRef?: React.MutableRefObject<(() => MenuEntry[]) | null>,
+  // IS THIS FILE AN APP'S FACE? Answered ONCE, by useAppActionRows' probe of
+  // /api/apps/entry (the one shared entry rule — under the marker rule a
+  // filename says nothing), and handed down rather than asked again here.
+  // Only an entry gets "Set Current View as Preview": a preview.png beside a
+  // plain html file has no card to show it. FallbackPreview passes `false`:
+  // it mounts no app rows, and the shot needs a `.preview-frame` it never
+  // renders, so the row could not have succeeded there anyway.
+  isEntry = false,
 ) {
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
   const [dialog, setDialog] = useState<PreviewDialog | null>(null);
@@ -548,22 +569,22 @@ function usePreviewFileMenu(
     );
   };
 
-  // Menu for the open file, macOS Finder order. No Open (already viewing it),
-  // no Paste/New/Refresh/Download (nothing to paste INTO from a single file).
-  const buildMenu = (): MenuEntry[] => [
-    { label: "Open With", icon: MenuIcons.openWith, submenu: loadOpenWith },
-    "separator",
-    { label: "Delete", icon: MenuIcons.trash, onClick: doTrash },
-    "separator",
-    { label: "Rename…", icon: MenuIcons.rename, onClick: startRename },
-    { label: "Duplicate", icon: MenuIcons.duplicate, onClick: doDuplicate },
-    "separator",
-    { label: "Cut", icon: MenuIcons.cut, onClick: () => setClipboard({ paths: [fsPath], op: "cut" }) },
-    { label: "Copy", icon: MenuIcons.copy, onClick: () => setClipboard({ paths: [fsPath], op: "copy" }) },
-    "separator",
-    { label: "Copy Path", icon: MenuIcons.copyPath, onClick: doCopyPath },
-    { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: doReveal },
-  ];
+  // The pane header's right-click: the FINDER MENU (bar-menus' finderMenu),
+  // the listing row's groups with fewer rows. No Open (already viewing it),
+  // no Open in New Tab, no Paste/New/Refresh (nothing to paste INTO from a
+  // single file), no Compress, no Claude command (owner, 2026-09-22: keep as
+  // is). The rows are entry-rows' factories, the clicks this hook's.
+  const buildMenu = (): MenuEntry[] =>
+    finderMenu({
+      open: [openWithRow(loadOpenWith)],
+      delete: [deleteRow(doTrash)],
+      edit: [renameRow(startRename), duplicateRow(doDuplicate)],
+      clip: [
+        cutRow(() => setClipboard({ paths: [fsPath], op: "cut" })),
+        copyRow(() => setClipboard({ paths: [fsPath], op: "copy" })),
+      ],
+      copy: [copyPathRow(doCopyPath), revealRow(doReveal)],
+    });
 
   const onContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -577,28 +598,6 @@ function usePreviewFileMenu(
       if (ok) notify({ title: "Command copied — paste it in your terminal", tone: "info" });
     });
   };
-
-  // IS THIS FILE AN APP'S FACE? The one shared entry rule, asked of the server
-  // (/api/apps/entry) exactly as useAppActionRows asks it — under the marker
-  // rule a filename says nothing. Only an entry gets "Set Current View as
-  // Preview": a preview.png beside a plain html file has no card to show it.
-  const [isAppEntry, setIsAppEntry] = useState(false);
-  useEffect(() => {
-    let alive = true;
-    setIsAppEntry(false);
-    if (stat.is_dir) return;
-    const canon = (p: string) => (/^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p);
-    getAppEntry(parent)
-      .then((r) => {
-        if (alive) setIsAppEntry(r.entry != null && canon(r.entry) === fsPath);
-      })
-      .catch(() => {
-        /* indeterminate reads as "not an entry" — no verb for nothing */
-      });
-    return () => {
-      alive = false;
-    };
-  }, [fsPath, parent, stat.is_dir]);
 
   // SHARE, FOR THE FILE ITSELF — same flag as the app sheet (share-app-flag.ts:
   // "ON, each surface shows ONE Share entry"), reused here so a reader flips
@@ -690,9 +689,10 @@ function usePreviewFileMenu(
     );
   };
 
-  // THIS HOOK'S SHARE OF THE FILE MENU (bar-menus' fileMenu), by group. The
-  // view composes them with the app rows into the one list its kebab and the
-  // crumb bar's right-click both show. Two pieces come back on their own rather
+  // THIS HOOK'S SHARE OF THE ENTRY MENU over a file (bar-menus' entryMenu),
+  // by group — the rows from entry-rows, the clicks this hook's. The view
+  // composes them with the app rows into the one list its kebab and the crumb
+  // bar's right-click both show. Two pieces come back on their own rather
   // than inside a group because the view has to slot rows around them:
   //   `setPreview` belongs in `app` AFTER the app rows (it photographs the app
   //   the file fronts — Akshil, 2026-08-27: "if I right-click ... I want an
@@ -706,16 +706,12 @@ function usePreviewFileMenu(
   //   EntryActionsMenu.tsx — a different concept), behind the same flag the
   //   app sheet uses. Present but disabled — never silently missing — for an
   //   extension the Fused catalog has no viewer for, naming the reason.
-  // Rebuilt per call: `isAppEntry`/`shareEligibility` land after first paint.
-  const fileGroups = (): Record<"file" | "open" | "share" | "copy" | "setPreview" | "splits", MenuEntry[]> => ({
-    file: [{ label: "Rename…", icon: MenuIcons.rename, onClick: startRename }],
+  // Rebuilt per call: `isEntry`/`shareEligibility` land after first paint.
+  const fileGroups = (): Record<"subject" | "open" | "share" | "copy" | "setPreview" | "splits", MenuEntry[]> => ({
+    subject: [renameRow(startRename)],
     open: [
-      { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: doReveal },
-      {
-        label: "Open in New Tab",
-        icon: MenuIcons.newTab,
-        onClick: () => window.open(urlForFsPath(fsPath), "_blank", "noopener"),
-      },
+      revealRow(doReveal),
+      openInNewTabRow(() => window.open(urlForFsPath(fsPath), "_blank", "noopener")),
     ],
     share: shareRow({
       sharingEnabled: sharingFilesEnabled,
@@ -724,13 +720,8 @@ function usePreviewFileMenu(
       eligibility: shareEligibility,
       onClick: doShareFile,
     }),
-    copy: [
-      { label: "Copy Path", icon: MenuIcons.copyPath, onClick: doCopyPath },
-      { label: "Copy Claude session command", icon: MenuIcons.openWith, onClick: doOpenInClaude },
-    ],
-    setPreview: isAppEntry
-      ? [{ label: "Set Current View as Preview", icon: MenuIcons.camera, onClick: doSetPreview }]
-      : [],
+    copy: [copyPathRow(doCopyPath), claudeCommandRow(doOpenInClaude)],
+    setPreview: isEntry ? [setPreviewRow(doSetPreview)] : [],
     splits: !stat.is_dir && !IS_EMBED ? splitItems((dir) => enterPanel(fsPath, dir)) : [],
   });
 
@@ -740,9 +731,9 @@ function usePreviewFileMenu(
   const barMenuItems = (): MenuEntry[] => {
     if (fileMenuRef?.current) return fileMenuRef.current();
     const own = fileGroups();
-    return fileMenu({
+    return entryMenu({
       app: own.setPreview,
-      file: own.file,
+      subject: own.subject,
       open: [...own.open, ...own.splits],
       share: own.share,
       copy: own.copy,
@@ -2079,9 +2070,6 @@ function TemplatePreview({
     else void setMode(m);
   };
   const loadOpenWith = () => Promise.resolve(buildOpenWithItems(templates, openMode));
-  const fileMenuRef = useRef<(() => MenuEntry[]) | null>(null);
-  const fileOps = usePreviewFileMenu(fsPath, stat, loadOpenWith, actionsInTopbar, fileMenuRef);
-
   // THE APP ROWS (EntryActionsMenu's hook): App Doctor, Share, Open as project,
   // MCP config, gated on this file being its folder's entry page (the hook asks
   // /api/apps/entry), and Open in embed. Over a DIRECTORY previewed by this
@@ -2136,10 +2124,17 @@ function TemplatePreview({
     onOpenGit: splitCapable ? () => applySide("git") : undefined,
   });
 
+  // AFTER useAppActionRows, deliberately: its `isEntry` (the one probe of
+  // /api/apps/entry) is what gates this hook's Set Current View as Preview.
+  // Both hooks are unconditional, so the order is a plain reorder, not a
+  // rules-of-hooks concern.
+  const fileMenuRef = useRef<(() => MenuEntry[]) | null>(null);
+  const fileOps = usePreviewFileMenu(fsPath, stat, loadOpenWith, actionsInTopbar, fileMenuRef, appRows.isEntry);
+
   // THE FILE MENU — one list, two surfaces (the kebab, the crumb bar's
   // right-click through `fileMenuRef`). Built per open, never memoised: the
   // app rows track their probes. The groups and their order are bar-menus'
-  // fileMenu; this only fills them. The file's own rows (Rename, Reveal, the
+  // entryMenu; this only fills them. The file's own rows (Rename, Reveal, the
   // copies, the splits, Set Current View as Preview) join ONLY where this
   // preview owns the crumb bar over a FILE — the same `ownsBar` the bar menu
   // is published on. Elsewhere the kebab stays the app rows alone, as it was:
@@ -2149,11 +2144,11 @@ function TemplatePreview({
   // instead.
   const ownsFileBar = !!actionsInTopbar && !stat.is_dir;
   const buildFileMenu = (): MenuEntry[] => {
-    if (!ownsFileBar) return fileMenu({ app: [...appRows.app, ...appRows.doctor], embed: appRows.embed });
+    if (!ownsFileBar) return entryMenu({ app: [...appRows.app, ...appRows.doctor], embed: appRows.embed });
     const own = fileOps.fileGroups();
-    return fileMenu({
+    return entryMenu({
       app: [...appRows.app, ...own.setPreview, ...appRows.doctor],
-      file: own.file,
+      subject: own.subject,
       open: [...own.open, ...own.splits],
       share: own.share,
       copy: own.copy,
@@ -2817,7 +2812,9 @@ function FallbackPreview({
   // No renderable views back this file (that's why it's the fallback), so Open
   // With resolves to the empty "No views available" list without a re-stat.
   const loadOpenWith = () => Promise.resolve(buildOpenWithItems([], () => {}));
-  const fileOps = usePreviewFileMenu(fsPath, stat, loadOpenWith, actionsInTopbar);
+  // No kebab (no `fileMenuRef`) and no app rows: a file with no view behind it
+  // is never treated as an app's entry page here (`isEntry` false).
+  const fileOps = usePreviewFileMenu(fsPath, stat, loadOpenWith, actionsInTopbar, undefined, false);
   return (
     <>
       {!actionsInTopbar && <Header fsPath={fsPath} stat={stat} onContextMenu={fileOps.onContextMenu} />}

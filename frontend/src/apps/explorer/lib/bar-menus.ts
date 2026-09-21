@@ -1,39 +1,39 @@
-// The item lists for the explorer's kebab and CRUMB BAR right-click menus, in
-// the two states the bar has: over a folder (the listing owns it) and over a
-// single file (the preview owns it).
+// The GROUPED menu builders for an entry in the explorer — one for the bars,
+// one for the Finder-style right-clicks — plus the ancestor-crumb menu, the
+// split pair and the folder-rename guard.
 //
-// Plain builders taking their actions as callbacks, for the reason every other
-// menu in the explorer is built this way (listing/useFileOps, lib/fs-actions'
+// Plain builders taking their rows as input, for the reason every other menu
+// in the explorer is built this way (listing/useFileOps, lib/fs-actions'
 // buildOpenWithItems): there are no React component tests in this repo, so a
 // menu's shape is only checkable when the list is a function of its inputs
 // rather than JSX inline in a handler. bar-menus.test.ts is the whole argument.
 //
-// THE FOLDER MENU IS ONE LIST ON THREE SURFACES — the listing's kebab (`⋮` in
-// the search row), a right-click on the listing's empty background, and a
-// right-click on the crumb bar over the folder. They used to be three lists:
-// the kebab carried the app rows (Share, Open as project, MCP, App Doctor,
-// embed) and then the folder ops and the splits; the background right-click
-// carried the folder ops alone, in a different order; the bar carried the
-// folder ops and the splits. Same folder, three menus that disagreed about
-// what you could do to it. `folderMenu` below is the ONE builder: every
-// surface hands it the same grouped input and shows the same rows in the same
-// order. The rows themselves are not written out here — the folder ops come
-// from useFileOps (clipboard, dialogs, refetch it owns), the app rows from
-// EntryActionsMenu's hook — so no surface can grow a private copy.
+// THE ENTRY MENU IS ONE LIST ON FIVE SURFACES — over a folder: the listing's
+// kebab (`⋮` in the search row), a right-click on the listing's empty
+// background, a right-click on the crumb bar; over a file: the preview's
+// kebab (`⋮` after the mode control) and a right-click on the crumb bar. They
+// used to be five lists, then two builders (`folderMenu`, `fileMenu`) that
+// were the same loop over two group interfaces differing in one key.
+// `entryMenu` below is the ONE builder: every surface hands it the same
+// grouped input and shows the same rows in the same order. The rows themselves
+// are not written out here — they come from lib/entry-rows (label + glyph,
+// once); the folder ops' clicks from useFileOps, the file ops' from Preview's
+// usePreviewFileMenu, the app rows from EntryActionsMenu's hook — so no
+// surface can grow a private copy.
 //
-// THE FILE MENU IS THE SAME ARRANGEMENT ON TWO SURFACES — the file preview's
-// kebab (`⋮` after the mode control) and a right-click on the crumb bar over
-// the open file. They used to be two lists: the kebab carried the app rows
-// alone, the bar carried Rename, Reveal, the copies and the splits, and nothing
-// showed both. `fileMenu` below is the file's ONE builder, the folder menu's
-// groups minus `create` (there is nothing to put INTO a file): the app rows
-// come from EntryActionsMenu's hook, the file ops from Preview's
-// usePreviewFileMenu (its rename dialog, its clipboard, its preview shot).
+// THE FINDER MENU IS THE SAME ARRANGEMENT ON TWO SURFACES — a right-click on a
+// listing row and on a pane preview's header. These carry the destructive
+// verbs (Delete, Cut) the bar menus deliberately do not: a top bar is not
+// where a file gets destroyed. They used to be two inline arrays that spelled
+// the Finder rows twice with slightly different sets; `finderMenu` is their
+// one builder. The pane header fills fewer groups than the row (no Open, no
+// Paste, no Compress, no Claude command — owner, 2026-09-22: keep as is) and
+// gets the same separator structure back for what it did fill.
 import { createElement } from "react";
 import type { MenuEntry } from "@platform/ui/ContextMenu";
-import { MenuIcons } from "@platform/ui/MenuIcons";
 import { SplitDownIcon, SplitRightIcon } from "@platform/ui/SplitIcons";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
+import { openInNewTabRow, revealRow } from "@apps/explorer/lib/entry-rows";
 
 export type SplitDir = "row" | "col";
 
@@ -80,9 +80,8 @@ export function canRenameBase(dir: string, guard: RenameBaseGuard): boolean {
 }
 
 // The two split-entry rows, with the same glyphs the panel bar uses. One
-// definition for the file bar's menu and the folder menu's `open` group,
-// because "Split right" that means `row` in one menu and `col` in another is
-// the kind of bug nobody re-checks.
+// definition for every menu's `open` group, because "Split right" that means
+// `row` in one menu and `col` in another is the kind of bug nobody re-checks.
 export function splitItems(onSplit: (dir: SplitDir) => void): MenuEntry[] {
   return [
     {
@@ -98,50 +97,63 @@ export function splitItems(onSplit: (dir: SplitDir) => void): MenuEntry[] {
   ];
 }
 
-// The folder menu's GROUPS, in the order they are shown. A group is a run of
+// The entry menu's GROUPS, in the order they are shown. A group is a run of
 // rows with a separator either side; an empty or absent group draws nothing,
 // not a stray rule.
 //
-//   app     what this folder IS, when it is an app: Share…, Open as
-//           project, MCP config, App Doctor. First because it is the reason the
-//           kebab carries a status dot, and absent on a plain folder.
-//   create  things that put something new in this folder: New Folder…,
-//           New File…, Paste. The verbs a hand reaches for a background menu
-//           for, so they lead once the app rows are out of the way.
-//   folder  the folder itself: Rename…, Refresh.
-//   open    the same folder somewhere else: Reveal in Finder, Open in New
-//           Tab, Split right, Split down. One group because they all answer
-//           "show me this elsewhere"; the splits are not a special case of
-//           anything, just two more elsewheres.
-//   copy    text to the clipboard: Copy path, Copy Claude session command.
-//   embed   Open in embed, LAST and alone (owner, 2026-09-20: "move open in
-//           embed to the bottom"): it leaves the explorer for the chrome-free
-//           view, so it closes the list rather than sitting among the rows
-//           that keep you here.
+//   app      what this entry IS, when it is an app (or an app's entry page):
+//            Share…, Open as project, MCP config, App Doctor, and on the entry
+//            page Set Current View as Preview — the one row that photographs
+//            the app rather than acting on the file. First because it is the
+//            reason the kebab carries a status dot, and absent on a plain
+//            folder or file.
+//   create   things that put something new INTO this folder: New Folder…,
+//            New File…, Paste. The verbs a hand reaches for a background menu
+//            for, so they lead once the app rows are out of the way. Always
+//            empty for a file (there is nothing to put into one).
+//   subject  the entry itself: Rename…, and for a folder Refresh. Deliberately
+//            NOT the Finder menu's Bin/Duplicate/Cut/Copy — a top bar is not
+//            where a file gets destroyed.
+//   open     the same entry somewhere else: Reveal in Finder, Open in New Tab,
+//            Split right, Split down. One group because they all answer "show
+//            me this elsewhere"; the splits are not a special case of anything,
+//            just two more elsewheres.
+//   share    Share… for a FILE itself (share-any-file-plan.md task 7) — its
+//            own group so it reads as one decision, not folded into `open` or
+//            `copy`. A folder's Share… is the app sheet, in `app`; only a file
+//            ever fills this one.
+//   copy     text to the clipboard: Copy Path, Copy Claude session command.
+//   embed    Open in embed, LAST and alone (owner, 2026-09-20: "move open in
+//            embed to the bottom"): it leaves the explorer for the chrome-free
+//            view, so it closes the list rather than sitting among the rows
+//            that keep you here.
 //
 // Each surface fills what it may offer (a panel pane cannot split or embed; a
-// folder that is not an app has no `app` rows) and gets the same shape back
-// for what it did fill — which is how the three surfaces show one menu.
-export interface FolderMenuGroups {
+// folder that is not an app has no `app` rows; a file has no `create`) and
+// gets the same shape back for what it did fill — which is how five surfaces
+// show one menu.
+export interface EntryMenuGroups {
   app?: MenuEntry[];
   create?: MenuEntry[];
-  folder?: MenuEntry[];
+  subject?: MenuEntry[];
   open?: MenuEntry[];
+  share?: MenuEntry[];
   copy?: MenuEntry[];
   embed?: MenuEntry[];
 }
 
-const FOLDER_GROUP_ORDER: (keyof FolderMenuGroups)[] = [
+const ENTRY_GROUP_ORDER: (keyof EntryMenuGroups)[] = [
   "app",
   "create",
-  "folder",
+  "subject",
   "open",
+  "share",
   "copy",
   "embed",
 ];
 
 // Groups → one flat list, a separator between consecutive NON-EMPTY groups and
-// never at either end. Shared by the folder and file builders so the two menus
+// never at either end. Shared by both builders so the two menu families
 // cannot drift in how they draw a divider.
 function groupedMenu<G extends string>(
   order: readonly G[],
@@ -157,8 +169,33 @@ function groupedMenu<G extends string>(
   return out;
 }
 
-export function folderMenu(groups: FolderMenuGroups): MenuEntry[] {
-  return groupedMenu(FOLDER_GROUP_ORDER, groups);
+export function entryMenu(groups: EntryMenuGroups): MenuEntry[] {
+  return groupedMenu(ENTRY_GROUP_ORDER, groups);
+}
+
+// The Finder menu's GROUPS, macOS Finder order — the structure both the
+// listing row's and the pane header's right-click already had, now named:
+//
+//   open    Open, Open in New Tab, Open With. The pane header fills only Open
+//           With (it is already showing the file).
+//   delete  Delete, alone between rules, as Finder sets Move to Bin.
+//   edit    Rename…, Duplicate, then folders only: Compress, Share…/Export App
+//           File.
+//   clip    Cut, Copy, Paste. The pane header has no Paste (nothing to paste
+//           INTO from a single file).
+//   copy    Copy Path, Reveal in Finder, Copy Claude session command.
+export interface FinderMenuGroups {
+  open?: MenuEntry[];
+  delete?: MenuEntry[];
+  edit?: MenuEntry[];
+  clip?: MenuEntry[];
+  copy?: MenuEntry[];
+}
+
+const FINDER_GROUP_ORDER: (keyof FinderMenuGroups)[] = ["open", "delete", "edit", "clip", "copy"];
+
+export function finderMenu(groups: FinderMenuGroups): MenuEntry[] {
+  return groupedMenu(FINDER_GROUP_ORDER, groups);
 }
 
 export interface CrumbActions {
@@ -172,56 +209,12 @@ export interface CrumbActions {
 // to the OS". A crumb is a navigation handle, not a row you selected, so the
 // editing verbs (Rename/Cut/Paste/Delete) have no business here — they belong
 // on the listing rows, which do carry the full menu (useFileOps.rowMenu).
-// What this must NOT be is the bar's own folder menu — that list acts on
+// What this must NOT be is the bar's own entry menu — that list acts on
 // the CURRENT directory (New File, Paste, Refresh), so on an ancestor crumb it
 // answered about the wrong folder entirely, which is the bug this fixes.
 //
 // The current folder's crumb keeps the bar menu: there the two are the same
 // folder, and the full list is right.
 export function crumbMenu(actions: CrumbActions): MenuEntry[] {
-  return [
-    { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: actions.onReveal },
-    { label: "Open in New Tab", icon: MenuIcons.newTab, onClick: actions.onOpenInNewTab },
-  ];
-}
-
-// The file menu's GROUPS, in the order they are shown — the folder menu's
-// groups without `create`, so a file and its folder read as one menu family:
-//
-//   app   what the file's folder IS, when the file is its entry page: Share…,
-//         Open as project, MCP config, App Doctor, and Set Current View as
-//         Preview — the one row that photographs the app rather than acting on
-//         the file. First for the folder menu's reason: it carries the status
-//         dot, and it is absent on a plain file.
-//   file  the file itself: Rename…. Deliberately NOT the preview header's full
-//         Finder menu (Preview's buildMenu): no Open With (the mode control is
-//         two inches away in the same bar), no Bin/Duplicate/Cut/Copy — a top
-//         bar is not where a file gets destroyed.
-//   open  the same file somewhere else: Reveal in Finder, Open in New Tab,
-//         Split right, Split down — the folder menu's `open` row for row, so
-//         the shared pair never swaps places between the two bars (they are
-//         one surface to the user).
-//   share Share… for the file ITSELF (share-any-file-plan.md task 7) — its
-//         own group so it reads as one decision, not folded into `open` or
-//         `copy`. Own group's `app`-namesake Share… (above) is the folder's;
-//         this one is the plain file's, and only a file ever fills it.
-//   copy  text to the clipboard: Copy Path, Copy Claude session command.
-//   embed Open in embed, last and alone — the folder menu's reason.
-//
-// Each surface fills what it may offer (a pane cannot split; a directory
-// previewed in a non-listing mode has no file rows at all) and gets the same
-// shape back for what it did fill.
-export interface FileMenuGroups {
-  app?: MenuEntry[];
-  file?: MenuEntry[];
-  open?: MenuEntry[];
-  share?: MenuEntry[];
-  copy?: MenuEntry[];
-  embed?: MenuEntry[];
-}
-
-const FILE_GROUP_ORDER: (keyof FileMenuGroups)[] = ["app", "file", "open", "share", "copy", "embed"];
-
-export function fileMenu(groups: FileMenuGroups): MenuEntry[] {
-  return groupedMenu(FILE_GROUP_ORDER, groups);
+  return [revealRow(actions.onReveal), openInNewTabRow(actions.onOpenInNewTab)];
 }
