@@ -364,7 +364,13 @@ def _make_loop(root: str, stop_event: threading.Event) -> WatchLoop:
         last_scan=lambda r: runner.last_scan(load_config(), r),
         live_run_covers=lambda r: _scan_in_flight(load_config(), r),
         gate_open=index_gate.indexing_allowed,
-        sleep=time.sleep,
+        # `stop_event.wait(delay)` is `time.sleep(delay)` that returns as
+        # soon as `stop_event` is set instead of ignoring it until it wakes
+        # on its own — without this a thread parked in the 30s gate poll or
+        # the 120s backoff keeps an open watch (and can still start a scan)
+        # for up to that long after shutdown was requested. Same
+        # `sleep(delay)` shape `WatchLoop` and its tests already rely on.
+        sleep=stop_event.wait,
         stop_event=stop_event,
     )
 

@@ -515,6 +515,34 @@ def test_start_degrades_instead_of_raising_when_roots_cannot_be_determined(monke
     assert iw._threads == []
 
 
+def test_the_real_sleep_is_interruptible_by_stop_event():
+    """`sleep=time.sleep` (the old wiring) ignores `stop_event` until it
+    wakes on its own — a thread parked in the 30s gate poll or the 120s
+    backoff keeps an open watch (and can start a scan) after shutdown was
+    requested, for up to that long. `stop_event.wait(delay)` is
+    interruptible for free and returns immediately once the event is set,
+    while keeping the same `sleep(delay)` shape the injected testability
+    relies on."""
+    stop = threading.Event()
+    loop = _make_loop("/home/me", stop)
+
+    started = time.time()
+
+    def set_soon():
+        time.sleep(0.1)
+        stop.set()
+
+    t = threading.Thread(target=set_soon, daemon=True)
+    t.start()
+    loop.sleep(30.0)  # the real gate_poll_s magnitude; must NOT block 30s
+    elapsed = time.time() - started
+    t.join(timeout=2)
+
+    assert elapsed < 5.0, (
+        f"sleep(30.0) took {elapsed:.2f}s after stop_event was set almost "
+        "immediately — it is not interruptible")
+
+
 # --------------------------------------------------------- real filesystem
 
 def test_a_real_change_arrives_through_the_real_filter(tmp_path):
