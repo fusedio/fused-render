@@ -83,6 +83,35 @@ def _extract_rule(record: dict) -> dict | None:
     }
 
 
+def _iter_udf_records(udfs):
+    """`fused.api.get_udfs(whose=...)` returns a `UdfRegistry` — a dict-like
+    mapping `str -> Udf` (NOT a list of dicts: iterating it directly yields
+    just the name strings, and `dict(name_string)` is the
+    `dictionary update sequence element ... length 1; 2 is required` crash
+    this traversal exists to avoid). Prefer `.items()`; fall back to treating
+    `udfs` as a plain iterable of objects/dicts each carrying their own
+    `name`, for the fixture shape older tests used and any other iterable
+    the SDK might someday hand back."""
+    if hasattr(udfs, "items"):
+        return udfs.items()
+    out = []
+    for record in udfs:
+        name = record.get("name") if isinstance(record, dict) else getattr(record, "name", None)
+        out.append((name, record))
+    return out
+
+
+def _record_to_dict(name, record) -> dict:
+    """Normalize one catalog entry to the plain `{name, metadata}` shape
+    `_extract_rule` expects. A real `Udf` exposes `metadata` as an
+    ATTRIBUTE (a dict) — `record.get("metadata")` silently returns nothing
+    for it, so a plain-dict `.get` is only correct for the plain-dict
+    fixture shape; a real record needs `getattr`."""
+    if isinstance(record, dict):
+        return {"name": record.get("name", name), "metadata": record.get("metadata")}
+    return {"name": getattr(record, "name", name), "metadata": getattr(record, "metadata", None)}
+
+
 def build_rules() -> list[dict]:
     """Ask Fused for the community then team catalogs, keep file-preview
     records, team rules ahead of community ones at equal specificity (a team
@@ -93,11 +122,13 @@ def build_rules() -> list[dict]:
     seen: set[tuple] = set()
     for whose in ("team", "community"):
         try:
-            records = fused.api.get_udfs(whose=whose) or []
+            udfs = fused.api.get_udfs(whose=whose)
         except Exception:
-            records = []
-        for record in records:
-            rule = _extract_rule(record if isinstance(record, dict) else dict(record))
+            udfs = None
+        if not udfs:
+            continue
+        for name, record in _iter_udf_records(udfs):
+            rule = _extract_rule(_record_to_dict(name, record))
             if rule is None:
                 continue
             key = (rule["name"], whose)
@@ -168,8 +199,13 @@ def _specific_match(rule: dict, path: str) -> bool:
     own `compareUdfRulesByMatchSpecificity`."""
     basename = os.path.basename(path)
     file_name = rule.get("file_name")
-    if file_name and file_name.lower() == basename.lower():
-        return True
+    if file_name:
+        # `fused:filePreviewFileName` is a list in the real catalog (e.g.
+        # `["_sample"]`), not the bare string this used to assume; a str
+        # fixture is still accepted. Any element matching is enough.
+        names = file_name if isinstance(file_name, list) else [file_name]
+        if any(isinstance(n, str) and n.lower() == basename.lower() for n in names):
+            return True
     regex = rule.get("regex")
     if regex:
         try:
@@ -181,6 +217,12 @@ def _specific_match(rule: dict, path: str) -> bool:
 
 
 def _extension_match(rule: dict, path: str) -> bool:
+    # A rule CAN declare the empty string as an extension (the real catalog
+    # has one: `Empty_Extension_File`). This is deliberately left able to
+    # match — `os.path.splitext` already scopes it to paths that genuinely
+    # have no extension (`Makefile`, `.bashrc`) rather than to every path or
+    # every dotfile-with-a-suffix (`.env.local` still gets `.local`), so an
+    # empty-extension rule cannot accidentally swallow ordinary files.
     ext = os.path.splitext(path)[1].lstrip(".").lower()
     extensions = rule.get("extensions") or []
     return ext in extensions
