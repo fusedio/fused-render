@@ -16,14 +16,19 @@ Style follows tests/test_index_freshness.py: assert on the trigger (did
 `runner.start` get called, for which root), never on a real scan.
 """
 import logging
+import os
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from fused_render.index import detect, runner
 from fused_render.index.config import IndexConfig
+from fused_render.index.store import Sink, compact
 from fused_render.shell import index_gate
 
 NOW = 1_000_000.0
+NS = 1_000_000_000
 
 
 @pytest.fixture()
@@ -69,6 +74,20 @@ def _root(tmp_path):
 
 def _no_recent_scan(monkeypatch):
     monkeypatch.setattr(runner, "last_scan", lambda cfg, root: None)
+
+
+def _indexed_root(tmp_path, root, mtime_s: float) -> IndexConfig:
+    """A real dirs.parquet recording `root` itself as last scanned with
+    mtime `mtime_s` (seconds) — the Phase-1 evidence check's "what did the
+    index think" half. Mirrors tests/test_index_freshness.py's `_index`."""
+    cfg = _cfg(tmp_path)
+    shards = str(tmp_path / "run" / "shards")
+    os.makedirs(shards, exist_ok=True)
+    sink = Sink(shards, "t", pa, pq, cfg.shard_rows)
+    sink.add(root, "s", ("sig", [], 0, int(mtime_s * NS), 0))
+    sink.close()
+    compact(cfg, root, shards, pa, pq)
+    return cfg
 
 
 # -- the core contract: stale enough -> scan, not stale enough -> nothing -------
@@ -345,6 +364,107 @@ def test_joining_an_already_running_scan_is_not_reported_as_started(
                             "run_id": "r1", "root": root, "already_running": True})
     assert detect.note_home_focused(
         _cfg(tmp_path), [root], detect.MIN_HIDDEN_S, now=NOW) == []
+
+
+# -- Phase 1: root-mtime evidence overrides the staleness floors -----------------
+#
+# The reported failure: a scan finished at T, `~/a.txt` landed directly under
+# the root at T+12 (moving the root's OWN mtime — a direct child, the
+# documented depth-1 bound freshness.py already names), and the focus event at
+# T+42 was refused: 42s had cleared neither `freshness.MIN_INTERVAL_S` (60s)
+# nor `FOCUS_STALE_S` (300s). Both floors were doing their job (stopping a
+# pointless rescan) against the WRONG question — neither one asks whether
+# anything actually changed. A `stat` of the root itself, compared against
+# what the index recorded for it (`freshness.is_newer_than_indexed`, the same
+# comparison `note_folder_opened` already uses), answers exactly that for a
+# direct child, for the cost of one syscall.
+
+def test_evidence_from_a_freshly_touched_root_overrides_both_stale_floors(
+        tmp_path, monkeypatch, spawned):
+    """The regression test: reproduces the reported failure exactly (a scan
+    at T, a direct child created at T+12, a focus event at T+42) and asserts
+    a scan now starts despite neither MIN_INTERVAL_S nor FOCUS_STALE_S having
+    elapsed. Fails against pre-Phase-1 HEAD, where `_check_root` has no way
+    to distinguish this from any other 42s-stale root."""
+    from fused_render.index import freshness
+
+    root = _root(tmp_path)
+    t = NOW
+    cfg = _indexed_root(tmp_path, root, t)
+    os.utime(root, (t + 12, t + 12))  # a direct child landing moves root's mtime
+    monkeypatch.setattr(runner, "last_scan", lambda cfg, r: t)
+    now = t + 42
+    assert (now - t) < freshness.MIN_INTERVAL_S  # sanity: neither floor has cleared
+    assert (now - t) < detect.FOCUS_STALE_S
+    assert detect.note_home_focused(cfg, [root], detect.MIN_HIDDEN_S, now=now) == [root]
+    assert spawned == [{"root": root, "full": False}]
+
+
+def test_no_evidence_and_a_recently_scanned_root_is_a_no_op(tmp_path, monkeypatch, spawned):
+    """No evidence (root mtime unchanged since the index recorded it) and the
+    root is within `MIN_INTERVAL_S`: refused, same as today."""
+    root = _root(tmp_path)
+    t = NOW
+    cfg = _indexed_root(tmp_path, root, t)
+    os.utime(root, (t, t))  # matches the indexed mtime exactly: no evidence
+    monkeypatch.setattr(runner, "last_scan", lambda cfg, r: t)
+    assert detect.note_home_focused(cfg, [root], detect.MIN_HIDDEN_S, now=t + 30) == []
+    assert spawned == []
+
+
+def test_no_evidence_and_a_root_past_focus_stale_s_is_still_scanned(
+        tmp_path, monkeypatch, spawned):
+    """No evidence, but the root is past `FOCUS_STALE_S`: the existing
+    fallback (unchanged by Phase 1) still fires."""
+    root = _root(tmp_path)
+    t = NOW
+    cfg = _indexed_root(tmp_path, root, t)
+    os.utime(root, (t, t))  # no evidence
+    monkeypatch.setattr(runner, "last_scan", lambda cfg, r: t)
+    now = t + detect.FOCUS_STALE_S + 1
+    assert detect.note_home_focused(cfg, [root], detect.MIN_HIDDEN_S, now=now) == [root]
+    assert spawned == [{"root": root, "full": False}]
+
+
+def test_evidence_with_a_scan_moments_ago_is_refused_by_the_storm_floor(
+        tmp_path, monkeypatch, spawned):
+    """Evidence bypasses `MIN_INTERVAL_S`/`FOCUS_STALE_S`, but not
+    unconditionally — a small floor (`EVIDENCE_MIN_INTERVAL_S`) still stops a
+    scan storm: a root just scanned 2s ago, even with fresh evidence, is
+    refused. This is what keeps a flappy tab-away from restarting a scan on
+    every focus event just because the root keeps getting touched."""
+    root = _root(tmp_path)
+    t = NOW
+    cfg = _indexed_root(tmp_path, root, t)
+    os.utime(root, (t + 1, t + 1))  # evidence: root moved since the index
+    monkeypatch.setattr(runner, "last_scan", lambda cfg, r: t + 1)
+    now = t + 1 + 2  # a scan finished 2s ago
+    assert detect.note_home_focused(cfg, [root], detect.MIN_HIDDEN_S, now=now) == []
+    assert spawned == []
+
+
+def test_evidence_stat_failure_is_treated_as_no_evidence_not_an_exception(
+        tmp_path, monkeypatch, spawned):
+    """A root that vanishes between the focus event and the check (or any
+    other `OSError` from `os.stat`) must degrade to "no evidence", not
+    raise — this is a housekeeping path with the same "never raises"
+    contract as everything else in this module."""
+    root = _root(tmp_path)
+    t = NOW
+    cfg = _indexed_root(tmp_path, root, t)
+    monkeypatch.setattr(runner, "last_scan", lambda cfg, r: t)
+
+    real_stat = os.stat
+
+    def flaky_stat(path, *a, **kw):
+        if path == root:
+            raise OSError("gone")
+        return real_stat(path, *a, **kw)
+
+    monkeypatch.setattr(os, "stat", flaky_stat)
+    # No evidence (stat failed) and still within FOCUS_STALE_S: refused, not raised.
+    assert detect.note_home_focused(cfg, [root], detect.MIN_HIDDEN_S, now=t + 30) == []
+    assert spawned == []
 
 
 # -- exceptions never escape -------------------------------------------------------

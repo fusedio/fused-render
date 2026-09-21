@@ -131,6 +131,25 @@ def indexed_mtime_ns(cfg: IndexConfig, path: str):
     return int(row[0])
 
 
+def is_newer_than_indexed(cfg: IndexConfig, path: str, disk_ns: int) -> bool:
+    """Whether an already-read disk mtime (`disk_ns`) is positive evidence
+    the index hasn't seen `path`'s current state.
+
+    Shared comparison, factored out so a second caller never re-derives its
+    own copy: `note_folder_opened` (below) asks this about a LISTED folder;
+    `index/detect.py`'s `_check_root` asks the identical question about a
+    SCAN ROOT itself (its Phase-1 evidence check — a file landing directly
+    under the root moves the root's own mtime, so one `stat` plus this
+    comparison sees it, no journal needed). Both mean "nothing to compare
+    against" the same way: no index yet, this path was never visited, or a
+    stored 0 (see `indexed_mtime_ns`'s own docstring) all read as `indexed is
+    None`, which is NOT evidence — an unindexed path is not thereby "changed"."""
+    indexed = indexed_mtime_ns(cfg, path)
+    if indexed is None:
+        return False
+    return disk_ns > indexed
+
+
 class FreshnessCheck(NamedTuple):
     """What `note_folder_opened` decided.
 
@@ -182,8 +201,7 @@ def note_folder_opened(cfg: IndexConfig, path: str, roots,
     quiet_at = disk_ns / 1e9 + QUIET_S
     if now < quiet_at:
         return FreshnessCheck(retry_after=quiet_at - now)
-    indexed = indexed_mtime_ns(cfg, path)
-    if indexed is None or disk_ns <= indexed:
+    if not is_newer_than_indexed(cfg, path, disk_ns):
         return FreshnessCheck()
     # runner.start would JOIN a live run of this root — but only on an EXACT
     # root-string match, and a triggered scan must not be the thing that
