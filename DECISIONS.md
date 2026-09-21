@@ -2979,3 +2979,86 @@ guard caught it because the file existed but the mistake was made anyway) before
 being caught and reverted via `git checkout -- DECISIONS.md`; this Task 17 section is
 the only change that survived. If a future session finds this file suspiciously
 short, that is a sign the same mistake happened again and was not caught.
+
+### Task 17 follow-up — fixing the two failing tests and three review findings
+
+Two `tests/test_git_view_renders.py` tests were red 3/3: they asserted the OLD
+inline `.confirm` bar's copy verbatim (`REVERT_QUESTION`/`CHECKOUT_QUESTION` module
+constants), and the earlier symbol-only grep (`confirmBar`, `askIn`, `where:`) never
+caught them because they assert rendered STRINGS, not identifiers. `confirmModal`'s
+question text for `revert`/`app_restore` is richer than the button's own tooltip
+(it now names the commit's own short sha + subject, since a modal has no adjacent
+row to supply that) — the old constants were fixed strings with no subject at all,
+so a straight copy-paste update would not have worked; they had to become functions
+(`_revert_question(commit)` / `_checkout_question(commit)`) that build the expected
+text the same way `pendingConfirm` does, from the same commit fields. The
+regression guarantee both tests exist for — a stale armed `ask=` must not follow the
+user to a commit/preview they never confirmed it against — is unchanged: the
+"not in" assertion still checks for the SPECIFIC armed commit's question text, so a
+guard failure that re-armed the wrong commit's modal would still be caught.
+Re-swept `tests/` for the old literal copy (`"Revert this commit? This adds a new
+commit"`, `"Commit the app folder back to this version? Other folders"`,
+`"Reset history to this commit? Every commit made"`) — the only remaining hits are
+the button-tooltip `titleIncludes` click actions in these same two tests, which are
+still correct because the button's own tooltip text (`revertQuestion`/
+`checkoutQuestion` in `template.html`) was deliberately left unchanged; only the
+modal's body text is new and richer.
+
+Three code-review findings fixed in `fused_render/templates/git/template.html`:
+
+- `focusSoon()` (~line 2127) called `input.setSelectionRange(...)` unconditionally.
+  Every pre-existing call site passed a text input; `confirmModal` (this task) is
+  the first to pass a `<button>` (Cancel), which has no `setSelectionRange` —
+  every confirmation threw inside the rAF callback, silently (focus itself still
+  landed), and the window error handler turned each throw into a repeating
+  page-error POST for as long as the modal stayed open. Fixed by guarding the call
+  with `typeof input.setSelectionRange === "function"` rather than skipping the
+  focus — Cancel keeping focus is deliberate (a stray Enter must not fire the
+  destructive action).
+- `.modal` (~line 276) had no `max-height`/`overflow`, so `confirmModal`'s plain
+  `.q` paragraph (unbounded, unlike the stash/publish dialogs' `.rows`, which are
+  already capped at `40vh`) could push the Confirm/Cancel row below the fold on a
+  short viewport — the exact bug this whole PR exists to fix, relocated from the
+  section into the modal. Capped `.modal` itself at `calc(82vh - 24px)` (82% being
+  what's left below its `top: 18%`) with `overflow-y: auto`, so the WHOLE dialog
+  scrolls and the button row stays reachable, for any dialog sharing `.modal`
+  (stash/publish included — their `.rows` sub-scroll is untouched and sits well
+  under this new outer cap in practice).
+- `listSection`'s doc comment (~line 3807) still described `footer` as carrying
+  "the confirm bar directly under the rows it is about" — no longer true, sections
+  never own a confirmation now. Rewrote it to say what `footer` actually is: a
+  trailing element appended inside the rows box, used today for the truncation
+  note (Changes), the "load more"/end-of-history note (Commits), or `null`
+  (Stashes). Not collapsed to a single use as speculated in the handoff — Commits
+  still passes `loadMore`, not `truncNote` — so the comment says that plainly
+  instead of claiming a generality (or a single-use fact) that isn't true either.
+
+Coverage investigation (finding 1, `focusSoon`/Cancel): checked whether
+`tests/_git_view_probe.mjs` can observe the TypeError. Its `requestAnimationFrame`
+stub is `setTimeout(fn, 0)`, and Node genuinely crashes (non-zero exit) on an
+uncaught synchronous throw inside a timer callback — confirmed empirically with a
+throwaway `node -e` script — and `tests/test_git_view_renders.py`'s `render()`
+helper already asserts `proc.returncode == 0`, so a probe crash IS a test failure,
+not a silently swallowed one. So the crash mechanism itself is observable. But the
+probe's `El` stub never implements `isConnected` at all (grepped for it — zero
+hits), so `!input.isConnected` inside `focusSoon` is always `true` for every node in
+this harness, and the function returns before ever reaching the buggy
+`setSelectionRange` line — for every call site, not just Cancel. Verified this is
+the actual blocker, not a guess: temporarily reverted the `focusSoon` fix, ran the
+probe, and it passed (bug unreachable); then temporarily added a one-line
+`get isConnected() { return true; }` to the stub's `El` class (throwaway, not kept)
+with the same reverted fix, re-ran, and got the exact expected crash:
+`TypeError: input.setSelectionRange is not a function` inside the timer callback,
+`proc.returncode == 1`. That confirms the mechanism and pinpoints the reason
+today's probe can't see it. Did not add `isConnected` to the shared stub to make
+this observable — the spec's own instruction is "if it CANNOT, do not contort the
+harness," and faking `isConnected` for every node changes behavior for every other
+`focusSoon` call site (filter/message/branch-name inputs) and every other test that
+happens to run one, well past this fix's scope. Restored both files to their
+pre-investigation state (verified with `diff`) and left the real
+`typeof input.setSelectionRange === "function"` guard as the only surviving change.
+Recorded as a genuine coverage gap: this probe cannot catch a `focusSoon` bug of any
+kind, on any element, because it never marks anything connected to the document.
+
+`.venv/bin/python -m pytest tests/test_git_view_renders.py tests/test_git_view.py tests/test_git_conflicts.py`:
+58 passed.

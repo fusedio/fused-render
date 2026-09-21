@@ -280,6 +280,19 @@
     top: 18%;
     transform: translateX(-50%);
     width: min(460px, calc(100vw - 32px));
+    /* `top: 18%` leaves 82% of the viewport below it, and nothing here used
+       to cap how tall the panel inside could grow. The stash/publish dialogs
+       never hit that because their long content already lives in `.rows`
+       (bounded to 40vh below), but `confirmModal`'s plain `.q` paragraph has
+       no such bound — a long question (the Reset warning is ~330 characters)
+       wraps to 8-10 lines at this width, and on a short viewport that pushes
+       the Confirm/Cancel row below the fold with nothing to scroll: the exact
+       below-the-fold failure this whole change exists to fix, just relocated
+       from the section into the modal. Capping `.modal` itself and letting
+       IT scroll keeps the button row reachable no matter how tall the body
+       gets, for every dialog that shares this class. */
+    max-height: calc(82vh - 24px);
+    overflow-y: auto;
     box-shadow: 0 12px 40px var(--shadow);
   }
   .modal .panel { margin-top: 0; }
@@ -2115,7 +2128,20 @@ function focusSoon(input) {
   requestAnimationFrame(() => {
     if (!input.isConnected || input.disabled) return;
     input.focus();
-    input.setSelectionRange(input.value.length, input.value.length);
+    /* Every original call site passed a text input, where placing the caret
+       at the end is the point. `confirmModal` (git template: route every
+       destructive confirmation through one page-root modal) reuses this to
+       focus the Cancel BUTTON instead, and a `<button>` has no
+       `setSelectionRange` — calling it unconditionally threw on every single
+       confirmation, silently, inside this rAF callback (focus itself still
+       landed; only the selection call failed), which runtime.js's window
+       error handler turned into a repeating page-error POST for as long as
+       the modal stayed open. Guard it rather than skip the focus: Cancel
+       keeping focus is deliberate, so a stray Enter cannot fire the
+       irreversible action. */
+    if (typeof input.setSelectionRange === "function") {
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
   });
 }
 
@@ -3779,9 +3805,16 @@ function stashLine(stash) {
   return line;
 }
 
-/* A section with a header, an action cluster on the right of the header, rows,
-   and — when this section owns the pending confirmation — the confirm bar
-   directly under the rows it is about.
+/* A section with a header, an action cluster on the right of the header, and
+   rows. `footer`, when given, is a trailing element appended INSIDE the rows
+   box, after the last row — the truncation note (Changes) or the
+   "load N more" button/end-of-history note (Commits); Stashes passes `null`.
+   It used to also carry the pending confirmation for whichever section owned
+   it, directly under the rows the question was about — a section's own
+   `confirmBar`, spliced in here. That is no longer true: every confirmation
+   in this view is a modal mounted once at the page root (see `render()` and
+   `pendingConfirm`), so a section never owns one, and `footer` is back to
+   being just what its name says — trailing, non-interactive, informational.
 
    The header is an ACCORDION toggle (`foldKey`): chevron + title + count fold
    the body. The action cluster sits outside the toggle button — folding and
