@@ -314,6 +314,32 @@ class _ProcessorWrappingATokenizer:
         self.tokenizer = _Tokenizer(ids=ids, raises=raises)
 
 
+class _ProcessorWithTemplate:
+    """A processor whose OWN `apply_chat_template` exists and has a
+    `chat_template` set — the shape `_messages_to_prompt` reaches the
+    tokenizer's own template for (D886's `enable_thinking` kwarg tests).
+
+    `reject_kwarg`, if set, names a kwarg that raises `TypeError` when passed
+    — simulating a template whose underlying `apply_chat_template` does not
+    forward an unexpected keyword, the retry hazard `_messages_to_prompt`'s
+    docstring documents."""
+
+    chat_template = "a real template string, non-empty is all that matters"
+
+    def __init__(self, reject_kwarg=None):
+        self.calls = []
+        self._reject_kwarg = reject_kwarg
+
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True,
+                            **kwargs):
+        if self._reject_kwarg is not None and self._reject_kwarg in kwargs:
+            raise TypeError(
+                f"apply_chat_template() got an unexpected keyword argument "
+                f"'{self._reject_kwarg}'")
+        self.calls.append(kwargs)
+        return "TEMPLATED-PROMPT"
+
+
 def test_the_prompt_is_counted_off_the_processors_own_encode_when_it_has_one(worker):
     assert worker._prompt_tokens(_ProcessorWithOwnEncode(ids=(5, 6, 7)), "hello") == 3
 
@@ -330,6 +356,60 @@ def test_a_tokenizer_that_cannot_count_costs_the_metric_not_the_completion(worke
     generation must not fail because a counter did."""
     assert worker._prompt_tokens(_ProcessorWrappingATokenizer(raises=True), "hello") is None
     assert worker._prompt_tokens(object(), "hello") is None
+
+
+# -- thinking (D886): unset passes no kwarg, explicit true/false pass through,
+# and a template that rejects the kwarg is retried without it -----------------
+
+
+def test_unset_thinking_passes_no_kwarg_and_is_byte_identical(worker):
+    """The core of the tri-state contract: leaving `enable_thinking` unset
+    must not merely "default to a value" — it must not appear in the
+    template call at all, so a template's OWN default (thinking ON for
+    Qwen3-family templates) decides, exactly as before this flag existed."""
+    processor = _ProcessorWithTemplate()
+    result = worker._messages_to_prompt(processor, [{"role": "user", "content": "hi"}], "")
+    assert result == "TEMPLATED-PROMPT"
+    assert processor.calls == [{}]
+
+
+def test_explicit_thinking_true_passes_the_kwarg(worker):
+    processor = _ProcessorWithTemplate()
+    worker._messages_to_prompt(processor, [{"role": "user", "content": "hi"}], "",
+                               enable_thinking=True)
+    assert processor.calls == [{"enable_thinking": True}]
+
+
+def test_explicit_thinking_false_passes_the_kwarg(worker):
+    processor = _ProcessorWithTemplate()
+    worker._messages_to_prompt(processor, [{"role": "user", "content": "hi"}], "",
+                               enable_thinking=False)
+    assert processor.calls == [{"enable_thinking": False}]
+
+
+def test_a_template_that_rejects_the_kwarg_is_retried_without_it(worker):
+    """The retry hazard `_messages_to_prompt`'s docstring documents: a
+    tokenizer whose `apply_chat_template` raises `TypeError` on an
+    unexpected keyword must not fail the whole generation over a flag it
+    cannot honour — it is retried once without the kwarg."""
+    processor = _ProcessorWithTemplate(reject_kwarg="enable_thinking")
+    result = worker._messages_to_prompt(processor, [{"role": "user", "content": "hi"}], "",
+                                        enable_thinking=False)
+    assert result == "TEMPLATED-PROMPT"
+    # First call raised (not recorded by the fake), the retry (no kwargs) is
+    # the one call that actually landed.
+    assert processor.calls == [{}]
+
+
+def test_a_templateless_processor_is_unaffected_by_the_new_parameter(worker):
+    """A processor with no `apply_chat_template` at all (the ordinary mlx-vlm
+    shape, `_ProcessorWrappingATokenizer`) must still fall back to the plain
+    join, whether or not a caller asked for thinking — there is no template
+    to pass the kwarg to."""
+    messages = [{"role": "user", "content": "hi"}]
+    assert (worker._messages_to_prompt(_ProcessorWrappingATokenizer(), messages, "",
+                                       enable_thinking=False)
+            == "hi")
 
 
 def test_both_terminal_frames_carry_the_prompt_count(worker, monkeypatch):
@@ -560,6 +640,27 @@ def test_a_generation_with_no_images_is_the_text_path_exactly_unchanged(worker, 
     assert frames[-1]["ok"] is True
 
 
+def test_generate_threads_enable_thinking_into_the_text_path(worker, monkeypatch):
+    """`body.get("enable_thinking")` (D886, wired by `server/ai.py` from the
+    wire's `thinking`) must reach `_messages_to_prompt`, not stop at
+    `generate`'s own boundary."""
+
+    class _Response:
+        text = "hi"
+
+    _fake_mlx_vlm_with_config(monkeypatch, responses=[_Response()])
+    processor = _ProcessorWithTemplate()
+    worker._loaded.update(model=_FakeVlmModel(), processor=processor,
+                          config={"model_type": "qwen3_5"})
+
+    frames = []
+    worker.generate({"messages": [{"role": "user", "content": "hi"}],
+                     "enable_thinking": False}, frames.append)
+
+    assert processor.calls == [{"enable_thinking": False}]
+    assert frames[-1]["ok"] is True
+
+
 # -- the MODEL axis: refuse when the LOADED checkpoint has no vision tower --
 # The server's `_accepts_image` tries to prevent this by reading a cached
 # `config.json`, but that is a PREDICTION and can disagree with reality (the
@@ -704,6 +805,31 @@ def test_an_image_bearing_request_uses_mlx_vlms_own_template_helper(worker, monk
     # thinking-stays-open behaviour the text path gets for free from the
     # tokenizer's own template (see `_messages_to_prompt`'s docstring).
     assert calls[0]["kwargs"].get("enable_thinking") is True
+    assert frames[-1]["ok"] is True
+
+
+def test_the_image_path_honours_an_explicit_thinking_false(worker, monkeypatch, tmp_path):
+    """The image path's default is `True` (D886), same as the text path — but
+    an explicit caller override must still reach mlx-vlm's helper, not be
+    silently overwritten by the default."""
+    photo = tmp_path / "cat.png"
+    photo.write_bytes(b"not a real png, just bytes on disk")
+    vlm_config = {"model_type": "qwen3_5", "image_token_id": 151655}
+
+    class _Response:
+        text = "a cat"
+
+    calls = _fake_mlx_vlm_with_config(monkeypatch, responses=[_Response()])
+    worker._loaded.update(model=_FakeVlmModel(), processor=_ProcessorWrappingATokenizer(),
+                          config=vlm_config)
+
+    frames = []
+    worker.generate(
+        {"messages": [{"role": "user", "content": "what is this?"}], "images": [str(photo)],
+         "enable_thinking": False},
+        frames.append)
+
+    assert calls[0]["kwargs"].get("enable_thinking") is False
     assert frames[-1]["ok"] is True
 
 

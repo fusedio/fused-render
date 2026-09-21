@@ -399,7 +399,7 @@ def release():
 # ------------------------------------------------------------------ generation
 
 
-def _messages_to_prompt(processor, messages, prompt):
+def _messages_to_prompt(processor, messages, prompt, enable_thinking=None):
     """The model's own chat template, never a hand-rolled one.
 
     Every instruct model has its own turn markers, and getting them wrong
@@ -425,12 +425,40 @@ def _messages_to_prompt(processor, messages, prompt):
     transformers `ProcessorMixin` exposes `apply_chat_template` and
     `chat_template` itself (forwarding to the tokenizer it wraps), the same
     shape mlx-lm's plain tokenizer had.
+
+    `enable_thinking` (D886, reversing AI-11d) is tri-state: `None` (the
+    caller left it unset) passes NO such kwarg at all, so the templated
+    prompt is byte-identical to what this returned before this flag existed
+    — the template's own default decides, which for Qwen3-family models is
+    thinking ON. An explicit `True`/`False` passes `enable_thinking=<bool>`
+    to the template call.
+
+    **Retry hazard.** Not every tokenizer's `apply_chat_template` accepts an
+    `enable_thinking` kwarg — a template that never references it can still
+    raise `TypeError` if the underlying `apply_chat_template` implementation
+    doesn't forward unknown kwargs. (This is transformers' behaviour, not
+    Jinja's own: `llama_text.py`'s module docstring explains why `_render_chat`
+    there needs no equivalent retry — Jinja's `template.render()` silently
+    ignores an unreferenced context variable, but transformers' wrapper can
+    reject an unexpected keyword outright.) So a kwarg is only ever added when
+    one was actually requested, and if the templated call then raises
+    `TypeError`, this retries once without it rather than failing the whole
+    generation over a flag the template cannot honour.
     """
     if prompt:
         return prompt
     template = getattr(processor, "apply_chat_template", None)
     if template and getattr(processor, "chat_template", None):
-        return template(messages, tokenize=False, add_generation_prompt=True)
+        kwargs = {}
+        if enable_thinking is not None:
+            kwargs["enable_thinking"] = enable_thinking
+        try:
+            return template(messages, tokenize=False, add_generation_prompt=True,
+                            **kwargs)
+        except TypeError:
+            if not kwargs:
+                raise
+            return template(messages, tokenize=False, add_generation_prompt=True)
     return "\n\n".join(m.get("content", "") for m in messages if isinstance(m, dict))
 
 
@@ -594,22 +622,26 @@ def generate(body, write):
         # the helper picks this checkpoint's own message format
         # (`prompt_utils.MODEL_CONFIG`).
         #
-        # **`enable_thinking=True`, explicitly** — mlx-vlm's helper (verified
-        # against the installed 0.6.15 source) defaults this to `False` on any
-        # template that accepts the kwarg, which closes the think block the
-        # same way `_messages_to_prompt`'s docstring says the OTHER helper
-        # must never be reached for: a reasoning model (Qwen3.5 and friends)
-        # would silently drop visible thinking the moment an image is
-        # attached, with no error and nothing for `playground/think.ts` to
-        # render. Passing it here keeps the image path's thinking behaviour
-        # identical to the text path's (an unset kwarg is simply unused by a
-        # template that never asks for it, so this is a no-op there).
+        # **`enable_thinking` defaults `True`, explicitly** — mlx-vlm's helper
+        # (verified against the installed 0.6.15 source) defaults this to
+        # `False` on any template that accepts the kwarg, which closes the
+        # think block the same way `_messages_to_prompt`'s docstring says the
+        # OTHER helper must never be reached for: a reasoning model (Qwen3.5
+        # and friends) would silently drop visible thinking the moment an
+        # image is attached, with no error and nothing for
+        # `playground/think.ts` to render. Passing `True` here keeps the
+        # image path's default thinking behaviour identical to the text
+        # path's (D886) — but an explicit caller flag is honoured here too,
+        # same as the text path.
         from mlx_vlm.prompt_utils import apply_chat_template
 
-        text = apply_chat_template(processor, config, messages,
-                                   num_images=len(images), enable_thinking=True)
+        enable_thinking = body.get("enable_thinking")
+        text = apply_chat_template(
+            processor, config, messages, num_images=len(images),
+            enable_thinking=enable_thinking if enable_thinking is not None else True)
     else:
-        text = _messages_to_prompt(processor, messages, body.get("prompt") or "")
+        text = _messages_to_prompt(processor, messages, body.get("prompt") or "",
+                                   enable_thinking=body.get("enable_thinking"))
     max_tokens = int(body.get("max_tokens") or 1024)
     sampler = make_sampler(
         temp=float(body.get("temperature", 0.7)),
