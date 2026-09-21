@@ -36,7 +36,6 @@ import {
   cancelScheduledMessage,
   forceStart,
   getTaskMessages,
-  skipQueue,
   markTaskMessageRead,
   markWholeTaskRead,
   resendScheduledMessage,
@@ -122,7 +121,6 @@ import {
   queueCaption,
   QUEUED_WORD,
   QUEUE_CAPTION_SEP,
-  skippedOverride,
   usageLimitCaption,
   projectMatches,
   projectOptions,
@@ -1708,30 +1706,22 @@ interface RunOutcome {
  *  Refusals THROW, like performRun: a 400 here means the row was not queued
  *  after all (the folder freed while the pointer was moving), and the server's
  *  sentence is the right thing to show. */
-async function performSkip(task: Task): Promise<QueueOverride> {
-  // BY TASK KEY, which is the right name HERE: this press is on a row that IS
-  // a task, and it means every pending entry that task has waiting. The chat's
-  // chip names one ENTRY instead, for the reason `skipQueue` records.
-  await skipQueue({ key: task.key });
-  return skippedOverride(task);
-}
-
 /** Run a queued task's oldest waiting message NOW, beside whatever owns its
  *  folder — `POST /api/tasks/queue/force`, whose docstring carries the rule.
  *
- *  NOT A PROMOTION AND SO NO OVERRIDE TO RETURN. `performSkip` above answers a
- *  claim the row has to paint (position 1, `queue_priority`) because no listing
- *  would say it for a while. This one starts a RUN: the row's own status is what
- *  changes, the listing is what says so, and a re-read is both cheaper and more
- *  honest than a hand-built `in_progress` this page would then have to defend
- *  against the next lap.
+ *  NOT A PROMOTION AND SO NO OVERRIDE TO RETURN. The old skip verb answered a
+ *  claim the row had to paint (position 1) because no listing would say it for
+ *  a while. This one starts a RUN: the row's own status is what changes, the
+ *  listing is what says so, and a re-read is both cheaper and more honest than
+ *  a hand-built `in_progress` this page would then have to defend against the
+ *  next lap.
  *
  *  BY TASK KEY, which is the right name here: this press is on a row that IS a
  *  task, and the server resolves that task's oldest due message itself — the
  *  same message the pump would have started for it. The chat's card names one
  *  ENTRY instead, for the reason `api.forceStart` records.
  *
- *  Refusals THROW, like performSkip: a 409 means the conversation cannot take
+ *  Refusals THROW: a 409 means the conversation cannot take
  *  the message yet (a send in flight, a live turn) and the server's sentence is
  *  the right thing to show. */
 async function performForceStart(task: Task): Promise<void> {
@@ -4667,8 +4657,8 @@ const RUN_DROP_WORDS = {
   // sentence since 2026-09-21: the Run next button that used to share the
   // wording is out of the UI, and the DRAG is now the only thing that says it.
   skip: {
-    title: "Next in this folder — nothing is interrupted",
-    hint: "Next in this folder — nothing is interrupted",
+    title: FORCE_START_LABEL,
+    hint: FORCE_START_HINT,
   },
 } as const;
 
@@ -4857,12 +4847,13 @@ export function TaskBoard({
     setNote(null);
     try {
       if (action.kind === "skip") {
-        // Queued → In Progress. NOT a run: the folder is held by another task
-        // and stays held — this only moves the card to the head of its folder's
-        // line, and the work goes out when the run in flight ends. The claim is
-        // published so the card jumps to the top of the lane on the drop rather
-        // than on the next poll.
-        onQueued?.(await performSkip(task));
+        // Queued → In Progress IS A FORCE START (Akshil, 2026-09-21): the card
+        // runs now, beside whatever holds the folder, and its task leaves the
+        // queue for good — the same verb the row's button presses. Skip the
+        // line is gone from every surface; the drop kind keeps its old name
+        // only because the lane detector files queued cards under it.
+        await performForceStart(task);
+        onReload?.();
       } else if (action.kind === "run") {
         // Upcoming → In Progress. The message goes out NOW and its `due` is
         // left alone, so the thread reads as a run that happened early rather
@@ -4967,9 +4958,8 @@ export function TaskBoard({
   // reason: the refusal (a 409 while the conversation has a turn open) belongs
   // in the board's ONE note line rather than inside a 260px lane.
   //
-  // NOT the drag, which is still a promotion and still spends `performSkip`
-  // above: the drop moves a card to the head of its lane and interrupts
-  // nothing, and these two must not be read as one gesture.
+  // The drag onto In Progress presses the same verb (`performForceStart`) and
+  // shares this note line, so a refusal reads the same either way.
   const force = async (task: Task) => {
     setNote(null);
     try {

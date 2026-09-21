@@ -55,9 +55,10 @@ describe("the three endpoints", () => {
       expect(shape).toContain(field);
     }
     expect(API).toContain("what: { key: string } | { entry_id: string },");
-    // The Board and the List still name the TASK: the press there means every
-    // pending entry that task has waiting.
-    expect(VIEWS).toContain("await skipQueue({ key: task.key });");
+    // No view presses skip any more (Akshil, 2026-09-21); the Board and the
+    // List name the TASK to Force start instead.
+    expect(VIEWS).not.toContain("skipQueue(");
+    expect(VIEWS).toContain("await forceStart({ key: task.key });");
     expect(API).toContain('postJson<QueueDecision>("/api/tasks/queue/decide", body)');
   });
 
@@ -173,18 +174,17 @@ describe("the Board's waiting cards", () => {
     expect(BOARD).toContain("{laneCountLabel(col.key, lane)}");
   });
 
-  it("calls RUN NEXT on the drop, never run-now", () => {
-    // The drop lands on the lane the Upcoming drag lands on and must not mean
-    // the same thing: firing here would be two runs in one folder.
+  it("a queued card dropped on In Progress is a FORCE START, never a skip", () => {
+    // Skip the line is gone from every surface (Akshil, 2026-09-21); the drag
+    // presses the same verb as the row's button and reloads the listing.
     expect(BOARD).toContain('if (action.kind === "skip") {');
-    expect(BOARD).toContain("onQueued?.(await performSkip(task));");
-    // …and the warning under the cursor says so, in the verb's own words rather
-    // than borrowing "Run now": `skip` is a drop kind of its own in the one
-    // wording table every run-shaped drop reads (`RUN_DROP_WORDS`). It said
-    // RUN_NEXT_HINT until 2026-09-21 and says the sentence itself now, because
-    // the drag is the only surface left that offers this.
+    expect(BOARD).toContain("await performForceStart(task);");
+    expect(VIEWS).not.toContain("performSkip");
+    expect(VIEWS).not.toContain("skipQueue");
+    expect(VIEWS).not.toContain("Next in this folder");
+    // …and the warning under the cursor uses the button's own words.
     expect(VIEWS).toMatch(
-      /skip: \{\s*title: "Next in this folder — nothing is interrupted",\s*hint: "Next in this folder — nothing is interrupted",\s*\}/,
+      /skip: \{\s*title: FORCE_START_LABEL,\s*hint: FORCE_START_HINT,\s*\}/,
     );
     // AND NO "Run next" ANYWHERE A READER CAN SEE IT (Akshil, 2026-09-21).
     expect(VIEWS).not.toContain("Run next —");
@@ -250,9 +250,8 @@ describe("the List's waiting row", () => {
     expect(ROW).toContain("void force();");
     expect(VIEWS).not.toContain("canRunNext");
     expect(VIEWS).not.toContain("void skip();");
-    // …and the DRAG's own performer is untouched: that gesture is still a
-    // promotion and still spends the skip endpoint.
-    expect(BOARD).toContain("onQueued?.(await performSkip(task));");
+    // …and the DRAG presses the same verb.
+    expect(BOARD).toContain("await performForceStart(task);");
     // The row is mounted and its buttons counted in queue-caption-press.test.tsx
     // — source strings cannot say a control is reachable, only that it is
     // written.
