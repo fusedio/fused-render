@@ -1,0 +1,346 @@
+"""A live filesystem watcher that keeps the file index honest between scans.
+
+`index_touch.py` fixes the index for changes THIS APP makes. Nothing fixed
+it for a file that lands from outside the app — a download, `touch
+~/a.txt`, a sync client — because every existing trigger (the startup scan,
+the folder-open freshness check) is a *pull* that guesses staleness from a
+clock, and no time constant can answer "did anything change?" (see
+SPEC-index-live-watch.md §1 for the three designs that failed on exactly
+that question).
+
+This module OBSERVES instead: `watchfiles` (the `notify` Rust crate —
+FSEvents on macOS, inotify on Linux, ReadDirectoryChangesW on Windows) feeds
+a `WatchLoop` per configured root. The loop filters at arrival (an ignored
+tree, the app's own state folder, a mount — none of them may ever reach a
+flush, or the index store writing itself would trigger the scan that
+triggers the watcher), reduces the survivors to their parent folders,
+collapses a big burst to the whole root, and forwards no more often than
+`WATCH_FLUSH_FLOOR_S` to the existing coalescing policy
+(`index_touch.note_index_folders`, which is `RescanQueue` underneath — this
+module does not implement a second queue).
+
+The policy in `WatchLoop` is intentionally free of `watchfiles` and of the
+server: every dependency (the event source, the clock, the sleeper, the
+forwarding call, the gate) is injected, so `tests/test_index_watch.py` can
+drive it with a fake event source and no real watcher, thread, or timer —
+the same shape `index_touch.RescanQueue`'s tests use.
+"""
+import logging
+import os
+import threading
+import time
+
+from fused_render.index.ignore import MountGuard, ignored_for_index, norm
+from fused_render.server.index_touch import (
+    MAX_FOLDERS,
+    _folder_of,
+    note_index_folders,
+    outermost_folders,
+)
+
+logger = logging.getLogger(__name__)
+
+# How often the pending folder set may be forwarded to RescanQueue. Every
+# scan ends in a whole-store compaction (index_touch.py explains why), and
+# churn across many different folders needs one global floor for the same
+# reason RescanQueue's own per-folder floor is not enough here: this module
+# forwards folders it has never seen mutated before, from a source that can
+# emit tens of thousands of events in a few minutes (measured: 67k-78k in a
+# 5.5-minute window under a real `~`). 30s keeps the duty cycle well under
+# the ~10% ceiling the design targets — see DECISIONS.md for the measurement
+# that set it.
+WATCH_FLUSH_FLOOR_S = 30.0
+
+# The Syncthing-style backstop: if nothing forwarded a rescan of a root in
+# this long AND no run is already covering it, force one on the next idle
+# tick. Catches changes made while the server was off (already covered by
+# the startup scan) or dropped by the kernel. The only time-based trigger
+# left, and it is a floor under the watcher, never the mechanism.
+WATCH_RESCAN_S = 3600.0
+
+# How often the loop checks whether indexing has been turned back on while
+# it was blocked (pref off, or no Full Disk Access yet on the packaged mac
+# app).
+GATE_POLL_S = 30.0
+
+# Backoff after the watch source raises or the underlying watch cannot be
+# opened: 5s, then 30s, then 120s, capped. Escalating rather than fixed so a
+# genuinely wedged watch (a mount that vanished, a permissions change) does
+# not spin the CPU, while a transient blip recovers fast.
+BACKOFF_SCHEDULE_S = (5.0, 30.0, 120.0)
+
+
+def make_dropped(rules, mounts_dir: str):
+    """A `path -> bool` filter: True when the watcher must never act on
+    `path`. Two structural refusals, same as `index_touch._real_blocked`
+    (§3.1.3 of the spec):
+
+      * `ignored_for_index(rules, path, tree=True)` — the ignore list,
+        checked tree-wise because a watched path arrives with no vetted
+        ancestors (same reason the FSEvents journal gate uses `tree=True`).
+        The index store's own directory (`cfg.dir`) and every branch's
+        mounts folder are already in `default_ignore()`.
+      * `MountGuard(mounts_dir=...).blocks(path)` — the structural refusal
+        that survives a user emptying the ignore list; it blocks the WHOLE
+        fused-render home tree, not only the mounts subdirectory, which is
+        what makes the index store's own directory doubly covered.
+
+    Returning True for either means: this path or a change under it must
+    never cause a flush. That is load-bearing, not an optimization — a scan
+    writes parquet into `cfg.dir`, and without this filter the watcher would
+    observe its own write and trigger the scan that triggered it."""
+    guard = MountGuard(mounts_dir=mounts_dir)
+
+    def dropped(path: str) -> bool:
+        p = norm(str(path or ""))
+        if not p:
+            return True
+        if guard.blocks(p):
+            return True
+        return ignored_for_index(rules, p, tree=True)
+
+    return dropped
+
+
+class WatchLoop:
+    """The per-root policy: filter+batch a raw event stream, forward no more
+    often than the flush floor, collapse an oversized burst to the root, run
+    the periodic safety net on idle ticks, and back off on error.
+
+    Every dependency is injected. The real wiring (`start`/`_real_open_source`
+    below) is the only place that touches `watchfiles`, threads, or the
+    server's config — this class knows about none of it, which is what lets
+    `tests/test_index_watch.py` drive it with an in-memory event source."""
+
+    def __init__(self, root: str, *, open_source, dropped, forward, now,
+                 last_scan, live_run_covers, gate_open, sleep, stop_event,
+                 flush_floor_s: float = WATCH_FLUSH_FLOOR_S,
+                 rescan_s: float = WATCH_RESCAN_S,
+                 max_folders: int = MAX_FOLDERS,
+                 gate_poll_s: float = GATE_POLL_S,
+                 backoff_schedule=BACKOFF_SCHEDULE_S):
+        self.root = root
+        self.open_source = open_source
+        self.dropped = dropped
+        self.forward = forward
+        self.now = now
+        self.last_scan = last_scan
+        self.live_run_covers = live_run_covers
+        self.gate_open = gate_open
+        self.sleep = sleep
+        self.stop_event = stop_event
+        self.flush_floor_s = flush_floor_s
+        self.rescan_s = rescan_s
+        self.max_folders = max_folders
+        self.gate_poll_s = gate_poll_s
+        self.backoff_schedule = backoff_schedule
+        self._backoff_i = 0
+
+    def run(self) -> None:
+        """Runs until `stop_event` is set. Never raises — every failure
+        inside one watch attempt is caught by `_run_one_watch`, and the gate
+        poll is the only thing this level does."""
+        while not self.stop_event.is_set():
+            if not self.gate_open():
+                self.sleep(self.gate_poll_s)
+                continue
+            self._run_one_watch()
+
+    def _run_one_watch(self) -> None:
+        """One open-watch-until-it-ends attempt. A clean end (the generator
+        stops with no exception — what `watchfiles.watch` does when
+        `stop_event` is set) forwards nothing and backs off nothing: that is
+        the expected shutdown path, not a failure."""
+        pending: set = set()
+        last_flush = None
+        try:
+            for batch in self.open_source(self.root):
+                if self.stop_event.is_set():
+                    return
+                self._backoff_i = 0  # a tick was delivered; the watch is healthy
+                folders = set()
+                for _change, path in batch:
+                    if self.dropped(path):
+                        continue
+                    folder = _folder_of(path)
+                    if folder:
+                        folders.add(folder)
+                pending |= folders
+                now = self.now()
+                if last_flush is None:
+                    # Measure the floor from the first tick this attempt
+                    # actually observes, not from when the watch opened —
+                    # an idle watch must never "owe" a flush from clock time
+                    # alone (that is exactly the time-based guessing this
+                    # module replaces).
+                    last_flush = now
+                if pending and now - last_flush >= self.flush_floor_s:
+                    self._flush(pending)
+                    pending = set()
+                    last_flush = now
+                elif not batch and not pending:
+                    self._maybe_periodic_rescan(now)
+        except Exception as e:  # noqa: BLE001 - a watcher must never die
+            if self.stop_event.is_set():
+                return
+            logger.warning("index watch: %s stopped unexpectedly (%s); "
+                           "recrawling and reopening", self.root, e)
+            self.forward({self.root})
+            i = min(self._backoff_i, len(self.backoff_schedule) - 1)
+            self.sleep(self.backoff_schedule[i])
+            self._backoff_i += 1
+
+    def _flush(self, pending: set) -> None:
+        outermost = outermost_folders(pending)
+        if len(outermost) > self.max_folders:
+            # A whole-root incremental walk (measured: 4.4s) beats scanning
+            # each of a burst's many folders separately, each ending in its
+            # own compaction — and it is the honest answer to a burst this
+            # loop cannot attribute to anything narrower.
+            self.forward({self.root})
+        else:
+            self.forward(set(outermost))
+
+    def _maybe_periodic_rescan(self, now: float) -> None:
+        if self.live_run_covers(self.root):
+            return
+        last = self.last_scan(self.root)
+        if last is None or (now - last) >= self.rescan_s:
+            self.forward({self.root})
+
+
+# ----------------------------------------------------------------- wiring
+#
+# Everything below touches `watchfiles`, threads, or the server's real
+# config, and is exercised by exactly one test (the real-filesystem check in
+# tests/test_index_watch.py) plus the live measurement in DECISIONS.md —
+# `WatchLoop` above carries the policy tests.
+
+
+def _is_watch_limit_error(exc: BaseException) -> bool:
+    """Whether `exc` is Linux's inotify watch-limit failure (ENOSPC from the
+    kernel when `fs.inotify.max_user_watches` is exhausted), as opposed to
+    some other OSError a recursive open can raise."""
+    import errno
+
+    return isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.ENOSPC
+
+
+def _shallow_watch_paths(root: str, rules, mounts_dir: str) -> list:
+    """§3.2: the root plus its immediate non-ignored subdirectories, for a
+    non-recursive fallback watch. `watchfiles` has no depth limit —
+    `recursive` is all-or-nothing — so this is the closest a non-recursive
+    open gets to the real thing: it still catches `~/Downloads/foo.dmg` and
+    `~/a.txt`; anything deeper falls to the periodic rescan."""
+    dropped = make_dropped(rules, mounts_dir)
+    paths = [root]
+    try:
+        with os.scandir(root) as it:
+            for entry in it:
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                except OSError:
+                    continue
+                p = norm(entry.path)
+                if not dropped(p):
+                    paths.append(p)
+    except OSError:
+        pass
+    return paths
+
+
+def _real_open_source(root: str, stop_event):
+    """The real `watchfiles.watch`-backed source for one root, with the
+    Linux shallow fallback on the inotify watch-limit error (§3.2)."""
+    import watchfiles
+
+    from fused_render.index.config import load_config
+    from fused_render.index.runner import _mounts_dir
+
+    cfg = load_config()
+    dropped = make_dropped(cfg.rules, _mounts_dir())
+
+    def _filter(_change, path) -> bool:
+        return not dropped(path)
+
+    try:
+        yield from watchfiles.watch(root, watch_filter=_filter,
+                                    stop_event=stop_event, rust_timeout=5000,
+                                    yield_on_timeout=True,
+                                    ignore_permission_denied=True)
+    except OSError as e:
+        if not _is_watch_limit_error(e):
+            raise
+        logger.warning("index watch: hit the platform watch limit opening "
+                       "%s (raise fs.inotify.max_user_watches); falling "
+                       "back to a shallow, non-recursive watch", root)
+        paths = _shallow_watch_paths(root, cfg.rules, _mounts_dir())
+        yield from watchfiles.watch(*paths, watch_filter=_filter,
+                                    stop_event=stop_event, rust_timeout=5000,
+                                    yield_on_timeout=True, recursive=False,
+                                    ignore_permission_denied=True)
+
+
+_stop_event: threading.Event | None = None
+_threads: list = []
+
+
+def _make_loop(root: str, stop_event: threading.Event) -> WatchLoop:
+    from fused_render.index import runner
+    from fused_render.index.config import load_config
+    from fused_render.server.routers.index import _scan_in_flight
+    from fused_render.shell import index_gate
+
+    return WatchLoop(
+        root,
+        open_source=lambda r: _real_open_source(r, stop_event),
+        dropped=make_dropped(load_config().rules, runner._mounts_dir()),
+        forward=note_index_folders,
+        now=time.time,
+        last_scan=lambda r: runner.last_scan(load_config(), r),
+        live_run_covers=lambda r: _scan_in_flight(load_config(), r),
+        gate_open=index_gate.indexing_allowed,
+        sleep=time.sleep,
+        stop_event=stop_event,
+    )
+
+
+def start() -> None:
+    """Start one watcher thread per configured root. Idempotent — a second
+    call while already running is a no-op, the same convention every other
+    singleton start in this codebase follows (e.g. `shell_mounts.
+    start_health_monitor`). Never starts anything a test can see: tests
+    build apps without running lifespan, so this is only ever called from
+    `create_app`'s startup handler."""
+    global _stop_event, _threads
+
+    if _stop_event is not None:
+        return
+
+    from fused_render.index.config import load_config
+    from fused_render.server.routers import index as index_routes
+
+    stop = threading.Event()
+    threads = []
+    for root in index_routes.scan_roots(load_config()):
+        loop = _make_loop(root, stop)
+        t = threading.Thread(target=loop.run, name=f"index-watch-{root}",
+                             daemon=True)
+        t.start()
+        threads.append(t)
+    _stop_event = stop
+    _threads = threads
+
+
+def stop() -> None:
+    """Signal every watcher thread to stop. Does not join — the threads are
+    daemons and a clean generator end (§ `_run_one_watch`'s docstring) is
+    fast, but shutdown must not block on it."""
+    global _stop_event, _threads
+
+    if _stop_event is None:
+        return
+    _stop_event.set()
+    _stop_event = None
+    _threads = []

@@ -110,6 +110,21 @@ def _folder_of(path: str) -> str:
     return "" if parent in ("", "/") or _DRIVE_ROOT.match(parent) else parent
 
 
+def outermost_folders(folders) -> list:
+    """The subset of `folders` no other folder in the set already covers,
+    sorted. `RescanQueue._outermost` uses it for its own pending set, and the
+    live watcher (index_watch.py) uses the same definition to decide whether
+    one flush's folders should collapse to the scan root instead — "does
+    folder A already cover folder B" must mean the same thing in both
+    places."""
+    out = []
+    for f in sorted(folders):
+        if out and (f == out[-1] or f.startswith(out[-1] + "/")):
+            continue
+        out.append(f)
+    return out
+
+
 def _canon_folder(path: str) -> str:
     """The canonical spelling of a folder that IS the thing to rescan (as
     opposed to `_folder_of`, whose job is finding the parent of a touched
@@ -229,12 +244,7 @@ class RescanQueue:
 
     def _outermost(self, pending: dict) -> list:
         """The pending folders no other pending folder already covers."""
-        folders = sorted(pending)
-        out = []
-        for f in folders:
-            if out and (f == out[-1] or f.startswith(out[-1] + "/")):
-                continue
-            out.append(f)
+        out = outermost_folders(pending)
         if len(out) > MAX_FOLDERS:
             logger.info("index: %d folders mutated at once; rescanning the "
                         "first %d", len(out), MAX_FOLDERS)
