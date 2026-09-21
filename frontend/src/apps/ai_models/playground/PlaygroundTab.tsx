@@ -56,6 +56,7 @@ import {
 import { useUrlVersion } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { explainErrorPrompt, explainWithAi } from "@platform/lib/explain-with-ai";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Card, CardHeader, CardTitle, CardAction, CardContent } from "@platform/shadcn/ui/card";
 import { Badge } from "@platform/shadcn/ui/badge";
@@ -471,7 +472,11 @@ export default function PlaygroundTab() {
     return <p className="cc-empty">Reading the model catalog…</p>;
   }
   if (catalog.status === "error") {
-    return <ErrorBanner>{catalog.message}</ErrorBanner>;
+    return (
+      <ErrorBanner onExplain={() => void explainWithAi(explainErrorPrompt(catalog.message))}>
+        {catalog.message}
+      </ErrorBanner>
+    );
   }
 
   // The size to name for the selected model, wherever this page names one —
@@ -745,7 +750,11 @@ export default function PlaygroundTab() {
           work column share the same box, so top and bottom can
           never drift apart. */}
       <div className="pg-frame">
-        {actionError && <ErrorBanner>{actionError}</ErrorBanner>}
+        {actionError && (
+          <ErrorBanner onExplain={() => void explainWithAi(explainErrorPrompt(actionError))}>
+            {actionError}
+          </ErrorBanner>
+        )}
         {blockedAsk && selected && (
           // Not an ErrorBanner: nothing failed and nothing the user did is
           // wrong — the link simply named a task this machine cannot run, and

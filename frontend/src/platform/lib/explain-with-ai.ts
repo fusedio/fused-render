@@ -6,7 +6,7 @@
 // "explain... then fix it", a click on this action must not start edits —
 // the prompt below explicitly tells Claude to stop after explaining.
 import { getConfig } from "@platform/lib/api";
-import { stageClaudeAsk } from "@apps/explorer/lib/pending-claude-ask";
+import { stageClaudeAsk } from "@platform/lib/pending-claude-ask";
 import { navigate } from "@platform/lib/router";
 
 /**

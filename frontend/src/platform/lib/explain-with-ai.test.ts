@@ -23,7 +23,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 const { explainErrorPrompt, explainWithAi, resetDefaultFolderCache, resolveDefaultFolder } =
   await import("@platform/lib/explain-with-ai");
 const { peekPendingClaudeAsk, takePendingClaudeAsk } = await import(
-  "@apps/explorer/lib/pending-claude-ask"
+  "@platform/lib/pending-claude-ask"
 );
 
 describe("explainErrorPrompt", () => {

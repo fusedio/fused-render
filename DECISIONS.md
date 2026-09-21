@@ -3159,3 +3159,74 @@ whether its message is a system/runtime error or plain validation, which is
 exactly the kind of per-call-site review this task's turn budget cannot
 absorb in one pass without risking a rushed, wrong classification on some
 of them.
+
+## Task 21 — Part A: two representative call sites wired + an import-boundary fix
+
+Wired `onExplain` at exactly the two representative call sites picked in
+Task 20's plan, deliberately NOT sweeping the rest (same rationale as
+above — per-call-site classification judgment doesn't fit this round):
+
+1. **Folder-scoped**: `Preview.tsx`'s snapshot-error banner (the "Could not
+   load this commit" error). Passes `parentDir` (already in scope, `=
+   dirname(fsPath)`) as `explainWithAi`'s `folderPath` — Preview.tsx is
+   already showing `fsPath` inside that folder, so this reuses the
+   "already mounted at this path" `stagedVersion` mechanism rather than a
+   fresh navigation.
+2. **Folderless**: `PlaygroundTab.tsx` (AI Models has no folder-scoped
+   chat) at both its `catalog.status === "error"` banner and its
+   `actionError` banner. Neither passes a `folderPath`, so `explainWithAi`
+   resolves `Config.fused_dir` via `resolveDefaultFolder()`.
+
+**Import-boundary violation found and fixed**: `bun run build` (which runs
+`scripts/check-boundaries.mjs` first) failed once `explain-with-ai.ts`
+(a `platform/lib` module) imported `stageClaudeAsk` from
+`@apps/explorer/lib/pending-claude-ask` — `platform/**` may only import
+`platform`. This wasn't a false positive: `pending-claude-ask.ts` really is
+now needed from `platform` (via `explain-with-ai.ts`) and, transitively,
+from apps other than `explorer` (`ai_models`) that the boundary rules
+already forbid from reaching into `apps/explorer` directly. Rather than
+work around the check, relocated the module: `git mv
+src/apps/explorer/lib/pending-claude-ask.ts
+src/platform/lib/pending-claude-ask.ts` (+ its test file likewise), and
+updated the import specifier in all six referencing files
+(`RepoUpdatesDock.tsx`, `explain-with-ai.ts`, `explain-with-ai.test.ts`,
+`pending-claude-ask.test.ts`'s own self-import, `Listing.tsx`,
+`Preview.tsx`'s pre-existing unrelated import of the same module). This is
+a principled fix, not a workaround: the module has zero dependencies of its
+own (a plain module-level store) and was already consumed by both `shell/`
+and `apps/explorer/`, so `platform/lib` is a better-fitting home than either
+app. Added a paragraph to the module's header comment explaining the move
+and why (quoted in the module itself, not repeated here).
+
+**Pre-existing, unrelated test failure ruled out**: running
+`RepoUpdatesDock.test.tsx` together with the new test files surfaced `bun
+test`'s error: `window.addEventListener is not a function`, thrown from
+`apps/claude/feature-flag.ts:289` (a module-init-time
+`window.addEventListener("storage", ...)` call against that test file's own
+minimal `window` stub, which lacks `addEventListener`). Verified this is
+pre-existing and unrelated to this task's changes by stashing
+`Preview.tsx`/`PlaygroundTab.tsx` (`git stash push -u -m
+"wip-explain-ai-check" -- <two files>`, captured the SHA via `git stash
+list --format='%H %gs'`) and re-running `bun test
+src/shell/RepoUpdatesDock.test.tsx` alone — it failed identically with none
+of this task's new files even present. Restored via `git stash apply
+<sha>` (never `pop`, shared stash stack), confirmed via `git status
+--short`, then dropped the entry via `git stash drop stash@{0}` (re-found
+by index, since `drop` — unlike `apply` — doesn't take a bare full SHA).
+Excluded `RepoUpdatesDock.test.tsx` from this task's own verification runs
+accordingly; it is NOT caused by this work and is not this task's to fix.
+
+**Verification**: `bunx tsc --noEmit -p .` clean. `bun test
+src/platform/lib/pending-claude-ask.test.ts
+src/platform/lib/explain-with-ai.test.ts src/platform/ui/ErrorBanner.test.tsx
+src/shell/repo-updates-lib.test.ts` → 52 pass, 0 fail. `bun run build` →
+boundaries OK (864 files), tsc clean, vite build succeeds (remaining build
+warnings — dynamic-vs-static import overlap on `router.ts`/`api.ts`, and the
+500kB+ chunk-size notice — are pre-existing and unrelated to this change).
+
+**Not done, flagged for the final report**: neither `Preview.tsx`'s nor
+`PlaygroundTab.tsx`'s wiring has a component-mount test (matching this
+codebase's existing pattern of not mounting these heavy stateful components
+under `react-test-renderer`) — both need human/manual verification that
+clicking "Explain with AI" actually opens the right chat with the right
+prompt.

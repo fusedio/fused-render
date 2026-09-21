@@ -26,6 +26,7 @@ import {
 import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
 import { captureAppPreview, cropRect } from "@platform/lib/appShot";
 import { confirmLeave, navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, embedUrlForFsPath, replaceSearch, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
+import { explainErrorPrompt, explainWithAi } from "@platform/lib/explain-with-ai";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import {
@@ -64,7 +65,7 @@ import {
   pendingClaudeAskVersion,
   subscribePendingClaudeAsk,
   takePendingClaudeAsk,
-} from "@apps/explorer/lib/pending-claude-ask";
+} from "@platform/lib/pending-claude-ask";
 import {
   sideSplit,
   parseSide,
@@ -2230,7 +2231,17 @@ function TemplatePreview({
                 directly with no sidebar hop — reusing it as-is would
                 silently reintroduce finding 2. */}
             {snapshotError ? (
-              <ErrorBanner>
+              <ErrorBanner
+                onExplain={() =>
+                  void explainWithAi(
+                    explainErrorPrompt(
+                      "Could not load this commit. This may be a temporary problem.",
+                      `Viewing ${fsPath} as of a previewed commit.`,
+                    ),
+                    parentDir,
+                  )
+                }
+              >
                 <p className="m-0">
                   Could not load this commit. This may be a temporary problem.
                 </p>

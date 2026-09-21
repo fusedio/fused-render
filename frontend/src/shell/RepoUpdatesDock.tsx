@@ -45,7 +45,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { shortTaskId } from "@platform/lib/task-id";
-import { stageClaudeAsk } from "@apps/explorer/lib/pending-claude-ask";
+import { stageClaudeAsk } from "@platform/lib/pending-claude-ask";
 import { dismissLanPairing, getJson, getLanPairings, postJson } from "@platform/lib/api";
 import type { LanPairingEvent } from "@platform/lib/api";
 import { navigate, navigateToJobPage, navigateUrl } from "@platform/lib/router";

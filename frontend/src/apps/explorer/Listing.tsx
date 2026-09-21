@@ -110,7 +110,7 @@ import {
   pendingClaudeAskVersion,
   subscribePendingClaudeAsk,
   takePendingClaudeAsk,
-} from "@apps/explorer/lib/pending-claude-ask";
+} from "@platform/lib/pending-claude-ask";
 import { SideToggleButton } from "@apps/explorer/SideChrome";
 import { useAppActionRows, canonEntryPath } from "@apps/explorer/EntryActionsMenu";
 import { McpDialog } from "@apps/explorer/McpDialog";
