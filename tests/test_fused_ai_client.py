@@ -161,6 +161,46 @@ def test_text_returns_result_text_on_success(monkeypatch):
     assert fused_ai.text("hi") == "hi there"
 
 
+def test_text_omits_thinking_from_the_body_when_unset(monkeypatch):
+    """Tri-state (D886): unset must not appear in the body at all — the
+    worker's own default (thinking ON) only applies when the key is absent."""
+    payload = {"ok": True, "result": {"text": "hi there", "model": "opus", "usage": None}}
+
+    def fake_urlopen(req, timeout=None):
+        assert json.loads(req.data) == {"prompt": "hi"}
+        return _FakeHTTPResponse(json.dumps(payload).encode())
+
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    monkeypatch.setattr(fused_ai.urllib.request, "urlopen", fake_urlopen)
+    assert fused_ai.text("hi") == "hi there"
+
+
+def test_text_sends_an_explicit_thinking_false(monkeypatch):
+    payload = {"ok": True, "result": {"text": "hi there", "model": "opus", "usage": None}}
+
+    def fake_urlopen(req, timeout=None):
+        assert json.loads(req.data) == {"prompt": "hi", "thinking": False}
+        return _FakeHTTPResponse(json.dumps(payload).encode())
+
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    monkeypatch.setattr(fused_ai.urllib.request, "urlopen", fake_urlopen)
+    assert fused_ai.text("hi", thinking=False) == "hi there"
+
+
+def test_stream_sends_an_explicit_thinking_true(monkeypatch):
+    frames = json.dumps({"type": "chunk", "text": "hi"}) + "\n" + \
+        json.dumps({"type": "done", "ok": True, "result": {}}) + "\n"
+    raw = frames.encode("utf-8")
+
+    def fake_urlopen(req, timeout=None):
+        assert json.loads(req.data) == {"prompt": "hi", "stream": True, "thinking": True}
+        return _FakeHTTPResponse(b"", chunks=[raw])
+
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    monkeypatch.setattr(fused_ai.urllib.request, "urlopen", fake_urlopen)
+    assert list(fused_ai.stream("hi", thinking=True)) == ["hi"]
+
+
 # -------------------------------------------------------------- NDJSON stream
 
 

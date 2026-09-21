@@ -1994,8 +1994,13 @@ export function popoverPos(
 // (Akshil, 2026-09-18) — and an entry booked under the old id still reads as
 // Fable here: the card folds a stored value through `normalizeModel`
 // (platform/lib/model-vocab) before it reaches this list.
+//
+// NO "Default" ROW (Akshil, 2026-09-21): the card opens on the model and
+// thinking the run will actually get — the global Claude preference
+// (`GET /api/claude-sessions/defaults`) — instead of an empty value the CLI
+// resolved out of sight. `taskRunOptions` still carries a stored "" through
+// without inventing a row for it; the card fills it in before it is drawn.
 export const TASK_MODELS: readonly { key: string; label: string }[] = [
-  { key: "", label: "Default" },
   { key: "fable", label: "Fable" },
   { key: "opus", label: "Opus" },
   { key: "sonnet", label: "Sonnet" },
@@ -2006,7 +2011,6 @@ export const TASK_MODELS: readonly { key: string; label: string }[] = [
 // rather than in the CLI's spelling: "xhigh" is the flag's word, "Extra high" is
 // the English one, and the key is what goes on the wire.
 export const TASK_EFFORTS: readonly { key: string; label: string }[] = [
-  { key: "", label: "Default" },
   { key: "low", label: "Low" },
   { key: "medium", label: "Medium" },
   { key: "high", label: "High" },
@@ -2038,7 +2042,9 @@ export function taskRunOptions(
   list: readonly { key: string; label: string }[],
   current: string,
 ): { key: string; label: string }[] {
-  return list.some((o) => o.key === current)
+  // "" is "not chosen yet" — the card is still asking the server what the run
+  // gets — and not a value anyone can pick, so no row is made for it.
+  return !current || list.some((o) => o.key === current)
     ? [...list]
     : [...list, { key: current, label: current }];
 }

@@ -201,8 +201,14 @@ def render(reader, repo, tmp_path, params=None, github=None, repo_patch=None,
     if git_app_folder is not None:
         fixture_obj["gitAppFolder"] = git_app_folder
     fixture.write_text(json.dumps(fixture_obj))
+    # `encoding="utf-8"` is explicit here, not implied by `text=True`: the
+    # confirm-modal question text now carries a real em dash, and on a
+    # Windows runner `text=True` alone decodes the probe's UTF-8 stdout with
+    # the ANSI codepage (cp1252), mangling it into mojibake before this
+    # string ever reaches an assertion.
     proc = subprocess.run([node, PROBE, TEMPLATE, str(fixture)],
-                          capture_output=True, text=True, timeout=90)
+                          capture_output=True, text=True, encoding="utf-8",
+                          timeout=90)
     assert proc.returncode == 0, f"probe crashed:\n{proc.stderr[-3000:]}"
     return json.loads(proc.stdout)
 
@@ -385,7 +391,7 @@ def test_the_probe_fails_on_a_template_that_throws(reader, tmp_path):
     if not node:  # pragma: no cover
         pytest.skip("node is required")
     proc = subprocess.run([node, PROBE, str(broken), str(fixture)],
-                          capture_output=True, text=True, timeout=90)
+                          capture_output=True, text=True, encoding="utf-8", timeout=90)
     out = json.loads(proc.stdout)
     assert out["error"] is not None, "the probe did not notice a duplicate `let`"
     assert "streamed" in out["error"], out["error"]
@@ -423,7 +429,7 @@ def test_the_probe_fails_on_a_template_that_paints_nothing(reader, tmp_path):
     if not node:  # pragma: no cover
         pytest.skip("node is required")
     proc = subprocess.run([node, PROBE, str(broken), str(fixture)],
-                          capture_output=True, text=True, timeout=90)
+                          capture_output=True, text=True, encoding="utf-8", timeout=90)
     out = json.loads(proc.stdout)
     assert out["error"] is None, "this control is about a SILENT blank"
     assert not out["unhandled"], out["unhandled"]
@@ -444,8 +450,29 @@ def test_the_probe_fails_on_a_template_that_paints_nothing(reader, tmp_path):
 # either into a real, non-default state is a REAL click through the probe's new
 # `actions` list, not a hand-assigned fixture field.
 
-REVERT_QUESTION = "Revert this commit? This adds a new commit"
-CHECKOUT_QUESTION = "Commit the app folder back to this version? Other folders"
+# These used to be the button's own tooltip text, rendered verbatim inside the
+# inline `.confirm` bar next to the row it was about. The modal that replaced
+# the bar (git template: route every destructive confirmation through one
+# page-root modal) has no row beside it to supply "which commit", so
+# `pendingConfirm` builds a RICHER, subject-enriched question independently of
+# the button's tooltip — see `template.html`'s `revert`/`app_restore` branches.
+# The two now differ, so the expected text has to be derived the same way the
+# template derives it (short sha + two spaces + subject, when a subject is
+# known), not hand-copied once and left to drift.
+
+
+def _revert_question(commit):
+    subject = "  " + commit["subject"] if commit.get("subject") else ""
+    return ("Revert " + commit["short"] + subject + "? This adds a new commit "
+            "undoing it across the whole repository — not just this scope. "
+            "This cannot be merged away.")
+
+
+def _checkout_question(commit):
+    subject = "  " + commit["subject"] if commit.get("subject") else ""
+    return ("Commit the app folder back to " + commit["short"] + subject
+             + "? Other folders in the repository are not touched, and this "
+             "makes a new commit you can revert.")
 
 
 def test_revert_confirm_bar_only_shows_for_the_commit_it_was_armed_on(reader, tmp_path):
@@ -463,7 +490,7 @@ def test_revert_confirm_bar_only_shows_for_the_commit_it_was_armed_on(reader, tm
                    actions=[{"titleIncludes": newer["subject"]},
                             {"titleIncludes": "Revert this commit?"}])
     _assert_painted(armed, "revert armed on the selected commit")
-    assert REVERT_QUESTION in armed["viewHTML"], armed["viewHTML"]
+    assert _revert_question(newer) in armed["viewHTML"], armed["viewHTML"]
 
     # The regression: arm Revert on the newer commit, then select the OLDER
     # one. The confirmation must NOT follow — it was never confirmed for this
@@ -474,7 +501,7 @@ def test_revert_confirm_bar_only_shows_for_the_commit_it_was_armed_on(reader, tm
                                  {"titleIncludes": "Revert this commit?"},
                                  {"titleIncludes": older["subject"]}])
     _assert_painted(retargeted, "revert re-targeted by selecting a different commit")
-    assert REVERT_QUESTION not in retargeted["viewHTML"], (
+    assert _revert_question(newer) not in retargeted["viewHTML"], (
         "an armed Revert confirmation followed the user to a commit they "
         f"never confirmed it against:\n{retargeted['viewHTML']}")
 
@@ -493,7 +520,7 @@ def test_checkout_confirm_bar_only_shows_for_the_previewed_commit_it_was_armed_o
                    actions=[{"ariaLabel": "Preview the files as of " + newer["short"]},
                             {"ariaLabel": "Commit the app folder back to this version"}])
     _assert_painted(armed, "checkout armed on the previewed commit")
-    assert CHECKOUT_QUESTION in armed["viewHTML"], armed["viewHTML"]
+    assert _checkout_question(newer) in armed["viewHTML"], armed["viewHTML"]
 
     # The regression: arm Checkout while previewing the newer commit, then
     # preview the OLDER one instead. The confirmation must not follow.
@@ -502,7 +529,7 @@ def test_checkout_confirm_bar_only_shows_for_the_previewed_commit_it_was_armed_o
                                  {"ariaLabel": "Commit the app folder back to this version"},
                                  {"ariaLabel": "Preview the files as of " + older["short"]}])
     _assert_painted(retargeted, "checkout re-targeted by previewing a different commit")
-    assert CHECKOUT_QUESTION not in retargeted["viewHTML"], (
+    assert _checkout_question(newer) not in retargeted["viewHTML"], (
         "an armed Checkout confirmation followed the user to a preview they "
         f"never confirmed it against:\n{retargeted['viewHTML']}")
 
@@ -594,6 +621,6 @@ if (failures.length) {
 }
 console.log("OK");
 """
-    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert proc.returncode == 0 and "OK" in proc.stdout, (
         f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")

@@ -8678,29 +8678,46 @@ an AI Models page that could say what was on disk but not what was *running*.
   listed file still growing. The mtime half is not optional: a memo that outlived a
   completed download would hide the model the user just fetched, which is precisely
   the bug being fixed.
-- **AI-11d** **Reasoning is OFF by default, because it is invisible and the CPU
-  path cannot afford it.** Qwen3's chat template defaults `enable_thinking` to
-  true and half the curated models are Qwen (Qwen3.5 since the 2026-08-21
-  refresh), so an ordinary question
-  emits a `<think>` block first — hundreds of tokens the caller cannot tell
-  apart from the answer, since `/generate` streams whatever the model produces.
-  At a few tokens a second on the CPU this runner exists to serve, that is
-  minutes of apparent silence on a machine already suspected of being slow. The
-  flag is passed to every model rather than to a list of known ones: kwargs land
-  in the Jinja render context, so a template that never mentions it does not
-  read it, and a tokenizer whose signature rejects it outright retries without —
-  a model that will not take the hint should still answer, just verbosely.
-  (Written for the transformers runner and inherited unchanged by
-  `runners/llama_text.py`, which renders the GGUF's own embedded template by hand
-  and passes `enable_thinking=False` into the render context — Jinja ignores an
-  unreferenced variable, so no retry is needed there at all. D416 removed the
-  other runner; the default did not move.) The same class of trap as the version
-  floor that used to sit beside it: `transformers>=5.15` is a release that knows
-  a `qwen3_5` exists, and a 4.x resolution installed perfectly and then failed
-  every Qwen3.5 Download with `KeyError: 'qwen3_5'`, which read as a broken model
-  rather than an environment a major version too old. The GGUF path has no such
-  floor to get wrong — a `.gguf` carries its own architecture and its own
-  template — which is one fewer way for a curated model to be unloadable.
+- **AI-11d** **Reasoning is ON by default (D886, reversing this entry's
+  original "OFF by default" — owner decision, 2026-09-21), and a caller can
+  now say otherwise with a per-request `thinking` flag.** The original
+  reasoning still applies to the cost: Qwen3's chat template defaults
+  `enable_thinking` to true and half the curated models are Qwen (Qwen3.5
+  since the 2026-08-21 refresh), so an ordinary question emits a `<think>`
+  block first — hundreds of tokens the caller cannot tell apart from the
+  answer, since `/generate` streams whatever the model produces, and at a few
+  tokens a second on the CPU this runner exists to serve, that is minutes of
+  apparent silence on a machine already suspected of being slow. What changed
+  is that unifying BOTH local text runners around one default was judged more
+  important than which default: `mlx_text/worker.py` never had a way to turn
+  thinking off at all (its text path passed no `enable_thinking` kwarg,
+  falling through to the template's own default, which is ON for Qwen) while
+  `runners/llama_text.py` passed `enable_thinking=False` unconditionally — two
+  runners silently disagreeing about the same setting, discovered when
+  `mlx-community/S1-mini-MLX-4bit` (a Qwen3-0.6B transcript normalizer) proved
+  unusable through the MLX runner without a way to force thinking off. The
+  fix threads a wire-level `thinking` boolean (client -> `server/ai.py` ->
+  worker's `enable_thinking`, tri-state: unset/true/false) through both
+  runners, **defaulting to ON when unset in both** — the CPU-silence cost this
+  entry originally weighed is accepted, not solved, and a caller who wants the
+  old behaviour back (or needs it, like S1-mini) now has an explicit knob
+  rather than a runner-specific accident. The flag is honoured by every model
+  rather than by a list of known ones: an explicit value lands in the Jinja
+  render context for `runners/llama_text.py` (a template that never mentions
+  it just never reads it) and as an `enable_thinking` kwarg to the
+  tokenizer's own `apply_chat_template` for `mlx_text/worker.py` — retried
+  once without the kwarg if the template's own `apply_chat_template` raises
+  `TypeError` on it, since (unlike Jinja) transformers can reject an
+  unexpected keyword outright. (Originally written for the removed
+  transformers runner, whose retry logic `mlx_text/worker.py` now carries;
+  D416 removed that runner, `runners/llama_text.py` never needed the retry at
+  all.) The same class of trap as the version floor that used to sit beside
+  it: `transformers>=5.15` is a release that knows a `qwen3_5` exists, and a
+  4.x resolution installed perfectly and then failed every Qwen3.5 Download
+  with `KeyError: 'qwen3_5'`, which read as a broken model rather than an
+  environment a major version too old. The GGUF path has no such floor to get
+  wrong — a `.gguf` carries its own architecture and its own template — which
+  is one fewer way for a curated model to be unloadable.
 - **AI-11b** **The device is reported, because a model on a CPU works and looks
   broken.** torch runs on whatever it can see, and what it can see is not
   knowable from outside the process: **the default rows pin an unaccelerated
@@ -8807,10 +8824,12 @@ an AI Models page that could say what was on disk but not what was *running*.
   (`llama_cpp.Llama.metadata`), which this runner renders by hand with
   jinja2 and hands to `create_completion(stream=True)` — never
   `create_chat_completion`, so the NDJSON contract stays identical to
-  `torch_text.generate`'s. `enable_thinking=False` rides into the render
-  context unconditionally, the same default AI-11d chose for the family of
-  models this shares (Qwen3.5), because Jinja silently ignores a context
-  variable a template never reads. **The chat template reads
+  `torch_text.generate`'s. `enable_thinking` rides into the render context,
+  defaulting to `True` when a caller leaves it unset (D886, reversing
+  AI-11d's original default for the family of models this shares, Qwen3.5) —
+  Jinja silently ignores a context variable a template never reads, so an
+  explicit value passes through with no retry needed either way. **The chat
+  template reads
   `Llama._model.token_get_text`/`add_bos_token`, not the public `Llama`
   surface** — `Llama` itself has no `token_get_text` at all, verified
   against the installed 0.3.29, and `add_bos_token` decides whether

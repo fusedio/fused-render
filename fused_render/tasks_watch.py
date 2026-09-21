@@ -400,18 +400,24 @@ def wait(since: int, timeout: float = MAX_WAIT_SEC) -> tuple[int, frozenset | No
             return _generation, None
         keys: set[str] = set()
         for gen, changed in _changed:
-            if gen > since:
-                keys |= changed
+            if gen <= since:
+                continue
+            # A generation that could not name its rows (`notify_all`) makes
+            # the whole window a reload: rows the ring never listed are not
+            # rows a union can carry.
+            if changed is None:
+                return _generation, None
+            keys |= changed
         return _generation, frozenset(keys)
 
 
 # ----------------------------------------------------------------- the writes
 
-def _bump(keys: set[str]) -> None:
+def _bump(keys: set[str] | None) -> None:
     global _generation
     with _cond:
         _generation += 1
-        _changed.append((_generation, frozenset(keys)))
+        _changed.append((_generation, None if keys is None else frozenset(keys)))
         _cond.notify_all()
 
 
@@ -420,6 +426,22 @@ def notify(keys: set[str] | None = None) -> None:
     endpoints call this so the page they were called from (and every other
     window) sees the row flip without waiting for a tick."""
     _bump(set(keys or ()))
+
+
+def notify_all() -> None:
+    """Announce a change that cannot be named row by row — every client
+    watching reloads the whole listing (`/api/tasks/changes` answers
+    ``full: true``).
+
+    The one caller so far is a FOLDER MOVE (fs_mutate `_fs_rename`,
+    current_apps rename): the sessions under it were rewritten on disk to the
+    new path, the app-state settle ran through `app_fused_dir.ensure` whose
+    result names no ids, and a plain `notify()` — a bump with no keys — is one
+    the client treats as "nothing about the rows" and skips, so the Tasks page
+    sat on the old paths until its 20 s floor refresh (Akshil, 2026-09-21:
+    "cut and paste … took 10–15 seconds"). A full reload is one GET, the same
+    one the floor makes, and it lands the instant the move answers."""
+    _bump(None)
 
 
 def mark_running(session_id: str, ttl_sec: float = MARK_TTL_SEC,

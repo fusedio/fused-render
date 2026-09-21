@@ -567,14 +567,26 @@ def test_a_chat_prompt_is_rendered_through_the_templates_own_shape(worker):
     assert rendered == "user: hi\nassistant:"
 
 
-def test_reasoning_is_off_by_default(worker):
-    """Three of this runner's curated models are Qwen3.5 GGUFs, whose upstream
-    template defaults reasoning ON (AI-11d) — passed unconditionally here
-    because, unlike transformers' `apply_chat_template`, Jinja never raises on
-    a context variable a template does not reference."""
+def test_reasoning_is_on_by_default(worker):
+    """D886 reverses AI-11d: both local text runners now default thinking ON
+    when the caller leaves it unset. `_prompt_text`'s own default parameter
+    (`enable_thinking=True`) is what a caller that never threads the flag —
+    an older caller, or a direct worker invocation — gets."""
     template = "{{ enable_thinking }}"
     llm = _FakeLlama(metadata={"tokenizer.chat_template": template})
-    assert worker._prompt_text(llm, [], "") == "False"
+    assert worker._prompt_text(llm, [], "") == "True"
+
+
+def test_an_explicit_thinking_false_is_honoured(worker):
+    template = "{{ enable_thinking }}"
+    llm = _FakeLlama(metadata={"tokenizer.chat_template": template})
+    assert worker._prompt_text(llm, [], "", enable_thinking=False) == "False"
+
+
+def test_an_explicit_thinking_true_is_honoured(worker):
+    template = "{{ enable_thinking }}"
+    llm = _FakeLlama(metadata={"tokenizer.chat_template": template})
+    assert worker._prompt_text(llm, [], "", enable_thinking=True) == "True"
 
 
 def test_a_raw_prompt_skips_the_template_entirely(worker):
@@ -731,6 +743,23 @@ def test_generate_passes_sampling_params_straight_through(worker):
     assert llm.last_call["max_tokens"] == 40
     assert llm.last_call["temperature"] == 0.2
     assert llm.last_call["top_p"] == 0.4
+
+
+def test_generate_threads_the_bodys_enable_thinking_into_the_template(worker):
+    """`body.get("enable_thinking")` (D886, wired by `server/ai.py` from the
+    wire's `thinking`) must reach `_render_chat`, not stop at `generate`'s
+    own boundary — and unset must still default to True."""
+    template = "{{ enable_thinking }}"
+    llm = _FakeLlama(metadata={"tokenizer.chat_template": template}, chunks=["x"])
+    worker._loaded["llm"] = llm
+
+    worker.generate({"messages": [], "enable_thinking": False}, lambda payload: None)
+    assert llm.last_call["prompt"] == "False"
+
+    llm2 = _FakeLlama(metadata={"tokenizer.chat_template": template}, chunks=["x"])
+    worker._loaded["llm"] = llm2
+    worker.generate({"messages": []}, lambda payload: None)
+    assert llm2.last_call["prompt"] == "True"
 
 
 def test_no_model_loaded_answers_a_clean_failure(worker):

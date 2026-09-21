@@ -470,6 +470,7 @@ def _raise_for_terminal_job(job: dict) -> None:
 
 def text(prompt: str, model: str | None = None, effort: str | None = None,
          system_prompt: str | None = None, provider: str | None = None,
+         thinking: bool | None = None,
          timeout: float = _DEFAULT_TIMEOUT_S) -> str:
     """`POST /api/ai` and return the completion text. Mirrors `fused.ai.text()`
     without `onChunk` — see `stream()` for the streaming form.
@@ -479,7 +480,12 @@ def text(prompt: str, model: str | None = None, effort: str | None = None,
     pinned ids (`"afm-text"`) name it outright, then the shape rule (a repo
     id or `.gguf` filename is local, anything else Claude), exactly as the
     JS side does. `provider="apple"` alone runs Apple's on-device model
-    (macOS 26+, D700)."""
+    (macOS 26+, D700).
+
+    `thinking` (D886) is tri-state: left `None`, both local text runners
+    default it ON; pass `False` for a model whose card demands it off (e.g.
+    `mlx-community/S1-mini-MLX-4bit`). Non-local tiers warn rather than
+    reject it (D631) — see `result["warnings"]` on the raw `/api/ai` route."""
     body: dict = {"prompt": prompt}
     if model is not None:
         body["model"] = model
@@ -489,6 +495,8 @@ def text(prompt: str, model: str | None = None, effort: str | None = None,
         body["effort"] = effort
     if system_prompt is not None:
         body["systemPrompt"] = system_prompt
+    if thinking is not None:
+        body["thinking"] = thinking
     payload = _post_json("/api/ai", body, timeout=timeout)
     if not payload.get("ok"):
         raise _error_from_payload(200, payload)
@@ -498,10 +506,11 @@ def text(prompt: str, model: str | None = None, effort: str | None = None,
 
 def stream(prompt: str, model: str | None = None, effort: str | None = None,
            system_prompt: str | None = None, provider: str | None = None,
+           thinking: bool | None = None,
            timeout: float = _DEFAULT_TIMEOUT_S):
     """`POST /api/ai` with `{"stream": true}` and yield text chunks as they
-    arrive, mirroring `fused.ai.text({prompt, onChunk})`. `provider` as in
-    `text()`.
+    arrive, mirroring `fused.ai.text({prompt, onChunk})`. `provider` and
+    `thinking` as in `text()`.
 
     The NDJSON body is `{"type":"chunk","text":...}` lines closed by one
     `{"type":"done", ...}` line. A `done` frame with `ok: false` is an error
@@ -518,6 +527,8 @@ def stream(prompt: str, model: str | None = None, effort: str | None = None,
         body["effort"] = effort
     if system_prompt is not None:
         body["systemPrompt"] = system_prompt
+    if thinking is not None:
+        body["thinking"] = thinking
     resp = _request("POST", "/api/ai", body=body, timeout=timeout)
 
     def _chunks():

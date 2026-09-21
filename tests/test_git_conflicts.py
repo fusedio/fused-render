@@ -353,7 +353,7 @@ def test_view_reads_conflicts_on_its_own_channel():
 
 
 def test_view_never_applies_a_resolution_without_the_confirmation():
-    """The only `op: "resolve"` call site is inside the confirmation bar.
+    """The only `op: "resolve"` call site is inside the confirmation modal.
 
     The proposal panel's Apply button must go through `confirmable`, which writes
     `ask` to the URL and renders a question — never straight to `run`. A second
@@ -362,14 +362,16 @@ def test_view_never_applies_a_resolution_without_the_confirmation():
     src = _view_source()
     assert src.count('{ op: "resolve"') == 1
     assert 'confirmable("resolve:" + proposal.path' in src
-    # And the one call site sits inside the confirmation bar's continuation.
-    bar = src.index("function resolveConfirmBar()")
-    after = src.index("\n}", src.index("return confirmBar(", bar))
+    # And the one call site sits inside `pendingConfirm`'s `resolve` branch —
+    # the confirmation is built and mounted at the page root, not beside the
+    # proposal panel, so this is the only place the destructive op can fire from.
+    bar = src.index('if (op === "resolve") {')
+    after = src.index('if (op === "app_restore") {', bar)
     assert bar < src.index('{ op: "resolve"') < after
-    # `pendingConfirm` must NOT also render this question (two Yes buttons for one
-    # proposal, one of them in a list section far from the text it writes).
+    # `pendingConfirm` must NOT also render this question anywhere else (two Yes
+    # buttons for one proposal, one of them far from the text it writes).
     assert 'if (op === "resolve") {\n    /*' in src
-    assert src.count('confirmBar(\n    "Overwrite ') == 1
+    assert src.count('confirmModal(\n      "Overwrite ') == 1
 
 
 def test_view_handles_every_ai_rejection_code():
