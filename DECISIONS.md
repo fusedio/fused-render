@@ -2889,3 +2889,93 @@ Removed the second parse: the "Publish AppImage + attach to release" step
 now exports `VERSION` via `$GITHUB_ENV` (Task 15) alongside `APPIMAGE`, the
 same pattern already used to carry `$APPIMAGE` across steps, so there is
 only one place the filename is ever parsed.
+
+## Task 17 — git template confirmations: inline `.confirm` bars → centered modals
+
+Every destructive confirmation in `fused_render/templates/git/template.html` used to
+render as an inline `.confirm` bar spliced into the section/pane the question was
+about (discard, discard-all, stash-drop, resolve, app-restore/checkout, revert, reset).
+In practice the bar often landed below the fold — under a long inline diff, at the
+bottom of a list — so a click on "Discard" produced no visible reaction. Converted
+every one of the seven `DESTRUCTIVE` ops to a single centered modal over a scrim,
+reusing the existing `stashModal`/`publishModal` pattern (`.scrim` + `.modal` +
+`.panel`, mounted once at the page root). Only *where/how* the question renders
+changed — the `ask=` URL grammar and the `DESTRUCTIVE` set are untouched.
+
+- `confirmBar(question, run, verb)` → `confirmModal(question, run, verb)`, same `wrap`
+  shape as the other two modals: scrim (click cancels via `setParams({ ask: null })`),
+  `.panel.danger` with a `.panel-head` (title = `verb`), the question as body text, and
+  a foot with the danger confirm button then Cancel. `role="alertdialog"`,
+  `aria-modal="true"`, `aria-labelledby` set via `setAttribute` (not reliable as plain
+  `el()` props). `focusSoon()` lands on Cancel, never Confirm, so a stray Enter can't
+  fire the destructive action.
+- `pendingConfirm(data, stashes)` now owns all seven keys and returns the modal node
+  directly (or `null`) — no more `{ where, node }`, `askIn`, `folded.delete(ask.where)`,
+  or `|| changesAsk` / `|| stashesAsk` guards that existed only to keep a section
+  rendered around a confirmation. A section may render empty again while its
+  confirmation is open; that's correct now, the question isn't inside it any more.
+  `stashes` isn't module-level (it's threaded `draw()` → `render(data, stashes, diff)`),
+  so it became `pendingConfirm`'s second parameter, needed for `stash_drop`'s message
+  lookup.
+- `resolve`, `app_restore`, `revert`, `reset` used to return `null` from
+  `pendingConfirm` and build their own bar at their own call site
+  (`resolveConfirmBar()`, the checkout banner, the commit pane). All four guards moved
+  into `pendingConfirm` UNCHANGED — every one of them is load-bearing (a stale `ask=`
+  in the URL must not arm a confirmation for a commit/preview the user never actually
+  selected: `rest !== proposal.path`, `rest !== previewed`, `sha !== selectedRev()`).
+  This was fully achievable because every guard's inputs (`proposal`, `previewed`,
+  `selectedRev()`, `canPreview`) are module-level and reachable by closure from
+  anywhere in the file — no site needed the spec's "guard cannot move" escape hatch.
+  `resolveConfirmBar()` was deleted outright; its logic is now `pendingConfirm`'s
+  `resolve` branch.
+- Button call sites (`confirmable(...)`) were left exactly where they were (proposal
+  panel foot, preview banner, commit pane) — only the inline `confirmBar`/`run(...)`
+  append at each was deleted. Their local question-text variables
+  (`checkoutQuestion`/`revertQuestion`/`resetQuestion`) were kept, now used only as
+  button tooltip text; the modal's actual (richer, subject-enriched) question text is
+  built independently inside `pendingConfirm`. Accepted as minor, deliberate
+  duplication rather than exporting a helper across an odd boundary — the spec allows
+  this explicitly.
+- Precedence: `askModal` (from `pendingConfirm`) wins at the page-root mount over
+  `panel=stash`/`panel=publish` — if a confirmation is pending, neither other modal
+  mounts. `publishOpen` became `!askModal && param("panel") === "publish"`, with
+  `ghStartPolling`/`ghStopPolling` gated on it.
+- Danger styling needed no dark-mode-specific rule: `--danger` / `--danger-bg` /
+  `--danger-line` were already defined once in the default (dark) `:root` block and
+  overridden in `:root[data-theme="light"]`, so `.panel.danger` inherits
+  theme-correctness for free.
+- Question-text pass: `stash_drop` now names the stash's own message when available
+  (`stash@{N} (message)`); `resolve`/`app_restore`/`revert`/`reset` add the path or the
+  commit's short sha + subject when not already implied. Long paths wrap via
+  `overflow-wrap: anywhere` on `.modal .q` instead of widening the modal.
+- Deleted the `.confirm` CSS block, `@keyframes confirm-in`, its `@media (max-width:
+  560px)` rule, and its reduced-motion rule; verified by grep that no `.confirm`
+  selector/className remains anywhere in the file.
+
+Tests: `tests/test_git_conflicts.py::test_view_never_applies_a_resolution_without_the_confirmation`
+had two literal-source-grep assertions anchored on `function resolveConfirmBar()` and
+`confirmBar(`; both needed updating for the rename and the deleted function — replaced
+the anchor with `pendingConfirm`'s `if (op === "resolve") { ... }` branch bounds, same
+guarantee (one `{ op: "resolve" }` call site, reached only through the confirmation).
+
+Two more tests in `tests/test_git_view.py` broke for a reason beyond a simple rename:
+`test_checkout_lives_in_the_previewing_banner_and_sends_app_restore` and
+`test_revert_appears_on_the_expanded_commit_and_sends_its_own_sha` asserted the actual
+`{ op: "app_restore" }` / `{ op: "revert" }` write happened at the button's own call
+site — true under the old inline-bar architecture, false now that the write lives in
+`pendingConfirm`. Rewrote both to check the button still lives at its original site
+and that the write + its guard now live in `pendingConfirm`'s matching branch.
+
+Grepped all of `tests/` for `confirmBar`, `askIn`, `folded.delete(ask`, `ask.where`,
+`where:` after finishing — zero real matches (a few `where`-adjacent hits are
+unrelated prose like "anywhere:"/"elsewhere:").
+
+`.venv/bin/python -m pytest -q tests/test_git_view.py tests/test_git_conflicts.py`:
+45 passed.
+
+Note for future readers: a builder note file for this specific task briefly
+overwrote this file's entire prior content (Write tool, no Read-before-overwrite
+guard caught it because the file existed but the mistake was made anyway) before
+being caught and reverted via `git checkout -- DECISIONS.md`; this Task 17 section is
+the only change that survived. If a future session finds this file suspiciously
+short, that is a sign the same mistake happened again and was not caught.
