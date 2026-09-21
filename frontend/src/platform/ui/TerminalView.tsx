@@ -83,12 +83,25 @@ export default function TerminalView({ id, onExit, onStatus }: TerminalViewProps
       },
     });
 
+    // Coalesced to at most one `fit.fit()` per animation frame: a resize
+    // drag (TerminalDrawer.tsx) can hand this observer a burst of
+    // intermediate layout sizes within a single frame, and each `fit.fit()`
+    // that actually changes rows/cols re-fires `term.onResize` ->
+    // `session.resize()` -> a WebSocket frame -> the server's ioctl ->
+    // SIGWINCH -> a shell prompt redraw. Running that whole chain once per
+    // observed size instead of once per frame is the flicker.
+    let fitRaf: number | null = null;
     const observer = new ResizeObserver(() => {
-      fit.fit();
+      if (fitRaf !== null) return;
+      fitRaf = requestAnimationFrame(() => {
+        fitRaf = null;
+        fit.fit();
+      });
     });
     observer.observe(el);
 
     return () => {
+      if (fitRaf !== null) cancelAnimationFrame(fitRaf);
       observer.disconnect();
       dataSub.dispose();
       resizeSub.dispose();
@@ -100,5 +113,12 @@ export default function TerminalView({ id, onExit, onStatus }: TerminalViewProps
     // tear down and rebuild the whole terminal on every parent render.
   }, [id]);
 
-  return <div className="term-view" ref={containerRef} />;
+  // `.term-view` carries the padding; `.term-view-surface` is the unpadded
+  // element xterm actually opens into and measures against (see the CSS
+  // comment in notifications.css for why the split matters to FitAddon).
+  return (
+    <div className="term-view">
+      <div className="term-view-surface" ref={containerRef} />
+    </div>
+  );
 }

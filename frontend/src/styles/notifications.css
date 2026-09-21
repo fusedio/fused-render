@@ -185,7 +185,29 @@
   touch-action: none;
 }
 
+/* Padding lives HERE, not on `.term-view-surface` (the element xterm.js
+   actually opens into): `box-sizing: border-box` is global (base.css:65), so
+   `FitAddon.proposeDimensions()` (@xterm/addon-fit) reads
+   `getComputedStyle(term.element.parentElement).height/width` as an already
+   border-box (padding-inclusive) number, then subtracts only whatever
+   padding it finds on `term.element` itself — never on an ancestor further
+   up. Padding placed directly on the element xterm opens into would be
+   subtracted correctly; padding placed on ITS parent would not be
+   subtracted at all, so xterm would size itself a few rows/cols too big for
+   the actual content box and clip the last row against our own padding.
+   Nesting an unpadded `.term-view-surface` inside this padded `.term-view`
+   keeps the breathing room without feeding FitAddon a number it can't
+   account for — the surface's own box is naturally the padded parent's
+   content area, so FitAddon's parentElement read already reflects it. */
 .term-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+}
+
+.term-view-surface {
   flex: 1 1 auto;
   min-height: 0;
 }
