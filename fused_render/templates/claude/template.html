@@ -11870,12 +11870,14 @@ const PERMISSION_SHORT = {
 };
 const DEFAULT_MODEL = "sonnet";
 const DEFAULT_EFFORT = "medium";
-// What the user ACTUALLY last used with Claude Code for this project — via this
-// template or the CLI directly — detected by the agent from the project's
-// session transcripts and settings files. A hardcoded "default" tells the user
-// nothing; the real config is worth preselecting. An explicit pane param (the
-// user touched the selector) always outranks detection; the constants above are
-// the last-resort fallback when nothing was detected.
+// The user's GLOBAL Claude config — `model` / `effortLevel` in
+// ~/.claude/settings.json, read by the agent (`_defaults`). This pane asks
+// without a session id, so it is always the new-chat question, and the answer
+// is that file and nothing about the folder (Akshil, 2026-09-21). A hardcoded
+// "default" tells the user nothing; the real config is worth preselecting. An
+// explicit pane param (the user touched the selector) always outranks
+// detection; the constants above are the last-resort fallback when nothing was
+// detected.
 let detectedModel = "";
 let detectedEffort = "";
 // The user's default-model preference (Preferences → Default model), a short
@@ -19307,7 +19309,7 @@ const ASK_DETECTION_TIMEOUT_MS = 1500;
     // awaiting them here `curModel()`/`curEffort()` inside `sendMessage` would
     // read `detectedModel`/`prefModel` while they are still "", and every
     // "Fix with AI" run would launch on `DEFAULT_MODEL`/`DEFAULT_EFFORT`,
-    // silently ignoring the project's detected config and the user's
+    // silently ignoring the detected config and the user's
     // Preferences → Default model. Both already swallow their own failures
     // (`.catch(() => {})`), so this can only be slow, never rejected — and
     // `ASK_DETECTION_TIMEOUT_MS` bounds the slow case, so a cold-venv

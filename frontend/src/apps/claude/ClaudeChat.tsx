@@ -214,6 +214,12 @@ export interface ClaudeChatProps {
   /** `peek=1` (TaskPeek modal). */
   peek: boolean;
   params: ChatParamsSource;
+  /** A HOST stated this conversation's model/effort through `ChatMount`'s
+   *  `model`/`effort` props, so the `model`/`effort` params on this mount's
+   *  store are a real seed and not the composer's own leftover — which is what
+   *  decides whether they outrank the global pair for a chat with no session
+   *  (ui/composer-defaults `seedCounts`). */
+  hostSeededSettings?: boolean;
   initialSessionId?: string;
   initialRunId?: string;
   initialAsk?: ClaudeAsk;
@@ -1462,7 +1468,9 @@ function ChatBody(props: ChatBodyProps) {
   );
 
   // ── the three pills ────────────────────────────────────────────────────────
-  const defaults = useComposerDefaults(agentDir, file, params);
+  const defaults = useComposerDefaults(
+    agentDir, file, params, !!props.hostSeededSettings,
+  );
   // WHAT THE RUN IS ACTUALLY LAUNCHED WITH (`run-controller`'s `curModel` /
   // `curEffort`, read at send time on every `start` and `send`) — and it is ""
   // for as long as the pills have not resolved.

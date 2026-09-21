@@ -289,11 +289,11 @@ test("a host's run settings SEED the pills and are never re-written under them",
     // THE SIDE PEEK'S BUG (Akshil, 2026-09-18: "I saw the sidebar peek — the
     // values there were different"). The composer ranks `param > detected >
     // pref > constant` (ui/composer-defaults), and `detected` is
-    // `agent._defaults`: the model last used in that FOLDER, scanned off its
-    // newest transcripts. Right for a chat somebody opened on a folder; wrong
-    // for a TASK that was set up with a model of its own, which is what the
-    // peek is always showing. With nothing on the param the task's own choice
-    // could not win, because it was never in the running.
+    // `agent._defaults`: for a chat with no session id, the GLOBAL Claude
+    // preference. Right for a chat somebody opened by hand; wrong for a TASK
+    // that was set up with a model of its own, which is what the peek is always
+    // showing. With nothing on the param the task's own choice could not win,
+    // because it was never in the running.
     //
     // So a host that KNOWS the settings states them, and the existing top of
     // that ranking does the rest.
