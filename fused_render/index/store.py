@@ -439,6 +439,114 @@ def _heartbeat_while(phase, msg, interval_s, stop):
         phase(msg)
 
 
+def _plan_partial_merge(con, old_parts_meta, files_dir, outside, kept, shard_src):
+    """The contiguous run of OLD partition indices `[lo, hi]` a merge must
+    rewrite; every partition outside that range is carried forward into the
+    new manifest UNTOUCHED — same filename, same bytes, never opened for
+    writing.
+
+    A single CONTIGUOUS range, not just the individually-affected
+    partitions: a brand-new path can sort into the GAP between two old
+    partitions that each individually show zero affected old rows (a new
+    directory with no old rows anywhere near it in path-sorted order), so a
+    per-partition min/max overlap test alone can miss it. The range is
+    widened to the shard rows' own min/max — whichever old partitions border
+    that span on either side — so every row a scan produced is guaranteed to
+    fall inside `[lo, hi]`. This is the correctness-critical part: silently
+    leaving a new row in an "untouched" partition would mean the row never
+    reaches the store at all.
+
+    Returns `None` when nothing is affected (should not happen once the
+    caller's nothing-changed skip above has already returned), or
+    `(0, len(old_parts_meta) - 1)` — the whole store — when a manifest-named
+    partition file is missing (nothing to plan a partial merge on top of) or
+    when the affected range turns out to cover everything anyway. Either
+    answer makes the caller fall back to the existing full-rewrite path."""
+    n = len(old_parts_meta)
+    anchors = []
+    for i, p in enumerate(old_parts_meta):
+        fp = os.path.join(files_dir, p["file"])
+        if not os.path.exists(fp):
+            return (0, n - 1)
+        src = parquet_src([fp])
+        hit = con.execute(
+            f"SELECT count(*) FROM {src} WHERE NOT ({outside} OR {kept})"
+        ).fetchone()[0]
+        if hit:
+            anchors.append(i)
+    if shard_src:
+        smin, smax = con.execute(
+            f"SELECT min(path), max(path) FROM {shard_src}").fetchone()
+        if smin is not None:
+            # First old partition whose max reaches at least as far as the
+            # shard's smallest new path (i.e. the leftmost partition the new
+            # rows could possibly belong beside), and the mirror image from
+            # the right. If the shard's range runs off either end of what
+            # the old partitions cover, that end anchors at the outermost
+            # partition (index 0 / n - 1) instead.
+            lo_shard = next((i for i, p in enumerate(old_parts_meta)
+                             if p["max"] >= smin), n - 1)
+            hi_shard = next((i for i in range(n - 1, -1, -1)
+                             if old_parts_meta[i]["min"] <= smax), 0)
+            anchors += [lo_shard, hi_shard]
+    if not anchors:
+        return None
+    return (min(anchors), max(anchors))
+
+
+def _merge_rows_to_partitions(con, src, files_dir, generation, part_rows, phase):
+    """Sort + dedupe `src` (already a `UNION ALL` of whichever rows are being
+    rewritten) and split it into `part_rows`-sized partition files tagged
+    with `generation`. Shared by the full-rewrite path and the partial-merge
+    path in `_compact_locked` — the two differ only in how much of the store
+    `src` covers, never in how a covered range gets written."""
+    # The dominant, unheartbeated cost on a large merge: this single
+    # blocking statement dedups and sorts every row before the
+    # partition-write loop below ever starts. A background thread ticks
+    # the run directory while it runs, joined before the main thread's
+    # next statement so nothing concurrent ever touches `con`.
+    stop = threading.Event()
+    heartbeat = threading.Thread(
+        target=_heartbeat_while,
+        args=(phase, "writing index (merging)", _MERGE_HEARTBEAT_S, stop),
+        daemon=True)
+    heartbeat.start()
+    try:
+        con.execute(
+            f"CREATE TEMP TABLE merged AS SELECT * FROM ({src}) "
+            f"QUALIFY row_number() OVER (PARTITION BY path ORDER BY mtime DESC) = 1 "
+            f"ORDER BY path")
+    finally:
+        stop.set()
+        heartbeat.join()
+    total_rows = con.execute("SELECT count(*) FROM merged").fetchone()[0]
+    n_parts = max(1, -(-total_rows // part_rows))
+    parts = []
+    for i in range(n_parts):
+        fp = os.path.join(files_dir, f"part-{generation:06d}-{i:05d}.parquet")
+        con.execute(
+            f"COPY (SELECT * FROM merged LIMIT {part_rows} "
+            f"OFFSET {i * part_rows}) "
+            f"TO '{_sql(fp)}' (FORMAT PARQUET, ROW_GROUP_SIZE 65536)")
+        # One partition's COPY can itself run long on a big merge; a
+        # heartbeat per partition (rather than once for the whole loop)
+        # is what keeps the liveness watchdog (`runner._looks_abandoned`)
+        # from calling a live compaction dead — nothing else touches the
+        # run directory for the length of this loop.
+        phase(f"writing index (partition {i + 1}/{n_parts})")
+        # The folded bounds are their own aggregate, not lower() of the
+        # byte-wise ones: the two orders disagree, so a partition can
+        # hold a folded-smaller path than its byte-wise minimum. Pruning
+        # for the ILIKE match needs the real folded range (query.prune).
+        lo, hi, lo_f, hi_f, n = con.execute(
+            f"SELECT min(path), max(path), "
+            f"min(lower(path)), max(lower(path)), count(*) "
+            f"FROM {parquet_src([fp])}").fetchone()
+        parts.append({"file": os.path.basename(fp), "min": lo, "max": hi,
+                      "min_lower": lo_f, "max_lower": hi_f, "rows": n})
+    return parts, total_rows
+
+
 def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
     import shutil
 
@@ -526,71 +634,66 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
         return {"rows": meta.get("rows", 0),
                 "partitions": len(meta.get("partitions", [])),
                 "changed_dirs": 0, "added_dirs": 0, "removed_dirs": 0,
-                "skipped_rewrite": True, **root_totals(old_src)}
+                "skipped_rewrite": True, "merged_rewrite": False,
+                **root_totals(old_src)}
 
     phase("writing index")
     os.makedirs(files_dir, exist_ok=True)
 
-    srcs = []
-    if has_old:
-        # Column list spelled out, not `SELECT *`: a partition written before
-        # `depth` existed has one fewer column than the shards it is unioned
-        # with, and a positional UNION ALL would fail outright rather than
-        # merge. Backfill it from the path instead (see depth_expr).
-        fcols = pq.read_schema(old_files[0]).names
-        fdp = "depth" if "depth" in fcols else f"{depth_expr('path')} AS depth"
-        srcs.append(f"SELECT path, dir, name, ext, size, mtime, {fdp} "
-                    f"FROM {old_src} WHERE {outside} OR {kept}")
-    if has_shards:
-        srcs.append(f"SELECT * FROM {shard_src}")
-    src = " UNION ALL ".join(srcs) or None
+    # A small changed set must not cost a rewrite of the whole store: when
+    # the affected old partitions are a PROPER subset of all of them, rewrite
+    # only that contiguous run and carry every other partition forward
+    # untouched (see `_plan_partial_merge`). No magic-fraction threshold —
+    # this is structural: partial merge triggers exactly when it can save
+    # work (some partitions provably don't need touching), and falls back to
+    # the full rewrite (identical to the pre-existing behaviour) whenever the
+    # affected range turns out to span the whole store anyway, e.g. a
+    # `full`/`rescan_all` run, which rescans everything and leaves nothing
+    # "kept" for the range-planner to spare.
+    old_parts_meta = old_manifest.get("partitions") or []
+    merge_range = (_plan_partial_merge(con, old_parts_meta, files_dir, outside,
+                                       kept, shard_src)
+                  if has_old and old_parts_meta else None)
+    merged_rewrite = (merge_range is not None
+                      and merge_range != (0, len(old_parts_meta) - 1))
 
     parts = []
     total_rows = 0
-    if src:
-        # The dominant, unheartbeated cost on a large merge: this single
-        # blocking statement dedups and sorts every row before the
-        # partition-write loop below ever starts. A background thread ticks
-        # the run directory while it runs, joined before the main thread's
-        # next statement so nothing concurrent ever touches `con`.
-        stop = threading.Event()
-        heartbeat = threading.Thread(
-            target=_heartbeat_while,
-            args=(phase, "writing index (merging)", _MERGE_HEARTBEAT_S, stop),
-            daemon=True)
-        heartbeat.start()
-        try:
-            con.execute(
-                f"CREATE TEMP TABLE merged AS SELECT * FROM ({src}) "
-                f"QUALIFY row_number() OVER (PARTITION BY path ORDER BY mtime DESC) = 1 "
-                f"ORDER BY path")
-        finally:
-            stop.set()
-            heartbeat.join()
-        total_rows = con.execute("SELECT count(*) FROM merged").fetchone()[0]
-        n_parts = max(1, -(-total_rows // cfg.part_rows))
-        for i in range(n_parts):
-            fp = os.path.join(files_dir, f"part-{generation:06d}-{i:05d}.parquet")
-            con.execute(
-                f"COPY (SELECT * FROM merged LIMIT {cfg.part_rows} "
-                f"OFFSET {i * cfg.part_rows}) "
-                f"TO '{_sql(fp)}' (FORMAT PARQUET, ROW_GROUP_SIZE 65536)")
-            # One partition's COPY can itself run long on a big merge; a
-            # heartbeat per partition (rather than once for the whole loop)
-            # is what keeps the liveness watchdog (`runner._looks_abandoned`)
-            # from calling a live compaction dead — nothing else touches the
-            # run directory for the length of this loop.
-            phase(f"writing index (partition {i + 1}/{n_parts})")
-            # The folded bounds are their own aggregate, not lower() of the
-            # byte-wise ones: the two orders disagree, so a partition can
-            # hold a folded-smaller path than its byte-wise minimum. Pruning
-            # for the ILIKE match needs the real folded range (query.prune).
-            lo, hi, lo_f, hi_f, n = con.execute(
-                f"SELECT min(path), max(path), "
-                f"min(lower(path)), max(lower(path)), count(*) "
-                f"FROM {parquet_src([fp])}").fetchone()
-            parts.append({"file": os.path.basename(fp), "min": lo, "max": hi,
-                          "min_lower": lo_f, "max_lower": hi_f, "rows": n})
+    if merged_rewrite:
+        lo, hi = merge_range
+        range_files = [os.path.join(files_dir, old_parts_meta[i]["file"])
+                       for i in range(lo, hi + 1)]
+        range_src = parquet_src(range_files)
+        fcols = pq.read_schema(range_files[0]).names
+        fdp = "depth" if "depth" in fcols else f"{depth_expr('path')} AS depth"
+        srcs = [f"SELECT path, dir, name, ext, size, mtime, {fdp} "
+               f"FROM {range_src} WHERE {outside} OR {kept}"]
+        if has_shards:
+            srcs.append(f"SELECT * FROM {shard_src}")
+        new_parts, new_rows = _merge_rows_to_partitions(
+            con, " UNION ALL ".join(srcs), files_dir, generation,
+            cfg.part_rows, phase)
+        preserved = old_parts_meta[:lo] + old_parts_meta[hi + 1:]
+        parts = old_parts_meta[:lo] + new_parts + old_parts_meta[hi + 1:]
+        total_rows = new_rows + sum(p["rows"] for p in preserved)
+    else:
+        srcs = []
+        if has_old:
+            # Column list spelled out, not `SELECT *`: a partition written
+            # before `depth` existed has one fewer column than the shards it
+            # is unioned with, and a positional UNION ALL would fail outright
+            # rather than merge. Backfill it from the path instead (see
+            # depth_expr).
+            fcols = pq.read_schema(old_files[0]).names
+            fdp = "depth" if "depth" in fcols else f"{depth_expr('path')} AS depth"
+            srcs.append(f"SELECT path, dir, name, ext, size, mtime, {fdp} "
+                        f"FROM {old_src} WHERE {outside} OR {kept}")
+        if has_shards:
+            srcs.append(f"SELECT * FROM {shard_src}")
+        src = " UNION ALL ".join(srcs) or None
+        if src:
+            parts, total_rows = _merge_rows_to_partitions(
+                con, src, files_dir, generation, cfg.part_rows, phase)
 
     # dirs.parquet: old rows outside root or unchanged inside it + new rows
     phase("writing signatures")
@@ -632,6 +735,7 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
     return {"rows": total_rows, "partitions": len(parts),
             "changed_dirs": changed, "added_dirs": added,
             "removed_dirs": removed, "skipped_rewrite": False,
+            "merged_rewrite": merged_rewrite,
             **root_totals(new_src)}
 
 
