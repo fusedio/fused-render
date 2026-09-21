@@ -113,6 +113,11 @@ import AppVersionPicker from "./AppVersionPicker";
 import { useAppVersionLabel } from "@platform/lib/appVersionLabel";
 import SnapshotError from "./SnapshotError";
 import { useAppPageSnapshot, type AppPageSnapshotState } from "./useAppPageSnapshot";
+import { TaskPeekFrame } from "./TaskPeekFrame";
+import { APP_PAGE_FIT_LABEL, useAppHeadFit, useAppTabbarFit } from "./app-page-fit";
+import { useTaskPeekEnabled } from "./task-peek-flag";
+import { useProjectPeekEnabled } from "./project-peek-flag";
+import { peekSearch } from "./task-peek-store";
 
 // ---- the tabs, as ONE registry -----------------------------------------------
 //
@@ -428,7 +433,10 @@ export default function AppPage({
       const i = APP_PAGE_TABS.indexOf(cur) + (e.key === "ArrowRight" ? 1 : -1);
       e.preventDefault();
       if (i < 0 || i >= APP_PAGE_TABS.length) return;
-      navigateUrl(appPageUrl(dir, APP_PAGE_TABS[i], location.search));
+      // The same address a click would take (`tabUrl`): `?peek=` stays behind
+      // here too, or an arrow-key switch would carry a dead param to Overview
+      // and re-open the panel on the way back (Bugbot, PR #1249).
+      navigateUrl(appPageUrl(dir, APP_PAGE_TABS[i], peekSearch(location.search, null)));
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -439,8 +447,32 @@ export default function AppPage({
     e.preventDefault();
     // The query rides along: it is the tab's own (`?view=` on Tasks), and a
     // switch away and back should find it as it was.
-    if (next !== tab) navigateUrl(appPageUrl(dir, next, location.search));
+    if (next !== tab) navigateUrl(tabUrl(next));
   };
+  // A tab's address. `?peek=` is the ONE param that does not ride along: it
+  // names a panel only the Tasks tab can show, and a switch away is a close
+  // (the tab unmounts its Scheduled, which is the peek's host). Carrying it to
+  // Overview would only put a dead param on the URL and re-open the panel on
+  // the way back — a Back that lands on Tasks with the peek up is the history
+  // entry's job, not the link's.
+  const tabUrl = (next: AppPageTab) => appPageUrl(dir, next, peekSearch(location.search, null));
+  // THE SIDE PEEK, HOSTED BY THIS PAGE (2026-09-20 — the same panel `/tasks`
+  // has, TaskPeekFrame.tsx): the frame is this WHOLE page, header and tab
+  // strip included, so the panel runs the full height of the content area
+  // exactly as it does there. Only the Tasks tab can open one, and only while
+  // the feature is on; any other tab (and the flag's first null frames) leaves
+  // the page bare.
+  // THE HEADER AND THE TAB STRIP FOLD TO ICONS when the room runs out
+  // (shell/app-page-fit.ts): measured, never a breakpoint. `data-fit` is how
+  // many rungs have had to go; the stylesheet hides the words by it.
+  const [headFit, headRef] = useAppHeadFit();
+  const [tabbarFit, tabbarRef] = useAppTabbarFit();
+  const peekOn = useTaskPeekEnabled();
+  // …AND THE PROJECT FLAG (project-peek-flag.ts, `project_peek_enabled`,
+  // default off): the peek on THIS page is a feature flag of its own while
+  // it settles, over and above the Tasks page's.
+  const projectPeekOn = useProjectPeekEnabled();
+  const peekable = peekOn === true && projectPeekOn === true && tab === "tasks";
 
   // Folded ONCE for every tilde below: `home` is raw expanduser (backslashed on
   // Windows) while `dir` and the root are forward-slash, and a prefix test
@@ -511,8 +543,9 @@ export default function AppPage({
   };
 
   return (
+    <TaskPeekFrame peekable={peekable}>
     <div className="app-page">
-      <header className="app-page-head">
+      <header className="app-page-head" ref={headRef} data-fit={headFit}>
         <div className="app-page-title">
           {/* The app's mark, and the way to change it: a click opens the same
               icon picker the sidebar's Projects row does (below). The app's
@@ -588,12 +621,12 @@ export default function AppPage({
             >
               {sharing ? (
                 <>
-                  Share
+                  <span className={APP_PAGE_FIT_LABEL}>Share</span>
                   <Share2 data-icon="inline-end" />
                 </>
               ) : (
                 <>
-                  {exporting ? "Exporting…" : "Export"}
+                  <span className={APP_PAGE_FIT_LABEL}>{exporting ? "Exporting…" : "Export"}</span>
                   {exporting ? (
                     <Loader2 data-icon="inline-end" className="animate-spin" />
                   ) : (
@@ -612,9 +645,10 @@ export default function AppPage({
               size="sm"
               variant="default"
               className="app-page-open"
+              title="Open the app in the Explorer"
               onClick={() => navigateUrl(urlForFsPath(entry), { isDir: false })}
             >
-              Open
+              <span className={APP_PAGE_FIT_LABEL}>Open</span>
               <FolderOpen data-icon="inline-end" />
             </Button>
           </div>
@@ -634,7 +668,7 @@ export default function AppPage({
             page-wide state (task 3 puts all three visible tabs on the
             selected commit), so it sits beside the strip rather than inside
             any one panel. */}
-        <div className="app-page-tabbar flex-none">
+        <div className="app-page-tabbar flex-none" ref={tabbarRef} data-fit={tabbarFit}>
           {/* Controlled by the URL and ONLY the URL: no onValueChange, so a
               ctrl/middle-click on a trigger opens the address elsewhere without
               also switching this page. Real anchors under the triggers (base-ui's
@@ -658,7 +692,11 @@ export default function AppPage({
                     nativeButton={false}
                     render={
                       <a
-                        href={appPageUrl(dir, id, location.search)}
+                        href={tabUrl(id)}
+                        // The word is what the fold hides; the tooltip and the
+                        // accessible name keep saying it (app-page-fit.ts).
+                        title={label}
+                        aria-label={label}
                         onClick={(e) => pickTab(e, id)}
                       />
                     }
@@ -675,7 +713,7 @@ export default function AppPage({
                     ) : (
                       <Icon data-icon="inline-start" />
                     )}
-                    {label}
+                    <span className={APP_PAGE_FIT_LABEL}>{label}</span>
                   </TabsTrigger>
                 );
               })}
@@ -718,5 +756,6 @@ export default function AppPage({
           })}
       </div>
     </div>
+    </TaskPeekFrame>
   );
 }

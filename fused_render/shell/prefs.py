@@ -233,6 +233,19 @@ def task_peek_enabled() -> bool:
     return True
 
 
+def project_peek_enabled() -> bool:
+    """Whether the APP PAGE's Tasks tab (`/apps/<folder>?_tab=tasks`) opens a
+    task in the same side panel `/tasks` does, instead of navigating to the
+    Explorer as that tab always has (default off — a feature flag while the
+    surface settles, 2026-09-21). `/tasks` itself is not gated by this; see
+    `task_peek_enabled` above.
+
+    Same idiom as `notify_terminal_sessions_enabled` below: only a stored
+    `true` is on, everything else (missing, legacy, junk) stays off.
+    """
+    return read_prefs().get("project_peek_enabled") is True
+
+
 def notify_terminal_sessions_enabled() -> bool:
     """Whether a finished-task notification fires for a session started from
     an INTERACTIVE TERMINAL (`claude` typed by hand) rather than only one
@@ -588,7 +601,10 @@ def _prefs_response() -> dict:
         # A task on the Tasks page opens in a side panel beside the list —
         # always, since 2026-09-20 (`task_peek_enabled`). Still sent, because
         # the client's flag module reads it.
-        "task_peek": {"enabled": task_peek_enabled()},
+        # …and `project` says whether the APP PAGE's Tasks tab does the same
+        # (default off, `project_peek_enabled`) — a flag on that one surface,
+        # under the key the client's peek flag module already reads.
+        "task_peek": {"enabled": task_peek_enabled(), "project": project_peek_enabled()},
         # Whether a finished-task notification fires for a session that
         # entered from an interactive terminal (default off, opt-in) — see
         # `notify_terminal_sessions_enabled`'s own doc comment for why this
@@ -772,6 +788,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'native_chat_enabled' must be a boolean"}, status_code=400)
         prefs["native_chat_enabled"] = value
         changed = True
+    if "project_peek_enabled" in body:
+        value = body.get("project_peek_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'project_peek_enabled' must be a boolean"}, status_code=400)
+        prefs["project_peek_enabled"] = value
+        changed = True
     if "task_notify_terminal_sessions" in body:
         value = body.get("task_notify_terminal_sessions")
         if not isinstance(value, bool):
@@ -889,6 +911,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             {"error": "no known preference in request (expected 'engine', "
                       "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'native_chat_enabled', "
                       "'task_notify_terminal_sessions', "
+                      "'project_peek_enabled', "
                       "'project_queue_enabled', "
                       "'lan_enabled', "
                       "'default_model', 'indexing_enabled', 'ranked_search_enabled', "

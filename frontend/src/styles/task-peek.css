@@ -80,6 +80,17 @@
   overflow: hidden;
 }
 
+/* THE SAME TWO ELEMENTS WITH THE FEATURE OFF (TaskPeekFrame.tsx): the app
+   page keeps the wrappers in the tree so entering and leaving the Tasks tab
+   never remounts the page under them (the Overview's keepMounted iframe would
+   reload). `display: contents` takes them out of layout entirely, and the
+   names share nothing with the peek's, so not one rule in this file reaches a
+   page that is off. */
+.peek-shell,
+.peek-shell-frame {
+  display: contents;
+}
+
 /* The Tasks page itself. Width is set inline as `calc(100% - <peek>px)` so the
    two transitions below run off ONE number; it re-lays-out to that width (no
    transform on content), which is what lets the page column's centred margins

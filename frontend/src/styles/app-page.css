@@ -330,11 +330,27 @@
    (schedule.css); inside the gutter frame both would be a second gutter. */
 .app-page-tasks .schedule-page {
   padding-inline: 0;
+  /* THE GUTTER THE PEEK'S ARITHMETIC READS (shell/task-peek-store.ts
+     `measureTasksBaseline`): on `/tasks` it is the 44px of padding above; here
+     the padding is gone and the 48px is the app page's own gutter frame
+     (`.app-page-body`'s `calc(100% - 48px)`), so the var says that instead.
+     Declared here and NOT under the tight rule below, for the reason
+     styles/task-peek.css gives: the frozen baseline's gutter must not move. */
+  --tasks-page-gutter: 48px;
 }
 
 .app-page-tasks .prefs-page.schedule-page > *,
 .app-page-tasks .schedule-page > .prefs-section {
   max-width: none;
+}
+
+/* …but the peek's arithmetic still counts the cap `/tasks` has: the store
+   reads `--tasks-column-max` off this element (`measureTasksBaseline`) where
+   there is no rendered max-width, so floors, tight and the default width fall
+   at the same window widths on both pages. (The body above is capped at the
+   same 1050px, so nothing on screen depends on this — only the measurement.) */
+.app-page-tasks .schedule-page > .prefs-section.schedule-main {
+  --tasks-column-max: 1050px;
 }
 
 .app-page-empty {
@@ -651,4 +667,36 @@
 .app-page-body > .error-banner,
 .app-page-body > .skeleton-lines {
   margin: 0;
+}
+
+/* ---- the header and the tab strip fold to icons (shell/app-page-fit.ts) ----
+   `data-fit` is how many rungs have had to go for the row to fit the width
+   it has — measured, never a breakpoint. EVERY selector names `[data-fit]`
+   and a non-zero level, so a page that has room (level 0) is exactly the
+   page it was. The tooltips and aria-labels keep the words. */
+.app-page-head[data-fit]:not([data-fit="0"]) .app-page-actions .app-page-fit-lbl,
+.app-page-tabbar[data-fit]:not([data-fit="0"]) .app-page-tabs .app-page-fit-lbl {
+  display: none;
+}
+
+/* An icon-only button is square-ish: the word's trailing-icon gap goes too. */
+.app-page-head[data-fit]:not([data-fit="0"]) .app-page-actions > button {
+  padding-inline: 10px;
+}
+
+.app-page-head[data-fit]:not([data-fit="0"]) .app-page-actions > button [data-icon="inline-end"] {
+  margin-inline-start: 0;
+}
+
+.app-page-tabbar[data-fit]:not([data-fit="0"]) .app-page-tabs a {
+  padding-inline: 12px;
+}
+
+.app-page-tabbar[data-fit]:not([data-fit="0"]) .app-page-tabs a [data-icon="inline-start"] {
+  margin-inline-end: 0;
+}
+
+/* Rung 1 of the tab bar: the "Version" eyebrow goes; the picker itself stays. */
+.app-page-tabbar[data-fit="2"] .app-version-picker-eyebrow {
+  display: none;
 }

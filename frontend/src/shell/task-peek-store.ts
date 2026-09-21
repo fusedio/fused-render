@@ -74,6 +74,11 @@ export function peekItemProps(key: string, openable: boolean): Record<string, st
  *  the element's own box so nothing changes size (styles/task-peek.css). */
 export const PEEK_OPEN_CLASS = "is-peeked";
 
+/** Marks a surface drawn INSIDE the frame that is not page background — a
+ *  popover that renders in place rather than through a portal. A click there
+ *  keeps the peek open (`PEEK_FRAME_KEEPS_OPEN`). */
+export const PEEK_KEEP_ATTR = "data-peek-keep";
+
 /**
  * THE MARK A WALKED-TO ITEM WEARS WHILE IT HOLDS THE WALK'S OWN FOCUS, and the
  * whole of its job is to take the focus RING off (styles/task-peek.css).
@@ -355,7 +360,13 @@ export function resolvePeekKey(
  */
 export const PEEK_FRAME_KEEPS_OPEN =
   'button, a, input, select, textarea, [role="button"], ' +
-  `[${PEEK_ITEM_ATTR}], .schedule-toolbar, .modal-dialog, .context-menu`;
+  `[${PEEK_ITEM_ATTR}], .schedule-toolbar, .modal-dialog, .context-menu, ` +
+  // The app page's frame holds more than the Tasks page did (2026-09-20): its
+  // header's icon is a span that opens a picker, the picker itself is drawn
+  // inside the frame, and the version picker is a transparent <select> under
+  // a painted label whose eyebrow and padding are not the select (Bugbot) —
+  // a click in any of them is a click ON something.
+  `.app-page-icon-toggle, .app-version-picker, [${PEEK_KEEP_ATTR}]`;
 
 /** Does a click that landed on `hit` close the peek? */
 export function frameClickCloses(hit: Element | null): boolean {
@@ -1095,7 +1106,18 @@ export function measureTasksBaseline(): number | null {
         : (Number.parseFloat(cs.paddingLeft) || 0) + (Number.parseFloat(cs.paddingRight) || 0);
     const content = host.clientWidth;
     if (!(content > 0)) return null;
-    const cap = Number.parseFloat(getComputedStyle(main).maxWidth);
+    // THE CAP, and where it comes from. On `/tasks` it is the column's own
+    // `max-width` (1050px, styles/schedule.css). The app page's Tasks tab lets
+    // its list FILL the page (Akshil, 2026-09-21: the page follows its parent,
+    // no centred column) and so carries no max-width — but it still wants the
+    // same arithmetic as `/tasks`, or its floors and default width would drift
+    // with the window. `--tasks-column-max` (styles/app-page.css) is that cap
+    // stated without laying anything out; the rendered max-width is the
+    // fallback for the page that never declared it.
+    const mainStyle = getComputedStyle(main);
+    const capVar = Number.parseFloat(mainStyle.getPropertyValue("--tasks-column-max"));
+    const cap =
+      Number.isFinite(capVar) && capVar > 0 ? capVar : Number.parseFloat(mainStyle.maxWidth);
     // A page with no cap at all (`max-width: none` parses to NaN) is one whose
     // column IS the room it is given, which is what `tasksBaselineFrom` falls
     // back to — but only the rendered box can confirm the element is laid out
