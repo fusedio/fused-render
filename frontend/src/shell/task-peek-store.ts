@@ -362,9 +362,11 @@ export const PEEK_FRAME_KEEPS_OPEN =
   'button, a, input, select, textarea, [role="button"], ' +
   `[${PEEK_ITEM_ATTR}], .schedule-toolbar, .modal-dialog, .context-menu, ` +
   // The app page's frame holds more than the Tasks page did (2026-09-20): its
-  // header's icon is a span that opens a picker, and the picker itself is
-  // drawn inside the frame — a click in either is a click ON something.
-  `.app-page-icon-toggle, [${PEEK_KEEP_ATTR}]`;
+  // header's icon is a span that opens a picker, the picker itself is drawn
+  // inside the frame, and the version picker is a transparent <select> under
+  // a painted label whose eyebrow and padding are not the select (Bugbot) —
+  // a click in any of them is a click ON something.
+  `.app-page-icon-toggle, .app-version-picker, [${PEEK_KEEP_ATTR}]`;
 
 /** Does a click that landed on `hit` close the peek? */
 export function frameClickCloses(hit: Element | null): boolean {

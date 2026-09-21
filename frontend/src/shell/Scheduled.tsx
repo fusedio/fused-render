@@ -1419,12 +1419,16 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // measured, two observers) before tearing it down. Scoped, this page never
   // draws a frame: a missing slot is a panel that waits one paint, nothing
   // more.
+  //
+  // ONE ROOT SHAPE, slot or no slot: a bare `page` on the first commit and a
+  // fragment around it on the next is a root-type change React answers with a
+  // remount of the whole tasks tree (Bugbot). The fragment is always there;
+  // only the portal inside it comes and goes.
   if (scope) {
-    if (!slot) return page;
     return (
       <>
         {page}
-        {createPortal(panel, slot)}
+        {slot ? createPortal(panel, slot) : null}
       </>
     );
   }

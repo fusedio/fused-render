@@ -190,10 +190,13 @@ describe("the two hosts", () => {
     expect(PAGE).toContain("const peekable = scope ? peekOn && projectPeekOn : peekOn;");
     expect(PAGE).not.toContain("!scope && peekOn");
     expect(PAGE).toContain("const slot = useTaskPeekSlot();");
-    expect(PAGE).toContain("{createPortal(panel, slot)}");
+    expect(PAGE).toContain("{slot ? createPortal(panel, slot) : null}");
     // …and NEVER a frame of its own while scoped: the slot arrives one commit
     // late, and a frame drawn in that gap would nest inside the app page's.
-    expect(PAGE).toContain("if (scope) {\n    if (!slot) return page;");
+    expect(PAGE).toContain("if (scope) {\n    return (\n      <>\n        {page}\n        {slot ? createPortal(panel, slot) : null}");
+    // …and ONE root shape whether or not the slot has arrived: a bare `page`
+    // one commit and a fragment the next remounted the tasks tree (Bugbot).
+    expect(PAGE).not.toContain("if (!slot) return page;");
     // …and draws its own frame where there is none: `/tasks`.
     expect(PAGE).toContain("<TaskPeekFrame peekable peek={panel}>");
   });
@@ -220,7 +223,7 @@ describe("the two hosts", () => {
 
   it("clicking the app page's icon, or inside its picker, is not a click on blank frame", () => {
     const STORE = read("task-peek-store.ts");
-    expect(STORE).toContain(".app-page-icon-toggle, [${PEEK_KEEP_ATTR}]");
+    expect(STORE).toContain(".app-page-icon-toggle, .app-version-picker, [${PEEK_KEEP_ATTR}]");
     expect(read("../platform/ui/IconPicker.tsx")).toContain('data-peek-keep="1"');
   });
 });
