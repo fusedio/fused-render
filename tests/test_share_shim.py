@@ -12,6 +12,9 @@ disk state.
 """
 from __future__ import annotations
 
+import datetime
+import io
+import json
 import sys
 import types
 
@@ -97,6 +100,27 @@ def test_canvas_zip_contains_toml_and_wrapper_with_the_given_viewer_token(shim):
         assert names == {"canvas.toml", "my_cool_app.py"}
         wrapper = zf.read("my_cool_app.py").decode()
         assert '_UDF = "UDF_Fused_App_File"' in wrapper
+
+
+def test_main_survives_a_non_json_expires_at(shim, monkeypatch, capsys):
+    """Finding 2: `session.expires_at` is typed `object` by the SDK — if the
+    real thing publish already did (upload, scope flip, share_collection)
+    succeeded but the answer happens to carry a `datetime`, `main()` must
+    still print it rather than dying with an uncaught TypeError AFTER all
+    that already ran, orphaning the canvas with no stored record."""
+    shim.ACTIONS["fake_publish"] = lambda req: {
+        "url": "https://udf.fused.ai/tok/x.html",
+        "session_expires": datetime.datetime(2026, 1, 1, 0, 0, 0),
+    }
+    monkeypatch.setattr(sys, "argv", ["_fused_share_app.py"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"action": "fake_publish"})))
+
+    rc = shim.main()
+
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["url"] == "https://udf.fused.ai/tok/x.html"
+    assert out["session_expires"] == "2026-01-01 00:00:00"
 
 
 def test_canvas_zip_for_a_plain_file_uses_the_files_viewer_token(shim):

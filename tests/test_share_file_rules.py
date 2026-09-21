@@ -96,6 +96,37 @@ def test_ties_at_equal_order_break_on_name():
     assert got["name"] == "Pandas_CSV"
 
 
+def test_regex_matches_the_basename_not_the_whole_path():
+    # Finding 5: a regex must not fire because of the PARENT DIRECTORY name.
+    # "census" is nowhere in the file name itself.
+    catalog = CATALOG + [rule("Census_Viewer", [], order=1, regex=r"census")]
+    got = rules_mod.resolve("/Users/me/census_data/notes.txt", catalog)
+    assert got["name"] != "Census_Viewer"
+    assert got["name"] == "Text_File"
+
+    # The same regex DOES still win when the match is actually in the
+    # basename — the predicate is not simply disabled.
+    got2 = rules_mod.resolve("/Users/me/other_dir/census.txt", catalog)
+    assert got2["name"] == "Census_Viewer"
+
+
+def test_specificity_is_scored_by_what_matched_this_path_not_by_declaration():
+    # Finding 6: General_Report declares BOTH a regex and extensions, but for
+    # a plain "other.csv" its regex never matches — it must not outrank a
+    # purpose-built, lower-`order` extension rule just because it "has" a
+    # regex. Pandas_CSV (order=1, extension-only) must still win.
+    catalog = CATALOG + [
+        rule("General_Report", ["csv"], order=5, regex=r"report_\d+\.csv$"),
+    ]
+    got = rules_mod.resolve("/local/other.csv", catalog)
+    assert got["name"] == "Pandas_CSV"
+
+    # But when the regex DOES match this path, General_Report's specificity
+    # correctly outranks the plain extension rules.
+    got2 = rules_mod.resolve("/local/report_7.csv", catalog)
+    assert got2["name"] == "General_Report"
+
+
 def test_builtin_fused_rule_appended_only_when_uncovered():
     covered = rules_mod._with_builtin(CATALOG)  # 'fused' extension not in CATALOG
     names = [r["name"] for r in covered if "fused" in (r.get("extensions") or [])]

@@ -151,11 +151,21 @@ def load_rules(ttl: float = RULES_TTL_INTERACTIVE) -> list[dict]:
     return _with_builtin(rules)
 
 
-def _has_specific(rule: dict) -> bool:
-    return bool(rule.get("file_name")) or bool(rule.get("regex"))
-
-
 def _matches(rule: dict, path: str) -> bool:
+    """True if `rule` claims this path by ANY predicate (filename, regex, or
+    extension) — every predicate is basename-scoped (finding 5: a regex was
+    matched against the whole absolute path, so a rule with `regex: "census"`
+    fired for `/Users/me/census_data/notes.txt`)."""
+    return _specific_match(rule, path) or _extension_match(rule, path)
+
+
+def _specific_match(rule: dict, path: str) -> bool:
+    """True if the filename or regex predicate itself matched THIS path —
+    not merely whether the rule declares one (finding 6: a rule with
+    `regex` plus `extensions` outranked a purpose-built, lower-`order` rule
+    even when its regex never matched and both only matched by extension).
+    Basename-scoped, matching every other predicate here and the workbench's
+    own `compareUdfRulesByMatchSpecificity`."""
     basename = os.path.basename(path)
     file_name = rule.get("file_name")
     if file_name and file_name.lower() == basename.lower():
@@ -163,22 +173,27 @@ def _matches(rule: dict, path: str) -> bool:
     regex = rule.get("regex")
     if regex:
         try:
-            if re.search(regex, path):
+            if re.search(regex, basename):
                 return True
         except re.error:
             pass
-    ext = os.path.splitext(path)[1].lstrip(".").lower()
-    extensions = rule.get("extensions") or []
-    if ext in extensions:
-        return True
     return False
 
 
-def _sort_key(rule: dict):
+def _extension_match(rule: dict, path: str) -> bool:
+    ext = os.path.splitext(path)[1].lstrip(".").lower()
+    extensions = rule.get("extensions") or []
+    return ext in extensions
+
+
+def _sort_key(rule: dict, path: str):
     order = rule.get("order")
     # A rule without `Menu order` sorts after every rule that has one.
     order_key = (1, 0) if order is None else (0, order)
-    return (0 if _has_specific(rule) else 1, order_key, rule.get("name") or "")
+    # Specificity is computed against THIS path, not the rule in the
+    # abstract — a rule only outranks by filename/regex when that predicate
+    # is what actually matched here (finding 6).
+    return (0 if _specific_match(rule, path) else 1, order_key, rule.get("name") or "")
 
 
 def resolve(path: str, rules: list[dict]) -> dict | None:
@@ -188,5 +203,5 @@ def resolve(path: str, rules: list[dict]) -> dict | None:
     matching = [r for r in rules if _matches(r, path)]
     if not matching:
         return None
-    matching.sort(key=_sort_key)
+    matching.sort(key=lambda r: _sort_key(r, path))
     return matching[0]

@@ -411,7 +411,15 @@ def main() -> int:
             msg = "Fused refused the request as not signed in. Sign in to Fused and retry."
         print(f"{type(exc).__name__}: {msg}"[-2000:], file=sys.stderr)
         return 1
-    json.dump(out, sys.stdout)
+    # `default=str`: the SDK's own `.expires_at` type is not pinned (see
+    # `_mint_session` above and share_file.py's `_parse_expiry`), so a
+    # `datetime` here must not raise AFTER import_collection_toml_zip, the
+    # scope flip and share_collection have already run against the real
+    # account — that would exit 1 with no stdout, no stored record, and an
+    # orphaned canvas/token the caller can never find again (code review
+    # finding 2). Any other odd-but-real type (Decimal, UUID, …) degrades to
+    # its str() the same way rather than losing the whole successful result.
+    json.dump(out, sys.stdout, default=str)
     return 0
 
 
