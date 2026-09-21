@@ -609,13 +609,22 @@ export function ComposerCard({
     const form = formRef.current;
     if (!form) return;
     const doc = form.ownerDocument;
-    const onDocPointerOver = (ev: PointerEvent) => {
+    // `pointerover` for a pointer that moves; `pointerdown` for one that does
+    // not (Bugbot on 1e33e75): a pick closes a menu under a still pointer, and
+    // nothing fires until it moves — a press anywhere that is not the card or a
+    // popup ends the hover just as it ends the focus (the outside-press
+    // listener below), so a click on the transcript folds a hover-opened card.
+    const onDocPointer = (ev: PointerEvent) => {
       const t = ev.target as Element | null;
       if (!t || form.contains(t) || t.closest?.(POPUP_SURFACE)) return;
       setHovered(false);
     };
-    doc.addEventListener("pointerover", onDocPointerOver, true);
-    return () => doc.removeEventListener("pointerover", onDocPointerOver, true);
+    doc.addEventListener("pointerover", onDocPointer, true);
+    doc.addEventListener("pointerdown", onDocPointer, true);
+    return () => {
+      doc.removeEventListener("pointerover", onDocPointer, true);
+      doc.removeEventListener("pointerdown", onDocPointer, true);
+    };
   }, [hovered]);
   /**
    * …AND A PRESS OUTSIDE FOLDS IT EVEN WHEN FOCUS DOES NOT MOVE (Akshil,
