@@ -79,6 +79,23 @@ describe("EmptyResultMessage", () => {
     expect(text(mount("scanning", true, 0))).toBe("The file index is still building");
   });
 
+  test("a covered, genuinely-empty answer switches to the scanning copy once a triggered scan is confirmed running", () => {
+    // reason === "" (covered) with the live poll strictly true: the
+    // covered-but-empty scan this feature fires must show the same
+    // "still building" copy the uncovered case already gets, not a
+    // stale "No matches".
+    expect(text(mount("", true, 12))).toContain("still building");
+    expect(text(mount("", true, 12))).toContain("12 files so far");
+  });
+
+  test("a covered, empty answer with the poll not yet answered (null) stays plain — no false positive on load", () => {
+    expect(text(mount("", null, 0))).toBe("No matches");
+  });
+
+  test("a covered, empty answer with the poll confirmed NOT scanning stays plain", () => {
+    expect(text(mount("", false, 0))).toBe("No matches");
+  });
+
   test("the frozen answer's own reason still reads as scanning before the poll answers", () => {
     // `scanning: null` — the poll has not answered yet — and `reason` frozen
     // at rank time as "scanning": `indexGap` still calls this scanning

@@ -29,9 +29,15 @@ export function EmptyResultMessage({
   /** `indexScan.files`, for the "still building" progress note. */
   filesScanned: number;
 }) {
-  // "" is the only reason that means what "No matches" already says: the
-  // index covers this folder and genuinely found nothing here.
-  const gap = reason !== "" ? indexGap(reason, scanning) : null;
+  // "" (covered) normally means what "No matches" already says. The one
+  // exception: a scan this box itself asked for (the covered-but-empty
+  // trigger in useListingSearch/FilesHome) can be running right now, and the
+  // live poll is the only thing that knows that — `reason` was frozen at
+  // rank time and can't say so. Only a STRICT `true` admits this; `null`
+  // (poll hasn't answered yet) and `false` both fall through to plain "No
+  // matches", so a fresh page load never shows "still building" before the
+  // poll has actually confirmed anything is running.
+  const gap = reason !== "" ? indexGap(reason, scanning) : scanning === true ? "scanning" : null;
   if (gap === "disabled") {
     return (
       <>
