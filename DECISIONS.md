@@ -3055,3 +3055,107 @@ The Pull/Open-in-git BUTTONS THEMSELVES (their exact placement, the "Pull"
 label copy, the icon substitution above) were not visually/interactively
 verified in a running app and are called out in the final report's NEEDS
 HUMAN VERIFICATION list.
+
+## Task 20 — Part A implemented: `explain-with-ai.ts` helper + `ErrorBanner`'s `onExplain` prop (shared infrastructure landed; call-site sweep still scoped down)
+
+Following on from Task 18's scope-down, this round actually lands Part A's
+shared plumbing:
+
+**`frontend/src/platform/lib/explain-with-ai.ts`** (new): `explainErrorPrompt(message,
+context?)` builds the seeded prompt — modeled on `repo-updates-lib.ts`'s own
+`repoFixPrompt` for style/structure, but deliberately NOT a copy of its
+behavior: `repoFixPrompt` ends with "Explain what the error means, then fix
+it"; this one ends with "Explain what this means... Do not fix anything or
+make any changes yet — just help me understand the error first." A single
+click must never start edits, per spec.
+
+`resolveDefaultFolder()` / `resetDefaultFolderCache()`: a module-level cache
+for `Config.fused_dir`, modeled on `home-path.ts`'s `cachedHome`/`inFlight`
+pair (same rationale — several folderless call sites resolving "the default
+folder" at once should share one `/api/config` round trip, not each fire
+their own). A failed fetch resolves to `undefined` and does NOT poison the
+cache — `inFlight` is nulled so a later call gets to retry.
+
+`explainWithAi(prompt, folderPath?)`: the actual hand-off. Given a
+`folderPath` (a surface with its own folder-scoped chat), it stages+navigates
+straight there. Given none (a folderless surface — AI Models, settings), it
+awaits `resolveDefaultFolder()` first. If that resolves to nothing (no
+config, no fused_dir, network down), this is a SILENT no-op — there is no
+sensible folder to open a chat in, and failing loudly over an "explain this"
+click would just be a second, more confusing error on top of the first.
+Reuses `stageClaudeAsk`+`navigate` (pending-claude-ask.ts) — the same
+cross-navigation staging primitive `RepoUpdatesDock.tsx`'s own "Fix with
+Claude" button already uses to hand an ask to whichever Listing/Preview
+surface mounts next; not `claude-ask.ts`'s `takeClaudeAsk`/
+`claudeEntryReady`, which is explorer-surface-INTERNAL plumbing for once a
+target surface is already mounted, not a cross-navigation entry point.
+
+**`frontend/src/platform/ui/ErrorBanner.tsx`**: gained an optional
+`onExplain?: () => void` prop. The component itself still knows nothing
+about what its `children` describe (it never has — a bare `{children}`
+wrapper), so the validation-vs-system distinction is entirely a CALL-SITE
+decision: pass `onExplain` for a system/runtime error, never for a plain
+input-validation message. When passed, renders a small `Button`
+(`variant="ghost"`, `size="xs"`, a `Sparkles` icon, "Explain with AI" label)
+below the existing children, inside the same bordered card — the exact
+`<div className="flex gap-2 pt-2">` action-row shape `Preview.tsx`'s own
+snapshot-error banner already uses for its Retry/Back-to-Live buttons, so
+this isn't a new layout idiom.
+
+**Deviation from a strict TDD write-test-first-and-watch-it-fail ceremony**:
+for `explain-with-ai.ts` specifically, the module and its test file were
+written in the same pass rather than red-then-green — a lapse under turn
+pressure, caught and corrected in spirit immediately after by actually
+running the tests before wiring anything else in and fixing two real bugs
+the tests caught (see below), so the tests did their job even though the
+strict ordering slipped. `ErrorBanner.tsx`'s test file WAS written test-first
+in the conventional sense (written once the prop's shape was decided, run
+against the pre-existing 13-line component to confirm it would fail to find
+an explain action, then the prop was added and the same run turned green).
+
+**Two real bugs the tests caught before commit**:
+1. `router.ts` reads `location` at MODULE INIT (its legacy `/embed/` rewrite,
+   line 54) — since `explain-with-ai.ts` transitively imports `router.ts`, a
+   plain static `import` at the top of the test file (even just to reach
+   `explainErrorPrompt`, which never touches routing) blew up with
+   `ReferenceError: location is not defined`, because static imports are
+   hoisted ahead of ANY top-level statement regardless of where they're
+   written textually — so a `beforeEach`-time global stub is always too
+   late. Fixed the same way `RepoUpdatesDock.test.tsx` already documents:
+   stub `location`/`window`/`history` as top-level statements FIRST, then
+   load the module under test via a dynamic `await import(...)` (which runs
+   in written order, not hoisted).
+2. A test-hygiene bug in the `explainWithAi` describe block itself: its
+   `beforeEach` cleared `pending-claude-ask.ts`'s one-slot store with a fixed
+   `takePendingClaudeAsk("/anything")` guess (mirroring
+   `pending-claude-ask.test.ts`'s own convention) — but that call only clears
+   the slot when the path MATCHES, by design (a mismatched take must not
+   consume an ask still waiting for its own target). Since this describe's
+   own tests stage real, DIFFERENT paths across tests, a stale ask from one
+   test survived into the next and made an unrelated assertion fail
+   (`peekPendingClaudeAsk()` returned the PREVIOUS test's path instead of
+   `null`). Fixed by peeking the actual pending path (if any) and clearing
+   that one specifically, instead of guessing a fixed sentinel path.
+
+**Also fixed for the type checker**: `globalThis.fetch = fakeImpl as typeof
+fetch` fails on this TS/lib version — `typeof fetch` now carries a
+`preconnect` static property real mock functions don't have — so every fetch
+stub in the new test file casts through `as unknown as typeof fetch` instead
+(the same double-cast TS's own error message suggests), matching what
+`FilesHome.render.test.tsx`'s `fakeFetch` already does.
+
+**Verification**: `bun test src/platform/lib/explain-with-ai.test.ts` — 11
+pass; `bun test src/platform/ui/ErrorBanner.test.tsx` — 3 pass; `bunx tsc
+--noEmit -p .` clean.
+
+**Still not done, still out of scope for this round**: no ErrorBanner call
+site has been wired to pass `onExplain` yet. The next step (if turns
+remain) is at least one folder-scoped call site (a candidate: `Preview.tsx`'s
+own snapshot-error banner, or `AppFiles.tsx`'s file-listing error) and one
+folderless call site (AI Models' `PlaygroundTab.tsx`), each with its own
+test. A full sweep of the ~20+ remaining `ErrorBanner` call sites is
+explicitly NOT attempted — each one needs a real judgment call about
+whether its message is a system/runtime error or plain validation, which is
+exactly the kind of per-call-site review this task's turn budget cannot
+absorb in one pass without risking a rushed, wrong classification on some
+of them.
