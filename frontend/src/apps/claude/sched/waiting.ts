@@ -516,20 +516,17 @@ export function pruneDropped(
  * the one answer that matters backwards: a row with nothing in front of it is
  * not a row that failed to say — it is the server saying THE FOLDER IS FREE NOW,
  * and falling back to the admission's minutes-old "behind TASK-038" left the
- * card naming a task that had long since finished, with a Run next button under
- * it that could do nothing.
+ * card naming a task that had long since finished.
  *
- * `claimedNext` IS THE ONE THING THAT OUTRANKS BOTH, and only until the next row
- * lands. Run next has just been accepted by the server; the row in hand was read
- * before the press, so believing it would take the reader's own press back off
- * the screen. It is a claim with a deadline, not a state: the caller drops it the
- * moment a fresher row arrives, and that row then decides — including when it
- * says `queue_priority: false` because the server refused after all.
+ * NO THIRD ARGUMENT ANY MORE (2026-09-22). Run next used to have one — an
+ * optimistic claim that outranked both while its own press was in flight — and
+ * it left with the button: nothing here promotes a row on the client, only the
+ * server does (a Run now that had to wait, or a held answer), and `queue_priority`
+ * read straight off `row`/`fallback` is that answer.
  */
 export function waitingFacts(
   row: QueueFacts | null | undefined,
   fallback: QueueFacts | null | undefined,
-  claimedNext: boolean = false,
 ): QueueFacts {
   const from = row ?? fallback ?? {};
   return {
@@ -540,7 +537,7 @@ export function waitingFacts(
     queue_ahead_session: from.queue_ahead_session ?? "",
     queue_ahead_target: from.queue_ahead_target ?? "",
     queue_ahead_key: from.queue_ahead_key ?? "",
-    queue_priority: claimedNext || from.queue_priority === true,
+    queue_priority: from.queue_priority === true,
   };
 }
 

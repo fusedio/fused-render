@@ -14,6 +14,7 @@ import {
   peekFrameSrc,
 } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
+import type { QueueOverride } from "./tasks-lib";
 import {
   laneCountLabel,
   laneSplitAt,
@@ -59,7 +60,6 @@ import {
   NO_QUEUE_OVERRIDES,
   skipLine,
   skipLineOverrides,
-  skippedOverride,
   withQueueOverride,
   withQueueOverrides,
   hasActiveFilters,
@@ -10985,12 +10985,12 @@ describe("dragging a queued card", () => {
     expect(isDraggable(waiting)).toBe(true);
   });
 
-  it("means SKIP on In Progress — never a run", () => {
+  it("means FORCE START on In Progress — never a run", () => {
     // The drop lands on the lane the Upcoming drag lands on and must not mean
     // the same thing: the folder is held by another task and stays held. Firing
     // here would be two runs in one folder, from the gesture the queue exists to
     // make safe.
-    expect(dropAction(waiting, "in_progress")).toEqual({ kind: "skip", key: "q" });
+    expect(dropAction(waiting, "in_progress")).toEqual({ kind: "force", key: "q" });
     // The TASK key, which is what the endpoint takes — not the folder's.
     expect(dropAction(waiting, "in_progress")).not.toHaveProperty("entryId");
   });
@@ -11004,8 +11004,8 @@ describe("dragging a queued card", () => {
     // …and the three views' buttons go with the drop, by construction:
     // `filingIntent` reads the same table.
     expect(filingIntent(waiting)).toBeNull();
-    // The skip is untouched — the one gesture a waiting card still has.
-    expect(dropAction(waiting, "in_progress")).toEqual({ kind: "skip", key: "q" });
+    // The force start is untouched — the one gesture a waiting card still has.
+    expect(dropAction(waiting, "in_progress")).toEqual({ kind: "force", key: "q" });
   });
 
   it("is not a lane anything may be dropped INTO", () => {
@@ -11089,33 +11089,26 @@ describe("the optimistic queue claim", () => {
     expect(expireQueueOverrides(NO_QUEUE_OVERRIDES, ["k1"])).toBe(NO_QUEUE_OVERRIDES);
   });
 
-  it("claims the head of the line for a skip, and leaves the holder alone", () => {
-    // Skipping never touches the run in flight, so the row still names whatever
-    // it was already behind — the LINK it wore included, which the claim has to
-    // carry now that it may also be asked to name a different holder.
-    const before = row({
-      status: "queued",
-      queue_position: 5,
-      queue_ahead: "TASK-041",
-      queue_ahead_title: "News",
-      queue_ahead_session: "sess-41",
-      queue_ahead_target: "/repo/news.py",
-      queue_ahead_key: "sess-41",
-    });
-    expect(skippedOverride(before)).toEqual({
-      key: "k1",
-      status: "queued",
-      queue_position: 1,
-      queue_ahead: "TASK-041",
-      queue_ahead_title: "News",
-      queue_ahead_session: "sess-41",
-      queue_ahead_target: "/repo/news.py",
-      queue_ahead_key: "sess-41",
-      queue_priority: true,
-    });
+  // THE CLAIM A PROMOTION MAKES: head of the line, and nothing about the run in
+  // flight, which a promotion never touches. `tasks-lib.skippedOverride` built
+  // this shape until 2026-09-22, when the button it was for came out of the
+  // code; Run now's own deferred response now builds it inline
+  // (ScheduleTaskViews.performRun), and this mirrors that shape so
+  // `skipLineOverrides`/`skipLine` — still the one place a whole line is
+  // repainted — stay covered by a realistic claim.
+  const promotedOverride = (t: Task): QueueOverride => ({
+    key: t.key,
+    status: "queued",
+    queue_position: 1,
+    queue_ahead: t.queue_ahead ?? "",
+    queue_ahead_title: t.queue_ahead_title ?? "",
+    queue_ahead_session: t.queue_ahead_session ?? "",
+    queue_ahead_target: t.queue_ahead_target ?? "",
+    queue_ahead_key: t.queue_ahead_key ?? "",
+    queue_priority: true,
   });
 
-  it("repaints the WHOLE line on a skip, so no two rows read 1st", () => {
+  it("repaints the WHOLE line on a promotion, so no two rows read 1st", () => {
     // THE DOUBLE-1st FRAME (Akshil, 2026-09-18). Three waiting rows in one
     // folder; ⤒ on the 2nd. The press answers for its own row, and the line the
     // press just changed answers for the rest — in one set of claims, so the
@@ -11162,7 +11155,7 @@ describe("the optimistic queue claim", () => {
     const pressed = line[1] as Task;
     const painted = applyQueueOverrides(
       line as Task[],
-      withQueueOverrides(NO_QUEUE_OVERRIDES, skipLineOverrides(line as Task[], skippedOverride(pressed))),
+      withQueueOverrides(NO_QUEUE_OVERRIDES, skipLineOverrides(line as Task[], promotedOverride(pressed))),
     );
     const by = (key: string) => painted.find((t) => t.key === key) as Task;
     // The pressed row is the head, and the only thing wearing the ⤒ claim.
@@ -11199,8 +11192,8 @@ describe("the optimistic queue claim", () => {
       row({ key: "c", task_id: "TASK-003", title: "third", session_id: "sess-c", target: "/repo/c.py",
             status: "queued", queue_key: "/repo", queue_position: 3, queue_ahead: "TASK-002" }),
     ];
-    const first = skipLine(NO_QUEUE_OVERRIDES, line as Task[], skippedOverride(line[2] as Task));
-    const second = skipLine(first, line as Task[], skippedOverride(line[1] as Task));
+    const first = skipLine(NO_QUEUE_OVERRIDES, line as Task[], promotedOverride(line[2] as Task));
+    const second = skipLine(first, line as Task[], promotedOverride(line[1] as Task));
     const painted = applyQueueOverrides(line as Task[], second);
     const by = (key: string) => painted.find((t) => t.key === key) as Task;
     expect(painted.filter((t) => t.queue_position === 1)).toHaveLength(1);

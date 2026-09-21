@@ -253,14 +253,14 @@ describe("what is in front is ONE answer for the whole chat", () => {
     expect(facts.queue_priority).toBe(false);
   });
 
-  it("lets a fresh Run next outrank both — until the next row lands", () => {
-    // The press has been accepted by the server; the row in hand was read before
-    // it. Believing the row would take the reader's own press back off the screen.
-    const claimed = waitingFacts({ queue_ahead: "TASK-041" }, null, true);
+  it("has no client-side claim of its own — only what row or fallback say", () => {
+    // Run next used to have a third argument here, a fresh press's own claim
+    // that outranked both for one lap. It left with the button (2026-09-22):
+    // `queue_priority` is read straight off whichever of `row`/`fallback` wins,
+    // never asserted by the caller.
+    const claimed = waitingFacts({ queue_ahead: "TASK-041", queue_priority: true }, null);
     expect(claimed.queue_priority).toBe(true);
-    // …and when the claim is spent, the row decides — including when it says the
-    // server refused after all.
-    const after = waitingFacts({ queue_ahead: "TASK-041", queue_priority: false }, null, false);
+    const after = waitingFacts({ queue_ahead: "TASK-041", queue_priority: false }, null);
     expect(after.queue_priority).toBe(false);
     expect(after.queue_ahead).toBe("TASK-041");
   });

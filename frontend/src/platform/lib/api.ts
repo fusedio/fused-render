@@ -3429,9 +3429,10 @@ export interface Task {
   // Both "" on a task that has run, and on an older server.
   entry_id?: string;
   entry_origin?: string;
-  // Skipped: this task's pending work jumped to the head of its folder's line
-  // (`POST /api/tasks/queue/skip`, or a held answer, which is always priority).
-  // It still never interrupts the run in flight.
+  // Promoted: this task's pending work is at the head of its folder's line by a
+  // claim rather than by ordinary arrival order — a Run now that had to wait
+  // (`POST /api/schedule/run-now`'s `queued` answer), or a held answer, which is
+  // always priority. It still never interrupts the run in flight.
   queue_priority?: boolean;
   // The three most recent, newest first. The rest need the endpoint below —
   // this list is built by a tail parse because it runs for every row, and a
@@ -3655,46 +3656,6 @@ export function admitQueueSend(body: {
   return postJson<QueueAdmission>("/api/tasks/queue/admit", body);
 }
 
-/**
- * Jump queued work to the head of its folder's line. NEVER interrupts the run in
- * flight — the answer is always a position, never "running now". Idempotent;
- * rejects (400) when there is nothing queued to move, which is a real answer and
- * worth showing.
- *
- * TWO WAYS TO NAME THE WORK, AND THEY ARE NOT INTERCHANGEABLE.
- *
- *   * `{ key }` — the TASK key, which is what a Tasks row or a Board card holds.
- *     The press there means "everything this task has waiting", and the server
- *     flags every pending due entry of it.
- *   * `{ entry_id }` — ONE ENTRY, and the only name a CHAT can safely hold. A
- *     queued send's task key is `pending:<leader entry id>` until the leader's
- *     run opens a Claude session, and the store then REKEYS that task onto the
- *     session id — so a key frozen at admission time is stale from the first run
- *     onwards, and `{ key }` 404s on the very chip a reader is most likely to
- *     press (round-2 review). An entry id is minted once and never rekeyed.
- *
- * Same answer either way: `{ ok, position }`.
- */
-/** What Skip answers with: the promise (`position: 1`) and the LINE IT JUST
- *  CHANGED — who is in front now, the same five `ahead_*` fields admit, decide
- *  and run-now answer with (`_queue_place`). Optional, because a server from
- *  before PR #1124 sends the first two alone. */
-export interface SkipResult {
-  ok: boolean;
-  position: number;
-  ahead_key?: string;
-  ahead?: string;
-  ahead_title?: string;
-  ahead_session?: string;
-  ahead_target?: string;
-}
-
-export function skipQueue(
-  what: { key: string } | { entry_id: string },
-): Promise<SkipResult> {
-  return postJson<SkipResult>("/api/tasks/queue/skip", what);
-}
-
 /** What Force start answers with.
  *
  *  `started: true` is the ordinary outcome and carries the run the dispatch
@@ -3728,11 +3689,13 @@ export interface ForceResult {
  * The flag-off behaviour for ONE message: the queue stops deciding when this
  * turn goes and the message is dispatched immediately, into a tree another task
  * may still be running in. IT INTERRUPTS NOTHING — the owner keeps the folder
- * and keeps running — and unlike `skipQueue` it is offered at every waiting
- * position, including the first: "next" and "now" are different promises.
+ * and keeps running — and it is offered at every waiting position, including
+ * the first: "next" and "now" are different promises.
  *
- * `{ entry_id }` is the name a chip can safely hold; see `skipQueue` for why a
- * task key is not one.
+ * `{ entry_id }` is the name a chip can safely hold: a queued send's task key is
+ * `pending:<leader entry id>` until the leader's run opens a Claude session, and
+ * the store then REKEYS that task onto the session id — so a key frozen at
+ * admission time is stale from the first run onwards.
  */
 export function forceStart(
   what: { entry_id?: string; key?: string },
@@ -5517,8 +5480,9 @@ export interface ScheduledMessage {
   // been there to prevent. Absent on every entry stored before the field
   // existed, which reads as "scheduled", i.e. the cautious half.
   origin?: string;
-  // Skipped to the head of its folder's line (`POST /api/tasks/queue/skip`, or a
-  // held answer, which is always priority). Never interrupts the run in flight.
+  // Promoted to the head of its folder's line — a Run now that had to wait
+  // (`schedule.set_priority`), or a held answer, which is always priority. Never
+  // interrupts the run in flight.
   priority?: boolean;
   // On a follow-up into a chat that has not run yet: the QUEUED ENTRY this
   // message was typed behind (`admitQueueSend`'s `follow_of`). The entry groups
@@ -5683,9 +5647,9 @@ export function restoreScheduledMessage(id: string): Promise<{ entry: ScheduledM
 //
 // `ok: false` WITH A REASON IS NOT A REFUSAL. Under the project queue a folder
 // that is busy with another task holds this message instead of sending it — the
-// entry stays pending, gains `priority` (running something now IS a skip) and
-// the row reads `queued` at position 1. The caller paints that rather than
-// raising it: nothing went wrong and nothing was lost.
+// entry stays pending, gains `priority` (promoted to the head of its folder's
+// line) and the row reads `queued` at position 1. The caller paints that rather
+// than raising it: nothing went wrong and nothing was lost.
 export function runScheduledNow(entryId: string): Promise<RunNowResult> {
   return postJson<RunNowResult>("/api/schedule/run-now", { entry_id: entryId });
 }

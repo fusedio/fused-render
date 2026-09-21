@@ -8,7 +8,6 @@
 import { describe, expect, it } from "bun:test";
 import {
   canForceStart,
-  canRunNext,
   chatUrl,
   PENDING_KEY_PREFIX,
   pendingEntryId,
@@ -17,7 +16,6 @@ import {
   QUEUE_CAPTION_SEP,
   FORCE_START_HINT,
   FORCE_START_LABEL,
-  QUEUE_PRIORITY_GLYPH,
   QUEUED_WORD,
   queueAfter,
   queueAheadHref,
@@ -25,9 +23,6 @@ import {
   queueOrdinal,
   queuePosition,
   queueRunsNext,
-  RUN_NEXT_DONE_HINT,
-  RUN_NEXT_HINT,
-  RUN_NEXT_LABEL,
   runningWaitingLabel,
   waitingCardText,
   waitingCount,
@@ -218,73 +213,21 @@ describe("the queued chat URL", () => {
 describe("runs next", () => {
   it("is the PRIORITY FLAG and never a position", () => {
     // Standing 1st is where this stood when the server last looked; anything in
-    // the folder can be skipped over it in the next second. Only the flag is a
-    // claim on the spot, and reading 1st as the head took Run next away from the
-    // row that most wanted to press it (browser QA, 2026-09-12).
+    // the folder can be skipped over it in the next second by a later Run now
+    // that had to wait its own turn. Only the flag is a claim on the spot.
     expect(queueRunsNext({ queue_position: 1 })).toBe(false);
     expect(queueRunsNext({ queue_priority: true })).toBe(true);
     expect(queueCaption(queued({ queue_position: 1 }))?.runsNext).toBe(false);
     expect(queueCaption(queued({ queue_position: 1, queue_priority: true }))?.runsNext).toBe(true);
   });
 
-  it("is what the Run next press is offered for, and only that", () => {
-    // ANOTHER WAITING TASK AHEAD — `queue_position > 1` — and the spot not
-    // already claimed. Either half missing and the press could only put the
-    // reader back where they are.
-    expect(canRunNext({ queue_position: 2, queue_ahead: "TASK-038" })).toBe(true);
-    expect(canRunNext({ queue_position: 9, queue_ahead: "TASK-038" })).toBe(true);
-    expect(
-      canRunNext({ queue_position: 2, queue_ahead: "TASK-038", queue_priority: true }),
-    ).toBe(false);
-  });
-
-  it("is NOT offered at the head of the line, however loudly the caption names a holder", () => {
-    // Position 1 means the only thing in front is the RUN HOLDING THE FOLDER,
-    // and Run next never interrupts a run — so the press had exactly one
-    // possible outcome, the state the reader was already in (Akshil,
-    // 2026-09-12). `behind TASK-056` is still true and still printed; the
-    // BUTTON is what goes.
-    expect(canRunNext({ queue_position: 1, queue_ahead: "TASK-056" })).toBe(false);
-    expect(waitingCardText(1, queued({ queue_position: 1, queue_ahead: "TASK-056" }))).toBe(
-      "1 message queued · after TASK-056",
-    );
-    // A server that placed nothing (0, or absent) is not CLAIMING anything is
-    // ahead, so it offers no button either — even when it named a holder.
-    expect(canRunNext({ queue_ahead: "TASK-038" })).toBe(false);
-    expect(canRunNext({ queue_position: 0, queue_ahead: "TASK-038" })).toBe(false);
-    expect(canRunNext({ queue_ahead: "" })).toBe(false);
-  });
-
-  it("survives `queue_ahead` naming the task DIRECTLY ahead rather than the holder", () => {
-    // The server changed what `queue_ahead*` points at: for position n > 1 it is
-    // now the task at n-1 (the one actually in front of you in the line), and
-    // the folder's HOLDER only for position 1. The button's rule is untouched by
-    // that, because it never read the id — it reads the PLACE (Akshil,
-    // 2026-09-12).
-    expect(canRunNext({ queue_position: 2, queue_ahead: "TASK-041" })).toBe(true);
-    expect(canRunNext({ queue_position: 1, queue_ahead: "TASK-041" })).toBe(false);
-    // …and the row is what moves it: a task that stood 1st and now stands 2nd
-    // offers the press again, from the row alone.
-    const wasHead = { status: "queued", queue_position: 1, queue_ahead: "TASK-056" };
-    const nowSecond = { ...wasHead, queue_position: 2, queue_ahead: "TASK-041" };
-    expect(canRunNext(wasHead)).toBe(false);
-    expect(canRunNext(nowSecond)).toBe(true);
-    // And the sentence a press produces is the same one a free folder reads.
-    expect(waitingCardText(2, { ...nowSecond, queue_priority: true })).toBe(
-      "2 messages queued · next in this folder",
-    );
-  });
-
   it("offers FORCE START at every place in a line, including the first", () => {
-    // THE WHOLE LINE BETWEEN THE TWO VERBS (Akshil, 2026-09-21). Run next
-    // changes the ORDER of what is waiting, so at position 1 it had nothing to
-    // get in front of. Force start does not reorder anything — it takes the
-    // message out of the line and runs it beside the folder's owner — and a task
-    // standing 1st is still waiting on a turn that may have an hour left in it.
+    // Force start does not reorder anything — it takes the message out of the
+    // line and runs it beside the folder's owner — and a task standing 1st is
+    // still offered it: it is still waiting on a turn that may have an hour
+    // left in it (Akshil, 2026-09-21).
     expect(canForceStart({ queue_position: 1, queue_ahead: "TASK-056" })).toBe(true);
     expect(canForceStart({ queue_position: 3, queue_ahead: "TASK-041" })).toBe(true);
-    // …and the two disagree exactly there, which is the point of having both.
-    expect(canRunNext({ queue_position: 1, queue_ahead: "TASK-056" })).toBe(false);
 
     // POSITION 0 IS STILL NO PRESS: the server placed this row nowhere, so the
     // press would have no subject and could only 400.
@@ -292,46 +235,21 @@ describe("runs next", () => {
     expect(canForceStart({ queue_ahead: "TASK-038" })).toBe(false);
     expect(canForceStart({})).toBe(false);
 
-    // A CLAIMED SPOT IS STILL A WAITING ONE, unlike Run next, which was done the
-    // moment `queue_priority` landed: "next" is not "now".
+    // A CLAIMED SPOT IS STILL A WAITING ONE: being promoted to the head of the
+    // line is not the same as having gone.
     expect(
       canForceStart({ queue_position: 1, queue_ahead: "TASK-038", queue_priority: true }),
     ).toBe(true);
-    expect(
-      canRunNext({ queue_position: 1, queue_ahead: "TASK-038", queue_priority: true }),
-    ).toBe(false);
   });
 
   it("says what Force start costs, because the label cannot", () => {
     // "Force" and not "Run now": the press puts a SECOND turn in one working
     // tree, which is the thing the project queue exists to prevent by default —
     // so the LABEL carries the cost and the hint says, in two words, when it
-    // happens. The hint used to name the run it starts beside; the label's own
-    // word already carries that, and a tooltip nobody finishes reading is worse
-    // than a short one (Akshil, 2026-09-21).
+    // happens.
     expect(FORCE_START_LABEL).toBe("Force start");
     expect(FORCE_START_HINT).toBe("Run immediately");
-    // AND IT IS NOT RUN NEXT'S SENTENCE. That one promises the opposite, and the
-    // two must never be readable as the same press.
     expect(FORCE_START_HINT).not.toContain("nothing is interrupted");
-    expect(FORCE_START_LABEL).not.toContain("Run next");
-  });
-
-  it("is the verb every surface says, in one place", () => {
-    // "Skip the queue" read as skipping the MESSAGE. The press makes the message
-    // RUN, next — and interrupts nothing, which is the half the hint says aloud.
-    expect(RUN_NEXT_LABEL).toBe("Run next");
-    expect(RUN_NEXT_HINT).toContain("nothing is interrupted");
-    expect(RUN_NEXT_HINT).not.toContain("Skip");
-    expect(RUN_NEXT_DONE_HINT).toBe("Already next in this folder");
-    // The mark means "to the top of this" and not "faster" — a bolt would promise
-    // the one thing this feature must never be read as offering. It is the
-    // BUTTON's face and nothing else's since 2026-09-19: the caption draws no
-    // glyph, because a skip changes the order and the order is the sentence.
-    expect(QUEUE_PRIORITY_GLYPH).toBe("⤒");
-    const skipped = queueCaption(queued({ queue_position: 1, queue_priority: true }));
-    expect(skipped?.text).toBe("1st");
-    expect(skipped?.text).not.toContain(QUEUE_PRIORITY_GLYPH);
   });
 });
 

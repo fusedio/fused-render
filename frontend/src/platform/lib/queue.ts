@@ -101,12 +101,12 @@ export interface QueueCaption {
   /** Whether this is the one that goes out next — `queue_priority` alone.
    *
    *  NOTHING DRAWS IT ANY MORE (Akshil, 2026-09-19). It used to lead the caption
-   *  with a ⤒ and repaint the whole sentence yellow, which made a skipped row
+   *  with a ⤒ and repaint the whole sentence yellow, which made a promoted row
    *  look like a different KIND of row in a column whose only subject is order —
-   *  the skip changes where this stands and nothing else, and the new place is
-   *  already printed. It survives as DATA because the Run next button reads it
-   *  (`canRunNext`, and the disabled draw at the head) and the optimistic
-   *  overlay claims it. */
+   *  a promotion changes where this stands and nothing else, and the new place
+   *  is already printed. It survives as DATA because `waitingCardText` reads it
+   *  (a promoted row's own card says "next in this folder" rather than naming
+   *  whatever still holds the folder) and the optimistic overlay claims it. */
   runsNext: boolean;
 }
 
@@ -345,49 +345,7 @@ export function waitingCardText(count: number, facts: QueueFacts): string {
 }
 
 /**
- * Is there anything for Run next to DO? The button's whole condition, written
- * once so the card, the row and the board cannot disagree.
- *
- * THE TEST IS THE POSITION, NOT "is something in front" (Akshil, 2026-09-12).
- * Every queued task has something in front of it — that is what queued MEANS —
- * and the thing in front is usually the RUN HOLDING THE FOLDER, which Run next
- * cannot touch: it interrupts nothing, by design. So at position 1 the press had
- * exactly one possible outcome, the state the reader was already in, while the
- * caption went on naming a task the control could not get in front of.
- *
- * `queue_position > 1` is "another WAITING task is ahead of me", which is the
- * only arrangement this verb can change. Position 0 — the server placed nothing
- * — is not a claim that anything is ahead, so it offers no button either.
- *
- * THE CAPTION IS NOT GATED ON THIS. `1 message waiting · behind TASK-056` is
- * true at position 1 and stays printed; only the button goes.
- */
-export function canRunNext(facts: QueueFacts): boolean {
-  return !queueRunsNext(facts) && queuePosition(facts) > 1;
-}
-
-/**
  * THE VERB, in the words every surface says it in.
- *
- * "Skip the queue" was the first wording and it was wrong in the one direction
- * that matters: it reads as skipping the MESSAGE. What the press does is send
- * this work to the front of its folder's line so that it is the next thing that
- * runs — and, critically, it interrupts nothing, which is the sentence the hint
- * exists to say out loud.
- */
-export const RUN_NEXT_LABEL = "Run next";
-export const RUN_NEXT_HINT = "Run next — nothing is interrupted";
-export const RUN_NEXT_DONE_HINT = "Already next in this folder";
-
-/**
- * THE OTHER VERB, in the words every surface says it in.
- *
- * Run next is about the ORDER of the line and still leaves the queue deciding
- * WHEN the turn goes. This one takes the message out of the line altogether and
- * runs it on the spot — which is why the hint has to say out loud what that
- * means: the task holding the folder is STILL RUNNING, and this work starts
- * beside it. That is the flag-off behaviour for one message, and naming the
- * other run is the only honest way to offer it.
  *
  * "Force" and not "Run now", because the word has to carry the cost. "Run now"
  * reads as a schedule change on a message nobody else is waiting on; the press
@@ -405,19 +363,3 @@ export function canForceStart(facts: QueueFacts): boolean {
 
 export const FORCE_START_LABEL = "Force start";
 export const FORCE_START_HINT = "Run immediately";
-
-/**
- * THE RUN NEXT BUTTON'S FACE — and, since 2026-09-19, nothing else's.
- *
- * AN ARROW TO A BAR, and not a star or a bolt. It means "to the top of this",
- * which is exactly what Run next does and is the only thing it does: the run
- * holding the folder keeps running. A lightning glyph would promise the one
- * thing this feature must never be read as offering.
- *
- * IT USED TO LEAD THE CAPTION TOO, on a row whose `queue_priority` was set, with
- * the sentence beside it repainted yellow. That was a HIGHLIGHT on a state, and
- * a skip does not produce a state — it produces an ORDER, which the caption
- * already prints. So the glyph is an action's face and nothing is decorated
- * with it (Akshil, 2026-09-19).
- */
-export const QUEUE_PRIORITY_GLYPH = "⤒";

@@ -496,8 +496,9 @@ a.c-waitcard .wc-ahead:hover,
   min-width: 4px;
 }
 /* FORCE START, on every waiting card (ui/Waiting `canForceStart`). Run next
-   wore this seat until 2026-09-21 and the class name is that history — the
-   skin is unchanged, because the button is the same box in the same place.
+   wore this seat until 2026-09-21, and its own endpoint is gone from the code
+   since 2026-09-22 — the class name (`wc-run`) is that history and the skin is
+   unchanged, because the button is the same box in the same place.
 
    NEUTRAL, deliberately, and for a REASON THAT CHANGED WITH THE VERB. Run next
    was neutral because it started nothing; this one starts a turn beside the one

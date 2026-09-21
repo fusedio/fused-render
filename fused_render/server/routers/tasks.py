@@ -1717,8 +1717,8 @@ def _queue_row(place: dict) -> dict:
     `priority` IS A FACT ABOUT THE HEAD OF THE LINE, NOT ABOUT THE GESTURE
     (Akshil, 2026-09-16): the manager sets it only for the item standing first
     that got there by a skip or an answer, so a promoted task outranked by a
-    newer press reads "2nd in line" and keeps the button that would make it
-    first.
+    newer press reads "2nd in line" and loses the flag — the card's wording is
+    what reads it now (`waitingCardText`), not a button.
     """
     raw_names = place.get("ahead_names")
     names = ([str(name) for name in raw_names if str(name)]
@@ -3162,8 +3162,8 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # for every task that has a session. A `pending:<entry>` row is a chat
         # whose first message is still waiting: there is no transcript to open
         # and no session id to open it with, so the entry id is the only handle
-        # a client has on it — it is what the chat is re-entered by, what Skip
-        # names (`api_queue_skip`'s `{entry_id}`), and what cancel writes
+        # a client has on it — it is what the chat is re-entered by, what Force
+        # start names (`api_queue_force`'s `{entry_id}`), and what cancel writes
         # against. Lifted out of the key rather than left for the client to
         # slice, because the key REKEYS onto the session the moment the leader
         # runs (§5) and a reader that parsed it would be parsing a shape that
@@ -6480,11 +6480,11 @@ def _queue_place(task_key: str, tasks: dict[str, dict] | None = None) -> dict:
     changed the line unable to click through to what is in front of it
     (round-3 review, 2026-09-12).
 
-    The three endpoints below all answer with a place in a line, and all three
-    have just CHANGED that line (stored an entry, skipped to the head, held an
-    answer). Re-READING it is the only honest way to report it: the manager's
-    index is one table and another window may have moved it in the same second,
-    and a number computed before the event was handed over would be a promise
+    The two endpoints below both answer with a place in a line, and both have
+    just CHANGED that line (stored an entry, held an answer). Re-READING it is
+    the only honest way to report it: the manager's index is one table and
+    another window may have moved it in the same second, and a number computed
+    before the event was handed over would be a promise
     about a queue that no longer exists.
 
     ONE TASK'S SLOT AND NOT THE WHOLE TABLE (PR 2, 2026-09-17):
@@ -6526,142 +6526,20 @@ def _queue_place(task_key: str, tasks: dict[str, dict] | None = None) -> dict:
             "ahead_target": place.get("ahead_target", "")}
 
 
-@router.post("/api/tasks/queue/skip")
-def api_queue_skip(body: dict = Body(...),
-                   x_fused: str | None = Header(default=None)):
-    """Move one queued task's due work to the head of its folder's line.
-
-    **IT NEVER INTERRUPTS THE RUN IN FLIGHT** (Akshil, 2026-09-12). Skip is a
-    statement about the ORDER of what is waiting, not about what is happening:
-    the holder keeps the folder until its turn ends, and this task goes first
-    when it frees. So the answer is always position 1 and never "running now" —
-    there is no gesture in this app that takes a folder off a live process.
-
-    **`manager.skip` IS THE WHOLE MECHANISM** (PR 2, 2026-09-17): the task moves
-    to index 0 of its folder's line — right behind the owner — and is marked
-    promoted, which is what lights the ⤒ on the row. Newest press wins, so a
-    later skip pushes this one to 2; that is the rule the old stamp ordering was
-    trying to express, stated once in the index instead of re-derived from
-    `priority_at` on every read.
-
-    `schedule.set_priority` is still written and now means only one thing: the
-    calendar page's existing queued display reads the store's flag. NOTHING
-    ORDERS BY IT any more. Only the task's DUE work is promoted — a message the
-    same task has scheduled for next Tuesday is not in this line and jumping it
-    to the head of one would be this verb silently rescheduling work nobody
-    asked about.
-
-    REFUSED (400) WHEN THE TASK IS NOT QUEUED, rather than quietly setting a flag
-    that does nothing: "skip the queue" on a task that is not in one is a client
-    that is looking at a stale row, and the honest answer is what makes it
-    refetch. A task holding a HELD ANSWER is already at the head by definition
-    (an answer outranks every message in its folder), so it is answered `ok` and
-    nothing is written.
-
-    **`{entry_id}` IS AN ALTERNATIVE TO `{key}`, and the chip in the chat sends
-    it** (round-2 review, 2026-09-12). A task key is not a constant: a queued
-    new chat is `pending:<leader entry>` until its leader's run mints a session,
-    and then the whole row REKEYS onto that session. A Skip button holding the
-    key it was painted with would, a second after the leader fired, name a row
-    that no longer exists — a 404 on the one gesture the user is watching the
-    line for. The entry id never moves, so the entry is what the chip names and
-    the key is resolved here through the listing's own filing rule
-    (`_entry_key`), which is the same answer the row was built under. The
-    response is unchanged either way.
-    """
-    guard = _require_fused(x_fused)
-    if guard is not None:
-        return guard
-
-    key = str(body.get("key") or "").strip()
-    entry_id = str(body.get("entry_id") or "").strip()
-    if not key and not entry_id:
-        return _error("key or entry_id: required", status=400)
-    if not project_queue.enabled():
-        return _error("project queue is off", status=409)
-    if not key:
-        by_id = _by_entry_id()
-        entry = by_id.get(entry_id)
-        if entry is None:
-            return _error(
-                f"entry_id: no scheduled message with id {entry_id!r}",
-                status=404)
-        key = _entry_key(entry, by_id)
-
-    tasks = _collect()
-    task = tasks.get(key)
-    if task is None:
-        return _error(f"no task with key {key!r}", status=404)
-    now = time.time()
-    manager = queue_manager.get()
-
-    # ONE CALL, AND IT IS THE PRESS. `manager.skip` is the whole mechanism for
-    # an answered task too — it moves to the head of the line like anything else
-    # and newest press wins — so there is no held-answer arm here any more: a
-    # second road to the same answer is a second set of rules to keep in step
-    # with the first.
-    #
-    # Position 0 back is "this task stands in no line", which is the 400 the
-    # docstring promises rather than a flag quietly set on nothing — UNLESS the
-    # press itself started it. The folder was free, the pump handed it straight
-    # over, and a task that is now RUNNING is the best possible outcome of "run
-    # this next": answered 200, never refused.
-    outcome = manager.skip(key) or {}
-    if int(outcome.get("position") or 0) == 0 and not outcome.get("started"):
-        return _error("not queued", status=400)
-
-    # THE STORE'S FLAG, FOR THE CALENDAR AND NOTHING ELSE (see the docstring),
-    # and only over THE FOLDER THIS TASK IS WAITING IN: a message the same task
-    # has due into a DIFFERENT tree stands in a different line, and promoting it
-    # here would be this verb silently reordering work nobody asked about. The
-    # folder is the one the task's earliest waiting message is for, which is the
-    # message the manager would spawn for it (`_queue_spawn`).
-    waiting: list[tuple[float, str, str]] = []
-    for entry in task["entries"]:
-        if str(entry.get("state") or "") != schedule.PENDING:
-            continue
-        due = _queue_at(entry)
-        if not due or due > now:
-            continue
-        folder = project_queue.queue_key(str(entry.get("target") or ""))
-        entry_id = str(entry.get("id") or "")
-        if folder and entry_id:
-            waiting.append((due, folder, entry_id))
-    folder = min(waiting)[1] if waiting else ""
-    ids = [entry_id for _due, other, entry_id in waiting if other == folder]
-    if ids:
-        schedule.set_priority(ids, True)
-    tasks_watch.notify({key})
-    # WHO IS IN FRONT NOW, the way admit, decide and run-now all answer it
-    # (`_queue_place`). The press has just changed this line and the chat has to
-    # redraw it: without these the card could only paint the claim ("runs next")
-    # and kept saying "behind TASK-041" about whatever was ahead BEFORE the press
-    # until the next listing landed (🟡 review, 2026-09-12).
-    #
-    # RE-READ AFTER THE PRESS, not from the `tasks` in hand: that collection was
-    # read before the skip moved the line, so placing against it would report
-    # the order this endpoint had just replaced. `position` stays the promise
-    # this endpoint makes (see the docstring) and is not taken from the read.
-    place = _queue_place(key)
-    return {"ok": True, "position": 1,
-            "ahead_key": place["ahead_key"], "ahead": place["ahead"],
-            "ahead_title": place["ahead_title"],
-            "ahead_session": place["ahead_session"],
-            "ahead_target": place["ahead_target"]}
-
-
 @router.post("/api/tasks/queue/force")
 def api_queue_force(body: dict = Body(...),
                     x_fused: str | None = Header(default=None)):
     """Run this WAITING message RIGHT NOW, beside whatever owns the folder.
 
     **IT IS THE FLAG-OFF BEHAVIOUR, FOR ONE MESSAGE** (Akshil, 2026-09-21).
-    Skip next door is a statement about the ORDER of the line and leaves the
-    queue deciding WHEN the turn goes; this is the user saying the line is not
-    what they want for this one message. So the manager never owns it: the item
-    leaves its line and the message is dispatched exactly as it would have been
-    with `project_queue_enabled` off — two processes in one tree, which is what
-    main has always done and what this pref exists to stop doing BY DEFAULT.
+    Promoting a task to the head of its line (`manager.skip`, still how a Run
+    now that had to wait gets there) is a statement about the ORDER of the line
+    and leaves the queue deciding WHEN the turn goes; this is the user saying
+    the line is not what they want for this one message. So the manager never
+    owns it: the item leaves its line and the message is dispatched exactly as
+    it would have been with `project_queue_enabled` off — two processes in one
+    tree, which is what main has always done and what this pref exists to stop
+    doing BY DEFAULT.
 
     **IT NEVER INTERRUPTS THE OWNER.** Nothing in this app takes a folder off a
     live process and this is not the exception: the holder keeps the folder and
@@ -6671,12 +6549,12 @@ def api_queue_force(body: dict = Body(...),
     **EVERY WAITING ROW GETS IT, INCLUDING #1.** "Next" and "now" are different
     promises — the task at the head of a line is still waiting on a turn that
     may have an hour left in it — so this is offered wherever a message is
-    queued, unlike `skip`, which has nothing to say at position 1.
+    queued, unlike a promotion, which has nothing to say at position 1.
 
-    `{entry_id}` OR `{key}`, resolved the way skip resolves them: a queued new
-    chat is filed under `pending:<leader entry>` until its leader's run mints a
-    session and the whole row then REKEYS, so the entry id is the only name a
-    chip painted a second ago can safely hold (see `api_queue_skip`).
+    `{entry_id}` OR `{key}`: a queued new chat is filed under
+    `pending:<leader entry>` until its leader's run mints a session and the
+    whole row then REKEYS, so the entry id is the only name a chip painted a
+    second ago can safely hold.
 
     **AND IT IS THE TASK'S FOR EVER, NOT THE MESSAGE'S** (Akshil, 2026-09-21:
     "once a task is force-started it never enters the queue again — no matter
