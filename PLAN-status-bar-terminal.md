@@ -363,3 +363,91 @@ overlaps the Claude composer.
     drawer shows the exit line without covering the last frame; pressing Enter starts a
     fresh shell in the same drawer; the drag handle actually resizes and the height
     survives a reload.
+- **Code review pass on PR #1290 (11 numbered findings, plus two coordinator-flagged
+  issues found during the pass): all 11 confirmed real, all fixed, no findings refuted.**
+  - **Finding #0 (critical, found during the pass, not in the original 11): the whole
+    server failed to import on Windows.** `pty_session.py` imported `fcntl`/`termios` at
+    module scope (both POSIX-only); `server/app.py`'s unconditional
+    `from ...routers.terminal import router` reached that import before
+    `resolve_profile()`'s `os.name == "nt"` guard ever got a chance to run, so importing
+    `fused_render.server.app` raised ImportError on Windows and took the entire app down,
+    not just the terminal. Moved both imports into `PtySession.resize()`, the one method
+    that uses them and the only one no Windows code path ever reaches (`resolve_profile()`
+    returns `None` on Windows, so `PtySessionRegistry.create()` raises before a
+    `PtySession` is ever constructed there). New
+    `tests/test_terminal_windows_import_safety.py` runs a subprocess with `fcntl`/
+    `termios` import-blocked (not a real Windows box, but the same failure mode) and
+    asserts `fused_render.server.app` still imports and `create_app()` still builds — "a
+    green macOS run proves nothing about this" was the standard to meet, so the test
+    forces the actual absence rather than trusting the platform it's running on.
+  - **Interjection: `tests/test_app_lifespan.py::test_every_handler_is_collected_in_the_
+    order_on_event_had` regressed** — the branch's `_shutdown_terminal_sessions` handler
+    (front-loaded into Task 3's commit) was never added to the test's hardcoded
+    `EXPECTED_SHUTDOWN` list. Fixed by appending it in its actual registration position
+    (last — `terminal_router` is `include_router`'d after every other shutdown handler in
+    `create_app`), not just anywhere in the list, since the test asserts order.
+  - **Finding 1** (PYTHONHOME/PYTHONPATH scrub ran one process too early, in
+    `terminal_profiles.py`, before the immediate Popen target — `sys.executable`, a
+    Python interpreter that in a packaged build needs those vars to start at all): scrub
+    moved to `_pty_exec_helper.py`, right before `execv`, where the next exec'd binary is
+    the actual shell. `terminal_profiles.py` now keeps both vars.
+  - **Finding 5** (three separately-locked calls in the WS route — `scrollback()`,
+    `alive`, `subscribe()` — with awaits between them could lose output produced in that
+    window, or miss the child's exit entirely): added `PtySession.attach()`, one lock hold
+    returning the scrollback snapshot, alive/exit_code, and a fresh subscriber queue
+    together.
+  - **Finding 6** (`kill()` signalled by pid unconditionally; once the reader thread has
+    reaped the child, that pid is free for the OS to hand to an unrelated process): `kill()`
+    now returns immediately if `not self.alive`.
+  - **Finding 7** (`TerminalDrawer.tsx`'s `createTerminalSession()` call had no error
+    handling — an unhandled rejection left the drawer open and permanently empty): wrapped
+    in try/catch, added a `createError` state with a `.term-drawer-exit`-styled message and
+    a Retry button.
+  - **Finding 9** (a malformed `{"resize": [...]}` control frame's `int()` conversion could
+    raise straight out of the WS handler, which `except WebSocketDisconnect` does not
+    catch, killing an otherwise-healthy session over one bad frame): wrapped in
+    try/except, malformed values are now ignored.
+  - **Finding 10** (`PtySessionRegistry.reap_dead()` had no callers anywhere, so a dead
+    session lingered in the registry forever and kept appearing in `GET /api/terminal`;
+    client-side, `TerminalDrawer`'s cached-id check only tested presence in that list, not
+    `alive`): `create()` and `list()` now both reap on entry (`_reap_dead_locked()`), and
+    the client-side check now filters on `s.id === cached && s.alive`.
+  - **Finding 11** (if `subprocess.Popen` itself raised — ENOENT on the helper, EAGAIN
+    under load — `master_fd` was never closed, leaking a pty master per failed create):
+    wrapped in try/except, closes `master_fd` on that path.
+  - **Findings 2 and 4** (`TerminalDrawer.tsx`'s `sessionId` state was seeded directly
+    from the cached localStorage id, which made the verify-effect's own `sessionId !==
+    null` guard bail out before the cached id was ever checked against the live
+    registry; the Enter-to-restart keydown listener was gated only on `exitCode !==
+    undefined`, not on `open`, so a shell that exited while the drawer was closed left a
+    global keydown listener armed): `sessionId` now starts `null` so the verify effect
+    always runs once per open; the keydown effect is now also gated on `open`.
+  - **Findings 3 and 8** (`TerminalView.tsx`: resize was sent immediately after
+    constructing `TerminalSession`, before the socket reaches OPEN, so
+    `TerminalSession.resize()`'s own OPEN-only guard silently dropped it; xterm's buffer
+    was never cleared between reconnects, so the server's full-scrollback replay on every
+    attach painted on top of what was already on screen): resize now sent from the
+    `onStatus("open")` callback (fires on every connect and reconnect), preceded by
+    `term.reset()` (a no-op on first connect).
+  - **Backend tests**: `tests/test_terminal_profiles.py`,
+    `tests/test_pty_session.py` (six new tests: PYTHONHOME/PYTHONPATH scrub boundary,
+    kill-on-dead-session no-op, reap-on-create-and-list, failed-Popen fd cleanup,
+    attach() atomicity, plus the existing fork-safety/Popen-kwargs test), `
+    tests/test_terminal_routes.py` (malformed resize), `
+    tests/test_terminal_windows_import_safety.py` (new file, finding #0), and `
+    tests/test_app_lifespan.py` (EXPECTED_SHUTDOWN fix) — 37 tests, all passing under
+    `.venv/bin/pytest ... -n 0`.
+  - **Frontend**: no new unit tests for `TerminalDrawer.tsx`'s findings (2, 4, 7, 10
+    client-side) — this file was already outside the plan's frontend test scope for the
+    same reasons Task 6's exit/restart behavior was (coordinates two hard-to-test pieces:
+    `TerminalView`'s canvas, `document`-level key handling); verified via `bun run
+    typecheck`, `bun run check:boundaries`, and `bun run build`, all clean, plus the
+    existing `terminalSession.test.ts`/`TerminalDock.test.tsx` suites still green.
+    `TerminalView.tsx`'s findings 3/8 fix is likewise untested by design (same file, same
+    existing exemption) and verified the same way.
+  - Six commits, each pushed immediately: the four backend commits (Windows import
+    safety + EXPECTED_SHUTDOWN, then findings 1/6/10/11/5/9 across `pty_session.py`/
+    `terminal_profiles.py`/`_pty_exec_helper.py`/`routers/terminal.py`), then
+    `Terminal: send resize once the socket is OPEN and reset xterm on reconnect (findings
+    3, 8)`, then `Terminal: rework session-id lifecycle (findings 2, 4, 7, 10
+    client-side)`.
