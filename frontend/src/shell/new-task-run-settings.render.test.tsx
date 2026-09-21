@@ -135,6 +135,9 @@ async function openCard(props: Record<string, unknown>, sent: Sent[]) {
     }
     if (u.startsWith("/api/config")) return json({ home: "/Users/me" });
     if (u === "/api/schedule") return json({ entry: { id: "e1" } });
+    // The global Claude preference the card opens on (2026-09-21): no
+    // "Default" row any more, the pair the run will get is what is shown.
+    if (u === "/api/claude-sessions/defaults") return json({ model: "fable", effort: "low" });
     return json({ folders: [], entries: [], tasks: [], sessions: [], ok: true, version: 1 });
   }) as unknown as typeof fetch;
   await act(async () => {
@@ -193,7 +196,9 @@ async function closeCard() {
 
 test("picking a model and a thinking level is what the card then says", async () => {
   const b = await openCard({}, []);
-  expect([label(b, "Model"), label(b, "Thinking")]).toEqual(["Default", "Default"]);
+  // Opens on the global preference the stub answers — Fable / Low — not on a
+  // "Default" placeholder.
+  expect([label(b, "Model"), label(b, "Thinking")]).toEqual(["Fable", "Low"]);
 
   await pick(b, "Model", "Opus");
   await pick(b, "Thinking", "Max");

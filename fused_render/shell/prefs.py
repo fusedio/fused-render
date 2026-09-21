@@ -278,29 +278,13 @@ def project_queue_enabled() -> bool:
     `queued` status never appears on a row.
 
     NO ENV OVERRIDE, deliberately, and the difference from `native_chat_enabled`
-    is the one `chat_recap_enabled` states below: `FUSED_RENDER_NATIVE_CHAT`
-    exists because it decides which of two whole implementations a chat runs on,
+    is this: `FUSED_RENDER_NATIVE_CHAT` exists because it decides which of two whole implementations a chat runs on,
     and a dev server has to be able to pick a side without touching prefs.json.
     This is a gate in front of work that already runs; a second env var nobody
     remembers setting is how a machine ends up serialising its tasks for a
     reason its owner cannot find.
     """
     return read_prefs().get("project_queue_enabled") is True
-
-
-def chat_recap_enabled() -> bool:
-    """Whether the native chat offers the "While you were away" session recap
-    (default ON, as it has always been — and as `native_chat_enabled` and
-    `task_peek_enabled` now are too).
-
-    Only a stored `false` turns it off; missing, legacy and junk all read as on,
-    so every install that has never opened Preferences has the fold.
-
-    No env override. `FUSED_RENDER_NATIVE_CHAT` exists because it decides which
-    of two whole implementations a chat runs on; this is one row at the bottom of
-    a transcript, and a second override is a switch nobody would remember.
-    """
-    return read_prefs().get("chat_recap_enabled") is not False
 
 
 def lan_enabled() -> bool:
@@ -600,10 +584,6 @@ def _prefs_response() -> dict:
         "chat": {
             "native": native_chat_enabled(),
             "forced_by": _chat_forced_by(),
-            # The "While you were away" recap fold (native chat only). Default
-            # ON, so a payload without it must not be read as off — the client
-            # reads `p.chat?.recap !== false` for exactly that reason.
-            "recap": chat_recap_enabled(),
         },
         # A task on the Tasks page opens in a side panel beside the list —
         # always, since 2026-09-20 (`task_peek_enabled`). Still sent, because
@@ -799,12 +779,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 {"error": "'task_notify_terminal_sessions' must be a boolean"}, status_code=400)
         prefs["task_notify_terminal_sessions"] = value
         changed = True
-    if "chat_recap_enabled" in body:
-        value = body.get("chat_recap_enabled")
-        if not isinstance(value, bool):
-            return JSONResponse({"error": "'chat_recap_enabled' must be a boolean"}, status_code=400)
-        prefs["chat_recap_enabled"] = value
-        changed = True
     if "project_queue_enabled" in body:
         value = body.get("project_queue_enabled")
         if not isinstance(value, bool):
@@ -914,7 +888,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
                       "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'native_chat_enabled', "
-                      "'chat_recap_enabled', 'task_notify_terminal_sessions', "
+                      "'task_notify_terminal_sessions', "
                       "'project_queue_enabled', "
                       "'lan_enabled', "
                       "'default_model', 'indexing_enabled', 'ranked_search_enabled', "

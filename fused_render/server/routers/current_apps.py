@@ -222,4 +222,7 @@ def api_current_apps_rename(patch: RenamePatch):
         # the same standing an out-of-band move of such a folder has.
         app_state_move.rewrite_stores(folder, new)
         claude_session_move.relocate(folder, new)
+    # The moved chats are on disk under the new path; tell every open listing
+    # (same bump `fs_mutate._fs_rename` makes — see the note there).
+    tasks_watch.notify()
     return {"ok": True, "path": new}

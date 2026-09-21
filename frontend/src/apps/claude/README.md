@@ -12,8 +12,7 @@ pane, and both are apps. Read the script's own comment for why it is not lifted
 into `platform/` instead.
 
 - `feature-flag.ts` — `native_chat_enabled` pref (`prefs.chat.native`), `useNativeChatEnabled()`;
-  and, off the SAME one prefs read, `chat_recap_enabled` (`prefs.chat.recap`, default ON),
-  `useChatRecapEnabled()`.
+  and, off the SAME one prefs read, `project_queue_enabled` (`prefs.queue.enabled`).
 - `ChatMount.tsx` — the switch: `<ClaudeChat/>` on, legacy `<ChatFrame/>` iframe off. Mounted at all 6 sites (00-shell-infra §1): the tasks cards wall and its popup (`shell/TaskCards.tsx`), the explorer file sidebar (`apps/explorer/Preview.tsx` → `PreviewSidebar`'s `chat` slot), the folder listing pane (`ListingPreviewPane.tsx`), the canvases workspace (`apps/canvases/CanvasWorkspace.tsx`) and the explorer content pane (`_mode=claude`). The two sites that framed a PLAIN iframe hand their old element over as `legacy` so the flag off is the same node it always was.
 - `legacy-src.ts` — the six flag-off `/render` URLs in one place, pinned byte-for-byte by `legacy-src.test.ts`. `shell/schedule-lib.ts` re-exports two of them.
 - `ClaudeChat.tsx` — root `.chat-root`, layout variants (split / chat-only / compact / peek / narrow), boot.
@@ -66,4 +65,4 @@ stays silent for it; the answer is dropped if the anchor moved meanwhile.
 (`.chat-recap`, `styles/transcript.css`); the body sets `?msg=<for_uuid>` so the
 existing anchor scroll + flare does the scrolling.
 
-Turn it off in Preferences → Native chat → **Session recap**.
+Always on: the Preferences switch that gated it left on 2026-09-21.

@@ -34,32 +34,14 @@ let generation = 0;
 const listeners = new Set<(v: boolean | null) => void>();
 
 /**
- * THE SECOND SWITCH THIS ONE PREFS READ ANSWERS: `prefs.chat.recap`, the native
- * chat's "While you were away" fold (shell/prefs.py `chat_recap_enabled`).
- *
- * It rides HERE rather than in a module of its own for one reason: every chat
- * embed already causes exactly one `/api/prefs` GET through `read()` below, and
- * a second reader would double that — six mounts on the tasks wall is six
- * needless round trips for one boolean.
- *
- * NOT a tri-state, unlike `enabled`. The argument for `null` up there is that a
- * premature `false` MOUNTS the wrong implementation; nothing mounts on this
- * one. It gates a fetch that cannot happen until the reader has been away a
- * minute, by which time the read has long landed — and the pref DEFAULTS ON, so
- * "not asked yet" and "on" are the same answer.
- */
-let recap = true;
-const recapListeners = new Set<(v: boolean) => void>();
-
-/**
- * THE THIRD SWITCH THIS ONE PREFS READ ANSWERS: `prefs.queue.enabled`, the
+ * THE SECOND SWITCH THIS ONE PREFS READ ANSWERS: `prefs.queue.enabled`, the
  * project queue — one task in progress per folder (shell/prefs.py
  * `project_queue_enabled`).
  *
- * Here rather than in a module of its own for `recap`'s reason: every chat
- * embed already causes exactly one `/api/prefs` GET, and the composer asks this
- * on the keystroke that sends — a second reader would be a second round trip
- * per mount for one boolean.
+ * Here rather than in a module of its own: every chat embed already causes
+ * exactly one `/api/prefs` GET, and the composer asks this on the keystroke
+ * that sends — a second reader would be a second round trip per mount for one
+ * boolean.
  *
  * NOT a tri-state, and the argument is the opposite of the native flag's. `null`
  * up there exists because a premature `false` MOUNTS the wrong implementation;
@@ -80,12 +62,6 @@ function set(next: boolean | null) {
   if (enabled === next) return;
   enabled = next;
   for (const listener of listeners) listener(next);
-}
-
-function setRecap(next: boolean) {
-  if (recap === next) return;
-  recap = next;
-  for (const listener of recapListeners) listener(next);
 }
 
 function setQueue(next: boolean) {
@@ -178,13 +154,9 @@ function read(): Promise<void> {
       // `native_chat_enabled`): the native chat is what a server that has never
       // been told otherwise runs, so an absent field is ON, not off.
       set(p.chat?.native !== false);
-      // `!== false`, never `=== true`: the recap is ON by default, so a server
-      // that predates the field (or one whose prefs.json has never been
-      // written) must read as on rather than silently losing the feature.
-      setRecap(p.chat?.recap !== false);
-      // `=== true`, the opposite polarity from the recap above: this one is
-      // OPT-IN, so a server with no such field is a server whose sends are not
-      // admitted through anything.
+      // `=== true`, the opposite polarity from the native flag above: this one
+      // is OPT-IN, so a server with no such field is a server whose sends are
+      // not admitted through anything.
       setQueue(p.queue?.enabled === true);
     })
     .catch(() => {
@@ -213,19 +185,10 @@ function read(): Promise<void> {
   return reading;
 }
 
-/** Hand over a known-fresh answer for the recap switch (the prefs payload a PUT
- *  returned). No `generation` bump: this value is not what `read()` retries for,
- *  and taking the native flag's answer away would put every mount back on a
- *  skeleton for a click that was not about it. */
-export function publishChatRecapEnabled(next: boolean) {
-  setRecap(next);
-}
-
 /** Hand over a known-fresh answer for the project queue (the prefs payload a
- *  PUT returned). No `generation` bump, for `publishChatRecapEnabled`'s reason:
- *  this is not the value `read()` retries for, and taking the native flag's
- *  answer away would put every mount back on a skeleton for a click that was
- *  not about it. */
+ *  PUT returned). No `generation` bump: this is not the value `read()` retries
+ *  for, and taking the native flag's answer away would put every mount back on
+ *  a skeleton for a click that was not about it. */
 /**
  * THE FLAG IS READ, NOT GUESSED, BEFORE A SEND ASKS IT (Akshil's QA, 2026-09-16).
  *
@@ -314,26 +277,6 @@ export function useProjectQueueEnabled(): boolean {
   return current;
 }
 
-/** Whether the session-recap fold is offered. Defaults ON — see `recap`. */
-export function chatRecapEnabledNow(): boolean {
-  return recap;
-}
-
-/** Subscribe to the recap switch. Triggers the same one prefs read the native
- *  flag uses, so a chat that is already mounted pays nothing for asking. */
-export function useChatRecapEnabled(): boolean {
-  const [current, setCurrent] = useState<boolean>(chatRecapEnabledNow);
-  useEffect(() => {
-    recapListeners.add(setCurrent);
-    setCurrent(chatRecapEnabledNow());
-    void read();
-    return () => {
-      recapListeners.delete(setCurrent);
-    };
-  }, []);
-  return current;
-}
-
 /** Hand over a known-fresh answer (the prefs payload a PUT returned). */
 export function publishNativeChatEnabled(next: boolean) {
   generation += 1;
@@ -355,7 +298,6 @@ export function resetNativeChatFlagForTests() {
   generation += 1;
   prefsDeadlineMs = GATE_FALLBACK_MS;
   set(null);
-  setRecap(true);
   setQueue(false);
 }
 

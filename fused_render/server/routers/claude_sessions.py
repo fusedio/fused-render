@@ -506,6 +506,37 @@ def api_claude_session_summaries():
     return {"sessions": sessions}
 
 
+@router.get("/api/claude-sessions/defaults")
+def claude_defaults():
+    """The model and effort a NEW task opens on — the GLOBAL Claude preference
+    and nothing about any folder.
+
+    The pair is `model` / `effortLevel` in `~/.claude/settings.json`, which is
+    what the app's Claude settings page writes (claude_config/preferences.py).
+    The New task card used to offer "Default" — an empty value the CLI resolved
+    at spawn — and the card now shows the pair the run will actually get
+    instead (Akshil, 2026-09-21: "remove the default field … show the model and
+    effort"). "" for a field the file does not set: the card keeps its own
+    first option then, which is the same thing the CLI would have picked.
+    """
+    from fused_render.server.routers import tasks as _tasks
+    agent = _tasks._agent_module()
+    if agent is None:
+        raise HTTPException(status_code=503,
+                            detail="the claude agent module did not load")
+    model = effort = ""
+    try:
+        with open(os.path.join(agent.CLAUDE_DIR, "settings.json"), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    if isinstance(data, dict):
+        model = agent._short_model(str(data.get("model") or ""))
+        e = str(data.get("effortLevel") or "").lower()
+        effort = e if e in agent._EFFORT_LEVELS else ""
+    return {"model": model, "effort": effort}
+
+
 @router.get("/api/claude-sessions/history")
 def api_claude_session_history(file: str, session_id: str, native: str = ""):
     """The chat's transcript restore, IN PROCESS (owner E2E R1, F5).
