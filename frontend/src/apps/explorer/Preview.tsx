@@ -2030,6 +2030,14 @@ function TemplatePreview({
         }
       : undefined,
     onOpenMcp: () => setMcpOpen(true),
+    // G1 (FIXES-round-3.md): App Doctor's "Open in git" opens THIS file's own
+    // sidebar on its Git tab, through the same writer the sidebar's own
+    // switcher calls (`applySide`) — never a navigation to a separate page.
+    // Only where this view actually splits (`splitCapable`): a panel/tab pane
+    // has no sidebar of its own (see `applySide`'s definition above), so
+    // there `onOpenGit` is left `undefined` and the row falls back to
+    // navigating instead.
+    onOpenGit: splitCapable ? () => applySide("git") : undefined,
   });
 
   // THE FILE MENU — one list, two surfaces (the kebab, the crumb bar's

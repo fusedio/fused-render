@@ -182,6 +182,7 @@ function CheckRow({
   onCheck,
   onPull,
   onDone,
+  onOpenGit,
 }: {
   check: AppCheck;
   busy: boolean;
@@ -205,6 +206,19 @@ function CheckRow({
    *  already use to dismiss the dialog once the user has actually landed
    *  somewhere else. `undefined` from the tab, which has nothing to close. */
   onDone?: () => void;
+  /** G1 (FIXES-round-3.md): "Open in git" no longer navigates to a separate
+   *  page — it opens the CALLER's own right-hand sidebar (Preview's `_side`
+   *  over a file, the listing pane's over a folder) and selects its Git tab,
+   *  staying on the page the user was already looking at. Owned by the
+   *  caller because only the caller (Listing.tsx, Preview.tsx) knows which
+   *  `_side`-writer is its own — this component has no sidebar of its own to
+   *  open. `undefined` where the surface HAS no such sidebar (AppPage.tsx's
+   *  `AppDoctorPanel`: read-only about git, no Git tab exists there — see its
+   *  own header — and a snapshot/panel pane, which owns no address bar to
+   *  write `_side` on), in which case the row falls back to the old
+   *  navigate-to-the-git-mode behaviour so the action still does something
+   *  rather than silently no-op. */
+  onOpenGit?: () => void;
 }) {
   const { shown, hidden } = splitFindings(check.findings);
   const failing = check.state === "fail";
@@ -320,19 +334,37 @@ function CheckRow({
               )}
               {/* D1 (FIXES-round-1.md): a secondary text button matching
                   Fix's own size/variant, sitting BEFORE Fix — "Repo in sync
-                  [Open in git] [Fix]". Never a fix action: opens the
-                  IN-APP git mode on this row's repo root (never an external
+                  [Open in git] [Fix]". Styling unchanged since D1 (G1,
+                  FIXES-round-3.md — the user approved this look). Never a fix
+                  action: it opens the IN-APP git mode (never an external
                   client — out of scope per the spec), so it draws quietly
                   even on a passing row — there is nothing to fix, only
                   somewhere to look. Previously a bare ghost icon-only
                   button, which read as a stray mark next to Fix's solid
-                  pill. */}
+                  pill.
+
+                  G1: what "opens" changed. It used to `navigate()` to this
+                  row's repo root in `_mode=git` — a whole separate page,
+                  leaving `index.html` (or wherever the user was) behind. Per
+                  the user's own words ("open in git should just ensure the
+                  sidebar is not turned off and the git tab is selected. no
+                  need to open separate page"), it now stays put and opens the
+                  CALLER's own sidebar on its Git tab (`onOpenGit`) — the
+                  row's `gitRoot` already decided WHICH repo this row is
+                  about; the sidebar it opens is scoped to the folder/file the
+                  user is already on, which is that same repo (Doctor never
+                  renders for a path outside it). Where no such sidebar exists
+                  (`onOpenGit` undefined — AppPage.tsx's read-only-about-git
+                  tab, or a snapshot/panel pane with no address bar of its
+                  own), falls back to the old cross-page navigation so the
+                  action still does something instead of silently no-op'ing. */}
               {openInGit && check.gitRoot && (
                 <Button
                   variant="secondary"
                   size="sm"
                   onClick={() => {
-                    navigate(check.gitRoot as string, { isDir: true, mode: "git" });
+                    if (onOpenGit) onOpenGit();
+                    else navigate(check.gitRoot as string, { isDir: true, mode: "git" });
                     onDone?.();
                   }}
                 >
@@ -646,7 +678,13 @@ function AppDoctorChecklist({
   pulling,
   pullRow,
   onDone,
-}: Report) {
+  onOpenGit,
+}: Report & {
+  /** G1 — see CheckRow's own doc comment. Not part of `useAppDoctorReport`'s
+   *  state (it knows nothing about any sidebar); threaded in separately by
+   *  each caller of `AppDoctorChecklist`. */
+  onOpenGit?: () => void;
+}) {
   return (
     <>
       <ErrorBanner>{error}</ErrorBanner>
@@ -676,6 +714,7 @@ function AppDoctorChecklist({
                   onCheck={(check, force) => void runCheck(check, force)}
                   onPull={(check) => void pullRow(check)}
                   onDone={onDone}
+                  onOpenGit={onOpenGit}
                 />
               ))}
             </ul>
@@ -736,6 +775,11 @@ function AppDoctorFixAllButton({ report, busy, liveTask, fixAll, followLive }: R
 // so this panel ignores `_snapshot` rather than reporting on a copy.
 export function AppDoctorPanel({ dir }: { dir: string }) {
   const r = useAppDoctorReport(dir);
+  // G1: no `onOpenGit` here on purpose. This page (AppPage.tsx) is
+  // deliberately read-only about git — no Git tab exists on it at all (see
+  // that file's own header) — so there is no sidebar for "Open in git" to
+  // open. CheckRow's fallback (the old cross-page navigate) is the correct,
+  // sensible degrade for this surface, not a gap to fill in.
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-x-hidden overflow-y-auto">
@@ -775,10 +819,18 @@ export function AppDoctorPanel({ dir }: { dir: string }) {
 export function AppDoctorModal({
   dir,
   onClose,
+  onOpenGit,
 }: {
   /** The app FOLDER (canonical forward-slash), not its entry page. */
   dir: string;
   onClose: () => void;
+  /** G1 (FIXES-round-3.md) — see CheckRow's own doc comment. Handed down by
+   *  `useAppActionRows` (EntryActionsMenu.tsx), which gets it from whichever
+   *  of Listing.tsx/Preview.tsx mounted it — each owns its own `_side`
+   *  writer, this dialog owns none. `undefined` on a surface with no
+   *  sidebar of its own (a snapshot/panel pane), where the row falls back to
+   *  navigating instead. */
+  onOpenGit?: () => void;
 }) {
   const r = useAppDoctorReport(dir, onClose);
   return (
@@ -822,7 +874,7 @@ export function AppDoctorModal({
           )}
         </DialogHeader>
         <div className="flex min-h-0 min-w-0 flex-col gap-5 overflow-x-hidden overflow-y-auto">
-          <AppDoctorChecklist {...r} />
+          <AppDoctorChecklist {...r} onOpenGit={onOpenGit} />
         </div>
         {/* The footer's hairline is the dialog's own border colour, not the
             button ground's — it separates the list from the action without

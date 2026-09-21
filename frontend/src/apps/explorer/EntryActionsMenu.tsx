@@ -112,6 +112,13 @@ export interface EntryActionsMenuProps {
   // over a folder that may well be one.
   mcp?: { available: boolean; pending: boolean; reason?: string };
   onOpenMcp: () => void;
+  // G1 (FIXES-round-3.md): App Doctor's "Open in git" row, handed straight
+  // through to `AppDoctorModal` — see that component's own doc comment. Each
+  // caller (Listing.tsx, Preview.tsx) knows its OWN `_side`/pane-side writer;
+  // this hook has no sidebar of its own to open, so it neither builds this
+  // nor defaults it. `undefined` on a surface with none (a snapshot/panel
+  // pane), where the row falls back to navigating instead.
+  onOpenGit?: () => void;
 }
 
 // What the hook hands back. `app` is what this folder IS when it is an app
@@ -138,6 +145,7 @@ export function useAppActionRows({
   onOpenEmbed,
   mcp,
   onOpenMcp,
+  onOpenGit,
 }: EntryActionsMenuProps): AppActionRows {
   const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
   const name = basename(dir);
@@ -319,6 +327,8 @@ export function useAppActionRows({
     embed,
     isEntry,
     badge: isEntry ? <AppDoctorStatusDot checks={doctorChecks} /> : undefined,
-    modal: doctorOpen ? <AppDoctorModal dir={dir} onClose={() => setDoctorOpen(false)} /> : null,
+    modal: doctorOpen ? (
+      <AppDoctorModal dir={dir} onClose={() => setDoctorOpen(false)} onOpenGit={onOpenGit} />
+    ) : null,
   };
 }

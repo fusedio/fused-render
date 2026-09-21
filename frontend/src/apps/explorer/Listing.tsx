@@ -963,6 +963,14 @@ export default function Listing({
         }
       : undefined,
     onOpenMcp: () => setMcpOpen(true),
+    // G1 (FIXES-round-3.md): App Doctor's "Open in git" opens THIS listing's
+    // own pane on its Git tab, through the same confirm-leave-aware `setSide`
+    // the switcher itself calls — never a navigation to a separate page. Only
+    // where this listing owns its pane (`paneEnabled`): a snapshot or a panel
+    // pane owns no `_side` of its own to write (see `applySide` above), so
+    // there `onOpenGit` is left `undefined` and the row falls back to
+    // navigating instead.
+    onOpenGit: paneEnabled ? () => setSide({ open: true, mode: "git" }) : undefined,
     // Open in embed — this listing under the chrome-free embed prefix, in a new
     // tab, `_mode=_listing` stamped so the embed shows the LISTING rather than
     // hopping to the folder's app entry (the same stamp the file preview's row
