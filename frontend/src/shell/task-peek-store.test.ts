@@ -1478,7 +1478,14 @@ describe("the sidebar, and the only thing that moves it", () => {
 // something smaller. `gutterVar: null` fakes a page that predates the var, to
 // prove the padding-sum fallback still works.
 function withFakeTasksDom(
-  opts: { content: number; cap?: number; gutterVar?: number | null; tightEachSide?: number },
+  opts: {
+    content: number;
+    cap?: number;
+    gutterVar?: number | null;
+    tightEachSide?: number;
+    /** The app page's shape: no rendered max-width, the cap stated as a var. */
+    capVar?: number;
+  },
   fn: () => void,
 ): void {
   const cap = opts.cap ?? 1050;
@@ -1489,10 +1496,11 @@ function withFakeTasksDom(
   const host = { clientWidth: opts.content };
   const styles = new Map<unknown, Record<string, unknown>>();
   styles.set(main, {
-    getPropertyValue: () => "",
+    getPropertyValue: (name: string) =>
+      name === "--tasks-column-max" && opts.capVar != null ? `${opts.capVar}px` : "",
     paddingLeft: "0px",
     paddingRight: "0px",
-    maxWidth: `${cap}px`,
+    maxWidth: opts.capVar != null ? "none" : `${cap}px`,
   });
   styles.set(page, {
     getPropertyValue: (name: string) =>
@@ -1528,6 +1536,22 @@ function withFakeTasksDom(
     else globalWithStyle.getComputedStyle = realGetComputedStyle;
   }
 }
+
+describe("measureTasksBaseline — the app page states its cap as a var", () => {
+  // The app page's Tasks tab has no `max-width` on the column (the page fills
+  // its parent, 2026-09-21) but declares `--tasks-column-max: 1050px`, so the
+  // arithmetic is the one `/tasks` runs — the same baseline at the same width.
+  it("reads --tasks-column-max where there is no rendered cap", () => {
+    withFakeTasksDom({ content: 1400, capVar: 1050, gutterVar: 48 }, () => {
+      expect(measureTasksBaseline()).toBe(1098); // 1050 (var) + 48 (app page gutter)
+    });
+  });
+  it("still takes the room when neither cap nor var is declared", () => {
+    withFakeTasksDom({ content: 900, capVar: 1050, gutterVar: 48 }, () => {
+      expect(measureTasksBaseline()).toBe(900); // min(1050, 900 − 48) + 48
+    });
+  });
+});
 
 describe("measureTasksBaseline — the gutter stays untight (Bugbot, PR #1141)", () => {
   it("measures the same gutter whether the frame is tight or not", () => {

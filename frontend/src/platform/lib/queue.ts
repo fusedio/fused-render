@@ -30,7 +30,7 @@
 //     point of the verb is that the message RUNS, next, and that nothing in
 //     flight is interrupted.
 //   * `queued` stays the STATUS WORD in code and on a row; `waiting` is the word
-//     a count is said in ("2 waiting"), because a person reading a sidebar wants
+//     a count is said in ("2 queued"), because a person reading a sidebar wants
 //     the state described, not the enum named.
 //
 // AND AGAIN ON 2026-09-19 (Akshil), for the caption alone — "3rd in line ·
@@ -266,7 +266,7 @@ export function chatUrl(target: string, sessionId: string, queuedEntryId = ""): 
 }
 
 /** WHAT JOINS THE TWO HALVES. A pipe and not a `·`: the middot is this page's
- *  separator between peers ("1 running · 2 waiting"), and these are not peers —
+ *  separator between peers ("1 running · 2 queued"), and these are not peers —
  *  the holder is the fact and the ordinal is a qualifier on it. It also survives
  *  the ellipsis better, because it is unmistakable at the point a row cuts. */
 export const QUEUE_CAPTION_SEP = " | ";
@@ -302,24 +302,24 @@ export function queueCaption(facts: QueueFacts): QueueCaption | null {
 }
 
 /**
- * "1 message waiting" / "2 messages waiting" — the card over the chat composer.
+ * "1 message queued" / "2 messages queued" — the card over the chat composer.
  *
  * The one place in this vocabulary that forks on plural, because it is the one
- * place the noun is spoken: "2 waiting" below needs no noun and therefore no
- * fork, while "2 messages waiting" would read as a typo without one.
+ * place the noun is spoken: "2 queued" below needs no noun and therefore no
+ * fork, while "2 messages queued" would read as a typo without one.
  */
 export function waitingCount(n: number): string {
-  return n === 1 ? "1 message waiting" : `${n} messages waiting`;
+  return n === 1 ? "1 message queued" : `${n} messages queued`;
 }
 
-/** "2 waiting" — the sidebar's and the lane header's readout, worded like the
+/** "2 queued" — the sidebar's and the lane header's readout, worded like the
  *  "2 running" it sits beside. No noun and no plural fork: one word names one
  *  state on every surface that says it. */
 export function waitingLabel(n: number): string {
-  return `${n} waiting`;
+  return `${n} queued`;
 }
 
-/** "1 running · 2 waiting" — the In Progress lane header, where the two groups
+/** "1 running · 2 queued" — the In Progress lane header, where the two groups
  *  the lane now holds are counted separately. Either half alone when the other
  *  is empty, so a lane with nothing waiting reads exactly as it always did. */
 export function runningWaitingLabel(running: number, waiting: number): string {

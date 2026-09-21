@@ -3283,7 +3283,6 @@ function ChatBody(props: ChatBodyProps) {
     inChat,
     navLocked: ann.locked,
     followBottom,
-    onNavigate,
     // T:17437 — `history: "replace"`: a fired scheduled run is not a place
     // anyone navigated to, so re-attaching from it must buy no Back entry.
     setRunParam: (runId) => params.set({ run: runId }, { history: "replace" }),
@@ -4412,7 +4411,6 @@ function ChatBody(props: ChatBodyProps) {
               stopping={sched.stopping}
               tick={sched.tick}
               onStop={sched.onStop}
-              onRow={sched.onRow}
               cardRef={sched.cardRef}
             />
             {/* A card is READ, not typed into: compact is the one cut that takes

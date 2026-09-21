@@ -46,11 +46,13 @@ test("rowNeed charges no gap for a single seat", () => {
   expect(rowNeed(box, [pill(40)])).toBe(40);
 });
 
-test("the ladder is full -> compact -> tight -> stack and stops at the first fit", () => {
+test("the ladder is full -> compact -> tight -> slim -> bare -> stack and stops at the first fit", () => {
   const needs: Record<RowFit, number> = {
     full: 420,
     compact: 400,
     tight: 370,
+    slim: 330,
+    bare: 300,
     stack: 200,
   };
   const asked: RowFit[] = [];
@@ -70,9 +72,19 @@ test("the ladder is full -> compact -> tight -> stack and stops at the first fit
   expect(asked).toEqual(["full", "compact", "tight"]);
 
   asked.length = 0;
-  // Below even the dense line: stack is the last resort and is NOT re-measured.
-  expect(pickRowFit(300, probe)).toBe("stack");
-  expect(asked).toEqual(["full", "compact", "tight"]);
+  // ONE LINE BEFORE TWO: seats are dropped (the ring and the screenshot group,
+  // then the calendar) before anything wraps.
+  expect(pickRowFit(340, probe)).toBe("slim");
+  expect(asked).toEqual(["full", "compact", "tight", "slim"]);
+
+  asked.length = 0;
+  expect(pickRowFit(300, probe)).toBe("bare");
+  expect(asked).toEqual(["full", "compact", "tight", "slim", "bare"]);
+
+  asked.length = 0;
+  // Below even the bare line: stack is the last resort and is NOT re-measured.
+  expect(pickRowFit(290, probe)).toBe("stack");
+  expect(asked).toEqual(["full", "compact", "tight", "slim", "bare"]);
 });
 
 test("a need exactly equal to the box fits — the browser wraps only past it", () => {
@@ -80,25 +92,24 @@ test("a need exactly equal to the box fits — the browser wraps only past it", 
   expect(pickRowFit(399, () => 400)).not.toBe("full");
 });
 
-test("fitFlags is cumulative: stack is a tight compact row that folded", () => {
-  expect(fitFlags("full")).toEqual({
-    compact: false,
-    tight: false,
-    stack: false,
-  });
-  expect(fitFlags("compact")).toEqual({
-    compact: true,
-    tight: false,
-    stack: false,
-  });
-  expect(fitFlags("tight")).toEqual({
+test("fitFlags is cumulative: stack is a bare slim tight compact row that folded", () => {
+  const off = { compact: false, tight: false, slim: false, bare: false, stack: false };
+  expect(fitFlags("full")).toEqual(off);
+  expect(fitFlags("compact")).toEqual({ ...off, compact: true });
+  expect(fitFlags("tight")).toEqual({ ...off, compact: true, tight: true });
+  expect(fitFlags("slim")).toEqual({ ...off, compact: true, tight: true, slim: true });
+  expect(fitFlags("bare")).toEqual({
+    ...off,
     compact: true,
     tight: true,
-    stack: false,
+    slim: true,
+    bare: true,
   });
   expect(fitFlags("stack")).toEqual({
     compact: true,
     tight: true,
+    slim: true,
+    bare: true,
     stack: true,
   });
 });

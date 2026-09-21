@@ -1224,7 +1224,14 @@ export interface Prefs {
    *  instead of navigating away (shell/prefs.py `task_peek_enabled`) — always
    *  `true` since 2026-09-20; the Preferences switch is gone. Optional because
    *  a server that predates the field sends nothing — which reads as ON too. */
-  task_peek?: { enabled: boolean };
+  task_peek?: {
+    enabled: boolean;
+    /** …and the APP PAGE's Tasks tab does the same — always `true` since
+     *  2026-09-21 (shell/prefs.py `project_peek_enabled`); the flag and its
+     *  Preferences switch are gone. Optional: a server that predates the
+     *  field sends nothing, and nothing reads as on too. */
+    project?: boolean;
+  };
   /** Whether a finished-task notification fires for a session that entered
    *  from an interactive terminal, rather than only one started through
    *  fused-render's own Claude template (shell/prefs.py

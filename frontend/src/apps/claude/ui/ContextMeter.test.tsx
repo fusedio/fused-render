@@ -46,26 +46,43 @@ test("nothing at all until a reply has spent something", () => {
   ).toBeNull();
 });
 
-test("the ring carries the digits, and ONE sentence answers both readers", () => {
+test("a bare ring, ONE sentence for both readers, and a second line that says press", () => {
   const meter = render(
     <ContextMeter
       usage={usage({ cache_read_input_tokens: 84_000, model: "claude-haiku-4-5" })}
       model="claude-haiku-4-5"
     />,
   ).root.findByType("button");
-  const sentence = "Context: 84k of 200k tokens (42%)";
-  // `data-hint` is this app's tooltip (platform/lib/hints), never `title`.
-  expect(meter.props["data-hint"]).toBe(sentence);
+  const sentence = "Context: 84k of 167k tokens before auto-compact (50%)";
+  // `data-hint` is this app's tooltip (platform/lib/hints), never `title`. It
+  // carries the sentence AND a "Click for details" line: nothing about a plain
+  // ring says it opens anything. The spoken name is the sentence alone — a
+  // button already tells a screen reader it can be pressed.
+  expect(meter.props["data-hint"]).toBe(sentence + "\nClick for details");
   expect(meter.props["aria-label"]).toBe(sentence);
   expect(meter.props.className).toBe("c-ctxmeter");
-  const pct = meter.findByProps({ className: "c-ctxmeter-pct" });
-  // The number lives INSIDE the ring, and with no "%" beside it: the sentence
-  // above spells the unit out, and two glyphs is what fits in the ring.
-  expect(pct.props.children).toBe(42);
-  expect(String(pct.props["aria-hidden"])).toBe("true");
+  // NO digits inside the ring: the tooltip and the popover already say the
+  // number, and dropping them is what lets the coin match the 24px pills.
+  expect(meter.findAllByProps({ className: "c-ctxmeter-pct" })).toHaveLength(0);
   // The drawing is hidden from the reader the label already told.
   const ring = meter.findByProps({ className: "c-ctxmeter-ring" });
   expect(String(ring.props["aria-hidden"])).toBe("true");
+  expect(ring.props.viewBox).toBe("0 0 24 24");
+});
+
+test("the ring turns yellow at 75% and red at 90%", () => {
+  const cls = (tokens: number) =>
+    render(
+      <ContextMeter
+        usage={usage({ cache_read_input_tokens: tokens, model: "claude-haiku-4-5" })}
+        model="claude-haiku-4-5"
+      />,
+    ).root.findByType("button").props.className as string;
+  // Haiku compacts at 167k: 72% dim, 76% yellow, 89% yellow, 91% red.
+  expect(cls(120_000)).toBe("c-ctxmeter");
+  expect(cls(127_000)).toBe("c-ctxmeter is-warn");
+  expect(cls(148_000)).toBe("c-ctxmeter is-warn");
+  expect(cls(152_000)).toBe("c-ctxmeter is-high");
 });
 
 test("the arc is the percentage, drawn from twelve o'clock", () => {
@@ -73,13 +90,14 @@ test("the arc is the percentage, drawn from twelve o'clock", () => {
     render(
       <ContextMeter usage={usage({ cache_read_input_tokens: tokens, model })} model={model} />,
     ).root.findByProps({ className: "c-ctxmeter-arc" }).props;
-  const circumference = 2 * Math.PI * 12;
+  const circumference = 2 * Math.PI * 7;
+  // 100k of Haiku's 167k compaction point: 60%.
   expect(arc("claude-haiku-4-5", 100_000).strokeDasharray).toBe(
-    `${(circumference / 2).toFixed(2)} ${circumference.toFixed(2)}`,
+    `${(circumference * 0.6).toFixed(2)} ${circumference.toFixed(2)}`,
   );
   // Rotated a quarter turn back, so the arc starts at the top like every other
   // dial a reader has seen.
-  expect(arc("claude-haiku-4-5", 100_000).transform).toBe("rotate(-90 14 14)");
+  expect(arc("claude-haiku-4-5", 100_000).transform).toBe("rotate(-90 12 12)");
   // …about the TRACK's centre, which the arc shares — an arc centred elsewhere
   // and rotated about the track is a crescent, not a fill (Bugbot, PR #1253).
   const ring = create(
@@ -89,7 +107,7 @@ test("the arc is the percentage, drawn from twelve o'clock", () => {
   const filled = ring.findByProps({ className: "c-ctxmeter-arc" }).props;
   expect([filled.cx, filled.cy]).toEqual([track.cx, track.cy]);
   expect(filled.transform).toBe(`rotate(-90 ${track.cx} ${track.cy})`);
-  // A million-token model reports its own scale: the same count, a quieter ring.
+  // A million-token model reports its own scale (967k): the same count, 10%.
   expect(arc("claude-sonnet-5", 100_000).strokeDasharray).toBe(
     `${(circumference * 0.1).toFixed(2)} ${circumference.toFixed(2)}`,
   );
@@ -103,7 +121,7 @@ test("a compacted reading says it is an estimate", () => {
     />,
   ).root.findByType("button");
   expect(meter.props["aria-label"]).toBe(
-    "Context: 9.8k of 1M tokens (1%) · compacted, estimate",
+    "Context: 9.8k of 967k tokens before auto-compact (1%) · compacted, estimate",
   );
 });
 
