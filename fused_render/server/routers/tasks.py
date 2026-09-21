@@ -6800,7 +6800,11 @@ def api_queue_force(body: dict = Body(...),
     # through (`api_queue_admit`, `routers/run._folder_busy`) ask under
     # whichever name they happen to hold; the session and the run are added the
     # moment they exist, below.
-    manager.mark_forced(key, *[tasks_store.pending_key(i) for i in pending_ids])
+    pending_keys = [tasks_store.pending_key(i) for i in pending_ids]
+    # WAS THIS CHAT ALREADY FORCED before this press? Decides what a press that
+    # starts nothing does to the mark below (Bugbot ×2, 2026-09-21).
+    was_forced = bool(manager.is_forced(key, *pending_keys))
+    manager.mark_forced(key, *pending_keys)
 
     # THE HELD DECISION GOES NOW. A forced task holds nothing, so an answer
     # that was parked for this conversation is replayed the flag-off way
@@ -6839,12 +6843,15 @@ def api_queue_force(body: dict = Body(...),
                 "delivered": len(answers)}
     if started is None:
         # Cancelled in the window, or the pump got there first. Nothing was
-        # force-started, so the mark written above comes off again (review,
-        # 2026-09-21): a permanent bypass for a press that did nothing would
-        # spawn this chat's NEXT message beside another task's live turn.
+        # force-started, so the mark THIS press wrote comes off again — a
+        # permanent bypass for a press that did nothing would spawn the chat's
+        # NEXT message beside another task's live turn. But a chat that was
+        # forced BEFORE this press keeps its mark: a retry, a second surface,
+        # or a double-click must not undo the press that did start something
+        # (review + Bugbot, 2026-09-21).
         forget = getattr(manager, "forget_forced", None)
-        if forget is not None:
-            forget(key, *[tasks_store.pending_key(i) for i in pending_ids])
+        if forget is not None and not was_forced:
+            forget(key, *pending_keys)
         tasks_watch.notify({key})
         return {"ok": True, "started": False, "reason": "already started"}
 

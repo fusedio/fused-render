@@ -1843,6 +1843,36 @@ def test_force_answers_started_false_when_there_is_nothing_left_to_send(
     assert _kinds(manager, "enqueue") == []
 
 
+def test_force_that_starts_nothing_unmarks_only_a_chat_it_marked_itself(
+        client, projects_dir, folders, monkeypatch, flag, manager, dispatched):
+    """`dispatch_entry` → None twice. First press on an unforced chat: the
+    mark it wrote comes off (a no-op press must not leave a permanent bypass).
+    Second press on a chat that was ALREADY forced: the mark stays (a retry or
+    a second surface must not undo the press that started something)."""
+    flag()
+    _calls, answer = dispatched
+    answer["value"] = None
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha)
+    schedule._write([_entry("e-due", "the queued one", alpha,
+                            session_id="sess-a")])
+    _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, "sess-a", holder="sess-holder",
+                 entries={"sess-a": "e-due"})
+
+    r = _post(client, "/api/tasks/queue/force", {"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert manager.is_forced("sess-a") is False
+    assert manager.is_forced("pending:e-due") is False
+
+    manager.mark_forced("sess-a")
+    manager.line(alpha, "sess-a", holder="sess-holder",
+                 entries={"sess-a": "e-due"})
+    r = _post(client, "/api/tasks/queue/force", {"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert manager.is_forced("sess-a") is True
+
+
 def test_force_on_a_task_that_is_owed_an_answer_delivers_it(
         client, projects_dir, folders, monkeypatch, flag, manager, dispatched,
         agent):
