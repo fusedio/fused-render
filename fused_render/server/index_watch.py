@@ -30,7 +30,12 @@ import os
 import threading
 import time
 
-from fused_render.index.ignore import MountGuard, ignored_for_index, norm
+from fused_render.index.ignore import (
+    MountGuard,
+    ignored_for_index,
+    is_inside_leaf_dir,
+    norm,
+)
 from fused_render.server.index_touch import (
     MAX_FOLDERS,
     _folder_of,
@@ -70,8 +75,12 @@ BACKOFF_SCHEDULE_S = (5.0, 30.0, 120.0)
 
 def make_dropped(rules, mounts_dir: str):
     """A `path -> bool` filter: True when the watcher must never act on
-    `path`. Two structural refusals, same as `index_touch._real_blocked`
-    (§3.1.3 of the spec):
+    `path`. Three structural refusals — the real analogue is not
+    `index_touch._real_blocked` (that one filters a scan ROOT, chosen by
+    something that already decided to scan) but the FSEvents journal gate at
+    `scan.py`'s `_run_fsevents`: `ignored_for_index(...) or guard.blocks(d)
+    or is_inside_leaf_dir(d)`, which filters raw watched paths the same way
+    this does:
 
       * `ignored_for_index(rules, path, tree=True)` — the ignore list,
         checked tree-wise because a watched path arrives with no vetted
@@ -82,10 +91,17 @@ def make_dropped(rules, mounts_dir: str):
         that survives a user emptying the ignore list; it blocks the WHOLE
         fused-render home tree, not only the mounts subdirectory, which is
         what makes the index store's own directory doubly covered.
+      * `is_inside_leaf_dir(path)` — whether an ANCESTOR of `path` is a leaf
+        directory (`.git`, an `.app` bundle, ...). `.git` is deliberately
+        NOT in the ignore names (it is a LEAF_DIR_NAME instead), so without
+        this check a write to `~/repo/.git/objects/ab/cdef` would survive
+        the filter and forward a folder the index deliberately never
+        indexes — and an active git repo writes under `.git/objects`
+        constantly, making this the hottest of the three in practice.
 
-    Returning True for either means: this path or a change under it must
-    never cause a flush. That is load-bearing, not an optimization — a scan
-    writes parquet into `cfg.dir`, and without this filter the watcher would
+    Returning True for any means: this path or a change under it must never
+    cause a flush. That is load-bearing, not an optimization — a scan writes
+    parquet into `cfg.dir`, and without this filter the watcher would
     observe its own write and trigger the scan that triggered it."""
     guard = MountGuard(mounts_dir=mounts_dir)
 
@@ -94,6 +110,8 @@ def make_dropped(rules, mounts_dir: str):
         if not p:
             return True
         if guard.blocks(p):
+            return True
+        if is_inside_leaf_dir(p):
             return True
         return ignored_for_index(rules, p, tree=True)
 

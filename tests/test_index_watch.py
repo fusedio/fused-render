@@ -109,6 +109,27 @@ def test_paths_under_an_ignored_tree_or_the_store_dir_are_dropped():
     assert not dropped(norm(os.path.expanduser("~/proj/notes.txt")))
 
 
+def test_a_path_inside_a_leaf_dir_is_dropped():
+    """The docstring claims parity with `index_touch._real_blocked`, but the
+    real analogue is the FSEvents journal gate at `scan.py:625`:
+    `ignored_for_index(...) or guard.blocks(d) or is_inside_leaf_dir(d)`.
+    `.git` is deliberately NOT in the ignore names (it is a LEAF_DIR_NAME
+    instead), so without `is_inside_leaf_dir` a write to
+    `~/repo/.git/objects/ab/cdef` survives the filter and forwards
+    `~/repo/.git/objects/ab` — a folder the index deliberately never
+    indexes, and per scan.py's own comment a later pass would purge rows a
+    scan of it wrote. Any active git repo under a watched root would churn
+    this every flush floor."""
+    rules = IgnoreRules(default_ignore())
+    mounts_dir = norm(os.path.expanduser("~/.fused-render/mounts"))
+    dropped = make_dropped(rules, mounts_dir)
+
+    assert dropped(norm(os.path.expanduser(
+        "~/repo/.git/objects/ab/cdef0123456789")))
+    # a sibling that is NOT inside a leaf dir is unaffected
+    assert not dropped(norm(os.path.expanduser("~/repo/src/main.py")))
+
+
 def test_the_filter_drives_what_a_watch_loop_ever_sees():
     """A batch entirely under an ignored tree never reaches a folder, never
     arms a flush."""
