@@ -1,25 +1,34 @@
+import { installDomShim } from "@platform/lib/testDomShim";
+installDomShim();
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 // This module transitively imports "@platform/lib/router", whose module-init
-// reads `location` at import time (router.ts:54) — so these globals must be
-// in place BEFORE that import executes. A static `import` is hoisted ahead
-// of any top-level statement in this file regardless of where it's written,
-// so (mirroring RepoUpdatesDock.test.tsx's own documented fix for the same
-// problem) the globals are set here first and the module under test is
-// loaded with a dynamic `await import` afterward, which runs in the order
-// written rather than being hoisted.
-(globalThis as Record<string, unknown>).location = { pathname: "/x", search: "" };
-(globalThis as Record<string, unknown>).window = {
-  parent: undefined,
-  top: undefined,
-  dispatchEvent: () => true,
-};
-(globalThis as Record<string, unknown>).history = {
-  state: null,
-  replaceState: () => {},
-  pushState: () => {},
-};
-
+// reads `location` at import time (router.ts:54) — so a `location`/`window`/
+// `history` shim must be in place BEFORE that import executes. A static
+// `import` is hoisted ahead of any top-level statement in this file
+// regardless of where it's written, so `installDomShim()` (the shared,
+// idempotent shim every other suite that hits this same module-init read
+// already uses — see UpdateBadge.render.test.tsx, restart-store.test.ts,
+// scheduleEvents.test.ts) runs first, and the module under test is loaded
+// with a dynamic `await import` afterward, which runs in the order written
+// rather than being hoisted.
+//
+// This file's own `explainWithAi` ALSO calls router.ts's `navigate()` at
+// *test-call* time, not just at module-init (explain-with-ai.ts:87) — so,
+// unlike a one-shot module-init read, the shim has to survive for this
+// file's entire run, not just through the import above. A prior version of
+// this file hand-rolled a 3-property stub and `delete`d it right after the
+// import to avoid leaking a fake `window` into later suites; that broke this
+// file's OWN `explainWithAi` tests (a deleted `location` makes
+// `router.ts`'s `navigate()` throw `ReferenceError: location is not
+// defined` when a test later calls it) and, since several other suites
+// (e.g. DownloadManager.test.tsx's `useJobs` describe block) read
+// `globalThis.window` without installing it themselves, relying on an
+// earlier file's shim already being up, deleting it here could also strand
+// THOSE suites depending on run order. `installDomShim()` is designed to be
+// installed once and left standing for the rest of the process — every
+// suite that needs these globals calls it defensively itself, so there is
+// nothing to tear down.
 const { explainErrorPrompt, explainWithAi, resetDefaultFolderCache, resolveDefaultFolder } =
   await import("@platform/lib/explain-with-ai");
 const { peekPendingClaudeAsk, takePendingClaudeAsk } = await import(

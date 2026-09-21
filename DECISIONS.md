@@ -3530,3 +3530,71 @@ are reported here, not fixed — fixing them is out of scope for the confirm-mod
 
 `.venv/bin/python -m pytest -q tests/test_git_view_renders.py tests/test_git_view.py tests/test_git_conflicts.py`:
 58 passed.
+
+### Fix round 2 — the 22 CI frontend failures: a hand-rolled, torn-down DOM stub
+
+Root cause confirmed, not assumed. `explain-with-ai.test.ts` (added by this branch)
+needed `location`/`window`/`history` in place before its dynamic import of
+`@platform/lib/explain-with-ai` (which transitively imports `@platform/lib/router`,
+whose module-init reads `location` once). The committed version hand-rolled a
+3-property partial stub (`window: { parent, top, dispatchEvent }`, no `setInterval`,
+no `Element`/`HTMLElement`) with no teardown. Since `bun test` shares one
+`globalThis` across every file in a run but does NOT share the module cache (each
+file gets its own fresh module instances), that partial `window` survived into
+whichever suite ran next and exploded the moment that suite's own module-init code
+or a React effect touched a member the stub never provided —
+`TypeError: window.setInterval is not a function` in `ServerStatusBanner.tsx` /
+`update-status.ts` (`scheduleEvents.test.ts`'s own narrator-tick timer), and
+`@base-ui`'s `isHTMLElement`/`isButtonElement` throwing on a `window` with no
+`Element`/`HTMLElement` (`ErrorBanner.test.tsx`'s `Button`). Reproduced directly:
+`bun test src/platform/lib/explain-with-ai.test.ts src/platform/ui/ErrorBanner.test.tsx
+src/platform/ui/NotificationHost.test.tsx src/platform/ui/UpdateBadge.render.test.tsx
+src/platform/lib/scheduleEvents.test.ts src/platform/lib/restart-store.test.ts
+src/platform/ui/ServerStatusBanner.test.tsx` on the committed HEAD version threw
+`window.setInterval is not a function` inside `scheduleEvents.test.ts`'s narrator
+effect — 6 of 42 tests failing, 36 passing.
+
+The previous builder's UNCOMMITTED candidate fix (three `delete (globalThis as
+...)` lines right after the import, mirroring `RepoUpdatesDock.test.tsx`'s
+documented install/delete pattern) was itself broken and was NOT used: `bun test
+src/platform/lib/explain-with-ai.test.ts` alone failed 2 of its own 12 tests with
+`ReferenceError: location is not defined` inside `router.ts`'s `navigate()`, because
+`explainWithAi()` calls `navigate()` at *test-call* time (`explain-with-ai.ts:87`),
+not just at the one-shot module-init read the comment described — deleting the
+globals right after the import pulled the rug out from under the file's own later
+test bodies. Deleting also risked stranding suites like `DownloadManager.test.tsx`'s
+`useJobs` describe block, which reads `globalThis.window` without installing it
+itself, relying on an earlier file's shim already being up (verified this file
+crashes standalone too, for an unrelated, pre-existing, order-dependent reason —
+its own static `jobs.ts → api.ts → presence.ts → router.ts` import chain resolves
+before its own `installDomShim()` call runs; left alone, out of scope for this
+round).
+
+Fix actually shipped: replaced the hand-rolled stub + delete with the shared,
+idempotent `installDomShim()` helper from `@platform/lib/testDomShim.ts` — the same
+one `UpdateBadge.render.test.tsx`, `restart-store.test.ts`, `scheduleEvents.test.ts`,
+and `ServerStatusBanner.test.tsx` already call. It provides the full member set
+(`setInterval`/`clearInterval`, `Element`/`HTMLElement`/`HTMLIFrameElement`,
+`requestAnimationFrame`, etc.) every suite in the process actually needs, uses `??=`
+so it never overwrites a shim another file already installed, and is deliberately
+never torn down — exactly the design its own header documents. This fixes both
+symptoms at once and needs no delete: the file's own `navigate()` calls keep working
+for the file's whole run, and later suites see a complete `window` instead of a
+partial one.
+
+Verified both orders clean post-fix (same 7-file set, forward and reversed):
+`42 pass, 0 fail` in both directions, and `explain-with-ai.test.ts` alone: `12 pass,
+0 fail`. `bunx tsc --noEmit`: clean. `ErrorBanner.test.tsx`'s `onExplain` test also
+now passes in every combination tried — the diagnosis's "second, independent
+problem" turned out to be the same partial-stub cause once `installDomShim()`
+supplies `Element`/`HTMLElement`.
+
+Excluded `DownloadManager.test.tsx` from the both-orders repro set after confirming
+it fails even fully standalone, unmodified, unrelated to this branch — logged above
+as a pre-existing, out-of-scope, order-dependent local issue (its own static import
+chain resolves `router.ts` before its own `installDomShim()` call), not one of the
+things this round is meant to fix.
+
+Commands run: `bun test <7-file set>` (both orders), `bun test
+src/platform/lib/explain-with-ai.test.ts` (alone), `bun test
+src/platform/ui/ErrorBanner.test.tsx` (alone), `bunx tsc --noEmit`.
