@@ -132,8 +132,8 @@ def test_migration_suffix_skips_existing_names(tmp_path, monkeypatch):
 
 
 def test_migration_keys_on_sanitized_filename_stem(tmp_path, monkeypatch):
-    # `a/b` and `a:b` are distinct strings but both export as `a-b.bookmark`,
-    # so they must count as duplicates (key = sanitized lowercase stem). The
+    # `a/b` and `a:b` are distinct strings but both sanitize to `a-b`, so
+    # they must count as duplicates (key = sanitized lowercase stem). The
     # newer one gets the first suffix whose sanitized key is free.
     client, home = _client(tmp_path, monkeypatch)
     _write_tree(home, [_bm("1", "a/b", 10), _bm("2", "a:b", 20), _bm("3", "A-B", 30)])
@@ -163,152 +163,6 @@ def test_migration_is_idempotent_and_writes_only_on_change(tmp_path, monkeypatch
     # (write_json would reformat — unchanged text proves no write happened).
     assert client.get("/api/bookmarks").json()["bookmarks"] == first
     assert (home / "bookmarks.json").read_text(encoding="utf-8") == saved
-
-
-# --- POST /api/bookmarks/export (.bookmark file, SB-8/D98) --------------------
-
-
-def _export_body(tmp_path, **overrides):
-    body = {
-        "dir": str(tmp_path),
-        "filename": "sales-dash.bookmark",
-        "content": '{\n  "version": 1,\n  "name": "sales-dash",\n  "kind": "single",\n  "path": "a.parquet",\n  "search": "sort=name"\n}\n',
-    }
-    body.update(overrides)
-    return body
-
-
-def test_export_writes_content_verbatim(tmp_path, monkeypatch):
-    client, _ = _client(tmp_path, monkeypatch)
-    body = _export_body(tmp_path)
-    resp = client.post("/api/bookmarks/export", json=body, headers=FUSED)
-    assert resp.status_code == 200
-    path = resp.json()["path"]
-    assert path == str(tmp_path / "sales-dash.bookmark")
-    # Exact bytes: the frontend owns the formatting, the server must not touch it.
-    with open(path, encoding="utf-8") as f:
-        assert f.read() == body["content"]
-
-
-def test_export_overwrites_existing_file(tmp_path, monkeypatch):
-    # Re-saving refreshes the snapshot: the name is unique (D97), so an
-    # existing file is a stale copy of the same bookmark.
-    client, _ = _client(tmp_path, monkeypatch)
-    (tmp_path / "sales-dash.bookmark").write_text("stale", encoding="utf-8")
-    body = _export_body(tmp_path)
-    assert client.post("/api/bookmarks/export", json=body, headers=FUSED).status_code == 200
-    assert (tmp_path / "sales-dash.bookmark").read_text(encoding="utf-8") == body["content"]
-
-
-def test_export_without_fused_header_is_rejected(tmp_path, monkeypatch):
-    client, _ = _client(tmp_path, monkeypatch)
-    resp = client.post("/api/bookmarks/export", json=_export_body(tmp_path))
-    assert resp.status_code == 403
-    assert not (tmp_path / "sales-dash.bookmark").exists()
-
-
-def test_export_rejects_bad_dir(tmp_path, monkeypatch):
-    client, _ = _client(tmp_path, monkeypatch)
-    for dir_ in ["relative/dir", str(tmp_path / "missing"), 7]:
-        body = _export_body(tmp_path, dir=dir_)
-        assert client.post("/api/bookmarks/export", json=body, headers=FUSED).status_code == 400
-    # A file is not a directory either.
-    target = tmp_path / "a.parquet"
-    target.write_text("x", encoding="utf-8")
-    body = _export_body(tmp_path, dir=str(target))
-    assert client.post("/api/bookmarks/export", json=body, headers=FUSED).status_code == 400
-
-
-def test_export_rejects_bad_filename(tmp_path, monkeypatch):
-    client, _ = _client(tmp_path, monkeypatch)
-    for filename in [
-        "no-suffix.txt",  # wrong extension
-        ".bookmark",  # empty stem
-        "sub/dir.bookmark",  # path separator
-        "sub\\dir.bookmark",  # backslash separator
-        "..bookmark",  # traversal-shaped stem
-        "",  # empty
-    ]:
-        body = _export_body(tmp_path, filename=filename)
-        assert client.post("/api/bookmarks/export", json=body, headers=FUSED).status_code == 400
-
-
-def test_export_rejects_garbage_content(tmp_path, monkeypatch):
-    client, _ = _client(tmp_path, monkeypatch)
-    for content in [
-        "not json at all",
-        "[1, 2]",  # JSON, but not an object
-        '{"name": "x"}',  # no version
-        '{"version": "1"}',  # version not an int
-        '{"version": true}',  # bool is not a version
-    ]:
-        body = _export_body(tmp_path, content=content)
-        assert client.post("/api/bookmarks/export", json=body, headers=FUSED).status_code == 400
-    assert not (tmp_path / "sales-dash.bookmark").exists()
-
-
-# --- GET /api/bookmark-file (.bookmark open flow, SB-9/D99) -------------------
-
-
-def _write_bookmark(tmp_path, name="sales-dash.bookmark", doc=None):
-    if doc is None:
-        doc = {"version": 1, "name": "sales-dash", "kind": "single",
-               "path": "a.parquet", "search": "sort=name"}
-    path = tmp_path / name
-    path.write_text(json.dumps(doc), encoding="utf-8")
-    return path, doc
-
-
-def test_bookmark_file_returns_dir_and_content(tmp_path, monkeypatch):
-    client, _ = _client(tmp_path, monkeypatch)
-    path, doc = _write_bookmark(tmp_path)
-    resp = client.get("/api/bookmark-file", params={"path": str(path)})
-    assert resp.status_code == 200
-    # `dir` is the file's own directory — what the frontend resolves the
-    # record's relative paths against.
-    assert resp.json() == {"dir": str(tmp_path), "bookmark": doc}
-
-
-def test_bookmark_file_rejects_relative_path(tmp_path, monkeypatch):
-    client, _ = _client(tmp_path, monkeypatch)
-    resp = client.get("/api/bookmark-file", params={"path": "rel/sales.bookmark"})
-    assert resp.status_code == 400
-
-
-def test_bookmark_file_rejects_wrong_extension(tmp_path, monkeypatch):
-    client, _ = _client(tmp_path, monkeypatch)
-    other = tmp_path / "a.json"
-    other.write_text("{}", encoding="utf-8")
-    resp = client.get("/api/bookmark-file", params={"path": str(other)})
-    assert resp.status_code == 400
-
-
-def test_bookmark_file_missing_file_is_404(tmp_path, monkeypatch):
-    client, _ = _client(tmp_path, monkeypatch)
-    resp = client.get("/api/bookmark-file", params={"path": str(tmp_path / "gone.bookmark")})
-    assert resp.status_code == 404
-
-
-def test_bookmark_file_rejects_malformed_json(tmp_path, monkeypatch):
-    client, _ = _client(tmp_path, monkeypatch)
-    path = tmp_path / "bad.bookmark"
-    path.write_text("{ not json", encoding="utf-8")
-    resp = client.get("/api/bookmark-file", params={"path": str(path)})
-    assert resp.status_code == 400
-    # A JSON array is not a bookmark record either.
-    path.write_text("[1, 2]", encoding="utf-8")
-    assert client.get("/api/bookmark-file", params={"path": str(path)}).status_code == 400
-
-
-def test_bookmark_file_rejects_unsupported_version(tmp_path, monkeypatch):
-    # Forward-compat: a v2 file from a newer build must fail with a clear
-    # message, not redirect somewhere wrong.
-    client, _ = _client(tmp_path, monkeypatch)
-    path, _ = _write_bookmark(tmp_path, doc={"version": 2, "name": "x", "kind": "single",
-                                             "path": "a", "search": ""})
-    resp = client.get("/api/bookmark-file", params={"path": str(path)})
-    assert resp.status_code == 400
-    assert "version" in resp.json()["error"]
 
 
 # --- tree sanitization + nested folders (GET-time, D121) ---------------------
@@ -495,7 +349,7 @@ def test_missing_never_flags_any_underscore_sentinel_route(tmp_path, monkeypatch
         {**_bm("templates", "templates", 2), "url": "/view/_templates"},
         {**_bm("mounts", "mounts", 3), "url": "/view/_mounts"},
         {**_bm("account", "account", 4), "url": "/view/_prefs?tab=account"},
-        {**_bm("bookmark", "bookmark", 5), "url": "/view/_bookmark?file=%2Ftmp%2Fx.bookmark"},
+        {**_bm("panel", "panel", 5), "url": "/view/_panel?_layout=x"},
     ]
     _write_tree(home, tree)
     assert client.get("/api/bookmarks").json()["missing"] == []

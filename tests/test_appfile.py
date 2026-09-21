@@ -269,7 +269,7 @@ def test_codec_routes_os_opened_fused_to_embed():
     # fusedapp template renders the app chrome-free (D390). In-explorer clicks
     # use the ordinary view prefix and need no special case.
     assert view_url_path("/tmp/My App.fused") == "/explorer/embed/tmp/My%20App.fused"
-    # Case-insensitive like .bookmark's check.
+    # Extension check is case-insensitive.
     assert view_url_path("/a/B.FUSED") == "/explorer/embed/a/B.FUSED"
     # And the embed path the template iframes the entry into is the same codec.
     assert embed_url_path("/x/demo/index.html") == "/explorer/embed/x/demo/index.html"

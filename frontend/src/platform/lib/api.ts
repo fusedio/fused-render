@@ -1140,31 +1140,6 @@ export function putBookmarks(bookmarks: unknown[]): Promise<void> {
   return putJson<unknown>("/api/bookmarks", bookmarks).then(() => undefined);
 }
 
-// Write a portable `<name>.bookmark` file next to the bookmark's target(s)
-// (SB-8). The frontend computes dir/filename/content (lib/bookmark-file.ts);
-// the server validates and writes, overwriting any previous save.
-export interface BookmarkExport {
-  dir: string;
-  filename: string;
-  content: string;
-}
-
-export function exportBookmarkFile(payload: BookmarkExport): Promise<{ path: string }> {
-  return postJson<{ path: string }>("/api/bookmarks/export", payload);
-}
-
-// Read a `.bookmark` file from disk (SB-9): the `_bookmark` sentinel resolves
-// the record's relative paths against `dir` (the file's own directory) and
-// redirects. The server validates (absolute path, exists, version 1) and reads.
-export interface BookmarkFileResult {
-  dir: string;
-  bookmark: Record<string, unknown>;
-}
-
-export function getBookmarkFile(path: string): Promise<BookmarkFileResult> {
-  return getJson<BookmarkFileResult>("/api/bookmark-file?path=" + encodeURIComponent(path));
-}
-
 // Recently opened files (fused_render/shell/recents.py). `url` is the shell
 // /view/ url verbatim including its query string (D20 posture); entries whose
 // file has since been deleted are already filtered out server-side.

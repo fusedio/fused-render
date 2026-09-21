@@ -238,15 +238,6 @@ def test_openurls_target_path_routes_deeplink_to_clone():
     assert openurls_target_path(DEEPLINK) == clone_url_path(DEEPLINK)
 
 
-def test_openurls_target_path_routes_bookmark_file_to_view():
-    # Finder can deliver a double-clicked .bookmark through the same
-    # application:openURLs: selector as a file:// URL, not openFiles:.
-    from fused_render.app import openurls_target_path, view_url_path
-
-    raw = "file:///tmp/My%20Note.bookmark"
-    assert openurls_target_path(raw) == view_url_path("/tmp/My Note.bookmark")
-
-
 def test_openurls_target_path_routes_plain_file_to_view():
     from fused_render.app import openurls_target_path, view_url_path
 

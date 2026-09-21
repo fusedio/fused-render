@@ -1119,8 +1119,8 @@ a.bookmark-name::after {
   background: var(--bg);
 }
 
-/* Save-to-disk button with no savable target (SB-8): greyed, inert, but still
-   hoverable so its explanatory title shows. */
+/* A disabled action (e.g. the Projects archive button while its request is in
+   flight): greyed, inert, but still hoverable so its title shows. */
 .icon-btn:disabled {
   opacity: 0.4;
   cursor: default;
