@@ -220,3 +220,142 @@ def test_the_page_asks_and_ranks_detection_below_an_explicit_choice():
     # selector doesn't have cannot be shown as selected.
     assert 'fetch("/api/prefs")' in html
     assert "MODELS.includes(m)" in html
+
+
+# ── THE WRITE HALF: `PUT /api/claude-sessions/defaults` ──────────────────────
+#
+# One value, two surfaces that both read AND write it (Akshil, 2026-09-21,
+# after testing #1281: "I don't see this being followed"). The Explorer
+# composer's pills for a chat with no session yet and the New task card's
+# Model / Thinking dropdowns are two editors of the same setting, so a pick on
+# either lands in `~/.claude/settings.json` — through the settings page's own
+# writer, `claude_config.preferences.main("patch", …)`, and not a second copy
+# of it.
+
+
+@pytest.fixture()
+def defaults_api(tmp_path, monkeypatch):
+    """The endpoint pair, with BOTH readers of `~/.claude` repointed at a
+    scratch dir.
+
+    There are two, deliberately, and they read different env vars: agent.py is
+    a template (it knows `CLAUDE_CONFIG_DIR` and imports nothing of
+    fused_render), while `claude_config.lib` is the app's own and knows
+    `CLAUDE_DIR`. Both are resolved at import, so the constants are what a test
+    has to move — missing one writes into the developer's real config."""
+    from fused_render.claude_config import lib
+    from fused_render.server.routers import claude_sessions, tasks
+
+    agent = _agent_in(tmp_path, monkeypatch)
+    monkeypatch.setattr(tasks, "_agent_module", lambda: agent)
+    monkeypatch.setattr(lib, "CLAUDE_DIR", agent.CLAUDE_DIR)
+    monkeypatch.setattr(lib, "SETTINGS_PATH",
+                        os.path.join(agent.CLAUDE_DIR, "settings.json"))
+    monkeypatch.setattr(lib, "_LOCK_PATH",
+                        os.path.join(str(tmp_path), ".config-ui.lock"))
+    # The config dir is a git repo the writer commits into. Kept off the
+    # developer's identity and global config, exactly as test_claude_config_api
+    # does.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Fixture Author")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "fixture@example.com")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Fixture Author")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "fixture@example.com")
+    return claude_sessions, agent
+
+
+def _put(mod, **body):
+    return mod.set_claude_defaults(mod.DefaultsPatch(**body), x_fused="1")
+
+
+def _settings(agent):
+    with open(os.path.join(agent.CLAUDE_DIR, "settings.json"), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def test_a_pick_writes_the_global_pair_and_reads_it_back(defaults_api):
+    mod, agent = defaults_api
+    _write_global(agent, model="fable", effortLevel="low")
+    assert _put(mod, model="opus") == {"model": "opus", "effort": "low"}
+    assert _settings(agent)["model"] == "opus"
+    # PER FIELD: moving the model left the effort exactly where it was, which
+    # is what keeps the two dropdowns two decisions.
+    assert _settings(agent)["effortLevel"] == "low"
+    assert _put(mod, effort="max") == {"model": "opus", "effort": "max"}
+    assert _settings(agent) == {"model": "opus", "effortLevel": "max"}
+
+
+def test_every_other_key_in_the_file_survives_the_write(defaults_api):
+    """The writer is the settings page's own — read-modify-write under the
+    config lock — so this file is edited, never replaced."""
+    mod, agent = defaults_api
+    _write_global(agent, model="fable", effortLevel="low",
+                  includeCoAuthoredBy=False, env={"FOO": "bar"})
+    _put(mod, model="haiku")
+    data = _settings(agent)
+    assert data["includeCoAuthoredBy"] is False
+    assert data["env"] == {"FOO": "bar"}
+    assert data["model"] == "haiku"
+
+
+def test_a_settings_file_that_does_not_exist_yet_is_created(defaults_api):
+    mod, agent = defaults_api
+    assert not os.path.exists(os.path.join(agent.CLAUDE_DIR, "settings.json"))
+    assert _put(mod, model="sonnet", effort="high") == {"model": "sonnet",
+                                                       "effort": "high"}
+    assert _settings(agent) == {"model": "sonnet", "effortLevel": "high"}
+
+
+def test_an_unknown_model_or_effort_is_refused_and_nothing_is_written(defaults_api):
+    """The vocabularies are the ones the pickers offer — a value no <select>
+    holds renders as a blank pill and is also what would reach the CLI."""
+    from fastapi import HTTPException
+
+    mod, agent = defaults_api
+    _write_global(agent, model="fable", effortLevel="low")
+    with pytest.raises(HTTPException) as bad_model:
+        _put(mod, model="gpt-42")
+    assert bad_model.value.status_code == 400
+    with pytest.raises(HTTPException) as bad_effort:
+        _put(mod, effort="turbo")
+    assert bad_effort.value.status_code == 400
+    assert _settings(agent) == {"model": "fable", "effortLevel": "low"}
+
+
+def test_the_settings_page_spellings_are_accepted_and_folded_on_the_way_out(
+        defaults_api):
+    """The catalog offers `opus[1m]`; the pills cannot say it. Writing it is
+    allowed — this is the same field that page edits — and it reads back as the
+    family name, which is what the pills can show."""
+    mod, agent = defaults_api
+    assert _put(mod, model="opus[1m]") == {"model": "opus", "effort": ""}
+    assert _settings(agent)["model"] == "opus[1m]"
+
+
+def test_an_empty_value_resets_the_key_rather_than_writing_one(defaults_api):
+    """"" is how the settings page clears a field: the key goes, and the CLI
+    resolves its own default again."""
+    mod, agent = defaults_api
+    _write_global(agent, model="fable", effortLevel="low")
+    assert _put(mod, model="") == {"model": "", "effort": "low"}
+    assert _settings(agent) == {"effortLevel": "low"}
+
+
+def test_a_write_without_the_fused_header_is_refused(defaults_api):
+    """D3: a custom request header forces a CORS preflight, so a foreign page
+    cannot fire this blind."""
+    mod, agent = defaults_api
+    _write_global(agent, model="fable", effortLevel="low")
+    out = mod.set_claude_defaults(mod.DefaultsPatch(model="opus"), x_fused=None)
+    assert out.status_code == 403
+    assert _settings(agent) == {"model": "fable", "effortLevel": "low"}
+
+
+def test_an_empty_body_changes_nothing_and_still_answers(defaults_api):
+    mod, agent = defaults_api
+    _write_global(agent, model="fable", effortLevel="low")
+    assert _put(mod) == {"model": "fable", "effort": "low"}
+    assert _settings(agent) == {"model": "fable", "effortLevel": "low"}

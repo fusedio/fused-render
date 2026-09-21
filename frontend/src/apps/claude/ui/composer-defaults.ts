@@ -3,8 +3,18 @@
 // 03 §F); the ranking is `curModel` / `curEffort` / `syncSelects`
 // (T:11901-11912, 12171-12176):
 //
-//   this chat's RECORD  >  URL param  >  detected (`defaults` action)
+//   this chat's RECORD  >  seed param  >  the GLOBAL pair / detected
 //                        >  prefs default  >  constant
+//
+// "seed param" and not "URL param" since 2026-09-21: a `?model=`/`?effort=`
+// counts only when a HOST stated it (ChatMount's props, into a per-mount memory
+// store) or when this chat already has a session. A bare one on the Explorer's
+// shell URL is the composer's own leftover from an earlier visit and no longer
+// speaks — see `seedCounts` in the body. The GLOBAL pair
+// (~/.claude/settings.json `model`/`effortLevel`, via
+// platform/lib/claude-defaults) sits at the detection rank for a chat with no
+// session, which is the same answer `agent._defaults` gives that case, only
+// fast and live.
 //
 // The record leads and it is the one rank that is not from T. It is what the
 // app itself wrote down for THIS conversation — every spawn, every send and
@@ -21,6 +31,13 @@
 // returns early with no `selectedOptions[0]`) and is also what reaches the CLI.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getPrefs, readChatSettings, recordChatSettings } from "@platform/lib/api";
+import {
+  getClaudeDefaults,
+  readClaudeDefaults,
+  setClaudeDefaults,
+  subscribeClaudeDefaults,
+  type ClaudeDefaults,
+} from "@platform/lib/claude-defaults";
 import { listedModelIn } from "@platform/lib/model-vocab";
 import { runAgent } from "../protocol/agent";
 import type { DefaultsResponse, PermissionMode } from "../protocol/types";
@@ -146,7 +163,11 @@ export interface ComposerDefaults {
   model: string;
   effort: string;
   permission: PermissionMode;
-  /** The pane param AND this chat's record — never localStorage (03 §F).
+  /** The pane param AND this chat's record — never localStorage (03 §F) — or,
+   *  for a chat with no session and no host seed, the GLOBAL pair itself
+   *  (2026-09-21): there is no conversation to record against, so the pick is a
+   *  statement about what this machine opens next, and it goes to the one file
+   *  that holds that. See `pickGlobal` in the body.
    *
    *  The param alone was the whole of it, and it is not persistence: it dies
    *  with the address bar, so a pick was lost on the next open and detection
@@ -193,6 +214,7 @@ export function useComposerDefaults(
   agentDir: string | null,
   file: string | null,
   params: ParamsStore,
+  hostSeeded = false,
 ): ComposerDefaults {
   const snapshot = useChatParams(params);
   const [detected, setDetected] = useState<{ model: string; effort: string }>({
@@ -247,6 +269,52 @@ export function useComposerDefaults(
   // remembered here and wins over the read's copy of it; cleared when a new
   // read starts, because a new read is about a new conversation.
   const pickedSinceRead = useRef<{ model?: string; effort?: string }>({});
+
+  // ── THE GLOBAL PAIR — the answer for a chat that has no conversation yet ──
+  //
+  // `~/.claude/settings.json`'s `model` / `effortLevel`, read (and written)
+  // through `platform/lib/claude-defaults`, which is the single home the New
+  // task card shares. It is the SAME answer the slow `defaults` read gives a
+  // sessionless chat — `agent._global_defaults` is literally what that action
+  // falls through to now — but it arrives off one JSON endpoint in
+  // milliseconds instead of a subprocess in seconds, and it MOVES: another
+  // surface changing it has to reach a composer that is already open.
+  //
+  // Consulted only while this chat has no session. A conversation that exists
+  // answers for itself (record, then its own transcript) and the global must
+  // not speak over it.
+  const [glob, setGlob] = useState<ClaudeDefaults>(
+    () => getClaudeDefaults() ?? { model: "", effort: "" },
+  );
+  // Whether this chat's own read has ANSWERED, for the same reason
+  // `recordReady` exists: a pill must not paint a constant it is about to
+  // replace. A document that has already asked once (another composer, the New
+  // task card) starts settled, so the second surface paints on its first render.
+  const [globalReady, setGlobalReady] = useState(() => getClaudeDefaults() !== null);
+  useEffect(() => {
+    if (sessionId) {
+      // A conversation that exists answers for itself. Nothing here is waited
+      // on, and nothing here speaks.
+      setGlobalReady(true);
+      return;
+    }
+    let live = true;
+    const off = subscribeClaudeDefaults(setGlob);
+    // Always re-asked on open, never served purely from the module cache: this
+    // is the "opening either surface shows the current value" half of the
+    // contract, and the settings page can have written the file since.
+    void readClaudeDefaults()
+      .then((d) => {
+        if (live) setGlob(d);
+      })
+      .finally(() => {
+        if (live) setGlobalReady(true);
+      });
+    return () => {
+      live = false;
+      off();
+    };
+  }, [sessionId]);
 
   // ── THE FAST READ: this chat's record, straight off the store ─────────────
   //
@@ -387,13 +455,49 @@ export function useComposerDefaults(
     };
   }, []);
 
+  // ── WHEN A `?model=`/`?effort=` STILL COUNTS ──────────────────────────────
+  //
+  // The params are a SEED, and the question this answers is WHOSE seed.
+  //
+  //   * A HOST STATED IT — `ChatMount`'s `model`/`effort` props, written once
+  //     into a per-mount MEMORY store: the Tasks side peek and the cards wall
+  //     handing over the task's own stored setting. That is a real statement
+  //     about a real conversation (a task booked and not yet run), it is the
+  //     whole reason those props exist (Akshil, 2026-09-18, "the values there
+  //     were different"), and it keeps outranking everything but this chat's
+  //     own record.
+  //
+  //   * NOBODY DID — a bare `?model=opus&effort=high` on the Explorer's shell
+  //     URL. That is not a seed at all: it is the composer's OWN pick from some
+  //     earlier visit, which used to be written straight into the address bar
+  //     and then read back as if a host had asked for it. It is exactly the bug
+  //     in Akshil's screenshot (2026-09-21) — the composer showing Opus / high
+  //     off a stale URL while the New task card showed the real global pair —
+  //     so for a chat with no session and no host seed the params no longer
+  //     speak, and a pick no longer writes them (see `setModel` below).
+  //
+  // A chat that HAS a session is unchanged either way: its record leads, and
+  // the params rank under it exactly as they always have.
+  const seedCounts = !!sessionId || hostSeeded;
+  const paramModel = seedCounts ? snapshot.model : "";
+  const paramEffort = seedCounts ? snapshot.effort : "";
+  // The global pair rides in AT THE DETECTION RANK, and it is the same answer:
+  // `agent._defaults` for a chat with no session id IS `_global_defaults`. This
+  // is the fast copy of it, so the pills settle in milliseconds instead of
+  // seconds, and it is the copy that hears another surface's write.
+  const globModel = sessionId ? "" : glob.model;
+  const globEffort = sessionId ? "" : glob.effort;
   const model = resolveModel(
-    snapshot.model,
-    detected.model,
+    paramModel,
+    globModel || detected.model,
     pref,
     recorded.model,
   );
-  const effort = resolveEffort(snapshot.effort, detected.effort, recorded.effort);
+  const effort = resolveEffort(
+    paramEffort,
+    globEffort || detected.effort,
+    recorded.effort,
+  );
   const permission = resolvePermission(snapshot.permission);
 
   // ── WHEN A PILL MAY SHOW ITS VALUE ────────────────────────────────────────
@@ -411,13 +515,20 @@ export function useComposerDefaults(
   // An unlisted param is settled too, and deliberately: `resolveModel` folds it
   // to the constant rather than falling through, so nothing pending speaks for
   // that field either.
+  //
+  // THE GLOBAL READ IS A THIRD WAY TO SETTLE, and for a brand-new chat it is
+  // the usual one: it is fast, and it outranks both slow reads. A global that
+  // answers "" for a field settles nothing — the ranks below it are detection
+  // and the prefs, and those are still out.
   const recordAnswered = recordReady;
   const modelSettled =
     recordAnswered &&
-    (!!recorded.model || !!snapshot.model || (detectionReady && prefsReady));
+    (!!recorded.model || !!paramModel || !!globModel ||
+      (globalReady && detectionReady && prefsReady));
   const effortSettled =
     recordAnswered &&
-    (!!recorded.effort || !!snapshot.effort || detectionReady);
+    (!!recorded.effort || !!paramEffort || !!globEffort ||
+      (globalReady && detectionReady));
   const pillsReady = modelSettled && effortSettled;
 
   // A PICK IS A WRITE, not just a param. The param still moves — it is what the
@@ -441,27 +552,66 @@ export function useComposerDefaults(
     [sessionId],
   );
 
+  // A PICK ON A CHAT THAT DOES NOT EXIST YET IS A PICK OF THE GLOBAL VALUE
+  // (Akshil, 2026-09-21). There is no conversation to key a record on, and the
+  // address bar is not storage — it died with the tab, and while it lived it
+  // shadowed the very setting the New task card was showing. So the write goes
+  // to `~/.claude/settings.json`, the one home this pair has, and every other
+  // open surface hears it (`claude-defaults` announces it).
+  //
+  // NOT for a host-seeded mount: a peek on a task that has not run is showing
+  // that TASK's stored setting, and moving its pill is not a statement about
+  // every future chat on this machine. It keeps writing the param it always
+  // did, which is the memory store that mount owns.
+  //
+  // The stale param is CLEARED on the way, and only in the case that no longer
+  // reads it: a `?model=`/`?effort=` left in the URL by an older build would
+  // otherwise sit in every copied link saying something the app has stopped
+  // believing. `replace`, because removing our own leftovers is not a
+  // navigation the Back button should have to undo.
+  const globalPick = !sessionId && !hostSeeded;
+  const pickGlobal = useCallback(
+    (patch: { model?: string; effort?: string }) => {
+      setGlob((prev) => ({ ...prev, ...patch }));
+      params.set(
+        { model: null, effort: null },
+        { history: "replace" },
+      );
+      void setClaudeDefaults(patch);
+    },
+    [params],
+  );
+
   return useMemo(
     () => ({
       model,
       effort,
       permission,
       setModel: (value: string) => {
+        if (globalPick) {
+          pickGlobal({ model: value });
+          return;
+        }
         params.set({ model: value });
         record({ model: value });
       },
       setEffort: (value: string) => {
+        if (globalPick) {
+          pickGlobal({ effort: value });
+          return;
+        }
         params.set({ effort: value });
         record({ effort: value });
       },
       setPermission: (value: PermissionMode) =>
         params.set({ permission: value }),
-      ready: detectionReady && prefsReady && recordReady,
+      ready: detectionReady && prefsReady && recordReady && globalReady,
       pillsReady,
       modelSettled,
       effortSettled,
     }),
-    [model, effort, permission, params, record, detectionReady, prefsReady,
-     recordReady, pillsReady, modelSettled, effortSettled],
+    [model, effort, permission, params, record, globalPick, pickGlobal,
+     detectionReady, prefsReady, recordReady, globalReady, pillsReady,
+     modelSettled, effortSettled],
   );
 }

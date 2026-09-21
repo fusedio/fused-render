@@ -3451,6 +3451,23 @@ export function getTaskDefaults(): Promise<{ model: string; effort: string }> {
   return getJson<{ model: string; effort: string }>("/api/claude-sessions/defaults");
 }
 
+/** WRITE that same global pair — the New task card's dropdowns and the
+ *  composer's pills for a chat with no session yet are both EDITORS of it, not
+ *  just readers (Akshil, 2026-09-21). A field left out is left alone, so moving
+ *  one of the two cannot restate the other. Answers with what the file says
+ *  AFTER the write, which is not always what was asked for: the settings page's
+ *  vocabulary has spellings (`opus[1m]`) the pills read back as the family name.
+ *
+ *  Callers should go through `platform/lib/claude-defaults`, which is what tells
+ *  the other open surfaces about the change; this is the bare wire call. */
+export function putTaskDefaults(
+  patch: { model?: string; effort?: string },
+): Promise<{ model: string; effort: string }> {
+  return putJson<{ model: string; effort: string }>(
+    "/api/claude-sessions/defaults", patch,
+  );
+}
+
 export function getTasks(): Promise<{ tasks: Task[]; generation?: number }> {
   return getJson<{ tasks: Task[]; generation?: number }>("/api/tasks");
 }

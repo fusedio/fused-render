@@ -298,6 +298,12 @@ export function ChatMount(props: ChatMountProps) {
         compact={!!props.compact}
         peek={!!props.peek}
         params={props.paramsSource === "url" ? "url" : memory}
+        // WHOSE `?model=`/`?effort=` the composer is looking at. These two props
+        // are the only way a seed is ever STATED — everything else in that pair
+        // of params is the composer's own leftover — and a stated one keeps
+        // outranking the global pair for a chat that has no session yet
+        // (ui/composer-defaults `seedCounts`).
+        {...(props.model || props.effort ? { hostSeededSettings: true } : {})}
         {...(props.sessionId ? { initialSessionId: props.sessionId } : {})}
         {...(props.runId ? { initialRunId: props.runId } : {})}
         {...(props.initialAsk ? { initialAsk: props.initialAsk } : {})}

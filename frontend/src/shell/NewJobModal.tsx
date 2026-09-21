@@ -12,12 +12,14 @@
 // its own — only "Custom (cron)…" reveals one extra input.
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { shortTaskId } from "@platform/lib/task-id";
+import {
+  readClaudeDefaults, setClaudeDefaults, subscribeClaudeDefaults,
+} from "@platform/lib/claude-defaults";
 import { Modal } from "@platform/ui/modal/Modal";
 import {
   cancelScheduledMessage,
   getClaudeSessionFolders,
   getConfig,
-  getTaskDefaults,
   getTasks,
   listDir,
   rawUrl,
@@ -3145,7 +3147,7 @@ export default function NewJobModal({
     if (askedDefaults.current || (model && effort)) return;
     askedDefaults.current = true;
     let live = true;
-    getTaskDefaults().then(
+    readClaudeDefaults().then(
       (d) => {
         if (!live) return;
         setModel((m) => m || d.model);
@@ -3157,6 +3159,45 @@ export default function NewJobModal({
       live = false;
     };
   }, [model, effort]);
+  // WHICH OF THE PAIR THIS CARD TOOK FROM THE GLOBAL, rather than from a
+  // reopened draft or the entry being edited — captured on the first render,
+  // because that is the only moment the distinction is visible. Only those two
+  // may be moved underneath the reader by another surface's write below: a
+  // draft that chose Opus is a choice this card is holding, and a composer pill
+  // somewhere else must not overwrite it.
+  const tookGlobal = useRef<{ model: boolean; effort: boolean } | null>(null);
+  if (tookGlobal.current === null) tookGlobal.current = { model: !model, effort: !effort };
+  // ONE VALUE, TWO SURFACES (Akshil, 2026-09-21). This card's dropdowns and the
+  // Explorer composer's pills for a new chat are two editors of the SAME
+  // setting — `~/.claude/settings.json`'s `model`/`effortLevel`. So a pick here
+  // writes it, and a pick THERE arrives here, in this window and in every other
+  // tab, without a reload.
+  //
+  // NEW TASKS ONLY. Editing a stored entry is the analogue of a chat that
+  // already has a session: what that task runs with is a fact about that task,
+  // and changing it must not re-aim every future chat on the machine.
+  const globalEditor = !editing;
+  useEffect(() => {
+    if (!globalEditor) return;
+    return subscribeClaudeDefaults((d) => {
+      if (tookGlobal.current?.model && d.model) setModel(d.model);
+      if (tookGlobal.current?.effort && d.effort) setEffort(d.effort);
+    });
+  }, [globalEditor]);
+  const pickModel = useCallback(
+    (value: string) => {
+      setModel(value);
+      if (globalEditor) void setClaudeDefaults({ model: value });
+    },
+    [globalEditor],
+  );
+  const pickEffort = useCallback(
+    (value: string) => {
+      setEffort(value);
+      if (globalEditor) void setClaudeDefaults({ effort: value });
+    },
+    [globalEditor],
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
@@ -5544,7 +5585,7 @@ export default function NewJobModal({
                 // an unrecognised stored value selectable instead of silently
                 // resetting the task to the default on the next edit.
                 options={taskRunOptions(TASK_MODELS, model)}
-                onPick={setModel}
+                onPick={pickModel}
               />
             </div>
             <div className="field">
@@ -5558,7 +5599,7 @@ export default function NewJobModal({
                 ariaLabel="Thinking"
                 value={taskRunLabel(TASK_EFFORTS, effort)}
                 options={taskRunOptions(TASK_EFFORTS, effort)}
-                onPick={setEffort}
+                onPick={pickEffort}
               />
             </div>
           </div>
