@@ -303,7 +303,7 @@ def test_keep_subdirs_drops_skip_dirs_ignored_and_mount_paths(tmp_path):
 
 # -- a whole run ---------------------------------------------------------------
 
-def _run(cfg, root, full=False, run_name="run"):
+def _run(cfg, root, full=False, run_name="run", hint=None):
     """Write and execute a run spec exactly as `runner.start` would.
 
     `runner.start` canonicalizes the root before it ever reaches spec.json
@@ -313,12 +313,19 @@ def _run(cfg, root, full=False, run_name="run"):
     spelling while everything the walk discovers underneath it is `norm`ed
     to forward slashes by `scan_dir_once` — a corpus split across two forms
     that then makes `load_dir_cache`'s prefix match miss every child on the
-    very next incremental run."""
+    very next incremental run.
+
+    `hint`, when given, is the `{"forced": [...], "subtrees": [...]}` shape
+    `runner.start` writes for a caller-supplied hint (SPEC-scan-cost.md part
+    2) — passed straight through into spec.json the same way it would be."""
     run_dir = os.path.join(cfg.runs_dir, run_name)
     os.makedirs(run_dir, exist_ok=True)
+    spec = {"root": canonical_root(root), "full": full, "started": 0,
+           "config": cfg.to_dict()}
+    if hint is not None:
+        spec["hint"] = hint
     with open(os.path.join(run_dir, "spec.json"), "w") as f:
-        json.dump({"root": canonical_root(root), "full": full, "started": 0,
-                   "config": cfg.to_dict()}, f)
+        json.dump(spec, f)
     run_scan(run_dir)
     return run_dir
 
@@ -620,6 +627,170 @@ def test_a_hint_that_explodes_fails_the_run_rather_than_scanning_full(
     for part in partition_files(cfg):
         paths += pq.read_table(part).column("path").to_pylist()
     assert sorted(paths) == sorted([_p(src / "a.txt"), _p(src / "sub" / "b.md")])
+
+
+# -- a caller-supplied hint (SPEC-scan-cost.md part 2: the watcher already
+# knows what changed, in-process, with no journal replay needed) ------------
+
+def test_a_supplied_hint_takes_the_fast_path_without_asking_the_journal(
+        tmp_path, monkeypatch):
+    """The watcher has strictly better information than the fsevents journal,
+    for free (SPEC-scan-cost.md part 2) -- a hint it supplies must reuse the
+    same fast-path walker `_run_fsevents` already uses (see
+    test_the_fsevents_path_does_not_walk_into_a_package) but WITHOUT paying
+    for fsevents.hint()'s journal replay at all."""
+    from fused_render.index import fsevents
+
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    cfg = _cfg(tmp_path, ignore=["node_modules"])
+    _run(cfg, str(src))  # seed a dir cache -- a hinted scan needs one (trap a)
+
+    (src / "sub" / "new.txt").write_text("n", encoding="utf-8")
+    asked = []
+    monkeypatch.setattr(fsevents, "hint",
+                        lambda _cfg, _root: (asked.append(_root), None)[1])
+
+    run_dir = _run(cfg, str(src), run_name="run2",
+                   hint={"forced": [_p(src / "sub")], "subtrees": []})
+    assert asked == [], "a supplied hint must not also replay the journal"
+    end = _summary(run_dir)
+    assert end["msg"] == "complete", end.get("error")
+    msgs = [e.get("msg") for e in _events(run_dir)]
+    assert any((m or "").startswith("scanning (watcher hint") for m in msgs)
+    part = os.path.join(cfg.files_dir, read_manifest(cfg)["partitions"][0]["file"])
+    assert _p(src / "sub" / "new.txt") in \
+        pq.read_table(part).column("path").to_pylist()
+
+
+def test_a_supplied_hint_falls_back_to_a_normal_scan_with_no_dir_cache(
+        tmp_path, monkeypatch):
+    """Trap (a): a hint only tells the fast path what to VISIT -- everything
+    else survives because `_run_fsevents` carries every cached dir it did not
+    visit forward as-is. With NO dir cache there is nothing to carry forward,
+    so a hinted run must fall back to a normal walk rather than silently
+    producing a store that only has the hinted dirs' rows.
+
+    `load_dir_cache` is forced empty directly (rather than relying on a fresh
+    root, which would also trip the separate "no applied fingerprint" full
+    rescan and prove nothing about THIS trap specifically)."""
+    import fused_render.index.scan as scan_mod
+    from fused_render.index import fsevents
+
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    cfg = _cfg(tmp_path, ignore=["node_modules"])
+    _run(cfg, str(src))  # writes the applied-ignore fingerprint
+    monkeypatch.setattr(scan_mod, "load_dir_cache", lambda *a, **k: {})
+    asked = []
+    monkeypatch.setattr(fsevents, "hint",
+                        lambda _cfg, _root: (asked.append(_root), None)[1])
+
+    run_dir = _run(cfg, str(src), run_name="run2",
+                   hint={"forced": [_p(src / "sub")], "subtrees": []})
+    assert asked == [], "an empty-cache hinted run must not replay the journal either"
+    end = _summary(run_dir)
+    assert end["msg"] == "complete", end.get("error")
+    assert "scanning (full)" in [e.get("msg") for e in _events(run_dir)]
+    paths = []
+    for part in partition_files(cfg):
+        paths += pq.read_table(part).column("path").to_pylist()
+    # everything, not just the hinted dir's row -- a.txt sits directly under
+    # the root, outside the hint entirely, and would be silently dropped by
+    # a naive "just take the fast path" implementation
+    assert sorted(paths) == sorted([_p(src / "a.txt"), _p(src / "sub" / "b.md")])
+
+
+def test_a_supplied_hint_does_not_advance_the_fsevents_cursor(
+        tmp_path, monkeypatch):
+    """Trap (c): only a hint that came from REPLAYING the journal may advance
+    the saved cursor (fsevents.save_state) -- a caller-supplied hint never
+    replayed it, so stamping the cursor forward here would make a LATER
+    journal-based scan think everything between the old cursor and "now" was
+    already accounted for, when only the caller's specific dirs were."""
+    from fused_render.index import fsevents
+
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    cfg = _cfg(tmp_path, ignore=["node_modules"])
+    _run(cfg, str(src))
+
+    saved = []
+    monkeypatch.setattr(fsevents, "save_state",
+                        lambda *a, **k: saved.append(a))
+    # current_id/device_uuid must still look real so this exercises the
+    # "supplied, so don't stamp" branch specifically, not just "there was
+    # nothing to stamp because this isn't macOS".
+    monkeypatch.setattr(fsevents, "current_id", lambda: 42)
+    monkeypatch.setattr(fsevents, "device_uuid", lambda _root: "uuid-1")
+
+    run_dir = _run(cfg, str(src), run_name="run2",
+                   hint={"forced": [_p(src / "sub")], "subtrees": []})
+    assert _summary(run_dir)["msg"] == "complete", _summary(run_dir).get("error")
+    assert saved == [], "a watcher-supplied hint must not stamp the fsevents cursor"
+
+
+def test_a_journal_derived_hint_still_advances_the_fsevents_cursor(
+        tmp_path, monkeypatch):
+    """Companion to the test above: the guard added there must not also break
+    the existing, safe case -- a hint that DID come from fsevents.hint()'s
+    own journal replay still needs its cursor advanced, or every later scan
+    replays the same history forever."""
+    from fused_render.index import fsevents
+
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    cfg = _cfg(tmp_path, ignore=["node_modules"])
+    _run(cfg, str(src))
+
+    saved = []
+    monkeypatch.setattr(fsevents, "save_state",
+                        lambda *a, **k: saved.append(a))
+    monkeypatch.setattr(fsevents, "current_id", lambda: 42)
+    monkeypatch.setattr(fsevents, "device_uuid", lambda _root: "uuid-1")
+    monkeypatch.setattr(fsevents, "hint",
+                        lambda _cfg, _root: ([_p(src / "sub")], []))
+
+    run_dir = _run(cfg, str(src), run_name="run2")
+    assert _summary(run_dir)["msg"] == "complete", _summary(run_dir).get("error")
+    assert len(saved) == 1
+
+
+def test_a_supplied_hint_works_with_no_fsevents_state_at_all(
+        tmp_path, monkeypatch):
+    """Trap (d): fsevents is macOS-only -- current_id()/device_uuid() answer
+    None on every other platform (fsevents.py's `_libs()`). A supplied hint
+    must not depend on either: it only reuses `_run_fsevents`'s WALKER, so
+    the fast path must still work with no fsevents state to consult at all,
+    exactly as it would have to on Windows/Linux."""
+    from fused_render.index import fsevents
+
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    cfg = _cfg(tmp_path, ignore=["node_modules"])
+    _run(cfg, str(src))
+    (src / "sub" / "new.txt").write_text("n", encoding="utf-8")
+
+    monkeypatch.setattr(fsevents, "current_id", lambda: None)
+    monkeypatch.setattr(fsevents, "device_uuid", lambda _root: None)
+
+    def _must_not_be_called(*a, **k):
+        raise AssertionError("must not consult the journal off darwin either")
+
+    monkeypatch.setattr(fsevents, "hint", _must_not_be_called)
+
+    run_dir = _run(cfg, str(src), run_name="run2",
+                   hint={"forced": [_p(src / "sub")], "subtrees": []})
+    end = _summary(run_dir)
+    assert end["msg"] == "complete", end.get("error")
+    part = os.path.join(cfg.files_dir, read_manifest(cfg)["partitions"][0]["file"])
+    assert _p(src / "sub" / "new.txt") in \
+        pq.read_table(part).column("path").to_pylist()
 
 
 def test_a_cancelled_run_leaves_the_index_untouched(tmp_path):
