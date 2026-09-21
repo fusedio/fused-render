@@ -296,12 +296,27 @@ export function failingCount(checks: AppCheck[]): number {
  *  app_doctor.py's `_repo_health_check`, which folds all three into one
  *  `failing_bits` list rather than three separate rows. */
 
-/** Origin is ahead of the local branch by a confirmed, nonzero count — the
- *  one condition worth a "Pull" button. `behind` is `null`/`undefined`
- *  until the async fetch resolves (or forever, with no remote to compare
- *  against), and `0` reads as confirmed up to date — neither shows Pull. */
+/** Origin is ahead of the local branch by a confirmed, nonzero count AND a
+ *  Pull would actually succeed — the only condition worth a "Pull" button
+ *  (B1, FIXES-round-1.md). `behind` is `null`/`undefined` until the async
+ *  fetch resolves (or forever, with no remote to compare against), and `0`
+ *  reads as confirmed up to date — neither shows Pull. Even a confirmed
+ *  `behind > 0` is not enough on its own: `git_upstream.update_repo`'s
+ *  preflight hard-refuses off the default branch (`not-default`) or over a
+ *  dirty tree (`dirty`), so this also requires `onDefault`/`clean` to both
+ *  be confirmed `true` — matching `RepoUpdatesDock`'s `on_default` gate for
+ *  its own Update action. When Pull isn't offered for either reason, the
+ *  row's own `detail` text says why (server-side `_repo_health_advice`) —
+ *  this function only decides whether the BUTTON renders, not whether the
+ *  user finds out. */
 export function showsPullAction(check: AppCheck): boolean {
-  return check.id === "git" && !!check.behind && check.behind > 0;
+  return (
+    check.id === "git" &&
+    !!check.behind &&
+    check.behind > 0 &&
+    check.onDefault === true &&
+    check.clean === true
+  );
 }
 
 /** The row checked a real, readable git repository — "Open in git" opens
