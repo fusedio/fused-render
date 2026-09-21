@@ -1381,8 +1381,10 @@ def _fs_rename(body: dict, x_fused: str | None, *, settle: bool = True):
             # rewrote transcripts on disk, but nothing the tasks watcher ticks
             # on changed — no registry row, no live transcript — so the Tasks
             # listing and every chat landing kept the old folder's rows until
-            # a reload. One bump, no keys: the listing feed refetches whole.
-            tasks_watch.notify()
+            # a reload. `notify_all`, not `notify()`: the `ensure` branch names
+            # no session ids, and a bump with no keys is one the client skips
+            # (it waited for the 20 s floor — "took 10–15 seconds").
+            tasks_watch.notify_all()
         except Exception:
             # The rename itself is done and must answer OK; the chats not
             # following is worth a line in the log, not a failed move.
