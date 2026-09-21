@@ -331,3 +331,35 @@ overlaps the Claude composer.
     `TerminalDock.test.tsx` (documented in that file's own comments): the initial
     `create()` call itself has to be wrapped in `act()`, not just the click, because the
     subscription is registered in a passive effect that only flushes inside `act()`.
+- **Task 6 done and committed** (`Terminal: reap sessions on shutdown, restart on
+  exit`). The server-side shutdown wiring itself was already front-loaded into Task 3's
+  commit (see the note above); this task added the one thing that was still missing —
+  `tests/test_pty_session.py::test_shutdown_all_reaps_every_live_session`, two
+  long-lived `/bin/sh` sessions (no self-terminating command, so the hook has to be
+  what kills them) run through `registry.shutdown_all()`, asserting both `not alive`,
+  both have an `exit_code`, and — the actual "no orphan" check — `os.kill(pid, 0)`
+  raises `ProcessLookupError` for both pids afterward (proving the child was `wait()`ed,
+  not merely signalled; the reader thread's `_read_loop` calls `self.proc.wait()`
+  before exiting, and `shutdown_all` joins that thread).
+  - `TerminalDrawer.tsx` now tracks an `exitCode: number | null | undefined` state
+    (`undefined` = alive), wired to `TerminalView`'s `onExit` prop. On exit it renders
+    a `.term-drawer-exit` status line ("Process exited (N) — press Enter to start a new
+    shell") as a flex sibling BELOW `.term-view`, not an overlay on top of it — the
+    dead terminal's last frame stays fully visible rather than getting dimmed or
+    covered. A `document`-level `keydown` listener, installed only while `exitCode !==
+    undefined`, intercepts Enter to call `createTerminalSession` again and reset state;
+    it is never registered while a session is alive, so ordinary typing inside a live
+    shell (including a literal Enter keystroke sent to the pty) is never touched by it.
+  - No new frontend unit test for this behavior: `TerminalDrawer.tsx` was already
+    outside this plan's frontend test scope (Task 5's Decisions note drawer geometry is
+    a "to verify by hand" item, and this is the same component), so this reuses that
+    same call rather than inventing a react-test-renderer harness for a component whose
+    whole job is coordinating two other untested/hard-to-test pieces (`TerminalView`'s
+    canvas, `document`-level key handling). Verified by the typecheck + boundary-check +
+    targeted `bun test` + `bun run build` combination that already covers this file's
+    compile correctness; the actual "Enter restarts the shell" behavior needs a live
+    browser pass — added to the to-verify list below.
+  - **To verify by hand** (added to the plan's existing list): typing `exit` in the
+    drawer shows the exit line without covering the last frame; pressing Enter starts a
+    fresh shell in the same drawer; the drag handle actually resizes and the height
+    survives a reload.

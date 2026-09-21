@@ -99,6 +99,37 @@ def test_cap_refuses_a_ninth_session(registry, tmp_path, monkeypatch):
         registry.create()
 
 
+def test_shutdown_all_reaps_every_live_session(registry, tmp_path, monkeypatch):
+    """Task 6: the shutdown hook (`fused_render/server/app.py`'s on_shutdown,
+    wired in Task 3) calls `REGISTRY.shutdown_all()` so a server restart never
+    leaves an orphaned shell running. Two long-lived sessions here (`/bin/sh`
+    with no exit command — nothing to make them die on their own) prove the
+    hook does the reaping itself rather than the test getting lucky with
+    sessions that were about to exit anyway."""
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh"]))
+    session_a = registry.create()
+    session_b = registry.create()
+    assert _wait_until(lambda: len(session_a.scrollback()) > 0)
+    assert _wait_until(lambda: len(session_b.scrollback()) > 0)
+    assert session_a.alive and session_b.alive
+
+    pid_a, pid_b = session_a.proc.pid, session_b.proc.pid
+    registry.shutdown_all()
+
+    assert not session_a.alive
+    assert not session_b.alive
+    assert session_a.exit_code is not None
+    assert session_b.exit_code is not None
+    # No orphan: `shutdown_all` already `join()`ed each reader thread above,
+    # which only returns once the child's exit has been reaped — so by now
+    # the pid must be gone from the process table entirely, not merely
+    # signalled.
+    for pid in (pid_a, pid_b):
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+
+
 def test_popen_kwargs_are_fork_safe(registry, tmp_path, monkeypatch):
     """The regression guard for the SIGSEGV: a Popen with cwd=,
     start_new_session=True, or close_fds=True (the default) takes the fork

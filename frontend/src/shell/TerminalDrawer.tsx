@@ -25,8 +25,13 @@
 // holds it. Only the visible `TerminalView` (and the xterm/session pair it
 // owns) mounts and unmounts with `open`.
 //
-// EXIT/RESTART UI IS TASK 6, not this file yet: `TerminalView`'s `onExit`
-// prop already exists for it, just unwired here for now.
+// EXIT/RESTART (Task 6): `TerminalView`'s `onExit` fires once, when the pty's
+// child process dies (server-side `{"exit": code}` frame). Rather than
+// leaving the last frame of a dead shell sitting there inert, this renders a
+// dim status line under it and restarts on Enter — a fresh
+// `createTerminalSession` call, a fresh id, which changes `TerminalView`'s
+// `id` prop and therefore remounts a brand new xterm/session pair (see that
+// component's own effect dependency on `id`).
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 
 import TerminalView from "@platform/ui/TerminalView";
@@ -76,6 +81,10 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   const open = useTerminalDockOpen();
   const [height, setHeight] = useState(() => loadState().height);
   const [sessionId, setSessionId] = useState<string | null>(() => loadState().sessionId);
+  // `undefined` = the current session is alive (or none exists yet);
+  // otherwise the exit code the server reported (`null` for "no code", the
+  // same shape `TerminalView`'s `onExit` already carries).
+  const [exitCode, setExitCode] = useState<number | null | undefined>(undefined);
   const heightRef = useRef(height);
   heightRef.current = height;
   const drag = useRef<{ startY: number; startHeight: number } | null>(null);
@@ -100,6 +109,7 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
       }
       const id = await createTerminalSession(cwd ?? undefined);
       if (!cancelled) {
+        setExitCode(undefined); // a fresh session is alive until told otherwise
         setSessionId(id);
         saveState({ height: heightRef.current, sessionId: id });
       }
@@ -112,6 +122,22 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
     // (the whole point is that the shell keeps running when you navigate).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, sessionId]);
+
+  // While a session has exited, Enter starts a new one — the only key this
+  // drawer intercepts globally, and only in that state, so ordinary typing
+  // inside a live shell is never touched by this listener.
+  useEffect(() => {
+    if (exitCode === undefined) return;
+    function onKeyDown(e: KeyboardEvent): void {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      setExitCode(undefined);
+      setSessionId(null);
+      saveState({ height: heightRef.current, sessionId: null });
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [exitCode]);
 
   function onHandlePointerDown(e: PointerEvent<HTMLDivElement>): void {
     drag.current = { startY: e.clientY, startHeight: heightRef.current };
@@ -147,7 +173,12 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
         onPointerMove={onHandlePointerMove}
         onPointerUp={onHandlePointerUp}
       />
-      {sessionId !== null && <TerminalView id={sessionId} />}
+      {sessionId !== null && <TerminalView id={sessionId} onExit={setExitCode} />}
+      {exitCode !== undefined && (
+        <div className="term-drawer-exit">
+          {`Process exited (${exitCode ?? "unknown"}) — press Enter to start a new shell`}
+        </div>
+      )}
     </div>
   );
 }

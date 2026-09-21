@@ -190,6 +190,19 @@
   min-height: 0;
 }
 
+/* Task 6: the dead-shell status line, replacing what used to be an inert
+   black box once the child process exits. A flex sibling under `.term-view`
+   (not an overlay on top of it) — the frozen last frame of the dead terminal
+   stays fully visible above this line rather than getting dimmed or hidden
+   under it. */
+.term-drawer-exit {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  border-top: 1px solid var(--border);
+}
+
 /* ---- Activity card (SPEC §36) -------------------------------------------- */
 /* ONE card for work in progress: every long-running operation a page reported
    (.dl-row). A scheduled message's own run draws no row here at all (D661) —
