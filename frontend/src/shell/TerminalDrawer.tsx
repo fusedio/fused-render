@@ -104,6 +104,24 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   const heightRef = useRef(height);
   heightRef.current = height;
   const drag = useRef<{ startY: number; startHeight: number } | null>(null);
+  // Drag resize is coalesced to at most one `setHeight` per animation frame:
+  // uncoalesced, every single `pointermove` triggered a re-render -> layout
+  // -> `ResizeObserver` (TerminalView.tsx) -> `fit.fit()` -> `onResize` ->
+  // `session.resize()` -> a WebSocket frame -> the server's ioctl ->
+  // SIGWINCH -> a shell prompt redraw, dozens of times per second — that
+  // chain, not a missing CSS transition, is the visible flicker.
+  // `dragHeightRef` always holds the latest computed height synchronously,
+  // independent of React's render timing, so `onHandlePointerUp` can commit
+  // and persist the true final size even if the last scheduled frame hasn't
+  // run yet (pointerup can land in the same frame as the last pointermove).
+  const rafRef = useRef<number | null>(null);
+  const dragHeightRef = useRef(height);
+
+  useEffect(() => {
+    return () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (!open || sessionId !== null) return;
@@ -175,6 +193,7 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
 
   function onHandlePointerDown(e: PointerEvent<HTMLDivElement>): void {
     drag.current = { startY: e.clientY, startHeight: heightRef.current };
+    dragHeightRef.current = heightRef.current;
     e.currentTarget.setPointerCapture(e.pointerId);
   }
 
@@ -184,14 +203,28 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
     // the bottom of `#main`, so dragging UP (negative clientY delta) is what
     // grows it.
     const implied = drag.current.startHeight + (drag.current.startY - e.clientY);
-    setHeight(Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, implied)));
+    dragHeightRef.current = Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, implied));
+    if (rafRef.current === null) {
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null;
+        setHeight(dragHeightRef.current);
+      });
+    }
   }
 
   function onHandlePointerUp(e: PointerEvent<HTMLDivElement>): void {
     if (!drag.current) return;
     drag.current = null;
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    // Commit synchronously rather than trusting the last scheduled frame to
+    // have already landed — the drop can arrive in the same frame as the
+    // last pointermove, before that frame's rAF callback runs.
+    setHeight(dragHeightRef.current);
     e.currentTarget.releasePointerCapture(e.pointerId);
-    saveState({ height: heightRef.current, sessionId });
+    saveState({ height: dragHeightRef.current, sessionId });
   }
 
   if (!open) return null;
