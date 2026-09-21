@@ -88,7 +88,25 @@ export function TaskPeekFrame({
   // mount, none after.
   const [host, setHost] = useState<HTMLDivElement | null>(null);
 
-  if (!peekable) return <>{children}</>;
+  // OFF, THE SAME TWO ELEMENTS, WEARING NOTHING. The app page flips `peekable`
+  // every time the reader enters or leaves the Tasks tab, and a frame that
+  // rendered a bare fragment when off and a `div > div` when on gave React a
+  // different tree each time — it remounted the whole page under it, and with
+  // it the Overview's `keepMounted` iframe, whose live app state is the one
+  // thing that mode exists to keep (Bugbot, PR #1249). So the two wrappers
+  // are always there; off, they are `display: contents` shells with neutral
+  // names (styles/task-peek.css) that no peek selector can match, so a page
+  // with the feature off lays out exactly as it did — and the slot is null,
+  // so a Scheduled inside knows there is nowhere to put a panel.
+  if (!peekable) {
+    return (
+      <div className="peek-shell">
+        <div ref={frameRef} className="peek-shell-frame">
+          <PeekSlotContext.Provider value={null}>{children}</PeekSlotContext.Provider>
+        </div>
+      </div>
+    );
+  }
 
   // SCROLL, DON'T FOLD (Akshil, 2026-09-15). `data-floored` used to switch on
   // at the middle pane's floor only, and the row ladder folded marks on the way

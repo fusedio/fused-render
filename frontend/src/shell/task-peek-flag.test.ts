@@ -175,7 +175,9 @@ describe("the markup adds nothing when the feature is off", () => {
     // whole gate on the Tasks page, and the app page adds its own tab test.
     expect(PAGE).toContain("const peekable = peekOn;");
     expect(PAGE).toContain("if (!peekable) return page;");
-    expect(FRAME).toContain("if (!peekable) return <>{children}</>;");
+    expect(FRAME).toContain('<div className="peek-shell">');
+    // …and the OFF shells share no name with the peek's host, so no rule reaches them.
+    expect(FRAME).toContain('<div ref={frameRef} className="peek-shell-frame">');
     expect(read("AppPage.tsx")).toContain('const peekable = peekOn === true && tab === "tasks";');
     // Which also means no param-boundary claim from this page: the claim lives
     // in TaskPeek, and TaskPeek is inside the branch above.
@@ -557,7 +559,9 @@ describe("the one selected style, and the flag that gates it", () => {
     // feature down the wrapper does not exist and not one of these selectors
     // can match.
     expect(FRAME).toContain('<div className="tasks-peek-host" ref={setHost}>');
-    expect(FRAME).toContain("if (!peekable) return <>{children}</>;");
+    expect(FRAME).toContain('<div className="peek-shell">');
+    // …and the OFF shells share no name with the peek's host, so no rule reaches them.
+    expect(FRAME).toContain('<div ref={frameRef} className="peek-shell-frame">');
     expect(PAGE).toContain("if (!peekable) return page;");
     const rules = PEEK_CSS.split("}")
       .map((chunk) => chunk.slice(chunk.lastIndexOf("*/") + 1).split("{")[0] ?? "")

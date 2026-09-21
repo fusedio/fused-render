@@ -12,7 +12,7 @@ installDomShim();
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createElement, type ReactElement } from "react";
+import { createElement, useEffect, type ReactElement } from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 // Dynamic, AFTER the shim: a static import is hoisted above `installDomShim()`
@@ -83,7 +83,7 @@ describe("TaskPeekFrame", () => {
     uninstallMeasuring();
   });
 
-  it("off, renders its children bare: no host, no frame, no slot", () => {
+  it("off, renders the same two wrappers wearing neutral names: no host, no frame, no slot", () => {
     act(() => {
       box = create(
         createElement(TaskPeekFrame, { peekable: false, children: createElement(SlotReader) }),
@@ -96,6 +96,34 @@ describe("TaskPeekFrame", () => {
     ).toHaveLength(0);
     expect(box!.root.findByProps({ className: "page" })).toBeTruthy();
     expect(seenSlot).toBeNull();
+    // The shells ARE there — the same `div > div > Provider` shape the on
+    // branch has, so flipping `peekable` never remounts the page (Bugbot,
+    // PR #1249: the Overview's keepMounted iframe reloaded on every Tasks visit).
+    const shell = box!.root.findByProps({ className: "peek-shell" });
+    expect(shell.findByProps({ className: "peek-shell-frame" }).findByProps({ className: "page" })).toBeTruthy();
+  });
+
+  it("flipping `peekable` keeps the page mounted — the wrappers only change names", () => {
+    let mounts = 0;
+    function Counter() {
+      useEffect(() => {
+        mounts++;
+      }, []);
+      return createElement("p", { className: "page" }, "the page");
+    }
+    act(() => {
+      box = create(createElement(TaskPeekFrame, { peekable: false, children: createElement(Counter) }), {
+        createNodeMock: nodeMock,
+      });
+    });
+    act(() => {
+      box!.update(createElement(TaskPeekFrame, { peekable: true, children: createElement(Counter) }));
+    });
+    act(() => {
+      box!.update(createElement(TaskPeekFrame, { peekable: false, children: createElement(Counter) }));
+    });
+    expect(mounts).toBe(1);
+    expect(box!.root.findAllByProps({ className: "tasks-peek-host" })).toHaveLength(0);
   });
 
   it("on, wraps the page in the row + frame and hands the row to what is inside", () => {
