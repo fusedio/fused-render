@@ -3549,3 +3549,141 @@ are reported here, not fixed — fixing them is out of scope for the confirm-mod
 
 `.venv/bin/python -m pytest -q tests/test_git_view_renders.py tests/test_git_view.py tests/test_git_conflicts.py`:
 58 passed.
+
+### SPEC-scan-cost.md part 2 — the watcher supplies its own changed-dir hint
+
+Built on top of part 1 (the small-changed-set merge in `index/store.py`, already
+landed as `11434990f`). Part 2's ask: the scanner already has `_run_fsevents`
+(`index/scan.py`), which visits only an explicit `(forced, subtrees)` hint and
+otherwise derives one by replaying the FSEvents journal (`fsevents.hint()`, 5-17s,
+spuriously returns `None`). The live watcher (`index_watch.py`) and the app-mutation
+queue (`index_touch.py`) already observe exactly what changed, in process, with no
+replay needed — they just weren't passing that along.
+
+**`runner.start(cfg, root, hint=None)`** (already landed as `a3c496540`): serializes
+a supplied hint into `spec.json`. The join-check's correctness trap (a live run
+hinted with dirs A must not silently answer a request hinted with dirs B): picked
+the conservative "identical hint or nothing" rule over a subset check, explicitly
+rejecting the subset-check as more optimal but a wrong-subset-check being exactly
+the bug class the existing `ignore_sig` conservatism was written to avoid. When a
+hinted request supersedes a differently-hinted live run, the replacement inherits
+the UNION of both hints — the cancelled run's own hint dirs were never applied to
+the store (a cancelled worker never compacts), so dropping them would silently lose
+coverage.
+
+**`scan.py`'s `run_scan`** (already landed as `0de2affef`): a `hint_is_supplied`
+flag distinguishes a caller-supplied hint from a journal-derived one. A supplied
+hint skips spawning the journal-replay thread entirely; falls back to a full scan
+when there is no dir cache (trap a — a hint only names what to VISIT, and with
+nothing cached there's nothing to carry the rest forward from); and — this is the
+one most worth flagging for the next reader — `fsevents.save_state()` (which
+advances the journal cursor) is called ONLY for a journal-derived hint, never a
+supplied one (trap c). A supplied hint never replayed the journal, so stamping the
+cursor forward would tell a LATER journal-based scan that everything up to that
+point was accounted for, when only the caller's specific dirs were.
+
+**This session: the actual wiring** (`index_touch.py`, `index_watch.py`). Read
+`_run_fsevents`'s full body (`index/scan.py:628-707`) to answer the one open
+correctness question before writing any of this: does a `forced` (non-recursive)
+hint on a folder correctly cascade to a brand-new child subdirectory discovered
+under it? Confirmed yes — `stack.append((s2, True))` fires exactly when a
+discovered subdir `s2` is NOT already in the dir cache (line 682), i.e. a genuinely
+new subtree gets its own forced visit; an EXISTING cached subdir is left untouched
+(carried forward as-is by the tail reconciliation loop at line 689+), which is
+correct — nothing about it needs re-reading, and if it secretly did change too, the
+watcher would have noted IT separately as its own folder.
+
+That last clause is the one design decision the spec didn't spell out, and it drove
+most of this session's work: `RescanQueue._fire` (`index_touch.py`) already collapses
+several separately-pending folders down to one outermost scan root via
+`outermost_folders` (e.g. a flush of `{proj, proj/sub}` starts only `proj`). A hint
+of `[proj]` alone would silently miss `sub` — `sub` is neither named in the hint nor
+a brand-new subtree `_run_fsevents` would discover on its own, since it's already in
+the cache. **Fix**: the hint now carries every originally-noted folder a collapse
+absorbed, not just the representative root — `RescanQueue._fire` computes
+`members = [f for f in pending if f == folder or f.startswith(folder + "/")]` and
+hints all of them, keyed off a per-folder `hinted` bit that's ANDed across every
+`note()`/`note_folders()` call the folder received before firing (any `note()` in
+the mix — an app mutation, e.g. a rename needing a real recursive read of the new
+name's subtree — poisons the whole group back to an unhinted, full scan).
+
+The same information-loss shape existed one level up: `WatchLoop._flush`
+(`index_watch.py`) was ALSO pre-collapsing to `outermost_folders(pending)` before
+ever forwarding to `RescanQueue`, which threw away exactly the folders the fix above
+needs to see. Changed `_flush` to forward the raw observed-folder set (still capped
+by `MAX_FOLDERS` on the outermost count, for the same "pathological burst" reason as
+before) and let `RescanQueue` do its own collapse-with-hint-preservation. This is
+also where `~/a.txt`'s specific cost actually lived: `_folder_of("~/a.txt") == "~"`
+directly (no `_clamp_to_root` escalation needed — that path only fires for folders
+OUTSIDE root), and `outermost_folders` swallows any deeper pending folder into `{~}`
+whenever `~` itself is also pending in the same flush window. Before this session,
+`{~}` reaching `RescanQueue._start` meant an UNHINTED `runner.start(cfg, "~")` —
+the full journal-replay-driven incremental machinery over the whole home directory.
+After: `note_folders("~")` hints `forced=["~"]`, so `run_scan` skips the journal
+thread and `_run_fsevents` non-recursively re-lists `~` alone.
+
+Worth being explicit about what "expensive" meant here, since this is my own
+reasoning this session, not a number I measured: the spec's `dirs: 79188` figure is
+a cumulative walk+keep summary total, not directories actually re-listed by an
+unhinted incremental scan — the FSEvents fast path only visits what the journal
+names plus new subtrees. The actual cost an unhinted `~` scan pays is dominated by
+the journal replay itself (`fsevents._replay`, 5-17s per the existing code comment
+in `scan.py`, itself from an EARLIER measurement not this session's), not a literal
+79k-directory crawl. This session's fix removes that replay for a watcher-observed
+change; it does not change what an unhinted (journal-derived or full) scan costs.
+
+**hinted=False escape hatch**: `RescanQueue.note_folders`/`note_index_folders` gained
+a `hinted: bool = True` kwarg. Three `WatchLoop.forward({self.root})` call sites
+carry no real observed-dirs information at all and must NOT be hinted, or a forced
+non-recursive visit of just `root` would silently under-cover what they exist to
+catch:
+  - the burst-overflow branch of `_flush` (too many distinct folders to attribute to
+    anything narrower — almost none of them would be covered by hinting root alone);
+  - the watch-error-recovery forward in `_run_one_watch`'s except block (the watch
+    itself broke; nothing was observed, and only a real scan or journal replay
+    recovers what was missed);
+  - the periodic Syncthing-style backstop in `_maybe_periodic_rescan` (exists
+    specifically for changes this loop never observed — server was off, the kernel
+    dropped events — so there is nothing to hint).
+
+**Deviation from the spec worth flagging**: the spec's own text for part 2 doesn't
+explicitly call out the "collapse absorbs multiple folders" and "flush pre-collapses
+before forwarding" cases — it says the watcher "passes its observed dirs as forced"
+without spelling out what happens when `outermost_folders` merges several of them
+into one scan root first. Treated this as within the spec's stated intent (a hint
+that is silently incomplete for the exact multi-folder-burst case the watcher is
+built to handle would be a correctness regression, not a simplification), and chose
+the conservative "any unhinted member poisons the whole group" rule over trying to
+partially hint a mixed group — consistent with the same conservative posture the
+`runner.start` join-check comment already argues for.
+
+**Commit attribution deviation**: a system-reminder appeared mid-session (after the
+work described in the earlier `runner.start`/`scan.py` part of this entry, i.e.
+after `a3c496540`/`0de2affef`) stating new attribution text supersedes prior
+guidance: `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>`, replacing the
+original spec/harness text (`Claude Opus 5 (1M context) <noreply@anthropic.com>`).
+Used the newer line for every commit made after it appeared, per the reminder's own
+"this replaces… earlier attribution guidance" wording.
+
+**To verify** (cannot be done from here): the real end-to-end `~/a.txt` latency on
+the user's own running server — this session has no access to it, and `scripts/dev.sh`
+is explicitly the user's own to start/stop. Also worth an eyeball check once the
+branch is running for real: that a genuine `touch ~/a.txt` followed by a search for
+`a.txt` lands quickly, and that a burst mixing a root-level touch with a deep nested
+edit (the specific case `test_a_root_level_change_alongside_a_deep_one_forwards_both_not_just_the_root`
+pins at the policy level) still finds both changes.
+
+Test results (`.venv/bin/pytest`, this worktree's own venv — bare `pytest`/`python3`
+on PATH lack `pytest-xdist` and choke on this repo's `-n auto` addopt):
+
+`tests/test_index_touch.py`: 39 passed (after the hinted-forced-hint wiring), then
+39 passed again (after the `hinted=False` kwarg addition), final count after both:
+39 passed.
+`tests/test_index_watch.py`: 28 passed.
+`tests/test_index_scan.py`: 35 passed (part 2's earlier scan.py commit).
+`tests/test_index_runner.py`: 44 passed (part 2's earlier runner.py commit).
+Combined final run, `.venv/bin/pytest tests/test_index_touch.py tests/test_index_watch.py tests/test_index_scan.py tests/test_index_runner.py -q`:
+146 passed.
+
+Not run this session: the full suite (orchestrator's job, per the working rules —
+"run only the touched test files while iterating").
