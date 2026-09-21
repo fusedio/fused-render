@@ -1394,7 +1394,7 @@ a.bookmark-name::after {
   text-decoration: line-through;
 }
 
-/* The "+ New app" row (D489) closes the list: a row in the desk's own metrics,
+/* The "+ New app" row (D489) opens the list: a row in the desk's own metrics,
    muted so it reads as a door rather than another app, full colour on hover. */
 .current-app-new {
   color: var(--fg-muted);

@@ -817,7 +817,9 @@ export default function CurrentAppsSection() {
           <span className="sidebar-heading-chevron" aria-hidden="true" />
           {collapsed && <span className="sidebar-count-chip">{apps.length}</span>}
         </div>
-        {!collapsed && apps.map(render)}
+        {/* The composer trigger sits ABOVE the app rows — the first thing
+            in the list, where a new app will also land (new apps take the
+            top sequence). Replaces the heading + reverted in #1303. */}
         {!collapsed && (
           <div
             className="bookmark-row current-app-row current-app-new"
@@ -838,6 +840,7 @@ export default function CurrentAppsSection() {
             <span className="bookmark-name">New app</span>
           </div>
         )}
+        {!collapsed && apps.map(render)}
       </div>
       {menu && (
         <ContextMenu
