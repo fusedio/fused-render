@@ -18,12 +18,14 @@ import threading
 import time
 
 from fused_render.index.ignore import IgnoreRules, default_ignore, norm
+from fused_render.server import index_touch
 from fused_render.server.index_watch import (
     BACKOFF_SCHEDULE_S,
     MAX_FOLDERS,
     WATCH_FLUSH_FLOOR_S,
     WATCH_RESCAN_S,
     WatchLoop,
+    _make_loop,
     make_dropped,
 )
 
@@ -340,6 +342,37 @@ def test_flipping_the_gate_on_mid_run_opens_the_watch_on_the_next_poll():
     loop = f.loop("/home/me", source, stop_event=Stop())
     loop.run()
     assert opened == ["/home/me"]
+
+
+# ----------------------------------------------- the real forward callable
+
+
+def test_a_real_flush_actually_reaches_the_rescan_queue(tmp_path, monkeypatch):
+    """`_make_loop` wires `forward=index_touch.note_index_folders`, the REAL
+    callable — not a fake with a friendlier shape. `note_index_folders` is
+    `def note_index_folders(*folders: str | None)`; a `WatchLoop` that calls
+    `self.forward({self.root})` hands it ONE positional argument holding a
+    set, not the folders unpacked, so `note_index_folders` would filter that
+    set out (it isn't a `str`) and queue nothing. This test crosses the real
+    seam between `WatchLoop` and `index_touch` instead of stopping at a fake
+    whose `forward(folders)` accepts an iterable and can't catch the bug."""
+    monkeypatch.setattr(index_touch, "_queue", index_touch.RescanQueue(
+        start=lambda root: None, live_run_covers=lambda root: False,
+        blocked=lambda root: False, last_scan=lambda root: None,
+        schedule=lambda delay, fn: None, now=time.time))
+    monkeypatch.setattr("fused_render.shell.index_gate.indexing_allowed",
+                        lambda: True)
+
+    root = str(tmp_path)
+    stop = threading.Event()
+    loop = _make_loop(root, stop)
+    loop.open_source = lambda r: iter([{_added(os.path.join(root, "a.txt"))}])
+    loop.flush_floor_s = 0.0
+    loop._run_one_watch()
+
+    assert index_touch._queue._pending, (
+        "a real flush must actually queue the folder with RescanQueue; "
+        "got an empty _pending, meaning the forward call queued nothing")
 
 
 # --------------------------------------------------------- real filesystem

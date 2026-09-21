@@ -294,7 +294,15 @@ def _make_loop(root: str, stop_event: threading.Event) -> WatchLoop:
         root,
         open_source=lambda r: _real_open_source(r, stop_event),
         dropped=make_dropped(load_config().rules, runner._mounts_dir()),
-        forward=note_index_folders,
+        # `WatchLoop` calls `forward(folders)` with a single iterable
+        # (`self.forward({self.root})`, `self.forward(set(outermost))`).
+        # `note_index_folders(*folders)` wants those folders UNPACKED as
+        # separate positional arguments — handing it the set itself as one
+        # argument fails its `isinstance(f, str)` filter and queues nothing
+        # (see tests/test_index_watch.py::
+        # test_a_real_flush_actually_reaches_the_rescan_queue). Unpack here,
+        # at the one seam where the real callable's shape has to match.
+        forward=lambda folders: note_index_folders(*folders),
         now=time.time,
         last_scan=lambda r: runner.last_scan(load_config(), r),
         live_run_covers=lambda r: _scan_in_flight(load_config(), r),
