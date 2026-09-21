@@ -353,6 +353,28 @@ def test_a_never_scanned_root_is_rescanned_on_an_idle_tick():
     assert f.forwarded == [{"/home/me"}]
 
 
+def test_a_refused_periodic_rescan_does_not_refire_every_idle_tick():
+    """`_maybe_periodic_rescan` gates on `last_scan(root)`, but `last_scan`
+    only records a scan that actually STARTED. If `RescanQueue._fire`
+    refuses the folder (ignored, foreign device) or `runner.start` declines,
+    `last_scan` is never written — so gating on it alone means the loop
+    forwards `{root}` again on every idle tick forever, once per 5s tick,
+    for as long as the loop is idle. The loop must remember its OWN last
+    forward instead of depending on a side effect it cannot observe."""
+    f = Fake()  # no last_scan entry, and it never gets one (simulates a
+                # forward that RescanQueue refused or declined)
+
+    def source(root):
+        for _ in range(5):
+            yield set()  # five idle ticks in a row, none of them advance
+
+    loop = f.loop("/home/me", source)
+    loop._run_one_watch()
+    assert f.forwarded == [{"/home/me"}], (
+        "a refused/declined forward must not be repeated on every idle "
+        "tick within the rescan floor")
+
+
 # ----------------------------------------------------------------- the gate
 
 

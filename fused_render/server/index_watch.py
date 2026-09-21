@@ -151,6 +151,10 @@ class WatchLoop:
         self.gate_poll_s = gate_poll_s
         self.backoff_schedule = backoff_schedule
         self._backoff_i = 0
+        # The loop's OWN memory of when it last asked for a periodic
+        # rescan, independent of whether that ask ever turned into a
+        # recorded scan (see `_maybe_periodic_rescan`).
+        self._last_periodic_rescan_at: float | None = None
 
     def run(self) -> None:
         """Runs until `stop_event` is set. Never raises — every failure
@@ -239,11 +243,25 @@ class WatchLoop:
             self.forward(set(outermost))
 
     def _maybe_periodic_rescan(self, now: float) -> None:
+        """The Syncthing-style backstop (spec §3.1.9). Gating on
+        `last_scan(root)` alone is not enough: `last_scan` only records a
+        scan that actually STARTED, and `RescanQueue._fire` can refuse the
+        folder (ignored, foreign device) or `runner.start` can decline —
+        neither ever writes `last_scan`. Without its own memory the loop
+        would forward `{root}` again on every idle tick forever whenever a
+        forward doesn't turn into a recorded scan. `_last_periodic_rescan_at`
+        is that memory: once this loop has asked, it does not ask again
+        until `rescan_s` has passed since either a real scan OR its own last
+        ask, whichever is more recent."""
         if self.live_run_covers(self.root):
             return
         last = self.last_scan(self.root)
+        if self._last_periodic_rescan_at is not None:
+            last = (self._last_periodic_rescan_at if last is None
+                    else max(last, self._last_periodic_rescan_at))
         if last is None or (now - last) >= self.rescan_s:
             self.forward({self.root})
+            self._last_periodic_rescan_at = now
 
 
 # ----------------------------------------------------------------- wiring
