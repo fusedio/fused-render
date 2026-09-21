@@ -203,6 +203,25 @@
   border-top: 1px solid var(--border);
 }
 
+/* Finding 7 (code review, PR #1290): `createTerminalSession` failing (server
+   down, the session cap, 501 on Windows) used to leave the drawer open and
+   permanently empty with an unhandled rejection. Reuses `.term-drawer-exit`'s
+   layout/tone for the message itself; this is the one inline affordance to
+   retry without a full page reload. */
+.term-drawer-retry {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: inherit;
+  font: inherit;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+
+.term-drawer-retry:hover {
+  background: var(--border);
+}
+
 /* ---- Activity card (SPEC §36) -------------------------------------------- */
 /* ONE card for work in progress: every long-running operation a page reported
    (.dl-row). A scheduled message's own run draws no row here at all (D661) —

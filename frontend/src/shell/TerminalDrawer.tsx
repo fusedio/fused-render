@@ -80,11 +80,27 @@ function saveState(state: DrawerState): void {
 export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   const open = useTerminalDockOpen();
   const [height, setHeight] = useState(() => loadState().height);
-  const [sessionId, setSessionId] = useState<string | null>(() => loadState().sessionId);
+  // Deliberately NOT seeded from `loadState().sessionId` (finding 2): doing
+  // that made this state non-null on first render whenever a cached id
+  // existed, which made the effect below bail out on its OWN guard
+  // (`sessionId !== null`) before the cached id was ever checked against the
+  // live registry — a stale id from a dev-server restart would then be
+  // handed straight to `TerminalView`, which can only find out it is dead by
+  // opening a socket the server immediately closes 1008 with no `{"exit":}`
+  // frame to explain why. Starting at `null` guarantees the verify-or-create
+  // effect always runs once per drawer open.
+  const [sessionId, setSessionId] = useState<string | null>(null);
   // `undefined` = the current session is alive (or none exists yet);
   // otherwise the exit code the server reported (`null` for "no code", the
   // same shape `TerminalView`'s `onExit` already carries).
   const [exitCode, setExitCode] = useState<number | null | undefined>(undefined);
+  // Finding 7: `createTerminalSession` can reject (server down, 501 on
+  // Windows, the session cap). Surfaced here instead of an unhandled
+  // rejection that would leave the drawer open and permanently empty.
+  const [createError, setCreateError] = useState<string | null>(null);
+  // Bumped by the retry affordance to re-run the effect below even though
+  // `sessionId` and `open` haven't changed.
+  const [retryTick, setRetryTick] = useState(0);
   const heightRef = useRef(height);
   heightRef.current = height;
   const drag = useRef<{ startY: number; startHeight: number } | null>(null);
@@ -93,12 +109,19 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
     if (!open || sessionId !== null) return;
     let cancelled = false;
     (async () => {
+      setCreateError(null);
       const cached = loadState().sessionId;
       if (cached !== null) {
         try {
-          const { sessions } = await getJson<{ sessions: { id: string }[] }>("/api/terminal");
+          const { sessions } = await getJson<{
+            sessions: { id: string; alive: boolean }[];
+          }>("/api/terminal");
           if (cancelled) return;
-          if (sessions.some((s) => s.id === cached)) {
+          // Finding 10 (client-side): a dead session can still be in the
+          // list for one tick (the registry only reaps on the next
+          // create()/list() call) — filter on `alive`, not just presence,
+          // or this can reattach to a session that is about to vanish.
+          if (sessions.some((s) => s.id === cached && s.alive)) {
             setSessionId(cached);
             return;
           }
@@ -107,11 +130,17 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
           // session rather than getting stuck with neither.
         }
       }
-      const id = await createTerminalSession(cwd ?? undefined);
-      if (!cancelled) {
-        setExitCode(undefined); // a fresh session is alive until told otherwise
-        setSessionId(id);
-        saveState({ height: heightRef.current, sessionId: id });
+      try {
+        const id = await createTerminalSession(cwd ?? undefined);
+        if (!cancelled) {
+          setExitCode(undefined); // a fresh session is alive until told otherwise
+          setSessionId(id);
+          saveState({ height: heightRef.current, sessionId: id });
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setCreateError(err instanceof Error ? err.message : String(err));
+        }
       }
     })();
     return () => {
@@ -121,13 +150,18 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
     // session is created for this page load, not on every folder navigation
     // (the whole point is that the shell keeps running when you navigate).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, sessionId]);
+  }, [open, sessionId, retryTick]);
 
   // While a session has exited, Enter starts a new one — the only key this
-  // drawer intercepts globally, and only in that state, so ordinary typing
-  // inside a live shell is never touched by this listener.
+  // drawer intercepts globally, and only in that state. Also gated on
+  // `open` (finding 4): this component stays mounted while the drawer is
+  // closed (see the module comment), so without that guard a shell that
+  // exited while the drawer was closed left a global `keydown` listener
+  // armed — pressing Enter anywhere in the app (typing in an unrelated
+  // input, submitting an unrelated form) would silently discard the exited
+  // session and mint a brand new one the user never asked for.
   useEffect(() => {
-    if (exitCode === undefined) return;
+    if (!open || exitCode === undefined) return;
     function onKeyDown(e: KeyboardEvent): void {
       if (e.key !== "Enter") return;
       e.preventDefault();
@@ -137,7 +171,7 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
     }
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [exitCode]);
+  }, [open, exitCode]);
 
   function onHandlePointerDown(e: PointerEvent<HTMLDivElement>): void {
     drag.current = { startY: e.clientY, startHeight: heightRef.current };
@@ -177,6 +211,21 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
       {exitCode !== undefined && (
         <div className="term-drawer-exit">
           {`Process exited (${exitCode ?? "unknown"}) — press Enter to start a new shell`}
+        </div>
+      )}
+      {createError !== null && (
+        <div className="term-drawer-exit">
+          {`Couldn't start a terminal: ${createError} — `}
+          <button
+            type="button"
+            className="term-drawer-retry"
+            onClick={() => {
+              setCreateError(null);
+              setRetryTick((n) => n + 1);
+            }}
+          >
+            Retry
+          </button>
         </div>
       )}
     </div>
