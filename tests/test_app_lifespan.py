@@ -129,6 +129,9 @@ EXPECTED_STARTUP = [
     "_startup_ai_hub_metadata_refresh",
     "_startup_gc_project_venvs",
     "_startup_index_scan",
+    # Added 2026-09-21: the live filesystem watcher (index_watch.py) that
+    # replaces time-based staleness guessing with an actual change feed.
+    "_startup_index_watch",
     "_startup_update_dev_manager",
 ]
 
@@ -143,6 +146,7 @@ EXPECTED_SHUTDOWN = [
     "_shutdown_captures",
     "_shutdown_ai_workers",
     "_shutdown_engines",
+    "_shutdown_index_watch",
 ]
 
 
