@@ -315,7 +315,13 @@ def relocate(old_root: str, new_root: str, *, projects_dir: str | None = None,
                 logger.info("session %s is live; leaving its transcript at %s", sid, src)
                 continue
             try:
-                if session_liveness.transcript_turn_open(src, now):
+                # `interrupt_closes=False` — the strict reading, every user row
+                # a turn: a reader who just pressed stop or typed `/model` in an
+                # INTERACTIVE session is still at that prompt, and this is the
+                # one caller where a wrong "not mid-turn" moves a file out from
+                # under a live CLI.
+                if session_liveness.transcript_turn_open(
+                        src, now, interrupt_closes=False):
                     held.append(sid)
                     logger.info("session %s is mid-turn; leaving %s", sid, src)
                     continue

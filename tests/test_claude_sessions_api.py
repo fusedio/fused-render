@@ -351,6 +351,149 @@ def test_an_assistant_still_calling_tools_is_a_turn_in_flight(client,
     assert _liveness(client, path).json()["running"] is True
 
 
+def _user_text_row(text):
+    return {"type": "user", "timestamp": "2026-01-01T00:00:00Z",
+            "message": {"role": "user",
+                        "content": [{"type": "text", "text": text}]}}
+
+
+def test_the_stop_buttons_interrupt_marker_ends_the_turn(client, projects_dir,
+                                                         tmp_path):
+    """Claude Code answers an interrupt by writing "[Request interrupted by
+    user]" as a `type: user` row, so a stopped run's last word was read as a
+    prompt awaiting its reply — and the chat said "Running outside this app"
+    for the whole STALE_TAIL_SEC after every stop (Akshil, 2026-09-21)."""
+    path = _session(projects_dir, "proj", "s1", str(tmp_path))
+    _rows(path, _user_text_row("do the thing"), _assistant("text", "tool_use"),
+          _user_text_row("[Request interrupted by user]"))
+    assert _liveness(client, path).json()["running"] is False
+    _rows(path, _user_text_row("do the thing"), _assistant("text", "tool_use"),
+          _user_text_row("[Request interrupted by user for tool use]"))
+    assert _liveness(client, path).json()["running"] is False
+    # Esc DURING A TOOL CALL travels as the cut-off tool's result, not as a
+    # text block — the more common shape of that marker in real transcripts.
+    _rows(path, _user_text_row("do the thing"), _assistant("text", "tool_use"),
+          {"type": "user", "timestamp": "2026-01-01T00:00:00Z",
+           "message": {"role": "user", "content": [
+               {"type": "tool_result", "tool_use_id": "t1",
+                "content": "[Request interrupted by user for tool use]"}]}})
+    assert _liveness(client, path).json()["running"] is False
+    # ...and as a text block INSIDE the tool_result — the CLI's third shape.
+    _rows(path, _user_text_row("do the thing"), _assistant("text", "tool_use"),
+          {"type": "user", "timestamp": "2026-01-01T00:00:00Z",
+           "message": {"role": "user", "content": [
+               {"type": "tool_result", "tool_use_id": "t1", "content": [
+                   {"type": "text",
+                    "text": "[Request interrupted by user for tool use]"}]}]}})
+    assert _liveness(client, path).json()["running"] is False
+    # ...and ONE marker PER TOOL when the Stop cut off parallel calls (Bugbot,
+    # PR #1285) — the row must be read block by block, not joined.
+    _rows(path, _user_text_row("do the thing"),
+          _assistant("text", "tool_use", "tool_use"),
+          {"type": "user", "timestamp": "2026-01-01T00:00:00Z",
+           "message": {"role": "user", "content": [
+               {"type": "tool_result", "tool_use_id": "t1",
+                "content": "[Request interrupted by user for tool use]"},
+               {"type": "tool_result", "tool_use_id": "t2",
+                "content": "[Request interrupted by user for tool use]"}]}})
+    assert _liveness(client, path).json()["running"] is False
+    # ...while a real tool result being fed back is a turn in flight.
+    _rows(path, _user_text_row("do the thing"), _assistant("text", "tool_use"),
+          {"type": "user", "timestamp": "2026-01-01T00:00:00Z",
+           "message": {"role": "user", "content": [
+               {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}})
+    assert _liveness(client, path).json()["running"] is True
+
+
+def test_a_prompt_that_talks_about_interrupts_is_still_a_prompt(
+        client, projects_dir, tmp_path):
+    path = _session(projects_dir, "proj", "s1", str(tmp_path))
+    _rows(path, _assistant("text"),
+          _user_text_row("why did it say [Request interrupted by user]?"))
+    assert _liveness(client, path).json()["running"] is True
+
+
+def test_a_slash_commands_envelope_is_not_a_turn_in_flight(client,
+                                                           projects_dir,
+                                                           tmp_path):
+    """`/model` writes the command and its output as two user rows; `/clear`
+    writes the command row ALONE (33 of 33 in the local corpus) and then the
+    file is abandoned. Both are housekeeping, like a `mode` record — the reply
+    before them is still the last message that counts."""
+    path = _session(projects_dir, "proj", "s1", str(tmp_path))
+    _rows(path, _assistant("text"),
+          {"type": "user", "timestamp": "2026-01-01T00:00:00Z",
+           "message": {"role": "user",
+                       "content": "<command-name>/model</command-name>\n"
+                                  "<command-message>model</command-message>"}},
+          {"type": "user", "timestamp": "2026-01-01T00:00:00Z",
+           "message": {"role": "user",
+                       "content": "<local-command-stdout>Set model to opus"
+                                  "</local-command-stdout>"}})
+    assert _liveness(client, path).json()["running"] is False
+    # The real `/clear` shape: the command row is the file's last word.
+    _rows(path, _assistant("text"),
+          {"type": "user", "timestamp": "2026-01-01T00:00:00Z",
+           "message": {"role": "user",
+                       "content": "<command-name>/clear</command-name>\n"
+                                  "<command-message>clear</command-message>"}})
+    assert _liveness(client, path).json()["running"] is False
+    # ...but a prompt typed after the command is a turn again.
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(_user_text_row("and now this")) + "\n")
+    assert _liveness(client, path).json()["running"] is True
+
+
+def test_a_bang_shell_line_and_the_caveat_row_are_not_a_turn_in_flight(
+        client, projects_dir, tmp_path):
+    """`!ls` in the CLI leaves `<bash-input>`/`<bash-stdout>` user rows, and a
+    session opened after local commands leads with an `isMeta` caveat row.
+    Housekeeping all — the reply before them still decides (review,
+    2026-09-21)."""
+    path = _session(projects_dir, "proj", "s1", str(tmp_path))
+    _rows(path, _assistant("text"),
+          {"type": "user", "timestamp": "2026-01-01T00:00:00Z",
+           "message": {"role": "user", "content": "<bash-input>ls</bash-input>"}},
+          {"type": "user", "timestamp": "2026-01-01T00:00:00Z",
+           "message": {"role": "user",
+                       "content": "<bash-stdout>a.py\nb.py</bash-stdout>"}},
+          {"type": "user", "isMeta": True, "timestamp": "2026-01-01T00:00:00Z",
+           "message": {"role": "user",
+                       "content": "Caveat: The messages below were generated by "
+                                  "the user while running local commands."}})
+    assert _liveness(client, path).json()["running"] is False
+    # A task-notification is the harness WAKING the agent: that one is a turn.
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "user", "timestamp": "2026-01-01T00:00:00Z",
+                             "message": {"role": "user", "content":
+                                         "<task-notification>done</task-notification>"}})
+                 + "\n")
+    assert _liveness(client, path).json()["running"] is True
+
+
+def test_the_relocator_may_keep_reading_an_interrupt_as_mid_turn(
+        projects_dir, tmp_path):
+    """`interrupt_closes=False` is claude_session_move's reading: a stopped
+    interactive session still has its reader at the prompt, and moving the
+    file then would pull it out from under a live CLI."""
+    path = _session(projects_dir, "proj", "s1", str(tmp_path))
+    _rows(path, _user_text_row("do the thing"),
+          _user_text_row("[Request interrupted by user]"))
+    now = time.time()
+    liveness = claude_sessions_mod.session_liveness
+    assert liveness.transcript_turn_open(str(path), now) is False
+    assert liveness.transcript_turn_open(str(path), now,
+                                         interrupt_closes=False) is True
+    # Strict is strict: a slash command's row holds the file too.
+    _rows(path, _assistant("text"),
+          {"type": "user", "timestamp": "2026-01-01T00:00:00Z",
+           "message": {"role": "user",
+                       "content": "<command-name>/model</command-name>"}})
+    assert liveness.transcript_turn_open(str(path), now) is False
+    assert liveness.transcript_turn_open(str(path), now,
+                                         interrupt_closes=False) is True
+
+
 def test_a_turn_left_open_by_a_dead_process_does_not_shimmer_forever(
         client, projects_dir, tmp_path):
     """A terminal closed mid-reply leaves a user row as the file's last word,

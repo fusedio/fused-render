@@ -66,3 +66,11 @@ test("`isAnchorableTurn` is the one definition both halves read", () => {
   expect(isAnchorableTurn(bot(0))).toBe(false);
   expect(isAnchorableTurn(undefined)).toBe(false);
 });
+
+test("the tool-use spelling of the interrupt marker is the same marker (Akshil, 2026-09-21)", async () => {
+  const { isInterruptMark } = await import("./wire");
+  expect(isInterruptMark("[Request interrupted by user for tool use]")).toBe(true);
+  expect(isInterruptMark("[Request interrupted by user for tool use]\n")).toBe(true);
+  expect(isInterruptMark("[Request interrupted by user]")).toBe(true);
+  expect(isInterruptMark("why did it say [Request interrupted by user for tool use]?")).toBe(false);
+});

@@ -335,8 +335,11 @@ def api_share_publish(
                           "name the shared canvas after")
         previous = get_record(aid) or {}
         out, err = _run_shim(
-            {"action": "publish", "app_id": aid, "name": name, "file": out_path,
-             "previous_remote": previous.get("remote")},
+            {"action": "publish", "share_id": aid, "viewer_token": "UDF_Fused_App_File",
+             "name": name, "file": out_path, "previous_remote": previous.get("remote"),
+             # Apps stay public-only, by decision — no mode control here
+             # (share_file.py's publish is where `mode` is a caller choice).
+             "mode": "public"},
             PUBLISH_TIMEOUT)
         if err is not None:
             return err
@@ -380,7 +383,7 @@ def api_share_lookup(body: dict = Body(...), x_fused: str | None = Header(defaul
     if not _logged_in():
         return _not_signed_in()
     name = os.path.basename(os.path.abspath(path))
-    out, err = _run_shim({"action": "lookup", "app_id": aid, "name": name}, LOOKUP_TIMEOUT)
+    out, err = _run_shim({"action": "lookup", "share_id": aid, "name": name}, LOOKUP_TIMEOUT)
     if err is not None:
         return err
     if not out.get("found"):
@@ -430,7 +433,7 @@ def api_share_remove(body: dict = Body(...), x_fused: str | None = Header(defaul
     try:
         rec = get_record(aid) or {}
         out, err = _run_shim(
-            {"action": "remove", "app_id": aid, "canvas_id": rec.get("canvas_id")},
+            {"action": "remove", "share_id": aid, "canvas_id": rec.get("canvas_id")},
             REMOVE_TIMEOUT)
         if err is not None:
             return err

@@ -1413,3 +1413,33 @@ test("every host draws the Upcoming lane; no host can filter it out", () => {
     );
   }
 });
+
+test("a Recent chats row offers Archive on hover, like the Tasks page row (Akshil, 2026-09-21)", () => {
+  // Rendered, not read out of the source: the button must be IN the borrowed
+  // row's mark slot, wearing the same class the Tasks page reveals on hover.
+  const r = mount(
+    <Lists
+      file="/repo/x.py"
+      recent={[
+        chat("s1", { status: "done" }),
+        chat("s2", { status: "archived" }),
+        chat("s3", { status: "in_progress" }),
+      ]}
+      artifacts={[]}
+      onOpen={() => {}}
+    />,
+  );
+  const json = r.toJSON() as Json;
+  const rows = all(json, "tasks-row");
+  expect(rows.length).toBe(3);
+  const kinds = rows.map((row) => {
+    const act = all(row, "tasks-act")[0];
+    return act ? String((act.props as { className?: string }).className) : "";
+  });
+  expect(kinds[0]).toContain("tasks-act--archive");
+  expect(kinds[1]).toContain("tasks-act--unarchive");
+  // A run in flight is the one row with nothing to file.
+  expect(kinds[2]).toBe("");
+  // Inside the ring's slot, so no pixel of the row moves when it appears.
+  expect(all(all(rows[0], "tasks-rowmark")[0], "tasks-act").length).toBe(1);
+});

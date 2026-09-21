@@ -1340,6 +1340,22 @@ def is_interrupt_mark(text: str) -> bool:
     return (text or "").strip() in _INTERRUPT_MARKS
 
 
+def leading_machinery_tag(text: str) -> str:
+    """The DROP tag a record LEADS with — "command-name", "bash-stdout",
+    "task-notification"… — or "" when it opens with prose or a STRIP tag.
+
+    For readers that need to know WHICH envelope a row is rather than whether
+    it is one (`session_liveness` steps over a slash command's rows but treats a
+    task-notification as the turn it opens). Same anchored matchers as
+    `is_machinery`, so the two cannot disagree about what counts as leading.
+    """
+    out = (text or "").strip()
+    match = _LEADING_BLOCK.match(out) or _LEADING_OPEN.match(out)
+    if match is None or match.group(1) not in _MACHINERY_DROP:
+        return ""
+    return match.group(1)
+
+
 def is_machinery(text: str) -> bool:
     """Is this record machinery WHOLE — nothing a human contributed to it?
 

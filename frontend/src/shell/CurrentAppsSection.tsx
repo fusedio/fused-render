@@ -697,13 +697,16 @@ export default function CurrentAppsSection() {
   const sharing = useAppSharingFeature();
   const menuItems = (app: CurrentApp): MenuEntry[] => [
     {
-      // The app card menu's own "Open in Explorer" (appCardMenu.ts): the app's
-      // folder as a plain listing, same label, glyph and nav hint — the two
-      // menus must not name or aim the same action differently.
+      // The app's ENTRY PAGE in the explorer — the file view, crumb bar and
+      // all — not the bare folder listing (owner, 2026-09-21: "open in
+      // explorer should open the index.html not only the folder"). The
+      // record already carries `entry`; a folder with no page falls back to
+      // its listing, the rule appEntry.ts (D269) applies to app cards.
       label: "Open in Explorer",
       icon: MenuIcons.folder,
       disabled: !app.exists,
-      onClick: () => navigate(app.path, { isDir: true }),
+      onClick: () =>
+        app.entry ? navigate(app.entry) : navigate(app.path, { isDir: true }),
     },
     sharing
       ? {

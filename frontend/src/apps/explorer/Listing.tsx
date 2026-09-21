@@ -996,7 +996,7 @@ export default function Listing({
   const buildFolderMenu = (): MenuEntry[] => {
     const own = folderGroups();
     return folderMenu({
-      app: appRows.app,
+      app: [...appRows.app, ...appRows.doctor],
       create: own.create,
       folder: own.folder,
       open: [

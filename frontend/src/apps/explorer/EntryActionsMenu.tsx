@@ -122,13 +122,17 @@ export interface EntryActionsMenuProps {
 }
 
 // What the hook hands back. `app` is what this folder IS when it is an app
-// (App Doctor, Share…, Open as project, MCP config); `embed` is Open in embed
-// on its own — the folder listing and the file preview file each into the
-// matching group of their menus (bar-menus' `app` and `embed`). `isEntry` is the probe's (or the caller's) answer,
+// (Share…, Open as project, MCP config); `doctor` is the App Doctor row on its
+// own, so the file preview can slot Set Current View as Preview ahead of it
+// (owner, 2026-09-21: "app doctor to move down set as preview"); `embed` is
+// Open in embed on its own — the folder listing and the file preview file each
+// into the matching group of their menus (bar-menus' `app` and `embed`).
+// `isEntry` is the probe's (or the caller's) answer,
 // `badge` rides the kebab trigger while the menu is shut, `modal` is the App
 // Doctor dialog to render wherever the rows are shown.
 export interface AppActionRows {
   app: MenuEntry[];
+  doctor: MenuEntry[];
   embed: MenuEntry[];
   isEntry: boolean;
   badge: ReactNode;
@@ -295,8 +299,11 @@ export function useAppActionRows({
     });
   }
 
+  // Handed back on its own so callers close the app group with it — after
+  // Set Current View as Preview where the file menu has one.
+  const doctor: MenuEntry[] = [];
   if (isEntry) {
-    app.push({
+    doctor.push({
       label: "App Doctor",
       icon: <Stethoscope {...LUCIDE} />,
       title:
@@ -324,6 +331,7 @@ export function useAppActionRows({
 
   return {
     app,
+    doctor,
     embed,
     isEntry,
     badge: isEntry ? <AppDoctorStatusDot checks={doctorChecks} /> : undefined,
