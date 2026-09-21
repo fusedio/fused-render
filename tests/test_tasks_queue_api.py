@@ -378,12 +378,12 @@ class FakeManager:
         self.remove_from_line(task_key)
         self.promoted.discard(task_key)
         self.answers.pop(task_key, None)
+        self._release(task_key)
 
     def forget_forced(self, *names):
         self.events.append(("forget_forced", *names))
         for name in names:
             self.forced.discard(name)
-        self._release(task_key)
 
     def _release(self, task_key):
         for folder, owner in list(self.owners.items()):
