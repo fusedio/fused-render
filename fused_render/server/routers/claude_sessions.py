@@ -619,6 +619,8 @@ _RECAP_TIMEOUT = 25.0
 # when it picks `for_uuid` (`recapAnchor`), spends that position on whatever
 # comes back, and never asks again, so an empty answer here is permanent.
 _INTERRUPT_MARK = "[Request interrupted by user]"
+_INTERRUPT_MARKS = frozenset((_INTERRUPT_MARK,
+                              "[Request interrupted by user for tool use]"))
 
 # Cache: (file, session_id, for_uuid) -> (text, expires_at).
 #
@@ -707,7 +709,7 @@ def _recap_tail(turns: list) -> str:
         # The interrupt marker is not something the reader said (_INTERRUPT_MARK
         # above): it is skipped rather than labelled, and above all it does not
         # count as the user having spoken last.
-        if text == _INTERRUPT_MARK:
+        if text in _INTERRUPT_MARKS:
             continue
         parts.append("%s: %s" % (label, text[:_RECAP_TURN_CHARS]))
         last_role = turn["role"]
