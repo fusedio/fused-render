@@ -106,6 +106,30 @@ def resolve_viewer(path: str) -> dict | None:
     return share_file_rules.resolve(path, _cached_rules())
 
 
+def warm_rules_cache() -> None:
+    """Actually build the catalog rule cache, through the shim's `rules`
+    action — nothing else in the product does this (code review finding 1):
+    `_cached_rules()` above is disk-only by design, so a cache that is never
+    written stays `None` forever and every extension but the built-in
+    `.fused` refuses to share. Called once from a server startup thread
+    (`server/app.py`'s `_startup_warm_share_rules`) so the table is usually
+    warm well before a reader opens the share sheet.
+
+    Best-effort and silent: no CLI, not signed in, offline, or a stale token
+    all leave the cache exactly as before (missing, or whatever it already
+    held) rather than raising into a startup thread nobody is watching.
+    """
+    if not _logged_in():
+        return
+    out, err = share_app._run_shim(
+        {"action": "rules", "ttl": share_file_rules.RULES_TTL_PUBLISH}, RULES_TIMEOUT)
+    if err is not None:
+        return
+    rules = out.get("rules") if isinstance(out, dict) else None
+    if isinstance(rules, list):
+        share_file_rules._write_cache(rules)
+
+
 def _refusal_for(path: str, rule: dict | None) -> str | None:
     if rule is not None:
         return None
