@@ -7,9 +7,10 @@ description: Use when reviewing or sharing an app — checking for secrets, hard
 
 Share-readiness pass over one app folder. `fused-render` ships as a packaged desktop app — the Python package is not on PATH, so never shell out to a `fused-render` subcommand.
 
-**Two modes.**
+**Three modes.**
 
 - **Fix session on one row** (the usual). The task names one check id and carries that row's findings inline; `fused_render/app_doctor.py` already computed section, severity, state. Go to the matching `##` heading, do only that. Never re-derive the checklist or re-run other checks.
+- **Fix-all session on every failing row.** The task names check `` `all` `` and carries one `##` block per failing row, each already computed the same way a single-row task's block is. Work through every block, in the order given, applying that block's own `##` heading's Fix guidance — the same as if each had been its own single-row session — then do ONE commit at the end covering the whole run, not one per row. This is still bounded by exactly the blocks handed to you: never re-derive the checklist, never re-run `app_doctor.py` yourself to look for more, and never invent a check the report didn't include. A row absent from the task's blocks was passing (or skipped) when the report was generated and is not this session's business.
 - **No panel.** Someone asks for a review with no report to hand — see [No panel](#no-panel).
 
 **Not a code audit.** No opinion on logic bugs, cache eviction, date math, dedup, DOM injection, error handling, perf. Even when the request says "review for correctness": say this skill covers share-readiness, offer the audit as separate work.
