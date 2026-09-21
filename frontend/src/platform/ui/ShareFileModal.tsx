@@ -36,6 +36,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Check, Clock, Copy, ExternalLink, Globe, Loader2, XIcon } from "lucide-react";
 import { copyToClipboard } from "@platform/lib/clipboard";
+import { dirname } from "@platform/lib/format";
 import {
   cancelUpload,
   closeShareFile,
@@ -80,9 +81,14 @@ const UPLOAD_POLL_MS = 1200;
 type Busy = null | ShareMode | "remove";
 
 /** The two, and only two, share actions the sheet ever offers. */
-export const PRIMARY_ACTIONS: Array<{ mode: ShareMode; label: string; busyLabel: string }> = [
-  { mode: "public", label: "Share publicly", busyLabel: "Sharing…" },
-  { mode: "temporary", label: "Share for 30 minutes", busyLabel: "Sharing…" },
+export const PRIMARY_ACTIONS: Array<{
+  mode: ShareMode;
+  label: string;
+  busyLabel: string;
+  icon: typeof Globe;
+}> = [
+  { mode: "public", label: "Share publicly", busyLabel: "Sharing…", icon: Globe },
+  { mode: "temporary", label: "Share for 30 minutes", busyLabel: "Sharing…", icon: Clock },
 ];
 
 export type SharePhase = "loading" | "refused" | "no-cli" | "share" | "shared" | "uploading";
@@ -433,19 +439,26 @@ export function ShareFileModal({
     );
   } else {
     body = (
-      <div className="flex flex-col gap-2">
-        {PRIMARY_ACTIONS.map((a, i) => (
-          <Button
-            key={a.mode}
-            size="sm"
-            variant={i === 0 ? "default" : "outline"}
-            disabled={working}
-            onClick={() => state.share(a.mode)}
-          >
-            {busy === a.mode && <Loader2 data-icon="inline-start" className="animate-spin" />}
-            {busy === a.mode ? a.busyLabel : a.label}
-          </Button>
-        ))}
+      <div className="flex flex-col gap-1.5">
+        {PRIMARY_ACTIONS.map((a, i) => {
+          const Icon = a.icon;
+          return (
+            <Button
+              key={a.mode}
+              size="sm"
+              variant={i === 0 ? "default" : "outline"}
+              disabled={working}
+              onClick={() => state.share(a.mode)}
+            >
+              {busy === a.mode ? (
+                <Loader2 data-icon="inline-start" className="animate-spin" />
+              ) : (
+                <Icon data-icon="inline-start" />
+              )}
+              {busy === a.mode ? a.busyLabel : a.label}
+            </Button>
+          );
+        })}
       </div>
     );
   }
@@ -458,8 +471,11 @@ export function ShareFileModal({
           if (!open && !working) onClose();
         }}
       >
-        <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-[480px]" showCloseButton={false}>
-          <DialogHeader className="gap-0 px-6 pt-4 pb-3">
+        <DialogContent
+          className="max-w-[min(360px,calc(100%-2rem))] gap-0 overflow-hidden p-0 sm:max-w-[min(360px,calc(100%-2rem))]"
+          showCloseButton={false}
+        >
+          <DialogHeader className="gap-0 px-5 pt-3.5 pb-2.5">
             <div className="flex items-center justify-between gap-3">
               <DialogTitle className="truncate text-[15px] font-semibold leading-6">
                 Share {file.name}
@@ -478,11 +494,15 @@ export function ShareFileModal({
                 <span className="sr-only">Close</span>
               </DialogClose>
             </div>
-            <DialogDescription className="sr-only">
-              Share this file as a public link or a link that expires in 30 minutes.
+            <DialogDescription
+              className="truncate text-[12px] text-muted-foreground"
+              dir="rtl"
+              title={dirname(file.path)}
+            >
+              <bdi dir="ltr">{dirname(file.path)}</bdi>
             </DialogDescription>
           </DialogHeader>
-          <div className="flex flex-col gap-3 px-6 pb-5">
+          <div className="flex flex-col gap-3 px-5 pb-4">
             {body}
             {err && (
               <p className="m-0 text-[13px] leading-5 text-destructive" role="alert">
