@@ -72,6 +72,19 @@ def test_expanduser_applies_to_path_patterns():
     assert r.is_ignored(norm(os.path.expanduser("~/Library/Caches")))
 
 
+def test_default_ignore_covers_library_caches_but_not_the_rest_of_library():
+    """`~/Library/Caches` is machine-generated churn the same way `.cache` is
+    on the other platforms — but `~/Library` itself must stay walkable: a
+    wider pattern was tried on the parked focus-trigger branch and reverted
+    because it hid legitimately-indexed content (Library/Documents, app
+    support files a user actually searches for)."""
+    r = IgnoreRules(default_ignore())
+    assert r.is_ignored(norm(os.path.expanduser("~/Library/Caches")))
+    assert r.is_ignored_tree(norm(os.path.expanduser("~/Library/Caches/com.example.app")))
+    assert not r.is_ignored(norm(os.path.expanduser("~/Library/Documents")))
+    assert not r.is_ignored_tree(norm(os.path.expanduser("~/Library/Application Support/foo")))
+
+
 def test_ignore_sig_is_order_sensitive_and_stable():
     assert ignore_sig(["a", "b"]) == ignore_sig(["a", "b"])
     assert ignore_sig(["a", "b"]) != ignore_sig(["b", "a"])
