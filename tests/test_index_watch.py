@@ -130,6 +130,26 @@ def test_a_path_inside_a_leaf_dir_is_dropped():
     assert not dropped(norm(os.path.expanduser("~/repo/src/main.py")))
 
 
+def test_a_configured_index_dir_outside_the_fused_render_home_is_blocked():
+    """`cfg.dir` is a settable config key (index/config.py's `IndexConfig.
+    dir`); it is only covered by `MountGuard` because its DEFAULT sits under
+    the fused-render home. Docstrings used to claim it was "already in
+    default_ignore()" — false: `default_ignore()` only appends the per-home
+    `**/mounts` patterns and `~/Library/Caches`. An index dir configured
+    outside the fused-render home but under a watched root would reopen the
+    self-trigger loop this filter exists to prevent, without this explicit
+    check."""
+    rules = IgnoreRules(default_ignore())
+    mounts_dir = norm(os.path.expanduser("~/.fused-render/mounts"))
+    custom_dir = norm(os.path.expanduser("~/my-custom-index-store"))
+    dropped = make_dropped(rules, mounts_dir, index_dir=custom_dir)
+
+    assert dropped(os.path.join(custom_dir, "dirs.parquet"))
+    assert dropped(custom_dir)
+    # a sibling directory is unaffected
+    assert not dropped(norm(os.path.expanduser("~/my-custom-index-store-sibling/x")))
+
+
 def test_the_filter_drives_what_a_watch_loop_ever_sees():
     """A batch entirely under an ignored tree never reaches a folder, never
     arms a flush."""

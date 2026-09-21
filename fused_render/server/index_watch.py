@@ -73,9 +73,9 @@ GATE_POLL_S = 30.0
 BACKOFF_SCHEDULE_S = (5.0, 30.0, 120.0)
 
 
-def make_dropped(rules, mounts_dir: str):
+def make_dropped(rules, mounts_dir: str, index_dir: str | None = None):
     """A `path -> bool` filter: True when the watcher must never act on
-    `path`. Three structural refusals — the real analogue is not
+    `path`. Four structural refusals — the real analogue is not
     `index_touch._real_blocked` (that one filters a scan ROOT, chosen by
     something that already decided to scan) but the FSEvents journal gate at
     `scan.py`'s `_run_fsevents`: `ignored_for_index(...) or guard.blocks(d)
@@ -85,31 +85,41 @@ def make_dropped(rules, mounts_dir: str):
       * `ignored_for_index(rules, path, tree=True)` — the ignore list,
         checked tree-wise because a watched path arrives with no vetted
         ancestors (same reason the FSEvents journal gate uses `tree=True`).
-        The index store's own directory (`cfg.dir`) and every branch's
-        mounts folder are already in `default_ignore()`.
+        Every branch's mounts folder is already in `default_ignore()`.
       * `MountGuard(mounts_dir=...).blocks(path)` — the structural refusal
         that survives a user emptying the ignore list; it blocks the WHOLE
-        fused-render home tree, not only the mounts subdirectory, which is
-        what makes the index store's own directory doubly covered.
+        fused-render home tree, not only the mounts subdirectory — which is
+        what covers the index store's own directory (`cfg.dir`) WHEN it
+        sits at its default location, but `cfg.dir` is a settable config
+        key, not a fixed one.
+      * `index_dir` (pass `cfg.dir`) — the explicit check for the case the
+        guard misses: an index dir configured OUTSIDE the fused-render home
+        but under a watched root. Without this, that configuration reopens
+        the self-trigger loop this filter exists to prevent (a scan writes
+        parquet into `cfg.dir`, the watcher observes its own write,
+        triggers the scan that triggered it). Optional only so the many
+        tests that don't care about this case don't have to pass it; real
+        wiring always does.
       * `is_inside_leaf_dir(path)` — whether an ANCESTOR of `path` is a leaf
         directory (`.git`, an `.app` bundle, ...). `.git` is deliberately
         NOT in the ignore names (it is a LEAF_DIR_NAME instead), so without
         this check a write to `~/repo/.git/objects/ab/cdef` would survive
         the filter and forward a folder the index deliberately never
         indexes — and an active git repo writes under `.git/objects`
-        constantly, making this the hottest of the three in practice.
+        constantly, making this the hottest of the four in practice.
 
     Returning True for any means: this path or a change under it must never
-    cause a flush. That is load-bearing, not an optimization — a scan writes
-    parquet into `cfg.dir`, and without this filter the watcher would
-    observe its own write and trigger the scan that triggered it."""
+    cause a flush. That is load-bearing, not an optimization."""
     guard = MountGuard(mounts_dir=mounts_dir)
+    idx = norm(str(index_dir or ""))
 
     def dropped(path: str) -> bool:
         p = norm(str(path or ""))
         if not p:
             return True
         if guard.blocks(p):
+            return True
+        if idx and (p == idx or p.startswith(idx + "/")):
             return True
         if is_inside_leaf_dir(p):
             return True
@@ -281,13 +291,14 @@ def _is_watch_limit_error(exc: BaseException) -> bool:
     return isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.ENOSPC
 
 
-def _shallow_watch_paths(root: str, rules, mounts_dir: str) -> list:
+def _shallow_watch_paths(root: str, rules, mounts_dir: str,
+                          index_dir: str | None = None) -> list:
     """§3.2: the root plus its immediate non-ignored subdirectories, for a
     non-recursive fallback watch. `watchfiles` has no depth limit —
     `recursive` is all-or-nothing — so this is the closest a non-recursive
     open gets to the real thing: it still catches `~/Downloads/foo.dmg` and
     `~/a.txt`; anything deeper falls to the periodic rescan."""
-    dropped = make_dropped(rules, mounts_dir)
+    dropped = make_dropped(rules, mounts_dir, index_dir=index_dir)
     paths = [root]
     try:
         with os.scandir(root) as it:
@@ -314,7 +325,7 @@ def _real_open_source(root: str, stop_event):
     from fused_render.index.runner import _mounts_dir
 
     cfg = load_config()
-    dropped = make_dropped(cfg.rules, _mounts_dir())
+    dropped = make_dropped(cfg.rules, _mounts_dir(), index_dir=cfg.dir)
 
     def _filter(_change, path) -> bool:
         return not dropped(path)
@@ -330,7 +341,8 @@ def _real_open_source(root: str, stop_event):
         logger.warning("index watch: hit the platform watch limit opening "
                        "%s (raise fs.inotify.max_user_watches); falling "
                        "back to a shallow, non-recursive watch", root)
-        paths = _shallow_watch_paths(root, cfg.rules, _mounts_dir())
+        paths = _shallow_watch_paths(root, cfg.rules, _mounts_dir(),
+                                      index_dir=cfg.dir)
         yield from watchfiles.watch(*paths, watch_filter=_filter,
                                     stop_event=stop_event, rust_timeout=5000,
                                     yield_on_timeout=True, recursive=False,
@@ -350,7 +362,8 @@ def _make_loop(root: str, stop_event: threading.Event) -> WatchLoop:
     return WatchLoop(
         root,
         open_source=lambda r: _real_open_source(r, stop_event),
-        dropped=make_dropped(load_config().rules, runner._mounts_dir()),
+        dropped=make_dropped(load_config().rules, runner._mounts_dir(),
+                              index_dir=load_config().dir),
         # `WatchLoop` calls `forward(folders)` with a single iterable
         # (`self.forward({self.root})`, `self.forward(set(outermost))`).
         # `note_index_folders(*folders)` wants those folders UNPACKED as
