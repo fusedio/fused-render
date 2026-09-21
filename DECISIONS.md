@@ -3468,3 +3468,248 @@ test itself was modified in place, not added). `bun test src/apps/explorer/
 lib/focus-detect.test.ts` — 12 passed (added 6: `isAway`'s cases). `bun run
 typecheck` (`tsc --noEmit`) — clean, no errors. Full suite was NOT run (not
 this round's job, per the brief).
+
+
+## 2026-09-21 — Phase 1: root-mtime evidence; Phase 2 investigated, not built
+
+**Phase 1, shipped.** The scan-on-stale redesign (2026-09-19/2026-09-20
+entries above) fixed the standalone-replay reliability problem but
+reopened the original bug it was meant to fix: with no evidence of change,
+`freshness.MIN_INTERVAL_S` (60s) and `FOCUS_STALE_S` (300s) correctly
+refuse a scan inside their windows even when something changed seconds
+earlier. Reported case: a scan finished at 10:48:48, `~/a.txt` was created
+at 10:49 (a direct child, moving `~`'s own mtime), the focus event hit at
+10:49:30, and both floors refused it — 42s had cleared neither.
+
+`detect._has_root_evidence(cfg, root)` now stats the root itself and
+compares it against `dirs.parquet`'s row for it via a new
+`freshness.is_newer_than_indexed(cfg, path, disk_ns)`, factored out of
+`note_folder_opened`'s existing `indexed is None or disk_ns <= indexed`
+comparison rather than re-derived — `note_folder_opened` was already asking
+this exact question about a listed folder; `_check_root` now asks it about
+a scan root. With evidence, `MIN_INTERVAL_S`/`FOCUS_STALE_S` no longer
+apply (both answer "do we need to check", which evidence already answers);
+only a new, small floor, `EVIDENCE_MIN_INTERVAL_S = 10.0`, still applies —
+sized to stop a churning root or a race between two focus events from
+starting a scan on every single check, not to judge staleness. Without
+evidence (root unchanged at depth 1, no index yet, or `os.stat` failing —
+all three fold into "no evidence", never an exception), behaviour is
+byte-for-byte what it was before this round.
+
+This is the SAME documented depth-1 bound `note_folder_opened` and
+`git_repos._note_tab_opened` already live with: a file two levels down
+(`~/Downloads/foo.dmg`) does not move the root's own mtime, so this check
+has nothing to say about it. That gap is Phase 2, below.
+
+**Regression test** (`tests/test_index_detect.py::
+test_evidence_from_a_freshly_touched_root_overrides_both_stale_floors`):
+reproduces the reported timeline exactly — a scan at `t`, `os.utime(root, (t
++ 12, t + 12))` standing in for a direct child landing, a focus event at `t
++ 42` — and asserts `runner.start` fires despite `(now - t) < MIN_INTERVAL_S`
+and `(now - t) < FOCUS_STALE_S` both holding (asserted explicitly as a
+sanity check inside the test, so the test cannot pass by accident against a
+future floor change). Confirmed failing against pre-Phase-1 HEAD
+(`846bfb0db`'s parent) before implementing, per TDD. Four more tests cover
+the corners the brief asked for: no evidence + recently scanned -> no-op;
+no evidence + past `FOCUS_STALE_S` -> scan (the unchanged fallback); evidence
++ a scan 2s ago -> refused by `EVIDENCE_MIN_INTERVAL_S` (the storm floor);
+and `os.stat` raising on the root -> treated as no evidence, not an
+exception.
+
+**Tests run, foreground:** `pytest tests/test_index_detect.py` — 23 passed
+(7 new). `pytest tests/test_index_detect.py tests/test_index_freshness.py`
+— 49 passed (confirms the `freshness.py` refactor — extracting
+`is_newer_than_indexed` — changed no behaviour for `note_folder_opened`'s
+own 26 tests). `pytest tests/test_index_api.py -k home_focus` — 7 passed,
+unchanged (these tests mock at the router boundary and never touch
+`detect.py`'s internals, so Phase 1 needed no changes there). No frontend
+files touched this round, so no `bun test` run was needed or performed.
+Full suite NOT run — not this round's job.
+
+**Not independently verified:** the depth-1 mtime-moves-the-parent
+assumption is asserted via `os.utime` in the test, matching how
+`note_folder_opened`'s own tests exercise the identical assumption
+(`tests/test_index_freshness.py` does the same thing), and it is standard
+POSIX directory-entry semantics, not something this round measured fresh
+against a real filesystem. What IS unverified against a real running app:
+whether the reported failure is now actually fixed end-to-end on the
+user's own machine — this whole class of bug ("green tests, fails in the
+user's hands") is why this is the THIRD design, and a synthetic
+`os.utime`-based unit test cannot rule out something environment-specific
+(a filesystem, a sync daemon, a timing window) that the first two designs'
+own green suites also missed. The user re-testing the original repro is
+the only real verification of Phase 1.
+
+---
+
+**Phase 2, investigated, not built.** The remaining gap: a file created
+deeper than one level (`~/Downloads/foo.dmg`) does not move the root's own
+mtime, so Phase 1's `_has_root_evidence` cannot see it — it degrades to "no
+evidence" and falls back to `FOCUS_STALE_S` (still a 5-minute worst case for
+this class of miss, better than never but not what the "narrower, not gate"
+shape in the spec was reaching for).
+
+**Q1 — can `runner.start`/`spec.json` express a scan narrowed to a set of
+subtrees? No, not today.** `runner.start`'s `spec.json` (index/runner.py
+~line 178) writes exactly six fixed keys: `root`, `full`, `started`,
+`ignore_sig`, `config`, `mounts_dir`. `run_scan` (index/scan.py:322) reads
+only those; when not `rescan_all` it calls `fsevents.hint(cfg, root)`
+ITSELF, inside the worker process (scan.py:430), and hands the result to
+`_run_fsevents` (scan.py:587), which already does exactly the
+"forced_dirs/walk_subtrees-narrowed walk" the spec's "attractive shape"
+describes — but that machinery is entirely internal to the worker's own
+incremental-scan decision. There is no parameter, spec.json key, or code
+path anywhere in `runner.start`/`run_scan` for a CALLER to hand the worker
+a pre-computed narrowing; building one would mean adding a new spec.json
+field and a new `run_scan` branch that trusts it instead of (or ahead of)
+the worker's own `fsevents.hint` call — real plumbing work, not a
+one-line change.
+
+**Q2 — the "considered and rejected" entry.** There is no DECISIONS.md
+entry recording this as a deliberated, rejected design; the only place it
+is written down is SPEC-focus-change-detection.md's "Why this shape is
+cheap" section: *"Accept one known cost: on the changed path the scan
+replays the journal a second time... Do not thread the hint through
+spec.json to avoid it — the worker 're-derives nothing from the
+environment' by design."* Two things about this, both worth being precise
+about:
+
+1. It is SPEC prose from the STANDALONE-REPLAY design (the one the
+   2026-09-19 redesign removed) — back when `detect.py` called
+   `fsevents.hint` itself to decide WHETHER to scan, and the "known cost"
+   was that a changed-path scan would then call `hint` a SECOND time inside
+   the worker. That double-replay cost doesn't exist in the current
+   (Phase-1) design at all: `detect.py` no longer calls `hint` anywhere,
+   Phase-1's evidence check is a single `os.stat`, not a journal replay.
+   Read literally, this SPEC paragraph is now stale — it argues against
+   avoiding a cost that Phase 1 doesn't incur. **Correcting this in
+   SPEC-focus-change-detection.md below**, rather than leaving a stale
+   "do not do X" standing unqualified against a design X no longer
+   resembles.
+
+2. But the PRINCIPLE behind it — quoted directly from `worker.py`'s own
+   docstring, not just the spec — is real and does bear on Phase 2's
+   candidate design 1 specifically: *"Everything this process needs is in
+   `<run_dir>/spec.json`... It re-derives nothing from the environment, so
+   a home that moved between the request and the spawn cannot make the
+   worker compact into a directory nobody reads."* That is an argument
+   about TOCTOU staleness between when a value is computed and when the
+   worker acts on it, not an argument against spec.json carrying computed
+   data in general (root/full/config already ARE computed data handed
+   through spec.json). It DOES block candidate design 1 specifically: a
+   hint computed in the PARENT at focus-check time, threaded through
+   spec.json, and used by the worker INSTEAD of the worker's own
+   `fs_id0`-anchored replay, would have the worker trust a pre-spawn
+   snapshot over the authoritative, freshly-anchored answer it computes
+   itself moments later — exactly the class of bug the docstring names. It
+   does NOT block candidate design 2 (below): that design never touches
+   spec.json or influences what the worker does; it only gates whether the
+   parent calls `runner.start` at all, using data the parent discards
+   immediately after deciding.
+
+**Q3 — candidate design 2: verify `hint()`'s candidates via the Phase 1
+stat comparison, not as a boolean gate.** Take `hint(cfg, root)`'s
+`(forced_dirs, walk_subtrees)`, run each candidate through the scan's own
+`IgnoreRules` (`ignored_for_index`), and for each survivor apply the exact
+`freshness.is_newer_than_indexed` comparison Phase 1 now uses for the root
+— "is this candidate dir's disk mtime newer than what the index recorded
+for it." A dir the journal names but whose mtime the index already has
+current produces no evidence, with no hand-rolled noise list needed to
+reach that answer — the earlier standalone-replay design's noise problem
+was specifically that it collapsed an UNFILTERED hint straight to a
+boolean; this design filters by IgnoreRules first and then asks a factual
+question of each survivor, so a dir's mere PRESENCE in the hint is never
+itself the evidence.
+
+**The honest weakness, assessed rather than assumed bounded:** `~/Library`
+(not `~/Library/Caches`, which IS in `default_ignore()` and would be
+filtered by the `IgnoreRules` pass) is real, constant, legitimate churn —
+Safari, Mail, Spotlight, saved app state — and none of it is excluded by
+`IgnoreRules` (the "Final fix round" entry above deliberately reverted
+`~/Library` from `default_ignore()`, for good reasons: it holds real
+searchable content, and a default someone's saved Preferences config
+freezes forever is the wrong place to fix an unrelated trigger's noise
+problem). So a candidate dir under `~/Library/Mail` or `~/Library/Saved
+Application State` legitimately has disk mtime newer than what the index
+recorded, essentially always — this is NOT a false positive the way the
+old boolean-hint design's noise was; it is genuinely correct evidence of a
+genuine change. The question is whether that's a problem.
+
+It is, and reusing Phase 1's `EVIDENCE_MIN_INTERVAL_S` (10s) unmodified
+would not bound it acceptably: that floor was sized (see its own comment)
+on ROOT-level evidence, which changes only when something moves directly
+under `~`, a rare event. `~/Library` sub-paths churn far more densely, so
+gating deep evidence at the same 10s floor could mean a full incremental
+scan roughly every 10s for as long as focus events keep landing during a
+session where Safari/Mail are active — a worst-case duty cycle near
+4.4/10 ≈ 44%, versus the ~1.5% Phase 1's `FOCUS_STALE_S` was explicitly
+sized to guarantee. That is not "correct but a little wasteful"; it is
+close to the exact failure mode (a flappy trigger burning a scan on
+close to every check) `FOCUS_STALE_S` exists to prevent, arrived at
+through a different door. So: **this design does reintroduce a real
+fragility, though a different shape of it than design #2's** — not
+"noise gets misread as change" (it's genuinely not misread), but "a
+legitimate, high-frequency source of real change gets treated the same
+as a rare, meaningful one." Bounding it needs either (a) a SEPARATE,
+larger floor for non-root ("deep") evidence, distinct from
+`EVIDENCE_MIN_INTERVAL_S` — which gives up much of the latency win Phase 2
+exists to deliver for anything under `~/Library` specifically, or (b) some
+scoped exclusion of `~/Library` from candidate DIRS (not from
+`default_ignore()` — the prior round's reasoning against putting it there
+stands) — which is functionally the same fragile, code-owned noise list
+the "Final fix round" removed for `default_ignore`, just relocated to a
+new module instead of deleted. Neither is free; recommend (a) if Phase 2
+is ever built, with the floor picked the same way `FOCUS_STALE_S` was —
+against a real measured duty cycle, not a guess — and explicitly flagging
+that `~/Library` will still be the dominant source of Phase 2 scans in
+practice.
+
+**Q4 — cursor cost between focus events.** Two sub-designs, different
+costs:
+
+- **Reuse the scan's own journal cursor** (no new state): the replay
+  window is "time since the last SCAN" — exactly what the 2026-09-19
+  entry already measured and rejected (11.9s / 199,943 events at 7.2
+  hours idle, sometimes hitting the 200k cap and returning `None`).
+  Re-adding a standalone replay on this cursor reintroduces that failure
+  mode unchanged; nothing about Phase 2's "narrower, not gate" framing
+  fixes it, because the framing is about what a SUCCESSFUL replay means,
+  and the failure is about replays that don't complete.
+- **A separate per-focus cursor** (`fsevents.save_state` called from
+  `detect.py` on every check, independent of scan.py's own): bounds the
+  window to "time since the last CHECK" instead, which is normally
+  small (`DETECT_INTERVAL_S`'s ~30s collapse) — but is unbounded in the
+  case that matters most: a user who leaves the app unfocused for hours
+  or days has a focus-cursor exactly as stale as the scan-cursor case
+  above, hitting the same cap/timeout/`None` failure. Given the measured
+  60x density swing (363 events/23–40ms at a 1.5-minute window vs.
+  67k–78k events/553ms–1.17s at a 5.5-minute window, moments apart on the
+  same machine), a realistic worst case for either sub-design is "several
+  seconds to ~12s, occasionally landing on the cap and answering
+  nothing" — not a rare edge case, a recurring one, exactly as
+  characterized in the 2026-09-19 entry. It would also add a genuinely
+  new piece of state (a second saved cursor) with a new way to drift out
+  of sync with the scan's own, for a design that — per Q1/Q3 above —
+  doesn't even need it to work (candidate design 2 needs `hint()`'s
+  candidate LIST, not a tight window; a stale cursor just means fewer or
+  no candidates, degrading to Phase 1's existing no-evidence fallback,
+  not to a wrong answer).
+- **Must be backgrounded either way** — matches what `note_home_focused`
+  already does (fire-and-forget on a thread; `_run_detect_change` never
+  blocks the request). That does not fix the worst-case cost, only keeps
+  it off the request path, same as today.
+
+**Recommendation.** Candidate design 2 (verify-by-stat, not gate-by-
+boolean) is the right SHAPE if Phase 2 is built — it inherits Phase 1's
+"factual evidence, not a collapsed signal" property and needs zero
+`spec.json`/worker plumbing (Q1/Q2). It should NOT reuse
+`EVIDENCE_MIN_INTERVAL_S` unmodified for non-root evidence (Q3) — that
+needs its own, larger, separately-justified floor, sized against a real
+`~/Library` churn measurement the way `FOCUS_STALE_S` was sized against
+the 4.37s/78,717-directory walk measurement, not assumed safe by analogy
+to Phase 1's root-level floor. And it should reuse the EXISTING scan
+cursor rather than add a second one (Q4) — a separate per-focus cursor
+adds real complexity and a new failure mode for no benefit this design
+actually needs, since a stale/absent cursor degrading to "no candidates"
+is exactly as safe as Phase 1's own no-evidence fallback. None of this was
+implemented this round, per the brief.

@@ -207,6 +207,55 @@ checked as the lower, shared floor every trigger honours. See DECISIONS.md
 the 4.37s/78,717-directory measurement this entry already cites, and treat
 this paragraph as the correction to that one.
 
+## Errata (2026-09-21, Phase 1): a root-mtime evidence check now sits ahead
+## of the staleness floors, and the "Why this shape is cheap" section's
+## `spec.json` rejection is stale
+
+Everything above this section describes the scan-on-stale design as it
+stood after the 2026-09-20 round: NO evidence of change, only two
+time-since-last-scan floors (`freshness.MIN_INTERVAL_S`, `FOCUS_STALE_S`).
+That was still wrong against a real report: a scan finished, `~/a.txt`
+landed directly under the root 12 seconds later, the user switched back and
+searched 30 seconds after that — 42s total, inside both floors, and the
+file could not be found. Both floors were correctly refusing a scan against
+the wrong question ("how long since the last scan") — neither one asks
+whether anything actually changed.
+
+`index/detect.py`'s `_check_root` now stats the scan root itself before
+consulting either floor (`_has_root_evidence`), comparing it against
+`dirs.parquet`'s row for the root via `freshness.is_newer_than_indexed` —
+the SAME comparison `note_folder_opened` already makes for a listed folder,
+factored out and reused rather than re-derived. A file landing directly
+under the root moves the root's own mtime, so this sees it for the cost of
+one `stat`. With that evidence, `MIN_INTERVAL_S`/`FOCUS_STALE_S` no longer
+apply — only a new, small floor, `EVIDENCE_MIN_INTERVAL_S` (10s), does,
+sized to stop a scan storm rather than to judge staleness. Without evidence
+(the change is deeper than depth 1, the root is genuinely unchanged, or
+`os.stat` fails), both floors apply exactly as before this round — this is
+also the fallback for the depth-1 bound below. See DECISIONS.md
+("2026-09-21 — Phase 1") for the full account, the regression test, and
+what is and is not independently verified.
+
+**This is the SAME documented depth-1 bound as `note_folder_opened`**: a
+file two levels down (`~/Downloads/foo.dmg`) does not move the root's own
+mtime, so the evidence check has nothing to say about it and the 5-minute
+`FOCUS_STALE_S` fallback is still the answer for that case. That gap is
+Phase 2 below, investigated this round and NOT built.
+
+**The "Why this shape is cheap" section above, specifically the sentence
+"Do not thread the hint through `spec.json` to avoid it — the worker
+'re-derives nothing from the environment' by design"**, is now stale prose
+from the standalone-replay design this feature no longer has: it describes
+avoiding a SECOND `fsevents.hint` replay inside the worker, a cost that
+only existed when `detect.py` called `hint` itself to decide whether to
+scan at all. `detect.py` calls `fsevents.hint` nowhere any more (Phase 1's
+evidence check is a single `os.stat`, not a journal replay), so there is no
+double-replay left to avoid. The underlying PRINCIPLE it was gesturing at
+(the worker must not trust a pre-spawn snapshot over its own
+freshly-anchored replay) is real and is examined properly, against Phase
+2's actual candidate designs, in DECISIONS.md's Phase 2 entry — read that
+instead of this sentence.
+
 Also stale as of this round: "What to build" → "Frontend" below still says
 to track "away" as `document.hidden || !document.hasFocus()`. That formula
 is wrong for this app's actual embedding — the explorer's home page can run
