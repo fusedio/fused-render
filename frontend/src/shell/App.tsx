@@ -53,6 +53,7 @@ import GlobalSidebar from "@shell/GlobalSidebar";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
+import { ShareFileHost } from "@platform/ui/ShareFileModal";
 import OnboardingWizard from "@shell/onboarding/OnboardingWizard";
 import { ONBOARDING_PATH, shouldAutoShow } from "@shell/onboarding/state";
 import { onboardingUrl } from "@shell/onboarding/progress";
@@ -1124,6 +1125,9 @@ export default function App({ config }: { config: Config }) {
           explorer kebab): the menu entries cannot own a dialog, so they post
           a request to platform/lib/share-app and this host renders it. */}
       <ShareAppHost />
+      {/* Same shape, for any file the Fused catalog can render rather than
+          just a .fused app — platform/lib/share-file's openShareFile store. */}
+      <ShareFileHost />
       {shortcutsOpen && (
         <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
       )}
