@@ -5947,6 +5947,39 @@ def _queue_running(task) -> bool:
     return _run_dir_alive(run_id)
 
 
+def own_run_alive(session_id: str = "", run_id: str = "") -> bool:
+    """Is the process THIS SEND ALREADY HAS still going — the one question both
+    of the queue's doors have to ask a FORCED chat.
+
+    `POST /api/tasks/queue/force` starts a run in a folder the index gives to
+    somebody else ON PURPOSE (it is the flag-off behaviour for one message), so
+    from the index's side that conversation is a STRANGER in the tree for the
+    rest of its life: the admission next door answered `run: false` and the run
+    gate refused "this folder has another task in progress" — for the SECOND
+    message of a chat whose own process is sitting right there waiting for it.
+    A chat can always talk to its own live run; that is the inbox-absorb case
+    the chat has had since long before this feature, and it spawns nothing.
+
+    ASKED OF THE SAME STATUS SYNC THE MANAGER IS WIRED TO (`_queue_running`), so
+    the two doors and the index cannot disagree in the same second about whether
+    a process is there: the sender's own mark, then the live registry, then the
+    run dir — which is the only channel that answers in the seconds between a
+    spawn and its registration.
+
+    THE NAMES ARE TAKEN EXACTLY AS THE CALLER GAVE THEM (`task: ""`). A door
+    asking "is MY run alive" must not have one of its ids tried as the other:
+    `_queue_identity` folds a bare label into both fields, and a session id
+    tried as a run id could name a stranger's run dir and answer yes."""
+    session_id = str(session_id or "")
+    run_id = str(run_id or "")
+    if run_id and project_queue.bad_id(run_id):
+        run_id = ""
+    if not session_id and not run_id:
+        return False
+    return _queue_running({"task": "", "session_id": session_id,
+                           "run_id": run_id})
+
+
 def _queue_blocked(task) -> bool:
     """Is this task parked on a card nobody has answered — the manager's
     `blocked`.
@@ -6048,6 +6081,12 @@ def api_queue_admit(body: dict = Body(...),
       new). A short reservation is taken on the way out: between this answer and
       the CLI registering a session there is nothing on disk saying the folder is
       taken, and a second send landing in that window would be admitted into it.
+      **AND THE SAME ANSWER FOR A CHAT WITH A LIVE RUN OF ITS OWN IN A FOLDER
+      THE INDEX GIVES TO SOMEBODY ELSE** — which is exactly what
+      `POST /api/tasks/queue/force` leaves behind, on purpose. That chat is a
+      stranger in the tree for the rest of its life, so the claim below can only
+      ever refuse it; the send is still an absorb into the process already
+      there, and it spawns nothing (`own_run_alive`).
     * `{"run": false, ...}` — the words are SAFE and nothing spawned. The message
       is stored as an ordinary pending entry due now, in the same store the
       calendar, the queue popover and cancel already work against, so there is no
@@ -6197,6 +6236,23 @@ def api_queue_admit(body: dict = Body(...),
     else:
         ok, _took, claim_token = manager.claim_for_send(key, owner_token, run_id,
                                                          session_id)
+        if not ok and own_run_alive(session_id, run_id):
+            # A FORCED CHAT, TALKING TO ITS OWN RUN (PR 2, 2026-09-21). The
+            # folder is somebody else's and always will be — `queue/force`
+            # started this run beside its owner on purpose — so the claim above
+            # can only ever refuse, and refusing is the wrong answer: there is a
+            # live process of this chat's own in that tree and the send is an
+            # inbox absorb into it (`agent._send`), not a second spawn.
+            #
+            # NO CLAIM AND NO STORE. Taking the folder would evict an owner this
+            # verb promised never to interrupt, and storing the message would
+            # queue it behind the very run it is addressed to.
+            #
+            # AFTER `behind_own`, NEVER BEFORE IT: a chat with an earlier
+            # message of its own still waiting is still not allowed to overtake
+            # itself, live run or not (see the docstring — message order in a
+            # conversation is the conversation).
+            return {"run": True}
     if ok:
         # THE FOLDER IS THIS TASK'S FROM HERE, and that record is the gate's —
         # nothing on the listing reads it. The row turns `in_progress` the way
@@ -6555,6 +6611,150 @@ def api_queue_skip(body: dict = Body(...),
             "ahead_title": place["ahead_title"],
             "ahead_session": place["ahead_session"],
             "ahead_target": place["ahead_target"]}
+
+
+@router.post("/api/tasks/queue/force")
+def api_queue_force(body: dict = Body(...),
+                    x_fused: str | None = Header(default=None)):
+    """Run this WAITING message RIGHT NOW, beside whatever owns the folder.
+
+    **IT IS THE FLAG-OFF BEHAVIOUR, FOR ONE MESSAGE** (Akshil, 2026-09-21).
+    Skip next door is a statement about the ORDER of the line and leaves the
+    queue deciding WHEN the turn goes; this is the user saying the line is not
+    what they want for this one message. So the manager never owns it: the item
+    leaves its line and the message is dispatched exactly as it would have been
+    with `project_queue_enabled` off — two processes in one tree, which is what
+    main has always done and what this pref exists to stop doing BY DEFAULT.
+
+    **IT NEVER INTERRUPTS THE OWNER.** Nothing in this app takes a folder off a
+    live process and this is not the exception: the holder keeps the folder and
+    keeps running. "Force" is a statement about the QUEUE, never about the other
+    run.
+
+    **EVERY WAITING ROW GETS IT, INCLUDING #1.** "Next" and "now" are different
+    promises — the task at the head of a line is still waiting on a turn that
+    may have an hour left in it — so this is offered wherever a message is
+    queued, unlike `skip`, which has nothing to say at position 1.
+
+    `{entry_id}` OR `{key}`, resolved the way skip resolves them: a queued new
+    chat is filed under `pending:<leader entry>` until its leader's run mints a
+    session and the whole row then REKEYS, so the entry id is the only name a
+    chip painted a second ago can safely hold (see `api_queue_skip`).
+
+    Three answers:
+
+    * `{"ok": true, "started": true, "run_id", "session_id"}` — it went.
+    * `{"ok": true, "started": false, "reason": "already started"}` — there was
+      nothing left to dispatch by the time this call reached the entry: it was
+      cancelled, or the pump claimed it in the window. A 200, because the thing
+      the user asked for either happened without them or is no longer theirs to
+      ask for, and the next listing says which.
+    * 409 carrying the scheduler's OWN sentence for a conversation that cannot
+      take the message YET (`schedule.SpawnBusy` — a send already in flight, a
+      live turn the user is typing into). **THE ITEM GOES BACK IN THE LINE**
+      before that answer is written: this endpoint is what took it out, and a
+      refusal that left it out would drop the user's message on the floor.
+
+    **A TASK WHOSE ONLY WAITING THING IS AN ANSWER** is not a message to
+    dispatch — it is a held card decision, and "run it now" means DELIVER it,
+    which is the same flag-off road (`_queue_deliver` → `agent._decide`, every
+    rule applied against the run as it now is). The task owns nothing here, so
+    `remove` only clears its line and its answers.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    key = str(body.get("key") or "").strip()
+    named = str(body.get("entry_id") or "").strip()
+    if not key and not named:
+        return _error("key or entry_id: required", status=400)
+    if not project_queue.enabled():
+        return _error("project queue is off", status=409)
+    if not key:
+        by_id = _by_entry_id()
+        entry = by_id.get(named)
+        if entry is None:
+            return _error(
+                f"entry_id: no scheduled message with id {named!r}",
+                status=404)
+        key = _entry_key(entry, by_id)
+
+    tasks = _collect()
+    task = tasks.get(key)
+    if task is None:
+        return _error(f"no task with key {key!r}", status=404)
+
+    manager = queue_manager.get()
+    # THE MESSAGE THIS TASK IS WAITING TO SEND, asked of the store the way the
+    # pump asks it (`_queue_spawn`): whichever of the task's due messages is
+    # OLDEST, and not whichever one the body happened to name. Message order in
+    # a conversation is the conversation, and a force that sent the named one
+    # would run the second thing typed before the first.
+    entry_id = _oldest_due_entry(key)
+    if not entry_id:
+        # NOTHING TO DISPATCH, so either this task is owed a DECISION — the
+        # other kind of waiting a line holds — or the row is stale.
+        answers = manager.held_answers(key)
+        if not answers:
+            return _error("nothing waiting to start", status=400)
+        for answer in answers:
+            _queue_deliver(answer)
+        manager.remove(key)
+        tasks_watch.notify({key})
+        return {"ok": True, "started": True, "delivered": len(answers)}
+
+    # WHERE TO PUT IT BACK if the dispatch is refused — read off the ENTRY and
+    # never off the key, the same rule everything else in this router files a
+    # waiting message under (`_queue_pending_due`). Taken from the collection
+    # already in hand rather than re-reading the store.
+    entry = next((row for row in task["entries"]
+                  if str(row.get("id") or "") == entry_id), {})
+    folder = project_queue.queue_key(str(entry.get("target") or ""))
+
+    # OUT OF THE LINE FIRST, and BY ENTRY: `remove` would also release the
+    # folder when this task happens to own it — a user forcing the second thing
+    # they typed would take the turn that is running away from themselves — and
+    # this verb touches no owner at all. Everybody behind it shifts up, because
+    # the folder's line really is one message shorter now.
+    manager.forget_entry(entry_id)
+    try:
+        started = schedule.dispatch_entry(entry_id)
+    except schedule.SpawnBusy as exc:
+        # NOT YET — and the message is still the user's.
+        if folder:
+            manager.enqueue(folder, key, entry_id)
+        tasks_watch.notify({key})
+        return _error(str(exc), status=409)
+    except Exception:
+        # Any other failure is a 500, but the message must survive it: the line
+        # is the only record that this work is still waiting.
+        if folder:
+            manager.enqueue(folder, key, entry_id)
+        tasks_watch.notify({key})
+        raise
+    if started is None:
+        # Cancelled in the window, or the pump got there first. Either way there
+        # is nothing to start and nothing to put back.
+        tasks_watch.notify({key})
+        return {"ok": True, "started": False, "reason": "already started"}
+
+    session_id = str(started.get("session_id") or "")
+    run_id = str(started.get("run_id") or "")
+    if session_id:
+        # A TURN JUST BEGAN and nothing else knows it yet — the same mark the
+        # pump's spawn site writes for the same reason (`_queue_spawn`): a stale
+        # `turn_ended` stamp would draw this row as done while it ran.
+        try:
+            tasks_watch.mark_running(session_id)
+        except Exception:  # noqa: BLE001 — a missed mark is the old behaviour
+            logger.debug("could not mark %s running", session_id, exc_info=True)
+    # THE ROW, AND THE ROW IT IS ABOUT TO BECOME: a queued new chat is filed
+    # under `pending:<entry>` until this dispatch mints a session, and a page
+    # long-polling the old key would not hear about the new one.
+    tasks_watch.notify({key, session_id} - {""})
+    return {"ok": True, "started": True, "run_id": run_id,
+            "session_id": session_id}
 
 
 def _already_decided(agent, run_dir: str, request_id: str) -> bool:

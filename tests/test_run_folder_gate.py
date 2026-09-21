@@ -172,6 +172,31 @@ def test_off_or_not_the_agent_or_not_a_send_is_always_open(gate):
     assert run_router._folder_busy(AGENT, _params(_file="")) == ""
 
 
+def test_a_send_into_this_chats_own_live_run_is_never_refused(gate, monkeypatch):
+    """THE FORCED CHAT (PR 2, 2026-09-21). `POST /api/tasks/queue/force` starts a
+    run beside the folder's owner on purpose — the flag-off behaviour for one
+    message — so the index names somebody else as that tree's owner for the rest
+    of that conversation's life, and this door refused its every follow-up. A
+    send whose OWN process is alive goes into the turn that is already there
+    (`agent._send`), so there is no second run here to prevent.
+
+    `own_run_alive` is the router's read of the status sync and has its own cases
+    next door (tests/test_tasks_queue_api.py); what is under test here is that
+    this door asks it, and only after the ordinary claim has refused."""
+    from fused_render.server.routers import tasks as tasks_mod
+    gate["manager"].own("/w/alpha", "TASK-007", session_id="sess-a", run_id="r-a")
+    params = _params(action="send", session_id="sess-b", run_id="r-b")
+    assert run_router._folder_busy(AGENT, params)
+
+    monkeypatch.setattr(tasks_mod, "own_run_alive",
+                        lambda session_id="", run_id="": session_id == "sess-b")
+    assert run_router._folder_busy(AGENT, params) == ""
+    # A chat with no process of its own is still a stranger — the refusal is
+    # unchanged everywhere this bypass does not apply.
+    assert run_router._folder_busy(
+        AGENT, _params(action="send", session_id="sess-c", run_id="r-c"))
+
+
 def test_an_undecidable_gate_is_an_open_one(gate, monkeypatch):
     """An index that will not read costs a gate, never a send."""
     def boom(*a, **k):

@@ -380,6 +380,25 @@ export const RUN_NEXT_HINT = "Run next — nothing is interrupted";
 export const RUN_NEXT_DONE_HINT = "Already next in this folder";
 
 /**
+ * THE OTHER VERB, in the words every surface says it in.
+ *
+ * Run next is about the ORDER of the line and still leaves the queue deciding
+ * WHEN the turn goes. This one takes the message out of the line altogether and
+ * runs it on the spot — which is why the hint has to say out loud what that
+ * means: the task holding the folder is STILL RUNNING, and this work starts
+ * beside it. That is the flag-off behaviour for one message, and naming the
+ * other run is the only honest way to offer it.
+ *
+ * "Force" and not "Run now", because the word has to carry the cost. "Run now"
+ * reads as a schedule change on a message nobody else is waiting on; the press
+ * actually puts a second process in one working tree, which is the single thing
+ * the project queue exists to prevent.
+ */
+export const FORCE_START_LABEL = "Force start";
+export const FORCE_START_HINT =
+  "Start now, beside the task running in this folder";
+
+/**
  * THE RUN NEXT BUTTON'S FACE — and, since 2026-09-19, nothing else's.
  *
  * AN ARROW TO A BAR, and not a star or a bolt. It means "to the top of this",

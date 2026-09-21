@@ -151,11 +151,15 @@ class FakeManager:
         self.owners: dict[str, dict | None] = {}
         self.promoted: set[str] = set()
         self.answers: dict[str, dict] = {}
+        # WHICH MESSAGE PUTS A TASK IN A LINE, which is the one thing
+        # `forget_entry` needs and `remove` deliberately does not know
+        # (`queue_manager.forget_entry` drops an ITEM, never a task).
+        self.entry_of: dict[str, str] = {}
         self.events: list[tuple] = []
 
     # -- the way a case states a line ------------------------------------
     def line(self, folder, *task_keys, holder="", priority=(),
-             holder_session=None, holder_run=None):
+             holder_session=None, holder_run=None, entries=None):
         """`folder`'s line, in order: `task_keys[0]` is #1.
 
         `holder` is the task key that OWNS the folder — what position 1 stands
@@ -172,6 +176,10 @@ class FakeManager:
         means."""
         self.lines[folder] = list(task_keys)
         self.promoted.update(priority)
+        # `{task key: entry id}` where a case needs the MESSAGE behind a place —
+        # what `forget_entry` names. Stated, because the real index learns it on
+        # the enqueue this case is standing in for.
+        self.entry_of.update(entries or {})
         session = (("" if holder.startswith("pending:") else holder)
                    if holder_session is None else holder_session)
         self.owners[folder] = ({"task": holder, "task_key": holder,
@@ -221,6 +229,14 @@ class FakeManager:
     def held_answer(self, task_key):
         answer = self.answers.get(task_key)
         return dict(answer) if answer else None
+
+    def held_answers(self, task_key):
+        """The whole list, which is what a door that DELIVERS reads — the fake
+        holds at most one per task (`hold` is keyed by task), and that is enough
+        for a door to be tested: how several answers stack on one task is
+        `queue_manager`'s subject."""
+        answer = self.answers.get(task_key)
+        return [dict(answer)] if answer else []
 
     def holds_live(self, task_key):
         """`queue_manager.QueueManager.holds_live` — is a RUN of this task in
@@ -311,7 +327,21 @@ class FakeManager:
         keys = self.lines.setdefault(folder, [])
         if task_key not in keys:
             keys.append(task_key)
+        if entry_id:
+            self.entry_of[task_key] = entry_id
         return self.place(task_key)
+
+    def forget_entry(self, entry_id):
+        """ONE MESSAGE leaves every line — AND NO OWNER IS TOUCHED, which is the
+        whole difference from `remove` (`queue_manager.forget_entry`)."""
+        self.events.append(("forget_entry", entry_id))
+        if not entry_id:
+            return
+        for task_key, named in list(self.entry_of.items()):
+            if named != entry_id:
+                continue
+            self.remove_from_line(task_key)
+            self.entry_of.pop(task_key, None)
 
     def skip(self, task_key):
         self.events.append(("skip", task_key))
@@ -334,6 +364,7 @@ class FakeManager:
 
     def remove(self, task_key):
         self.events.append(("remove", task_key))
+        self.entry_of.pop(task_key, None)
         self.remove_from_line(task_key)
         self.promoted.discard(task_key)
         self.answers.pop(task_key, None)
@@ -1281,6 +1312,50 @@ def test_a_run_id_does_not_admit_a_chat_into_somebody_elses_folder(
     assert _rows(client)["sess-mine"]["status"] == "queued"
 
 
+def test_admit_absorbs_a_send_into_this_chats_own_live_run(
+        client, folders, flag, manager, chat_run):
+    """A FORCED CHAT'S FOLLOW-UP (PR 2, 2026-09-21). `queue/force` starts a run
+    BESIDE the folder's owner on purpose, so the index goes on naming somebody
+    else as that tree's owner — and this chat is a stranger in it for the rest
+    of its life. Its second message was told to queue behind a task its own
+    process is running beside; a chat can always talk to its own live run, and
+    that send spawns nothing (`agent._send` absorbs it).
+
+    THE RUN IS REAL HERE, not a flag on the fake: `own_run_alive` reads the same
+    status sync the manager is wired to, and the run dir is the only channel
+    that answers for a chat with no session yet."""
+    flag()
+    alpha, _beta = folders
+    chat_run("r-forced", alpha)
+    manager.line(alpha, holder="sess-holder")
+
+    r = _post(client, "/api/tasks/queue/admit",
+              {"project": alpha, "message": "and one more thing",
+               "run_id": "r-forced"})
+    assert r.status_code == 200, r.text
+    # No claim token and no owner token: nothing was taken and nothing stored.
+    assert r.json() == {"run": True}
+    assert schedule.list_entries() == []
+    assert (manager.owner(alpha) or {})["task"] == "sess-holder"
+    assert _kinds(manager, "enqueue", "started") == []
+
+
+def test_admit_still_queues_a_stranger_whose_run_is_gone(
+        client, folders, flag, manager, chat_run):
+    """The other half of the rule above, and the one that keeps the feature: a
+    run id that names no live process is not a conversation of one's own."""
+    flag()
+    alpha, _beta = folders
+    chat_run("r-forced", alpha)
+    manager.line(alpha, holder="sess-holder")
+
+    r = _post(client, "/api/tasks/queue/admit",
+              {"project": alpha, "message": "and one more thing",
+               "run_id": "r-gone"})
+    assert r.status_code == 200, r.text
+    assert r.json()["run"] is False
+
+
 def test_an_admitted_send_changes_no_row_by_itself(
         client, projects_dir, folders, flag, rings, manager):
     """INSTANT STATUS IS THE SENDER'S MARK, NOT THE RESERVATION (2026-09-16).
@@ -1441,6 +1516,7 @@ def test_every_queue_verb_needs_the_fused_header(client, folders):
     for path, body in (("/api/tasks/queue/admit",
                         {"project": alpha, "session_id": "s", "message": "go"}),
                        ("/api/tasks/queue/skip", {"key": "sess-a"}),
+                       ("/api/tasks/queue/force", {"key": "sess-a"}),
                        ("/api/tasks/queue/decide",
                         {"run_id": "r", "request_id": "q", "session_id": "s",
                          "project": alpha, "decision": "allow", "scope": "once"})):
@@ -1579,6 +1655,213 @@ def test_skip_into_a_free_folder_is_answered_and_not_refused(
     assert r.status_code == 200, r.text
     assert r.json()["ok"] is True
     assert (manager.owner(alpha) or {})["task"] == "sess-a"
+
+
+# ==================================================================== force
+#
+# `POST /api/tasks/queue/force` — run this WAITING message now, beside whatever
+# owns the folder. It is the FLAG-OFF behaviour for one message: the manager
+# never owns it, the owner is never interrupted, and the dispatch is the
+# scheduler's ordinary one. So every case here asserts two things at once — the
+# message went, and the folder's owner did not move.
+
+
+@pytest.fixture()
+def dispatched(monkeypatch):
+    """Every `schedule.dispatch_entry` the router made, and what it answers.
+
+    The ONE spawn site, stubbed so this suite pins the CALL rather than starting
+    a CLI — the dispatch itself, its session gates and its `SpawnBusy` are
+    tests/test_schedule_project_queue.py's subject. `answer["value"]` is what it
+    hands back, or an exception to raise."""
+    calls = []
+    answer = {"value": {"run_id": "r-new", "session_id": "sess-new"}}
+
+    def dispatch_entry(entry_id, now=None):
+        calls.append(entry_id)
+        value = answer["value"]
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    monkeypatch.setattr(schedule, "dispatch_entry", dispatch_entry)
+    return calls, answer
+
+
+def test_force_starts_the_waiting_message_beside_the_folders_owner(
+        client, projects_dir, folders, monkeypatch, flag, manager, dispatched,
+        rings):
+    """The whole verb in one press: the message goes NOW, it leaves the line, and
+    the task holding the folder keeps it."""
+    flag()
+    calls, _answer = dispatched
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha)
+    schedule._write([
+        _entry("e-due", "the queued one", alpha, session_id="sess-a"),
+        _entry("e-later", "next week", alpha, due=_iso(7 * 86400),
+               session_id="sess-a"),
+    ])
+    _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, "sess-a", holder="sess-holder",
+                 entries={"sess-a": "e-due"})
+
+    r = _post(client, "/api/tasks/queue/force", {"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "started": True, "run_id": "r-new",
+                        "session_id": "sess-new"}
+    # THE OLDEST DUE MESSAGE AND NOTHING ELSE. Next week's is not waiting, and
+    # forcing it would be this verb silently rescheduling work nobody asked
+    # about.
+    assert calls == ["e-due"]
+    # OUT OF THE LINE BY ENTRY, and the owner untouched — the two halves of
+    # "beside whatever owns the folder".
+    assert _kinds(manager, "forget_entry") == [("forget_entry", "e-due")]
+    assert manager.lines[alpha] == []
+    assert (manager.owner(alpha) or {})["task"] == "sess-holder"
+    assert _kinds(manager, "remove", "skip", "claim") == []
+    # The row it is, and the row it is about to become once the dispatch names
+    # itself.
+    assert {"sess-a", "sess-new"} in rings
+
+
+def test_force_names_the_entry_when_the_key_has_moved(
+        client, projects_dir, folders, monkeypatch, flag, manager, dispatched):
+    """The chip's own road, for the same reason skip has it: a queued chat is
+    `pending:<leader entry>` until its leader's run mints a session, and a
+    button holding that key 404s a second later. The entry id never moves."""
+    flag()
+    calls, _answer = dispatched
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha)
+    schedule._write([
+        _entry("e-lead", "first thing", alpha, state=schedule.SENT,
+               turn="done", claude_session_id="sess-lead"),
+        _entry("e-follow", "second thing", alpha, follow_of="e-lead"),
+    ])
+    _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, "sess-lead", holder="sess-holder",
+                 entries={"sess-lead": "e-follow"})
+
+    stale = _post(client, "/api/tasks/queue/force",
+                  {"key": tasks_store.pending_key("e-lead")})
+    assert stale.status_code == 404
+
+    r = _post(client, "/api/tasks/queue/force", {"entry_id": "e-follow"})
+    assert r.status_code == 200, r.text
+    assert r.json()["started"] is True
+    assert calls == ["e-follow"]
+
+
+def test_force_puts_the_message_back_when_the_conversation_cannot_take_it(
+        client, projects_dir, folders, monkeypatch, flag, manager, dispatched):
+    """`SpawnBusy` is "not yet", not "no" — a send already in flight, or a live
+    turn the user is typing into. This endpoint took the item out of the line, so
+    this endpoint is what has to put it back: a 409 that left it out would drop
+    the user's message on the floor."""
+    flag()
+    _calls, answer = dispatched
+    alpha, _beta = folders
+    answer["value"] = schedule.SpawnBusy(
+        "e-due: session sess-a has a live turn")
+    _transcript(projects_dir, "sess-holder", alpha)
+    schedule._write([_entry("e-due", "the queued one", alpha,
+                            session_id="sess-a")])
+    _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, "sess-a", holder="sess-holder",
+                 entries={"sess-a": "e-due"})
+
+    r = _post(client, "/api/tasks/queue/force", {"key": "sess-a"})
+    assert r.status_code == 409
+    # The scheduler's OWN sentence, so the chat says what the wait actually is.
+    assert r.json()["error"] == "e-due: session sess-a has a live turn"
+    assert _kinds(manager, "enqueue") == [("enqueue", alpha, "sess-a", "e-due")]
+    assert manager.lines[alpha] == ["sess-a"]
+    assert (manager.owner(alpha) or {})["task"] == "sess-holder"
+
+
+def test_force_answers_started_false_when_there_is_nothing_left_to_send(
+        client, projects_dir, folders, monkeypatch, flag, manager, dispatched):
+    """Cancelled in the window, or the pump got there first. A 200, because what
+    the user asked for is no longer theirs to ask for — and nothing goes back in
+    the line, because there is no message behind it any more."""
+    flag()
+    _calls, answer = dispatched
+    answer["value"] = None
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha)
+    schedule._write([_entry("e-due", "the queued one", alpha,
+                            session_id="sess-a")])
+    _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.line(alpha, "sess-a", holder="sess-holder",
+                 entries={"sess-a": "e-due"})
+
+    r = _post(client, "/api/tasks/queue/force", {"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "started": False,
+                        "reason": "already started"}
+    assert _kinds(manager, "enqueue") == []
+
+
+def test_force_on_a_task_that_is_owed_an_answer_delivers_it(
+        client, projects_dir, folders, monkeypatch, flag, manager, dispatched,
+        agent):
+    """A held card decision is the OTHER kind of waiting a line holds, and there
+    is no message to dispatch for it. "Run it now" means deliver it — the same
+    flag-off road, `agent._decide` against the run as it now is."""
+    flag()
+    calls, _answer = dispatched
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-holder", alpha)
+    _transcript(projects_dir, "sess-a", alpha)
+    _holders(monkeypatch, {alpha: "sess-holder"})
+    manager.hold("sess-a", run_id="run-1", request_id="req-1",
+                 raw={"run_id": "run-1", "request_id": "req-1",
+                      "decision": "allow", "scope": "once"})
+    manager.line(alpha, "sess-a", holder="sess-holder")
+
+    r = _post(client, "/api/tasks/queue/force", {"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "started": True, "delivered": 1}
+    assert [call["request_id"] for call in agent.calls] == ["req-1"]
+    assert calls == []
+    # It owns nothing, so `remove` here only clears its line and its answers —
+    # and the owner of the folder is still the owner of the folder.
+    assert _kinds(manager, "remove") == [("remove", "sess-a")]
+    assert (manager.owner(alpha) or {})["task"] == "sess-holder"
+
+
+def test_force_refuses_a_task_with_nothing_waiting(
+        client, projects_dir, folders, flag, manager, dispatched):
+    """A client looking at a stale row, and the refusal is what makes it
+    refetch — the same posture as skip's 400."""
+    flag()
+    calls, _answer = dispatched
+    alpha, _beta = folders
+    _transcript(projects_dir, "sess-a", alpha, "mine")
+
+    r = _post(client, "/api/tasks/queue/force", {"key": "sess-a"})
+    assert r.status_code == 400
+    assert r.json()["error"] == "nothing waiting to start"
+    assert calls == []
+
+
+def test_force_refuses_a_disabled_queue_and_a_name_that_is_nothing(
+        client, folders, flag, dispatched):
+    """The flag is the feature's one promise: with it off this verb does not
+    exist, and nothing is read or resolved on the way to saying so."""
+    calls, _answer = dispatched
+    flag(False)
+    r = _post(client, "/api/tasks/queue/force", {"key": "sess-a"})
+    assert r.status_code == 409
+    assert r.json()["error"] == "project queue is off"
+    flag()
+    assert _post(client, "/api/tasks/queue/force",
+                 {"key": "nobody"}).status_code == 404
+    assert _post(client, "/api/tasks/queue/force",
+                 {"entry_id": "no-such"}).status_code == 404
+    assert _post(client, "/api/tasks/queue/force", {}).status_code == 400
+    assert calls == []
 
 
 # =================================================================== decide
@@ -3205,6 +3488,25 @@ def test_the_parked_read_answers_to_a_run_id_too(folders, park):
     # …and the session half, unchanged.
     assert tasks_mod._queue_blocked(
         {"task": "pending:e1", "run_id": "", "session_id": "sess-1"}) is True
+
+
+def test_own_run_alive_answers_for_this_chats_process_and_no_other(
+        folders, chat_run, registry):
+    """The one question both doors ask a forced chat. Either name is enough — a
+    chat with no session yet has only the run it started — and NEITHER id is
+    tried as the other: a session id tried as a run id would name a stranger's
+    run dir and answer yes."""
+    alpha, _beta = folders
+    chat_run("r-forced", alpha)
+    assert tasks_mod.own_run_alive("", "r-forced") is True
+    assert tasks_mod.own_run_alive("r-forced", "") is False
+    assert tasks_mod.own_run_alive("", "r-gone") is False
+    assert tasks_mod.own_run_alive("", "") is False
+    # A path where a run id belongs is not a run id.
+    assert tasks_mod.own_run_alive("", "../r-forced") is False
+    # …and the registry half, which is what a chat that HAS a session offers.
+    registry("sess-forced", status="busy")
+    assert tasks_mod.own_run_alive("sess-forced", "") is True
 
 
 def test_decide_hands_the_card_to_the_manager(

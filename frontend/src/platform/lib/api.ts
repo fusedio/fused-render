@@ -3695,6 +3695,48 @@ export function skipQueue(
   return postJson<SkipResult>("/api/tasks/queue/skip", what);
 }
 
+/** What Force start answers with.
+ *
+ *  `started: true` is the ordinary outcome and carries the run the dispatch
+ *  created (`session_id` is "" for a brand-new chat until Claude Code mints
+ *  one), or, for a task whose only waiting thing was a HELD CARD ANSWER, the
+ *  number of decisions that were delivered instead.
+ *
+ *  `started: false` is the honest 200 for a press that arrived too late: the
+ *  message was cancelled, or the folder's own pump dispatched it in the window
+ *  (`reason: "already started"`). Nothing failed and nothing is queued any
+ *  more, so the caller refetches rather than showing an error.
+ *
+ *  A conversation that cannot take the message YET — a send already in flight,
+ *  a live turn — is a 409 carrying the scheduler's own sentence, and `postJson`
+ *  throws it like any other refusal. The message stays in its line. */
+export interface ForceResult {
+  ok: boolean;
+  started: boolean;
+  run_id?: string;
+  session_id?: string;
+  delivered?: number;
+  reason?: string;
+}
+
+/**
+ * RUN THIS WAITING MESSAGE NOW, beside whatever owns its folder.
+ *
+ * The flag-off behaviour for ONE message: the queue stops deciding when this
+ * turn goes and the message is dispatched immediately, into a tree another task
+ * may still be running in. IT INTERRUPTS NOTHING — the owner keeps the folder
+ * and keeps running — and unlike `skipQueue` it is offered at every waiting
+ * position, including the first: "next" and "now" are different promises.
+ *
+ * `{ entry_id }` is the name a chip can safely hold; see `skipQueue` for why a
+ * task key is not one.
+ */
+export function forceStart(
+  what: { entry_id?: string; key?: string },
+): Promise<ForceResult> {
+  return postJson<ForceResult>("/api/tasks/queue/force", what);
+}
+
 /** A card decision routed through the queue: the same body the agent's own
  *  `decide` action takes, plus the session and folder the server needs to find
  *  the line. `held: false` carries the ordinary decide result straight through;
