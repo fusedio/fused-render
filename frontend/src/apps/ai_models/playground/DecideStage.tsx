@@ -275,15 +275,28 @@ function Distribution({
  *  lists details"). The verdict word is the question's one accent hit. A
  *  native <details> keeps the fold per row with no state to carry: opening
  *  one question's details leaves the others shut. */
+// What `confidence` measures — the skill says the same, and a reader who
+// sees "10% confident" beside a 46.6% option needs the sentence right there.
+const CONFIDENCE_TIP =
+  "Not the probability of the picked answer. Confidence is how decisive the "
+  + "whole distribution is: 1 minus its normalised entropy — 100% when all the "
+  + "probability sits on one option, 0% when it is spread evenly over them. "
+  + "Open Details for each option's own probability.";
+const CONFIDENCE_TIP_NOUL =
+  "For a yes/no question this is the probability of the side the model took: "
+  + "max(P(yes), P(no)).";
+
 function AnswerLine({
   verdict,
   title,
   confidence,
+  confidenceTitle = CONFIDENCE_TIP,
   children,
 }: {
   verdict: string;
   title?: string;
   confidence: number;
+  confidenceTitle?: string;
   children: ReactNode;
 }) {
   return (
@@ -291,7 +304,7 @@ function AnswerLine({
       <summary className="pg-decide-verdict">
         <span className="pg-decide-verdict-label" aria-hidden="true">Answer:</span>
         <span className="pg-decide-verdict-word" title={title}>{verdict}</span>
-        <span className="pg-decide-verdict-conf" title="How sure the model is of this answer">
+        <span className="pg-decide-verdict-conf" title={confidenceTitle}>
           {(confidence * 100).toFixed(0)}% confident
         </span>
         <span className="pg-decide-details-toggle">
@@ -336,7 +349,12 @@ function Answer({ answer }: { answer: DecideAnswer }) {
     const p = answer.noul ?? 0;
     const yes = p >= 0.5;
     return (
-      <AnswerLine verdict={yes ? "Yes" : "No"} confidence={answer.confidence} title={`P(true) = ${p.toFixed(4)}`}>
+      <AnswerLine
+        verdict={yes ? "Yes" : "No"}
+        confidence={answer.confidence}
+        confidenceTitle={CONFIDENCE_TIP_NOUL}
+        title={`P(true) = ${p.toFixed(4)}`}
+      >
         <Distribution rows={[{ key: "true", label: "P(true)", p }]} picked={yes ? "true" : undefined} />
       </AnswerLine>
     );
