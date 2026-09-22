@@ -34,9 +34,19 @@
 // machine — the two-action gate, the confirm-before-stop, the upload
 // fallback — testable head-on through the hook (ShareFileModal.test.tsx).
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Check, Clock, Copy, ExternalLink, Globe, Loader2, XIcon } from "lucide-react";
+import {
+  Check,
+  ChevronRight,
+  Clock,
+  Copy,
+  ExternalLink,
+  Folder,
+  Globe,
+  Loader2,
+  XIcon,
+} from "lucide-react";
 import { copyToClipboard } from "@platform/lib/clipboard";
-import { dirname } from "@platform/lib/format";
+import { basename, dirname } from "@platform/lib/format";
 import {
   cancelUpload,
   closeShareFile,
@@ -75,20 +85,43 @@ import {
 } from "@platform/shadcn/ui/dialog";
 import { Input } from "@platform/shadcn/ui/input";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
+import { iconForEntry } from "@platform/ui/FileIcons";
 
 const UPLOAD_POLL_MS = 1200;
 
 type Busy = null | ShareMode | "remove";
 
-/** The two, and only two, share actions the sheet ever offers. */
+/** The two, and only two, share actions the sheet ever offers.
+ *
+ *  WORDED AS AUDIENCES, NOT VERBS ("Anyone with the link", not "Share
+ *  publicly"), and drawn as two rows of icon + label + consequence rather than
+ *  two stacked buttons — the shape every reader has already met in Drive,
+ *  Dropbox and the iOS share sheet (owner, 2026-09-22: "some UI familiar to
+ *  the users when sharing stuff"). It is a presentation change only: this is
+ *  still the two-state machine this file's header describes, NOT the
+ *  visibility picker that header rules out — picking a row publishes at once,
+ *  and the only way from one row to the other is still Stop sharing. */
 export const PRIMARY_ACTIONS: Array<{
   mode: ShareMode;
   label: string;
+  detail: string;
   busyLabel: string;
   icon: typeof Globe;
 }> = [
-  { mode: "public", label: "Share publicly", busyLabel: "Sharing…", icon: Globe },
-  { mode: "temporary", label: "Share for 30 minutes", busyLabel: "Sharing…", icon: Clock },
+  {
+    mode: "public",
+    label: "Anyone with the link",
+    detail: "Stays up until you stop sharing",
+    busyLabel: "Sharing…",
+    icon: Globe,
+  },
+  {
+    mode: "temporary",
+    label: "Anyone with the link, 30 minutes",
+    detail: "Expires on its own",
+    busyLabel: "Sharing…",
+    icon: Clock,
+  },
 ];
 
 export type SharePhase = "loading" | "refused" | "no-cli" | "share" | "shared" | "uploading";
@@ -345,6 +378,7 @@ export function ShareFileModal({
   const state = useShareFile(file);
   const { phase, status, shared, busy, err, upload, confirmStop, copied } = state;
   const working = busy !== null;
+  const dir = dirname(file.path);
 
   let body: ReactNode;
   if (phase === "loading") {
@@ -380,39 +414,32 @@ export function ShareFileModal({
   } else if (phase === "shared" && shared) {
     const url = shared.url;
     body = (
-      <div className="flex flex-col gap-2.5">
-        <div className="flex items-center gap-1.5">
+      <div className="flex min-w-0 flex-col gap-2.5">
+        {/* THE LINK IN A FIELD-WITH-A-BUTTON, the one shape every share dialog
+            the reader has used already puts here: the url sits in a bordered
+            well and a LABELLED "Copy link" ends it, rather than the row of
+            three same-weight icon buttons this was. Copying is what a reader
+            came to do, so it is the only filled control in the sheet; Open and
+            Stop sharing drop to quiet ghosts on the line below. */}
+        <div className="flex min-w-0 items-center gap-1.5 rounded-xl border border-input bg-muted/40 py-1 pr-1 pl-2.5">
           <Input
             type="text"
             readOnly
             value={url ?? ""}
             onFocus={(e) => e.currentTarget.select()}
             aria-label="Shared link"
-            className="h-8 min-w-0 flex-1 truncate bg-muted/40 font-mono text-[12.5px] text-foreground"
+            className="h-7 min-w-0 flex-1 truncate border-0 bg-transparent px-0 font-mono text-[12.5px] text-foreground focus-visible:ring-0 dark:bg-transparent"
           />
-          <Button
-            size="icon-sm"
-            variant="outline"
-            onClick={state.copyLink}
-            disabled={!url}
-            title={copied ? "Copied" : "Copy link"}
-            aria-label={copied ? "Copied" : "Copy link"}
-          >
-            {copied ? <Check /> : <Copy />}
+          <Button size="sm" onClick={state.copyLink} disabled={!url}>
+            {copied ? (
+              <Check data-icon="inline-start" />
+            ) : (
+              <Copy data-icon="inline-start" />
+            )}
+            {copied ? "Copied" : "Copy link"}
           </Button>
-          {url && (
-            <Button
-              size="icon-sm"
-              variant="outline"
-              title="Open the shared page"
-              aria-label="Open the shared page"
-              render={<a href={url} target="_blank" rel="noopener noreferrer" />}
-            >
-              <ExternalLink />
-            </Button>
-          )}
         </div>
-        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-2">
           <Badge variant="secondary" className="gap-1">
             {shared.mode === "temporary" ? (
               <>
@@ -424,38 +451,65 @@ export function ShareFileModal({
               </>
             )}
           </Badge>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={working}
-            onClick={state.requestStop}
-            className="text-muted-foreground hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
-          >
-            {busy === "remove" && <Loader2 data-icon="inline-start" className="animate-spin" />}
-            {busy === "remove" ? "Stopping…" : "Stop sharing"}
-          </Button>
+          <div className="flex items-center gap-0.5">
+            {url && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-muted-foreground hover:text-foreground"
+                render={<a href={url} target="_blank" rel="noopener noreferrer" />}
+              >
+                <ExternalLink data-icon="inline-start" />
+                Open
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={working}
+              onClick={state.requestStop}
+              className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+            >
+              {busy === "remove" && <Loader2 data-icon="inline-start" className="animate-spin" />}
+              {busy === "remove" ? "Stopping…" : "Stop sharing"}
+            </Button>
+          </div>
         </div>
       </div>
     );
   } else {
     body = (
-      <div className="flex flex-col gap-1.5">
-        {PRIMARY_ACTIONS.map((a, i) => {
+      <div className="flex min-w-0 flex-col gap-1.5">
+        {PRIMARY_ACTIONS.map((a) => {
           const Icon = a.icon;
+          const running = busy === a.mode;
           return (
             <Button
               key={a.mode}
-              size="sm"
-              variant={i === 0 ? "default" : "outline"}
+              variant="outline"
               disabled={working}
               onClick={() => state.share(a.mode)}
+              className="h-auto w-full justify-start gap-3 rounded-xl px-3 py-2.5 text-left"
             >
-              {busy === a.mode ? (
-                <Loader2 data-icon="inline-start" className="animate-spin" />
-              ) : (
-                <Icon data-icon="inline-start" />
-              )}
-              {busy === a.mode ? a.busyLabel : a.label}
+              <span
+                className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground"
+                aria-hidden
+              >
+                {running ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Icon className="size-4" />
+                )}
+              </span>
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-[13px] leading-5 font-medium text-foreground">
+                  {running ? a.busyLabel : a.label}
+                </span>
+                <span className="truncate text-[11.5px] leading-4 font-normal text-muted-foreground">
+                  {a.detail}
+                </span>
+              </span>
+              <ChevronRight className="size-4 shrink-0 text-muted-foreground/60" aria-hidden />
             </Button>
           );
         })}
@@ -472,29 +526,63 @@ export function ShareFileModal({
         }}
       >
         <DialogContent
-          className="max-w-[min(360px,calc(100%-2rem))] gap-0 overflow-hidden p-0 sm:max-w-[min(360px,calc(100%-2rem))]"
+          className="max-w-[min(420px,calc(100%-2rem))] gap-0 overflow-hidden p-0 sm:max-w-[min(420px,calc(100%-2rem))]"
           showCloseButton={false}
         >
           {/* `min-w-0` ON EVERY BOX A TRUNCATING CHILD SITS IN, and it is not
               decoration: a flex/grid item's automatic minimum size is its
               MIN-CONTENT, and the path below is `white-space: nowrap`, so the
               header demanded the path's full unwrapped width — measured at
-              395px against this sheet's 360px cap — and `overflow-hidden` on
-              the sheet then sliced the excess off. The visible fault was a
+              395px against the sheet's then-360px cap — and `overflow-hidden`
+              on the sheet then sliced the excess off. The visible fault was a
               title reading "hare index.html" and a path missing its "/U"
               (owner, 2026-09-22). `truncate` alone cannot fix it: it clips
               what has already overflowed rather than letting the box shrink. */}
-          <DialogHeader className="min-w-0 gap-0 px-5 pt-3.5 pb-2.5">
-            <div className="flex min-w-0 items-center justify-between gap-3">
-              <DialogTitle className="min-w-0 truncate text-[15px] font-semibold leading-6">
-                Share {file.name}
-              </DialogTitle>
+          {/* THE FILE ITSELF AS THE HEADING — its own listing glyph in a
+              tile, then the name, then the folder it sits in. A share dialog
+              that opens with the thing being shared is the arrangement every
+              file app uses, and it beats the sentence this was ("Share
+              index.html" in one line) at the one job the header has: telling
+              the reader WHICH file this is about before they publish it. The
+              word "Share" survives for screen readers alone, so the dialog's
+              accessible name still says what the dialog does. */}
+          <DialogHeader className="min-w-0 gap-0 px-4 pt-4 pb-3">
+            <div className="flex min-w-0 items-start gap-3">
+              <span className="mt-px flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
+                {iconForEntry(file.name, false)}
+              </span>
+              <div className="flex min-w-0 flex-1 flex-col">
+                {/* `m-0` ON BOTH: this app runs without Tailwind's preflight,
+                    so an `h2` and a `p` still carry the browser's own 0.83em /
+                    1em block margins — measured 12.4px and 12px here, which is
+                    what held the name and its folder ~90px apart instead of
+                    stacked. Every other `p` in this file already spells `m-0`
+                    out for the same reason. */}
+                <DialogTitle className="m-0 min-w-0 truncate text-[15px] leading-6 font-semibold">
+                  <span className="sr-only">Share </span>
+                  {file.name}
+                </DialogTitle>
+                {/* THE FOLDER'S NAME, NOT THE WHOLE PATH: at this sheet's
+                    width an absolute path only ever arrives mid-word
+                    ("msdas/Fused/sandbox/…", measured), which reads as damage
+                    rather than as location. One folder name with a folder
+                    glyph is how a share dialog says where something lives, and
+                    nothing is lost — the full path is the `title` here, and
+                    the crumb bar behind the sheet is already showing it. */}
+                <DialogDescription
+                  className="m-0 mt-0.5 flex min-w-0 items-center gap-1 text-left text-[12px] leading-4 text-muted-foreground"
+                  title={dir}
+                >
+                  <Folder className="size-3 shrink-0" aria-hidden />
+                  <span className="min-w-0 truncate">{basename(dir) || dir}</span>
+                </DialogDescription>
+              </div>
               <DialogClose
                 render={
                   <Button
                     variant="ghost"
                     size="icon-sm"
-                    className="-mr-2 bg-transparent text-muted-foreground hover:text-foreground"
+                    className="-mt-1 -mr-1.5 bg-transparent text-muted-foreground hover:text-foreground"
                   />
                 }
                 disabled={working}
@@ -503,15 +591,8 @@ export function ShareFileModal({
                 <span className="sr-only">Close</span>
               </DialogClose>
             </div>
-            <DialogDescription
-              className="min-w-0 truncate text-left text-[12px] text-muted-foreground"
-              dir="rtl"
-              title={dirname(file.path)}
-            >
-              <bdi dir="ltr">{dirname(file.path)}</bdi>
-            </DialogDescription>
           </DialogHeader>
-          <div className="flex min-w-0 flex-col gap-3 px-5 pb-4">
+          <div className="flex min-w-0 flex-col gap-3 px-4 pb-4">
             {body}
             {err && (
               <p className="m-0 text-[13px] leading-5 text-destructive" role="alert">
