@@ -97,6 +97,39 @@ def _spec_ignore_sig(spec: dict):
     return None
 
 
+def _hint_key(hint):
+    """A canonical, hashable form of a `(forced, subtrees)` hint pair (or the
+    `{"forced": [...], "subtrees": [...]}` dict spec.json stores it as), for
+    comparing two hints — or a hint against "no hint" — the same way
+    `_spec_ignore_sig` lets `start` compare two rule sets. `None` means "this
+    run/request covers the whole root" (a normal walk, or a completed
+    whole-root journal replay), which is exactly why it never equals a
+    concrete hint below: covering everything is a strictly bigger promise
+    than covering a named set of dirs."""
+    if hint is None:
+        return None
+    if isinstance(hint, dict):
+        forced, subtrees = hint.get("forced") or [], hint.get("subtrees") or []
+    else:
+        forced, subtrees = hint
+    return (tuple(sorted(set(forced))), tuple(sorted(set(subtrees))))
+
+
+def _union_hints(a, b):
+    """The `(forced_set, subtrees_set)` union of two hints (tuple or spec.json
+    dict form). Used only when `start` is about to supersede a live hinted
+    run with a differently-hinted request — see the comment at that call
+    site for why the replacement must cover both."""
+    def parts(h):
+        if isinstance(h, dict):
+            return h.get("forced") or [], h.get("subtrees") or []
+        return h
+
+    fa, sa = parts(a)
+    fb, sb = parts(b)
+    return (set(fa) | set(fb), set(sa) | set(sb))
+
+
 def active_run(cfg: IndexConfig, root: str):
     """The live run scanning exactly `root`, or None.
 
@@ -120,11 +153,13 @@ def active_run(cfg: IndexConfig, root: str):
             spec = _run_spec(rd)
             return {"run_id": rid, "root": root,
                     "ignore_sig": _spec_ignore_sig(spec),
-                    "full": bool(spec.get("full"))}
+                    "full": bool(spec.get("full")),
+                    "hint": spec.get("hint")}
     return None
 
 
-def start(cfg: IndexConfig, root: str, full: bool = False) -> dict:
+def start(cfg: IndexConfig, root: str, full: bool = False,
+         hint=None) -> dict:
     """Spawn a detached scan of `root`; returns `{run_id, root}` at once.
 
     A root already being scanned JOINS that run instead of starting a second.
@@ -161,6 +196,7 @@ def start(cfg: IndexConfig, root: str, full: bool = False) -> dict:
     if not os.path.isdir(root):
         raise ValueError(f"not a directory: {root}")
     sig = cfg.rules.sig()
+    req_hint_key = _hint_key(hint)
     live = active_run(cfg, root)
     if live is not None:
         # Join only a run that can actually answer THIS request. A live scan
@@ -171,9 +207,36 @@ def start(cfg: IndexConfig, root: str, full: bool = False) -> dict:
         # reconciled while the store still holds the folders just excluded —
         # with the UI having reported a rebuild. `full` is one-way: a full
         # rebuild already covers an incremental request, not the reverse.
-        if live["ignore_sig"] == sig and (live["full"] or not full):
+        #
+        # Same one-way shape for `hint` (SPEC-scan-cost.md part 2's
+        # "correctness trap"): a live run with NO hint is a full walk (or a
+        # completed whole-root journal replay), so it covers any hinted
+        # request. A live run that IS hinted only walked its own named dirs,
+        # so it can answer a request only when the two hints are the exact
+        # same set — a live hint of {/a} does not cover a request for {/a,
+        # /b}, and (the direction it's tempting to wave through) it does not
+        # cover an UNHINTED request either, which needs the whole root, not
+        # just /a. Checking "is the request's hint a SUBSET of the live
+        # run's" would let more joins through correctly, but nothing here
+        # needs that set-logic and a wrong subset check is exactly the class
+        # of bug the ignore_sig check above was written to prevent — so this
+        # picks the conservative rule (identical or nothing) over the
+        # optimal one.
+        live_hint_key = _hint_key(live["hint"])
+        hint_ok = live_hint_key is None or live_hint_key == req_hint_key
+        if live["ignore_sig"] == sig and (live["full"] or not full) and hint_ok:
             return {"run_id": live["run_id"], "root": root,
                     "already_running": True}
+        if (hint is not None and live_hint_key is not None
+                and live_hint_key != req_hint_key):
+            # Both sides are hinted and disagree: the live run is about to be
+            # cancelled before it ever compacts (see the comment on `cancel`
+            # just below), so its own dirs were never applied to the store —
+            # if the run that replaces it only inherits the CALLER's hint,
+            # the live run's dirs are dropped until something else happens to
+            # notice them again. Union rather than pick one, so the
+            # superseding run accounts for both.
+            hint = _union_hints(hint, live["hint"])
         # Otherwise supersede it. Cancelling is safe to do bluntly: a
         # cancelled worker returns before it compacts or stamps anything
         # (index/scan.py), so its output was going to be discarded regardless
@@ -182,13 +245,20 @@ def start(cfg: IndexConfig, root: str, full: bool = False) -> dict:
     run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex()
     run_dir = os.path.join(cfg.runs_dir, run_id)
     os.makedirs(run_dir)
+    # `ignore_sig` is redundant with `config` and recorded anyway: the join
+    # check above reads it on every start, and deriving it from the config
+    # means compiling the rules just to answer "same rules?". Same reasoning
+    # is why `hint`, when given, is written in its own canonical (deduped,
+    # sorted) form rather than the caller's raw iterables.
+    run_spec = {"root": root, "full": bool(full), "started": time.time(),
+               "ignore_sig": sig, "config": cfg.to_dict(),
+               "mounts_dir": _mounts_dir()}
+    if hint is not None:
+        forced_key, subtrees_key = _hint_key(hint)
+        run_spec["hint"] = {"forced": list(forced_key),
+                            "subtrees": list(subtrees_key)}
     with open(os.path.join(run_dir, "spec.json"), "w") as f:
-        # `ignore_sig` is redundant with `config` and recorded anyway: the join
-        # check above reads it on every start, and deriving it from the config
-        # means compiling the rules just to answer "same rules?".
-        json.dump({"root": root, "full": bool(full), "started": time.time(),
-                   "ignore_sig": sig, "config": cfg.to_dict(),
-                   "mounts_dir": _mounts_dir()}, f)
+        json.dump(run_spec, f)
     with open(os.path.join(run_dir, "worker.log"), "w") as logf:
         subprocess.Popen(
             [sys.executable, "-m", WORKER_MODULE, run_dir],

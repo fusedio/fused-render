@@ -134,6 +134,25 @@ export function useListingSearch(
   home: string | undefined,
   refresh: number,
   urlSync = true,
+  // Called once a covered-but-empty answer's on-demand scan (below) actually
+  // goes out — the caller's cue to shorten its own index-status poll's idle
+  // beat (Listing.tsx bumps the nonce it passes to `useIndexStatus`) rather
+  // than wait out its full idle interval before noticing the scan.
+  onScanRequested?: () => void,
+  // Whether this instance ever runs the covered-but-empty scan trigger at
+  // all (SPEC-empty-search-scan.md) — default true for every real search
+  // box. FileSearchField.tsx passes false: it mounts this hook purely to
+  // decide when to hand a query off to the PARENT folder's own Listing
+  // (`isPristineQuery`/`gateOpen`, see that file's header), never to render
+  // a single result, so a scan trigger firing from here would ask the
+  // server to scan the parent root a second time for the exact same query
+  // the real Listing is about to ask for anyway the moment navigation
+  // lands — a redundant request with no UI wired to explain it (code review
+  // finding 1's third call site). Excluding it here, rather than wiring it
+  // up, is deliberate: the real trigger — with its `onScanRequested` poll
+  // nonce and its "still building" copy — belongs to whichever box actually
+  // shows the answer.
+  fireEmptyScan = true,
 ) {
   // The owner's unranked-search preference (D720) — same module-level cache
   // FilesHome.tsx's home search reads; both boxes honour the one setting.
@@ -306,6 +325,49 @@ export function useListingSearch(
   const asked = useRef(false);
   const sinceAsk = useRef(0);
   const polls = useRef(0);
+  // Per-query dedup for the SEPARATE covered-but-empty scan trigger below
+  // (SPEC-empty-search-scan.md): a query already asked for a scan must not
+  // ask again just because the same text comes back around (backspacing and
+  // retyping, or a lifecycle bump re-asking the identical query). Distinct
+  // from `asked` above, which is folder+generation scoped for the uncovered
+  // path.
+  //
+  // Keyed on the TRIMMED query, not the raw `q` this hook uses everywhere
+  // else (A1): the spec's own wording is "at most once per distinct trimmed
+  // query string" (SPEC-empty-search-scan.md), and code review finding 5
+  // caught that this used to key on raw `q` — so "src" and "src " (genuinely
+  // different requests to `indexRank`, A1) could each fire their own scan of
+  // the identical folder for what is, for this purpose, the same query.
+  //
+  // Reset on `[fsPath]` ALONE, not `[fsPath, pinned]` — the other half of
+  // finding 5. This hook and FilesHome.tsx's own copy of this same feature
+  // used to disagree here (that one already reset on `[home]` alone); a
+  // generation bump (a scan completing, an in-app mutation reconciling) is
+  // not a reason to forget that this exact query already asked, and doing so
+  // would let a lifecycle-triggered re-ask of the SAME still-empty query
+  // immediately re-fire the very scan whose completion just bumped the
+  // generation. Only a genuinely different folder is a new episode for this
+  // dedup's purposes.
+  const firedEmptyScan = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    firedEmptyScan.current = new Set();
+  }, [fsPath]);
+  // Whether a scan THIS hook itself asked for (the covered-but-empty
+  // trigger below) has been confirmed running — set from the `started`
+  // field of that request's own reply, the only signal that means "a scan
+  // we asked for, for this exact root, is running" (code review finding 2).
+  // Read by the caller (Listing.tsx -> EmptyResultMessage) instead of the
+  // live status poll's machine-wide `scanning` flag, which is true for ANY
+  // scan anywhere and made an unrelated scan of an unrelated root claim a
+  // build was in progress here.
+  //
+  // Reset alongside `asked`/`polling` below (`[fsPath, pinned]` — a folder
+  // OR a generation change is a new episode, unlike `firedEmptyScan` above)
+  // and again at the top of every new request `run` issues: a generation
+  // bump is exactly the shape of "the scan we were tracking just finished",
+  // and a fresh request for an edited query has nothing to say yet about
+  // whether IT needs a scan.
+  const [ourScanRunning, setOurScanRunning] = useState(false);
   // Bumped by the poll timer to re-ask while a scan is running.
   const [pollTick, setPollTick] = useState(0);
   const [polling, setPolling] = useState(false);
@@ -323,6 +385,7 @@ export function useListingSearch(
     sinceAsk.current = 0;
     polls.current = 0;
     setPolling(false);
+    setOurScanRunning(false);
   }, [fsPath, pinned]);
 
   // --- the ranked answer -------------------------------------------------------
@@ -517,6 +580,10 @@ export function useListingSearch(
       // The epoch AT ISSUE TIME, and this is the request that most needed it.
       const epoch = sourceEpoch.current;
       setPending(true);
+      // A fresh request supersedes whatever the LAST query's covered-but-
+      // empty trigger (below) learned — that confirmation was about a
+      // different query's scan, not this one's.
+      setOurScanRunning(false);
       // The previous failure is not this request's verdict.
       setFailure("");
       // Same disambiguation the server uses (resolve_query: mode is `"*" in
@@ -538,6 +605,46 @@ export function useListingSearch(
           if (ctl.signal.aborted || sourceEpoch.current !== epoch) return;
           inflightKey.current = null;
           const step = applyStep(res, epoch);
+          // The covered-but-empty scan trigger (SPEC-empty-search-scan.md):
+          // a settled answer that says the root IS covered (reason === "")
+          // but found no files is real evidence the index may be behind this
+          // exact query — ask for a background scan of the answer's OWN
+          // root (never a hardcoded fsPath fallback would be wrong here:
+          // res.base is what this answer actually searched, same reasoning
+          // as the existing uncovered-scan call above). MIN_QUERY_CHARS is
+          // already enforced by `runsSearch` gating this whole effect, so no
+          // extra length check is needed here. `firedEmptyScan` is the
+          // per-query dedup the spec requires (keyed on `trimmedQ`, not `q`
+          // — its own comment above); the server's own SCAN_DEBOUNCE_S is
+          // the cross-query floor and is not duplicated here. A refusal or a
+          // thrown fetch are both silent — a search must never fail over
+          // housekeeping (routers/index.py:627). `fireEmptyScan` lets
+          // FileSearchField.tsx's non-displaying instance opt out entirely
+          // (code review finding 1).
+          if (
+            fireEmptyScan &&
+            (res.reason ?? "") === "" &&
+            res.hits.length === 0 &&
+            !firedEmptyScan.current.has(trimmedQ)
+          ) {
+            firedEmptyScan.current.add(trimmedQ);
+            void requestFolderScan(res.base || fsPath).then(
+              (r) => {
+                // Both an epoch guard (code review finding 4 — the sibling
+                // uncovered-scan handler twelve lines up has one, this one
+                // didn't) and a check of `r.started` (finding 3 — a
+                // refusal is durable and expected, and must not be read as
+                // "a build is running", which is exactly what caused
+                // finding 2's false positive downstream).
+                if (sourceEpoch.current !== epoch) return;
+                if (r.started) {
+                  setOurScanRunning(true);
+                  onScanRequested?.();
+                }
+              },
+              () => {},
+            );
+          }
           answerSeq.current += 1;
           answerGen.current = genRef.current;
           answerLifecycle.current = lifecycleRef.current;
@@ -916,6 +1023,12 @@ export function useListingSearch(
     // (lib/home-search's `indexGap`) — the client holds no copy of the rules
     // behind it.
     reason: answer?.reason ?? ("" as RankReason),
+    // Whether THIS hook's own covered-but-empty scan trigger has confirmed
+    // (via `requestFolderScan`'s `started` reply) that a scan for the
+    // current root is running right now — see `ourScanRunning`'s own
+    // comment above. The caller feeds this to `EmptyResultMessage` instead
+    // of the live status poll's machine-wide `scanning` flag.
+    ourScanRunning,
     prefetchIndex,
     hits,
     searchBase,

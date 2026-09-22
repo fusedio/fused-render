@@ -977,6 +977,26 @@ def create_app(start_dir: str) -> FastAPI:
         # boots the app never gets a background thread.
         index_routes.start_index_job_bridge()
 
+    # ...and watch the filesystem for changes the app did not make itself
+    # (a download, `touch ~/a.txt`, a sync client) so the index stays fresh
+    # without guessing staleness from a clock — see
+    # fused_render/server/index_watch.py's module docstring and
+    # SPEC-index-live-watch.md §1 for why the previous approach (a
+    # time-based freshness check) failed three times. One background thread
+    # per configured root; `index_watch.start()` is idempotent, same
+    # singleton-start convention as `shell_mounts.start_health_monitor`.
+    @on_startup
+    async def _startup_index_watch():
+        from fused_render.server import index_watch
+
+        index_watch.start()
+
+    @on_shutdown
+    async def _shutdown_index_watch():
+        from fused_render.server import index_watch
+
+        index_watch.stop()
+
     # THE IN-APP UPDATE MANAGER (update/mac.py, update/linux.py), for every
     # platform whose server ever boots through this create_app() — which is
     # every platform's: the packaged mac app embeds this same FastAPI server

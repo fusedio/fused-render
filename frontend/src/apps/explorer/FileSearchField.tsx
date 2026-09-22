@@ -14,12 +14,19 @@
 // folder's own Listing is what actually searches, seeded already-committed
 // (`navHintQCommitted`, router.ts) so it never asks for a second Enter.
 //
-// `useListingSearch(parentPath, home, 0, false)` — the trailing `false` is
-// `urlSync`: this box's query is never mirrored onto the file's own URL (that
-// belongs to no view here), and the effect below fires before the hook's own
-// fetch ever would (a `useLayoutEffect`, ahead of the hook's passive-effect
-// request), so no rank request goes out against the parent while this file's
-// page is still the one on screen.
+// `useListingSearch(parentPath, home, 0, false, undefined, false)` — the
+// first `false` is `urlSync`: this box's query is never mirrored onto the
+// file's own URL (that belongs to no view here), and the effect below fires
+// before the hook's own fetch ever would (a `useLayoutEffect`, ahead of the
+// hook's passive-effect request), so no rank request goes out against the
+// parent while this file's page is still the one on screen. The trailing
+// `false` is `fireEmptyScan` (code review finding 1): this instance never
+// renders a result, only decides when to hand off to the parent folder's own
+// Listing, which runs its own `useListingSearch` — with the trigger fully
+// wired (`onScanRequested`, the "still building" copy) — the moment
+// navigation lands. Letting THIS instance also fire the covered-but-empty
+// scan trigger would ask the server to scan the same root a second time for
+// no UI anyone would see.
 import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { navigate } from "@platform/lib/router";
 import { dirname } from "@apps/explorer/lib/fs-actions";
@@ -64,7 +71,7 @@ export function FileSearchField({ active, fsPath }: FileSearchFieldProps) {
     prefetchIndex,
     searchState,
     awaitingCommit,
-  } = useListingSearch(parentPath, home, 0, false);
+  } = useListingSearch(parentPath, home, 0, false, undefined, false);
   const typedAddress = useTypedPathAddress(query, parentPath, home);
   const completion = useCompletion(query, parentPath, home);
   const committed = showingSearchHits(searchState, awaitingCommit);
