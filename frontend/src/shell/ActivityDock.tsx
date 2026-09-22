@@ -46,7 +46,6 @@ import {
   groupPopupTick,
   isRunning,
   popupTick,
-  updateJobInFlight,
   terminalNotifications,
   type Job,
 } from "@platform/lib/jobs";
@@ -180,14 +179,8 @@ function useRunningEngines(): {
 export default function ActivityDock({
   onTerminalJobs,
   onJobPopup,
-  onUpdateJob,
 }: {
   onTerminalJobs?: (jobs: Job[]) => void;
-  /** The self-update's row while it runs, or `null` once it stops — drawn
-   *  bottom right by `NotificationHost` (platform/ui/UpdateProgressCard).
-   *  Fires every poll during an install (the bytes move), once with `null`
-   *  after. */
-  onUpdateJob?: (job: Job | null) => void;
   /** A job just crossed into terminal and should pop its card (SPEC
    *  actionable-notifications) — "latest wins" is already enforced by
    *  `popupTick` below, so this fires at most once per poll. */
@@ -235,13 +228,6 @@ export default function ActivityDock({
   const groupPopupStateRef = useRef(EMPTY_GROUP_POPUP_STATE);
   const onJobPopupRef = useRef(onJobPopup);
   onJobPopupRef.current = onJobPopup;
-  // The self-update's running row, forwarded to `NotificationHost`'s
-  // bottom-right progress card (platform/ui/UpdateProgressCard). Called only
-  // when the answer moves — a new object each poll while the install runs
-  // (its bytes are the point), `null` once, when it leaves the running set.
-  const onUpdateJobRef = useRef(onUpdateJob);
-  onUpdateJobRef.current = onUpdateJob;
-  const updateJobWasRef = useRef(false);
   // The setup meter (onboarding/progress.ts) reads stage statuses the server
   // observes on each read — and a model download starting or finishing is
   // exactly when the Models stage moves. This poll is the shell's one view of
@@ -308,9 +294,6 @@ export default function ActivityDock({
           : popped
         : popped ?? groupResult.popped;
     if (winner) onJobPopupRef.current?.(winner);
-    const updateJob = updateJobInFlight(next);
-    if (updateJob || updateJobWasRef.current) onUpdateJobRef.current?.(updateJob);
-    updateJobWasRef.current = updateJob !== null;
     if (moved) noteProgressMayHaveMoved();
   }, []);
 

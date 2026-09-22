@@ -52,6 +52,7 @@ import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
+import UpdateNotifier from "@platform/ui/UpdateNotifier";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
 import { ShareFileHost } from "@platform/ui/ShareFileModal";
 import OnboardingWizard from "@shell/onboarding/OnboardingWizard";
@@ -555,11 +556,6 @@ export default function App({ config }: { config: Config }) {
   // for the identical reason: `ActivityDock` is the one place with the full
   // poll snapshot, and `NotificationHost` is the one column that draws it.
   const [popupJob, setPopupJob] = useState<Job | null>(null);
-
-  // THE SELF-UPDATE'S PROGRESS CARD (Akshil, 2026-09-19): the running
-  // `sys:update:<version>` row, bottom right, until the user closes it or the
-  // install stops. Same wiring shape as `popupJob` for the same reason.
-  const [updateJob, setUpdateJob] = useState<Job | null>(null);
 
   // Background mount-health poll → global disconnect/reconnect toasts. Mounted
   // once here for the page's lifetime (no-ops in embed); renders via NotificationHost.
@@ -1065,6 +1061,7 @@ export default function App({ config }: { config: Config }) {
       <div id="app">
         <OnboardingWizard key={epoch} config={config} />
         <NotificationHost />
+        <UpdateNotifier />
         {/* Mod+K is App-wide (the listener above runs here too), so the sheet
             must be renderable here — or the flag flips with nothing shown and
             the sheet pops open on whatever page the wizard lets go to. */}
@@ -1108,7 +1105,6 @@ export default function App({ config }: { config: Config }) {
               <ActivityDock
                 onTerminalJobs={setTerminalJobs}
                 onJobPopup={setPopupJob}
-                onUpdateJob={setUpdateJob}
               />
             }
             repoUpdates={
@@ -1120,7 +1116,17 @@ export default function App({ config }: { config: Config }) {
           />
         )}
       </div>
-      <NotificationHost jobPopup={popupJob} onJobPopupGone={() => setPopupJob(null)} updateJob={updateJob} />
+      <NotificationHost jobPopup={popupJob} onJobPopupGone={() => setPopupJob(null)} />
+      {/* The two self-update notifications (Download available / Restart
+          ready), plus in-flight restart narration re-notifying the same card
+          — SPEC-update-notifications.md's consolidation of what used to be 5
+          separate surfaces (UpdateBadge, UpdateProgressCard, the restart
+          dialog, ActivityDock's update row, RepoUpdatesDock) into "Activity =
+          progress, Notifications = decisions". Headless — mounted beside
+          `NotificationHost` (both draw through the same notify() store)
+          rather than inside it, so `NotificationHost` stays a pure renderer
+          of whatever's in the store. */}
+      <UpdateNotifier />
       {/* One dialog for every "Share" entry (card chip, card menu, app page,
           explorer kebab): the menu entries cannot own a dialog, so they post
           a request to platform/lib/share-app and this host renders it. */}
