@@ -16,6 +16,12 @@ const rankCalls: {
   ranked: boolean | undefined;
   limit: number | undefined;
   reply: Deferred<IndexRankResult>;
+  /** The controller's own signal, captured at call time -- the abort-on-
+   * schedule fix (rank-starvation-fallback) aborts the SOURCE's
+   * AbortController directly, so this is the one thing a test can observe
+   * to prove a request already in flight was actually cut loose, as
+   * opposed to merely superseded by a later reply landing first. */
+  signal: AbortSignal | undefined;
 }[] = [];
 const scanCalls: string[] = [];
 let scanReply: { started: boolean; why: string } = { started: true, why: "started" };
@@ -30,9 +36,13 @@ let scanThrows = false;
 let prefsRanked = true;
 
 mock.module("@platform/lib/api", () => ({
-  indexRank: (root: string, q: string, opts?: { ranked?: boolean; limit?: number }) => {
+  indexRank: (
+    root: string,
+    q: string,
+    opts?: { ranked?: boolean; limit?: number; signal?: AbortSignal },
+  ) => {
     const reply = new Deferred<IndexRankResult>();
-    rankCalls.push({ root, q, ranked: opts?.ranked, limit: opts?.limit, reply });
+    rankCalls.push({ root, q, ranked: opts?.ranked, limit: opts?.limit, reply, signal: opts?.signal });
     return reply.promise;
   },
   requestFolderScan: (path: string) => {
@@ -179,6 +189,57 @@ describe("one request per query, abortable", () => {
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(2);
     expect(rankCalls[1].q).toBe("gadget");
+    box.unmount();
+  });
+});
+
+describe("aborting a superseded request (rank-starvation fallback fix)", () => {
+  // The bug: the abort used to live only inside `run`, the function the
+  // trailing debounce finally invokes. During a sustained typing burst
+  // (each keystroke's gap under INSTANT_DEBOUNCE_MS) `run` for the newer
+  // query never fires until the burst pauses, so the abort inside it never
+  // ran either -- the request already in flight kept running (and holding
+  // an interactive-lane permit + DuckDB threads) for the WHOLE burst. The
+  // fix moves the abort to scheduling time, right after the `inflightKey`
+  // guard, so it fires the moment the key changes, not once the debounce
+  // that follows finally elapses.
+  test("scheduling a new query aborts the request already in flight immediately, before the new debounce elapses", async () => {
+    const box = await search("widget");
+    const first = rankCalls[0];
+    expect(first.signal?.aborted).toBe(false);
+
+    // A keystroke mid-burst: this resets the debounce, so `run` for
+    // "widgets" has NOT fired yet by the time this assertion runs.
+    await flush(() => box.current().setQuery("widgets"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS / 2));
+
+    expect(rankCalls).toHaveLength(1); // the new request has not gone out yet
+    expect(first.signal?.aborted).toBe(true); // but the old one is already cut loose
+    box.unmount();
+  });
+
+  // The guard this fix must not break: `inflightKey.current === key` exists
+  // so a poll tick (the fetch effect re-running on `pollTick`/`polling`
+  // alone, query unchanged) does not abort-and-restart a live request -- a
+  // rank that outlasts SCAN_POLL_MS would otherwise never be allowed to
+  // finish (see "an uncovered folder: scan, poll, answer" above, which this
+  // reuses the shape of).
+  test("a poll tick landing on the SAME query does not abort the request already in flight", async () => {
+    const box = await search("widget");
+    await flush(() => rankCalls[0].reply.resolve(answer({ covered: false, reason: "uncovered" })));
+    expect(scanCalls).toEqual(["/d"]);
+
+    await flush(() => clock.advance(SCAN_POLL_MS));
+    expect(rankCalls).toHaveLength(2);
+    const polled = rankCalls[1];
+    expect(polled.signal?.aborted).toBe(false);
+
+    // Left UNRESOLVED on purpose: another poll tick landing on the exact
+    // same key before this one settles is the regression the inflightKey
+    // guard exists to prevent.
+    await flush(() => clock.advance(SCAN_POLL_MS));
+    expect(rankCalls).toHaveLength(2); // no new request -- the guard matched
+    expect(polled.signal?.aborted).toBe(false);
     box.unmount();
   });
 });

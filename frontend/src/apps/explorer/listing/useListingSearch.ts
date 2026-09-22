@@ -567,6 +567,17 @@ export function useListingSearch(
     // that outlasts SCAN_POLL_MS would otherwise never be allowed to finish.
     const key = [fsPath, pinned, lifecycle, retryNonce, q, rankedPref].join(" ");
     if (inflightKey.current === key) return;
+    // Reaching here means the key genuinely changed (a poll tick alone
+    // would have matched above and returned already), so whatever is in
+    // flight is an answer this run has moved past. Abort it NOW, at
+    // scheduling time, not inside `run`: a debounce-resetting typing burst
+    // (gaps under INSTANT_DEBOUNCE_MS) keeps deferring `run`, so it never
+    // fired mid-burst and the abort inside it never ran either -- the
+    // superseded request ran to completion the whole burst, holding an
+    // interactive-lane permit and DuckDB threads the request the user is
+    // actually waiting on was competing for.
+    inflight.current?.abort();
+    inflightKey.current = null;
     // Past every early return above: this effect run WILL issue a
     // request, once the debounce below elapses. Armed here, at
     // scheduling, not inside `run` where the round trip actually starts
