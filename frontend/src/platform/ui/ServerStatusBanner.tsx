@@ -83,13 +83,11 @@ function searchOverride(): string {
 function useServerStatus(): {
   banner: ServerBanner;
   version: string;
-  installedVersion: string;
   dev: boolean;
   checkNow: () => void;
 } {
   const [state, setState] = useState<StatusState>(initialStatus);
   const [version, setVersion] = useState("");
-  const [installedVersion, setInstalledVersion] = useState("");
   const [dev, setDev] = useState(false);
   const probingRef = useRef(false);
   const probeRef = useRef<() => void>(() => {});
@@ -150,7 +148,6 @@ function useServerStatus(): {
         return;
       }
       if (result.version) setVersion(result.version);
-      if (result.installedVersion) setInstalledVersion(result.installedVersion);
       if (result.ok) setDev(result.dev === true);
       setState(next);
       if (next.banner === "reconnected") {
@@ -211,17 +208,12 @@ function useServerStatus(): {
   return {
     banner: state.banner,
     version,
-    installedVersion,
     dev,
     checkNow,
   };
 }
 
 export default function ServerStatusBanner() {
-  // `installedVersion` no longer has a reader here — it fed the restart
-  // dialog's title, which is deleted (SPEC-update-notifications.md). Left on
-  // `useServerStatus`'s own return type rather than trimmed there: the probe
-  // still needs it fed to `setInstalledVersion` regardless of who reads it.
   const { banner, version, dev, checkNow } = useServerStatus();
   const mode = updateDialogMode(dev, searchOverride(), storedDialogOverride());
   // The SHARED update poll (platform/lib/update-status), the same store the
@@ -238,10 +230,14 @@ export default function ServerStatusBanner() {
   // "there is a new version on disk" and they arrive on two different clocks:
   // the update store's `installed` (2 s while an install runs) and this
   // component's own `/api/config` probe reading `installed_version` (5 s).
-  // The restart NOTIFICATION (`UpdateNotifier`) wants the real installed
-  // version for its own body copy the moment it raises, not the seconds-later
-  // number the slow probe would otherwise supply — so this still asks early,
-  // even though nothing in THIS component reads the answer any more.
+  // What this still buys, now that nothing in this file reads
+  // `installed_version` any more (finding #7, code review — the field used
+  // to feed a `setInstalledVersion` that had no reader anywhere, on a false
+  // claim that `UpdateNotifier` wanted it; it reads `status?.latest_version`
+  // from the update store instead, never this probe): forcing the 5 s probe
+  // early still feeds `bannerSurface`'s OWN `banner` field faster, so
+  // `update-restart` — the disk-ahead-but-still-healthy suppression this
+  // component DOES still own — lands sooner than the next scheduled tick.
   //
   // One probe per transition INTO `installed`, not one per render: the ref
   // re-arms only when the state leaves `installed` again (a fresh check, a
