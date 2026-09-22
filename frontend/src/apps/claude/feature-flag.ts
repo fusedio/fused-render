@@ -289,6 +289,15 @@ export function nativeChatEnabledNow(): boolean | null {
   return enabled;
 }
 
+/** Test-only: how many components are currently subscribed. `bun test` runs
+ *  every suite in ONE process, so these Sets are shared globally for the run —
+ *  a tree a test forgets to unmount leaves its subscription here forever,
+ *  which is exactly the bug this exists to make loud (see sched-block.test.tsx's
+ *  `afterEach`, and DECISIONS.md's "bun test heap leak" entry). */
+export function listenerCountsForTests() {
+  return { listeners: listeners.size, queueListeners: queueListeners.size };
+}
+
 /** Test-only: forget the cached answer so a suite starts from "not asked".
  *  NOTIFIES, like every other write: a component already mounted would
  *  otherwise keep the answer the suite just took away. */
