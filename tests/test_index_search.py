@@ -1191,13 +1191,18 @@ def test_search_ranked_honours_the_limit_in_sql_not_just_in_python(tmp_path):
     # more" is known without a separate count. Only "alpha.txt" itself
     # actually contains the substring "alpha" (the noise files are
     # "a{i}-l-p-h-a.txt", hyphen-separated, never a contiguous "alpha"), so
-    # the bounded candidate pool comes back with exactly 1 row — fewer than
-    # `limit` (3) — which is the starvation-fallback's trigger
-    # (search_ranked's docstring, worktree-search-trailing-space): a second,
-    # unbounded query reruns and its result is what the response is built
-    # from. Both queries carry the same outer `LIMIT 4` (limit + 1), so
-    # `seen_limits` now has two entries, not one.
-    assert seen_limits == [4, 4]
+    # the bounded candidate pool comes back with exactly 1 row. That single
+    # row is BELOW the starvation fallback's Tier 2 threshold (DECISIONS.md,
+    # "Rank starvation fallback: a short page is not starvation evidence"):
+    # `pool_n < pool` (1 row seen against a pool sized for `limit + 1 == 4`,
+    # `_basename_candidate_pool(4)` is 20) proves the pool's own inner
+    # `LIMIT` never bound — the bounded pass already saw every row an
+    # unbounded pass would have, so the two queries are equivalent by
+    # construction and the unbounded rerun is correctly skipped. Only one
+    # statement runs (`LIMIT 4` once), so `seen_limits` has exactly one
+    # entry, not two — `[4]`, not the old `[4, 4]` that used to pin the
+    # wasteful double scan this fix removes.
+    assert seen_limits == [4]
 
 
 def test_search_ranked_logs_one_debug_line_per_request(tmp_path, caplog):
