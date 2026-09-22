@@ -902,7 +902,22 @@ _CHECK_ID_RE = re.compile(r"check `([a-z0-9-]+)`")
 
 
 def is_doctor_prompt(message: str) -> bool:
+    """A FIX task's prompt OR a CHECK task's (`check_prompt`) — both are App
+    Doctor tasks for the one-live-task-per-app gate (a check must not read
+    files a fix is rewriting, and a fix must not start on a verdict that is
+    still being written). `is_doctor_check_prompt` tells them apart."""
     return str(message or "").startswith(DOCTOR_PROMPT_PREFIX)
+
+
+# The words right after the prefix that mark a CHECK task (`check_prompt`)
+# rather than a fix: the on-demand row's own model run, which the panel
+# draws as "checking" rather than "Fix in progress".
+_CHECK_TASK_MARK = " — run check `"
+
+
+def is_doctor_check_prompt(message: str) -> bool:
+    text = str(message or "")
+    return text.startswith(DOCTOR_PROMPT_PREFIX + _CHECK_TASK_MARK)
 
 
 def doctor_task_check_id(message: str) -> str | None:
@@ -1119,4 +1134,52 @@ def doctor_prompt_all(entry_html: str, checks: list[dict]) -> str:
         f"covering every failing row). Invoke the `{SKILL_QUALIFIED}` skill and follow "
         f"it end to end, one row at a time in the order given. {_CREDENTIAL_NOTE}\n\n"
         f"{body}\n\n{_COMMIT_STEP_ALL}"
+    )
+
+
+def check_prompt(entry_html: str, files: list[str], verdict_path: str) -> str:
+    """The CHECK task's text for the on-demand `cross-browser` row
+    (`app_doctor_ai`): a session that READS the listed view files against the
+    cross-browser skill's trap table and writes ONE file — the verdict, at
+    the path the server chose under `.fused/cache/` — and edits nothing else.
+
+    Starts with `DOCTOR_PROMPT_PREFIX` so the one-live-task-per-app gate
+    counts it (`is_doctor_prompt`), then `_CHECK_TASK_MARK` + the id so
+    `is_doctor_check_prompt` and `doctor_task_check_id` both read it. The
+    session is told the shape (`app_doctor_ai.VERDICT_SHAPE`) rather than
+    handed a schema flag: a scheduled task is an ordinary session, and the
+    server reads the file back leniently (`_parse_verdict`) — a verdict that
+    does not read is reported as "no verdict", not trusted. The checksum the
+    row is cached on is never in the prompt: the server computed it from the
+    same files before the task existed, and the session has no say in it.
+
+    `.fused/` is gitignored for every app (`app_git._GITIGNORE`), so the
+    verdict never lands in the commit the finished turn is recorded as."""
+    from fused_render import app_doctor_ai
+
+    entry_name = os.path.basename(entry_html)
+    listed = "\n".join(f"- {rel}" for rel in files) or "- (no .html/.css/.js/.svg files found)"
+    return (
+        f"{DOCTOR_PROMPT_PREFIX}{_CHECK_TASK_MARK}{app_doctor_ai.CHECK_ID}` "
+        f"(`{entry_name}` is its entry page). This is a READ-ONLY check, not a fix: "
+        f"do not edit, create, move or commit any file except the one verdict file "
+        f"named below.\n\n"
+        f"Invoke the `fused-render:{app_doctor_ai.RUBRIC_SKILL}` skill and judge ONLY "
+        f"by its trap table: a finding is a concrete line in one of the files below "
+        f"that will look or behave differently in Chrome/Edge, Firefox, Safari or "
+        f"WKWebView, or a feature the table says not to use without a fallback. Do not "
+        f"invent rules beyond the table; do not comment on logic, style or "
+        f"performance; skip anything cosmetic the table does not name. Prefer few, "
+        f"certain findings over many doubtful ones, and report a problem repeated "
+        f"across lines ONCE, pointing at its first occurrence. A feature already "
+        f"guarded by `@supports` or with its `-webkit-` twin beside it is not a "
+        f"finding. Write every sentence for the app's author, who may not know CSS.\n\n"
+        f"Files to read (relative to the app folder; read nothing else):\n{listed}\n\n"
+        f"When you have judged every file, write your verdict as JSON to exactly this "
+        f"path, creating parent folders if needed, overwriting whatever is there:\n"
+        f"`{verdict_path}`\n\nShape:\n{app_doctor_ai.VERDICT_SHAPE}\n\n"
+        f"Then, in the chat, reply with the summary sentence followed by one short "
+        f"line per finding — plain words for the app's author, what a visitor would "
+        f"notice and in which browser, no code, no file paths, no CSS terms. Nothing "
+        f"else, and nothing at all under the findings if there were none. Do not commit."
     )

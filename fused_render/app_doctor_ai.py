@@ -1,45 +1,53 @@
-"""The App Doctor's one MODEL-BACKED row: `cross-browser`, answered by a
-one-shot Claude call rather than a file read or a regex.
+"""The App Doctor's one MODEL-BACKED row: `cross-browser`, answered by an
+App Doctor TASK (a Claude session on the app's entry page, the same door the
+fix tasks go through) rather than by a file read or a regex.
 
 Every other row of the checklist (`app_doctor.py`) is deterministic and runs
 on every GET — the header dot fetches the report each time an app opens.
-This row cannot: it spends the user's tokens and takes seconds, so it is
+This row cannot: it spends the user's tokens and takes a while, so it is
 
 * ON DEMAND — nothing here runs unless a person presses the row's own Check
   button (`POST /api/apps/doctor/run`, routers/apps.py). `report()` and
-  `report_one()` only ever READ the cache below; they never spawn `claude`.
-* CACHED ON THE APP'S CONTENT — the verdict is stored beside a sha256 over
-  exactly the bytes the model was shown (`checksum`), under
-  `.fused/cache/app-doctor/cross-browser.json` (SPEC §47: `cache/` is for
-  bytes that can be rebuilt, which a verdict is — press Check again). A later
-  GET recomputes the checksum and, if the view files changed since, the row
-  reads UNRUN again with "the app changed since it was last checked" — the
-  cache invalidates itself on content, never on time.
+  `report_one()` only ever READ the cache below; they never create a task.
+* A TASK, NOT A BLOCKING CALL. The first build ran this as a one-shot
+  `claude -p` inside the HTTP request: the page showed nothing while it ran,
+  and leaving the tab lost the "checking…" state, since it lived only in the
+  component (owner, 2026-09-21: "no notification while it's working … very
+  unstable wrt to UI"). Now the button CREATES A TASK (`_create_app_task`,
+  the fix task's own seam) and returns at once. The task is a row on the
+  app's Tasks tab, its finish raises the shell's ordinary "Task finished"
+  notice and the sidebar's unread dot, and every open of the doctor reads
+  "checking" off the STORE, not off component state — so a reload, a tab
+  switch or a second window all draw the same thing.
+* CACHED ON THE TASK AND THE APP'S CONTENT — two files under
+  `.fused/cache/app-doctor/` (SPEC §47: `cache/` is for bytes that can be
+  rebuilt, which a verdict is — press Check again):
+
+    cross-browser.json          the RUN record, written by the SERVER when
+                                the task is created: `{checksum, task_id,
+                                started_at, model, effort, files}`
+    cross-browser.verdict.json  the VERDICT, written by the SESSION the task
+                                runs: `{ok, summary, findings}`
+
+  The row is the join of the two. Run record whose `checksum` no longer
+  matches the folder → UNRUN, "the app changed" — the cache invalidates
+  itself on content, never on time. Run record with no verdict yet → the
+  task is still working (the router confirms against the schedule store and
+  attaches it as `check_task`), or it ended without writing one, which reads
+  as UNRUN with that reason. Both files present and matching → PASS/FAIL.
+  The checksum is the server's alone: the session never sees it and cannot
+  stamp a verdict onto content it did not read.
 * FIXED AT SONNET + LOW EFFORT — the question is bounded (a rubric plus a
-  handful of view files), the reader is waiting on a button, and the rubric
-  does the heavy lifting. The FIX session that follows a failing verdict is
-  an ordinary App Doctor fix task and still takes the user's own model and
-  effort pickers, exactly like every other row.
+  handful of view files) and the rubric does the heavy lifting. The FIX
+  session that follows a failing verdict is an ordinary App Doctor fix task
+  and takes the user's own model and effort pickers, like every other row.
 
-THE RUBRIC IS THE SKILL. The prompt embeds `skills/fused-render-cross-browser/
-SKILL.md`, read from disk at run time through `skill_sources()` the same way
-`app_doctor.engine()` loads `ci/app_check.py` by path — so the check judges
-by the same table the fix session later fixes by, and there is one copy of
-what "compatible" means. Files are handed over with numbered lines so the
-verdict's findings cite `path:line` and land in the modal in the same
-`{rule, path, line, excerpt}` shape every other row's findings use.
-
-THE SPAWN COPIES `claude_sessions._recap_generate`'S SHAPE, not `ai.py`'s
-persistent process: `-p --no-session-persistence` (no phantom `.jsonl` in the
-sessions list), `--input-format stream-json` with the prompt over STDIN —
-file contents are full of newlines, and on the Windows `.cmd` shim a newline
-inside an argv element ends the command line as far as `cmd.exe` is
-concerned — `--tools=`/`--setting-sources=` in equals form (the shim drops an
-empty argv element, see `ai._ai_cmd`), `--max-turns 1`, `--verbose` (the CLI
-demands it with stream-json output), and `--json-schema`, which makes the
-terminal `result` event carry a parsed `structured_output` — verified live
-against the installed CLI on 2026-09-18 with `--model sonnet --effort low`:
-~4s, two findings on a two-line fixture, both real.
+THE RUBRIC IS THE SKILL. The task's prompt (`app_doctor.check_prompt`) tells
+the session to invoke `fused-render-cross-browser` and judge the listed view
+files by its trap table, so the check judges by the same table the fix
+session later fixes by, and there is one copy of what "compatible" means.
+The session writes the verdict itself, in the shape `_parse_verdict` reads;
+a verdict that does not read is "no verdict", never a crash.
 
 The verdict is a `kind="candidate"` row (`app_doctor._CHECK_META`): a
 model's reading of a rubric is not a fact (a file exists or it does not) and
@@ -47,51 +55,38 @@ its findings are worth a second look before an edit, which is exactly what
 the candidate prompt (`_triage_ask`) asks the fix session to do.
 
 NOTHING HERE RAISES INTO A REPORT. A cache that will not read is "not run
-yet"; a checksum that cannot be computed reads as UNRUN with the reason; a
-run that fails comes back as an error string the endpoint turns into a 502,
-and the previous cached verdict — if any — is left where it was.
+yet"; a checksum that cannot be computed reads as UNRUN with the reason.
 """
 import hashlib
 import json
 import logging
 import os
-import subprocess
-import sys
 import tempfile
-import threading
 from datetime import datetime, timezone
 
 from fused_render import app_fused_dir
-from fused_render.skill_sources import skill_sources
 
 logger = logging.getLogger(__name__)
 
 CHECK_ID = "cross-browser"
 LABEL = "Renders and works alike in Chrome, Firefox and Safari"
 
-# The skill whose SKILL.md is the rubric — and the one the fix session is
-# routed to by the app-doctor skill's `cross-browser` section.
+# The skill the CHECK task invokes as its rubric — and the one the fix
+# session is routed to by the app-doctor skill's `cross-browser` section.
 RUBRIC_SKILL = "fused-render-cross-browser"
 
-# The model and effort the CHECK runs at. Fixed on purpose — see the module
-# docstring. `sonnet` is the CLI alias, the CLI resolves it.
+# The model and effort the CHECK task runs at. Fixed on purpose — see the
+# module docstring. Both are the CLI's own aliases (`VALID_DEFAULT_MODELS`,
+# `_VALID_SESSION_EFFORTS`).
 MODEL = "sonnet"
 EFFORT = "low"
-# One shot, no tools, a bounded prompt: a minute is generous, and a run that
-# has not answered by then is killed rather than left burning tokens.
-TIMEOUT = 120.0
 
-# What the model is shown: the view files a browser actually parses. `.py`
-# never reaches a browser, images are bytes, `.md` is prose.
+# What the session is pointed at: the view files a browser actually parses.
+# `.py` never reaches a browser, images are bytes, `.md` is prose.
 _VIEW_SUFFIXES = (".html", ".htm", ".css", ".js", ".mjs", ".svg")
-# Bounds on the prompt — past these the rest is listed by name only, so a
-# huge app gets a partial verdict that SAYS it is partial rather than a
-# request too big to send.
-_MAX_FILES = 40
-_MAX_FILE_BYTES = 64 * 1024
-_MAX_TOTAL_BYTES = 256 * 1024
 
-_CACHE_REL = os.path.join("app-doctor", f"{CHECK_ID}.json")
+_RUN_REL = os.path.join("app-doctor", f"{CHECK_ID}.json")
+_VERDICT_REL = os.path.join("app-doctor", f"{CHECK_ID}.verdict.json")
 
 
 # ----------------------------------------------------------------- the files
@@ -113,121 +108,174 @@ def _view_files(app_dir: str) -> list[tuple[str, str]]:
     return out
 
 
-def _read_bounded(path: str) -> tuple[str, bool]:
-    """`(text, truncated)` — at most `_MAX_FILE_BYTES`, decoded leniently."""
-    with open(path, "rb") as fh:
-        raw = fh.read(_MAX_FILE_BYTES + 1)
-    truncated = len(raw) > _MAX_FILE_BYTES
-    return raw[:_MAX_FILE_BYTES].decode("utf-8", errors="replace"), truncated
-
-
 def gather(app_dir: str) -> dict:
-    """The exact input one run is judged on: `{"files": [{"rel", "text",
-    "truncated"}], "omitted": [rel...], "checksum": sha256-hex}`.
+    """What one run is judged on: `{"files": [rel...], "checksum": sha256-hex}`.
 
-    The checksum covers rel path + the bytes actually sent (post-truncation)
-    for every included file, plus the names of omitted ones — so it is a hash
-    of what the model SAW, not of the folder: a cache hit means "same input",
-    which is the only thing that makes reusing the verdict honest. Raises
-    OSError only for a folder that cannot be walked at all; a single file that
-    vanished mid-walk is skipped."""
+    The checksum covers every view file's rel path and full bytes, so a cache
+    hit means "the same view files" — the only thing that makes reusing the
+    verdict honest. Raises OSError only for a folder that cannot be walked at
+    all; a single file that vanished mid-walk is skipped."""
     files = []
-    omitted = []
-    total = 0
     h = hashlib.sha256()
     for full, rel in _view_files(app_dir):
-        if len(files) >= _MAX_FILES or total >= _MAX_TOTAL_BYTES:
-            omitted.append(rel)
-            continue
         try:
-            text, truncated = _read_bounded(full)
+            with open(full, "rb") as fh:
+                raw = fh.read()
         except OSError:
             continue
-        total += len(text)
-        files.append({"rel": rel, "text": text, "truncated": truncated})
+        files.append(rel)
         h.update(rel.encode("utf-8") + b"\0")
-        h.update(text.encode("utf-8", errors="replace") + b"\0")
-    for rel in omitted:
-        h.update(b"omitted:" + rel.encode("utf-8") + b"\0")
-    return {"files": files, "omitted": omitted, "checksum": h.hexdigest()}
+        h.update(raw + b"\0")
+    return {"files": files, "checksum": h.hexdigest()}
 
 
 # ----------------------------------------------------------------- the cache
 
 
-def cache_path(app_dir: str) -> str:
-    return os.path.join(app_fused_dir.cache_dir(app_dir), _CACHE_REL)
+def run_path(app_dir: str) -> str:
+    return os.path.join(app_fused_dir.cache_dir(app_dir), _RUN_REL)
 
 
-def read_cache(app_dir: str) -> dict | None:
-    """The stored verdict, or None — absent, unreadable, malformed or from an
-    unfamiliar writer all read the same: nothing to reuse."""
+def verdict_path(app_dir: str) -> str:
+    return os.path.join(app_fused_dir.cache_dir(app_dir), _VERDICT_REL)
+
+
+def _read_json(path: str) -> dict | None:
     try:
-        with open(cache_path(app_dir), encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
         return None
-    if not isinstance(data, dict) or not isinstance(data.get("checksum"), str):
+    return data if isinstance(data, dict) else None
+
+
+def read_run(app_dir: str) -> dict | None:
+    """The stored run record, or None — absent, unreadable, malformed or from
+    an unfamiliar writer all read the same: nothing to reuse."""
+    data = _read_json(run_path(app_dir))
+    if data is None or not isinstance(data.get("checksum"), str):
         return None
-    if not isinstance(data.get("ok"), bool) or not isinstance(data.get("findings"), list):
+    # `task_id` is what tells this record apart from the previous build's
+    # one-file cache at the SAME path (checksum + verdict inline, no task).
+    # That older file's checksum can still match today's folder, and reading
+    # it as a run record would draw a saved verdict as "ended without a
+    # verdict". It reads as "not checked yet" instead — one Check rebuilds it.
+    if not isinstance(data.get("task_id"), str):
         return None
     return data
 
 
-def write_cache(app_dir: str, verdict: dict) -> bool:
-    """Best-effort: a read-only `.fused` clone (`appfile._make_read_only`) or
-    a mount-backed folder `app_fused_dir.ensure` refuses just means the
-    verdict is returned to the caller uncached. Temp file + `os.replace` so a
-    half-written file never reads as a verdict."""
-    path = cache_path(app_dir)
+def read_verdict(app_dir: str) -> dict | None:
+    """The session's verdict, normalised (`_parse_verdict`), or None when
+    there is none yet or what is there does not read as one."""
+    data = _read_json(verdict_path(app_dir))
+    if data is None:
+        return None
+    return _parse_verdict(data)
+
+
+def _write_json(path: str, data: dict) -> bool:
+    """Temp file + `os.replace` so a half-written file never reads as a
+    record. False when the folder refuses (see `write_run`)."""
     try:
-        if not app_fused_dir.ensure(app_dir):
-            # A mount-backed or unwritable folder: `ensure` declining is the
-            # signal to leave it alone, not to makedirs around it.
-            return False
         os.makedirs(os.path.dirname(path), exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(verdict, fh, indent=1)
+            json.dump(data, fh, indent=1)
         os.replace(tmp, path)
         return True
     except OSError:
-        logger.debug("could not cache the %s verdict for %s", CHECK_ID, app_dir, exc_info=True)
+        logger.debug("could not write %s", path, exc_info=True)
         return False
 
 
+def write_run(app_dir: str, record: dict) -> bool:
+    """Best-effort: a read-only `.fused` clone (`appfile._make_read_only`) or
+    a mount-backed folder `app_fused_dir.ensure` refuses just means the
+    check cannot be cached here — and since the session would not be able to
+    write its verdict either, the router refuses to create the task."""
+    if not app_fused_dir.ensure(app_dir):
+        # A mount-backed or unwritable folder: `ensure` declining is the
+        # signal to leave it alone, not to makedirs around it.
+        return False
+    return _write_json(run_path(app_dir), record)
+
+
+def clear_verdict(app_dir: str) -> None:
+    """Drop the previous verdict BEFORE a new task starts, so the run record
+    written next can never be read alongside a verdict for older content."""
+    try:
+        os.unlink(verdict_path(app_dir))
+    except OSError:
+        pass
+
+
+def clear_run(app_dir: str) -> None:
+    """Undo `write_run` when the task it describes was never created."""
+    try:
+        os.unlink(run_path(app_dir))
+    except OSError:
+        pass
+
+
 # ------------------------------------------------------------------- the row
+
+# The UNRUN detail for "run record, no verdict yet". The router tells the two
+# cases behind it apart (task live vs. task ended empty-handed) — it is the
+# only caller that can see the schedule store — and replaces this text with
+# `ENDED_DETAIL` for the second. Exported so it can compare, not copy.
+CHECKING_DETAIL = "an App Doctor task is checking it — listed under the app's Tasks tab"
+ENDED_DETAIL = ("the last check task ended without leaving a verdict — "
+                "see the Tasks tab for what happened, then press Check again")
+
 
 # The shape `app_doctor._check` builds, minus what only `app_doctor` knows
 # (section/severity/kind) — it wraps this with `_check(...)`.
 def row_state(app_dir: str) -> tuple[str, str, list[dict]]:
     """`(state, detail, findings)` for the row as a GET should draw it —
-    from the cache alone. Never spawns anything.
+    from the two cache files alone. Never creates a task, never spawns.
 
-    No cache at all → UNRUN without even walking the folder (the common case
-    for an app nobody has pressed Check on, and the header dot's GET runs on
-    every app open). A cache whose checksum no longer matches the folder →
-    UNRUN, saying so. A matching cache → the stored verdict."""
+    No run record at all → UNRUN without even walking the folder (the common
+    case for an app nobody has pressed Check on, and the header dot's GET
+    runs on every app open). A record whose checksum no longer matches the
+    folder → UNRUN, saying so. A matching record with no verdict → UNRUN,
+    `CHECKING_DETAIL` — the router (`_settle_check_row`) confirms the task is
+    actually still live and attaches it, or swaps in `ENDED_DETAIL` when it
+    ended without a verdict. A matching record and a readable verdict →
+    PASS/FAIL."""
     from fused_render.app_doctor import FAIL, PASS, UNRUN
 
-    cached = read_cache(app_dir)
-    if cached is None:
-        return UNRUN, ("not checked yet — Check asks Claude (Sonnet) to read the app's "
-                       "view files against the cross-browser rubric"), []
+    record = read_run(app_dir)
+    if record is None:
+        return UNRUN, ("not checked yet — Check creates a task that asks Claude (Sonnet) "
+                       "to read the app's view files against the cross-browser rubric"), []
     try:
         current = gather(app_dir)["checksum"]
     except OSError as exc:
         return UNRUN, f"could not read the app's view files: {exc}", []
-    if current != cached["checksum"]:
+    if current != record["checksum"]:
         return UNRUN, "the app changed since it was last checked — press Check to re-run", []
-    findings = [f for f in cached["findings"] if isinstance(f, dict)]
-    summary = str(cached.get("summary") or "").strip()
-    if cached["ok"]:
+    verdict = read_verdict(app_dir)
+    if verdict is None:
+        return UNRUN, CHECKING_DETAIL, []
+    findings = verdict["findings"]
+    if verdict["ok"]:
         return PASS, "nothing will look or behave differently in another browser", []
     n = len(findings)
     # The summary alone — no date, no jargon. The findings under it carry
     # the where/what/fix; the detail line only has to say how bad it is.
-    return FAIL, summary or f"{n} thing{'' if n == 1 else 's'} will look different in another browser", findings
+    return FAIL, (verdict["summary"]
+                  or f"{n} thing{'' if n == 1 else 's'} will look different in another browser"), findings
+
+
+def pending_task_id(app_dir: str) -> str | None:
+    """The task id of a run that has no verdict yet, or None. Cheap: two
+    file reads, no folder walk. What the router joins against the store."""
+    record = read_run(app_dir)
+    if record is None or read_verdict(app_dir) is not None:
+        return None
+    task_id = str(record.get("task_id") or "")
+    return task_id or None
 
 
 # ------------------------------------------------------------------- the run
@@ -235,146 +283,36 @@ def row_state(app_dir: str) -> tuple[str, str, list[dict]]:
 # THE VERDICT IS WRITTEN FOR THE APP'S AUTHOR, NOT FOR A BROWSER ENGINEER.
 # The first live run came back as a 90-word paragraph of rubric jargon with
 # raw source lines under it (owner, 2026-09-18: "intimidating"). So the shape
-# the model fills in is three plain sentences per finding — WHERE (file:line),
-# WHAT will go wrong and in which browser, and the FIX in one line — plus one
-# short summary, and the schema's `description`s carry the length and
-# plain-language limits so they are enforced at generation, not trimmed
-# after. The modal draws `excerpt` (the WHAT) as the finding's sentence and
-# `fix` under it; the raw source line is never shown — the fix session has
-# the file.
-_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "ok": {"type": "boolean",
-               "description": "true only when there is nothing to fix"},
-        "summary": {
-            "type": "string",
-            "description": "One plain sentence, at most 15 words, no code and no "
-                           "jargon, saying how many things will look or behave "
-                           "differently and in which browser(s). Example: 'Two "
-                           "things will look different in Safari.' Empty when ok.",
-        },
-        "findings": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "the file, as given"},
-                    "line": {"type": "integer", "description": "the numbered line"},
-                    "rule": {"type": "string",
-                             "description": "3-6 word name of the trap, e.g. "
-                                            "'Safari disclosure triangle'"},
-                    "what": {
-                        "type": "string",
-                        "description": "What a visitor will see go wrong, and in "
-                                       "which browser — one sentence, at most 20 "
-                                       "words, written for someone who does not "
-                                       "know CSS. No code, no backticks.",
-                    },
-                    "fix": {
-                        "type": "string",
-                        "description": "What to change, one sentence, at most 20 "
-                                       "words. May name one CSS property or "
-                                       "attribute; no code blocks.",
-                    },
-                },
-                "required": ["path", "line", "rule", "what", "fix"],
-            },
-        },
-    },
-    "required": ["ok", "summary", "findings"],
-}
-
-_SYSTEM = (
-    "You review fused-render app views for cross-browser compatibility: they are "
-    "opened in whatever the user's default browser is (Chrome/Edge, Firefox, Safari) "
-    "and inside WKWebView, by people who are not the author. Judge ONLY by the rubric "
-    "you are given — do not invent rules beyond it, and do not comment on logic, "
-    "style or performance. A finding is a concrete line that will look or behave "
-    "differently in one of those engines, or a feature the rubric says not to use "
-    "without a fallback. Prefer few, certain findings over many doubtful ones; the "
-    "same problem repeated across lines is ONE finding pointing at the first "
-    "occurrence. Write every sentence for the app's author, who may not know CSS: "
-    "say what a visitor would notice and in which browser, then what to change. "
-    "Short sentences, plain words, no code in `summary` or `what`. Skip anything "
-    "cosmetic that the rubric does not name (font weights, minor spacing)."
-)
-
-
-# The schema, as prose, for the Windows shim path where `--json-schema`
-# cannot ride in argv (see `_run_locked`). `_parse_verdict` reads the JSON
-# back out of the result text there.
-_SCHEMA_IN_PROMPT = (
-    "Answer with ONLY a JSON object, no prose around it: "
+# the session fills in is three plain sentences per finding — WHERE
+# (file:line), WHAT will go wrong and in which browser, and the FIX in one
+# line — plus one short summary. `VERDICT_SHAPE` is the prose the prompt
+# hands the session (`app_doctor.check_prompt`); `_parse_verdict` is its
+# lenient reader.
+VERDICT_SHAPE = (
     '{"ok": bool, "summary": str, "findings": [{"path": str, "line": int, '
-    '"rule": str, "what": str, "fix": str}]}. `summary`: one plain sentence, at '
-    "most 15 words, no code, saying how many things will look different and in "
-    "which browser(s) — empty when ok. Per finding: `rule` a 3-6 word name of the "
-    "trap; `what` one sentence (<= 20 words) saying what a visitor sees go wrong and "
-    "in which browser, no code; `fix` one sentence (<= 20 words) saying what to "
-    "change, may name one CSS property."
+    '"rule": str, "what": str, "fix": str}]}\n'
+    "- `ok`: true only when there is nothing to fix.\n"
+    "- `summary`: one plain sentence, at most 15 words, no code and no jargon, "
+    "saying how many things will look or behave differently and in which "
+    "browser(s), e.g. \"Two things will look different in Safari.\" Empty when ok.\n"
+    "- per finding: `path` the file as listed, `line` its 1-based line; `rule` a "
+    "3-6 word name of the trap (e.g. \"Safari disclosure triangle\"); `what` one "
+    "sentence (at most 20 words) saying what a visitor will see go wrong and in "
+    "which browser, written for someone who does not know CSS, no code; `fix` one "
+    "sentence (at most 20 words) saying what to change, may name one CSS property "
+    "or attribute, no code blocks."
 )
 
 
-def _rubric() -> str | None:
-    src = skill_sources().get(RUBRIC_SKILL)
-    if not src:
-        return None
-    try:
-        with open(os.path.join(src, "SKILL.md"), encoding="utf-8") as fh:
-            return fh.read()
-    except OSError:
-        return None
-
-
-def _numbered(text: str) -> str:
-    return "\n".join(f"{i}: {ln}" for i, ln in enumerate(text.splitlines(), 1))
-
-
-def build_prompt(gathered: dict, rubric: str) -> str:
-    parts = ["# Rubric\n", rubric.strip(), "\n\n# App view files\n"]
-    if not gathered["files"]:
-        parts.append("(no .html/.css/.js/.svg files found)\n")
-    for f in gathered["files"]:
-        parts.append(f"\n## {f['rel']}" + (" (truncated)" if f["truncated"] else "") + "\n")
-        parts.append(_numbered(f["text"]) + "\n")
-    if gathered["omitted"]:
-        parts.append("\n## Not shown (past the size budget — say the verdict is partial)\n")
-        parts.extend(f"- {rel}\n" for rel in gathered["omitted"])
-    parts.append("\nAnswer with the JSON object described by the schema.")
-    return "".join(parts)
-
-
-def _result_event(stdout: str) -> dict | None:
-    result = None
-    for ln in stdout.splitlines():
-        try:
-            ev = json.loads(ln)
-        except ValueError:
-            continue
-        if isinstance(ev, dict) and ev.get("type") == "result":
-            result = ev
-    return result
-
-
-def _parse_verdict(result: dict) -> dict | None:
-    """`{"ok", "summary", "findings"}` off the terminal result event —
-    `structured_output` when the CLI honoured the schema, else the `result`
-    text parsed as JSON (fences stripped). None when neither reads."""
-    data = result.get("structured_output")
-    if not isinstance(data, dict):
-        text = str(result.get("result") or "").strip()
-        if text.startswith("```"):
-            text = text.strip("`")
-            text = text[text.find("{"):text.rfind("}") + 1]
-        try:
-            data = json.loads(text)
-        except ValueError:
-            return None
+def _parse_verdict(data: dict) -> dict | None:
+    """`{"ok", "summary", "findings"}` off what the session wrote, or None
+    when it does not read as a verdict at all."""
     if not isinstance(data, dict) or not isinstance(data.get("ok"), bool):
         return None
+    if not isinstance(data.get("findings"), list):
+        return None
     findings = []
-    for f in data.get("findings") or []:
+    for f in data["findings"]:
         if not isinstance(f, dict):
             continue
         try:
@@ -383,7 +321,7 @@ def _parse_verdict(result: dict) -> dict | None:
             line = 0
         # `excerpt` is the WHAT sentence (the modal's finding line); `fix` is
         # the extra line under it. Older-shaped answers (`excerpt` only) are
-        # still read so a cached verdict from a previous build draws.
+        # still read so a verdict from a previous build draws.
         what = str(f.get("what") or f.get("excerpt") or "").strip()
         findings.append({
             "rule": f"{CHECK_ID}:" + str(f.get("rule") or "trap").strip()[:80],
@@ -394,164 +332,50 @@ def _parse_verdict(result: dict) -> dict | None:
         })
     # A verdict that says ok but lists findings (or the reverse) is read by
     # the findings: the list is the evidence, the flag is the summary of it.
-    # `.strip('"')` because the structured answer has arrived with a stray
-    # trailing quote inside the string (seen live) — not worth a re-run over.
     return {"ok": not findings,
             "summary": str(data.get("summary") or "").strip().strip('"').strip()[:500],
             "findings": findings}
 
 
-def _agent():
-    """The claude template's agent.py (`_claude_bin`, `_spawn_env`), loaded
-    and cached by `project_queue.agent_module` — the same one copy
-    `routers/tasks._agent_module` wraps, reached directly so this module
-    never imports the router stack."""
-    from fused_render import project_queue
+def begin(app_dir: str, force: bool = False) -> tuple[dict | None, str | None, bool]:
+    """Prepare a run: `(gathered, error, reuse)`, exactly one of the first two
+    set. `reuse` True means the cache already answers for the folder as it
+    is now — a matching verdict, or a run record with a task on it and no
+    verdict yet — and no task should be created; the caller draws the row
+    instead (and, for the no-verdict case, settles whether that task is
+    still live). `force` is the Re-check button: ask again although the
+    cached verdict still matches — the one case the checksum cannot see is
+    the rubric itself having moved on. The caller must never force while a
+    check task is live; the router's one-live-task-per-app gate sees to it.
 
-    return project_queue.agent_module()
-
-
-_inflight: dict[str, threading.Lock] = {}
-_inflight_guard = threading.Lock()
-
-
-def run(app_dir: str, force: bool = False) -> tuple[dict | None, str | None]:
-    """Run the check now and cache the verdict. `(row_tuple, error)` — exactly
-    one set: `row_tuple` is `row_state`'s `(state, detail, findings)` for the
-    fresh verdict, `error` is one sentence for a 502.
-
-    Single-flighted per folder: two Check presses on one app (two tabs) run
-    the CLI once; the second waits and reads the first's verdict. `force` is
-    the Re-check button: skip that reuse and ask the model again even though
-    the cache still matches — the one case the checksum cannot see is the
-    rubric itself having moved on.
-    """
+    On a fresh run the previous verdict is dropped HERE, before any task
+    exists, so a run record written by `record_task` next can never be read
+    alongside a verdict for older content."""
     app_dir = os.path.abspath(app_dir)
-    with _inflight_guard:
-        lock = _inflight.setdefault(app_dir, threading.Lock())
-    with lock:
-        if not force:
-            # Someone else may have just finished — a matching cache is the answer.
-            state, detail, findings = row_state(app_dir)
-            from fused_render.app_doctor import UNRUN
-
-            if state != UNRUN:
-                return (state, detail, findings), None
-        return _run_locked(app_dir)
-
-
-def _run_locked(app_dir: str) -> tuple[dict | None, str | None]:
-    agent = _agent()
-    if agent is None:
-        return None, "the Claude session host is not available on this server"
-    rubric = _rubric()
-    if rubric is None:
-        return None, f"the {RUBRIC_SKILL} skill is not installed"
     try:
         gathered = gather(app_dir)
     except OSError as exc:
-        return None, f"could not read the app's view files: {exc}"
+        return None, f"could not read the app's view files: {exc}", False
+    record = read_run(app_dir)
+    if not force and record is not None and record["checksum"] == gathered["checksum"]:
+        if read_verdict(app_dir) is not None or record.get("task_id"):
+            return gathered, None, True
+    if not app_fused_dir.ensure(app_dir):
+        return None, ("this folder cannot hold the check's verdict (read-only or "
+                      "mount-backed), so there is nothing for the task to write to"), False
+    clear_verdict(app_dir)
+    return gathered, None, False
 
-    message = json.dumps({"type": "user", "message": {
-        "role": "user",
-        "content": [{"type": "text", "text": build_prompt(gathered, rubric)}]}})
-    workdir = app_dir if os.path.isdir(app_dir) else tempfile.gettempdir()
-    # NO FREE TEXT IN ARGV — the same rule `ai._ai_cmd` spells out: behind the
-    # Windows `.cmd` shim cmd.exe re-parses the whole line and `_cmd_quote`
-    # refuses any element holding a `"`. The system prompt goes through a
-    # file (`--system-prompt-file`, as ai.py does), the schema is compact
-    # JSON with its quotes intact — so it also has to travel as a FILE, not
-    # argv... except the CLI has no `--json-schema-file`. So the schema is
-    # written with single-quoted-safe content: `json.dumps` output holds `"`,
-    # which `_cmd_quote` rejects. On the shim path we therefore fall back to
-    # asking for JSON in the prompt (`_parse_verdict` reads the result text)
-    # and pass no `--json-schema` at all. `_popen_cmd` turns the list into
-    # the shim's single command string where needed.
-    from fused_render.server.ai import _kill_process_tree, _needs_cmd_shim, _popen_cmd
 
-    bin_path = agent._claude_bin()
-    shim = _needs_cmd_shim(bin_path)
-    fd, sp_file = tempfile.mkstemp(prefix="fused-doctor-sp-", suffix=".txt")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(_SYSTEM if not shim else _SYSTEM + "\n\n" + _SCHEMA_IN_PROMPT)
-        args = ["-p", "--no-session-persistence",
-                "--input-format", "stream-json",
-                "--output-format", "stream-json", "--verbose",
-                "--max-turns", "1", "--tools=", "--setting-sources=",
-                "--model", MODEL, "--effort", EFFORT,
-                "--system-prompt-file", sp_file]
-        if not shim:
-            args += ["--json-schema", json.dumps(_SCHEMA, separators=(",", ":"))]
-        cmd = _popen_cmd(bin_path, args)
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                # A STRING is the shim's command line and only means anything
-                # through cmd.exe — `shell=True` is the sync twin of
-                # `ai._spawn_claude_stream`'s create_subprocess_shell, and
-                # just as there it is no injection surface: the payload is
-                # ours, fully quoted, and every free text rides stdin or a
-                # file. A list is exec'd directly.
-                shell=isinstance(cmd, str),
-                cwd=workdir, env=agent._spawn_env(), stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                encoding="utf-8", errors="replace",
-                creationflags=(subprocess.CREATE_NO_WINDOW
-                               if sys.platform == "win32" else 0))
-        except (OSError, ValueError) as exc:
-            return None, f"could not start claude: {exc}"
-        try:
-            stdout, stderr = proc.communicate(input=message + "\n", timeout=TIMEOUT)
-        except subprocess.TimeoutExpired:
-            # The tree, not just the top process: behind the shim `proc` is
-            # cmd.exe, and a bare kill would orphan the node child that is
-            # still burning tokens (`ai._kill_process_tree`).
-            _kill_process_tree(proc)
-            proc.communicate()
-            return None, f"the check did not answer within {int(TIMEOUT)}s"
-    finally:
-        try:
-            os.unlink(sp_file)
-        except OSError:
-            pass
-    if proc.returncode != 0:
-        tail = (stderr or "").strip().splitlines()
-        return None, "claude exited " + str(proc.returncode) + (f": {tail[-1]}" if tail else "")
-    result = _result_event(stdout or "")
-    if result is None or result.get("is_error"):
-        why = str((result or {}).get("result") or "no result event").strip()
-        return None, f"the check failed: {why[:200]}"
-    verdict = _parse_verdict(result)
-    if verdict is None:
-        return None, "the model's answer was not the JSON verdict asked for"
-
-    stored = {
+def record_task(app_dir: str, gathered: dict, task_id: str) -> bool:
+    """Write the run record once the task exists — the join key the GET
+    reads. False when the folder refused, in which case the caller has a
+    task running whose verdict will never be attached; it says so."""
+    return write_run(os.path.abspath(app_dir), {
         "checksum": gathered["checksum"],
-        "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "task_id": task_id,
+        "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "model": MODEL,
         "effort": EFFORT,
-        "files": [f["rel"] for f in gathered["files"]],
-        "omitted": gathered["omitted"],
-        **verdict,
-    }
-    written = write_cache(app_dir, stored)
-    # Read back through the same path a GET uses, so the row the button
-    # returns is byte-for-byte what the next open will draw. Two ways that
-    # read can still come back UNRUN, told apart rather than blamed on one:
-    # the cache could not be written (read-only clone, mount-backed folder),
-    # or the app changed WHILE the model was reading it, so the verdict that
-    # was just written already describes a folder that is gone.
-    state, detail, findings = row_state(app_dir)
-    from fused_render.app_doctor import FAIL, PASS, UNRUN
-
-    if state == UNRUN:
-        state = PASS if verdict["ok"] else FAIL
-        detail = verdict["summary"] or (
-            "nothing will look or behave differently in another browser" if verdict["ok"]
-            else f"{len(verdict['findings'])} thing"
-                 f"{'' if len(verdict['findings']) == 1 else 's'} will look different in another browser")
-        detail += (" (not cached: this folder is read-only)" if not written
-                   else " (the app changed while it was being checked — Check again)")
-        findings = verdict["findings"]
-    return (state, detail, findings), None
+        "files": gathered["files"],
+    })

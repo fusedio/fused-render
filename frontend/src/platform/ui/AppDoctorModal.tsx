@@ -19,7 +19,10 @@
 // run, answered afresh on every GET. The exception is an ON-DEMAND row
 // (`check.ondemand`, today `cross-browser`, fused_render/app_doctor_ai.py): a
 // Sonnet read of the view files that spends tokens, so it runs only when its
-// own Check button is pressed (`useAppDoctorReport`'s `runCheck`), and its
+// own Check button is pressed (`useAppDoctorReport`'s `runCheck`) — and it
+// runs as a TASK on the app's entry page (`check.check_task` while live: the
+// Tasks tab lists it, the shell's finished-task notice fires for it), never
+// as a call this component waits on, so a tab switch cannot lose it. Its
 // verdict is cached server-side on a checksum of those files — a GET draws
 // the cached verdict for free, and reads `unrun` ("Not run yet") once the app
 // has changed under it. A settled on-demand row keeps a Re-check for the
@@ -174,25 +177,30 @@ function CheckRow({
   check,
   busy,
   otherTaskLive,
-  checking,
+  creating,
   anyChecking,
   pulling,
   onFix,
   onCheck,
+  onFollowCheck,
   onPull,
   onDone,
   onOpenGit,
 }: {
   check: AppCheck;
   busy: boolean;
-  /** Some OTHER row (or "Fix all") already has a live task — the server
-   *  allows exactly one at a time, so pressing this row's own button would
-   *  just 409. Disabled rather than hidden, with a title saying why. */
+  /** Open the running check task (its Claude pane, or the Tasks tab). */
+  onFollowCheck: (check: AppCheck) => void;
+  /** Some OTHER row (or "Fix all") already has a live task — a fix or a
+   *  check — the server allows exactly one at a time, so pressing this row's
+   *  own button would just 409. Disabled rather than hidden, with a title
+   *  saying why. */
   otherTaskLive: boolean;
-  /** THIS on-demand row's model call is in flight. */
-  checking: boolean;
-  /** Some on-demand row's model call is in flight — one at a time, so the
-   *  server's per-folder single-flight never has a second press to queue. */
+  /** THIS on-demand row's check task is being created (the press is in
+   *  flight; the row does not carry `check_task` yet). */
+  creating: boolean;
+  /** Some on-demand row's check task is being created or is live — one at a
+   *  time, so a second press never queues behind the first. */
   anyChecking: boolean;
   /** THIS row's Pull is in flight — `git`-only, never true for another row. */
   pulling: boolean;
@@ -221,6 +229,9 @@ function CheckRow({
 }) {
   const { shown, hidden } = splitFindings(check.findings);
   const failing = check.state === "fail";
+  // "Checking…" from the press until the verdict lands: the create call in
+  // flight, then the server's own word that a check task is live on it.
+  const checking = creating || !!check.check_task;
   const openInGit = showsOpenInGitAction(check);
   // An on-demand row always has something to press — Check when it has not
   // been run on this content, Re-check once it has — so it takes the fuller
@@ -249,7 +260,11 @@ function CheckRow({
       <div className="appdoc-text">
         <span className="appdoc-label">{check.label}</span>
         {checking ? (
-          <span className="appdoc-detail">Asking Claude (Sonnet) to read the app's view files…</span>
+          <span className="appdoc-detail">
+            {creating
+              ? "Creating the check task…"
+              : "Claude (Sonnet) is reading the app's view files — listed under the app's Tasks tab; you will be notified when it finishes"}
+          </span>
         ) : (
           rowVisibleDetailText(check) !== "" && (
             <span className="appdoc-detail">{rowVisibleDetailText(check)}</span>
@@ -301,15 +316,33 @@ function CheckRow({
               the only thing to do is run it. Nothing to fix yet, so no
               Fix/Review beside it. */}
           {check.ondemand && check.state === "unrun" ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={anyChecking}
-              title="Asks Claude (Sonnet, low effort) to read this app's .html/.css/.js against the cross-browser rubric — cached until the files change"
-              onClick={() => onCheck(check)}
-            >
-              {checking ? "Checking…" : "Check"}
-            </Button>
+            check.check_task ? (
+              // The running check: the button IS the way there — the Claude
+              // pane on its run, or the Tasks tab — same as a row's "Fix in
+              // progress" opens the fix session.
+              <Button
+                variant="secondary"
+                size="sm"
+                title="Claude is checking this app — open the running task"
+                onClick={() => onFollowCheck(check)}
+              >
+                Open check
+              </Button>
+            ) : (
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={anyChecking || busy || otherTaskLive}
+                title={
+                  otherTaskLive
+                    ? "An App Doctor task is editing this app — check once it has finished"
+                    : "Creates a task that asks Claude (Sonnet, low effort) to read this app's .html/.css/.js against the cross-browser rubric — cached until the files change"
+                }
+                onClick={() => onCheck(check)}
+              >
+                {checking ? "Checking…" : "Check"}
+              </Button>
+            )
           ) : (
             <>
               {/* Prominent and FIRST — a repo behind origin is the one
@@ -594,61 +627,115 @@ export function useAppDoctorReport(dir: string, onDone?: () => void) {
     onDone?.();
   };
 
-  // The on-demand row's model call. The id of the row in flight, or null —
-  // one at a time (the server single-flights per folder anyway; this just
-  // keeps a second press from queueing behind the first). On return the
-  // fresh row is swapped into the report in place — everything else on the
-  // checklist is as true as it was a moment ago, so no full re-run.
-  const [checking, setChecking] = useState<string | null>(null);
+  // The on-demand row's CHECK TASK. In flight is a fact the SERVER holds —
+  // `check.check_task` is read off the task store on every GET — not a
+  // component flag, so a tab switch, a reload or a second window all draw
+  // the same "Checking…" and none of them can lose it. `creating` is only
+  // the seconds between the press and the server's answer (the create call
+  // waits for the task's run id); the moment the row comes back it carries
+  // `check_task` and this clears.
+  const [creating, setCreating] = useState<string | null>(null);
   const runCheck = async (check: AppCheck, force = false) => {
-    if (checking) return;
-    setChecking(check.id);
+    if (creating) return;
+    setCreating(check.id);
     setError(null);
     try {
       const res = await runAppDoctorOnDemand(dir, check.id, force);
-      // The header dot (useAppDoctorChecks) fetched once at open and would
-      // otherwise stay clean over a row that just went red; the verdict is
-      // cached now, so its refetch is free.
+      // A new row on the Tasks tab — the pulse that feeds the shell's task
+      // notices and the sidebar's unread dot should notice it now, not on
+      // its next idle tick.
+      if (res.task) announceTasksChanged();
+      // ...and the header dot's own hook (useAppDoctorChecks) refetches on
+      // this: its answer now carries `check_task`, which is what starts ITS
+      // poll — the one that outlives this panel, so a check that finishes
+      // after a tab switch still moves the dot.
       announceAppDoctorChanged(dir);
       if (alive.current) {
         setReport((r) =>
           r
             ? {
                 ...r,
-                // The run endpoint knows nothing about fix sessions and
-                // returns `task: null`; the row's live task — its own, or a
-                // Fix-all's — is still running, so it is kept from the row
-                // being replaced rather than dropped with it.
-                checks: r.checks.map((c) =>
-                  c.id === res.check.id ? { ...res.check, task: c.task } : c,
-                ),
+                checks: r.checks.map((c) => (c.id === res.check.id ? res.check : c)),
               }
             : r,
         );
       }
+      if (res.task_error) throw new Error(res.task_error);
     } catch (e) {
       if (alive.current) setError((e as Error).message);
     } finally {
-      if (alive.current) setChecking(null);
+      if (alive.current) setCreating(null);
     }
   };
+
+  // While a check task is live, ask the server again every few seconds so
+  // the verdict lands on the row the moment the task writes it — without
+  // this, the row would say "Checking…" until the doctor was reopened. A
+  // plain GET: a bounded folder walk, no tokens. The old report stays on
+  // screen until the new one arrives (never through `load`, which blanks
+  // the checklist to a skeleton). When the task is gone from the answer,
+  // the header dot's own fetch (useAppDoctorChecks) is rung so it moves off
+  // "clean" over a row that just went red. Keyed on the live task's id, so
+  // the interval restarts only when the task changes, not on every render.
+  const liveCheckId = report?.checks.find((c) => c.check_task)?.check_task?.id ?? null;
+  useEffect(() => {
+    if (!liveCheckId) return;
+    let cancelled = false;
+    const timer = window.setInterval(async () => {
+      try {
+        const r = await getAppDoctor(dir);
+        if (cancelled || !alive.current) return;
+        setReport(r);
+        if (!r.checks.some((c) => c.check_task?.id === liveCheckId)) {
+          announceAppDoctorChanged(dir);
+        }
+      } catch {
+        /* the next tick asks again; the row keeps saying "Checking…" meanwhile */
+      }
+    }, CHECK_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [dir, liveCheckId]);
+
+  // Take the user to the running check: the Claude pane on its run when the
+  // task has a run id (same landing the fix flow uses), else the Tasks tab
+  // where the stored entry is listed.
+  const followCheck = (check: AppCheck) => {
+    const run = check.check_task?.run_id;
+    navigateUrl(run && report?.entry ? appLandingUrl(report.entry, run) : tasksTabUrl(dir));
+    onDone?.();
+  };
+
+  // A check task on any row (or one being created) holds the same
+  // one-live-task-per-app gate a fix does, so the footer's "Fix all" must
+  // read it as in-flight too — pressing it would just 409.
+  const checkLive = creating !== null || !!liveCheckId;
 
   return {
     report,
     error,
     busy,
     liveTask,
+    checkLive,
     load,
     fixRow,
     fixAll,
     followLive,
-    checking,
+    creating,
     runCheck,
+    followCheck,
     pulling,
     pullRow,
     onDone,
   };
 }
+
+// How often the checklist re-asks the server while a check task is live. A
+// check is a Sonnet read of a few files — tens of seconds — so a few seconds
+// between asks lands the verdict promptly without hammering a folder walk.
+const CHECK_POLL_MS = 4_000;
 
 type Report = ReturnType<typeof useAppDoctorReport>;
 
@@ -671,8 +758,9 @@ function AppDoctorChecklist({
   busy,
   liveTask,
   fixRow,
-  checking,
+  creating,
   runCheck,
+  followCheck,
   pulling,
   pullRow,
   onDone,
@@ -683,6 +771,8 @@ function AppDoctorChecklist({
    *  each caller of `AppDoctorChecklist`. */
   onOpenGit?: () => void;
 }) {
+  // Any row's live check task — one per app, like the fix task.
+  const anyCheckLive = !!report?.checks.some((c) => c.check_task);
   return (
     <>
       <ErrorBanner>{error}</ErrorBanner>
@@ -704,12 +794,13 @@ function AppDoctorChecklist({
                   key={c.id}
                   check={c}
                   busy={busy}
-                  otherTaskLive={!!liveTask && !c.task}
-                  checking={checking === c.id}
-                  anyChecking={checking !== null}
+                  otherTaskLive={(!!liveTask && !c.task) || (anyCheckLive && !c.check_task)}
+                  creating={creating === c.id}
+                  anyChecking={creating !== null || anyCheckLive}
                   pulling={pulling === c.id}
                   onFix={fixRow}
                   onCheck={(check, force) => void runCheck(check, force)}
+                  onFollowCheck={followCheck}
                   onPull={(check) => void pullRow(check)}
                   onDone={onDone}
                   onOpenGit={onOpenGit}
@@ -724,7 +815,19 @@ function AppDoctorChecklist({
 }
 
 // The primary action: "Fix N issues" / "Fix in progress" / "Nothing to fix".
-function AppDoctorFixAllButton({ report, busy, liveTask, fixAll, followLive }: Report) {
+function AppDoctorFixAllButton({ report, busy, liveTask, checkLive, fixAll, followLive }: Report) {
+  if (checkLive) {
+    return (
+      <Button
+        variant="default"
+        size="sm"
+        disabled
+        title="A check task is running on this app — fixes wait until its verdict lands"
+      >
+        Check in progress
+      </Button>
+    );
+  }
   if (liveTask) {
     return (
       <Button

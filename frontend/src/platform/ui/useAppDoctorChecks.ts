@@ -52,5 +52,23 @@ export function useAppDoctorChecks(dir: string | null): AppCheck[] | null {
       alive = false;
     };
   }, [dir, generation]);
+
+  // The OTHER exception: while a CHECK TASK is live on any row, ask again
+  // every few seconds until it is gone. The Doctor panel polls for itself
+  // while mounted, but this dot outlives it (the tab trigger, the explorer
+  // menu) — a check that finishes after a tab switch would otherwise leave
+  // the dot clean over a row that just went red until the app was reopened.
+  // Same cheap GET as above; the poll stops the moment no row carries a task.
+  const liveCheck = checks?.some((c) => c.check_task) ?? false;
+  useEffect(() => {
+    if (!dir || !liveCheck) return;
+    const timer = window.setInterval(() => setGeneration((g) => g + 1), CHECK_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [dir, liveCheck]);
   return checks;
 }
+
+// How often the dot re-asks while a check task is live — a Sonnet read of a
+// few files takes tens of seconds, so this lands the verdict promptly
+// without hammering a folder walk. Matches AppDoctorModal.tsx's own poll.
+const CHECK_POLL_MS = 4_000;

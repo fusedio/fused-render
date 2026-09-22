@@ -69,6 +69,7 @@ const check = (
   findings: [],
   task: null,
   ondemand: false,
+  check_task: null,
   ...extra,
 });
 
