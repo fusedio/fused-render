@@ -1367,6 +1367,157 @@ def test_starvation_fallback_misses_a_page_short_by_exactly_one_row(tmp_path):
     assert result["truncated"] is True
 
 
+# -- starvation fallback, round 2: a short page is not starvation evidence --
+#
+# The fallback above (`len(rows) < limit + 1`) treats ANY short bounded page
+# as possible starvation and reruns unbounded to find out. That conflates two
+# unrelated situations: a query whose matches genuinely fill fewer than
+# `limit + 1` slots (a sparse query, or one with no matches at all) ALSO
+# produces a short bounded page, with nothing for a rerun to recover — `LIKE
+# '%q%'` has no anchor, so both the bounded and unbounded passes scan the
+# entire corpus regardless of how few rows match, meaning a zero-match or
+# sparse query pays for two full scans to answer the same "not much/nothing
+# here" every time (DECISIONS.md has the measured cost). `_pool_n_column`
+# reports how many rows the bounded pool's own `LIMIT <pool>` stage actually
+# produced; `search_ranked` uses it below to tell "the pool starved a
+# fillable page" apart from "there was nothing to find" before ever
+# re-running anything.
+import contextlib
+from unittest.mock import patch
+
+import duckdb
+
+
+@contextlib.contextmanager
+def _counting_rank_statements():
+    """Counts real `duckdb.DuckDBPyConnection.execute` calls whose SQL text
+    matches the rank/glob query shape (`_qualify_basename_cap`'s `QUALIFY`
+    fragment appears in every `_rank_sql`/`_glob_sql` statement and nowhere
+    else `search_ranked` executes) — used to pin exactly how many rank
+    statements a `search_ranked` call issues, independent of what its
+    result happens to be."""
+    counts = {"n": 0}
+    orig_execute = duckdb.DuckDBPyConnection.execute
+
+    def counting_execute(self, sql, *args, **kwargs):
+        if isinstance(sql, str) and "QUALIFY" in sql:
+            counts["n"] += 1
+        return orig_execute(self, sql, *args, **kwargs)
+
+    with patch.object(duckdb.DuckDBPyConnection, "execute", counting_execute):
+        yield counts
+
+
+def _unbounded_ground_truth(monkeypatch, cfg, root, q, **kwargs):
+    """The correct answer for `search_ranked(cfg, root, q, **kwargs)`,
+    computed by forcing the candidate pool arbitrarily large so the bounded
+    query can never truncate the WHERE-matched set — functionally identical
+    to `bounded=False` for any fixture small enough to fit inside that pool,
+    without needing to reach into `_rank_sql`/`_glob_sql`/`inner` directly.
+    Used as the parity oracle: whatever `search_ranked` returns with the real
+    (small) pool must match this, query for query."""
+    import fused_render.index.query as qmod
+    monkeypatch.setattr(qmod, "_basename_candidate_pool", lambda limit: 10**9)
+    try:
+        return search_ranked(cfg, root, q, **kwargs)
+    finally:
+        monkeypatch.undo()
+
+
+def test_zero_match_query_issues_exactly_one_rank_statement(tmp_path):
+    """Tier 1: the bounded pass returning 0 rows PROVES the WHERE clause
+    matched nothing at all (`_qualify_basename_cap`'s QUALIFY keeps at least
+    one row per distinct `nm` the pool holds, so a non-empty pool can never
+    produce zero rows) — the unbounded rerun can only reproduce "0 rows" too,
+    so it must never fire. Before the fix, `0 < limit + 1` is unconditionally
+    true, so every zero-match query paid for two full corpus scans."""
+    cfg = _index(tmp_path, "/r", ["/r/alpha/beta.txt", "/r/gamma/delta.txt"])
+    with _counting_rank_statements() as counts:
+        result = search_ranked(cfg, "/r", "zzz_no_such_substring_zzz", limit=20)
+    assert result["hits"] == []
+    assert counts["n"] == 1
+
+
+def test_sparse_query_whose_pool_does_not_fill_issues_exactly_one_rank_statement(
+        tmp_path):
+    """Tier 2: the corpus has plenty of files, but only two of them match
+    `q` — nowhere near filling the pool (`_basename_candidate_pool(21)` is
+    well over 20). The bounded pool's own `LIMIT <pool>` stage therefore never
+    binds: `pool_n` (the pool subquery's actual row count) comes back below
+    `pool`, which proves the bounded query already saw every WHERE-matched
+    row an unbounded query would — the two are equivalent by construction, so
+    the fallback must not fire even though the returned page (2 rows) is far
+    short of `limit + 1` (21)."""
+    files = (["/r/a/rareword_one.txt", "/r/b/rareword_two.txt"]
+             + [f"/r/noise/f{i}.txt" for i in range(100)])
+    cfg = _index(tmp_path, "/r", files)
+    with _counting_rank_statements() as counts:
+        result = search_ranked(cfg, "/r", "rareword", limit=20)
+    hits = [h for h in result["hits"] if not h["is_dir"]]
+    assert len(hits) == 2
+    assert counts["n"] == 1
+
+
+@pytest.mark.parametrize("glob,ranked", [
+    pytest.param(False, True, id="substring-ranked"),
+    pytest.param(True, True, id="glob-scored"),
+])
+def test_starvation_fallback_still_fires_when_the_pool_genuinely_truncates(
+        tmp_path, monkeypatch, glob, ranked):
+    """Guard against over-fixing: the two equivalence checks above must not
+    swallow the REAL starvation case (`13ff8332a`'s own adversarial shape,
+    also pinned above) — a pool that genuinely truncates the WHERE-matched
+    set (`dominant_count` comfortably exceeds the pool) AND whose basename
+    cap starves the page (only the dominant name survives, 3 rows, far short
+    of `limit + 1`) must still trigger exactly one rerun (two statements
+    total), and the recovered result must match the unbounded ground truth.
+
+    Only the RANKED branches are exercised here: `_adversarial_files`'s
+    dominant `dup.txt` only ranks ahead of every `dupN.txt` via the scored
+    `edge`/`length(nm)` predicates (see its own docstring) — the unranked
+    order (`depth ASC, rel ASC`) sorts alphabetically instead, where
+    `d0_0/dup0.txt` precedes `dom0/dup.txt`, so the dominant name never
+    concentrates at the front of the pool and this fixture does not starve
+    the unranked branches at all (verified separately: they issue exactly
+    one statement here, correctly, since there is nothing to recover)."""
+    files = _adversarial_files(dominant_count=1000)
+    cfg = _index(tmp_path, "/r", files)
+    query = "**dup**" if glob else "dup"
+    with _counting_rank_statements() as counts:
+        result = search_ranked(cfg, "/r", query, glob=glob, ranked=ranked,
+                               limit=21)
+    assert counts["n"] == 2
+    expected = _unbounded_ground_truth(monkeypatch, cfg, "/r", query,
+                                       glob=glob, ranked=ranked, limit=21)
+    assert result["hits"] == expected["hits"]
+    assert result["truncated"] == expected["truncated"]
+
+
+@pytest.mark.parametrize("q,glob,limit", [
+    ("zzz_no_such_substring_zzz", False, 20),
+    ("rareword", False, 20),
+    ("dup", False, 21),
+    ("**dup**", True, 21),
+    ("noise", False, 15),
+])
+def test_starvation_fallback_fix_does_not_change_any_result(
+        tmp_path, monkeypatch, q, glob, limit):
+    """Parity: for a spread of queries (zero-match, sparse, a genuinely
+    starved broad substring query, the same shape in glob mode, and an
+    ordinary broad query with many distinct basenames), the new tiered
+    fallback trigger must return BYTE-IDENTICAL hits/truncated to the
+    unbounded ground truth — removing a redundant scan must never change a
+    single returned row."""
+    files = (_adversarial_files(dominant_count=1000)
+             + ["/r/a/rareword_one.txt", "/r/b/rareword_two.txt"])
+    cfg = _index(tmp_path, "/r", files)
+    actual = search_ranked(cfg, "/r", q, glob=glob, limit=limit)
+    expected = _unbounded_ground_truth(monkeypatch, cfg, "/r", q, glob=glob,
+                                       limit=limit)
+    assert actual["hits"] == expected["hits"]
+    assert actual["truncated"] == expected["truncated"]
+
+
 def test_glob_unranked_reproduces_the_old_depth_then_alpha_order(tmp_path):
     """`ranked=False` for a glob query must still answer `depth ASC,
     lower(rel) ASC, rel ASC` — the exact order glob mode always used before

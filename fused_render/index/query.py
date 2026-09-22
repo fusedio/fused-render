@@ -1521,6 +1521,47 @@ def _basename_candidate_pool(limit: int) -> int:
     return max(limit, min(limit * _BASENAME_POOL_FACTOR, _BASENAME_POOL_MAX))
 
 
+def _pool_n_column(bounded: bool) -> str:
+    """The extra SELECT-list fragment (a leading `, ` or `""`) that reports
+    how many rows the bounded candidate pool actually produced — see
+    DECISIONS.md and `search_ranked`'s own starvation-fallback comment for
+    why this replaces "the page came back short" as the fallback's trigger.
+
+    `bounded=False` has no pool stage to measure (`_bounded_or_full_candidates`
+    returns `base_select` unmodified), so this is `""` — not merely unused,
+    never computed at all.
+
+    `bounded=True`: `count(*) OVER ()` with no `PARTITION BY`, spliced into
+    the OUTER SELECT that reads FROM the candidate-pool subquery (i.e. from
+    `_bounded_or_full_candidates`'s own `(base_select ORDER BY ... LIMIT
+    pool)`), NOT into `base_select` itself and NOT into a window ABOVE the
+    final `QUALIFY`/`ORDER BY`/`LIMIT`. Placement matters for two reasons:
+
+    1. DuckDB evaluates every window function in a SELECT (including this
+       one and `_qualify_basename_cap`'s `QUALIFY` row_number) over the same
+       FROM-clause input, before QUALIFY filters rows out — so `pool_n` is
+       the row count of the candidate-pool subquery itself, i.e. `min(pool,
+       actual WHERE-matched count)`, independent of how many rows QUALIFY's
+       per-basename cap then keeps. `pool_n < pool` therefore means the
+       inner `LIMIT <pool>` never bound: the pool subquery returned every
+       WHERE-matched row, so `QUALIFY` here saw the SAME input the unbounded
+       (`bounded=False`) query's `QUALIFY` would have seen, and the two
+       queries are provably equivalent — the fallback is redundant and must
+       not fire.
+    2. It must sit ABOVE the pool's own `ORDER BY ... LIMIT <pool>`, never
+       inside `base_select` or as a window over the full WHERE-matched set —
+       a `count(*) OVER ()` there would force DuckDB to materialise every
+       matching row just to answer it, defeating the heap-based Top-N scan
+       `_bounded_or_full_candidates`'s inner `LIMIT` exists to enable (see
+       its own docstring) and reintroducing, for a broad query, exactly the
+       full-corpus-scan cost this fix's whole point is to avoid.
+
+    Every row this query returns carries the SAME `pool_n` value (there is
+    no `PARTITION BY`), so a caller only needs to read it off any one
+    returned row (`rows[0][-1]`, `search_ranked` does not care which)."""
+    return ", count(*) OVER () AS pool_n" if bounded else ""
+
+
 def _bounded_or_full_candidates(base_select: str, order_by: str, limit: int,
                                 bounded: bool) -> str:
     """The subquery that feeds `_qualify_basename_cap`'s `QUALIFY`: either the
@@ -1791,7 +1832,8 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, qs: str, limit: int,
         candidates = _bounded_or_full_candidates(
             base_select, unranked_order, limit, bounded)
         return (
-            f"SELECT rel, size, mtime, is_dir, depth FROM {candidates} "
+            f"SELECT rel, size, mtime, is_dir, depth"
+            f"{_pool_n_column(bounded)} FROM {candidates} "
             f"{_qualify_basename_cap(unranked_order)}"
             f"ORDER BY {unranked_order} "
             f"LIMIT {limit}")
@@ -1803,7 +1845,8 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, qs: str, limit: int,
         f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden} ")
     candidates = _bounded_or_full_candidates(base_select, order_by, limit, bounded)
     return (
-        f"SELECT rel, size, mtime, is_dir, depth, score, tier FROM {candidates} "
+        f"SELECT rel, size, mtime, is_dir, depth, score, tier"
+        f"{_pool_n_column(bounded)} FROM {candidates} "
         f"{_qualify_basename_cap(order_by)}"
         f"ORDER BY {order_by} "
         f"LIMIT {limit}")
@@ -2160,7 +2203,8 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
         candidates = _bounded_or_full_candidates(
             base_select, unscored_order, limit, bounded)
         return (
-            f"SELECT rel, size, mtime, is_dir, depth FROM {candidates} "
+            f"SELECT rel, size, mtime, is_dir, depth"
+            f"{_pool_n_column(bounded)} FROM {candidates} "
             f"{_qualify_basename_cap(unscored_order)}"
             f"ORDER BY {unscored_order} "
             f"LIMIT {limit}")
@@ -2228,7 +2272,8 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
         f"WHERE {like_guard}regexp_matches(lrel, '{regex}'){hidden} ")
     candidates = _bounded_or_full_candidates(base_select, order_by, limit, bounded)
     return (
-        f"SELECT rel, size, mtime, is_dir, depth, score, tier FROM {candidates} "
+        f"SELECT rel, size, mtime, is_dir, depth, score, tier"
+        f"{_pool_n_column(bounded)} FROM {candidates} "
         f"{_qualify_basename_cap(order_by)}"
         f"ORDER BY {order_by} "
         f"LIMIT {limit}")
@@ -2544,35 +2589,70 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
                                  ranked=ranked, bounded=bounded)
         # One row past `limit` so "there was more" is known without a count —
         # same trick `search_under` uses for its own LIMIT.
-        rows = con.execute(_build_sql(bounded=True)).fetchall()
+        pool_rows = con.execute(_build_sql(bounded=True)).fetchall()
         if token is not None:
             token.check()
         # Starvation fallback (`13ff8332a`'s bounded candidate pool ahead of
-        # the basename cap, DECISIONS.md/specs/query.md §3): a bounded run
-        # that comes back with a FULL page — `limit + 1` rows, the same
-        # one-extra-row `truncated` is computed from everywhere else in this
-        # function, NOT merely `limit` rows — is provably not starved: a
-        # basename large enough to fill the whole pool and outrank every
-        # other matching name would still have left every OTHER basename
-        # capped at `_MAX_PER_BASENAME`, so a full `limit + 1`-row page can
-        # only mean the pool held enough distinct names to fill it AND leave
-        # one more over. **Code-review correction**: an earlier version of
-        # this fallback compared against `limit` rather than `limit + 1` — a
-        # bounded run landing at EXACTLY `limit` rows (one short of the
-        # query's own `limit + 1`) read as "full" and skipped the rerun, even
-        # though the pool boundary could still be hiding a better-ranked,
-        # distinct basename that the unbounded query's `(limit + 1)`th row
-        # would have surfaced — silently under-reporting both the page and
-        # `truncated`. Fewer than `limit + 1` is the ONLY signal available
-        # without a second query, and it is also exactly the case where the
-        # extra query is cheap either way: either the corpus genuinely has
-        # few matches (the unbounded rerun re-scans a small WHERE-matched
-        # set) or the pool actually starved a fillable page (and correctness
-        # is worth the extra query). Rerunning replaces `rows` wholesale —
-        # `truncated`/`total` below are computed from whichever query
-        # actually ran, so a fallback's row count is never mixed with the
-        # bounded query's.
-        if len(rows) < limit + 1:
+        # the basename cap, DECISIONS.md/specs/query.md §3) — REWORKED this
+        # round: a short bounded page used to be treated as evidence the pool
+        # might have starved a fillable page, but a short page is exactly
+        # what a genuinely sparse or zero-match query produces too — neither
+        # tells you which happened, and `LIKE '%q%'` has no anchor, so
+        # BOTH passes scan the entire corpus regardless (measured: a
+        # zero-match query on a 440k-row index cost 2.6x, paying for two full
+        # scans to answer "still nothing"). The fix replaces "was the page
+        # short" with two provable equivalences instead, each of which
+        # proves the unbounded rerun can only reproduce `pool_rows` — see
+        # DECISIONS.md for the full writeup:
+        #
+        # Tier 1 (`not pool_rows`): the bounded pool subquery's `QUALIFY row_
+        # number() OVER (PARTITION BY nm ...) <= _MAX_PER_BASENAME` keeps at
+        # least the `row_number() = 1` row for every distinct `nm` the pool
+        # holds, so a non-empty pool can never produce zero output rows.
+        # Zero rows back therefore proves the pool itself was empty, which
+        # proves the WHERE clause matched nothing at all — the unbounded
+        # query, filtering the identical WHERE-matched set, must also return
+        # zero rows. No rerun needed; the fallback would just re-answer "no
+        # matches" at the cost of a second full-corpus scan.
+        #
+        # Tier 2 (`pool_n < pool`): `pool_n` (`_pool_n_column`'s `count(*)
+        # OVER ()`, computed over the candidate-pool subquery — i.e. strictly
+        # AFTER its own `ORDER BY ... LIMIT <pool>`, never over the raw
+        # WHERE-matched set, which would defeat DuckDB's top-N scan on a
+        # broad query) is the pool subquery's actual row count. `pool_n <
+        # pool` means that inner `LIMIT <pool>` never truncated anything —
+        # the pool held EVERY WHERE-matched row, so this bounded query's
+        # `QUALIFY` ran over the exact same input the unbounded query's
+        # `QUALIFY` would run over. The two are equivalent by construction;
+        # the fallback cannot produce a different result and must not fire.
+        #
+        # Only when the pool actually filled (`pool_n >= pool`) AND the page
+        # still came up short of `limit + 1` (the same one-extra-row
+        # `truncated` trick used everywhere else in this function — see the
+        # code-review correction preserved below) is a real basename-cap
+        # starvation still possible, and the unbounded rerun fires exactly
+        # as before. Rerunning replaces `rows` wholesale — `truncated`/
+        # `total` below are computed from whichever query actually ran, so a
+        # fallback's row count is never mixed with the bounded query's.
+        #
+        # **Code-review correction** (unchanged from the prior round): an
+        # earlier version of this fallback compared against `limit` rather
+        # than `limit + 1` — a bounded run landing at EXACTLY `limit` rows
+        # (one short of the query's own `limit + 1`) read as "full" and
+        # skipped the rerun, even though the pool boundary could still be
+        # hiding a better-ranked, distinct basename that the unbounded
+        # query's `(limit + 1)`th row would have surfaced — silently
+        # under-reporting both the page and `truncated`. Fewer than
+        # `limit + 1` remains the page-shortness signal; it is now combined
+        # with (not replacing) the two equivalence checks above.
+        if pool_rows:
+            pool_n = pool_rows[0][-1]
+            rows = [r[:-1] for r in pool_rows]
+        else:
+            pool_n = 0
+            rows = []
+        pool = _basename_candidate_pool(limit + 1)
+        if pool_rows and pool_n >= pool and len(rows) < limit + 1:
             rows = con.execute(_build_sql(bounded=False)).fetchall()
             if token is not None:
                 token.check()

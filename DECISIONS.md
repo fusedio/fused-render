@@ -4490,3 +4490,75 @@ got the wording assertion above. Ran `tests/test_git_upstream.py`,
 `tests/test_app_doctor_report.py`, and the doctor-scoped subset of
 `tests/test_apps_api.py`: 114 passed. No TypeScript touched, so no `bunx tsc`
 run.
+
+## Rank starvation fallback: a short page is not starvation evidence
+
+`13ff8332a`'s bounded-candidate-pool fast path (`fused_render/index/query.py`,
+`_rank_sql`/`_glob_sql`, `_bounded_or_full_candidates`) added a starvation
+fallback in `search_ranked`: if the bounded pass returns fewer than
+`limit + 1` rows, rerun the same query unbounded (`bounded=False`, `QUALIFY`
+over the entire WHERE-matched set) in case the pool's own `LIMIT <pool>`
+squeezed out a distinct basename that would have filled the page. Correct as
+far as it went, but the trigger condition — "the page came back short" — is
+not evidence the pool actually did anything: a query with genuinely few
+matches returns a short page too, and a zero-match query returns a short page
+*unconditionally* (`0 < limit + 1` is always true). Because the substring
+filter is `lrel LIKE '%q%'`, an unanchored pattern DuckDB cannot index, both
+the bounded and unbounded passes scan the entire WHERE-matched set regardless
+of how few rows survive — so a sparse or zero-match query paid for two full
+corpus scans to answer "still nothing" or "still not much." Measured on a
+440k-row index: a zero-match query went from 71.4ms to 186.6ms (2.6x), a
+sparse query (`openbot`) from 100.1ms to 222.8ms (2.2x); a page-filling query
+stayed at 1.0x (only ever one pass).
+
+The fix replaces "was the page short" with two provable equivalences, each of
+which proves the unbounded rerun can only reproduce the bounded result, so
+skipping it changes nothing:
+
+1. **Zero rows.** `_qualify_basename_cap`'s `QUALIFY row_number() OVER
+   (PARTITION BY nm ORDER BY <order_by>) <= _MAX_PER_BASENAME` keeps at least
+   the `row_number() = 1` row for every distinct `nm` the candidate pool
+   holds — a non-empty pool can never produce zero output rows. Zero rows
+   back therefore proves the pool itself was empty, which proves the WHERE
+   clause matched nothing at all: the unbounded query, filtering the
+   identical WHERE-matched set, must also return zero rows. No rerun.
+
+2. **The pool did not fill.** `_pool_n_column` adds `count(*) OVER ()` (no
+   `PARTITION BY`) to the SELECT that reads FROM the candidate-pool subquery
+   — i.e. strictly AFTER that subquery's own `ORDER BY <order_by> LIMIT
+   <pool>` stage, in the same window-function evaluation phase as
+   `_qualify_basename_cap`'s `QUALIFY row_number()`, both computed over the
+   same FROM-clause input before QUALIFY filters anything out. The resulting
+   `pool_n` is therefore the pool subquery's actual row count: `min(pool,
+   actual WHERE-matched count)`. `pool_n < pool` means the inner `LIMIT
+   <pool>` never bound — the pool subquery returned every WHERE-matched row,
+   so this bounded query's `QUALIFY` ran over the exact same input the
+   unbounded query's `QUALIFY` would run over. The two are equivalent by
+   construction; the fallback cannot produce a different result and must not
+   fire.
+
+Only when the pool genuinely truncates (`pool_n >= pool`) AND the page still
+comes up short of `limit + 1` is real basename-cap starvation still possible
+(one basename's duplicate count exceeds the pool and outranks every other
+matching name, `13ff8332a`'s own reported defect) — the unbounded rerun still
+fires in exactly that case, unchanged from before.
+
+Deliberately NOT placed: `count(*) OVER ()` inside the un-`LIMIT`ed WHERE-
+matched subquery, or above the whole statement's own `QUALIFY`/`ORDER
+BY`/`LIMIT`. Either placement would force DuckDB to materialise every
+matching row just to answer it, defeating the heap-based Top-N scan the
+pool's own `LIMIT <pool>` exists to enable — reintroducing, on a broad query,
+the exact full-corpus-scan cost this fix removes for a narrow one. It has to
+sit strictly between the pool's `LIMIT` and the cap's `QUALIFY`.
+
+Verified: `tests/test_index_rank.py`'s
+`test_zero_match_query_issues_exactly_one_rank_statement` and
+`test_sparse_query_whose_pool_does_not_fill_issues_exactly_one_rank_statement`
+fail on the pre-fix trigger (2 statements each) and pass after (1);
+`test_starvation_fallback_still_fires_when_the_pool_genuinely_truncates`
+guards against over-fixing (the real starvation case still reruns, 2
+statements, result matches the unbounded ground truth);
+`test_starvation_fallback_fix_does_not_change_any_result` pins byte-identical
+`hits`/`truncated` across a query spread (zero-match, sparse, starved broad,
+starved glob, ordinary broad) against a ground truth computed by forcing the
+candidate pool arbitrarily large.
