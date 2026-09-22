@@ -2407,6 +2407,14 @@
 }
 
 /* The question's one accent hit. */
+/* A grey "Answer" label ahead of the verdict, so the accent word reads as
+   the model's reply and not as a fourth option in the row (owner ask). */
+.pg-decide-verdict-label {
+  flex: none;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+}
+
 .pg-decide-verdict-word {
   min-width: 0;
   overflow: hidden;

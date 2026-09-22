@@ -289,6 +289,7 @@ function AnswerLine({
   return (
     <details className="pg-decide-answer">
       <summary className="pg-decide-verdict">
+        <span className="pg-decide-verdict-label" aria-hidden="true">Answer</span>
         <span className="pg-decide-verdict-word" title={title}>{verdict}</span>
         <span className="pg-decide-verdict-conf" title="How sure the model is of this answer">
           {(confidence * 100).toFixed(0)}% confident
