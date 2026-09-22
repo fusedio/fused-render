@@ -46,6 +46,11 @@ interface RankCall {
    * fused_render/server/routers/index.py); this matches what `indexRank()`
    * actually throws (an HttpError) rather than a network-level rejection. */
   reject: (message: string) => void;
+  /** The fetch's own `init.signal` — the SOURCE's AbortController.signal,
+   * captured here so a test can prove a request already in flight was
+   * actually aborted (rank-starvation-fallback fix), rather than merely
+   * superseded by a later reply landing first. */
+  signal: AbortSignal | undefined;
 }
 interface StatCall {
   path: string;
@@ -105,6 +110,7 @@ function fakeFetch(url: string | URL, init?: RequestInit): Promise<Response> {
         resolve: (data) => settle(new Response(JSON.stringify(data), { status: 200 })),
         reject: (message) =>
           settle(new Response(JSON.stringify({ error: message }), { status: 503 })),
+        signal: init?.signal ?? undefined,
       });
     });
   }
@@ -573,6 +579,32 @@ describe("stale rows: narrow first, clear only if narrowing empties out", () => 
       await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
       expect(noteText(box)).not.toBe("Searching…");
     }
+    box.unmount();
+  });
+});
+
+describe("aborting a superseded request (rank-starvation fallback fix)", () => {
+  // The bug: the abort used to live only inside the debounced `run`
+  // closure. During a sustained typing burst (each keystroke's gap under
+  // INSTANT_DEBOUNCE_MS) `run` for the newer query never fires until the
+  // burst pauses, so the request already in flight kept running -- holding
+  // an interactive-lane permit and DuckDB threads -- for the whole burst
+  // instead of being cancelled at the first keystroke past it. The fix
+  // aborts at scheduling time (the effect body), before the debounce timer
+  // for the new query is even armed.
+  test("a keystroke mid-burst aborts the request already in flight before its own debounce elapses", async () => {
+    const box = mount();
+    await type(box, "readme");
+    const first = rankCalls[0];
+    expect(first.signal?.aborted).toBe(false);
+
+    // A follow-up keystroke that resets the debounce -- `run` for
+    // "readmex" has NOT fired yet at the point of the assertion below.
+    await flush(() => box.input().props.onChange({ target: { value: "readmex" } }));
+    clock.advance(INSTANT_DEBOUNCE_MS / 2);
+
+    expect(rankCalls.filter((c) => c.q === "readmex")).toHaveLength(0); // not fired yet
+    expect(first.signal?.aborted).toBe(true); // but the stale one is already cut loose
     box.unmount();
   });
 });
