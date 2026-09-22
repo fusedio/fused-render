@@ -4916,3 +4916,86 @@ rendering exercises it indirectly; a from-scratch DOM-pointer-event harness
 was judged lower value than the time it would cost given the rest of the
 scope. (2) `AppPage.tsx`'s inner JSX (header, icon picker, tab strip, tab
 panels) was not reindented to reflect its new nesting depth — noted above.
+
+## App page git peek: code-review follow-up, seven findings
+
+A code review of the git-peek redesign (previous entry) flagged seven
+issues; all seven are fixed here, no disagreements.
+
+1. HIGH — `.app-page-split` had no `overflow: hidden`, so the always-
+   rendered, `translateX(100%)`-when-shut peek grew a horizontal page
+   scrollbar on every app page even with git closed (measured:
+   `scrollWidth` 1807 vs `clientWidth` 1390). Fixed by adding
+   `overflow: hidden` to `.app-page-split`, the same rule
+   `.tasks-peek-host` already carries for the identical reason.
+2. MEDIUM — `.app-git-peek-close` rendered with native `<button>` UA chrome
+   (measured `border: 2px outset`, translucent background, `cursor:
+   default`, off font-size/padding) because this project runs Tailwind
+   without preflight. Fixed by adding explicit `padding: 0; border: 0;
+   background: transparent; font: inherit; cursor: pointer;`, matching
+   `.task-side-peek-btn`'s own reset.
+3. MEDIUM — `useAppPageGitPeekWidth.ts`'s `onSeamPointerDown` attached three
+   `window` listeners (`pointermove`/`pointerup`/`pointercancel`) whose
+   only removal path was `onSeamPointerUp` — a component that unmounts
+   mid-drag left all three attached for the life of the document, each
+   still firing `setChosen`/`setDragging` on a dead hook. Fixed with a
+   `useEffect` cleanup that removes the same three listeners on unmount.
+4. MEDIUM — the seam's `pointerdown` did neither `preventDefault()` nor
+   `setPointerCapture()`, so dragging it swept a native text selection
+   across the page. Fixed by adding both, mirroring
+   `PreviewSidebar.tsx`'s own divider handler; pointer events still bubble
+   to `window` from a captured element, so the existing move/up listeners
+   keep working unchanged.
+5. LOW/MEDIUM — `.app-page-frame-slot` had no width transition while
+   `.app-git-peek` slides on a 0.2s ease, so the page's own content
+   snapped to its new width instead of animating with the peek. Fixed by
+   adding `transition: width var(--peek-dur) var(--peek-ease);` to the
+   slot, reusing the same global timing variables the peek already does.
+6. LOW — `useDirMode` resets to `ABSENT` one commit AFTER `open` flips
+   false, so `src` went to `null` while the panel was still visible for
+   its whole 200ms slide-out, and every close blinked "Loading…" right
+   before sliding away. Fixed in `AppPageGitPeek.tsx`: a `lastSrc` ref
+   captures the most recent non-null `src`; while shut, the panel renders
+   `src ?? lastSrc.current` instead of `src` directly. Reopening still
+   shows "Loading…" correctly, because the fallback is only consulted
+   when `!open`.
+7. LOW/MEDIUM — `clampSideWidth` (apps/explorer/lib/side-width.ts)
+   deliberately leaves the width unchanged once a narrow container can't
+   hold both floors (below ~700px), assuming CSS min-widths on both sides
+   would hold instead — they didn't, so below ~380px the app content
+   behind the peek could be squeezed to 0px wide. Fixed with actual CSS
+   floors: `.app-page-frame-slot` gained `min-width: 320px`, and
+   `.app-git-peek` gained `max-width: calc(100% - 320px);` so the two
+   floors can never both lose to the same pixel.
+
+New tests: `AppPageGitPeek.test.tsx` (2 tests, pins finding 6's close/
+reopen sequence against the panel's actual props, not just a comment),
+`useAppPageGitPeekWidth.test.ts` (2 tests, pins findings 3 and 4 against
+the hook directly — a `window`-listener net-count spy for the unmount
+case, a captured `preventDefault` call for the capture case), and
+`app-page-git-peek-layout.test.ts` (4 tests, a stylesheet-parse test in
+the same style as `notifications-width.test.ts`, pinning findings 1, 5,
+and 7's exact CSS declarations since a DOM-less `react-test-renderer` run
+has no `getComputedStyle` to check them against). Findings 2 and 4's
+button/CSS-only halves needed no dedicated test per this repo's "CSS-only
+rounds skip tests" convention; finding 2 has no behavioral test at all
+(there is no behavior to assert, only an appearance fix) and is verified
+by code review of the rule against `.task-side-peek-btn`'s reset.
+
+One test-harness wrinkle worth recording: `useAppPageGitPeekWidth.test.ts`
+originally created the pointer-event watch (a spy patching
+`window.addEventListener`/`removeEventListener`) BEFORE mounting the probe
+component in the "unmount removes all three listeners" test. React can
+flush an EARLIER test's still-pending passive-effect cleanup as a side
+effect of committing a brand new tree, and that flush landed inside the
+watch's own counting window, corrupting it. Fix: mount the probe first,
+install the watch only after, so any such leftover flush from a prior test
+happens before the watch exists to see it.
+
+Tests run: `useAppPageGitColumn.test.ts`, `TaskPeekFrame.test.tsx`,
+`AppPage.test.tsx`, `AppPageGitPeek.test.tsx`,
+`useAppPageGitPeekWidth.test.ts`, `app-page-git-peek-layout.test.ts` — 33
+pass, 0 fail across the six files. `bun run typecheck`,
+`bun run check:boundaries`, and `bun run build` all clean (the build's
+existing >500kB chunk-size warnings are pre-existing and unrelated to this
+change). No full suite run, per this task's scope.
