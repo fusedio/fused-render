@@ -194,3 +194,88 @@ its plumbing; mount `UpdateNotifier`. Check whether `jobs.ts`'s
 - Any change to `fused_render/update/*.py` or the quit/relaunch timings.
 - `UpdateDialog kind="refresh"`.
 - The Windows/Linux updaters' own surfaces.
+
+## Build notes
+
+Items 1-5 of "Files" (`UpdateBadge`/`UpdateProgressCard` deletion,
+`UpdateDialog`'s restart-mode strip, `server-status.ts`/`ServerStatusBanner.tsx`,
+and the sidebar/CSS cleanup) landed in earlier commits on this branch
+(`2aaf54f0d`, `c77ce9a78`, `d78cf9879`) and were verified still correct —
+`bannerSurface` returns `"none"` for every in-flight restart stage,
+`updateDialogPreview`'s restart branch is gone, `GlobalSidebar.tsx` has no
+`UpdateBadge`/rail-dot/`useUpdateStatus` references left, and the two CSS
+classes still named `.update-badge-*` (`sidebar.css`) are explicitly
+documented as shared with `TroubleCard`/`ClaudeHealthStrip`, not orphans.
+
+This pass added `UpdateNotifier.tsx` (and its test), removed the
+`onUpdateJob`/`updateJobInFlight` plumbing (`ActivityDock.tsx`, `jobs.ts`,
+`App.tsx`), added the `dismissible` field, and added the Preferences
+"Updates" section. Notable decisions and one bug found along the way:
+
+- **`dismissible` field, not named in the spec's Files section but required
+  by "drop the ✕ while in flight"**: added to `NotificationInput`/
+  `StoredNotification` (default `true`), read by `MessagePopupCard`. A
+  pre-existing hand-built `StoredNotification` fixture in
+  `RepoUpdatesDock.test.tsx` needed `dismissible: true` added once the field
+  became required — a type-only fallout, not a behavior change for that file.
+
+- **App.tsx has two `NotificationHost` mount sites** (the onboarding-wizard
+  early return, and the main return) — not mentioned in the spec. Mounted
+  `<UpdateNotifier />` at both, beside `NotificationHost` at each, since
+  either one could be the page that's up when a status/restart change lands.
+
+- **The spec's claimed keep-alive mechanism does not hold in general.** It
+  says restart-store's own `TICK_MS = 1000` tick is enough to keep
+  re-notifying the popup ("no change to `notifications.ts`"). Tracing
+  `restart-store.ts`'s `dispatch()` shows it early-returns (skips
+  `publishView()`) when a tick doesn't change `stage`/`requestedAt`/`fails`/
+  `before` by value — which is exactly what happens during several seconds of
+  an unchanging "Reconnecting…" between failed probes. `useRestartFlow()`
+  does not reliably re-render on every tick, so a keep-alive effect keyed off
+  it alone would let the popup's own exit timer (`JOB_POPUP_VISIBLE_MS`) win
+  during that gap. Fix: `UpdateNotifier` runs its own independent
+  `setInterval(1000ms)` and reads the stage fresh off the non-reactive
+  `restartStageNow()` export on every tick. This satisfies the spec's actual
+  intent ("keep it on screen") without a `sticky` flag on `notifications.ts`,
+  which is the part of the spec's reasoning that does hold.
+
+- **Infinite-loop bug found and fixed in the restart-ready effect.** The
+  effect that raises Notification #2 depends on `retained` (to detect
+  eviction past `capRetained`'s 5-row cap) and originally called `notify()`
+  unconditionally on every run. `notify()`'s `replaceId` path against an
+  existing retained row always returns a **new** array reference
+  (`retained.map(...)`), so an unconditional call fed straight back into its
+  own `retained` dependency — effect runs, calls `notify()`, gets a new
+  array, `useRetainedNotifications()` reports a change, effect runs again,
+  forever, with no actual state divergence. Caught live: a `bun test` run
+  against this file pegged one core at ~258% CPU with no output for minutes
+  before being killed. Fixed with a `restartRaisedForRef` guard that skips
+  the `notify()` call when the card is already retained showing the same
+  version — `notify()` now only fires on a genuine change (first raise, a
+  version bump, or actual eviction).
+
+- **"back" stage wording overrides `restartStageLabel`'s own text.** The spec
+  calls out `` `Back on v<new>` `` by name, quoting the deleted `UpdateDialog`
+  restart mode's vocabulary rather than `restart-flow.ts`'s own generic
+  "Reconnected — fused-render is back." `UpdateNotifier`'s `inFlightLabel()`
+  overrides just that one stage locally rather than changing
+  `restartStageLabel` itself (which has no other caller left, but is not this
+  file's to redefine).
+
+- **Preferences "Updates" section has no dedicated test file** —
+  `Preferences.tsx` (1000+ lines, a dozen sections) has never had a render
+  test for any section; introducing that scaffold for one small section
+  seemed disproportionate given the section itself is a straight port of
+  already-tested-by-history `UpdateBadge` logic (`checkNowLabel`,
+  `CHECK_RESULT_HOLD_MS`, the `awaiting` fix) onto a different shell.
+
+- **Two pre-existing, unrelated standalone-test failures noticed, not
+  caused by this work**: `bun test src/shell/RepoUpdatesDock.test.tsx` and
+  `bun test src/platform/ui/NotificationHost.test.tsx`, each run in
+  isolation, fail on a module-load-order issue (`window.addEventListener`
+  missing / `location is not defined`) in code this branch never touched
+  (`apps/claude/feature-flag.ts`, `platform/lib/router.ts`). Confirmed via
+  `git diff HEAD` that neither file nor its dependencies were edited on this
+  branch — these two test files are apparently only green when run as part
+  of a larger `bun test` invocation alongside whatever file establishes the
+  DOM globals first.
