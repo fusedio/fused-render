@@ -44,12 +44,14 @@ This row cannot: it spends the user's tokens and takes a while, so it is
   session that follows a failing verdict is an ordinary App Doctor fix task
   and takes the user's own model and effort pickers, like every other row.
 
-THE RUBRIC IS THE SKILL. The task's prompt (`app_doctor.check_prompt`) tells
-the session to invoke `fused-render-cross-browser` and judge the listed view
-files by its trap table, so the check judges by the same table the fix
-session later fixes by, and there is one copy of what "compatible" means.
-The session writes the verdict itself, in the shape `_parse_verdict` reads;
-a verdict that does not read is "no verdict", never a crash.
+THE RUBRIC IS THE SKILL. The task's prompt (`app_doctor.check_prompt`)
+embeds `fused-render-cross-browser`'s SKILL.md, read from disk (`rubric()`),
+so the check judges by the same table the fix session later fixes by, and
+there is one copy of what "compatible" means. Embedded rather than invoked:
+plan mode gates the Skill tool too, and the first live run spent its turn
+finding that out. The session answers with a fenced JSON block in the shape
+`_parse_verdict` reads; a reply that does not read is "no verdict", never a
+crash.
 
 The verdict is a `kind="candidate"` row (`app_doctor._CHECK_META`): a
 model's reading of a rubric is not a fact (a file exists or it does not) and
@@ -350,6 +352,27 @@ def _parse_verdict(data: dict) -> dict | None:
 PERMISSION_MODE = "plan"
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def rubric() -> str | None:
+    """The cross-browser skill's SKILL.md, read from disk at prompt-build time
+    through `skill_sources()` (the same path trick `app_doctor.engine()` uses),
+    minus its front matter. None when the skill is not installed."""
+    from fused_render.skill_sources import skill_sources
+
+    src = skill_sources().get(RUBRIC_SKILL)
+    if not src:
+        return None
+    try:
+        with open(os.path.join(src, "SKILL.md"), encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            text = text[end + 4:]
+    return text.strip()
 
 
 def _assistant_texts(transcript: str) -> list[str]:

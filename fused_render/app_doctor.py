@@ -1161,25 +1161,39 @@ def check_prompt(entry_html: str, files: list[str]) -> str:
 
     entry_name = os.path.basename(entry_html)
     listed = "\n".join(f"- {rel}" for rel in files) or "- (no .html/.css/.js/.svg files found)"
+    # The rubric rides IN the prompt: plan mode also gates the Skill tool, and
+    # the first live run spent its turn discovering that ("Plan mode block
+    # skill invoke too") instead of judging. Same trick `engine()` uses to
+    # load the floor script: read the sibling skill's SKILL.md by path.
+    rubric = app_doctor_ai.rubric() or (
+        f"(the `{app_doctor_ai.RUBRIC_SKILL}` skill is not installed on this server — "
+        f"judge by MDN Baseline: flag only features not Widely available, used without "
+        f"a fallback)")
     return (
         f"{DOCTOR_PROMPT_PREFIX}{_CHECK_TASK_MARK}{app_doctor_ai.CHECK_ID}` "
         f"(`{entry_name}` is its entry page). This is a READ-ONLY check, not a fix.\n\n"
-        f"Invoke the `fused-render:{app_doctor_ai.RUBRIC_SKILL}` skill and judge ONLY "
-        f"by its trap table, for DESKTOP browsers only — Chrome/Edge, Firefox, Safari "
-        f"and the macOS WKWebView. Ignore phones and tablets entirely: nothing about "
-        f"touch, viewport zoom or mobile layout is a finding. A finding is a concrete "
-        f"line in one of the files below that will look or behave differently in one "
-        f"of those engines, with no fallback (`@supports`, or the `-webkit-` twin "
-        f"beside it). Nothing beyond the table; nothing about logic, style or "
+        f"You are running in plan mode ON PURPOSE: it is what makes this check unable "
+        f"to edit anything. You are not being asked for a plan — do not write one, do "
+        f"not call ExitPlanMode, do not ask for permissions, do not invoke skills. "
+        f"Read the files below, judge them, answer in the chat.\n\n"
+        f"Judge ONLY by the rubric below, for DESKTOP browsers only — Chrome/Edge, "
+        f"Firefox, Safari and the macOS WKWebView. Ignore phones and tablets entirely: "
+        f"nothing about touch, viewport zoom or mobile layout is a finding. A finding is "
+        f"a concrete line in one of the files that will look or behave differently in "
+        f"one of those engines, with no fallback (`@supports`, or the `-webkit-` twin "
+        f"beside it). Nothing beyond the rubric; nothing about logic, style or "
         f"performance. Few, certain findings; a problem repeated across lines is ONE "
         f"finding at its first occurrence. Write for the app's author, who may not "
         f"know CSS.\n\n"
+        f"# Rubric\n\n{rubric}\n\n"
         f"Files to read (relative to the app folder; read nothing else):\n{listed}\n\n"
         f"Reply in the chat with, in this order: the summary sentence; one short line "
         f"per finding in plain words for the app's author — what a visitor would notice "
         f"and in which browser, no code, no file paths, no CSS terms (nothing here when "
         f"there were none); then, LAST, exactly one fenced ```json block holding the "
         f"verdict in this shape:\n{app_doctor_ai.VERDICT_SHAPE}\n\n"
-        f"Nothing after the JSON block. You cannot edit or commit in this task, and "
-        f"must not try."
+        f"The JSON block is REQUIRED — a reply without it is discarded and the check "
+        f"reads as never answered — and it must be the last thing in your final "
+        f"message, even when there were no findings (`ok: true`, empty `findings`). "
+        f"Nothing after it."
     )
