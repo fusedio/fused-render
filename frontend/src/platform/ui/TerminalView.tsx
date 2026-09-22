@@ -70,6 +70,67 @@ export default function TerminalView({ id, onExit, onStatus }: TerminalViewProps
       term.loadAddon(fit);
       term.open(el);
 
+      // Repaint watchdog (Task: black-pane-on-open regression).
+      //
+      // Confirmed, not guessed, by instrumenting `write()`'s completion
+      // callback and `.xterm-rows`' DOM text directly: on both a brand-new
+      // session and a reattach to an already-populated one, xterm's `write()`
+      // callback fires (proving the scrollback bytes were parsed into its
+      // buffer) while `.xterm-rows` stays empty for 10+ seconds afterward —
+      // i.e. this is neither "bytes never arrived" nor "bytes were cleared."
+      // The reason: xterm's own `RenderDebouncer.refresh()`
+      // (node_modules/@xterm/xterm/lib/xterm.js) coalesces all repaint work
+      // behind a SINGLE `requestAnimationFrame`
+      // (`this._animationFrame ||= requestAnimationFrame(() =>
+      // this._innerRefresh())`), and a page/webview that isn't currently
+      // getting compositor ticks can leave that one rAF request sitting
+      // unfired indefinitely.
+      //
+      // What this watchdog can and can't do: it asks again via the public
+      // `refresh()`/`onRender` API on a `setTimeout` (which still fires on a
+      // throttled/backgrounded page, unlike a starved rAF) — a real fix for
+      // ordinary tab-backgrounding, where the browser throttles rAF but
+      // still eventually runs it. It does NOT help when rAF is fully dead:
+      // confirmed live in this task's own test harness, a bare
+      // `requestAnimationFrame` ping scheduled directly (no xterm involved)
+      // never fired even once across several seconds on the affected
+      // surface, while a real keystroke immediately produced a correct
+      // paint — proof that the keystroke's fix in that harness comes from
+      // WKWebView doing an out-of-band paint on a native input event, not
+      // from anything JS can request. That surface's `focus-webview` also
+      // errored "WebView is not in a window," so a fully rAF-starved host is
+      // plausibly specific to that automation environment rather than a
+      // normally-composited, on-screen app window — but this was not
+      // confirmed either way for the real app, so treat this watchdog as a
+      // genuine partial mitigation, not a proven complete fix.
+      const MAX_WATCHDOG_ATTEMPTS = 6;
+      let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+      let watchdogAttempts = 0;
+      const clearWatchdog = () => {
+        if (watchdogTimer !== null) {
+          clearTimeout(watchdogTimer);
+          watchdogTimer = null;
+        }
+        watchdogAttempts = 0;
+      };
+      const renderSub = term.onRender(clearWatchdog);
+      teardown.push(() => renderSub.dispose());
+      teardown.push(clearWatchdog);
+      const scheduleRepaintWatchdog = () => {
+        if (watchdogTimer !== null || watchdogAttempts >= MAX_WATCHDOG_ATTEMPTS) return;
+        watchdogAttempts += 1;
+        // Linear backoff (100ms, 200ms, ... 600ms — ~2.1s total): `setTimeout`
+        // callbacks still run on a hidden/backgrounded page (unlike a
+        // never-invoked rAF), which is what makes this an effective
+        // workaround rather than just another rAF that could get stuck the
+        // same way.
+        watchdogTimer = setTimeout(() => {
+          watchdogTimer = null;
+          term.refresh(0, term.rows - 1);
+          scheduleRepaintWatchdog();
+        }, 100 * watchdogAttempts);
+      };
+
       // `session` has to exist before `term.onData`/`term.onResize` are
       // wired up and before the first `fit.fit()`, in that order: `fit()`
       // can synchronously invoke the `onResize` handler below (see the
@@ -78,7 +139,10 @@ export default function TerminalView({ id, onExit, onStatus }: TerminalViewProps
       // synchronous callback can observe a not-yet-initialized `session`.
       const session = new TerminalSession({
         id,
-        onData: (chunk) => term.write(chunk),
+        onData: (chunk) => {
+          term.write(chunk);
+          scheduleRepaintWatchdog();
+        },
         onExit: (code) => onExit?.(code),
         onStatus: (status) => {
           if (status === "open") {

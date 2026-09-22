@@ -3167,3 +3167,85 @@ run: `bun test src/platform/lib/terminalSession.test.ts` (10 pass) and
 `bun test src/shell/TerminalDock.test.tsx` (5 pass) — both exercise code paths
 this change touches (`TerminalSession` construction/dispose order,
 `TerminalDrawer`'s mount of `TerminalView`) and were unaffected.
+
+#### TerminalView black pane on open (second fix round, after the TDZ fix)
+
+Second-round task on the same branch: even after the TDZ fix above, opening
+the drawer on a brand-new session (and reloading into an already-populated
+one) showed a solid black pane — no prompt, no cursor — with zero console
+errors and `GET /api/terminal` reporting `alive: true`. Focusing the hidden
+textarea and typing made the correct prompt/scrollback appear instantly.
+
+Distinguished the three candidate mechanisms live, by instrumenting
+`term.write(chunk, callback)`'s completion callback and `.xterm-rows`'
+DOM text directly (temporary `console.log`s, removed before commit):
+
+- **Bytes never arrived**: ruled out. `onData` fired reliably with real,
+  non-empty payloads (up to ~1.3KB) on every repro, including reload/reattach
+  to an existing session.
+- **Bytes arrived but were cleared**: ruled out. `term.reset()` (called from
+  `onStatus("open")`) always runs before any scrollback reply can arrive —
+  confirmed via `terminalSession.ts` and the WebSocket spec's onopen-before-
+  onmessage guarantee, and no interleaving was ever observed in the logs.
+- **Bytes are in the buffer but unpainted**: confirmed. `write()`'s callback
+  fired (proving the bytes were parsed into xterm's buffer) while
+  `.xterm-rows` stayed empty for 10+ seconds afterward, with no
+  `visibilitychange` ever logged in that window.
+
+Root cause, confirmed by reading `@xterm/xterm`'s own compiled source
+(`node_modules/@xterm/xterm/lib/xterm.js`): xterm's `RenderDebouncer.refresh()`
+coalesces ALL repaint work behind a single `requestAnimationFrame`, latched
+with `this._animationFrame ||= requestAnimationFrame(() =>
+this._innerRefresh())` — `_animationFrame` only clears inside
+`_innerRefresh()`, once that exact rAF actually runs. A page/webview that
+isn't currently receiving compositor ticks can leave that one rAF request
+sitting unfired indefinitely, so xterm's internal buffer can be fully correct
+while nothing ever reaches the screen.
+
+Fix (`frontend/src/platform/ui/TerminalView.tsx`): added a bounded repaint
+watchdog. After each `write()`, if xterm's own `onRender` event (its public
+"a real paint just happened" signal) hasn't fired shortly after, call
+`term.refresh(0, term.rows - 1)` again on a `setTimeout` (100ms, 200ms, ...
+600ms, ~2.1s total, capped at 6 attempts) — `setTimeout` still runs on a
+throttled/backgrounded page, unlike a starved rAF, so this recovers the
+*ordinary* form of this bug (a real browser tab that throttles rAF while
+backgrounded but does still eventually run it).
+
+**This fix could NOT be verified to close the reported symptom end-to-end.**
+Live-tested against the running dev server via the cmux browser automation
+surface used for this task: with the fix built and served (confirmed via the
+bundle hash), opening a brand-new session's drawer and waiting still showed a
+solid black pane with no prompt — screenshot taken with zero interaction,
+`.xterm-rows` empty. Diagnosed one level further: a bare `requestAnimationFrame`
+call scheduled directly on that page (no xterm involved at all) never fired
+even once across several seconds, while a real keystroke on the same page
+immediately produced a correct paint. That proves the keystroke's effect
+comes from WKWebView doing an out-of-band paint on a native input event, not
+from anything requestable via JS — so no JS-level scheduling trick, including
+this watchdog, can close the gap when rAF is this fully dead. That same
+surface's `focus-webview` command also errored `invalid_state: WebView is not
+in a window`, which is consistent with this being specific to that automation
+surface's detached-from-a-window state rather than a normal, on-screen,
+foregrounded app window — but this was NOT confirmed either way for the real
+shipped app within this task's scope. Keeping the watchdog as a real, bounded,
+harmless partial mitigation for genuine tab-backgrounding; explicitly not
+claiming it fixes the reported black-pane symptom in general.
+
+Orphan-session reaper (secondary task, scope-gated — not built): confirmed
+`PtySessionRegistry._reap_dead_locked()` (`fused_render/pty_session.py`) only
+reaps sessions whose child process has exited (`not s.alive`); there is no
+mechanism anywhere in the registry that reaps a session that is alive but has
+no attaching client, or has been idle a long time. Observed live: `GET
+/api/terminal` on the dev server used for this task returned 7 alive sessions
+(cap is `MAX_SESSIONS = 8`) accumulated across this and the prior round's
+testing, none killed. Building a reaper is a real design question (idle
+threshold? does a closed-but-not-killed drawer count as "orphaned," given
+`TerminalDrawer`'s whole point is that the shell survives a closed drawer?) —
+out of scope for this round per the task's own instructions; recorded here as
+a known gap.
+
+Scoped tests run: `bun test src/platform/lib/terminalSession.test.ts
+src/shell/TerminalDock.test.tsx` — 15 pass, 0 fail (unaffected by this
+change; `TerminalView.tsx` remains deliberately untested per the header
+comment's own reasoning, unchanged from the prior round). `bun run build`
+succeeded.
