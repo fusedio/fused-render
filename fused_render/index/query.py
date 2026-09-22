@@ -1521,7 +1521,7 @@ def _basename_candidate_pool(limit: int) -> int:
     return max(limit, min(limit * _BASENAME_POOL_FACTOR, _BASENAME_POOL_MAX))
 
 
-def _pool_n_column(bounded: bool, pool: int = None) -> str:
+def _pool_n_column(bounded: bool, pool: int | None = None) -> str:
     """The extra SELECT-list fragment (a leading `, ` or `""`) that reports
     whether the bounded candidate pool actually filled — see DECISIONS.md and
     `search_ranked`'s own starvation-fallback comment for why this replaces
