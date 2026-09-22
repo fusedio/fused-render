@@ -717,21 +717,29 @@ export function useAppDoctorReport(dir: string, onDone?: () => void) {
   useEffect(() => {
     if (!liveCheckId) return;
     let cancelled = false;
-    const timer = window.setInterval(async () => {
+    let timer = 0;
+    // A chained timeout, not setInterval: the next ask is armed only after
+    // the previous answer lands, so a slow folder walk never overlaps the
+    // next tick. `fetch: false` — a poll must not re-trigger the git
+    // force-fetch the modal-open GET performs.
+    const tick = async () => {
       try {
-        const r = await getAppDoctor(dir);
+        const r = await getAppDoctor(dir, { fetch: false });
         if (cancelled || !alive.current) return;
         setReport(r);
         if (!r.checks.some((c) => c.check_task?.id === liveCheckId)) {
           announceAppDoctorChanged(dir);
+          return;
         }
       } catch {
-        /* the next tick asks again; the row keeps saying "Checking…" meanwhile */
+        /* ask again next tick; the row keeps saying "Checking…" meanwhile */
       }
-    }, CHECK_POLL_MS);
+      if (!cancelled) timer = window.setTimeout(() => void tick(), CHECK_POLL_MS);
+    };
+    timer = window.setTimeout(() => void tick(), CHECK_POLL_MS);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      window.clearTimeout(timer);
     };
   }, [dir, liveCheckId]);
 

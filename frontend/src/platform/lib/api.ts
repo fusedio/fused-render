@@ -2729,9 +2729,17 @@ export interface AppDoctorReport {
   severities: Severity[];
 }
 
-export function getAppDoctor(path: string): Promise<AppDoctorReport> {
+/** `fetch: false` is the POLL variant (the panel and the header dot re-asking
+ *  every few seconds while a check task is live): the server skips the
+ *  modal-open git force-fetch and answers the `git` row from its throttled
+ *  cache, so polling never turns into a git fetch every four seconds. */
+export function getAppDoctor(
+  path: string,
+  opts: { fetch?: boolean } = {},
+): Promise<AppDoctorReport> {
+  const fetchFlag = opts.fetch === false ? "&fetch=0" : "";
   return getJson<AppDoctorReport>(
-    `/api/apps/doctor?path=${encodeURIComponent(path)}`,
+    `/api/apps/doctor?path=${encodeURIComponent(path)}${fetchFlag}`,
   );
 }
 

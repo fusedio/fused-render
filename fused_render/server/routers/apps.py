@@ -56,6 +56,7 @@ is machine-wide and synced only at startup.
 """
 import os
 import shutil
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -688,6 +689,19 @@ def _settle_check_row(folder: str, row: dict, live_check: dict | None) -> None:
     row["detail"] = app_doctor_ai.ENDED_DETAIL
 
 
+_doctor_run_locks: dict[str, threading.Lock] = {}
+_doctor_run_locks_guard = threading.Lock()
+
+
+def _doctor_run_lock(folder: str) -> threading.Lock:
+    """The per-folder lock `api_app_doctor_run` holds across its gate-and-
+    create span. Keyed on the real path so two spellings of one folder share
+    a lock; never freed — a folder that was checked once is a few bytes."""
+    key = os.path.realpath(folder)
+    with _doctor_run_locks_guard:
+        return _doctor_run_locks.setdefault(key, threading.Lock())
+
+
 def _verdict_task(folder: str) -> dict | None:
     """`{id, session_id, target}` for the check task the cached verdict came
     from, or None — no run record, or the entry is gone from the store.
@@ -716,7 +730,7 @@ def _verdict_task(folder: str) -> dict | None:
 
 
 @router.get("/api/apps/doctor")
-def api_app_doctor(path: str):
+def api_app_doctor(path: str, fetch: bool = True):
     """The App Doctor report for one folder: the deterministic checklist the
     modal draws (`app_doctor.report` — what it checks and why lives there),
     each row carrying its own live fix task if one is already running.
@@ -769,7 +783,13 @@ def api_app_doctor(path: str):
     fixes, checks = _live_doctor_tasks(entry_html)
     all_task = fixes.get(app_doctor.ALL)
 
-    git_upstream.force_check(folder)
+    # `fetch=0` is the POLL: the panel and the header dot re-ask every few
+    # seconds while a check task is live, and that traffic must not turn the
+    # modal-open force-fetch into a git fetch every four seconds (nor block
+    # each tick on the remote). The row then reads `git_upstream`'s own
+    # throttled cache, as every other caller does.
+    if fetch:
+        git_upstream.force_check(folder)
     report = app_doctor.report(folder)
     for c in report["checks"]:
         c["task"] = fixes.get(c["id"]) or all_task
@@ -921,59 +941,67 @@ def api_app_doctor_run(body: dict = Body(...),
         _settle_check_row(folder, row, task or checks.get(check_id))
         return row
 
-    # The gate comes BEFORE `begin`: a forced re-check drops the cached
-    # verdict, and doing that while a fix session is live would leave a
-    # successful run reading as "ended without a verdict" (a second window's
-    # stale page can press what this one has disabled). A live CHECK task is
-    # caught here too — the cache would have answered "reuse" for it anyway.
-    live = _live_app_task(entry_html, app_doctor.is_doctor_prompt)
-    if live is not None:
-        _fixes, checks = _live_doctor_tasks(entry_html)
-        if checks.get(check_id):
-            # This row's own check is already running: not an error, the
-            # row as it stands (Checking…) is the answer.
-            return {"path": folder, "entry_html": entry_html, "check": row_now(),
-                    "task": None, "task_error": None}
-        return _error("an App Doctor task for this app is already in progress",
-                      status=409)
+    # ONE PRESS AT A TIME PER FOLDER: the gate below reads the store and the
+    # task is created several lines later, so two overlapping presses (two
+    # tabs, a double-click) could both pass the gate and create two tasks.
+    # The old blocking `run()` single-flighted per folder; this lock is its
+    # replacement, held only for the gate-and-create span (the create waits
+    # up to `_SENT_WAIT_S` for a run id, so the second press queues behind
+    # it and then finds the task live).
+    with _doctor_run_lock(folder):
+        # The gate comes BEFORE `begin`: a forced re-check drops the cached
+        # verdict, and doing that while a fix session is live would leave a
+        # successful run reading as "ended without a verdict" (a second window's
+        # stale page can press what this one has disabled). A live CHECK task is
+        # caught here too — the cache would have answered "reuse" for it anyway.
+        live = _live_app_task(entry_html, app_doctor.is_doctor_prompt)
+        if live is not None:
+            _fixes, checks = _live_doctor_tasks(entry_html)
+            if checks.get(check_id):
+                # This row's own check is already running: not an error, the
+                # row as it stands (Checking…) is the answer.
+                return {"path": folder, "entry_html": entry_html, "check": row_now(),
+                        "task": None, "task_error": None}
+            return _error("an App Doctor task for this app is already in progress",
+                          status=409)
 
-    force = bool(body.get("force"))
-    gathered, begin_error, reuse = app_doctor_ai.begin(folder, force=force)
-    if begin_error is not None:
-        return _error(begin_error, status=502)
-    if reuse:
-        row = row_now()
-        # The cache answered — unless it answered "a task is on it" and that
-        # task is gone (ended without a verdict): then the row's own detail
-        # says to press Check again, and this IS that press.
-        if row["detail"] != app_doctor_ai.ENDED_DETAIL:
-            return {"path": folder, "entry_html": entry_html, "check": row,
-                    "task": None, "task_error": None}
-        gathered, begin_error, _reuse = app_doctor_ai.begin(folder, force=True)
+        force = bool(body.get("force"))
+        gathered, begin_error, reuse = app_doctor_ai.begin(folder, force=force)
         if begin_error is not None:
             return _error(begin_error, status=502)
+        if reuse:
+            row = row_now()
+            # The cache answered — unless it answered "a task is on it" and that
+            # task is gone (ended without a verdict): then the row's own detail
+            # says to press Check again, and this IS that press.
+            if row["detail"] != app_doctor_ai.ENDED_DETAIL:
+                return {"path": folder, "entry_html": entry_html, "check": row,
+                        "task": None, "task_error": None}
+            gathered, begin_error, _reuse = app_doctor_ai.begin(folder, force=True)
+            if begin_error is not None:
+                return _error(begin_error, status=502)
 
-    prompt = app_doctor.check_prompt(entry_html, gathered["files"])
-    task, task_error = _create_app_task(
-        entry_html, prompt, app_doctor_ai.MODEL, app_doctor_ai.EFFORT,
-        permission_mode=app_doctor_ai.PERMISSION_MODE)
-    if task is None:
-        # No task, so no run record: the row goes back to "not checked yet"
-        # (the previous verdict was already dropped by `begin`, which is the
-        # honest state — it described files the user asked to re-judge).
-        app_doctor_ai.clear_run(folder)
-        return _error(task_error or "the check task could not be created", status=502)
-    task_id = str(task.get("id") or "")
-    if not app_doctor_ai.record_task(folder, gathered, task_id):
-        # The task is running but its verdict will never join a run record.
-        # `begin` checked `ensure` a moment ago, so this is a race with the
-        # folder going read-only — rare enough to report, not to unwind.
-        task_error = (task_error or "") or (
-            "the check task started but its verdict cannot be cached in this folder")
-    live = {"id": task_id, "state": str(task.get("state") or ""),
-            "run_id": task.get("run_id") or None}
-    return {"path": folder, "entry_html": entry_html, "check": row_now(live),
-            "task": task, "task_error": task_error}
+        prompt = app_doctor.check_prompt(entry_html, gathered["files"])
+        task, task_error = _create_app_task(
+            entry_html, prompt, app_doctor_ai.MODEL, app_doctor_ai.EFFORT,
+            permission_mode=app_doctor_ai.PERMISSION_MODE)
+        if task is None:
+            # No task, so no run record: the row goes back to "not checked yet"
+            # (the previous verdict was already dropped by `begin`, which is the
+            # honest state — it described files the user asked to re-judge).
+            app_doctor_ai.clear_run(folder)
+            return _error(task_error or "the check task could not be created", status=502)
+        task_id = str(task.get("id") or "")
+        if not app_doctor_ai.record_task(folder, gathered, task_id):
+            # The task is running but its verdict will never join a run record.
+            # `begin` checked `ensure` a moment ago, so this is a race with the
+            # folder going read-only — rare enough to report, not to unwind.
+            task_error = (task_error or "") or (
+                "the check task started but its verdict cannot be cached in this folder")
+        live = {"id": task_id, "state": str(task.get("state") or ""),
+                "run_id": task.get("run_id") or None}
+        return {"path": folder, "entry_html": entry_html, "check": row_now(live),
+                "task": task, "task_error": task_error}
 
 
 # The authored thumbnail's cap and signature — the same two the .fused

@@ -41,7 +41,10 @@ export function useAppDoctorChecks(dir: string | null): AppCheck[] | null {
     }
     if (!dir) return;
     let alive = true;
-    getAppDoctor(dir)
+    // Always the poll variant: this dot decorates a page, it is never the
+    // modal's own "load", so it must not force a git fetch on every app open
+    // (nor on every 4s tick while a check task is live).
+    getAppDoctor(dir, { fetch: false })
       .then((r) => {
         if (alive) setChecks(r.checks);
       })
