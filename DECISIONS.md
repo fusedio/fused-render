@@ -4562,3 +4562,63 @@ statements, result matches the unbounded ground truth);
 `hits`/`truncated` across a query spread (zero-match, sparse, starved broad,
 starved glob, ordinary broad) against a ground truth computed by forcing the
 candidate pool arbitrarily large.
+
+## Rank starvation fallback follow-ups: a stale test, a stale docstring, a duplicated derivation
+
+Code review on the previous entry's fix (PR #1308) surfaced four loose ends,
+all addressed in the same round:
+
+1. **A test pinned the old, buggy behavior as correct.**
+   `tests/test_index_search.py::test_search_ranked_honours_the_limit_in_sql_not_just_in_python`
+   builds 50 noise files plus one real match, so the bounded candidate pool
+   comes back with exactly 1 row — Tier 2 (`1 < pool`, `_basename_candidate_pool(4)`
+   is 20) proves the unbounded rerun would be identical, so it is correctly
+   skipped. The test asserted `seen_limits == [4, 4]` (two SQL statements),
+   which was true only under the pre-fix behavior this PR removes. Updated
+   the assertion to `[4]` and rewrote the trailing comment, which had stated
+   the old rule ("fewer than `limit` is the starvation-fallback's trigger")
+   as fact; it now explains why exactly one statement is correct here.
+
+2. **`_bounded_or_full_candidates`'s docstring asserted the inverse of the
+   shipped contract** — it still said a short page alone (fewer than
+   `limit + 1` rows) triggers the `bounded=False` rerun. Rewritten to state
+   the two-tier gate: a short page is necessary but not sufficient: it must
+   be combined with the pool actually having filled.
+
+3. **The pool size was derived in three independent places**: twice inside
+   the `_build_sql` closures (via `_bounded_or_full_candidates`, called from
+   `_rank_sql`/`_glob_sql`), and a third time in `search_ranked` itself
+   (`pool = _basename_candidate_pool(limit + 1)`, used only to compare
+   against `pool_n`). All three agreed today, but nothing enforced that —
+   if the Python-side value ever exceeded the SQL's, `pool_n >= pool` could
+   never be true and the starvation fallback would silently stop firing,
+   with no exception anywhere, for exactly the failure mode this whole PR
+   exists to close off.
+
+   Fixed by making `_bounded_or_full_candidates` the single source: it now
+   returns `(sql, pool)` instead of just `sql`, and callers pass that `pool`
+   straight into `_pool_n_column`, which emits the comparison AS SQL —
+   `count(*) OVER () >= {pool} AS pool_filled` — instead of the raw
+   `pool_n` count. `search_ranked` reads the boolean straight off
+   `pool_rows[0][-1]` and no longer computes `pool` at all. Chose "compare
+   in SQL" over "hand the pool size back to Python and compare there"
+   because it removes the second comparison site entirely rather than just
+   removing the second derivation site — there is now exactly one place
+   `pool` is computed (`_bounded_or_full_candidates`) and exactly one place
+   it is compared against `count(*) OVER ()` (the SQL text `_pool_n_column`
+   emits). Observable behavior (`hits`, `truncated`, statement count) is
+   unchanged — no test pins the generated SQL's column name or expression
+   text, so nothing else needed updating for this rename.
+
+4. **Over-broad `monkeypatch.undo()`** in `tests/test_index_rank.py`'s
+   `_unbounded_ground_truth`: it called `monkeypatch.undo()` in a `finally`,
+   which reverts EVERY patch registered on the fixture the caller passed in,
+   not just the `_basename_candidate_pool` patch this helper itself sets.
+   Scoped it with `monkeypatch.context()` instead, so only this helper's own
+   patch is undone when it returns.
+
+Verified: `tests/test_index_search.py tests/test_index_rank.py
+tests/test_index_query.py tests/test_index_rank_concurrency.py` — 342
+passed. The updated test
+(`test_search_ranked_honours_the_limit_in_sql_not_just_in_python`) run 3x in
+isolation to confirm it is not flaky post-fix: 3/3 passed.
