@@ -4789,3 +4789,26 @@ pass post-integration. Scoped tests run: `AppPage.test.tsx`,
 `useAppPageGitColumn.test.ts`, `appdoctor-lib.test.ts`, `panel-seams.test.ts`
 — 55 pass, 0 fail. No full suite run (left to the orchestrator, per this
 branch's build instructions).
+
+**CI fix: the split wrapper's indentation, not its structure, broke a pinned
+test.** `TaskPeekFrame.test.tsx`'s "the app page frames the WHOLE page..."
+test asserted a literal source substring —
+`<TaskPeekFrame peekable={peekable}>\n    <div className="app-page">` —
+against `AppPage.tsx`. Wrapping the page in the new `.app-page-split` flex
+container nested `TaskPeekFrame` one level deeper, shifting `<div
+className="app-page">`'s indentation from 4 to 8 spaces; the substring no
+longer matched and CI went red (1 of 7176). The real invariant the test
+exists to protect — `.app-page` is `TaskPeekFrame`'s immediate child, so the
+frame still encloses the whole page (header, tab strip, panels) and not just
+some inner section — still holds; only the whitespace pinned alongside it
+went stale. Updated the assertion's expected indentation to match rather
+than touching `AppPage.tsx` or `TaskPeekFrame.tsx`: the split wrapper is
+exactly where the design calls for it (mirrors `.stat-split`, `PreviewSidebar`
+finds its container by `closest` on either class name), and reverting the
+nesting to dodge the test would be fixing the code to fit a test that was
+checking the wrong thing. The updated assertion still fails if `.app-page`
+stops being `TaskPeekFrame`'s direct child (moved out, or another element
+inserted between them) — it only stopped caring about the wrapper's absolute
+depth. Scoped tests (`TaskPeekFrame.test.tsx`, `useAppPageGitColumn.test.ts`)
+— 13 pass, 0 fail — plus `bun run typecheck` and `bun run check:boundaries`,
+both clean. No full suite run, per this task's scope.

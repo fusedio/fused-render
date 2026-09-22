@@ -204,7 +204,13 @@ describe("the two hosts", () => {
   it("the app page frames the WHOLE page, only on the Tasks tab, only with the flag", () => {
     expect(APP).toContain('const peekable = peekOn === true && tab === "tasks";');
     // The wrap encloses `.app-page` — header, tab strip and panels alike.
-    expect(APP).toContain('<TaskPeekFrame peekable={peekable}>\n    <div className="app-page">');
+    // Indented two deeper than before `useAppPageGitColumn` landed:
+    // TaskPeekFrame now nests inside `.app-page-split`, the split that lets
+    // the git column sit beside it. What this pins is the DIRECT-CHILD
+    // relationship — `.app-page` is TaskPeekFrame's immediate child, not
+    // wrapped in some intermediate element — not the wrapper's absolute
+    // indentation depth, which is free to move as the page nests deeper.
+    expect(APP).toContain('<TaskPeekFrame peekable={peekable}>\n        <div className="app-page">');
   });
 
   it("the app page's tab links never carry `?peek=`: a switch away is a close", () => {
