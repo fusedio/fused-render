@@ -91,6 +91,17 @@ export function useAppPageGitPeekWidth(
 
   const onSeamPointerDown = useCallback(
     (e: ReactPointerEvent<HTMLElement>) => {
+      // Without this, dragging the seam text-selects the page underneath it
+      // (the Doctor panel / Overview content) — `.is-dragging iframe {
+      // pointer-events: none }` (app-page.css) covers the iframes either
+      // side of the seam, not a native selection sweeping across ordinary
+      // DOM. `setPointerCapture` retargets `pointermove`/`pointerup` to the
+      // seam element itself, but pointer events still bubble to `window`
+      // from a captured element, so the listeners below keep firing exactly
+      // as they did before capture was added — see PreviewSidebar.tsx's own
+      // divider handler, the pattern this mirrors.
+      e.preventDefault();
+      e.currentTarget.setPointerCapture(e.pointerId);
       drag.current = { x: e.clientX, w: width };
       setDragging(true);
       window.addEventListener("pointermove", onSeamPointerMove);
@@ -99,6 +110,21 @@ export function useAppPageGitPeekWidth(
     },
     [width, onSeamPointerMove, onSeamPointerUp],
   );
+
+  // If the component unmounts mid-drag (a nav, an app-folder key change, a
+  // route change while the seam button is still down), `onSeamPointerUp` is
+  // the ONLY removal path and it never fires — the pointer's `up` lands on a
+  // document with no more React tree to route it through in the usual way.
+  // Without this, the three `window` listeners outlive the component for the
+  // life of the document, each subsequent pointer event calling `setChosen`/
+  // `setDragging` on an unmounted hook.
+  useEffect(() => {
+    return () => {
+      window.removeEventListener("pointermove", onSeamPointerMove);
+      window.removeEventListener("pointerup", onSeamPointerUp);
+      window.removeEventListener("pointercancel", onSeamPointerUp);
+    };
+  }, [onSeamPointerMove, onSeamPointerUp]);
 
   return { width, onSeamPointerDown, dragging };
 }
