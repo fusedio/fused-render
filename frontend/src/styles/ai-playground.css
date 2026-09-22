@@ -2337,6 +2337,14 @@
    that brightens on hover. Every UA button property is reset explicitly —
    preflight is off, so `border: 2px outset` and `buttonface` show through any
    rule that forgets one. Focus is a neutral hairline, never a ring. */
+/* A grey "Type" label ahead of the shape words, the twin of the verdict's
+   "Answer" label, so the two secondary lines of a question read the same. */
+.pg-decide-seg-label {
+  flex: none;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+}
+
 .pg-decide-seg {
   flex: none;
   display: inline-flex;

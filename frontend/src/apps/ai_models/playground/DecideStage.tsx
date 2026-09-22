@@ -289,7 +289,7 @@ function AnswerLine({
   return (
     <details className="pg-decide-answer">
       <summary className="pg-decide-verdict">
-        <span className="pg-decide-verdict-label" aria-hidden="true">Answer</span>
+        <span className="pg-decide-verdict-label" aria-hidden="true">Answer:</span>
         <span className="pg-decide-verdict-word" title={title}>{verdict}</span>
         <span className="pg-decide-verdict-conf" title="How sure the model is of this answer">
           {(confidence * 100).toFixed(0)}% confident
@@ -566,6 +566,7 @@ export function DecideStage({
                           foreground weight 600 on a soft tint pill. The shadcn
                           ToggleGroup was tried here and its variant chrome kept
                           leaking through the scope. */}
+                      <span className="pg-decide-seg-label" aria-hidden="true">Type:</span>
                       <div
                         className="pg-decide-seg"
                         role="radiogroup"
