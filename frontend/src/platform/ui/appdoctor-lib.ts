@@ -144,7 +144,11 @@ export const SECTION_LABEL: Record<string, string> = {
  *  judge each finding first (Review), a FACT row asks it to fix outright
  *  (Fix) — see app_doctor.doctor_prompt's own triage-vs-fix split. */
 export function rowActionLabel(check: AppCheck): "Fix" | "Review" {
-  return check.kind === "candidate" ? "Review" : "Fix";
+  // An on-demand row (`cross-browser`) is a candidate too — a model read a
+  // rubric — but its findings arrive already written as what-to-change
+  // sentences, so the button says what the session will do: Fix (owner,
+  // 2026-09-22). The triage-first prompt still applies underneath.
+  return check.kind === "candidate" && !check.ondemand ? "Review" : "Fix";
 }
 
 /** A failing row's own state word — feeds both `rowStateAccessibleLabel`
@@ -166,7 +170,11 @@ export function rowActionLabel(check: AppCheck): "Fix" | "Review" {
  *  `aria-label`/`title`, not this one. */
 export function rowStateDetailText(check: AppCheck): string {
   if (check.state !== "fail") return STATE_LABEL[check.state];
-  return check.kind === "candidate" ? `${check.findings.length} to review` : STATE_LABEL.fail;
+  // Same carve-out as `rowActionLabel`: an on-demand row's button says Fix,
+  // so its detail must not count things "to review".
+  return check.kind === "candidate" && !check.ondemand
+    ? `${check.findings.length} to review`
+    : STATE_LABEL.fail;
 }
 
 /** A failing row's ACCESSIBLE name — feeds `.appdoc-state`'s `aria-label`/
@@ -272,7 +280,11 @@ export function readinessSentence(checks: AppCheck[]): string {
  *  findings and decides, rather than rewriting them outright. Empty when no
  *  candidate is failing — a footer with nothing to qualify says nothing. */
 export function reviewNote(checks: AppCheck[]): string {
-  const n = checks.filter((c) => c.state === "fail" && c.kind === "candidate").length;
+  // On-demand rows say Fix, not Review (`rowActionLabel`), so they are not
+  // "matches to read" in the footer's count either.
+  const n = checks.filter(
+    (c) => c.state === "fail" && c.kind === "candidate" && !c.ondemand,
+  ).length;
   if (n === 0) return "";
   return n === 1 ? "1 of these is a match to read, not a fix." : `${n} of these are matches to read, not fixes.`;
 }

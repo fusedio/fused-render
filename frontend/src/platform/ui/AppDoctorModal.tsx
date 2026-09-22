@@ -431,7 +431,12 @@ function CheckRow({
                   </Button>
                 ) : (
                   <Button
-                    variant="secondary"
+                    // On the on-demand row Fix is the PRIMARY call to action
+                    // and the two icon buttons beside it (conversation,
+                    // Re-check) are secondary, so it takes the filled
+                    // variant there (owner, 2026-09-22). Every other row's
+                    // Fix stays secondary: it is the only action on its row.
+                    variant={check.ondemand ? "default" : "secondary"}
                     size="sm"
                     disabled={busy || otherTaskLive || checking}
                     title={
@@ -451,7 +456,8 @@ function CheckRow({
               {check.ondemand && check.verdict_task && (
                 <Button
                   variant="ghost"
-                  size="icon-sm"
+                  size="icon-xs"
+                  className="text-muted-foreground"
                   title="Open the check's conversation — Claude's own plain-words notes on what it found"
                   aria-label="Open the check's conversation"
                   onClick={() => onOpenVerdictTask(check)}
@@ -466,7 +472,8 @@ function CheckRow({
               {check.ondemand && (
                 <Button
                   variant="ghost"
-                  size="icon-sm"
+                  size="icon-xs"
+                  className="text-muted-foreground"
                   // Not while a fix session is live on this app: it is about
                   // to change the very files a re-check would read, so the
                   // verdict would be stale the moment it landed.
