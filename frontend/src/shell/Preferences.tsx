@@ -81,6 +81,8 @@ import {
   CHECK_RESULT_HOLD_MS,
   checkForUpdates,
   checkNowLabel,
+  updateLabel,
+  updateRelevant,
   useUpdateStatus,
   type ManualCheckPhase,
 } from "@platform/lib/update-status";
@@ -177,7 +179,21 @@ function UpdatesSection() {
   }, []);
 
   const settle = useCallback((result: UpdateStatus) => {
-    setPhase(result.check_error ? "failed" : "current");
+    // `updateRelevant` gates "current" the same way the deleted `UpdateBadge`
+    // gated the whole row (finding #2, code review): that component only
+    // ever rendered this button INSIDE `if (!updateRelevant(status))`, so
+    // "Up to date" could never appear over an `available`/`installing`/
+    // `installed`/`error` status. Porting `settle` onto this section's own
+    // local `phase` state dropped that gate — the check's own answer (this
+    // press found nothing NEW beyond what the store already knew, e.g. a
+    // "checking" that resolved back to "idle") does not mean the OVERALL
+    // status is irrelevant, so a check that lands while the store is already
+    // sitting on `available` must not claim "Up to date" over the "Update
+    // available" notification popping at the same instant. `rest` (silently
+    // fall back to the render's own `updateRelevant(status)` gate below,
+    // which then shows the real state) rather than "failed" — nothing here
+    // actually failed.
+    setPhase(result.check_error ? "failed" : updateRelevant(result) ? "rest" : "current");
     clearTimeout(holdTimer.current);
     holdTimer.current = setTimeout(() => setPhase("rest"), CHECK_RESULT_HOLD_MS);
   }, []);
@@ -208,26 +224,54 @@ function UpdatesSection() {
     }
   };
 
-  // `status === null` means /api/config never carried an `update` field —
-  // an unpackaged dev run with no mac.DEV_MANAGER_ENV, or a non-mac build.
-  // Nothing to check there; say so instead of a button that would 404.
+  // `status === null` means one of two different things (finding #6, code
+  // review), and the old code could not tell them apart:
+  //   1. An unpackaged dev run with no mac.DEV_MANAGER_ENV, or a non-mac
+  //      build — genuinely no updater, forever.
+  //   2. `useUpdateStatus()` simply has not heard back from its first
+  //      `/api/config` poll yet — its `getSnapshot` starts at `null` and
+  //      only flips once that request resolves.
+  // The deleted `UpdateBadge.tsx` handled this with its own `if (!status)
+  // return null` — render NOTHING during the unknown window. Porting the
+  // section onto local state lost that: `hasUpdater = status !== null`
+  // read case 2 as case 1, so every packaged build flashed "Updates aren't
+  // managed from inside the app on this build" — a false claim — for the
+  // length of that first request, on every single visit to this tab.
+  // `awaitingFirstStatus` distinguishes "haven't heard yet" (render
+  // nothing) from "heard, and there is nothing" (say so) by reusing
+  // `version`'s own one-shot `getConfig()` fetch above as the "have we
+  // heard back at all" signal, rather than adding a second `useState` for
+  // the same fact.
+  const awaitingFirstStatus = status === null && version === null;
   const hasUpdater = status !== null;
 
   return (
     <section className="prefs-section">
       <h2>Updates</h2>
       <p className="deploy-muted">{version ? `Running v${version}.` : " "}</p>
-      {hasUpdater ? (
-        <div className="prefs-actions">
-          <button
-            type="button"
-            className="btn btn-secondary"
-            disabled={phase === "checking"}
-            onClick={() => void check()}
-          >
-            {checkNowLabel(phase, version)}
-          </button>
-        </div>
+      {awaitingFirstStatus ? null : hasUpdater ? (
+        // UPDATE_RELEVANT GATE (finding #2, code review): the deleted
+        // `UpdateBadge` only ever rendered this button INSIDE
+        // `if (!updateRelevant(status))` — an update already found,
+        // installing, installed or failed is a DECISION, and
+        // `UpdateNotifier`'s own notification is what is asking it; this
+        // row's job is only the idle "is there something new?" question, so
+        // it must get out of the way rather than contradict that
+        // notification with "Up to date" at the same instant.
+        updateRelevant(status) ? (
+          <p className="deploy-muted">{updateLabel(status)}</p>
+        ) : (
+          <div className="prefs-actions">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={phase === "checking"}
+              onClick={() => void check()}
+            >
+              {checkNowLabel(phase, version)}
+            </button>
+          </div>
+        )
       ) : (
         <p className="deploy-muted">
           Updates aren&rsquo;t managed from inside the app on this build.
