@@ -40,9 +40,13 @@ const { setUpdateStatus, resetUpdateStatusForTests } = await import("@platform/l
 const { requestRestart, resetRestartForTests, noteRestartProbe } = await import(
   "@platform/lib/restart-store"
 );
-const { getRetainedNotifications, getPopupNotification, _resetNotificationsForTest } = await import(
-  "@platform/lib/notifications"
-);
+const {
+  dismissNotification,
+  notify,
+  getRetainedNotifications,
+  getPopupNotification,
+  _resetNotificationsForTest,
+} = await import("@platform/lib/notifications");
 
 const realFetch = globalThis.fetch;
 let installCalls: Array<string | null | undefined> = [];
@@ -69,6 +73,30 @@ beforeEach(() => {
   globalThis.fetch = stubFetch;
   installCalls = [];
   sessionCells.clear();
+  // BELT AND SUSPENDERS on top of the `afterEach` resets below (finding #8,
+  // code review — a CI-only flake in the very first test in this file: green
+  // 7138/0 on this machine, red 7137/1 on the Linux runner, same file and
+  // test counts both times). The real mechanism was traced to
+  // `update-status.ts`'s `poll()`: its staleness guard used to run AFTER the
+  // mutating `set()` call rather than before it, so a stale `getConfig()`
+  // fetch — started by an EARLIER test file's own component mount, which
+  // reaches this same module-singleton poll loop — could resolve arbitrarily
+  // later and silently overwrite the shared `current` state out from under a
+  // completely different, later-running test file's `useUpdateStatus()`
+  // subscriber (this one). `resetUpdateStatusForTests()` in `afterEach` bumps
+  // the generation counter and clears the pending timer, but cannot cancel an
+  // ALREADY in-flight fetch promise — so the race's odds depend on bun's
+  // process-wide module registry and exact test scheduling, which is exactly
+  // why it was timing/order-dependent rather than reliably reproducible
+  // locally. `poll()` itself is now fixed to check staleness before `set()`
+  // runs at all (the actual fix); resetting here too, before this file's own
+  // very first status write, removes any window for a same-run leftover
+  // (a stale in-flight poll from a test file that ran directly before this
+  // one, before this file's own tests have made any status calls yet) to be
+  // mistaken for real data by this file's assertions.
+  resetUpdateStatusForTests();
+  resetRestartForTests();
+  _resetNotificationsForTest();
 });
 
 afterEach(() => {
@@ -184,6 +212,90 @@ test("dismissing (Later) records the version and suppresses re-raise for it, but
   });
   expect(getRetainedNotifications()).toHaveLength(1);
   expect(getRetainedNotifications()[0].title).toBe("Update ready");
+  await act(async () => r.unmount());
+});
+
+test("dismissing the restart card directly (the panel's own ✕) does not resurrect it (finding #3)", async () => {
+  // `RepoUpdatesDock`'s ✕ and "Dismiss all" call `dismissNotification(id)`
+  // straight into the store — they bypass this component's own "Later"
+  // handler entirely, so they never call `recordRestartDismissed`. Before
+  // finding #3's fix, the raise effect could not tell that apart from a
+  // `capRetained` eviction (both look identical: "our id vanished from
+  // `retained`") and treated it as safe to resurrect, popping the exact card
+  // the user had just closed straight back on the very next status update.
+  const r = await mount();
+  await act(async () => {
+    setUpdateStatus(status({ state: "installed", latest_version: "0.5.81" }));
+  });
+  const card = getRetainedNotifications()[0];
+  await act(async () => {
+    dismissNotification(card.id);
+  });
+  expect(getRetainedNotifications()).toHaveLength(0);
+
+  // The poll landing again with nothing new (the ordinary steady-state case)
+  // must not bring it back.
+  await act(async () => {
+    setUpdateStatus(status({ state: "installed", latest_version: "0.5.81" }));
+  });
+  expect(getRetainedNotifications()).toHaveLength(0);
+  await act(async () => r.unmount());
+});
+
+test("a genuine cap eviction still resurrects the restart card (finding #3)", async () => {
+  // The other half of finding #3: the fix must not turn a REAL eviction into
+  // a silent, permanent loss either. Filling the retained list past
+  // `MAX_RETAINED` pushes the restart card (the oldest row) out the same way
+  // a busy notification stream would. Note this resurrects WITHIN the same
+  // `act()` that causes the eviction, not on a later poke: the eviction
+  // itself changes `retained`, which is one of this effect's own
+  // dependencies, so React reruns it immediately — same-render eviction and
+  // recovery, exactly as it did before this fix (only the DISMISSAL path,
+  // tested above, now behaves differently).
+  const r = await mount();
+  await act(async () => {
+    setUpdateStatus(status({ state: "installed", latest_version: "0.5.81" }));
+  });
+  const beforeId = getRetainedNotifications()[0].id;
+  expect(getRetainedNotifications().some((n) => n.title === "Update ready")).toBe(true);
+
+  await act(async () => {
+    for (let i = 0; i < 5; i++) {
+      notify({ title: `Other notice ${i}`, tier: "attention", action: { label: "x", onClick: () => {} } });
+    }
+  });
+  const restartCard = getRetainedNotifications().find((n) => n.title === "Update ready");
+  expect(restartCard).toBeDefined();
+  // Resurrected as a FRESH row (a new id) — its old slot is the one that got
+  // sliced off by `capRetained`, so it comes back at the end like any other
+  // freshly-`notify()`'d card, not back in its original position.
+  expect(restartCard?.id).not.toBe(beforeId);
+  await act(async () => r.unmount());
+});
+
+test("Later works when the server reports no version string (finding #4)", async () => {
+  // `latest_version` can legitimately be `null` (`state: "installed"` with no
+  // version attached). The old code's bare `if (version) recordRestartDismissed(version)`
+  // silently skipped recording anything for that case — "Later" dismissed the
+  // popup, but with nothing recorded, `wasRestartDismissed` never matched and
+  // the very next render (retained changed → effect re-ran) put the card
+  // straight back, making "Later" a no-op whenever the version was null.
+  const r = await mount();
+  await act(async () => {
+    setUpdateStatus(status({ state: "installed", latest_version: null }));
+  });
+  const card = getRetainedNotifications()[0];
+  expect(card.title).toBe("Update ready");
+  await act(async () => {
+    card.extraAction?.onClick();
+  });
+  expect(getRetainedNotifications()).toHaveLength(0);
+
+  // Re-poked with the same (null) version — must stay dismissed.
+  await act(async () => {
+    setUpdateStatus(status({ state: "installed", latest_version: null }));
+  });
+  expect(getRetainedNotifications()).toHaveLength(0);
   await act(async () => r.unmount());
 });
 

@@ -43,9 +43,22 @@ import { pokeUpdateStatus, setUpdateStatus, useUpdateStatus } from "@platform/li
 // with anything else is not a concern; this is the only writer.
 const RESTART_DISMISSED_KEY = "fused_update_restart_dismissed";
 
-function wasRestartDismissed(version: string): boolean {
+// Sentinel stored when `UpdateStatus.latest_version` is `null` (finding #4,
+// code review) — the server can report `state: "installed"` with no version
+// string attached, and a bare `if (version) recordRestartDismissed(version)`
+// silently skipped recording anything for exactly that case: "Later" then
+// dismissed the popup, `retained` changed (the row it was just removed from),
+// the raise effect re-ran, `version` was still null, the "already dismissed"
+// guard below never matched (nothing had been recorded), and the card came
+// straight back — "Later" was a no-op. Recording this sentinel instead of
+// skipping means a null-version install can be deferred exactly like a named
+// one. Not a real version string that could ever collide (`\u0000` cannot
+// appear in a semver).
+const RESTART_DISMISSED_NONE = "\u0000none";
+
+function wasRestartDismissed(version: string | null): boolean {
   try {
-    return sessionStorage.getItem(RESTART_DISMISSED_KEY) === version;
+    return sessionStorage.getItem(RESTART_DISMISSED_KEY) === (version ?? RESTART_DISMISSED_NONE);
   } catch {
     // Private window, quota, embed without storage access — treat as "not
     // dismissed" rather than throw; the worst case is one extra re-raise.
@@ -53,9 +66,9 @@ function wasRestartDismissed(version: string): boolean {
   }
 }
 
-function recordRestartDismissed(version: string): void {
+function recordRestartDismissed(version: string | null): void {
   try {
-    sessionStorage.setItem(RESTART_DISMISSED_KEY, version);
+    sessionStorage.setItem(RESTART_DISMISSED_KEY, version ?? RESTART_DISMISSED_NONE);
   } catch {
     // Same as above — losing the "later" memory is not worth crashing over.
   }
@@ -120,6 +133,12 @@ export default function UpdateNotifier(): null {
   // Only `notify()` again when something actually needs to change: a fresh
   // version, or the row having been evicted out from under it.
   const restartRaisedForRef = useRef<string | null>(null);
+  // Snapshot of `retained`'s id set as of the LAST time the effect below
+  // ran — the only way to tell a capRetained EVICTION apart from an
+  // explicit DISMISSAL (finding #3, code review). See that effect's own
+  // comment for the reasoning; kept here rather than inline because it must
+  // survive across renders even on the early-return branches.
+  const prevRestartRetainedIdsRef = useRef<Set<number>>(new Set());
 
   // ---- Notification #1 — Download / failed -------------------------------
   useEffect(() => {
@@ -174,21 +193,68 @@ export default function UpdateNotifier(): null {
 
   // ---- Notification #2 — Restart ready (before a restart is requested) ---
   useEffect(() => {
+    // Recorded on EVERY run, before any early return, so the snapshot never
+    // goes stale across a stage change or an unrelated status update — the
+    // eviction-vs-dismissal check below depends on comparing against
+    // whatever `retained` looked like the last time this effect actually ran,
+    // not just the last time it got past the `flow.stage` guard.
+    const currentIds = new Set(retained.map((n) => n.id));
+    const prevIds = prevRestartRetainedIdsRef.current;
+    prevRestartRetainedIdsRef.current = currentIds;
+
     // Once a restart is actually in flight (or over), this card belongs to
     // the in-flight effect below — it owns `restartIdRef` from here on.
     if (flow.stage !== "ready") return;
+
+    // EVICTION VS. DISMISSAL (finding #3, code review — "the hardest of the
+    // seven"). The OLD code treated "our id is no longer in `retained`" as
+    // one thing: capRetained eviction, always safe to resurrect. But that
+    // exact same symptom — our id vanishing from `retained` — is also what
+    // happens when the user presses the panel's own ✕ on this row
+    // (`RepoUpdatesDock.tsx`'s `dismissNotification(n.id)`) or "Dismiss
+    // all". Neither of those goes through the `extraAction.onClick` handler
+    // below — `dismissNotification` is a generic store call that knows
+    // nothing about THIS component's "Later" bookkeeping — so a deliberate
+    // dismissal never recorded `wasRestartDismissed`, and the very next
+    // render (retained changed -> this effect's own dependency) saw "not
+    // still retained" and popped the exact card the user had just closed.
+    //
+    // The two cases are distinguishable by what ELSE changed: `capRetained`
+    // only ever trims the OLDEST row as a side effect of a NEW row being
+    // pushed past `MAX_RETAINED` — so an eviction always comes with some
+    // other id appearing in `retained` that was not there a moment ago. A
+    // plain dismissal is exactly `retained.filter(n => n.id !== ours)` —
+    // nothing is ever added. "Did the id set gain a member we didn't have
+    // before" is therefore a reliable eviction/dismissal test without
+    // needing the store to expose anything new.
+    if (
+      restartIdRef.current !== undefined &&
+      prevIds.has(restartIdRef.current) &&
+      !currentIds.has(restartIdRef.current)
+    ) {
+      const gainedAnId = [...currentIds].some((id) => !prevIds.has(id));
+      if (!gainedAnId) {
+        // Explicit dismissal — finalize it exactly like "Later" does
+        // (`recordRestartDismissed`), so `wasRestartDismissed` below makes
+        // it stick instead of popping right back on the next render.
+        recordRestartDismissed(restartRaisedForRef.current);
+        restartIdRef.current = undefined;
+        restartRaisedForRef.current = null;
+        return;
+      }
+      // Genuine eviction — forget the stale id so the logic below treats
+      // this as "nothing on screen" and raises fresh, rather than passing
+      // `notify()` an id it no longer recognizes as either the live popup
+      // or a retained row.
+      restartIdRef.current = undefined;
+    }
+
     if (!status || status.state !== "installed") return;
     const version = status.latest_version;
-    if (version && wasRestartDismissed(version)) return;
+    if (wasRestartDismissed(version)) return;
 
-    // SURVIVE EVICTION (spec): `capRetained` drops the OLDEST row past
-    // `MAX_RETAINED = 5`, so five unrelated notifications can silently push
-    // this one out from under a user who never dismissed it. If our id is no
-    // longer in the retained list, treat it as gone and re-raise fresh
-    // (`replaceId: undefined`) rather than pass an id `notify()` will not
-    // recognize as either the live popup or a retained row.
     const stillRetained =
-      restartIdRef.current !== undefined && retained.some((n) => n.id === restartIdRef.current);
+      restartIdRef.current !== undefined && currentIds.has(restartIdRef.current);
 
     // Nothing to do: the card is already up, showing this exact version.
     // Skipping here is what breaks the feedback loop described above —
@@ -207,7 +273,7 @@ export default function UpdateNotifier(): null {
         extraAction: {
           label: "Later",
           onClick: () => {
-            if (version) recordRestartDismissed(version);
+            recordRestartDismissed(version);
             if (restartIdRef.current !== undefined) dismissNotification(restartIdRef.current);
             restartRaisedForRef.current = null;
           },
