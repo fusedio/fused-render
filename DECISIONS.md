@@ -3249,3 +3249,84 @@ src/shell/TerminalDock.test.tsx` — 15 pass, 0 fail (unaffected by this
 change; `TerminalView.tsx` remains deliberately untested per the header
 comment's own reasoning, unchanged from the prior round). `bun run build`
 succeeded.
+
+## Toggle shortcut + exit-hides-drawer (build subagent round)
+
+Two features requested together: a keyboard shortcut to toggle the terminal
+drawer, and making a process exit hide the drawer instead of showing a
+dead-shell banner with an Enter-to-restart listener.
+
+Shortcut: bound BOTH the user's requested chord (Cmd+Shift+` on macOS,
+Ctrl+Shift+` elsewhere, via `isMod()` from `platform/lib/platform.ts` — the
+same exclusive Mac-vs-other test every other app shortcut uses) AND VS Code's
+own Ctrl+` (no Shift) as a permanent alias on every platform, because the Cmd
+chord collides with macOS's own window-cycling shortcut and may never reach
+the page. Matched on `e.code === "Backquote"`, not `e.key` (which is `"~"`
+once Shift is held, and layout-dependent). Registered in `TerminalDrawer.tsx`
+itself via a `useEffect` with an empty dependency array, unconditional on
+`open` — this component already stays mounted while closed (early-returns
+`null` after all hooks run), so it is the one listener that has to fire
+while the drawer is closed, to open it. Did not move it to `App.tsx` or
+`terminalDockStore.ts`: `TerminalDrawer.tsx` already owns the store's
+setter/toggle calls used elsewhere in this file (drag-to-resize, etc.), so
+adding the keydown effect here keeps all of the drawer's own input handling
+in one file rather than splitting it across the store and the shell shell.
+Advertised the alias (not the Cmd chord) in `TerminalDock.tsx`'s tooltip
+(`⌃\``) since it's the one guaranteed to work everywhere, and added the
+user's chord to the `ShortcutsOverlay` cheat sheet data
+(`platform/lib/shortcuts.ts`, View group) as the one canonical binding shown
+there, following the sheet's own existing convention of documenting one
+chord per action even when an alias exists.
+
+Exit-hides-drawer: removed the old "Process exited... press Enter to start a
+new shell" banner, the `exitCode` state, and the global Enter-to-restart
+keydown listener entirely. `TerminalView`'s `onExit` now calls a new
+`handleExit()` which clears the React `sessionId` state and calls an
+exported pure function `clearExitedSession(height)` that clears the
+persisted `sessionId` in localStorage and calls `closeTerminalDock()`. Next
+open (chip or shortcut) finds `sessionId === null` and the existing
+verify-or-create effect mints a fresh shell rather than trying to reattach
+to a dead one.
+
+Dead end / architectural finding: "process exits while the drawer is already
+closed" (explicitly called out in the task) is not literally reachable
+through `TerminalView.onExit` in the current design — `TerminalView` (which
+owns the pty WebSocket and is the only thing that can receive a server exit
+frame) only ever mounts while `open` is true; the whole `TerminalDrawer`
+subtree past the `if (!open) return null` unmounts it the instant the drawer
+closes, so there is no live connection while closed to receive an exit frame
+on. Rather than force an unreachable path through a full render (and rather
+than touching `TerminalView.tsx`, which is off-limits and deliberately
+untested — a headless renderer can't run its real resize/layout pass),
+`clearExitedSession` was factored out as an exported, pure, idempotent
+function callable and testable directly regardless of `open`, covering both
+starting states (drawer open, drawer already closed) without mounting
+`TerminalView` at all.
+
+Test-infra note: firing a captured keydown handler synchronously inside a
+plain `act(() => {...})` produced "not wrapped in act(...)" warnings, because
+`toggleTerminalDock()`'s `useSyncExternalStore` notification resolved on a
+microtask past that synchronous callback's return. Fixed by making the
+test's `fireKeyDown` helper `async` and awaiting
+`act(async () => { ...; await Promise.resolve(); })` instead — mirrors the
+`await act(async () => ...)` pattern already used elsewhere on this branch
+for store-notification timing.
+
+New file: `frontend/src/shell/TerminalDrawer.test.tsx` — 12 tests covering
+both directions of the toggle (chord + VS Code alias), every non-matching
+modifier/key-code combination, `isMod()`'s platform exclusivity, and
+`clearExitedSession` in both drawer states plus `closeTerminalDock`'s
+idempotency. Scoped run:
+`bun test src/shell/TerminalDock.test.tsx src/shell/TerminalDrawer.test.tsx
+src/platform/lib/terminalSession.test.ts` — 27 pass, 0 fail, 53 expect()
+calls. `bun run build` succeeded (boundaries OK, 869 files; `tsc --noEmit`
+clean; `✓ built in 5.69s`; only pre-existing, unrelated
+static+dynamic-import and chunk-size Rollup warnings, unchanged from before
+this round).
+
+Not verified: live/browser behavior (no cmux, no dev-server restart, per
+task instructions) — the shortcut firing through a real DOM keydown and the
+drawer actually closing on a real process exit were not exercised end to
+end; only the unit-level behavior above was. The user should confirm the
+chord doesn't collide with anything OS/browser-level in their actual
+environment before relying on it.
