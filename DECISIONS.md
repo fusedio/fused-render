@@ -4703,3 +4703,89 @@ confidence; this session's evidence is one clean full-suite pass post-fix.
 broader `--isolate`/`--parallel` bun flag adoption (rendered unnecessary once
 the actual leaking file was fixed); no changes to any file other than
 `sched-block.test.tsx`, `feature-flag.ts`, and this log.
+
+## App page git column (branch `app-page-git-sidebar`) — draft review, a real race bug, and its fix
+
+A prior pass on this branch had already landed a draft (commit `2e3560a7e`)
+giving the app page (`shell/AppPage.tsx`) a right-hand git column: the same
+`git` template, the same `PreviewSidebar` companion the explorer's file
+preview already hosts, opened only from App Doctor's existing "Open in git"
+row (no header button, no new URL param — closing is the column's own close
+button or dragging it through its floor). That draft's architecture held up
+under review — `PreviewSidebar`'s widened `SPLIT_SEL`, the `useDirMode(open ?
+dir : null, "git")` gate, the `gitSrc` URL shape, the CSS split/drag rules,
+and `onOpenGit` threaded through `AppDoctorModal.tsx` all matched every
+relevant precedent (`Preview.tsx`'s `sideSrcFor`, `.stat-split`'s CSS,
+`dir-mode.ts`'s contract). Two non-behavioral fixes were made directly on it:
+a stale header comment still claiming the page was "read-only about git" (a
+prior, unrelated change — the version picker — had already made that false),
+and a JSX indentation slip where the new `.app-page-split` wrapper's children
+were left at the wrapper's own indentation level instead of one deeper.
+
+**No existing test was found asserting the old contract.** Grepped
+frontend `*.test.{ts,tsx}` and Python `tests/*.py` for `onOpenGit`, `Open in
+git`, `read-only about git`, `app-page`, `stat-split`, `SPLIT_SEL`,
+`app_doctor` — nothing pins "AppDoctorPanel has no onOpenGit" or "the app
+page is read-only about git" as a passing assertion anywhere. The risk
+flagged in the handoff did not materialize as a blocking test.
+
+**A real bug, found by TDD, not by review.** The draft's inline auto-close
+effect —
+
+```ts
+useEffect(() => {
+  if (gitOpen && !gitMode.pending && gitMode.entry === null) setGitOpen(false);
+}, [gitOpen, gitMode.pending, gitMode.entry]);
+```
+
+— closes the column the instant it opens, before the probe is ever
+dispatched. `useDirMode`'s own state does not move in the same render that
+flips its `dir` argument from `null` to real; it only updates once ITS OWN
+effect runs, one commit later. On the transitional render, `gitMode` still
+reads the old `{ entry: null, pending: false }` — indistinguishable, at that
+instant, from "asked, and the folder has no git" — and the draft's effect
+(which runs immediately after `useDirMode`'s own effect in the same commit,
+per hook declaration order) reads that stale value and calls `setGitOpen(false)`
+before `useDirMode`'s placeholder (`pending: true`) has had a chance to land.
+Nothing in `bun run typecheck`/`check:boundaries`/`build` could have caught
+this — it is a runtime effect-ordering race, not a type or lint issue, and
+the draft shipped with no tests at all covering this path.
+
+Extracted the whole git-column state (`open`/`openGit`/`closeGit`/`gitMode`/
+`gitSrc`) out of `AppPage.tsx` into `shell/useAppPageGitColumn.ts`, mirroring
+`useAppPageSnapshot.ts`'s precedent (`AppPage.tsx` itself has no render-test
+path — mounting it pulls in base-ui's Tabs, a document-dependent keyboard-nav
+effect, `useFavicon`, and the Tasks subtree — so behavior worth pinning gets
+its own hook and its own test, driven through `useDirMode`'s real code path
+with only the network boundary stubbed). The fix adds a `probed` ref that
+only trusts a "not offered" verdict once the probe has actually been seen
+`pending` at least once:
+
+```ts
+const probed = useRef(false);
+useEffect(() => {
+  if (!open) { probed.current = false; return; }
+  if (gitMode.pending) { probed.current = true; return; }
+  if (probed.current && gitMode.entry === null) setOpen(false);
+}, [open, gitMode.pending, gitMode.entry]);
+```
+
+`shell/useAppPageGitColumn.test.ts` covers, against the real `useDirMode`
+fetch path (stubbed `fetch`, one directory string per test — `dir-mode.ts`
+caches per-directory answers for 30s with no reset hook, so sharing a
+directory across tests would let one test's resolution silently answer
+another): no probe at all until `openGit()` is called; `openGit` probes the
+FOLDER (not some file inside it) and frames the git template's `src` against
+it; `closeGit` shuts the column; the column auto-closes once the folder
+genuinely settles as not offering git. All four passed only after the
+`probed` fix — before it, the "opens" / "closes" / "auto-closes" tests all
+failed with `open` snapping back to `false` immediately, which is what
+surfaced the race in the first place. `AppPage.tsx` was then refactored to
+call the hook instead of carrying its own (buggy) copy of the same logic —
+same bug, same fix, now covered.
+
+`bun run typecheck`, `bun run check:boundaries`, and `bun run build` all
+pass post-integration. Scoped tests run: `AppPage.test.tsx`,
+`useAppPageGitColumn.test.ts`, `appdoctor-lib.test.ts`, `panel-seams.test.ts`
+— 55 pass, 0 fail. No full suite run (left to the orchestrator, per this
+branch's build instructions).
