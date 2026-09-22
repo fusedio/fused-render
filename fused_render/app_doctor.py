@@ -110,8 +110,11 @@ _CHECK_META: dict[str, tuple[str, str, str]] = {
     # reading of a rubric earns a second look before an edit, which is what
     # the candidate prompt asks the fix session for.
     "cross-browser": ("sharing", "warning", "candidate"),
+    # Consolidated repo-health row (SPEC-doctor-git-ai-errors.md): committed +
+    # pushed + not-behind-origin, in one. The first two are answered from
+    # local refs only; "behind origin" needs a real fetch, which this never
+    # performs inline — see `_repo_health_check`.
     "git": ("sharing", "warning", "fact"),
-    "pushed": ("sharing", "warning", "fact"),
     "generated": ("sharing", "warning", "fact"),
     "preview": ("sharing", "warning", "fact"),
 }
@@ -350,13 +353,13 @@ def _git_findings(pending: list[tuple[str, str]]) -> list[dict]:
     return out
 
 
-# `_pushed_pending`'s SKIP reasons — distinct enough that `_pushed_check` can
-# say something TRUE instead of one catch-all sentence. `NO_REPO` covers "not
-# a git repository this server can read" in all its shapes (no `.git` at all,
-# `git` missing from PATH, a hung call past `_GIT_TIMEOUT`) — the same
-# condition `_git_check` already reports for the `git` row, worded the same
-# way here. `NO_UPSTREAM` is the one case that is actually about THIS
-# question: a real, readable repo whose current branch has no upstream
+# `_pushed_pending`'s SKIP reasons — distinct enough that `_repo_health_check`
+# can say something TRUE instead of one catch-all sentence. `NO_REPO` covers
+# "not a git repository this server can read" in all its shapes (no `.git`
+# at all, `git` missing from PATH, a hung call past `_GIT_TIMEOUT`) — the
+# same condition `_git_pending` reports too, worded the same way. `NO_UPSTREAM`
+# is the one case that is actually about THIS question: a real, readable
+# repo whose current branch has no upstream
 # configured, so there is nothing to compare against.
 _SKIP_NO_REPO = "no-repo"
 _SKIP_NO_UPSTREAM = "no-upstream"
@@ -591,16 +594,193 @@ def _icon_check(app_dir: str) -> dict:
     return _check("icon", label, SKIP, "no icon.svg or icon.png in this folder")
 
 
-def _git_check(app_dir: str) -> dict:
-    state, pending = _git_pending(app_dir)
-    return _check(
-        "git", "Every change is committed", state,
-        "this folder is not in a git repository this server can read" if state == SKIP
-        else f"{len(pending)} uncommitted path{'' if len(pending) == 1 else 's'} — "
-             "commit them so what you share is what you tested" if state == FAIL
-        else "the working tree is clean",
-        _git_findings(pending),
-    )
+def _repo_health_check(app_dir: str) -> dict:
+    """The consolidated Sharing-section row: every change committed, every
+    commit pushed, and not behind origin — in one (SPEC-doctor-git-ai-
+    errors.md). The first two are answered entirely from local refs
+    (`_git_pending`/`_pushed_pending`, no network). "Behind origin" needs a
+    real fetch, which THIS FUNCTION NEVER PERFORMS ITSELF: it only calls
+    `git_upstream.note_app_opened`, which does no synchronous git work of its
+    own — it dispatches a throttled, best-effort BACKGROUND check (see that
+    module's docstring) and returns immediately. What follows reads whatever
+    `git_upstream`'s own cache (`repo_state_for`) already has for this repo
+    root: fresh from a moment ago, stale from up to `CHECK_TTL_S` earlier, or
+    still empty because the fetch has not resolved (or ever will — offline,
+    no remote, expired auth). A slow or unreachable remote can therefore
+    never make a doctor report slow; a caller that reopens Doctor a moment
+    later sees the row filled in once the background fetch has landed.
+
+    A remote that is unresolved reads as SKIP, with the reason stated — never
+    FAIL: an unreachable remote is not a defect in the app being reviewed.
+
+    MIXED REF BASES, NAMED HONESTLY RATHER THAN UNIFIED: `p_state`/`p_subjects`
+    (the "unpushed" half, from `_pushed_pending`) compare against `@{upstream}`
+    — this branch's OWN tracking ref, whole-repo, matching the in-app Git
+    panel's "Send N" count exactly (`templates/git/log.py`'s `rev-list
+    --left-right --count HEAD...@{upstream}`). `behind`/`ahead` (the "not
+    behind origin" half, from `git_upstream.check_repo`) instead compare
+    against `origin/<default_branch>` — deliberately: the Pull button this
+    row can offer always fast-forwards onto the DEFAULT branch
+    (`git_upstream.update_repo`), never onto `@{upstream}`, so that is the
+    only base that tells the truth about what Pull would do. On the default
+    branch the two bases usually agree (its own upstream typically IS
+    `origin/<default_branch>`), so this row says "origin". Off the default
+    branch they answer different questions on purpose — "is MY branch pushed
+    anywhere" vs. "is the DEFAULT branch's tip ahead of me" — and saying
+    "behind origin" there would misname which ref that count is actually
+    against; `_behind_target` below names the real one instead of pretending
+    the two bases are one.
+    """
+    from fused_render import git_upstream
+
+    g_state, g_pending = _git_pending(app_dir)
+    p_state, p_subjects, p_skip_reason = _pushed_pending(app_dir)
+
+    root = git_upstream.repo_root(app_dir)
+    behind = ahead = on_default = clean = cached = None
+    default_branch = None
+    if root is not None:
+        git_upstream.note_app_opened(app_dir)
+        cached = git_upstream.repo_state_for(root)
+        if cached is not None:
+            behind = cached.get("behind") or 0
+            ahead = cached.get("ahead") or 0
+            on_default = cached.get("on_default")
+            default_branch = cached.get("default_branch")
+        # The SAME cleanliness signal `update_repo`'s preflight refuses on
+        # (`_mutation_preflight` -> `_is_clean(root, include_untracked=False)`)
+        # — computed here, synchronously, local-only (no fetch, no network:
+        # just `git status --porcelain`), so the UI can know BEFORE the user
+        # presses Pull whether it would be refused with "dirty". This is
+        # deliberately the whole-repo signal `update_repo` actually checks,
+        # not `g_state` (this app's own `-- .`-scoped view) — a Pull button
+        # this row shows acts on the whole repo root, and a sibling app's
+        # uncommitted change also blocks a real `--ff-only` pull here even
+        # though it never fails g_state.
+        try:
+            clean = git_upstream._is_clean(root, include_untracked=False)
+        except Exception:  # noqa: BLE001 — unknown status reads as not-clean
+            clean = False
+
+    findings = _git_findings(g_pending) + [
+        {"rule": "pushed:unpushed", "path": ".", "line": 0, "excerpt": s}
+        for s in p_subjects
+    ]
+
+    # Pull is only ever a real option when the fetch confirmed a positive
+    # behind count AND the row's own on_default/clean signals say
+    # `update_repo`'s preflight (not-default / dirty) would not refuse it —
+    # see B1 in FIXES-round-1.md. `showsPullAction` (appdoctor-lib.ts) makes
+    # the identical decision from these same three fields; keep the two in
+    # sync rather than re-deriving one from the other.
+    can_pull = bool(behind) and on_default is True and clean is True
+
+    # What `behind`/`ahead` are actually measured against — `origin` on the
+    # default branch (where that coincides with `@{upstream}` for almost
+    # every repo), or the default branch's own name off it, where "behind
+    # origin" would misleadingly suggest this is the same comparison
+    # `p_state` just made against this branch's own upstream (see this
+    # function's docstring).
+    behind_target = "origin" if on_default else (default_branch or "the default branch")
+
+    failing_bits = []
+    if g_state == FAIL:
+        failing_bits.append(
+            f"{len(g_pending)} uncommitted path{'' if len(g_pending) == 1 else 's'}")
+    if p_state == FAIL:
+        failing_bits.append(
+            f"{len(p_subjects)} unpushed commit{'' if len(p_subjects) == 1 else 's'}")
+    if behind:
+        failing_bits.append(
+            f"{behind} commit{'' if behind == 1 else 's'} behind {behind_target}")
+
+    if failing_bits:
+        state = FAIL
+        detail = ", ".join(failing_bits) + " — " + _repo_health_advice(
+            commit=g_state == FAIL, push=p_state == FAIL, behind=behind,
+            can_pull=can_pull, on_default=on_default, clean=clean,
+            default_branch=(cached.get("default_branch") if cached is not None
+                             else None),
+        )
+    elif p_skip_reason == _SKIP_NO_UPSTREAM:
+        # `behind`/`ahead` may still be a confirmed number here (git_upstream
+        # compares HEAD against the DEFAULT branch's origin ref regardless of
+        # this branch's own upstream — see api.ts's `ahead` doc comment) but
+        # that is not the same question as "is every commit on THIS branch
+        # pushed somewhere" — with no upstream configured, that half of the
+        # row can never be confirmed, so this must not read as PASS (the
+        # previous `pushed` row correctly SKIPped here; the consolidation
+        # regressed it — B2 in FIXES-round-1.md).
+        state = SKIP
+        detail = "no upstream remote configured for this folder — nothing to compare against"
+    elif behind is not None:
+        state = PASS
+        detail = f"the working tree is clean, nothing to push, and up to date with {behind_target}"
+    else:
+        state = SKIP
+        if root is None:
+            detail = "this folder is not in a git repository this server can read"
+        else:
+            detail = "origin status could not be checked (offline, unreachable, or not checked yet)"
+
+    row = _check("git", "Repo in sync", state, detail, findings)
+    # Additive, UI-only fields — not part of the fixed `_check` shape every
+    # other row returns, since only this row has a remote to name or a Pull
+    # action to offer. `gitRoot` (camelCase — read by the TS client, api.ts's
+    # `AppCheck`) is the path `POST /api/git-upstream` takes as `root`.
+    row["behind"] = behind
+    row["ahead"] = ahead
+    row["gitRoot"] = root
+    # `onDefault`/`clean` (camelCase, api.ts's `AppCheck`) — B1: the same two
+    # signals `RepoUpdatesDock` already gates its own Update button on, so
+    # `showsPullAction` can refuse the same way `update_repo`'s preflight
+    # would, instead of offering a button that is a guaranteed dead end.
+    row["onDefault"] = on_default
+    row["clean"] = clean
+    return row
+
+
+def _repo_health_advice(*, commit, push, behind, can_pull, on_default, clean,
+                         default_branch):
+    """The `git` row's trailing advice sentence — F2 in FIXES-round-1.md: it
+    must name only the actions that would actually help, in `commit, push, or
+    pull` order, never a generic "pull, commit, or push" that mentions an
+    action nothing failed over.
+
+    When origin has moved on (`behind`) but the row's own on_default/clean
+    signals mean a direct Pull would be refused (B1), this says what has to
+    change FIRST — the same fact `showsPullAction` uses to hide the button —
+    rather than telling the user to "pull" into a button that is not shown.
+
+    `clean` is the WHOLE-repo dirty signal (Pull's own preflight), while
+    `commit` is this row's own PATH-scoped one — a dirty path always implies
+    a dirty whole repo, so when both fire the blocker must not re-mention
+    "commit" a second time (G2 in FIXES-round-3.md: this used to read
+    "commit or commit or stash your changes to pull...")."""
+    bits = []
+    if commit:
+        bits.append("commit")
+    if push:
+        bits.append("push")
+    if behind:
+        if can_pull:
+            bits.append("pull")
+        else:
+            blockers = []
+            if on_default is not True:
+                blockers.append(f"switch to {default_branch or 'the default branch'}")
+            if clean is not True:
+                blockers.append("stash your changes" if commit else "commit or stash your changes")
+            bits.append(" and ".join(blockers) + " to pull" if blockers else "pull")
+    if not bits:
+        return "pull, commit, or push so what you share matches what you tested"
+    if len(bits) == 1:
+        joined = bits[0]
+    elif len(bits) == 2:
+        joined = f"{bits[0]} or {bits[1]}"
+    else:
+        joined = ", ".join(bits[:-1]) + f", or {bits[-1]}"
+    return joined + " so what you share matches what you tested"
 
 
 def _cross_browser_check(app_dir: str) -> dict:
@@ -614,30 +794,6 @@ def _cross_browser_check(app_dir: str) -> dict:
     except Exception as exc:  # noqa: BLE001 — a doctor never crashes on its patient
         state, detail, findings = UNRUN, f"could not read the last verdict: {exc}", []
     return _check(app_doctor_ai.CHECK_ID, app_doctor_ai.LABEL, state, detail, findings)
-
-
-def _pushed_check(app_dir: str) -> dict:
-    state, subjects, skip_reason = _pushed_pending(app_dir)
-    return _check(
-        "pushed", "Every commit is pushed", state,
-        # Two different SKIP causes get two different sentences — see
-        # `_pushed_pending`'s `_SKIP_NO_REPO`/`_SKIP_NO_UPSTREAM`. Telling
-        # someone in a folder that is not a git repository at all that they
-        # have "no upstream configured" is a different, wrong fact — the
-        # NO_REPO wording matches `_git_check`'s own "not in a git
-        # repository this server can read" verbatim, since it is the same
-        # condition.
-        "this folder is not in a git repository this server can read"
-        if state == SKIP and skip_reason == _SKIP_NO_REPO
-        else "no upstream branch configured for this folder — nothing to compare against"
-        if state == SKIP
-        else f"{len(subjects)} commit{'' if len(subjects) == 1 else 's'} sitting only "
-             "on this machine — push them so what you shared is reachable"
-        if state == FAIL
-        else "the branch has nothing left to push",
-        [{"rule": "pushed:unpushed", "path": ".", "line": 0, "excerpt": s}
-         for s in subjects],
-    )
 
 
 # One computation per check id, dispatched by `report` (which needs every row)
@@ -679,8 +835,7 @@ def report(app_dir: str) -> dict:
         "preview": _preview_check(app_dir),
         "pyproject": _pyproject_check(app_dir),
         "icon": _icon_check(app_dir),
-        "git": _git_check(app_dir),
-        "pushed": _pushed_check(app_dir),
+        "git": _repo_health_check(app_dir),
         "cross-browser": _cross_browser_check(app_dir),
     }
     checks = [by_id[cid] for cid in CHECK_ORDER]
@@ -725,9 +880,7 @@ def report_one(app_dir: str, check_id: str) -> dict | None:
     if check_id == "icon":
         return _icon_check(app_dir)
     if check_id == "git":
-        return _git_check(app_dir)
-    if check_id == "pushed":
-        return _pushed_check(app_dir)
+        return _repo_health_check(app_dir)
     if check_id == "cross-browser":
         return _cross_browser_check(app_dir)
     raise AssertionError(f"unreachable: {check_id!r} is in _CHECK_META but not dispatched")
@@ -749,7 +902,22 @@ _CHECK_ID_RE = re.compile(r"check `([a-z0-9-]+)`")
 
 
 def is_doctor_prompt(message: str) -> bool:
+    """A FIX task's prompt OR a CHECK task's (`check_prompt`) — both are App
+    Doctor tasks for the one-live-task-per-app gate (a check must not read
+    files a fix is rewriting, and a fix must not start on a verdict that is
+    still being written). `is_doctor_check_prompt` tells them apart."""
     return str(message or "").startswith(DOCTOR_PROMPT_PREFIX)
+
+
+# The words right after the prefix that mark a CHECK task (`check_prompt`)
+# rather than a fix: the on-demand row's own model run, which the panel
+# draws as "checking" rather than "Fix in progress".
+_CHECK_TASK_MARK = " — run check `"
+
+
+def is_doctor_check_prompt(message: str) -> bool:
+    text = str(message or "")
+    return text.startswith(DOCTOR_PROMPT_PREFIX + _CHECK_TASK_MARK)
 
 
 def doctor_task_check_id(message: str) -> str | None:
@@ -840,14 +1008,14 @@ _CREDENTIAL_NOTE = (
 # still-live or relocated credential must never end up in the commit.
 #
 # Review findings 1 & 2, one root cause: `_COMMIT_STEP` is only right for a
-# row whose fix EDITS FILES. `git` and `pushed` don't — their fix IS a git
-# action, already spelled out in their own SKILL.md section ("Commit the
-# listed paths" / "Push the branch"). Appending `_COMMIT_STEP` on top of
-# those two contradicts them: its "never push" fights `pushed`'s only real
-# fix, and its "no edit at all -> no commit" fights `git`'s fix, which
+# row whose fix EDITS FILES. `git` (the consolidated commit/push/behind row)
+# doesn't — its fix IS a git action, already spelled out in its own SKILL.md
+# section ("Commit the listed paths" / "Push the branch" / "pull"). Appending
+# `_COMMIT_STEP` on top contradicts it: its "never push" fights the push
+# fix, and its "no edit at all -> no commit" fights the commit fix, which
 # commits paths that are already uncommitted with no edit required. So
-# `doctor_prompt` skips `_COMMIT_STEP` entirely for `git` and `pushed` —
-# those rows' own SKILL.md sections are the whole instruction, untouched.
+# `doctor_prompt` skips `_COMMIT_STEP` entirely for `git` — its own SKILL.md
+# section is the whole instruction, untouched.
 _COMMIT_STEP = (
     "If you edited any files to address this, commit them now in this repo — never "
     "push. Say what changed in the commit message. If you made no edit at all (an "
@@ -861,24 +1029,23 @@ _COMMIT_STEP = (
 # already cover committing/pushing, and a blanket "never push" or
 # edit-conditioned commit instruction here would contradict them exactly the
 # same way `_COMMIT_STEP` would on their own per-row prompts.
-_COMMIT_STEP_EXEMPT = frozenset({"git", "pushed"})
+_COMMIT_STEP_EXEMPT = frozenset({"git"})
 
-# Fix-all's trailing step covers a run that may include a `git` and/or a
-# `pushed` row alongside ordinary file-editing rows, so — unlike
-# `_COMMIT_STEP` — it must not blanket-forbid push or restrict the commit to
-# only files edited THIS run: it explicitly defers to those two rows' own
-# sections above when one of them is present (review findings 1 & 2 applied
-# to the fix-all case).
+# Fix-all's trailing step covers a run that may include the `git` row
+# alongside ordinary file-editing rows, so — unlike `_COMMIT_STEP` — it must
+# not blanket-forbid push or restrict the commit to only files edited THIS
+# run: it explicitly defers to that row's own section above when it is
+# present (review findings 1 & 2 applied to the fix-all case).
 _COMMIT_STEP_ALL = (
     "When every row above is done: make ONE commit — not one per row — covering every "
     "file you actually edited across the whole run, plus any pre-existing uncommitted "
     "paths a `git` row above asked you to commit even though you didn't edit them. This "
-    "step itself does not include pushing — except if a `pushed` row is one of the rows "
-    "above, in which case follow through on push exactly as that row's own section says; "
-    "this step does not forbid it. If nothing needed changing anywhere (every row was "
-    "advisory only, or already passed) and no row above asked for a commit or push of "
-    "its own, make no commit at all — and never commit a still-live or merely relocated "
-    "credential from a secrets row."
+    "step itself does not include pushing — except if a `git` row is one of the rows "
+    "above and it asked you to push, in which case follow through on push exactly as "
+    "that row's own section says; this step does not forbid it. If nothing needed "
+    "changing anywhere (every row was advisory only, or already passed) and no row "
+    "above asked for a commit or push of its own, make no commit at all — and never "
+    "commit a still-live or merely relocated credential from a secrets row."
 )
 
 
@@ -909,9 +1076,9 @@ def doctor_prompt(entry_html: str, check_id: str, findings: list[dict],
     `""` and the "Findings for this row:" header is omitted rather than left
     dangling over nothing.
 
-    Review findings 1 & 2: `git` and `pushed` are excluded from the trailing
-    `_COMMIT_STEP` (see the note above that constant) — their own SKILL.md
-    sections are the whole instruction for those two rows."""
+    Review findings 1 & 2: `git` is excluded from the trailing `_COMMIT_STEP`
+    (see the note above that constant) — its own SKILL.md section is the
+    whole instruction for that row."""
     entry_name = os.path.basename(entry_html)
     _section, _severity, kind = _meta(check_id)
     lines = _findings_block(detail, findings)
@@ -967,4 +1134,66 @@ def doctor_prompt_all(entry_html: str, checks: list[dict]) -> str:
         f"covering every failing row). Invoke the `{SKILL_QUALIFIED}` skill and follow "
         f"it end to end, one row at a time in the order given. {_CREDENTIAL_NOTE}\n\n"
         f"{body}\n\n{_COMMIT_STEP_ALL}"
+    )
+
+
+def check_prompt(entry_html: str, files: list[str]) -> str:
+    """The CHECK task's text for the on-demand `cross-browser` row
+    (`app_doctor_ai`): a session that READS the listed view files against the
+    cross-browser skill's trap table and answers in the chat — nothing else.
+
+    The task runs in the CLI's PLAN permission mode (`app_doctor_ai.
+    PERMISSION_MODE`), so it CANNOT edit, write or commit whatever the prompt
+    says; the read-only sentence below is a courtesy, the mode is the
+    guarantee. It also means the session cannot write the verdict file — so
+    the reply ends with the verdict as one fenced JSON block, and the server
+    lifts it off the transcript into the cache (`app_doctor_ai.
+    settle_from_task`) once the turn is filed ok.
+
+    Starts with `DOCTOR_PROMPT_PREFIX` so the one-live-task-per-app gate
+    counts it (`is_doctor_prompt`), then `_CHECK_TASK_MARK` + the id so
+    `is_doctor_check_prompt` and `doctor_task_check_id` both read it. The
+    shape (`app_doctor_ai.VERDICT_SHAPE`) is prose, read back leniently
+    (`_parse_verdict`) — a reply with no readable verdict is "no verdict",
+    never trusted. The checksum the row is cached on is never in the
+    prompt: the server computed it before the task existed."""
+    from fused_render import app_doctor_ai
+
+    entry_name = os.path.basename(entry_html)
+    listed = "\n".join(f"- {rel}" for rel in files) or "- (no .html/.css/.js/.svg files found)"
+    # The rubric rides IN the prompt: plan mode also gates the Skill tool, and
+    # the first live run spent its turn discovering that ("Plan mode block
+    # skill invoke too") instead of judging. Same trick `engine()` uses to
+    # load the floor script: read the sibling skill's SKILL.md by path.
+    rubric = app_doctor_ai.rubric() or (
+        f"(the `{app_doctor_ai.RUBRIC_SKILL}` skill is not installed on this server — "
+        f"judge by MDN Baseline: flag only features not Widely available, used without "
+        f"a fallback)")
+    return (
+        f"{DOCTOR_PROMPT_PREFIX}{_CHECK_TASK_MARK}{app_doctor_ai.CHECK_ID}` "
+        f"(`{entry_name}` is its entry page). This is a READ-ONLY check, not a fix.\n\n"
+        f"You are running in plan mode ON PURPOSE: it is what makes this check unable "
+        f"to edit anything. You are not being asked for a plan — do not write one, do "
+        f"not call ExitPlanMode, do not ask for permissions, do not invoke skills. "
+        f"Read the files below, judge them, answer in the chat.\n\n"
+        f"Judge ONLY by the rubric below, for DESKTOP browsers only — Chrome/Edge, "
+        f"Firefox, Safari and the macOS WKWebView. Ignore phones and tablets entirely: "
+        f"nothing about touch, viewport zoom or mobile layout is a finding. A finding is "
+        f"a concrete line in one of the files that will look or behave differently in "
+        f"one of those engines, with no fallback (`@supports`, or the `-webkit-` twin "
+        f"beside it). Nothing beyond the rubric; nothing about logic, style or "
+        f"performance. Few, certain findings; a problem repeated across lines is ONE "
+        f"finding at its first occurrence. Write for the app's author, who may not "
+        f"know CSS.\n\n"
+        f"# Rubric\n\n{rubric}\n\n"
+        f"Files to read (relative to the app folder; read nothing else):\n{listed}\n\n"
+        f"Reply in the chat with, in this order: the summary sentence; one short line "
+        f"per finding in plain words for the app's author — what a visitor would notice "
+        f"and in which browser, no code, no file paths, no CSS terms (nothing here when "
+        f"there were none); then, LAST, exactly one fenced ```json block holding the "
+        f"verdict in this shape:\n{app_doctor_ai.VERDICT_SHAPE}\n\n"
+        f"The JSON block is REQUIRED — a reply without it is discarded and the check "
+        f"reads as never answered — and it must be the last thing in your final "
+        f"message, even when there were no findings (`ok: true`, empty `findings`). "
+        f"Nothing after it."
     )

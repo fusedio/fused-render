@@ -73,14 +73,6 @@
     background-color 0.12s,
     border-color 0.12s;
 }
-.c-schedblock .sb-row:hover {
-  background: var(--c-surface);
-  border-color: var(--c-border-strong);
-}
-.c-schedblock .sb-row:focus-visible {
-  outline: 2px solid var(--c-accent);
-  outline-offset: 2px;
-}
 /* THE spacer, and there is exactly one. */
 .c-schedblock .sb-grow {
   flex: 1 1 auto;
@@ -503,10 +495,16 @@ a.c-waitcard .wc-ahead:hover,
   flex: 1 1 auto;
   min-width: 4px;
 }
-/* RUN NEXT, and only when there is something to get in front of (ui/Waiting).
-   NEUTRAL, deliberately: this starts nothing — the run holding the folder keeps
-   running — and a primary-coloured button here would promise the one thing the
-   press must never be read as offering. */
+/* FORCE START, on every waiting card (ui/Waiting `canForceStart`). Run next
+   wore this seat until 2026-09-21 and the class name is that history — the
+   skin is unchanged, because the button is the same box in the same place.
+
+   NEUTRAL, deliberately, and for a REASON THAT CHANGED WITH THE VERB. Run next
+   was neutral because it started nothing; this one starts a turn beside the one
+   already running in the folder, which is the single press on this card that
+   costs anything — and a primary-coloured button would read as the card
+   recommending it. The word says what it does, the hint says what it costs
+   (`FORCE_START_HINT`), and the colour says neither. */
 .c-waitcard .wc-run {
   flex: 0 0 auto;
   appearance: none;

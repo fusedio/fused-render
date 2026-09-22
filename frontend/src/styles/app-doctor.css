@@ -83,6 +83,22 @@
   color: var(--fg-muted);
 }
 
+/* AN AGENT IS WORKING ON THIS ROW (`check.check_task` live, or the task
+ * being created). The row is UNRUN in state — no verdict yet — but it must
+ * not read as idle. One amber signal only, the spinner in the state mark's
+ * slot (owner, 2026-09-22: "too much yellow"): no wash, no amber detail, no
+ * amber button. The label keeps full weight so the row reads as active, and
+ * the action beside it is an ordinary outlined button. Chained onto
+ * `.appdoc-row` to outrank the `.appdoc-unrun` muting above. */
+.appdoc-row.appdoc-checking .appdoc-state {
+  color: var(--warning);
+}
+
+.appdoc-row.appdoc-checking .appdoc-label {
+  color: var(--fg);
+  font-weight: 500;
+}
+
 /* `flex: 1 1 auto` (not the default `0 1 auto`) so this — the row's MIDDLE
  * column (state mark, text, action) — grows to fill whatever the state mark
  * and the action column don't need, rather than shrink-wrapping to its own

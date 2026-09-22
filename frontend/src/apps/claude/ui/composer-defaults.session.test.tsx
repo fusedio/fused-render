@@ -46,7 +46,9 @@ type Defaults = {
 /** Every `/api/run` and `/api/tasks/settings` body this render posted, newest
  *  last. Both go through one shim so a test can assert on the ORDER of a pick:
  *  it re-asks nothing and writes once. */
-function record(answer: Defaults = {}): Record<string, unknown>[] {
+function record(answer: Defaults = {},
+                global: { model: string; effort: string } = { model: "", effort: "" },
+): Record<string, unknown>[] {
   const seen: Record<string, unknown>[] = [];
   globalThis.fetch = ((url: string, init?: RequestInit) => {
     const target = String(url);
@@ -55,6 +57,20 @@ function record(answer: Defaults = {}): Record<string, unknown>[] {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
       if (target.startsWith("/api/tasks/settings")) body.__settings = true;
       seen.push(body);
+    }
+    // THE GLOBAL PAIR, standing in for `~/.claude/settings.json` itself rather
+    // than for one read of it: a chat with no session both READS and WRITES it
+    // (2026-09-21), so a PUT has to merge and every read after it has to say so.
+    if (target.startsWith("/api/claude-sessions/defaults")) {
+      if (init?.body) {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        seen.push({ ...body, __global: true });
+        Object.assign(global, body);
+      }
+      return Promise.resolve({
+        ok: true, status: 200,
+        json: () => Promise.resolve({ ...global }),
+      } as unknown as Response);
     }
     return Promise.resolve({
       ok: true,
@@ -78,6 +94,12 @@ function posted(seen: Record<string, unknown>[]) {
   return seen.filter((b) => b.__settings);
 }
 
+/** Every GLOBAL write this render made, newest last — the other half of a pick,
+ *  and the only half a chat with no session has. */
+function wroteGlobal(seen: Record<string, unknown>[]) {
+  return seen.filter((b) => b.__global).map(({ __global: _g, ...rest }) => rest);
+}
+
 /** The params the `defaults` call went out with, or null if it never went. */
 function askedWith(seen: Record<string, unknown>[]) {
   const call = seen.find(
@@ -89,11 +111,15 @@ function askedWith(seen: Record<string, unknown>[]) {
 /** The live hook result, so a test can read the pills and move them. */
 type Pills = ReturnType<typeof useComposerDefaults>;
 
-async function mount(params: ReturnType<typeof createMemoryParamsStore>) {
+async function mount(params: ReturnType<typeof createMemoryParamsStore>,
+                     hostSeeded = false) {
   const box: { pills: Pills | null } = { pills: null };
+  // The module-level global pair outlives the suite that set it — `bun test`
+  // shares one `globalThis` — so each mount starts from "nothing read yet".
+  (await import("@platform/lib/claude-defaults")).resetClaudeDefaultsForTests();
   await act(async () => {
     const r = create(createElement(function Probe() {
-      box.pills = useComposerDefaults("/w/p/.fused/claude", "/w/p", params);
+      box.pills = useComposerDefaults("/w/p/.fused/claude", "/w/p", params, hostSeeded);
       return null;
     }));
     mounted.push(r);
@@ -201,16 +227,53 @@ test("a pick is WRITTEN, and the pill shows it before the write lands", async ()
   expect("effort" in posted(seen)[1]).toBe(false);
 });
 
-test("a chat with no session writes nothing — there is nothing to key on", async () => {
-  // The first send mints the id and records the pair server-side
-  // (`agent._start`), so the pick is not lost; it simply has no subject yet.
+test("a chat with no session writes the GLOBAL pair, not a record", async () => {
+  // There is nothing to key a record on until the first send mints an id — but
+  // the pick is not nothing either, and it used to go into the address bar and
+  // stay there, where the New task card could not see it and a stale URL kept
+  // answering for it (Akshil, 2026-09-21). It goes to the one home this pair
+  // has instead: `~/.claude/settings.json`, through
+  // `PUT /api/claude-sessions/defaults`.
   const seen = record();
   const box = await mount(createMemoryParamsStore({}));
   await act(async () => { box.pills!.setModel("haiku"); });
   expect(posted(seen)).toEqual([]);
-  // The param still moved, so the pill — and the send it is about to make —
-  // carry the pick.
+  expect(wroteGlobal(seen)).toEqual([{ model: "haiku" }]);
+  // …and the pill — and the send it is about to make — carry the pick at once,
+  // without waiting for the round trip.
   expect(box.pills!.model).toBe("haiku");
+});
+
+test("a HOST's seed still outranks the global pair; a stale URL no longer does",
+     async () => {
+  // Two `?model=` params that look identical and mean opposite things.
+  //
+  // STATED by a host — `ChatMount`'s `model`/`effort` props, which the Tasks
+  // side peek fills from the task's own stored setting — is a fact about a real
+  // conversation that has not run yet, and it keeps winning.
+  const seedSeen = record({}, { model: "fable", effort: "low" });
+  const seeded = await mount(createMemoryParamsStore({ model: "opus" }), true);
+  expect(seeded.pills!.model).toBe("opus");
+  expect(wroteGlobal(seedSeen)).toEqual([]);
+
+  // LEFT BEHIND by an older build of this very composer, on the Explorer's
+  // shell URL. Nobody stated it, and it is exactly what made the composer show
+  // Opus while the New task card showed Fable.
+  const staleSeen = record({}, { model: "fable", effort: "low" });
+  const stale = await mount(createMemoryParamsStore({ model: "opus" }));
+  expect(stale.pills!.model).toBe("fable");
+  expect(wroteGlobal(staleSeen)).toEqual([]);
+});
+
+test("a host-seeded chat's pick stays its own — it never rewrites the global",
+     async () => {
+  // A peek on a task that has not run is showing that TASK's setting. Moving
+  // its pill is not a statement about every future chat on this machine.
+  const seen = record({}, { model: "fable", effort: "low" });
+  const box = await mount(createMemoryParamsStore({ model: "opus" }), true);
+  await act(async () => { box.pills!.setModel("haiku"); });
+  expect(box.pills!.model).toBe("haiku");
+  expect(wroteGlobal(seen)).toEqual([]);
 });
 
 test("a pick made while the defaults read is in flight is not undone by its answer", async () => {

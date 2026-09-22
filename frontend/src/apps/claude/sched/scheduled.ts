@@ -23,7 +23,7 @@
 // pollution the lock prevents, and the schedule is the only thing that could
 // ever have explained it (T:17383-17390).
 
-import { shortTaskId } from "@platform/lib/task-id";
+import { CONTINUE_PROMPT, CONTINUE_TITLE } from "../protocol/quota";
 
 /** The `/api/schedule` entry, narrowed to what these rules read (T:16892-16899,
  *  17061-17070, 17395). Structurally satisfied by `platform/lib/api`'s
@@ -35,6 +35,9 @@ export interface SchedEntry {
   claude_session_id?: string;
   due?: string;
   message?: string;
+  /** The listing's own name for it. The chat's comeback (`protocol/quota`
+   *  `CONTINUE_TITLE`) is told apart by this and nothing else. */
+  title?: string;
   target?: string;
   run_id?: string;
   template_id?: string;
@@ -219,6 +222,9 @@ export function taskDraftUrl(draftId: string, from = "", hop = false): string {
  *  longer line is simply clipped. The banner carries the explanation; this only
  *  has to say the box is not broken. */
 export const BLOCKED_PLACEHOLDER = "Waiting on a scheduled message…";
+/** …and the comeback's own: the box is shut because the plan is, not because
+ *  the reader queued anything. */
+export const COMEBACK_PLACEHOLDER = "Paused until your usage limit resets…";
 /** T:17242 — the calendar button's other reason for being off (annNavLocked). */
 export const NAV_LOCKED_REASON = "finish or discard the notes first";
 /** T:17427 / T:17434 — the two transcript notes, and the ◷ they are drawn with. */
@@ -470,12 +476,43 @@ export function schedStopTarget(entry: SchedEntry | null | undefined): string {
     : String((entry && entry.id) || "");
 }
 
+/**
+ * THE CHAT'S OWN COMEBACK — the follow-up `scheduleComeback` posts when a turn
+ * dies on the plan limit (`protocol/run-controller`), told apart by the two
+ * fixed marks it carries: its title (the same test `tasks.py _comeback_at`
+ * spends) or, for a listing that spelled no title, its prompt — both are
+ * constants the chat wrote, never the reader.
+ *
+ * READ OFF THE ENTRY ONLY. The `/api/tasks` row is the CONVERSATION's, and a
+ * conversation once rescued keeps that title for every later message a person
+ * schedules into it; testing the row would dress each of those as a
+ * usage-limit pause, stop control included (Bugbot, PR #1292).
+ */
+export function schedIsComeback(entry: SchedEntry | null | undefined): boolean {
+  if (!entry) return false;
+  if (String(entry.title || "").trim() === CONTINUE_TITLE) return true;
+  const said = String(entry.message || "").replace(/\s+/g, " ").trim();
+  return said === CONTINUE_PROMPT.replace(/\s+/g, " ").trim();
+}
+
 /** T:17082-17086 — WHY the box is shut, in one sentence, and it has one author:
  *  the banner shows it as its only line of prose and the calendar button
  *  carries it as its tooltip and its spoken name. The repeat gets its own
  *  wording because the ESCAPE differs — "scheduled" is a message you can
- *  cancel, "repeating" is a job you have to stop. */
-export function schedBlockReason(entry: SchedEntry | null | undefined): string {
+ *  cancel, "repeating" is a job you have to stop.
+ *
+ *  THE COMEBACK IS NOT "BLOCKED". Nobody queued it; the plan ran out and the
+ *  chat put itself back on the calendar. A reader who hit the limit and sees
+ *  "Blocked — a scheduled message runs in this chat" has to work out that the
+ *  message is their own rescue, so the line says the rescue outright and WHEN
+ *  (Akshil, 2026-09-21). */
+export function schedBlockReason(
+  entry: SchedEntry | null | undefined,
+  now: Date = new Date(),
+): string {
+  if (schedIsComeback(entry)) {
+    return `Paused on your usage limit — this chat picks up again by itself ${schedWhenText(entry?.due, now)}.`;
+  }
   return schedIsRepeat(entry)
     ? "Blocked — a repeating message runs in this chat."
     : "Blocked — a scheduled message runs in this chat.";
@@ -484,11 +521,11 @@ export function schedBlockReason(entry: SchedEntry | null | undefined): string {
 /** The whole reason line: the soonest is NAMED by the row below and the rest are
  *  counted here, because naming one answers "what is coming?" and a list of five
  *  would be the Tasks page in a strip above a chat (T:17111-17113). */
-export function schedWhyLine(blockers: readonly SchedEntry[]): string {
+export function schedWhyLine(blockers: readonly SchedEntry[], now: Date = new Date()): string {
   const next = blockers[0];
   if (!next) return "";
   const others = blockers.length - 1;
-  return schedBlockReason(next) + (others > 0 ? " " + others + " more after it." : "");
+  return schedBlockReason(next, now) + (others > 0 ? " " + others + " more after it." : "");
 }
 
 /** T:16904-16908 — local calendar days apart, computed from MIDNIGHTS rather
@@ -674,7 +711,10 @@ export function schedRefusalNote(repeat: boolean): string {
 
 /** T:17153-17156 — say what the control DOES, and for the repeat say what it
  *  COSTS on the press that spends it. */
-export function schedStopLabel(repeat: boolean, armed: boolean): string {
+export function schedStopLabel(repeat: boolean, armed: boolean, comeback = false): string {
+  // The comeback's escape is its own sentence: nothing was "scheduled" by the
+  // reader, so "Cancel this message" names a message they never wrote.
+  if (comeback) return "Don't resume automatically";
   return repeat
     ? armed
       ? "Cancel every future run"
@@ -682,17 +722,11 @@ export function schedStopLabel(repeat: boolean, armed: boolean): string {
     : "Cancel this message";
 }
 
-/** T:17157-17159. */
-export function schedStopTitle(repeat: boolean): string {
+export function schedStopTitle(repeat: boolean, comeback = false): string {
+  if (comeback) return "Cancels the automatic resume, and this chat reopens now";
   return repeat
     ? "Stops the repeating task: this chat reopens and no further runs are scheduled"
     : "Cancels this scheduled message, and this chat reopens";
-}
-
-/** T:17136-17137 — the ONE title in this card, and it describes the HOP rather
- *  than repeating text already on screen. */
-export function schedRowTitle(rec: SchedTask | null | undefined): string {
-  return "Open " + (shortTaskId(rec && rec.task_id) || "this task") + " on the Tasks calendar";
 }
 
 // ---- the poller (T:17379-17447) --------------------------------------------
@@ -911,7 +945,13 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
       // turn that never appears at all. Returning leaves the entry unmarked for
       // the next tick (T:17423-17429).
       if (deps.busy()) return;
-      deps.addNote(NOTE_OURS);
+      // NO NOTE FOR A CHAT-ORIGIN ENTRY (Akshil, 2026-09-21). A message the
+      // reader typed into this chat and the queue admitted later — pumped or
+      // Force-started — is their own bubble finally going; "Your scheduled
+      // message is running now" is a sentence about the calendar, and it
+      // read as noise above a turn they had just pressed for. `schedIsCalendar`
+      // is the same classifier the composer lock uses.
+      if (schedIsCalendar(entry)) deps.addNote(NOTE_OURS);
       attached.add(runId);
       deps.setRunParam(runId);
       await deps.resumeRun(runId);

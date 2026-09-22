@@ -30,10 +30,36 @@ def _clean_state(monkeypatch):
     next."""
     monkeypatch.setattr(git_upstream, "_checked", {})
     monkeypatch.setattr(git_upstream, "_state", {})
-    # The slot is a real Lock; a test that acquired it and never released
-    # (an exception mid-check) must not wedge every test after it.
-    if git_upstream._check_slot.locked():
+    # Drain, don't release (C2, FIXES-round-1.md): this file's own tests
+    # exercise `note_app_opened(..., _runner=_sync)` and require the
+    # process-wide `_check_slot` to be free the moment they call it — a
+    # still-held slot makes `note_app_opened` a silent no-op (`_sync` never
+    # even runs), which makes the very next assertion order-dependent on
+    # whatever else happens to be sharing this worker process.
+    # `test_app_doctor_report.py` dispatches REAL background threads on
+    # every test against a real repo (not only its `_sync`-warmed ones), so
+    # when both files land in the same pytest worker, a thread that file
+    # started can still be in flight when this fixture runs. A BLOCKING
+    # acquire-then-immediately-release waits out any such foreign holder
+    # before this test's own body runs, so the slot is guaranteed free at
+    # that point — addressing the actual contention, not the symptom a bare
+    # non-blocking release/skip would just mask. This is never the
+    # "RuntimeError: release unlocked lock" bug a defensive bare `release()`
+    # used to cause: a release only ever follows an acquire THIS call itself
+    # just performed. Bounded by TIMEOUT_S so a genuinely stuck fetch can
+    # never hang the suite forever; failing to drain in time is a best-effort
+    # miss, not a fatal error — the test that follows may then flake exactly
+    # as before, no worse than today.
+    if git_upstream._check_slot.acquire(timeout=git_upstream.TIMEOUT_S + 5):
         git_upstream._check_slot.release()
+    # NOTE: deliberately no defensive `_check_slot` release beyond the
+    # acquire/release pair above. Every test in this file that acquires the
+    # slot directly does so in its own `try/finally` (see
+    # test_a_busy_slot_does_not_stamp_the_throttle_for_a_different_repo),
+    # and `_background_check`'s own `finally` guarantees exactly one release
+    # per real dispatch — so a SECOND, unconditional "just in case" release
+    # here would still have no legitimate target and would still race a
+    # guaranteed release into `RuntimeError: release unlocked lock`.
 
 
 def _clone_with_remote_ahead(tmp_path, name="repo"):
@@ -137,6 +163,101 @@ def test_a_second_app_in_the_same_repo_does_not_refetch_inside_the_window(tmp_pa
     assert git_upstream.note_app_opened(sub, _runner=_sync)
 
     assert len(calls) == 1
+
+
+# --------------------------------------------------------------- force_check
+#
+# `force_check` is the Doctor-modal-open path (SPEC-doctor-git-ai-errors.md):
+# an explicit ask for a fresh fetch, bypassing `_due`'s throttle but bounded
+# so it can never hang the caller.
+
+
+def test_force_check_bypasses_the_throttle(tmp_path, monkeypatch):
+    local = _clone_with_remote_ahead(tmp_path)
+    calls = []
+    real_check = git_upstream.check_repo
+
+    def spy(root):
+        calls.append(root)
+        return real_check(root)
+
+    monkeypatch.setattr(git_upstream, "check_repo", spy)
+
+    # Warm the cache once, well inside CHECK_TTL_S — a plain `note_app_opened`
+    # right after this would find the root not due and skip the fetch
+    # entirely (the test above proves that).
+    assert git_upstream.note_app_opened(local, _runner=_sync)
+    assert len(calls) == 1
+
+    # An explicit Doctor-modal open asks again immediately — unlike
+    # `note_app_opened`, this must NOT be throttled away.
+    state = git_upstream.force_check(local, _runner=_sync)
+
+    assert len(calls) == 2
+    assert state is not None
+    assert state["behind"] == 2
+
+
+def test_force_check_falls_back_to_cache_when_the_slot_is_already_held(tmp_path):
+    local = _clone_with_remote_ahead(tmp_path)
+    assert git_upstream.note_app_opened(local, _runner=_sync)
+    cached = git_upstream.repo_state_for(os.path.realpath(local))
+    assert cached is not None
+
+    # Simulate a check already in flight for some repo (background or a
+    # concurrent Doctor open) by holding the process-wide slot ourselves.
+    git_upstream._check_slot.acquire()
+    try:
+        state = git_upstream.force_check(local)
+    finally:
+        git_upstream._check_slot.release()
+
+    # No second fetch was piled on — the call just returned the existing
+    # cache, exactly as `_mutation_slot`'s docstring says a busy slot should
+    # be handled (never queue a second `git fetch` in the same repo).
+    assert state == cached
+
+
+def test_force_check_on_a_path_outside_any_repo_returns_none(tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+
+    assert git_upstream.force_check(str(plain), _runner=_sync) is None
+
+
+def test_force_check_gives_up_after_its_own_budget_and_the_fetch_finishes_later(
+    tmp_path, monkeypatch,
+):
+    """The whole point of the bounded wait: a fetch slower than
+    `DOCTOR_TIMEOUT_S` must not make `force_check` block past it. Here the
+    fetch is dispatched on a REAL background thread (a custom `_runner`, not
+    `_sync`) so the budget actually elapses while it's still running, then
+    the test waits for that thread itself before asserting the state landed
+    — covering "the row must reflect the answer once it resolves" without
+    involving the frontend's own retry."""
+    import threading as _threading
+
+    local = _clone_with_remote_ahead(tmp_path)
+    monkeypatch.setattr(git_upstream, "DOCTOR_TIMEOUT_S", 0.0)
+
+    threads = []
+
+    def _capture(fn):
+        t = _threading.Thread(target=fn, daemon=True, name="test-forced-check")
+        threads.append(t)
+        t.start()
+
+    state = git_upstream.force_check(local, _runner=_capture)
+
+    # A zero-second budget: the background fetch had no chance to land yet.
+    assert state is None
+
+    assert threads, "force_check must still have dispatched a background check"
+    threads[0].join(timeout=git_upstream.TIMEOUT_S + 5)
+
+    landed = git_upstream.repo_state_for(os.path.realpath(local))
+    assert landed is not None
+    assert landed["behind"] == 2
 
 
 def test_a_preview_render_triggers_no_check(tmp_path, monkeypatch):
@@ -497,6 +618,37 @@ def test_is_known_repo_stays_true_after_the_repo_is_brought_up_to_date(tmp_path)
                           "on_default": True, "behind": 0, "checked_at": 0.0})
     assert not any(r["root"] == root for r in git_upstream.known_repos())
     assert git_upstream.is_known_repo(root)
+
+
+# --------------------------------------------------------------- repo_state_for
+
+
+def test_repo_state_for_is_none_for_a_root_never_checked(tmp_path):
+    assert git_upstream.repo_state_for(str(tmp_path / "never-seen")) is None
+
+
+def test_repo_state_for_returns_the_recorded_result(tmp_path):
+    local = _clone_with_remote_ahead(tmp_path)
+    assert git_upstream.note_app_opened(local, _runner=_sync)
+    root = os.path.realpath(local)
+    state = git_upstream.repo_state_for(root)
+    assert state is not None
+    assert state["root"] == root
+    assert state["behind"] > 0
+
+
+def test_repo_state_for_sees_a_zero_behind_result_unlike_known_repos(tmp_path):
+    # known_repos() filters out behind == 0; repo_state_for must not, since a
+    # caller here (App Doctor) needs to tell "confirmed up to date" apart
+    # from "never checked" — both would otherwise read as "unknown".
+    local = _clone_with_remote_ahead(tmp_path)
+    root = os.path.realpath(local)
+    git_upstream._record({"root": root, "branch": "main", "default_branch": "main",
+                          "on_default": True, "behind": 0, "ahead": 0, "checked_at": 0.0})
+    assert git_upstream.repo_state_for(root) == {
+        "root": root, "branch": "main", "default_branch": "main",
+        "on_default": True, "behind": 0, "ahead": 0, "checked_at": 0.0,
+    }
 
 
 # ---------------------------------------------------------- POST /api/git-upstream

@@ -22,6 +22,13 @@ classifiers = [
 dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    # The live filesystem watcher that keeps the file index honest between
+    # scans (server/index_watch.py). Core, not an extra: the index is core,
+    # and the watcher is what keeps it from lying about files that landed
+    # from outside the app. uvicorn only pulls this in transitively under its
+    # own `standard` extra, which we do not install, so it has to be declared
+    # here rather than borrowed.
+    "watchfiles>=1.0",
     # mDNS advertising of render.fused.local for local-network app sharing
     # (fused_render/lan.py). Pure Python (+ ifaddr); optional at runtime — the
     # listener still binds without it, the friendly name just does not resolve.

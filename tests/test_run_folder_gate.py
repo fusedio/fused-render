@@ -29,6 +29,9 @@ class _Manager:
         # would have handed back on `run: true`, mirrored here so a case can
         # present one as `queue_claim` — see `mint_claim`/`consume_claim`.
         self.tokens: dict[str, list[str]] = {}
+        # The names Force start has taken out of the queue for good
+        # (`QueueManager.mark_forced`), which this door now reads.
+        self.forced: set[str] = set()
 
     def own(self, folder, task, session_id="", run_id=""):
         self.owners[folder] = {"task": task, "session_id": session_id,
@@ -109,6 +112,14 @@ class _Manager:
     def started(self, folder, task_key, run_id="", session_id=""):
         self.own(folder, task_key, session_id=session_id, run_id=run_id)
 
+    def mark_forced(self, *names):
+        """`QueueManager.mark_forced`, mirrored — a task that Force start took
+        out of the queue for good."""
+        self.forced.update(str(n) for n in names if n)
+
+    def is_forced(self, *names):
+        return any(str(n) in self.forced for n in names if n)
+
 
 @pytest.fixture()
 def gate(monkeypatch):
@@ -170,6 +181,59 @@ def test_off_or_not_the_agent_or_not_a_send_is_always_open(gate):
     assert run_router._folder_busy("/repo/some/other/page.py", _params()) == ""
     assert run_router._folder_busy(AGENT, _params(action="poll")) == ""
     assert run_router._folder_busy(AGENT, _params(_file="")) == ""
+
+
+def test_a_send_into_this_chats_own_live_run_is_never_refused(gate, monkeypatch):
+    """THE FORCED CHAT (PR 2, 2026-09-21). `POST /api/tasks/queue/force` starts a
+    run beside the folder's owner on purpose — the flag-off behaviour for one
+    message — so the index names somebody else as that tree's owner for the rest
+    of that conversation's life, and this door refused its every follow-up. A
+    send whose OWN process is alive goes into the turn that is already there
+    (`agent._send`), so there is no second run here to prevent.
+
+    `own_run_alive` is the router's read of the status sync and has its own cases
+    next door (tests/test_tasks_queue_api.py); what is under test here is that
+    this door asks it, and only after the ordinary claim has refused."""
+    from fused_render.server.routers import tasks as tasks_mod
+    gate["manager"].own("/w/alpha", "TASK-007", session_id="sess-a", run_id="r-a")
+    params = _params(action="send", session_id="sess-b", run_id="r-b")
+    assert run_router._folder_busy(AGENT, params)
+
+    monkeypatch.setattr(tasks_mod, "own_run_alive",
+                        lambda session_id="", run_id="": session_id == "sess-b")
+    assert run_router._folder_busy(AGENT, params) == ""
+    # A chat with no process of its own is still a stranger — the refusal is
+    # unchanged everywhere this bypass does not apply.
+    assert run_router._folder_busy(
+        AGENT, _params(action="send", session_id="sess-c", run_id="r-c"))
+
+
+def test_a_forced_tasks_send_is_never_refused(gate):
+    """STICKY, PER TASK (Akshil, 2026-09-21). Force start takes a conversation
+    out of the queue for good (`queue_manager.mark_forced`), so its next send —
+    which spawns a FRESH run rather than absorbing into one, and therefore has
+    no live process to prove itself by — still walks through this door. The
+    index is what says who it is.
+
+    Asked under every name the chat answers to, because the force marks all
+    three and a send carries whichever it has."""
+    gate["manager"].own("/w/alpha", "TASK-007", session_id="sess-a", run_id="r-a")
+    params = _params(action="send", session_id="sess-b", run_id="r-b")
+    assert run_router._folder_busy(AGENT, params)
+
+    gate["manager"].mark_forced("sess-b")
+    assert run_router._folder_busy(AGENT, params) == ""
+    # …by its run alone, which is the only name a chat that has not minted a
+    # session yet has to offer.
+    gate["manager"] = _Manager().own("/w/alpha", "TASK-007",
+                                     session_id="sess-a", run_id="r-a")
+    queue_manager.reset_for_tests(gate["manager"])
+    gate["manager"].mark_forced("r-c")
+    assert run_router._folder_busy(
+        AGENT, _params(action="send", session_id="sess-c", run_id="r-c")) == ""
+    # …and a chat that was never forced is refused exactly as before.
+    assert run_router._folder_busy(
+        AGENT, _params(action="send", session_id="sess-d", run_id="r-d"))
 
 
 def test_an_undecidable_gate_is_an_open_one(gate, monkeypatch):

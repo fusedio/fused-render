@@ -196,6 +196,12 @@ _IMPORT_TO_DIST = {
     # ever does import it, the same declare-or-fail rule applies as to any other
     # bundled distribution.
     "mcp": "mcp",
+    # The live filesystem watcher (server/index_watch.py, index-live-watch):
+    # core `dependencies` (uvicorn only pulls it in transitively, under an
+    # extra we do not use — pyproject.toml says so at the `watchfiles>=1.0`
+    # line). A template has no business importing it, but it ships in core
+    # `dependencies`, so the map must name it like any other.
+    "watchfiles": "watchfiles",
 }
 
 # Distributions the app ships that a template may import WITHOUT declaring in its

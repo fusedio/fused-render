@@ -33,12 +33,15 @@ const {
   effectiveSeverity,
   failingCount,
   findingWhere,
+  gitRowFetchPending,
   groupBySection,
   MAX_FINDINGS_SHOWN,
   readinessCount,
   readinessSentence,
   reviewNote,
   rowActionLabel,
+  showsOpenInGitAction,
+  showsPullAction,
   rowStateAccessibleLabel,
   rowStateDetailText,
   rowVisibleDetailText,
@@ -66,6 +69,8 @@ const check = (
   findings: [],
   task: null,
   ondemand: false,
+  check_task: null,
+  verdict_task: null,
   ...extra,
 });
 
@@ -383,4 +388,54 @@ test("the visible detail text never contains a severity word, only the accessibl
       expect(accessible).toContain(SEVERITY_LABEL[severity]);
     }
   }
+});
+
+// --------------------------------------------------------------- git row
+
+test("showsPullAction is true only for the git row with a confirmed nonzero behind count, on the default branch, with a clean tree", () => {
+  expect(
+    showsPullAction(check("git", "fail", { behind: 2, ahead: 0, gitRoot: "/r", onDefault: true, clean: true })),
+  ).toBe(true);
+  // Confirmed up to date — 0 is a real answer, not "unknown".
+  expect(
+    showsPullAction(check("git", "pass", { behind: 0, ahead: 0, gitRoot: "/r", onDefault: true, clean: true })),
+  ).toBe(false);
+  // Unresolved fetch — undefined/null must not read as "ahead".
+  expect(showsPullAction(check("git", "skip", { gitRoot: "/r" }))).toBe(false);
+  expect(showsPullAction(check("git", "skip", { behind: null, gitRoot: "/r" }))).toBe(false);
+  // Never for another row, even one that happens to carry the same fields.
+  expect(
+    showsPullAction(check("pushed", "fail", { behind: 2, gitRoot: "/r", onDefault: true, clean: true })),
+  ).toBe(false);
+  // B1 (FIXES-round-1.md): a confirmed behind count off the default branch,
+  // or over a dirty tree, is a guaranteed `update_repo` refusal
+  // (`not-default` / `dirty`) — Pull must not be offered either way, even
+  // though the OLD behind-only gate would have shown it.
+  expect(
+    showsPullAction(check("git", "fail", { behind: 2, ahead: 0, gitRoot: "/r", onDefault: false, clean: true })),
+  ).toBe(false);
+  expect(
+    showsPullAction(check("git", "fail", { behind: 2, ahead: 0, gitRoot: "/r", onDefault: true, clean: false })),
+  ).toBe(false);
+  // Unresolved `onDefault`/`clean` (undefined) must not read as "confirmed".
+  expect(showsPullAction(check("git", "fail", { behind: 2, ahead: 0, gitRoot: "/r" }))).toBe(false);
+});
+
+test("showsOpenInGitAction is true for any git row that resolved a real repo root, pass or fail", () => {
+  expect(showsOpenInGitAction(check("git", "pass", { gitRoot: "/r" }))).toBe(true);
+  expect(showsOpenInGitAction(check("git", "fail", { gitRoot: "/r" }))).toBe(true);
+  expect(showsOpenInGitAction(check("git", "skip", { gitRoot: null }))).toBe(false);
+  expect(showsOpenInGitAction(check("git", "skip"))).toBe(false);
+  expect(showsOpenInGitAction(check("readme", "pass", { gitRoot: "/r" }))).toBe(false);
+});
+
+test("gitRowFetchPending is true only when a real repo's remote count has not landed yet", () => {
+  expect(gitRowFetchPending([check("git", "skip", { gitRoot: "/r" })])).toBe(true);
+  expect(gitRowFetchPending([check("git", "pass", { gitRoot: "/r", behind: 0, ahead: 0 })])).toBe(false);
+  expect(gitRowFetchPending([check("git", "fail", { gitRoot: "/r", behind: 3, ahead: 0 })])).toBe(false);
+  // No repo at all — nothing will ever resolve, but this function does not
+  // need to predict that; the caller only ever fires the retry once.
+  expect(gitRowFetchPending([check("git", "skip", { gitRoot: null })])).toBe(false);
+  // No git row in the report at all (should never happen, but must not throw).
+  expect(gitRowFetchPending([check("readme", "pass")])).toBe(false);
 });

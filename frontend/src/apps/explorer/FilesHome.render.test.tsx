@@ -34,7 +34,7 @@ import {
   PENDING_INDICATOR_MS,
   STALE_CLEAR_MS,
 } from "@platform/lib/instant-search";
-import { resetFsMutations } from "@platform/lib/index-freshness";
+import { noteIndexLifecycle, resetFsMutations } from "@platform/lib/index-freshness";
 
 // --- the module boundary: a fetch stub, not a module mock -------------------
 interface RankCall {
@@ -60,6 +60,19 @@ const statCalls: StatCall[] = [];
 /** Every POST /api/index/scan, by URL — the observable trace of the note's
  * "index them now" button actually asking for a scan. */
 const scanCalls: string[] = [];
+/** Every POST /api/index/scan-folder, by the `path` in its JSON body — the
+ * observable trace of the covered-but-empty scan trigger
+ * (SPEC-empty-search-scan.md) actually firing, distinct from `scanCalls`
+ * above (the button's `/api/index/scan`, a different route entirely). */
+const folderScanCalls: string[] = [];
+/** How `/api/index/scan-folder` answers the NEXT call, settable per test —
+ * mirrors `FolderScanRequest`. A refusal (`why: "refused"`) is a normal,
+ * silent reply, not an error. */
+let folderScanReply: { started: boolean; why: string } = { started: true, why: "started" };
+/** When true, the next `/api/index/scan-folder` call rejects the fetch
+ * itself (a network failure), rather than resolving with a refusal body —
+ * the other silent-failure shape the trigger must swallow. */
+let folderScanThrows = false;
 /** Every POST /api/ai and /api/search/files, by URL — the observable trace of
  * a committed AI search actually running (see the reload test below). */
 const aiCalls: string[] = [];
@@ -81,7 +94,7 @@ const realFetch = globalThis.fetch;
  * settled only when the test calls `.resolve()`/`.reject()` — the same
  * leading-edge control the old Deferred-based mock gave, without touching
  * the module registry at all. */
-function fakeFetch(url: string | URL): Promise<Response> {
+function fakeFetch(url: string | URL, init?: RequestInit): Promise<Response> {
   const u = String(url);
   if (u.startsWith("/api/index/rank")) {
     const params = new URL(u, "http://localhost").searchParams;
@@ -110,6 +123,22 @@ function fakeFetch(url: string | URL): Promise<Response> {
   // deferred like the two above: the test's interest is that the scan was
   // ASKED FOR, and the note's state after it comes from the status poll
   // (`indexScan`, a prop here), not from this reply.
+  if (u.startsWith("/api/index/scan-folder")) {
+    const path = (JSON.parse(String(init?.body ?? "{}")) as { path: string }).path;
+    // Pushed BEFORE the throw check (code review finding 8): the call was
+    // still ATTEMPTED even when the fetch itself is about to reject, and a
+    // test asserting the trigger is silent needs to first prove the call
+    // happened at all — otherwise "no error" and "never fired" are
+    // indistinguishable, which is exactly the bug that let the "thrown
+    // fetch is silent" test below pass with the trigger deleted.
+    folderScanCalls.push(path);
+    if (folderScanThrows) return Promise.reject(new Error("network down"));
+    return Promise.resolve(
+      new Response(JSON.stringify({ ...folderScanReply, run_id: "r1", root: path }), {
+        status: 200,
+      }),
+    );
+  }
   if (u.startsWith("/api/index/scan")) {
     scanCalls.push(u);
     return Promise.resolve(
@@ -192,6 +221,9 @@ beforeEach(() => {
   rankCalls.length = 0;
   statCalls.length = 0;
   scanCalls.length = 0;
+  folderScanCalls.length = 0;
+  folderScanReply = { started: true, why: "started" };
+  folderScanThrows = false;
   aiCalls.length = 0;
   searchFilesCalls.length = 0;
   scanRequested = 0;
@@ -1153,6 +1185,208 @@ describe("the empty (buildable) note paints no leading separator", () => {
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS)); // past the trailing debounce
     await flush(() => clock.advance(PENDING_INDICATOR_MS + 50)); // past the slow threshold
     expect(noteText(box)).toBe("Searching…");
+    box.unmount();
+  });
+});
+
+// The covered-but-empty scan trigger (SPEC-empty-search-scan.md): a settled
+// answer that says the root IS covered (reason === "") but found no files is
+// real evidence the index may be behind this exact query, so the box asks
+// for a background scan of the answer's own root via `requestFolderScan`
+// (POST /api/index/scan-folder) — silently, with no button and no error
+// surface either way. Mirrors the sibling coverage in
+// useListingSearch.render.test.ts for the in-folder box.
+describe("a covered folder with a genuinely empty answer: fire a scan (SPEC-empty-search-scan.md)", () => {
+  test("asks for a scan of the answer's own root", async () => {
+    const box = mount();
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer()));
+    expect(folderScanCalls).toEqual([HOME]);
+    box.unmount();
+  });
+
+  test("does not fire when the answer has at least one file hit", async () => {
+    const box = mount();
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer({ hits: [hit("report.csv")] })));
+    expect(folderScanCalls).toEqual([]);
+    box.unmount();
+  });
+
+  test("does not fire for mount / package / ignored / disabled / fda / uncovered — no scan will ever cover them, or one is already offered separately", async () => {
+    for (const reason of [
+      "mount",
+      "package",
+      "ignored",
+      "disabled",
+      "fda",
+      "uncovered",
+    ] as const) {
+      const box = mount();
+      await type(box, "report");
+      await flush(() =>
+        rankCalls[0].resolve(answer({ covered: false, reason, hits: [] })),
+      );
+      expect(folderScanCalls).toEqual([]);
+      box.unmount();
+    }
+  });
+
+  test("does not fire for a one-character query (never even asks the index)", async () => {
+    const box = mount();
+    await type(box, "a");
+    expect(rankCalls).toHaveLength(0);
+    expect(folderScanCalls).toEqual([]);
+    box.unmount();
+  });
+
+  test("fires once for a given query, not once per re-render or a lifecycle bump re-asking it", async () => {
+    const box = mount();
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer()));
+    expect(folderScanCalls).toEqual([HOME]);
+
+    // A lifecycle bump (the shared index-status poll noticing
+    // `last_completed_at` moved) re-runs the SAME query — Part 2 of the
+    // spec, no retyping needed. That must not fire a second scan for a
+    // query that already asked.
+    await flush(() => noteIndexLifecycle());
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls.filter((c) => c.q === "report").length).toBeGreaterThan(1);
+    await flush(() => rankCalls[rankCalls.length - 1].resolve(answer()));
+    expect(folderScanCalls).toEqual([HOME]);
+    box.unmount();
+  });
+
+  test("a DIFFERENT query fires its own scan", async () => {
+    const box = mount();
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer()));
+    expect(folderScanCalls).toEqual([HOME]);
+
+    await type(box, "reportx");
+    await flush(() => rankCalls[rankCalls.length - 1].resolve(answer()));
+    expect(folderScanCalls).toEqual([HOME, HOME]);
+    box.unmount();
+  });
+
+  test("a route refusal is silent — no error, no retry", async () => {
+    folderScanReply = { started: false, why: "debounced" };
+    const box = mount();
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer()));
+    expect(folderScanCalls).toEqual([HOME]);
+    expect(noteText(box)).not.toContain("could not");
+    expect(noteText(box)).toContain("No file name matched");
+    box.unmount();
+  });
+
+  test("a thrown fetch (the promise itself rejects) is silent too", async () => {
+    folderScanThrows = true;
+    const box = mount();
+    await type(box, "report");
+    // The rank resolve itself must not throw/reject the render even though
+    // the scan POST it triggers does. `folderScanCalls` still gets the
+    // attempted call (the fake `fetch` pushes to it BEFORE deciding whether
+    // to reject — code review finding 8): a bare `toEqual([])` here would
+    // pass just as well with the whole trigger deleted, which is exactly
+    // the "worthless test" the finding called out. Proving the call
+    // happened AND that the render stayed healthy is what actually verifies
+    // the rejection was swallowed rather than never attempted.
+    await flush(() => rankCalls[0].resolve(answer()));
+    expect(folderScanCalls).toEqual([HOME]);
+    expect(noteText(box)).toContain("No file name matched");
+    box.unmount();
+  });
+
+  test("verified against a PRE-EXISTING answer object, not only a freshly created one", async () => {
+    const box = mount();
+    await type(box, "report");
+    const reply = answer({ base: "/Users/me/sub" });
+    await flush(() => rankCalls[0].resolve(reply));
+    expect(folderScanCalls).toEqual(["/Users/me/sub"]);
+    box.unmount();
+  });
+
+  test("bumps the caller's onScanRequested once the scan request resolves, restarting the poll's idle beat", async () => {
+    const box = mount();
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer()));
+    expect(scanRequested).toBe(1);
+    box.unmount();
+  });
+
+  // Part 3 of the spec: the note's own copy while the triggered scan runs.
+  // `displayAnswer.reason` is "" (covered) and was frozen at rank time; only
+  // a CONFIRMED-started scan of THIS root can say a build is in progress
+  // (code review findings 2 & 3 — gated on `emptyScanRunning`, set from
+  // `requestFolderScan`'s own `started` reply, never the live status poll's
+  // machine-wide `scanning`). With the default `folderScanReply = {started:
+  // true}`, that confirmation lands in the SAME flush as the rank reply —
+  // no separate `box.poll(...)` needed, unlike the old (wrong) design this
+  // test used to verify.
+  test("switches to the 'still building' copy the moment the scan request confirms started", async () => {
+    const box = mount(scanStatus({ scanning: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer()));
+    expect(folderScanCalls).toEqual([HOME]);
+    expect(noteText(box)).toContain("still building");
+    box.unmount();
+  });
+
+  test("code review finding 2 regression: an unrelated machine-wide scan must not claim OUR root is building", async () => {
+    // The live poll (`scanning: true`) reports some scan running somewhere
+    // on the machine, but OUR OWN `requestFolderScan` was refused
+    // (`started: false`) — the note must stay plain, not read the unrelated
+    // scan as evidence a build is in progress for THIS root.
+    folderScanReply = { started: false, why: "debounced" };
+    const box = mount(scanStatus({ scanning: true, files: 42 }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer()));
+    expect(folderScanCalls).toEqual([HOME]);
+    expect(noteText(box)).toContain("No file name matched");
+    expect(noteText(box)).not.toContain("still building");
+    box.unmount();
+  });
+
+  test("stays plain when the poll has not answered yet (null) and no scan of our own was confirmed", async () => {
+    // No confirmed scan of our own (a refusal) means no "still building",
+    // whatever the poll — here, absent (null) entirely — says.
+    folderScanReply = { started: false, why: "debounced" };
+    const box = mount(null);
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer()));
+    expect(noteText(box)).toContain("No file name matched");
+    expect(noteText(box)).not.toContain("still building");
+    box.unmount();
+  });
+
+  test("a covered answer WITH hits never loses them to an unrelated scan running at the same time", async () => {
+    const box = mount(scanStatus({ scanning: true, files: 5 }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer({ hits: [hit("report.csv")] })));
+    expect(noteText(box)).not.toContain("still building");
+    box.unmount();
+  });
+
+  // Code review finding 6: the covered branch used to read `displayAnswer`
+  // (which can hold a PREVIOUS query's answer across a failed request)
+  // rather than testing the current request's own outcome. A held
+  // covered-but-empty answer plus a now-failed request for a DIFFERENT
+  // query must never read as "our new query's scan is still building".
+  test("finding 6: a failed request does not read a held empty answer as evidence for the new query", async () => {
+    const box = mount();
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer())); // covered, empty -> held
+    expect(folderScanCalls).toEqual([HOME]);
+    expect(noteText(box)).toContain("still building");
+
+    await type(box, "reportx");
+    await flush(() => rankCalls[rankCalls.length - 1].reject("network error"));
+    // The held answer is still "" / empty, but THIS query's request failed —
+    // `failure !== ""` must keep the note from claiming a build is running
+    // for a query that never actually got a covered-but-empty verdict.
+    expect(noteText(box)).not.toContain("still building");
     box.unmount();
   });
 });

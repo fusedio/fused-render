@@ -660,3 +660,169 @@ def test_compact_aborts_at_the_lock_when_its_run_was_cancelled(tmp_path):
     out = compact(cfg, "/r", shards, pa, pq, cancel_flag=str(flag))
     assert out is None
     assert read_manifest(cfg) is None
+
+
+# -- partial merge: a small changed-dir set must not rewrite the whole store --
+
+def _build_ten_dir_store(tmp_path, name="ix"):
+    """10 dirs (/r/d00 .. /r/d09), 5 files each, part_rows=5 -> exactly one
+    partition per directory: partition i's whole content is dir di's files.
+    That 1:1 mapping is what makes it easy to assert precisely which
+    partitions a later merge touched and which it left untouched."""
+    cfg = _cfg(tmp_path / name, part_rows=5)
+    entries = [
+        (f"/r/d{i:02d}",
+         _scanned(f"sig{i}", [_row(f"/r/d{i:02d}/f{j}.txt") for j in range(5)],
+                  50, i + 1, 0))
+        for i in range(10)
+    ]
+    compact(cfg, "/r", _shard(tmp_path / name, cfg, entries), pa, pq)
+    return cfg
+
+
+def _all_rows(cfg):
+    """Every (path, dir, name, ext, size, mtime, depth) tuple currently in the
+    store, from EVERY partition file the manifest names — the ground truth an
+    equivalence check compares, independent of which files happen to hold
+    which rows."""
+    m = read_manifest(cfg)
+    files = [os.path.join(cfg.files_dir, p["file"]) for p in m["partitions"]]
+    if not files:
+        return set()
+    t = pq.read_table(files, columns=["path", "dir", "name", "ext", "size",
+                                       "mtime", "depth"])
+    return set(zip(*(t.column(c).to_pylist() for c in t.column_names)))
+
+
+def test_partial_merge_is_equivalent_to_a_full_rewrite(tmp_path):
+    """The single most important test in this round: for the SAME inputs, the
+    merge path a small changed-dir set takes must produce a store with the
+    exact same rows as the full-rewrite path would, not merely a faster one.
+
+    Built by running the identical update against two copies of the same
+    fixture store: one left to pick whatever path `compact` chooses on its
+    own (expected: the merge path, since only 1 of 10 dirs changed), the
+    other with `_plan_partial_merge` forced to answer "rewrite everything" so
+    it is provably the full-rewrite path. Same row set, same dirs.parquet,
+    same summary totals is the equivalence this round is about."""
+    cfg_a = _build_ten_dir_store(tmp_path, "a")  # picks its own path
+    cfg_b = _build_ten_dir_store(tmp_path, "b")  # forced full rewrite
+
+    update = [("/r/d05", _scanned("sig5-changed",
+                                   [_row("/r/d05/f0.txt", size=999)],
+                                   999, 100, 0))]
+    keep = [(f"/r/d{i:02d}", 5) for i in range(10) if i != 5]
+
+    summary_a = compact(cfg_a, "/r",
+                        _shard(tmp_path / "a", cfg_a, update, keep=keep), pa, pq)
+
+    def _force_full(con, old_parts_meta, files_dir, outside, kept, shard_src):
+        n = len(old_parts_meta)
+        return (0, n - 1)
+
+    import fused_render.index.store as store_mod
+    orig = store_mod._plan_partial_merge
+    store_mod._plan_partial_merge = _force_full
+    try:
+        summary_b = compact(cfg_b, "/r",
+                            _shard(tmp_path / "b", cfg_b, update, keep=keep),
+                            pa, pq)
+    finally:
+        store_mod._plan_partial_merge = orig
+
+    assert summary_a["merged_rewrite"] is True
+    assert summary_b["merged_rewrite"] is False
+    assert _all_rows(cfg_a) == _all_rows(cfg_b)
+    assert pq.read_table(cfg_a.dirs_parquet).to_pydict() == \
+        pq.read_table(cfg_b.dirs_parquet).to_pydict()
+    for key in ("rows", "root_files", "root_size", "root_dirs",
+               "changed_dirs", "added_dirs", "removed_dirs"):
+        assert summary_a[key] == summary_b[key], key
+
+
+def test_partial_merge_leaves_untouched_partitions_byte_identical(tmp_path):
+    cfg = _build_ten_dir_store(tmp_path)
+    before = read_manifest(cfg)["partitions"]
+    before_stat = {p["file"]: os.stat(os.path.join(cfg.files_dir, p["file"])).st_ino
+                  for p in before}
+    before_mtime = {p["file"]: os.stat(os.path.join(cfg.files_dir, p["file"])).st_mtime_ns
+                    for p in before}
+
+    update = [("/r/d05", _scanned("sig5-changed",
+                                   [_row("/r/d05/f0.txt", size=999)],
+                                   999, 100, 0))]
+    keep = [(f"/r/d{i:02d}", 5) for i in range(10) if i != 5]
+    summary = compact(cfg, "/r", _shard(tmp_path, cfg, update, keep=keep), pa, pq)
+    assert summary["merged_rewrite"] is True
+
+    after = read_manifest(cfg)["partitions"]
+    # every partition file NOT holding d05's rows kept its exact filename and
+    # on-disk bytes (mtime unchanged) -- it was never opened for writing
+    untouched_files = {p["file"] for p in after} & set(before_stat)
+    assert len(untouched_files) == 9
+    for f in untouched_files:
+        assert os.stat(os.path.join(cfg.files_dir, f)).st_mtime_ns == before_mtime[f]
+
+
+def test_partial_merge_handles_a_dir_whose_rows_all_disappear(tmp_path):
+    cfg = _build_ten_dir_store(tmp_path)
+    # d05 is dropped entirely: not scanned, not in the keep list
+    keep = [(f"/r/d{i:02d}", 5) for i in range(10) if i != 5]
+    summary = compact(cfg, "/r", _shard(tmp_path, cfg, [], keep=keep), pa, pq)
+    assert summary["removed_dirs"] == 1
+    rows = _all_rows(cfg)
+    assert not any(p[1] == "/r/d05" for p in rows)
+    assert len(rows) == 45
+
+
+def test_partial_merge_handles_a_new_dir_in_the_gap_between_two_partitions(tmp_path):
+    """A brand new directory ('/r/d05b') has no rows in ANY old partition, so
+    the per-partition affected test alone would mark nothing affected -- and
+    its path sorts strictly between d05's and d06's old partitions, so a
+    naive [min,max]-overlap test could miss it too. The merge range must
+    still be widened to include it (store.py's load-bearing invariant: no row
+    a scan produced may be silently dropped)."""
+    cfg = _build_ten_dir_store(tmp_path)
+    keep = [(f"/r/d{i:02d}", 5) for i in range(10)]  # every old dir unchanged
+    new_dir = [("/r/d05b", _scanned("new", [_row("/r/d05b/f0.txt")], 10, 1, 0))]
+    summary = compact(cfg, "/r", _shard(tmp_path, cfg, new_dir, keep=keep), pa, pq)
+    rows = _all_rows(cfg)
+    assert ("/r/d05b/f0.txt", "/r/d05b", "f0.txt", "txt", 10, 100.0, 3) in rows
+    assert len(rows) == 51  # the original 50 plus the new one
+
+
+def test_partial_merge_falls_back_to_full_rewrite_when_every_partition_is_touched(tmp_path):
+    cfg = _build_ten_dir_store(tmp_path)
+    entries = [
+        (f"/r/d{i:02d}", _scanned(f"sig{i}b",
+                                  [_row(f"/r/d{i:02d}/f0.txt", size=999)],
+                                  999, 200, 0))
+        for i in range(10)
+    ]
+    # every dir rescanned, none kept -> every partition is affected
+    summary = compact(cfg, "/r", _shard(tmp_path, cfg, entries), pa, pq)
+    assert summary["merged_rewrite"] is False
+
+
+def test_partial_merge_at_the_boundary_one_partition_short_of_everything(tmp_path):
+    """9 of 10 dirs change; exactly 1 stays untouched -- the boundary on the
+    side where a merge still has something to save."""
+    cfg = _build_ten_dir_store(tmp_path)
+    entries = [
+        (f"/r/d{i:02d}", _scanned(f"sig{i}b",
+                                  [_row(f"/r/d{i:02d}/f0.txt", size=999)],
+                                  999, 200, 0))
+        for i in range(9)
+    ]
+    keep = [("/r/d09", 5)]
+    before_file = read_manifest(cfg)["partitions"][9]["file"]  # d09's partition
+    before_mtime = os.stat(os.path.join(cfg.files_dir, before_file)).st_mtime_ns
+    summary = compact(cfg, "/r", _shard(tmp_path, cfg, entries, keep=keep), pa, pq)
+    assert summary["merged_rewrite"] is True
+    after = read_manifest(cfg)["partitions"]
+    # d09's own partition survives untouched (same file, same bytes); the
+    # other 9 dirs' single-row updates (9 rows) get re-chunked at part_rows=5
+    # into 2 fresh partitions -- 3 partitions total, not the original 10.
+    assert any(p["file"] == before_file for p in after)
+    assert os.stat(os.path.join(cfg.files_dir, before_file)).st_mtime_ns == before_mtime
+    assert len(after) == 3

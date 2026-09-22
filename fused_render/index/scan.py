@@ -415,14 +415,33 @@ def run_scan(run_dir: str) -> None:
         # two again, and it is the one run where a wasted replay is guaranteed
         # cheap — there is no saved event id for the root, so `hint` answers None
         # before it opens anything.
+        # SPEC-scan-cost.md part 2: a caller (the live watcher) can supply its
+        # own observed changed-dir set instead of this run deriving one from
+        # the fsevents journal — it already knows exactly what changed, in
+        # process, with no replay needed. `supplied_hint` is the raw
+        # `{"forced": [...], "subtrees": [...]}` spec.json shape
+        # `runner.start`'s `hint` parameter writes; `None` for every run that
+        # was not given one, which is every run before this feature and every
+        # non-macOS run's fallback to the journal path below.
+        raw_supplied = spec.get("hint") if not rescan_all else None
+        supplied = (
+            (list((raw_supplied or {}).get("forced") or []),
+             list((raw_supplied or {}).get("subtrees") or []))
+            if raw_supplied else None)
+
         box: dict = {}
         hint_thread = None
-        if not rescan_all:
+        if not rescan_all and supplied is None:
             # Names the window above (fsevents.hint's journal replay racing
             # load_dir_cache's parquet read) so the Activity card shows this
             # text instead of derive_state's seeded "starting" placeholder —
             # neither operation has anything countable to report yet, so this
-            # is the only progress signal available until they join.
+            # is the only progress signal available until they join. Skipped
+            # entirely when a hint is already supplied: the whole point of a
+            # caller-supplied hint is that nothing needs to ask the journal
+            # for one (a scan's own comment above `rescan_all` measured the
+            # replay at 0.1-2.9s typical, up to fsevents._replay's 20s
+            # timeout worst case — that's exactly the wait this avoids).
             _emit(ev, type="phase", msg="checking for changes")
 
             def _hint_thread():
@@ -448,9 +467,18 @@ def run_scan(run_dir: str) -> None:
             # user's way out is a full scan, which never reaches this code.
             raise box["error"]
         incremental = bool(cache)
-        hint = box.get("hint") if incremental else None
+        # Trap (a): a hint — supplied OR journal-derived — only names what to
+        # VISIT; `_run_fsevents` accounts for everything it does NOT visit by
+        # carrying every cached dir forward as-is (deletions, kept dirs). With
+        # no dir cache there is nothing to carry forward, so either kind of
+        # hint must fall back to a normal walk here, not proceed and silently
+        # produce a store holding only the hinted dirs' rows.
+        hint_is_supplied = supplied is not None and incremental
+        hint = (supplied if hint_is_supplied
+                else box.get("hint") if incremental else None)
         _emit(ev, type="phase", msg=(
-            "scanning (fsevents journal)" if hint is not None
+            "scanning (watcher hint)" if hint_is_supplied
+            else "scanning (fsevents journal)" if hint is not None
             else "scanning (incremental)" if incremental else "scanning (full)"))
 
         devs = set()
@@ -476,7 +504,20 @@ def run_scan(run_dir: str) -> None:
         if hint is not None:
             summary = _run_fsevents(cfg, rules, guard, root, hint, cache, sink,
                                     ev, cancel_flag, devs, t0, pa, pq, root_dev)
-            if summary is not None and fs_id0 is not None and fs_uuid:
+            if (summary is not None and not hint_is_supplied
+                    and fs_id0 is not None and fs_uuid):
+                # Trap (c): only a hint that came from REPLAYING the journal
+                # (fsevents.hint(), above) may advance the saved cursor. A
+                # caller-supplied hint never replayed it — the watcher only
+                # reused this fast path's WALKER — so stamping the cursor
+                # forward here would tell a LATER journal-based scan that
+                # everything between the old cursor and fs_id0 was already
+                # accounted for, when only the caller's specific dirs were;
+                # real changes elsewhere in that window would be skipped
+                # forever. This also keeps the supplied-hint path free of any
+                # fsevents-specific state (trap d): fs_id0/fs_uuid are always
+                # None off macOS (fsevents.py's `_libs()`), so this branch
+                # already never fires there regardless of `hint_is_supplied`.
                 fsevents.save_state(cfg, root, fs_id0, fs_uuid, devs)
             if summary is not None:
                 save_applied_ignore(cfg, root)

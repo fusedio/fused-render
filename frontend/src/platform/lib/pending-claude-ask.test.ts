@@ -5,7 +5,7 @@ import {
   stageClaudeAsk,
   subscribePendingClaudeAsk,
   takePendingClaudeAsk,
-} from "@apps/explorer/lib/pending-claude-ask";
+} from "@platform/lib/pending-claude-ask";
 
 // The store is module-level (there is only ever one pending cross-navigation
 // ask, matching one activity card and one button press at a time), so each

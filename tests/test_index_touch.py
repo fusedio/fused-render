@@ -35,6 +35,7 @@ class Fake:
     def __init__(self, live=(), blocked=(), last_scan=None):
         self.t = 1000.0
         self.started = []
+        self.start_hints = []
         self.armed = []
         self.live = list(live)
         self.blocked = set(blocked)
@@ -48,8 +49,9 @@ class Fake:
         self.armed.append(delay)
         self._fn = fn
 
-    def start(self, root):
+    def start(self, root, hint=None):
         self.started.append(root)
+        self.start_hints.append(hint)
 
     def live_run_covers(self, root):
         return any(r == root or root.startswith(r + "/") or r.startswith(root + "/")
@@ -181,6 +183,33 @@ def test_nothing_is_armed_when_there_is_nothing_to_do():
     assert f.armed == []
 
 
+def test_more_than_max_folders_defers_the_rest_instead_of_losing_them():
+    """`_outermost` used to truncate with `out[:MAX_FOLDERS]` AFTER `_fire`
+    had already cleared `self._pending` — so folders past the sixteenth
+    were dropped permanently, never scanned. This needed a pathological
+    caller before RescanQueue.note_folders existed; the live watcher makes
+    exceeding MAX_FOLDERS in one burst ordinary. The excess must stay
+    pending for the next cycle, the same as a folder deferred for a live
+    run or a floor."""
+    from fused_render.server.index_touch import MAX_FOLDERS
+
+    f = Fake()
+    q = f.queue()
+    many = [f"/home/me/d{i:03d}" for i in range(MAX_FOLDERS + 3)]
+    q.note_folders(*many)
+    f.fire()
+    assert len(f.started) == MAX_FOLDERS, (
+        "one cycle still scans at most MAX_FOLDERS — the rest defer, they "
+        "don't all fire at once")
+    assert f.armed[-1] == q.coalesce_s  # re-armed for the deferred excess
+
+    f.fire()  # the deferred cycle
+    assert len(f.started) == MAX_FOLDERS + 3, (
+        "the folders past the sixteenth must eventually be scanned too, "
+        "not lost")
+    assert sorted(f.started) == sorted(canonical_root(p) for p in many)
+
+
 def test_a_start_that_fails_does_not_strand_the_rest():
     """One bad folder (gone between the mutation and the scan) must not stop
     the others, and must not raise into a request thread."""
@@ -198,6 +227,206 @@ def test_a_start_that_fails_does_not_strand_the_rest():
     f.fire()
     assert sorted(f.started) == sorted(
         [canonical_root("/home/me/bad"), canonical_root("/home/me/good")])
+
+
+# ------------------------------------------------- note_folders (D-watch)
+#
+# The live filesystem watcher (index_watch.py) already knows the folder a
+# change belongs to — it reduces raw paths to `_folder_of(path)` itself, at
+# the batching layer, so it can collapse the outermost-only set BEFORE the
+# flush floor decides how much churn to report. Routing that back through
+# `_folder_of` a second time here would be a no-op for an ordinary folder but
+# wrong for a scan ROOT: `_folder_of` always returns the PARENT, so a watcher
+# forwarding `{root}` on overflow must not have it turned into the root's own
+# parent.
+
+def test_note_folders_takes_folders_as_is_not_their_parent():
+    f = Fake()
+    q = f.queue()
+    q.note_folders("/home/me/proj", "/home/me/other")
+    f.fire()
+    assert sorted(f.started) == sorted(
+        [canonical_root("/home/me/proj"), canonical_root("/home/me/other")])
+
+
+def test_note_folders_still_collapses_to_the_outermost():
+    f = Fake()
+    q = f.queue()
+    q.note_folders("/home/me/proj", "/home/me/proj/sub")
+    f.fire()
+    assert f.started == [canonical_root("/home/me/proj")]
+
+
+def test_note_folders_never_queues_the_filesystem_root():
+    """`note()` routes through `_folder_of`, which refuses a bare "/" (and a
+    bare Windows drive root). `note_folders` routes through `_canon_folder`
+    instead, whose last line is `return norm(...).rstrip("/") or "/"` — it
+    PRODUCES "/" for a root-ish input rather than refusing it. Without the
+    same refusal, `note_folders("/")` queues a whole-disk crawl, exactly the
+    thing the module docstring says never happens ("Never a mount, never
+    `/`")."""
+    f = Fake()
+    q = f.queue()
+    q.note_folders("/")
+    assert f.armed == []  # refused before it was ever queued, nothing to fire
+    assert f.started == []
+
+
+# --------------------------------------------------------- hint wiring
+# (SPEC-scan-cost.md part 2: a folder noted through `note_folders` — the
+# watcher already observed it change, in process — is scanned with a
+# `forced` hint instead of an unhinted (journal-replaying, or full) scan. A
+# folder noted through `note()` (an app mutation) never is: a rename needs a
+# real recursive walk of the new name's subtree, which nothing "hints" at.
+
+def test_a_single_watcher_folder_is_started_with_itself_as_the_hint():
+    f = Fake()
+    q = f.queue()
+    q.note_folders("/home/me/proj")
+    f.fire()
+    assert f.started == [canonical_root("/home/me/proj")]
+    assert f.start_hints == [([canonical_root("/home/me/proj")], [])]
+
+
+def test_a_mutation_folder_is_started_with_no_hint():
+    f = Fake()
+    q = f.queue()
+    q.note("/home/me/proj/notes.txt")
+    f.fire()
+    assert f.started == [canonical_root("/home/me/proj")]
+    assert f.start_hints == [None]
+
+
+def test_collapsed_watcher_folders_hint_every_absorbed_folder_not_just_the_root():
+    """`proj` and `proj/sub` both come from the watcher and collapse to one
+    scan of `proj` (outermost-only). A hint of `[proj]` alone would miss
+    `sub`: `_run_fsevents` only force-visits a dir it is told about, or a
+    brand-new one discovered under a forced dir — `sub`, already in the dir
+    cache, is neither. The hint must carry both originally-noted folders."""
+    f = Fake()
+    q = f.queue()
+    q.note_folders("/home/me/proj", "/home/me/proj/sub")
+    f.fire()
+    assert f.started == [canonical_root("/home/me/proj")]
+    assert f.start_hints == [
+        (sorted([canonical_root("/home/me/proj"),
+                canonical_root("/home/me/proj/sub")]), [])]
+
+
+def test_a_mutation_absorbed_into_a_watcher_folder_falls_back_to_no_hint():
+    """`proj` (watcher) and `proj/sub` (an app mutation, e.g. a rename)
+    collapse to one scan of `proj`. `sub`'s new name has no "originally
+    noted" dir a hint could name, so the whole thing must fall back to a
+    real recursive scan rather than a forced hint that would miss it."""
+    f = Fake()
+    q = f.queue()
+    q.note_folders("/home/me/proj")
+    q.note("/home/me/proj/sub/renamed.txt")
+    f.fire()
+    assert f.started == [canonical_root("/home/me/proj")]
+    assert f.start_hints == [None]
+
+
+def test_the_same_folder_noted_both_ways_falls_back_to_no_hint():
+    """A folder noted via `note_folders` AND via `note` in the same
+    coalescing window is poisoned back to unhinted — the mutation's own
+    reason (a possible rename) applies regardless of note order."""
+    f = Fake()
+    q = f.queue()
+    q.note("/home/me/proj/notes.txt")  # folder is /home/me/proj
+    q.note_folders("/home/me/proj")
+    f.fire()
+    assert f.started == [canonical_root("/home/me/proj")]
+    assert f.start_hints == [None]
+
+
+def test_note_folders_hinted_false_forces_a_normal_scan():
+    """The watcher's own escape hatch (index_watch.py's burst-overflow and
+    periodic-backstop forwards of `{root}` alone): even a single folder
+    noted through `note_folders` must not be hinted when the caller says
+    `hinted=False`, since neither of those forwards carries any real
+    observed-dirs information — root is a stand-in for "something,
+    somewhere, may have changed"."""
+    f = Fake()
+    q = f.queue()
+    q.note_folders("/home/me/proj", hinted=False)
+    f.fire()
+    assert f.started == [canonical_root("/home/me/proj")]
+    assert f.start_hints == [None]
+
+
+def test_a_live_deferral_preserves_every_absorbed_member_for_the_hint():
+    """`proj` and `proj/sub` collapse to one scan root, `proj`, and that scan
+    is deferred because a run over `home` is live. The deferral used to keep
+    only the collapsed root pending, silently dropping `sub` — so once the
+    live run ends and the scan finally starts, the hint named `proj` alone
+    and `_run_fsevents` never force-visited `sub`. Both must still be named
+    once the deferred scan actually starts."""
+    f = Fake(live=[canonical_root("/home/me")])
+    q = f.queue()
+    q.note_folders("/home/me/proj", "/home/me/proj/sub")
+    f.fire()
+    assert f.started == []  # deferred: proj is under a live run
+    f.live.clear()
+    f.fire()
+    assert f.started == [canonical_root("/home/me/proj")]
+    assert f.start_hints == [
+        (sorted([canonical_root("/home/me/proj"),
+                canonical_root("/home/me/proj/sub")]), [])]
+
+
+def test_an_excess_deferral_preserves_every_absorbed_member_for_the_hint():
+    """The same loss, via the MAX_FOLDERS excess path instead of a live run:
+    enough distinct roots that the collapsed `{zz, zz/sub}` pair lands past
+    MAX_FOLDERS and is deferred to the next cycle. `sub` must still be named
+    in the hint once that deferred cycle actually starts the scan."""
+    from fused_render.server.index_touch import MAX_FOLDERS
+
+    f = Fake()
+    q = f.queue()
+    many = [f"/home/me/d{i:03d}" for i in range(MAX_FOLDERS)]
+    q.note_folders(*many)
+    q.note_folders("/home/me/zz", "/home/me/zz/sub")
+    f.fire()
+    assert len(f.started) == MAX_FOLDERS  # zz/zz-sub collapse into the excess
+    f.fire()  # the deferred cycle
+    assert f.started[-1] == canonical_root("/home/me/zz")
+    assert f.start_hints[-1] == (
+        sorted([canonical_root("/home/me/zz"),
+               canonical_root("/home/me/zz/sub")]), [])
+
+
+def test_a_deferred_folders_original_wait_is_not_reset_by_repeated_deferral():
+    """The deadline escape hatch is measured from the folder's ORIGINAL
+    first-noted time. A deferral that re-timestamps the folder on every
+    cycle would let a live run (or a wedged one) hold it forever — the exact
+    failure the deadline exists to prevent."""
+    f = Fake(live=[canonical_root("/home/me")])
+    q = f.queue()
+    q.note_folders("/home/me/proj", "/home/me/proj/sub")
+    f.fire()  # deferred: still live
+    f.t += q.deadline_s / 2
+    f.fire()  # still live, still deferred; each cycle's own gap is well under
+              # deadline_s, so this must not itself trip anything
+    assert f.started == []
+    f.t += q.deadline_s / 2 + 1  # total elapsed since the ORIGINAL note now
+                                 # exceeds deadline_s
+    f.fire()
+    assert f.started == [canonical_root("/home/me/proj")]  # deadline wins
+    assert f.start_hints == [
+        (sorted([canonical_root("/home/me/proj"),
+                canonical_root("/home/me/proj/sub")]), [])]
+
+
+def test_disjoint_watcher_folders_each_get_their_own_hint():
+    f = Fake()
+    q = f.queue()
+    q.note_folders("/home/me/proj", "/home/me/other")
+    f.fire()
+    assert sorted(f.started) == sorted(
+        [canonical_root("/home/me/proj"), canonical_root("/home/me/other")])
+    for root, hint in zip(f.started, f.start_hints):
+        assert hint == ([root], [])
 
 
 def _mutating_routes():
@@ -335,6 +564,51 @@ def test_note_index_mutation_queues_normally_while_indexing_is_on(monkeypatch,
     assert noted == [(path,)]
 
 
+def test_note_index_folders_no_ops_while_indexing_is_off(monkeypatch, tmp_path):
+    import fused_render.shell.prefs as prefs_mod
+    from fused_render.server import index_touch
+
+    monkeypatch.setattr(prefs_mod, "indexing_enabled", lambda: False)
+    noted = []
+    monkeypatch.setattr(index_touch._queue, "note_folders",
+                        lambda *f, **kw: noted.append(f))
+    index_touch.note_index_folders(str(tmp_path))
+    assert noted == []
+
+
+def test_note_index_folders_queues_normally_while_indexing_is_on(monkeypatch,
+                                                                   tmp_path):
+    import fused_render.shell.prefs as prefs_mod
+    from fused_render.server import index_touch
+
+    monkeypatch.setattr(prefs_mod, "indexing_enabled", lambda: True)
+    noted = []
+    monkeypatch.setattr(index_touch._queue, "note_folders",
+                        lambda *f, **kw: noted.append(f))
+    folder = str(tmp_path)
+    index_touch.note_index_folders(folder)
+    assert noted == [(folder,)]
+
+
+def test_note_index_folders_passes_hinted_through(monkeypatch, tmp_path):
+    """The watcher's burst-overflow and periodic-backstop forwards pass
+    `hinted=False` (SPEC-scan-cost.md part 2) — this is the one seam that has
+    to carry it from `note_index_folders` down to `RescanQueue.note_folders`,
+    since `_queue` is a module-level singleton neither caller constructs."""
+    import fused_render.shell.prefs as prefs_mod
+    from fused_render.server import index_touch
+
+    monkeypatch.setattr(prefs_mod, "indexing_enabled", lambda: True)
+    seen_hinted = []
+    monkeypatch.setattr(
+        index_touch._queue, "note_folders",
+        lambda *f, hinted=True: seen_hinted.append(hinted))
+    index_touch.note_index_folders(str(tmp_path), hinted=False)
+    assert seen_hinted == [False]
+    index_touch.note_index_folders(str(tmp_path))
+    assert seen_hinted == [False, True]
+
+
 # ---------------------------------------------- the bridge wake (D732)
 #
 # `_real_start` is the sixth path that calls `runner.start` (the other five
@@ -347,7 +621,8 @@ def test_real_start_wakes_the_index_job_bridge(monkeypatch, tmp_path):
     from fused_render.server import index_touch
     from fused_render.server.routers import index as index_router
 
-    monkeypatch.setattr(runner, "start", lambda cfg, root: {"run_id": "r1"})
+    monkeypatch.setattr(runner, "start",
+                        lambda cfg, root, hint=None: {"run_id": "r1"})
     woke = []
     monkeypatch.setattr(index_router, "_wake_index_job_bridge",
                         lambda: woke.append(True))

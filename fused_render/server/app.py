@@ -904,6 +904,33 @@ def create_app(start_dir: str) -> FastAPI:
     from fused_render.share_app import router as share_app_router
 
     app.include_router(share_app_router)
+    # Share any file whose extension resolves to a Fused catalog file-preview
+    # UDF (share_file.py) — the generalised sibling of share_app_router
+    # above, reusing its record store, lock and shim plumbing.
+    from fused_render.share_file import router as share_file_router
+
+    app.include_router(share_file_router)
+
+    # The file-preview rule table (share_file_rules.py) that `share_file`'s
+    # status/publish routes resolve a viewer from: nothing else ever calls
+    # the shim's `rules` action (code review finding — the cache was never
+    # built on a fresh install, so every extension but `.fused` refused to
+    # share). A daemon thread, same reasoning as `_startup_tasks_warm` below:
+    # it is a subprocess spawn plus a network round trip to the catalog, and
+    # must not delay server readiness. Best-effort and silent on failure
+    # (no CLI, not signed in, offline) — status/publish already fall back to
+    # the built-in `.fused` rule alone when the cache stays empty.
+    @on_startup
+    async def _startup_warm_share_rules():
+        from fused_render import share_file
+
+        thread = threading.Thread(target=share_file.warm_rules_cache, daemon=True,
+                                  name="fused-share-file-rules-warm")
+        thread.start()
+        # For tests, the same seam `_startup_tasks_warm`/`_startup_queue_manager`
+        # leave: join this instead of racing the background fetch.
+        app.state.share_rules_warm = thread
+
     # Template management (templates_api.py) — the Templates view backend:
     # inventory across sources, registry bindings edit, import/export. It owns
     # GET /api/templates/registry (the extended §2.2 shape). Imported here
@@ -962,6 +989,26 @@ def create_app(start_dir: str) -> FastAPI:
         # above; called here rather than at import time so a test that never
         # boots the app never gets a background thread.
         index_routes.start_index_job_bridge()
+
+    # ...and watch the filesystem for changes the app did not make itself
+    # (a download, `touch ~/a.txt`, a sync client) so the index stays fresh
+    # without guessing staleness from a clock — see
+    # fused_render/server/index_watch.py's module docstring and
+    # SPEC-index-live-watch.md §1 for why the previous approach (a
+    # time-based freshness check) failed three times. One background thread
+    # per configured root; `index_watch.start()` is idempotent, same
+    # singleton-start convention as `shell_mounts.start_health_monitor`.
+    @on_startup
+    async def _startup_index_watch():
+        from fused_render.server import index_watch
+
+        index_watch.start()
+
+    @on_shutdown
+    async def _shutdown_index_watch():
+        from fused_render.server import index_watch
+
+        index_watch.stop()
 
     # THE IN-APP UPDATE MANAGER (update/mac.py, update/linux.py), for every
     # platform whose server ever boots through this create_app() — which is

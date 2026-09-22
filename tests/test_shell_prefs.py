@@ -1300,6 +1300,23 @@ def test_put_no_longer_accepts_the_removed_task_switches(tmp_path, monkeypatch):
     assert "task_cards" not in client.get("/api/prefs").json()
 
 
+# -- project (app page) task peek: always on -------------------------------------
+
+
+def test_project_peek_is_always_on_and_the_put_no_longer_takes_it(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["task_peek"] == {"enabled": True, "project": True}
+    # A stored value from the flagged build is ignored…
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(json.dumps({"project_peek_enabled": False}), encoding="utf-8")
+    assert client.get("/api/prefs").json()["task_peek"]["project"] is True
+    assert prefs_mod.project_peek_enabled() is True
+    # …and the key is no longer a preference the PUT knows.
+    assert client.put(
+        "/api/prefs", json={"project_peek_enabled": False}, headers=FUSED,
+    ).status_code == 400
+
+
 # -- task notify terminal sessions flag ----------------------------------------
 
 

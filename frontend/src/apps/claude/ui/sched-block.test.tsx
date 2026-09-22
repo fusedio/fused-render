@@ -99,7 +99,7 @@ function stubController(over: Partial<ChatController> = {}): ChatController {
   } as unknown as ChatController;
 }
 
-function mount(over: { navLocked?: boolean; onNavigate?(url: string): void } = {}) {
+function mount(over: { navLocked?: boolean } = {}) {
   let api: ScheduleState | null = null;
   /** The 15 s poll, captured instead of waited out: `poll()` below is one tick
    *  of the real watcher, which is what re-reads the store. */
@@ -130,7 +130,6 @@ function mount(over: { navLocked?: boolean; onNavigate?(url: string): void } = {
       stopping: sched.stopping,
       tick: sched.tick,
       onStop: sched.onStop,
-      onRow: sched.onRow,
       cardRef: sched.cardRef,
     });
   };
@@ -320,20 +319,62 @@ test("A REFUSED CANCEL keeps the box shut and says why, keyed to the entry", asy
   expect(texts(m.tree, "sb-note")).toEqual(["Still scheduled — it may already be running."]);
 });
 
-test("the row's hop remembers the calendar and lands on /tasks", async () => {
+test("the row is a reading, not a door: no press, no hop", async () => {
+  // It used to hop to the Tasks page — the calendar, then this task's side
+  // peek, which is the chat the reader is already in. "What's the point of
+  // linking it if it opens the same task?" (Akshil, 2026-09-21). Cancel is the
+  // card's one control.
   entries = [{ id: "e1", state: "pending", session_id: "s1" }];
-  tasks = [];
-  const hops: string[] = [];
-  const m = mount({ onNavigate: (u) => hops.push(u) });
+  tasks = [{ key: "s1", task_id: "TASK-007", title: "Nightly tidy", status: "upcoming" }];
+  const m = mount();
   await flush();
   const row = m.tree.root.find(
     (n) => typeof n.type === "string" && n.props.className === "sb-row",
   );
-  await act(async () => {
-    (row.props.onClick as () => void)();
-  });
-  expect(hops).toEqual(["/tasks"]);
-  expect(localStorage.getItem("fused-render:scheduled-view")).toBe("calendar");
+  expect(row.type).toBe("div");
+  expect(row.props.onClick).toBeUndefined();
+  const buttons = m.tree.root.findAll((n) => n.type === "button");
+  expect(buttons).toHaveLength(1);
+  expect(buttons[0]!.props.children).toBe("Cancel this message");
+});
+
+test("THE COMEBACK IS NOT BLOCKED: the card says the chat resumes itself, and when", async () => {
+  // A turn died on the plan limit and `scheduleComeback` put this chat back on
+  // the calendar under `CONTINUE_TITLE`. Nobody queued it, so "Blocked — a
+  // scheduled message runs in this chat" was a riddle (Akshil, 2026-09-21).
+  entries = [
+    {
+      id: "e1",
+      state: "pending",
+      session_id: "s1",
+      due: "2099-01-01T09:00:00",
+      title: "Continue after usage limit",
+      message: "Your usage limit has reset. Continue the task you were working on.",
+    },
+  ];
+  tasks = [{ key: "s1", task_id: "TASK-007", title: "Continue after usage limit", status: "upcoming" }];
+  const m = mount();
+  await flush();
+  expect(texts(m.tree, "sb-when")).toEqual([
+    "Paused on your usage limit — this chat picks up again by itself 09:00 1/1/2099.",
+  ]);
+  expect(m.api.placeholder).toBe("Paused until your usage limit resets…");
+  expect(m.api.reason.startsWith("Paused on your usage limit")).toBe(true);
+  const stop = acts(m.tree);
+  expect(stop.props.children).toBe("Don't resume automatically");
+  expect(stop.props.title).toBe("Cancels the automatic resume, and this chat reopens now");
+});
+
+test("…but a LATER message in a rescued chat is an ordinary block", async () => {
+  // The task row keeps "Continue after usage limit" as the conversation's name;
+  // only the entry's own marks decide (Bugbot, #1292).
+  entries = [{ id: "e2", state: "pending", session_id: "s1", due: "2099-01-01T09:00:00", message: "Nightly tidy" }];
+  tasks = [{ key: "s1", task_id: "TASK-007", title: "Continue after usage limit", status: "upcoming" }];
+  const m = mount();
+  await flush();
+  expect(texts(m.tree, "sb-when")).toEqual(["Blocked — a scheduled message runs in this chat."]);
+  expect(acts(m.tree).props.children).toBe("Cancel this message");
+  expect(m.api.placeholder).toBe("Waiting on a scheduled message…");
 });
 
 test("N MORE AFTER IT: the soonest is named, the rest counted", async () => {

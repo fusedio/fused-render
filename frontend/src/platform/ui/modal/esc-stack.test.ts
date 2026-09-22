@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { isTopmost, openModalCount, popModal, pushModal } from "./esc-stack";
+import { anyModalOpen, isTopmost, openModalCount, popModal, pushModal } from "./esc-stack";
 
 test("the innermost modal owns the press, and only it", () => {
   const peek = {};
@@ -50,4 +50,13 @@ test("popping a token twice is harmless", () => {
   popModal(t);
   popModal(t);
   expect(openModalCount()).toBe(0);
+});
+
+test("`anyModalOpen` is what a non-modal Esc surface (the side peek) stands down on", () => {
+  const a = {};
+  expect(anyModalOpen()).toBe(false);
+  pushModal(a);
+  expect(anyModalOpen()).toBe(true);
+  popModal(a);
+  expect(anyModalOpen()).toBe(false);
 });

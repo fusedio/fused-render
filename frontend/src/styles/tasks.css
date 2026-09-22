@@ -1212,22 +1212,30 @@ button.tasks-caret,
   border-color: color-mix(in srgb, var(--activity) 32%, transparent);
 }
 
-/* RUN NEXT (the verb was "Skip the queue" until 2026-09-12 — see
-   platform/lib/queue.RUN_NEXT_LABEL for why it changed). Same group, same size,
-   same silence at rest — and NEUTRAL under the pointer, deliberately NOT Run
-   now's `--activity` blue. That hue is the page's "this STARTS something", and
-   this starts nothing: the run holding the folder keeps running, and all the
-   press does is move a card to the front of a line so it goes when that run
-   ends. Borrowing the blue would promise the one thing this button must never be
-   read as offering. */
+/* FORCE START wears this seat since 2026-09-21 (`FORCE_START_LABEL`,
+   ScheduleTaskViews). The CLASS NAME is the seat's history: Run next — "Skip the
+   queue" until 2026-09-12 — held it first, and the PR that deletes that endpoint
+   renames the class with it rather than this one renaming it twice. Same group,
+   same height, same silence at rest.
+
+   THE ONE BUTTON IN THE STRIP THAT IS WORDS. Its siblings are glyphs in a 22px
+   square, and this one is not: a bolt sat here for a day and the strip beside it
+   already holds a play triangle meaning "start this early", so two start-ish
+   shapes one press apart is a hover a reader should not have to spend. So the
+   box gives up the square — `width: auto`, its own side padding — and keeps the
+   height, which is what holds the strip's line straight. `nowrap` because the
+   label is two words and half of "Force" is not a control; on a list row it
+   still gives way entirely before the title does (the rule below), which is the
+   right end for a label that cannot be abbreviated. */
 .tasks-act--skip,
 .prefs-section .tasks-act--skip {
-  /* The glyph is a CHARACTER, not an inline svg like every sibling here, so it
-     needs the size and weight the svg's own geometry gave those. Line-height 1
-     so the 16px box does not grow around it. */
-  font-size: 13px;
-  font-weight: 600;
+  width: auto;
+  flex-basis: auto;
+  padding: 0 7px;
+  font-size: 11px;
+  font-weight: 500;
   line-height: 1;
+  white-space: nowrap;
 }
 
 /* …AND ON A LIST ROW IT GIVES WAY BEFORE THE TITLE DOES, like the caption it
@@ -1290,6 +1298,16 @@ button.tasks-caret,
   flex-shrink: 0;
   min-width: auto;
 }
+
+/* NEUTRAL UNDER THE POINTER, deliberately NOT Run now's `--activity` blue —
+   and the reason CHANGED with the verb (2026-09-21) rather than the rule
+   changing. Run next was neutral because it started nothing. Force start very
+   much does start something, so by that hue's own rule ("this STARTS
+   something") it would qualify; it stays neutral because this is the one press
+   on the page that puts a SECOND turn in a working tree, and a button the page
+   colours as its happy path is a button the page is recommending. The hint is
+   where the cost is said (`FORCE_START_HINT`); the skin's job is not to
+   invite. */
 .tasks-act--skip:hover:not(:disabled),
 .prefs-section .tasks-act--skip:hover:not(:disabled) {
   color: var(--fg);

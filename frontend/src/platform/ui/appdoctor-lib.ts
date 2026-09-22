@@ -144,7 +144,11 @@ export const SECTION_LABEL: Record<string, string> = {
  *  judge each finding first (Review), a FACT row asks it to fix outright
  *  (Fix) — see app_doctor.doctor_prompt's own triage-vs-fix split. */
 export function rowActionLabel(check: AppCheck): "Fix" | "Review" {
-  return check.kind === "candidate" ? "Review" : "Fix";
+  // An on-demand row (`cross-browser`) is a candidate too — a model read a
+  // rubric — but its findings arrive already written as what-to-change
+  // sentences, so the button says what the session will do: Fix (owner,
+  // 2026-09-22). The triage-first prompt still applies underneath.
+  return check.kind === "candidate" && !check.ondemand ? "Review" : "Fix";
 }
 
 /** A failing row's own state word — feeds both `rowStateAccessibleLabel`
@@ -166,7 +170,11 @@ export function rowActionLabel(check: AppCheck): "Fix" | "Review" {
  *  `aria-label`/`title`, not this one. */
 export function rowStateDetailText(check: AppCheck): string {
   if (check.state !== "fail") return STATE_LABEL[check.state];
-  return check.kind === "candidate" ? `${check.findings.length} to review` : STATE_LABEL.fail;
+  // Same carve-out as `rowActionLabel`: an on-demand row's button says Fix,
+  // so its detail must not count things "to review".
+  return check.kind === "candidate" && !check.ondemand
+    ? `${check.findings.length} to review`
+    : STATE_LABEL.fail;
 }
 
 /** A failing row's ACCESSIBLE name — feeds `.appdoc-state`'s `aria-label`/
@@ -272,7 +280,11 @@ export function readinessSentence(checks: AppCheck[]): string {
  *  findings and decides, rather than rewriting them outright. Empty when no
  *  candidate is failing — a footer with nothing to qualify says nothing. */
 export function reviewNote(checks: AppCheck[]): string {
-  const n = checks.filter((c) => c.state === "fail" && c.kind === "candidate").length;
+  // On-demand rows say Fix, not Review (`rowActionLabel`), so they are not
+  // "matches to read" in the footer's count either.
+  const n = checks.filter(
+    (c) => c.state === "fail" && c.kind === "candidate" && !c.ondemand,
+  ).length;
   if (n === 0) return "";
   return n === 1 ? "1 of these is a match to read, not a fix." : `${n} of these are matches to read, not fixes.`;
 }
@@ -280,4 +292,65 @@ export function reviewNote(checks: AppCheck[]): string {
 /** How many rows the footer's one task would cover. */
 export function failingCount(checks: AppCheck[]): number {
   return checks.filter((c) => c.state === "fail").length;
+}
+
+// --------------------------------------------------------------- git row
+
+/** The consolidated `git` row draws up to THREE simultaneous actions
+ *  (Fix stays generic and is handled by `rowActionLabel`/`onFix` already) —
+ *  these two are new, `git`-only, and both read off fields ONLY that row
+ *  carries (`behind`/`ahead`/`gitRoot`, api.ts), so neither has any meaning
+ *  for another check id.
+ *
+ *  A row can show Pull AND Fix AND Open-in-git all at once: being behind
+ *  origin, having uncommitted work, and simply wanting to look at the repo
+ *  are three independent facts about the same folder — see
+ *  app_doctor.py's `_repo_health_check`, which folds all three into one
+ *  `failing_bits` list rather than three separate rows. */
+
+/** Origin is ahead of the local branch by a confirmed, nonzero count AND a
+ *  Pull would actually succeed — the only condition worth a "Pull" button
+ *  (B1, FIXES-round-1.md). `behind` is `null`/`undefined` until the async
+ *  fetch resolves (or forever, with no remote to compare against), and `0`
+ *  reads as confirmed up to date — neither shows Pull. Even a confirmed
+ *  `behind > 0` is not enough on its own: `git_upstream.update_repo`'s
+ *  preflight hard-refuses off the default branch (`not-default`) or over a
+ *  dirty tree (`dirty`), so this also requires `onDefault`/`clean` to both
+ *  be confirmed `true` — matching `RepoUpdatesDock`'s `on_default` gate for
+ *  its own Update action. When Pull isn't offered for either reason, the
+ *  row's own `detail` text says why (server-side `_repo_health_advice`) —
+ *  this function only decides whether the BUTTON renders, not whether the
+ *  user finds out. */
+export function showsPullAction(check: AppCheck): boolean {
+  return (
+    check.id === "git" &&
+    !!check.behind &&
+    check.behind > 0 &&
+    check.onDefault === true &&
+    check.clean === true
+  );
+}
+
+/** The row checked a real, readable git repository — "Open in git" opens
+ *  that repo's root in the in-app git mode regardless of whether anything
+ *  is wrong with it, so this is available on a passing row too. False when
+ *  the folder isn't in a repo this server can read (`gitRoot: null`). */
+export function showsOpenInGitAction(check: AppCheck): boolean {
+  return check.id === "git" && !!check.gitRoot;
+}
+
+/** The `git` row's own remote check has not landed yet: local state is
+ *  known (the row exists, and it names a real repo) but `behind`/`ahead`
+ *  are both still unset. `useAppDoctorReport` uses this once, right after a
+ *  report lands, to decide whether a single delayed re-`load()` is worth
+ *  scheduling — Doctor never blocks the initial paint on the fetch, so this
+ *  is the only way the panel notices the fetch finished without the person
+ *  pressing Re-run themselves. Deliberately not a bounded "will this ever
+ *  resolve" prediction (a repo with no remote also reads this way, and
+ *  never resolves) — one extra fetch that lands on an unchanged SKIP is a
+ *  cheap, one-time cost, and the caller only fires it once, not on a
+ *  timer. */
+export function gitRowFetchPending(checks: AppCheck[]): boolean {
+  const git = checks.find((c) => c.id === "git");
+  return !!git && !!git.gitRoot && git.behind == null && git.ahead == null;
 }
