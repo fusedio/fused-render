@@ -106,6 +106,7 @@ _STRUCTURE_META = {
     "structure:missing-index": ("essentials", "critical", "fact"),
     "structure:missing-readme": ("essentials", "suggested", "fact"),
     "structure:missing-thumbnail": ("sharing", "suggested", "fact"),
+    "structure:missing-pyproject": ("essentials", "suggested", "fact"),
 }
 
 
@@ -685,13 +686,16 @@ def _check_device_paths(rel_path: str, text: str, findings: list) -> None:
 
 # ---------------------------------------------------------------- structure
 
-# The three files that make a shared app openable and recognizable to
-# whoever receives it: a page to open, a README to say what it is, and a
-# thumbnail to show in a grid of other apps. Plain existence (and, for the
-# thumbnail, non-emptiness) — this engine does not parse any of the three,
-# it only asks whether the basics are there.
+# The four files that make a shared app openable, recognizable, and
+# reproducible for whoever receives it: a page to open, a README to say
+# what it is, a thumbnail to show in a grid of other apps, and a
+# pyproject.toml so its dependencies are declared rather than implicit
+# (D230). Plain existence (and, for the thumbnail, non-emptiness) — this
+# engine does not parse any of the four, it only asks whether the basics
+# are there.
 _ENTRY_NAME = "index.html"
 _PREVIEW_IMAGE_NAME = "preview.png"
+_PYPROJECT_NAME = "pyproject.toml"
 
 
 def _check_structure(app_dir: str, findings: list) -> None:
@@ -725,6 +729,13 @@ def _check_structure(app_dir: str, findings: list) -> None:
             "structure:missing-thumbnail",
             f"no {_PREVIEW_IMAGE_NAME} thumbnail (or it is empty) — this is how "
             "the app is recognized in a grid of others",
+        ))
+
+    if not os.path.isfile(os.path.join(app_dir, _PYPROJECT_NAME)):
+        findings.append(_structure_finding(
+            "structure:missing-pyproject",
+            f"no {_PYPROJECT_NAME} — without it this app's dependencies are "
+            "implicit and unreproducible for whoever you share it with",
         ))
 
 

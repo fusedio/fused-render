@@ -29,6 +29,8 @@ def _clean_app(tmp_path):
     _write(tmp_path, "index.html", "<html><body>hi</body></html>\n")
     _write(tmp_path, "README.md", "a small app\n")
     (tmp_path / "preview.png").write_bytes(b"\x89PNG" + b"0" * 32)
+    _write(tmp_path, "pyproject.toml",
+          '[project]\nname = "x"\nversion = "0.1.0"\n\n[tool.uv]\npackage = false\n')
     return tmp_path
 
 
