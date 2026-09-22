@@ -275,16 +275,10 @@ function Distribution({
  *  lists details"). The verdict word is the question's one accent hit. A
  *  native <details> keeps the fold per row with no state to carry: opening
  *  one question's details leaves the others shut. */
-// What `confidence` measures — the skill says the same, and a reader who
-// sees "10% confident" beside a 46.6% option needs the sentence right there.
-const CONFIDENCE_TIP =
-  "Not the probability of the picked answer. Confidence is how decisive the "
-  + "whole distribution is: 1 minus its normalised entropy — 100% when all the "
-  + "probability sits on one option, 0% when it is spread evenly over them. "
-  + "Open Details for each option's own probability.";
-const CONFIDENCE_TIP_NOUL =
-  "For a yes/no question this is the probability of the side the model took: "
-  + "max(P(yes), P(no)).";
+// What `confidence` measures, in one plain line (owner: no technical
+// wording). The skill carries the exact definition for page authors.
+const CONFIDENCE_TIP = "How clearly one option stood out from the others, not how likely the answer is.";
+const CONFIDENCE_TIP_NOUL = "How likely the model thinks its yes or no is right.";
 
 function AnswerLine({
   verdict,
