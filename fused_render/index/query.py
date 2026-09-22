@@ -1521,33 +1521,43 @@ def _basename_candidate_pool(limit: int) -> int:
     return max(limit, min(limit * _BASENAME_POOL_FACTOR, _BASENAME_POOL_MAX))
 
 
-def _pool_n_column(bounded: bool) -> str:
+def _pool_n_column(bounded: bool, pool: int = None) -> str:
     """The extra SELECT-list fragment (a leading `, ` or `""`) that reports
-    how many rows the bounded candidate pool actually produced — see
-    DECISIONS.md and `search_ranked`'s own starvation-fallback comment for
-    why this replaces "the page came back short" as the fallback's trigger.
+    whether the bounded candidate pool actually filled — see DECISIONS.md and
+    `search_ranked`'s own starvation-fallback comment for why this replaces
+    "the page came back short" as the fallback's trigger.
 
     `bounded=False` has no pool stage to measure (`_bounded_or_full_candidates`
     returns `base_select` unmodified), so this is `""` — not merely unused,
-    never computed at all.
+    never computed at all. `pool` is then ignored (and every caller passes
+    `None` for it in that case — see `_bounded_or_full_candidates`, the only
+    source of a real `pool` value).
 
-    `bounded=True`: `count(*) OVER ()` with no `PARTITION BY`, spliced into
-    the OUTER SELECT that reads FROM the candidate-pool subquery (i.e. from
-    `_bounded_or_full_candidates`'s own `(base_select ORDER BY ... LIMIT
-    pool)`), NOT into `base_select` itself and NOT into a window ABOVE the
-    final `QUALIFY`/`ORDER BY`/`LIMIT`. Placement matters for two reasons:
+    `bounded=True`: `pool` MUST be the exact same pool size
+    `_bounded_or_full_candidates` sized THIS statement's own candidate pool
+    with — the value it returns alongside the SQL string, never re-derived
+    here or by any other caller (a second, independent derivation is exactly
+    the silent-divergence risk DECISIONS.md warns against: if it ever
+    disagreed with the pool the SQL actually built, the comparison below
+    would compare against the wrong number with no exception anywhere). The
+    emitted column is `count(*) OVER () >= {pool}`, with no `PARTITION BY`,
+    spliced into the OUTER SELECT that reads FROM the candidate-pool
+    subquery (i.e. from `_bounded_or_full_candidates`'s own `(base_select
+    ORDER BY ... LIMIT pool)`), NOT into `base_select` itself and NOT into a
+    window ABOVE the final `QUALIFY`/`ORDER BY`/`LIMIT`. Placement matters
+    for two reasons:
 
     1. DuckDB evaluates every window function in a SELECT (including this
        one and `_qualify_basename_cap`'s `QUALIFY` row_number) over the same
-       FROM-clause input, before QUALIFY filters rows out — so `pool_n` is
-       the row count of the candidate-pool subquery itself, i.e. `min(pool,
-       actual WHERE-matched count)`, independent of how many rows QUALIFY's
-       per-basename cap then keeps. `pool_n < pool` therefore means the
-       inner `LIMIT <pool>` never bound: the pool subquery returned every
-       WHERE-matched row, so `QUALIFY` here saw the SAME input the unbounded
-       (`bounded=False`) query's `QUALIFY` would have seen, and the two
-       queries are provably equivalent — the fallback is redundant and must
-       not fire.
+       FROM-clause input, before QUALIFY filters rows out — so `count(*)
+       OVER ()` here is the row count of the candidate-pool subquery itself,
+       i.e. `min(pool, actual WHERE-matched count)`, independent of how many
+       rows QUALIFY's per-basename cap then keeps. That count being `< pool`
+       (the emitted column is false) therefore means the inner `LIMIT <pool>`
+       never bound: the pool subquery returned every WHERE-matched row, so
+       `QUALIFY` here saw the SAME input the unbounded (`bounded=False`)
+       query's `QUALIFY` would have seen, and the two queries are provably
+       equivalent — the fallback is redundant and must not fire.
     2. It must sit ABOVE the pool's own `ORDER BY ... LIMIT <pool>`, never
        inside `base_select` or as a window over the full WHERE-matched set —
        a `count(*) OVER ()` there would force DuckDB to materialise every
@@ -1556,20 +1566,28 @@ def _pool_n_column(bounded: bool) -> str:
        its own docstring) and reintroducing, for a broad query, exactly the
        full-corpus-scan cost this fix's whole point is to avoid.
 
-    Every row this query returns carries the SAME `pool_n` value (there is
-    no `PARTITION BY`), so a caller only needs to read it off any one
-    returned row (`rows[0][-1]`, `search_ranked` does not care which)."""
-    return ", count(*) OVER () AS pool_n" if bounded else ""
+    Every row this query returns carries the SAME boolean (there is no
+    `PARTITION BY`), so a caller only needs to read it off any one returned
+    row (`rows[0][-1]`, `search_ranked` does not care which)."""
+    if not bounded:
+        return ""
+    return f", count(*) OVER () >= {pool} AS pool_filled"
 
 
 def _bounded_or_full_candidates(base_select: str, order_by: str, limit: int,
-                                bounded: bool) -> str:
+                                bounded: bool) -> tuple:
     """The subquery that feeds `_qualify_basename_cap`'s `QUALIFY`: either the
     bounded candidate pool (`bounded=True`, the `13ff8332a` fast path — an
     `ORDER BY <order_by> LIMIT <pool>` stage ahead of the cap, sized by
     `_basename_candidate_pool`) or the entire `base_select` unmodified
     (`bounded=False` — the pre-`13ff8332a` shape, `QUALIFY` over the full
     WHERE-matched set, no candidate limit at all).
+
+    Returns `(sql, pool)`: `pool` is the pool size actually used
+    (`_basename_candidate_pool(limit)`) when `bounded=True`, else `None`.
+    This is the ONLY place `pool` is derived — callers pass it straight to
+    `_pool_n_column` rather than recomputing it, so the SQL's own `LIMIT
+    <pool>` and the comparison `_pool_n_column` emits can never disagree.
 
     `base_select` is the filtered-but-unordered inner SELECT (already ending
     in a trailing space after its own `WHERE ...` clause, matching every
@@ -1581,19 +1599,24 @@ def _bounded_or_full_candidates(base_select: str, order_by: str, limit: int,
     the unbounded shape here is exactly what an infinitely large pool would
     have produced, not merely a similar query.
 
-    A caller that gets fewer than `limit + 1` rows back from the bounded
-    query (the same one-extra-row `limit` the caller itself passes in here —
+    A short page (fewer than `limit + 1` rows back from the bounded query —
+    the same one-extra-row `limit` the caller itself passes in here —
     `search_ranked` always calls with its own `limit + 1`, for the identical
-    truncation-detection trick `truncated` is computed from) reruns with
-    `bounded=False` (`search_ranked`) — a short page is the only case where
-    the pool could have starved a fillable page, and it is also the case
-    where the corpus is small enough (or the pool starved it, either way)
-    that the extra scan is affordable; see DECISIONS.md and
-    `specs/query.md` §3 for the reasoning and the measured cost."""
+    truncation-detection trick `truncated` is computed from) is NOT by
+    itself grounds to rerun with `bounded=False`: a genuinely sparse or
+    zero-match query produces a short page too, and reruns of those would
+    just pay for a second full-corpus scan to reconfirm the same few (or
+    zero) rows (DECISIONS.md, "Rank starvation fallback: a short page is not
+    starvation evidence"). `search_ranked` instead reruns only when the
+    short page is COMBINED with `_pool_n_column`'s proof, computed in SQL,
+    that the bounded pool's own `LIMIT <pool>` actually bound — that
+    combination is the only case where the pool could have starved a
+    fillable page; see DECISIONS.md and `specs/query.md` §3 for the
+    reasoning and the measured cost."""
     if not bounded:
-        return f"({base_select})"
+        return f"({base_select})", None
     pool = _basename_candidate_pool(limit)
-    return f"({base_select}ORDER BY {order_by} LIMIT {pool})"
+    return f"({base_select}ORDER BY {order_by} LIMIT {pool})", pool
 
 
 def _lex_order_and_score(nm_exact: str, preds: dict,
@@ -1829,11 +1852,11 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, qs: str, limit: int,
         base_select = (
             f"SELECT rel, size, mtime, is_dir, depth, nm FROM ({inner}) "
             f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden} ")
-        candidates = _bounded_or_full_candidates(
+        candidates, pool = _bounded_or_full_candidates(
             base_select, unranked_order, limit, bounded)
         return (
             f"SELECT rel, size, mtime, is_dir, depth"
-            f"{_pool_n_column(bounded)} FROM {candidates} "
+            f"{_pool_n_column(bounded, pool)} FROM {candidates} "
             f"{_qualify_basename_cap(unranked_order)}"
             f"ORDER BY {unranked_order} "
             f"LIMIT {limit}")
@@ -1843,10 +1866,10 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, qs: str, limit: int,
         f"SELECT rel, size, mtime, is_dir, depth, nm, ({score}) AS score, "
         f"({tier}) AS tier FROM ({inner}) "
         f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden} ")
-    candidates = _bounded_or_full_candidates(base_select, order_by, limit, bounded)
+    candidates, pool = _bounded_or_full_candidates(base_select, order_by, limit, bounded)
     return (
         f"SELECT rel, size, mtime, is_dir, depth, score, tier"
-        f"{_pool_n_column(bounded)} FROM {candidates} "
+        f"{_pool_n_column(bounded, pool)} FROM {candidates} "
         f"{_qualify_basename_cap(order_by)}"
         f"ORDER BY {order_by} "
         f"LIMIT {limit}")
@@ -2200,11 +2223,11 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
         base_select = (
             f"SELECT rel, size, mtime, is_dir, depth, nm FROM ({inner}) "
             f"WHERE {like_guard}regexp_matches(lrel, '{regex}'){hidden} ")
-        candidates = _bounded_or_full_candidates(
+        candidates, pool = _bounded_or_full_candidates(
             base_select, unscored_order, limit, bounded)
         return (
             f"SELECT rel, size, mtime, is_dir, depth"
-            f"{_pool_n_column(bounded)} FROM {candidates} "
+            f"{_pool_n_column(bounded, pool)} FROM {candidates} "
             f"{_qualify_basename_cap(unscored_order)}"
             f"ORDER BY {unscored_order} "
             f"LIMIT {limit}")
@@ -2270,10 +2293,10 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
         f"SELECT rel, size, mtime, is_dir, depth, nm, ({score_expr}) AS score, "
         f"({tier}) AS tier FROM ({inner}) "
         f"WHERE {like_guard}regexp_matches(lrel, '{regex}'){hidden} ")
-    candidates = _bounded_or_full_candidates(base_select, order_by, limit, bounded)
+    candidates, pool = _bounded_or_full_candidates(base_select, order_by, limit, bounded)
     return (
         f"SELECT rel, size, mtime, is_dir, depth, score, tier"
-        f"{_pool_n_column(bounded)} FROM {candidates} "
+        f"{_pool_n_column(bounded, pool)} FROM {candidates} "
         f"{_qualify_basename_cap(order_by)}"
         f"ORDER BY {order_by} "
         f"LIMIT {limit}")
@@ -2615,18 +2638,24 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         # zero rows. No rerun needed; the fallback would just re-answer "no
         # matches" at the cost of a second full-corpus scan.
         #
-        # Tier 2 (`pool_n < pool`): `pool_n` (`_pool_n_column`'s `count(*)
-        # OVER ()`, computed over the candidate-pool subquery — i.e. strictly
-        # AFTER its own `ORDER BY ... LIMIT <pool>`, never over the raw
-        # WHERE-matched set, which would defeat DuckDB's top-N scan on a
-        # broad query) is the pool subquery's actual row count. `pool_n <
-        # pool` means that inner `LIMIT <pool>` never truncated anything —
-        # the pool held EVERY WHERE-matched row, so this bounded query's
-        # `QUALIFY` ran over the exact same input the unbounded query's
-        # `QUALIFY` would run over. The two are equivalent by construction;
-        # the fallback cannot produce a different result and must not fire.
+        # Tier 2 (`not pool_filled`): `pool_filled` (`_pool_n_column`'s
+        # `count(*) OVER () >= pool` boolean, computed over the candidate-
+        # pool subquery — i.e. strictly AFTER its own `ORDER BY ... LIMIT
+        # <pool>`, never over the raw WHERE-matched set, which would defeat
+        # DuckDB's top-N scan on a broad query) is SQL's own answer to
+        # "did the pool's inner LIMIT actually bind". `pool` itself is never
+        # re-derived here in Python — `_bounded_or_full_candidates` is the
+        # one place that sizes it, and it hands that exact value to
+        # `_pool_n_column` so the comparison is always against the pool the
+        # SQL actually built, never a second, independently-computed number
+        # that could silently drift from it. `pool_filled is False` means
+        # that inner `LIMIT <pool>` never truncated anything — the pool held
+        # EVERY WHERE-matched row, so this bounded query's `QUALIFY` ran
+        # over the exact same input the unbounded query's `QUALIFY` would
+        # run over. The two are equivalent by construction; the fallback
+        # cannot produce a different result and must not fire.
         #
-        # Only when the pool actually filled (`pool_n >= pool`) AND the page
+        # Only when the pool actually filled (`pool_filled`) AND the page
         # still came up short of `limit + 1` (the same one-extra-row
         # `truncated` trick used everywhere else in this function — see the
         # code-review correction preserved below) is a real basename-cap
@@ -2646,13 +2675,12 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         # `limit + 1` remains the page-shortness signal; it is now combined
         # with (not replacing) the two equivalence checks above.
         if pool_rows:
-            pool_n = pool_rows[0][-1]
+            pool_filled = bool(pool_rows[0][-1])
             rows = [r[:-1] for r in pool_rows]
         else:
-            pool_n = 0
+            pool_filled = False
             rows = []
-        pool = _basename_candidate_pool(limit + 1)
-        if pool_rows and pool_n >= pool and len(rows) < limit + 1:
+        if pool_rows and pool_filled and len(rows) < limit + 1:
             rows = con.execute(_build_sql(bounded=False)).fetchall()
             if token is not None:
                 token.check()
