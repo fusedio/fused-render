@@ -4,7 +4,7 @@
 // refusal that survives the poll the same click asks for.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
 
@@ -86,6 +86,7 @@ const fire = (type: string, ev: Record<string, unknown>) => {
 
 const { SchedBlock } = await import("./SchedBlock");
 const { useSchedule } = await import("../sched/useSchedule");
+const { listenerCountsForTests } = await import("../feature-flag");
 type ScheduleState = import("../sched/useSchedule").ScheduleState;
 type ChatController = import("../protocol/controller-api").ChatController;
 
@@ -98,6 +99,22 @@ function stubController(over: Partial<ChatController> = {}): ChatController {
     ...over,
   } as unknown as ChatController;
 }
+
+/** `bun test` runs every suite in ONE process with no per-file isolation, so a
+ *  tree left mounted here keeps its `useSchedule`/`useProjectQueueEnabled`
+ *  subscriptions alive — and re-rendering on — for the rest of the run. Every
+ *  `mount()` below is tracked here and torn down in the shared `afterEach`,
+ *  which also asserts the count came back down: this file's `useSchedule`
+ *  calls are the only `queueListeners` subscribers it ever adds, so a mismatch
+ *  here means a `mount()` this file forgot to tear down (the exact bug that
+ *  once inflated a full `bun test src` run from ~300MB to 9GB+ — see
+ *  DECISIONS.md's "bun test heap leak" entry). */
+const mounted: ReactTestRenderer[] = [];
+const baselineQueueListeners = listenerCountsForTests().queueListeners;
+afterEach(() => {
+  for (const tree of mounted.splice(0)) act(() => tree.unmount());
+  expect(listenerCountsForTests().queueListeners).toBe(baselineQueueListeners);
+});
 
 function mount(over: { navLocked?: boolean } = {}) {
   let api: ScheduleState | null = null;
@@ -137,6 +154,7 @@ function mount(over: { navLocked?: boolean } = {}) {
   act(() => {
     tree = create(createElement(Harness));
   });
+  mounted.push(tree!);
   return {
     tree: tree!,
     poll: () => {

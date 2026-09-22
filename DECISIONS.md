@@ -4722,3 +4722,215 @@ many rows survive the filter; connection setup was measured at only ~7% of
 the call (3.8ms of 54ms) and is not the diluent. Sparse and zero-match
 queries keep more of the win because there is little or no scoring work to
 dilute it.
+## bun test heap leak investigation (fix/bun-test-heap-leak, 2026-09-21)
+
+Task: find/fix the memory leak that makes `bun test` (frontend) OOM the machine.
+Working copy: this clone's `frontend/`. No PR opened per instructions; findings only.
+
+### Tooling built
+- `guarded-test.sh` (kept in scratchpad, NOT this repo, since it is a throwaway
+  investigation harness, not project code): runs `bun test <args>` with a hard
+  wall-clock timeout and a 1s-polling `footprint <pid>` watchdog that SIGKILLs
+  the process the instant phys_footprint crosses a caller-given ceiling.
+  Verified to actually fire (OOM_KILLED case) before being trusted for real runs.
+  Caveat: the poll interval is 1s and JSC growth here has been observed to add
+  ~4-5GB in a single second once the blow-up starts, so the measured "peak" can
+  overshoot the configured ceiling by a few GB — treat the ceiling as a rough
+  trip wire, not an exact cap. Set ceilings with several GB of headroom below
+  whatever the machine can actually absorb.
+
+### Reproduced safely
+Full `bun test src` under the guarded runner: stable ~150-340MB footprint for
+the first ~64s, then explodes to 9.1GB within the next ~8s (watchdog fired at
+peak_kb=9147392, elapsed_s=72, cap was 6291456 KB). This matches the original
+bug report exactly (sudden late blow-up, not a slow climb).
+
+### Bisection (file-set, from `src/apps/claude`)
+Isolated combination that was suspected to reproduce it stand-alone —
+feature-flag.test.tsx, ClaudeChat.{ann,boot,attach}.test.tsx,
+ui/useArtifacts.test.tsx, ui/useSnapshots.test.tsx, ui/home-lists.test.tsx,
+ui/placement.test.tsx, ui/cards.test.tsx, pane/appState.test.ts,
+ann/useAnnotations.test.tsx, protocol/run-controller.pr4.test.ts (12 files,
+same order as they run inside the full suite) — does NOT reproduce the leak
+when run alone: 331 pass, 0 fail, peak 210MB, 9.85s. This RULES OUT "these 12
+files alone" as sufficient; whatever leaks needs the preceding ~64s/hundreds
+of files of the full suite to have already run first. Ruling stands: the leak
+requires accumulated state from the broader suite, not just this file set.
+
+### Listener-count instrumentation (temporary, uncommitted)
+Added a temporary diagnostic to `src/apps/claude/feature-flag.ts`: a
+`console.error` in `set()`/`setQueue()` gated behind `process.env.LEAK_DIAG`
+that prints `listeners.size` / `queueListeners.size` on every call, plus a
+`__debugListenerCounts()` export (both still uncommitted in the working tree —
+see `git status` before doing anything else with this branch).
+
+Ran the full suite again with `LEAK_DIAG=1`: `queueListeners.size` peaks at 16
+(not the "thousands" a runaway-listener theory would predict) right as
+`run-controller.pr4.test.ts` starts (its `beforeEach`/`afterEach` call
+`publishProjectQueueEnabled(true/false)` on every one of its ~70 tests). This
+RULES OUT "unbounded listener-Set growth in feature-flag.ts fans out to a
+catastrophic number of re-renders" as the direct memory driver — 13-16
+listeners firing ~70 times is a few hundred calls, not an 8GB event.
+
+What the 13-16 residual listeners DO confirm: they are stale — pr4.test.ts
+itself never calls `useProjectQueueEnabled`/`useNativeChatFlag` and mounts no
+React tree, so every listener firing at that point was registered by an
+EARLIER test file (a `ClaudeChat.*.test.tsx` or `feature-flag.test.tsx` mounted
+component) that was never unmounted/cleaned up. This is real evidence of a
+leaked-mount bug (something in ClaudeChat.tsx's mount path, or one of its
+consumers, is not being unmounted by its owning test), but it is NOT itself
+big enough to explain the observed blow-up.
+
+Read of the last ~150 lines before the OOM in the LEAK_DIAG run: a bounded
+number of `Warning: An update to Harness inside a test was not wrapped in
+act(...)` warnings (66 total in the whole run, not runaway/infinite) fire
+right as pr4.test.ts starts — consistent with the ~70 afterEach-triggered
+setQueue() fanout calls hitting a small number of stale "Harness"/"Probe"
+components left mounted from earlier files. `run-controller.pr4.test.ts`
+itself contains no `render(`/React usage at all (grepped; it's pure
+protocol-logic tests) — the "Harness"/"Probe" names in the warnings belong to
+OTHER files' test harnesses, still alive.
+
+### Current best hypothesis (NOT YET CONFIRMED)
+The 8-9GB blow-up is not driven by listener-Set size. It's more likely that
+one or more of the ~13-16 stale, still-mounted "Harness"/"Probe" component
+trees (leaked from an earlier `ClaudeChat.*.test.tsx` or
+`feature-flag.test.tsx` run, never unmounted) is itself large or contains an
+effect/render path that allocates unboundedly per re-render (e.g. an
+unbounded array/string build in a render or effect body triggered by the
+`queueEnabled`/`nativeChatFlag` state change), and `run-controller.pr4.test.ts`
+repeatedly re-triggering that stale tree's setState (via the shared
+`publishProjectQueueEnabled` broadcast) is the detonator, not the cause. NOT
+CONFIRMED — the specific component and its unbounded allocation have not been
+identified yet.
+
+### Not yet done / exact resume point
+1. Find which test file(s) leave a `ClaudeChat`/`Harness`/`Probe` tree mounted
+   past their own test (grep each of ClaudeChat.ann/boot/attach.test.tsx and
+   feature-flag.test.tsx for a `render()`/`create()` without a matching
+   `.unmount()` in every test, including error paths / early returns).
+2. Once found, inspect what that mounted tree's re-render path does on a
+   `queueEnabled`/`nativeChatFlag` change — look for unbounded state growth
+   (array push, string concat, snapshot/log ring buffer without a cap) that
+   would explain multi-GB growth from ~70 repeated fanout calls hitting a
+   handful of stale trees.
+3. Confirm by instrumenting that specific allocation site (or by taking a heap
+   snapshot / using `bun test --smol` or `BUN_JSC_*` env knobs — not yet tried)
+   during a guarded run of just `<offending file>.test.tsx` +
+   `run-controller.pr4.test.ts` (2 files) with a tight (~1GB) cap, to isolate
+   the minimal repro before touching source.
+4. `--isolate`/`--parallel` (bun 1.3.14 flags, not yet tried) are a viable
+   fallback IF the root cause turns out to be systemic/hard to fix per-file,
+   but source-level bisection ruled out a generic bun/JSC-level cause (an
+   unrelated 11-file set from src/platform/lib did not reproduce it earlier),
+   so a real leaked-mount bug in app test code is still the most likely
+   explanation and should be fixed at the source first.
+5. `git status` in this clone currently shows ONLY the uncommitted temporary
+   diagnostic in `frontend/src/apps/claude/feature-flag.ts` (gated behind
+   `LEAK_DIAG` env var, inert unless set) — no real fix, no commit yet.
+
+No PR opened, per instructions. No commit made yet — still investigating.
+
+## bun test heap leak: root cause found and fixed (fix/bun-test-heap-leak, 2026-09-21, part 2)
+
+Continuing from the resume point above. Root cause found; fix committed.
+
+**Root cause.** `frontend/src/apps/claude/ui/sched-block.test.tsx` has a local
+`mount()` helper that `create()`s a `Harness` (which calls `useSchedule`, which
+calls `useProjectQueueEnabled()`) for each of its 13 tests, but the file has
+**no `afterEach`, no `mounted` array, and not one call to `.unmount()`**
+anywhere (`grep -n unmount sched-block.test.tsx` → zero matches). Every other
+file in `src/apps/claude` that mounts a `react-test-renderer` tree follows the
+same convention (a module-level `mounted` array pushed to by the mount helper,
+drained by a shared `afterEach` that calls `act(() => r.unmount())`) — this
+file was the one exception. Confirmed via a throwaway preload script (outside
+the repo, dynamic-imported `feature-flag.ts`'s internals to log
+`listeners.size`/`queueListeners.size` after every test): `queueListeners`
+climbed 1-by-1, exactly 13 times, strictly inside this file's own run, and
+never came back down (this superseded and corrects the earlier 12-file
+bisection above, which never included this file and so never reproduced the
+leak).
+
+**What rooted the retained memory.** `bun test` runs the whole `src` tree in
+ONE process with no per-file isolation, so `feature-flag.ts`'s
+`listeners`/`queueListeners` module-level `Set`s are one shared global for the
+entire run. The 13 un-unmounted `Harness` trees stay mounted — and subscribed
+— for the rest of the process. `useSchedule`'s internal `watcher` and its
+`setInterval`-driven poll, plus every later file's `publishProjectQueueEnabled`
+broadcast (e.g. `protocol/run-controller.pr4.test.ts`'s ~70 calls across its
+`beforeEach`/`afterEach`), then re-render those 13 permanently-live trees over
+and over for the remaining ~250+ files/6900+ tests of the run. Isolating just
+this file alone (13 tests, guarded, 1GB cap) stayed flat at ~71MB — no
+blowup. Isolating this file plus `run-controller.pr4.test.ts` together (the
+originally-hypothesized minimal repro) ALSO stayed flat and fast (~12MB,
+<1s) — so the hypothesized second "production unbounded-allocation" defect
+(DEFECT #2) does **not exist as a separate bug**: the growth to multi-GB only
+shows up when the 13 stale trees are left alive and re-rendering across the
+*entire* remaining suite (hundreds of files), not from any one or two files'
+broadcasts. 13 leaked subscriptions, compounded over the full run's re-render
+traffic, was sufficient by itself. There is one defect, not two.
+
+**Minimal repro.**
+```
+GUARDED_OUTLOG=/tmp/x.log GUARDED_STATUSFILE=/tmp/y.log \
+  ./guarded-test.sh 1048576 60 src/apps/claude/ui/sched-block.test.tsx \
+  --preload <scratchpad>/leak-preload.ts
+```
+run alone: no leak signal (flat ~71MB). The leak only manifests as a
+full-suite blowup — `bun test src` — because it needs the rest of the suite's
+re-render/broadcast traffic to compound. Before the fix, a full guarded
+`bun test src` run (6GB cap) got OOM_KILLED at ~69s elapsed after climbing
+past 6GB; the earlier full-suite run recorded in this file's part-1 entry
+above hit 9.1GB.
+
+**Peak memory, full `bun test src`, guarded, 3GB cap, no diagnostic preload:**
+- Before fix: OOM_KILLED (uncapped runs observed up to 9.1GB; this session's
+  6GB-capped run also tripped the cap).
+- After fix: `RESULT status=EXITED_0 peak_kb=330752 peak_gb_x100=31
+  elapsed_s=73` — **~323MB peak**, 7098 pass, 0 fail, 26185 expect() calls
+  across 331 files, well inside the previously-established healthy baseline
+  (150-340MB).
+
+**The fix (one commit, `frontend/src/apps/claude/ui/sched-block.test.tsx`).**
+Added the same `mounted: ReactTestRenderer[]` + shared `afterEach(() => { for
+(const tree of mounted.splice(0)) act(() => tree.unmount()); ... })` pattern
+already used by every other file in this directory; `mount()` now pushes its
+tree onto `mounted` instead of only returning it.
+
+**Regression guard (same commit).** Rather than a global cross-suite
+assertion (higher blast radius, and other files have their own valid
+per-file-not-per-test cleanup timing), the guard is local and targeted: the
+new `afterEach` also asserts
+`listenerCountsForTests().queueListeners` returns to the value captured
+before this file's first test ran. `listenerCountsForTests()` is a small,
+permanent, side-effect-free accessor added to `feature-flag.ts` for exactly
+this purpose — it exports `{ listeners, queueListeners }` sizes and does
+nothing else. If this file's cleanup ever regresses (or a future test in this
+file adds a `mount()` call without going through the helper), the assertion
+fails loudly in this file's own output instead of silently inflating memory
+hundreds of files later.
+
+**Temporary diagnostic disposition.** The previous agent's `LEAK_DIAG`
+`console.error` lines inside `set()`/`setQueue()` in `feature-flag.ts` were
+reverted entirely (not shipped). The `__debugListenerCounts()` export was
+renamed to `listenerCountsForTests()`, kept as a permanent, minimal, side-effect-free
+test-only accessor (matches this file's existing `resetNativeChatFlagForTests()`
+naming/doc-comment convention), and is now load-bearing for the regression
+guard described above rather than being a leftover diagnostic.
+`grep -rn "__debugListenerCounts\|LEAK_DIAG" frontend/src` → no matches.
+
+**Exact command to run the full suite safely, and its duration:**
+```
+GUARDED_OUTLOG=/tmp/out.log GUARDED_STATUSFILE=/tmp/status.log \
+  ./guarded-test.sh 3145728 240 src
+```
+(from `<scratchpad>/guarded-test.sh`, 3GB cap, 240s timeout — actual run
+finishes in ~73s at ~323MB peak, comfortably under the cap). Plain `bun test
+src` with no cap is still NOT safe to run outside this guard until/unless the
+guarded run has been repeated a few more times on a clean checkout to build
+confidence; this session's evidence is one clean full-suite pass post-fix.
+
+**Not done / explicitly out of scope for this pass:** no PR opened; no
+broader `--isolate`/`--parallel` bun flag adoption (rendered unnecessary once
+the actual leaking file was fixed); no changes to any file other than
+`sched-block.test.tsx`, `feature-flag.ts`, and this log.
