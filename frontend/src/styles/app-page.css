@@ -6,12 +6,40 @@
 
    After schedule.css / tasks.css in the barrel: the nested Tasks page is drawn
    by those, and this file adds only the frame around it. */
+/* THE PAGE-LEVEL SPLIT (shell/AppPage.tsx): the page, and the git column
+   beside it when one is open. The explorer's `.stat-split` (explorer.css) with
+   a different name and the same job — same rules, same class contract, because
+   the column inside it is literally the same component
+   (apps/explorer/PreviewSidebar), and its drag resolves its container by
+   `closest(".stat-split, .app-page-split")`.
+
+   Always rendered, so a page with no column open is the single-column layout it
+   has always been: one flex child, filling the row. */
+.app-page-split {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
 .app-page {
   flex: 1 1 auto;
+  /* Was never needed while this element was the only child of #content; as a
+     flex ITEM in the row above it is, or a wide tab body would push the git
+     column off the window instead of scrolling inside its own. */
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg);
+}
+
+/* Both sides of the seam are inert for the drag's duration — the git column's
+   document is an iframe and would otherwise swallow the captured pointer
+   stream, and so would the Overview's frame opposite it. The explorer states
+   the same rule over `.stat-split` (preview.css). */
+.app-page-split:has(.preview-side-divider.dragging) iframe {
+  pointer-events: none;
 }
 
 .app-page-head {

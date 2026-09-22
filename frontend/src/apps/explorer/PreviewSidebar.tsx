@@ -58,7 +58,14 @@ import { committedWidth, resizeWidth } from "@platform/lib/panel-drag";
 // the divider with `closest` rather than handed down as a ref: the two live in
 // different components now (StatView owns the container, this owns the handle),
 // and a ref would have to be threaded through the portal to get here.
-const SPLIT_SEL = ".stat-split";
+//
+// TWO containers now, hence a selector LIST. `.stat-split` is the explorer's,
+// which reaches this component through the portal; `.app-page-split` is the app
+// page's own (shell/AppPage.tsx), which renders this column as an ordinary
+// child instead. `closest` takes the nearest ancestor matching either, so a
+// column only ever measures the split it is actually in — the app page is not
+// nested inside StatView, so the two can never both match.
+const SPLIT_SEL = ".stat-split, .app-page-split";
 
 // The one companion whose document is a CHAT, and so the one that reports when
 // its transcript is painted (`data-chat-ready`, platform/ui/ChatFrame). Named

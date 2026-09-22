@@ -116,6 +116,9 @@ import { useAppPageSnapshot, type AppPageSnapshotState } from "./useAppPageSnaps
 import { TaskPeekFrame } from "./TaskPeekFrame";
 import { APP_PAGE_FIT_LABEL, useAppHeadFit, useAppTabbarFit } from "./app-page-fit";
 import { useTaskPeekEnabled } from "./task-peek-flag";
+import PreviewSidebar from "@apps/explorer/PreviewSidebar";
+import { useDirMode } from "@apps/explorer/lib/dir-mode";
+import { templateModeIcon } from "@apps/explorer/ModeSwitcher";
 import { peekSearch } from "./task-peek-store";
 
 // ---- the tabs, as ONE registry -----------------------------------------------
@@ -129,6 +132,10 @@ import { peekSearch } from "./task-peek-store";
 // unmounted). The Overview needs it — the frame holds live app state and a tab
 // switch must not reload it. Nothing else should want it: a hidden panel still
 // polls and paints.
+// The one companion this page hosts. Named rather than inlined so the probe,
+// the switcher entry and the frame all demonstrably ask for the same mode.
+const GIT_MODE = "git";
+
 type TabCtx = {
   slug: string;
   dir: string;
@@ -144,6 +151,9 @@ type TabCtx = {
    *  view's resolution by the time a caller reads it — there is no such
    *  singleton here at all, deliberately). */
   snapshot: AppPageSnapshotState;
+  /** Opens this page's git column (see `GIT_MODE` below). Only the Doctor tab
+   *  takes it — its "Open in git" row is the one and only way in. */
+  openGit: () => void;
 };
 
 type TabDef = {
@@ -253,7 +263,7 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     // Not keepMounted: the report is fetched fresh on every mount, so coming
     // back to the tab IS the re-run (the panel also offers one in place).
     // Ignores the version picker on purpose — see AppDoctorPanel.
-    render: ({ dir }) => <AppDoctorPanel dir={dir} />,
+    render: ({ dir, openGit }) => <AppDoctorPanel dir={dir} onOpenGit={openGit} />,
   },
 };
 
@@ -469,6 +479,52 @@ export default function AppPage({
   const peekOn = useTaskPeekEnabled();
   const peekable = peekOn === true && tab === "tasks";
 
+  // ---- THE GIT COLUMN -------------------------------------------------------
+  //
+  // The folder's `git` template in a right-hand column beside the whole page:
+  // the same component, the same drag and the same remembered width as the
+  // explorer's own companion sidebar (apps/explorer/PreviewSidebar), rendered
+  // here as an ordinary child of this page's split instead of through
+  // StatView's portal — this page is not inside StatView.
+  //
+  // This does NOT bring back the Git TAB the header above says was removed, and
+  // the distinction is the whole design. A tab put the working tree on the same
+  // footing as the app itself, so reaching it took the app off the screen; a
+  // column does not. Staging and committing are things you do WHILE looking at
+  // the app — which is the argument the file preview's companion sidebar
+  // already makes for this same template. What the header says about the
+  // VERSION PICKER is untouched: that stays read-only and page-wide, and this
+  // column always shows the LIVE folder, never a `_snapshot` tree (there is no
+  // working tree to stage in an extracted copy).
+  //
+  // ONE WAY IN, by the owner's choice: App Doctor's "Open in git" row, which
+  // until now left this page for the explorer. No header button, so the column
+  // costs a page nobody opened it from nothing at all — not a probe, not a
+  // frame. The way OUT is the column's own close button, and dragging it
+  // through its floor, exactly as everywhere else that hosts one.
+  const [gitOpen, setGitOpen] = useState(false);
+  // Probed only once the column is asked for: the gate forks a `git rev-parse`
+  // per answer (lib/dir-mode caches, but the first one is real work). `dir` is
+  // the app FOLDER, which is what a working tree belongs to.
+  const gitMode = useDirMode(gitOpen ? dir : null, GIT_MODE);
+  // Settled, and this folder does not offer git at all — no repository, or the
+  // gate said no. Shut the column rather than hold a spinner over nothing.
+  // Ordinarily unreachable: the Doctor row that opens this renders only once
+  // its check has resolved a real repo root. So this is the honest answer to a
+  // repository that went away between the report and the press, not a state
+  // anybody is meant to see.
+  useEffect(() => {
+    if (gitOpen && !gitMode.pending && gitMode.entry === null) setGitOpen(false);
+  }, [gitOpen, gitMode.pending, gitMode.entry]);
+  // The template's document, in the shape every borrowed-companion frame uses
+  // (Preview.tsx's `sideSrcFor`): the template path as the page, the FOLDER as
+  // its subject. No `remote`/thumb flags — neither exists on this page.
+  const gitSrc =
+    gitMode.entry && gitMode.entry.path !== null
+      ? `/render?path=${encodeURIComponent(gitMode.entry.path)}` +
+        `&_file=${encodeURIComponent(dir)}`
+      : null;
+
   // Folded ONCE for every tilde below: `home` is raw expanduser (backslashed on
   // Windows) while `dir` and the root are forward-slash, and a prefix test
   // between the two spellings prints the full path instead of "~/…".
@@ -538,6 +594,10 @@ export default function AppPage({
   };
 
   return (
+    // The page-level split: the page itself, then the git column when one is
+    // open. Mirrors `.stat-split` (explorer.css) down to the class contract —
+    // PreviewSidebar's drag finds its container by `closest` on either name.
+    <div className="app-page-split">
     <TaskPeekFrame peekable={peekable}>
     <div className="app-page">
       <header className="app-page-head" ref={headRef} data-fit={headFit}>
@@ -745,12 +805,37 @@ export default function AppPage({
                 role="tabpanel"
                 aria-hidden={!active}
               >
-                {def.render({ slug, dir, entry, snapshot })}
+                {def.render({ slug, dir, entry, snapshot, openGit: () => setGitOpen(true) })}
               </section>
             );
           })}
       </div>
     </div>
     </TaskPeekFrame>
+    {gitOpen && (
+      <PreviewSidebar
+        // One companion here, so the header's strip is one tab: it reads as
+        // this column's title, which is what it is. The icon comes off
+        // `bound` — the mode as the registry binds it — so a column that is
+        // still gate-pending wears the Git mark rather than a placeholder
+        // letter, the same rule the explorer's disabled rows follow.
+        entries={[
+          {
+            mode: GIT_MODE,
+            icon: templateModeIcon(
+              gitMode.bound ?? { mode: GIT_MODE, path: null, icon: null },
+            ),
+            pending: gitMode.pending,
+          },
+        ]}
+        active={GIT_MODE}
+        // Nothing to switch TO — the strip's only tab is the active one, and
+        // base-ui never reports a change to the value it already holds.
+        onSelect={() => {}}
+        src={gitMode.pending ? null : gitSrc}
+        onClose={() => setGitOpen(false)}
+      />
+    )}
+    </div>
   );
 }
