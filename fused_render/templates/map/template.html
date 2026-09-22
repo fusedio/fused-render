@@ -627,8 +627,11 @@ function esriCanvasStyle(variant, attribution, maxzoom) {
 }
 const ESRI_ATTR = "Esri, HERE, Garmin, © OpenStreetMap contributors";
 const BASEMAPS = {
+  // The plain OSM raster tiles QGIS ships as its own default basemap — no
+  // key, but no dark/satellite equivalent, so those two variants still come
+  // from Esri's key-free Canvas/World_Imagery services above.
+  light: rasterStyle(["https://tile.openstreetmap.org/{z}/{x}/{y}.png"], "© OpenStreetMap contributors", 19),
   dark:  esriCanvasStyle("Dark", ESRI_ATTR, 16),
-  light: esriCanvasStyle("Light", ESRI_ATTR, 16),
   sat:   rasterStyle(["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"], "Esri, Maxar, Earthstar Geographics", 18),
 };
 
