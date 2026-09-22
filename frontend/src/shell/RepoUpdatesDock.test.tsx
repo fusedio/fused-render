@@ -1238,6 +1238,7 @@ const message = (over: Partial<StoredNotification> = {}): StoredNotification => 
   count: 1,
   updatedAt: 0,
   leaving: false,
+  dismissible: true,
   ...over,
 });
 

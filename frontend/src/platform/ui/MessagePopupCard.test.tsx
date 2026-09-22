@@ -62,3 +62,36 @@ test("an error message pops role=alert and the terminal glyph; an info one pops 
     _resetNotificationsForTest();
   }
 });
+
+// SPEC-update-notifications.md: the restart notification drops its ✕ while
+// the app is quitting for one — `dismissible: false` is the lever, read
+// straight off the popup rather than derived from tone/tier so a caller can
+// flip it per-notify() call without inventing a new tier for it.
+test("dismissible: false drops the ✕; the default (and true) keeps it", async () => {
+  _resetNotificationsForTest();
+  try {
+    notify({ title: "Restarting fused-render", dismissible: false });
+    let renderer: ReturnType<typeof create> | null = null;
+    await act(async () => {
+      renderer = create(<MessagePopupCard />);
+    });
+    let tree = renderer!.toJSON() as ReactTestRendererJSON;
+    expect(findAll(tree, "dl-x")).toHaveLength(0);
+    await act(async () => {
+      renderer!.unmount();
+    });
+
+    _resetNotificationsForTest();
+    notify({ title: "Update ready" });
+    await act(async () => {
+      renderer = create(<MessagePopupCard />);
+    });
+    tree = renderer!.toJSON() as ReactTestRendererJSON;
+    expect(findAll(tree, "dl-x")).toHaveLength(1);
+    await act(async () => {
+      renderer!.unmount();
+    });
+  } finally {
+    _resetNotificationsForTest();
+  }
+});
