@@ -388,7 +388,7 @@ export function ShareFileModal({
             value={url ?? ""}
             onFocus={(e) => e.currentTarget.select()}
             aria-label="Shared link"
-            className="h-8 flex-1 truncate bg-muted/40 font-mono text-[12.5px] text-foreground"
+            className="h-8 min-w-0 flex-1 truncate bg-muted/40 font-mono text-[12.5px] text-foreground"
           />
           <Button
             size="icon-sm"
@@ -475,9 +475,18 @@ export function ShareFileModal({
           className="max-w-[min(360px,calc(100%-2rem))] gap-0 overflow-hidden p-0 sm:max-w-[min(360px,calc(100%-2rem))]"
           showCloseButton={false}
         >
-          <DialogHeader className="gap-0 px-5 pt-3.5 pb-2.5">
-            <div className="flex items-center justify-between gap-3">
-              <DialogTitle className="truncate text-[15px] font-semibold leading-6">
+          {/* `min-w-0` ON EVERY BOX A TRUNCATING CHILD SITS IN, and it is not
+              decoration: a flex/grid item's automatic minimum size is its
+              MIN-CONTENT, and the path below is `white-space: nowrap`, so the
+              header demanded the path's full unwrapped width — measured at
+              395px against this sheet's 360px cap — and `overflow-hidden` on
+              the sheet then sliced the excess off. The visible fault was a
+              title reading "hare index.html" and a path missing its "/U"
+              (owner, 2026-09-22). `truncate` alone cannot fix it: it clips
+              what has already overflowed rather than letting the box shrink. */}
+          <DialogHeader className="min-w-0 gap-0 px-5 pt-3.5 pb-2.5">
+            <div className="flex min-w-0 items-center justify-between gap-3">
+              <DialogTitle className="min-w-0 truncate text-[15px] font-semibold leading-6">
                 Share {file.name}
               </DialogTitle>
               <DialogClose
@@ -495,14 +504,14 @@ export function ShareFileModal({
               </DialogClose>
             </div>
             <DialogDescription
-              className="truncate text-left text-[12px] text-muted-foreground"
+              className="min-w-0 truncate text-left text-[12px] text-muted-foreground"
               dir="rtl"
               title={dirname(file.path)}
             >
               <bdi dir="ltr">{dirname(file.path)}</bdi>
             </DialogDescription>
           </DialogHeader>
-          <div className="flex flex-col gap-3 px-5 pb-4">
+          <div className="flex min-w-0 flex-col gap-3 px-5 pb-4">
             {body}
             {err && (
               <p className="m-0 text-[13px] leading-5 text-destructive" role="alert">
