@@ -32,15 +32,15 @@ One plain fn `main(**params)`. Rules:
 
 ### Available Python libraries
 
-No `pyproject.toml` in folder → app interpreter: stdlib plus exactly this bundled set (authoritative: repo `pyproject.toml` — `[bundled]` extra, plus `pyarrow`/`duckdb`/`httpx` from core `[project]` deps). Prefer it — zero install.
+No `pyproject.toml` in folder → app interpreter: stdlib plus exactly this bundled set (repo `pyproject.toml` `[bundled]` extra minus `botocore`/`google-auth`, plus `pyarrow`/`duckdb`/`httpx` from core `[project]` deps). Prefer it — zero install.
 
 - **Data:** `numpy` `pandas` `pyarrow` `duckdb` `openpyxl` `msgpack`
 - **Images:** `pillow`
 - **Documents:** `python-pptx` `fpdf2` (import name *fpdf*)
-- **Network & cloud:** `requests` `httpx` `botocore` `google-auth`
+- **Network:** `requests` `httpx`
 - **Logs:** `drain3`
 
-**Render App portability:** the standalone Render App (`fused-render-app`) gives a `pyproject.toml`-less app the same set **except `botocore` and `google-auth`** (its `LEGACY_DEPS`, `fused_render_app/env.py`). Need either → declare it in a folder `pyproject.toml` (with the rest of your imports — see below), or the app opens fine in fused-render and fails in Render App.
+Same set the standalone Render App (`fused-render-app`, `LEGACY_DEPS` in `fused_render_app/env.py`) gives a `pyproject.toml`-less app — keep the two in step. `botocore` / `google-auth` are on fused-render's interpreter but NOT in this list: Render App lacks them, so always declare them in a folder `pyproject.toml`.
 
 Anything else needs folder `pyproject.toml` (project root only; add `[tool.uv] package = false`). Facts:
 
