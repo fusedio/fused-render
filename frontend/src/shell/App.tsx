@@ -1061,7 +1061,16 @@ export default function App({ config }: { config: Config }) {
       <div id="app">
         <OnboardingWizard key={epoch} config={config} />
         <NotificationHost />
-        <UpdateNotifier />
+        {/* This whole branch already requires `!IS_EMBED` (the `if` above),
+            so this is never reachable under IS_EMBED today — but the guard
+            is spelled out explicitly anyway (finding #1, code review):
+            `UpdateNotifier`'s own header comment claims it runs "behind the
+            same !IS_EMBED guard as its siblings" everywhere it is mounted,
+            and leaving this instance implicit made that claim false at the
+            OTHER mount site below, which had no guard at all. Both sites now
+            say it the same way so the comment stays true regardless of how
+            this branch's own condition might change later. */}
+        {!IS_EMBED && <UpdateNotifier />}
         {/* Mod+K is App-wide (the listener above runs here too), so the sheet
             must be renderable here — or the flag flips with nothing shown and
             the sheet pops open on whatever page the wizard lets go to. */}
@@ -1125,8 +1134,18 @@ export default function App({ config }: { config: Config }) {
           progress, Notifications = decisions". Headless — mounted beside
           `NotificationHost` (both draw through the same notify() store)
           rather than inside it, so `NotificationHost` stays a pure renderer
-          of whatever's in the store. */}
-      <UpdateNotifier />
+          of whatever's in the store. Behind `!IS_EMBED`, same as the sidebar
+          and `StatusBar` above (finding #1, code review): this mount had NO
+          guard at all before, so an app opened in an embedded pane raised
+          its OWN copy of both decision notifications AND (via `notify()`'s
+          pane->shell forwarding, `platform/lib/notifications.ts`) pushed a
+          SECOND copy into the top shell's own panel — the exact double-popup
+          this file's other `!IS_EMBED`-gated mounts already exist to avoid.
+          `UpdateNotifier` only needs to run once, in the top document; the
+          decision it raises already reaches every pane through the ordinary
+          notify() store, so a pane mounting its own instance can only
+          duplicate work, never add coverage. */}
+      {!IS_EMBED && <UpdateNotifier />}
       {/* One dialog for every "Share" entry (card chip, card menu, app page,
           explorer kebab): the menu entries cannot own a dialog, so they post
           a request to platform/lib/share-app and this host renders it. */}
