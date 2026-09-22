@@ -197,41 +197,62 @@ export interface SurfaceInput {
 }
 
 export function bannerSurface({ banner, mode, updateState, stage }: SurfaceInput): BannerSurface {
-  // TWO DOORS INTO "A RESTART IS HAPPENING", and it needs both. The banner's
-  // own `update-restart` is the durable fact (the disk is ahead of the running
-  // app), reached on the 5 s probe; the update store saying "installed" is the
-  // same news two ticks earlier, on its 2 s busy cadence — which is what lets
-  // `UpdateNotifier` raise its restart notification the moment the install
-  // lands (D2) rather than whenever the next probe happens to be. Neither door
-  // draws anything HERE any more (`UpdateDialog`'s "restart" mode is deleted,
-  // SPEC-update-notifications.md); both still matter below only for what they
-  // suppress.
-  const installedReady = banner === "update-restart" || updateState === "installed";
+  // THE SERVER IS STILL ANSWERING, JUST AN OLDER BUILD (2026-09-22 fix,
+  // finding #5, code review). `banner === "update-restart"` is `reduceProbe`
+  // saying the disk is ahead of what the running server just served on a
+  // HEALTHY probe — the app is demonstrably up, just not yet restarted onto
+  // the new build, so the "isn't running" card would be a lie here.
+  //
+  // `updateState === "installed"` used to be OR'd in alongside it (the same
+  // fact two ticks earlier, off the update store's 2s busy poll, per D2 —
+  // `UpdateNotifier` reads the SAME field to raise its own restart
+  // notification without waiting for a 5s probe). That reasoning is sound
+  // for as long as the server is actually still responding. The bug: this
+  // field never goes back to anything else until an ACTUAL restart happens
+  // (installing on disk does not touch the live process), so it stayed true
+  // for the rest of the session regardless of what happened next. If the
+  // running server then genuinely crashed for an unrelated reason — no
+  // restart ever requested, `stage` still sitting at "ready" — two failed
+  // probes flipped `banner` to "down" while `updateState` was still
+  // "installed" from minutes earlier, and this OR suppressed the real outage
+  // forever: a session-long "everything's fine" over an app that had
+  // actually died. Dropping it and keeping only `banner === "update-restart"`
+  // fixes that — that condition is false the instant probes start failing
+  // (`reduceProbe` overwrites `banner` with "down" past `FAIL_THRESHOLD`,
+  // whatever it was before), so it can no longer paper over a real outage,
+  // while a genuine "disk ahead, server still healthy" wait still shows
+  // nothing, exactly as before.
+  const diskAheadOfHealthyServer = banner === "update-restart";
 
   // THE CAP'S FALL-THROUGH (D4), and it is the FIRST thing asked. `gave-up`
   // means the stage machine stopped promising; what the page shows from then on
   // is whatever the SERVER says, with no stage attached. While the server is
   // still not answering that is the ordinary down card — the case the cap
-  // exists for — and it has to outrank both doors below, because both stay open
-  // through an outage: `update-restart` is the last thing the banner knew, and
-  // the update store keeps its last value when its poll fails. Without this the
-  // down card would stay suppressed past the promise that suppressed it.
+  // exists for — and it has to outrank the door below, which stays open
+  // through an outage: `update-restart` is the last thing the banner knew
+  // before probes started failing. Without this the down card would stay
+  // suppressed past the promise that suppressed it.
   //
   // WITH THE SERVER ANSWERING THE DOWN CARD STAYS SUPPRESSED TOO, and that is
   // deliberate (bugbot, PR #1214): a restart that did not take leaves the app
   // demonstrably running with the disk still ahead, so "fused-render isn't
-  // running" would be a lie. The ordinary doors below take it instead — there
+  // running" would be a lie. The ordinary door below takes it instead — there
   // is no dialog left to draw a button on `gave-up`; the restart notification
   // (`UpdateNotifier`) offers the retry instead, and it is not this function's
   // concern.
   if (stage === "gave-up" && banner === "down") return "down";
 
-  // A restart in flight (or ready to be offered) suppresses the "isn't
-  // running" card on its own — this IS step 5, the whole of what PR #1214
-  // fixed, and the one thing this function still owes the restart flow now
-  // that the dialog itself is gone: the app being gone from the first failed
-  // probe onward is the restart working, not an outage to report.
-  if (restartInFlight(stage) || installedReady) return "none";
+  // A restart in flight (or a disk-ahead wait with the server still
+  // healthy) suppresses the "isn't running" card on its own — this IS step
+  // 5, the whole of what PR #1214 fixed, and the one thing this function
+  // still owes the restart flow now that the dialog itself is gone: the app
+  // being gone from the first failed probe onward, DURING an actual
+  // restart, is the restart working, not an outage to report.
+  // `restartInFlight(stage)` alone already covers every in-flight restart
+  // stage regardless of `banner` (see this file's own test asserting the
+  // down card never wins during one) — `diskAheadOfHealthyServer` only adds
+  // the pre-request "ready to restart, haven't pressed it yet" wait.
+  if (restartInFlight(stage) || diskAheadOfHealthyServer) return "none";
   if (banner === "hidden") return "none";
   if (banner === "reconnected") return "reconnected";
   if (banner === "update-refresh") return mode === "off" ? "none" : "refresh-dialog";

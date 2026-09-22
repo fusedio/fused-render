@@ -214,15 +214,33 @@ test("the disk being ahead suppresses the down card, but draws no dialog", () =>
   expect(surface({ banner: "update-restart" })).toBe("none");
 });
 
-test("the install landing suppresses the down card the same way, on the store alone", () => {
-  // D2: the shared update store says "installed" on its 2 s busy cadence, two
-  // ticks before the banner's own 5 s probe notices the disk moved. Neither the
-  // banner state nor a press is needed.
+test("the install landing draws no dialog either, same as the disk-ahead case", () => {
+  // None of these ever draw anything HERE (`UpdateDialog`'s "restart" mode is
+  // deleted) — with the default `banner: "hidden"` from `surface()` there is
+  // nothing to suppress in the first place, so this only pins that no state
+  // in the update store makes this function invent a card on its own. The
+  // case that actually exercises suppression — `updateState` overriding a
+  // real `banner: "down"` — is below, since it used to (wrongly) matter and
+  // no longer does; see the "genuine outage" test.
   expect(surface({ updateState: "installed" })).toBe("none");
-  // …and only that state. An install still running is the Activity job's story.
   expect(surface({ updateState: "installing" })).toBe("none");
   expect(surface({ updateState: "available" })).toBe("none");
   expect(surface({ updateState: "error" })).toBe("none");
+});
+
+test("a genuine crash still shows the down card even with an install sitting installed (finding #5, code review)", () => {
+  // Regression test. `installedReady` used to be
+  // `banner === "update-restart" || updateState === "installed"` — and
+  // `updateState` never reverts from "installed" until an actual restart
+  // happens, so once ANY update installed during a session, this OR stayed
+  // true for the rest of it. A later, wholly unrelated server crash (no
+  // restart ever requested, `stage` still "ready") flips `banner` to "down"
+  // on consecutive failed probes exactly as it always did — but the OR used
+  // to swallow that "down" and keep showing "none" forever. The fix narrows
+  // the door to `banner === "update-restart"` alone, which `reduceProbe`
+  // itself clears the instant probes start failing, so a real outage is no
+  // longer hidden behind old news from the update store.
+  expect(surface({ banner: "down", updateState: "installed", stage: "ready" })).toBe("down");
 });
 
 test("the down card is suppressed for every in-flight stage", () => {
