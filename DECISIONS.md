@@ -4622,3 +4622,83 @@ tests/test_index_query.py tests/test_index_rank_concurrency.py` — 342
 passed. The updated test
 (`test_search_ranked_honours_the_limit_in_sql_not_just_in_python`) run 3x in
 isolation to confirm it is not flaky post-fix: 3/3 passed.
+
+## LIKE ... ESCAPE blocks DuckDB's optimizer; contains()/bare LIKE where safe
+
+Every predicate in `fused_render/index/query.py` was written as
+`col LIKE '...' ESCAPE '\'` (via `like_literal()`), including unanchored
+substring scans (`%needle%`) and simple prefix scans (`prefix%`). DuckDB's
+`LikeOptimizationRule` only rewrites `LIKE` into `contains()` or a sargable
+range when the statement has NO `ESCAPE` clause; with one present, it falls
+back to the opaque `like_escape()` function — no fast path, no parquet
+row-group pruning. Measured directly: substring `LIKE ... ESCAPE` 9.74ms vs.
+`contains()` 5.00ms (~1.95x); prefix `LIKE ... ESCAPE` 2.39ms vs. plain
+`LIKE 'prefix%'` 1.48ms (~1.6x — the unescaped form compiles to a real
+`>= / <` range, enabling row-group pruning that the escaped form cannot get).
+`starts_with()` was also measured (2.11ms) and rejected: essentially no win
+over the escaped form, so it isn't worth trading away for.
+
+Two changes, split by whether dropping `ESCAPE` is always safe:
+
+1. **Unconditional**: every unanchored substring predicate (`_rank_sql`'s
+   `lrel` filter, `search_under`'s path/dir substring filter, and the
+   single-literal leg of `_name_predicate_sql`'s `contains` key) now emits
+   `contains(col, lower('lit'))` instead of
+   `col LIKE '%'||like_literal(lit)||'%' ESCAPE '\'`. `contains()` has no
+   wildcard semantics at all, so it is exactly equivalent for any literal —
+   including literals containing `%`, `_`, or `\` — with no escaping
+   needed. (`_name_predicate_sql`'s multi-literal `%`-chain leg keeps the
+   escaped form: `contains()` only takes one needle, so a chain of several
+   literals still needs a real LIKE pattern.)
+
+2. **Conditional**, via a new `_prefix_predicate_sql(col, prefix)` helper
+   used by `stats`, `search_under`, and `search_ranked`'s prefix scans: it
+   drops `ESCAPE` only when `like_literal(prefix) == prefix`, i.e. the
+   prefix contains no LIKE metacharacter. Metacharacter-free prefixes (the
+   overwhelming common case — ordinary path segments) get the fast
+   unescaped `LIKE 'prefix%'`. A prefix containing `_` or `%` keeps the
+   escaped form, because those are the two characters `LIKE` treats as
+   wildcards: an unescaped `dir LIKE '/x/proj_a/%'` would also match
+   `/x/proj-a/...` (`_` matches any single character), silently returning a
+   sibling directory's files as if they were under `proj_a`. This is
+   exactly the scoping bug the gate exists to prevent — proven by a
+   red/green cycle: temporarily forcing `_prefix_predicate_sql` to always
+   drop `ESCAPE` turned 5 tests red (the proj_a/proj-a scoping tests in all
+   three of `test_index_query.py`, `test_index_search.py`, and
+   `test_index_rank.py`, plus the two pre-existing lookalike-sibling tests
+   for `stats`/`search_under`), then restoring the gate brought all 330
+   back to green. `starts_with()` was not used here either, for the same
+   reason it was rejected above — it has no gated/ungated split of its own
+   and measured no meaningful improvement over the escaped `LIKE`.
+
+New/updated tests (all in the targeted 3-file suite,
+`tests/test_index_query.py tests/test_index_rank.py
+tests/test_index_search.py`): `test_prefix_predicate_drops_escape_for_a_metachar_free_prefix`,
+`test_prefix_predicate_keeps_escape_when_the_prefix_has_an_underscore`,
+`test_prefix_predicate_keeps_escape_when_the_prefix_has_a_percent`,
+`test_search_under_scoping_ignores_proj_a_lookalike_and_a_percent_literal`,
+`test_search_under_substring_filter_compiles_to_contains_not_like_escape`,
+`test_name_predicate_sql_contains_leg_uses_contains_for_a_single_literal`,
+`test_search_ranked_scoping_ignores_a_proj_a_lookalike_sibling`,
+`test_rank_sql_substring_filter_compiles_to_contains_not_like_escape`. Two
+pre-existing tests already covered the `stats`/`search_under` lookalike
+case (`test_stats_does_not_count_a_lookalike_underscore_sibling`,
+`test_search_under_ignores_a_lookalike_underscore_sibling`) and needed no
+changes. 330 passed in the targeted suite.
+
+End-to-end honesty check: built a synthetic 450,000-row index (3,000 dirs,
+random names/extensions) and timed `search_ranked` through the public API
+over a 5-query mix, alternating this branch against the pre-change code 3x
+each (7 reps per run, reporting the per-run median). Per-run medians —
+branch: 3.060ms, 3.158ms, 3.110ms (median 3.110ms); pre-change: 3.142ms,
+3.046ms, 3.029ms (median 3.046ms). **The predicate-level win (1.6-2x) does
+not show up end-to-end at this scale** — the two arms are statistically
+indistinguishable (within run-to-run noise, and the "reverted" arm was
+occasionally faster). `search_ranked`'s total latency here is dominated by
+connection setup, the scoring/ranking apparatus, and Python-side overhead
+around the query, not by the scan predicates this change targets; the win
+is real at the predicate/plan level (proven directly against DuckDB's
+EXPLAIN output and isolated timings) but this benchmark's query/data shape
+doesn't put enough weight on the scan itself to surface it in the
+end-to-end number. Reporting this as-is rather than cherry-picking a
+favorable pair of runs.
