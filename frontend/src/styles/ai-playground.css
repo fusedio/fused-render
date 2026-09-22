@@ -2149,6 +2149,426 @@
   font-size: 11.5px;
 }
 
+/* -- the decisions stage (Laya) -----------------------------------------------------
+   The questions are the main control, so they sit in the main column — as a
+   LIST, not a stack of cards (owner, 2026-09-22: "too many boxes mean nothing
+   has any value"). Hierarchy comes from type and spacing: a quiet index, the
+   question as the strongest text on its row in a field with no border until
+   focused, the answer shape and its options as one muted line beneath, a
+   hairline between questions and no container around any of them.
+
+   The accent has a budget of ONE hit per answered question: the picked bar of
+   a choice, the marker on a score's rail, the P(true) bar of a noul. Verdicts
+   are foreground weight, confidence is a small muted figure, every other bar
+   is a neutral tint — so the one accented thing is the thing to read. The
+   bars draw RAW probabilities (they sum to one per question; nothing is
+   rescaled the way the embed stage rescales cosines). */
+
+.pg-decide-questions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pg-decide-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* One question: index column, then the body. The hairline sits BETWEEN
+   questions only — the first has the label above it, the last the add row. */
+.pg-decide-q {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 0;
+}
+
+.pg-decide-q + .pg-decide-q {
+  border-top: 1px solid var(--border);
+}
+
+.pg-decide-q-n {
+  flex: none;
+  width: 1.4em;
+  padding-top: 7px;
+  color: var(--fg-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.pg-decide-q-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pg-decide-q-top,
+.pg-decide-q-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pg-decide-q-meta {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+/* The two inline fields read as text until touched: no border, no fill, the
+   card's own background. Hover lifts a faint plate so the field announces
+   itself as editable; focus draws a neutral hairline under the text rather
+   than the composer's accent glow — three glowing rings in a list is the
+   yellow problem again. The appearance/border/background resets are
+   load-bearing: preflight is off. */
+.pg-decide-q-text,
+.pg-decide-q-criteria {
+  appearance: none;
+  min-width: 0;
+  margin: 0 -6px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  outline: none;
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.pg-decide-q-text::placeholder,
+.pg-decide-q-criteria::placeholder {
+  color: var(--fg-muted);
+  opacity: 0.7;
+}
+
+.pg-decide-q-text:hover,
+.pg-decide-q-criteria:hover {
+  background: rgba(var(--tint), 0.04);
+}
+
+.pg-decide-q-text:focus-visible,
+.pg-decide-q-criteria:focus-visible {
+  background: rgba(var(--tint), 0.04);
+  box-shadow: inset 0 -1px 0 var(--ctl-quiet-border-hover);
+}
+
+/* The question is the strongest text on its row. */
+.pg-decide-q-text {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+/* The options line is secondary: smaller, muted until typed into. */
+.pg-decide-q-criteria {
+  flex: 1 1 12rem;
+  /* Sits after the segmented control, so no left bleed: the hover plate
+     would otherwise eat the gap between them. */
+  margin-left: 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+}
+
+.pg-decide-q-criteria:focus-visible {
+  color: var(--fg);
+}
+
+/* Remove shows for the question under the pointer or holding focus, and
+   stays reachable from the keyboard on its own. */
+.pg-decide-q-remove {
+  flex: none;
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.pg-decide-q:hover .pg-decide-q-remove,
+.pg-decide-q:focus-within .pg-decide-q-remove,
+.pg-decide-q-remove:focus-visible {
+  opacity: 1;
+}
+
+/* The last question cannot be removed; its × stays hidden rather than
+   showing dead on hover. */
+.pg-decide-q-remove:disabled {
+  opacity: 0;
+}
+
+/* The list's footer: Add on the left at the text column, Ask on the right. */
+.pg-decide-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 6px;
+}
+
+.pg-decide-add {
+  margin-left: calc(1.4em + 10px);
+  padding: 4px 0;
+}
+
+.pg-decide-foot .pg-send {
+  margin-left: auto;
+}
+
+/* The answer shape as a segmented control: one soft track, and the lit
+   segment is a filled plate in the card's colour — neutral, not the accent.
+   Plain CSS on the shadcn slots because the toggle's own utilities live in
+   Tailwind's layer, and unlayered rules win without `!`. */
+.pg-decide-seg {
+  flex: none;
+  padding: 2px;
+  border-radius: 7px;
+  background: rgba(var(--tint), 0.06);
+}
+
+.pg-decide-seg [data-slot="toggle-group-item"] {
+  height: 22px;
+  min-width: 0;
+  padding: 0 9px;
+  border-radius: 5px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  background: transparent;
+  box-shadow: none;
+}
+
+.pg-decide-seg [data-slot="toggle-group-item"]:hover {
+  color: var(--fg);
+  background: transparent;
+}
+
+.pg-decide-seg [data-slot="toggle-group-item"][aria-pressed="true"],
+.pg-decide-seg [data-slot="toggle-group-item"][data-pressed] {
+  color: var(--fg);
+  background: var(--bg-alt);
+  box-shadow: 0 0 0 1px rgba(var(--tint), 0.08);
+}
+
+/* -- the answer, under its question -- */
+
+.pg-decide-answer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.pg-decide-verdict {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0;
+  min-width: 0;
+}
+
+.pg-decide-verdict-word {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.pg-decide-verdict-conf {
+  flex: none;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The distribution: label / thin track / percentage, on a shared grid so the
+   bars start on one line whatever the labels' widths. No row has a box. */
+.pg-decide-dist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(5rem, 11rem) 1fr 3.4rem;
+  column-gap: 10px;
+  row-gap: 5px;
+  align-items: center;
+}
+
+.pg-decide-dist-row {
+  display: grid;
+  grid-template-columns: subgrid;
+  grid-column: 1 / -1;
+  align-items: center;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+.pg-decide-dist-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-decide-dist-track {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(var(--tint), 0.08);
+  overflow: hidden;
+}
+
+.pg-decide-dist-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: rgba(var(--tint), 0.3);
+  transition: width 240ms ease;
+}
+
+.pg-decide-dist-pct {
+  text-align: right;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The row the verdict rests on: stronger text, and — for a choice or a noul —
+   the accent on its bar. A score's mode is only the stronger text (`is-mode`);
+   its accent went to the rail marker. */
+.pg-decide-dist-row.is-picked,
+.pg-decide-dist-row.is-mode {
+  color: var(--fg);
+}
+
+.pg-decide-dist-row.is-picked .pg-decide-dist-label,
+.pg-decide-dist-row.is-mode .pg-decide-dist-label {
+  font-weight: 600;
+}
+
+.pg-decide-dist-row.is-picked .pg-decide-dist-fill {
+  background: var(--accent);
+}
+
+/* A score's scale as ordered steps, worst left to best right, with the
+   expected level marked. Steps are small neutral ticks on a hairline; the
+   marker is the one accented dot. */
+.pg-decide-rail {
+  position: relative;
+  height: 14px;
+  margin: 2px 6px 4px;
+}
+
+.pg-decide-rail-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: rgba(var(--tint), 0.16);
+}
+
+.pg-decide-rail-step {
+  position: absolute;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--bg-alt);
+  box-shadow: 0 0 0 1px rgba(var(--tint), 0.22);
+  transform: translate(-50%, -50%);
+}
+
+.pg-decide-rail-mark {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.18);
+  transform: translate(-50%, -50%);
+  transition: left 240ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pg-decide-dist-fill,
+  .pg-decide-rail-mark,
+  .pg-decide-q-text,
+  .pg-decide-q-criteria,
+  .pg-decide-q-remove {
+    transition: none;
+  }
+}
+
+/* The cog: keys and the request JSON, for the page author. */
+.pg-decide-keys {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pg-decide-key {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pg-decide-key .pg-decide-q-n {
+  padding-top: 0;
+}
+
+.pg-decide-key-input {
+  appearance: none;
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  outline: none;
+}
+
+.pg-decide-key-input:focus-visible {
+  border-color: var(--ctl-quiet-border-hover);
+}
+
+/* Nothing to paste yet: the same sentence the run would refuse with. */
+.pg-decide-json-none {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+}
+
+.pg-decide-json {
+  margin: 0;
+  max-height: 16rem;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre;
+}
+
 /* -- the images mode (SPEC §40) ----------------------------------------------------
    Drawn only where the selected model reports a vision tower — see
    EmbedStage.tsx's header. The list of chosen files lives behind the settings

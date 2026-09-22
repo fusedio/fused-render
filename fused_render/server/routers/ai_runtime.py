@@ -54,8 +54,8 @@ from fused_render.ai import catalog, fit, footprints, hw_detect, registry, speed
 # worker asked directly would give.
 from fused_render.ai.runners import diarize, embed_common, engine_options, formats, partial, preview
 from fused_render.server.common import (
-    AI_PROVIDERS, APPLE_MODELS, _error, _require_fused, ai_result, apple_model_for,
-    provider_of_model)
+    AI_PROVIDERS, APPLE_MODELS, _error, _require_fused, ai_result, ai_usage_tokens,
+    apple_model_for, provider_of_model)
 # The AI Models page's reading of the local cache, imported rather than
 # re-derived: see `_inferred_capability` and `_catalog_with_downloads`. It imports
 # nothing from here.
@@ -179,6 +179,24 @@ _EMBED_OPTIONS = frozenset({"texts", "paths", "model", "kind", "provider"})
 #: SERVER's accepted set is wider than the caller-facing one, the same asymmetry
 #: `_TRANSCRIBE_SERVER_OPTIONS` documents.
 _EMBED_SERVER_OPTIONS = _EMBED_OPTIONS | {"base"}
+#: `/api/ai/decide`'s caller-facing option names (SPEC §40).
+#:
+#: A typed-decision call (Laya via `laya-mlx`) carries a `state` — the text,
+#: JSON object or conversation the questions are about — and a `questions` map
+#: of typed questions (`choice` | `score` | `noul`). Nothing else: the model has
+#: no sampling knobs (zero output tokens; every answer is a calibrated
+#: probability), so the tunables the text verb carries have nothing to attach
+#: to here. Pinned against `runtime.js`'s `decideKeys` and
+#: `templates/shared/fused_ai.py`'s `_DECIDE_WIRE_KEYS` the same way the
+#: other five sets are.
+_DECIDE_OPTIONS = frozenset({"state", "questions", "model", "provider"})
+#: Nothing bridge-injected on this verb (no page-relative path to resolve), so
+#: the server's set IS the caller's. Kept as its own name so the route and the
+#: drift guard read the same way as the other five.
+_DECIDE_SERVER_OPTIONS = _DECIDE_OPTIONS
+#: The three question types Laya's decision heads answer. Closed: a fourth
+#: type is a 400 here, not a worker traceback.
+_DECIDE_TYPES = frozenset({"choice", "score", "noul"})
 
 
 def _reject_unknown(body: dict, allowed: frozenset[str], endpoint: str):
@@ -203,7 +221,7 @@ def _reject_unknown(body: dict, allowed: frozenset[str], endpoint: str):
 
 
 def _provider_rejection(body: dict, verb: str):
-    """The `provider` tier check the four capability routes share (D631).
+    """The `provider` tier check the five capability routes share (D631).
 
     Returns None when the call may proceed locally, else a
     `(type, message, status)` triple for the caller to wrap in its own
@@ -260,12 +278,13 @@ def _provider_rejection(body: dict, verb: str):
             "on this machine", 409)
 
 
-#: Which capability each job-backed verb is, in the apple tier's table.
+#: Which capability each verb is, in the apple tier's table.
 _APPLE_VERB_CAPABILITY = {
     "image": registry.IMAGE_GENERATION,
     "video": registry.VIDEO_GENERATION,
     "transcribe": registry.SPEECH_TO_TEXT,
     "embed": registry.EMBEDDINGS,
+    "decide": registry.DECISIONS,
 }
 #: The verbs the apple tier serves in THIS build. `embed` has a pinned id
 #: (`afm-embedding`) but no path yet — it answers `unavailable` until its
@@ -278,6 +297,8 @@ _APPLE_VERB_REFUSALS = {
     "video": "provider 'apple' does not serve video; use a local model",
     "embed": ("provider 'apple' does not serve embed in this build yet ('afm-embedding' "
               "is reserved for it); use a local model"),
+    "decide": ("provider 'apple' does not serve decide: Apple ships no typed-decision "
+               "model; use a local model"),
 }
 
 
@@ -2558,4 +2579,181 @@ def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=No
             {"embeddings": result.get("vectors") or [], "values": list(items)},
             provider="local", model=model, usage=None,
             metadata={"dim": result.get("dim") or 0, "kind": kind}),
+    }
+
+
+# ---------------------------------------------------------------- decide
+
+
+def _decide_error(type_: str, message: str, status: int,
+                  job_id: str | None = None) -> JSONResponse:
+    """`/api/ai/decide`'s wire shape — `_embed_error`'s, for the same reason:
+    this route's 409 can mean the model is LOADING NOW and carries the job id
+    the page should watch, a field `_error`'s bare shape cannot hold."""
+    return _embed_error(type_, message, status, job_id=job_id)
+
+
+def _validate_questions(questions) -> str | None:
+    """The sentence a malformed `questions` map earns, or None when it is fine.
+
+    Checked HERE rather than left to the worker for `api_ai_embed`'s reason: a
+    malformed request must cost a 400 naming the question, not a 409 that
+    implies the fix is to wait for a model to load, and never a traceback out
+    of `laya_mlx` in its own vocabulary. The rules are Laya's own
+    (`Agent._to_internal`): three types; `choice` and `score` need `criteria`
+    (a list of unique labels, or — `choice` only — a label→description dict);
+    `noul` takes none. Every question is checked, first failure wins, so the
+    message can name exactly one id.
+    """
+    if not isinstance(questions, dict) or not questions:
+        return "'questions' must be a non-empty object of {id: {type, instructions, criteria}}"
+    for qid, q in questions.items():
+        if not isinstance(qid, str) or not qid.strip():
+            return "every key of 'questions' must be a non-empty string id"
+        if not isinstance(q, dict):
+            return f"question {qid!r} must be an object with 'type' and 'instructions'"
+        qtype = q.get("type")
+        if qtype not in _DECIDE_TYPES:
+            return (f"question {qid!r}: 'type' must be one of "
+                    + ", ".join(sorted(_DECIDE_TYPES)) + f", not {qtype!r}")
+        instructions = q.get("instructions")
+        if not isinstance(instructions, str) or not instructions.strip():
+            return f"question {qid!r}: 'instructions' must be a non-empty string"
+        criteria = q.get("criteria")
+        if qtype == "noul":
+            if criteria not in (None, [], {}):
+                return f"question {qid!r}: a 'noul' question takes no 'criteria'"
+            continue
+        if isinstance(criteria, dict):
+            if qtype != "choice":
+                return (f"question {qid!r}: a 'score' question's 'criteria' is an "
+                        "ordered list of rubric levels, not an object")
+            labels = list(criteria)
+            if not all(isinstance(v, str) for v in criteria.values()):
+                return f"question {qid!r}: every 'criteria' description must be a string"
+        elif isinstance(criteria, list):
+            labels = criteria
+        else:
+            return (f"question {qid!r}: a {qtype!r} question needs 'criteria' — a list "
+                    "of labels"
+                    + (" or a {label: description} object" if qtype == "choice" else ""))
+        if len(labels) < 2:
+            return f"question {qid!r}: 'criteria' needs at least two entries"
+        if not all(isinstance(label, str) and label.strip() for label in labels):
+            return f"question {qid!r}: every 'criteria' label must be a non-empty string"
+        if len(set(labels)) != len(labels):
+            return f"question {qid!r}: 'criteria' labels must be unique"
+    return None
+
+
+def _camel_answers(answers: dict) -> dict:
+    """Laya's per-answer dict, with its one snake_case key made camelCase.
+
+    D633: the wire speaks camelCase. Every other key Laya emits (`type`,
+    `confidence`, `choice`, `probabilities`, `score`, `legend`, `noul`) is
+    already a single word; `action.act_probability` is the only compound, so
+    it is the only translation — done at the boundary, once, rather than in
+    the worker, which stays a thin shim over the library's own output.
+    """
+    out = {}
+    for qid, answer in (answers or {}).items():
+        # A non-dict answer is a worker bug; pass it through rather than 500.
+        if not isinstance(answer, dict):
+            out[qid] = answer
+            continue
+        answer = dict(answer)
+        action = answer.get("action")
+        if isinstance(action, dict) and "act_probability" in action:
+            action = dict(action)
+            action["actProbability"] = action.pop("act_probability")
+            answer["action"] = action
+        out[qid] = answer
+    return out
+
+
+@router.post("/api/ai/decide")
+def api_ai_decide(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Ask the resident typed-decision model (Laya) typed questions about a state.
+
+    Laya is not a chat model: a bidirectional encoder with decision heads turns
+    a `state` (text, a JSON object, or a conversation) plus typed `questions`
+    into calibrated probabilities — a `choice` over labels, a `score` on an
+    ordered rubric, or a `noul` P(true) — with ZERO output tokens. So this is
+    `api_ai_embed`'s shape, not `/api/ai`'s: nothing to stream, one forward
+    pass per question (~13 ms), the reply IS the result.
+
+    **A cold model is `model_loading`, not `unavailable`** — the same fork embed
+    takes: the load starts, its job id comes back on a 409 for the caller to
+    watch and retry.
+
+    The reply is the one result frame (D632) with `answers` as the payload:
+    `{qid: {type, confidence, action: {actProbability}, choice?, probabilities?,
+    score?, legend?, noul?}}`, and `usage` carries the encoder's input tokens
+    (`outputTokens` is always 0 — a fact about the model, kept rather than
+    dropped so a usage table reads the same across verbs).
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    rejection = _reject_unknown(body, _DECIDE_SERVER_OPTIONS, "/api/ai/decide")
+    if rejection is not None:
+        message = json.loads(bytes(rejection.body))["error"]
+        return _decide_error("bad_request", message, status=400)
+    tier = _provider_rejection(body, "decide")
+    if tier is not None:
+        return _decide_error(tier[0], tier[1], status=tier[2])
+
+    state = body.get("state")
+    # Laya accepts a string, a dict (serialised as JSON) or a conversation list;
+    # anything else — and an EMPTY one of those — has nothing for the encoder to
+    # read, so it is refused before a model is resolved, same as embed's batch
+    # check.
+    if isinstance(state, str):
+        if not state.strip():
+            return _decide_error("bad_request", "'state' must not be empty", status=400)
+    elif isinstance(state, (dict, list)):
+        if not state:
+            return _decide_error("bad_request", "'state' must not be empty", status=400)
+    else:
+        return _decide_error(
+            "bad_request",
+            "'state' must be a string, an object, or a list of conversation turns",
+            status=400)
+    problem = _validate_questions(body.get("questions"))
+    if problem is not None:
+        return _decide_error("bad_request", problem, status=400)
+
+    model = _model_of(body) or catalog.default_for(registry.DECISIONS)
+    if not model:
+        return _decide_error(
+            "unavailable",
+            registry.unavailable_reason(registry.DECISIONS)
+            or "no typed-decision model is configured",
+            status=409)
+    # Same refusal the load route makes, in this route's own vocabulary — see
+    # `api_ai_embed`'s identical block.
+    gap = catalog.engine_gap(model)
+    if gap is not None:
+        return _decide_error("unavailable", gap["reason"], status=409)
+
+    forwarded = {"state": state, "questions": body["questions"]}
+    try:
+        result = supervisor.generate_decide(model, forwarded)
+    except supervisor.ModelNotReady as e:
+        return _decide_error("model_loading", str(e), status=409, job_id=e.job_id)
+    except supervisor.SupervisorError as e:
+        return _decide_error("ai_error", str(e), status=502)
+
+    return {
+        "ok": True,
+        "result": ai_result(
+            {"answers": _camel_answers(result.get("answers") or {})},
+            provider="local", model=model,
+            usage=ai_usage_tokens(result.get("usage")),
+            # The worker's own warnings (a state cut to the token window) —
+            # the D633 slot for "part of your input was dropped".
+            warnings=list(result.get("warnings") or []),
+            finish_reason="stop",
+            metadata={"runner": "laya-mlx"}),
     }

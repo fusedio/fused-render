@@ -126,6 +126,7 @@ from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import fit, footprints, hw_detect, speed
 from fused_render.ai import tasks as ai_tasks
 from fused_render.ai.registry import TEXT_GENERATION, available_runners, for_capability
+from fused_render.ai.registry import all_runners as _all_runners
 from fused_render.ai.runners import formats
 from fused_render.server.common import _error, _require_fused
 from fused_render.ai.hub_cache import (
@@ -1057,6 +1058,45 @@ def _count_variants(raw: dict) -> int:
     return 1
 
 
+#: The `tags` entry every Laya checkpoint carries (upstream's and the
+#: `aac6fef/*-mlx` conversions alike, checked against the Hub API
+#: 2026-09-22), and the one word a search hit on a `format_gated` tag must
+#: say for itself when it is not already a curated id. The runner code is the
+#: key because the gate is about ONE runner's format (`registry.DECISIONS`'s
+#: docstring); a second format-gated runner adds a row here, not a branch.
+_FORMAT_GATE_FAMILY_TAGS = {"laya-mlx": ("laya",)}
+
+
+def _passes_format_gate(reading, model_id: str, raw: dict) -> bool:
+    """HS-0 for a tag the runner shares with models it cannot open (D887).
+
+    `text-classification` is supported — `laya-mlx` serves it — but the tag
+    is worn by every sentiment BERT, cross-encoder and NLI head on the Hub,
+    and after download those cards would say "no engine here reads this
+    format" beside a Download button this tab had offered. The cached path
+    has the files and lets `formats.loaders()` decide; a search result has
+    only metadata, so it needs something besides the tag: the repo is one the
+    catalog curates for the runner, or its own `tags` name the runner's
+    family. Both are the author's or the curation's claim about the FORMAT,
+    which is what `pipeline_tag` on every other row already is.
+
+    Not gated: any reading whose tag is not `format_gated`, and any reading
+    with no capability (already dropped by the caller).
+    """
+    if not ai_tasks.is_format_gated(reading.tag):
+        return True
+    from fused_render.ai import catalog
+    runners = [r for r in available_runners(reading.capability)] or [
+        r for r in _all_runners() if r.capability == reading.capability]
+    tags = {t for t in (raw.get("tags") or []) if isinstance(t, str)}
+    for runner in runners:
+        if any(entry.get("id") == model_id for entry in catalog.for_runner(runner.code)):
+            return True
+        if tags & set(_FORMAT_GATE_FAMILY_TAGS.get(runner.code, ())):
+            return True
+    return False
+
+
 def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
                footprint_store: dict | None, hardware) -> dict | None:
     """One Hub result, joined to the local cache — or None for a row this app
@@ -1160,6 +1200,10 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str],
         # unrecognised one are both dropped, and now for stateable reasons —
         # `reading.support` says which, for a future face that wants to show
         # rather than hide them.
+        return None
+    if not _passes_format_gate(reading, model_id, raw):
+        # HS-0 again, for the one supported tag that is shared with models
+        # nothing here opens (D887) — see `_passes_format_gate`.
         return None
     task = reading.label
     library = raw.get("library_name") if isinstance(raw.get("library_name"), str) else None

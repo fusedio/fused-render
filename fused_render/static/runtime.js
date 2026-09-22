@@ -70,7 +70,8 @@
  *     paths, seconds) is under providerMetadata[provider].
  *   fused.ai.text({prompt, ...opts})
  *     -> Promise<{text, ...frame}>  usage: {inputTokens, outputTokens, totalTokens}
- *     Text is ONE capability among five (image, video, transcribe, embed), so
+ *     Text is ONE capability among six (image, video, transcribe, embed,
+ *     decide), so
  *     it is a verb like the others and takes ONE options object like the
  *     others — `prompt` is a field, not a positional argument, exactly as
  *     `.image({prompt})` and `.transcribe({path})` already read. `fused.ai`
@@ -88,12 +89,12 @@
  *     Apple Intelligence on) — nothing to download, nothing leaves the Mac,
  *     ~4k-token context, `usage` null on macOS 26. The reply's `provider`
  *     names the tier that answered. The SAME option, same meaning, is on
- *     .image/.video/.transcribe/.embed, and every reply carries `provider`;
- *     omitted means "local" there. "claude" rejects those four with
- *     `unavailable` (the CLI speaks text and nothing else), and "apple"
- *     rejects .image/.video (Apple ships no programmatic image model) and,
- *     in this build, .embed — a 409, not a 400: the tier exists, it lacks
- *     the verb.
+ *     .image/.video/.transcribe/.embed/.decide, and every reply carries
+ *     `provider`; omitted means "local" there. "claude" rejects those five
+ *     with `unavailable` (the CLI speaks text and nothing else), and "apple"
+ *     rejects .image/.video/.decide (Apple ships no programmatic image or
+ *     decision model) and, in this build, .embed — a 409, not a 400: the
+ *     tier exists, it lacks the verb.
  *     opts.history: prior [{role:"user"|"assistant", content}] turns, for a
  *     caller holding a conversation rather than asking one question.
  *     opts.raw: send the prompt verbatim, with no chat template around it.
@@ -274,6 +275,26 @@
  *     call just started — watch it and retry, exactly like the first
  *     fused.ai.text(...) on a cold local model) | "ai_error" | "unavailable" (no
  *     embedding runner on this machine).
+ *   fused.ai.decide({state, questions, model, provider, abortSignal})
+ *     -> Promise<{answers, ...frame}>  usage: {inputTokens, outputTokens: 0, totalTokens}
+ *     providerMetadata.local: {runner}.
+ *     Typed decisions from a small local model (Laya), NOT a chat model: it
+ *     reads `state` — a string, a JSON object, or a [{role, content}]
+ *     conversation — and answers each question in `questions` with
+ *     calibrated probabilities, zero tokens generated. `questions` is
+ *     {id: {type, instructions, criteria}} with three types: "choice"
+ *     (criteria: labels as a string[] or a {label: description} object;
+ *     answer {choice, probabilities}), "score" (criteria: an ordered
+ *     string[] of rubric levels; answer {score — the expected zero-based
+ *     level, legend, probabilities}), "noul" (no criteria; answer {noul —
+ *     P(true)}). Every answer also carries `type`, `confidence` and
+ *     `action.actProbability`. Context is SMALL (512 tokens on the English
+ *     checkpoint, 1024 multilingual) and shared by instructions, criteria
+ *     and state. Not job-backed: one forward pass per question, over in
+ *     milliseconds, so the reply IS the result. Rejects .type "bad_request"
+ *     (a malformed question, named by id) | "model_loading" (.jobId is the
+ *     load this call started — watch it and retry) | "ai_error" |
+ *     "unavailable" (no decision runner on this machine: Apple Silicon only).
  *   fused.capture.* -> record the screen, record the mic, grab a still
  *     screen({display, rect, audio, device, cursor, path, maxSeconds, title})
  *     -> Promise<handle> and audio({source, path, maxSeconds, title})
@@ -4829,6 +4850,90 @@
       });
   }
 
+  // fused.ai.decide({state, questions, model, provider}) -> Promise<{answers, ...frame}>
+  //
+  // Typed decisions from Laya, a small bidirectional encoder with decision
+  // heads — not a chat model. It reads a `state` (text, a JSON object, or a
+  // conversation) and answers each typed question with calibrated
+  // probabilities: a `choice` over labels, a `score` on an ordered rubric, or
+  // a `noul` P(true). Zero output tokens, so there is nothing to stream and
+  // nothing to watch a job for: one forward pass per question, over in
+  // milliseconds. The reply IS the result — `aiEmbed`'s shape, not
+  // `aiImage`/`aiTranscribe`'s.
+  //
+  // The envelope is closed (D413): `decideKeys` is the caller-facing set the
+  // server pins against `_DECIDE_OPTIONS`, and an unknown key is refused HERE
+  // with the server's own sentence, before the trip. The two REQUIRED fields
+  // get a presence check here too, for `aiEmbed`'s exactly-one-of reason: a
+  // call that will certainly be refused should not pay for the round trip.
+  // The per-question rules (three types, criteria per type, unique labels)
+  // are the server's to state — one copy, in `_validate_questions`.
+  //
+  // The 409 here can mean the model is LOADING rather than unavailable, so
+  // like `aiEmbed` this does not go through `aiPost` (whose blanket
+  // "409 -> unavailable" would drop the job id). Same `fail()` mapping,
+  // copied for the same reason.
+  function aiDecide(opts) {
+    opts = opts || {};
+    const decideKeys = ["state", "questions", "model", "provider"];
+    const unknown = Object.keys(opts).filter(
+      (k) => !decideKeys.includes(k) && k !== "abortSignal");
+    if (unknown.length) {
+      const named = unknown.sort().map((k) => `'${k}'`).join(", ");
+      const err = new Error(
+        `${named} ${unknown.length === 1 ? "is not an option" : "are not options"} `
+          + `of fused.ai.decide; accepted: ${decideKeys.slice().sort().join(", ")}`);
+      err.type = "bad_request";
+      return Promise.reject(err);
+    }
+    const state = opts.state;
+    const stateOk = (typeof state === "string" && state.trim())
+      || (Array.isArray(state) && state.length > 0)
+      || (state && typeof state === "object" && !Array.isArray(state)
+          && Object.keys(state).length > 0);
+    if (!stateOk) {
+      const err = new Error(
+        "fused.ai.decide({state}): 'state' must be a non-empty string, object, "
+          + "or list of conversation turns");
+      err.type = "bad_request";
+      return Promise.reject(err);
+    }
+    const questions = opts.questions;
+    if (!questions || typeof questions !== "object" || Array.isArray(questions)
+        || Object.keys(questions).length === 0) {
+      const err = new Error(
+        "fused.ai.decide({questions}): 'questions' must be a non-empty object of "
+          + "{id: {type, instructions, criteria}}");
+      err.type = "bad_request";
+      return Promise.reject(err);
+    }
+    const body = { state: opts.state, questions: opts.questions };
+    if (opts.model !== undefined) body.model = opts.model;
+    if (opts.provider !== undefined) body.provider = opts.provider;
+    const signal = abortSignalOf(opts);
+    if (signal && signal.aborted) return Promise.reject(cancelledError("the decision"));
+    return fetch("/api/ai/decide", {
+      method: "POST",
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      body: JSON.stringify(body),
+      signal: signal || undefined,
+    })
+      .catch(rethrowAbort("the decision"))
+      .then((res) => res.json().catch(() => ({})).then((data) => ({ res, data })))
+      .then(({ res, data }) => {
+        if (!res.ok || !data.ok) {
+          const error = data.error || {};
+          const err = new Error(
+            error.message || res.statusText || "the decision failed");
+          err.type = error.type
+            || (res.status === 409 ? "unavailable" : "ai_error");
+          if (error.jobId) err.jobId = error.jobId;
+          throw err;
+        }
+        return data.result;
+      });
+  }
+
   const aiModels = {
     list: () => fetch("/api/ai/runtime", { headers: callHeaders({}) }).then((r) => r.json()),
     catalog: () => fetch("/api/ai/catalog", { headers: callHeaders({}) }).then((r) => r.json()),
@@ -4869,6 +4974,7 @@
     video: aiVideo,
     transcribe: aiTranscribe,
     embed: aiEmbed,
+    decide: aiDecide,
     // Stop the generation in flight on a local model, keeping it loaded — the
     // next message answers straight away. Resolves false when there was
     // nothing to stop, which is not an error: a Stop pressed as the last token

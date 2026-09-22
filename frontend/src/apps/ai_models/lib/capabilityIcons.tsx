@@ -84,6 +84,16 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M12 17.5V21" />
     </svg>
   ),
+  // Decisions (Laya): a fork — one input line splitting into two branches,
+  // with a dot marking the branch that was picked.
+  "text-classification": (
+    <svg {...base}>
+      <path d="M4 12h5" />
+      <path d="M9 12c3 0 3-5 6-5h5" />
+      <path d="M9 12c3 0 3 5 6 5h5" />
+      <circle cx="20" cy="7" r="1.5" fill="currentColor" />
+    </svg>
+  ),
   // Search by meaning: a magnifier.
   embeddings: (
     <svg {...base}>

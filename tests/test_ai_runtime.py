@@ -9321,6 +9321,24 @@ def test_the_bridges_accepted_video_keys_match_the_servers_constant():
     assert "base" in ai_runtime._VIDEO_SERVER_OPTIONS
 
 
+def test_the_bridges_accepted_decide_keys_match_the_servers_constant():
+    """The same drift guard for decide (Laya typed decisions). No `base`
+    asymmetry here — nothing is bridge-injected — so the caller-facing and
+    server sets are one and the same, and both must match the bridge."""
+    from fused_render.server.routers import ai_runtime
+
+    source = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "fused_render", "static", "runtime.js"),
+                  encoding="utf-8").read()
+    start = source.index("  function aiDecide(opts)")
+    body = source[start:source.index("\n  }\n", start)]
+    match = re.search(r'const decideKeys = \[(.*?)\];', body)
+    assert match, "could not find aiDecide's whitelist array in runtime.js"
+    js_keys = sorted(re.findall(r'"([^"]+)"', match.group(1)))
+    assert js_keys == sorted(ai_runtime._DECIDE_OPTIONS)
+    assert ai_runtime._DECIDE_SERVER_OPTIONS == ai_runtime._DECIDE_OPTIONS
+
+
 def test_the_bridges_accepted_transcribe_keys_match_the_servers_CALLER_FACING_constant():
     """Same drift guard for transcribe — compared against the CALLER-FACING
     set, which must NOT include `base`: the server's set is wider because
