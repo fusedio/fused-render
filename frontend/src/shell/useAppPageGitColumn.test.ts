@@ -72,6 +72,11 @@ async function flush(): Promise<void> {
 
 let calls: string[] = [];
 let statPlan: Record<string, { templates: Array<{ mode: string; path: string | null; icon: string | null; conditional?: boolean }> }> = {};
+// Directories in here reject their `/api/fs/stat` call outright — a transient
+// network/server failure, not a settled verdict — so a test can prove the
+// column tells that apart from a genuine "no git here" (both otherwise land on
+// the same `{ entry: null, pending: false }` shape out of `useDirMode`).
+let failPlan: Set<string> = new Set();
 
 function installFetch() {
   (globalThis as Record<string, unknown>).fetch = (async (url: string) => {
@@ -79,6 +84,7 @@ function installFetch() {
     calls.push(u.pathname + u.search);
     if (u.pathname === "/api/fs/stat") {
       const path = u.searchParams.get("path")!;
+      if (failPlan.has(path)) throw new Error("stat failed: " + path);
       const plan = statPlan[path] ?? { templates: [] };
       return {
         ok: true,
@@ -103,6 +109,7 @@ function installFetch() {
 beforeEach(() => {
   calls = [];
   statPlan = {};
+  failPlan = new Set();
   installFetch();
 });
 
@@ -160,5 +167,22 @@ test("auto-closes once the folder settles as not offering git at all", async () 
   await flush();
   expect(box.current().gitMode.entry).toBeNull();
   expect(box.current().open).toBe(false);
+  box.unmount();
+});
+
+// ---------------------------------------------------------------- probe failure
+
+test("does not auto-close on a probe that failed — a rejected fetch is not a settled 'no git'", async () => {
+  const dir = "/repo/app-probe-fails";
+  failPlan.add(dir);
+  const box = renderHook(dir);
+  act(() => box.current().openGit());
+  expect(box.current().open).toBe(true);
+  await flush();
+  // Same shape `useDirMode` gives a genuine "no git here" — entry null,
+  // pending false — except the caller can tell the two apart.
+  expect(box.current().gitMode.entry).toBeNull();
+  expect(box.current().gitMode.failed).toBe(true);
+  expect(box.current().open).toBe(true);
   box.unmount();
 });

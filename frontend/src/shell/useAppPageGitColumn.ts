@@ -72,8 +72,15 @@ export function useAppPageGitColumn(dir: string): AppPageGitColumn {
       probed.current = true;
       return;
     }
-    if (probed.current && gitMode.entry === null) setOpen(false);
-  }, [open, gitMode.pending, gitMode.entry]);
+    // A REJECTED probe (`gitMode.failed`) is not a settled "no git here" — see
+    // dir-mode.ts's own header. Closing on it would slam the column shut over a
+    // transient network/server error with nothing for the reader to act on;
+    // leaving it open lets the template's own iframe show the failure, and
+    // closing + reopening (the column's existing close/`openGit` cycle) is
+    // already a working retry, because `loadDirModes` evicts a rejection's
+    // cache entry on the spot.
+    if (probed.current && gitMode.entry === null && !gitMode.failed) setOpen(false);
+  }, [open, gitMode.pending, gitMode.entry, gitMode.failed]);
 
   const gitSrc =
     gitMode.entry && gitMode.entry.path !== null
