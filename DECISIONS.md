@@ -4490,3 +4490,228 @@ got the wording assertion above. Ran `tests/test_git_upstream.py`,
 `tests/test_app_doctor_report.py`, and the doctor-scoped subset of
 `tests/test_apps_api.py`: 114 passed. No TypeScript touched, so no `bunx tsc`
 run.
+#### TerminalView TDZ crash: `fit.fit()` firing `onResize` before `session` existed
+
+Live check on the running dev server (http://127.0.0.1:2575) after the padding
+round (ce9561da9) found the drawer rendering a black, dead pane on every open,
+reproduced 2/2: `Error: Cannot access 'c' before initialization` inside
+`TerminalView`'s mount effect, thrown from `fit.fit()`. The effect wired
+`term.onResize(({rows,cols}) => session.resize(rows,cols))` and then called
+`fit.fit()` *before* `const session = new TerminalSession(...)` ran. `fit()`
+recomputes rows/cols from the container's real size and fires `term.onResize`
+SYNCHRONOUSLY whenever that differs from xterm's 80x24 default — which it
+always does once the container has a real layout size — so the handler
+dereferenced `session` while it was still in its temporal dead zone. The
+effect threw before `new TerminalSession(...)`, ever ran, so: no session, no
+WebSocket, a dead pane; the effect's cleanup was never returned, leaking the
+`Terminal`, both subscriptions and the `ResizeObserver` on every unmount; and
+`TerminalDrawer` had already called `createTerminalSession` server-side by
+that point, so every open leaked a live pty (`GET /api/terminal` showed 3
+alive after a few opens).
+
+Confirmed via `git log -L` that the ordering is not new in ce9561da9 — it
+dates to 05ccaee8b, the feature's first commit — but was latent until the 8px
+padding changed the container's initial computed size enough that the first
+`fit()` now always disagrees with the 80x24 default and always fires
+`onResize`. Treated as a pre-existing latent bug the padding exposed, not a
+regression of the padding itself; did not touch the padding.
+
+Fix (`frontend/src/platform/ui/TerminalView.tsx`): construct `session` before
+wiring `term.onData`/`term.onResize` and before the first `fit.fit()`, so no
+synchronous callback can run while `session` is uninitialized. Also wrapped
+the whole body in try/catch with a `teardown` stack that each resource
+(`Terminal`, `TerminalSession`, the two subscriptions, the `ResizeObserver`)
+pushes onto as soon as it is created, so a throw anywhere past that point
+unwinds everything already built instead of leaking it, and the effect always
+returns a cleanup function on every reachable path. Left the `onStatus ===
+"open"` handler's eager `session.resize()` and its no-op-until-OPEN reasoning
+untouched, and did not add a second eager-resize path — the reordered
+`fit.fit()` can still fire `onResize` before the socket opens, but
+`TerminalSession.resize()` already no-ops in that case, so there is nothing
+new to guard.
+
+Test decision: did not add an automated test for this. The concrete
+regression-catcher the task description describes — a fake `Terminal`/
+`FitAddon` whose `fit()` synchronously invokes the registered `onResize`
+handler — needs a way to hand `TerminalView` fakes instead of the real
+`@xterm/xterm`/`@xterm/addon-fit` classes it imports directly. `mock.module`
+is process-wide (forbidden per this task's constraints — it would leak into
+every other test file in the same `bun test` process), so the only route left
+is adding test-only constructor injection to `TerminalView`'s props, the same
+shape `TerminalSession` already uses for its `wsFactory`. That is a real
+production-surface change to a component whose own header commits to staying
+a thin, deliberately-untested xterm/DOM wrapper (a headless renderer cannot
+run a real resize/layout pass here) — bigger than this fix's scope, and it
+would sit oddly next to a header still saying "deliberately untested" a few
+lines above a test-only prop that exists only so a test can drive it. The
+ordering fix itself is also now structurally awkward to break by accident:
+`session` is constructed immediately after `term.open()`, before anything
+else in the effect touches it, so a future edit would have to deliberately
+move a callback above that line to reintroduce the TDZ window. Scoped tests
+run: `bun test src/platform/lib/terminalSession.test.ts` (10 pass) and
+`bun test src/shell/TerminalDock.test.tsx` (5 pass) — both exercise code paths
+this change touches (`TerminalSession` construction/dispose order,
+`TerminalDrawer`'s mount of `TerminalView`) and were unaffected.
+
+#### TerminalView black pane on open (second fix round, after the TDZ fix)
+
+Second-round task on the same branch: even after the TDZ fix above, opening
+the drawer on a brand-new session (and reloading into an already-populated
+one) showed a solid black pane — no prompt, no cursor — with zero console
+errors and `GET /api/terminal` reporting `alive: true`. Focusing the hidden
+textarea and typing made the correct prompt/scrollback appear instantly.
+
+Distinguished the three candidate mechanisms live, by instrumenting
+`term.write(chunk, callback)`'s completion callback and `.xterm-rows`'
+DOM text directly (temporary `console.log`s, removed before commit):
+
+- **Bytes never arrived**: ruled out. `onData` fired reliably with real,
+  non-empty payloads (up to ~1.3KB) on every repro, including reload/reattach
+  to an existing session.
+- **Bytes arrived but were cleared**: ruled out. `term.reset()` (called from
+  `onStatus("open")`) always runs before any scrollback reply can arrive —
+  confirmed via `terminalSession.ts` and the WebSocket spec's onopen-before-
+  onmessage guarantee, and no interleaving was ever observed in the logs.
+- **Bytes are in the buffer but unpainted**: confirmed. `write()`'s callback
+  fired (proving the bytes were parsed into xterm's buffer) while
+  `.xterm-rows` stayed empty for 10+ seconds afterward, with no
+  `visibilitychange` ever logged in that window.
+
+Root cause, confirmed by reading `@xterm/xterm`'s own compiled source
+(`node_modules/@xterm/xterm/lib/xterm.js`): xterm's `RenderDebouncer.refresh()`
+coalesces ALL repaint work behind a single `requestAnimationFrame`, latched
+with `this._animationFrame ||= requestAnimationFrame(() =>
+this._innerRefresh())` — `_animationFrame` only clears inside
+`_innerRefresh()`, once that exact rAF actually runs. A page/webview that
+isn't currently receiving compositor ticks can leave that one rAF request
+sitting unfired indefinitely, so xterm's internal buffer can be fully correct
+while nothing ever reaches the screen.
+
+Fix (`frontend/src/platform/ui/TerminalView.tsx`): added a bounded repaint
+watchdog. After each `write()`, if xterm's own `onRender` event (its public
+"a real paint just happened" signal) hasn't fired shortly after, call
+`term.refresh(0, term.rows - 1)` again on a `setTimeout` (100ms, 200ms, ...
+600ms, ~2.1s total, capped at 6 attempts) — `setTimeout` still runs on a
+throttled/backgrounded page, unlike a starved rAF, so this recovers the
+*ordinary* form of this bug (a real browser tab that throttles rAF while
+backgrounded but does still eventually run it).
+
+**This fix could NOT be verified to close the reported symptom end-to-end.**
+Live-tested against the running dev server via the cmux browser automation
+surface used for this task: with the fix built and served (confirmed via the
+bundle hash), opening a brand-new session's drawer and waiting still showed a
+solid black pane with no prompt — screenshot taken with zero interaction,
+`.xterm-rows` empty. Diagnosed one level further: a bare `requestAnimationFrame`
+call scheduled directly on that page (no xterm involved at all) never fired
+even once across several seconds, while a real keystroke on the same page
+immediately produced a correct paint. That proves the keystroke's effect
+comes from WKWebView doing an out-of-band paint on a native input event, not
+from anything requestable via JS — so no JS-level scheduling trick, including
+this watchdog, can close the gap when rAF is this fully dead. That same
+surface's `focus-webview` command also errored `invalid_state: WebView is not
+in a window`, which is consistent with this being specific to that automation
+surface's detached-from-a-window state rather than a normal, on-screen,
+foregrounded app window — but this was NOT confirmed either way for the real
+shipped app within this task's scope. Keeping the watchdog as a real, bounded,
+harmless partial mitigation for genuine tab-backgrounding; explicitly not
+claiming it fixes the reported black-pane symptom in general.
+
+Orphan-session reaper (secondary task, scope-gated — not built): confirmed
+`PtySessionRegistry._reap_dead_locked()` (`fused_render/pty_session.py`) only
+reaps sessions whose child process has exited (`not s.alive`); there is no
+mechanism anywhere in the registry that reaps a session that is alive but has
+no attaching client, or has been idle a long time. Observed live: `GET
+/api/terminal` on the dev server used for this task returned 7 alive sessions
+(cap is `MAX_SESSIONS = 8`) accumulated across this and the prior round's
+testing, none killed. Building a reaper is a real design question (idle
+threshold? does a closed-but-not-killed drawer count as "orphaned," given
+`TerminalDrawer`'s whole point is that the shell survives a closed drawer?) —
+out of scope for this round per the task's own instructions; recorded here as
+a known gap.
+
+Scoped tests run: `bun test src/platform/lib/terminalSession.test.ts
+src/shell/TerminalDock.test.tsx` — 15 pass, 0 fail (unaffected by this
+change; `TerminalView.tsx` remains deliberately untested per the header
+comment's own reasoning, unchanged from the prior round). `bun run build`
+succeeded.
+
+## Toggle shortcut + exit-hides-drawer (build subagent round)
+
+Two features requested together: a keyboard shortcut to toggle the terminal
+drawer, and making a process exit hide the drawer instead of showing a
+dead-shell banner with an Enter-to-restart listener.
+
+Shortcut: bound BOTH the user's requested chord (Cmd+Shift+` on macOS,
+Ctrl+Shift+` elsewhere, via `isMod()` from `platform/lib/platform.ts` — the
+same exclusive Mac-vs-other test every other app shortcut uses) AND VS Code's
+own Ctrl+` (no Shift) as a permanent alias on every platform, because the Cmd
+chord collides with macOS's own window-cycling shortcut and may never reach
+the page. Matched on `e.code === "Backquote"`, not `e.key` (which is `"~"`
+once Shift is held, and layout-dependent). Registered in `TerminalDrawer.tsx`
+itself via a `useEffect` with an empty dependency array, unconditional on
+`open` — this component already stays mounted while closed (early-returns
+`null` after all hooks run), so it is the one listener that has to fire
+while the drawer is closed, to open it. Did not move it to `App.tsx` or
+`terminalDockStore.ts`: `TerminalDrawer.tsx` already owns the store's
+setter/toggle calls used elsewhere in this file (drag-to-resize, etc.), so
+adding the keydown effect here keeps all of the drawer's own input handling
+in one file rather than splitting it across the store and the shell shell.
+Advertised the alias (not the Cmd chord) in `TerminalDock.tsx`'s tooltip
+(`⌃\``) since it's the one guaranteed to work everywhere, and added the
+user's chord to the `ShortcutsOverlay` cheat sheet data
+(`platform/lib/shortcuts.ts`, View group) as the one canonical binding shown
+there, following the sheet's own existing convention of documenting one
+chord per action even when an alias exists.
+
+Exit-hides-drawer: removed the old "Process exited... press Enter to start a
+new shell" banner, the `exitCode` state, and the global Enter-to-restart
+keydown listener entirely. `TerminalView`'s `onExit` now calls a new
+`handleExit()` which clears the React `sessionId` state and calls an
+exported pure function `clearExitedSession(height)` that clears the
+persisted `sessionId` in localStorage and calls `closeTerminalDock()`. Next
+open (chip or shortcut) finds `sessionId === null` and the existing
+verify-or-create effect mints a fresh shell rather than trying to reattach
+to a dead one.
+
+Dead end / architectural finding: "process exits while the drawer is already
+closed" (explicitly called out in the task) is not literally reachable
+through `TerminalView.onExit` in the current design — `TerminalView` (which
+owns the pty WebSocket and is the only thing that can receive a server exit
+frame) only ever mounts while `open` is true; the whole `TerminalDrawer`
+subtree past the `if (!open) return null` unmounts it the instant the drawer
+closes, so there is no live connection while closed to receive an exit frame
+on. Rather than force an unreachable path through a full render (and rather
+than touching `TerminalView.tsx`, which is off-limits and deliberately
+untested — a headless renderer can't run its real resize/layout pass),
+`clearExitedSession` was factored out as an exported, pure, idempotent
+function callable and testable directly regardless of `open`, covering both
+starting states (drawer open, drawer already closed) without mounting
+`TerminalView` at all.
+
+Test-infra note: firing a captured keydown handler synchronously inside a
+plain `act(() => {...})` produced "not wrapped in act(...)" warnings, because
+`toggleTerminalDock()`'s `useSyncExternalStore` notification resolved on a
+microtask past that synchronous callback's return. Fixed by making the
+test's `fireKeyDown` helper `async` and awaiting
+`act(async () => { ...; await Promise.resolve(); })` instead — mirrors the
+`await act(async () => ...)` pattern already used elsewhere on this branch
+for store-notification timing.
+
+New file: `frontend/src/shell/TerminalDrawer.test.tsx` — 12 tests covering
+both directions of the toggle (chord + VS Code alias), every non-matching
+modifier/key-code combination, `isMod()`'s platform exclusivity, and
+`clearExitedSession` in both drawer states plus `closeTerminalDock`'s
+idempotency. Scoped run:
+`bun test src/shell/TerminalDock.test.tsx src/shell/TerminalDrawer.test.tsx
+src/platform/lib/terminalSession.test.ts` — 27 pass, 0 fail, 53 expect()
+calls. `bun run build` succeeded (boundaries OK, 869 files; `tsc --noEmit`
+clean; `✓ built in 5.69s`; only pre-existing, unrelated
+static+dynamic-import and chunk-size Rollup warnings, unchanged from before
+this round).
+
+Not verified: live/browser behavior (no cmux, no dev-server restart, per
+task instructions) — the shortcut firing through a real DOM keydown and the
+drawer actually closing on a real process exit were not exercised end to
+end; only the unit-level behavior above was. The user should confirm the
+chord doesn't collide with anything OS/browser-level in their actual
+environment before relying on it.

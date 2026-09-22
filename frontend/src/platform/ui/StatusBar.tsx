@@ -109,16 +109,24 @@ import type { ReactNode } from "react";
 import DownloadManager from "@platform/ui/DownloadManager";
 
 export default function StatusBar({
+  terminalDock,
   models,
   activity,
   repoUpdates,
 }: {
+  /** The status-bar terminal's chip (`shell/TerminalDock.tsx`), leftmost —
+   *  the same lifetime argument this file's header makes for Models:
+   *  persistent status, not transient work that appears and resolves.
+   *  Optional so a caller/test with no terminal feature wired up (or a
+   *  Windows build, where the chip is hidden) renders nothing here. */
+  terminalDock?: ReactNode;
   models?: ReactNode;
   activity?: ReactNode;
   repoUpdates?: ReactNode;
 }) {
   return (
     <div className="status-bar">
+      {terminalDock}
       {models}
       {activity ?? <DownloadManager />}
       {repoUpdates}

@@ -114,6 +114,11 @@ export function shortcutGroups(): ShortcutGroup[] {
     // ---- View ------------------------------------------------------------
     { group: "View", keys: [MOD_LABEL, "R"], label: "Refresh" },
     { group: "View", keys: [MOD_LABEL, "K"], label: "Show this shortcut list" },
+    // The status-bar terminal drawer (TerminalDrawer.tsx). VS Code's own
+    // Ctrl+` binding is also always bound, on every platform, as a reliable
+    // alias — but this list documents the one chord users asked for, the
+    // same way the sheet elsewhere shows one canonical binding per action.
+    { group: "View", keys: [MOD_LABEL, SHIFT_LABEL, "`"], label: "Toggle the terminal" },
     { group: "View", keys: ["Esc"], label: "Close overlay" },
   ];
 

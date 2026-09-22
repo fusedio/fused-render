@@ -150,6 +150,98 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* ---- Terminal drawer (PLAN-status-bar-terminal.md Task 5) ---------------- */
+/* A sibling of `.status-bar` inside `#main`, deliberately NOT a `.dl-panel`:
+   the panel family tops out around 340px (see its own comment further below)
+   and floats over content — exactly what this drawer exists to avoid for a
+   surface meant to stay open for minutes at a time. `flex: 0 0 auto` plus an
+   explicit pixel `height` (set inline by TerminalDrawer.tsx from its
+   localStorage-persisted state) reserves that much of `#main`'s column for
+   real, the same way `.status-bar` itself does one row below it — nothing
+   may overlap while the drawer is open, the identical "nothing may overlap"
+   rule `.status-bar`'s own header argues for the bar. */
+.term-drawer {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 120px;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+
+/* The drag handle rides the drawer's own TOP edge — dragging it up grows the
+   drawer, matching the direction the pointer actually moves the boundary it
+   is holding. A thin hit strip straddling the border above, not a visible
+   bar of its own: the border already reads as the seam, this only needs to
+   be aimed at. */
+.term-drawer-handle {
+  position: absolute;
+  top: -3px;
+  left: 0;
+  right: 0;
+  height: 6px;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+/* Padding lives HERE, not on `.term-view-surface` (the element xterm.js
+   actually opens into): `box-sizing: border-box` is global (base.css:65), so
+   `FitAddon.proposeDimensions()` (@xterm/addon-fit) reads
+   `getComputedStyle(term.element.parentElement).height/width` as an already
+   border-box (padding-inclusive) number, then subtracts only whatever
+   padding it finds on `term.element` itself — never on an ancestor further
+   up. Padding placed directly on the element xterm opens into would be
+   subtracted correctly; padding placed on ITS parent would not be
+   subtracted at all, so xterm would size itself a few rows/cols too big for
+   the actual content box and clip the last row against our own padding.
+   Nesting an unpadded `.term-view-surface` inside this padded `.term-view`
+   keeps the breathing room without feeding FitAddon a number it can't
+   account for — the surface's own box is naturally the padded parent's
+   content area, so FitAddon's parentElement read already reflects it. */
+.term-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+}
+
+.term-view-surface {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Was the dead-shell status line (Task 6); a process exit now closes the
+   drawer instead (TerminalDrawer.tsx's own header), so the only remaining
+   user of this layout/tone is the createError banner below (finding 7). */
+.term-drawer-exit {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  border-top: 1px solid var(--border);
+}
+
+/* Finding 7 (code review, PR #1290): `createTerminalSession` failing (server
+   down, the session cap, 501 on Windows) used to leave the drawer open and
+   permanently empty with an unhandled rejection. Reuses `.term-drawer-exit`'s
+   layout/tone for the message itself; this is the one inline affordance to
+   retry without a full page reload. */
+.term-drawer-retry {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: inherit;
+  font: inherit;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+
+.term-drawer-retry:hover {
+  background: var(--border);
+}
+
 /* ---- Activity card (SPEC §36) -------------------------------------------- */
 /* ONE card for work in progress: every long-running operation a page reported
    (.dl-row). A scheduled message's own run draws no row here at all (D661) —

@@ -150,6 +150,12 @@ EXPECTED_SHUTDOWN = [
     "_shutdown_captures",
     "_shutdown_ai_workers",
     "_shutdown_engines",
+    # Status-bar terminal (PLAN-status-bar-terminal.md): registered where
+    # `terminal_router` is included in `create_app`, well after the handlers
+    # above — reaps every live pty session (pty_session.py's
+    # PtySessionRegistry.shutdown_all) so a server restart never leaves an
+    # orphaned shell running.
+    "_shutdown_terminal_sessions",
     "_shutdown_index_watch",
 ]
 
