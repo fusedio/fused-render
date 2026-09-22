@@ -1401,169 +1401,19 @@
 }
 
 /* ---- The update DIALOG (platform/ui/UpdateDialog) -------------------------- */
-/* ALMOST NO RULES OF ITS OWN. NEITHER update case is a card: the refresh one
-   because the bundle in this tab is no longer the one the server serves, and
-   the restart one because the app itself is about to go away — so the page
-   behind either cannot be trusted to answer. Both block on the shared platform
-   Modal chassis (deploy.css / buttons-modal.css), the same one the Delete task
-   dialog uses (Akshil, 2026-09-14). The `.server-update-backdrop/-dialog/
-   -title/-body/-action` skin that used to live here was a second modal
-   vocabulary for one dialog and went with it, and `.server-status-update` — the
-   warning-toned restart CARD — went with the card itself (D1, 2026-09-18).
-   `busy` is what keeps the dialog undismissable. See UpdateDialog.tsx.
+/* NO RULES OF ITS OWN. The refresh dialog is not a card — the bundle in this
+   tab is no longer the one the server serves, so the page behind it cannot be
+   trusted to answer — and it blocks on the shared platform Modal chassis
+   (deploy.css / buttons-modal.css), the same one the Delete task dialog uses
+   (Akshil, 2026-09-14). `busy` is what keeps it undismissable. See
+   UpdateDialog.tsx.
 
-   The rules left are the restart mode's STEP STRIP, which stands where the
-   button stood: the footer is a flex row of controls, and a bare line of text
-   dropped into it would sit at a button's baseline without a button's weight.
-   (It replaces the single `.update-dialog-stage` word line of D1 — one word
-   said what the app was doing and nothing about how far along it was; see
-   UpdateDialog.tsx.) */
-.update-dialog-steps {
-  /* THE SAME BOX `.btn` OCCUPIED — 32px tall, 13px type (buttons-modal.css) —
-     so the footer does not change height on the press that swaps one for the
-     other; the dialog must not resize under a reader mid-restart. This height
-     is the invariant the whole strip is designed around and is asserted in
-     update-dialog-footer.test.ts. Muted and unbordered, because it is a status
-     line where a control used to be and must not read as a control that has
-     stopped working. */
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 32px;
-  /* 8px rather than the old 2px so the `back` tint below has something to sit
-     in; set on EVERY state so the tint cannot shift the words sideways in the
-     last half-second before the reload. */
-  padding: 0 8px;
-  border-radius: 6px;
-  color: var(--fg-muted);
-  font-size: 13px;
-  min-width: 0;
-  /* Far left of the footer's flex row, exactly as `.modal-dirty-hint` sits: it
-     is narration, not a control. This is also what lets `gave-up` show the
-     strip AND the button on ONE row instead of stacking them, which is the only
-     arrangement that keeps the footer the same height in every stage. */
-  margin-right: auto;
-}
-
-.update-dialog-step {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  /* The live word is longer than its own name ("Restart" → "Restarting…"); a
-     step allowed to wrap would change the strip's height, which is the one
-     thing it may not do. */
-  white-space: nowrap;
-}
-
-/* THE CONNECTOR IS A HAIRLINE, NOT A TRACK. A filled rail would be a progress
-   bar, and a progress bar has to know a percentage — nothing in this flow does
-   (see restart-flow.ts). It only joins the three marks so they read as one
-   sequence rather than three unrelated words. Fixed width: the strip is
-   shrink-to-fit (its slack sits OUTSIDE it, on the footer's `flex-end` side),
-   so a flexible joiner would never actually take any — what keeps the marks
-   from sliding is the word slot below, not the joiner. */
-.update-dialog-steps-link {
-  flex: 0 0 20px;
-  height: 1px;
-  background: var(--border);
-}
-
-/* THE WORD SLOT IS AS WIDE AS ITS LONGEST FORM in every stage. Two spans stacked
-   in one grid cell: a hidden ghost of the live label ("Restarting…") sets the
-   width, the visible text ("Restart" / "Restarting…") paints over it. So a
-   step going live or completing changes letters, never geometry — the strip
-   is one width from `quitting` to `back` and no mark moves under the reader. */
-.update-dialog-step-word {
-  display: inline-grid;
-}
-
-.update-dialog-step-word > * {
-  grid-area: 1 / 1;
-  white-space: nowrap;
-}
-
-.update-dialog-step-ghost {
-  visibility: hidden;
-}
-
-/* THE BODY HOLDS TWO LINES whatever it says. The in-flight sentence wraps to
-   two at the modal's width; the 25s sentence, `back` and `ready` are one line.
-   Without a floor the footer would jump up by a line on the 25s flip — under a
-   reader who cannot dismiss the dialog. `lh` is the paragraph's own line box,
-   so the reserve follows the modal's type rather than guessing a pixel count. */
-.update-dialog-body {
-  min-height: 2lh;
-}
-
-/* ONE BOX FOR ALL THREE MARKS — the tick, the spinner and the hollow dot — at
-   `.update-spinner`'s own 14px, so a step completing swaps the glyph without
-   shuffling every word after it sideways. */
-.update-dialog-step-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 14px;
-  width: 14px;
-  height: 14px;
-}
-
-/* Done. The MUTED accent rather than the accent itself: three ticks in
-   #E5FF44 would out-shout the live step, which is the one thing on the strip
-   the reader is actually waiting on. */
-.update-dialog-step-tick {
-  color: var(--accent-soft);
-  font-size: 12px;
-  line-height: 1;
-}
-
-/* Still to come — the spinner's ring with no arc on it, which is exactly what
-   an unstarted step is. */
-.update-dialog-step-dot {
-  border: 1.5px solid var(--border);
-  border-radius: 50%;
-}
-
-/* Three weights, so the eye lands on the live step first: it is the only one at
-   full foreground. Done steps stay readable (they are the evidence the wait is
-   moving); upcoming ones recede. */
-.update-dialog-step.is-live .update-dialog-step-word {
-  color: var(--fg);
-}
-
-.update-dialog-step.is-done .update-dialog-step-word {
-  color: var(--fg-muted);
-}
-
-.update-dialog-step.is-upcoming .update-dialog-step-word {
-  color: var(--fg-faint);
-}
-
-/* GAVE UP: the whole strip goes quiet. No step may keep a claim on a restart
-   that did not happen, and the button beside it is the only live thing left. */
-.update-dialog-steps.is-stalled .update-dialog-step-word {
-  color: var(--fg-faint);
-}
-
-/* BACK: the half-second before the reload lands. The app's own --success, the
-   same token the signed-in/live states use — not a new colour, and not the
-   accent, which here means "done" rather than "well". It is on screen for one
-   beat by construction (`reduceProbe` reloads the page on this very
-   transition), so it fades IN and is not asked to fade out again: a 500ms exit
-   would be a promise about time the reload is free to break. */
-.update-dialog-steps.is-back {
-  background: color-mix(in srgb, var(--success) 14%, transparent);
-  animation: update-steps-settled 500ms ease-out 1;
-}
-
-.update-dialog-steps.is-back .update-dialog-step-tick {
-  color: var(--success);
-}
-
-@keyframes update-steps-settled {
-  from {
-    background-color: transparent;
-  }
-}
+   The restart mode this section used to style — the three-step strip, its
+   word-ghost sizing, the `is-back`/`is-stalled` tints — is DELETED along with
+   the mode itself (SPEC-update-notifications.md): the restart decision is now
+   a status-bar notification (`UpdateNotifier.tsx`), not a dialog with a
+   footer to draw. See git history on this file (pre-SPEC-update-notifications)
+   if that strip is ever needed again. */
 
 /* The FDA strip's (FdaStrip.tsx) how-to, an ordered list in the strip body. */
 .fda-steps {

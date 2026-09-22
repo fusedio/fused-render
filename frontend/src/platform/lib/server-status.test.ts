@@ -10,8 +10,6 @@ import {
   bannerSurface,
   FAIL_THRESHOLD,
   initialStatus,
-  previewInstalledVersion,
-  previewRequestedAt,
   probeOnTick,
   probeWhileHidden,
   reduceProbe,
@@ -20,7 +18,7 @@ import {
   type StatusState,
   type SurfaceInput,
 } from "@platform/lib/server-status";
-import { restartIsSlow, RESTART_SLOW_MS, RESTART_STAGES } from "@platform/lib/restart-flow";
+import { restartInFlight, RESTART_STAGES } from "@platform/lib/restart-flow";
 
 const BUILD = "0.4.8";
 
@@ -208,36 +206,38 @@ test("today's cards are unchanged when no restart is anywhere near", () => {
   expect(surface({ banner: "update-refresh", mode: "off" })).toBe("none");
 });
 
-test("the disk being ahead raises the DIALOG, not a card", () => {
-  // It used to be `.server-status-update`, a card in the notification stack
-  // with a bare relaunch link on it that sat there forever (D1).
-  expect(surface({ banner: "update-restart" })).toBe("restart-dialog");
+test("the disk being ahead suppresses the down card, but draws no dialog", () => {
+  // Used to raise a blocking dialog (D1, then `UpdateDialog`'s "restart"
+  // mode). Both are gone: the decision is a status-bar notification now
+  // (`UpdateNotifier`), which this function knows nothing about — it only
+  // still owns whether the down card shows.
+  expect(surface({ banner: "update-restart" })).toBe("none");
 });
 
-test("the dialog pops on its own the moment the install lands", () => {
+test("the install landing suppresses the down card the same way, on the store alone", () => {
   // D2: the shared update store says "installed" on its 2 s busy cadence, two
   // ticks before the banner's own 5 s probe notices the disk moved. Neither the
   // banner state nor a press is needed.
-  expect(surface({ updateState: "installed" })).toBe("restart-dialog");
-  // …and only that state. An install still running is the badge's story.
+  expect(surface({ updateState: "installed" })).toBe("none");
+  // …and only that state. An install still running is the Activity job's story.
   expect(surface({ updateState: "installing" })).toBe("none");
   expect(surface({ updateState: "available" })).toBe("none");
   expect(surface({ updateState: "error" })).toBe("none");
 });
 
 test("the down card is suppressed for every in-flight stage", () => {
-  // Step 5. The app being gone IS the restart working; two surfaces telling
-  // opposite stories about one outage is the bug.
+  // Step 5. The app being gone IS the restart working; a down card during it
+  // would tell the opposite story from the restart notification.
   for (const stage of ["quitting", "restarting", "reconnecting", "back"] as const) {
-    expect(surface({ banner: "down", stage })).toBe("restart-dialog");
+    expect(surface({ banner: "down", stage })).toBe("none");
   }
 });
 
 test("the cap gives the down card back while the server is still gone", () => {
-  // D4, and the case the cap exists for. Both doors into the dialog stay open
+  // D4, and the case the cap exists for. Both suppression doors stay open
   // through an outage — the update store keeps its last value when its poll
   // fails, and `update-restart` is the last thing the banner knew — so
-  // `gave-up` has to outrank both or the modal outlives the promise it made.
+  // `gave-up` has to outrank both or the down card never comes back.
   expect(surface({ banner: "down", stage: "gave-up" })).toBe("down");
   expect(surface({ banner: "down", updateState: "installed", stage: "gave-up" })).toBe("down");
 });
@@ -245,114 +245,51 @@ test("the cap gives the down card back while the server is still gone", () => {
 test("the cap does NOT show the down card over a server that is answering", () => {
   // bugbot, PR #1214. A restart that did not take leaves the app demonstrably
   // running with the disk still ahead: "fused-render isn't running" would be a
-  // lie, and with the dialog gone the only way back to the button is a page
-  // reload. The ordinary doors take it instead — and `UpdateDialog` draws the
-  // button for `gave-up` exactly as it does for `ready`.
-  expect(surface({ banner: "update-restart", stage: "gave-up" })).toBe("restart-dialog");
-  expect(surface({ updateState: "installed", stage: "gave-up" })).toBe("restart-dialog");
+  // lie. The restart notification (`UpdateNotifier`), not this function, is
+  // what offers the retry on `gave-up`.
+  expect(surface({ banner: "update-restart", stage: "gave-up" })).toBe("none");
+  expect(surface({ updateState: "installed", stage: "gave-up" })).toBe("none");
   // Nothing to say at all is still nothing to say.
   expect(surface({ banner: "hidden", stage: "gave-up" })).toBe("none");
   expect(surface({ banner: "reconnected", stage: "gave-up" })).toBe("reconnected");
 });
 
-test("a restart in flight outranks every other card too", () => {
-  expect(surface({ banner: "update-refresh", stage: "reconnecting" })).toBe("restart-dialog");
-  expect(surface({ banner: "reconnected", stage: "back" })).toBe("restart-dialog");
-  expect(surface({ banner: "hidden", stage: "quitting" })).toBe("restart-dialog");
+test("a restart in flight suppresses every other card too", () => {
+  expect(surface({ banner: "update-refresh", stage: "reconnecting" })).toBe("none");
+  expect(surface({ banner: "reconnected", stage: "back" })).toBe("none");
+  expect(surface({ banner: "hidden", stage: "quitting" })).toBe("none");
 });
 
-test("a stage the dialog is not on screen for leaves the banner alone", () => {
-  // Only `ready` and `gave-up`; every other stage is covered above. Stated as a
-  // sweep so a stage added to the machine cannot quietly acquire a surface.
-  const holds = RESTART_STAGES.filter((stage) => surface({ stage }) === "restart-dialog");
-  expect(holds).toEqual(["quitting", "restarting", "reconnecting", "back"]);
-});
-
-// ---- the restart preview (dev only) ---------------------------------------
-
-test("the preview flag says WHICH dialog, and the restart one says which stage", () => {
-  expect(updateDialogPreview("?update_modal=1", null)).toEqual({ kind: "refresh" });
-  expect(updateDialogPreview("?update_modal=restart&stage=reconnecting", null)).toEqual({
-    kind: "restart",
-    stage: "reconnecting",
-    slow: false,
-  });
-  for (const stage of RESTART_STAGES) {
-    expect(updateDialogPreview(`?update_modal=restart&stage=${stage}`, null)).toEqual({
-      kind: "restart",
-      stage,
-      slow: false,
-    });
+test("bannerSurface never returns the down card for any in-flight restart stage", () => {
+  // New verification named in SPEC-update-notifications.md, stated as a sweep
+  // over `restartInFlight`'s own predicate so a stage added to that set
+  // cannot quietly reopen the down card during a restart. `ready` (no restart
+  // under way) and `gave-up` (the cap's D4 fall-through, which is SUPPOSED to
+  // give the down card back) are correctly excluded — see the tests above.
+  for (const stage of RESTART_STAGES.filter(restartInFlight)) {
+    expect(surface({ banner: "down", stage })).toBe("none");
   }
 });
 
-test("an unknown or missing stage previews the face a real restart starts on", () => {
-  expect(updateDialogPreview("?update_modal=restart", null)).toEqual({
-    kind: "restart",
-    stage: "ready",
-    slow: false,
-  });
-  expect(updateDialogPreview("?update_modal=restart&stage=melting", null)).toEqual({
-    kind: "restart",
-    stage: "ready",
-    slow: false,
-  });
+// ---- the refresh preview (dev only) ---------------------------------------
+// `updateDialogPreview` used to also answer for `UpdateDialog`'s "restart"
+// mode (`?update_modal=restart&stage=...`); that mode is deleted along with
+// the dialog it previewed (SPEC-update-notifications.md), so only the refresh
+// preview is left to test.
+
+test("the preview flag previews the refresh dialog, from the URL or from storage", () => {
+  expect(updateDialogPreview("?update_modal=1", null)).toEqual({ kind: "refresh" });
+  expect(updateDialogPreview("", "1")).toEqual({ kind: "refresh" });
 });
 
-test("no flag, no preview — and the restart flag is a preview like the refresh one", () => {
+test("no flag, no preview", () => {
   expect(updateDialogPreview("", null)).toBeNull();
   expect(updateDialogPreview("?update_modal=0", "0")).toBeNull();
-  expect(updateDialogMode(true, "?update_modal=restart", null)).toBe("preview");
-  // Storage carries it across page loads, exactly as "1" always has.
-  expect(updateDialogPreview("", "restart")).toEqual({ kind: "restart", stage: "ready", slow: false });
-});
-
-test("`slow=1` previews the overlong wait, which is not a stage and cannot be named as one", () => {
-  // The machine is still in `restarting` past 25s — the sentence changes, the
-  // stage does not — so the seventh face has to be reachable by a flag or not
-  // at all.
-  expect(updateDialogPreview("?update_modal=restart&stage=restarting&slow=1", null)).toEqual({
-    kind: "restart",
-    stage: "restarting",
-    slow: true,
-  });
-  // Anything but "1" is off, the way the dialog flag itself reads its own value.
-  expect(updateDialogPreview("?update_modal=restart&stage=restarting&slow=yes", null)).toEqual({
-    kind: "restart",
-    stage: "restarting",
-    slow: false,
-  });
-  expect(updateDialogPreview("?update_modal=restart&stage=restarting", null)).toEqual({
-    kind: "restart",
-    stage: "restarting",
-    slow: false,
-  });
-});
-
-test("the pretend press is placed past the sentence's own estimate, or at the instant itself", () => {
-  const now = 1_700_000_000_000;
-  // Far enough back that the dialog reads the wait as overlong on the FIRST
-  // paint — a preview you have to wait 25 seconds for is not a preview.
-  expect(previewRequestedAt(true, now)).toBeLessThanOrEqual(now - RESTART_SLOW_MS);
-  expect(restartIsSlow(previewRequestedAt(true, now), now)).toBe(true);
-  // And a plain preview freezes the ordinary sentence: the press is NOW, so
-  // nothing crosses the mark while the page is being looked at.
-  expect(previewRequestedAt(false, now)).toBe(now);
-  expect(restartIsSlow(previewRequestedAt(false, now), now)).toBe(false);
-});
-
-test("the preview invents the one disagreement a dev server cannot supply", () => {
-  // Nothing newer on disk — the dev case — so the sentence would otherwise read
-  // "Closing v0.5.53 and starting v0.5.53", which no reader will ever see.
-  expect(previewInstalledVersion("0.5.53", "0.5.53")).toBe("0.5.54");
-  expect(previewInstalledVersion("0.5.53", "")).toBe("0.5.54");
-  // A REAL pending update wins: the preview shows the number actually waiting
-  // rather than a made-up one.
-  expect(previewInstalledVersion("0.5.53", "0.6.0")).toBe("0.6.0");
-  // A version it cannot parse is left exactly as it is — inventing a successor
-  // for it would put a string on screen that is not a version at all.
-  expect(previewInstalledVersion("nightly", "nightly")).toBe("nightly");
-  expect(previewInstalledVersion("0.5.x", "0.5.x")).toBe("0.5.x");
+  // The restart preview's old value is gone with the mode it previewed — a
+  // stale bookmark or localStorage entry from before this change previews
+  // nothing rather than reaching for a component that no longer exists.
+  expect(updateDialogPreview("?update_modal=restart", null)).toBeNull();
+  expect(updateDialogPreview("", "restart")).toBeNull();
 });
 
 test("a hidden tab keeps probing only while a restart is in flight", () => {

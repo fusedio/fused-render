@@ -11,24 +11,23 @@
 // it survives the epoch-keyed view remounts. Styling is .server-status* in
 // styles/notifications.css.
 //
-// TWO OF THE STATES ARE NOT CARDS. Both update cases are the one blocking
-// dialog on the shared platform Modal chassis (`UpdateDialog`, D1), because the
-// page behind either of them is talking to a version that is going away — every
-// click from here is a guess about which side answers:
-//   • `update-refresh` — the served bundle moved; a refresh fixes it. Suppressed
-//     on a dev server, where the two versions disagree by design, and forced up
-//     as a PREVIEW there under `?update_modal=1` — the three modes are
-//     `updateDialogMode`'s, stated once in server-status.ts.
-//   • the restart case — the disk is ahead of the running app. It USED TO BE a
-//     card here with a bare `fused-render://relaunch` link on it, which sat
-//     forever and said nothing about whether the press had worked. It is the
-//     dialog's "restart" mode now, it POPS ON ITS OWN the moment the install
-//     lands (D2 — off the shared update-status store, not a new poll), and it
-//     narrates the restart through `restart-flow.ts`'s stages.
+// ONE OF THE STATES IS NOT A CARD. `update-refresh` — the served bundle
+// moved, a refresh fixes it — is a blocking dialog on the shared platform
+// Modal chassis (`UpdateDialog`), because the page is talking to a version
+// that is going away and every click from here is a guess about which side
+// answers. Suppressed on a dev server, where the two versions disagree by
+// design, and forced up as a PREVIEW there under `?update_modal=1` — the
+// three modes are `updateDialogMode`'s, stated once in server-status.ts.
 //
-// WHILE A RESTART IS IN FLIGHT THE "down" CARD IS SUPPRESSED (step 5): the app
-// being gone is the restart working, and two surfaces telling opposite stories
-// about the same outage is the bug this flow exists to fix. The cap
+// THE RESTART CASE IS NOT DRAWN HERE AT ALL (SPEC-update-notifications.md).
+// It used to be a bare-link card, then `UpdateDialog`'s "restart" mode
+// (D1) — both gone now, replaced by a status-bar notification
+// (`platform/ui/UpdateNotifier.tsx`) that owns the decision AND the in-flight
+// narration through `restart-flow.ts`'s stages. What THIS component still
+// owns about a restart is narrower: while one is in flight (or the install
+// just landed) the "down" card must stay suppressed (step 5) — the app being
+// gone is the restart working, and two surfaces telling opposite stories
+// about the same outage is the bug that step fixed. The cap
 // (RESTART_GIVE_UP_MS) is what gives the card back.
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -36,7 +35,6 @@ import UpdateDialog from "@platform/ui/UpdateDialog";
 import {
   forgetRestartRecord,
   noteRestartProbe,
-  requestRestart,
   restartStageNow,
   useRestartFlow,
 } from "@platform/lib/restart-store";
@@ -45,8 +43,6 @@ import {
   bannerSurface,
   initialStatus,
   reduceProbe,
-  previewInstalledVersion,
-  previewRequestedAt,
   probeOnTick,
   updateDialogMode,
   updateDialogPreview,
@@ -222,14 +218,19 @@ function useServerStatus(): {
 }
 
 export default function ServerStatusBanner() {
-  const { banner, version, installedVersion, dev, checkNow } = useServerStatus();
+  // `installedVersion` no longer has a reader here — it fed the restart
+  // dialog's title, which is deleted (SPEC-update-notifications.md). Left on
+  // `useServerStatus`'s own return type rather than trimmed there: the probe
+  // still needs it fed to `setInstalledVersion` regardless of who reads it.
+  const { banner, version, dev, checkNow } = useServerStatus();
   const mode = updateDialogMode(dev, searchOverride(), storedDialogOverride());
   // The SHARED update poll (platform/lib/update-status), the same store the
-  // sidebar badge and the Settings row read — no second timer, and it is what
-  // makes the restart dialog PROACTIVE (D2): `state === "installed"` is the
-  // instant the swap finished, reported on that store's 2 s busy cadence, where
-  // the banner's own `update-restart` has to wait for the next 5 s probe to
-  // notice the disk moved. Whichever says so first is enough.
+  // new Preferences "Updates" section and `UpdateNotifier` read — no second
+  // timer, and it is what lets the down card's suppression react PROACTIVELY
+  // (D2): `state === "installed"` is the instant the swap finished, reported
+  // on that store's 2 s busy cadence, where the banner's own `update-restart`
+  // has to wait for the next 5 s probe to notice the disk moved. Whichever
+  // says so first is enough.
   const update = useUpdateStatus();
   const flow = useRestartFlow();
 
@@ -237,11 +238,10 @@ export default function ServerStatusBanner() {
   // "there is a new version on disk" and they arrive on two different clocks:
   // the update store's `installed` (2 s while an install runs) and this
   // component's own `/api/config` probe reading `installed_version` (5 s).
-  // `bannerSurface` already opens the dialog on either, but only the probe
-  // carries the VERSION the dialog's title is made of — so without this the
-  // seconds between the two clocks were spent either on a title falling back
-  // to `latest_version` or, when the store's word had not arrived first, with
-  // no dialog on screen at all while the app on disk had already moved.
+  // The restart NOTIFICATION (`UpdateNotifier`) wants the real installed
+  // version for its own body copy the moment it raises, not the seconds-later
+  // number the slow probe would otherwise supply — so this still asks early,
+  // even though nothing in THIS component reads the answer any more.
   //
   // One probe per transition INTO `installed`, not one per render: the ref
   // re-arms only when the state leaves `installed` again (a fresh check, a
@@ -259,9 +259,9 @@ export default function ServerStatusBanner() {
     checkNow();
   }, [update?.state, checkNow]);
   // WHAT GOES ON SCREEN is a pure decision (server-status.ts `bannerSurface`) —
-  // the restart dialog outranking the "down" card is the whole of step 5, and a
-  // rule two surfaces have to agree on should be a test, not a reading of the
-  // `if`s below.
+  // a restart in flight suppressing the "down" card is the whole of step 5,
+  // and a rule two surfaces have to agree on should be a test, not a reading
+  // of the `if`s below.
   const surface = bannerSurface({
     banner,
     mode,
@@ -274,48 +274,12 @@ export default function ServerStatusBanner() {
   // `update-refresh` would still show nothing — which is the bug this fixes.
   // The numbers are the real ones (see `updateDialogMode`); `version` arrives
   // with the first probe, the same probe that reports `dev`, so this cannot
-  // paint a blank one. It outranks the down card and the real restart dialog
-  // deliberately: the
-  // flag is an explicit "show me this dialog", and it is set by hand.
-  if (mode === "preview") {
-    const preview = updateDialogPreview(searchOverride(), storedDialogOverride());
-    if (preview?.kind === "restart") {
-      return (
-        <UpdateDialog
-          kind="restart"
-          version={version}
-          // A dev server has nothing newer on disk, so the preview invents the
-          // one disagreement the dialog is about — see `previewInstalledVersion`.
-          installedVersion={previewInstalledVersion(version, installedVersion)}
-          stage={preview.stage}
-          // A pretend press, placed so the frozen face includes the one the
-          // stage name cannot reach — the overlong wait (`&slow=1`).
-          requestedAt={previewRequestedAt(preview.slow, Date.now())}
-          onRestart={requestRestart}
-        />
-      );
-    }
+  // paint a blank one. It outranks the down card deliberately: the flag is an
+  // explicit "show me this dialog", and it is set by hand. Only the refresh
+  // dialog can be previewed now — `updateDialogPreview` used to also answer
+  // for `UpdateDialog`'s deleted "restart" mode.
+  if (mode === "preview" && updateDialogPreview(searchOverride(), storedDialogOverride())) {
     return <UpdateDialog kind="refresh" version={version} buildVersion={BUILD_VERSION} />;
-  }
-
-  if (surface === "restart-dialog") {
-    return (
-      <UpdateDialog
-        kind="restart"
-        version={version}
-        // The store's `latest_version` is the fallback for the seconds between
-        // the install landing and the next probe re-reading the disk: the
-        // dialog's title is a version number and must never read "v".
-        installedVersion={installedVersion || update?.latest_version || version}
-        stage={flow.stage}
-        verifying={flow.verifying}
-        // The press instant, not this window's own clock: a window that LATCHED
-        // someone else's press must say "taking longer" at the same moment the
-        // window that made it does (D3).
-        requestedAt={flow.requestedAt}
-        onRestart={requestRestart}
-      />
-    );
   }
 
   if (surface === "none") return null;
