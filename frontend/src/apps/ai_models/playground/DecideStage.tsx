@@ -21,7 +21,7 @@
 // question, so nothing is rescaled the way the embed stage rescales cosines —
 // and the picked label is the one the model would act on. Questions and state
 // are session state, never URL state (PlaygroundTab's rule).
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { decide, withModelReady, type DecideAnswer, type DecideQuestion } from "./client";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { Card } from "@platform/shadcn/ui/card";
@@ -239,27 +239,23 @@ function nextKey(rows: QuestionRow[]): string {
 }
 
 /** The per-label distribution as a quiet list: label left, a thin track bar,
- *  the percentage right in tabular figures. The one row the verdict rests on
- *  (`picked`) is the only thing in an answer that takes the accent — every
- *  other row is neutral, so the eye lands on exactly one bar per question.
- *  `quiet` hands the accent to something else on the same answer (the score
- *  rail) and leaves the mode as the stronger LABEL only, so an answer never
- *  spends the accent twice. */
+ *  the percentage right in tabular figures. Every bar is neutral — the accent
+ *  is spent on the verdict word above — and the row the verdict rests on
+ *  (`picked`) is only the stronger label, so the list reads as detail under
+ *  an answer rather than a second answer. */
 function Distribution({
   rows,
   picked,
-  quiet = false,
 }: {
   rows: { key: string; label: string; p: number }[];
   picked: string | undefined;
-  quiet?: boolean;
 }) {
   return (
     <ol className="pg-decide-dist">
       {rows.map(({ key, label, p }) => (
         <li
           key={key}
-          className={"pg-decide-dist-row" + (key === picked ? (quiet ? " is-mode" : " is-picked") : "")}
+          className={"pg-decide-dist-row" + (key === picked ? " is-picked" : "")}
           title={`p = ${p.toFixed(4)}`}
         >
           <span className="pg-decide-dist-label">{label}</span>
@@ -273,19 +269,55 @@ function Distribution({
   );
 }
 
-/** Verdict on the left, confidence on the right — the verdict is the
- *  strongest text in the row (the foreground, not the accent: the accent is
- *  for the bar or marker that carries it), the confidence a small muted
- *  figure that qualifies without competing. */
-function Verdict({ children, title, confidence }: { children: string; title?: string; confidence: number }) {
+/** One answer as ONE line — the verdict, then the confidence and a Details
+ *  toggle in small muted text — with everything else folded under it (owner,
+ *  2026-09-23: "a single answer from the model, and then an expandable which
+ *  lists details"). The verdict word is the question's one accent hit. A
+ *  native <details> keeps the fold per row with no state to carry: opening
+ *  one question's details leaves the others shut. */
+function AnswerLine({
+  verdict,
+  title,
+  confidence,
+  children,
+}: {
+  verdict: string;
+  title?: string;
+  confidence: number;
+  children: ReactNode;
+}) {
   return (
-    <p className="pg-decide-verdict">
-      <span className="pg-decide-verdict-word" title={title}>{children}</span>
-      <span className="pg-decide-verdict-conf" title="How sure the model is of this answer">
-        {(confidence * 100).toFixed(0)}% confident
-      </span>
-    </p>
+    <details className="pg-decide-answer">
+      <summary className="pg-decide-verdict">
+        <span className="pg-decide-verdict-word" title={title}>{verdict}</span>
+        <span className="pg-decide-verdict-conf" title="How sure the model is of this answer">
+          {(confidence * 100).toFixed(0)}% confident
+        </span>
+        <span className="pg-decide-details-toggle">
+          Details
+          <svg
+            viewBox="0 0 12 12"
+            width="10"
+            height="10"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M3 4.5 6 7.5 9 4.5" />
+          </svg>
+        </span>
+      </summary>
+      <div className="pg-decide-details">{children}</div>
+    </details>
   );
+}
+
+/** "14 ms" under a second, "1.3 s" from there — the model's own time. */
+function formatModelTime(seconds: number): string {
+  return seconds < 1 ? `${Math.round(seconds * 1000)} ms` : `${seconds.toFixed(1)} s`;
 }
 
 /** The keys of a distribution in rubric order: a score's keys are the level
@@ -303,12 +335,9 @@ function Answer({ answer }: { answer: DecideAnswer }) {
     const p = answer.noul ?? 0;
     const yes = p >= 0.5;
     return (
-      <div className="pg-decide-answer">
-        <Verdict confidence={answer.confidence} title={`P(true) = ${p.toFixed(4)}`}>
-          {yes ? "Yes" : "No"}
-        </Verdict>
+      <AnswerLine verdict={yes ? "Yes" : "No"} confidence={answer.confidence} title={`P(true) = ${p.toFixed(4)}`}>
         <Distribution rows={[{ key: "true", label: "P(true)", p }]} picked={yes ? "true" : undefined} />
-      </div>
+      </AnswerLine>
     );
   }
   const probabilities = answer.probabilities ?? {};
@@ -319,17 +348,17 @@ function Answer({ answer }: { answer: DecideAnswer }) {
     const score = answer.score ?? 0;
     const levelName = (k: string) => answer.legend?.[k] ?? k;
     return (
-      <div className="pg-decide-answer">
-        <Verdict
-          confidence={answer.confidence}
-          title="The expected level, zero-based — a probability-weighted average over the levels"
-        >
-          {`${mode ? levelName(mode) : ""} · expected ${score.toFixed(2)} of ${top}`}
-        </Verdict>
+      <AnswerLine
+        verdict={mode ? levelName(mode) : ""}
+        confidence={answer.confidence}
+        title="The most likely level; the expected level is under Details"
+      >
         {/* The scale as ordered steps with the expected level marked on it:
             a score is a position on a rubric, and the rail shows the position
-            the way the bars below show the spread. The marker is the answer's
-            one accent. */}
+            the way the bars below show the spread. */}
+        <p className="pg-decide-expected" title="Zero-based — a probability-weighted average over the levels">
+          expected {score.toFixed(2)} of {top}
+        </p>
         <div className="pg-decide-rail" role="img" aria-label={`Expected level ${score.toFixed(2)} of ${top}`}>
           <span className="pg-decide-rail-line" aria-hidden="true" />
           {keys.map((k, i) => (
@@ -349,21 +378,17 @@ function Answer({ answer }: { answer: DecideAnswer }) {
         <Distribution
           rows={keys.map((k) => ({ key: k, label: levelName(k), p: probabilities[k] ?? 0 }))}
           picked={mode}
-          quiet
         />
-      </div>
+      </AnswerLine>
     );
   }
   return (
-    <div className="pg-decide-answer">
-      <Verdict confidence={answer.confidence} title="The option the model would act on">
-        {answer.choice ?? ""}
-      </Verdict>
+    <AnswerLine verdict={answer.choice ?? ""} confidence={answer.confidence} title="The option the model would act on">
       <Distribution
         rows={keys.map((k) => ({ key: k, label: k, p: probabilities[k] ?? 0 }))}
         picked={answer.choice ?? mode}
       />
-    </div>
+    </AnswerLine>
   );
 }
 
@@ -381,6 +406,10 @@ export function DecideStage({
   const [error, setError] = useState<string | null>(null);
   const [answers, setAnswers] = useState<Record<string, DecideAnswer> | null>(null);
   const [inputTokens, setInputTokens] = useState<number | null>(null);
+  // Model time only (tokenise + forward passes, from the worker), not the
+  // request's round trip — a run is milliseconds once the model is resident,
+  // and this is the figure that shows it.
+  const [modelSeconds, setModelSeconds] = useState<number | null>(null);
   // Which model produced the answers on screen — recorded at the run, not read
   // live, for the embed stage's reason: `model` is the sidebar's selection and
   // the answers below may belong to the previous one.
@@ -425,6 +454,7 @@ export function DecideStage({
       if (abortRef.current !== controller) return;
       setAnswers(result.answers);
       setInputTokens(result.usage?.inputTokens ?? null);
+      setModelSeconds(result.providerMetadata?.local?.seconds ?? null);
       setAnsweredBy(result.response?.modelId ?? model);
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
@@ -663,6 +693,11 @@ export function DecideStage({
               >
                 {answeredBy}
                 {inputTokens != null && ` · ${inputTokens} tokens in`}
+                {modelSeconds != null && (
+                  <span title="Model time, not counting the request round trip">
+                    {` · ${formatModelTime(modelSeconds)}`}
+                  </span>
+                )}
               </span>
             )}
             <button

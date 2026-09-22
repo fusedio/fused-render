@@ -2157,12 +2157,13 @@
    focused, the answer shape and its options as one muted line beneath, a
    hairline between questions and no container around any of them.
 
-   The accent has a budget of ONE hit per answered question: the picked bar of
-   a choice, the marker on a score's rail, the P(true) bar of a noul. Verdicts
-   are foreground weight, confidence is a small muted figure, every other bar
-   is a neutral tint — so the one accented thing is the thing to read. The
-   bars draw RAW probabilities (they sum to one per question; nothing is
-   rescaled the way the embed stage rescales cosines). */
+   An answer is ONE line — the verdict word, a small muted confidence, a
+   Details toggle — with the distribution folded under it (owner, 2026-09-23).
+   The accent has a budget of ONE hit per answered question and the verdict
+   word is it; every bar and the score rail's marker are neutral tints, so the
+   unfolded details read as detail, not as a second answer. The bars draw RAW
+   probabilities (they sum to one per question; nothing is rescaled the way
+   the embed stage rescales cosines). */
 
 .pg-decide-questions {
   display: flex;
@@ -2269,34 +2270,27 @@
   line-height: 1.4;
 }
 
-/* The options line is secondary: smaller, muted — and visibly a field at
-   rest, not floating text: a faint dotted hairline under it says "type here"
-   the way a fill-in blank does, the hover plate confirms it, focus turns the
-   hairline solid. Placeholder is an example list, so an empty question still
-   shows what goes there. */
+/* The options line is secondary: smaller, muted. No underline at rest
+   (owner: the hairline read as a rule across the row and made the options
+   harder to read) — the hover plate and the italic example placeholder are
+   the editable affordance, and focus keeps the plate alone. */
 .pg-decide-q-criteria {
   flex: 1 1 12rem;
   /* Sits after the shape words, so no left bleed: the hover plate would
      otherwise eat the gap between them. */
   margin-left: 0;
-  border-radius: 5px 5px 0 0;
   font-size: 12.5px;
   line-height: 1.4;
   color: var(--fg-muted);
-  box-shadow: inset 0 -1px 0 rgba(var(--tint), 0.16);
 }
 
 .pg-decide-q-criteria::placeholder {
   font-style: italic;
 }
 
-.pg-decide-q-criteria:hover {
-  box-shadow: inset 0 -1px 0 rgba(var(--tint), 0.3);
-}
-
 .pg-decide-q-criteria:focus-visible {
   color: var(--fg);
-  box-shadow: inset 0 -1px 0 var(--ctl-quiet-border-hover);
+  box-shadow: none;
 }
 
 /* Remove shows for the question under the pointer or holding focus, and
@@ -2384,10 +2378,10 @@
 
 /* -- the answer, under its question -- */
 
+/* One line: the verdict, the confidence, a Details toggle. The whole line is
+   the <summary>, so clicking anywhere on it folds the details open; the UA's
+   own marker is hidden and the chevron at the end stands in for it. */
 .pg-decide-answer {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
   margin-top: 6px;
 }
 
@@ -2397,8 +2391,22 @@
   gap: 10px;
   margin: 0;
   min-width: 0;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 5px;
+  outline: none;
 }
 
+.pg-decide-verdict::-webkit-details-marker {
+  display: none;
+}
+
+.pg-decide-verdict:focus-visible {
+  box-shadow: 0 0 0 1px var(--ctl-quiet-border-hover);
+}
+
+/* The question's one accent hit. */
 .pg-decide-verdict-word {
   min-width: 0;
   overflow: hidden;
@@ -2406,7 +2414,7 @@
   white-space: nowrap;
   font-size: 14px;
   font-weight: 600;
-  color: var(--fg);
+  color: var(--accent);
 }
 
 .pg-decide-verdict-conf {
@@ -2417,8 +2425,51 @@
   font-variant-numeric: tabular-nums;
 }
 
+.pg-decide-details-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  transition: color 120ms ease;
+}
+
+.pg-decide-verdict:hover .pg-decide-details-toggle {
+  color: var(--fg);
+}
+
+.pg-decide-details-toggle svg {
+  transition: transform 160ms ease;
+}
+
+.pg-decide-answer[open] .pg-decide-details-toggle svg {
+  transform: rotate(180deg);
+}
+
+/* The folded part: indented to the text column already (it is inside the
+   row's body), no border, a little air above. */
+.pg-decide-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* Room on every side (owner: "make it visually separate"): air above so
+     the fold reads as its own block under the verdict, air below before the
+     row's hairline, and the same inset the verdict line has. */
+  margin-top: 10px;
+  padding: 12px 0 14px;
+}
+
+.pg-decide-expected {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 /* The distribution: label / thin track / percentage, on a shared grid so the
-   bars start on one line whatever the labels' widths. No row has a box. */
+   bars start on one line whatever the labels' widths. No row has a box, and
+   no bar takes the accent — the verdict above already did. */
 .pg-decide-dist {
   list-style: none;
   margin: 0;
@@ -2468,26 +2519,23 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* The row the verdict rests on: stronger text, and — for a choice or a noul —
-   the accent on its bar. A score's mode is only the stronger text (`is-mode`);
-   its accent went to the rail marker. */
-.pg-decide-dist-row.is-picked,
-.pg-decide-dist-row.is-mode {
+/* The row the verdict rests on: stronger text and a stronger (still neutral)
+   bar. */
+.pg-decide-dist-row.is-picked {
   color: var(--fg);
 }
 
-.pg-decide-dist-row.is-picked .pg-decide-dist-label,
-.pg-decide-dist-row.is-mode .pg-decide-dist-label {
+.pg-decide-dist-row.is-picked .pg-decide-dist-label {
   font-weight: 600;
 }
 
 .pg-decide-dist-row.is-picked .pg-decide-dist-fill {
-  background: var(--accent);
+  background: rgba(var(--tint), 0.55);
 }
 
 /* A score's scale as ordered steps, worst left to best right, with the
    expected level marked. Steps are small neutral ticks on a hairline; the
-   marker is the one accented dot. */
+   marker is a solid foreground dot — neutral too, the accent is the verdict. */
 .pg-decide-rail {
   position: relative;
   height: 14px;
@@ -2517,11 +2565,11 @@
 .pg-decide-rail-mark {
   position: absolute;
   top: 50%;
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.18);
+  background: var(--fg);
+  box-shadow: 0 0 0 3px rgba(var(--tint), 0.12);
   transform: translate(-50%, -50%);
   transition: left 240ms ease;
 }
@@ -2529,6 +2577,7 @@
 @media (prefers-reduced-motion: reduce) {
   .pg-decide-dist-fill,
   .pg-decide-rail-mark,
+  .pg-decide-details-toggle svg,
   .pg-decide-q-text,
   .pg-decide-q-criteria,
   .pg-decide-q-remove {

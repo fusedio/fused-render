@@ -2755,5 +2755,5 @@ def api_ai_decide(body: dict = Body(...), x_fused: str | None = Header(default=N
             # the D633 slot for "part of your input was dropped".
             warnings=list(result.get("warnings") or []),
             finish_reason="stop",
-            metadata={"runner": "laya-mlx"}),
+            metadata={"runner": "laya-mlx", "seconds": result.get("seconds")}),
     }

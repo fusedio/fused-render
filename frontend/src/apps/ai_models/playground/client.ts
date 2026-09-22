@@ -553,7 +553,7 @@ export interface DecideResult {
   warnings: { type: string; setting?: string; message: string }[];
   usage: { inputTokens: number; outputTokens: number; totalTokens: number } | null;
   response: { id: string | null; modelId: string; timestamp: string };
-  providerMetadata: Record<string, { runner?: string }>;
+  providerMetadata: Record<string, { runner?: string; seconds?: number | null }>;
 }
 
 /** Ask a decision model typed questions about one state. One POST, one

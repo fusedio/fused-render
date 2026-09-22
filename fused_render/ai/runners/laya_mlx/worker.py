@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import logging  # noqa: E402
 import threading  # noqa: E402
+import time  # noqa: E402
 import warnings  # noqa: E402
 
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
@@ -279,6 +280,7 @@ def generate(body):
         raise RuntimeError("no model is loaded")
 
     state, questions = validate_request(body)
+    started = time.monotonic()
     try:
         result = agent.predict(state, questions)
     except FloatingPointError:
@@ -296,6 +298,10 @@ def generate(body):
         "answers": result.get("answers") or {},
         "usage": result.get("usage") or {"input_tokens": 0, "output_tokens": 0},
         "warnings": _truncation_warnings(agent, state, questions),
+        # Model time only (tokenise + forward passes), the same `seconds` the
+        # text runner reports, so the page can say how long the model took
+        # apart from the request's own round trip.
+        "seconds": round(time.monotonic() - started, 4),
     }
 
 
