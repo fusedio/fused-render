@@ -1232,10 +1232,10 @@ def test_bounded_pool_alone_starves_the_adversarial_shape_but_unbounded_recovers
 
     con = duckdb.connect()
     bounded_rows = con.execute(
-        _rank_sql(inner, "", "dup", "dup", "dup", limit, bounded=True)
+        _rank_sql(inner, "", "dup", "dup", limit, bounded=True)
     ).fetchall()
     unbounded_rows = con.execute(
-        _rank_sql(inner, "", "dup", "dup", "dup", limit, bounded=False)
+        _rank_sql(inner, "", "dup", "dup", limit, bounded=False)
     ).fetchall()
 
     bounded_names = Counter(r[0].rsplit("/", 1)[-1] for r in bounded_rows)
@@ -1365,6 +1365,163 @@ def test_starvation_fallback_misses_a_page_short_by_exactly_one_row(tmp_path):
     assert len(hits) == 6
     assert names == {"dup.txt": 3, "dup0.txt": 3}
     assert result["truncated"] is True
+
+
+# -- starvation fallback, round 2: a short page is not starvation evidence --
+#
+# The fallback above (`len(rows) < limit + 1`) treats ANY short bounded page
+# as possible starvation and reruns unbounded to find out. That conflates two
+# unrelated situations: a query whose matches genuinely fill fewer than
+# `limit + 1` slots (a sparse query, or one with no matches at all) ALSO
+# produces a short bounded page, with nothing for a rerun to recover — `LIKE
+# '%q%'` has no anchor, so both the bounded and unbounded passes scan the
+# entire corpus regardless of how few rows match, meaning a zero-match or
+# sparse query pays for two full scans to answer the same "not much/nothing
+# here" every time (DECISIONS.md has the measured cost). `_pool_n_column`
+# reports how many rows the bounded pool's own `LIMIT <pool>` stage actually
+# produced; `search_ranked` uses it below to tell "the pool starved a
+# fillable page" apart from "there was nothing to find" before ever
+# re-running anything.
+import contextlib
+from unittest.mock import patch
+
+import duckdb
+
+
+@contextlib.contextmanager
+def _counting_rank_statements():
+    """Counts real `duckdb.DuckDBPyConnection.execute` calls whose SQL text
+    matches the rank/glob query shape (`_qualify_basename_cap`'s `QUALIFY`
+    fragment appears in every `_rank_sql`/`_glob_sql` statement and nowhere
+    else `search_ranked` executes) — used to pin exactly how many rank
+    statements a `search_ranked` call issues, independent of what its
+    result happens to be."""
+    counts = {"n": 0}
+    orig_execute = duckdb.DuckDBPyConnection.execute
+
+    def counting_execute(self, sql, *args, **kwargs):
+        if isinstance(sql, str) and "QUALIFY" in sql:
+            counts["n"] += 1
+        return orig_execute(self, sql, *args, **kwargs)
+
+    with patch.object(duckdb.DuckDBPyConnection, "execute", counting_execute):
+        yield counts
+
+
+def _unbounded_ground_truth(monkeypatch, cfg, root, q, **kwargs):
+    """The correct answer for `search_ranked(cfg, root, q, **kwargs)`,
+    computed by forcing the candidate pool arbitrarily large so the bounded
+    query can never truncate the WHERE-matched set — functionally identical
+    to `bounded=False` for any fixture small enough to fit inside that pool,
+    without needing to reach into `_rank_sql`/`_glob_sql`/`inner` directly.
+    Used as the parity oracle: whatever `search_ranked` returns with the real
+    (small) pool must match this, query for query.
+
+    `monkeypatch` here is the CALLER's fixture, shared across everything else
+    it does in the same test. Patches inside a `with monkeypatch.context()`
+    block are undone when that block exits, regardless of what else the
+    caller registered on `monkeypatch` before or after calling this helper —
+    a bare `monkeypatch.undo()` would instead revert EVERY patch on the
+    fixture, including ones a future caller sets up around this call and
+    still needs afterward."""
+    import fused_render.index.query as qmod
+    with monkeypatch.context() as m:
+        m.setattr(qmod, "_basename_candidate_pool", lambda limit: 10**9)
+        return search_ranked(cfg, root, q, **kwargs)
+
+
+def test_zero_match_query_issues_exactly_one_rank_statement(tmp_path):
+    """Tier 1: the bounded pass returning 0 rows PROVES the WHERE clause
+    matched nothing at all (`_qualify_basename_cap`'s QUALIFY keeps at least
+    one row per distinct `nm` the pool holds, so a non-empty pool can never
+    produce zero rows) — the unbounded rerun can only reproduce "0 rows" too,
+    so it must never fire. Before the fix, `0 < limit + 1` is unconditionally
+    true, so every zero-match query paid for two full corpus scans."""
+    cfg = _index(tmp_path, "/r", ["/r/alpha/beta.txt", "/r/gamma/delta.txt"])
+    with _counting_rank_statements() as counts:
+        result = search_ranked(cfg, "/r", "zzz_no_such_substring_zzz", limit=20)
+    assert result["hits"] == []
+    assert counts["n"] == 1
+
+
+def test_sparse_query_whose_pool_does_not_fill_issues_exactly_one_rank_statement(
+        tmp_path):
+    """Tier 2: the corpus has plenty of files, but only two of them match
+    `q` — nowhere near filling the pool (`_basename_candidate_pool(21)` is
+    well over 20). The bounded pool's own `LIMIT <pool>` stage therefore never
+    binds: `pool_n` (the pool subquery's actual row count) comes back below
+    `pool`, which proves the bounded query already saw every WHERE-matched
+    row an unbounded query would — the two are equivalent by construction, so
+    the fallback must not fire even though the returned page (2 rows) is far
+    short of `limit + 1` (21)."""
+    files = (["/r/a/rareword_one.txt", "/r/b/rareword_two.txt"]
+             + [f"/r/noise/f{i}.txt" for i in range(100)])
+    cfg = _index(tmp_path, "/r", files)
+    with _counting_rank_statements() as counts:
+        result = search_ranked(cfg, "/r", "rareword", limit=20)
+    hits = [h for h in result["hits"] if not h["is_dir"]]
+    assert len(hits) == 2
+    assert counts["n"] == 1
+
+
+@pytest.mark.parametrize("glob,ranked", [
+    pytest.param(False, True, id="substring-ranked"),
+    pytest.param(True, True, id="glob-scored"),
+])
+def test_starvation_fallback_still_fires_when_the_pool_genuinely_truncates(
+        tmp_path, monkeypatch, glob, ranked):
+    """Guard against over-fixing: the two equivalence checks above must not
+    swallow the REAL starvation case (`13ff8332a`'s own adversarial shape,
+    also pinned above) — a pool that genuinely truncates the WHERE-matched
+    set (`dominant_count` comfortably exceeds the pool) AND whose basename
+    cap starves the page (only the dominant name survives, 3 rows, far short
+    of `limit + 1`) must still trigger exactly one rerun (two statements
+    total), and the recovered result must match the unbounded ground truth.
+
+    Only the RANKED branches are exercised here: `_adversarial_files`'s
+    dominant `dup.txt` only ranks ahead of every `dupN.txt` via the scored
+    `edge`/`length(nm)` predicates (see its own docstring) — the unranked
+    order (`depth ASC, rel ASC`) sorts alphabetically instead, where
+    `d0_0/dup0.txt` precedes `dom0/dup.txt`, so the dominant name never
+    concentrates at the front of the pool and this fixture does not starve
+    the unranked branches at all (verified separately: they issue exactly
+    one statement here, correctly, since there is nothing to recover)."""
+    files = _adversarial_files(dominant_count=1000)
+    cfg = _index(tmp_path, "/r", files)
+    query = "**dup**" if glob else "dup"
+    with _counting_rank_statements() as counts:
+        result = search_ranked(cfg, "/r", query, glob=glob, ranked=ranked,
+                               limit=21)
+    assert counts["n"] == 2
+    expected = _unbounded_ground_truth(monkeypatch, cfg, "/r", query,
+                                       glob=glob, ranked=ranked, limit=21)
+    assert result["hits"] == expected["hits"]
+    assert result["truncated"] == expected["truncated"]
+
+
+@pytest.mark.parametrize("q,glob,limit", [
+    ("zzz_no_such_substring_zzz", False, 20),
+    ("rareword", False, 20),
+    ("dup", False, 21),
+    ("**dup**", True, 21),
+    ("noise", False, 15),
+])
+def test_starvation_fallback_fix_does_not_change_any_result(
+        tmp_path, monkeypatch, q, glob, limit):
+    """Parity: for a spread of queries (zero-match, sparse, a genuinely
+    starved broad substring query, the same shape in glob mode, and an
+    ordinary broad query with many distinct basenames), the new tiered
+    fallback trigger must return BYTE-IDENTICAL hits/truncated to the
+    unbounded ground truth — removing a redundant scan must never change a
+    single returned row."""
+    files = (_adversarial_files(dominant_count=1000)
+             + ["/r/a/rareword_one.txt", "/r/b/rareword_two.txt"])
+    cfg = _index(tmp_path, "/r", files)
+    actual = search_ranked(cfg, "/r", q, glob=glob, limit=limit)
+    expected = _unbounded_ground_truth(monkeypatch, cfg, "/r", q, glob=glob,
+                                       limit=limit)
+    assert actual["hits"] == expected["hits"]
+    assert actual["truncated"] == expected["truncated"]
 
 
 def test_glob_unranked_reproduces_the_old_depth_then_alpha_order(tmp_path):
@@ -1550,6 +1707,52 @@ def test_like_metacharacters_in_the_query_match_only_the_literal_filename(tmp_pa
     assert rels("_b") == {"a_b.txt"}
 
 
+def test_name_predicate_sql_contains_leg_uses_contains_for_a_single_literal():
+    """`_name_predicate_sql`'s `contains` leg (Change 1) is the single-
+    literal case `_rank_sql` always calls with — must compile to a bare
+    `contains(nm, ...)`, never an `ESCAPE`-bearing LIKE. The multi-literal
+    (glob) case is unaffected: `contains()` takes one needle, not an
+    in-order chain, so it keeps the escaped `%`-separated LIKE form."""
+    from fused_render.index.query import _name_predicate_sql
+    single = _name_predicate_sql("nm", ["100%done"])
+    assert single["contains"] == "contains(nm, lower('100%done'))"
+    assert "ESCAPE" not in single["contains"]
+
+    multi = _name_predicate_sql("nm", ["src", "ts"])
+    assert "ESCAPE" in multi["contains"]
+    assert not multi["contains"].startswith("contains(")
+
+
+def test_search_ranked_scoping_ignores_a_proj_a_lookalike_sibling(tmp_path):
+    """The ESCAPE-rewrite gate (`_prefix_predicate_sql`), through
+    `search_ranked`'s own root-prefix filter: scoping to /r/proj_a/ must
+    return only proj_a's own file, never proj-a's — this is what would go
+    red if the gate's `like_literal(prefix) == prefix` check were ever
+    dropped in favour of an unconditional unescaped LIKE."""
+    cfg = _index(tmp_path, "/r",
+                 ["/r/proj_a/keep.py", "/r/proj-a/skip.py"],
+                 dirs=["/r/proj_a", "/r/proj-a"])
+    rels = {h["rel"] for h in search_ranked(cfg, "/r/proj_a", "py")["hits"]}
+    assert rels == {"keep.py"}
+
+
+def test_rank_sql_substring_filter_compiles_to_contains_not_like_escape(tmp_path):
+    """`_rank_sql`'s substring filter (Change 1) must compile to
+    `contains(lrel, ...)`, not an `ESCAPE`-bearing `LIKE` DuckDB can only run
+    as the opaque `like_escape()` function — pinned on the generated SQL
+    text itself, not just the (separately pinned) result set.
+
+    The basename-scoring predicates further down the same query (`nm LIKE
+    ... ESCAPE`) DO still carry ESCAPE — those are the `_name_predicate_sql`
+    prefix/suffix legs, deliberately left alone (they run over an
+    already-narrowed candidate set, not a disk scan) — so this only asserts
+    on the WHERE clause's own filter, not the whole statement."""
+    from fused_render.index.query import _rank_sql
+    sql = _rank_sql("SELECT 1", "", "abc", "abc", 10)
+    where_clause = sql.split("WHERE ", 1)[1].split(" ORDER BY")[0]
+    assert where_clause.strip() == "contains(lrel, lower('abc'))"
+
+
 def test_a_quote_in_the_query_does_not_break_the_sql(tmp_path):
     """`like_literal`/`_q` (store.py/query.py) double every single quote so
     the query can never close the SQL string literal it is spliced into.
@@ -1623,7 +1826,7 @@ def test_unranked_sql_has_no_scoring_apparatus(tmp_path):
     from fused_render.index.query import _rank_sql
 
     sql = _rank_sql("SELECT 1 AS rel, 1 AS size, 1 AS mtime, false AS is_dir, "
-                     "1 AS depth, 'x' AS nm, 'x' AS lrel", "", "q", "q", 1, 10,
+                     "1 AS depth, 'x' AS nm, 'x' AS lrel", "", "q", 1, 10,
                      ranked=False)
     lowered = sql.lower()
     for banned in ("score", "tier", "segment_starts", "p0", "strpos", "name_bonus"):

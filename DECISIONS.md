@@ -4491,6 +4491,237 @@ got the wording assertion above. Ran `tests/test_git_upstream.py`,
 `tests/test_apps_api.py`: 114 passed. No TypeScript touched, so no `bunx tsc`
 run.
 
+## Rank starvation fallback: a short page is not starvation evidence
+
+`13ff8332a`'s bounded-candidate-pool fast path (`fused_render/index/query.py`,
+`_rank_sql`/`_glob_sql`, `_bounded_or_full_candidates`) added a starvation
+fallback in `search_ranked`: if the bounded pass returns fewer than
+`limit + 1` rows, rerun the same query unbounded (`bounded=False`, `QUALIFY`
+over the entire WHERE-matched set) in case the pool's own `LIMIT <pool>`
+squeezed out a distinct basename that would have filled the page. Correct as
+far as it went, but the trigger condition — "the page came back short" — is
+not evidence the pool actually did anything: a query with genuinely few
+matches returns a short page too, and a zero-match query returns a short page
+*unconditionally* (`0 < limit + 1` is always true). Because the substring
+filter is `lrel LIKE '%q%'`, an unanchored pattern DuckDB cannot index, both
+the bounded and unbounded passes scan the entire WHERE-matched set regardless
+of how few rows survive — so a sparse or zero-match query paid for two full
+corpus scans to answer "still nothing" or "still not much." Measured on a
+440k-row index: a zero-match query went from 71.4ms to 186.6ms (2.6x), a
+sparse query (`openbot`) from 100.1ms to 222.8ms (2.2x); a page-filling query
+stayed at 1.0x (only ever one pass).
+
+The fix replaces "was the page short" with two provable equivalences, each of
+which proves the unbounded rerun can only reproduce the bounded result, so
+skipping it changes nothing:
+
+1. **Zero rows.** `_qualify_basename_cap`'s `QUALIFY row_number() OVER
+   (PARTITION BY nm ORDER BY <order_by>) <= _MAX_PER_BASENAME` keeps at least
+   the `row_number() = 1` row for every distinct `nm` the candidate pool
+   holds — a non-empty pool can never produce zero output rows. Zero rows
+   back therefore proves the pool itself was empty, which proves the WHERE
+   clause matched nothing at all: the unbounded query, filtering the
+   identical WHERE-matched set, must also return zero rows. No rerun.
+
+2. **The pool did not fill.** `_pool_n_column` adds `count(*) OVER ()` (no
+   `PARTITION BY`) to the SELECT that reads FROM the candidate-pool subquery
+   — i.e. strictly AFTER that subquery's own `ORDER BY <order_by> LIMIT
+   <pool>` stage, in the same window-function evaluation phase as
+   `_qualify_basename_cap`'s `QUALIFY row_number()`, both computed over the
+   same FROM-clause input before QUALIFY filters anything out. The resulting
+   `pool_n` is therefore the pool subquery's actual row count: `min(pool,
+   actual WHERE-matched count)`. `pool_n < pool` means the inner `LIMIT
+   <pool>` never bound — the pool subquery returned every WHERE-matched row,
+   so this bounded query's `QUALIFY` ran over the exact same input the
+   unbounded query's `QUALIFY` would run over. The two are equivalent by
+   construction; the fallback cannot produce a different result and must not
+   fire.
+
+Only when the pool genuinely truncates (`pool_n >= pool`) AND the page still
+comes up short of `limit + 1` is real basename-cap starvation still possible
+(one basename's duplicate count exceeds the pool and outranks every other
+matching name, `13ff8332a`'s own reported defect) — the unbounded rerun still
+fires in exactly that case, unchanged from before.
+
+Deliberately NOT placed: `count(*) OVER ()` inside the un-`LIMIT`ed WHERE-
+matched subquery, or above the whole statement's own `QUALIFY`/`ORDER
+BY`/`LIMIT`. Either placement would force DuckDB to materialise every
+matching row just to answer it, defeating the heap-based Top-N scan the
+pool's own `LIMIT <pool>` exists to enable — reintroducing, on a broad query,
+the exact full-corpus-scan cost this fix removes for a narrow one. It has to
+sit strictly between the pool's `LIMIT` and the cap's `QUALIFY`.
+
+Verified: `tests/test_index_rank.py`'s
+`test_zero_match_query_issues_exactly_one_rank_statement` and
+`test_sparse_query_whose_pool_does_not_fill_issues_exactly_one_rank_statement`
+fail on the pre-fix trigger (2 statements each) and pass after (1);
+`test_starvation_fallback_still_fires_when_the_pool_genuinely_truncates`
+guards against over-fixing (the real starvation case still reruns, 2
+statements, result matches the unbounded ground truth);
+`test_starvation_fallback_fix_does_not_change_any_result` pins byte-identical
+`hits`/`truncated` across a query spread (zero-match, sparse, starved broad,
+starved glob, ordinary broad) against a ground truth computed by forcing the
+candidate pool arbitrarily large.
+
+## Rank starvation fallback follow-ups: a stale test, a stale docstring, a duplicated derivation
+
+Code review on the previous entry's fix (PR #1308) surfaced four loose ends,
+all addressed in the same round:
+
+1. **A test pinned the old, buggy behavior as correct.**
+   `tests/test_index_search.py::test_search_ranked_honours_the_limit_in_sql_not_just_in_python`
+   builds 50 noise files plus one real match, so the bounded candidate pool
+   comes back with exactly 1 row — Tier 2 (`1 < pool`, `_basename_candidate_pool(4)`
+   is 20) proves the unbounded rerun would be identical, so it is correctly
+   skipped. The test asserted `seen_limits == [4, 4]` (two SQL statements),
+   which was true only under the pre-fix behavior this PR removes. Updated
+   the assertion to `[4]` and rewrote the trailing comment, which had stated
+   the old rule ("fewer than `limit` is the starvation-fallback's trigger")
+   as fact; it now explains why exactly one statement is correct here.
+
+2. **`_bounded_or_full_candidates`'s docstring asserted the inverse of the
+   shipped contract** — it still said a short page alone (fewer than
+   `limit + 1` rows) triggers the `bounded=False` rerun. Rewritten to state
+   the two-tier gate: a short page is necessary but not sufficient: it must
+   be combined with the pool actually having filled.
+
+3. **The pool size was derived in three independent places**: twice inside
+   the `_build_sql` closures (via `_bounded_or_full_candidates`, called from
+   `_rank_sql`/`_glob_sql`), and a third time in `search_ranked` itself
+   (`pool = _basename_candidate_pool(limit + 1)`, used only to compare
+   against `pool_n`). All three agreed today, but nothing enforced that —
+   if the Python-side value ever exceeded the SQL's, `pool_n >= pool` could
+   never be true and the starvation fallback would silently stop firing,
+   with no exception anywhere, for exactly the failure mode this whole PR
+   exists to close off.
+
+   Fixed by making `_bounded_or_full_candidates` the single source: it now
+   returns `(sql, pool)` instead of just `sql`, and callers pass that `pool`
+   straight into `_pool_n_column`, which emits the comparison AS SQL —
+   `count(*) OVER () >= {pool} AS pool_filled` — instead of the raw
+   `pool_n` count. `search_ranked` reads the boolean straight off
+   `pool_rows[0][-1]` and no longer computes `pool` at all. Chose "compare
+   in SQL" over "hand the pool size back to Python and compare there"
+   because it removes the second comparison site entirely rather than just
+   removing the second derivation site — there is now exactly one place
+   `pool` is computed (`_bounded_or_full_candidates`) and exactly one place
+   it is compared against `count(*) OVER ()` (the SQL text `_pool_n_column`
+   emits). Observable behavior (`hits`, `truncated`, statement count) is
+   unchanged — no test pins the generated SQL's column name or expression
+   text, so nothing else needed updating for this rename.
+
+4. **Over-broad `monkeypatch.undo()`** in `tests/test_index_rank.py`'s
+   `_unbounded_ground_truth`: it called `monkeypatch.undo()` in a `finally`,
+   which reverts EVERY patch registered on the fixture the caller passed in,
+   not just the `_basename_candidate_pool` patch this helper itself sets.
+   Scoped it with `monkeypatch.context()` instead, so only this helper's own
+   patch is undone when it returns.
+
+Verified: `tests/test_index_search.py tests/test_index_rank.py
+tests/test_index_query.py tests/test_index_rank_concurrency.py` — 342
+passed. The updated test
+(`test_search_ranked_honours_the_limit_in_sql_not_just_in_python`) run 3x in
+isolation to confirm it is not flaky post-fix: 3/3 passed.
+
+## LIKE ... ESCAPE blocks DuckDB's optimizer; contains()/bare LIKE where safe
+
+Every predicate in `fused_render/index/query.py` was written as
+`col LIKE '...' ESCAPE '\'` (via `like_literal()`), including unanchored
+substring scans (`%needle%`) and simple prefix scans (`prefix%`). DuckDB's
+`LikeOptimizationRule` only rewrites `LIKE` into `contains()` or a sargable
+range when the statement has NO `ESCAPE` clause; with one present, it falls
+back to the opaque `like_escape()` function — no fast path, no parquet
+row-group pruning. Measured directly: substring `LIKE ... ESCAPE` 9.74ms vs.
+`contains()` 5.00ms (~1.95x); prefix `LIKE ... ESCAPE` 2.39ms vs. plain
+`LIKE 'prefix%'` 1.48ms (~1.6x — the unescaped form compiles to a real
+`>= / <` range, enabling row-group pruning that the escaped form cannot get).
+`starts_with()` was also measured (2.11ms) and rejected: essentially no win
+over the escaped form, so it isn't worth trading away for.
+
+Two changes, split by whether dropping `ESCAPE` is always safe:
+
+1. **Unconditional**: every unanchored substring predicate (`_rank_sql`'s
+   `lrel` filter, `search_under`'s path/dir substring filter, and the
+   single-literal leg of `_name_predicate_sql`'s `contains` key) now emits
+   `contains(col, lower('lit'))` instead of
+   `col LIKE '%'||like_literal(lit)||'%' ESCAPE '\'`. `contains()` has no
+   wildcard semantics at all, so it is exactly equivalent for any literal —
+   including literals containing `%`, `_`, or `\` — with no escaping
+   needed. (`_name_predicate_sql`'s multi-literal `%`-chain leg keeps the
+   escaped form: `contains()` only takes one needle, so a chain of several
+   literals still needs a real LIKE pattern.)
+
+2. **Conditional**, via a new `_prefix_predicate_sql(col, prefix)` helper
+   used by `stats`, `search_under`, and `search_ranked`'s prefix scans: it
+   drops `ESCAPE` only when `like_literal(prefix) == prefix`, i.e. the
+   prefix contains no LIKE metacharacter. Metacharacter-free prefixes (the
+   overwhelming common case — ordinary path segments) get the fast
+   unescaped `LIKE 'prefix%'`. A prefix containing `_` or `%` keeps the
+   escaped form, because those are the two characters `LIKE` treats as
+   wildcards: an unescaped `dir LIKE '/x/proj_a/%'` would also match
+   `/x/proj-a/...` (`_` matches any single character), silently returning a
+   sibling directory's files as if they were under `proj_a`. This is
+   exactly the scoping bug the gate exists to prevent — proven by a
+   red/green cycle: temporarily forcing `_prefix_predicate_sql` to always
+   drop `ESCAPE` turned 5 tests red (the proj_a/proj-a scoping tests in all
+   three of `test_index_query.py`, `test_index_search.py`, and
+   `test_index_rank.py`, plus the two pre-existing lookalike-sibling tests
+   for `stats`/`search_under`), then restoring the gate brought all 330
+   back to green. `starts_with()` was not used here either, for the same
+   reason it was rejected above — it has no gated/ungated split of its own
+   and measured no meaningful improvement over the escaped `LIKE`.
+
+New/updated tests (all in the targeted 3-file suite,
+`tests/test_index_query.py tests/test_index_rank.py
+tests/test_index_search.py`): `test_prefix_predicate_drops_escape_for_a_metachar_free_prefix`,
+`test_prefix_predicate_keeps_escape_when_the_prefix_has_an_underscore`,
+`test_prefix_predicate_keeps_escape_when_the_prefix_has_a_percent`,
+`test_search_under_scoping_ignores_proj_a_lookalike_and_a_percent_literal`,
+`test_search_under_substring_filter_compiles_to_contains_not_like_escape`,
+`test_name_predicate_sql_contains_leg_uses_contains_for_a_single_literal`,
+`test_search_ranked_scoping_ignores_a_proj_a_lookalike_sibling`,
+`test_rank_sql_substring_filter_compiles_to_contains_not_like_escape`. Two
+pre-existing tests already covered the `stats`/`search_under` lookalike
+case (`test_stats_does_not_count_a_lookalike_underscore_sibling`,
+`test_search_under_ignores_a_lookalike_underscore_sibling`) and needed no
+changes. 330 passed in the targeted suite.
+
+**Correction (same session):** the first end-to-end benchmark run here was
+invalid and its "no measurable improvement" conclusion is retracted. Its
+index was never "covered" — every `search_ranked` call returned
+`{'covered': False, 'hits': [], 'total': 0, 'scanned_partitions': 0,
+'reason': 'uncovered'}`, so both arms were timing an early return that
+never touched the parquet at all; the ~3.1ms vs. ~3.0ms medians were
+measuring the no-op path, not the query. Lesson for any future benchmark
+of this kind: an uncovered root turns `search_ranked` into a no-op, so the
+harness must assert `covered is True` and `scanned_partitions >= 1` (and
+non-zero hits, for a query expected to match) before timing anything —
+otherwise it silently benchmarks the wrong code path.
+
+End-to-end honesty check (re-measured): built a fresh, premise-asserted
+450,100-row index across 10 partitions and timed `search_ranked` through
+the public API, alternating this branch (HEAD) against the pre-change code
+(`45fa6c8d8`), fresh subprocess per arm, 6 rounds with round 0 discarded as
+warmup, 5 timed reps per arm per round, reporting medians with
+[min, max] across rounds:
+
+| query | scope | pre-change (45fa6c8d8) | HEAD | ratio |
+|---|---|---|---|---|
+| broad substring `file_` | root `/r`, ~442k matches | 75.10 ms [72.86, 80.75] | 71.02 ms [69.19, 74.39] | 1.06x |
+| sparse substring `special_marker` | root `/r`, 100 matches | 19.17 ms [18.73, 22.51] | 14.05 ms [13.82, 14.86] | 1.37x |
+| zero match | root `/r` | 17.50 ms [16.60, 18.97] | 12.63 ms [11.90, 13.64] | 1.39x |
+| subfolder-scoped `file_` | root `/r/A5`, 2/10 partitions scanned | 23.73 ms [23.59, 23.91] | 19.60 ms [19.45, 19.83] | 1.21x |
+
+Interpretation, stated at exactly this strength and no stronger: the raw-SQL
+predicate win (~1.95x substring, ~1.6x prefix) does NOT survive intact
+end-to-end. The end-to-end win is 1.06x on the broadest query and ~1.4x on
+sparse/zero-match queries — real and consistently in the right direction,
+but modest. The dilution is scoring and ordering work downstream of the
+WHERE clause, which this change does not touch and which dominates when
+many rows survive the filter; connection setup was measured at only ~7% of
+the call (3.8ms of 54ms) and is not the diluent. Sparse and zero-match
+queries keep more of the win because there is little or no scoring work to
+dilute it.
 ## bun test heap leak investigation (fix/bun-test-heap-leak, 2026-09-21)
 
 Task: find/fix the memory leak that makes `bun test` (frontend) OOM the machine.
