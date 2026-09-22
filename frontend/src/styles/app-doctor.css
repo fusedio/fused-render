@@ -83,6 +83,38 @@
   color: var(--fg-muted);
 }
 
+/* AN AGENT IS WORKING ON THIS ROW (`check.check_task` live, or the task
+ * being created). The row is UNRUN in state — no verdict yet — but it must
+ * not read as idle: the mark is a spinner and the mark, label and detail all
+ * take the warning amber, the same hue the shell uses for "in progress"
+ * elsewhere, on a faint amber wash so the row stands out of the muted block
+ * around it. The action is a ghost pill in the same amber that opens the
+ * running task. Specificity beats the `.appdoc-unrun` muting above by
+ * chaining onto it. */
+.appdoc-row.appdoc-checking {
+  background: color-mix(in srgb, var(--warning) 9%, transparent);
+}
+
+.appdoc-row.appdoc-checking .appdoc-state,
+.appdoc-row.appdoc-checking .appdoc-detail {
+  color: var(--warning);
+}
+
+.appdoc-row.appdoc-checking .appdoc-label {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.appdoc-checking-btn {
+  color: var(--warning);
+  font-weight: 500;
+}
+
+.appdoc-checking-btn:hover {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+}
+
 /* `flex: 1 1 auto` (not the default `0 1 auto`) so this — the row's MIDDLE
  * column (state mark, text, action) — grows to fill whatever the state mark
  * and the action column don't need, rather than shrink-wrapping to its own

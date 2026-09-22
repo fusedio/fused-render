@@ -92,6 +92,7 @@ import {
   CircleMinus,
   CirclePlay,
   GitPullRequest,
+  LoaderCircle,
   MessageSquareText,
   RotateCw,
   TriangleAlert,
@@ -252,6 +253,10 @@ function CheckRow({
         hasAction ? "py-[9px]" : "py-[5px]",
         "appdoc-row appdoc-" + check.state,
         failing && "appdoc-row-sev-" + check.severity,
+        // A check task is on this row: the whole row wears the "an agent is
+        // working here" tint (app-doctor.css `.appdoc-checking`) — amber
+        // mark, spinner, amber detail — so it reads as live, not as idle.
+        checking && "appdoc-checking",
       )}
     >
       <span
@@ -260,7 +265,11 @@ function CheckRow({
         aria-label={rowStateAccessibleLabel(check)}
         title={rowStateAccessibleLabel(check)}
       >
-        <StateMark state={check.state} severity={failing ? check.severity : undefined} />
+        {checking ? (
+          <LoaderCircle size={16} aria-hidden className="animate-spin" />
+        ) : (
+          <StateMark state={check.state} severity={failing ? check.severity : undefined} />
+        )}
       </span>
       <div className="appdoc-text">
         <span className="appdoc-label">{check.label}</span>
@@ -268,7 +277,7 @@ function CheckRow({
           <span className="appdoc-detail">
             {creating
               ? "Creating the check task…"
-              : "Claude (Sonnet) is reading the app's view files — listed under the app's Tasks tab; you will be notified when it finishes"}
+              : "An agent is reading the app's view files against the cross-browser rubric — you'll be notified when it finishes"}
           </span>
         ) : (
           rowVisibleDetailText(check) !== "" && (
@@ -326,12 +335,14 @@ function CheckRow({
               // pane on its run, or the Tasks tab — same as a row's "Fix in
               // progress" opens the fix session.
               <Button
-                variant="secondary"
+                variant="ghost"
                 size="sm"
-                title="Claude is checking this app — open the running task"
+                className="appdoc-checking-btn"
+                title="Claude is reading this app's view files now — open the running task"
                 onClick={() => onFollowCheck(check)}
               >
-                Open check
+                <LoaderCircle aria-hidden className="animate-spin" />
+                Claude is checking
               </Button>
             ) : (
               <Button
