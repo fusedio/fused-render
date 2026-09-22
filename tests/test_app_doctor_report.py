@@ -664,9 +664,15 @@ def test_pull_is_not_offered_off_the_default_branch_and_the_row_says_why(workspa
     d = _app(workspace)
     repo = workspace / "local"
     remote = workspace.parent / "remote.git"
-    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True,
+    # Both inits pin `-b main` rather than leaving it to the runner's
+    # `init.defaultBranch` — the assertion below names "main" explicitly, and
+    # the remote's resolved default branch comes from ITS OWN initial HEAD
+    # symref, not from whatever branch name happens to get pushed to it. A
+    # runner defaulting to "master" would otherwise mismatch the local repo's
+    # "main" and desync the two, which reads as "no repo" rather than "fail".
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True,
                    capture_output=True, close_fds=False)
-    _git(repo, "init", "-q")
+    _git(repo, "init", "-q", "-b", "main")
     _git(repo, "add", "-A")
     _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "in")
     _git(repo, "remote", "add", "origin", str(remote))
