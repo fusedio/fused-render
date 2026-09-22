@@ -279,3 +279,154 @@ This pass added `UpdateNotifier.tsx` (and its test), removed the
   branch — these two test files are apparently only green when run as part
   of a larger `bun test` invocation alongside whatever file establishes the
   DOM globals first.
+
+## Code review round 2 (2026-09-22)
+
+Eight findings fixed. Each is testable and testable ones got tests except
+where noted.
+
+- **Finding #1 — `UpdateNotifier` mounted without `!IS_EMBED` at the main
+  `App.tsx` return site.** This mount had NO guard at all (the onboarding
+  branch's mount was already unreachable under `IS_EMBED` via its own outer
+  `if`, but is now spelled out explicitly too, for the same reason). Decision:
+  **guard alone**, not guard-plus-forwarding-fix. The compounding bugs named
+  alongside this finding — `forwardToShell` dropping `dismissible` on the
+  pane->shell copy, and `notify()`'s `replaceId` path against the popup
+  returning before reaching the forwarding call — are real, but a grep of
+  every `dismissible` usage in `frontend/src` turns up exactly one caller:
+  `UpdateNotifier`'s own in-flight restart card. With the guard in place, no
+  pane ever mounts `UpdateNotifier` any more, so nothing ever calls `notify()`
+  with `dismissible: false` from inside a pane in the first place — the
+  forwarding bugs have no live caller left to exercise them. Fixing them
+  anyway would touch `notifications.ts`'s shared forwarding logic (read by
+  every OTHER `notify()` caller too) for a case that can no longer occur,
+  which is more risk than the finding's actual observed consequence
+  (duplicate toast + duplicate shell copy) justifies. Left as a known,
+  currently-unreachable rough edge in `forwardToShell`/`notify()` rather than
+  rewritten.
+
+- **Finding #2 — Preferences "Check for updates" restored to `UpdateBadge`'s
+  old gate.** `settle()` now checks `updateRelevant(result)` before claiming
+  `"current"`; when the store is sitting on anything the deleted
+  `UpdateBadge` would have called relevant (`available`/`installing`/
+  `installed`/`error`), the manual-check result no longer overrides that with
+  "Up to date". No dedicated render test (see the existing note above on
+  `Preferences.tsx` having no test scaffold at all) — verified by `tsc`,
+  `bun run build`, and reading `UpdateBadge`'s deleted git-history source
+  against the restored gate line by line.
+
+- **Finding #3 (hardest) — eviction vs. dismissal.** Fixed by keeping a
+  `prevRestartRetainedIdsRef` snapshot of `retained`'s id set as of the last
+  time the raise effect ran. When the restart card's id disappears from
+  `retained`, the two cases that can cause that are told apart by whether
+  some OTHER id appeared at the same time: `capRetained` only ever trims the
+  single oldest row as a side effect of a NEW row being pushed past
+  `MAX_RETAINED`, so a genuine eviction always comes with a gain elsewhere in
+  the set. An explicit dismissal (`RepoUpdatesDock`'s ✕, or "Dismiss all",
+  both calling `dismissNotification(id)` directly, bypassing the component's
+  own "Later" handler) is exactly `retained.filter(n => n.id !== ours)` —
+  nothing is ever added. "Did the id set gain a member we didn't have before"
+  distinguishes them without the notification store needing to expose
+  anything new. A dismissal now routes through the same
+  `recordRestartDismissed()` "Later" already uses, so it sticks; a genuine
+  eviction still clears the stale ref and re-raises, unchanged from before.
+  Two regression tests added to `UpdateNotifier.test.tsx`: one presses
+  `dismissNotification` directly and confirms the card stays gone even after
+  the underlying status is re-posted unchanged; the other floods
+  `MAX_RETAINED` past capacity with unrelated notifications and confirms the
+  card resurrects (as a fresh row/id — its old slot is the one that got
+  sliced off) in the SAME `act()` as the eviction, since the eviction itself
+  changes `retained`, which is one of the raise effect's own dependencies.
+
+- **Finding #4 — "Later" was a no-op when `latest_version` is null.** Fixed
+  together with #3 (same effect, same code review comment). Introduced a
+  `RESTART_DISMISSED_NONE` sentinel (`"\u0000none"`, which cannot appear in a
+  real semver) stored in `sessionStorage` in place of the version string when
+  it is `null`; `wasRestartDismissed`/`recordRestartDismissed` both take
+  `string | null` now and compare/write the sentinel for the null case
+  instead of skipping the write entirely. Regression test added: raises the
+  card with `latest_version: null`, presses "Later", re-posts the same
+  (still-null) status, and asserts it stays dismissed.
+
+- **Finding #5 — `server-status.ts`'s `installedReady` silently suppressed a
+  real outage for the rest of the session.** `updateState === "installed"`
+  dropped from the OR entirely; `installedReady` renamed
+  `diskAheadOfHealthyServer` and narrowed to `banner === "update-restart"`
+  alone, which `reduceProbe` itself clears the instant consecutive probe
+  failures cross `FAIL_THRESHOLD` (it unconditionally overwrites `banner` to
+  `"down"` at that point, regardless of what it held before) — so this can no
+  longer paper over a genuine crash. PR #1214's guarantee ("never show the
+  down card during an in-flight restart") is untouched: it lives entirely in
+  `restartInFlight(stage)`, checked independently in the same `||`
+  expression, unaffected by this narrowing — confirmed by the existing sweep
+  test over `RESTART_STAGES.filter(restartInFlight)` still passing unchanged.
+  Rewrote the stale "TWO DOORS" comment block, which justified the removed
+  clause by name. Regression test added to `server-status.test.ts`:
+  `banner: "down", updateState: "installed", stage: "ready"` must now surface
+  `"down"` (it used to return `"none"` — the bug).
+
+- **Finding #6 — Preferences flashed "Updates aren't managed..." on every
+  visit.** `hasUpdater = status !== null` couldn't tell "no updater exists"
+  apart from "haven't heard from the first `/api/config` poll yet" (both are
+  `null`). Added `awaitingFirstStatus = status === null && version === null`
+  (reusing `version`'s own one-shot fetch as the "have we heard back at all"
+  signal rather than adding a second `useState`) and render nothing during
+  that window, matching the deleted `UpdateBadge`'s own `if (!status) return
+  null`. Fixed in the same edit as #2 since both touch the same render
+  branch; see that finding's note on test coverage.
+
+- **Finding #7 — `ServerStatusBanner.tsx`'s `installedVersion` was dead state
+  behind a false comment.** Grepped every reader of `installedVersion` across
+  `frontend/src`: `UpdateNotifier.tsx`'s `inFlightLabel()` takes a
+  same-named parameter, but it is fed `status?.latest_version` from the
+  SHARED update store (`update-status.ts`), never anything from
+  `ServerStatusBanner`'s own local state — the two are unconnected. Removed
+  `useServerStatus`'s `installedVersion`/`setInstalledVersion` state and its
+  entry on the hook's return type; `result.installedVersion` (read off the
+  probe body) is still fed straight into `reduceProbe()` as before — that
+  path never went through the deleted `useState` and is unaffected. Replaced
+  the false "the restart NOTIFICATION wants the real installed version"
+  comment with what forcing the early probe actually still buys: feeding
+  `bannerSurface`'s `banner` field (which this component DOES still read)
+  sooner than the next scheduled 5s tick.
+
+- **Finding #8 — CI-only flake in `UpdateNotifier.test.tsx`'s first test.**
+  Root cause: `update-status.ts`'s `poll()` checked its `generation`
+  staleness guard AFTER calling `set(next)`, not before — the check only
+  gated whether the NEXT tick got scheduled, not whether the current
+  in-flight response was allowed to mutate shared state at all. `getConfig()`
+  is a real `await`; a poll started by an EARLIER bun test file's own
+  `useUpdateStatus()`-consuming component mount (which calls
+  `ensureStarted()` on this module-singleton store) can resolve arbitrarily
+  later, including during a completely different, LATER-running test file in
+  the same shared bun process (bun runs one `bun test` invocation as one
+  process with one module registry and one event loop across every file).
+  `resetUpdateStatusForTests()` — called in every test's own `afterEach` —
+  bumps `generation` and clears the pending `setTimeout`, but cannot cancel
+  an ALREADY in-flight `fetch` promise, so the old code let that stale
+  response silently overwrite `current` and fire every subscriber (including
+  a freshly-mounted `UpdateNotifier` in the unrelated later test) with data
+  that test never asked for. This is timing-dependent by nature — fast
+  locally (the round trip usually resolves before the next file's own
+  `beforeEach` runs), far likelier on a slower/differently-scheduled Linux CI
+  runner — which matches the exact "green 7138/0 locally, red 7137/1 on CI,
+  identical file/test counts" signature. Fix: moved the `if (mine !==
+  generation) return;` check to run BEFORE `set(next)`, not just before the
+  re-arm. Also added explicit `resetUpdateStatusForTests()` /
+  `resetRestartForTests()` / `_resetNotificationsForTest()` calls to this
+  file's own `beforeEach` (previously only in `afterEach`) as defense in
+  depth — belt-and-suspenders against a same-run leftover from whatever file
+  happens to run immediately before this one, on top of the actual `poll()`
+  fix. Verified deterministic under file-order variation: `bun test
+  src/platform/ui/UpdateNotifier.test.tsx` alone (3 repeats, 8/8 pass each);
+  `bun test src/platform/ui/MessagePopupCard.test.tsx
+  src/platform/ui/UpdateNotifier.test.tsx` (3 repeats, 10/10 pass each). The
+  coordinator's third suggested combo, `RepoUpdatesDock.test.tsx` immediately
+  before `UpdateNotifier.test.tsx`, was also tried — it reproduces total
+  failure of every subsequent test, but that combo fails the exact same way
+  with `RepoUpdatesDock.test.tsx` run completely alone (`window.
+  addEventListener is not a function`, from `apps/claude/feature-flag.ts`,
+  code untouched by this branch) — i.e. it is the pre-existing,
+  already-documented standalone-only failure above, not finding #8's
+  mechanism; not something this branch introduced or can fix from
+  `UpdateNotifier.test.tsx`'s side.
