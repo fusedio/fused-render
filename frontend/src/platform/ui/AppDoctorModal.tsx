@@ -455,7 +455,7 @@ function CheckRow({
                   Icon-only, beside Re-check, so neither competes with Fix. */}
               {check.ondemand && check.verdict_task && (
                 <Button
-                  variant="ghost"
+                  variant="outline"
                   size="icon-xs"
                   className="text-muted-foreground"
                   title="Open the check's conversation — Claude's own plain-words notes on what it found"
@@ -471,7 +471,7 @@ function CheckRow({
                   opinion. Icon-only, so it never competes with Fix. */}
               {check.ondemand && (
                 <Button
-                  variant="ghost"
+                  variant="outline"
                   size="icon-xs"
                   className="text-muted-foreground"
                   // Not while a fix session is live on this app: it is about
