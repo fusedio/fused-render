@@ -1415,13 +1415,19 @@ def _unbounded_ground_truth(monkeypatch, cfg, root, q, **kwargs):
     to `bounded=False` for any fixture small enough to fit inside that pool,
     without needing to reach into `_rank_sql`/`_glob_sql`/`inner` directly.
     Used as the parity oracle: whatever `search_ranked` returns with the real
-    (small) pool must match this, query for query."""
+    (small) pool must match this, query for query.
+
+    `monkeypatch` here is the CALLER's fixture, shared across everything else
+    it does in the same test. Patches inside a `with monkeypatch.context()`
+    block are undone when that block exits, regardless of what else the
+    caller registered on `monkeypatch` before or after calling this helper —
+    a bare `monkeypatch.undo()` would instead revert EVERY patch on the
+    fixture, including ones a future caller sets up around this call and
+    still needs afterward."""
     import fused_render.index.query as qmod
-    monkeypatch.setattr(qmod, "_basename_candidate_pool", lambda limit: 10**9)
-    try:
+    with monkeypatch.context() as m:
+        m.setattr(qmod, "_basename_candidate_pool", lambda limit: 10**9)
         return search_ranked(cfg, root, q, **kwargs)
-    finally:
-        monkeypatch.undo()
 
 
 def test_zero_match_query_issues_exactly_one_rank_statement(tmp_path):
