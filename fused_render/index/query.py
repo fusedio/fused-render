@@ -91,6 +91,29 @@ def _q(s: str) -> str:
     return s.replace("'", "''")
 
 
+def _prefix_predicate_sql(col: str, prefix: str) -> str:
+    """`col LIKE 'prefix%'`, dropping ESCAPE when the literal allows it.
+
+    DuckDB's `LikeOptimizationRule` only rewrites a `LIKE` into a sargable
+    range (which lets parquet row groups be skipped by their path min/max)
+    when the syntax carries no `ESCAPE` clause — an `ESCAPE '\\'` predicate is
+    always evaluated as the opaque `like_escape()` function instead, with no
+    range and no pruning (measured: ~1.6x on a 450k-row parquet). When
+    `prefix` contains no LIKE metacharacter (`%`, `_`, `\\`), the escaped and
+    unescaped forms are byte-identical in what they match, so we emit the
+    prunable one; otherwise `%`/`_` would act as wildcards — `/x/proj_a/`
+    wrongly matching `/x/proj-a/f.py` — and we keep today's escaped form.
+
+    The gate is exactly `like_literal(prefix) == prefix`: `like_literal` is a
+    no-op precisely when `prefix` has no metacharacter to escape (its quote
+    doubling is a no-op too whenever `prefix` has no `'`, so this also covers
+    that case correctly either way)."""
+    lit = like_literal(prefix)
+    if lit == prefix:
+        return f"{col} LIKE '{lit}%'"
+    return f"{col} LIKE '{lit}%' ESCAPE '\\'"
+
+
 def dirs_src(cfg: IndexConfig) -> str:
     """dirs.parquet as an explicit one-file list, never a glob string — the
     store path is the user's, and DuckDB's glob has no escape for a `[` in
@@ -338,9 +361,8 @@ def stats(cfg: IndexConfig, root: str = "", breakdown: bool = False,
         # unconditionally, as a plain `root != "/"` check used to, would double
         # it on the drive-root case and match nothing.
         prefix = root if root.endswith("/") else root + "/"
-        pfx = like_literal(prefix)
         inside = (f"(dir = '{_q(root)}' "
-                  f"OR dir LIKE '{pfx}%' ESCAPE '\\')")
+                  f"OR {_prefix_predicate_sql('dir', prefix)})")
         hit = prune(m["partitions"], prefix)
         n_rows, total_size, n_dirs = 0, 0, 0
         types = []
@@ -519,7 +541,6 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
         # See stats()'s identical fix above: root already ends in "/" for
         # any bare root (POSIX or a Windows drive), not only "/" itself.
         prefix = root if root.endswith("/") else root + "/"
-        prefix_like = like_literal(prefix)
         limit = max(0, min(int(limit), MAX_CORPUS))
         hit = prune(m["partitions"], prefix)
         q_trimmed = q.strip() if q else ""
@@ -542,7 +563,14 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
             # `**/` prefix an unadorned `resolve_query` glob with no "/"
             # gets.
             wildcard_regex = _q(_glob_to_regex(("**/" + expanded).lower()))
-        qlit = like_literal(q_trimmed) if q_trimmed and wildcard_regex is None else ""
+        # `contains()` needs no LIKE-metachar escaping at all (it has no
+        # wildcard semantics — see `_prefix_predicate_sql`'s docstring for the
+        # ESCAPE-rewrite finding this is the substring half of), so this is
+        # now just the "is there a plain substring filter to apply" gate that
+        # `like_literal(q_trimmed)`'s truthiness used to double as; the
+        # literal text itself is quoted fresh (`_q(q_trimmed)`) at each use
+        # below.
+        has_substring_filter = bool(q_trimmed) and wildcard_regex is None
         # Code review finding 3: `q` truthy but `expanded` empty means `q`
         # was WHITESPACE-ONLY — `expand_whitespace_query`'s own contract
         # (test_index_query.py, A2) already resolves that to `""` because
@@ -552,8 +580,9 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
         # NOT the same as `q` never having been passed at all (this
         # function's own documented "no filter, whole corpus" contract,
         # `q=""`/`q=None`) — conflating the two let a whitespace-only query
-        # fall through every filter guard below (`q_trimmed` and `qlit` are
-        # ALSO empty for whitespace) and answer with the unfiltered corpus.
+        # fall through every filter guard below (`q_trimmed` and
+        # `has_substring_filter` are ALSO empty/false for whitespace) and
+        # answer with the unfiltered corpus.
         no_match = bool(q) and not expanded
         # Files and directories compete in ONE depth-ordered query, not two.
         #
@@ -579,23 +608,25 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
                 like = (f" AND regexp_matches(lower(substr(path, {prefix_chars + 1})), "
                         f"'{wildcard_regex}')")
             else:
-                like = f" AND path ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
+                like = (f" AND contains(lower(path), lower('{_q(q_trimmed)}'))"
+                        if has_substring_filter else "")
             branches.append(
                 f"SELECT path, size, mtime, false AS is_dir, "
                 f"{_depth_col(_cached_src_cols(con, fsrc, (cfg.dir, m.get('generation'), 'files')), 'path')} AS depth FROM {fsrc} "
-                f"WHERE path LIKE '{prefix_like}%' ESCAPE '\\'{like}")
+                f"WHERE {_prefix_predicate_sql('path', prefix)}{like}")
         if include_dirs:
             dsrc = dirs_src(cfg)
             if wildcard_regex is not None:
                 dlike = (f" AND regexp_matches(lower(substr(dir, {prefix_chars + 1})), "
                          f"'{wildcard_regex}')")
             else:
-                dlike = f" AND dir ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
+                dlike = (f" AND contains(lower(dir), lower('{_q(q_trimmed)}'))"
+                         if has_substring_filter else "")
             branches.append(
                 f"SELECT dir AS path, CAST(NULL AS BIGINT) AS size, "
                 f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
                 f"{_depth_col(_cached_src_cols(con, dsrc, (cfg.dir, m.get('generation'), 'dirs')), 'dir')} AS depth FROM {dsrc} "
-                f"WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'{dlike}")
+                f"WHERE {_prefix_predicate_sql('dir', prefix)}{dlike}")
         entries, truncated = [], False
         if branches and not no_match:
             if token is not None:
@@ -1367,6 +1398,17 @@ def _name_predicate_sql(nm_col: str, literals: list) -> dict:
                 "boundary": "false", "edge": "false"}
     first_like = like_literal(literals[0])
     last_like = like_literal(literals[-1])
+    # A single literal run's `contains` predicate is exactly `contains(nm,
+    # lit)` — no `%`-chain, no `LIKE`/`ESCAPE` at all — since `contains()` is
+    # proven equivalent to `LIKE '%'||like_literal(lit)||'%' ESCAPE '\\'` for
+    # any literal, with none of the ESCAPE clause's optimizer cost
+    # (`_prefix_predicate_sql`'s docstring has the fuller ESCAPE-rewrite
+    # finding). Multiple literals (a multi-run glob) still need the escaped
+    # `%`-separated chain below: `contains()` takes one needle, not an
+    # in-order sequence of them.
+    single_literal_contains = (
+        f"contains({nm_col}, lower('{_q(literals[0])}'))"
+        if len(literals) == 1 else None)
     chain_like = "%".join(like_literal(lit) for lit in literals)
     # `boundary`'s literal is the first run with its own leading
     # non-alphanumeric characters stripped (code review finding 6): a literal
@@ -1406,8 +1448,8 @@ def _name_predicate_sql(nm_col: str, literals: list) -> dict:
     return {
         "prefix": f"{nm_col} LIKE lower('{first_like}') || '%' ESCAPE '\\'",
         "suffix": f"{nm_col} LIKE '%' || lower('{last_like}') ESCAPE '\\'",
-        "contains": (f"{nm_col} LIKE '%' || lower('{chain_like}') || '%' "
-                     f"ESCAPE '\\'"),
+        "contains": single_literal_contains or (
+            f"{nm_col} LIKE '%' || lower('{chain_like}') || '%' ESCAPE '\\'"),
         "boundary": (f"regexp_matches({nm_col}, "
                      f"'(^|[^a-z0-9])' || lower('{first_re}'))"),
         "edge": f"(({prefix_edge}) OR ({suffix_edge}))",
@@ -1743,14 +1785,14 @@ def _lex_order_and_score(nm_exact: str, preds: dict,
     return order_by, score, tier
 
 
-def _rank_sql(inner: str, hidden: str, ql: str, qq: str, qs: str, limit: int,
+def _rank_sql(inner: str, hidden: str, qq: str, qs: str, limit: int,
               ranked: bool = True, bounded: bool = True) -> str:
     """The whole rank query: substring filter, scoring, and ORDER BY ... LIMIT,
     all in SQL — no candidate cap, no Python-side pass.
 
     `ranked=False` (the owner's unranked-results preference, D720) keeps the
-    exact same `WHERE lrel LIKE ...` substring filter and hidden-file handling
-    below, but drops the entire scoring apparatus — no predicate columns, no
+    exact same `WHERE contains(lrel, ...)` substring filter and hidden-file
+    handling below, but drops the entire scoring apparatus — no predicate columns, no
     `score`, no `tier` — computed nowhere, not computed-then-discarded. It
     orders `depth ASC, rel ASC` instead: `depth` here is `rel_depth`, the
     same ROOT-RELATIVE depth the ranked branch computes in `inner` (see
@@ -1776,15 +1818,16 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, qs: str, limit: int,
     `inner` is the UNION ALL of the files/dirs branches (each already carries
     `rel`, `size`, `mtime`, `is_dir`, `depth` — RELATIVE to the search root,
     `search_ranked`'s `rel_depth` — and `nm`, the lowercased basename,
-    `_name_col`'s doing) plus `lrel` (`lower(rel)`). `ql` is the ORIGINAL-case
-    `qs` as a LIKE literal (metachars escaped, use with ESCAPE '\\'); `qq` is
-    the same original-case string as a plain SQL string literal (quotes
-    doubled only) for the `nm = lower(qq)` exact-match test, which is not
-    LIKE and must not see LIKE's escapes. Every comparison against `ql`/`qq`
-    below wraps them in SQL's own `lower(...)` rather than lowering in Python
-    first — see the paragraph below for why. `qs` is the original-case query
-    string itself, passed through to `_name_predicate_sql` as the single
-    literal run a substring query is.
+    `_name_col`'s doing) plus `lrel` (`lower(rel)`). `qq` is the ORIGINAL-case
+    `qs` as a plain SQL string literal (quotes doubled only) — used both for
+    the `nm = lower(qq)` exact-match test AND (since 13ff8332a's ESCAPE
+    finding) for the `contains(lrel, lower(qq))` substring filter itself:
+    `contains()` has no wildcard semantics, so it needs no LIKE-metachar
+    escaping at all, only the ordinary quote-doubling `qq` already carries.
+    Every comparison against `qq` below wraps it in SQL's own `lower(...)`
+    rather than lowering in Python first — see the paragraph below for why.
+    `qs` is the original-case query string itself, passed through to
+    `_name_predicate_sql` as the single literal run a substring query is.
 
     Ported (then substantially rewritten — see the position-free redesign
     note above this function) from the deleted index/rank.py's `fuzzy_match`
@@ -1851,7 +1894,7 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, qs: str, limit: int,
         unranked_order = "depth ASC, rel ASC"
         base_select = (
             f"SELECT rel, size, mtime, is_dir, depth, nm FROM ({inner}) "
-            f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden} ")
+            f"WHERE contains(lrel, lower('{qq}')){hidden} ")
         candidates, pool = _bounded_or_full_candidates(
             base_select, unranked_order, limit, bounded)
         return (
@@ -1865,7 +1908,7 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, qs: str, limit: int,
     base_select = (
         f"SELECT rel, size, mtime, is_dir, depth, nm, ({score}) AS score, "
         f"({tier}) AS tier FROM ({inner}) "
-        f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden} ")
+        f"WHERE contains(lrel, lower('{qq}')){hidden} ")
     candidates, pool = _bounded_or_full_candidates(base_select, order_by, limit, bounded)
     return (
         f"SELECT rel, size, mtime, is_dir, depth, score, tier"
@@ -2476,7 +2519,6 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         # See stats()'s identical fix above: root already ends in "/" for
         # any bare root (POSIX or a Windows drive), not only "/" itself.
         prefix = root if root.endswith("/") else root + "/"
-        prefix_like = like_literal(prefix)
         limit = max(0, min(int(limit), MAX_GLOB_RANK_LIMIT if glob else MAX_RANK_LIMIT))
         hit = prune(m["partitions"], prefix)
         base = {"covered": True, "reason": "", "scanned_partitions": len(hit),
@@ -2518,7 +2560,7 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
                 f"SELECT {frel} AS rel, size, mtime, "
                 f"false AS is_dir, {_name_col(fcols)} AS nm, "
                 f"{_rel_depth_sql(fcols, frel, prefix_slashes)} AS depth "
-                f"FROM {fsrc} WHERE path LIKE '{prefix_like}%' ESCAPE '\\'")
+                f"FROM {fsrc} WHERE {_prefix_predicate_sql('path', prefix)}")
         if include_dirs:
             dsrc = dirs_src(cfg)
             dcols = _cached_src_cols(con, dsrc, (cfg.dir, m.get("generation"), "dirs"))
@@ -2532,7 +2574,7 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
                 f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
                 f"regexp_extract(lower({drel}), '[^/]*$') AS nm, "
                 f"{_rel_depth_sql(dcols, drel, prefix_slashes)} AS depth "
-                f"FROM {dsrc} WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'")
+                f"FROM {dsrc} WHERE {_prefix_predicate_sql('dir', prefix)}")
         if not branches:
             return {**base, "hits": [], "truncated": False, "total": 0}
 
@@ -2599,16 +2641,15 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
                                  score=score, like_guard=like_guard,
                                  bounded=bounded)
         else:
-            # NOT `.lower()`'d here — `_rank_sql` lowers `ql`/`qq` itself,
-            # with the same `lower()` call that produces `lrel`, so the query
-            # and the rel it's compared against always fold through one
-            # implementation (see `_rank_sql`'s docstring on why lowering both
-            # sides separately can disagree).
-            ql = like_literal(qs)
+            # NOT `.lower()`'d here — `_rank_sql` lowers `qq` itself, with the
+            # same `lower()` call that produces `lrel`, so the query and the
+            # rel it's compared against always fold through one implementation
+            # (see `_rank_sql`'s docstring on why lowering both sides
+            # separately can disagree).
             qq = _q(qs)
 
             def _build_sql(bounded: bool) -> str:
-                return _rank_sql(inner, hidden, ql, qq, qs, limit + 1,
+                return _rank_sql(inner, hidden, qq, qs, limit + 1,
                                  ranked=ranked, bounded=bounded)
         # One row past `limit` so "there was more" is known without a count —
         # same trick `search_under` uses for its own LIMIT.

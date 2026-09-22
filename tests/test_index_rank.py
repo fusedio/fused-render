@@ -1232,10 +1232,10 @@ def test_bounded_pool_alone_starves_the_adversarial_shape_but_unbounded_recovers
 
     con = duckdb.connect()
     bounded_rows = con.execute(
-        _rank_sql(inner, "", "dup", "dup", "dup", limit, bounded=True)
+        _rank_sql(inner, "", "dup", "dup", limit, bounded=True)
     ).fetchall()
     unbounded_rows = con.execute(
-        _rank_sql(inner, "", "dup", "dup", "dup", limit, bounded=False)
+        _rank_sql(inner, "", "dup", "dup", limit, bounded=False)
     ).fetchall()
 
     bounded_names = Counter(r[0].rsplit("/", 1)[-1] for r in bounded_rows)
@@ -1707,6 +1707,52 @@ def test_like_metacharacters_in_the_query_match_only_the_literal_filename(tmp_pa
     assert rels("_b") == {"a_b.txt"}
 
 
+def test_name_predicate_sql_contains_leg_uses_contains_for_a_single_literal():
+    """`_name_predicate_sql`'s `contains` leg (Change 1) is the single-
+    literal case `_rank_sql` always calls with — must compile to a bare
+    `contains(nm, ...)`, never an `ESCAPE`-bearing LIKE. The multi-literal
+    (glob) case is unaffected: `contains()` takes one needle, not an
+    in-order chain, so it keeps the escaped `%`-separated LIKE form."""
+    from fused_render.index.query import _name_predicate_sql
+    single = _name_predicate_sql("nm", ["100%done"])
+    assert single["contains"] == "contains(nm, lower('100%done'))"
+    assert "ESCAPE" not in single["contains"]
+
+    multi = _name_predicate_sql("nm", ["src", "ts"])
+    assert "ESCAPE" in multi["contains"]
+    assert not multi["contains"].startswith("contains(")
+
+
+def test_search_ranked_scoping_ignores_a_proj_a_lookalike_sibling(tmp_path):
+    """The ESCAPE-rewrite gate (`_prefix_predicate_sql`), through
+    `search_ranked`'s own root-prefix filter: scoping to /r/proj_a/ must
+    return only proj_a's own file, never proj-a's — this is what would go
+    red if the gate's `like_literal(prefix) == prefix` check were ever
+    dropped in favour of an unconditional unescaped LIKE."""
+    cfg = _index(tmp_path, "/r",
+                 ["/r/proj_a/keep.py", "/r/proj-a/skip.py"],
+                 dirs=["/r/proj_a", "/r/proj-a"])
+    rels = {h["rel"] for h in search_ranked(cfg, "/r/proj_a", "py")["hits"]}
+    assert rels == {"keep.py"}
+
+
+def test_rank_sql_substring_filter_compiles_to_contains_not_like_escape(tmp_path):
+    """`_rank_sql`'s substring filter (Change 1) must compile to
+    `contains(lrel, ...)`, not an `ESCAPE`-bearing `LIKE` DuckDB can only run
+    as the opaque `like_escape()` function — pinned on the generated SQL
+    text itself, not just the (separately pinned) result set.
+
+    The basename-scoring predicates further down the same query (`nm LIKE
+    ... ESCAPE`) DO still carry ESCAPE — those are the `_name_predicate_sql`
+    prefix/suffix legs, deliberately left alone (they run over an
+    already-narrowed candidate set, not a disk scan) — so this only asserts
+    on the WHERE clause's own filter, not the whole statement."""
+    from fused_render.index.query import _rank_sql
+    sql = _rank_sql("SELECT 1", "", "abc", "abc", 10)
+    where_clause = sql.split("WHERE ", 1)[1].split(" ORDER BY")[0]
+    assert where_clause.strip() == "contains(lrel, lower('abc'))"
+
+
 def test_a_quote_in_the_query_does_not_break_the_sql(tmp_path):
     """`like_literal`/`_q` (store.py/query.py) double every single quote so
     the query can never close the SQL string literal it is spliced into.
@@ -1780,7 +1826,7 @@ def test_unranked_sql_has_no_scoring_apparatus(tmp_path):
     from fused_render.index.query import _rank_sql
 
     sql = _rank_sql("SELECT 1 AS rel, 1 AS size, 1 AS mtime, false AS is_dir, "
-                     "1 AS depth, 'x' AS nm, 'x' AS lrel", "", "q", "q", 1, 10,
+                     "1 AS depth, 'x' AS nm, 'x' AS lrel", "", "q", 1, 10,
                      ranked=False)
     lowered = sql.lower()
     for banned in ("score", "tier", "segment_starts", "p0", "strpos", "name_bonus"):

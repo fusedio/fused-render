@@ -20,6 +20,7 @@ from fused_render.index.config import IndexConfig
 from fused_render.index.ignore import norm
 from fused_render.index.query import (
     _glob_to_regex,
+    _prefix_predicate_sql,
     expand_whitespace_query,
     prune,
     resolve_query,
@@ -88,6 +89,43 @@ def test_prune_falls_back_to_the_byte_test_without_folded_bounds():
     assert prune(parts, "/Users/me") == parts
     assert prune(parts, "/users/me") == []
     assert prune(parts, "/zzz") == []
+
+
+# -- the LIKE/ESCAPE optimizer-rewrite finding -----------------------------
+#
+# DuckDB's `LikeOptimizationRule` only rewrites a `LIKE` into `contains()` or
+# a sargable range when the SQL carries no `ESCAPE` clause — every predicate
+# here used to carry one unconditionally (`ESCAPE '\\'`), so none of them
+# ever got the fast path or (for a prefix) row-group pruning. See
+# `_prefix_predicate_sql`'s own docstring and DECISIONS.md for the full
+# measured finding; these tests pin the generated SQL text itself, not just
+# the (unaffected) result set.
+
+def test_prefix_predicate_drops_escape_for_a_metachar_free_prefix():
+    """No `%`/`_`/`\\` in the prefix -> the two LIKE forms match identically,
+    so the prunable, ESCAPE-free form is emitted."""
+    sql = _prefix_predicate_sql("path", "/data/raw/")
+    assert sql == "path LIKE '/data/raw/%'"
+    assert "ESCAPE" not in sql
+
+
+def test_prefix_predicate_keeps_escape_when_the_prefix_has_an_underscore():
+    """An `_` or `%` in the prefix is a real LIKE metacharacter — dropping
+    ESCAPE here would let it act as a wildcard (`/x/proj_a/` matching
+    `/x/proj-a/...`), so the escaped form is kept."""
+    sql = _prefix_predicate_sql("dir", "/x/proj_a/")
+    assert "ESCAPE '\\'" in sql
+    assert sql == "dir LIKE '/x/proj\\_a/%' ESCAPE '\\'"
+
+
+def test_prefix_predicate_keeps_escape_when_the_prefix_has_a_percent():
+    sql = _prefix_predicate_sql("dir", "/x/100%done/")
+    assert "ESCAPE '\\'" in sql
+
+
+    # `search_under`'s own SQL-generation and behavioural coverage for this
+    # (contains() over ILIKE, proj_a/proj-a scoping) lives in
+    # tests/test_index_search.py, next to its `_index` fixture helper.
 
 
 # -- glob translation -----------------------------------------------------------
