@@ -1065,6 +1065,12 @@ def _count_variants(raw: dict) -> int:
 #: key because the gate is about ONE runner's format (`registry.DECISIONS`'s
 #: docstring); a second format-gated runner adds a row here, not a branch.
 _FORMAT_GATE_FAMILY_TAGS = {"laya-mlx": ("laya",)}
+#: The family tag alone is not enough: upstream's bundle repo
+#: (`convaiinnovations/laya`, `library_name: transformers`) wears `laya` too,
+#: and a Download there pulls three checkpoints plus eval PNGs into a runner
+#: that wants ONE pre-converted MLX export. So the tag branch also asks the
+#: card's `library_name` to be the runner's own framework.
+_FORMAT_GATE_FAMILY_LIBRARY = {"laya-mlx": "mlx"}
 
 
 def _passes_format_gate(reading, model_id: str, raw: dict) -> bool:
@@ -1093,7 +1099,9 @@ def _passes_format_gate(reading, model_id: str, raw: dict) -> bool:
         if any(entry.get("id") == model_id for entry in catalog.for_runner(runner.code)):
             return True
         if tags & set(_FORMAT_GATE_FAMILY_TAGS.get(runner.code, ())):
-            return True
+            wanted = _FORMAT_GATE_FAMILY_LIBRARY.get(runner.code)
+            if wanted is None or raw.get("library_name") == wanted:
+                return True
     return False
 
 
