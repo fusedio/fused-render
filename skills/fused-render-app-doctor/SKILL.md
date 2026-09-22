@@ -48,7 +48,7 @@ Real: live-looking key shape, long random string, or a PEM block, in a file the 
 
 **fact** — required. Fail means either no `pyproject.toml` at all, or one that exists and won't parse.
 
-**Fix, missing file.** A folder's dependency list is **all-or-nothing** — the bundled set (`numpy`, `pandas`, `pyarrow`, `duckdb`, `openpyxl`, `msgpack`, `pillow`, `python-pptx`, `fpdf2`, `requests`, `httpx`, `drain3`) is **NOT** unioned in. So writing a stub `pyproject.toml` with an empty or partial dependency list **breaks an app that works today**: an app importing `pandas` with no `pyproject.toml` runs fine on the bundled interpreter; add a `pyproject.toml` that omits `pandas` and it stops running. A stub file is a regression, not a fix.
+**Fix, missing file.** A folder's dependency list is **all-or-nothing** — the bundled set (`numpy`, `pandas`, `pyarrow`, `duckdb`, `openpyxl`, `msgpack`, `pillow`, `python-pptx`, `fpdf2`, `requests`, `httpx`, `drain3`) is **NOT** unioned in. An **empty** `dependencies` list is safe — the folder stays on the app interpreter with the full bundled set. The hazard is a **non-empty but incomplete** list: an app importing `pandas` with no `pyproject.toml` runs fine on the bundled interpreter; add one that declares some other package but omits `pandas` and it stops running. A partial stub is a regression, not a fix.
 
 Read every `.py` in the app folder, collect every third-party import, and declare all of them — nothing less. An app with no `.py` files gets a `pyproject.toml` with an empty `dependencies` list; that is the correct, complete result for it.
 
