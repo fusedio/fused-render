@@ -34,8 +34,8 @@ import {
 import type { DragEvent as ReactDragEvent } from "react";
 import {
   cancelScheduledMessage,
+  forceStart,
   getTaskMessages,
-  skipQueue,
   markTaskMessageRead,
   markWholeTaskRead,
   resendScheduledMessage,
@@ -114,16 +114,13 @@ import {
   laneCountLabel,
   laneSplitAt,
   LANE_SPLIT_LABEL,
-  canRunNext,
+  canForceStart,
+  FORCE_START_HINT,
+  FORCE_START_LABEL,
   messageState,
   queueCaption,
   QUEUED_WORD,
   QUEUE_CAPTION_SEP,
-  QUEUE_PRIORITY_GLYPH,
-  RUN_NEXT_DONE_HINT,
-  RUN_NEXT_HINT,
-  RUN_NEXT_LABEL,
-  skippedOverride,
   usageLimitCaption,
   projectMatches,
   projectOptions,
@@ -390,6 +387,13 @@ const ICON_SKIP = icon(
 // call, but "start this early" and "start this again" are not the same sentence
 // to the person clicking. lucide `play` and `rotate-ccw`.
 const ICON_PLAY = icon(<polygon points="6 3 20 12 6 21 6 3" />, 12);
+/* FORCE START WEARS ITS OWN NAME, not a glyph (Akshil, 2026-09-21). A bolt sat
+   in this seat for a day and it was the wrong bet: the strip beside it already
+   holds a play triangle that means "start this early", and a second start-ish
+   shape one press away is a guess a reader has to hover to settle. The two
+   words are the shortest thing that cannot be misread, and the chat's own card
+   has said them from the start — one verb, one wording, three surfaces
+   (`FORCE_START_LABEL`, platform/lib/queue). */
 const ICON_RERUN = icon(
   <><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
     <path d="M3 3v5h5" /></>, 13);
@@ -1702,12 +1706,26 @@ interface RunOutcome {
  *  Refusals THROW, like performRun: a 400 here means the row was not queued
  *  after all (the folder freed while the pointer was moving), and the server's
  *  sentence is the right thing to show. */
-async function performSkip(task: Task): Promise<QueueOverride> {
-  // BY TASK KEY, which is the right name HERE: this press is on a row that IS
-  // a task, and it means every pending entry that task has waiting. The chat's
-  // chip names one ENTRY instead, for the reason `skipQueue` records.
-  await skipQueue({ key: task.key });
-  return skippedOverride(task);
+/** Run a queued task's oldest waiting message NOW, beside whatever owns its
+ *  folder — `POST /api/tasks/queue/force`, whose docstring carries the rule.
+ *
+ *  NOT A PROMOTION AND SO NO OVERRIDE TO RETURN. The old skip verb answered a
+ *  claim the row had to paint (position 1) because no listing would say it for
+ *  a while. This one starts a RUN: the row's own status is what changes, the
+ *  listing is what says so, and a re-read is both cheaper and more honest than
+ *  a hand-built `in_progress` this page would then have to defend against the
+ *  next lap.
+ *
+ *  BY TASK KEY, which is the right name here: this press is on a row that IS a
+ *  task, and the server resolves that task's oldest due message itself — the
+ *  same message the pump would have started for it. The chat's card names one
+ *  ENTRY instead, for the reason `api.forceStart` records.
+ *
+ *  Refusals THROW: a 409 means the conversation cannot take
+ *  the message yet (a send in flight, a live turn) and the server's sentence is
+ *  the right thing to show. */
+async function performForceStart(task: Task): Promise<void> {
+  await forceStart({ key: task.key });
 }
 
 /**
@@ -2819,11 +2837,6 @@ function TaskNode({
   // (tasks-lib.scheduledMark). No chip beside the time any more (Akshil,
   // 2026-09-11: "we don't need to show time 2 times on the right side").
   const sched = scheduledMark(task);
-  // Where this row stands in its folder's line, when it is waiting on one. The
-  // SAME builder the Board card and the chat's own rows ask
-  // (tasks-lib.queueCaption), so a task's place is worded once for the whole app.
-  // Null on every other row.
-  const queue = queueCaption(task);
   /** …and the OTHER sentence a not-moving row can carry: the plan's window,
    *  named and dated ("Usage limit · resumes 4:00 AM"). "" on every row the usage
    *  limit did not stop. */
@@ -2947,7 +2960,7 @@ function TaskNode({
       // the row Upcoming would read as a press that did nothing.
       if (said.queued) {
         onQueued?.({ ...said.queued, key: task.key });
-        setNote(`Waiting — ${queueCaption({ ...task, ...said.queued })?.text ?? RUN_NEXT_LABEL}.`);
+        setNote(`Waiting — ${queueCaption({ ...task, ...said.queued })?.text ?? QUEUED_WORD}.`);
       }
     } catch (e) {
       // The server's own sentence, verbatim. Its common refusal is a 409
@@ -2963,18 +2976,21 @@ function TaskNode({
     }
   };
 
-  // Run next: this row's pending work to the head of its folder's line.
-  // The same performer the Board's drag and its card button spend, so one
-  // gesture cannot mean two things on two views — and it NEVER interrupts the
-  // run holding the folder, which is why the sentence it leaves says so.
-  const skip = async () => {
+  // FORCE START: this row's oldest waiting message, run now beside whatever
+  // holds its folder. It NEVER interrupts that run — the holder keeps the folder
+  // — and it does not reorder the line either; it leaves it.
+  //
+  // NO OPTIMISTIC PAINT (`performForceStart`): the row's status is what changes
+  // and the listing is what says so, so this asks for the re-read every other
+  // performer here ends with and lets one lap draw it.
+  const force = async () => {
     setActing(true);
     setNote("");
     try {
-      onQueued?.(await performSkip(task));
+      await performForceStart(task);
     } catch (e) {
-      // Usually a 400: the folder freed while the pointer was travelling, so the
-      // row is not queued any more. The server's own words, in the quiet note.
+      // Usually a 409: the conversation already has a turn open, which reads as
+      // "wait", not as "broken" — the quiet note, like run-now's above.
       setNote((e as Error).message);
     } finally {
       setActing(false);
@@ -3771,32 +3787,14 @@ function TaskNode({
             the same three gestures the mark does. The `TASK-x` link inside it
             stops propagation and keeps its own destination: the caption opens
             THIS row, the id opens the holder's. */}
-        {queue && (
-          <span
-            className="tasks-row-queue"
-            data-hint={queue.aheadTitle || queue.text}
-            onClick={(e) => {
-              if (!href) return;
-              if (opensElsewhere(e)) {
-                window.open(href, "_blank", "noopener");
-                return;
-              }
-              activate();
-            }}
-            onAuxClick={(e) => {
-              if (e.button !== 1 || !href) return;
-              e.preventDefault();
-              window.open(href, "_blank", "noopener");
-            }}
-            onMouseDown={(e) => {
-              if (e.button === 1 && href) e.preventDefault();
-            }}
-          >
-            <span className="tasks-queue-text">
-              <QueueCaptionText queue={queue} />
-            </span>
-          </span>
-        )}
+        {/* NO PLACE CAPTION ON A ROW (Akshil, 2026-09-21). "after TASK-046 |
+            3rd" used to sit here, and it was the third thing on a row already
+            saying the same state twice — the dashed ring and the `queued` word
+            carry "this is waiting", which is what a reader scanning a list
+            wants; WHERE in the line it stands is a detail of one row, not a
+            column. The sentence survives where it is actually read: the chat's
+            own waiting card over the composer, and the chat header. The Force
+            start press below stays, on its own rule (`canForceStart`). */}
         {/* …AND THE PLAN'S PAUSE, in the same seat, on a blocked row the usage
             limit stopped (`usageLimitCaption`). The lane, the ring and the header
             are Blocked's — nothing is moving and nothing will move by itself —
@@ -3863,44 +3861,35 @@ function TaskNode({
             has unread (tasks-lib.markReadIntent): every other row would carry a
             button whose press does nothing, which is what makes the rows where
             it matters hard to pick out. */}
-        {/* SKIP THE QUEUE — the one row action this page grows for the project
-            queue, and only on a row that is actually queued (hidden, not
+        {/* FORCE START — the one row action this page grows for the project
+            queue, and only on a row standing in the line — queued, or parked with a held answer (hidden, not
             disabled, everywhere else: a control that is present-but-dead on
             every row is what makes the rows it works on hard to find).
 
-            NOT BEHIND SHOW_ROW_ACTIONS, for the reason Archive is not: with that
-            flag down this would otherwise be the List's only missing
-            CAPABILITY rather than a missing shortcut, and a reader would have to
-            switch to the Board and drag a card to get to the front of a line.
-            Hover-revealed all the same (`.tasks-act`), so a list at rest grows no
-            chrome — and by opacity rather than display, so a keyboard still
-            reaches it.
+            ON EVERY WAITING ROW, INCLUDING THE FIRST (`canForceStart`, whose
+            note carries the why). Run next sat here until 2026-09-21 and was
+            drawn only with another WAITING task ahead, because it could not get
+            in front of the run holding the folder. This press does not try to:
+            it takes the message out of the line and starts it BESIDE that run.
 
-            Drawn and DISABLED at the head of the line: dropping it on the press
-            that worked would take the control away at the moment it is most
-            obvious what it did.
-
-            AND ONLY WHEN ANOTHER WAITING TASK IS AHEAD (`canRunNext`, whose note
-            carries the why): behind nothing but the run holding the folder there
-            is nothing to get in front of, because this press never interrupts
-            anything. `runsNext` keeps the disabled draw described above. */}
-        {queue && (canRunNext(task) || queue.runsNext) && (
+            NOT BEHIND SHOW_ROW_ACTIONS, for the reason Archive is not: with
+            that flag down this would otherwise be the List's only missing
+            CAPABILITY rather than a missing shortcut. Hover-revealed all the
+            same (`.tasks-act`), so a list at rest grows no chrome — and by
+            opacity rather than display, so a keyboard still reaches it. */}
+        {canForceStart(task) && (
           <button
             type="button"
             className="tasks-act tasks-act--skip"
-            title={
-              queue.runsNext
-                ? RUN_NEXT_DONE_HINT
-                : RUN_NEXT_HINT
-            }
-            aria-label={`${RUN_NEXT_LABEL} for ${task.task_id}`}
-            disabled={acting || queue.runsNext}
+            title={FORCE_START_HINT}
+            aria-label={`${FORCE_START_LABEL} for ${task.task_id}`}
+            disabled={acting}
             onClick={(e) => {
               e.stopPropagation();
-              void skip();
+              void force();
             }}
           >
-            {QUEUE_PRIORITY_GLYPH}
+            {FORCE_START_LABEL}
           </button>
         )}
         {SHOW_ROW_ACTIONS && seen && (
@@ -4664,11 +4653,12 @@ const RUN_DROP_WORDS = {
   // queued card dropped on In Progress lands on the same lane the Upcoming drag
   // lands on, so without a wording of its own the card would promise "Run now"
   // for a gesture that starts nothing — and the one thing a queued card must
-  // never claim is that it can interrupt the run holding its folder. Both words
-  // are RUN_NEXT_HINT, the same sentence the Run next button carries.
+  // never claim is that it can interrupt the run holding its folder. Its own
+  // sentence since 2026-09-21: the Run next button that used to share the
+  // wording is out of the UI, and the DRAG is now the only thing that says it.
   skip: {
-    title: RUN_NEXT_HINT,
-    hint: RUN_NEXT_HINT,
+    title: FORCE_START_LABEL,
+    hint: FORCE_START_HINT,
   },
 } as const;
 
@@ -4857,12 +4847,12 @@ export function TaskBoard({
     setNote(null);
     try {
       if (action.kind === "skip") {
-        // Queued → In Progress. NOT a run: the folder is held by another task
-        // and stays held — this only moves the card to the head of its folder's
-        // line, and the work goes out when the run in flight ends. The claim is
-        // published so the card jumps to the top of the lane on the drop rather
-        // than on the next poll.
-        onQueued?.(await performSkip(task));
+        // Queued → In Progress IS A FORCE START (Akshil, 2026-09-21): the card
+        // runs now, beside whatever holds the folder, and its task leaves the
+        // queue for good — the same verb the row's button presses. Skip the
+        // line is gone from every surface; the drop kind keeps its old name
+        // only because the lane detector files queued cards under it.
+        await performForceStart(task);
       } else if (action.kind === "run") {
         // Upcoming → In Progress. The message goes out NOW and its `due` is
         // left alone, so the thread reads as a run that happened early rather
@@ -4962,13 +4952,17 @@ export function TaskBoard({
   // lands in the board's ONE note line, beside the drag's: a sentence tucked
   // inside a 260px lane under one card is a sentence nobody reads. Unarchive
   // itself says nothing on success (performUnarchive), here as everywhere.
-  // Skip from a card's own button, which is the drop above without the drag —
-  // and up here for `refile`'s reason: the refusal (a 400 when the folder freed
-  // while the pointer was moving) belongs in the board's ONE note line.
-  const skip = async (task: Task) => {
+  // FORCE START from a card's own button — run this card's oldest waiting
+  // message now, beside whatever holds its folder. Up here for `refile`'s
+  // reason: the refusal (a 409 while the conversation has a turn open) belongs
+  // in the board's ONE note line rather than inside a 260px lane.
+  //
+  // The drag onto In Progress presses the same verb (`performForceStart`) and
+  // shares this note line, so a refusal reads the same either way.
+  const force = async (task: Task) => {
     setNote(null);
     try {
-      onQueued?.(await performSkip(task));
+      await performForceStart(task);
     } catch (e) {
       setNote((e as Error).message);
     }
@@ -5010,7 +5004,7 @@ export function TaskBoard({
       if (said.note) setNote(said.note);
       if (said.queued) {
         onQueued?.({ ...said.queued, key: task.key });
-        setNote(`Waiting — ${queueCaption({ ...task, ...said.queued })?.text ?? RUN_NEXT_LABEL}.`);
+        setNote(`Waiting — ${queueCaption({ ...task, ...said.queued })?.text ?? QUEUED_WORD}.`);
       }
     } catch (e) {
       setNote((e as Error).message);
@@ -5212,7 +5206,7 @@ export function TaskBoard({
                     unread, and naming the number on hover. */}
                 <StatusIcon status={col.key} unread={news > 0} count={news} />
                 <span className="schedule-tv-lane-label">{col.label}</span>
-                {/* "7", or "1 running · 2 waiting" on the one lane that now holds
+                {/* "7", or "1 running · 2 queued" on the one lane that now holds
                     two statuses (tasks-lib.laneCountLabel). A bare total over a
                     column of three running tasks and four waiting ones answers a
                     question nobody asked. */}
@@ -5271,7 +5265,7 @@ export function TaskBoard({
                     }}
                     onFile={(intent) => refile(task, intent)}
                     onRun={(intent) => runNow(task, intent)}
-                    onSkip={() => skip(task)}
+                    onForceStart={() => force(task)}
                     onErased={onReload}
                     onOpen={(intent) => openCard(task, intent)}
                     {...(onOpenDraft ? { onOpenDraft } : {})}
@@ -5323,7 +5317,7 @@ function TaskCard({
   onDragEnd,
   onFile,
   onRun,
-  onSkip,
+  onForceStart,
   onOpen,
   onOpenDraft,
   onErased,
@@ -5365,12 +5359,13 @@ function TaskCard({
   /** Run the task's next message now, or re-send the one that failed. Same
    * arrangement and same reason as onTriage: the board makes the call. */
   onRun: (intent: TaskRunIntent) => Promise<void>;
-  /** Send this queued card to the front of its folder's line — the drag onto In
-   * Progress without the drag, for the reason Archive is a button as well as a
-   * drop: the Queued lane is rolled up whenever it is empty, and a gesture that
-   * begins with "expand the lane first" is not the only way a capability may be
-   * reachable. The board owns the call, so its refusal lands in the one note. */
-  onSkip: () => Promise<void>;
+  /** Run this queued card's oldest waiting message NOW, beside whatever owns
+   * its folder — Force start. A button and not only a drop for the reason
+   * Archive is: the Queued lane is rolled up whenever it is empty, and a gesture
+   * that begins with "expand the lane first" is not the only way a capability
+   * may be reachable. The drag onto In Progress presses the same verb. The
+   * board owns the call, so its refusal lands in the one note. */
+  onForceStart: () => Promise<void>;
   /** Open the conversation, marking the thread read on the way. The board owns
    * it because the board owns the read set — and it is only ever called with a
    * non-null intent, so this card cannot navigate to nowhere. */
@@ -5477,11 +5472,6 @@ function TaskCard({
   // "somebody has to answer this now".
   const failedOffLane = isFailedTask(task) && lane !== "blocked";
   const waiting = needsAttention(task);
-  // Where this card stands in its folder's line, when it is waiting on one —
-  // the SAME builder the List row and the chat's own rows ask
-  // (tasks-lib.queueCaption), so one task's place is described in one wording
-  // wherever it is read. Null on every other card, which draws nothing.
-  const queue = queueCaption(task);
   /** …and the OTHER sentence a not-moving row can carry: the plan's window,
    *  named and dated ("Usage limit · resumes 4:00 AM"). "" on every row the usage
    *  limit did not stop. */
@@ -5708,11 +5698,8 @@ function TaskCard({
             this card's PLACE, and the place is the sentence. One register for
             every waiting card in the lane, and the order is what tells them
             apart. */}
-        {queue && (
-          <span className="tasks-card-queue" title={queue.aheadTitle || undefined}>
-            <QueueCaptionText queue={queue} />
-          </span>
-        )}
+        {/* …AND NONE ON A CARD EITHER (Akshil, 2026-09-21) — the row's rule,
+            for the row's reason. See the List row. */}
         {/* The plan's pause, on its own line — the List row's rule and the List
             row's words (`usageLimitCaption`). */}
         {limit && <span className="tasks-card-queue">{limit}</span>}
@@ -5790,8 +5777,8 @@ function TaskCard({
           while the List shows it is exactly the divergence the shared flag exists
           to prevent (§1 — same element, same behaviour in every view). The strip
           itself is drawn whenever either survives its guard. */}
-      {((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek) || queue
-        || (SHOW_ROW_ACTIONS && run)) && (
+      {((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek)
+        || canForceStart(task) || (SHOW_ROW_ACTIONS && run)) && (
         <span className="tasks-card-acts">
           {/* DISCARD, the List row's own act in the card's hover strip — same
               glyph, same class, same caption, same silence at rest (design.md,
@@ -5830,6 +5817,38 @@ function TaskCard({
               {ICON_TRASH}
             </button>
           )}
+          {/* FORCE START, on a queued card and nowhere else — and NOT behind
+              SHOW_ROW_ACTIONS, for the reason Archive is not: while that flag is
+              down this would be the only way to reach the verb from the Board
+              other than a lane that is rolled up whenever it is empty, and a
+              capability with no press is a capability the page does not really
+              have.
+
+              ON EVERY WAITING CARD, INCLUDING THE FIRST (`canForceStart`) — the
+              same rule the List row and the chat's own card read, so one verb is
+              not offered on three surfaces under three conditions. The DRAG is
+              still the promotion and is untouched; these are two verbs, and the
+              named one is the one that starts something.
+
+              FIRST IN THE STRIP, AHEAD OF OPEN (Akshil, 2026-09-21): it is the
+              only press here that is about the state the card is IN — a message
+              that is waiting — and it is offered on so few cards that it must
+              not sit behind a door every card carries. */}
+          {canForceStart(task) && (
+            <button
+              type="button"
+              className="tasks-act tasks-card-act tasks-act--skip"
+              title={FORCE_START_HINT}
+              aria-label={`${FORCE_START_LABEL} ${shortTaskId(task.task_id)}`}
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                void onForceStart().finally(() => setBusy(false));
+              }}
+            >
+              {FORCE_START_LABEL}
+            </button>
+          )}
           {/* The List row's quick door, in the card's own hover strip — same
               act, same glyph, same caption (design.md, Round 3). A SIBLING of
               the card rather than a child, because the card IS a button; that
@@ -5849,37 +5868,6 @@ function TaskCard({
             >
               {OPEN_DOOR_LABEL}
             </a>
-          )}
-          {/* SKIP THE QUEUE, on a queued card and nowhere else — and NOT behind
-              SHOW_ROW_ACTIONS, for the reason Archive is not: while that flag is
-              down this would be the only way to skip from the Board other than
-              dragging a card out of a lane that is rolled up whenever it is
-              empty, and a capability with no press is a capability the page does
-              not really have. Already at the head (`runsNext`) it is drawn and
-              DISABLED rather than dropped: the card would otherwise lose a
-              control on the very press that worked.
-
-              ONLY WITH ANOTHER WAITING TASK AHEAD (`canRunNext`) — the same rule
-              the List row and the chat's own card read, so one verb cannot be
-              offered on three surfaces under three conditions. */}
-          {queue && (canRunNext(task) || queue.runsNext) && (
-            <button
-              type="button"
-              className="tasks-act tasks-card-act tasks-act--skip"
-              title={
-                queue.runsNext
-                  ? RUN_NEXT_DONE_HINT
-                  : RUN_NEXT_HINT
-              }
-              aria-label={`${RUN_NEXT_LABEL} for ${task.task_id}`}
-              disabled={busy || queue.runsNext}
-              onClick={() => {
-                setBusy(true);
-                void onSkip().finally(() => setBusy(false));
-              }}
-            >
-              {QUEUE_PRIORITY_GLYPH}
-            </button>
           )}
           {SHOW_ROW_ACTIONS && run && (
             <button

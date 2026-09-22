@@ -1527,10 +1527,13 @@ def _fs_copy(body: dict, x_fused: str | None):
 def _note_index_mutation(result, *paths: str | None) -> None:
     """Tell the file index which folders this app just changed.
 
-    The index has no filesystem watcher, so without this a rename made in the
-    explorer leaves search offering the old name until the next scheduled scan
-    — which the in-folder search used to route around by walking the folder
-    live instead (server/index_touch.py carries the reasoning).
+    The filesystem watcher (server/index_watch.py) is what catches a change
+    made outside this app; it cannot help here because a rename made THROUGH
+    this endpoint needs to stop lying about the old name before the request
+    returns, not whenever a watch event round-trips. Without this call the
+    explorer would offer the old name until the next scan — which the
+    in-folder search used to route around by walking the folder live instead
+    (server/index_touch.py carries the reasoning).
 
     ON SUCCESS ONLY, unlike the stat-cache invalidation above. That one is a
     no-op when nothing changed; this one schedules a real (small) rescan, and

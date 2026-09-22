@@ -221,6 +221,90 @@ def test_start_joins_a_full_run_when_only_an_incremental_is_asked_for(tmp_path, 
     assert len(spawned) == 1
 
 
+# -- hint (SPEC-scan-cost.md part 2: the watcher supplies its own changed-dir
+# set instead of a scan re-deriving one from the fsevents journal) ------------
+
+def test_start_writes_a_supplied_hint_into_spec_json(tmp_path, spawned):
+    """The hint travels with the run exactly like `root`/`full`/`config` do —
+    the worker reads it back out of spec.json, it does not come from an
+    environment the detached process doesn't share."""
+    cfg = _cfg(tmp_path)
+    started = runner.start(cfg, str(tmp_path),
+                           hint=(["/a", "/a"], ["/b", "/c"]))
+    spec = json.load(open(os.path.join(cfg.runs_dir, started["run_id"],
+                                       "spec.json")))
+    # deduped and sorted, not just echoed back — the same canonical form the
+    # join check below hashes to compare two hints for equality.
+    assert spec["hint"] == {"forced": ["/a"], "subtrees": ["/b", "/c"]}
+
+
+def test_start_with_no_hint_writes_no_hint_key(tmp_path, spawned):
+    cfg = _cfg(tmp_path)
+    started = runner.start(cfg, str(tmp_path))
+    spec = json.load(open(os.path.join(cfg.runs_dir, started["run_id"],
+                                       "spec.json")))
+    assert "hint" not in spec
+
+
+def test_start_joins_a_live_run_with_an_identical_hint(tmp_path, spawned):
+    cfg = _cfg(tmp_path)
+    first = runner.start(cfg, str(tmp_path), hint=(["/a"], []))
+    second = runner.start(cfg, str(tmp_path), hint=(["/a"], []))
+    assert second["run_id"] == first["run_id"]
+    assert second["already_running"] is True
+    assert len(spawned) == 1
+
+
+def test_start_joins_a_hintless_live_run_even_when_the_request_is_hinted(
+        tmp_path, spawned):
+    """A run with no hint is a full walk (or a completed whole-root journal
+    replay) — it covers any subset of dirs a hinted request could name, the
+    same way a `full` run already covers a plain incremental request."""
+    cfg = _cfg(tmp_path)
+    first = runner.start(cfg, str(tmp_path))
+    second = runner.start(cfg, str(tmp_path), hint=(["/a"], []))
+    assert second["run_id"] == first["run_id"]
+    assert second["already_running"] is True
+    assert len(spawned) == 1
+
+
+def test_start_does_not_join_a_hinted_live_run_when_the_request_has_no_hint(
+        tmp_path, spawned):
+    """The other direction is NOT safe: a live run hinted at `/a` only walked
+    `/a`, and a plain (unhinted) request needs the whole root accounted for.
+    Joining would tell the caller a full-root scan happened when only `/a`
+    was ever visited."""
+    cfg = _cfg(tmp_path)
+    first = runner.start(cfg, str(tmp_path), hint=(["/a"], []))
+    second = runner.start(cfg, str(tmp_path))
+    assert second["run_id"] != first["run_id"]
+    assert "already_running" not in second
+    assert len(spawned) == 2
+    assert os.path.exists(os.path.join(cfg.runs_dir, first["run_id"],
+                                       "cancel"))
+
+
+def test_start_does_not_join_a_live_run_with_a_different_hint(tmp_path,
+                                                               spawned):
+    """Two concrete hints only cover each other if they're identical — see
+    the join-check comment in runner.py for why a subset check isn't done
+    here. Since the superseded run is cancelled before it ever compacts
+    (index/scan.py), its own dirs would be silently dropped from every future
+    scan unless the run that replaces it inherits them too, so the new run's
+    hint is the UNION of both, not just the caller's."""
+    cfg = _cfg(tmp_path)
+    first = runner.start(cfg, str(tmp_path), hint=(["/a"], []))
+    second = runner.start(cfg, str(tmp_path), hint=(["/b"], []))
+    assert second["run_id"] != first["run_id"]
+    assert "already_running" not in second
+    assert len(spawned) == 2
+    assert os.path.exists(os.path.join(cfg.runs_dir, first["run_id"],
+                                       "cancel"))
+    spec = json.load(open(os.path.join(cfg.runs_dir, second["run_id"],
+                                       "spec.json")))
+    assert sorted(spec["hint"]["forced"]) == ["/a", "/b"]
+
+
 def test_a_dead_run_is_reported_promptly_not_after_several_minutes():
     """Compaction now heartbeats per partition (see the store.py loop this
     threshold's own comment points at), so the long silent gap a whole-store

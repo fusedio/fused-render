@@ -1876,3 +1876,62 @@ test("a host that states no `ready` at all is stating a settled pair", () => {
   expect(modelPill(c).wrap.props.className).toBe("c-pillwrap");
   expect(modelPill(c).sel.props.disabled).toBe(false);
 });
+
+test("the idle line opens under the pointer and folds when it leaves; touch is ignored (Akshil, 2026-09-21)", () => {
+  const m = mount();
+  const form = () => m.root.findByType("form");
+  const cls = () => String(form().props.className);
+  expect(cls()).toContain("is-idle");
+  act(() => form().props.onPointerEnter({ pointerType: "mouse" }));
+  expect(cls()).not.toContain("is-idle");
+  const doc = { querySelector: () => null };
+  const leave = (over: Record<string, unknown>) =>
+    act(() =>
+      form().props.onPointerLeave({
+        pointerType: "mouse",
+        relatedTarget: null,
+        currentTarget: { ownerDocument: doc },
+        ...over,
+      }),
+    );
+  leave({});
+  expect(cls()).toContain("is-idle");
+  // A pill's menu is portaled to the body: the pointer moving into it, or into
+  // the gap under the pill while it is up, is not a leave (Bugbot, #1298).
+  act(() => form().props.onPointerEnter({ pointerType: "mouse" }));
+  leave({ relatedTarget: { closest: (sel: string) => (sel.includes("popover") ? {} : null) } });
+  expect(cls()).not.toContain("is-idle");
+  leave({ currentTarget: { ownerDocument: { querySelector: () => ({}) } } });
+  expect(cls()).not.toContain("is-idle");
+  leave({});
+  expect(cls()).toContain("is-idle");
+  // A finger has no hover: a tap's pointerenter must not stick the card open.
+  act(() => form().props.onPointerEnter({ pointerType: "touch" }));
+  expect(cls()).toContain("is-idle");
+  // The landing card never folds, hovered or not.
+  const home = mount({ variant: "home" });
+  expect(String(home.root.findByType("form").props.className)).not.toContain("is-idle");
+});
+
+test("focus alone opens the idle line — no click or key needed — and focus on Send does not (Akshil, 2026-09-21)", () => {
+  const m = mount();
+  const form = () => m.root.findByType("form");
+  const cls = () => String(form().props.className);
+  const textarea = { closest: () => null };
+  const send = { closest: (sel: string) => (sel === ".c-send" ? {} : null) };
+  expect(cls()).toContain("is-idle");
+  // The focus a pressed Send button gets is not the reader reaching for the card.
+  act(() => form().props.onFocus({ target: send }));
+  expect(cls()).toContain("is-idle");
+  // The caret landing in the box — by click, Tab, or `autoFocus` on arrival — is.
+  act(() => form().props.onFocus({ target: textarea }));
+  expect(cls()).not.toContain("is-idle");
+  // Focus leaving the form folds it back.
+  act(() =>
+    form().props.onBlur({
+      relatedTarget: null,
+      currentTarget: { contains: () => false, ownerDocument: { querySelector: () => null } },
+    }),
+  );
+  expect(cls()).toContain("is-idle");
+});

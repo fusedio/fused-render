@@ -837,22 +837,6 @@ button.sidebar-prefs-trigger {
   margin-left: auto;
 }
 
-/* The heading's "+" (Projects: new app; Bookmarks: save this view, or scroll to
-   its row when one exists). Seated where the rows' hover ✕ lands: that button
-   is an .icon-btn at `right: 6px` inside a row whose edge is the heading's, and
-   the heading carries 10px right padding, so -4px puts the two glyphs on one
-   column. Zero block padding so the heading keeps its height (the seams and
-   useSectionContentCap's min-height both read it). Open sections only: folded,
-   the heading's far end belongs to the count chip. */
-.recents-heading > .sidebar-heading-add {
-  margin-left: auto;
-  margin-right: -4px;
-  padding-top: 0;
-  padding-bottom: 0;
-  line-height: 1;
-  font-size: 13px;
-}
-
 /* The heading's collapsed count. No skin of its own since 2026-08-18: it wears
    `.sidebar-count-chip` (above) alongside this class, which now exists only to
    name the element. The three counts in this sidebar — a folder's children, a
@@ -1410,7 +1394,7 @@ a.bookmark-name::after {
   text-decoration: line-through;
 }
 
-/* The "+ New app" row (D489) closes the list: a row in the desk's own metrics,
+/* The "+ New app" row (D489) opens the list: a row in the desk's own metrics,
    muted so it reads as a door rather than another app, full colour on hover. */
 .current-app-new {
   color: var(--fg-muted);

@@ -23,14 +23,14 @@
 import "../styles/sched.css";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  canRunNext,
+  canForceStart,
   queueAheadHref,
   queueAfter,
   queueRunsNext,
-  RUN_NEXT_HINT,
-  RUN_NEXT_LABEL,
   waitingCardText,
   waitingCount,
+  FORCE_START_HINT,
+  FORCE_START_LABEL,
   NEXT_IN_FOLDER,
 } from "@platform/lib/queue";
 import type { QueueFacts } from "@platform/lib/queue";
@@ -253,9 +253,10 @@ export interface WaitingCardProps {
    *  nothing sitting on top of the box. */
   count: number;
   facts: QueueFacts;
-  /** Run next is in flight, or already spent: the button is dead either way. */
+  /** Force start is in flight, or already spent: the button is dead either
+   *  way. */
   busy?: boolean;
-  onRunNext(): void;
+  onForceStart(): void;
 }
 
 /**
@@ -268,17 +269,20 @@ export interface WaitingCardProps {
  * composer is, and it is deliberately a SUMMARY: one count, one thing in front,
  * one verb. Everything per-message (the words, the delete) is on the row.
  *
- * RUN NEXT ONLY WHEN ANOTHER WAITING TASK IS AHEAD (`canRunNext`, and its note
- * carries the why). The press can never touch the run holding the folder, so at
- * the head of the line there is nothing for it to get in front of — and a
- * control whose only possible outcome is the state you are already in is a
- * control that teaches the reader it does nothing.
+ * FORCE START, ON EVERY WAITING CARD (`canForceStart`, 2026-09-21). Run next
+ * held this seat until then and was drawn only with another WAITING task ahead,
+ * because it could not get in front of the run holding the folder. This verb
+ * does not try to: it takes the message out of the line and runs it BESIDE that
+ * run, which is a thing worth offering at position 1 as much as at 3 — the task
+ * at the head of a line is still waiting on a turn that may have an hour left in
+ * it. The hint is where the cost is said out loud (`FORCE_START_HINT`), because
+ * the label cannot carry it.
  *
- * THE SENTENCE IS UNAFFECTED. `behind TASK-056` stays printed at the head of the
- * line, because it is true there; only `queue_priority` — the spot actually
- * claimed — replaces it with "next in this folder".
+ * THE SENTENCE IS UNAFFECTED by the press. `behind TASK-056` stays printed at
+ * the head of the line, because it is true there; only `queue_priority` — the
+ * spot actually claimed — replaces it with "next in this folder".
  */
-export function WaitingCard({ count, facts, busy, onRunNext }: WaitingCardProps) {
+export function WaitingCard({ count, facts, busy, onForceStart }: WaitingCardProps) {
   if (count <= 0) return null;
   /**
    * WHAT IS IN FRONT is a different question from WHETHER THERE IS A PRESS, and
@@ -287,10 +291,10 @@ export function WaitingCard({ count, facts, busy, onRunNext }: WaitingCardProps)
    * folder is genuinely in front — and the card used to swap it for "next in
    * this folder" purely because no button was going to be drawn. So the sentence
    * now follows `waitingCardText`'s own rule (`queue_priority` alone silences
-   * it) and the button follows `canRunNext`.
+   * it) and the button follows `canForceStart`.
    */
   const behind = queueRunsNext(facts) ? "" : queueAfter(facts);
-  const showRun = canRunNext(facts);
+  const showForce = canForceStart(facts);
   const href = queueAheadHref(facts);
   return (
     <div className="c-waitcard">
@@ -321,15 +325,22 @@ export function WaitingCard({ count, facts, busy, onRunNext }: WaitingCardProps)
             <span className="wc-behind">{NEXT_IN_FOLDER}</span>
           )}
         </span>
+        {/* The grower keeps the sentence's left edge whether or not the button
+            is drawn. */}
         <span className="wc-grow" />
-        {/* RUN NEXT ONLY WHEN ANOTHER WAITING TASK IS AHEAD (`canRunNext`).
-            Behind the folder's own holder there is nothing for this press to get
-            in front of — it never interrupts a run — and a control whose only
-            outcome is the state you are already in teaches the reader that it
-            does nothing. */}
-        {showRun ? (
-          <button type="button" className="wc-run" disabled={busy} title={RUN_NEXT_HINT} onClick={onRunNext}>
-            {RUN_NEXT_LABEL}
+        {/* FORCE START, WHEREVER THIS CARD STANDS IN A LINE (`canForceStart`).
+            Not gated on who is ahead: this press does not pass them, it leaves
+            the line. Position 0 — the server placed nothing — is the one arm
+            with no button, because the press would have no subject. */}
+        {showForce ? (
+          <button
+            type="button"
+            className="wc-run"
+            disabled={busy}
+            title={FORCE_START_HINT}
+            onClick={onForceStart}
+          >
+            {FORCE_START_LABEL}
           </button>
         ) : null}
       </div>

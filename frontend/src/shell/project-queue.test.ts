@@ -9,7 +9,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { canRunNext, waitingCardText } from "@platform/lib/queue";
+import { canForceStart, canRunNext, waitingCardText } from "@platform/lib/queue";
 
 const SHELL = new URL(".", import.meta.url).pathname;
 const API = readFileSync(join(SHELL, "../platform/lib/api.ts"), "utf8");
@@ -55,9 +55,10 @@ describe("the three endpoints", () => {
       expect(shape).toContain(field);
     }
     expect(API).toContain("what: { key: string } | { entry_id: string },");
-    // The Board and the List still name the TASK: the press there means every
-    // pending entry that task has waiting.
-    expect(VIEWS).toContain("await skipQueue({ key: task.key });");
+    // No view presses skip any more (Akshil, 2026-09-21); the Board and the
+    // List name the TASK to Force start instead.
+    expect(VIEWS).not.toContain("skipQueue(");
+    expect(VIEWS).toContain("await forceStart({ key: task.key });");
     expect(API).toContain('postJson<QueueDecision>("/api/tasks/queue/decide", body)');
   });
 
@@ -119,28 +120,42 @@ describe("the Preferences switch", () => {
 });
 
 describe("the Board's waiting cards", () => {
-  it("draws the card's place in the line, and NOTHING that marks a skip", () => {
-    expect(CARD).toContain("const queue = queueCaption(task);");
-    expect(CARD).toContain('<span className="tasks-card-queue" title={queue.aheadTitle || undefined}>');
+  it("draws NO place caption, and NOTHING that marks a skip", () => {
+    // THE CARD SAYS NOTHING ABOUT WHERE IT STANDS (Akshil, 2026-09-21). The
+    // dashed ring and the status word carry "this is waiting", which is what a
+    // reader scanning a lane wants; the ordinal was a third thing saying the
+    // same state. The sentence survives where it is actually read — the chat's
+    // waiting card over the composer and the chat header — so `queueCaption`
+    // and `QueueCaptionText` both stay, and only the rows drop them.
+    expect(CARD).not.toContain("queueCaption(task)");
+    expect(CARD).not.toContain("tasks-card-queue\" title=");
+    expect(CARD).not.toContain("<QueueCaptionText");
+    expect(ROW).not.toContain("queueCaption(task)");
+    expect(ROW).not.toContain("<QueueCaptionText");
     // NO HIGHLIGHT FOR A SKIPPED CARD (Akshil, 2026-09-19). It used to lead with
     // the ⤒ and repaint the sentence in the queued hue, which made one card in a
     // lane of waiting cards read as a different KIND of thing — where all a skip
     // does is change the ORDER, and the order is what the caption already says.
-    // The glyph survives as the Run next BUTTON's face and decorates nothing.
+    //
+    // …AND THE GLYPH IS DRAWN NOWHERE AT ALL SINCE 2026-09-21, because the Run
+    // next button whose face it was is out of the UI. Rows promoted before that
+    // deploy still carry `queue_priority` in the index, so this is the guard that
+    // they come back as ordinary waiting rows and not as decorated ones.
     for (const src of [CARD, ROW]) {
       expect(src).not.toContain("is-next");
       expect(src).not.toContain("tasks-queue-glyph");
       expect(src).not.toContain("{queue.runsNext && (");
+      expect(src).not.toContain("QUEUE_PRIORITY_GLYPH");
     }
+    expect(VIEWS).not.toContain("QUEUE_PRIORITY_GLYPH");
     expect(css(TASKS_CSS)).not.toContain("is-next");
     expect(css(TASKS_CSS)).not.toContain(".tasks-queue-glyph");
-    // …and the caption's one actionable token is a LINK into the conversation
-    // that is in the way. The same component the List row draws, because it is
-    // one sentence (ScheduleTaskViews.QueueCaptionText).
-    expect(CARD).toContain("<QueueCaptionText queue={queue} />");
+    // …and the sentence itself is still BUILT here, for the chat that draws it:
+    // the header's own caption spends this component, and its one actionable
+    // token is a LINK into the conversation that is in the way.
     expect(VIEWS).toContain("export function QueueCaptionText({ queue }: { queue: QueueCaption })");
     expect(VIEWS).toContain("href={queue.aheadHref}");
-    // The press must not also fire the card it sits in.
+    // The press must not also fire whatever it sits in.
     expect(VIEWS).toContain("onClick={(e) => e.stopPropagation()}");
   });
 
@@ -159,15 +174,21 @@ describe("the Board's waiting cards", () => {
     expect(BOARD).toContain("{laneCountLabel(col.key, lane)}");
   });
 
-  it("calls RUN NEXT on the drop, never run-now", () => {
-    // The drop lands on the lane the Upcoming drag lands on and must not mean
-    // the same thing: firing here would be two runs in one folder.
+  it("a queued card dropped on In Progress is a FORCE START, never a skip", () => {
+    // Skip the line is gone from every surface (Akshil, 2026-09-21); the drag
+    // presses the same verb as the row's button and reloads the listing.
     expect(BOARD).toContain('if (action.kind === "skip") {');
-    expect(BOARD).toContain("onQueued?.(await performSkip(task));");
-    // …and the warning under the cursor says so, in the verb's own words rather
-    // than borrowing "Run now": `skip` is a drop kind of its own in the one
-    // wording table every run-shaped drop reads (`RUN_DROP_WORDS`).
-    expect(VIEWS).toMatch(/skip: \{\s*title: RUN_NEXT_HINT,\s*hint: RUN_NEXT_HINT,\s*\}/);
+    expect(BOARD).toContain("await performForceStart(task);");
+    expect(VIEWS).not.toContain("performSkip");
+    expect(VIEWS).not.toContain("skipQueue");
+    expect(VIEWS).not.toContain("Next in this folder");
+    // …and the warning under the cursor uses the button's own words.
+    expect(VIEWS).toMatch(
+      /skip: \{\s*title: FORCE_START_LABEL,\s*hint: FORCE_START_HINT,\s*\}/,
+    );
+    // AND NO "Run next" ANYWHERE A READER CAN SEE IT (Akshil, 2026-09-21).
+    expect(VIEWS).not.toContain("Run next —");
+    expect(VIEWS).not.toContain("RUN_NEXT_");
     expect(BOARD).toContain('RUN_DROP_WORDS[runDrop?.kind ?? "run"]');
     // The one wording, from the one place — never a literal in a view. (The
     // file's other "Skip" is the repeat-occurrence verb on a message row, which
@@ -175,80 +196,81 @@ describe("the Board's waiting cards", () => {
     expect(VIEWS).not.toContain("Skip the queue");
   });
 
-  it("offers the same verb as a button, unguarded by the hover-actions flag", () => {
-    // Archive's precedent: while SHOW_ROW_ACTIONS is down this would otherwise be
-    // the Board's only route to the front of a line other than dragging a card
-    // out of a lane that is rolled up whenever it is empty.
-    expect(CARD).toContain('className="tasks-act tasks-card-act tasks-act--skip"');
-    const strip = css(CARD).slice(css(CARD).indexOf('<span className="tasks-card-acts">'));
-    const at = strip.indexOf("tasks-act--skip");
-    expect(at).toBeGreaterThan(0);
-    // Its own guard is `{queue && (`, with no flag in front of it — read off the
-    // source with the prose stripped, since the comment above it NAMES the flag.
-    expect(strip.slice(0, at)).not.toContain("SHOW_ROW_ACTIONS");
-    expect(strip.slice(0, at)).toContain("{queue && (");
-    // Drawn and disabled at the head, not dropped: taking a control away on the
-    // press that worked is how a reader ends up unsure anything happened.
-    expect(strip).toContain("disabled={busy || queue.runsNext}");
-    expect(strip).toContain("RUN_NEXT_DONE_HINT");
+  it("offers FORCE START as its one queue button, and Run next as none", () => {
+    // TWO VERBS, NOT ONE RENAMED (2026-09-21). The DRAG is still the promotion
+    // — a queued card dropped on In Progress goes to the head of its lane and
+    // interrupts nothing — and the BUTTON is now the other verb entirely: it
+    // takes the message out of the line and starts it beside the folder's
+    // owner. The card wears the same seat the ⤒ did (`.tasks-act--skip`, kept
+    // with its skin) and reads its condition from the one place all three
+    // surfaces read it.
+    expect(CARD).toContain("tasks-act--skip");
+    expect(CARD).toContain("canForceStart(task)");
+    expect(CARD).toContain("FORCE_START_LABEL");
+    expect(CARD).toContain("onForceStart()");
+    // AND NOT THE DEAD VERB'S CONDITION, which was the thing that hid it at the
+    // head of a line — the one position this button most has to appear at.
+    expect(CARD).not.toContain("canRunNext");
+    expect(CARD).not.toContain("queue.runsNext");
+    expect(CARD).not.toContain("onSkip");
+  });
+
+  it("puts FORCE START FIRST in the act strip, ahead of the Open door", () => {
+    // Akshil, 2026-09-21. Open is on every card that has a page; this is on the
+    // few that are waiting, and it is the only press in the strip that is about
+    // the state the card is IN — so it leads rather than following the door
+    // every card carries.
+    const strip = CARD.slice(CARD.indexOf('<span className="tasks-card-acts">'));
+    expect(strip.indexOf("FORCE_START_LABEL")).toBeGreaterThan(-1);
+    expect(strip.indexOf("OPEN_DOOR_LABEL")).toBeGreaterThan(-1);
+    expect(strip.indexOf("FORCE_START_LABEL")).toBeLessThan(strip.indexOf("OPEN_DOOR_LABEL"));
   });
 });
 
 describe("the List's waiting row", () => {
-  it("says where it stands, in the flow — never as a second line", () => {
-    // Every row here is one line tall, and one row growing to two would break
-    // the rhythm the whole column is scanned down. The card is what grows.
-    expect(ROW).toContain('className="tasks-row-queue"');
-    expect(ROW).toContain("<QueueCaptionText queue={queue} />");
+  it("says nothing about where it stands — the ring and the word are the state", () => {
+    // Dropped on 2026-09-21 (Akshil). The seat's CSS stays, because the usage
+    // limit's sentence wears it on a blocked row and the chat's header wears it
+    // over the composer — one look for one kind of aside, wherever it is said.
+    expect(ROW).not.toContain("<QueueCaptionText queue={queue} />");
     expect(css(TASKS_CSS)).toContain(".tasks-row-queue {");
     expect(css(TASKS_CSS)).toContain(".tasks-card-queue {");
+    // …and the seat is still drawn for the one caption a row has left.
+    expect(ROW).toContain('<span className="tasks-row-queue" data-hint={limit}>');
   });
 
-  it("spends the row's own press, because it SITS OVER the row's link", () => {
-    // `.tasks-row-queue` is `z-index: 2` over the stretched `.tasks-rowlink`
-    // (for its tooltip), which made the whole caption a dead run of pixels —
-    // the identical fault the file mark beside it was fixed for. The three
-    // handlers are the mark's three, verbatim: plain press activates, a
-    // modified one opens a tab, a middle press does not autoscroll. The
-    // behaviour itself is mounted in queue-caption-press.test.tsx.
-    const at = ROW.indexOf('className="tasks-row-queue"');
-    expect(at).toBeGreaterThan(-1);
-    const span = ROW.slice(at, ROW.indexOf("</span>", at));
-    expect(span).toContain("if (opensElsewhere(e)) {");
-    expect(span).toContain("activate();");
-    expect(span).toContain("onAuxClick={(e) => {");
-    expect(span).toContain("if (e.button === 1 && href) e.preventDefault();");
+  it("grows FORCE START in the hover strip, and NO Run next anywhere", () => {
+    // The ⤒ button lived in this strip until 2026-09-21 and Force start took the
+    // seat. What must not come back is the CONDITION: `canRunNext` hid the
+    // control at position 1, which is the position a reader most wants this one
+    // at (standing 1st is still waiting on a turn with an hour left in it).
+    expect(ROW).toContain("tasks-act--skip");
+    expect(ROW).toContain("canForceStart(task)");
+    expect(ROW).toContain("FORCE_START_LABEL");
+    expect(ROW).toContain("void force();");
+    expect(VIEWS).not.toContain("canRunNext");
+    expect(VIEWS).not.toContain("void skip();");
+    // …and the DRAG presses the same verb.
+    expect(BOARD).toContain("await performForceStart(task);");
+    // The row is mounted and its buttons counted in queue-caption-press.test.tsx
+    // — source strings cannot say a control is reachable, only that it is
+    // written.
   });
 
-  it("grows a Run next only on a waiting row, and not behind the hover-actions flag", () => {
-    expect(ROW).toContain('className="tasks-act tasks-act--skip"');
-    const at = ROW.indexOf("tasks-act--skip");
-    // The guard immediately above it is the queue's, not SHOW_ROW_ACTIONS's.
-    expect(ROW.slice(at - 400, at)).toContain("{queue && (");
-    expect(ROW).toContain("aria-label={`${RUN_NEXT_LABEL} for ${task.task_id}`}");
-    expect(ROW).toContain("void skip();");
-    expect(ROW).toContain("onQueued?.(await performSkip(task));");
-  });
-
-  it("offers it only when ANOTHER WAITING TASK is ahead — one rule, three surfaces", () => {
-    // Every queued task has something in front of it; usually it is the run
-    // HOLDING the folder, which this press can never touch. So at position 1 the
-    // button's only possible outcome was the state the reader was already in
-    // (Akshil, 2026-09-12). `canRunNext` is `queue_position > 1`, and the List
-    // row, the Board card and the chat's own card all read that one function.
+  it("still SAYS where it stands, which the button never carried anyway", () => {
+    // THE CAPTION WAS NEVER GATED ON A BUTTON, and that is why swapping the verb
+    // in the seat changes no sentence: `1 message queued · after TASK-056` is
+    // true at the head of the line and stays printed whether or not a press is
+    // drawn beside it. `canRunNext` survives in platform/lib/queue for the
+    // follow-up that removes the skip endpoint with it, and both conditions are
+    // tested there — including the one position they disagree at.
     expect(canRunNext({ status: "queued", queue_position: 2, queue_ahead: "TASK-056" })).toBe(true);
     expect(canRunNext({ status: "queued", queue_position: 1, queue_ahead: "TASK-056" })).toBe(false);
-    for (const src of [ROW, CARD]) {
-      expect(src).toContain("{queue && (canRunNext(task) || queue.runsNext) && (");
-    }
-    // …and `runsNext` still keeps the DISABLED draw, so a press that worked does
-    // not take its own control off the row.
-    expect(ROW).toContain("disabled={acting || queue.runsNext}");
-    expect(CARD).toContain("disabled={busy || queue.runsNext}");
-    // THE CAPTION IS NOT GATED ON IT. `1 message waiting · behind TASK-056` is
-    // true at the head of the line and stays printed; only the button goes.
+    expect(canForceStart({ status: "queued", queue_position: 1, queue_ahead: "TASK-056" })).toBe(
+      true,
+    );
     expect(waitingCardText(1, { status: "queued", queue_position: 1, queue_ahead: "TASK-056" })).toBe(
-      "1 message waiting · after TASK-056",
+      "1 message queued · after TASK-056",
     );
   });
 
@@ -376,7 +398,8 @@ describe("the queue's ink", () => {
     );
     expect(card).toContain("overflow-wrap: anywhere");
     expect(card).not.toMatch(/(?<!-)\bwidth:\s*\d/);
-    // …AND NEITHER DOES THE RUN NEXT BUTTON, which is the queue's other piece of
+    // …AND NEITHER DOES THE QUEUE BUTTON in the strip (Run next's seat until
+    // 2026-09-21, Force start's since), which is the queue's other piece of
     // permanent row chrome. `.tasks-act` reserves a 22px box at rest so a row
     // does not reflow under the pointer — right for actions that exist on no row
     // while SHOW_ROW_ACTIONS is down, and wrong for one drawn on every waiting
@@ -462,11 +485,11 @@ describe("the page holds the optimistic claims, not the view", () => {
 });
 
 describe("the sidebar", () => {
-  it("says '· 2 waiting' in words, and keeps its one dot for running", () => {
+  it("says '· 2 queued' in words, and keeps its one dot for running", () => {
     // The row already spends its one dot slot on running-or-unread, and what a
     // reader wants from a queue is the NUMBER, which a dot cannot say. The WORD
-    // is "waiting" — `queued` is the status word, and a count beside "1 running"
-    // is a person being told what their machine is doing (tasks-lib.queuedLabel).
+    // is "queued" — the status word, said the same way in the count
+    // (tasks-lib.queuedLabel, Akshil 2026-09-21).
     expect(APPS).toContain('<span className="current-app-queued">{"· " + queuedLabel(app.queued)}</span>');
     expect(APPS).toContain("{app.queued > 0 && (");
     expect(APPS).toContain("rows.filter((r) => isQueued(r)).map((r) => r.project");

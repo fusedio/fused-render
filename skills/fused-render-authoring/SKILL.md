@@ -32,13 +32,15 @@ One plain fn `main(**params)`. Rules:
 
 ### Available Python libraries
 
-No `pyproject.toml` in folder → app interpreter: stdlib plus exactly this bundled set (authoritative: repo `pyproject.toml` — `[bundled]` extra, plus `pyarrow`/`duckdb`/`httpx` from core `[project]` deps). Prefer it — zero install.
+No `pyproject.toml` in folder → app interpreter: stdlib plus exactly this bundled set (repo `pyproject.toml` `[bundled]` extra minus `botocore`/`google-auth`, plus `pyarrow`/`duckdb`/`httpx` from core `[project]` deps). Prefer it — zero install.
 
 - **Data:** `numpy` `pandas` `pyarrow` `duckdb` `openpyxl` `msgpack`
 - **Images:** `pillow`
 - **Documents:** `python-pptx` `fpdf2` (import name *fpdf*)
-- **Network & cloud:** `requests` `httpx` `botocore` `google-auth`
+- **Network:** `requests` `httpx`
 - **Logs:** `drain3`
+
+Same set the standalone Render App (`fused-render-app`, `LEGACY_DEPS` in `fused_render_app/env.py`) gives a `pyproject.toml`-less app — keep the two in step. `botocore` / `google-auth` are on fused-render's interpreter but NOT in this list: Render App lacks them, so always declare them in a folder `pyproject.toml`.
 
 Anything else needs folder `pyproject.toml` (project root only; add `[tool.uv] package = false`). Facts:
 
@@ -119,7 +121,7 @@ Iframe = blank canvas; shell follows OS/pref light-dark. Quick answer: `data-fus
 
 ## Cross-browser (MANDATORY for every view)
 
-Views open in the user's default browser — Chrome, Firefox, Safari — and in WKWebView (popover, iOS shell). Chrome-tested ≠ done. Every view you write follows these rules by default, no ask needed:
+Views open in the user's default desktop browser — Chrome/Edge, Firefox, Safari — and in the macOS WKWebView popover. Desktop only: phones and tablets are out of scope. Chrome-tested ≠ done. Every view you write follows these rules by default, no ask needed:
 
 - **Features:** only MDN **Baseline: Widely available**. Newly-available → `@supports` + working fallback, or skip. Chrome-only → never. Unsure → check MDN compat, don't assume from Chrome.
 - **No build step, no autoprefixer** — prefixes are hand-written. Still prefixed in Safari: `-webkit-user-select`, `-webkit-backdrop-filter` (Safari < 18), `-webkit-line-clamp` trio (`display: -webkit-box; -webkit-box-orient: vertical`), `-webkit-appearance` alongside `appearance`.
@@ -127,19 +129,15 @@ Views open in the user's default browser — Chrome, Firefox, Safari — and in 
 
 ```css
 *, *::before, *::after { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
-body { margin: 0; -webkit-tap-highlight-color: transparent; }
+body { margin: 0; }
 button, input, select, textarea { font: inherit; color: inherit; margin: 0; }
 ::placeholder { color: var(--muted); opacity: 1; }
 input, select, textarea, progress { accent-color: var(--accent, currentColor); }
 img, svg, video, canvas { display: block; max-width: 100%; }
 ```
 
-- **Hover only behind `@media (hover: hover)`** — `:hover` sticks on touch.
-- **Full-height:** `min-height: 100vh; min-height: 100dvh;` (two lines, that order).
 - **Scrollbars:** write both pairs on same element — `scrollbar-width`/`scrollbar-color` AND `::-webkit-scrollbar*`, same colours. Firefox/Chrome/new Safari take the first, older WebKit the second.
 - **Form controls:** `<select>` → `appearance: none` + own arrow; `<option>` unstyleable in Safari. Range → both `::-webkit-slider-thumb` and `::-moz-range-thumb`. `<summary>` → `list-style: none` + `::-webkit-details-marker { display: none }`. Date/number/color/file pickers look native — style the box only. `appearance: none` drops `color-scheme` dark-mode chrome for that control → restyle fully or leave native.
-- **Touch inputs ≥ 16px** (`@media (pointer: coarse)`) or iOS zooms on focus.
 - **Layout:** `min-width: 0` on flex children holding text; no `transform` on ancestor of `position: fixed`; `overflow: clip` (not `hidden`) between `sticky` and its scroller.
 - **Fonts:** `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif`; mono `ui-monospace, Menlo, Consolas, monospace`; weights 400/600/700 only.
 - **JS:** ISO dates with `T` (Safari `Date.parse` rejects space); no `showOpenFilePicker`/`scrollIntoViewIfNeeded`/`requestIdleCallback` without fallback; ES2022 syntax ceiling; `wheel` `deltaMode === 1` → multiply by 16.
@@ -182,7 +180,7 @@ Read digest. Zero records + visible placeholder = preview-gated, fine. Zero reco
 - Slider + heavy import, no ~150 ms debounce → subprocess per tick.
 - `writeFile` on existing file without `expectedMtime` = silent clobber; create-if-absent = `{create: true}`, not stat-then-write.
 - `readFile` for media → use `rawUrl`.
-- Skipped the Cross-browser section — dead `:hover` on touch, unstyled `<select>`, vanished scrollbar, `user-select` without `-webkit-`, only ever opened in Chrome.
+- Skipped the Cross-browser section — unstyled `<select>`, vanished scrollbar, `user-select` without `-webkit-`, only ever opened in Chrome.
 - Walking fs for counts/sizes → `fused.fileIndex.query` (`fused-render-index`).
 - `fused.ai.text(` in a page meant for HOSTED export → exporter rejects textually, env guard no help. A `.fused` app file allows it (`fused-render-ai`).
 - Claiming "done" without `fused-render calls` — blank-JS and failing-Python look identical without log.

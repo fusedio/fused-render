@@ -176,19 +176,27 @@ describe("the two sums", () => {
 });
 
 describe("usedPct", () => {
-  it("is input over the FULL model window, rounded and clamped", () => {
+  it("is the whole conversation over the auto-compact point, rounded and clamped", () => {
+    // Sonnet 5 compacts at 967k; Haiku at 167k. 100% is the compaction.
     expect(usedPct("claude-sonnet-5", input(285_229))).toBe(29);
-    expect(usedPct("claude-haiku-4-5", input(84_000))).toBe(42);
+    expect(usedPct("claude-haiku-4-5", input(84_000))).toBe(50);
+    expect(usedPct("claude-haiku-4-5", input(167_000))).toBe(100);
     expect(usedPct("claude-haiku-4-5", input(400_000))).toBe(100);
     expect(usedPct("claude-sonnet-5", null)).toBe(0);
   });
 
-  it("measures an ENFORCED model against its head, not its compact window", () => {
-    // 180k in a million-token Opus 5 is 18% of the model — and simultaneously
-    // past the point where the CLI will compact it. Both are true, and the two
-    // readings are drawn in two different places for exactly that reason.
-    expect(usedPct("claude-opus-5", input(180_000))).toBe(18);
+  it("counts the output in, and reads 100% exactly where contextLevel says compact", () => {
+    // 180k in a million-token Opus 5 is 18% of the model's head — and past the
+    // point where the CLI compacts it. The ring says the second, because that
+    // is the question "can I keep going?" is asking (Akshil, 2026-09-21: one
+    // number, not "77" in the ring under "87% context used").
+    expect(usedPct("claude-opus-5", input(180_000))).toBe(100);
     expect(contextLevel("claude-opus-5", 180_000)).toBe("compact");
+    const m = "claude-haiku-4-5";
+    expect(usedPct(m, usage({ cache_read_input_tokens: 160_000, model: m }))).toBe(96);
+    expect(
+      usedPct(m, usage({ cache_read_input_tokens: 160_000, output_tokens: 7_000, model: m })),
+    ).toBe(100);
   });
 });
 
@@ -221,10 +229,12 @@ describe("warnLine", () => {
   });
 
   it("counts DOWN to auto-compact when a window is enforced", () => {
-    // Opus 5: enforced 200k window, compact at 167k. (167000 − 150000)/167000.
+    // Opus 5: enforced 200k window, compact at 167k. 100 − round(150/167).
     expect(warnLine("claude-opus-5", input(150_000))).toBe(
       "10% until auto-compact",
     );
+    // The SAME number the ring draws, in words.
+    expect(usedPct("claude-opus-5", input(150_000))).toBe(90);
     expect(warnLine("claude-opus-5", input(167_000))).toBe(
       "0% until auto-compact",
     );
@@ -235,8 +245,9 @@ describe("warnLine", () => {
   });
 
   it("counts UP through the effective window when none is enforced", () => {
-    // Sonnet 5: 980k effective, warning from 947k. 100 − round(30000/980000).
-    expect(warnLine("claude-sonnet-5", input(950_000))).toBe("97% context used");
+    // Sonnet 5: compacts at 967k, warning from 947k. round(950/967).
+    expect(warnLine("claude-sonnet-5", input(950_000))).toBe("98% context used");
+    expect(usedPct("claude-sonnet-5", input(950_000))).toBe(98);
     expect(warnLine("claude-sonnet-5", input(980_000))).toBe("100% context used");
   });
 
@@ -279,9 +290,9 @@ describe("contextHint", () => {
   it("is the whole sentence the pill says, in both of its voices", () => {
     expect(
       contextHint("claude-fable-5-1", input(285_229, "claude-fable-5-1")),
-    ).toBe("Context: 285k of 1M tokens (29%)");
+    ).toBe("Context: 285k of 967k tokens before auto-compact (29%)");
     expect(contextHint("claude-haiku-4-5", input(84_000))).toBe(
-      "Context: 84k of 200k tokens (42%)",
+      "Context: 84k of 167k tokens before auto-compact (50%)",
     );
   });
 
@@ -291,7 +302,7 @@ describe("contextHint", () => {
         "claude-sonnet-5",
         usage({ input_tokens: 9_876, model: "claude-sonnet-5", compacted: true }),
       ),
-    ).toBe("Context: 9.8k of 1M tokens (1%) · compacted, estimate");
+    ).toBe("Context: 9.8k of 967k tokens before auto-compact (1%) · compacted, estimate");
   });
 });
 
@@ -339,10 +350,14 @@ describe("contextReport", () => {
   });
 
   it("suggests nothing until 80%, then quotes the CLI's own line", () => {
-    expect(contextReport("claude-haiku-4-5", input(158_000)).suggestion).toBe("");
-    expect(contextReport("claude-haiku-4-5", input(162_000)).suggestion).toBe(
+    // 80% of the 167k compaction point, which is the ring's own scale.
+    expect(contextReport("claude-haiku-4-5", input(130_000)).suggestion).toBe("");
+    expect(contextReport("claude-haiku-4-5", input(135_000)).suggestion).toBe(
       "Context is 81% full",
     );
+    // …and the headline pair the popover prints is total / compactAt.
+    const r = contextReport("claude-haiku-4-5", input(135_000));
+    expect([r.total, r.compactAt, r.pct]).toEqual([135_000, 167_000, 81]);
   });
 
   it("gives a used segment at least one square, and never more than the grid", () => {

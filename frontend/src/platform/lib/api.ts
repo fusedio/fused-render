@@ -1224,7 +1224,14 @@ export interface Prefs {
    *  instead of navigating away (shell/prefs.py `task_peek_enabled`) — always
    *  `true` since 2026-09-20; the Preferences switch is gone. Optional because
    *  a server that predates the field sends nothing — which reads as ON too. */
-  task_peek?: { enabled: boolean };
+  task_peek?: {
+    enabled: boolean;
+    /** …and the APP PAGE's Tasks tab does the same — always `true` since
+     *  2026-09-21 (shell/prefs.py `project_peek_enabled`); the flag and its
+     *  Preferences switch are gone. Optional: a server that predates the
+     *  field sends nothing, and nothing reads as on too. */
+    project?: boolean;
+  };
   /** Whether a finished-task notification fires for a session that entered
    *  from an interactive terminal, rather than only one started through
    *  fused-render's own Claude template (shell/prefs.py
@@ -2666,8 +2673,19 @@ export interface AppCheck {
    *  rather than one the doctor answers on every GET — today `cross-browser`,
    *  a Sonnet read of the view files cached on their checksum
    *  (fused_render/app_doctor_ai.py). `state: "unrun"` only ever appears on
-   *  one of these: never run, or the app changed since. */
+   *  one of these: never run, the app changed since, or a check task is on it. */
   ondemand: boolean;
+  /** The on-demand row's own CHECK task (the Sonnet read, run as a task on the
+   *  app's entry page) while it is still live, or null. Kept apart from `task`
+   *  — a fix session — because the row draws one as "Checking…" and the other
+   *  as "Fix in progress". Read off the server's task store on every GET, so
+   *  a reload or a tab switch shows the same in-flight state. */
+  check_task: AppDoctorTask | null;
+  /** On a SETTLED on-demand row: the check task whose session wrote the cached
+   *  verdict, so the row can open that conversation (its plain per-finding
+   *  lines). `session_id` is the conversation the turn ran in — what `chatUrl`
+   *  opens; `target` its entry page. Null when the task is gone from the store. */
+  verdict_task: { id: string; session_id: string; target: string } | null;
   /** `git` row only: commits HEAD is behind/ahead of
    *  `origin/<default_branch>` (`git_upstream.check_repo`'s
    *  `HEAD...origin/<default_branch>` count), or `null` when the remote
@@ -2711,9 +2729,17 @@ export interface AppDoctorReport {
   severities: Severity[];
 }
 
-export function getAppDoctor(path: string): Promise<AppDoctorReport> {
+/** `fetch: false` is the POLL variant (the panel and the header dot re-asking
+ *  every few seconds while a check task is live): the server skips the
+ *  modal-open git force-fetch and answers the `git` row from its throttled
+ *  cache, so polling never turns into a git fetch every four seconds. */
+export function getAppDoctor(
+  path: string,
+  opts: { fetch?: boolean } = {},
+): Promise<AppDoctorReport> {
+  const fetchFlag = opts.fetch === false ? "&fetch=0" : "";
   return getJson<AppDoctorReport>(
-    `/api/apps/doctor?path=${encodeURIComponent(path)}`,
+    `/api/apps/doctor?path=${encodeURIComponent(path)}${fetchFlag}`,
   );
 }
 
@@ -2721,18 +2747,33 @@ export interface AppDoctorFixResult extends NewAppResult {
   check: string;
 }
 
-/** RUN one on-demand row now (`check.ondemand`) and get the refreshed row
- *  back — the server caches the verdict on the app's content, so until the
- *  view files change the next GET draws this same row for free. Blocks for
- *  the model call (seconds). 502 with one sentence when the model could not
- *  answer; the previous verdict, if any, stays. */
+export interface AppDoctorRunResult {
+  path: string;
+  entry_html: string;
+  /** The row as the next GET would draw it: `check_task` set while the new
+   *  task (or one already on it) is live, else the cached verdict. */
+  check: AppCheck;
+  /** The stored task entry when one was created this call, else null (the
+   *  cache already answered, or a task was already on it). */
+  task: NewAppResult["task"];
+  task_error: string | null;
+}
+
+/** RUN one on-demand row (`check.ondemand`): creates its CHECK task — a
+ *  session on the app's entry page that reads the view files against the
+ *  cross-browser skill and writes the verdict into the app's `.fused/cache/`
+ *  — and returns at once with the row in its "checking" state. The verdict
+ *  is cached on the app's content, so until the view files change the next
+ *  GET draws it for free, and a press while a task is already on it is a
+ *  no-op that returns that task. 409 while a fix task is live on the app;
+ *  502 when the task could not be created. */
 export function runAppDoctorOnDemand(
   path: string,
   check: string,
   /** Re-check: ask again although the cached verdict still matches the files. */
   force = false,
-): Promise<{ path: string; check: AppCheck }> {
-  return postJson<{ path: string; check: AppCheck }>("/api/apps/doctor/run", {
+): Promise<AppDoctorRunResult> {
+  return postJson<AppDoctorRunResult>("/api/apps/doctor/run", {
     path,
     check,
     force,
@@ -3478,6 +3519,23 @@ export function getTaskDefaults(): Promise<{ model: string; effort: string }> {
   return getJson<{ model: string; effort: string }>("/api/claude-sessions/defaults");
 }
 
+/** WRITE that same global pair — the New task card's dropdowns and the
+ *  composer's pills for a chat with no session yet are both EDITORS of it, not
+ *  just readers (Akshil, 2026-09-21). A field left out is left alone, so moving
+ *  one of the two cannot restate the other. Answers with what the file says
+ *  AFTER the write, which is not always what was asked for: the settings page's
+ *  vocabulary has spellings (`opus[1m]`) the pills read back as the family name.
+ *
+ *  Callers should go through `platform/lib/claude-defaults`, which is what tells
+ *  the other open surfaces about the change; this is the bare wire call. */
+export function putTaskDefaults(
+  patch: { model?: string; effort?: string },
+): Promise<{ model: string; effort: string }> {
+  return putJson<{ model: string; effort: string }>(
+    "/api/claude-sessions/defaults", patch,
+  );
+}
+
 export function getTasks(): Promise<{ tasks: Task[]; generation?: number }> {
   return getJson<{ tasks: Task[]; generation?: number }>("/api/tasks");
 }
@@ -3669,6 +3727,51 @@ export function skipQueue(
   what: { key: string } | { entry_id: string },
 ): Promise<SkipResult> {
   return postJson<SkipResult>("/api/tasks/queue/skip", what);
+}
+
+/** What Force start answers with.
+ *
+ *  `started: true` is the ordinary outcome and carries the run the dispatch
+ *  created (`session_id` is "" for a brand-new chat until Claude Code mints
+ *  one), or, for a task whose only waiting thing was a HELD CARD ANSWER, the
+ *  number of decisions that were delivered instead.
+ *
+ *  `started: false` is the honest 200 for a press that arrived too late: the
+ *  message was cancelled, or the folder's own pump dispatched it in the window
+ *  (`reason: "already started"`). Nothing failed and nothing is queued any
+ *  more, so the caller refetches rather than showing an error.
+ *
+ *  A conversation that cannot take the message YET — a send already in flight,
+ *  a live turn — is the same honest 200, with the scheduler's own sentence as
+ *  `reason` (2026-09-21). The message is NOT put back in the line: forcing a
+ *  task takes it out of the queue for good, its entry is still pending in the
+ *  store and the scheduler's next tick sends it. So the caller refetches here
+ *  too rather than showing a refusal about work that is on its way. */
+export interface ForceResult {
+  ok: boolean;
+  started: boolean;
+  run_id?: string;
+  session_id?: string;
+  delivered?: number;
+  reason?: string;
+}
+
+/**
+ * RUN THIS WAITING MESSAGE NOW, beside whatever owns its folder.
+ *
+ * The flag-off behaviour for ONE message: the queue stops deciding when this
+ * turn goes and the message is dispatched immediately, into a tree another task
+ * may still be running in. IT INTERRUPTS NOTHING — the owner keeps the folder
+ * and keeps running — and unlike `skipQueue` it is offered at every waiting
+ * position, including the first: "next" and "now" are different promises.
+ *
+ * `{ entry_id }` is the name a chip can safely hold; see `skipQueue` for why a
+ * task key is not one.
+ */
+export function forceStart(
+  what: { entry_id?: string; key?: string },
+): Promise<ForceResult> {
+  return postJson<ForceResult>("/api/tasks/queue/force", what);
 }
 
 /** A card decision routed through the queue: the same body the agent's own

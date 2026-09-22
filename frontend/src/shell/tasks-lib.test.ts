@@ -1063,7 +1063,7 @@ describe("taskColumn", () => {
     // separating a queued task from a running one is which second its folder
     // frees, and a column boundary is far too strong a line between two states
     // that swap every few minutes. They are told apart INSIDE the lane instead:
-    // running first, then a dashed "waiting" rule, then the waiting ones by their
+    // running first, then a dashed "queued" rule, then the waiting ones by their
     // place in the line (groupByColumn, laneCountLabel, laneSplitAt).
     expect(laneOf("queued")).toBe("in_progress");
     for (const col of BOARD_LANES) expect(laneOf(col.key)).toBe(col.key);
@@ -4241,15 +4241,16 @@ describe("the archive action", () => {
     // what the flag has to come back to.
     // …and the quick door out, which is on every card that HAS a page — the
     // fourth member of the strip since 2026-09-13; Discard, the draft card's
-    // one action, the fifth since 2026-09-15; and `queue`, which joined the
-    // guard on 2026-09-12 because a queued card grows a Run next in the same
-    // strip and (like Archive) it is NOT behind SHOW_ROW_ACTIONS — with that
-    // flag down it would otherwise be the Board's only way to reach the front
-    // of a line other than dragging a card out of a lane that is rolled up
-    // whenever it is empty.
+    // one action, the fifth since 2026-09-15; and Force start, which joined the
+    // guard on 2026-09-12 (as `queue`, the caption, until 2026-09-21 — the
+    // caption is gone from the card and the BUTTON's own condition is what the
+    // strip now asks) because, like Archive, it is NOT behind SHOW_ROW_ACTIONS:
+    // with that flag down it would otherwise be the Board's only way to start a
+    // waiting message other than dragging a card out of a lane that is rolled
+    // up whenever it is empty.
     expect(card).toContain(
-      "{((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek) || queue\n"
-      + "        || (SHOW_ROW_ACTIONS && run)) && (",
+      "{((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek)\n"
+      + "        || canForceStart(task) || (SHOW_ROW_ACTIONS && run)) && (",
     );
     expect(card).toContain('className="tasks-card-acts"');
     expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*position: absolute/);
@@ -4557,8 +4558,8 @@ describe("the delete affordance", () => {
     expect(strip.indexOf("ICON_TRASH")).toBeLessThan(strip.indexOf("ICON_ARCHIVE"));
     // The strip is drawn for a gone folder even with nothing to file.
     expect(VIEWS_SRC).toContain(
-      "{((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek) || queue\n"
-      + "        || (SHOW_ROW_ACTIONS && run)) && (",
+      "{((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek)\n"
+      + "        || canForceStart(task) || (SHOW_ROW_ACTIONS && run)) && (",
     );
     // And the foot is back to the sentence alone — no trash before it there.
     const foot = VIEWS_SRC.slice(
@@ -10878,11 +10879,11 @@ describe("the waiting half of the In Progress lane", () => {
     // A bare total over a column of three running tasks and four waiting ones
     // answers a question nobody asked.
     const both = [running("r", 1), waiting("a", 1, 1), waiting("b", 2, 1)];
-    expect(laneCountLabel("in_progress", both)).toBe("1 running · 2 waiting");
+    expect(laneCountLabel("in_progress", both)).toBe("1 running · 2 queued");
     // …and every other shape keeps the plain number it has always had, which is
     // every board on a machine that has not turned the queue on.
     expect(laneCountLabel("in_progress", [running("r", 1), running("s", 1)])).toBe("2");
-    expect(laneCountLabel("in_progress", [waiting("a", 1, 1)])).toBe("1 waiting");
+    expect(laneCountLabel("in_progress", [waiting("a", 1, 1)])).toBe("1 queued");
     expect(laneCountLabel("upcoming", both)).toBe("3");
   });
 
@@ -10890,12 +10891,12 @@ describe("the waiting half of the In Progress lane", () => {
     const both = [running("r", 1), waiting("a", 1, 1)];
     expect(laneSplitAt("in_progress", both)).toBe(1);
     // A lane that is ALL waiting needs no line across the top of itself — the
-    // header already says "2 waiting" — and neither does one with nothing
+    // header already says "2 queued" — and neither does one with nothing
     // waiting at all.
     expect(laneSplitAt("in_progress", [waiting("a", 1, 1), waiting("b", 2, 1)])).toBe(-1);
     expect(laneSplitAt("in_progress", [running("r", 1)])).toBe(-1);
     expect(laneSplitAt("upcoming", both)).toBe(-1);
-    expect(LANE_SPLIT_LABEL).toBe("waiting");
+    expect(LANE_SPLIT_LABEL).toBe("queued");
   });
 
   it("takes nothing out of the other lanes", () => {

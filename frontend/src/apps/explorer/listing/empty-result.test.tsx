@@ -31,12 +31,18 @@ afterEach(() => {
   clock.restore();
 });
 
-function mount(reason: string, scanning: boolean | null = null, filesScanned = 0) {
+function mount(
+  reason: string,
+  scanning: boolean | null = null,
+  filesScanned = 0,
+  ourScanRunning = false,
+) {
   act(() => {
     mounted = create(
       createElement(EmptyResultMessage, {
         reason: reason as never,
         scanning,
+        ourScanRunning,
         filesScanned,
       }),
     );
@@ -77,6 +83,30 @@ describe("EmptyResultMessage", () => {
   test("scanning: reports progress when the poll has a file count", () => {
     expect(text(mount("scanning", true, 4321))).toContain("4,321 files so far");
     expect(text(mount("scanning", true, 0))).toBe("The file index is still building");
+  });
+
+  test("a covered, genuinely-empty answer switches to the scanning copy once a triggered scan is confirmed running", () => {
+    // reason === "" (covered) with `ourScanRunning` true — our own
+    // covered-but-empty trigger's `requestFolderScan` reply confirmed
+    // `started` — must show the same "still building" copy the uncovered
+    // case already gets, not a stale "No matches". `scanning` (the
+    // machine-wide poll) is irrelevant to this branch entirely; it is
+    // passed `null` here on purpose (see the next test).
+    expect(text(mount("", null, 12, true))).toContain("still building");
+    expect(text(mount("", null, 12, true))).toContain("12 files so far");
+  });
+
+  test("a covered, empty answer with no confirmed scan of our own stays plain — no false positive on load", () => {
+    expect(text(mount("", null, 0, false))).toBe("No matches");
+  });
+
+  test("code review finding 2 regression: an unrelated machine-wide scan must not claim OUR root is building", () => {
+    // The live poll (`scanning`) reports true because SOME scan is running
+    // somewhere on the machine, but `ourScanRunning` — this box's own
+    // `requestFolderScan` confirmation — is false: nothing was asked for
+    // THIS root, so the note must stay plain rather than claim a build
+    // is in progress for it.
+    expect(text(mount("", true, 999, false))).toBe("No matches");
   });
 
   test("the frozen answer's own reason still reads as scanning before the poll answers", () => {

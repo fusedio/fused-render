@@ -20,6 +20,7 @@ import {
   getClaudeSessionFolders,
   getGitRepos,
   indexRank,
+  requestFolderScan,
   startIndexScan,
   statPath,
 } from "@platform/lib/api";
@@ -592,6 +593,37 @@ export function FilesSearch({
   // failure was terminal: none of the other deps is something a user can move,
   // so search stayed dead until a reload.
   const [retryNonce, setRetryNonce] = useState(0);
+  // Per-query dedup for the covered-but-empty scan trigger below
+  // (SPEC-empty-search-scan.md, code review finding 5): keyed on `trimmedQ`,
+  // not the raw `q` — the spec asks for "at most once per distinct trimmed
+  // query string", and "report" vs "report " are the SAME scan target (both
+  // resolve to `next.base`, a folder, never a whitespace-sensitive glob) even
+  // though A1 above deliberately keeps them different RANK requests. Reset
+  // scope is root-only (`[home]`), matching `useListingSearch.ts`'s own reset
+  // (finding 5's other half — the two implementations must agree): resetting
+  // on a lifecycle/mutation bump instead would re-arm the very query whose
+  // scan just finished, the moment that scan's own completion bumps the
+  // lifecycle counter, re-firing a request for a root that was JUST scanned.
+  // A different root is a different session for this purpose; nothing else
+  // is.
+  const firedEmptyScan = useRef<Set<string>>(new Set());
+  // Whether a scan THIS page itself asked for (the trigger below) has been
+  // confirmed running via `requestFolderScan`'s own `started` reply — see
+  // `ourScanRunning` in useListingSearch.ts for why this can't reuse
+  // `liveScanning` (code review finding 2: that poll is machine-wide, true
+  // for any scan of any root).
+  const [emptyScanRunning, setEmptyScanRunning] = useState(false);
+  useEffect(() => {
+    firedEmptyScan.current = new Set();
+    setEmptyScanRunning(false);
+  }, [home]);
+  // `home` captured by ref so the scan reply handler (below, inside the fetch
+  // effect's `.then`) can tell a reply for a since-abandoned root from a
+  // fresh one without an epoch counter — this page has no `sourceEpoch`
+  // mechanism the way useListingSearch.ts does, and a ref read at reply time
+  // is the same guarantee without adding one just for this.
+  const homeRef = useRef(home);
+  homeRef.current = home;
 
   // A scan finishing or the index being deleted changes what a query ANSWERS
   // to, and no other signal reports it — the filesystem did not change (see
@@ -665,6 +697,13 @@ export function FilesSearch({
       inflight.current = ctl;
       issuedAt.current = Date.now();
       setPending(true);
+      // A fresh request retires any "still building" note the PREVIOUS
+      // query's trigger left up — that confirmation was for a scan of a root
+      // this new query may not even share, and `firedEmptyScan`'s own dedup
+      // (keyed on `trimmedQ`, reset only on `[home]`) is not enough to catch
+      // it since two different queries against the same root are two
+      // different dedup entries.
+      setEmptyScanRunning(false);
       // The previous failure is not this request's verdict. Left standing it
       // kept the banner up over rows that were about to be replaced, and — via
       // rankingSettled — armed the AI row on every keystroke after one
@@ -680,6 +719,38 @@ export function FilesSearch({
           setAnswer(next);
           setFailure("");
           setPending(false);
+          // The covered-but-empty scan trigger (SPEC-empty-search-scan.md):
+          // a settled answer that says the root IS covered (reason === "")
+          // but found no files is real evidence the index may be behind
+          // this exact query — ask for a background scan of the answer's
+          // OWN root (`next.base`, never a hardcoded `home`: a leading
+          // "~"/"/" query can resolve elsewhere). `searchable` gates this
+          // whole effect, which already enforces MIN_QUERY_CHARS, so no
+          // extra length check is needed here. `firedEmptyScan` is the
+          // per-query dedup the spec requires (keyed on `trimmedQ` — finding
+          // 5); the server's own SCAN_DEBOUNCE_S is the cross-query floor
+          // and is not duplicated here.
+          if (next.reason === "" && next.hits.length === 0 && !firedEmptyScan.current.has(trimmedQ)) {
+            firedEmptyScan.current.add(trimmedQ);
+            // `r.started` (code review finding 3): a refusal
+            // (`refused`/`debounced`/`joined`) is durable and expected, not
+            // evidence a build is running — only `started` means this
+            // page's own note may say so. The `homeRef` check (finding 4's
+            // fix, since this page has no epoch counter) discards a reply
+            // that lands after the user has moved to a different root. A
+            // thrown fetch is silent either way — a search must never fail
+            // over housekeeping (routers/index.py:627).
+            void requestFolderScan(next.base || home).then(
+              (r) => {
+                if (homeRef.current !== home) return;
+                if (r.started) {
+                  setEmptyScanRunning(true);
+                  onScanRequested();
+                }
+              },
+              () => {},
+            );
+          }
         },
         (err: Error) => {
           if (ctl.signal.aborted || err.name === "AbortError") return;
@@ -928,10 +999,33 @@ export function FilesSearch({
   // earlier branches: `showOpenRow` and `!searchable` short-circuit it before
   // any `gap === …` case — the "Open" note (below) already owns that row's
   // real estate, and a query under MIN_QUERY_CHARS never asked anything.
+  // A covered (`reason === ""`) answer normally means the ternary below's
+  // plain "No file name matched" is the whole story. The one exception: the
+  // covered-but-empty scan trigger (SPEC-empty-search-scan.md, in the fetch
+  // effect above) can have a scan running RIGHT NOW for this exact root.
+  // `emptyScanRunning` (not `liveScanning` — code review finding 2) is the
+  // one signal that means "a scan WE asked for, for THIS root, is confirmed
+  // running": `liveScanning` is the machine-wide poll, true for any scan of
+  // any root, so using it here made an unrelated scan elsewhere (e.g. the
+  // whole-index button) claim a build was in progress for a root nothing is
+  // scanning. Gated on `hits.length === 0` so a covered answer that DOES have
+  // rows never loses them to a "still building" note. `failure === ""`
+  // (finding 6) keeps a failed request's held answer — real evidence about a
+  // PREVIOUS query, not this one — from reading as "no matches" for a query
+  // that never actually got a covered-but-empty verdict of its own.
   const gap =
     displayAnswer !== null && !displayAnswer.covered && !showOpenRow && searchable
       ? indexGap(displayAnswer.reason, liveScanning)
-      : null;
+      : displayAnswer !== null &&
+          displayAnswer.covered &&
+          !showOpenRow &&
+          searchable &&
+          settled &&
+          failure === "" &&
+          hits.length === 0 &&
+          emptyScanRunning
+        ? "scanning"
+        : null;
   // The `buildable` and `fda` branches yield nothing — the `.fh-index-cta`
   // callout is the message for those states — so the note paragraph is empty
   // and the suffix's leading "·" would separate nothing.

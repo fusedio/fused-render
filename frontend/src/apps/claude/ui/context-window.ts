@@ -7,12 +7,17 @@
 // CLI's statusline and its `/context` — and two meters over one conversation
 // that disagree by ten points are worse than one meter.
 //
-// The two halves disagree ON PURPOSE, and §8 of the spec is where the CLI says
-// so: the percentage on the pill is input-only over the FULL model window
-// (statusline parity), while the warning line above the box counts output too
-// and measures against the AUTO-COMPACT window. Same conversation, two
-// questions — "how much of the model's head is in use" and "how long until the
-// CLI compacts this" — and they have different denominators.
+// ONE NUMBER, and it is the one that matters: how far this conversation is
+// from the point where the CLI compacts it. The CLI itself prints two — the
+// statusline's input-over-model-window and the warning's total-over-compact-
+// window — and the first cut of this file mirrored both (§8 of the spec).
+// That put "77" in the ring and "87% context used" in the line above it, two
+// readings of one conversation a hand apart (Akshil, 2026-09-21: "why do I
+// have two different context warnings?"). So every reading here — the ring,
+// its tooltip, the line above the box, the popover's headline — is
+// `usedPct`: input AND output, over `compactAt`, where 100% is the compaction.
+// The thresholds themselves are still the CLI's, read out of the binary; only
+// the denominator the reader sees was unified.
 //
 // Nothing here touches React and nothing here fetches: it is handed the model
 // id and the latest reply's `usage`.
@@ -183,16 +188,22 @@ export function contextTotal(usage: ContextUsage | null | undefined): number {
 }
 
 /**
- * `IKt` — the pill's percentage: input-only over the FULL model window,
- * rounded and clamped to 0..100.
+ * THE percentage — the whole conversation (input and output) over the point
+ * where the CLI auto-compacts, rounded and clamped to 0..100. 100% is the
+ * compaction, not the model's head: a 200k model compacts at 167k, so 167k
+ * reads 100%, and a million-token one at 967k.
+ *
+ * Not the CLI statusline's `IKt` (input over the full window): that number
+ * says "how much of the model is in use", which is the wrong question when
+ * the answer to "can I keep going?" is decided 33k tokens earlier.
  */
 export function usedPct(
   model: string | null | undefined,
   usage: ContextUsage | null | undefined,
 ): number {
-  const window = modelWindow(model);
-  if (window <= 0) return 0;
-  const pct = Math.round((contextInput(usage) / window) * 100);
+  const { compactAt } = contextThresholds(model);
+  if (compactAt <= 0) return 0;
+  const pct = Math.round((contextTotal(usage) / compactAt) * 100);
   return Math.min(100, Math.max(0, pct));
 }
 
@@ -234,13 +245,12 @@ export function warnLine(
 ): string {
   const total = contextTotal(usage);
   if (contextLevel(model, total) === "ok") return "";
-  const { compactAt, effective, enforced } = contextThresholds(model);
-  if (enforced) {
-    const left = Math.max(0, Math.round(((compactAt - total) / compactAt) * 100));
-    return `${left}% until auto-compact`;
-  }
-  const left = Math.max(0, Math.round(((effective - total) / effective) * 100));
-  return `${100 - left}% context used`;
+  // THE SAME NUMBER THE RING SHOWS, in the CLI's two spellings: an enforced
+  // window counts down to the compaction, an automatic one counts up to it.
+  const pct = usedPct(model, usage);
+  return contextThresholds(model).enforced
+    ? `${100 - pct}% until auto-compact`
+    : `${pct}% context used`;
 }
 
 /** A token count in the fewest characters that stay honest: "950", "285k",
@@ -272,9 +282,13 @@ export function contextHint(
   model: string | null | undefined,
   usage: ContextUsage | null | undefined,
 ): string {
-  const window = modelWindow(model);
-  const used = contextInput(usage);
-  const line = `Context: ${formatTokens(used)} of ${formatTokens(window)} tokens (${usedPct(model, usage)}%)`;
+  // Total over the compaction point, the ring's own fraction spelled out —
+  // "of 167k" and not "of 200k", because 167k is where this conversation is
+  // cut, and a denominator the ring is not measured against would be the two
+  // numbers all over again.
+  const { compactAt } = contextThresholds(model);
+  const used = contextTotal(usage);
+  const line = `Context: ${formatTokens(used)} of ${formatTokens(compactAt)} tokens before auto-compact (${usedPct(model, usage)}%)`;
   // AN ESTIMATE IS LABELLED AS ONE. Straight after a compaction the CLI has no
   // usage to report at all until the next API call, so this reading is the
   // boundary row's own `postTokens` — a number the compactor predicted rather
@@ -305,7 +319,12 @@ export interface ContextLegendRow {
 export interface ContextReport {
   model: string;
   window: number;
+  /** The grid's used tokens — input, clipped to the window, as `/context` draws it. */
   used: number;
+  /** The headline's pair: the whole conversation and the compaction point it is
+   *  measured against — `pct` is `total / compactAt`, the ring's own number. */
+  total: number;
+  compactAt: number;
   pct: number;
   columns: number;
   rows: number;
@@ -416,6 +435,8 @@ export function contextReport(
     model: id,
     window: modelWindow,
     used,
+    total: contextTotal(usage),
+    compactAt,
     pct,
     columns,
     rows,

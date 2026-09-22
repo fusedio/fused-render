@@ -5488,9 +5488,36 @@ def _scan_transcript(path: str) -> tuple:
     return model, effort
 
 
+def _global_defaults() -> tuple:
+    """(model, effort) from ~/.claude/settings.json — THE global preference.
+
+    The `model` / `effortLevel` pair the app's Claude settings page writes
+    (claude_config/preferences.py) and the CLI reads for itself. ONE reader for
+    the two callers that need it: a brand-new chat below, and the New task
+    card's `GET /api/claude-sessions/defaults`, which shows the pair the run it
+    books will actually get. Two readers of one file drift, and a card that
+    promises "haiku" for a chat that opens on "fable" is worse than a card that
+    promises nothing.
+
+    A field is "" when the file does not set it, cannot be read or parsed, or
+    names something this build's pickers do not offer. "" is the honest answer
+    and it is what leaves the caller's own constant speaking — the same one the
+    CLI would have resolved for itself."""
+    try:
+        with open(os.path.join(CLAUDE_DIR, "settings.json"), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return "", ""
+    if not isinstance(data, dict):
+        return "", ""
+    model = _short_model(str(data.get("model") or ""))
+    effort = str(data.get("effortLevel") or "").lower()
+    return model, (effort if effort in _EFFORT_LEVELS else "")
+
+
 def _defaults(file: str, session_id: str = "") -> dict:
     """The model/effort the selectors should open on — for THIS CONVERSATION
-    when one is named, else the ones last used in this project.
+    when one is named, else the GLOBAL preference.
 
     THE CONVERSATION ANSWERS FOR ITSELF, or it does not answer (Akshil,
     2026-09-18: "what I select as a user stays"). With a `session_id` this reads
@@ -5513,11 +5540,22 @@ def _defaults(file: str, session_id: str = "") -> dict:
     the missing half was filled in from whichever neighbour chat ran last.
 
     WITHOUT a session id — a brand-new chat, which has no conversation to ask —
-    the folder ladder answers as it always has: the newest transcripts in this
-    project's store (true last-used, shared by CLI and template runs since both
-    key sessions on the same cwd munge), then settings files (project
-    .claude/settings.local.json, project .claude/settings.json,
-    ~/.claude/settings.json — the `model` and `effortLevel` keys).
+    the answer is the GLOBAL preference and only that: `model` / `effortLevel`
+    in ~/.claude/settings.json, through `_global_defaults` (Akshil, 2026-09-21:
+    "only factor in global model/effort for all new chats — from the file
+    explorer composer or from the New task modal").
+
+    NOTHING FOLDER-SPECIFIC ANY MORE. This used to walk a ladder — the newest
+    five transcripts in the folder's project store, then the folder's
+    .claude/settings.local.json, then its .claude/settings.json, and only then
+    the global file. Every rung of it made a new chat inherit a decision
+    somebody made for something else: one experiment on haiku in a folder
+    silently pinned every later chat opened there, and the two folder settings
+    files are Claude Code's own config, not a statement about what the reader
+    wants THIS window to run. The global pair is the one the reader sets on
+    purpose, in the app's own Claude settings page, and it is now the only
+    thing a new chat reads — so the composer and the New task card agree, in
+    every folder, without either of them guessing.
 
     `recorded` rides back beside the resolved pair so the composer can rank the
     record ABOVE its own `?model=`/`?effort=` params: those params are a SEED
@@ -5525,9 +5563,7 @@ def _defaults(file: str, session_id: str = "") -> dict:
     that outranked the record would undo a pill the reader changed mid-chat on
     the next open. Empty fields mean nothing was detected; the page keeps its
     own fallback."""
-    workdir = _workdir(os.path.abspath(file))
     model = effort = source = ""
-    proj = os.path.join(PROJECTS, _munge(workdir))
     # `_bad_id` for the reason every other reader of a session id has it: the id
     # becomes a path below, and one that does not round-trip is not a session
     # this store can hold. A rejected id is treated as no id at all.
@@ -5544,9 +5580,10 @@ def _defaults(file: str, session_id: str = "") -> dict:
     if rec_model or rec_effort:
         model, effort, source = rec_model, rec_effort, "record"
     if named:
-        # THIS CHAT'S TRANSCRIPT, and then done — see the docstring for why the
-        # folder ladder below is not reached from here.
+        # THIS CHAT'S TRANSCRIPT, and then done — see the docstring for why
+        # the global read below is not reached from here.
         if not (model and effort):
+            proj = os.path.join(PROJECTS, _munge(_workdir(os.path.abspath(file))))
             mine = os.path.join(proj, session_id + ".jsonl")
             if os.path.exists(mine):
                 m, e = _scan_transcript(mine)
@@ -5558,43 +5595,11 @@ def _defaults(file: str, session_id: str = "") -> dict:
                     source = source or "session"
         return {"model": model, "effort": effort, "source": source,
                 "recorded": {"model": rec_model, "effort": rec_effort}}
-    try:
-        names = [n for n in os.listdir(proj) if n.endswith(".jsonl")]
-        paths = sorted((os.path.join(proj, n) for n in names),
-                       key=os.path.getmtime, reverse=True)
-    except OSError:
-        paths = []
-    # Newest few only: the newest transcript IS the answer when it has both
-    # fields, and one more file covers a fresh session that hasn't spoken yet.
-    for path in paths[:5]:
-        m, e = _scan_transcript(path)
-        model = model or m
-        effort = effort or e
-        if model or effort:
-            source = "session"
-        if model and effort:
-            break
-    if not (model and effort):
-        for p in (os.path.join(workdir, ".claude", "settings.local.json"),
-                  os.path.join(workdir, ".claude", "settings.json"),
-                  os.path.join(CLAUDE_DIR, "settings.json")):
-            try:
-                with open(p, encoding="utf-8") as f:
-                    data = json.load(f)
-            except (OSError, ValueError):
-                continue
-            if not isinstance(data, dict):
-                continue
-            if not model:
-                m = _short_model(str(data.get("model", "")))
-                if m:
-                    model, source = m, source or "settings"
-            if not effort:
-                e = str(data.get("effortLevel", "")).lower()
-                if e in _EFFORT_LEVELS:
-                    effort, source = e, source or "settings"
-            if model and effort:
-                break
+    # A BRAND-NEW CHAT TAKES THE GLOBAL PREFERENCE AND NOTHING ELSE — see the
+    # docstring for why the folder ladder that used to run here is gone.
+    model, effort = _global_defaults()
+    if model or effort:
+        source = "settings"
     # `recorded` is empty for a chat with no id: there is nothing to have
     # recorded about a conversation that does not exist yet, and the caller's
     # own seed is what speaks for that window.

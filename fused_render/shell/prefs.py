@@ -233,6 +233,18 @@ def task_peek_enabled() -> bool:
     return True
 
 
+def project_peek_enabled() -> bool:
+    """Whether the APP PAGE's Tasks tab (`/apps/<folder>?_tab=tasks`) opens a
+    task in the same side panel `/tasks` does — ALWAYS, since 2026-09-21
+    (Akshil: the flag came off once the surface settled). The switch is gone
+    from Preferences and the PUT no longer accepts `project_peek_enabled`; a
+    stored value from the flagged build is ignored. Kept as a function, and
+    kept in the GET payload as `task_peek.project`, because the client's type
+    still names it — a server that sends nothing reads as ON there too.
+    """
+    return True
+
+
 def notify_terminal_sessions_enabled() -> bool:
     """Whether a finished-task notification fires for a session started from
     an INTERACTIVE TERMINAL (`claude` typed by hand) rather than only one
@@ -588,7 +600,10 @@ def _prefs_response() -> dict:
         # A task on the Tasks page opens in a side panel beside the list —
         # always, since 2026-09-20 (`task_peek_enabled`). Still sent, because
         # the client's flag module reads it.
-        "task_peek": {"enabled": task_peek_enabled()},
+        # …and `project`: the APP PAGE's Tasks tab does the same — always,
+        # since 2026-09-21 (`project_peek_enabled`). Still sent, because the
+        # client's type names it.
+        "task_peek": {"enabled": task_peek_enabled(), "project": project_peek_enabled()},
         # Whether a finished-task notification fires for a session that
         # entered from an interactive terminal (default off, opt-in) — see
         # `notify_terminal_sessions_enabled`'s own doc comment for why this

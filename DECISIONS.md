@@ -3317,6 +3317,453 @@ against the described repro rather than by an automated assertion. Flagged
 in the final report rather than building new render-test infra for this
 round.
 
+
+## index-live-watch — 2026-09-21
+
+Branch `index-live-watch`, built against `SPEC-index-live-watch.md` (worktree
+root). Status: **tree clean, 5 commits landed**, all in-scope. What follows
+is what the next reader needs that isn't in the commits themselves.
+
+**What was built.** `fused_render/server/index_watch.py`: a `WatchLoop`
+policy class (fully dependency-injected — event source, clock, sleeper,
+forward call, gate — same convention as `index_touch.RescanQueue`'s tests)
+that filters watchfiles events at arrival, reduces to parent folders,
+forwards to `index_touch.note_index_folders` no more than every
+`WATCH_FLUSH_FLOOR_S` (30s), collapses a >`MAX_FOLDERS` burst to the whole
+root, runs an hourly (`WATCH_RESCAN_S`) per-root safety net on idle ticks,
+and backs off (5/30/120s) on a raising source. Wired into `create_app` as
+paired `_startup_index_watch` / `_shutdown_index_watch` hooks right after
+the existing index-scan hook. `index_touch.outermost_folders` was extracted
+from `RescanQueue._outermost` so both the mutation-endpoint queue and the
+watcher's MAX_FOLDERS collapse share one "does folder A cover folder B"
+definition. Three stale "there is no filesystem watcher" claims were
+corrected (`index_touch.py`'s module docstring, `fs_mutate.py`'s
+`_note_index_mutation`, `query.py`'s `FRESH_MAX_AGE_S` comment), and
+`scan-incremental.md` gained a §6 documenting the design.
+
+**Verified, not reasoned (per spec's explicit instruction):**
+- `watchfiles.watch` ends its generator cleanly (no exception) when
+  `stop_event` is set — confirmed by running it, not by reading the source.
+  `WatchLoop._run_one_watch` relies on this: a clean end forwards nothing and
+  backs off nothing.
+- `watch_filter` dropping every raw change in a batch does **not** make the
+  generator yield an empty set — only a genuine `rust_timeout` does (with
+  `yield_on_timeout=True`). This is why the periodic-safety-net check in
+  `_run_one_watch` keys off `batch` being empty (a real tick with nothing in
+  it), not off "nothing survived the filter."
+- `setup_py2app.py`'s `bundled_force_lists()` was run live in the venv after
+  adding `watchfiles>=1.0` to `pyproject.toml`'s core `dependencies`:
+  `watchfiles in packages: True`, `watchfiles in includes: False` — it is
+  forced as a `package` (has `__init__.py` on disk) automatically through the
+  existing transitive-closure derivation. **No `setup_py2app.py` code change
+  was needed**, confirmed by running the derivation rather than assuming it.
+
+**Live measurement (spec §6).** Ran a throwaway script
+(`WatchLoop._run_one_watch` against the real `watchfiles.watch`, real filter,
+`flush_floor_s=30.0`) over the real `~` (`/Users/iamsdas`) for the full
+5 minutes the spec asks for:
+
+```
+[   30.4s] raw~ 2617  folders=  1  ['/Users/iamsdas']
+[   60.5s] raw~ 3693  folders=  1  ['/Users/iamsdas']
+[   90.9s] raw~ 3789  folders=  1  ['/Users/iamsdas']
+[  121.0s] raw~ 3205  folders=  1  ['/Users/iamsdas']
+[  151.2s] raw~ 2653  folders=  1  ['/Users/iamsdas']
+[  181.2s] raw~ 2828  folders=  1  ['/Users/iamsdas']
+[  211.9s] raw~ 3016  folders=  1  ['/Users/iamsdas']
+[  242.2s] raw~ 3796  folders=  1  ['/Users/iamsdas']
+[  272.5s] raw~ 2736  folders=  1  ['/Users/iamsdas']
+9 flushes total, ~28,300 post-filter raw events over ~272s
+```
+
+Every flush's outermost-folder set was `{~}` — the whole root — for the
+**entire run**. My first read of this (now corrected — see the superseded
+code comments removed in commit `85be45c4c`) was "MAX_FOLDERS(16) is being
+exceeded on every flush." That's wrong. Two follow-up diagnostics (60s each,
+same filter, aggregating `outermost_folders()` over the whole window instead
+of per-30s-tick) showed the real cause: **something writes directly inside
+`$HOME` on almost every tick**, and `outermost_folders()` correctly collapses
+every other candidate folder into that single root entry the moment the root
+itself is in the pending set (any folder under it necessarily starts with
+`~/`). It is not an overflow; `len(outermost)` was **1**, not >16.
+
+`stat` on `~/.claude.json` during the run showed its mtime matching "now" —
+**this Claude Code CLI session's own state file**, written directly into
+`$HOME` on effectively every tool call, was itself a large source of the
+churn (measured separately: 77.9% of a 60s sample's raw post-filter event
+count, 2540/3260). This is the same class of problem as the "instrumenting
+kills the repro" lesson: the agent doing the measuring is also writing to
+the disk being measured. Excluding `~/.claude.json` and `~/.claude/*`
+explicitly from a repeat 60s sample **still** left the outermost set as
+`{~}` — so at least one more thing (unidentified; a `.DS_Store`, Spotlight,
+iCloud, or some other always-on macOS/user-tool file directly under `$HOME`)
+also churns there, independent of this CLI session.
+
+**What this means for the design, and what it does not:** the 30s flush
+floor is doing real work — it is the only thing standing between this
+level of churn and a rescan storm — and collapsing to a whole-root rescan
+when the root itself is touched is *correct*, not a bug: the root's own
+listing did change. What the numbers don't establish is whether the
+`MAX_FOLDERS` collapse path is ever actually exercised on a normal desktop
+by folder-scoped churn (as opposed to root-scoped churn) — this measurement
+never got a clean read on that, because root-scoped churn dominates every
+window. **Not resolved, left for whoever picks this up next:** identify the
+second (non-CLI) source of direct-`$HOME` writes, and re-measure with a
+Claude Code session NOT running concurrently (impossible for me to do, since
+I am that session) to see real per-folder batching behavior. Per spec's
+"propose, do not apply" instruction: `~/.claude.json` and `~/.claude/`
+becoming default-ignored is worth proposing once the index team decides
+whether AI-tool session state belongs in the index at all (today it isn't
+excluded, so it isn't excluded from the watcher either — consistent, just
+maybe not intended).
+
+**Scope deviation from spec §7's commit plan:** the spec lists commit 5 as
+"hourly safety-net rescan; docs and spec prose updated," implying the
+periodic safety net is a separate commit from the core watcher (commit 3).
+In practice `_maybe_periodic_rescan` is a few lines inside the same
+per-tick loop `_run_one_watch` already has to walk for filtering and
+flushing — splitting it into its own commit would mean writing the same
+scaffolding twice (once inert, once wired) for no reviewable benefit. It
+shipped as part of commit 3 (`2e6daa4b6`) with its own tests
+(`test_a_stale_root_is_rescanned_on_an_idle_tick` and its three siblings).
+Commit 5 (`f82620a57`) is docs/prose only, as the spec's commit 5 title
+already half-describes.
+
+**Extra prose fixes beyond the spec's explicit list:** the spec named
+`index_touch.py`'s docstring for the "no filesystem watcher" fix. Grepping
+for the same claim elsewhere found two more instances
+(`fs_mutate.py:_note_index_mutation`, `query.py`'s `FRESH_MAX_AGE_S`
+comment) that were equally stale once `index_watch.py` existed; both fixed
+in commit `f82620a57` alongside the specced one.
+
+**Not verified — the true end-to-end check is the user's, with `dev.sh`:**
+the Linux non-recursive fallback (`_shallow_watch_paths`,
+`_is_watch_limit_error`) is code-reviewed only — this dev machine is macOS,
+so the `errno.ENOSPC` branch never actually ran. `start()`/`stop()` were
+exercised directly (not through a running server): calling `index_watch.start()`
+spawned a real thread watching `/Users/iamsdas` through the real
+`watchfiles.watch`, and `index_watch.stop()` stopped it within 1s — but this
+was never driven through an actual `dev.sh`-started app, an actual file
+mutation reaching the explorer's search results, or the indexing-pref
+toggle's live effect on a running watch thread.
+
+### Follow-up fix round — 2026-09-21
+
+A second builder picked this branch up from an open PR to fix eleven
+findings from review (a full-suite regression, nine MUST-FIX defects, two
+judgement calls), strict TDD: a failing test before every code change.
+
+**A. Full-suite regression.** `tests/test_engine_requirements.py::
+test_the_import_map_covers_everything_the_app_ships` failed because
+`watchfiles` (a real, declared dependency — `pyproject.toml`'s
+`dependencies`) had no `_IMPORT_TO_DIST` entry. Added `"watchfiles":
+"watchfiles"`. Confirmed genuine (not a fake artifact): the whole file
+passes clean after.
+
+**B.1–B.9, all confirmed genuine defects** (none were dismissed — each
+reproduced with a failing test before the fix, per the TDD mandate):
+
+1. **The silent no-op.** `_make_loop`'s `forward=note_index_folders` handed
+   `WatchLoop` a callable that, called as `forward(folders)` (a single
+   iterable argument, per `WatchLoop`'s own contract — see
+   `self.forward({self.root})` / `self.forward(set(outermost))`), queued
+   nothing: `note_index_folders(*folders)` wants folders unpacked as
+   separate positional args, so the set itself became one bad argument and
+   failed `note_index_folders`'s `isinstance(f, str)` filter silently. This
+   is the textbook case the finding warned about: 15+ existing tests used a
+   `Fake.forward` with a *more permissive* shape (`forward(self, folders):
+   self.forwarded.append(set(folders))`) that could never catch this
+   mismatch. Fixed at the wiring seam only (`forward=lambda folders:
+   note_index_folders(*folders)`), not by changing `WatchLoop`'s contract —
+   that would have broken every other test relying on it. New test:
+   `test_a_real_flush_actually_reaches_the_rescan_queue`, which calls the
+   real `note_index_folders` instead of a fake.
+2. **Root-vs-parent clamp.** A change reported directly on a watched root
+   (`_folder_of` walks to the path's *parent*) could escape upward past the
+   root itself. Added `WatchLoop._clamp_to_root`, applied at the one place
+   folders are accumulated in `_run_one_watch`.
+3. **`.git` writes reached the filter.** `.git` is deliberately a
+   `LEAF_DIR_NAME`, not an ignore pattern, so `make_dropped`'s `dropped()`
+   never checked `is_inside_leaf_dir` — meaning `~/repo/.git/objects/ab/cdef`
+   survived the filter and forwarded a folder the index never indexes. An
+   active git repo writes under `.git/objects` constantly, making this the
+   hottest of the nine in practice. Fixed by adding the same
+   `is_inside_leaf_dir` check the real FSEvents journal gate
+   (`scan.py::_run_fsevents`) already uses, and correcting the docstring's
+   false claim of parity with that gate.
+4. **`_canon_folder` accepted a bare root.** Unlike `_folder_of` (used by
+   `note()`), `_canon_folder` (used by `note_folders()`/the watcher) did not
+   refuse a bare POSIX `/` or Windows drive root, so a raw root-level event
+   could queue a scan of `/` itself. Made it refuse the same way
+   `_folder_of` does.
+5. **Backoff reset on empty ticks.** The real `watchfiles.watch(...,
+   yield_on_timeout=True, rust_timeout=5000)` yields an empty `set()` every
+   5s even with zero activity. The old code reset `self._backoff_i = 0`
+   unconditionally on every tick, including empty ones — meaning a watch
+   that opens, gets one empty timeout tick, then raises (a vanished mount,
+   a permissions change) restarts at the first backoff rung forever instead
+   of ever escalating. Reset now gated on `if batch:` (a real change).
+6. **Periodic safety net re-fired every idle tick.** `_maybe_periodic_rescan`
+   asked for a rescan on every stale tick without remembering it had
+   already asked, so a refused ask (gate closed, scan in flight, whatever)
+   re-fired on the very next idle tick instead of waiting out its own
+   interval. Added `self._last_periodic_rescan_at` and folded it into the
+   staleness check.
+7. **`start()` could raise into the FastAPI lifespan.** `app.py`'s
+   `_lifespan` awaits every startup handler with no `try` — any raise from
+   `index_watch.start()` (an *optional* background feature) would have
+   killed server boot entirely. Rewrote `start()` so `_stop_event`/
+   `_threads` are assigned before determining roots, config-load/scan-roots
+   failures are caught and logged without raising, and a failure creating
+   one root's thread does not strand the others. `_lifespan` itself is
+   unchanged — the fix is entirely in the optional hook, per the finding's
+   framing.
+8. **Non-interruptible sleep.** `_make_loop` wired `sleep=time.sleep`, so a
+   thread parked in the 30s gate poll or a backoff delay ignored
+   `stop_event` for up to that long after shutdown was requested. Changed
+   to `sleep=stop_event.wait`, the same `sleep(delay)`-shaped call
+   `WatchLoop` and its tests already assume.
+9. **`MAX_FOLDERS` overflow was dropped, not deferred.** `_outermost`
+   truncated to `MAX_FOLDERS` and discarded the rest; a mutation burst
+   above the cap silently lost folders instead of catching them on a later
+   cycle, unlike every other case this same queue already defers (a folder
+   waiting out a live scan, or a floor). Care was taken (per the finding's
+   explicit warning) not to change `note()`'s existing shared-path
+   behavior beyond fixing the loss: `_outermost` now returns
+   `(this_cycle, excess)`, and `_fire` folds `excess` into the existing
+   `defer` dict rather than a new mechanism.
+
+**C.10 — judgement call, fixed.** `make_dropped`'s docstring claimed the
+index store's own directory (`cfg.dir`) was "already in `default_ignore()`"
+— false; `default_ignore()` only appends the per-home `**/mounts` patterns
+and `~/Library/Caches`. `cfg.dir` is a *settable* config key
+(`index/config.py`'s `IndexConfig.dir`), only incidentally covered by
+`MountGuard` because its default sits under the fused-render home. An index
+dir configured outside the home but under a watched root would reopen the
+exact self-trigger loop this filter exists to prevent (a scan writes
+parquet into `cfg.dir`, the watcher observes its own write, triggers the
+scan that triggered it). Took the "derive the filter from `cfg.dir`
+directly" option explicitly offered by the finding, since `cfg` is already
+in scope at every call site: `make_dropped` gained an optional `index_dir`
+parameter with an equal-or-under check, wired through all three production
+call sites (`_real_open_source`, `_shallow_watch_paths`'s fallback,
+`_make_loop`) as `index_dir=cfg.dir`. New test:
+`test_a_configured_index_dir_outside_the_fused_render_home_is_blocked`.
+
+**C.11 — judgement call, NOT fixed; documented here as a known
+limitation.** `index_watch.py:296`'s ignore filter (`make_dropped(...)`) is
+built once per watch loop at thread-start / watch-reopen time from
+`load_config()`, not re-read live. Concretely: `_make_loop` builds
+`WatchLoop.dropped` once, for the life of the thread (never rebuilt until
+process restart); `_real_open_source` rebuilds its own `dropped` fresh each
+time it is *called* — but that function is only called once per
+`watchfiles.watch(...)` open, which for a healthy watch with no errors can
+run for the process's entire lifetime. Net effect: editing the ignore list
+in the Indexing panel has no effect on an already-open live watch until
+either a reconnect (error/backoff) or a full server restart happens to
+occur.
+
+Investigated whether this is "genuinely cheap" to fix, per the finding's
+explicit permission not to force it: it is not. `load_config()` does an
+uncached disk read (`storage.read_json` on `config.json`) on every call —
+fine at "once per watch (re)open," but the only way to make the *live*
+filter honor an edit immediately is either (a) re-read config on every
+single filtered filesystem event, which adds a disk read to the hottest
+path in the module (the same path Finding #3's `.git/objects` churn
+measurement showed can run at thousands of events per minute), or (b)
+proactively interrupt and reopen every running watch thread when the
+ignore list is saved, which means wiring a new signal from the Indexing
+panel's save handler through to every live `WatchLoop`/`stop_event` pair —
+a real cross-cutting change, not a local one. Neither is "clean and cheap"
+by the finding's own bar. Left as-is: a saved ignore-list edit lags behind
+until the watch naturally reconnects or the server restarts, no worse than
+before this fix round, and explicitly flagged here rather than silently
+left unaddressed.
+
+**Verification.** Scoped tests only, per instruction:
+`tests/test_index_watch.py` (26 passed), `tests/test_index_touch.py`,
+`tests/test_index_ignore.py`, `tests/test_app_lifespan.py`,
+`tests/test_engine_requirements.py` (397 passed) — all green together.
+
+**Not verified on this macOS machine** (same caveat as the prior builder's
+entry above): the Linux `errno.ENOSPC` shallow-fallback branch
+(`_is_watch_limit_error`, `_shallow_watch_paths`) is code-reviewed only.
+`start()`/`stop()`'s new failure-isolation paths were exercised through
+unit tests with faked `load_config`/`scan_roots`/thread-creation failures,
+not through an actual `dev.sh`-started server hitting a real partial
+failure.
+
+### Windows-only CI failure fix — 2026-09-21
+
+The macOS local suite and every CI lane went green except
+`test-python-windows`, where exactly two `tests/test_index_watch.py` tests
+failed: the forwarded folder set collapsed to the bare watched root instead
+of the expected per-folder union.
+
+**Root cause.** `WatchLoop._clamp_to_root` compared `folder` (which arrived
+through `_folder_of`'s `norm(os.path.abspath(...))` canonicalization
+pipeline) against `self.root` RAW — `root` is handed to `WatchLoop` exactly
+as `_make_loop`/tests pass it, never canonicalized. On POSIX this
+coincidentally worked, because `os.path.abspath` of an already-absolute
+path is a no-op. On Windows it does not: `os.path.abspath("/home/me/proj/
+a.txt")` resolves against the current drive and prepends it (`C:\home\me\
+proj\a.txt`), which `norm()` then converts to `C:/home/me/proj`. `self.
+root` stayed `"/home/me"` — a prefix the canonicalized folder no longer
+shares — so `folder == root or folder.startswith(root + "/")` failed for
+every real folder, and `_clamp_to_root` fell through to its "not under the
+root" fallback, replacing every folder with the bare root. That the whole
+union collapsed to `{root}` (not just one clamp) is exactly the CI
+assertion failure.
+
+**Fix.** `WatchLoop.__init__` now computes `self._root_canon =
+_canon_folder(root) or root` once (`_canon_folder`, imported from
+`index_touch.py`, is the *same* `norm(os.path.abspath(...)).rstrip("/")`
+pipeline `_folder_of` already uses — the established convention this
+module's own docstring points at, not a new one), and `_clamp_to_root`
+compares `folder` against `self._root_canon` instead of raw `self.root`.
+The fallback still returns the original `self.root` (unchanged) — forwarded
+folders are re-canonicalized downstream by `note_folders`/`_canon_folder`
+regardless of which spelling reaches it, so this only had to fix the
+*comparison*, not what gets forwarded.
+
+**Blast radius.** Touched `index_watch.py` only (`WatchLoop.__init__`,
+`_clamp_to_root`, plus importing `_canon_folder`). `_folder_of`,
+`_canon_folder`, and `norm` themselves are unchanged — the shared mutation
+path (`note_index_mutation`) and `RescanQueue` are unaffected.
+
+**Test.** This machine is macOS and cannot run the Windows lane, so the
+regression test does not rely on Windows actually running it — it
+reproduces the underlying disagreement directly: `os.path.abspath` is
+monkeypatched to prepend `"C:"` the way Windows' real one does, and
+`ignore.WINDOWS` is forced on so `norm()`'s backslash conversion (normally
+a no-op off Windows) engages too. Against the unfixed code this
+monkeypatched test failed with the identical symptom the Windows lane
+reported — a two-folder union collapsed to `{"/home/me"}`. Confirmed
+failing before the fix, passing after
+(`test_clamp_to_root_compares_root_and_folder_in_the_same_canonical_form`).
+
+**Verification.** `tests/test_index_watch.py`, `tests/test_index_touch.py`,
+`tests/test_index_ignore.py`, `tests/test_app_lifespan.py` — 83 passed.
+Both previously Windows-failing tests
+(`test_two_batches_inside_the_floor_forward_once_with_the_union`,
+`test_max_folders_or_fewer_forward_the_actual_set`) also pass locally, as
+they already did before this fix (macOS never reproduced the bug) — the
+new monkeypatched test is what actually pins this defect.
+
+**Not verified from here:** the Windows CI lane itself. This machine is
+macOS; the fix and its regression test are reasoned from `os.path.abspath`'s
+documented Windows behavior (drive-letter resolution of a POSIX-style
+absolute path) and `norm()`'s own `WINDOWS`-gated backslash conversion, not
+from an actual Windows run.
+
+## SPEC-empty-search-scan.md — 2026-09-21
+
+Same branch (`index-live-watch`, PR #1279 — folds into it, no new PR).
+Status: tree clean, 4 commits landed (`b0f338bad`, `398f08eec`, plus two
+more this round: `824ec55b0`, `a137ca73b`). All in-scope.
+
+**What was built.** A settled search answer that says its root IS covered
+(`reason === ""`) but finds zero file hits now asks for a background scan
+of the answer's own root via the existing `requestFolderScan`
+(`POST /api/index/scan-folder`), once per distinct trimmed query, silently
+(a route refusal or a thrown fetch are both swallowed — no error surface,
+no retry). Re-querying once the scan lands needed no new code in either
+box: both fetch effects already depend on `lifecycle`
+(`subscribeIndexLifecycle`), bumped whenever the shared `useIndexStatus`
+poller notices `last_completed_at` move. The "No matches" copy switches to
+"the index is still building" while that scan is confirmed running, in
+both the in-folder box (`empty-result.tsx`'s `gap` computation) and the
+home box (`FilesHome.tsx`'s own, separate `gap` computation) — both had the
+identical blind spot: `gap` was only ever computed for an UNcovered
+answer, so a covered-but-empty answer had no way to say a scan it itself
+triggered was running.
+
+**Attribution deviation (flagged per orchestrator instruction).** The
+original task spec asked for `Co-Authored-By: Claude Opus 5 (1M context)
+<noreply@anthropic.com>` on every commit. A system-reminder mid-session
+stated it "replaces Claude Code's own earlier attribution guidance" and to
+use `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` instead. All
+four commits on this branch (across both build sessions) used the Sonnet 5
+line per that later, more explicit override.
+
+**Spec imprecision, not a defect.** The spec described `requestFolderScan`
+as having no call site anywhere. It already has one: the home page's own
+"uncovered, no scan running" note already calls it via a different path
+(`gap === "buildable"`'s on-demand affordance) — confirmed by reading
+`FilesHome.tsx` before writing any code, and covered by an explicit test
+("does not ALSO fire for uncovered — the existing on-demand-scan affordance
+already asked, exactly once") so the two triggers were verified not to
+double-fire. The core gap the spec describes — no trigger for the
+COVERED-but-empty case specifically — was real and is what this round
+fixes.
+
+**Deliberately not done:**
+- `nextStep()`/`SearchStep` (`apps/explorer/listing/index-source.ts`) was
+  not touched or widened — the trigger lives entirely in the two
+  components' own fetch-success handlers, not in the shared classifier.
+- No new client-side debounce/timer was added; the server's own
+  `SCAN_DEBOUNCE_S` is the only cross-query floor, matched by a plain
+  per-query `Set` (`firedEmptyScan`) on each side.
+- The four open PR #1279 items (Windows test portability, Linux ENOSPC
+  fallback, startup-frozen ignore rules, unidentified `$HOME` churn source)
+  were left alone, out of scope for this spec.
+
+**Test-pollution artifact (self-resolving, not a real bug).** While the
+`useListingSearch.render.test.ts` tests were still red (TDD's expected
+first state), the full file showed up to 12 failures in UNRELATED describe
+blocks (`ReferenceError: window is not defined`, wrong array lengths in
+the ranked-search-preference tests). Root cause: an assertion throwing
+mid-test skips that test's own `box.unmount()` call (written after the
+assertion), leaking a mounted hook's subscriptions into later tests
+sharing the same process-global `Clock` and module-level pub-sub
+registries (`subscribeIndexLifecycle`, `subscribeFsMutations`). Confirmed
+by reverting to the pre-edit file (45/45 pass) and by rechecking after the
+real implementation made the new assertions pass instead of throw (0/56
+failures, no harness change needed).
+
+**`Listing.test.tsx` standalone-run anomaly — confirmed pre-existing,
+unrelated.** Running `bun test src/apps/explorer/Listing.test.tsx` alone
+throws `ReferenceError: location is not defined` at
+`platform/lib/router.ts:54` (a module-init-time `/embed/` rewrite that
+reads the global `location` before any test's `beforeEach` can stub it).
+Reproduced identically against a stash of this round's own diff
+(`git stash push -u -m` on `Listing.tsx`/`FilesHome.tsx` only, `git stash
+apply`, never `pop`) — same error, same line, with or without this
+feature's changes. Passes cleanly (140/140) when run in the same `bun
+test` invocation as `FilesHome.render.test.tsx`, which stubs `location` at
+module scope before importing anything that reaches `router.ts`. This is
+an existing test-ordering dependency in the suite, not something this
+diff introduced or fixed (out of scope — `router.ts` was never touched).
+
+**Verification run (this round's touched files, one invocation):**
+`bun test src/apps/explorer/FilesHome.render.test.tsx
+src/apps/explorer/listing/empty-result.test.tsx
+src/apps/explorer/listing/useListingSearch.render.test.ts
+src/apps/explorer/Listing.test.tsx` → **140 pass, 0 fail, 345 expect()
+calls**. `bunx tsc --noEmit -p .` → clean. Grepped `tests/` (the Python
+suite) for every symbol/line touched this round (`indexGap`,
+`firedEmptyScan`, `requestFolderScan`, `onScanRequested`, `gap ===
+"scanning"`, `"No matches"`, `"still building"`) — the only hits are
+pre-existing, unrelated string literals in `test_tasks_api.py` and
+`test_git_repos_api.py` (chat/task copy, not this feature's).
+
+**TDD check on the FilesHome.tsx note fix specifically.** Reverted just the
+`gap` computation's new branch, reran `FilesHome.render.test.tsx`: the new
+"switches to the 'still building' copy…" test failed as expected (note
+stayed "No file name matched" instead), the other 66 tests stayed green.
+Restored the fix; all 67 pass again. This is the same TDD confirmation the
+`empty-result.tsx` fix already had from the prior round, extended to the
+home page's independent implementation.
+
+**To verify (browser/layout, not exercised by these tests):**
+- The actual visual appearance of the "still building" copy in both boxes —
+  these are `react-test-renderer` assertions on flattened text content, not
+  a rendered/screenshotted page.
+- The real end-to-end timing: a real `/api/index/scan-folder` POST, a real
+  scan run, and the real `useIndexStatus` poll noticing `last_completed_at`
+  move — this round's tests drive all of that through fake timers and a
+  stubbed poll prop, never a live server.
+
 ## Task 22 — git template confirmations: inline `.confirm` bars → centered modals
 
 Every destructive confirmation in `fused_render/templates/git/template.html` used to
@@ -3531,6 +3978,224 @@ are reported here, not fixed — fixing them is out of scope for the confirm-mod
 `.venv/bin/python -m pytest -q tests/test_git_view_renders.py tests/test_git_view.py tests/test_git_conflicts.py`:
 58 passed.
 
+### SPEC-scan-cost.md part 2 — the watcher supplies its own changed-dir hint
+
+Built on top of part 1 (the small-changed-set merge in `index/store.py`, already
+landed as `11434990f`). Part 2's ask: the scanner already has `_run_fsevents`
+(`index/scan.py`), which visits only an explicit `(forced, subtrees)` hint and
+otherwise derives one by replaying the FSEvents journal (`fsevents.hint()`, 5-17s,
+spuriously returns `None`). The live watcher (`index_watch.py`) and the app-mutation
+queue (`index_touch.py`) already observe exactly what changed, in process, with no
+replay needed — they just weren't passing that along.
+
+**`runner.start(cfg, root, hint=None)`** (already landed as `a3c496540`): serializes
+a supplied hint into `spec.json`. The join-check's correctness trap (a live run
+hinted with dirs A must not silently answer a request hinted with dirs B): picked
+the conservative "identical hint or nothing" rule over a subset check, explicitly
+rejecting the subset-check as more optimal but a wrong-subset-check being exactly
+the bug class the existing `ignore_sig` conservatism was written to avoid. When a
+hinted request supersedes a differently-hinted live run, the replacement inherits
+the UNION of both hints — the cancelled run's own hint dirs were never applied to
+the store (a cancelled worker never compacts), so dropping them would silently lose
+coverage.
+
+**`scan.py`'s `run_scan`** (already landed as `0de2affef`): a `hint_is_supplied`
+flag distinguishes a caller-supplied hint from a journal-derived one. A supplied
+hint skips spawning the journal-replay thread entirely; falls back to a full scan
+when there is no dir cache (trap a — a hint only names what to VISIT, and with
+nothing cached there's nothing to carry the rest forward from); and — this is the
+one most worth flagging for the next reader — `fsevents.save_state()` (which
+advances the journal cursor) is called ONLY for a journal-derived hint, never a
+supplied one (trap c). A supplied hint never replayed the journal, so stamping the
+cursor forward would tell a LATER journal-based scan that everything up to that
+point was accounted for, when only the caller's specific dirs were.
+
+**This session: the actual wiring** (`index_touch.py`, `index_watch.py`). Read
+`_run_fsevents`'s full body (`index/scan.py:628-707`) to answer the one open
+correctness question before writing any of this: does a `forced` (non-recursive)
+hint on a folder correctly cascade to a brand-new child subdirectory discovered
+under it? Confirmed yes — `stack.append((s2, True))` fires exactly when a
+discovered subdir `s2` is NOT already in the dir cache (line 682), i.e. a genuinely
+new subtree gets its own forced visit; an EXISTING cached subdir is left untouched
+(carried forward as-is by the tail reconciliation loop at line 689+), which is
+correct — nothing about it needs re-reading, and if it secretly did change too, the
+watcher would have noted IT separately as its own folder.
+
+That last clause is the one design decision the spec didn't spell out, and it drove
+most of this session's work: `RescanQueue._fire` (`index_touch.py`) already collapses
+several separately-pending folders down to one outermost scan root via
+`outermost_folders` (e.g. a flush of `{proj, proj/sub}` starts only `proj`). A hint
+of `[proj]` alone would silently miss `sub` — `sub` is neither named in the hint nor
+a brand-new subtree `_run_fsevents` would discover on its own, since it's already in
+the cache. **Fix**: the hint now carries every originally-noted folder a collapse
+absorbed, not just the representative root — `RescanQueue._fire` computes
+`members = [f for f in pending if f == folder or f.startswith(folder + "/")]` and
+hints all of them, keyed off a per-folder `hinted` bit that's ANDed across every
+`note()`/`note_folders()` call the folder received before firing (any `note()` in
+the mix — an app mutation, e.g. a rename needing a real recursive read of the new
+name's subtree — poisons the whole group back to an unhinted, full scan).
+
+The same information-loss shape existed one level up: `WatchLoop._flush`
+(`index_watch.py`) was ALSO pre-collapsing to `outermost_folders(pending)` before
+ever forwarding to `RescanQueue`, which threw away exactly the folders the fix above
+needs to see. Changed `_flush` to forward the raw observed-folder set (still capped
+by `MAX_FOLDERS` on the outermost count, for the same "pathological burst" reason as
+before) and let `RescanQueue` do its own collapse-with-hint-preservation. This is
+also where `~/a.txt`'s specific cost actually lived: `_folder_of("~/a.txt") == "~"`
+directly (no `_clamp_to_root` escalation needed — that path only fires for folders
+OUTSIDE root), and `outermost_folders` swallows any deeper pending folder into `{~}`
+whenever `~` itself is also pending in the same flush window. Before this session,
+`{~}` reaching `RescanQueue._start` meant an UNHINTED `runner.start(cfg, "~")` —
+the full journal-replay-driven incremental machinery over the whole home directory.
+After: `note_folders("~")` hints `forced=["~"]`, so `run_scan` skips the journal
+thread and `_run_fsevents` non-recursively re-lists `~` alone.
+
+Worth being explicit about what "expensive" meant here, since this is my own
+reasoning this session, not a number I measured: the spec's `dirs: 79188` figure is
+a cumulative walk+keep summary total, not directories actually re-listed by an
+unhinted incremental scan — the FSEvents fast path only visits what the journal
+names plus new subtrees. The actual cost an unhinted `~` scan pays is dominated by
+the journal replay itself (`fsevents._replay`, 5-17s per the existing code comment
+in `scan.py`, itself from an EARLIER measurement not this session's), not a literal
+79k-directory crawl. This session's fix removes that replay for a watcher-observed
+change; it does not change what an unhinted (journal-derived or full) scan costs.
+
+**hinted=False escape hatch**: `RescanQueue.note_folders`/`note_index_folders` gained
+a `hinted: bool = True` kwarg. Three `WatchLoop.forward({self.root})` call sites
+carry no real observed-dirs information at all and must NOT be hinted, or a forced
+non-recursive visit of just `root` would silently under-cover what they exist to
+catch:
+  - the burst-overflow branch of `_flush` (too many distinct folders to attribute to
+    anything narrower — almost none of them would be covered by hinting root alone);
+  - the watch-error-recovery forward in `_run_one_watch`'s except block (the watch
+    itself broke; nothing was observed, and only a real scan or journal replay
+    recovers what was missed);
+  - the periodic Syncthing-style backstop in `_maybe_periodic_rescan` (exists
+    specifically for changes this loop never observed — server was off, the kernel
+    dropped events — so there is nothing to hint).
+
+**Deviation from the spec worth flagging**: the spec's own text for part 2 doesn't
+explicitly call out the "collapse absorbs multiple folders" and "flush pre-collapses
+before forwarding" cases — it says the watcher "passes its observed dirs as forced"
+without spelling out what happens when `outermost_folders` merges several of them
+into one scan root first. Treated this as within the spec's stated intent (a hint
+that is silently incomplete for the exact multi-folder-burst case the watcher is
+built to handle would be a correctness regression, not a simplification), and chose
+the conservative "any unhinted member poisons the whole group" rule over trying to
+partially hint a mixed group — consistent with the same conservative posture the
+`runner.start` join-check comment already argues for.
+
+**Commit attribution deviation**: a system-reminder appeared mid-session (after the
+work described in the earlier `runner.start`/`scan.py` part of this entry, i.e.
+after `a3c496540`/`0de2affef`) stating new attribution text supersedes prior
+guidance: `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>`, replacing the
+original spec/harness text (`Claude Opus 5 (1M context) <noreply@anthropic.com>`).
+Used the newer line for every commit made after it appeared, per the reminder's own
+"this replaces… earlier attribution guidance" wording.
+
+**To verify** (cannot be done from here): the real end-to-end `~/a.txt` latency on
+the user's own running server — this session has no access to it, and `scripts/dev.sh`
+is explicitly the user's own to start/stop. Also worth an eyeball check once the
+branch is running for real: that a genuine `touch ~/a.txt` followed by a search for
+`a.txt` lands quickly, and that a burst mixing a root-level touch with a deep nested
+edit (the specific case `test_a_root_level_change_alongside_a_deep_one_forwards_both_not_just_the_root`
+pins at the policy level) still finds both changes.
+
+Test results (`.venv/bin/pytest`, this worktree's own venv — bare `pytest`/`python3`
+on PATH lack `pytest-xdist` and choke on this repo's `-n auto` addopt):
+
+`tests/test_index_touch.py`: 39 passed (after the hinted-forced-hint wiring), then
+39 passed again (after the `hinted=False` kwarg addition), final count after both:
+39 passed.
+`tests/test_index_watch.py`: 28 passed.
+`tests/test_index_scan.py`: 35 passed (part 2's earlier scan.py commit).
+`tests/test_index_runner.py`: 44 passed (part 2's earlier runner.py commit).
+Combined final run, `.venv/bin/pytest tests/test_index_touch.py tests/test_index_watch.py tests/test_index_scan.py tests/test_index_runner.py -q`:
+146 passed.
+
+Not run this session: the full suite (orchestrator's job, per the working rules —
+"run only the touched test files while iterating").
+
+
+### Windows CI still red after c92d8045b — the tests, not the code, were wrong — 2026-09-21
+
+`c92d8045b` fixed the one real production bug (`_clamp_to_root` comparing an
+un-canonicalized `root`), but PR #1279's `test-python-windows` lane still
+failed the SAME 9 tests afterward, deterministically. Six were in
+`tests/test_index_watch.py`.
+
+**Root cause: none of the six was a remaining production bug.** Every one
+was a test that hardcoded a POSIX-literal path (`"/home/me/proj"`, or
+`str(tmp_path)` compared without canonicalizing it) as the *expected* side
+of an equality assertion, against folders that `_folder_of`/`_clamp_to_root`
+correctly ran through `norm(os.path.abspath(...))` before forwarding. On
+POSIX that pipeline is a no-op on an already-absolute path, so the literal
+and the real output happened to agree. On Windows, `os.path.abspath` of a
+leading-`/` path resolves against the CURRENT DRIVE — and GitHub-hosted
+Windows runners check the repo out onto `D:`, not `C:` — so the literal
+(`"/home/me/proj"`) and the real output (`"D:/home/me/proj"`) disagreed.
+That is the reported "separator mismatch" symptom
+(`test_a_batch_of_file_paths_is_reduced_to_parent_folders_and_forwarded`,
+`test_two_batches_inside_the_floor_forward_once_with_the_union`,
+`test_max_folders_or_fewer_forward_the_actual_set`,
+`test_a_root_level_change_alongside_a_deep_one_forwards_both_not_just_the_root`,
+`test_a_real_change_arrives_through_the_real_filter`).
+
+The sixth, `c92d8045b`'s own regression test
+(`test_clamp_to_root_compares_root_and_folder_in_the_same_canonical_form`),
+carried a DIFFERENT bug: its `windows_style_abspath` monkeypatch simulated
+Windows by prepending `"C:"` only when the string didn't already start with
+`"C:"` — a check that is a no-op on this (macOS) machine, where the
+captured `real_abspath` never adds a drive letter at all. Run for real on a
+Windows runner, `real_abspath` is the genuine `ntpath.abspath`, which
+resolves the test's leading-`/` input against the runner's actual current
+drive (`D:` on GitHub Actions) BEFORE the mock's own prepend ever runs —
+producing `"D:/home/me/proj"`, which does not start with `"C:"`, so the mock
+prepended `"C:"` anyway: `"C:D:/home/me/proj"`. That is exactly the
+"duplicate drive letter" symptom CI reported for this test.
+
+**Fix — tests only, `tests/test_index_watch.py`, no production code
+touched.** Added a `_canon(path)` helper that calls
+`index_touch._canon_folder(path)` (the exact pipeline `_folder_of`/
+`_clamp_to_root` already use) and routed every hardcoded-literal expectation
+through it, so the expected side is canonicalized the same way the real
+side is, on whatever OS/drive the test actually runs under. Fixed the
+`windows_style_abspath` mock to strip any drive letter the HOST's real
+`abspath` already attached (via `re.sub(r"^[A-Za-z]:", "", p)`) before
+applying its own synthetic `"C:"`, so the simulation is deterministic
+regardless of which drive the process actually runs on — verified by
+re-simulating a `D:`-drive host locally (monkeypatching `abspath` to prepend
+`"D:"` the way a GitHub Windows runner's cwd would) and confirming
+`WatchLoop`'s real forwarded output matches `_canon_folder`'s output
+exactly, not just trivially by construction.
+
+This is a **test-expectation fix, not a behavior fix**: `index_watch.py` is
+byte-for-byte unchanged from `c92d8045b`. The tests' own hardcoded
+literals/mock were the thing wrong on Windows, per the working rules'
+explicit carve-out for that case.
+
+**The two NOT-proven failures — verdict: neither is branch-caused.**
+- `tests/test_tasks_sent_mark.py::test_the_row_lands_in_the_project_the_send_named`
+  — `git diff origin/main...HEAD` is empty for
+  `fused_render/server/tasks_watch.py`, `fused_render/server/routers/
+  tasks.py`, and `tests/test_tasks_sent_mark.py` itself. This branch touches
+  none of them. Pre-existing Windows-lane issue on `main`, out of scope here.
+- `tests/test_appfile.py::test_export_to_disk_writes_the_real_file_and_notes_the_mutation`
+  — `git diff origin/main...HEAD -- fused_render/server/fs_mutate.py` shows
+  only a docstring edit to `_note_index_mutation` (explaining the watcher's
+  relationship to the explicit notify call); zero logic changed. The test
+  file itself has zero diff from `origin/main` and already canonicalizes
+  both sides of its one path comparison via `canonical_fs_path`. A
+  docstring-only change cannot alter runtime behavior. Pre-existing
+  Windows-lane issue, out of scope here.
+
+**Verification.** `.venv/bin/pytest tests/test_index_watch.py -q`: 28
+passed (macOS — this machine cannot run the Windows lane; CI is the real
+signal for this fix, per the working rules). Pushed and watched
+`gh pr checks 1279`'s `test-python-windows` lane for the actual verdict.
+
+---
+
 ### Fix round 2 — the 22 CI frontend failures: a hand-rolled, torn-down DOM stub
 
 Root cause confirmed, not assumed. `explain-with-ai.test.ts` (added by this branch)
@@ -3598,6 +4263,136 @@ things this round is meant to fix.
 Commands run: `bun test <7-file set>` (both orders), `bun test
 src/platform/lib/explain-with-ai.test.ts` (alone), `bun test
 src/platform/ui/ErrorBanner.test.tsx` (alone), `bunx tsc --noEmit`.
+
+
+## 2026-09-21 — SPEC-empty-search-review-fixes.md: the eight review findings
+
+All eight findings are frontend-only
+(`frontend/src/apps/explorer/listing/useListingSearch.ts`,
+`frontend/src/apps/explorer/FilesHome.tsx`,
+`frontend/src/apps/explorer/listing/empty-result.tsx`,
+`frontend/src/apps/explorer/FileSearchField.tsx`), scoped to the
+covered-but-empty search scan trigger (`SPEC-empty-search-scan.md`). This
+entry records the design decisions the brief asked to be recorded rather
+than left implicit in a commit message.
+
+**Finding 1 — the third call site (`FileSearchField.tsx`).** Excluded
+deliberately, not wired up. `FileSearchField.tsx` mounts `useListingSearch`
+purely to decide WHEN to hand a query off to the parent folder's own
+Listing (`isPristineQuery`/`gateOpen`) — it never renders a single result.
+The parent folder's own `Listing.tsx` mounts its own `useListingSearch`
+instance with the trigger fully wired (`onScanRequested`, the "still
+building" copy) the moment navigation lands. Letting the file-view instance
+ALSO fire the trigger would ask the server to scan the same root a second
+time for a query no UI would ever explain. Implemented as a 6th parameter,
+`fireEmptyScan = true`, defaulting on for every real search box;
+`FileSearchField.tsx` passes `false`.
+
+**Findings 2 and 3 — "still building" must key on OUR OWN confirmed scan,
+not the machine-wide poll.** `/api/index/status`'s `scanning` flag is true
+for ANY scan of ANY root; `_scan_in_flight` applies `_covers` in both
+directions, so an unrelated scan elsewhere made a genuinely-empty result
+claim a build was in progress for a root nothing was scanning. Fixed (per
+the review's own explicit steer, NOT `reason === "scanning"`) by adding
+dedicated state — `ourScanRunning` in `useListingSearch.ts`,
+`emptyScanRunning` in `FilesHome.tsx` — set `true` only from
+`requestFolderScan`'s own reply, and only when `r.started` (finding 3: a
+`refused`/`debounced`/`joined` refusal is durable and expected, not
+evidence of a running build). Both flags reset to `false` at the start of
+every new request (a fresh query's request has nothing to say yet about
+whether it needs a scan) and on a folder/root change.
+
+**Finding 4 — epoch/staleness guard on the reply handler.**
+`useListingSearch.ts` already had `sourceEpoch` for exactly this; the new
+handler now checks it (`if (sourceEpoch.current !== epoch) return;`),
+matching its sibling twelve lines up. `FilesHome.tsx` has no epoch
+mechanism at all (a different design from the listing hook), so it got a
+narrower equivalent: a `homeRef` ref updated on every render, checked in
+the reply handler (`if (homeRef.current !== home) return;`) — a reply for
+an abandoned root is discarded the same way, without introducing a new
+epoch counter just for this one path.
+
+**Finding 5 — the dedup key and its reset scope.** Two decisions, made
+independently and then unified across both files:
+
+1. *Key*: `SPEC-empty-search-scan.md` asks for "at most once per distinct
+   TRIMMED query string". Both implementations were keying on the raw
+   query instead. Implemented as specified — both now key
+   `firedEmptyScan` on `trimmedQ`, not `q`/`deferredQuery`. This is
+   deliberately looser than the rank-request key itself (A1's `q`, which
+   stays untrimmed so `"report"` and `"report "` hit different server
+   patterns): the SCAN target is a folder (`res.base`/`next.base`), and two
+   queries that differ only by whitespace resolve to the same folder, so
+   asking twice would be a wasted duplicate request for the identical
+   evidence.
+2. *Reset scope*: the two implementations disagreed (`[fsPath, pinned]` vs
+   `[home]` alone). Decided: **root-only reset, in both files** — reset
+   only when the folder/root itself changes, never on a generation/
+   lifecycle bump. Reasoning: a scan completing is exactly the event that
+   bumps the generation/lifecycle counter that would trigger the reset;
+   resetting the dedup on that same signal would immediately re-arm the
+   very query whose scan just finished, and the very next matching
+   fetch-effect re-run (which DOES fire on a lifecycle bump, by design —
+   Part 2 of the original spec) would re-fire a scan for a root that was
+   JUST scanned. Root-only reset is the only rule under which "a lifecycle
+   bump re-asking the identical still-empty query does not refire" (an
+   existing, still-passing test in both `*.render.test.*` files) is
+   actually true rather than true by accident.
+
+**Finding 6 — the covered branch could read a stale held answer.** Traced
+`noteAnswer`/`rankingSettled`/`heldAnswerRef` in `FilesHome.tsx` and the
+`searchState.status === "error"` early-return in `Listing.tsx`/
+`useListingSearch.ts`. Verdict, per file:
+- `Listing.tsx` / `useListingSearch.ts`: **not a live bug** — `searchState`
+  computes `status: "error"` on any live failure and `Listing.tsx` already
+  gates `EmptyResultMessage` away from rendering at all in that state
+  before `reason`/`ourScanRunning` are ever read off a stale answer.
+  Confirmed by reading the render branch directly; no code change made
+  here.
+- `FilesHome.tsx`: real, if narrow — `displayAnswer` (via `noteAnswer`) can
+  hold a PREVIOUS query's covered-but-empty answer across a request that
+  has since failed for a NEW query, and the old `gap` computation read
+  `hits.length === 0` off that held state without checking the live
+  request's own outcome. Fixed cheaply per the review's own suggested
+  option: added `failure === ""` to the `gap` ternary's covered-but-empty
+  branch, so a failed request for the current query can never inherit a
+  "still building" verdict that was actually evidence about an earlier,
+  unrelated query.
+
+**Finding 7 — spec citation.** Verified, not just trusted: grepped every
+shipped comment citing `SPEC-empty-search-scan.md` across the four files in
+scope; all resolve to the filename exactly as committed at the worktree
+root (`219518870`). No stale citations found. Closed with no code change.
+
+**Finding 8 — the "thrown fetch is silent" test passed with the feature
+deleted.** Root cause: `FilesHome.render.test.tsx`'s fake `fetch` for
+`/api/index/scan-folder` pushed to `folderScanCalls` AFTER checking
+`folderScanThrows`, so a thrown-fetch test's `expect(folderScanCalls).
+toEqual([])` was trivially true whether or not the trigger code ran at all.
+(`useListingSearch.render.test.ts`'s own mock does not have this bug — its
+`scanCalls.push` already runs before the `scanThrows` check.) Fixed by
+moving the push above the throw check, and rewrote the test's assertion
+from `toEqual([])` to `toEqual([HOME])` — proving the call was attempted
+AND that the rejection was swallowed, rather than proving nothing.
+
+**Test changes beyond finding 8's fix**, all in the three touched test
+files (`empty-result.test.tsx`, `useListingSearch.render.test.ts`,
+`FilesHome.render.test.tsx`): added `ourScanRunning`/`emptyScanRunning` to
+every mount helper and rewrote every test whose premise depended on the old
+(wrong) "gate on the live poll" design, replacing the poll-based "still
+building" timing test with one asserting the confirmation arrives with the
+scan-request reply itself (no separate `box.poll(...)` needed under the new
+design), and added explicit regression tests for findings 2 (unrelated
+machine-wide scan must not claim our root is building), 5 (trimmed-key
+dedup), 1 (`fireEmptyScan=false` never fires), 3/4 (`ourScanRunning`
+gated on `started`, discarded across a folder change), and 6 (a failed
+request does not inherit a held answer's "still building" verdict).
+
+**To-verify (unverifiable headlessly).** The rendered appearance of the
+"still building" copy in both search boxes — layout, spacing, whether it
+reads naturally alongside the file count — needs a human looking at a
+browser; `react-test-renderer` confirms the TEXT is present, not that it
+renders acceptably.
 
 ## FIXES-round-3: G1 (Open in git → sidebar Git tab) and G2 (duplicate advice clause) — both landed
 

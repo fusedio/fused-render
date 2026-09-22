@@ -69,6 +69,8 @@ const check = (
   findings: [],
   task: null,
   ondemand: false,
+  check_task: null,
+  verdict_task: null,
   ...extra,
 });
 

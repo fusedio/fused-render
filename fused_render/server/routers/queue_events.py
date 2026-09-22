@@ -116,6 +116,11 @@ def _task_key(run_id: str) -> str:
 def _dispatch(kind: str, task_key: str, run_id: str, code,
               request_id: str = "") -> bool:
     manager = queue_manager.get()
+    # THE HOST KNOWS BOTH NAMES: a forced new chat is marked under its run id
+    # before its session exists; this event is where the two first meet.
+    learn = getattr(manager, "learn_forced", None)
+    if learn is not None:
+        learn(task_key, run_id)
     if kind == "turn_ended":
         manager.turn_ended(task_key, run_id)
     elif kind == "exited":

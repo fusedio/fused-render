@@ -124,8 +124,18 @@ function json(body: unknown): Promise<Response> {
 
 /** The card, on a server that answers everything it asks with the emptiest true
  *  answer there is, recording every write. */
-async function openCard(props: Record<string, unknown>, sent: Sent[]) {
+async function openCard(
+  props: Record<string, unknown>,
+  sent: Sent[],
+  global: { model: string; effort: string } = { model: "fable", effort: "low" },
+) {
   const { default: NewJobModal } = await import("./NewJobModal");
+  // The global pair is a MODULE-LEVEL value and `bun test` shares one
+  // `globalThis` across suites, so the pair one test wrote is still standing
+  // when the next one mounts. Cleared here — and imported dynamically for this
+  // file's own reason: it reaches `platform/lib/api`, whose import chain reads
+  // `location` at module scope.
+  (await import("@platform/lib/claude-defaults")).resetClaudeDefaultsForTests();
   installWindowTimers();
   doc.body = { nodeType: 1, children: [] as unknown[], createNodeMock: node };
   globalThis.fetch = ((url: string, init?: RequestInit) => {
@@ -135,9 +145,15 @@ async function openCard(props: Record<string, unknown>, sent: Sent[]) {
     }
     if (u.startsWith("/api/config")) return json({ home: "/Users/me" });
     if (u === "/api/schedule") return json({ entry: { id: "e1" } });
-    // The global Claude preference the card opens on (2026-09-21): no
-    // "Default" row any more, the pair the run will get is what is shown.
-    if (u === "/api/claude-sessions/defaults") return json({ model: "fable", effort: "low" });
+    // The global Claude preference the card opens on AND writes back to
+    // (2026-09-21). No "Default" row any more — the pair the run will get is
+    // what is shown — and the card's dropdowns are an EDITOR of it, so this
+    // stands in for the file rather than for one read of it: a PUT merges, and
+    // every read after it says what was written.
+    if (u === "/api/claude-sessions/defaults") {
+      if (init?.method === "PUT") Object.assign(global, JSON.parse(String(init.body)));
+      return json({ ...global });
+    }
     return json({ folders: [], entries: [], tasks: [], sessions: [], ok: true, version: 1 });
   }) as unknown as typeof fetch;
   await act(async () => {
@@ -260,4 +276,57 @@ test("an edit opens on the model the task was saved with", async () => {
     },
   }, []);
   expect([label(b, "Model"), label(b, "Thinking")]).toEqual(["Sonnet", "High"]);
+});
+
+// ── THE OTHER HALF: the card WRITES the global pair too ────────────────────
+//
+// One value, two surfaces (Akshil, 2026-09-21, after testing #1281: "I don't
+// see this being followed"). The card's dropdowns and the Explorer composer's
+// pills for a chat with no session are two editors of the same setting —
+// `~/.claude/settings.json`'s `model` / `effortLevel` — so a pick here has to
+// reach the file, and a pick THERE has to reach an open card.
+
+test("picking on a new task card writes the global setting", async () => {
+  const sent: Sent[] = [];
+  const b = await openCard({}, sent);
+  await pick(b, "Model", "Opus");
+  await pick(b, "Thinking", "Max");
+
+  const puts = sent.filter((s) => s.url === "/api/claude-sessions/defaults");
+  // PER FIELD, and one field per write: moving Thinking must not restate the
+  // model, or the two dropdowns become one value with two names.
+  expect(puts.map((p) => p.body)).toEqual([{ model: "opus" }, { effort: "max" }]);
+});
+
+test("a change made on another surface reaches an open card", async () => {
+  const b = await openCard({}, []);
+  expect([label(b, "Model"), label(b, "Thinking")]).toEqual(["Fable", "Low"]);
+
+  // The composer's pill, as far as this card can tell: the same module, the
+  // same announcement. No reload, no reopen.
+  const store = await import("@platform/lib/claude-defaults");
+  await act(async () => {
+    store.applyClaudeDefaultsBroadcast(
+      store.CLAUDE_DEFAULTS_BROADCAST_KEY,
+      JSON.stringify({ model: "haiku", effort: "high" }),
+    );
+  });
+  expect([label(b, "Model"), label(b, "Thinking")]).toEqual(["Haiku", "High"]);
+});
+
+test("editing a stored task never rewrites the global setting", async () => {
+  // A task's own model is a fact about that task — the analogue of a chat that
+  // already has a session id. Changing it must not re-aim every future chat on
+  // the machine.
+  const sent: Sent[] = [];
+  const b = await openCard({
+    editing: {
+      id: "s1", target: "/p", message: "hi", title: "T",
+      due: new Date().toISOString(), state: "pending", immediate: false,
+      model: "sonnet", effort: "high",
+    },
+  }, sent);
+  await pick(b, "Model", "Opus");
+  expect(label(b, "Model")).toBe("Opus");
+  expect(sent.filter((s) => s.url === "/api/claude-sessions/defaults")).toEqual([]);
 });

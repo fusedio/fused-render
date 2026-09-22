@@ -202,8 +202,9 @@ export interface AgentRequests {
   sessions: FileRequest;
   live_run: FileSessionRequest;
   /** `session_id` OPTIONAL, exactly as `live_run` takes it: with one the agent
-   *  answers for THAT conversation (off its own transcript), without one for
-   *  the folder. See `agent._defaults` and `ui/composer-defaults`. */
+   *  answers for THAT conversation (off its own record and transcript), without
+   *  one from the GLOBAL Claude preference — never from the folder. See
+   *  `agent._defaults` and `ui/composer-defaults`. */
   defaults: FileRequest & { session_id?: string };
   history: FileSessionRequest;
   snapshots: SnapshotsRequest;

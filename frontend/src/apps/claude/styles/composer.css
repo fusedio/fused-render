@@ -350,7 +350,8 @@
 
 /* ---- IDLE: ONE LINE (Akshil, 2026-09-16) ----------------------------------
    The chat composer is one line — the box and Send — whenever focus is not in
-   it, and the full card only while the reader is (`ui/Composer.tsx`, `is-idle`).
+   it and the pointer is not over it, and the full card while the reader is in
+   it or hovering it (`ui/Composer.tsx`, `is-idle`).
    Same surface, same border, same 20px radius on both sides: what moves is the
    padding and the tools' shelf, together over 240ms on one ease, and the caret
    never leaves the box.
@@ -517,6 +518,19 @@
   padding-right: 17px;
   background-position: right 5px center;
 }
+/* ONE LINE BEFORE TWO: below `tight` the ladder drops seats instead of
+   wrapping. `slim` hides the context ring and the screenshot group — the two
+   whose facts live elsewhere too (the ring's number in its popover, the
+   camera in the strip above an app) — and `bare` also hides the calendar.
+   Send never goes. `display: none` and not `visibility`, so `readRow` prices
+   the seat at nothing, gap included. */
+.c-composer-row.is-slim .c-ctxwrap,
+.c-composer-row.is-slim .c-anncta {
+  display: none;
+}
+.c-composer-row.is-bare > .c-schedbtn {
+  display: none;
+}
 /* The spacer becomes the LINE BREAK — `width: 100%` and not `flex-basis`,
    which WKWebView ignored outright (T:2755-2769). */
 .c-composer-row.is-stack .c-spacer {
@@ -613,15 +627,17 @@ select.c-pill {
   cursor: not-allowed;
 }
 /* ---- the context meter (the composer's "how full is the window") --------
-   A RING WITH THE NUMBER INSIDE IT, sized to the pills it sits beside (24px,
-   which is what 12px type in a 3px-padded pill measures). One object rather
-   than a ring next to a percentage: two readings of one fact competing for the
-   same 40px is what the second spelling would be, and a ring around the digits
-   survives the row's tightest rungs with nothing left to drop.
+   A RING AND NOTHING INSIDE IT. The BUTTON is 24px — the pills' height, so
+   the row's line stays one line of controls — but the ring drawn in it is
+   16px, the size of the calendar glyph beside it: a circle the full height of
+   a text pill reads as a coin, not an icon (Akshil, 2026-09-21: "the ring
+   still looks big"). The digits used to sit in the middle; the arc's fill is
+   the glance and the tooltip carries the number.
 
-   DIM AT EVERY LEVEL, and that is parity rather than an oversight — the CLI
-   has no colour ramp while auto-compact is on (spec §4). The arc takes
-   `currentColor`, so hover and focus move ring and digits together. */
+   THREE COLOUR STEPS, not a gradient: dim below 75%, yellow (`is-warn`) to 90%,
+   red (`is-high`) past it. The arc takes `currentColor`, so hover and focus
+   still move the ring with the button, and the step colours are set on the
+   button so the same rule reaches both. */
 .c-ctxwrap {
   display: inline-flex;
 }
@@ -630,10 +646,10 @@ select.c-pill {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  /* The pills beside it stand 28px; the ring stands the same, so the row reads
-     as one line of controls rather than a row with a smaller coin in it. */
-  width: 28px;
-  height: 28px;
+  /* The pills beside it measure 24px; the ring stands the same, so the row
+     reads as one line of controls rather than a row with a bigger coin in it. */
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: 1px solid transparent;
   border-radius: 999px;
@@ -659,6 +675,20 @@ select.c-pill {
 .c-ctxmeter:focus-visible {
   border-color: var(--c-border-strong);
 }
+/* The step colours win over hover's `--c-fg`: a red ring going grey under the
+   pointer would be the warning switching off exactly when the reader looks. */
+.c-ctxmeter.is-warn,
+.c-ctxmeter.is-warn:hover,
+.c-ctxmeter.is-warn:focus-visible,
+.c-ctxmeter.is-warn[aria-expanded="true"] {
+  color: var(--c-status-progress);
+}
+.c-ctxmeter.is-high,
+.c-ctxmeter.is-high:hover,
+.c-ctxmeter.is-high:focus-visible,
+.c-ctxmeter.is-high[aria-expanded="true"] {
+  color: var(--c-error);
+}
 .c-ctxmeter-ring {
   position: absolute;
   inset: 0;
@@ -677,20 +707,15 @@ select.c-pill {
   stroke-width: 2;
   stroke-linecap: round;
   /* The fill steps once per API response, not continuously — a short ease
-     reads as the number moving rather than as a new number appearing. */
-  transition: stroke-dasharray 0.25s ease;
+     reads as the ring moving rather than as a new ring appearing. */
+  transition:
+    stroke-dasharray 0.25s ease,
+    stroke 0.12s;
 }
 @media (prefers-reduced-motion: reduce) {
   .c-ctxmeter-arc {
     transition: none;
   }
-}
-.c-ctxmeter-pct {
-  position: relative;
-  font-size: 10.5px;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.02em;
 }
 
 /* THE ONE DIM LINE ABOVE THE BOX (spec §4), and it is one line: no icon, no
