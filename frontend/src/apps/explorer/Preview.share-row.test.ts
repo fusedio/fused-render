@@ -22,6 +22,7 @@ test("flag off: row is absent entirely, not merely disabled", () => {
   const rows = shareRow({
     sharingEnabled: false,
     isDir: false,
+    isAppEntry: false,
     name: "demo.parquet",
     eligibility: { canShare: true, refusal: null },
     onClick: noop,
@@ -33,6 +34,7 @@ test("a directory: row is absent entirely — that's the app sheet's job, not th
   const rows = shareRow({
     sharingEnabled: true,
     isDir: true,
+    isAppEntry: false,
     name: "some-folder",
     eligibility: { canShare: true, refusal: null },
     onClick: noop,
@@ -44,6 +46,7 @@ test("flag on, a file, eligible: one enabled Share… row", () => {
   const rows = shareRow({
     sharingEnabled: true,
     isDir: false,
+    isAppEntry: false,
     name: "demo.parquet",
     eligibility: { canShare: true, refusal: null },
     onClick: noop,
@@ -60,6 +63,7 @@ test("flag on, a file, no viewer for the extension: present but disabled, with t
   const rows = shareRow({
     sharingEnabled: true,
     isDir: false,
+    isAppEntry: false,
     name: "notebook.ipynb",
     eligibility: { canShare: false, refusal: "No Fused viewer for .ipynb yet" },
     onClick: noop,
@@ -76,6 +80,7 @@ test("flag on, a file, indeterminate (no refusal text yet): disabled with a gene
   const rows = shareRow({
     sharingEnabled: true,
     isDir: false,
+    isAppEntry: false,
     name: "demo.parquet",
     eligibility: { canShare: false, refusal: null },
     onClick: noop,
@@ -92,6 +97,7 @@ test("onClick is passed through unchanged", () => {
   const rows = shareRow({
     sharingEnabled: true,
     isDir: false,
+    isAppEntry: false,
     name: "demo.parquet",
     eligibility: { canShare: true, refusal: null },
     onClick: () => {
@@ -102,4 +108,20 @@ test("onClick is passed through unchanged", () => {
   if (row === "separator") throw new Error("expected a MenuItem, not a separator");
   row.onClick?.();
   expect(clicked).toBe(true);
+});
+
+// The app rows above this one already carry a Share… (useAppActionRows), so an
+// entry file that also got this row showed the word twice in one menu — owner,
+// 2026-09-22. The app's Share is the one that survives: it publishes the folder
+// the page runs out of, not the lone .html.
+test("an app's entry file: row is absent — the app rows' Share… is the only one", () => {
+  const rows = shareRow({
+    sharingEnabled: true,
+    isDir: false,
+    isAppEntry: true,
+    name: "index.html",
+    eligibility: { canShare: true, refusal: null },
+    onClick: noop,
+  });
+  expect(rows).toEqual([]);
 });
