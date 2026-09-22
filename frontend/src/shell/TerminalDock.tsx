@@ -21,6 +21,12 @@
 import StatusChip from "@platform/ui/StatusChip";
 import { toggleTerminalDock, useTerminalDockOpen } from "@shell/terminalDockStore";
 
+// The tooltip advertises VS Code's own Ctrl+` binding, not the user's
+// Cmd/Ctrl+Shift+` chord (TerminalDrawer.tsx's own header) — that one is a
+// reliable alias on every platform, while the Cmd version can collide with
+// macOS's own window-cycling shortcut and never reach the page at all.
+const SHORTCUT_HINT = "⌃`";
+
 export function TerminalDockView({
   open,
   onToggle,
@@ -34,7 +40,7 @@ export function TerminalDockView({
         label="Terminal"
         tone={open ? "on" : "idle"}
         open={open}
-        title={open ? "Hide terminal" : "Show terminal"}
+        title={open ? `Hide terminal (${SHORTCUT_HINT})` : `Show terminal (${SHORTCUT_HINT})`}
         ariaLabel={open ? "Terminal, open" : "Terminal"}
         onClick={onToggle}
       />

@@ -212,11 +212,9 @@
   min-height: 0;
 }
 
-/* Task 6: the dead-shell status line, replacing what used to be an inert
-   black box once the child process exits. A flex sibling under `.term-view`
-   (not an overlay on top of it) — the frozen last frame of the dead terminal
-   stays fully visible above this line rather than getting dimmed or hidden
-   under it. */
+/* Was the dead-shell status line (Task 6); a process exit now closes the
+   drawer instead (TerminalDrawer.tsx's own header), so the only remaining
+   user of this layout/tone is the createError banner below (finding 7). */
 .term-drawer-exit {
   flex: 0 0 auto;
   padding: 4px 8px;

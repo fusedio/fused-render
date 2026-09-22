@@ -25,19 +25,32 @@
 // holds it. Only the visible `TerminalView` (and the xterm/session pair it
 // owns) mounts and unmounts with `open`.
 //
-// EXIT/RESTART (Task 6): `TerminalView`'s `onExit` fires once, when the pty's
-// child process dies (server-side `{"exit": code}` frame). Rather than
-// leaving the last frame of a dead shell sitting there inert, this renders a
-// dim status line under it and restarts on Enter — a fresh
-// `createTerminalSession` call, a fresh id, which changes `TerminalView`'s
-// `id` prop and therefore remounts a brand new xterm/session pair (see that
-// component's own effect dependency on `id`).
+// EXIT HIDES THE DRAWER: `TerminalView`'s `onExit` fires once, when the
+// pty's child process dies (server-side `{"exit": code}` frame). An earlier
+// round left the last frame of a dead shell on screen with a dim status line
+// and restarted on Enter; that read as a shell users had to notice and
+// dismiss. Instead, an exit closes the drawer AND clears the cached session
+// id (both the React state and the persisted `sessionId` in localStorage),
+// so the next open — via the chip or the keyboard shortcut below — finds
+// `sessionId === null` and runs the verify-or-create effect fresh, minting a
+// brand new shell rather than trying to reattach to the one that just died.
+// `clearExitedSession` is the localStorage+store half of that, factored out
+// so it is directly testable without mounting `TerminalView` (deliberately
+// untested — see that component's own header).
+//
+// TOGGLE SHORTCUT: bound once, here, because this component stays mounted
+// whether the drawer is open or closed (see above) — a listener registered
+// only while open would never see the chord that's supposed to OPEN it.
+// Both `e.code === "Backquote"` chords route through `isMod()`
+// (platform/lib/platform.ts), the same exclusive Mac-vs-other test every
+// other shortcut in the app uses.
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 
 import TerminalView from "@platform/ui/TerminalView";
 import { createTerminalSession } from "@platform/lib/terminalSession";
 import { getJson } from "@platform/lib/api";
-import { useTerminalDockOpen } from "@shell/terminalDockStore";
+import { isMod } from "@platform/lib/platform";
+import { closeTerminalDock, toggleTerminalDock, useTerminalDockOpen } from "@shell/terminalDockStore";
 
 const STORAGE_KEY = "fused-render:terminal-drawer";
 const MIN_HEIGHT = 120;
@@ -77,6 +90,18 @@ function saveState(state: DrawerState): void {
   }
 }
 
+/** The localStorage+store half of "a process exit hides the drawer": drops
+ * the cached session id (so the next open's verify-or-create effect mints a
+ * fresh shell instead of reattaching to the one that just died) and closes
+ * the drawer. `closeTerminalDock()` is idempotent — safe to call even if the
+ * drawer is somehow already closed by the time this runs — so this needs no
+ * `open` check of its own. Exported so it is directly testable without
+ * mounting `TerminalView` to fire a real `onExit`. */
+export function clearExitedSession(height: number): void {
+  saveState({ height, sessionId: null });
+  closeTerminalDock();
+}
+
 export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   const open = useTerminalDockOpen();
   const [height, setHeight] = useState(() => loadState().height);
@@ -90,10 +115,6 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   // frame to explain why. Starting at `null` guarantees the verify-or-create
   // effect always runs once per drawer open.
   const [sessionId, setSessionId] = useState<string | null>(null);
-  // `undefined` = the current session is alive (or none exists yet);
-  // otherwise the exit code the server reported (`null` for "no code", the
-  // same shape `TerminalView`'s `onExit` already carries).
-  const [exitCode, setExitCode] = useState<number | null | undefined>(undefined);
   // Finding 7: `createTerminalSession` can reject (server down, 501 on
   // Windows, the session cap). Surfaced here instead of an unhandled
   // rejection that would leave the drawer open and permanently empty.
@@ -151,7 +172,6 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
       try {
         const id = await createTerminalSession(cwd ?? undefined);
         if (!cancelled) {
-          setExitCode(undefined); // a fresh session is alive until told otherwise
           setSessionId(id);
           saveState({ height: heightRef.current, sessionId: id });
         }
@@ -170,26 +190,37 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, sessionId, retryTick]);
 
-  // While a session has exited, Enter starts a new one — the only key this
-  // drawer intercepts globally, and only in that state. Also gated on
-  // `open` (finding 4): this component stays mounted while the drawer is
-  // closed (see the module comment), so without that guard a shell that
-  // exited while the drawer was closed left a global `keydown` listener
-  // armed — pressing Enter anywhere in the app (typing in an unrelated
-  // input, submitting an unrelated form) would silently discard the exited
-  // session and mint a brand new one the user never asked for.
+  // `TerminalView`'s exit callback: clears the cached session id (React
+  // state + localStorage, via `clearExitedSession`) and closes the drawer,
+  // so the next open mints a fresh shell instead of trying to reattach to
+  // the one that just died. `TerminalView` is only ever mounted while
+  // `open` is true (see below), so this always runs with a live drawer —
+  // `clearExitedSession` itself stays safe to call regardless.
+  function handleExit(): void {
+    setSessionId(null);
+    clearExitedSession(heightRef.current);
+  }
+
+  // Toggle the drawer: the user's requested chord (Cmd+Shift+` on macOS,
+  // Ctrl+Shift+` elsewhere) plus VS Code's own Ctrl+` binding, kept as a
+  // reliable alias on every platform — the Cmd chord above collides with
+  // macOS's own window-cycling shortcut and may never reach the page at
+  // all. Matches on `e.code` ("Backquote"), not `e.key`, which is "~" once
+  // Shift is held and varies by keyboard layout. Registered once,
+  // unconditionally (no `open` guard) — this is the one listener that has
+  // to fire while the drawer is CLOSED, to open it.
   useEffect(() => {
-    if (!open || exitCode === undefined) return;
     function onKeyDown(e: KeyboardEvent): void {
-      if (e.key !== "Enter") return;
+      if (e.code !== "Backquote" || e.altKey) return;
+      const primaryChord = e.shiftKey && isMod(e);
+      const vsCodeAlias = e.ctrlKey && !e.metaKey && !e.shiftKey;
+      if (!primaryChord && !vsCodeAlias) return;
       e.preventDefault();
-      setExitCode(undefined);
-      setSessionId(null);
-      saveState({ height: heightRef.current, sessionId: null });
+      toggleTerminalDock();
     }
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [open, exitCode]);
+  }, []);
 
   function onHandlePointerDown(e: PointerEvent<HTMLDivElement>): void {
     drag.current = { startY: e.clientY, startHeight: heightRef.current };
@@ -240,12 +271,7 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
         onPointerMove={onHandlePointerMove}
         onPointerUp={onHandlePointerUp}
       />
-      {sessionId !== null && <TerminalView id={sessionId} onExit={setExitCode} />}
-      {exitCode !== undefined && (
-        <div className="term-drawer-exit">
-          {`Process exited (${exitCode ?? "unknown"}) — press Enter to start a new shell`}
-        </div>
-      )}
+      {sessionId !== null && <TerminalView id={sessionId} onExit={handleExit} />}
       {createError !== null && (
         <div className="term-drawer-exit">
           {`Couldn't start a terminal: ${createError} — `}
