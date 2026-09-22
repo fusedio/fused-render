@@ -2269,19 +2269,34 @@
   line-height: 1.4;
 }
 
-/* The options line is secondary: smaller, muted until typed into. */
+/* The options line is secondary: smaller, muted — and visibly a field at
+   rest, not floating text: a faint dotted hairline under it says "type here"
+   the way a fill-in blank does, the hover plate confirms it, focus turns the
+   hairline solid. Placeholder is an example list, so an empty question still
+   shows what goes there. */
 .pg-decide-q-criteria {
   flex: 1 1 12rem;
-  /* Sits after the segmented control, so no left bleed: the hover plate
-     would otherwise eat the gap between them. */
+  /* Sits after the shape words, so no left bleed: the hover plate would
+     otherwise eat the gap between them. */
   margin-left: 0;
+  border-radius: 5px 5px 0 0;
   font-size: 12.5px;
   line-height: 1.4;
   color: var(--fg-muted);
+  box-shadow: inset 0 -1px 0 rgba(var(--tint), 0.16);
+}
+
+.pg-decide-q-criteria::placeholder {
+  font-style: italic;
+}
+
+.pg-decide-q-criteria:hover {
+  box-shadow: inset 0 -1px 0 rgba(var(--tint), 0.3);
 }
 
 .pg-decide-q-criteria:focus-visible {
   color: var(--fg);
+  box-shadow: inset 0 -1px 0 var(--ctl-quiet-border-hover);
 }
 
 /* Remove shows for the question under the pointer or holding focus, and
@@ -2323,39 +2338,48 @@
   margin-left: auto;
 }
 
-/* The answer shape as a segmented control: one soft track, and the lit
-   segment is a filled plate in the card's colour — neutral, not the accent.
-   Plain CSS on the shadcn slots because the toggle's own utilities live in
-   Tailwind's layer, and unlayered rules win without `!`. */
+/* The answer shape: three words in a row, no track, no borders. The lit one
+   is foreground weight 600 on a soft tint pill; the others are muted text
+   that brightens on hover. Every UA button property is reset explicitly —
+   preflight is off, so `border: 2px outset` and `buttonface` show through any
+   rule that forgets one. Focus is a neutral hairline, never a ring. */
 .pg-decide-seg {
   flex: none;
-  padding: 2px;
-  border-radius: 7px;
-  background: rgba(var(--tint), 0.06);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: -6px;
 }
 
-.pg-decide-seg [data-slot="toggle-group-item"] {
-  height: 22px;
-  min-width: 0;
-  padding: 0 9px;
+.pg-decide-seg-item {
+  appearance: none;
+  margin: 0;
+  padding: 2px 6px;
+  border: 0;
   border-radius: 5px;
-  font-size: 11.5px;
-  font-weight: 500;
-  color: var(--fg-muted);
-  background: transparent;
+  outline: none;
   box-shadow: none;
-}
-
-.pg-decide-seg [data-slot="toggle-group-item"]:hover {
-  color: var(--fg);
   background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: color 120ms ease, background-color 120ms ease;
 }
 
-.pg-decide-seg [data-slot="toggle-group-item"][aria-pressed="true"],
-.pg-decide-seg [data-slot="toggle-group-item"][data-pressed] {
+.pg-decide-seg-item:hover {
   color: var(--fg);
-  background: var(--bg-alt);
-  box-shadow: 0 0 0 1px rgba(var(--tint), 0.08);
+}
+
+.pg-decide-seg-item.active {
+  color: var(--fg);
+  font-weight: 600;
+  background: rgba(var(--tint), 0.07);
+}
+
+.pg-decide-seg-item:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--ctl-quiet-border-hover);
 }
 
 /* -- the answer, under its question -- */

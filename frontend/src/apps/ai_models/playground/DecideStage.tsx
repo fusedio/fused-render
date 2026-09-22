@@ -25,9 +25,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { decide, withModelReady, type DecideAnswer, type DecideQuestion } from "./client";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { Card } from "@platform/shadcn/ui/card";
-import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
 import {
-  useConfigOpen, ConfigPanel, CopyButton, RailField, ResultSlot, StageHeader, StarterCards,
+  useConfigOpen, ConfigPanel, CopyButton, RailField, StageHeader, StarterCards,
   type Starter,
 } from "./controls";
 import { StarterIcons } from "./starterIcons";
@@ -530,25 +529,31 @@ export function DecideStage({
                       </button>
                     </div>
                     <div className="pg-decide-q-meta">
-                      <ToggleGroup
+                      {/* Three words, not three buttons: plain <button>s fully
+                          reset (preflight is off, so the UA's 2px outset border
+                          and buttonface fill show on anything less), the lit one
+                          foreground weight 600 on a soft tint pill. The shadcn
+                          ToggleGroup was tried here and its variant chrome kept
+                          leaking through the scope. */}
+                      <div
                         className="pg-decide-seg"
-                        spacing={0}
-                        size="sm"
-                        value={[row.type]}
+                        role="radiogroup"
                         aria-label={`Answer shape for question ${at + 1}`}
-                        onValueChange={(next) => {
-                          // Single-select lets a click on the lit item clear it;
-                          // a question always has a shape, so that click is a no-op.
-                          const picked = (Array.isArray(next) ? next[0] : next) as QType | undefined;
-                          if (picked) updateRow(at, { type: picked });
-                        }}
                       >
                         {TYPES.map((t) => (
-                          <ToggleGroupItem key={t.value} value={t.value} title={t.title}>
+                          <button
+                            key={t.value}
+                            type="button"
+                            role="radio"
+                            aria-checked={row.type === t.value}
+                            className={"pg-decide-seg-item" + (row.type === t.value ? " active" : "")}
+                            title={t.title}
+                            onClick={() => updateRow(at, { type: t.value })}
+                          >
                             {t.label}
-                          </ToggleGroupItem>
+                          </button>
                         ))}
-                      </ToggleGroup>
+                      </div>
                       {row.type !== "noul" && (
                         <input
                           type="text"
@@ -556,8 +561,8 @@ export function DecideStage({
                           value={row.criteria}
                           placeholder={
                             row.type === "score"
-                              ? "Levels, worst to best — e.g. not urgent, soon, critical"
-                              : "Options, comma separated — e.g. billing, technical, sales"
+                              ? "not urgent, soon, critical… (worst to best)"
+                              : "billing, technical, sales…"
                           }
                           aria-label={row.type === "score" ? "Levels, worst to best" : "Options"}
                           onChange={(e) => updateRow(at, { criteria: e.target.value })}
@@ -669,15 +674,9 @@ export function DecideStage({
               Clear
             </button>
           </p>
-        ) : (
-          !busy && (
-            <ResultSlot
-              label="Answers"
-              capability="text-classification"
-              note="Each question gets its answer drawn right under it — the option picked, the level on your scale, or how likely it is true."
-            />
-          )
-        )}
+        ) : null}
+        {/* No idle "Answers" slot: the answers draw under their questions, so
+            a dashed box down here promised a second place they never arrive. */}
       </Card>
     </div>
   );
