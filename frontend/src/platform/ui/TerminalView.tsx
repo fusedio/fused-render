@@ -42,72 +42,104 @@ export default function TerminalView({ id, onExit, onStatus }: TerminalViewProps
     const el = containerRef.current;
     if (!el) return;
 
-    const term = new Terminal({
-      convertEol: true,
-      fontSize: 12,
-      cursorBlink: true,
-      theme: { background: "transparent" },
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(el);
-
-    const dataSub = term.onData((data) => session.write(data));
-    const resizeSub = term.onResize(({ rows, cols }) => session.resize(rows, cols));
-
-    fit.fit();
-
-    const session = new TerminalSession({
-      id,
-      onData: (chunk) => term.write(chunk),
-      onExit: (code) => onExit?.(code),
-      onStatus: (status) => {
-        if (status === "open") {
-          // The server replays the full scrollback on EVERY attach
-          // (fused_render/server/routers/terminal.py), and `connect()` is
-          // also the reconnect path — nothing else clears xterm's buffer
-          // between attempts, so a bare reconnect would paint that replay
-          // on top of whatever is already on screen. `reset()` here is a
-          // no-op the first time (the pane is already empty) and prevents
-          // duplicated output on every subsequent one. Re-send the current
-          // size right after: the pty keeps whatever size it had across a
-          // reattach, but the SOCKET does not, so every open (first
-          // connect and reconnect alike) has to resend it — sending it
-          // eagerly right after `new TerminalSession(...)` (the previous
-          // code) silently dropped the frame, since `TerminalSession.resize`
-          // no-ops until the socket reaches OPEN.
-          term.reset();
-          session.resize(term.rows, term.cols);
-        }
-        onStatus?.(status);
-      },
-    });
-
-    // Coalesced to at most one `fit.fit()` per animation frame: a resize
-    // drag (TerminalDrawer.tsx) can hand this observer a burst of
-    // intermediate layout sizes within a single frame, and each `fit.fit()`
-    // that actually changes rows/cols re-fires `term.onResize` ->
-    // `session.resize()` -> a WebSocket frame -> the server's ioctl ->
-    // SIGWINCH -> a shell prompt redraw. Running that whole chain once per
-    // observed size instead of once per frame is the flicker.
-    let fitRaf: number | null = null;
-    const observer = new ResizeObserver(() => {
-      if (fitRaf !== null) return;
-      fitRaf = requestAnimationFrame(() => {
-        fitRaf = null;
-        fit.fit();
-      });
-    });
-    observer.observe(el);
-
-    return () => {
-      if (fitRaf !== null) cancelAnimationFrame(fitRaf);
-      observer.disconnect();
-      dataSub.dispose();
-      resizeSub.dispose();
-      session.dispose();
-      term.dispose();
+    // Every resource this effect creates registers its own teardown here,
+    // in creation order, as soon as it exists — NOT collected at the bottom
+    // into one literal cleanup closure. `fit.fit()` below can synchronously
+    // fire `term.onResize` (xterm computes a size that differs from its
+    // 80x24 default the moment the container has real dimensions), and
+    // `new TerminalSession(...)` can in principle throw too; either way, if
+    // anything past this point throws, `cleanup()` in the `catch` below
+    // still unwinds whatever was already created instead of leaking a
+    // `Terminal`/subscription/`ResizeObserver` that the effect never got to
+    // return a cleanup for.
+    const teardown: Array<() => void> = [];
+    const cleanup = () => {
+      while (teardown.length > 0) teardown.pop()!();
     };
+
+    try {
+      const term = new Terminal({
+        convertEol: true,
+        fontSize: 12,
+        cursorBlink: true,
+        theme: { background: "transparent" },
+      });
+      teardown.push(() => term.dispose());
+
+      const fit = new FitAddon();
+      term.loadAddon(fit);
+      term.open(el);
+
+      // `session` has to exist before `term.onData`/`term.onResize` are
+      // wired up and before the first `fit.fit()`, in that order: `fit()`
+      // can synchronously invoke the `onResize` handler below (see the
+      // comment on `teardown` above), and that handler dereferences
+      // `session`. Constructing it first means there is no window where a
+      // synchronous callback can observe a not-yet-initialized `session`.
+      const session = new TerminalSession({
+        id,
+        onData: (chunk) => term.write(chunk),
+        onExit: (code) => onExit?.(code),
+        onStatus: (status) => {
+          if (status === "open") {
+            // The server replays the full scrollback on EVERY attach
+            // (fused_render/server/routers/terminal.py), and `connect()` is
+            // also the reconnect path — nothing else clears xterm's buffer
+            // between attempts, so a bare reconnect would paint that replay
+            // on top of whatever is already on screen. `reset()` here is a
+            // no-op the first time (the pane is already empty) and prevents
+            // duplicated output on every subsequent one. Re-send the current
+            // size right after: the pty keeps whatever size it had across a
+            // reattach, but the SOCKET does not, so every open (first
+            // connect and reconnect alike) has to resend it — sending it
+            // eagerly right after `new TerminalSession(...)` (a previous
+            // version of this code) silently dropped the frame, since
+            // `TerminalSession.resize` no-ops until the socket reaches
+            // OPEN. The initial `fit.fit()` below can also fire
+            // `term.onResize` -> `session.resize()` before the socket ever
+            // opens, for the same reason: it no-ops too, so there is no
+            // second eager-resize path to worry about here.
+            term.reset();
+            session.resize(term.rows, term.cols);
+          }
+          onStatus?.(status);
+        },
+      });
+      teardown.push(() => session.dispose());
+
+      const dataSub = term.onData((data) => session.write(data));
+      teardown.push(() => dataSub.dispose());
+      const resizeSub = term.onResize(({ rows, cols }) => session.resize(rows, cols));
+      teardown.push(() => resizeSub.dispose());
+
+      fit.fit();
+
+      // Coalesced to at most one `fit.fit()` per animation frame: a resize
+      // drag (TerminalDrawer.tsx) can hand this observer a burst of
+      // intermediate layout sizes within a single frame, and each `fit.fit()`
+      // that actually changes rows/cols re-fires `term.onResize` ->
+      // `session.resize()` -> a WebSocket frame -> the server's ioctl ->
+      // SIGWINCH -> a shell prompt redraw. Running that whole chain once per
+      // observed size instead of once per frame is the flicker.
+      let fitRaf: number | null = null;
+      const observer = new ResizeObserver(() => {
+        if (fitRaf !== null) return;
+        fitRaf = requestAnimationFrame(() => {
+          fitRaf = null;
+          fit.fit();
+        });
+      });
+      observer.observe(el);
+      teardown.push(() => {
+        if (fitRaf !== null) cancelAnimationFrame(fitRaf);
+        observer.disconnect();
+      });
+    } catch (err) {
+      cleanup();
+      throw err;
+    }
+
+    return cleanup;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- onExit/onStatus
     // are event callbacks, not reactive inputs; re-subscribing to them would
     // tear down and rebuild the whole terminal on every parent render.

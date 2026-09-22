@@ -3104,3 +3104,66 @@ are reported here, not fixed — fixing them is out of scope for the confirm-mod
 
 `.venv/bin/python -m pytest -q tests/test_git_view_renders.py tests/test_git_view.py tests/test_git_conflicts.py`:
 58 passed.
+
+#### TerminalView TDZ crash: `fit.fit()` firing `onResize` before `session` existed
+
+Live check on the running dev server (http://127.0.0.1:2575) after the padding
+round (ce9561da9) found the drawer rendering a black, dead pane on every open,
+reproduced 2/2: `Error: Cannot access 'c' before initialization` inside
+`TerminalView`'s mount effect, thrown from `fit.fit()`. The effect wired
+`term.onResize(({rows,cols}) => session.resize(rows,cols))` and then called
+`fit.fit()` *before* `const session = new TerminalSession(...)` ran. `fit()`
+recomputes rows/cols from the container's real size and fires `term.onResize`
+SYNCHRONOUSLY whenever that differs from xterm's 80x24 default — which it
+always does once the container has a real layout size — so the handler
+dereferenced `session` while it was still in its temporal dead zone. The
+effect threw before `new TerminalSession(...)`, ever ran, so: no session, no
+WebSocket, a dead pane; the effect's cleanup was never returned, leaking the
+`Terminal`, both subscriptions and the `ResizeObserver` on every unmount; and
+`TerminalDrawer` had already called `createTerminalSession` server-side by
+that point, so every open leaked a live pty (`GET /api/terminal` showed 3
+alive after a few opens).
+
+Confirmed via `git log -L` that the ordering is not new in ce9561da9 — it
+dates to 05ccaee8b, the feature's first commit — but was latent until the 8px
+padding changed the container's initial computed size enough that the first
+`fit()` now always disagrees with the 80x24 default and always fires
+`onResize`. Treated as a pre-existing latent bug the padding exposed, not a
+regression of the padding itself; did not touch the padding.
+
+Fix (`frontend/src/platform/ui/TerminalView.tsx`): construct `session` before
+wiring `term.onData`/`term.onResize` and before the first `fit.fit()`, so no
+synchronous callback can run while `session` is uninitialized. Also wrapped
+the whole body in try/catch with a `teardown` stack that each resource
+(`Terminal`, `TerminalSession`, the two subscriptions, the `ResizeObserver`)
+pushes onto as soon as it is created, so a throw anywhere past that point
+unwinds everything already built instead of leaking it, and the effect always
+returns a cleanup function on every reachable path. Left the `onStatus ===
+"open"` handler's eager `session.resize()` and its no-op-until-OPEN reasoning
+untouched, and did not add a second eager-resize path — the reordered
+`fit.fit()` can still fire `onResize` before the socket opens, but
+`TerminalSession.resize()` already no-ops in that case, so there is nothing
+new to guard.
+
+Test decision: did not add an automated test for this. The concrete
+regression-catcher the task description describes — a fake `Terminal`/
+`FitAddon` whose `fit()` synchronously invokes the registered `onResize`
+handler — needs a way to hand `TerminalView` fakes instead of the real
+`@xterm/xterm`/`@xterm/addon-fit` classes it imports directly. `mock.module`
+is process-wide (forbidden per this task's constraints — it would leak into
+every other test file in the same `bun test` process), so the only route left
+is adding test-only constructor injection to `TerminalView`'s props, the same
+shape `TerminalSession` already uses for its `wsFactory`. That is a real
+production-surface change to a component whose own header commits to staying
+a thin, deliberately-untested xterm/DOM wrapper (a headless renderer cannot
+run a real resize/layout pass here) — bigger than this fix's scope, and it
+would sit oddly next to a header still saying "deliberately untested" a few
+lines above a test-only prop that exists only so a test can drive it. The
+ordering fix itself is also now structurally awkward to break by accident:
+`session` is constructed immediately after `term.open()`, before anything
+else in the effect touches it, so a future edit would have to deliberately
+move a callback above that line to reintroduce the TDZ window. Scoped tests
+run: `bun test src/platform/lib/terminalSession.test.ts` (10 pass) and
+`bun test src/shell/TerminalDock.test.tsx` (5 pass) — both exercise code paths
+this change touches (`TerminalSession` construction/dispose order,
+`TerminalDrawer`'s mount of `TerminalView`) and were unaffected.
