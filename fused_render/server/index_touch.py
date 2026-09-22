@@ -117,6 +117,15 @@ def _folder_of(path: str) -> str:
     return "" if parent in ("", "/") or _DRIVE_ROOT.match(parent) else parent
 
 
+def _members_of(folder: str, pending: dict) -> list:
+    """Every originally-noted folder `outermost_folders` collapsed into
+    `folder` when it built the pending set — the root itself plus anything
+    pending under it. `_fire` uses this both to name a forced hint's
+    contents (the `members` comment below) and, on a deferral, to put back
+    what a `pending[folder]`-only defer would silently drop."""
+    return [f for f in pending if f == folder or f.startswith(folder + "/")]
+
+
 def outermost_folders(folders) -> list:
     """The subset of `folders` no other folder in the set already covers,
     sorted. `RescanQueue._outermost` uses it for its own pending set, and the
@@ -265,7 +274,16 @@ class RescanQueue:
             # the next cycle scans them. `waited` is preserved via `pending`
             # (never overwritten below), so a folder that keeps landing in
             # the excess still hits `deadline_s` like any other deferral.
-            defer[folder] = pending[folder]
+            #
+            # `folder` is already a COLLAPSED outermost root (`_outermost`
+            # ran before the MAX_FOLDERS split) — putting back only `folder`
+            # would silently drop any pending member it absorbed (a `sub`
+            # under it), the same incomplete-hint trap the `members` comment
+            # below explains for the fired path. Put back the full absorbed
+            # set, each with its own original timestamp, so the next cycle's
+            # `members` computation still has everything it needs.
+            for member in _members_of(folder, pending):
+                defer[member] = pending[member]
         for folder in outermost:
             if self._blocked(folder):
                 logger.info("index: not rescanning %s (nothing may scan it)",
@@ -283,7 +301,11 @@ class RescanQueue:
                 last = self._last_scan(folder)
                 recent = last is not None and (now - last) < self.floor_s
             if (live or recent) and waited < self.deadline_s:
-                defer[folder] = pending[folder]
+                # Same trap as the excess loop above: `folder` is the
+                # collapsed root, and restoring just it would drop any
+                # member absorbed into it. Put back the full set.
+                for member in _members_of(folder, pending):
+                    defer[member] = pending[member]
                 continue
             # `outermost_folders` (index_touch.py, shared with index_watch.py)
             # can collapse several separately-noted folders into one scan
@@ -298,8 +320,7 @@ class RescanQueue:
             # `note()` in the mix means a real recursive walk is required
             # (a rename's new-name subtree has no "originally noted" dir to
             # hint at), so the whole root falls back to an unhinted scan.
-            members = [f for f in pending
-                      if f == folder or f.startswith(folder + "/")]
+            members = _members_of(folder, pending)
             hint = ((sorted(members), []) if all(hinted.get(m, False)
                                                   for m in members)
                     else None)

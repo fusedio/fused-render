@@ -355,6 +355,69 @@ def test_note_folders_hinted_false_forces_a_normal_scan():
     assert f.start_hints == [None]
 
 
+def test_a_live_deferral_preserves_every_absorbed_member_for_the_hint():
+    """`proj` and `proj/sub` collapse to one scan root, `proj`, and that scan
+    is deferred because a run over `home` is live. The deferral used to keep
+    only the collapsed root pending, silently dropping `sub` — so once the
+    live run ends and the scan finally starts, the hint named `proj` alone
+    and `_run_fsevents` never force-visited `sub`. Both must still be named
+    once the deferred scan actually starts."""
+    f = Fake(live=[canonical_root("/home/me")])
+    q = f.queue()
+    q.note_folders("/home/me/proj", "/home/me/proj/sub")
+    f.fire()
+    assert f.started == []  # deferred: proj is under a live run
+    f.live.clear()
+    f.fire()
+    assert f.started == [canonical_root("/home/me/proj")]
+    assert f.start_hints == [
+        (sorted([canonical_root("/home/me/proj"),
+                canonical_root("/home/me/proj/sub")]), [])]
+
+
+def test_an_excess_deferral_preserves_every_absorbed_member_for_the_hint():
+    """The same loss, via the MAX_FOLDERS excess path instead of a live run:
+    enough distinct roots that the collapsed `{zz, zz/sub}` pair lands past
+    MAX_FOLDERS and is deferred to the next cycle. `sub` must still be named
+    in the hint once that deferred cycle actually starts the scan."""
+    from fused_render.server.index_touch import MAX_FOLDERS
+
+    f = Fake()
+    q = f.queue()
+    many = [f"/home/me/d{i:03d}" for i in range(MAX_FOLDERS)]
+    q.note_folders(*many)
+    q.note_folders("/home/me/zz", "/home/me/zz/sub")
+    f.fire()
+    assert len(f.started) == MAX_FOLDERS  # zz/zz-sub collapse into the excess
+    f.fire()  # the deferred cycle
+    assert f.started[-1] == canonical_root("/home/me/zz")
+    assert f.start_hints[-1] == (
+        sorted([canonical_root("/home/me/zz"),
+               canonical_root("/home/me/zz/sub")]), [])
+
+
+def test_a_deferred_folders_original_wait_is_not_reset_by_repeated_deferral():
+    """The deadline escape hatch is measured from the folder's ORIGINAL
+    first-noted time. A deferral that re-timestamps the folder on every
+    cycle would let a live run (or a wedged one) hold it forever — the exact
+    failure the deadline exists to prevent."""
+    f = Fake(live=[canonical_root("/home/me")])
+    q = f.queue()
+    q.note_folders("/home/me/proj", "/home/me/proj/sub")
+    f.fire()  # deferred: still live
+    f.t += q.deadline_s / 2
+    f.fire()  # still live, still deferred; each cycle's own gap is well under
+              # deadline_s, so this must not itself trip anything
+    assert f.started == []
+    f.t += q.deadline_s / 2 + 1  # total elapsed since the ORIGINAL note now
+                                 # exceeds deadline_s
+    f.fire()
+    assert f.started == [canonical_root("/home/me/proj")]  # deadline wins
+    assert f.start_hints == [
+        (sorted([canonical_root("/home/me/proj"),
+                canonical_root("/home/me/proj/sub")]), [])]
+
+
 def test_disjoint_watcher_folders_each_get_their_own_hint():
     f = Fake()
     q = f.queue()
