@@ -24,18 +24,36 @@
 
    Always rendered, so a page with no peek open is the single-column layout it
    has always been: the slot filling the row, the peek collapsed to nothing. */
+/* `overflow: hidden` is what keeps a panel parked off the right edge (the git
+   peek, `transform: translateX(100%)` while shut) from growing a horizontal
+   page scrollbar — a transformed box's border box still counts toward
+   scrollable overflow even with `visibility: hidden`. Same rule, same reason,
+   as `.tasks-peek-host` (styles/task-peek.css). MEASURED without it: shut,
+   `document.documentElement.scrollWidth` 1807 vs `clientWidth` 1390. */
 .app-page-split {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
   display: flex;
   position: relative;
+  overflow: hidden;
 }
 
+/* Width transitions on the same clock as the peek's own slide
+   (`--peek-dur`/`--peek-ease`, styles/task-peek.css), so the frame's reflow
+   and the peek's slide run off one number instead of the frame snapping
+   while the peek animates — `.tasks-frame`'s own `transition: width` is the
+   precedent this mirrors. A floor on top of that width: `.app-git-peek`'s own
+   `max-width` below leaves this slot no less than CONTENT_MIN_W
+   (apps/explorer/lib/side-width.ts) at rest, but a JS state briefly out of
+   sync with a fast resize is still possible, and a floor here is what stops
+   the app underneath from being crushed to nothing rather than merely
+   narrow. */
 .app-page-frame-slot {
-  min-width: 0;
+  min-width: 320px;
   min-height: 0;
   display: flex;
+  transition: width var(--peek-dur) var(--peek-ease);
 }
 
 .app-page {
@@ -763,6 +781,18 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* Same floor as `.app-page-frame-slot`'s `min-width` (CONTENT_MIN_W,
+     apps/explorer/lib/side-width.ts) applied from the other side: on a narrow
+     window `useAppPageGitPeekWidth`'s `clampSideWidth` leaves `current`
+     UNCHANGED once the container can no longer hold both floors (below
+     ~700px), on the documented assumption that "the CSS min-widths hold
+     there" — which was never true here, since this panel's width is set
+     purely from JS state and the frame slot had no CSS floor of its own
+     either. Below ~380px the un-clamped width could reach the full
+     container, leaving the app behind it 0px wide. This caps the panel at
+     the same number the slot is floored to, so the two together hold the
+     line the JS clamp gives up on. */
+  max-width: calc(100% - 320px);
   background: var(--bg-panel);
   box-shadow:
     0 0 0 1px var(--border),
@@ -809,14 +839,27 @@
   font-weight: 600;
 }
 
+/* A plain `<button>` with no reset of its own: this project ships Tailwind
+   WITHOUT preflight (styles/tailwind.css — its `@layer base` is scoped to
+   `[data-slot]`, deliberately not bare `button`), and `base.css`'s hand-named
+   reset list does not cover this class, so without these declarations the
+   button keeps native UA chrome. MEASURED before this rule: `border: 2px
+   outset`, `background-color: rgba(255,255,255,0.247)`, `cursor: default`,
+   `font-size: 11px`, `padding: 2px 6px 3px`. Mirrors the sibling
+   `.task-side-peek-btn` (styles/task-peek.css). */
 .app-git-peek-close {
   width: var(--peek-icon-w);
   height: var(--peek-icon-w);
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 0;
+  border: 0;
   border-radius: 6px;
+  background: transparent;
   color: var(--fg-muted);
+  font: inherit;
+  cursor: pointer;
 }
 
 .app-git-peek-close:hover {
