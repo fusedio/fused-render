@@ -1137,33 +1137,33 @@ def doctor_prompt_all(entry_html: str, checks: list[dict]) -> str:
     )
 
 
-def check_prompt(entry_html: str, files: list[str], verdict_path: str) -> str:
+def check_prompt(entry_html: str, files: list[str]) -> str:
     """The CHECK task's text for the on-demand `cross-browser` row
     (`app_doctor_ai`): a session that READS the listed view files against the
-    cross-browser skill's trap table and writes ONE file — the verdict, at
-    the path the server chose under `.fused/cache/` — and edits nothing else.
+    cross-browser skill's trap table and answers in the chat — nothing else.
+
+    The task runs in the CLI's PLAN permission mode (`app_doctor_ai.
+    PERMISSION_MODE`), so it CANNOT edit, write or commit whatever the prompt
+    says; the read-only sentence below is a courtesy, the mode is the
+    guarantee. It also means the session cannot write the verdict file — so
+    the reply ends with the verdict as one fenced JSON block, and the server
+    lifts it off the transcript into the cache (`app_doctor_ai.
+    settle_from_task`) once the turn is filed ok.
 
     Starts with `DOCTOR_PROMPT_PREFIX` so the one-live-task-per-app gate
     counts it (`is_doctor_prompt`), then `_CHECK_TASK_MARK` + the id so
     `is_doctor_check_prompt` and `doctor_task_check_id` both read it. The
-    session is told the shape (`app_doctor_ai.VERDICT_SHAPE`) rather than
-    handed a schema flag: a scheduled task is an ordinary session, and the
-    server reads the file back leniently (`_parse_verdict`) — a verdict that
-    does not read is reported as "no verdict", not trusted. The checksum the
-    row is cached on is never in the prompt: the server computed it from the
-    same files before the task existed, and the session has no say in it.
-
-    `.fused/` is gitignored for every app (`app_git._GITIGNORE`), so the
-    verdict never lands in the commit the finished turn is recorded as."""
+    shape (`app_doctor_ai.VERDICT_SHAPE`) is prose, read back leniently
+    (`_parse_verdict`) — a reply with no readable verdict is "no verdict",
+    never trusted. The checksum the row is cached on is never in the
+    prompt: the server computed it before the task existed."""
     from fused_render import app_doctor_ai
 
     entry_name = os.path.basename(entry_html)
     listed = "\n".join(f"- {rel}" for rel in files) or "- (no .html/.css/.js/.svg files found)"
     return (
         f"{DOCTOR_PROMPT_PREFIX}{_CHECK_TASK_MARK}{app_doctor_ai.CHECK_ID}` "
-        f"(`{entry_name}` is its entry page). This is a READ-ONLY check, not a fix: "
-        f"do not edit, create, move or commit any file except the one verdict file "
-        f"named below.\n\n"
+        f"(`{entry_name}` is its entry page). This is a READ-ONLY check, not a fix.\n\n"
         f"Invoke the `fused-render:{app_doctor_ai.RUBRIC_SKILL}` skill and judge ONLY "
         f"by its trap table, for DESKTOP browsers only — Chrome/Edge, Firefox, Safari "
         f"and the macOS WKWebView. Ignore phones and tablets entirely: nothing about "
@@ -1175,11 +1175,11 @@ def check_prompt(entry_html: str, files: list[str], verdict_path: str) -> str:
         f"finding at its first occurrence. Write for the app's author, who may not "
         f"know CSS.\n\n"
         f"Files to read (relative to the app folder; read nothing else):\n{listed}\n\n"
-        f"When you have judged every file, write your verdict as JSON to exactly this "
-        f"path, creating parent folders if needed, overwriting whatever is there:\n"
-        f"`{verdict_path}`\n\nShape:\n{app_doctor_ai.VERDICT_SHAPE}\n\n"
-        f"Then, in the chat, reply with the summary sentence followed by one short "
-        f"line per finding — plain words for the app's author, what a visitor would "
-        f"notice and in which browser, no code, no file paths, no CSS terms. Nothing "
-        f"else, and nothing at all under the findings if there were none. Do not commit."
+        f"Reply in the chat with, in this order: the summary sentence; one short line "
+        f"per finding in plain words for the app's author — what a visitor would notice "
+        f"and in which browser, no code, no file paths, no CSS terms (nothing here when "
+        f"there were none); then, LAST, exactly one fenced ```json block holding the "
+        f"verdict in this shape:\n{app_doctor_ai.VERDICT_SHAPE}\n\n"
+        f"Nothing after the JSON block. You cannot edit or commit in this task, and "
+        f"must not try."
     )

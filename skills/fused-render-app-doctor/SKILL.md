@@ -79,9 +79,9 @@ Real: a hardcoded `/Users/alex/data.csv` (or `/home/…`, `/Volumes/…`) the ap
 
 ## `cross-browser` — renders and works alike in Chrome, Firefox and Safari
 
-**candidate** — a Sonnet read of the app's `.html`/`.css`/`.js`/`.svg` files against `fused-render-cross-browser`'s own SKILL.md, run as an App Doctor **check task** (a session on the entry page, listed under the app's Tasks tab) only when someone pressed the row's Check button. That session writes its verdict to `.fused/cache/app-doctor/cross-browser.verdict.json` beside a server-written run record keyed on a checksum of those files, so the findings you are handed describe the folder as it was when Check was last pressed (the panel refuses to open a fix session on a stale verdict, and a fix and a check never run at once on one app).
+**candidate** — a Sonnet read of the app's `.html`/`.css`/`.js`/`.svg` files against `fused-render-cross-browser`'s own SKILL.md, run as an App Doctor **check task** (a session on the entry page, listed under the app's Tasks tab) only when someone pressed the row's Check button. The check task runs in **plan mode** (read-only, enforced by the CLI) and ends its reply with the verdict as a fenced JSON block; the server lifts that into `.fused/cache/app-doctor/cross-browser.verdict.json` beside its own run record keyed on a checksum of those files, so the findings you are handed describe the folder as it was when Check was last pressed (the panel refuses to open a fix session on a stale verdict, and a fix and a check never run at once on one app).
 
-If YOU are the check task (your prompt says "run check `cross-browser`"): read only the listed files, write only that one verdict file in the shape the prompt gives, edit and commit nothing.
+If YOU are the check task (your prompt says "run check `cross-browser`"): read only the listed files and answer in the chat exactly as the prompt asks — plain lines, then one JSON block last. You cannot edit or commit, and must not try.
 
 Not a finding:
 

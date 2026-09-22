@@ -26,8 +26,10 @@ This row cannot: it spends the user's tokens and takes a while, so it is
     cross-browser.json          the RUN record, written by the SERVER when
                                 the task is created: `{checksum, task_id,
                                 started_at, model, effort, files}`
-    cross-browser.verdict.json  the VERDICT, written by the SESSION the task
-                                runs: `{ok, summary, findings}`
+    cross-browser.verdict.json  the VERDICT `{ok, summary, findings}` — also
+                                server-written, lifted off the finished
+                                task's transcript (`settle_from_task`): the
+                                task runs in PLAN mode and cannot write
 
   The row is the join of the two. Run record whose `checksum` no longer
   matches the folder → UNRUN, "the app changed" — the cache invalidates
@@ -61,6 +63,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
 
@@ -335,6 +338,80 @@ def _parse_verdict(data: dict) -> dict | None:
     return {"ok": not findings,
             "summary": str(data.get("summary") or "").strip().strip('"').strip()[:500],
             "findings": findings}
+
+
+# The task runs in the CLI's PLAN permission mode — read-only by the CLI's own
+# enforcement (Read/Grep/Glob work; Edit/Write and mutating Bash are refused),
+# so "the check never edits the app" is a guarantee, not a prompt's request.
+# Plan mode also means the session cannot write the verdict file itself: it
+# ends its reply with the verdict as a fenced JSON block, and the SERVER
+# lifts it off the transcript (`verdict_from_transcript`) into the cache when
+# the task's turn is filed ok. The verdict is server-written end to end.
+PERMISSION_MODE = "plan"
+
+_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def _assistant_texts(transcript: str) -> list[str]:
+    """Every assistant text block in the transcript, in order. Tolerates
+    truncated lines and unfamiliar records the way every other reader of
+    these files does."""
+    out: list[str] = []
+    try:
+        with open(transcript, encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                if '"assistant"' not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                msg = obj.get("message") if isinstance(obj, dict) else None
+                if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                    continue
+                content = msg.get("content")
+                if isinstance(content, str):
+                    out.append(content)
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            out.append(str(block.get("text") or ""))
+    except OSError:
+        pass
+    return out
+
+
+def verdict_from_transcript(session_id: str) -> dict | None:
+    """The verdict the check session left in its reply, or None. The LAST
+    fenced JSON object that parses as a verdict wins — the prompt asks for
+    exactly one, at the end, but a session that quoted the shape earlier
+    while thinking aloud must not have that quote read as its answer."""
+    from fused_render.session_liveness import transcript_path
+
+    path = transcript_path(session_id)
+    if not path:
+        return None
+    found = None
+    for text in _assistant_texts(path):
+        for m in _FENCE_RE.finditer(text):
+            try:
+                data = json.loads(m.group(1))
+            except ValueError:
+                continue
+            parsed = _parse_verdict(data)
+            if parsed is not None:
+                found = parsed
+    return found
+
+
+def settle_from_task(app_dir: str, session_id: str) -> bool:
+    """Lift the finished task's verdict off its transcript into the cache.
+    True when a verdict was written; False when the reply held none (the
+    row then reads `ENDED_DETAIL`) or the folder refused the write."""
+    verdict = verdict_from_transcript(session_id)
+    if verdict is None:
+        return False
+    return _write_json(verdict_path(os.path.abspath(app_dir)), verdict)
 
 
 def begin(app_dir: str, force: bool = False) -> tuple[dict | None, str | None, bool]:

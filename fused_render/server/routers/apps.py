@@ -670,8 +670,22 @@ def _settle_check_row(folder: str, row: dict, live_check: dict | None) -> None:
         return
     if row["detail"] != app_doctor_ai.CHECKING_DETAIL:
         return
-    if live_check is None:
-        row["detail"] = app_doctor_ai.ENDED_DETAIL
+    if live_check is not None:
+        return
+    # The task is no longer live and the cache has no verdict. The task runs
+    # in plan mode and could not write one — the verdict is in its REPLY. Lift
+    # it off the transcript now (once: a written verdict file ends this branch
+    # on the next GET), then redraw the row from the cache. A reply with no
+    # readable JSON block, or a task that failed/was cancelled/is gone from
+    # the store, leaves the row on ENDED_DETAIL, Check again.
+    done = _verdict_task(folder)
+    if done and done["session_id"] and app_doctor_ai.settle_from_task(folder, done["session_id"]):
+        fresh = app_doctor.report_one(folder, row["id"])
+        if fresh is not None:
+            row.update({k: fresh[k] for k in ("state", "detail", "findings")})
+            row["verdict_task"] = done
+            return
+    row["detail"] = app_doctor_ai.ENDED_DETAIL
 
 
 def _verdict_task(folder: str) -> dict | None:
@@ -939,10 +953,10 @@ def api_app_doctor_run(body: dict = Body(...),
         if begin_error is not None:
             return _error(begin_error, status=502)
 
-    prompt = app_doctor.check_prompt(
-        entry_html, gathered["files"], app_doctor_ai.verdict_path(folder))
+    prompt = app_doctor.check_prompt(entry_html, gathered["files"])
     task, task_error = _create_app_task(
-        entry_html, prompt, app_doctor_ai.MODEL, app_doctor_ai.EFFORT)
+        entry_html, prompt, app_doctor_ai.MODEL, app_doctor_ai.EFFORT,
+        permission_mode=app_doctor_ai.PERMISSION_MODE)
     if task is None:
         # No task, so no run record: the row goes back to "not checked yet"
         # (the previous verdict was already dropped by `begin`, which is the
@@ -1168,7 +1182,8 @@ def _session_choice_error(field: str, value, allowed) -> str | None:
 
 
 def _create_app_task(entry_html: str, prompt: str, model: str = "",
-                     effort: str = "") -> tuple[dict | None, str | None]:
+                     effort: str = "",
+                     permission_mode: str = "") -> tuple[dict | None, str | None]:
     """Create the scaffolding TASK: the prompt, on the app's index.html, due now.
 
     The seam a test stubs. `schedule.create` is the New task form's own path
@@ -1204,9 +1219,13 @@ def _create_app_task(entry_html: str, prompt: str, model: str = "",
     was stored but whose send failed comes back as the entry — its own
     `state`/`error` say so, where every task's does."""
     try:
+        # `permission_mode` "" keeps `schedule.create`'s default ("auto", the
+        # broadest); the App Doctor CHECK task passes "plan" so the CLI itself
+        # refuses every edit — see app_doctor_ai.PERMISSION_MODE.
         entry = schedule.create(
             entry_html, prompt, datetime.now(timezone.utc),
-            immediate=True, model=model, effort=effort)
+            immediate=True, model=model, effort=effort,
+            permission_mode=permission_mode)
     except Exception as exc:  # noqa: BLE001 — the reason belongs in the response
         return None, f"failed to create the app's task: {exc}"
     entry_id = str(entry.get("id") or "")
