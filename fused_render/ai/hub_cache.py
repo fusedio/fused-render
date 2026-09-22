@@ -660,6 +660,12 @@ def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str]
         return "automatic-speech-recognition", "its MLX Whisper weights"
     if repo_id in formats.MFLUX_VARIANTS and formats.has_mflux_components(dirnames):
         return "text-to-image", "its MLX diffusion components"
+    if formats.is_laya_snapshot(names, dirnames):
+        # Decisive for the same reason `weights.npz` is: `rl_agent_config.json`
+        # is Laya's and nobody else's (D887). The card's own tag says the same
+        # thing, but a Laya repo mirrored without a card still deserves the
+        # right label.
+        return _ai_registry.DECISIONS, "its Laya decision-head config"
     return None
 
 

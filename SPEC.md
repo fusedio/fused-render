@@ -242,7 +242,7 @@ const { text, usage, response, provider } = await fused.ai.text({
   PATH) — or through a model resident on this machine (§40). The CLI runs as a pure
   one-shot completion (no tools, no settings/CLAUDE.md, no session persistence, one
   turn). **`fused.ai` is a namespace, not a function** (D631): text is one verb among
-  `.image`/`.video`/`.transcribe`/`.embed`, takes **one options object** like them
+  `.image`/`.video`/`.transcribe`/`.embed`/`.decide`, takes **one options object** like them
   (`prompt` is a field, never a positional argument), and the former callable
   `fused.ai(prompt)` is gone rather than aliased. **`opts.provider`** (`"local" | "apple" |
   "claude"`, optional) pins the **tier** that serves the call; omitted, the model decides:
@@ -256,9 +256,9 @@ const { text, usage, response, provider } = await fused.ai.text({
   the same; `"local"` → the catalog's default text model for this machine
   (`catalog.default_for`, a 409 `ai_unavailable` where no text runner resolves).
   `provider: "claude"` with a repo id is a `bad_request` naming the tier that would
-  take it. **The same `provider` option is on `.image`, `.video`, `.transcribe` and
-  `.embed`** (their D413 envelopes grow that one key), and every reply of the five
-  carries `provider`; those four have only a local tier today, so omitted means
+  take it. **The same `provider` option is on `.image`, `.video`, `.transcribe`,
+  `.embed` and `.decide`** (their D413 envelopes grow that one key), and every reply of the six
+  carries `provider`; those five have only a local tier today, so omitted means
   `"local"` and `"claude"` answers `unavailable` on a 409 — a well-formed request
   against a tier that lacks the verb, not a malformed one — which becomes a real
   path the day a gateway serves them, with no page changing. Resolves with exactly
@@ -280,7 +280,8 @@ const { text, usage, response, provider } = await fused.ai.text({
   **This is THE result frame (D632): every `fused.ai` verb resolves with these six
   keys plus its own payload** — `text` here; `images: [{path, url, mediaType}]`,
   `videos: [...]`, `text` + `segments: [{text, startSecond, endSecond, speaker?,
-  words?}]` + `language` + `durationInSeconds`, `embeddings` + `values`. Learn it once.
+  words?}]` + `language` + `durationInSeconds`, `embeddings` + `values`, `answers`
+  (decide, D887). Learn it once.
   It is the AI SDK's `generateText` return contract, chosen because it is the shape
   page authors already know: **`provider`** the tier that answered, so which side of
   the machine boundary a call landed on is always inspectable; **`response`**
@@ -9986,7 +9987,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   guard, so a hostile repo id answers False exactly as `has_vision_tower`
   already does.
 - **AI-28** **`registry.py` gains `tool-use`/`vision` TAGS on top of the
-  five existing capabilities -- never a reshape of them.**
+  the five capabilities of the time -- never a reshape of them.**
   `registry.supports_tool_use(repo_id, model_type=None, architecture=None)`
   matches a KNOWN-FAMILY allowlist (`TOOL_USE_FAMILIES`: qwen3, qwen2.5,
   command-r, hermes, llama-3+instruct, mistral+instruct, gemma-3/4+-it),
@@ -10081,6 +10082,66 @@ an AI Models page that could say what was on disk but not what was *running*.
   WITHIN one already-curated repo's own listing), and wiring it here would
   not be an honest caller, only a way to make it non-inert. It stays ready
   for a future UI that offers alternate quantizer conversions.
+- **AI-31** **A sixth capability, `text-classification`, and a sixth verb,
+  `fused.ai.decide({state, questions})` — the first capability that GENERATES
+  NOTHING (D887).** Laya is a typed-decision model: a bidirectional encoder
+  with decision heads that reads a `state` (a string, a JSON record or a
+  conversation) plus typed questions and answers with CALIBRATED
+  PROBABILITIES — `choice` over named labels, `score` as the expected
+  zero-based level of an ordered rubric, `noul` as P(true) — with zero output
+  tokens, so none of the five verbs fit and shoehorning it under `text` would
+  have meant parsing prose back into numbers the model already had. It runs
+  through `laya-mlx` as a LOCAL-tier `Runner` (`laya-mlx`, `_apple_silicon`,
+  its own runner venv pinning `laya-mlx 0.2.x`, which itself pins `mlx 0.32`), NOT a fourth provider: a tier is
+  an engine family (D700), and this is MLX weights in the Hub cache loaded by
+  a Python worker — exactly what `local` means — so it inherits the supervisor's
+  resident slot, download jobs, mirror and Local-tab card for free.
+  **The capability constant IS the Hub tag**, `registry.DECISIONS =
+  "text-classification"`, the way `SPEECH_TO_TEXT` is: `tasks.py`'s existing
+  row flips from unserved to `DECISIONS` and a cached Laya snapshot classifies
+  off its own card. Every sentiment BERT carries the same tag, so
+  `formats.DECISIVE` gains `laya-mlx` claiming ONLY a snapshot containing
+  `rl_agent_config.json` PLUS an `encoder/` folder (`formats.is_laya_snapshot`;
+  Laya's own manifest and layout, present in no other family) —
+  a plain text-classification repo reads as "capability known, no engine here
+  reads this format", which is the sentence the card already had.
+  **`POST /api/ai/decide` is the embed shape, not the image one**: closed
+  option envelope (`state`, `questions`, `model`, `provider`), `_provider_rejection`
+  answering `claude`/`apple` with 409 `unavailable`, `catalog.default_for(DECISIONS)`
+  when no model is named, a cold model raising `ModelNotReady` so the load
+  STARTS and the 409 carries its job id (AI-5) — one forward pass per question
+  answers in milliseconds once resident, so there is no job for a fetch to hide
+  inside and nothing to stream. `supervisor.generate_embed`'s body is lifted
+  into `_generate_sync(capability, model, body)` and both verbs call it.
+  **The worker hands `laya_mlx.load()` the snapshot DIRECTORY, never the repo
+  id**: the library's own `resolve_model` calls `snapshot_download` on a bare id,
+  which would fetch through the Hub behind the app's back — no disk-measured
+  progress (AI-5b), no mirror (AI-5l), no ✕ — so `download` goes through
+  `worker_base.download_snapshot` and `load` only ever reaches the local
+  branch. The reply is `common.ai_result` with `answers` as its payload; each
+  answer passes Laya's keys through (`type`, `confidence`, `choice`,
+  `probabilities`, `score`, `legend`, `noul`) except `action.act_probability`,
+  which becomes `actProbability` because D633 made the wire camelCase and that
+  is the one snake key in it; Laya's own `"model": "laya-rl-agent"` is dropped
+  for `response.modelId`, the catalog id. `usage.outputTokens` is always 0.
+  **Catalog**: the two pre-converted standalone FP16 repos,
+  `aac6fef/laya-multilingual-mlx` (322M, 0.68 GB, 1024-token context) at
+  position 0 by AI-7d's smallest-first rule and therefore the bare default, and
+  `aac6fef/laya-mlx` (421M, 0.85 GB, 512-token context, English) marked
+  `recommended` (AI-11i) so the Playground's pick and any English-first page
+  land on it; the upstream bundle `convaiinnovations/laya` was rejected (three
+  checkpoints in one download, `transformers`-tagged, needs a `subfolder=` no
+  other row has). Onboarding's Models step EXCLUDES the capability the way it
+  excludes video — a 0.85 GB download offered to every fresh install with no
+  visible use yet. The context is small and SHARED by instructions, criteria
+  and state, so the skill tells page authors to shortlist labels and keep
+  instructions to a sentence. **The two overflows fail differently**: too many
+  labels or rubric levels for the token budget is refused by the library
+  ("too many options for the token budget") and surfaces as `ai_error`; too long
+  a STATE is silently cut from the TAIL by `laya_mlx`'s `build_sequence`, so the
+  worker reports every question whose sequence hit the ceiling as a D633-style
+  entry in the reply's `warnings[]` (`{type: "other", message: "…state was cut to
+  N tokens…"}`) — `usage.inputTokens` sitting at the ceiling is the other tell.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 

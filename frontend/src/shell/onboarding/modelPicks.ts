@@ -16,10 +16,17 @@
 // dwarfs the other four put together (~9 GB). Onboarding is not where someone
 // decides to spend that, and a total reading "38 GB" makes the step look like
 // a demand rather than a head start. It stays one click away on /ai-models.
+//
+// **Decisions (Laya, `text-classification`) is excluded too**, for the
+// opposite reason: it is small (under 1 GB) but a first-run reader has no
+// idea what a typed-decision model is for until they have seen the Playground
+// stage. Owner's call (2026-09-22): offer it once the Playground has a UI a
+// reader can find, not as a checkbox on day one.
 import type { AiCatalogCapability, AiCatalogModel } from "@platform/lib/api";
 
-/** `registry.VIDEO_GENERATION`. Left out of the step — see the header. */
-const EXCLUDED_CAPABILITY = "text-to-video";
+/** `registry.VIDEO_GENERATION` and `registry.DECISIONS`. Left out of the
+ *  step — see the header. */
+const EXCLUDED_CAPABILITIES = new Set(["text-to-video", "text-classification"]);
 
 export interface ModelPick {
   capability: string;
@@ -39,7 +46,7 @@ export interface ModelPick {
 export function modelPicks(capabilities: AiCatalogCapability[]): ModelPick[] {
   const picks: ModelPick[] = [];
   for (const cap of capabilities) {
-    if (cap.capability === EXCLUDED_CAPABILITY) continue;
+    if (EXCLUDED_CAPABILITIES.has(cap.capability)) continue;
     if (!cap.available) continue;
     const model = cap.models.find((m) => m.recommended);
     if (!model) continue;
@@ -65,6 +72,8 @@ function capabilityLabel(capability: string): string {
       return "Speech to text";
     case "embeddings":
       return "Search and similarity";
+    case "text-classification":
+      return "Decisions";
     default:
       return capability;
   }

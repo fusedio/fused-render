@@ -1394,6 +1394,41 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "defaults": {"steps": 8},
         },
     ],
+    # **Laya typed decisions (D887).** The two pre-converted FP16 MLX
+    # checkpoints published by the `laya-mlx` port's author — NOT the upstream
+    # `convaiinnovations/laya` bundle, which is transformers-tagged, holds all
+    # three checkpoints in one repo and needs a `subfolder=` no other row here
+    # has. Sizes are the repos' own blob totals (HF API, `?blobs=true`,
+    # 2026-09-22): 678,238,048 B and 846,231,836 B. Smallest first per the
+    # file's rule, so the bare `fused.ai.decide({...})` default is the
+    # multilingual model; the English one carries `recommended` because it is
+    # upstream's primary checkpoint and what an English-first page wants —
+    # the onboarding/Playground pick reads that flag, not position 0.
+    "laya-mlx": [
+        {
+            "id": "aac6fef/laya-multilingual-mlx",
+            "params": "322M",
+            "quantization": "MLX FP16",
+            "label": "Laya Multilingual (MLX FP16)",
+            "nickname": "Laya",
+            "size_gb": 0.68,
+            "note": "mmBERT-base encoder, 1024-token context shared by state, "
+                    "instructions and options. Reads non-English input; "
+                    "quality is uneven across languages.",
+        },
+        {
+            "id": "aac6fef/laya-mlx",
+            "recommended": True,
+            "params": "421M",
+            "quantization": "MLX FP16",
+            "label": "Laya (MLX FP16)",
+            "nickname": "Laya",
+            "size_gb": 0.85,
+            "note": "ModernBERT-large encoder, upstream's primary checkpoint. "
+                    "English only; 512-token context shared by state, "
+                    "instructions and options.",
+        },
+    ],
 }
 
 #: Hardware variant -> the runner whose list it SHARES. Resolved by `for_runner`

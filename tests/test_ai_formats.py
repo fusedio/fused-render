@@ -122,6 +122,12 @@ def test_every_registered_runner_appears_in_loaders():
     seen |= set(formats.loaders(
         repo_id="x/y", names=set(), dirnames={"onnx"},
         config={"model_type": "siglip"}, torch_weights=False, onnx_weights=True))
+    # Laya (`laya-mlx`, D887): a root `rl_agent_config.json` beside an
+    # `encoder/` folder is the decisive marker; the branch returns early like
+    # whisper's, so it needs its own call here.
+    seen |= set(formats.loaders(
+        repo_id="x/y", names={formats.LAYA_AGENT_CONFIG},
+        dirnames={formats.LAYA_ENCODER_DIR}, config={}, torch_weights=False))
     missing = _codes() - seen
     assert not missing, (
         f"{sorted(missing)} are registered runners that `loaders()` never "
