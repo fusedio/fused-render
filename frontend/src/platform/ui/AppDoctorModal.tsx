@@ -335,14 +335,12 @@ function CheckRow({
               // pane on its run, or the Tasks tab — same as a row's "Fix in
               // progress" opens the fix session.
               <Button
-                variant="ghost"
+                variant="outline"
                 size="sm"
-                className="appdoc-checking-btn"
                 title="Claude is reading this app's view files now — open the running task"
                 onClick={() => onFollowCheck(check)}
               >
-                <LoaderCircle aria-hidden className="animate-spin" />
-                Claude is checking
+                Open task
               </Button>
             ) : (
               <Button
