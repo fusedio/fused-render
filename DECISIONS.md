@@ -4686,19 +4686,39 @@ case (`test_stats_does_not_count_a_lookalike_underscore_sibling`,
 `test_search_under_ignores_a_lookalike_underscore_sibling`) and needed no
 changes. 330 passed in the targeted suite.
 
-End-to-end honesty check: built a synthetic 450,000-row index (3,000 dirs,
-random names/extensions) and timed `search_ranked` through the public API
-over a 5-query mix, alternating this branch against the pre-change code 3x
-each (7 reps per run, reporting the per-run median). Per-run medians —
-branch: 3.060ms, 3.158ms, 3.110ms (median 3.110ms); pre-change: 3.142ms,
-3.046ms, 3.029ms (median 3.046ms). **The predicate-level win (1.6-2x) does
-not show up end-to-end at this scale** — the two arms are statistically
-indistinguishable (within run-to-run noise, and the "reverted" arm was
-occasionally faster). `search_ranked`'s total latency here is dominated by
-connection setup, the scoring/ranking apparatus, and Python-side overhead
-around the query, not by the scan predicates this change targets; the win
-is real at the predicate/plan level (proven directly against DuckDB's
-EXPLAIN output and isolated timings) but this benchmark's query/data shape
-doesn't put enough weight on the scan itself to surface it in the
-end-to-end number. Reporting this as-is rather than cherry-picking a
-favorable pair of runs.
+**Correction (same session):** the first end-to-end benchmark run here was
+invalid and its "no measurable improvement" conclusion is retracted. Its
+index was never "covered" — every `search_ranked` call returned
+`{'covered': False, 'hits': [], 'total': 0, 'scanned_partitions': 0,
+'reason': 'uncovered'}`, so both arms were timing an early return that
+never touched the parquet at all; the ~3.1ms vs. ~3.0ms medians were
+measuring the no-op path, not the query. Lesson for any future benchmark
+of this kind: an uncovered root turns `search_ranked` into a no-op, so the
+harness must assert `covered is True` and `scanned_partitions >= 1` (and
+non-zero hits, for a query expected to match) before timing anything —
+otherwise it silently benchmarks the wrong code path.
+
+End-to-end honesty check (re-measured): built a fresh, premise-asserted
+450,100-row index across 10 partitions and timed `search_ranked` through
+the public API, alternating this branch (HEAD) against the pre-change code
+(`45fa6c8d8`), fresh subprocess per arm, 6 rounds with round 0 discarded as
+warmup, 5 timed reps per arm per round, reporting medians with
+[min, max] across rounds:
+
+| query | scope | pre-change (45fa6c8d8) | HEAD | ratio |
+|---|---|---|---|---|
+| broad substring `file_` | root `/r`, ~442k matches | 75.10 ms [72.86, 80.75] | 71.02 ms [69.19, 74.39] | 1.06x |
+| sparse substring `special_marker` | root `/r`, 100 matches | 19.17 ms [18.73, 22.51] | 14.05 ms [13.82, 14.86] | 1.37x |
+| zero match | root `/r` | 17.50 ms [16.60, 18.97] | 12.63 ms [11.90, 13.64] | 1.39x |
+| subfolder-scoped `file_` | root `/r/A5`, 2/10 partitions scanned | 23.73 ms [23.59, 23.91] | 19.60 ms [19.45, 19.83] | 1.21x |
+
+Interpretation, stated at exactly this strength and no stronger: the raw-SQL
+predicate win (~1.95x substring, ~1.6x prefix) does NOT survive intact
+end-to-end. The end-to-end win is 1.06x on the broadest query and ~1.4x on
+sparse/zero-match queries — real and consistently in the right direction,
+but modest. The dilution is scoring and ordering work downstream of the
+WHERE clause, which this change does not touch and which dominates when
+many rows survive the filter; connection setup was measured at only ~7% of
+the call (3.8ms of 54ms) and is not the diluent. Sparse and zero-match
+queries keep more of the win because there is little or no scoring work to
+dilute it.
