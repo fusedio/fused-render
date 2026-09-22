@@ -92,6 +92,7 @@ import {
   CircleMinus,
   CirclePlay,
   GitPullRequest,
+  MessageSquareText,
   RotateCw,
   TriangleAlert,
   X,
@@ -141,6 +142,7 @@ import { SkeletonLines } from "@platform/ui/Skeleton";
 import { appLandingUrl } from "@platform/lib/appLanding";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { announceAppDoctorChanged, announceTasksChanged } from "@platform/lib/tasksChanged";
+import { chatUrl } from "@platform/lib/queue";
 
 // The Pull button's own mutation result — same minimal shape
 // shell/RepoUpdatesDock.tsx's own `MutationResult` keeps local rather than
@@ -183,6 +185,7 @@ function CheckRow({
   onFix,
   onCheck,
   onFollowCheck,
+  onOpenVerdictTask,
   onPull,
   onDone,
   onOpenGit,
@@ -191,6 +194,8 @@ function CheckRow({
   busy: boolean;
   /** Open the running check task (its Claude pane, or the Tasks tab). */
   onFollowCheck: (check: AppCheck) => void;
+  /** Open the conversation that wrote a settled row's cached verdict. */
+  onOpenVerdictTask: (check: AppCheck) => void;
   /** Some OTHER row (or "Fix all") already has a live task — a fix or a
    *  check — the server allows exactly one at a time, so pressing this row's
    *  own button would just 409. Disabled rather than hidden, with a title
@@ -428,6 +433,21 @@ function CheckRow({
                     {rowActionLabel(check)}
                   </Button>
                 ))}
+              {/* A settled on-demand row whose verdict came from a task still
+                  in the store: the way back to that conversation, where the
+                  session left its plain one-line reading of each finding.
+                  Icon-only, beside Re-check, so neither competes with Fix. */}
+              {check.ondemand && check.verdict_task && (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  title="Open the check's conversation — Claude's own plain-words notes on what it found"
+                  aria-label="Open the check's conversation"
+                  onClick={() => onOpenVerdictTask(check)}
+                >
+                  <MessageSquareText aria-hidden />
+                </Button>
+              )}
               {/* A settled on-demand row: the cache invalidates itself when
                   the files change, so this exists for what it cannot see —
                   a rubric that moved on, or a verdict worth a second
@@ -708,6 +728,16 @@ export function useAppDoctorReport(dir: string, onDone?: () => void) {
     onDone?.();
   };
 
+  // Open the conversation that wrote a settled row's verdict — the session's
+  // own plain reading of what it found. `chatUrl` is the app's one spelling
+  // of "this session, in the Claude pane"; without a session id (the run
+  // never answered) the Tasks tab still lists the entry.
+  const openVerdictTask = (check: AppCheck) => {
+    const t = check.verdict_task;
+    navigateUrl(t?.session_id && t.target ? chatUrl(t.target, t.session_id) : tasksTabUrl(dir));
+    onDone?.();
+  };
+
   // A check task on any row (or one being created) holds the same
   // one-live-task-per-app gate a fix does, so the footer's "Fix all" must
   // read it as in-flight too — pressing it would just 409.
@@ -726,6 +756,7 @@ export function useAppDoctorReport(dir: string, onDone?: () => void) {
     creating,
     runCheck,
     followCheck,
+    openVerdictTask,
     pulling,
     pullRow,
     onDone,
@@ -761,6 +792,7 @@ function AppDoctorChecklist({
   creating,
   runCheck,
   followCheck,
+  openVerdictTask,
   pulling,
   pullRow,
   onDone,
@@ -801,6 +833,7 @@ function AppDoctorChecklist({
                   onFix={fixRow}
                   onCheck={(check, force) => void runCheck(check, force)}
                   onFollowCheck={followCheck}
+                  onOpenVerdictTask={openVerdictTask}
                   onPull={(check) => void pullRow(check)}
                   onDone={onDone}
                   onOpenGit={onOpenGit}

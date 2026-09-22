@@ -642,7 +642,7 @@ def _live_doctor_tasks(entry_html: str | None) -> tuple[dict[str, dict], dict[st
     return fixes, checks
 
 
-def _settle_check_row(row: dict, live_check: dict | None) -> None:
+def _settle_check_row(folder: str, row: dict, live_check: dict | None) -> None:
     """Attach the on-demand row's CHECK task and settle its UNRUN wording.
 
     `app_doctor_ai.row_state` reads the two cache files and cannot see the
@@ -656,12 +656,49 @@ def _settle_check_row(row: dict, live_check: dict | None) -> None:
     from fused_render import app_doctor, app_doctor_ai
 
     row["check_task"] = live_check
-    if not row.get("ondemand") or row["state"] != app_doctor.UNRUN:
+    row["verdict_task"] = None
+    if not row.get("ondemand"):
+        return
+    if row["state"] in (app_doctor.PASS, app_doctor.FAIL):
+        # A settled verdict: the task that wrote it, so the row can offer a
+        # way back to the session's own reading (the plain per-finding lines
+        # it left in the chat). Looked up by the run record's task id in the
+        # store; a task since erased just leaves the row without the link.
+        row["verdict_task"] = _verdict_task(folder)
+        return
+    if row["state"] != app_doctor.UNRUN:
         return
     if row["detail"] != app_doctor_ai.CHECKING_DETAIL:
         return
     if live_check is None:
         row["detail"] = app_doctor_ai.ENDED_DETAIL
+
+
+def _verdict_task(folder: str) -> dict | None:
+    """`{id, session_id, target}` for the check task the cached verdict came
+    from, or None — no run record, or the entry is gone from the store.
+    `session_id` is the conversation the turn actually ran in
+    (`claude_session_id`, learned when the run answered), which is what
+    `chatUrl` opens; falls back to the entry's own `session_id`."""
+    from fused_render import app_doctor_ai
+
+    record = app_doctor_ai.read_run(folder)
+    task_id = str((record or {}).get("task_id") or "")
+    if not task_id:
+        return None
+    try:
+        entries = schedule.list_entries()
+    except Exception:  # noqa: BLE001 — a store that cannot be read is "no link"
+        return None
+    for e in entries:
+        if str(e.get("id") or "") != task_id:
+            continue
+        return {
+            "id": task_id,
+            "session_id": str(e.get("claude_session_id") or e.get("session_id") or ""),
+            "target": str(e.get("target") or ""),
+        }
+    return None
 
 
 @router.get("/api/apps/doctor")
@@ -722,7 +759,7 @@ def api_app_doctor(path: str):
     report = app_doctor.report(folder)
     for c in report["checks"]:
         c["task"] = fixes.get(c["id"]) or all_task
-        _settle_check_row(c, checks.get(c["id"]))
+        _settle_check_row(folder, c, checks.get(c["id"]))
     return report
 
 
@@ -867,7 +904,7 @@ def api_app_doctor_run(body: dict = Body(...),
         row = app_doctor.report_one(folder, check_id)
         _fixes, checks = _live_doctor_tasks(entry_html)
         row["task"] = _fixes.get(check_id) or _fixes.get(app_doctor.ALL)
-        _settle_check_row(row, task or checks.get(check_id))
+        _settle_check_row(folder, row, task or checks.get(check_id))
         return row
 
     # The gate comes BEFORE `begin`: a forced re-check drops the cached

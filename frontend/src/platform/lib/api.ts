@@ -2681,6 +2681,11 @@ export interface AppCheck {
    *  as "Fix in progress". Read off the server's task store on every GET, so
    *  a reload or a tab switch shows the same in-flight state. */
   check_task: AppDoctorTask | null;
+  /** On a SETTLED on-demand row: the check task whose session wrote the cached
+   *  verdict, so the row can open that conversation (its plain per-finding
+   *  lines). `session_id` is the conversation the turn ran in — what `chatUrl`
+   *  opens; `target` its entry page. Null when the task is gone from the store. */
+  verdict_task: { id: string; session_id: string; target: string } | null;
   /** `git` row only: commits HEAD is behind/ahead of
    *  `origin/<default_branch>` (`git_upstream.check_repo`'s
    *  `HEAD...origin/<default_branch>` count), or `null` when the remote
