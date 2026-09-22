@@ -223,8 +223,9 @@ def test_a_missing_pyproject_fails_its_row_and_the_report(workspace):
 
 
 def test_a_missing_icon_still_skips_its_row(workspace):
-    """icon shares `_optional_file_check` with pyproject today but must not
-    change behavior: absent is still SKIP, never FAIL."""
+    """icon still uses `_optional_file_check`; pyproject no longer does (it
+    now fails when absent). Pin that the two rows have deliberately
+    diverged: icon's absence is still SKIP, never FAIL."""
     d = _app(workspace)
     assert _state(app_doctor.report(str(d)), "icon") == "skip"
 
