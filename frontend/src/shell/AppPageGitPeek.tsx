@@ -33,7 +33,7 @@
 // Tasks tab's own peek host exactly as it narrows every other tab's content,
 // and the Tasks peek renders inside THAT already-narrowed row, never
 // underneath or beside this one.
-import type { ReactElement } from "react";
+import { type ReactElement, useEffect, useRef } from "react";
 import { X } from "lucide-react";
 import type { DirMode } from "@apps/explorer/lib/dir-mode";
 import type { AppPageGitPeekWidth } from "./useAppPageGitPeekWidth";
@@ -54,6 +54,20 @@ export default function AppPageGitPeek({
   layout,
 }: AppPageGitPeekProps): ReactElement {
   const { width, onSeamPointerDown } = layout;
+
+  // `closeGit` (useAppPageGitColumn.ts) drops `src` to null a commit BEFORE
+  // this panel finishes its 200ms slide-out (`useDirMode`'s reset to ABSENT
+  // runs one commit after `open` flips false) — without this, the reader
+  // watches the live template blink to "Loading…" and only then slide away.
+  // Kept only while shut: reopening the SAME panel while `src` is still
+  // resolving must show "Loading…", not a stale frame from before it closed,
+  // so this is read only when `!open`.
+  const lastSrc = useRef<string | null>(null);
+  useEffect(() => {
+    if (src !== null) lastSrc.current = src;
+  }, [src]);
+  const shownSrc = open ? src : (src ?? lastSrc.current);
+
   return (
     <aside
       className={"app-git-peek" + (open ? " is-open" : "")}
@@ -80,7 +94,7 @@ export default function AppPageGitPeek({
         </button>
       </div>
       <div className="app-git-peek-body">
-        {mode.pending || src === null ? (
+        {mode.pending || shownSrc === null ? (
           mode.failed ? (
             // A REJECTED probe, not a settled "no git here" (dir-mode.ts) —
             // the panel stays open and says so, rather than silently closing
@@ -96,9 +110,9 @@ export default function AppPageGitPeek({
           )
         ) : (
           <iframe
-            key={src}
+            key={shownSrc}
             className="app-git-peek-frame"
-            src={src}
+            src={shownSrc}
             title="Git"
           />
         )}
