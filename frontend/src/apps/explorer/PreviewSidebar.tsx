@@ -59,13 +59,13 @@ import { committedWidth, resizeWidth } from "@platform/lib/panel-drag";
 // different components now (StatView owns the container, this owns the handle),
 // and a ref would have to be threaded through the portal to get here.
 //
-// TWO containers now, hence a selector LIST. `.stat-split` is the explorer's,
-// which reaches this component through the portal; `.app-page-split` is the app
-// page's own (shell/AppPage.tsx), which renders this column as an ordinary
-// child instead. `closest` takes the nearest ancestor matching either, so a
-// column only ever measures the split it is actually in — the app page is not
-// nested inside StatView, so the two can never both match.
-const SPLIT_SEL = ".stat-split, .app-page-split";
+// BACK TO ONE CONTAINER (2026-09-22): the app page briefly reused this
+// component for its own git column, which is why this was a selector LIST for
+// a while (`.stat-split, .app-page-split`); the git peek redesign gave the app
+// page its own slim component instead (shell/AppPageGitPeek.tsx) and this one
+// no longer renders there at all, so `.stat-split` — the explorer's own,
+// reached through the portal — is the only container this ever needs to find.
+const SPLIT_SEL = ".stat-split";
 
 // The one companion whose document is a CHAT, and so the one that reports when
 // its transcript is painted (`data-chat-ready`, platform/ui/ChatFrame). Named

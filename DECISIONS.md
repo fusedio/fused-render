@@ -4812,3 +4812,107 @@ inserted between them) — it only stopped caring about the wrapper's absolute
 depth. Scoped tests (`TaskPeekFrame.test.tsx`, `useAppPageGitColumn.test.ts`)
 — 13 pass, 0 fail — plus `bun run typecheck` and `bun run check:boundaries`,
 both clean. No full suite run, per this task's scope.
+
+**Git column redesign: the template alone, framed like the Tasks tab's own
+side peek, not the explorer's borrowed-companion sidebar.** The owner's own
+words: "I just want the git template. not the full right sidebar. I want the
+UI to be similar more like the tasks tab sidebar." The draft above shipped
+with `PreviewSidebar` — a mode rail, a "Git" tab header, a panel-toggle icon,
+a close button — because it was the nearest existing component that already
+framed a borrowed template beside a page. All of that chrome is now gone.
+The FULL template (staging, committing, branches, push/pull — nothing
+trimmed) is unchanged; only the frame around it changed, to a new
+`AppPageGitPeek.tsx` + `useAppPageGitPeekWidth.ts` pair that mirrors
+`TaskPeek.tsx`'s own side peek: a slim aside sliding in over the row's right
+edge via `translateX`, width and slide animated in lockstep over the same
+200ms `ease` (`--peek-dur`/`--peek-ease`, reused from `styles/task-peek.css`
+— declared globally on `:root` for exactly this kind of reuse), its own
+44px header with a title and a close button, a 12px resize seam on its left
+edge, and a body that shows the template's iframe, a loading state, or an
+error state. `useAppPageGitColumn.ts`'s existing probe/open/auto-close logic
+and its tests are unchanged in substance (extended, not replaced — see the
+failed-probe fix below). App Doctor's "Open in git" row stays the only entry
+point; still no header toggle, no new URL param.
+
+**Interaction with the Tasks tab's own side peek: nested outside it, one
+level up — decided, not discovered.** `AppPage.tsx`'s `.app-page-split` is
+now the row both peeks ultimately live in. Its two children are
+`.app-page-frame-slot` (width `calc(100% - <git-peek-width>px)`, holding
+`TaskPeekFrame` and everything inside it unchanged) and `.app-git-peek`
+(the new peek, absolutely positioned over the split's own right edge). The
+Tasks tab's own `.tasks-peek-host` row is entirely inside the slot, so it
+only ever measures against the width the git peek has already taken; the two
+peeks can never fight over one right edge because they are not siblings at
+the same DOM level — the git peek's edge is the split's edge, the Tasks
+peek's edge is the slot's edge, and the slot's own width already accounts
+for the git peek. Width state for the new peek is deliberately NOT routed
+through `apps/explorer/lib/side-store.ts` (the module-level width the
+explorer's companion column and the listing's preview pane already share) —
+reusing it would make dragging the git peek silently resize the next file
+preview the reader opens in the explorer, and vice versa. `side-width.ts`'s
+pure clamp/default arithmetic is reused directly; only the storage is not.
+No persistence, no drag-to-close (`panel-drag.ts`'s overdrag/resistance
+arithmetic is not used) — the peek only has an explicit close button, so a
+plain floor clamp is enough. A `dragging` flag drives `.app-page-split
+.is-dragging iframe { pointer-events: none }` (app-page.css), mirroring the
+explorer's own "both sides of the seam go inert mid-drag" rule, so neither
+the Overview's iframe nor the git template's own iframe swallows the
+captured pointer stream while resizing.
+
+`TaskPeekFrame.test.tsx`'s pinned literal (`<TaskPeekFrame
+peekable={peekable}>\n<div className="app-page">`) shifted its indentation
+again, from 8/8 to 8/10 spaces, because `TaskPeekFrame` now nests one level
+deeper inside the new `.app-page-frame-slot`. Same call as the prior CI fix
+above: the DIRECT-CHILD relationship the test protects is untouched, so the
+expectation's whitespace was updated to match rather than reindenting
+`AppPage.tsx`'s whole inner JSX tree to "fix" it (the inner JSX — header,
+icon picker, tab strip, tab panels — was deliberately left at its old
+indentation depth: cosmetic only, and a bulk re-indent via string-matching
+edits over ~230 lines was judged higher-risk than the alternative of a
+locally 2-space-shallow block).
+
+`PreviewSidebar.tsx`'s `SPLIT_SEL` reverted from `".stat-split,
+.app-page-split"` back to `".stat-split"`: nothing renders `PreviewSidebar`
+on the app page any more (confirmed by grep — its only remaining renderer is
+`apps/explorer/Preview.tsx`, inside `.stat-split`), so the selector list that
+existed only to let one component serve two different containers is no
+longer doing anything.
+
+**Bugfix carried over from code review: a REJECTED probe could not be told
+apart from a settled "no git here", so the column auto-closed on a transient
+fetch failure with nothing for the reader to act on.** `useDirMode`
+(`dir-mode.ts`) resolved both a genuine "this folder has no git template"
+settle and a rejected `/api/fs/stat` fetch to the identical shape — `{
+entry: null, pending: false }` — and `useAppPageGitColumn.ts`'s auto-close
+guard (`if (probed.current && gitMode.entry === null) setOpen(false)`) fired
+on either. Fixed by giving `DirMode` a `failed: boolean` discriminant and a
+new `FAILED` singleton distinct from the existing `ABSENT` one; the
+rejection handler in `useDirMode`'s effect now sets `FAILED` instead of
+`ABSENT`. The auto-close guard gained `&& !gitMode.failed`, so a rejected
+probe leaves the panel open and `AppPageGitPeek.tsx` shows an explicit error
+state ("Could not check this folder for git. Close this panel and open it
+again to retry.") instead of silently vanishing. No new retry API was
+needed: `loadDirModes` already evicts a rejected directory's cache entry on
+the spot, so the existing close → reopen cycle (a real `dir` transition,
+string → null → string, across two user-triggered handlers) is already a
+working retry once the auto-close bug stops preventing it from being
+reached. New test: "does not auto-close on a probe that failed" in
+`useAppPageGitColumn.test.ts`, verified RED (temporarily reverting the
+`!gitMode.failed` guard reproduced the auto-close and the test failed for
+the right reason — `gitMode.failed` read `false` instead of `true` because
+the stale logic closed the panel and reset `dir` to `null`, falling back to
+`ABSENT`) then GREEN.
+
+Tests run: `TaskPeekFrame.test.tsx` + `useAppPageGitColumn.test.ts` (14
+pass), `AppPage.test.tsx` (11 pass) — 25 pass, 0 fail across the three files
+touched by this rework. `bun run typecheck`, `bun run check:boundaries`, and
+`bun run build` all clean. No full suite run, per this task's scope.
+
+Deviations from the brief, and why: (1) no dedicated unit test file for
+`useAppPageGitPeekWidth.ts` — it is pure `ResizeObserver` + pointer-event
+plumbing with no branching logic beyond what `side-width.ts` (already
+tested) already covers, and `AppPage.test.tsx`/`AppPageGitPeek`'s own
+rendering exercises it indirectly; a from-scratch DOM-pointer-event harness
+was judged lower value than the time it would cost given the rest of the
+scope. (2) `AppPage.tsx`'s inner JSX (header, icon picker, tab strip, tab
+panels) was not reindented to reflect its new nesting depth — noted above.

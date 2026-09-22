@@ -36,15 +36,18 @@
 // read-only and page-wide — it is not what the git column below is for.
 //
 // THE GIT COLUMN is a later, separate addition (opened only from App Doctor's
-// "Open in git" row — see the git-column block further down in this file for
-// the full argument): the folder's `git` template beside the page, in the
-// same borrowed-companion sidebar the explorer's file preview already hosts,
-// with its ordinary write actions — stage, commit, branches, push/pull. This
-// page is NOT read-only about git any more; it is read-only about the VERSION
-// PICKER'S past commits, which is a different thing, and the two must not be
-// conflated. There is still no Git TAB: a tab put the working tree on the
-// same footing as the app and took the app off the screen to reach it, and
-// that argument is what this page still declines.
+// "Open in git" row — see the git-peek block further down in this file for
+// the full argument): the folder's `git` template beside the page — the WHOLE
+// template, with its ordinary write actions (stage, commit, branches,
+// push/pull) — in a slim peek of its own (AppPageGitPeek.tsx), styled after
+// the Tasks tab's own side peek rather than the explorer's file-preview
+// sidebar it first borrowed (owner's correction, 2026-09-22: "I just want the
+// git template. not the full right sidebar."). This page is NOT read-only
+// about git any more; it is read-only about the VERSION PICKER'S past
+// commits, which is a different thing, and the two must not be conflated.
+// There is still no Git TAB: a tab put the working tree on the same footing
+// as the app and took the app off the screen to reach it, and that argument
+// is what this page still declines.
 //
 // Opened from the sidebar's "Current apps" rows and NOWHERE ELSE (owner's
 // brief): the hub's cards and the explorer keep opening the entry page as they
@@ -124,9 +127,9 @@ import { useAppPageSnapshot, type AppPageSnapshotState } from "./useAppPageSnaps
 import { TaskPeekFrame } from "./TaskPeekFrame";
 import { APP_PAGE_FIT_LABEL, useAppHeadFit, useAppTabbarFit } from "./app-page-fit";
 import { useTaskPeekEnabled } from "./task-peek-flag";
-import PreviewSidebar from "@apps/explorer/PreviewSidebar";
-import { templateModeIcon } from "@apps/explorer/ModeSwitcher";
-import { useAppPageGitColumn, GIT_COLUMN_MODE } from "@shell/useAppPageGitColumn";
+import { useAppPageGitColumn } from "@shell/useAppPageGitColumn";
+import AppPageGitPeek from "./AppPageGitPeek";
+import { useAppPageGitPeekWidth } from "./useAppPageGitPeekWidth";
 import { peekSearch } from "./task-peek-store";
 
 // ---- the tabs, as ONE registry -----------------------------------------------
@@ -484,36 +487,43 @@ export default function AppPage({
   const peekOn = useTaskPeekEnabled();
   const peekable = peekOn === true && tab === "tasks";
 
-  // ---- THE GIT COLUMN -------------------------------------------------------
+  // ---- THE GIT PEEK -----------------------------------------------------------
   //
-  // The folder's `git` template in a right-hand column beside the whole page:
-  // the same component, the same drag and the same remembered width as the
-  // explorer's own companion sidebar (apps/explorer/PreviewSidebar), rendered
-  // here as an ordinary child of this page's split instead of through
-  // StatView's portal — this page is not inside StatView.
+  // The folder's `git` template beside the whole page, in a slim peek of its
+  // own (AppPageGitPeek.tsx) — the FULL template, ordinary write actions and
+  // all, framed like the Tasks tab's own side peek rather than through the
+  // explorer's borrowed-companion sidebar (apps/explorer/PreviewSidebar) the
+  // first draft used. See AppPageGitPeek.tsx's own header for why: no mode
+  // rail, no tab header, no panel-toggle — just the template, a close
+  // affordance and a resize seam.
   //
   // This does NOT bring back the Git TAB the header above says was removed, and
   // the distinction is the whole design. A tab put the working tree on the same
   // footing as the app itself, so reaching it took the app off the screen; a
-  // column does not. Staging and committing are things you do WHILE looking at
-  // the app — which is the argument the file preview's companion sidebar
-  // already makes for this same template. What the header says about the
-  // VERSION PICKER is untouched: that stays read-only and page-wide, and this
-  // column always shows the LIVE folder, never a `_snapshot` tree (there is no
-  // working tree to stage in an extracted copy).
+  // peek does not. Staging and committing are things you do WHILE looking at
+  // the app. What the header says about the VERSION PICKER is untouched: that
+  // stays read-only and page-wide, and this peek always shows the LIVE folder,
+  // never a `_snapshot` tree (there is no working tree to stage in an
+  // extracted copy).
   //
   // ONE WAY IN, by the owner's choice: App Doctor's "Open in git" row, which
-  // until now left this page for the explorer. No header button, so the column
+  // until now left this page for the explorer. No header button, so the peek
   // costs a page nobody opened it from nothing at all — not a probe, not a
-  // frame. The way OUT is the column's own close button, and dragging it
-  // through its floor, exactly as everywhere else that hosts one.
+  // frame. The way OUT is the peek's own close button.
   //
-  // The state itself lives in useAppPageGitColumn.ts, not here: it is the one
-  // piece of this page with real behaviour to pin (the probe gate, the
-  // auto-close race against `useDirMode`'s own async settling), and this file
-  // has no render-test precedent to pin it against directly (see
-  // AppPage.test.tsx's header) — the hook gets its own test instead.
+  // The open/probe state lives in useAppPageGitColumn.ts, not here: it is the
+  // one piece of this page with real behaviour to pin (the probe gate, the
+  // auto-close race against `useDirMode`'s own async settling, and now telling
+  // a rejected probe apart from a settled "no git here"), and this file has no
+  // render-test precedent to pin it against directly (see AppPage.test.tsx's
+  // header) — the hook gets its own test instead. The peek's WIDTH is a
+  // separate, purely-visual concern (useAppPageGitPeekWidth.ts) kept out of
+  // that hook for the same reason: nothing about "how wide" belongs beside
+  // "is it open and did the probe fail".
   const { open: gitOpen, openGit, closeGit, gitMode, gitSrc } = useAppPageGitColumn(dir);
+  const gitSplitRef = useRef<HTMLDivElement | null>(null);
+  const gitPeekLayout = useAppPageGitPeekWidth(gitSplitRef);
+  const gitTaken = gitOpen ? gitPeekLayout.width : 0;
 
   // Folded ONCE for every tilde below: `home` is raw expanduser (backslashed on
   // Windows) while `dir` and the root are forward-slash, and a prefix test
@@ -584,12 +594,24 @@ export default function AppPage({
   };
 
   return (
-    // The page-level split: the page itself, then the git column when one is
-    // open. Mirrors `.stat-split` (explorer.css) down to the class contract —
-    // PreviewSidebar's drag finds its container by `closest` on either name.
-    <div className="app-page-split">
-      <TaskPeekFrame peekable={peekable}>
-        <div className="app-page">
+    // The page-level split, laid out exactly the way `TaskPeekFrame`'s own
+    // on-branch row is (Notion-style: a shrinking frame beside an absolutely
+    // positioned panel sliding in over the row's right edge) — but ONE LEVEL
+    // UP, so the git peek and the Tasks tab's own peek never share a right
+    // edge. `.app-page-frame-slot` is the frame's own width (100% minus
+    // whatever the git peek has taken); `TaskPeekFrame` renders inside it
+    // untouched, so the Tasks peek — when it opens — narrows to whatever room
+    // THIS split has already left it, rather than reaching for the same edge.
+    <div
+      className={"app-page-split" + (gitPeekLayout.dragging ? " is-dragging" : "")}
+      ref={gitSplitRef}
+    >
+      <div
+        className="app-page-frame-slot"
+        style={{ width: `calc(100% - ${gitTaken}px)` }}
+      >
+        <TaskPeekFrame peekable={peekable}>
+          <div className="app-page">
           <header className="app-page-head" ref={headRef} data-fit={headFit}>
             <div className="app-page-title">
               {/* The app's mark, and the way to change it: a click opens the same
@@ -801,31 +823,15 @@ export default function AppPage({
               })}
           </div>
         </div>
-      </TaskPeekFrame>
-      {gitOpen && (
-        <PreviewSidebar
-          // One companion here, so the header's strip is one tab: it reads as
-          // this column's title, which is what it is. The icon comes off
-          // `bound` — the mode as the registry binds it — so a column that is
-          // still gate-pending wears the Git mark rather than a placeholder
-          // letter, the same rule the explorer's disabled rows follow.
-          entries={[
-            {
-              mode: GIT_COLUMN_MODE,
-              icon: templateModeIcon(
-                gitMode.bound ?? { mode: GIT_COLUMN_MODE, path: null, icon: null },
-              ),
-              pending: gitMode.pending,
-            },
-          ]}
-          active={GIT_COLUMN_MODE}
-          // Nothing to switch TO — the strip's only tab is the active one, and
-          // base-ui never reports a change to the value it already holds.
-          onSelect={() => {}}
-          src={gitMode.pending ? null : gitSrc}
-          onClose={closeGit}
-        />
-      )}
+        </TaskPeekFrame>
+      </div>
+      <AppPageGitPeek
+        open={gitOpen}
+        mode={gitMode}
+        src={gitMode.pending ? null : gitSrc}
+        onClose={closeGit}
+        layout={gitPeekLayout}
+      />
     </div>
   );
 }
