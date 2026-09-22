@@ -6,12 +6,75 @@
 
    After schedule.css / tasks.css in the barrel: the nested Tasks page is drawn
    by those, and this file adds only the frame around it. */
+/* THE PAGE-LEVEL SPLIT (shell/AppPage.tsx): the page, and the git peek beside
+   it when one is open (AppPageGitPeek.tsx, useAppPageGitPeekWidth.ts). This
+   used to be the explorer's own companion-column component
+   (apps/explorer/PreviewSidebar) reused wholesale; the redesign (2026-09-22,
+   "I just want the git template... more like the tasks tab sidebar") gave the
+   git peek its own slim component instead, styled below, so PreviewSidebar no
+   longer renders on this page at all and its `SPLIT_SEL` no longer names
+   `.app-page-split` (see PreviewSidebar.tsx).
+
+   `.app-page-frame-slot` is the frame's own share of the row — 100% minus
+   whatever the peek has taken — so the Tasks tab's own side peek
+   (TaskPeekFrame, styles/task-peek.css) always measures against the row this
+   slot leaves it, never against the git peek's edge directly. The two peeks
+   can never fight over one edge because of that nesting: this split's other
+   child is `.app-git-peek`, and TaskPeekFrame lives entirely inside the slot.
+
+   Always rendered, so a page with no peek open is the single-column layout it
+   has always been: the slot filling the row, the peek collapsed to nothing. */
+/* `overflow: hidden` is what keeps a panel parked off the right edge (the git
+   peek, `transform: translateX(100%)` while shut) from growing a horizontal
+   page scrollbar — a transformed box's border box still counts toward
+   scrollable overflow even with `visibility: hidden`. Same rule, same reason,
+   as `.tasks-peek-host` (styles/task-peek.css). MEASURED without it: shut,
+   `document.documentElement.scrollWidth` 1807 vs `clientWidth` 1390. */
+.app-page-split {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Width transitions on the same clock as the peek's own slide
+   (`--peek-dur`/`--peek-ease`, styles/task-peek.css), so the frame's reflow
+   and the peek's slide run off one number instead of the frame snapping
+   while the peek animates — `.tasks-frame`'s own `transition: width` is the
+   precedent this mirrors. A floor on top of that width: `.app-git-peek`'s own
+   `max-width` below leaves this slot no less than CONTENT_MIN_W
+   (apps/explorer/lib/side-width.ts) at rest, but a JS state briefly out of
+   sync with a fast resize is still possible, and a floor here is what stops
+   the app underneath from being crushed to nothing rather than merely
+   narrow. */
+.app-page-frame-slot {
+  min-width: 320px;
+  min-height: 0;
+  display: flex;
+  transition: width var(--peek-dur) var(--peek-ease);
+}
+
 .app-page {
   flex: 1 1 auto;
+  /* Was never needed while this element was the only child of #content; as a
+     flex ITEM in the row above it is, or a wide tab body would push the git
+     peek off the window instead of scrolling inside its own. */
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg);
+}
+
+/* Both sides of the seam are inert for the drag's duration — the git peek's
+   document is an iframe and would otherwise swallow the captured pointer
+   stream, and so would the Overview's frame opposite it. The explorer states
+   the same rule over `.stat-split` (preview.css); `useAppPageGitPeekWidth.ts`
+   is what sets `.is-dragging` on this row for the drag's duration. */
+.app-page-split.is-dragging iframe {
+  pointer-events: none;
 }
 
 .app-page-head {
@@ -699,4 +762,129 @@
 /* Rung 1 of the tab bar: the "Version" eyebrow goes; the picker itself stays. */
 .app-page-tabbar[data-fit="2"] .app-version-picker-eyebrow {
   display: none;
+}
+
+/* ---- THE GIT PEEK (AppPageGitPeek.tsx) -----------------------------------
+   Same slide as the Tasks tab's own side peek (`.task-side-peek`,
+   task-peek.css) — same `--peek-*` vars, same absolute-over-the-row-edge
+   arrangement — but its own classes and its own component, because it is not
+   that peek: it has no cover mode, no drag-to-close (a plain floor clamp in
+   useAppPageGitPeekWidth.ts; the close button is the only way out), and none
+   of task-peek-store.ts's state. `.app-page-split` (above) is its row,
+   `position: relative` there is what an absolutely-positioned child needs. */
+.app-git-peek {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  /* Same floor as `.app-page-frame-slot`'s `min-width` (CONTENT_MIN_W,
+     apps/explorer/lib/side-width.ts) applied from the other side: on a narrow
+     window `useAppPageGitPeekWidth`'s `clampSideWidth` leaves `current`
+     UNCHANGED once the container can no longer hold both floors (below
+     ~700px), on the documented assumption that "the CSS min-widths hold
+     there" — which was never true here, since this panel's width is set
+     purely from JS state and the frame slot had no CSS floor of its own
+     either. Below ~380px the un-clamped width could reach the full
+     container, leaving the app behind it 0px wide. This caps the panel at
+     the same number the slot is floored to, so the two together hold the
+     line the JS clamp gives up on. */
+  max-width: calc(100% - 320px);
+  background: var(--bg-panel);
+  box-shadow:
+    0 0 0 1px var(--border),
+    0 4px 12px -2px var(--shadow-sm);
+  transform: translateX(100%);
+  transition:
+    transform var(--peek-dur) var(--peek-ease),
+    visibility 0s linear var(--peek-dur);
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.app-git-peek.is-open {
+  transform: translateX(0);
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    transform var(--peek-dur) var(--peek-ease),
+    visibility 0s;
+}
+
+.app-git-peek-seam {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--peek-seam-w);
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 1;
+}
+
+.app-git-peek-head {
+  flex: 0 0 auto;
+  height: var(--peek-head-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-inline: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.app-git-peek-title {
+  font-weight: 600;
+}
+
+/* A plain `<button>` with no reset of its own: this project ships Tailwind
+   WITHOUT preflight (styles/tailwind.css — its `@layer base` is scoped to
+   `[data-slot]`, deliberately not bare `button`), and `base.css`'s hand-named
+   reset list does not cover this class, so without these declarations the
+   button keeps native UA chrome. MEASURED before this rule: `border: 2px
+   outset`, `background-color: rgba(255,255,255,0.247)`, `cursor: default`,
+   `font-size: 11px`, `padding: 2px 6px 3px`. Mirrors the sibling
+   `.task-side-peek-btn` (styles/task-peek.css). */
+.app-git-peek-close {
+  width: var(--peek-icon-w);
+  height: var(--peek-icon-w);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.app-git-peek-close:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.app-git-peek-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-git-peek-frame {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+}
+
+.app-git-peek-resolving,
+.app-git-peek-error {
+  margin: auto;
+  padding: 24px;
+  text-align: center;
+  color: var(--fg-muted);
 }
