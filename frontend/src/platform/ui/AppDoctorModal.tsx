@@ -93,7 +93,6 @@ import {
   CirclePlay,
   GitPullRequest,
   LoaderCircle,
-  MessageSquareText,
   RotateCw,
   TriangleAlert,
   X,
@@ -144,6 +143,7 @@ import { appLandingUrl } from "@platform/lib/appLanding";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { announceAppDoctorChanged, announceTasksChanged } from "@platform/lib/tasksChanged";
 import { chatUrl } from "@platform/lib/queue";
+import { ClaudeMark } from "@platform/ui/ClaudeMark";
 
 // The Pull button's own mutation result — same minimal shape
 // shell/RepoUpdatesDock.tsx's own `MutationResult` keeps local rather than
@@ -460,7 +460,7 @@ function CheckRow({
                   aria-label="Open the check's conversation"
                   onClick={() => onOpenVerdictTask(check)}
                 >
-                  <MessageSquareText aria-hidden />
+                  <ClaudeMark size={0.8} />
                 </Button>
               )}
               {/* A settled on-demand row: the cache invalidates itself when
