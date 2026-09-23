@@ -102,8 +102,8 @@ export interface Job {
   // diverges for a render, where it stays the raising route (or "") through
   // every tick, including the terminal one, never inheriting `page`'s
   // output-path fallback. "" means "no known raiser" and must always read as
-  // "cannot suppress, so notify" — see `isPopupSuppressed`, and `matchesSource`
-  // (presence.ts), which already returns false for an empty `source`.
+  // "cannot suppress, so notify" — see `matchesSource` (presence.ts), which
+  // already returns false for an empty `source`.
   source: string;
   // A short, human-readable label naming WHAT RAISED this job — "Playground",
   // "Local models", "Benchmark", "Explorer", "Claude setup", "GitHub",
@@ -299,46 +299,6 @@ export function effectiveTier(job: Job): JobTier {
  *  that declared itself transient/silent but ended in `error`/`cancelled`
  *  still gets a row, because the override already turned it into
  *  `attention`. */
-/** D-A / §2b (SPEC-quiet-notifications.md), reversed 2026-09-17 (user: "I
- *  also don't like this recent stuff. notification is notification. remove
- *  this recent."): a successful job whose own page the user is already
- *  looking at no longer earns a place in a folded "Recent" section — that
- *  section is gone (see DECISIONS-quiet-notifications.md). What survives is
- *  ONLY the popup suppression itself, the original ask this predicate was
- *  built for ("the success notification should only come if the user
- *  doesn't have the app open"): a suppressed row still pops nothing and still
- *  never grabs the popup slot, it now simply lands as an ordinary row in the
- *  panel's one unified list instead of a second, folded one.
- *
- *  UPDATE (2026-09-23, D888): `popupJobs`/`popupTick` no longer call this at
- *  all — a successful `done` job never pops a card any more, presence aside,
- *  so the presence check this function existed to make had nothing left to
- *  gate. It is kept as an exported, independently-tested pure function (its
- *  `source`-vs-`page` reasoning below is still correct and may be wanted
- *  again), but nothing in this file calls it today.
- *
- *  Gated on `state === "done"` specifically, not `isTerminal`: `error` and
- *  `cancelled` are promoted to "attention" by `effectiveTier` before this
- *  check ever runs (verified by reading `effectiveTier` above, not assumed),
- *  so a failure already fails the `!== "attention"` test and is never
- *  suppressed — this condition is written the long way on purpose so that
- *  stays visibly true rather than relying on it as an accident of `done`-only
- *  gating. */
-export function isPopupSuppressed(job: Job, isOpenAnywhere: (source: string) => boolean): boolean {
-  if (job.state !== "done") return false;
-  if (effectiveTier(job) === "attention") return false;
-  // `job.source`, NOT `job.page` (SPEC-quiet-notifications.md bug 1): `page`
-  // is a render's own OUTPUT PATH once no caller page was supplied (see
-  // `Job.source`'s own doc comment above), which can never match an open
-  // shell route — reading it here suppressed nothing, ever, for a
-  // server-backed render. `source` never inherits that fallback, so a render
-  // raised from a page the user is still looking at is now suppressed
-  // correctly, and `source === ""` (no known raiser) correctly falls through
-  // to `isOpenAnywhere("")`, which `matchesSource` always reads false for —
-  // "cannot suppress, so notify", never a silent match.
-  return isOpenAnywhere(job.source);
-}
-
 // ------------------------------------------------------------------ §3 grouping
 //
 // SPEC-quiet-notifications.md §3. `Job.group` (above) is defaulted server-side
@@ -532,9 +492,9 @@ function indexGroups(jobs: readonly Job[]): Map<string, JobGroup> {
 }
 
 // `isOpenAnywhere`, still accepted here, is now UNUSED by this function
-// itself (removed 2026-09-17 alongside the "Recent" section — see
-// `isPopupSuppressed`'s own header comment) — kept only so every existing
-// caller (`terminalNotifications`, `ActivityDock.tsx`, every test in
+// itself (removed 2026-09-17 alongside the "Recent" section — presence no
+// longer gates this list, only the popup path below does) — kept only so
+// every existing caller (`terminalNotifications`, `ActivityDock.tsx`, every test in
 // `jobs.test.ts` that passes `openHere(...)`/`openNowhere`) keeps compiling
 // unchanged. A presence-suppressed success is no longer excluded from this
 // list at all: it lands here as an ordinary row, exactly like everything
@@ -596,11 +556,9 @@ export function terminalNotifications(
  *  finish, whatever the producer's declared `tier`) is excluded outright — a
  *  running row, or the chip's own progress line, already said the work was
  *  happening, so a successful finish is not news worth interrupting for.
- *  This is why the old presence-suppression check (`isOpenAnywhere`,
- *  `isPopupSuppressed`) is gone from this function: it only ever gated a
- *  SUCCESS pop, and success never pops here any more regardless of where the
- *  user is — see `isPopupSuppressed`'s own doc comment for what, if
- *  anything, still calls it.
+ *  This is why the old presence-suppression check (`isOpenAnywhere`) is gone
+ *  from this function: it only ever gated a SUCCESS pop, and success never
+ *  pops here any more regardless of where the user is.
  *
  *  `mergedRows` still runs first, for the same reason `terminalNotifications`
  *  runs it first: a render waiting on a shared model load must not pop the
@@ -696,9 +654,8 @@ export function popupTick(
   // No presence check here any more (2026-09-23, D888): `popupJobs` already
   // excludes every `state === "done"` job outright, so the only candidates
   // reaching this loop are `error`/`cancelled` — never suppressed regardless
-  // of where the user is (see `isPopupSuppressed`'s own doc). The former
-  // `isOpenAnywhere` param existed solely to gate a success pop and is gone
-  // with it.
+  // of where the user is. The former `isOpenAnywhere` param existed solely
+  // to gate a success pop and is gone with it.
   for (const j of popupJobs(jobs)) {
     const key = popupKey(j);
     next.add(key);
@@ -747,9 +704,9 @@ export const EMPTY_GROUP_POPUP_STATE: GroupPopupState = {
  *  needs the user's attention.
  *
  *  Not gated by presence/`isOpenAnywhere` on purpose: a FAILURE is
- *  `effectiveTier === "attention"`, which `isPopupSuppressed` itself already
- *  always excludes from suppression — so there is no presence check this
- *  function could apply that would ever change the outcome. */
+ *  `effectiveTier === "attention"`, which is never suppressed regardless of
+ *  presence — so there is no presence check this function could apply that
+ *  would ever change the outcome. */
 export function groupPopupTick(
   jobs: Job[],
   state: GroupPopupState,

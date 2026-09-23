@@ -25,7 +25,6 @@ const {
   jobAmount,
   jobDetail,
   jobFraction,
-  isPopupSuppressed,
   jobRows,
   jobsAfterClear,
   jobStatusLine,
@@ -44,8 +43,8 @@ function job(over: Partial<Job> = {}): Job {
   // `source` defaults to whatever `page` resolved to (ordinary-producer
   // parity, same as the server's own default) unless a test explicitly
   // overrides it — this is what lets every pre-existing fixture in this file
-  // keep passing unchanged once `isPopupSuppressed`/`familyKey` read `source`
-  // instead of `page`.
+  // keep passing unchanged once `familyKey` reads `source` instead of
+  // `page`.
   const page = over.page ?? "/tmp/index.html";
   return {
     id: "j1",
@@ -782,71 +781,16 @@ test("aggregate progress: nothing running draws no line, no totals sweep, else t
 // SPEC-quiet-notifications.md §2b / D-A, reversed 2026-09-17 for the ROW (the
 // "Recent" section is gone — see DECISIONS-quiet-notifications.md): a
 // successful terminal job whose own page the user is already looking at no
-// longer loses its seat in Notifications. What survives is only the POPUP
-// suppression `isPopupSuppressed` was originally built for.
+// longer loses its seat in Notifications. Presence-based popup suppression
+// (formerly `isPopupSuppressed`) was itself removed 2026-09-23 (D888): a
+// clean finish never pops a card any more, regardless of presence, so
+// `jobRows` below is exercised only for its ROW behavior (still unaffected
+// by presence) and its now-inert `isOpenAnywhere` parameter.
 
 const openHere = (page: string) => (source: string) => source === page;
 const openNowhere = () => false;
 
-test("isPopupSuppressed: a done, non-attention job whose page is open anywhere is popup-suppressed", () => {
-  const j = job({ state: "done", tier: "trail", page: "/ai-models/local" });
-  expect(isPopupSuppressed(j, openHere("/ai-models/local"))).toBe(true);
-});
-
-test("isPopupSuppressed: false when nothing has that page open", () => {
-  const j = job({ state: "done", tier: "trail", page: "/ai-models/local" });
-  expect(isPopupSuppressed(j, openNowhere)).toBe(false);
-});
-
-test("isPopupSuppressed: an error is never popup-suppressed even if its page is open (effectiveTier promotes to attention)", () => {
-  const j = job({ state: "error", tier: "trail", page: "/ai-models/local" });
-  expect(isPopupSuppressed(j, openHere("/ai-models/local"))).toBe(false);
-});
-
-test("isPopupSuppressed: a cancelled job is never popup-suppressed for the same reason", () => {
-  const j = job({ state: "cancelled", tier: "trail", page: "/ai-models/local" });
-  expect(isPopupSuppressed(j, openHere("/ai-models/local"))).toBe(false);
-});
-
-test("isPopupSuppressed: an explicit tier: attention job is never popup-suppressed", () => {
-  const j = job({ state: "done", tier: "attention", page: "/ai-models/local" });
-  expect(isPopupSuppressed(j, openHere("/ai-models/local"))).toBe(false);
-});
-
-test("isPopupSuppressed: a running job is never popup-suppressed regardless of presence", () => {
-  const j = job({ state: "running", tier: "trail", page: "/ai-models/local" });
-  expect(isPopupSuppressed(j, openHere("/ai-models/local"))).toBe(false);
-});
-
-// Bug 1 (SPEC-quiet-notifications.md): a server-backed render's `page` is
-// overloaded to the OUTPUT IMAGE PATH once no caller page survives — a
-// pre-existing, deliberate fallback in `_start_render` that must keep
-// working so a click still opens the file. `source` is the separate field
-// that carries the RAISING route instead, and `isPopupSuppressed` must read
-// it, not `page`, or a server-backed render's popup can never be suppressed
-// at all.
-test("isPopupSuppressed: a render whose page is an output path IS suppressed via its distinct source", () => {
-  const j = job({
-    state: "done",
-    tier: "trail",
-    page: "/tmp/outputs/render.png",
-    source: "/ai-models/playground",
-  });
-  expect(isPopupSuppressed(j, openHere("/ai-models/playground"))).toBe(true);
-});
-
-test("isPopupSuppressed: the same render job is NOT suppressed when source is empty (unknown source degrades to notify)", () => {
-  const j = job({
-    state: "done",
-    tier: "trail",
-    page: "/tmp/outputs/render.png",
-    source: "",
-  });
-  expect(isPopupSuppressed(j, openHere("/ai-models/playground"))).toBe(false);
-  expect(isPopupSuppressed(j, openNowhere)).toBe(false);
-});
-
-test("jobRows: a popup-suppressed success still shows as an ordinary row (no more Recent section to drop into)", () => {
+test("jobRows: a done job still shows as an ordinary row (no more Recent section to drop into)", () => {
   const jobs = [job({ state: "done", tier: "trail", page: "/ai-models/local" })];
   expect(jobRows(jobs, openHere("/ai-models/local")).map((j) => j.id)).toEqual(jobs.map((j) => j.id));
 });
@@ -869,10 +813,8 @@ test("jobRows: omitting isOpenAnywhere entirely preserves today's behavior (no s
 // `popupJobs`/`popupTick` no longer take an `isOpenAnywhere` predicate at all
 // (2026-09-23, D888): a successful `done` job never pops regardless of
 // presence, and an `error`/`cancelled` job was never presence-suppressed to
-// begin with (see the `isPopupSuppressed` tests above) — so there is no
-// presence-gated popup behavior left for these two functions to exercise.
-// `isPopupSuppressed` itself remains exported and unit-tested above; it is
-// simply no longer called from this popup pipeline.
+// begin with — so there is no presence-gated popup behavior left for these
+// two functions to exercise.
 
 // --------------------------------------------------------------- §3 grouping
 // SPEC-quiet-notifications.md §3: rows are keyed by `(page, group)`, not by
