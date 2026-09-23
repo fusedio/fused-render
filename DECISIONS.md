@@ -5364,3 +5364,116 @@ COMPLETE set once any manifest exists, core deps included, no baseline
 credit, D172), then `.venv/bin/python -m pytest tests/test_bundle_contents.py
 tests/test_engine_requirements.py -k <folder>` to re-confirm the D176
 conflict before deciding which of the two options above to take.
+
+**Item 4 (CI gates) — done.** Ported the three gates from the sibling
+openfused repo's `.github/workflows/ci.yml` (`local-extra`/wheel/d68ddb45's
+import-weight technique), adapted to this repo's job graph:
+
+- `minimal-install` (new job in `.github/workflows/test.yml`, after
+  `fused-engine`): `pip install -e ".[dev]"` (no `[bundled]`/`[fused]`), then
+  an explicit `python -c "import fused_render.cli"` +
+  `create_app(tempfile.mkdtemp())`, then `tests/test_import_weight.py`
+  (new file), then a real boot of `python -m fused_render.cli serve
+  --port 8781 --no-browser` and a `curl -sf http://127.0.0.1:8781/api/config`
+  retry loop, killed after.
+- `wheel` (new job, same location): `uv build --wheel` (this repo's build
+  uses hatchling + a custom hook in `scripts/hatch_build.py` that shells to
+  npm itself for a non-editable build — confirmed by reading the hook, so
+  the job needs Node 22 but does not need the `frontend` job's shell-dist
+  artifact), asserts `fused_render/static/shell-dist/index.html` and
+  `fused_render/skills/` are present in the built wheel via `unzip -l | grep
+  -q`, installs into `/tmp/fr-wheel-venv` via `uv pip install`, `cd /tmp`,
+  boots `fused-render serve --port 8782 --no-browser`, same curl retry loop.
+- `tests/test_import_weight.py` (new file): the d68ddb45 technique —
+  `sys.meta_path.insert(0, _BlockHeavy())` in a subprocess (`sys.meta_path`
+  is process-global and the suite runs under pytest-xdist, so mutating it
+  in-process would leak into whatever else that worker imports next),
+  `find_spec` raises `ModuleNotFoundError` for any HEAVY root, HEAVY =
+  `{numpy, pandas, requests, openpyxl, pptx, msgpack, fpdf, drain3,
+  botocore}` — every one a `[bundled]`-only distribution today (re-checked
+  against `pyproject.toml`'s `bundled` extra). Deliberately excludes
+  `pillow`: it is a CORE dependency on `sys_platform in {"win32", "linux"}`
+  (the capture-backend entries around pyproject.toml:120), so blocking it on
+  the Linux CI runner this test actually runs on would not be testing a lean
+  install — it would just always pass regardless of whether the code path
+  under test needs it. `fused_render.cli` and `fused_render.server` are
+  asserted importable under the block.
+- `test-status`'s aggregator `needs:`/result-check was extended to include
+  both new jobs (they gate on `app` like `fused-engine`, no legitimate
+  "skipped" outcome, same treatment as `test-python`/`fused-engine`/etc.).
+
+Local verification actually run, not just read: `tests/test_import_weight.py`
+passed against the current dev `.venv` (which HAS `[bundled,fused]`
+installed) — confirming the block genuinely makes the import fail rather than
+passing by accident (a `sys.modules`-absence check would have false-passed
+here regardless of whether the code was reachable). The full frontend was
+built locally (`cd frontend && npm install && npm run build` — the
+`setting-up-dev-env` skill's documented one-time step, no dev server
+started), then the `minimal-install` boot step was run for real (`python -m
+fused_render.cli serve --port 18781 --no-browser` in the background, curl
+retry loop, `kill` + `wait` after) and succeeded: `GET /api/config HTTP/1.1"
+200 OK`, clean shutdown. The `wheel` job's steps were also run for real:
+`uv build --wheel` (which shells to npm itself, confirmed by reading
+`scripts/hatch_build.py`'s `ShellBuildHook.initialize`) produced
+`dist/fused_render-0.5.82-py3-none-any.whl`; `unzip -l` confirmed both
+artifact paths present (32 `shell-dist` entries including `index.html`, 18
+`fused_render/skills/` entries); `uv venv --python 3.12
+/tmp/fr-wheel-venv-smoke` + `uv pip install` installed the wheel cleanly.
+
+**That last step surfaced a real, unscoped, high-priority bug — not fixed
+here, flagged for a follow-up.** Booting the installed wheel from `/tmp` (no
+extras) crashed at FastAPI startup:
+
+```
+ModuleNotFoundError: No module named 'cryptography'
+  File ".../fused_render/server/app.py", line 1032, in _startup_update_dev_manager
+    update.start()
+  File ".../fused_render/update/__init__.py", line 50, in start
+    from fused_render.update import mac
+  File ".../fused_render/update/mac.py", line 67, in <module>
+    from fused_render.update import common
+  File ".../fused_render/update/common.py", line 28, in <module>
+    from cryptography.exceptions import InvalidSignature
+ERROR:    Application startup failed. Exiting.
+```
+
+Root cause: `update/__init__.py:start()` unconditionally imports
+`fused_render.update.mac` when `sys.platform == "darwin"` (no try/except),
+and `mac.py` imports `common.py` at module load, which does `from
+cryptography.exceptions import InvalidSignature` / `from
+cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey`
+at the top level (the self-update manifest's ed25519 signature check) — also
+with no guard. `cryptography` is not a core dependency anywhere in
+`pyproject.toml`; it only arrives via `[dev]` (test tooling) or, per item 1's
+finding, transitively through `mcp` in `[bundled]`/`[fused]`. A bare `pip
+install fused-render` on **any macOS** (not just x86_64 — this is unrelated
+to the item 1 version ceiling) has none of those, so the server's own
+startup lifespan (`_startup_update_dev_manager`, `app.py:1032`) crashes the
+whole process before it ever serves a request.
+
+This is the actual remaining blocker for this spec's stated goal — item 1
+fixes dependency *resolution* on x86_64 macOS, but the installed app still
+cannot *run* on any Mac without `[dev]`/`[bundled]`/`[fused]` also being
+installed. It surfaced only because this item's CI gates do a REAL boot,
+which items 1–3 never do. The two new CI jobs run on `ubuntu-latest`
+(matching the sibling repo and every other non-desktop job in this
+workflow), so this darwin-only crash will NOT reproduce there — CI will be
+green on every PR despite the bug being real; catching it in CI would need a
+`macos-latest` leg, which is outside this item's stated scope (port the
+sibling's three gates, adapted — not add new platform coverage) and a real
+runner-cost/scope tradeoff, so it was not added unilaterally.
+
+Not fixed in this branch: it touches a security-critical,
+signature-verification import path (`update/common.py`'s ed25519 manifest
+check) and deserves its own reviewed change, not a rushed patch riding along
+with the CI-gates commit. The likely-safe shape, for whoever picks this up:
+guard the `from fused_render.update import mac` import in
+`update/__init__.py:start()` (or the `cryptography` import inside
+`update/mac.py`/`common.py` itself) with `except (ImportError,
+ModuleNotFoundError)`, treating a missing `cryptography` the same as the
+module's own documented "nothing to swap" no-op convention (`manager()`
+already tolerates `mac.manager()` returning `None`) — log once, disable
+self-update, let the server boot. Repro: build a wheel (`uv build --wheel`),
+`uv venv /tmp/x && uv pip install --python /tmp/x/bin/python dist/*.whl`,
+`cd /tmp && /tmp/x/bin/fused-render serve --no-browser` on a real Mac with
+no other extras installed.

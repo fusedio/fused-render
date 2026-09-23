@@ -448,6 +448,162 @@ jobs:
           FUSED_RENDER_REQUIRE_FUSED_ENGINE: "1"
         run: python -m pytest tests/ -q
 
+  # Does fused-render actually WORK with nothing beyond core + `[dev]`
+  # installed? (LEAN_WHEEL_SPEC.md item 4, modeled on the sibling openfused
+  # repo's `local-extra` job, ci.yml:81.) test-python above already installs
+  # only `.[dev]`, but it never asserts the install works BEFORE running
+  # ~11,000 tests that can silently `importorskip` past anything
+  # bundled/fused-only touches — a fully broken lean install could still show
+  # green there, the same failure mode that job's own comment (below) warns
+  # about for extras. This job is narrower and cheaper: an explicit up-front
+  # import of the two real entry points, a genuine block of every
+  # `[bundled]`-only package (tests/test_import_weight.py), then a real boot
+  # of the CLI's own `serve` subcommand and a request against it — so "the
+  # lean install works" is asserted directly, not inferred from what happened
+  # not to skip.
+  minimal-install:
+    needs: [detect-changes, frontend]
+    if: needs.detect-changes.outputs.app == 'true' && needs.frontend.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: shell-dist
+          path: fused_render/static/shell-dist
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # No [bundled], no [fused] — the leanest real install: core deps plus
+      # just enough test tooling to run pytest.
+      - name: Install fused-render (dev extra only)
+        run: pip install -e ".[dev]"
+
+      - name: Assert the entry points import with nothing but core deps
+        # Without this, a broken lean install can still go green below: the
+        # server import could already be failing on a missing bundled
+        # package, and the boot step would surface it later as a less legible
+        # timeout instead of the real ModuleNotFoundError. Fail here, first,
+        # on the real symptom.
+        run: |
+          python -c "import fused_render.cli"
+          python -c "
+          import tempfile
+          from fused_render.server import create_app
+          create_app(tempfile.mkdtemp())
+          "
+
+      - name: Prove no [bundled]-only package is reachable from either entry point
+        run: python -m pytest tests/test_import_weight.py -q
+
+      - name: Boot the server and hit it for real
+        # No TestClient/ASGI shortcut — the real CLI subprocess and a real
+        # HTTP request, so nothing about the process boundary or the uvicorn
+        # startup path is assumed away.
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m fused_render.cli serve --port 8781 --no-browser &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -sf "http://127.0.0.1:8781/api/config" >/dev/null; then
+              echo "Lean install served a real request."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::server never answered /api/config on a minimal install"
+          exit 1
+
+  # Does the actual wheel that ships to users install and run with nothing but
+  # itself? (LEAN_WHEEL_SPEC.md item 4, modeled on the sibling openfused repo's
+  # `wheel` job, ci.yml:228.) The artifact-presence check catches a
+  # hatch_build.py regression that silently drops shell-dist/skills from the
+  # built wheel; the boot+curl step catches an install that LOOKS complete but
+  # can't actually serve (a missing runtime dep, a broken entry point). `cd`
+  # into a directory with no fused_render source before booting is
+  # load-bearing, exactly as it is in the source repo: without it a broken
+  # wheel could still boot by accidentally resolving fused_render off this
+  # checkout instead of the installed wheel, and the smoke test would prove
+  # nothing.
+  wheel:
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.app == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # scripts/hatch_build.py's build hook runs `npm install && npm run
+      # build` itself for a non-editable build (see its own top-of-file
+      # docstring) — this job builds the wheel from source rather than reusing
+      # the `frontend` job's shell-dist artifact, so Node has to be on PATH
+      # here too, same version as that job.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build the wheel
+        run: |
+          pip install build
+          python -m build --wheel
+
+      - name: Assert the shipped paths are actually in the wheel
+        # The `artifacts` globs (pyproject.toml's [tool.hatch.build.targets.wheel])
+        # are a promise, not a guarantee — the build hook has to have actually
+        # run and actually found the files. Check by name, failing with which
+        # path is missing, rather than trusting a successful build exit code.
+        run: |
+          set -euo pipefail
+          whl=$(ls dist/*.whl)
+          echo "Built: $whl"
+          for f in \
+            "fused_render/static/shell-dist/index.html" \
+            "fused_render/skills/"; do
+            if ! unzip -l "$whl" | grep -q "$f"; then
+              echo "::error::$f missing from $whl"
+              exit 1
+            fi
+          done
+
+      - name: Install the wheel into a throwaway venv
+        run: |
+          python -m venv /tmp/fr-wheel-venv
+          /tmp/fr-wheel-venv/bin/pip install "$(ls dist/*.whl)"
+
+      - name: Boot the installed wheel and hit it for real
+        # Working directory /tmp, not the checkout: from here nothing can
+        # resolve fused_render off source, only off the installed wheel.
+        shell: bash
+        working-directory: /tmp
+        run: |
+          set -euo pipefail
+          /tmp/fr-wheel-venv/bin/fused-render serve --port 8782 --no-browser &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -sf "http://127.0.0.1:8782/api/config" >/dev/null; then
+              echo "Installed wheel served a real request."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::server never answered /api/config from the installed wheel"
+          exit 1
+
   # Does the macOS bundle actually contain what `[bundled]` promises? Same shape
   # of hole as `fused-engine` above, one extra along: tests/test_bundle_contents.py
   # can only speak about a distribution it finds real metadata for, and the
@@ -717,7 +873,7 @@ jobs:
     name: Test Status
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [detect-changes, frontend, test-python, test-python-windows, fused-engine, bundle-contents, linux-desktop, windows-desktop, macos-desktop]
+    needs: [detect-changes, frontend, test-python, test-python-windows, fused-engine, minimal-install, wheel, bundle-contents, linux-desktop, windows-desktop, macos-desktop]
     if: always()
     steps:
       - name: Check test status
@@ -742,7 +898,7 @@ jobs:
           # among them: it gates on `app` exactly like test-python, and it is
           # listed here rather than with the filter-gated desktop jobs below
           # because "skipped" is NOT a legitimate outcome for it.
-          for result in "${{ needs.frontend.result }}" "${{ needs.test-python.result }}" "${{ needs.test-python-windows.result }}" "${{ needs.fused-engine.result }}" "${{ needs.linux-desktop.result }}" "${{ needs.bundle-contents.result }}"; do
+          for result in "${{ needs.frontend.result }}" "${{ needs.test-python.result }}" "${{ needs.test-python-windows.result }}" "${{ needs.fused-engine.result }}" "${{ needs.minimal-install.result }}" "${{ needs.wheel.result }}" "${{ needs.linux-desktop.result }}" "${{ needs.bundle-contents.result }}"; do
             if [[ "$result" != "success" ]]; then
               echo "Job did not succeed: $result"
               exit 1

@@ -192,6 +192,65 @@ layout differs.
 The wheel build runs the hatchling hook in `scripts/hatch_build.py`, which
 shells out to npm and needs Node 22 — the CI job must provide it.
 
+**Builder status (2026-09-23): done — three jobs added to `.github/workflows/test.yml`
+(`minimal-install`, `wheel`), plus `tests/test_import_weight.py`, all wired into
+`test-status`.** `minimal-install` installs `.[dev]` only, asserts
+`fused_render.cli`/`fused_render.server` import and `create_app()` constructs
+cleanly, runs the new import-weight test (blocks every `[bundled]`-only
+distribution via a `sys.meta_path` finder, subprocess-isolated, per
+d68ddb45's technique), then boots the real CLI (`python -m fused_render.cli
+serve`) and curls `/api/config`. `wheel` builds a real wheel (`uv build
+--wheel`, which shells out to npm the same way `pip`/`build` would — verified
+locally), asserts the `artifacts` glob paths
+(`fused_render/static/shell-dist/index.html`, `fused_render/skills/`) are
+actually inside it via `unzip -l`, installs into a throwaway venv, `cd /tmp`,
+boots `fused-render serve`, and curls `/api/config`. Both boot+curl sequences
+and the wheel build/artifact-check were run for real, locally, before
+committing (not just YAML-reviewed) — see DECISIONS.md for the exact commands
+and their output.
+
+**Critical finding from that local run, outside the four items but directly
+relevant to this spec's whole goal:** the wheel's boot-smoke step FAILED the
+first time it was run for real, off a throwaway venv with `dist/*.whl`
+installed and no extras — `ModuleNotFoundError: No module named
+'cryptography'` inside FastAPI's `lifespan`, from
+`fused_render/update/common.py:28` (`from cryptography.exceptions import
+InvalidSignature`), reached via `update/mac.py` (imported unconditionally by
+`update/__init__.py:start()` on `sys.platform == "darwin"`) from
+`app.py:_startup_update_dev_manager`. **A bare `pip install fused-render`
+(no extras, any macOS, not just x86_64) crashes at server startup today** —
+`cryptography` is not a core dependency (item 1 only ceilinged it for
+`[dev]`/`[bundled]`/`[fused]`, per the mcp-transitive finding at the top of
+this file), and `update/common.py`'s signature-verification import has no
+guard.
+
+This is the actual blocker for "the wheel is installable on Intel Macs" — item
+1 fixes *resolution* (pip can find compatible wheels), but the app still will
+not *run* once installed, on any Mac. It was found here, not in items 1-3,
+because those changes never exercise a real boot; the CI gates in this item
+are what caught it, on the first real run.
+
+**Also worth flagging:** both new CI jobs run on `ubuntu-latest` (matching the
+sibling repo's convention and this repo's other non-desktop jobs), so on CI
+this darwin-only crash does NOT reproduce — the jobs will show green on every
+PR despite the bug being real. Catching it in CI would need a `macos-latest`
+leg for at least the boot-smoke step. Not added here: outside item 4's stated
+scope (port the sibling repo's three gates, adapted, not add new platform
+coverage) and a real cost/scope decision (macOS runner minutes, whether to
+also gate on `macos_packaging`/`app`) that a builder should not make
+unilaterally, same posture as items 2 and 3.
+
+**Left unfixed, by design — this is a fifth, unscoped finding, not one of the
+four items.** The safe fix is almost certainly a guard in `update/mac.py`
+mirroring the module's own documented "nothing to swap" no-op convention
+(catch `ModuleNotFoundError`/`ImportError` around the `common` import in
+`start()`, log once, leave `manager()` returning `None` — the same shape
+`/api/config` and `/api/update` already handle for "no update manager on this
+platform"). That touches a security-critical, signature-verification code
+path, so it deserves its own reviewed change, not a rushed patch appended to
+a CI-gates commit. Flagged for the orchestrator/next builder as a real,
+verified, high-priority bug — full repro in DECISIONS.md.
+
 ## Explicitly out of scope
 
 - **pyarrow → duckdb in the file index.** Deferred by the user pending a
