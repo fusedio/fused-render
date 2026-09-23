@@ -45,6 +45,11 @@ import sys
 #     pulls (mcp brings in pydantic/httpx-sse/etc.; fused brings in its own
 #     large dependency tree); verified locally that blocking them still
 #     yields IMPORT_OK.
+#   * cryptography — reaches `fused_render.update.common` unguarded before
+#     LEAN_WHEEL_SPEC.md item 4's fix; blocking it here is this PR's own
+#     regression test for that bug (see the child source below, which also
+#     imports `fused_render.update.mac`/`.linux` to prove the guard from
+#     both platform branches, not just the two entry points).
 HEAVY = frozenset({
     "numpy",
     "pandas",
@@ -58,6 +63,7 @@ HEAVY = frozenset({
     "google",
     "mcp",
     "fused",
+    "cryptography",
 })
 
 _CHILD_SOURCE = """
@@ -79,6 +85,12 @@ sys.meta_path.insert(0, _BlockHeavy())
 try:
     import fused_render.cli  # noqa: F401
     import fused_render.server  # noqa: F401
+    # Imported unconditionally, regardless of host platform: both are pure
+    # Python, and the whole point is that the darwin-only update chain
+    # (update/common.py -> update/mac.py) must be provable from a Linux CI
+    # runner, not just from a machine that happens to be a Mac.
+    import fused_render.update.mac  # noqa: F401
+    import fused_render.update.linux  # noqa: F401
 except ModuleNotFoundError as exc:
     print(f"IMPORT_FAILED:{{type(exc).__name__}}:{{exc}}")
     sys.exit(1)
