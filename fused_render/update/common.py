@@ -25,8 +25,27 @@ import tempfile
 import urllib.error
 import urllib.request
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+try:
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+except ModuleNotFoundError as _exc:
+    # `cryptography` is not a core dependency (pyproject.toml) — it only
+    # arrives transitively via [bundled]/[fused]'s `mcp<2` -> `pyjwt[crypto]`.
+    # A bare `pip install fused-render` therefore has to be able to IMPORT
+    # this module without it: mac.py/linux.py/the win32 supervisor updater
+    # all import `common` at their own module top level, so an unguarded
+    # import here crashes every one of them at import time, which crashes
+    # server startup on any platform (`update/__init__.py:start()` -> the
+    # platform module -> here). `exc.name` is checked, not a bare except, so
+    # a genuinely broken cryptography install (present but corrupt) still
+    # raises instead of being silently treated as "absent".
+    if _exc.name != "cryptography":
+        raise
+    InvalidSignature = None  # type: ignore[assignment,misc]
+    Ed25519PublicKey = None  # type: ignore[assignment,misc]
+    CRYPTO_AVAILABLE = False
+else:
+    CRYPTO_AVAILABLE = True
 
 PUBLIC_KEY = base64.b64decode("u4eiDvccdWmsVCN0nifCEXqmU+xVGIDPe8LP5KRlDns=")
 SIGNING_CONTEXT = "fused-render-update"
@@ -116,6 +135,17 @@ def fetch_manifest(url: str, *, urlopen_fn=None, public_key: bytes = PUBLIC_KEY)
 
 def verify_signature(version: str, sha256: str, signature: str, *,
                      public_key: bytes = PUBLIC_KEY) -> None:
+    if not CRYPTO_AVAILABLE:
+        # Never skip the check silently — a caller reaching this without
+        # `cryptography` installed is a bug (mac.start()/linux.start() gate
+        # on CRYPTO_AVAILABLE before ever constructing a manager that could
+        # call this), not a "verification unavailable, proceed anyway" case.
+        raise RuntimeError(
+            "cryptography is not installed; cannot verify the update manifest signature")
+    # Narrows Ed25519PublicKey/InvalidSignature from `... | None` for the type
+    # checker; the CRYPTO_AVAILABLE guard above already makes this true at
+    # runtime — they are only ever None together with CRYPTO_AVAILABLE False.
+    assert Ed25519PublicKey is not None and InvalidSignature is not None
     message = f"{SIGNING_CONTEXT}\n{version}\n{sha256}\n".encode("utf-8")
     try:
         Ed25519PublicKey.from_public_bytes(public_key).verify(

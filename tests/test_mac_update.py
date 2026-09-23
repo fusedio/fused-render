@@ -655,6 +655,22 @@ def test_start_noop_when_unbundled(monkeypatch):
     assert mac.manager() is None
 
 
+def test_start_noop_when_cryptography_is_unavailable(monkeypatch, caplog):
+    # A lean/wheel-only install (no [bundled]/[fused]) has no `cryptography`
+    # (verified 2026-09-23: a bare `pip install fused-render` crashed at
+    # startup on `ModuleNotFoundError: No module named 'cryptography'`,
+    # imported unconditionally by update/common.py). The fix: start() no-ops
+    # the same way it does for "nothing to swap", rather than crashing.
+    monkeypatch.setattr(mac, "_manager", None)
+    monkeypatch.setattr(common, "CRYPTO_AVAILABLE", False)
+    monkeypatch.setattr(mac, "bundle_path", lambda: "/Applications/FusedRender.app")
+    monkeypatch.setenv(mac.DEV_MANAGER_ENV, "1")
+    with caplog.at_level("WARNING", logger="fused_render.update"):
+        assert mac.start() is None
+    assert mac.manager() is None
+    assert "cryptography" in caplog.text
+
+
 # ---- the check-only manager of a dev run (DEV_MANAGER_ENV) ---------------------
 
 
