@@ -140,7 +140,15 @@ def verify_signature(version: str, sha256: str, signature: str, *,
         # `cryptography` installed is a bug (mac.start()/linux.start() gate
         # on CRYPTO_AVAILABLE before ever constructing a manager that could
         # call this), not a "verification unavailable, proceed anyway" case.
-        raise RuntimeError(
+        # ValueError, not RuntimeError: callers (supervisor/_win32/update.py
+        # and the manual /api/update/check route) catch exactly
+        # (OSError, ValueError, http.client.HTTPException) to produce the
+        # existing "could not check for updates right now" dialog. The
+        # caller contract is "verification did not succeed -> report
+        # unavailable", and a missing crypto library is exactly that; using
+        # ValueError keeps the blast radius to this one file instead of
+        # also having to edit the win32 supervisor and the API route.
+        raise ValueError(
             "cryptography is not installed; cannot verify the update manifest signature")
     # Narrows Ed25519PublicKey/InvalidSignature from `... | None` for the type
     # checker; the CRYPTO_AVAILABLE guard above already makes this true at

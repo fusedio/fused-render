@@ -79,9 +79,14 @@ def test_verify_signature_refuses_when_cryptography_is_unavailable(monkeypatch):
     # verification itself must never silently no-op when that happens — an
     # update path that skips the check is worse than no updater at all — so
     # it has to raise instead of quietly returning.
+    # ValueError, not RuntimeError: supervisor/_win32/update.py's callers
+    # (and the manual /api/update/check route) catch exactly
+    # (OSError, ValueError, http.client.HTTPException) to produce the
+    # existing "could not check for updates right now" dialog. A RuntimeError
+    # would escape that handler instead of being reported the normal way.
     from fused_render.update import common
     monkeypatch.setattr(common, "CRYPTO_AVAILABLE", False)
-    with pytest.raises(RuntimeError, match="cryptography"):
+    with pytest.raises(ValueError, match="cryptography"):
         common.verify_signature("1.0.0", "deadbeef", "c2ln")
 
 
