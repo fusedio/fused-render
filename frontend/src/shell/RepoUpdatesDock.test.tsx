@@ -6,13 +6,14 @@
 // reason: no polling, and no persisted `collapsed` state (both live in the
 // default-exported `RepoUpdatesDock` this file never mounts) — so most tests
 // here render it directly with a fixed row list and no globals at all. The
-// exceptions are noted where they happen: a `location`/`window`/`history`
-// stub, installed and torn down once at file load so router.ts's real
-// module can be imported (see the comment just below), and a per-test
+// exceptions are noted where they happen: the shared `location`/`window`/
+// `history` DOM shim (installed once at file load so router.ts's real
+// module can be imported — see the comment just below), and a per-test
 // `globalThis.fetch` stub in the one test that presses a row's own button.
 import { expect, mock, test } from "bun:test";
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
 import type { Job } from "@platform/lib/jobs";
+import { installDomShim } from "@platform/lib/testDomShim";
 
 // NEITHER "@platform/lib/router" NOR "@platform/lib/api" is `mock.module`d
 // here — found the hard way, live: an earlier version of this file DID mock
@@ -29,27 +30,31 @@ import type { Job } from "@platform/lib/jobs";
 // exact lesson for `@platform/lib/api` ("a real ES module namespace export
 // is frozen... this stubs `globalThis.fetch` instead") — the same principle
 // applies to router.ts. So instead of mocking either module, this file
-// installs the minimal `location`/`window`/`history` globals router.ts's
-// own module-init code touches (mirroring `hook-harness.ts`'s `Clock`) and
-// then imports the REAL router.ts — a real, unfrozen, behaviorally correct
-// module every other file can also import safely alongside this one.
-(globalThis as Record<string, unknown>).location = { pathname: "/x", search: "" };
-(globalThis as Record<string, unknown>).window = {
-  parent: undefined,
-  top: undefined,
-  dispatchEvent: () => true,
-};
-(globalThis as Record<string, unknown>).history = {
-  state: null,
-  replaceState: () => {},
-  pushState: () => {},
-};
+// installs the shared `location`/`window`/`history` shim (`testDomShim.ts`)
+// router.ts's own module-init code touches, then imports the REAL router.ts
+// — a real, unfrozen, behaviorally correct module every other file can also
+// import safely alongside this one.
+//
+// This used to hand-roll its own `location`/`window`/`history` objects and
+// `delete` them again right after the import below, on the theory that
+// nothing later in this file touched them and leaving them standing would
+// only affect "whichever file happens to run next". That reasoning was
+// backwards: `bun test` shares one process-wide `globalThis` across every
+// file in the run (see `testDomShim.ts`'s own header), and once a router.ts
+// consumer elsewhere is unlucky enough to import it — transitively, at
+// module scope, before any OTHER file's `installDomShim()` call re-lands the
+// shim — the bare `location` read throws a `ReferenceError`, not a
+// `globalThis.location` `undefined`. That is exactly what surfaced as a
+// whole-suite crash in CI once this file's position in the run made it the
+// one to delete the globals ahead of a file that reads `location` eagerly
+// (2026-09-23). `installDomShim()` is idempotent (`??=`) and is what every
+// other suite in this codebase relies on staying installed — so this file
+// now installs it and leaves it installed, exactly like everyone else.
+installDomShim();
 
 // A rowClick's `onClick` calls `navigateUrl`, which touches `history` and
-// `window` — both deleted right after the import below, the same as
-// `location` (see the block comment above). Most tests never press a
-// rowClick, so they never need these back; the few that do restore them only
-// for the press itself, via this helper, so nothing here leaks between tests.
+// `window` — swapped out for the press itself and restored after, via this
+// helper, so nothing here leaks between tests.
 function withNav<T>(run: (pushed: string[]) => T): T {
   const pushed: string[] = [];
   const realHistory = (globalThis as Record<string, unknown>).history;
@@ -74,27 +79,15 @@ import type { RepoRow, RepoStatus } from "@shell/repo-updates-lib";
 import type { AttentionRow } from "@shell/tasks-lib";
 // notifications.ts (and its router.ts import) is already evaluated by the
 // dynamic import above — RepoUpdatesDock.tsx imports it — so this second
-// `await import` just reads the cached module; it does NOT re-run
-// router.ts's module-init `location` read, and is safe after the
-// `location`/`window`/`history` globals above are deleted. Used only by the
-// "messages" tests below, to drive the real store the way `MessageRowView`'s
-// dismiss button does (it calls `dismissNotification` directly, not through
-// a prop — see RepoUpdatesDock.tsx's own header comment on that row kind).
+// `await import` just reads the cached module; it does NOT re-run router.ts's
+// module-init `location` read. Used only by the "messages" tests below, to
+// drive the real store the way `MessageRowView`'s dismiss button does (it
+// calls `dismissNotification` directly, not through a prop — see
+// RepoUpdatesDock.tsx's own header comment on that row kind).
 const { notify, getRetainedNotifications, _resetNotificationsForTest } = await import(
   "@platform/lib/notifications"
 );
 import type { StoredNotification } from "@platform/lib/notifications";
-
-// The globals above exist only to get router.ts's module-init code through
-// ITS one-time evaluation above (triggered by the dynamic import) — nothing
-// in this file's own tests touches `window`/`location`/`history` again, so
-// they are torn back down immediately rather than left standing for
-// whichever file happens to run next in the same process (mirroring
-// `hook-harness.ts` Clock's own install/restore discipline, just inlined
-// since this file only ever needs the install once, at load).
-delete (globalThis as Record<string, unknown>).location;
-delete (globalThis as Record<string, unknown>).window;
-delete (globalThis as Record<string, unknown>).history;
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
   if (node === null || typeof node === "string") return [];
