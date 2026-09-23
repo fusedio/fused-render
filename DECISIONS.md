@@ -5690,3 +5690,52 @@ Did not run the full suite — that's the orchestrator's job. Did not touch
 the `fused` version pin, `fused_render/templates/*`,
 `tests/test_bundle_contents.py`, `tests/test_template_locks.py`, or
 `fused_render/index/`, all deliberately out of scope per instruction.
+
+## Item 2 (fused pin) deferral resolved: bumped to 2.9.3b9 (2026-09-23)
+
+The `2.9.3b8`→`2.9.3b9` deferral recorded above no longer holds. At the
+time it was written, `2.9.3b9`'s metadata existed on PyPI but the release
+was absent from the simple index (`https://pypi.org/simple/fused/`), which
+is what pip/uv actually resolve against — so `uv pip compile --extra
+fused` failed with "no version of fused==2.9.3b9" even though the wheel
+itself was live on files.pythonhosted.org. That was an index-propagation
+lag, not a withdrawn release, and it has since caught up.
+
+Verified with a real install, not a metadata fetch (a metadata fetch is
+not a resolve): `uv pip install --no-cache --refresh 'fused==2.9.3b9'` in
+a fresh 3.12 venv succeeds, and `uv pip show fused` reports `2.9.3b9`.
+(`fused.__version__` itself misreports as `2.8.2.dev...` — a known
+upstream quirk, not evidence of anything; `pip show`/`uv pip show` is the
+source of truth for the installed version.)
+
+Bumped `fused==2.9.3b8` → `fused==2.9.3b9` in both `pyproject.toml`'s
+`[bundled]` and `[fused]` extras (the two pins the earlier entry's own
+byte-identical-pin comment requires stay in lockstep). Re-ran the full
+resolve this PR's platform-conditional `cryptography<=48.0.1` ceiling
+(x86_64 macOS, item 1) was meant to guard, since a `fused` dependency
+change is exactly the kind of thing that could collide with it:
+
+- `uv pip compile pyproject.toml --extra bundled` — resolves clean,
+  `fused==2.9.3b9`, `cryptography==50.0.1` (unconstrained, arm64 host).
+- `uv pip compile pyproject.toml --extra bundled --python-platform
+  x86_64-apple-darwin` — resolves clean, `fused==2.9.3b9`,
+  `cryptography==48.0.1` (ceiling still binds correctly).
+- `uv pip compile pyproject.toml --extra fused` — resolves clean,
+  `fused==2.9.3b9`, `cryptography==50.0.1`.
+- `uv pip compile pyproject.toml --extra fused --python-platform
+  x86_64-apple-darwin` — resolves clean, `fused==2.9.3b9`,
+  `cryptography==48.0.1`.
+
+No collision: `fused` 2.9.3b9 does not pull in a `cryptography` floor
+above the x86_64 ceiling. Grepped the whole worktree for `2.9.3b8`
+afterward — the only other hits were prose in `LEAN_WHEEL_SPEC.md` (its
+"Deferred" note, updated separately) and this file's own history above,
+which is append-only and was left untouched. No lockfile, test, or
+template manifest pins the version string.
+
+Scoped tests only, per instruction: `tests/test_engine_requirements.py`,
+`tests/test_bundle_contents.py` — 436 passed, 0 failed, 0 skipped. Did not
+run the full suite — that's the orchestrator's job. Did not touch
+`fused_render/templates/*`, `tests/test_template_locks.py`,
+`fused_render/index/`, or anything else outside the pin bump and its
+directly-affected docs, per instruction.

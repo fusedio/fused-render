@@ -40,27 +40,37 @@ Verify each ceiling against PyPI rather than trusting this document: fetch
 `macosx_*_x86_64` wheel. If the real boundary differs from the version above,
 use the real one and say so in the commit message.
 
-### 2. Bump the fused pin — DEFERRED, see below
+### 2. Bump the fused pin — DONE
 
-`fused==2.9.3b8` → `fused==2.9.3b9` at pyproject.toml:276 (`[bundled]`) and
-pyproject.toml:323 (`[fused]`).
+`fused==2.9.3b8` → `fused==2.9.3b9` at pyproject.toml:292 (`[bundled]`) and
+pyproject.toml:352 (`[fused]`).
 
 2.9.3b9 is published on PyPI (uploaded 2026-09-23 09:13 UTC) and carries
 upstream PR fusedio/fused#369, which cut the core dependency set to 23 dists —
 no pyarrow, geopandas, shapely, boto3 or cryptography. This is the release that
 makes the `[fused]` path viable on an unserved platform.
 
-**Builder finding (2026-09-23): NOT done.** The `requires_dist` claim above is
-correct — `https://pypi.org/pypi/fused/2.9.3b9/json` confirms it — but the
-version is not in PyPI's *simple index*, which is what pip/uv actually resolve
-against. `pip download fused==2.9.3b9` and `uv pip compile --extra fused` both
-fail with "no matching distribution" / "no solution found"; the simple index at
-`https://pypi.org/simple/fused/` tops out at 2.9.3b8. Bumping the pin now would
-make `pip install "fused-render[bundled]"`/`[fused]` unsatisfiable — the
-opposite of this branch's goal. Left at 2.9.3b8. Full detail and re-check
-instructions in DECISIONS.md under "Lean wheel / Intel Mac compatibility
-(2026-09-23)". A later builder: re-check the simple index first; if 2.9.3b9 (or
-newer) has propagated, the bump itself is a one-line, already-verified change.
+**Builder finding (2026-09-23): initially deferred, NOT done.** The
+`requires_dist` claim above was correct — `https://pypi.org/pypi/fused/2.9.3b9/json`
+confirmed it — but the version was not in PyPI's *simple index*, which is what
+pip/uv actually resolve against. `pip download fused==2.9.3b9` and `uv pip
+compile --extra fused` both failed with "no matching distribution" / "no
+solution found"; the simple index at `https://pypi.org/simple/fused/` topped
+out at 2.9.3b8. Bumping the pin then would have made `pip install
+"fused-render[bundled]"`/`[fused]` unsatisfiable — the opposite of this
+branch's goal. Left at 2.9.3b8 at the time.
+
+**Resolved (2026-09-23), later same day: deferral lifted, bump landed.** The
+simple index caught up — this was an index-propagation lag, not a withdrawn
+release. Verified with a real install, not a metadata fetch: `uv pip install
+--no-cache --refresh 'fused==2.9.3b9'` in a fresh 3.12 venv succeeds, and `uv
+pip show fused` reports `2.9.3b9` (`fused.__version__` itself misreports as
+`2.8.2.dev...` — a known upstream quirk, ignore it; trust `pip show`/`uv pip
+show`). Re-resolved both extras on both the host arch and
+`--python-platform x86_64-apple-darwin` (to exercise item 1's
+`cryptography<=48.0.1` ceiling against the new pin) — all four resolve clean,
+no collision. Full detail in DECISIONS.md under "Item 2 (fused pin) deferral
+resolved: bumped to 2.9.3b9 (2026-09-23)".
 
 ### 3. Manifests for undeclared template imports — DEFERRED, see below
 
