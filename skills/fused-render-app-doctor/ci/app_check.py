@@ -1,8 +1,9 @@
 """A floor engine that reads an app folder and flags the obvious problems
 worth failing a push over — a leaked credential, a path that only resolves
-on the machine it was written on, and an app folder missing the three files
-that make a share openable and recognizable to whoever receives it:
-`index.html`, a README, and a `preview.png` thumbnail.
+on the machine it was written on, and an app folder missing the four files
+that make a share openable, recognizable, and reproducible for whoever
+receives it: `index.html`, a README, a `preview.png` thumbnail, and a
+`pyproject.toml` declaring its dependencies.
 
 Judging whether an app's `fused.*` calls are actually correct is not this
 script's job: that question needs to know whether a name is being used
@@ -45,9 +46,10 @@ whether one is real, which is exactly the judgment `SKILL.md` exists to make.
 Failing a push on a candidate alone means a false positive blocks a real
 commit; that cost model is upside down for these two families.
 `CHECK_META` (below) marks `secrets` and `device-paths` as `kind: "candidate"`
-and everything else — the three structure gaps — `kind: "fact"`: a missing
-`index.html`/README/`preview.png` is not a pattern match over prose, it is a
-direct `os.path.isfile` answer with no false-positive rate at all. `main`
+and everything else — the four structure gaps — `kind: "fact"`: a missing
+`index.html`/README/`preview.png`/`pyproject.toml` is not a pattern match
+over prose, it is a direct `os.path.isfile` answer with no false-positive
+rate at all. `main`
 exits 1 only when a fact finding fired; a run with candidates only prints them
 and exits 0, so someone still sees them without a push getting blocked over
 a maybe.
@@ -91,13 +93,14 @@ import sys
 # checklist's own two severities without app_doctor.py needing to know this
 # table has a third tier at all. This is the SINGLE table for these two ids:
 # app_doctor.py reads it rather than keeping a second copy, and a fix to one
-# is a fix to both surfaces. The three structure ids (`entry`, `readme`,
-# `preview`, keyed here by their full rule string rather than a family prefix
-# — there is exactly one rule each) are not read by app_doctor.py, which
-# computes those rows itself from the runtime's own knowledge; `suggested`
-# lives on two of them (below) precisely because app_doctor.py never sees it —
-# it is where this engine's own missing-readme/missing-thumbnail gap gets to
-# stay non-blocking without touching the checklist's severities at all.
+# is a fix to both surfaces. The four structure ids (`entry`, `readme`,
+# `preview`, `pyproject`, keyed here by their full rule string rather than a
+# family prefix — there is exactly one rule each) are not read by
+# app_doctor.py, which computes those rows itself from the runtime's own
+# knowledge; `suggested` lives on three of them (below) precisely because
+# app_doctor.py never sees it — it is where this engine's own
+# missing-readme/missing-thumbnail/missing-pyproject gap gets to stay
+# non-blocking without touching the checklist's severities at all.
 CHECK_META = {
     "secrets": ("essentials", "critical", "candidate"),
     "device-paths": ("sharing", "warning", "candidate"),
@@ -106,6 +109,7 @@ _STRUCTURE_META = {
     "structure:missing-index": ("essentials", "critical", "fact"),
     "structure:missing-readme": ("essentials", "suggested", "fact"),
     "structure:missing-thumbnail": ("sharing", "suggested", "fact"),
+    "structure:missing-pyproject": ("essentials", "suggested", "fact"),
 }
 
 
@@ -685,13 +689,16 @@ def _check_device_paths(rel_path: str, text: str, findings: list) -> None:
 
 # ---------------------------------------------------------------- structure
 
-# The three files that make a shared app openable and recognizable to
-# whoever receives it: a page to open, a README to say what it is, and a
-# thumbnail to show in a grid of other apps. Plain existence (and, for the
-# thumbnail, non-emptiness) — this engine does not parse any of the three,
-# it only asks whether the basics are there.
+# The four files that make a shared app openable, recognizable, and
+# reproducible for whoever receives it: a page to open, a README to say
+# what it is, a thumbnail to show in a grid of other apps, and a
+# pyproject.toml so its dependencies are declared rather than implicit
+# (D230). Plain existence (and, for the thumbnail, non-emptiness) — this
+# engine does not parse any of the four, it only asks whether the basics
+# are there.
 _ENTRY_NAME = "index.html"
 _PREVIEW_IMAGE_NAME = "preview.png"
+_PYPROJECT_NAME = "pyproject.toml"
 
 
 def _check_structure(app_dir: str, findings: list) -> None:
@@ -727,6 +734,13 @@ def _check_structure(app_dir: str, findings: list) -> None:
             "the app is recognized in a grid of others",
         ))
 
+    if not os.path.isfile(os.path.join(app_dir, _PYPROJECT_NAME)):
+        findings.append(_structure_finding(
+            "structure:missing-pyproject",
+            f"no {_PYPROJECT_NAME} — without it this app's dependencies are "
+            "implicit and unreproducible for whoever you share it with",
+        ))
+
 
 # --------------------------------------------------------------------- API
 
@@ -734,7 +748,7 @@ def _check_structure(app_dir: str, findings: list) -> None:
 def check(app_dir: str) -> list[dict]:
     """Every finding for `app_dir`: `{rule, section, severity, kind, path,
     line, excerpt}`, `path` always relative to `app_dir`. `kind` is `"fact"`
-    for the three structure gaps and `"candidate"` for the two pattern-match
+    for the four structure gaps and `"candidate"` for the two pattern-match
     families (secrets, device paths) — see the module docstring for why that
     split exists and what it changes about `main`'s exit code. Never
     raises — an unreadable app is one the caller already knows is broken some

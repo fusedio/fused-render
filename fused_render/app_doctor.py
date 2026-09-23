@@ -27,7 +27,9 @@ because they need the runtime's own knowledge:
 * the declared fused API version against the one the runtime speaks
   (`fused_api_version`),
 * generated state loose in the tree instead of under `.fused/`,
-* `pyproject.toml` and `icon.svg` / `icon.png` parsing, when either is there at all,
+* `pyproject.toml` — required, so absence itself is a finding, not just a
+  parse failure — and `icon.svg` / `icon.png` parsing, when it is there at
+  all (icon stays optional),
 * whether the folder's own git repo has everything committed,
 * whether the current branch has commits its upstream does not, and
 * — the one MODEL-BACKED row — whether the views render alike across
@@ -579,8 +581,21 @@ def _optional_file_check(app_dir: str, cid: str, name: str, kind: str, label: st
 
 
 def _pyproject_check(app_dir: str) -> dict:
-    return _optional_file_check(app_dir, "pyproject", "pyproject.toml", "toml",
-                                "pyproject.toml is valid TOML")
+    # NOT `_optional_file_check` — icon keeps that skip-when-absent shape,
+    # but a folder's dependencies live only here (D230), so absence is a
+    # real gap, not a "nothing to check" — same required-file shape as
+    # `_readme_check` / `_preview_check` above.
+    label = "pyproject.toml is valid TOML"
+    path = os.path.join(app_dir, "pyproject.toml")
+    if not os.path.isfile(path):
+        return _check(
+            "pyproject", label, FAIL,
+            "no pyproject.toml — without it this app's dependencies are "
+            "implicit and unreproducible for whoever you share it with",
+        )
+    ok, reason = _parses(path, "toml")
+    return _check("pyproject", label, PASS if ok else FAIL,
+                 "pyproject.toml parses" if ok else f"pyproject.toml: {reason}")
 
 
 def _icon_check(app_dir: str) -> dict:
