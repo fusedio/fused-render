@@ -76,6 +76,11 @@ export const CAPABILITY_ORDER = [
   "text-to-image",
   "automatic-speech-recognition",
   "embeddings",
+  // Decisions (Laya, `text-classification`) sits after embeddings: like
+  // embeddings it is a sub-second encoder call rather than a generator, and
+  // it is the newest and least familiar of the six, so it reads best after the
+  // four everybody recognises. Video still sorts last, as before.
+  "text-classification",
   "text-to-video",
 ];
 

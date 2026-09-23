@@ -2149,6 +2149,515 @@
   font-size: 11.5px;
 }
 
+/* -- the decisions stage (Laya) -----------------------------------------------------
+   The questions are the main control, so they sit in the main column — as a
+   LIST, not a stack of cards (owner, 2026-09-22: "too many boxes mean nothing
+   has any value"). Hierarchy comes from type and spacing: a quiet index, the
+   question as the strongest text on its row in a field with no border until
+   focused, the answer shape and its options as one muted line beneath, a
+   hairline between questions and no container around any of them.
+
+   An answer is ONE line — the verdict word, a small muted confidence, a
+   Details toggle — with the distribution folded under it (owner, 2026-09-23).
+   The accent has a budget of ONE hit per answered question and the verdict
+   word is it; every bar and the score rail's marker are neutral tints, so the
+   unfolded details read as detail, not as a second answer. The bars draw RAW
+   probabilities (they sum to one per question; nothing is rescaled the way
+   the embed stage rescales cosines). */
+
+.pg-decide-questions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pg-decide-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* One question: index column, then the body. The hairline sits BETWEEN
+   questions only — the first has the label above it, the last the add row. */
+.pg-decide-q {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 0;
+}
+
+.pg-decide-q + .pg-decide-q {
+  border-top: 1px solid var(--border);
+}
+
+.pg-decide-q-n {
+  flex: none;
+  width: 1.4em;
+  padding-top: 7px;
+  color: var(--fg-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.pg-decide-q-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pg-decide-q-top,
+.pg-decide-q-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pg-decide-q-meta {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+/* The two inline fields read as text until touched: no border, no fill, the
+   card's own background. Hover lifts a faint plate so the field announces
+   itself as editable; focus draws a neutral hairline under the text rather
+   than the composer's accent glow — three glowing rings in a list is the
+   yellow problem again. The appearance/border/background resets are
+   load-bearing: preflight is off. */
+.pg-decide-q-text,
+.pg-decide-q-criteria {
+  appearance: none;
+  min-width: 0;
+  margin: 0 -6px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  outline: none;
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.pg-decide-q-text::placeholder,
+.pg-decide-q-criteria::placeholder {
+  color: var(--fg-muted);
+  opacity: 0.7;
+}
+
+.pg-decide-q-text:hover,
+.pg-decide-q-criteria:hover {
+  background: rgba(var(--tint), 0.04);
+}
+
+.pg-decide-q-text:focus-visible,
+.pg-decide-q-criteria:focus-visible {
+  background: rgba(var(--tint), 0.04);
+  box-shadow: inset 0 -1px 0 var(--ctl-quiet-border-hover);
+}
+
+/* The question is the strongest text on its row. */
+.pg-decide-q-text {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+/* The options line is secondary: smaller, muted. No underline at rest
+   (owner: the hairline read as a rule across the row and made the options
+   harder to read) — the hover plate and the italic example placeholder are
+   the editable affordance, and focus keeps the plate alone. */
+.pg-decide-q-criteria {
+  flex: 1 1 12rem;
+  /* Sits after the shape words, so no left bleed: the hover plate would
+     otherwise eat the gap between them. */
+  margin-left: 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+}
+
+.pg-decide-q-criteria::placeholder {
+  font-style: italic;
+}
+
+.pg-decide-q-criteria:focus-visible {
+  color: var(--fg);
+  box-shadow: none;
+}
+
+/* Remove shows for the question under the pointer or holding focus, and
+   stays reachable from the keyboard on its own. */
+.pg-decide-q-remove {
+  flex: none;
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.pg-decide-q:hover .pg-decide-q-remove,
+.pg-decide-q:focus-within .pg-decide-q-remove,
+.pg-decide-q-remove:focus-visible {
+  opacity: 1;
+}
+
+/* The last question cannot be removed; its × stays hidden rather than
+   showing dead on hover. */
+.pg-decide-q-remove:disabled {
+  opacity: 0;
+}
+
+/* The list's footer: Add on the left at the text column, Ask on the right. */
+.pg-decide-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 6px;
+}
+
+.pg-decide-add {
+  margin-left: calc(1.4em + 10px);
+  padding: 4px 0;
+}
+
+.pg-decide-foot .pg-send {
+  margin-left: auto;
+}
+
+/* The answer shape: three words in a row, no track, no borders. The lit one
+   is foreground weight 600 on a soft tint pill; the others are muted text
+   that brightens on hover. Every UA button property is reset explicitly —
+   preflight is off, so `border: 2px outset` and `buttonface` show through any
+   rule that forgets one. Focus is a neutral hairline, never a ring. */
+/* A grey "Type" label ahead of the shape words, the twin of the verdict's
+   "Answer" label, so the two secondary lines of a question read the same. */
+.pg-decide-seg-label {
+  flex: none;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+}
+
+.pg-decide-seg {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: -6px;
+}
+
+.pg-decide-seg-item {
+  appearance: none;
+  margin: 0;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 5px;
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.pg-decide-seg-item:hover {
+  color: var(--fg);
+}
+
+.pg-decide-seg-item.active {
+  color: var(--fg);
+  font-weight: 600;
+  background: rgba(var(--tint), 0.07);
+}
+
+.pg-decide-seg-item:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--ctl-quiet-border-hover);
+}
+
+/* -- the answer, under its question -- */
+
+/* One line: the verdict, the confidence, a Details toggle. The whole line is
+   the <summary>, so clicking anywhere on it folds the details open; the UA's
+   own marker is hidden and the chevron at the end stands in for it. */
+.pg-decide-answer {
+  margin-top: 6px;
+}
+
+.pg-decide-verdict {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0;
+  min-width: 0;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 5px;
+  outline: none;
+}
+
+.pg-decide-verdict::-webkit-details-marker {
+  display: none;
+}
+
+.pg-decide-verdict:focus-visible {
+  box-shadow: 0 0 0 1px var(--ctl-quiet-border-hover);
+}
+
+/* The question's one accent hit. */
+/* A grey "Answer" label ahead of the verdict, so the accent word reads as
+   the model's reply and not as a fourth option in the row (owner ask). */
+.pg-decide-verdict-label {
+  flex: none;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+}
+
+.pg-decide-verdict-word {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.pg-decide-verdict-conf {
+  flex: none;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.pg-decide-details-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  transition: color 120ms ease;
+}
+
+.pg-decide-verdict:hover .pg-decide-details-toggle {
+  color: var(--fg);
+}
+
+.pg-decide-details-toggle svg {
+  transition: transform 160ms ease;
+}
+
+.pg-decide-answer[open] .pg-decide-details-toggle svg {
+  transform: rotate(180deg);
+}
+
+/* The folded part: indented to the text column already (it is inside the
+   row's body), no border, a little air above. */
+.pg-decide-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* Room on every side (owner: "make it visually separate"): air above so
+     the fold reads as its own block under the verdict, air below before the
+     row's hairline, and the same inset the verdict line has. */
+  margin-top: 10px;
+  padding: 12px 0 14px;
+}
+
+.pg-decide-expected {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The distribution: label / thin track / percentage, on a shared grid so the
+   bars start on one line whatever the labels' widths. No row has a box, and
+   no bar takes the accent — the verdict above already did. */
+.pg-decide-dist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(5rem, 11rem) 1fr 3.4rem;
+  column-gap: 10px;
+  row-gap: 5px;
+  align-items: center;
+}
+
+.pg-decide-dist-row {
+  display: grid;
+  grid-template-columns: subgrid;
+  grid-column: 1 / -1;
+  align-items: center;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+.pg-decide-dist-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-decide-dist-track {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(var(--tint), 0.08);
+  overflow: hidden;
+}
+
+.pg-decide-dist-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: rgba(var(--tint), 0.3);
+  transition: width 240ms ease;
+}
+
+.pg-decide-dist-pct {
+  text-align: right;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The row the verdict rests on: stronger text and a stronger (still neutral)
+   bar. */
+.pg-decide-dist-row.is-picked {
+  color: var(--fg);
+}
+
+.pg-decide-dist-row.is-picked .pg-decide-dist-label {
+  font-weight: 600;
+}
+
+.pg-decide-dist-row.is-picked .pg-decide-dist-fill {
+  background: rgba(var(--tint), 0.55);
+}
+
+/* A score's scale as ordered steps, worst left to best right, with the
+   expected level marked. Steps are small neutral ticks on a hairline; the
+   marker is a solid foreground dot — neutral too, the accent is the verdict. */
+.pg-decide-rail {
+  position: relative;
+  height: 14px;
+  margin: 2px 6px 4px;
+}
+
+.pg-decide-rail-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: rgba(var(--tint), 0.16);
+}
+
+.pg-decide-rail-step {
+  position: absolute;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--bg-alt);
+  box-shadow: 0 0 0 1px rgba(var(--tint), 0.22);
+  transform: translate(-50%, -50%);
+}
+
+.pg-decide-rail-mark {
+  position: absolute;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--fg);
+  box-shadow: 0 0 0 3px rgba(var(--tint), 0.12);
+  transform: translate(-50%, -50%);
+  transition: left 240ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pg-decide-dist-fill,
+  .pg-decide-rail-mark,
+  .pg-decide-details-toggle svg,
+  .pg-decide-q-text,
+  .pg-decide-q-criteria,
+  .pg-decide-q-remove {
+    transition: none;
+  }
+}
+
+/* The cog: keys and the request JSON, for the page author. */
+.pg-decide-keys {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pg-decide-key {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pg-decide-key .pg-decide-q-n {
+  padding-top: 0;
+}
+
+.pg-decide-key-input {
+  appearance: none;
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  outline: none;
+}
+
+.pg-decide-key-input:focus-visible {
+  border-color: var(--ctl-quiet-border-hover);
+}
+
+/* Nothing to paste yet: the same sentence the run would refuse with. */
+.pg-decide-json-none {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+}
+
+.pg-decide-json {
+  margin: 0;
+  max-height: 16rem;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre;
+}
+
 /* -- the images mode (SPEC §40) ----------------------------------------------------
    Drawn only where the selected model reports a vision tower — see
    EmbedStage.tsx's header. The list of chosen files lives behind the settings

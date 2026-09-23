@@ -130,8 +130,8 @@ def ai_result(payload: dict, *, provider: str, model: str, warnings=None,
     """The ONE result frame every `fused.ai` verb resolves with (RH-11, D632).
 
     Learn it once: `payload` is the verb's own output key(s) — `text`,
-    `images`, `videos`, `text`+`segments`, `embeddings` — and everything
-    else is the same on all five. The frame is the AI SDK's `generateText`
+    `images`, `videos`, `text`+`segments`, `embeddings`, `answers` — and
+    everything else is the same on all six. The frame is the AI SDK's `generateText`
     return contract, because that is the shape page authors already know:
 
       provider          which tier answered ("local" | "apple" | "claude")

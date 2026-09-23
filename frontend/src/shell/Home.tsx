@@ -288,6 +288,17 @@ const MEDIA_GLYPHS = {
       <path d="M16 10.5 21 7.5v9L16 13.5z" />
     </svg>
   ),
+  // A decision: one line forking into two, the taken branch marked. Same
+  // figure as `capabilityIcons.tsx`'s text-classification glyph, redrawn at
+  // this set's stroke so the card row stays one weight.
+  decision: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 12h6" />
+      <path d="M10 12c3 0 3-5 6-5h4" />
+      <path d="M10 12c3 0 3 5 6 5h4" />
+      <circle cx="20" cy="7" r="1.6" fill="currentColor" stroke="none" />
+    </svg>
+  ),
 } satisfies Record<string, ReactNode>;
 
 type PlaygroundMedia = keyof typeof MEDIA_GLYPHS;
@@ -302,6 +313,7 @@ const PLAYGROUND_FLOWS: Record<string, [PlaygroundMedia, PlaygroundMedia]> = {
   "text-to-video": ["chat", "video"],
   "automatic-speech-recognition": ["speech", "chat"],
   embeddings: ["chat", "meaning"],
+  "text-classification": ["chat", "decision"],
 };
 
 // The header's single glyph names the task itself, which is not always the
@@ -312,6 +324,7 @@ const PLAYGROUND_HEADS: Record<string, PlaygroundMedia> = {
   "text-to-video": "video",
   "automatic-speech-recognition": "speech",
   embeddings: "meaning",
+  "text-classification": "decision",
 };
 
 const FLOW_ARROW = (

@@ -1497,6 +1497,12 @@ UNLOADABLE_QUANT = frozenset({"awq", "gptq", "bitsandbytes", "compressed-tensors
 #: just decisive about matching NOTHING, which the early return in `loaders()`
 #: enforces directly rather than through this table.
 DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "ltx-video",
+            # A root `rl_agent_config.json` is Laya's decision-head config and
+            # nothing else's (D887) — it is what separates a Laya checkpoint
+            # from the sentiment BERTs that share its `text-classification`
+            # card tag, so the claim settles the modality as surely as a
+            # `weights.npz` does.
+            "laya-mlx",
             "diffusers-image",
             # Every hardware variant of the diffusers runner, because membership
             # here is a statement about the FORMAT — a `model_index.json` is a
@@ -1658,6 +1664,26 @@ def has_h3_components(dirnames) -> bool:
     return H3_COMPONENT in dirnames
 
 
+#: Laya's decision-head config (D887). `laya_mlx.agent.resolve_model` requires
+#: this, `encoder/config.json` and `model.safetensors` before it will open a
+#: directory, and the first of the three is the one no other layout ships.
+LAYA_AGENT_CONFIG = "rl_agent_config.json"
+LAYA_ENCODER_DIR = "encoder"
+
+
+def is_laya_snapshot(names, dirnames) -> bool:
+    """Is this a Laya typed-decision checkpoint (`laya-mlx` reads it)?
+
+    The same two signals `laya_mlx`'s own `resolve_model` insists on before
+    loading: the root `rl_agent_config.json` and an `encoder/` subfolder for
+    the ModernBERT/mmBERT config. `model.safetensors` is not asked for here —
+    a snapshot whose download has not finished has the small JSON files and
+    not yet the weights, and the CURATION answer for such a card is still
+    "this belongs to Laya", not "nothing reads this".
+    """
+    return LAYA_AGENT_CONFIG in names and LAYA_ENCODER_DIR in dirnames
+
+
 def has_ltx_split_layout(names) -> bool:
     """Is this an mlx-forge split conversion of LTX-2.3 — `ltx_video`'s own
     curated layout? `names` is the snapshot's TOP-LEVEL FILES (`loaders`'s
@@ -1767,6 +1793,16 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
         # speech model as a chat model. (The `weights.safetensors` era had the
         # same leak — `.safetensors` counts as torch weights — fixed by the
         # same return.)
+        return tuple(found)
+    if is_laya_snapshot(names, dirnames):
+        found.append("laya-mlx")
+        # …and NOTHING else, for the `ltx-video` branch's reason just below:
+        # a Laya export is `model.safetensors` beside its configs, so the
+        # fallthrough at the bottom would ALSO claim it and offer to load a
+        # decision encoder as a chat model. (It would in fact fail the
+        # `config` requirement there — Laya keeps its encoder config under
+        # `encoder/`, not at the root — but the return states the intent
+        # rather than leaning on that accident.)
         return tuple(found)
     if has_ltx_split_layout(names):
         found.append("ltx-video")

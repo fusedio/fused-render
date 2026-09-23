@@ -517,6 +517,76 @@ export async function embedPaths(model: string, paths: string[]): Promise<EmbedR
   return readEmbedReply(res);
 }
 
+// -- Decisions (POST /api/ai/decide, Laya) --------------------------------------
+
+/** One typed question for a decision model. `criteria` is required for
+ *  `choice` (labels, or label → description) and `score` (ordered rubric
+ *  levels, worst first); `noul` has none. */
+export interface DecideQuestion {
+  type: "choice" | "score" | "noul";
+  instructions: string;
+  criteria?: string[] | Record<string, string>;
+}
+
+/** One answer, keyed by the question id in `DecideResult.answers`. The keys
+ *  present depend on `type`: `choice`/`probabilities` for a choice,
+ *  `score`/`legend`/`probabilities` for a score, `noul` (P(true)) for a noul.
+ *  `confidence` and `action.actProbability` are on every answer. */
+export interface DecideAnswer {
+  type: "choice" | "score" | "noul";
+  confidence: number;
+  action: { actProbability: number };
+  choice?: string;
+  probabilities?: Record<string, number>;
+  score?: number;
+  legend?: Record<string, string>;
+  noul?: number;
+}
+
+/** `/api/ai/decide`'s result — the D632 frame with `answers` as the payload.
+ *  Zero output tokens by construction: the model is an encoder with decision
+ *  heads, not a generator. */
+export interface DecideResult {
+  answers: Record<string, DecideAnswer>;
+  provider: "local";
+  finishReason: string;
+  warnings: { type: string; setting?: string; message: string }[];
+  usage: { inputTokens: number; outputTokens: number; totalTokens: number } | null;
+  response: { id: string | null; modelId: string; timestamp: string };
+  providerMetadata: Record<string, { runner?: string; seconds?: number | null }>;
+}
+
+/** Ask a decision model typed questions about one state. One POST, one
+ *  forward pass per question inside the worker, answered in milliseconds once
+ *  the model is resident. Wrapped (`{ok, result}`) like embed, and a cold
+ *  model answers the same model_loading 409 — thrown as `ModelLoading` for
+ *  `withModelReady`'s watch-and-retry. */
+export async function decide(
+  model: string,
+  state: string,
+  questions: Record<string, DecideQuestion>,
+): Promise<DecideResult> {
+  const res = await fetch("/api/ai/decide", {
+    method: "POST",
+    headers: { ...sourceHeader(), "Content-Type": "application/json", "X-Fused": "1" },
+    body: JSON.stringify({ model, state, questions }),
+  });
+  const data = (await res.json().catch(() => null)) as {
+    ok?: boolean;
+    result?: DecideResult;
+    error?: { type?: string; message?: string; jobId?: string };
+  } | null;
+  if (!res.ok || !data?.ok) {
+    const error = data?.error;
+    if (res.status === 409 && error?.type === "model_loading") {
+      throw new ModelLoading(error.message || "model is loading", error.jobId ?? null);
+    }
+    throw new Error(error?.message || `decision failed (${res.status})`);
+  }
+  if (!data.result) throw new Error("the reply carried no result");
+  return data.result;
+}
+
 // -- Transcription (POST /api/ai/transcribe, AI-10) ---------------------------
 
 export interface TranscribeRequest {
