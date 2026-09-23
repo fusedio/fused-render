@@ -5605,3 +5605,88 @@ standalone at all, only as part of the full suite, because `jobs.ts`
 transitively imports `router.ts` (`api.ts` -> `presence.ts` -> `router.ts`),
 which reads `location` at module scope. A full `bun test` run (339 files,
 7174 tests) stayed green throughout.
+
+### Code-review fix-up (2026-09-23): six review findings on PR #1320
+
+Picked up a code review of this branch's items 1 and 4 and implemented all
+six fixes as directed — no redesign, every mechanism below was the
+reviewer's own decision, not derived here. Six commits, TDD where a test
+was involved.
+
+1. **`minimal-install` was decorative.** It installed `.[dev]`, and `[dev]`
+   declares `cryptography` on every platform, so the macOS leg could never
+   reproduce the boot crash the job exists to catch — reverting
+   `update/common.py`'s fix would have stayed green. Changed to
+   `pip install -e .` + `pip install pytest` (no pytest-xdist: the job's own
+   pytest invocation doesn't use `-n`), and added an explicit assertion step
+   before the import-check step that `python -c "import cryptography"`
+   fails. Confirmed the found-wrong premise is real: a bare `[dev]` install
+   on this checkout does have `cryptography` present.
+
+2. **`test_import_weight.py`'s HEAVY set.** The docstring already claimed
+   google-auth collapsed to `google`, but `google` was never actually in the
+   set — added it, plus `mcp` and `fused` (both `[bundled]`-only, both
+   verified locally to still yield IMPORT_OK when blocked). Left pillow out,
+   per the existing comment (core on win32/linux).
+
+3. **`test_import_weight.py`'s own blind spot.** The child subprocess never
+   imported anything from `fused_render.update`, and `cryptography` was not
+   in HEAVY, so this PR's own regression (an unguarded top-level `import
+   cryptography` in `update/common.py`) could have shipped without any gate
+   in this PR catching it. Added `cryptography` to HEAVY and had the child
+   import `fused_render.update.mac`/`.linux` unconditionally (both pure
+   Python, import cleanly on any host platform — verified locally, no
+   platform-specific skip needed, so the brief's fallback instruction
+   ("report back, don't skip") never had to be exercised).
+
+4. **`verify_signature()`'s `RuntimeError`.** Callers
+   (`supervisor/_win32/update.py:95`/`:119`, and the manual
+   `/api/update/check` route) catch exactly `(OSError, ValueError,
+   http.client.HTTPException)`, so a `RuntimeError` from a missing
+   `cryptography` escaped both the tray "Check for updates" handler and the
+   API route instead of producing the existing "could not check for updates
+   right now" dialog. Changed to `ValueError` per the reviewer's directive —
+   still a raise (never a silent skip of the security check), blast radius
+   kept to `common.py` alone. Updated
+   `test_win_supervisor_update.py::test_verify_signature_refuses_when_cryptography_is_unavailable`
+   (TDD: watched it fail against the RuntimeError-raising code first).
+
+5. **`lan_tls.py`/`lan.py` bare-install 500.** `lan_tls.py`'s docstring
+   claimed cryptography "is already a dependency" — false, that's this
+   whole PR's premise — corrected. `GET /lan/ca.pem` and `GET /api/lan/tls`
+   called into `lan_tls` unguarded. **Found something the brief didn't
+   state:** `lan_tls.py` has NO top-level `cryptography` import — it imports
+   lazily inside `ca_pem()`/`ca_fingerprint()` themselves — so wrapping only
+   the `from fused_render import lan_tls` line in `try/except
+   ModuleNotFoundError` (which is what a literal reading of the brief's
+   phrasing suggested) would not actually have caught anything; the
+   `ModuleNotFoundError` only fires from the CALL. The `try` block has to
+   wrap the call too. Verified this the hard way: wrote the tests first with
+   only the import wrapped, watched them still fail with an uncaught
+   `ModuleNotFoundError` escaping `_route`, then widened the `try` to cover
+   the call and re-ran green. Both routes now return `PlainTextResponse(...,
+   status_code=503)`, matching this file's existing convention (the "phone
+   grid not built" 503 a few lines above `LanApp._route`) rather than an
+   `HTTPException` — this file's routing is a hand-rolled `_route()` method
+   returning `Response` objects directly, not FastAPI route handlers, so
+   `HTTPException` isn't the local idiom. The other three call sites
+   (`lan.py:1017`, `:1197`, `:1457`) are already inside broad `except
+   Exception` and were left untouched, per instruction. New tests in
+   `tests/test_lan_mdns.py` (the only existing lan test file with content
+   that fit — `test_engine_requirements.py`'s one `lan` mention is an
+   unrelated mDNS-dependency-declaration check).
+
+6. **Stale job count.** `test.yml:924`'s comment said "these six always run"
+   under a loop that now iterates eight jobs
+   (`frontend`/`test-python`/`test-python-windows`/`fused-engine`/`minimal-install`/`wheel`/`linux-desktop`/`bundle-contents`).
+   Corrected to "eight".
+
+Scoped tests only, per instruction: `tests/test_import_weight.py`,
+`tests/test_win_supervisor_update.py`, `tests/test_mac_update.py`,
+`tests/test_linux_update.py`, `tests/test_lan_mdns.py` — 139 passed, 2
+skipped (pre-existing platform skips), across all six commits' final state.
+Workflow YAML re-parsed with `yaml.safe_load` after each `test.yml` edit.
+Did not run the full suite — that's the orchestrator's job. Did not touch
+the `fused` version pin, `fused_render/templates/*`,
+`tests/test_bundle_contents.py`, `tests/test_template_locks.py`, or
+`fused_render/index/`, all deliberately out of scope per instruction.
