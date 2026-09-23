@@ -228,7 +228,7 @@ export default function ActivityDock({
   const popupJobsSeenRef = useRef<Set<string>>(new Set());
   const popupFirstTickRef = useRef(true);
   // D-C's own state (SPEC-quiet-notifications.md §3) — a MULTI-member
-  // group's start/failure pop-rule tracking, entirely separate from
+  // group's failure pop-rule tracking, entirely separate from
   // `popupJobsSeenRef` above (which now excludes multi-member group members
   // outright; see `popupJobs`'s own doc). Carried the same way, in a ref,
   // for the same "this callback is memoized with `[]` deps" reason.
@@ -276,6 +276,10 @@ export default function ActivityDock({
     // it, not the panel's already-tier-filtered subset (see `popupJobs`'s
     // own doc for why: a `transient` job here has to pop even though
     // `terminalNotifications` never counts it terminal-for-the-panel).
+    // No presence check here any more (2026-09-23, D888): `popupJobs`
+    // already excludes every successful `done` job outright, so the only
+    // candidates reaching this are `error`/`cancelled`, which are never
+    // suppressed regardless of where the user is.
     // Finding 8: pass the PRIOR tick's group-failure keys so a group that
     // just shrank to one member (a sibling dismissed/swept) doesn't have its
     // already-popped failure treated as a brand-new candidate the instant it
@@ -285,18 +289,16 @@ export default function ActivityDock({
       next,
       popupJobsSeenRef.current,
       popupFirstTickRef.current,
-      isOpenAnywhere,
       groupPopupStateRef.current.failedSeen,
     );
     popupJobsSeenRef.current = seen;
-    // D-C (§3): a MULTI-member group's own start/failure pop, computed off
-    // the same full `next` snapshot and the same `isFirstTick` flag (so a
+    // D-C (§3): a MULTI-member group's own failure pop, computed off the
+    // same full `next` snapshot and the same `isFirstTick` flag (so a
     // page-load backlog seeds silently here too, not just in `popupTick`).
     // "Latest wins, no stacking" is enforced ACROSS both sources by
     // comparing whichever moment each candidate actually represents (a
-    // single job's own `finished_at`, a group start's `started_at`, a group
-    // failure's `finished_at`) — see each function's own doc for why that
-    // pairing is the right one.
+    // single job's own `finished_at`, a group failure's `finished_at`) —
+    // see each function's own doc for why that pairing is the right one.
     const groupResult = groupPopupTick(next, groupPopupStateRef.current, popupFirstTickRef.current);
     groupPopupStateRef.current = groupResult.state;
     popupFirstTickRef.current = false;

@@ -48,8 +48,8 @@
 //
 // NEVER PRESENCE-SUPPRESSED (2026-09-17, second reversal): this branch used
 // to also carry `source: taskSource(task)`, which let a finished task's
-// POPUP get swallowed by `isPopupSuppressed` (jobs.ts) whenever the run's own
-// chat/project was already on screen — "you're already looking at it" for a
+// POPUP get swallowed by a presence check (jobs.ts, since removed) whenever
+// the run's own chat/project was already on screen — "you're already looking at it" for a
 // job that is still running. A finished Claude task is different: the run
 // has ENDED, so "already looking at the chat" no longer means "already knows
 // it's done" the way it does for an in-progress job's own page. Dropping

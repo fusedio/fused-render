@@ -652,12 +652,11 @@ export function RepoUpdatesCardView({
   rows: RepoRow[];
   dismissed: Record<string, string>;
   /** Terminal jobs re-routed here from the Jobs section (D586). A
-   *  presence-suppressed success (SPEC-quiet-notifications.md §2b) is no
-   *  longer split into a separate "Recent" section (removed 2026-09-17,
-   *  user: "I also don't like this recent stuff. notification is
-   *  notification. remove this recent.") — it is an ordinary row here like
-   *  everything else; only the POPUP for it is ever suppressed
-   *  (`jobs.ts`'s `isPopupSuppressed`). */
+   *  successful job is no longer split into a separate "Recent" section
+   *  (removed 2026-09-17, user: "I also don't like this recent stuff.
+   *  notification is notification. remove this recent."; then quieted
+   *  further 2026-09-23, D888: a clean finish never pops a card at all any
+   *  more) — it is an ordinary row here like everything else. */
   terminal?: Job[];
   /** Devices that paired over the LAN — the third row kind. */
   pairings?: LanPairingEvent[];
@@ -731,10 +730,10 @@ export function RepoUpdatesCardView({
   // Removed 2026-09-17 (user: "I also don't like this recent stuff.
   // notification is notification. remove this recent."): a retained, non-error
   // message no longer has anywhere else to land — every non-attention
-  // message is "Worth keeping" now, full stop. Presence suppression
-  // (`jobs.ts`'s `isPopupSuppressed`) still governs whether the POPUP for a
-  // finished task ever pops; it no longer decides where the retained row
-  // lands.
+  // message is "Worth keeping" now, full stop. Presence no longer decides
+  // where the retained row lands, and (2026-09-23, D888) no longer decides
+  // whether a finished task pops either — a clean finish never pops a card
+  // at all any more.
   const messagesTrail = messages.filter((m) => m.tier !== "attention");
   // ONLY TERMINAL-TRAIL JOBS FOLD — a waiting task, a repo row, a pairing and
   // an attention-tier terminal job are always shown in full, never counted

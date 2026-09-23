@@ -46,9 +46,15 @@ Real: live-looking key shape, long random string, or a PEM block, in a file the 
 
 ## `pyproject` — pyproject.toml is valid TOML
 
-**fact** — skip means no file, which is fine (optional; it only declares deps beyond the bundled Python). Fail means it exists and won't parse.
+**fact** — required. Fail means either no `pyproject.toml` at all, or one that exists and won't parse.
 
-**Fix.** Read the parse error from the row's `detail`, fix the syntax. Broken costs the app its extra packages, not its ability to open.
+**Fix, missing file.** A folder's dependency list is **all-or-nothing** — the bundled set (`numpy`, `pandas`, `pyarrow`, `duckdb`, `openpyxl`, `msgpack`, `pillow`, `python-pptx`, `fpdf2`, `requests`, `httpx`, `drain3`) is **NOT** unioned in. An **empty** `dependencies` list is safe — the folder stays on the app interpreter with the full bundled set. The hazard is a **non-empty but incomplete** list: an app importing `pandas` with no `pyproject.toml` runs fine on the bundled interpreter; add one that declares some other package but omits `pandas` and it stops running. A partial stub is a regression, not a fix.
+
+Read every `.py` in the app folder, collect every third-party import, and declare all of them — nothing less. An app with no `.py` files gets a `pyproject.toml` with an empty `dependencies` list; that is the correct, complete result for it.
+
+Shape: `[project]` with `name`, `version`, `requires-python`, `dependencies`, plus `[tool.uv] package = false` (the folder is a set of scripts, not a distribution to build). See `fused_render/templates/docs/pyproject.toml` for a real minimal example.
+
+**Fix, won't parse.** Read the parse error from the row's `detail`, fix the syntax. Broken costs the app its extra packages, not its ability to open.
 
 ## `readme` — has a README explaining the app
 

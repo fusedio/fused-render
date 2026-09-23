@@ -32,7 +32,7 @@ One plain fn `main(**params)`. Rules:
 
 ### Available Python libraries
 
-No `pyproject.toml` in folder → app interpreter: stdlib plus exactly this bundled set (repo `pyproject.toml` `[bundled]` extra minus `botocore`/`google-auth`, plus `pyarrow`/`duckdb`/`httpx` from core `[project]` deps). Prefer it — zero install.
+A `pyproject.toml` is always expected — App Doctor's `pyproject` row fails a folder that lacks one. Without one, the app interpreter falls back to stdlib plus exactly this bundled set (repo `pyproject.toml` `[bundled]` extra minus `botocore`/`google-auth`, plus `pyarrow`/`duckdb`/`httpx` from core `[project]` deps). `dependencies` should list the app's own third-party imports — NOT this bundled set; an app that only imports from it declares an empty `dependencies` list, which keeps it on that zero-install interpreter.
 
 - **Data:** `numpy` `pandas` `pyarrow` `duckdb` `openpyxl` `msgpack`
 - **Images:** `pillow`
