@@ -57,7 +57,6 @@ import { thumbUrl } from "@platform/lib/thumb-frame";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { listedModelIn, normalizeModel } from "@platform/lib/model-vocab";
 import { navigateUrl } from "@platform/lib/router";
-import { ENTER_LABEL } from "@platform/lib/platform";
 import {
   chatKeySession,
   draftSyncer,
@@ -4619,17 +4618,9 @@ export default function NewJobModal({
           <button type="button" className="btn btn-primary schedule-save"
                   disabled={busy} aria-disabled={!ready} onClick={trySubmit}>
             {busy ? `${actionLabel === "Create" ? "Creating" : "Scheduling"}…` : actionLabel}
-            {/* THE HOTKEY, ON THE BUTTON (Akshil, 2026-08-27: "show that hotkey
-                on the schedule button as well"). Enter from the title or the
-                instructions submits — see their onKeyDown — and a shortcut
-                nobody is told about is one nobody uses. Hidden while busy: the
-                button is disabled then and a live-looking hotkey on a dead
-                button is a lie. */}
-            {!busy && (
-              <kbd className="schedule-save-key" aria-hidden>
-                <span>{ENTER_LABEL}</span>
-              </kbd>
-            )}
+            {/* No hotkey badge (Akshil, 2026-09-23): the chord it advertised
+                (⌘↩) is gone, and a bare ↩ beside "Create" said nothing a
+                reader would not try first. */}
           </button>
         </>
       }
