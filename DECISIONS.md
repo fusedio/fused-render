@@ -5231,3 +5231,74 @@ pass, 0 fail across the six files. `bun run typecheck`,
 `bun run check:boundaries`, and `bun run build` all clean (the build's
 existing >500kB chunk-size warnings are pre-existing and unrelated to this
 change). No full suite run, per this task's scope.
+
+## D888 — Quiet notifications, round 2: no more start or success popups, only failures
+
+D-C (SPEC-quiet-notifications.md, this same file's earlier "Quiet
+Notifications" work) already earned the panel its quiet floor: a folded
+"Recent" section for successes (D-B, later reversed 2026-09-17 — see the
+`isPopupSuppressed` code comments in `jobs.ts`), presence suppression, and a
+multi-member group's own pop-on-start/pop-on-failure rule. Two sources of
+noise survived that round: a job crossing into a *successful* `done` still
+popped a floating card (every model download, AI render, index scan,
+self-update, etc.), and a multi-member group's first running member still
+popped a "started" card (two clustered `sys:index:*` scans, a parallel AI
+image/video batch). Both were reported as chatter the Activity chip's own
+progress line already made redundant — the chip counts up and shows a
+running total the instant anything starts, and its row stays in the panel
+until dismissed, so a floating card announcing the same fact added nothing
+a user needed to see arrive as a toast.
+
+Changed, in `frontend/src/platform/lib/jobs.ts`:
+
+- `popupJobs` now excludes every `state === "done"` job outright, for every
+  job kind, regardless of `tier` — a `done` job never pops any more. This
+  subsumes the old `tier === "silent" && state === "done"` gate (silent was
+  a special case of an already-more-general rule) and makes the
+  presence-suppression check (`isPopupSuppressed`/`isOpenAnywhere`) dead for
+  this call path: `isPopupSuppressed` only ever returns non-`false` for a
+  `done` job, and no `done` job reaches it any more. `popupJobs`/`popupTick`
+  both dropped their `isOpenAnywhere` parameter as a result.
+- `groupPopupTick`'s START edge (a group going from no running members to
+  some) is removed entirely, along with the `GroupPopupState` fields it
+  needed (`runningMemberIds`, `lastStartPopAt`) and the key-churn-immunity
+  machinery built around them. Only the FAILURE edge remains: any member
+  entering `error`/`cancelled` (`effectiveTier === "attention"`) still pops,
+  same as before, and the Finding-8 shrink-to-one carry-forward (a group's
+  already-popped failure survives its sibling being dismissed/swept) is
+  unchanged.
+
+Kept unchanged, on purpose: `UpdateProgressCard` (the self-update's own
+progress card is not a notification, it is the install's own UI); the
+Activity chip's label/count/progress line and its hover-preview/click-pin
+behavior (`platform/lib/statusChip.ts`); the Notifications chip and
+`RepoUpdatesDock`'s terminal-jobs feed (`ActivityDock`'s `onTerminalRef`
+plumbing is untouched — a successful job still gets a row there, it simply
+no longer also pops a floating card); schedule toasts
+(`platform/lib/schedule-toast.ts`); the "engine retired (idle)" toast in
+`ActivityDock.tsx`; and app-level `notify()` toasts. `isPopupSuppressed` is
+kept as an exported, independently-tested pure function (other doc comments
+in `presence.ts`/`RepoUpdatesDock.tsx`/`task-status-notify.ts` still
+reference it) even though nothing in the popup pipeline calls it any more.
+
+`SPEC-quiet-notifications.md`'s D-C bullet and its two restatements (§3's
+"Pop rule (D-C)", and the verification checklist) are annotated in place
+with a "Reversed 2026-09-23 (D888)" note each, rather than rewritten, so the
+original scoping decision stays legible next to what changed and why.
+
+Tests: `frontend/src/platform/lib/jobs.test.ts` (117 pass) and
+`frontend/src/shell/ActivityDock.test.tsx` (9 pass), run individually per
+this repo's `mock.module`-is-process-wide convention. Every generic
+popup-mechanics test that used to exercise a `done` job as its terminal
+state (seeding, dedup, latest-wins, id-reuse) was rewritten against
+`error` instead, since `done` can no longer demonstrate those mechanics at
+all. Every `groupPopupTick` START/key-churn test was removed outright (the
+edge they covered no longer exists); the FAILURE and
+ordinary-completion/whole-group-completion tests were kept unchanged.
+`jobs.test.ts` additionally gained an `installDomShim()` call (converting
+its static `@platform/lib/jobs` import to a dynamic one, matching
+`restart-store.test.ts`'s own pattern) — the file could not previously run
+standalone at all, only as part of the full suite, because `jobs.ts`
+transitively imports `router.ts` (`api.ts` -> `presence.ts` -> `router.ts`),
+which reads `location` at module scope. A full `bun test` run (339 files,
+7174 tests) stayed green throughout.
