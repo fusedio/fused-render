@@ -357,7 +357,7 @@ def _imported_dists(text: str) -> set[str]:
 
 def _template_files() -> list[str]:
     out = []
-    for dirpath, _dirnames, filenames in os.walk(_TEMPLATES):
+    for dirpath, _, filenames in os.walk(_TEMPLATES):
         if "__pycache__" in dirpath or os.sep + "vendor" in dirpath:
             continue
         out += [
@@ -453,7 +453,7 @@ def _runpython_targets() -> frozenset[str]:
     exactly the relationship that does NOT make the importee an entry point.
     """
     targets = set()
-    for dirpath, _dirnames, filenames in os.walk(_TEMPLATES):
+    for dirpath, _, filenames in os.walk(_TEMPLATES):
         if "__pycache__" in dirpath or os.sep + "vendor" in dirpath:
             continue
         prose = ""

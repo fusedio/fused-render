@@ -145,8 +145,58 @@ side:
   with no manifest at all would reintroduce exactly the false-positive risk
   that gate exists to avoid.
 
-Left undone. A later builder (or a product call) has two real options, neither
-of which this branch should make unilaterally:
+**Orchestrator decision (2026-09-23): item 3 is NOT actually blocked by
+D176.** `projectenv.has_lock`'s docstring makes the real mechanism explicit —
+the `app_satisfies` fast path is skipped only for a LOCKED project; an
+unlocked manifest declaring only bundle-provided dists leaves
+`app_satisfies` returning True, so DMG/`[bundled]` users pay nothing, while a
+lean wheel-only install still gets a declaration for `explain_missing_module`
+to read. D176's test (`test_a_declaration_is_needed_for_what_the_MACOS_BUNDLE_lacks`)
+keys on `_raw_declaration(folder)` alone and never consults `has_lock` —
+broader than its own stated rationale ("it is the folder that now costs a
+venv build and a download") — so the fix is to narrow D176 to apply only when
+`projectenv.has_lock` is true, via `projectenv.has_lock` itself (not a
+reimplementation), leaving all 10 currently-locked folders' assertions
+unchanged. Directive: add unlocked manifests (no `uv.lock`) for the 9
+folders (`xlsx` still skipped, `INPROCESS_HELPERS`), each declaring the FULL
+completeness set (core deps included, D172), and narrow D176 accordingly.
+
+**Builder finding (2026-09-23), before implementing the narrowing — STOPPED
+per the orchestrator's own condition ("if such a constraint exists, stop and
+report rather than relaxing a second test").** A second, independent test
+requires every declaring folder to ship a lock:
+`tests/test_template_locks.py::test_a_declaring_template_ships_a_lock` (line
+83-91) is parametrized over `_declaring_folders()` — every folder under
+`fused_render/templates/` with a `pyproject.toml`, no lock-aware carve-out —
+and asserts `uv.lock` exists for each one, failing with "declares an
+environment but ships no uv.lock, so a shipped build would resolve it
+against PyPI on first render. Run `uv lock`... and commit the result." A
+sibling test in the same file,
+`test_the_lock_matches_the_manifest` (line 94-122), then requires that lock's
+recorded root dependencies to equal the manifest's `dependencies` exactly —
+so even a placeholder/empty lock would not satisfy it; the lock has to be a
+real `uv lock` output that matches.
+
+This means the orchestrator's directive as given — unlocked manifests for
+the 9 folders — would fail `test_template_locks.py` for every one of them,
+the same day it stopped failing `test_bundle_contents.py`. Both tests are
+real and deliberate (D177's mechanism-not-comment framing, explicit in that
+file's own module docstring): a declaring-but-unlocked folder is exactly the
+state `test_template_locks.py` exists to prevent, for reasons unrelated to
+D176 (an unpinned first-render PyPI resolution, and a lock that silently
+drifts from the manifest on the user's machine, per that file's docstring).
+
+Per instruction, item 3 implementation is stopped here — no manifests
+written, `test_a_declaration_is_needed_for_what_the_MACOS_BUNDLE_lacks` not
+narrowed — pending the orchestrator's read on this second constraint. Not
+relaxed unilaterally: this is now two tests standing between "unlocked
+manifest" and green, which the orchestrator asked to see before either gets
+touched.
+
+Left undone pending that decision. Absent a further directive, the same two
+real options as before remain (now with the added fact that going with
+option 1 must additionally reconcile or narrow `test_template_locks.py`, not
+just D176):
 1. Accept the DMG venv-build+download regression for these 9 folders and add
    the manifests, extending D176's necessity test with a documented exemption
    list (mirroring `_OPTIONAL_IMPORTS`'s shape: named entries, each with a
