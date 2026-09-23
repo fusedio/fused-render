@@ -5231,3 +5231,40 @@ pass, 0 fail across the six files. `bun run typecheck`,
 `bun run check:boundaries`, and `bun run build` all clean (the build's
 existing >500kB chunk-size warnings are pre-existing and unrelated to this
 change). No full suite run, per this task's scope.
+
+## Lean wheel / Intel Mac compatibility (2026-09-23)
+
+Building LEAN_WHEEL_SPEC.md's four items. Item 1 (platform-conditional
+version ceilings for zeroconf/cryptography on x86_64 macOS) verified and
+shipped as-specced: 0.148.0 and 48.0.1 are both the correct real boundaries
+(checked against `https://pypi.org/pypi/<name>/json`, including
+universal2 wheels for cryptography, which do cover x86_64 until 48.0.1 —
+48.0.2/48.0.3 shipped no macOS wheel at all, 49.0.0+ ship arm64-only).
+`uv pip compile --python-platform x86_64-apple-darwin` resolves both to
+their ceilings; `aarch64-apple-darwin` resolves both unconstrained to
+latest. Confirms the spec's numbers.
+
+**Item 2 (bump fused pin to 2.9.3b9) is DEFERRED — the spec's claim does
+not hold up.** `https://pypi.org/pypi/fused/2.9.3b9/json` returns a full,
+non-yanked release record (uploaded 2026-09-23T09:13:37Z, correct
+`requires_dist` matching the spec's "23 core dists, no pyarrow/geopandas/
+shapely/boto3/cryptography" claim) — but the version is **not present in
+PyPI's simple index** (`https://pypi.org/simple/fused/`, which is what
+pip/uv actually resolve against). Verified three ways:
+  - `curl https://pypi.org/simple/fused/` lists 2.9.3b8 as the newest;
+    2.9.3b9 does not appear.
+  - `uv pip compile --extra fused` fails: "no version of fused==2.9.3b9".
+  - `python3 -m pip download fused==2.9.3b9` fails: "No matching
+    distribution found", and its own available-versions list tops out at
+    2.9.3b8.
+  - The wheel file itself IS live on files.pythonhosted.org (direct URL
+    200s), so this is not a broken/corrupt upload — just not indexed.
+
+Bumping the pin right now would make `pip install "fused-render[bundled]"`
+/ `[fused]` **unsatisfiable** on every platform, which is the opposite of
+this branch's goal. Left at `fused==2.9.3b8` in both `[bundled]` and
+`[fused]`. Re-check `https://pypi.org/simple/fused/` before bumping — if
+this was an index-propagation lag rather than a permanently withdrawn
+release, 2.9.3b9 should appear there once it catches up, at which point
+the bump is a one-line, well-verified change (dependency reduction already
+confirmed above).
