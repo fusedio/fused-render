@@ -921,7 +921,7 @@ jobs:
             echo "No relevant changes; skipped."
             exit 0
           fi
-          # app fired ⇒ these six always run (they gate on app only), so
+          # app fired ⇒ these eight always run (they gate on app only), so
           # anything other than success is a failure. test-python-windows is
           # among them: it gates on `app` exactly like test-python, and it is
           # listed here rather than with the filter-gated desktop jobs below
