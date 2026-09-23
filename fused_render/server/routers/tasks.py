@@ -281,7 +281,10 @@ def _prompt(obj) -> dict | None:
     # by every other reader of a transcript's prompts (tasks_store.head,
     # claude_sessions, agent.py) and, until 2026-09-15, not by this one.
     if (obj.get("type") != "user" or obj.get("isMeta")
-            or obj.get("isSidechain")):
+            or obj.get("isSidechain") or obj.get("isCompactSummary")):
+        # `isCompactSummary` is /compact's own recap ("This session is being
+        # continued from a previous conversation…"), written as a user row
+        # the user never typed; it titled the row (Akshil, 2026-09-23).
         return None
     message = obj.get("message")
     if not isinstance(message, dict) or message.get("role") != "user":
@@ -458,6 +461,17 @@ def _absorb(rec: dict, line: str) -> None:
         # tracks the conversation. See claude_sessions.ai_title.
         rec["title"] = title
         return
+    stopped_at = _interrupt_at(obj)
+    if stopped_at is not None:
+        # The reader hit stop: the row says so where the reply would go, and
+        # says ONLY so — whatever Claude got out before the stop is not the
+        # answer (Akshil, 2026-09-23: "always Interrupted by you, even though
+        # we have first line of the response"). Clears the raw line still
+        # waiting on `_condense_reply`, or that reply would win the scan.
+        rec["reply_line"] = ""
+        rec["reply"] = _INTERRUPTED_REPLY
+        rec["reply_at"] = stopped_at
+        return
     prompt = _prompt(obj)
     if prompt is None:
         # Not a message — but a slash-command envelope is still worth ONE fact,
@@ -471,6 +485,25 @@ def _absorb(rec: dict, line: str) -> None:
     rec["tail"].append(prompt)
     if len(rec["tail"]) > _LISTING_MESSAGES:
         rec["tail"].pop(0)
+
+
+#: What a stopped turn prints where a reply would go. Same words as the chat's
+#: own status line for the marker (Turn.tsx `is-interrupt`).
+_INTERRUPTED_REPLY = "Interrupted by you"
+
+
+def _interrupt_at(obj: dict) -> float | None:
+    """When the reader hit stop, if this user record is the CLI's marker for
+    it (`tasks_store.is_interrupt_mark`), else None. A sidechain's marker is a
+    subagent's, not this conversation's."""
+    if obj.get("type") != "user" or obj.get("isSidechain"):
+        return None
+    message = obj.get("message")
+    if not isinstance(message, dict):
+        return None
+    if not tasks_store.is_interrupt_mark(tasks_store.first_text(message.get("content"))):
+        return None
+    return tasks_store.epoch(obj.get("timestamp")) or 0.0
 
 
 def _new_scan() -> dict:
@@ -501,14 +534,22 @@ def _condense_reply(rec: dict) -> None:
         return
     # Own cap, wider than `_LAST_MESSAGE_MAX`: this line fills the row's whole
     # free width on a wide screen, so 200 characters would ellipsise early.
+    # WHEN it was said, so the row can tell a reply to THIS turn from one left
+    # over from the last (`_last_reply`). 0.0 for a record without a stamp,
+    # which the row reads as "cannot tell — show it".
+    said_at = tasks_store.epoch(obj.get("timestamp")) or 0.0
+    # An OLDER row never beats the reply already held: a compaction replays
+    # earlier rows after later ones (`_ORDER_SLACK`), and the one this guards
+    # is the stop marker — a replayed pre-stop reply must not put Claude's
+    # words back where "Interrupted by you" stands.
+    held_at = float(rec.get("reply_at") or 0.0)
+    if said_at and held_at and said_at < held_at:
+        return
     for raw in str(tasks_store.first_text(message.get("content")) or "").splitlines():
         text = raw.strip()
         if text:
             rec["reply"] = text[:600]
-            # WHEN it was said, so the row can tell a reply to THIS turn from
-            # one left over from the last (`_last_reply`). 0.0 for a record
-            # without a stamp, which the row reads as "cannot tell — show it".
-            rec["reply_at"] = tasks_store.epoch(obj.get("timestamp")) or 0.0
+            rec["reply_at"] = said_at
             return
 
 

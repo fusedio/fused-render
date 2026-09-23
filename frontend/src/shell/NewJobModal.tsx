@@ -57,7 +57,7 @@ import { thumbUrl } from "@platform/lib/thumb-frame";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { listedModelIn, normalizeModel } from "@platform/lib/model-vocab";
 import { navigateUrl } from "@platform/lib/router";
-import { ENTER_LABEL, isMod, MOD_LABEL } from "@platform/lib/platform";
+import { ENTER_LABEL } from "@platform/lib/platform";
 import {
   chatKeySession,
   draftSyncer,
@@ -1735,6 +1735,9 @@ export const TITLE_PLACEHOLDER = "What should Claude do?";
 // and leaving that question here while the field above asks it too would put the
 // user in front of the same question twice.
 export const ASK_PLACEHOLDER = "Additional instructions (optional)";
+// The second line of the ask's placeholder: the key that brings the caret
+// down from the title (its onKeyDown).
+export const ASK_HINT_KEY = "shift + enter";
 
 // One line of a block of prose, trimmed. Used to reduce a multi-line value to
 // something an <input> can hold — it would strip the newlines anyway. It also
@@ -4617,14 +4620,13 @@ export default function NewJobModal({
                   disabled={busy} aria-disabled={!ready} onClick={trySubmit}>
             {busy ? `${actionLabel === "Create" ? "Creating" : "Scheduling"}…` : actionLabel}
             {/* THE HOTKEY, ON THE BUTTON (Akshil, 2026-08-27: "show that hotkey
-                on the schedule button as well"). ⌘↩ from any field submits —
-                see the form's onKeyDown — and a shortcut nobody is told about
-                is one nobody uses. Hidden while busy: the button is disabled
-                then and a live-looking hotkey on a dead button is a lie. */}
+                on the schedule button as well"). Enter from the title or the
+                instructions submits — see their onKeyDown — and a shortcut
+                nobody is told about is one nobody uses. Hidden while busy: the
+                button is disabled then and a live-looking hotkey on a dead
+                button is a lie. */}
             {!busy && (
               <kbd className="schedule-save-key" aria-hidden>
-                <span>{MOD_LABEL}</span>
-                <span className="schedule-save-key-plus">+</span>
                 <span>{ENTER_LABEL}</span>
               </kbd>
             )}
@@ -4634,20 +4636,6 @@ export default function NewJobModal({
     >
       <div
         className="schedule-form"
-        // ⌘↩ / Ctrl+Enter SUBMITS, from any field (Akshil, 2026-08-27). Plain
-        // Enter has a job in every box here — next line in the ask, next field
-        // from the title, a pick in the recents list — so the commit needs the
-        // modifier, and the modifier is the one every composer on the machine
-        // already uses for "send". Goes through trySubmit, not submit, so a form
-        // that cannot be saved answers the same way the button does: says which
-        // field, moves the caret. Left alone inside the folder explorer, whose
-        // own Enter picks a row, and while a save is already in flight.
-        onKeyDown={(e) => {
-          if (e.key !== "Enter" || !isMod(e) || busy) return;
-          if ((e.target as HTMLElement).closest(".schedule-explorer")) return;
-          e.preventDefault();
-          trySubmit();
-        }}
       >
         {/* ONE WRITING SURFACE, not two controls (Akshil, 2026-08-17, reference
             image): the title and the description share a single borderless
@@ -4711,21 +4699,21 @@ export default function NewJobModal({
             placeholder={TITLE_PLACEHOLDER}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            // ENTER MOVES DOWN, into the instructions (Akshil, 2026-08-27: "when
-            // I am typing in the title, when I click enter, it should go to
-            // additional instructions"). The two fields are one message and the
-            // title is its first line, so Enter at the end of the first line
-            // means what it means in any editor: start the next one. It does
-            // NOT submit — a single-line field that fires Save on Enter would
-            // create a task on the way to describing it. An IME composition's
-            // Enter commits the candidate, not the line, and is left alone.
-            // A MODIFIED Enter is not this field's: ⌘↩ / Ctrl+Enter is the
-            // form's Save chord (the wrap's onKeyDown), and it must bubble there
-            // untouched rather than also walk the caret down (Bugbot).
+            // ENTER CREATES THE TASK; SHIFT+ENTER MOVES DOWN into the
+            // instructions (Akshil, 2026-09-23). It was the other way round —
+            // Enter walked the caret down and ⌘↩ saved — and the card asked
+            // for a chord to do the one thing it exists for. An IME
+            // composition's Enter commits the candidate, not the line, and is
+            // left alone. Goes through trySubmit, not submit, so a form that
+            // cannot be saved answers the same way the button does.
             onKeyDown={(e) => {
-              if (e.key !== "Enter" || e.nativeEvent.isComposing || isMod(e)) return;
+              if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
               e.preventDefault();
-              askRef.current?.focus();
+              if (e.shiftKey) {
+                askRef.current?.focus();
+                return;
+              }
+              if (!busy) trySubmit();
             }}
             autoFocus
           />
@@ -4746,16 +4734,35 @@ export default function NewJobModal({
               deliberately does not have: multi-line, autogrowing with the text
               from the floor `.new-task-ask` sets up to its max-height, then
               scrolling. */}
-          <textarea
-            ref={askRef}
-            className="new-task-field new-task-ask"
-            rows={2}
-            aria-label="Additional instructions"
-            placeholder={ASK_PLACEHOLDER}
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            onPaste={pasteFiles}
-          />
+          <div className="new-task-ask-wrap">
+            <textarea
+              ref={askRef}
+              className="new-task-field new-task-ask"
+              rows={2}
+              aria-label="Additional instructions"
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              onPaste={pasteFiles}
+              // Enter creates the task here too; Shift+Enter is the textarea's
+              // own newline and is left to it (Akshil, 2026-09-23).
+              onKeyDown={(e) => {
+                if (e.key !== "Enter" || e.nativeEvent.isComposing || e.shiftKey) return;
+                e.preventDefault();
+                if (!busy) trySubmit();
+              }}
+            />
+            {/* The placeholder, drawn rather than set: a native `placeholder`
+                is one run of text, and this one is two — the words, and under
+                them the key that gets the caret here, in italics. Hidden the
+                moment there is text, like the native one; `aria-hidden`
+                because the field's `aria-label` already says what it is. */}
+            {!message && (
+              <div className="new-task-ask-hint" aria-hidden="true">
+                <span>{ASK_PLACEHOLDER}</span>
+                <em>{ASK_HINT_KEY}</em>
+              </div>
+            )}
+          </div>
 
           {/* The attachments, minimal on purpose (Akshil, 2026-08-26: "just
               the image and the x icon on it"): a bare thumbnail that OPENS the

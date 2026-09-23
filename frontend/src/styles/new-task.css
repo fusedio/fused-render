@@ -291,7 +291,9 @@
    and its rules went with it: the big field IS the description, so there is no
    third piece of prose to style.) */
 .new-task-write .new-task-title {
-  font-size: 20px;
+  /* 18px, was 20 (Akshil, 2026-09-23): still the larger face of the pair by a
+     clear step over the 13px ask. */
+  font-size: 18px;
   font-weight: 500;
   line-height: 1.35;
   /* One line. `pre` rather than `nowrap` so a pasted value's own spacing is not
@@ -333,13 +335,50 @@
   line-height: 1.55;
   resize: none;
   overflow-wrap: anywhere;
-  /* Six lines of the 13px face plus the shared padding: the block the reference
-     image gives the description, and the slack it takes. */
-  min-height: calc(13px * 1.55 * 6 + 12px);
+  /* Three lines of the 13px face plus the shared padding — half the six the
+     reference image gave it (Akshil, 2026-09-23). Still the slack-taker. */
+  min-height: calc(13px * 1.55 * 3 + 12px);
   /* Ten, then it scrolls. */
   max-height: calc(13px * 1.55 * 10 + 12px);
   overflow-y: auto;
   flex: 1 1 auto;
+}
+
+/* The ask's box: what the drawn placeholder is positioned against. Takes the
+   textarea's place in the write block's flex column and hands the slack on. */
+.new-task-ask-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* The two-line placeholder: sits exactly where the textarea's own text starts
+   (its 6px top padding, flush left), in the same face, the same muted ink the
+   native one wore. Two lines — the words, then the key in italics. Lets clicks
+   through to the field beneath. */
+.new-task-ask-hint {
+  position: absolute;
+  top: 6px;
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 1.55;
+  pointer-events: none;
+}
+
+.new-task-ask-hint > * {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.new-task-ask-hint > em {
+  font-style: italic;
 }
 
 /* -- The past-time note ------------------------------------------------------
