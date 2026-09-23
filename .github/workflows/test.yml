@@ -508,10 +508,26 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      # No [bundled], no [fused] — the leanest real install: core deps plus
-      # just enough test tooling to run pytest.
-      - name: Install fused-render (dev extra only)
-        run: pip install -e ".[dev]"
+      # No [bundled], no [fused], no [dev] — the leanest real install: core
+      # deps only, plus just the test tooling this job's own steps need
+      # (pytest). [dev] pulls in cryptography on every platform
+      # (pyproject.toml ~:156-163), which would make this job unable to ever
+      # reproduce a bare-install crash like the one this job exists to catch.
+      - name: Install fused-render (core only, plus pytest)
+        run: |
+          pip install -e .
+          pip install pytest
+
+      - name: Assert cryptography is genuinely absent
+        # Without this assertion, a dependency added later (directly or
+        # transitively) can silently reintroduce cryptography into this
+        # "lean" install and this job would go back to testing nothing,
+        # exactly as it did before this fix.
+        run: |
+          if python -c "import cryptography" 2>/dev/null; then
+            echo "::error::cryptography is present; this job no longer tests a lean install"
+            exit 1
+          fi
 
       - name: Assert the entry points import with nothing but core deps
         # Without this, a broken lean install can still go green below: the
