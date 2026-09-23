@@ -41,6 +41,10 @@ import sys
 #     transitively, this test should fail and say so, not paper over it.
 #   * google-auth / botocore — collapsed to their real top-level import
 #     names (`google`, `botocore`) rather than the PyPI project names.
+#   * mcp / fused — both `[bundled]`-only and by far the heaviest transitive
+#     pulls (mcp brings in pydantic/httpx-sse/etc.; fused brings in its own
+#     large dependency tree); verified locally that blocking them still
+#     yields IMPORT_OK.
 HEAVY = frozenset({
     "numpy",
     "pandas",
@@ -51,6 +55,9 @@ HEAVY = frozenset({
     "fpdf",
     "drain3",
     "botocore",
+    "google",
+    "mcp",
+    "fused",
 })
 
 _CHILD_SOURCE = """
