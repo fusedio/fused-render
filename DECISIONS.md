@@ -5477,3 +5477,58 @@ self-update, let the server boot. Repro: build a wheel (`uv build --wheel`),
 `uv venv /tmp/x && uv pip install --python /tmp/x/bin/python dist/*.whl`,
 `cd /tmp && /tmp/x/bin/fused-render serve --no-browser` on a real Mac with
 no other extras installed.
+
+### Follow-up (2026-09-23): the bare-install crash fixed, plus a macOS CI leg
+
+Picked up the flagged fifth finding above. Fixed in `fused_render/update/common.py`:
+the `cryptography` import is now inside `try/except ModuleNotFoundError`,
+checked on `exc.name == "cryptography"` (a genuinely broken install — present
+but corrupt — still raises; only a truly absent package is swallowed).
+`CRYPTO_AVAILABLE` records which branch ran. `verify_signature()` raises
+`RuntimeError` if it is somehow called while `CRYPTO_AVAILABLE` is False,
+rather than silently skipping the check — the security property (no update
+path that ships bytes unverified) is preserved, not traded for boot safety.
+
+`mac.start()`/`linux.start()` each gained the same guard, first thing, before
+the existing "nothing to swap" bundle/AppImage check: if `cryptography` is
+absent, log a WARNING once and return `None`, exactly like the existing
+unpackaged-dev-run no-op. `update/__init__.py` needed no change — with
+`common.py` fixed, importing `mac`/`linux`/the win32 supervisor updater no
+longer raises on any platform, so the platform dispatch already reaches the
+per-module guard correctly.
+
+Verified for real, not just reasoned about: `uv build --wheel`, installed the
+built wheel into a throwaway venv with `uv pip install --python
+<venv>/bin/python dist/*.whl` (no extras), confirmed with `python -c "import
+cryptography"` that the venv genuinely lacks it, then `cd /tmp &&
+<venv>/bin/python -m fused_render.cli serve --port 8971` — booted and served
+`/api/config` as 200. Separately confirmed the log line fires
+(`logging.basicConfig(level=WARNING); fused_render.update.start()` prints the
+"cryptography is not installed..." warning and returns `None`).
+
+Added `.github/workflows/test.yml`'s missing macOS leg for this class of bug:
+`minimal-install` is now a `strategy.matrix` over `[ubuntu-latest, macos-14]`
+rather than a second, hand-duplicated job — same steps run on both, so they
+cannot drift apart. `macos-14` is pinned explicitly (not `macos-latest`),
+with a comment explaining why: this repo's `macos-desktop` job carries its
+own history of a floating-image Python-launch failure (D468, macos-14 vs. a
+bundled framework Python), and while that specific failure mode doesn't apply
+here (this job never bundles its own interpreter, only whatever
+`actions/setup-python` installs), the runner image is pinned on the same
+general principle rather than left to float. A comment in the workflow also
+says explicitly not to delete the macOS leg as "redundant" with
+`ubuntu-latest` — it is the only leg that exercises `update/mac.py`'s import
+chain on a lean install; `sys.platform != "darwin"` means `ubuntu-latest`
+structurally cannot catch this class of bug.
+
+`test_import_weight.py` and its CI wiring into `test-status` were left as the
+previous builder built them — `needs.minimal-install.result` already
+aggregates across the whole matrix (any leg failing fails the aggregate), so
+`test-status` needed no change.
+
+New tests: `test_mac_update.py::test_start_noop_when_cryptography_is_unavailable`,
+`test_linux_update.py::test_start_noop_when_cryptography_is_unavailable`, and
+`test_win_supervisor_update.py::test_verify_signature_refuses_when_cryptography_is_unavailable`.
+All scoped update/*-test files plus the new tests pass locally (119 passed,
+2 skipped — the 2 are pre-existing POSIX-only skips on this run's platform,
+unrelated to this change).

@@ -461,10 +461,38 @@ jobs:
   # of the CLI's own `serve` subcommand and a request against it — so "the
   # lean install works" is asserted directly, not inferred from what happened
   # not to skip.
+  # ubuntu-only here would be a hole this repo has already fallen into once:
+  # a bare `pip install fused-render` (no extras) crashed at startup on every
+  # macOS install (ModuleNotFoundError: No module named 'cryptography',
+  # imported unconditionally by update/common.py, reached only through
+  # update/__init__.py:start()'s `sys.platform == "darwin"` branch) while this
+  # exact job stayed green on ubuntu-latest, because the crash never fires
+  # there. macos-14 is added to the matrix instead of a second job so the
+  # macOS leg literally runs the same steps as the ubuntu one, not a
+  # hand-duplicated copy that can drift out of sync with it.
+  #
+  # DO NOT DELETE THE MACOS LEG AS "REDUNDANT WITH ubuntu-latest" — it is the
+  # only leg in this whole workflow that exercises update/mac.py's import
+  # chain against a lean, no-extras install; ubuntu-latest cannot cover it.
+  #
+  # macos-14, not macos-latest: this repo's macos-desktop job (below) carries
+  # its own scar from a floating image — D468 pinned it to macos-14 after a
+  # newer runner's bundled Python failed to LAUNCH there, and macos-desktop
+  # has since moved off macos-14 for an unrelated SDK reason (Xcode 26 /
+  # FoundationModels), not because macos-14 itself was ever bad. This job
+  # never bundles a Python interpreter of its own — it only calls whatever
+  # setup-python installs — so the launch-failure class of bug doesn't apply
+  # here, but the general lesson (pin the runner image explicitly; a floating
+  # `-latest` label can silently swap the Python underneath a job) still
+  # does, so it is pinned the same way rather than left to float.
   minimal-install:
     needs: [detect-changes, frontend]
     if: needs.detect-changes.outputs.app == 'true' && needs.frontend.result == 'success'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
