@@ -5268,3 +5268,99 @@ this was an index-propagation lag rather than a permanently withdrawn
 release, 2.9.3b9 should appear there once it catches up, at which point
 the bump is a one-line, well-verified change (dependency reduction already
 confirmed above).
+
+**Item 3 (manifests for undeclared template imports) — also NOT done,**
+because of a genuine conflict with an existing test, not a mistake in either
+side.
+
+Re-derived the "roughly 18" count using `tests/test_engine_requirements.py`'s
+own AST machinery (`_template_graph()`, `_imported_dists()`, `_app_dists()`),
+comparing each template file's app-dist imports against ONLY the core
+dependencies with no PEP 508 marker (a marker-scoped core dep, e.g. `pillow`
+on win32/linux, is not guaranteed present, so an unconditional import of it
+counts as undeclared same as a `[bundled]`-only one). Result: **10 folders**,
+not 18 — `autocad_viewer` (pillow), `claude` (pillow), `excel` (duckdb,
+fpdf2, openpyxl, pyarrow), `las` (numpy), `log_studio` (drain3), `netcdf`
+(numpy — `grid_tile_server.py` is self-managed/DAEMON_VENV and correctly
+excluded), `photos` (pillow), `slides` (fpdf2, pillow, python-pptx), `usd`
+(msgpack, numpy), `xlsx` (openpyxl).
+
+`xlsx/reader.py` is `INPROCESS_HELPERS` (`executor.py:71`) — it always runs
+on the server's own interpreter, never a spawned child or project venv, so a
+manifest cannot help it. Skipped for that reason, per the spec's own
+`structure/reader.py` precedent.
+
+For the other 9, wrote a real manifest for `autocad_viewer` (`dependencies =
+["pillow"]`, matching `model_card/pyproject.toml`'s shape — no `uv.lock`,
+since none is required by any test) and ran
+`tests/test_bundle_contents.py -k autocad_viewer`. It failed:
+
+```
+test_a_declaration_is_needed_for_what_the_MACOS_BUNDLE_lacks[autocad_viewer]
+AssertionError: fused_render/templates/autocad_viewer/pyproject.toml declares
+['pillow'], all of which the macOS bundle already ships — so it only costs a
+venv build and a download. Delete the file (and its lock).
+```
+
+That test (D176) requires `declared - _macos_dists()` to be non-empty — a
+folder's manifest must name at least one distribution the macOS **bundle**
+does not already carry, else it is pure waste: `has_lock()`'s own comment
+confirms a *locked* project always skips the fused engine's `app_satisfies`
+fast path (`engine.py:547`), forcing a real venv build + download even when
+the app interpreter already has everything declared — and the 10
+already-declaring folders (`docs`, `geometry_editor`, `geotiff`,
+`joblib_model`, `latex`, `map`, `model_card`, `pano`, `pdf_studio`, `vector`)
+all ship a `uv.lock`, so that convention is real, not incidental.
+
+Checked all 9 flagged folders against `[bundled]`'s current contents
+(pyproject.toml:206-269): every single flagged import — pillow, openpyxl,
+fpdf2, python-pptx, drain3, msgpack, numpy, duckdb, pyarrow — is already
+there. D276 never removed any of these from `[bundled]` (only the geo stack,
+PDF-viewer stack, polars, scipy and matplotlib left). So **none of the 9
+folders has even one dist that would clear D176's bar** — this is not
+specific to `autocad_viewer`; every one of the 9 would fail the same
+assertion.
+
+Two mechanisms were checked as a way to reconcile "helps lean-wheel users"
+with "costs nothing for DMG/`[bundled]` users", and both are dead ends:
+- The **built-in executor** (`executor.py`, always active) never builds a
+  venv at all — `_run_python` unconditionally spawns
+  `[sys.executable, CHILD]` on the app's own interpreter. A manifest changes
+  nothing about where code runs there; its only effect is unlocking
+  `explain_missing_module`'s better error text. So under the built-in
+  executor alone, adding these 9 manifests is free for DMG users (no venv,
+  no lock consulted for interpreter choice) — but D176's test does not
+  distinguish "built-in executor only" from "fused engine also enabled", and
+  correctly so: once a user turns on `engine = fused` (or installs
+  `fused-render[fused]`), the SAME manifest starts mattering for real, and a
+  locked one then does force the wasted build+download D176 exists to catch.
+- `explain_missing_module` (`executor.py:155`) is deliberately gated on the
+  folder DECLARING the missing module ("blaming the environment for a user's
+  typo is worse than saying nothing", `executor.py:186`) — it will not fire
+  for an import that's merely *known to be `[bundled]`-only* with no
+  manifest at all. Loosening that gate to cover this case would reintroduce
+  the exact false-positive risk it was written to avoid (a real user typo
+  getting told "this is a lean-install problem").
+
+**Left undone**, rather than either breaking D176 silently or unilaterally
+relaxing it. Two real options for whoever picks this up, both requiring a
+product call this branch should not make on its own:
+1. Add the 9 manifests anyway and extend D176's necessity test with a named,
+   reasoned exemption list (same shape as `_OPTIONAL_IMPORTS` in
+   `test_engine_requirements.py`) for folders whose declaration exists only
+   to serve users without `[bundled]` — accepting the venv-build+download
+   cost for DMG/full-bundle users as the tradeoff.
+2. Leave these 9 templates undeclared and accept they stay
+   broken-with-a-bare-traceback on a lean/wheel-only install (same failure
+   mode as today) until `[bundled]` (or an equivalent) is actually
+   obtainable on that install path.
+
+No `pyproject.toml`/`uv.lock` files were left behind for any of the 9 —
+the trial `autocad_viewer/pyproject.toml` was deleted after the test run
+above. Re-run recipe for a future builder: write the manifest per the
+per-folder dependency lists above (full app-dist import set per folder, not
+just what's missing — `test_a_declared_environment_is_complete` requires the
+COMPLETE set once any manifest exists, core deps included, no baseline
+credit, D172), then `.venv/bin/python -m pytest tests/test_bundle_contents.py
+tests/test_engine_requirements.py -k <folder>` to re-confirm the D176
+conflict before deciding which of the two options above to take.

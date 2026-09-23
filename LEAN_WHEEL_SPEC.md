@@ -62,7 +62,7 @@ instructions in DECISIONS.md under "Lean wheel / Intel Mac compatibility
 (2026-09-23)". A later builder: re-check the simple index first; if 2.9.3b9 (or
 newer) has propagated, the bump itself is a one-line, already-verified change.
 
-### 3. Manifests for undeclared template imports
+### 3. Manifests for undeclared template imports — DEFERRED, see below
 
 `fused_render/executor.py:155` `explain_missing_module` turns a bare
 `ModuleNotFoundError` into a legible message — but it is strictly gated: the
@@ -91,6 +91,76 @@ Two constraints:
 Adding a template file changes the packaged-tree sha256, which is the gate in
 `fused_render/core_templates.py` — expected, no action needed, but it means a
 running dev server restages on next start.
+
+**Builder finding (2026-09-23): NOT done — a real count, and a real conflict.**
+
+Re-derived list, using `tests/test_engine_requirements.py`'s own AST helpers
+(`_template_graph`, `_imported_dists`, `_app_dists`): **10 folders**, not
+"roughly 18" — `autocad_viewer`, `claude`, `excel`, `las`, `log_studio`,
+`netcdf`, `photos`, `slides`, `usd`, `xlsx`. Each imports a `[bundled]`-only
+dist (pillow, openpyxl, fpdf2, python-pptx, drain3, msgpack, numpy — plus
+`duckdb`/`pyarrow` for `excel`, which are core deps but still count: a folder
+with *any* manifest must declare every app-dist import, core included —
+`test_a_declared_environment_is_complete` gives no baseline credit, D172) with
+no `pyproject.toml` of its own.
+
+`xlsx/reader.py` is the one to skip as instructed: it is in
+`executor.py`'s `INPROCESS_HELPERS`, so it never runs in a spawned child or a
+project venv — a manifest cannot reach it, the same as `structure/reader.py`.
+
+**The other 9 cannot be given a manifest without either breaking or relaxing
+an existing, deliberate test.** Confirmed by writing one (`autocad_viewer`,
+declaring only `pillow`) and running the suite:
+`tests/test_bundle_contents.py::test_a_declaration_is_needed_for_what_the_MACOS_BUNDLE_lacks[autocad_viewer]`
+fails — "declares ['pillow'], all of which the macOS bundle already ships...
+Delete the file." That test (D176) requires a folder's declaration to name at
+least one dist the **macOS bundle** does not already carry, on the theory that
+anything else only costs a venv build and a download for no benefit. Checked
+all 9: every flagged import (pillow, openpyxl, fpdf2, python-pptx, drain3,
+msgpack, numpy, duckdb, pyarrow) is already in `[bundled]` today (D276 never
+removed any of these), so **none of the 9 has a single dist that clears that
+bar** — the necessity test would reject all 9, not just the one tried.
+
+This is a genuine conflict between this item and D176, not a bug in either
+side:
+- D176's test is correct for the DMG/full-bundle reader: a locked manifest
+  (the convention — all 10 existing declaring folders ship a `uv.lock`)
+  disables the fused engine's `app_satisfies` fast path
+  (`engine.py:547`/`projectenv.py:585`), so adding one of these 9 would force
+  a real venv build + download for every DMG/`[bundled]` user, to declare
+  something their interpreter already has. That is exactly the D276 defect
+  D176 exists to prevent, applied to a different set of packages.
+- The spec's premise is also correct: on a genuinely lean/wheel-only install
+  (no `[bundled]`), none of these 9 folders can ever get
+  `explain_missing_module`'s help or a working fused-engine auto-install,
+  because nothing declares what they need. That gap is real and unaddressed.
+- Two mechanisms were checked and ruled out as a way to have both: (a) the
+  built-in executor (`executor.py`) never builds a venv at all — it always
+  spawns `[sys.executable, _child.py]` on the app's own interpreter regardless
+  of a manifest, so a manifest changes nothing there except unlocking
+  `explain_missing_module`'s message; (b) `explain_missing_module` is
+  deliberately gated on the folder *declaring* the module ("blaming the
+  environment for a user's typo is worse than saying nothing" —
+  `executor.py:186`), so extending it to fire for any known-bundled import
+  with no manifest at all would reintroduce exactly the false-positive risk
+  that gate exists to avoid.
+
+Left undone. A later builder (or a product call) has two real options, neither
+of which this branch should make unilaterally:
+1. Accept the DMG venv-build+download regression for these 9 folders and add
+   the manifests, extending D176's necessity test with a documented exemption
+   list (mirroring `_OPTIONAL_IMPORTS`'s shape: named entries, each with a
+   reason) for folders whose declaration exists solely to serve the
+   lean-wheel/no-`[bundled]` path.
+2. Leave `[bundled]` folders undeclared and accept that these 9 templates stay
+   broken-with-no-explanation on a lean/wheel-only install until `[bundled]`
+   is available there too (e.g. once fused pin work — item 2 — or a `pip
+   install fused-render[bundled]` on Linux — lands and is documented as the
+   supported path for these templates).
+
+No files changed for this item; `pyproject.toml`/`uv.lock` scaffolding for the
+9 folders was not written. Full detail cross-referenced in DECISIONS.md under
+"Lean wheel / Intel Mac compatibility (2026-09-23)".
 
 ### 4. CI gates
 
