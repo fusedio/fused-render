@@ -4516,6 +4516,7 @@ export default function NewJobModal({
   return (
     <Modal
       title={editing ? "Edit task" : "New task"}
+      dialogClassName="new-task-dialog"
       // …plus WHICH TASK this one came out of, when it came out of one
       // (design.md B, Option 1). A chip, not a field: it states the fact the
       // session id was already carrying silently, and pressing it opens that
