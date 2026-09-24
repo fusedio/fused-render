@@ -544,7 +544,9 @@ jobs:
           "
 
       - name: Prove no [bundled]-only package is reachable from either entry point
-        run: python -m pytest tests/test_import_weight.py -q
+        # pyproject's addopts asks for `-n auto` (pytest-xdist), which this
+        # minimal venv deliberately does not have; run this one file serially.
+        run: python -m pytest -o addopts="" tests/test_import_weight.py -q
 
       - name: Boot the server and hit it for real
         # No TestClient/ASGI shortcut — the real CLI subprocess and a real
