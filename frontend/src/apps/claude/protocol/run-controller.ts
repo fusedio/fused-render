@@ -2275,6 +2275,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // match now consumes exactly ONE name.
       const named = still.filter((t): t is string => typeof t === "string" && !!t);
       const stranded: StrandedLine[] = [];
+      /** The unconfirmed sends whose pictures go back through `returnSend` —
+       *  AFTER `onStranded` (Bugbot round 4): the page posts every handed-back
+       *  line in ONE ordered insert from the strand, so the per-send returns
+       *  must find their rows already posted rather than post their own first
+       *  and leave the rest to land behind them out of typed order. */
+      const toReturn: typeof queued = [];
       for (const entry of queued.slice()) {
         // Matched against the WIRE form, which is what `still_queued` carries;
         // what goes BACK to the box is the TYPED form, because that is the text
@@ -2313,7 +2319,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // (`onSendReturned`'s own note).
         if (!entry.landed && !entry.handedBack) {
           entry.handedBack = true;
-          returnSend(entry.typed, entry.opts);
+          toReturn.push(entry);
         }
         // The optimistic bubble goes with it. A follow-up the interrupt
         // stranded was never answered, so leaving the row posted claims the
@@ -2338,6 +2344,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       queued.length = 0;
       if (cleared || stranded.length) publishQueued();
       if (stranded.length) deps.onStranded?.(stranded);
+      for (const entry of toReturn) returnSend(entry.typed, entry.opts);
     } catch (err) {
       // The kill never reached the backend, so the run is still going and the
       // loop is still streaming it. Take the claim back: leaving it set would
