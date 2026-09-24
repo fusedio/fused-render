@@ -17,9 +17,8 @@
 // Kept here, in platform, because both pickers need the same answer and they
 // live in different halves of the app — the chat composer
 // (apps/claude/ui/composer-defaults) and the New task card (shell/schedule-lib).
-// The chat TEMPLATE (templates/claude/template.html) carries its own copy for
-// the reason it carries its own MODELS: it is vanilla JS served off disk and
-// cannot import this bundle.
+// agent.py's `_short_model` and tasks.py's `_display_model` are the Python
+// side's copies of the same fold, for the values that arrive off disk.
 // The id, then optionally the CLI's context qualifier (`[1m]`), which is a
 // modifier on a model rather than a different one — so it is kept, and only
 // the id in front of it is folded.

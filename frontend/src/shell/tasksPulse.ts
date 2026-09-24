@@ -25,7 +25,7 @@
 // `/api/tasks` rows live was opening its own long-poll, and a wall of twelve
 // chat cards opened twelve.
 import { useEffect, useState } from "react";
-import { queueEnabled } from "@apps/claude/feature-flag";
+import { queueEnabled } from "@apps/claude/chat-prefs";
 import { getTasks, getTasksPulse } from "@platform/lib/api";
 import type { Task, TaskPulseTask } from "@platform/lib/api";
 import {
@@ -260,15 +260,16 @@ export function pokeTasks() {
   void poll();
 }
 
-/** The localStorage key the chat template (templates/claude/template.html)
- *  stamps when an interactive turn starts or ends. Interactive turns create no
- *  sys:schedule job and no schedule event — neither producer above fires for
- *  them — so a follow-up typed into a chat left every tasks surface stale until
- *  its next slow poll (Akshil, 2026-08-19: "the task's unread status does not
- *  update"). Every same-origin document EXCEPT the writer receives a `storage`
- *  event for the stamp, and the chat runs in its own iframe document, so the
- *  shell around it — and a Tasks page open in another window entirely — hears
- *  the turn for free, with no postMessage and no new endpoint. */
+/** The localStorage key the chat (apps/claude/ClaudeChat) stamps when an
+ *  interactive turn starts or ends. Interactive turns create no sys:schedule
+ *  job and no schedule event — neither producer above fires for them — so a
+ *  follow-up typed into a chat left every tasks surface stale until its next
+ *  slow poll (Akshil, 2026-08-19: "the task's unread status does not update").
+ *  Every same-origin document EXCEPT the writer receives a `storage` event for
+ *  the stamp, so a Tasks page open in another window hears the turn for free,
+ *  with no postMessage and no new endpoint. The writer's OWN document is
+ *  covered separately: the run controller dispatches `tasksChanged` in the same
+ *  breath (platform/lib/tasksChanged). */
 export const CHAT_ACTIVITY_KEY = "fused-render:chat-activity";
 
 /** The storage half of that poke: App forwards every storage event's key here,

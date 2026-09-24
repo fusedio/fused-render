@@ -658,48 +658,6 @@ export function folderHref(task: Pick<Task, "target" | "project">): string | nul
   return target ? explorerUrl(target, "") : null;
 }
 
-/**
- * The same conversation as an IFRAME — one card on the Tasks page's Cards view
- * (shell/TaskCards.tsx), showing the run as it happens.
- *
- * Deliberately NOT `/explorer/embed/<dir>?_side=claude`, which is the shape the
- * two hrefs above build and the obvious thing to reach for. An embed is the
- * whole React shell: a breadcrumb, a listing or a file preview, and the chat as
- * a SIDE pane of it — so a 420px card would spend most of itself on a folder
- * listing and show the conversation in the strip beside it, twelve times over.
- * The chat template is framed DIRECTLY instead, which is what the explorer's own
- * sidebar does (apps/explorer/Preview.tsx `sideSrcFor`) and what the canvas
- * workspace does (apps/canvases/CanvasWorkspace.tsx) — same three
- * params, same reasons:
- *
- *   `path`       the claude template itself, resolved per FOLDER through
- *                /api/fs/stat rather than hardcoded, so a user's own override
- *                (§16) is honoured here exactly as it is in the sidebar.
- *   `_file`      the folder the run is against. Underscore-prefixed, hence
- *                reserved, hence read off the frame's own URL — the template's
- *                own note above `CHAT_ONLY` has the argument.
- *   `chat_only`  the host is not showing the file, but a 420px tile has no room
- *                for the template's own preview column either, and the no-pane
- *                teardown is what that param buys.
- *   `compact`    and this one is new for this view: no top bar, no composer —
- *                the card's head says what the bar would, and a card is read
- *                rather than typed into (template.html, `COMPACT`).
- *
- * `session_id` rides the URL too, which only works because the HOST marks itself
- * a param boundary while the grid is up (TaskCards.tsx, static/runtime.js
- * `findTarget`): without that, every card's runtime would climb past its own
- * frame to the Tasks page and twelve documents would share — and fight over —
- * one `session_id` on `/tasks`. With it, each frame is its own param target and
- * each card reads the one session it was given.
- */
-/** Both URLs now live in `apps/claude/legacy-src.ts`, beside the other four
- *  frame shapes and the byte-for-byte parity test that pins all six: the flag
- *  OFF has to be the address these two sites loaded before `ChatMount` existed.
- *  Imported from the MODULE and not the app's barrel — the barrel re-exports
- *  `ClaudeChat`, and a string builder must not drag the whole chat (and the
- *  markdown chunk) into every bundle that touches the schedule library. */
-export { cardFrameSrc, peekFrameSrc } from "@apps/claude/legacy-src";
-
 // ---- Calendar: the task chip grid ---------------------------------------------
 // The calendar shows the same unit the List and the Board show — a TASK — and
 // what the time axis adds is placement:
@@ -1980,13 +1938,12 @@ export function popoverPos(
 // almost every task, so it has to be a real, re-selectable option rather than a
 // state the user can only get back to by cancelling the card.
 //
-// KEPT IN SYNC BY HAND with the chat picker's MODELS/EFFORTS in
-// fused_render/templates/claude/template.html — deliberately, and the duplication
-// is cheap. That template is vanilla JS served straight off disk to render one
-// file; it cannot import a module out of this bundle, and the alternative (an
-// endpoint that hands both surfaces the same list) buys a network round-trip for
-// a list of five strings that changes about once a year. If you add a model,
-// add it in both places.
+// KEPT IN SYNC BY HAND with the chat picker's MODELS/EFFORTS
+// (apps/claude/ui/composer-defaults.ts) — deliberately, and the duplication is
+// cheap. The shell must not import the chat's modules to read them: the chat is
+// a `lazy()` chunk precisely so a route that never mounts one does not carry it,
+// and a list of five strings that changes about once a year is not worth
+// undoing that for. If you add a model, add it in both places.
 //
 // ONE ROW PER MODEL. A pinned full id ("claude-fable-5-1") used to sit above the
 // alias that names the same model, offered as the way to hold a repeating task

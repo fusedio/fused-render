@@ -103,7 +103,7 @@ def test_every_mode_the_composer_can_offer_is_accepted(target, mode):
     """The composer hands its approvals pill straight through, so a mode it can
     show but the store refuses is a 400 naming a value the user never chose.
     `acceptEdits` was exactly that bug — see PERMISSION_MODES. The two lists are
-    held together by test_claude_schedule_pill.py; this end pins the values."""
+    held together by test_claude_schedule_handoff_params.py; this end pins the values."""
     assert schedule.create(str(target), "hi", _in(600),
                            permission_mode=mode)["permission_mode"] == mode
 

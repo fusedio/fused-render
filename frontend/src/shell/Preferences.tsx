@@ -68,7 +68,7 @@ import type { UpdateStatus } from "@platform/lib/api";
 import qrcode from "qrcode-generator";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
-import { publishProjectQueueEnabled } from "@apps/claude/feature-flag";
+import { publishProjectQueueEnabled } from "@apps/claude/chat-prefs";
 import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -433,8 +433,10 @@ function AppSharingSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pr
 // the Tasks board's Queued lane. A control filed under a feature it is not part
 // of is a control nobody finds again when they go looking for the thing it
 // actually does. (The "Native chat" switch that used to sit above this left the
-// page on 2026-09-19 — the React chat is simply on; `native_chat_enabled` stays
-// a stored pref for the env override and old installs, shell/prefs.py.)
+// page on 2026-09-19 — the React chat is simply on, and the pref behind it is
+// gone with the legacy template, D890. The session-recap toggle that used to
+// sit in a Chat section of its own left the page on 2026-09-21 — recap is
+// simply on.)
 function ProjectQueueSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -492,7 +494,7 @@ function ProjectQueueSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: 
 // plain `claude` session typed by hand in a terminal, nothing to do with
 // fused-render, raising a fused-render "Finished" notice). This is the
 // opt-BACK-in for an interactive terminal session too — default off, same
-// one-checkbox section shape as Native chat above.
+// one-checkbox section shape as Chat above.
 function TaskNotifyTerminalSection({
   prefs,
   onChange,

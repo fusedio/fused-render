@@ -1,44 +1,34 @@
-// WHAT EACH BRANCH ACTUALLY RENDERS. `legacy-src.test.ts` pins the six URLs;
-// this pins the element around them — which is the other half of "flag off is
-// the legacy iframe exactly as today", and the half a string test cannot see: a
-// lost `className`, a lost `frameRef`, legacy winning when the flag says
-// native, or either branch rendering before the flag has answered at all.
+// WHAT THE MOUNT ACTUALLY RENDERS. The chat itself has its own suites; this
+// pins the box around it — the native mount and nothing else in it, the host
+// classes that may and may not ride it, the ids a host hands over late, and the
+// two screens a failure inside it falls back to.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { lazy, Suspense } from "react";
 import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 
-const { ChatMount, ChatChunkBoundary, legacyBranch, useHostIds } = await import("./ChatMount");
+const { ChatMount, ChatChunkBoundary, ChatLoadFailed, isChunkLoadError, useHostIds } =
+  await import("./ChatMount");
 const { createMemoryParamsStore } = await import("./params/store");
-// The native branch is a `lazy` chunk, so an `act` that does not AWAIT pins the
-// Suspense fallback and nothing else. Resolving the module once, here, makes
-// every mount below able to reach the chat itself inside one async `act`.
+// The chat is a `lazy` chunk, so an `act` that does not AWAIT pins the Suspense
+// fallback and nothing else. Resolving the module once, here, makes every mount
+// below able to reach the chat itself inside one async `act`.
 const { ClaudeChat } = await import("./ClaudeChat");
-const { publishNativeChatEnabled, resetNativeChatFlagForTests } = await import("./feature-flag");
+const { resetChatPrefsForTests } = await import("./chat-prefs");
 
-// NO PREFS GET FROM THIS FILE. Every test publishes the flag directly, but the
-// "not read yet" one deliberately leaves `read()` armed — and a real GET that
-// settles later now writes `false` (feature-flag.ts's catch), which lands as a
-// state update outside `act`. A fetch that never settles keeps the tri-state
-// exactly where each test puts it. Restored after each test, because
-// `globalThis` is shared with every other file in the run.
+// NO PREFS GET FROM THIS FILE: a real one settling later lands as a state
+// update outside `act`. A fetch that never settles leaves the defaults where
+// they are. Restored after each test, because `globalThis` is shared with every
+// other file in the run.
 const realFetch = globalThis.fetch;
 beforeEach(() => {
   (globalThis as { fetch: unknown }).fetch = () => new Promise(() => {});
 });
 
 const mounted: Array<ReturnType<typeof create>> = [];
-function mount(el: React.ReactElement) {
-  let r!: ReturnType<typeof create>;
-  act(() => {
-    r = create(el);
-  });
-  mounted.push(r);
-  return r;
-}
-/** A mount that lets the `lazy` chunk land — the native branch's own output is
- *  behind one microtask turn, and a synchronous `act` only ever sees the cover. */
+/** A mount that lets the `lazy` chunk land — the chat's own output is behind
+ *  one microtask turn, and a synchronous `act` only ever sees the cover. */
 async function mountAsync(el: React.ReactElement) {
   let r!: ReturnType<typeof create>;
   await act(async () => {
@@ -52,7 +42,7 @@ async function mountAsync(el: React.ReactElement) {
 }
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
-  resetNativeChatFlagForTests();
+  resetChatPrefsForTests();
   (globalThis as { fetch: unknown }).fetch = realFetch;
 });
 
@@ -69,154 +59,227 @@ function nodes(r: ReturnType<typeof create>): Json[] {
 }
 const classes = (r: ReturnType<typeof create>) =>
   nodes(r).map((n) => String((n.props as Record<string, unknown>)?.className ?? ""));
+const text = (r: ReturnType<typeof create>) => JSON.stringify(r.toJSON());
 
-const SRC = "/render?path=%2Fw%2Fp%2Ftemplate.html&_file=%2Fw%2Fp&chat_only=1";
-
-test("the flag not yet read renders NEITHER branch — just the cover", () => {
-  resetNativeChatFlagForTests();
-  const r = mount(
-    <ChatMount
-      file="/w/p"
-      chatOnly
-      legacySrc={SRC}
-      className="preview-side-frame"
-      paramsSource="url"
-    />,
-  );
-  // No iframe: booting the legacy template would drain the pending "Fix with
-  // AI" ask and start a poll for a document about to be thrown away.
-  expect(nodes(r).filter((n) => n.type === "iframe")).toEqual([]);
-  expect(classes(r).some((c) => c.split(" ").includes("chat-frame"))).toBe(true);
-  expect(classes(r).some((c) => c.includes("chat-frame-placeholder"))).toBe(true);
-});
-
-test("flag off is the legacy ChatFrame: same src, same class, same frameRef", () => {
-  publishNativeChatEnabled(false);
-  const frameRef = { current: null as HTMLIFrameElement | null };
-  const r = mount(
-    <ChatMount
-      file="/w/p"
-      chatOnly
-      legacySrc={SRC}
-      className="task-peek-frame"
-      title="TASK-1 chat"
-      legacyFrameRef={frameRef}
-      paramsSource="memory"
-    />,
-  );
-  const frames = nodes(r).filter((n) => n.type === "iframe");
-  expect(frames.length).toBe(1);
-  const props = frames[0].props as Record<string, unknown>;
-  expect(props.src).toBe(SRC);
-  expect(props.title).toBe("TASK-1 chat");
-  // The frame's own class rides the IFRAME (the card's scaled fit depends on
-  // it), beside ChatFrame's own.
-  expect(String(props.className).split(" ")).toContain("task-peek-frame");
-  // And nothing native: no `.chat-mount` box around it.
-  expect(classes(r).some((c) => c.split(" ").includes("chat-mount"))).toBe(false);
-});
-
-test("flag off with a `legacy` node hands that node over verbatim", () => {
-  publishNativeChatEnabled(false);
-  const r = mount(
-    <ChatMount
-      file="/w/p"
-      legacySrc={SRC}
-      legacy={<iframe className="pane-frame is-shown" src={SRC} title="given" />}
-      paramsSource="url"
-    />,
-  );
-  const frames = nodes(r).filter((n) => n.type === "iframe");
-  expect(frames.length).toBe(1);
-  expect(String((frames[0].props as Record<string, unknown>).className)).toBe(
-    "pane-frame is-shown",
-  );
-});
-
-test("flag on renders the native box and NO iframe, with the mount class on it", async () => {
-  publishNativeChatEnabled(true);
+test("the mount is the native box and NO iframe, with the mount class on it", async () => {
   // AWAITED: the chunk resolves inside this `act`, so what is asserted is the
   // chat itself and not the Suspense cover standing in for it.
   const r = await mountAsync(
-    <ChatMount
-      file="/w/p"
-      chatOnly
-      legacySrc={SRC}
-      mountClassName="preview-frame is-shown"
-      paramsSource="url"
-    />,
+    <ChatMount file="/w/p" chatOnly mountClassName="preview-frame is-shown" paramsSource="url" />,
   );
   expect(nodes(r).filter((n) => n.type === "iframe")).toEqual([]);
-  // `mountClassName` rides the native box; `className` (frame geometry) does
-  // NOT — stamping both would shrink a compact card twice.
   expect(classes(r)).toContain("chat-mount preview-frame is-shown");
   // The chat's own root is inside it — i.e. the chunk really landed, and this
-  // is not the cover.
+  // is not the Suspense cover. NOT asserted: that no `.chat-frame-placeholder`
+  // remains — the loaded chat draws its OWN boot cover (same class) while its
+  // first history read is in flight, and whether that read has settled by now
+  // depends on what other test files warmed, which is not this test's claim.
   expect(classes(r).some((c) => c.includes("chat-root"))).toBe(true);
-  expect(classes(r).some((c) => c.includes("chat-frame-placeholder"))).toBe(false);
 });
 
-test("the chunk's cover never wears the LEGACY frame's geometry class", async () => {
-  publishNativeChatEnabled(true);
-  const r = await mountAsync(
-    <ChatMount
-      file="/w/p"
-      compact
-      legacySrc={SRC}
-      className="task-card-frame"
-      paramsSource="memory"
-    />,
-  );
-  // No frame geometry anywhere in the native branch's output: `.task-card-frame`
-  // lays out at 133.33% and draws at `scale(0.75)`, and `.chat-mount` is not a
-  // frame.
+test("the chunk's cover never wears a host's FRAME geometry class", async () => {
+  const r = await mountAsync(<ChatMount file="/w/p" compact paramsSource="memory" />);
+  // No frame geometry anywhere in the output: `.task-card-frame` lays out at
+  // 133.33% and draws at `scale(0.75)`, and `.chat-mount` is not a frame.
   expect(classes(r).some((c) => c.split(" ").includes("task-card-frame"))).toBe(false);
   // The Suspense COVER is the one node this cannot reach — the chunk is already
   // resolved in a test (see the top-level `await import`), so the fallback never
   // paints and react-test-renderer puts no instance in the tree for it. Pinned
   // at the source instead, because the regression is a one-word one (handing it
-  // `props.className` again) and it would be invisible: a compact card's cover
+  // a host class again) and it would be invisible: a compact card's cover
   // scaled twice, popping when the real chat lands.
   const src = await Bun.file(new URL("./ChatMount.tsx", import.meta.url)).text();
   expect(src).toMatch(/<Suspense fallback=\{placeholderFor\(\)\}>/);
 });
 
-test("a chunk that fails to load falls back to the legacy frame, not a blank shell", async () => {
-  // The deploy case `__BUILD_VERSION__` exists for: a tab open across a deploy
-  // asks for a hashed chunk that is gone. Without a boundary that throw unmounts
-  // React to the root and the reader loses the whole shell.
-  const Gone = lazy(() => Promise.reject(new Error("chunk 404")));
-  const props = {
-    file: "/w/p",
-    chatOnly: true,
-    legacySrc: SRC,
-    className: "task-card-frame",
-    title: "TASK-1 chat",
-    paramsSource: "memory" as const,
-  };
+/** The boundary as the mount wires it, with the card as its fallback — so what
+ *  these cases drive is the real pairing and not a hand-built screen. */
+function boundary(children: React.ReactNode, onReady?: () => void) {
+  return (
+    <ChatChunkBoundary
+      fallback={(failure) => (
+        <ChatLoadFailed
+          kind={failure.kind}
+          error={failure.error}
+          onRetry={failure.reset}
+          {...(onReady ? { onReady } : {})}
+        />
+      )}
+    >
+      {children}
+    </ChatChunkBoundary>
+  );
+}
+
+/** Mount with `console.error` muted: the boundary logs every catch in full, on
+ *  purpose, and a suite that printed it would be unreadable. */
+async function mountQuiet(el: React.ReactElement) {
   const quiet = console.error;
-  console.error = () => {};
+  const logged: unknown[][] = [];
+  console.error = (...args: unknown[]) => void logged.push(args);
   let r!: ReturnType<typeof create>;
   try {
     await act(async () => {
-      r = create(
-        <ChatChunkBoundary fallback={legacyBranch(props)}>
-          <Suspense fallback={<div className="chat-frame-placeholder" />}>
-            <Gone />
-          </Suspense>
-        </ChatChunkBoundary>,
-      );
+      r = create(el);
     });
   } finally {
     console.error = quiet;
   }
   mounted.push(r);
-  const frames = nodes(r).filter((n) => n.type === "iframe");
-  expect(frames.length).toBe(1);
-  const framed = frames[0].props as Record<string, unknown>;
-  expect(framed.src).toBe(SRC);
-  // …and the SAME node the flag-off branch renders, geometry class included.
-  expect(String(framed.className).split(" ")).toContain("task-card-frame");
+  return { r, logged };
+}
+
+/** The boundary's OWN log line, apart from React's own "The above error
+ *  occurred in" that every caught throw also prints. */
+const ours = (logged: unknown[][]) =>
+  logged.filter((args) => args[0] === "chat failed to render");
+
+const buttonLabels = (r: ReturnType<typeof create>) =>
+  nodes(r)
+    .filter((n) => n.type === "button")
+    .map((n) => JSON.stringify(n.children));
+
+test("a chunk that fails to load leaves an error card with a way out, not a blank shell", async () => {
+  // The deploy case `__BUILD_VERSION__` exists for: a tab open across a deploy
+  // asks for a hashed chunk that is gone. Without a boundary that throw unmounts
+  // React to the root and the reader loses the whole shell — and with nothing to
+  // degrade to, what is owed instead is the fact and the one press that fixes it.
+  //
+  // The message is a REAL one (Chromium's), not "chunk 404": the two screens are
+  // told apart by matching it, so a test that invents its own wording would pass
+  // while every real deploy failure took the crash branch.
+  const Gone = lazy(() =>
+    Promise.reject(
+      new TypeError(
+        "Failed to fetch dynamically imported module: http://localhost/assets/ClaudeChat-a1b2c3d4.js",
+      ),
+    ),
+  );
+  let ready = 0;
+  const { r, logged } = await mountQuiet(
+    boundary(
+      <Suspense fallback={<div className="chat-frame-placeholder" />}>
+        <Gone />
+      </Suspense>,
+      () => ready++,
+    ),
+  );
+  expect(nodes(r).filter((n) => n.type === "iframe")).toEqual([]);
+  // The app's own error card, not a look of its own.
+  expect(classes(r).some((c) => c.split(" ").includes("trouble-card"))).toBe(true);
+  expect(text(r)).toContain("This chat could not load.");
+  expect(text(r)).toContain("The app was updated. Reload to continue.");
+  // NOT the crash screen's copy, and no verbatim line: the cause is known
+  // exactly, and the URL of a chunk means nothing to a reader.
+  expect(text(r)).not.toContain("This chat hit an error.");
+  expect(classes(r).some((c) => c.split(" ").includes("trouble-error"))).toBe(false);
+  // And the ACTION: a button, not a sentence telling the reader to go and do it.
+  // ONE of them — `lazy` caches its rejected promise, so a "Try again" here
+  // would re-throw the same rejection and be a button that does nothing.
+  expect(buttonLabels(r)).toEqual([JSON.stringify(["Reload"])]);
+  // And it completes the host's swap (Bugbot on #1149): a content pane that
+  // holds the previous frame until `onReady` would otherwise keep this card
+  // at opacity 0 — Reload hidden — until its own timeout gave up.
+  expect(ready).toBe(1);
+  // The whole thing reaches a console ONCE, whatever the card chose to show
+  // (React logs its own "The above error occurred in" beside it; that is React's).
+  expect(ours(logged).length).toBe(1);
+});
+
+test("a chat that THROWS gets the crash screen, with what happened and a retry", async () => {
+  // Bugbot on #1149: this boundary is above the whole chat, so every render
+  // throw inside it lands here too — and one screen said "The app was updated.
+  // Reload to continue." to all of them. A reader who reloads on that advice
+  // gets the same crash from the same build.
+  function Boom(): React.ReactElement {
+    throw new Error("Cannot read properties of undefined (reading 'turns')");
+  }
+  let ready = 0;
+  const { r, logged } = await mountQuiet(boundary(<Boom />, () => ready++));
+  expect(text(r)).toContain("This chat hit an error.");
+  expect(text(r)).not.toContain("The app was updated. Reload to continue.");
+  // The error VERBATIM, in the app's own `.trouble-error` pre — the reader is
+  // owed what actually happened rather than a shrug.
+  expect(classes(r).some((c) => c.split(" ").includes("trouble-error"))).toBe(true);
+  expect(text(r)).toContain("Cannot read properties of undefined (reading 'turns')");
+  // TWO actions, retry first: a render throw is usually about one conversation's
+  // state, and the cheap press should be the one in front.
+  expect(buttonLabels(r)).toEqual([JSON.stringify(["Try again"]), JSON.stringify(["Reload"])]);
+  expect(ready).toBe(1);
+  expect(ours(logged).length).toBe(1);
+});
+
+test("a very long throw is trimmed to one line so the actions stay in the box", async () => {
+  // The card sits in a box that can be a 300px task card; a folded stack trace
+  // would push Try again and Reload below the fold. The full object went to the
+  // console — that is where a stack belongs.
+  const long = "wide\n   ".repeat(200);
+  function Boom(): React.ReactElement {
+    throw new Error(long);
+  }
+  const { r } = await mountQuiet(boundary(<Boom />));
+  const pre = nodes(r).find((n) =>
+    String((n.props as Record<string, unknown>)?.className ?? "")
+      .split(" ")
+      .includes("trouble-error"),
+  );
+  const shown = String((pre?.children ?? [])[0]);
+  expect(shown.length).toBeLessThanOrEqual(200);
+  expect(shown).not.toContain("\n");
+  expect(shown.endsWith("\u2026")).toBe(true);
+});
+
+test("Try again REMOUNTS the tree — a throw that was about one render is over", async () => {
+  // The claim is a remount and not a re-render: the boundary keys its children
+  // on the attempt, so the subtree that threw is thrown away with its state.
+  // A child that throws only the FIRST time is exactly that shape.
+  let renders = 0;
+  function OnceBad() {
+    renders += 1;
+    if (renders === 1) throw new Error("the first paint only");
+    return <div className="chat-root" />;
+  }
+  const { r } = await mountQuiet(boundary(<OnceBad />));
+  expect(text(r)).toContain("This chat hit an error.");
+  const retry = nodes(r).find(
+    (n) => n.type === "button" && JSON.stringify(n.children).includes("Try again"),
+  );
+  await act(async () => {
+    (retry?.props as { onClick: () => void }).onClick();
+  });
+  // The chat is back, and the card is gone with it.
+  expect(classes(r).some((c) => c.split(" ").includes("chat-root"))).toBe(true);
+  expect(text(r)).not.toContain("This chat hit an error.");
+});
+
+test("the two kinds are told apart by what a failed import ACTUALLY says", async () => {
+  // Every engine's own wording for a dynamic import that did not arrive, plus
+  // Vite's own for a stylesheet dep (vite 6.4.3's preload helper). These are
+  // the strings the classification rests on; inventing one would make the chunk
+  // screen unreachable in the browser the message came from.
+  for (const message of [
+    "Failed to fetch dynamically imported module: http://x/assets/a.js", // Chromium
+    "error loading dynamically imported module: http://x/assets/a.js", // Firefox
+    "Importing a module script failed.", // WebKit
+    "Unable to preload CSS for /assets/chat-9f8e.css", // Vite itself
+    "Loading chunk 42 failed.", // webpack's, matched for breadth
+    "Loading CSS chunk 7 failed.",
+  ]) {
+    expect(isChunkLoadError(new TypeError(message))).toBe(true);
+  }
+  // …and everything else is a CRASH, because the crash screen's advice is safe
+  // for a chunk failure while the deploy screen's is a lie about a chat that
+  // threw. A value that is not an Error at all included.
+  for (const other of [
+    new Error("Cannot read properties of undefined (reading 'turns')"),
+    new Error(""),
+    "a thrown string",
+    null,
+    undefined,
+    { message: "Failed to fetch dynamically imported module: /a.js" },
+  ]) {
+    expect(isChunkLoadError(other)).toBe(false);
+  }
 });
 
 test("a host id that arrives later pushes only its own key", async () => {
@@ -270,17 +333,12 @@ test("the recap is OPT-IN: absent unless the host asked for it", async () => {
   // them on one return. Default-off is the guarantee — a new embed site cannot
   // inherit the cost by not thinking about it — so what is asserted is the
   // absence of the prop, not merely a falsy one.
-  publishNativeChatEnabled(true);
-  const off = await mountAsync(
-    <ChatMount file="/w/p" chatOnly legacySrc={SRC} paramsSource="url" />,
-  );
+  const off = await mountAsync(<ChatMount file="/w/p" chatOnly paramsSource="url" />);
   const propsOf = (r: ReturnType<typeof create>) =>
     r.root.findByType(ClaudeChat).props as Record<string, unknown>;
   expect("recap" in propsOf(off)).toBe(false);
 
-  const on = await mountAsync(
-    <ChatMount file="/w/p" chatOnly legacySrc={SRC} paramsSource="url" recap />,
-  );
+  const on = await mountAsync(<ChatMount file="/w/p" chatOnly paramsSource="url" recap />);
   expect(propsOf(on).recap).toBe(true);
 });
 
@@ -297,13 +355,11 @@ test("a host's run settings SEED the pills and are never re-written under them",
     //
     // So a host that KNOWS the settings states them, and the existing top of
     // that ranking does the rest.
-    publishNativeChatEnabled(true);
     const r = await mountAsync(
       <ChatMount
         file="/w/p"
         chatOnly
         peek
-        legacySrc={SRC}
         paramsSource="memory"
         sessionId="s1"
         model="opus"
@@ -333,7 +389,6 @@ test("a host's run settings SEED the pills and are never re-written under them",
         file="/w/p"
         chatOnly
         peek
-        legacySrc={SRC}
         paramsSource="memory"
         sessionId="s2"
         model="opus"
@@ -352,9 +407,8 @@ test("a host with no run settings leaves the chat's own detection speaking",
     // an empty `model` param is a value, and `resolveModel`'s `param || detected`
     // would still short-circuit differently from no param at all if it ever
     // stopped being a falsy-or.
-    publishNativeChatEnabled(true);
     const r = await mountAsync(
-      <ChatMount file="/w/p" chatOnly peek legacySrc={SRC} paramsSource="memory" />,
+      <ChatMount file="/w/p" chatOnly peek paramsSource="memory" />,
     );
     const params = (r.root.findByType(ClaudeChat).props as {
       params: { getAll(): Record<string, string> };
@@ -363,7 +417,7 @@ test("a host with no run settings leaves the chat's own detection speaking",
     expect("effort" in params.getAll()).toBe(false);
 
     const blank = await mountAsync(
-      <ChatMount file="/w/p" chatOnly peek legacySrc={SRC} paramsSource="memory"
+      <ChatMount file="/w/p" chatOnly peek paramsSource="memory"
                  model="" effort="" />,
     );
     const blankParams = (blank.root.findByType(ClaudeChat).props as {

@@ -83,7 +83,7 @@ import { getStream, isNativeOff, noteSourcesProbe, shotsDir } from "./shots";
 import {
   CHAT_FRAME_FALLBACK_MS,
   ChatFramePlaceholder,
-} from "@platform/ui/ChatFrame";
+} from "./ui/ChatPlaceholder";
 import {
   AppPane,
   createAppStateWatcher,
@@ -143,7 +143,7 @@ import {
   queueEnabled,
   queueFlagReady,
   useProjectQueueEnabled,
-} from "./feature-flag";
+} from "./chat-prefs";
 import { WaitingCard, WaitingRow } from "./ui/Waiting";
 import { copyToTaskShots } from "./ui/SchedButton";
 import type { DraftAttachment } from "@platform/lib/drafts";
@@ -372,13 +372,13 @@ export function ClaudeChat(props: ClaudeChatProps) {
     }
     let live = true;
     setAgentDir(undefined);
-    // AND A BACKSTOP, which legacy had as `CHAT_FRAME_FALLBACK_MS` (8 s) on the
-    // frame's own cover: a `statPath` that never settles — a stalled server, a
-    // request the browser never answers — left the box blank FOR EVER, with no
-    // road to the `TroubleView` branch below that exists to explain exactly
-    // this. Losing the race resolves to `null`, which is that branch.
+    // AND A BACKSTOP, the same `CHAT_FRAME_FALLBACK_MS` (8 s) every chat wait
+    // has had: a `statPath` that never settles — a stalled server, a request
+    // the browser never answers — left the box blank FOR EVER, with no road to
+    // the `TroubleView` branch below that exists to explain exactly this.
+    // Losing the race resolves to `null`, which is that branch.
     //
-    // The same 8 s, and the same constant, so the two waits cannot drift apart.
+    // One constant for every such wait, so they cannot drift apart.
     const backstop = setTimeout(() => {
       if (live) setAgentDir(null);
     }, CHAT_FRAME_FALLBACK_MS);
@@ -419,21 +419,19 @@ export function ClaudeChat(props: ClaudeChatProps) {
   const params: ParamsStore = props.params === "url" ? urlStore! : props.params;
 
   if (agentDir === undefined) {
-    // THE TEMPLATE LOOKUP IS IN FLIGHT, and this branch used to be an EMPTY BOX
-    // on the argument that "the host is still holding its own cover over this
-    // box (ChatFrame's skeleton)". That is true flag-OFF, where the host really
-    // does frame a booting document — but flag-on there is no frame and no
-    // cover: `ChatMount`'s `Suspense` fallback covers only the CHUNK LOAD, and
-    // it has already resolved by the time this component is running its own
-    // stat. So a first mount for a folder drew a bare `.chat-root` on the host
-    // background for the length of one `/api/fs/stat`, and a cold cards wall of
-    // six drew six empty tiles where legacy drew six skeletons.
+    // THE AGENT-DIR LOOKUP IS IN FLIGHT, and this branch used to be an EMPTY
+    // BOX on the argument that "the host is still holding its own cover over
+    // this box". It is not: `ChatMount`'s `Suspense` fallback covers only the
+    // CHUNK LOAD, and it has already resolved by the time this component is
+    // running its own stat. So a first mount for a folder drew a bare
+    // `.chat-root` on the host background for the length of one
+    // `/api/fs/stat`, and a cold cards wall of six drew six empty tiles.
     //
-    // `placeholderFor`'s node — the SAME `ChatFramePlaceholder` that
-    // `Suspense` shows and that `ChatFrame` holds over a booting frame — so the
-    // two waits look like one wait, which is what 00 §1e's "one wait, one look"
-    // actually asks for. The reader sees the chunk's skeleton become the stat's
-    // skeleton with no flash of an empty box between them.
+    // `placeholderFor`'s node — the SAME `ChatFramePlaceholder` that `Suspense`
+    // shows (ui/ChatPlaceholder) — so the two waits look like one wait, which
+    // is what 00 §1e's "one wait, one look" actually asks for. The reader sees
+    // the chunk's skeleton become the stat's skeleton with no flash of an empty
+    // box between them.
     return <ChatFramePlaceholder className={rootClass(props)} />;
   }
   if (agentDir === null) {

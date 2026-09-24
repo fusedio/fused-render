@@ -607,11 +607,11 @@ describe("a dispatched queue row through the feed", () => {
       last_active: 35,
     }) as Task;
 
-  /** The flag is MODULE state on `apps/claude/feature-flag` and outlives every
+  /** The flag is MODULE state on `apps/claude/chat-prefs` and outlives every
    *  test in this process, so every case here puts it back by hand. */
   const setQueueFlag = async (on: boolean) => {
     const { applyQueueFlagBroadcast, QUEUE_FLAG_BROADCAST_KEY } = await import(
-      "@apps/claude/feature-flag"
+      "@apps/claude/chat-prefs"
     );
     applyQueueFlagBroadcast(QUEUE_FLAG_BROADCAST_KEY, JSON.stringify({ on }));
   };

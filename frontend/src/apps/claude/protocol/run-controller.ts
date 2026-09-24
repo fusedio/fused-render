@@ -38,7 +38,7 @@ import {
   scheduleMessage,
 } from "@platform/lib/api";
 import { chatDraftKey } from "@platform/lib/drafts";
-import { queueEnabled, queueFlagReady } from "../feature-flag";
+import { queueEnabled, queueFlagReady } from "../chat-prefs";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
 import { runAgent } from "./agent";

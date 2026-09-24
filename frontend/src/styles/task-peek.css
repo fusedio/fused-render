@@ -51,12 +51,13 @@
 
      STATED HERE AS A LITERAL, which is the one thing this file does that its
      neighbours do not, and the reason is that the chat's palette is LAZY:
-     `apps/claude/styles/chat.css` arrives with `ClaudeChat`, which is a
-     `lazy()` import and is never loaded at all for a reader on the legacy
-     iframe chat. `var(--c-panel)` would therefore resolve to nothing exactly
-     half the time. The value is `--c-panel`'s, both themes, and
-     `task-peek-flag.test.ts` reads the two files and fails if they ever
-     disagree. */
+     `apps/claude/styles/chat.css` ships inside the `lazy()` `ClaudeChat` chunk,
+     so it is not in the document while the panel is opening — and it is never
+     in the document at all for a panel whose folder turns out to have no chat
+     to mount, or whose chunk fails to load. `var(--c-panel)` would therefore
+     resolve to nothing exactly when this gutter is first painted. The value is
+     `--c-panel`'s, both themes, and `task-peek-flag.test.ts` reads the two
+     files and fails if they ever disagree. */
   --peek-chat-bg: #1e2025;
 }
 
@@ -619,14 +620,15 @@ body.tasks-peek-dragging {
   flex-direction: column;
 }
 
-/* `.chat-frame` (legacy) and `.chat-mount` (native) both already declare
-   `flex: 1 1 auto; width: 100%; height: 100%`, so the column above is all
-   either of them needs — and the SHIMMER over a conversation that has not
-   painted yet is ChatFrame's own placeholder, restarted on every swap because
-   the mount is keyed on the task (TaskPeek). One skeleton, not two. */
+/* `.chat-mount` (styles/chat-frame.css) already declares
+   `flex: 1 1 auto; width: 100%; height: 100%`,
+   so the column above is all it needs — and the SHIMMER over a conversation
+   that has not painted yet is the chat's own placeholder
+   (apps/claude/ui/ChatPlaceholder), restarted on every swap because the mount
+   is keyed on the task (TaskPeek). One skeleton, not two. */
 
-/* The wait BEFORE there is a frame at all: the folder's chat template is still
-   being resolved (a stat), so there is no src to hand the mount yet. */
+/* The wait BEFORE there is anything to mount: the folder's chat mode is still
+   being resolved (a stat), so the panel does not know there is a chat yet. */
 .task-side-peek-wait {
   flex: 1 1 auto;
   min-height: 0;
