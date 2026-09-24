@@ -43,7 +43,7 @@ import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
 import { resolveAgentDir } from "./protocol/agent";
 import { fetchHistory, sharedHistoryCache } from "./protocol/history";
-import type { SendOptions, UserTurn } from "./protocol/controller-api";
+import type { SendOptions, StrandedLine, UserTurn } from "./protocol/controller-api";
 import { watchStreamTeardown, watchTopOrigin } from "./shots";
 import type { Attachment, Receipt } from "./shots/types";
 import { enhanceCodeBlocks } from "./protocol/markdown";
@@ -1069,16 +1069,22 @@ function ChatBody(props: ChatBodyProps) {
    * owns (`onSendReturned` → `attachBack`) — the strand names only words.
    */
   /**
-   * A PARKED LINE THE CONTROLLER HANDED BACK, waiting for whoever posts its
-   * row (Bugbot round 2, PR #1323). A stop hands an unconfirmed follow-up back
-   * TWICE in one tick — `returnSend` (pictures) then `onStranded` (words) — and
-   * each used to post a "not sent" bubble, so one line came back as two.
-   * `onSendReturned` now only STASHES the parked payload here, keyed by the
-   * dispatch, and `strandAll` claims it for the row it posts for those words;
-   * a stash nothing claimed by the next tick (a `send` that failed outside a
-   * stop) posts its own row then. One dispatch, one row.
+   * ONE ROW PER SEND ID (Bugbot rounds 2–3, PR #1323). A stop hands an
+   * unconfirmed follow-up back TWICE in one tick — `returnSend` (pictures) then
+   * `onStranded` (words) — and a `send` that fails on its own hands it back
+   * once, through `returnSend` only. The parked road in `onSendReturned` posts
+   * the row the moment it is handed back and records the send's id here;
+   * `strandAll` then skips a line whose id is recorded. Ids, never text: two
+   * identical lines are two sends with two ids and two payloads.
    */
-  const returnedParked = useRef<Map<string, { text: string; payload: OutboxPayload }>>(new Map());
+  const postedForSend = useRef<Set<string>>(new Set());
+  /** EVERY PARKED LINE'S SEND STILL OUT, by send id → its payload. More than
+   *  one can be out at once (a follow-up releases the latch before its `send`
+   *  answers, and the next parked line drains behind it), so `onSendReturned`
+   *  looks its return up HERE, by the id the controller hands back — never
+   *  through the single "current dispatch" ref, which the later dispatch
+   *  overwrote. Set at dispatch, deleted in its `finally`. */
+  const parkedBySendId = useRef<Map<string, OutboxPayload>>(new Map());
   const postNotSent = useCallback(
     (text: string, payload: OutboxPayload): OutboxEntry<OutboxPayload> | null => {
       const c = controllerRef.current;
@@ -1093,26 +1099,24 @@ function ChatBody(props: ChatBodyProps) {
     [],
   );
   const strandAll = useCallback(
-    (texts: readonly string[]) => {
-      const words = texts.filter(Boolean);
-      if (!controllerRef.current || !words.length) return;
+    (lines: readonly StrandedLine[]) => {
+      if (!controllerRef.current) return;
       const entries: OutboxEntry<OutboxPayload>[] = [];
-      for (const text of words) {
-        // THE STASHED PARKED LINE, if this is it: same words, handed back by
-        // the same stop — its pictures ride the row rather than NO_TAKEN, and
-        // the stash is spent so its own flush posts nothing.
-        let payload: OutboxPayload = { opts: {}, bubble: "", taken: NO_TAKEN };
-        for (const [key, stashed] of returnedParked.current) {
-          if (stashed.text === text) {
-            payload = stashed.payload;
-            returnedParked.current.delete(key);
-            break;
-          }
+      for (const line of lines) {
+        if (!line.text) continue;
+        // ALREADY POSTED, BY ID: `onSendReturned` took this send back a moment
+        // ago (same tick, or earlier when its `send` failed) and posted its row
+        // with its own pictures. The id is spent here so a later stop naming
+        // the same id (it cannot — the entry is gone — but by construction)
+        // would post nothing either.
+        if (line.sendId && postedForSend.current.has(line.sendId)) {
+          postedForSend.current.delete(line.sendId);
+          continue;
         }
-        const row = postNotSent(text, payload);
+        const row = postNotSent(line.text, { opts: {}, bubble: "", taken: NO_TAKEN });
         if (row) entries.push(row);
       }
-      setOutbox(pushFrontAll(outboxRef.current, entries));
+      if (entries.length) setOutbox(pushFrontAll(outboxRef.current, entries));
     },
     [setOutbox, postNotSent],
   );
@@ -1214,22 +1218,20 @@ function ChatBody(props: ChatBodyProps) {
           // a "not sent" row that keeps its words AND its pictures, for the
           // reader to pull (Bugbot, PR #1323). Its `inFlight` entry is spent
           // below like any other; the pictures stay on the row, not the tray.
-          const parked = dispatchingParked.current;
+          // …LOOKED UP BY ITS OWN SEND ID (`parkedBySendId`): a return for any
+          // send that was not a parked line takes the ordinary road below.
+          const sid = sendId || "";
+          const parked = sid ? (parkedBySendId.current.get(sid) ?? null) : null;
           if (parked && !refused && text) {
-            // STASHED, NOT POSTED (Bugbot round 2): a stop hands these same
-            // words to `onStranded` in this very tick, and `strandAll` posts the
-            // one row — claiming this stash for its pictures. Only a stash still
-            // here on the next tick (no stop: the `send` itself failed) posts.
-            const key = sendId || `p${++outboxSeq.current}`;
-            returnedParked.current.set(key, { text, payload: parked });
-            setTimeout(() => {
-              const left = returnedParked.current.get(key);
-              if (!left) return;
-              returnedParked.current.delete(key);
-              const row = postNotSent(left.text, left.payload);
-              if (row) setOutbox(pushFront(outboxRef.current, row));
-            }, 0);
-            if (sendId) returnedSends.current.add(sendId);
+            // POSTED NOW, ONCE, and the id recorded (Bugbot round 3): a stop that
+            // strands these same words in this tick — or ever — finds the id in
+            // `postedForSend` and posts nothing (`strandAll`). No timer, no text.
+            const row = postNotSent(text, parked);
+            if (row) {
+              setOutbox(pushFront(outboxRef.current, row));
+              postedForSend.current.add(sid);
+            }
+            returnedSends.current.add(sid);
             if (attachments) inFlight.current.delete(attachments);
             return;
           }
@@ -2730,6 +2732,7 @@ function ChatBody(props: ChatBodyProps) {
       void (async () => {
         let taken = false;
         dispatchingParked.current = parked ?? null;
+        if (parked) parkedBySendId.current.set(sendId, parked);
         try {
           // ---- ADMISSION, AHEAD OF EVERYTHING ELSE (the project queue) ------
           //
@@ -3091,6 +3094,7 @@ function ChatBody(props: ChatBodyProps) {
           // turn ending cannot open the door on a LATER send's window.
           if (!taken && optimisticKey) controller.dropOptimisticUser(optimisticKey);
           dispatchingParked.current = null;
+          parkedBySendId.current.delete(sendId);
           releaseSend(sendId);
         }
       })();

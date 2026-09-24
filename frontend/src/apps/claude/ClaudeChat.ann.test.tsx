@@ -60,6 +60,8 @@ let audioSource: Record<string, unknown> = { audio: { available: true, reason: n
 let holdStart: Promise<void> | null = null;
 let holdSend: Promise<void> | null = null;
 let pollLive = false;
+/** `send` answers nothing (the host is gone): the follow-up FAILS on its own. */
+let failSend = false;
 
 /** `/api/prefs` — the project queue's switch lives there (`queue.enabled`). */
 let prefsBody: Record<string, unknown> = {};
@@ -143,6 +145,7 @@ function stubFetch(): void {
       }
       if (pollLive && action === "live_host") return jsonRes({ ok: true, result: { run_id: "r1" } });
       if (pollLive && action === "send") {
+        if (failSend) return jsonRes({ ok: true, result: {} });
         // HOLDABLE like `start`: the window between the inbox taking the bytes
         // and `{sent: true}` coming back is where an unconfirmed follow-up lives.
         if (holdSend) return holdSend.then(() => jsonRes({ ok: true, result: { sent: true } }));
@@ -239,6 +242,7 @@ beforeEach(() => {
   holdStart = null;
   holdSend = null;
   pollLive = false;
+  failSend = false;
   prefsBody = {};
   admits.length = 0;
   admitAnswer = { run: true };
@@ -1397,6 +1401,85 @@ test("a parked line stopped before the inbox confirmed it comes back as ONE not-
   const bubbles = byClass(r, "bubble").map((n) => String(n.props.children));
   expect(bubbles.filter((b) => b === "second message")).toHaveLength(1);
   expect(boxValue(r)).toBe("");
+});
+
+test("a parked line whose `send` FAILS on its own comes back as ONE not-sent bubble", async () => {
+  // Bugbot round 3 (PR #1323): with no stop in play, the failed follow-up's
+  // `returnSend` is the only hand-back — and the row it posts must not be
+  // followed by a second one from any later strand.
+  pollLive = true;
+  failSend = true;
+  const open = heldStart();
+  const { r } = await mountChat();
+  await typeInBox(r, "first message");
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle();
+  await typeInBox(r, "second message");
+  await pressEnterInBox(r);
+  await settle();
+  await act(async () => open());
+  await settle(60);
+  expect(runs.filter((c) => c.action === "send")).toHaveLength(1);
+  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
+    "not sent · click to edit",
+  ]);
+  // A stop afterwards strands nothing for it (the entry is gone) — still one.
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(60);
+  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
+    "not sent · click to edit",
+  ]);
+  expect(byClass(r, "bubble").map((n) => String(n.props.children)).filter((b) => b === "second message"))
+    .toHaveLength(1);
+});
+
+test("two identical parked lines, one out and one waiting, each keep their own row on Stop", async () => {
+  // Bugbot round 3: rows are owned by send id, never matched by text — two
+  // "again"s are two sends, and a stop must leave exactly two "not sent" rows.
+  pollLive = true;
+  let releaseSend!: () => void;
+  holdSend = new Promise<void>((resolve) => {
+    releaseSend = resolve;
+  });
+  const open = heldStart();
+  const { r } = await mountChat();
+  await typeInBox(r, "first message");
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle();
+  await typeInBox(r, "again");
+  await pressEnterInBox(r);
+  await typeInBox(r, "again");
+  await pressEnterInBox(r);
+  await settle();
+  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
+    "queued",
+    "queued",
+  ]);
+  // The run goes live: BOTH "again"s drain into it — a follow-up opens the
+  // latch as soon as it is handed to the controller, so the second follows the
+  // first out — and both `send`s are held: two sends out, two ids, neither
+  // confirmed.
+  await act(async () => open());
+  await settle(60);
+  expect(runs.filter((c) => c.action === "send")).toHaveLength(2);
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(60);
+  releaseSend();
+  await settle(60);
+  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
+    "not sent · click to edit",
+    "not sent · click to edit",
+  ]);
+  expect(byClass(r, "bubble").map((n) => String(n.props.children)).filter((b) => b === "again"))
+    .toHaveLength(2);
 });
 
 test("the run going live opens the door without waiting for the turn to end", async () => {

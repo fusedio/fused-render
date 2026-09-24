@@ -53,6 +53,7 @@ import type {
   ResumeOptions,
   RunStatus,
   SendOptions,
+  StrandedLine,
   Trouble,
   Turn,
   UserTurn,
@@ -2273,7 +2274,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // out and its bubble dropped, leaving the text nowhere at all. Each
       // match now consumes exactly ONE name.
       const named = still.filter((t): t is string => typeof t === "string" && !!t);
-      const stranded: string[] = [];
+      const stranded: StrandedLine[] = [];
       for (const entry of queued.slice()) {
         // Matched against the WIRE form, which is what `still_queued` carries;
         // what goes BACK to the box is the TYPED form, because that is the text
@@ -2287,7 +2288,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // nothing was ever going to answer it. Claude Code's own Esc does the
         // same thing — the queued messages return to the input, editable.
         // Losing a bubble is recoverable; a bubble with no reply is not.
-        stranded.push(entry.typed || entry.wire);
+        //
+        // NAMED BY ITS SEND, and told whether `returnSend` fires for it below
+        // (Bugbot round 3): the page posts one row per send id, so a line whose
+        // pictures went back in this same tick is not posted twice.
+        const willReturn = !entry.landed && !entry.handedBack;
+        stranded.push({
+          text: entry.typed || entry.wire,
+          ...(entry.opts.sendId ? { sendId: entry.opts.sendId } : {}),
+          ...(willReturn ? { returned: true } : {}),
+        });
         // AND ITS PICTURES, but only for a send the inbox never confirmed. The
         // words go back through `onStranded`; the attachments are parked in
         // `ClaudeChat`'s `inFlight` map under this send's own `Receipt[]` and
@@ -2321,7 +2331,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // Anything the CLI named that this page has no entry for (a follow-up
       // from another viewer of the same session) is handed back verbatim
       // rather than lost — there is no typed form to prefer.
-      for (const t of named) stranded.push(t);
+      for (const t of named) stranded.push({ text: t });
       // The turn is over for every entry, handed back or not — so the hint
       // under the box goes either way, in ONE publish.
       const cleared = queued.length > 0;
