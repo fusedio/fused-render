@@ -381,7 +381,7 @@
   font-style: italic;
   /* Lighter than the line above it: grey + italic at the same weight read as
      a smudge (Akshil, 2026-09-24). */
-  font-weight: 300;
+  font-weight: 100;
 }
 
 /* -- The past-time note ------------------------------------------------------
