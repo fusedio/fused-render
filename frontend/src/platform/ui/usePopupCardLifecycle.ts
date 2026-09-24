@@ -91,11 +91,29 @@ export function usePopupCardLifecycle({
     return () => globalThis.removeEventListener("click", onOutside, true);
   }, [leaving, cardRefLive, setLeaving]);
 
-  const wasIframeRef = useRef(document.activeElement instanceof HTMLIFrameElement);
+  const initialActiveElementIsIframe = document.activeElement instanceof HTMLIFrameElement;
+  // eslint-disable-next-line no-console
+  console.log("DIAG3 mount", {
+    initialActiveElementIsIframe,
+    activeElementCtor: (document.activeElement as { constructor?: { name?: string } } | null)
+      ?.constructor?.name,
+    docCtor: (document as unknown as { constructor?: { name?: string } })?.constructor?.name,
+    docHasQuerySelector: typeof (document as unknown as { querySelector?: unknown })?.querySelector,
+    docIsGlobal: document === (globalThis as unknown as { document?: unknown }).document,
+  });
+  const wasIframeRef = useRef(initialActiveElementIsIframe);
   useEffect(() => {
     if (leaving) return;
     const onBlur = () => {
       const isIframeNow = document.activeElement instanceof HTMLIFrameElement;
+      // eslint-disable-next-line no-console
+      console.log("DIAG3 blur", {
+        isIframeNow,
+        was: wasIframeRef.current,
+        activeElementCtor: (document.activeElement as { constructor?: { name?: string } } | null)
+          ?.constructor?.name,
+        docIsGlobal: document === (globalThis as unknown as { document?: unknown }).document,
+      });
       if (isIframeNow && !wasIframeRef.current) setLeaving(true);
       wasIframeRef.current = isIframeNow;
     };
