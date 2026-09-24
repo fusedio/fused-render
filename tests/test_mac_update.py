@@ -8,6 +8,7 @@ command at all), and the /api/update endpoints' guards.
 """
 import os
 import subprocess
+import threading
 import time
 import types
 
@@ -550,17 +551,44 @@ def test_the_auto_loop_forces_its_tick(monkeypatch):
 
     def check(force=False):
         forced.append(force)
-        # The loop sleeps out common.CHECK_INTERVAL_S after this; the thread is
-        # a daemon, so one tick is all this test ever sees.
         return manager.status()
 
     monkeypatch.setattr(manager, "check", check)
+    # Review finding: the loop's own `time.sleep(common.CHECK_INTERVAL_S)`
+    # (300s, real) after this one tick was left UNPATCHED — daemon or not,
+    # that is 300 real seconds of a background thread alive in the pytest
+    # WORKER PROCESS, easily outliving the rest of a slower (Windows) CI
+    # run, and an interpreter shutdown with a thread still parked mid-sleep
+    # is exactly the kind of leak `conftest.py`'s `_no_schedule_loop_thread`/
+    # `_no_tasks_watch_thread`/`_no_ai_idle_reaper_thread`/etc. exist to
+    # prevent for every OTHER background loop this app starts — this one
+    # just wasn't one of them, since nothing but this test ever calls
+    # `start_auto_checks()` on Windows (`update.start()` is a no-op there,
+    # see `update/__init__.py`). Same fix as the sibling test just above
+    # (`test_the_check_only_manager_never_sweeps_the_shared_updates_dir`):
+    # patch `time.sleep` itself so the SAME call that reports the tick also
+    # ends the loop, and drain the thread before returning rather than
+    # trusting "it's a daemon" to make it harmless.
+    done = threading.Event()
+    real_sleep = time.sleep  # `mac.time` IS the `time` module: patching mac.time.sleep
+    # patches time.sleep globally, so this test's own polling below must use a
+    # captured reference rather than calling time.sleep() directly, or it would
+    # hit `one_tick` too and raise SystemExit in the main thread.
+
+    def one_tick(seconds):
+        if not forced:
+            return  # the startup-delay sleep, before the first tick: let it pass
+        done.set()
+        raise SystemExit  # ends the daemon loop after this one check
+
+    monkeypatch.setattr(mac.time, "sleep", one_tick)
     manager.start_auto_checks()
     for _ in range(200):
         if forced:
             break
-        time.sleep(0.01)
+        real_sleep(0.01)
     assert forced == [True]
+    assert done.wait(2.0), "the auto-check loop's thread never reached its sleep"
 
 
 # ---- dmg helpers ---------------------------------------------------------------

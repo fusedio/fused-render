@@ -35,6 +35,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fused_render import schedule, tasks_store, tasks_watch
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server import create_app
 from fused_render.server.routers import claude_sessions as sessions_mod
 from fused_render.server.routers import tasks as tasks_mod
@@ -176,14 +177,20 @@ def test_the_row_lands_in_the_project_the_send_named(client, tmp_path):
     target.write_text("x = 1\n")
     tasks_watch.mark_running(SID, text="go", file=str(target))
     row = _by_key(client)[SID]
-    assert row["project"] == str(proj)
-    assert row["target"] == str(target)
+    # `project`/`target` come back in the shell's canonical form (forward
+    # slashes on a drive-letter path — router.ts `rootedFsPath` / D-number
+    # in canonical_fs_path's docstring), not os.path's native separator, so
+    # `str(proj)`/`str(target)` on Windows must be canonicalized before the
+    # comparison rather than compared as-is.
+    assert row["project"] == canonical_fs_path(str(proj))
+    assert row["target"] == canonical_fs_path(str(target))
 
     tasks_mod.reset_cache()
     tasks_watch.mark_running(SID, text="go", file=str(proj))
     row = _by_key(client)[SID]
-    assert row["project"] == str(proj)
-    assert row["target"] == str(proj), "a folder target is its own target"
+    assert row["project"] == canonical_fs_path(str(proj))
+    assert row["target"] == canonical_fs_path(str(proj)), \
+        "a folder target is its own target"
 
 
 def test_a_marked_send_lights_up_a_task_that_already_exists(client,
