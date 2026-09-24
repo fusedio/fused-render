@@ -16,6 +16,7 @@ import importlib
 import importlib.util
 import logging
 import os
+import re
 import shlex
 import stat
 import sys
@@ -134,10 +135,24 @@ def _installed_fused_version() -> str | None:
         return None
 
 
+_PINNED_FUSED_RE = re.compile(r"^fused(?:\[[^\]]*\])?==")
+
+
 def _pinned_fused_version() -> str | None:
     """What THIS project pins `fused` to, from fused-render's own installed
-    metadata (``fused==X`` in Requires-Dist) — the only source that exists at
-    runtime, since a shipped app has no pyproject.toml."""
+    metadata (``fused==X`` or ``fused[extra1,extra2]==X`` in Requires-Dist) —
+    the only source that exists at runtime, since a shipped app has no
+    pyproject.toml.
+
+    The optional `[...]` extras group must be matched and stripped, not just
+    the bare name: `[bundled]`/`[fused]` pin `fused[ai,aws]==...` (openfused
+    #(2.9.3b9) moved `anthropic`/`boto3`/`pyarrow`/`pyjwt[crypto]` behind those
+    extras, so a bare `fused==` pin no longer builds a working DMG venv — see
+    the pyproject.toml comment on that line). A plain `startswith("fused==")`
+    check would silently stop matching the moment extras were added, turning
+    this drift check into a permanent no-op with no failing test — exactly the
+    class of defect `test_the_pin_is_discoverable_at_runtime` exists to catch.
+    """
     try:
         from importlib.metadata import PackageNotFoundError, requires
 
@@ -147,8 +162,9 @@ def _pinned_fused_version() -> str | None:
             return None
         for req in reqs:
             text = req.replace(" ", "")
-            if text.startswith("fused=="):
-                return text[len("fused=="):].split(";")[0].split(",")[0]
+            m = _PINNED_FUSED_RE.match(text)
+            if m:
+                return text[m.end():].split(";")[0].split(",")[0]
     except Exception:  # noqa: BLE001
         return None
     return None
