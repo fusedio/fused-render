@@ -50,15 +50,27 @@ export function rewriteLegacyUrl(url: string): string {
 
 // Rewritten in place at module init — before IS_EMBED is computed, so a
 // legacy /embed/ load still comes up in embed mode.
+// WHERE THE PAGE BOOTED, read once for the module-scope constants below. In
+// the browser it IS `location`, live. Under `bun test` there is no DOM: every
+// suite runs in one process, files run in whatever order the runner finds
+// them, and a suite that imports this module (transitively — most do) before
+// any other has installed the test shim used to die HERE at module init,
+// which poisoned the module for every later importer — 160 failures, CI
+// only, order-dependent (2026-09-24). With no `location` the page is simply
+// not an embed, a preview or a snapshot; nothing here is worth throwing for.
+const boot: { pathname: string; search: string } =
+  typeof location === "undefined" ? { pathname: "/", search: "" } : location;
+
 (function rewriteLegacyPath(): void {
+  if (typeof location === "undefined") return;
   const current = location.pathname + location.search;
   const next = rewriteLegacyUrl(current);
   if (next !== current) history.replaceState(history.state, "", next);
 })();
 
 export const IS_EMBED =
-  location.pathname.startsWith(EMBED_PREFIX) ||
-  location.pathname === "/explorer/embed";
+  boot.pathname.startsWith(EMBED_PREFIX) ||
+  boot.pathname === "/explorer/embed";
 
 // The param a display-only card peek stamps on its embed URL (BookmarkCards'
 // LivePreview), and the flag GET /render takes to skip open recording (D301).
@@ -93,7 +105,7 @@ function ancestorIsPreview(): boolean {
 // app's entry page RECORDS AN OPEN of that app every time the card scrolls
 // into view, and the /apps recency order rearranges itself.
 export const IS_PREVIEW =
-  (IS_EMBED && new URLSearchParams(location.search).get(PREVIEW_PARAM) === "1") ||
+  (IS_EMBED && new URLSearchParams(boot.search).get(PREVIEW_PARAM) === "1") ||
   ancestorIsPreview();
 
 // Mark an embed/render URL as a thumbnail. Idempotent (a bookmark's stored
@@ -151,7 +163,7 @@ export function withPreviewFlag(src: string): string {
 // loads, so the framing cannot change without one, and a value read per render
 // would be a second source of truth for a fact that never moves.
 export const IS_SNAPSHOT =
-  new URLSearchParams(location.search).get("snapshot") === "1";
+  new URLSearchParams(boot.search).get("snapshot") === "1";
 
 // AM I A TOP-LEVEL EMBED? — the embed shell running as the WHOLE WINDOW, not
 // framed by anything: a Finder double-click on a `.fused` (the view-URL codec

@@ -92,7 +92,14 @@ export function installDomShim(): void {
     // when the window it reaches for has no such member.
     // The same object as the global, so a suite can stub `location.assign` on
     // either and the code under test — which reads `window.location` — sees it.
-    location: g.location,
+    // LIVE, not a snapshot: suites swap `globalThis.location` for their own
+    // object (AppVersionPicker.test.tsx does, per test), and code that reads
+    // `window.location` must see the same one — a copied reference here left
+    // `window.location.assign` stubs and `globalThis.location` stubs pointing
+    // at two different objects (Bugbot, PR #1317).
+    get location() {
+      return (globalThis as { location?: unknown }).location;
+    },
     Element: g.Element,
     HTMLElement: g.HTMLElement,
     requestAnimationFrame: g.requestAnimationFrame,

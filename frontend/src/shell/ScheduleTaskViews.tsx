@@ -105,7 +105,6 @@ import {
   taskFile,
   messageWhenTitle,
   scheduledMark,
-  outcomeTag,
   openMessageHref,
   openThreadIntent,
   opensElsewhere,
@@ -791,40 +790,15 @@ function IdChip({ id, kind }: {
   );
 }
 
-/* The one word a lane cannot say about the run it is showing — today only
-   "Stopped", for a run the user ended (tasks-lib.outcomeTag).
-
-   A PILL, and the only one on this page. Every other mark here has been argued
-   down to a ring, a weight, or bare text, because they all competed with the
-   title for the same glance. This one is different in kind: it is not a status
-   the lane already carries (that is the ring's job) but a CORRECTION to what the
-   lane implies — Done, but it did not finish — and it has to survive being read
-   beside whatever else is on the line. Bare text did not: in the card's foot
-   next to the folder chip, "Fused Stopped" read as the name of the folder
-   (Akshil, 2026-08-21, screenshot). A border is what makes it a separate object
-   rather than the next word in a phrase.
-
-   BESIDE THE ID, in both views. The id line is where marks ABOUT the task live
-   (the off-lane status ring is already there), the title line is for the work's
-   own words, and the foot is for the run's circumstances — the folder it ran in,
-   the run ahead. This is a fact about the task, so it goes with the id. */
-function OutcomePill({ outcome }: { outcome: OutcomeTag }) {
-  return (
-    <span className="tasks-outcome-pill" title={outcome.title}>
-      {outcome.text}
-    </span>
-  );
-}
-
 /**
  * THE ONE MARK FOR WORDS NOBODY HAS SENT — a pencil and the word `Draft` — and,
  * on the List and the Board, the control that filters the page down to them
  * (design.md, Round 2: "It is a filter tag").
  *
- * WHY IT IS ITS OWN COMPONENT and no longer just an `OutcomePill`. It is still
- * the same pill shape — that was never in question, and `.tasks-outcome-pill`
- * is what it is built out of — but it now does two things the outcome pill
- * cannot. It carries a GLYPH, because the pencil is the mark a reader learns
+ * WHY IT IS ITS OWN COMPONENT. It is built out of `.tasks-outcome-pill` — the
+ * page's one pill shape, which the retired "Stopped" mark used to wear too
+ * (dropped 2026-09-24: the row's own "Interrupted by you" says it) — but it
+ * does two things a plain pill cannot. It carries a GLYPH, because the pencil is the mark a reader learns
  * this feature by (Slack's own, the reference UI); and it is PRESSABLE, because
  * the chip that says "there are drafts here" is the natural place to ask for
  * only those.
@@ -2846,9 +2820,6 @@ function TaskNode({
    *  while the flag is down, while `messageState` derives its own from "pending
    *  and past due", which is true in either build (🔴 review 2026-09-12). */
   const queueOn = useProjectQueueEnabled();
-  // ...and the one word a settled lane cannot say: that the last run was
-  // STOPPED rather than finished (tasks-lib.outcomeTag).
-  const outcome = outcomeTag(task);
   // The `Draft` chip — this task's unsent composer text, or the row's own
   // unfinished form. tasks-lib.draftTag owns both cases and the tooltip.
   // Hidden while the side peek holds this row's draft (tasks-lib.draftHeldByPeek).
@@ -3607,7 +3578,6 @@ function TaskNode({
         {/* Beside the id, the same component in the same place as on the card
             (design-principles §1): a tag that moved between the two views would
             be two different marks to learn. */}
-        {outcome && <OutcomePill outcome={outcome} />}
         {/* THE DRAFT CHIP IS NOT HERE ANY MORE (Akshil, 2026-09-11). It sat
             beside the id for a round, on the outcome pill's own argument: the id
             line is where marks ABOUT the task live. That was right while it was
@@ -5441,11 +5411,6 @@ function TaskCard({
   // The mark after the title — clock or circle arrows (tasks-lib.scheduledMark),
   // the List row's own, so the two views say "this runs by itself" alike.
   const sched = scheduledMark(task);
-  // ...and the one word the Done lane cannot say on its own: that this card's
-  // last run was STOPPED rather than finished (tasks-lib.outcomeTag). Same
-  // function the List row asks, so the two views cannot describe one run
-  // differently.
-  const outcome = outcomeTag(task);
   // …and the `Draft` chip: a chat draft joined onto this task's session, or
   // — on a draft row — the unfinished form itself (tasks-lib.draftTag).
   // Hidden while the side peek holds this row's draft (tasks-lib.draftHeldByPeek).
@@ -5612,7 +5577,6 @@ function TaskCard({
             ? <StatusIcon status="needs_attention" />
             : failedOffLane && <StatusIcon status={lane} failed />}
           <IdChip id={task.task_id} kind="task" />
-          {outcome && <OutcomePill outcome={outcome} />}
           {/* The draft chip left this head with the List row's (Akshil,
               2026-09-11) and for the same reason — it is a tag now, and the
               tags sit together at the card's other end. It is in the foot,

@@ -290,8 +290,16 @@
    "Description (optional)" textarea — .new-task-desc / .new-task-desc-line —
    and its rules went with it: the big field IS the description, so there is no
    third piece of prose to style.) */
+/* The card's heading and its Title field are set at the SAME 16px (Akshil,
+   2026-09-24, screenshot): the name of the card and the name of the task read
+   as one size, the description a step under both. Scoped to this dialog —
+   every other modal keeps deploy.css's 15px heading. */
+.new-task-dialog .deploy-head h2 {
+  font-size: 16px;
+}
+
 .new-task-write .new-task-title {
-  font-size: 20px;
+  font-size: 16px;
   font-weight: 500;
   line-height: 1.35;
   /* One line. `pre` rather than `nowrap` so a pasted value's own spacing is not
@@ -311,13 +319,7 @@
    reads as body text under a heading — which is also what stops two 20px fields
    from shouting at each other in a 460px card.
 
-   13px, which is not a size picked for this card: it is the repo's BODY size —
-   what `.field-control` sets for every field in the app, and what the two
-   checkboxes and the rows further down this same form already use. So the pair
-   reads as 20px heading over body copy, and the description is the same face as
-   the facts beneath it rather than a third size of its own. It was 14px, one
-   step off the title and close enough that the two looked like one field set
-   twice (Akshil, 2026-08-17).
+   13px — the repo's body size — under a 16px title (Akshil, 2026-09-24).
 
    It GROWS like a note: JS sets height from scrollHeight on every change
    (NewJobModal), and the two clamps here bound it at both ends. The FLOOR is
@@ -328,18 +330,59 @@
    scrolls. Both clamp the inline height JS writes, so the measured value only
    ever picks a size between them. */
 .new-task-write .new-task-ask {
+  /* 13px (Akshil, 2026-09-24): the body size, one step under the 16px title. */
   font-size: 13px;
   font-weight: 400;
   line-height: 1.55;
   resize: none;
   overflow-wrap: anywhere;
-  /* Six lines of the 13px face plus the shared padding: the block the reference
-     image gives the description, and the slack it takes. */
-  min-height: calc(13px * 1.55 * 6 + 12px);
+  /* Three lines of the face plus the shared padding — half the six the
+     reference image gave it (Akshil, 2026-09-23). Still the slack-taker. */
+  min-height: calc(13px * 1.55 * 3 + 12px);
   /* Ten, then it scrolls. */
   max-height: calc(13px * 1.55 * 10 + 12px);
   overflow-y: auto;
   flex: 1 1 auto;
+}
+
+/* The ask's box: what the drawn placeholder is positioned against. Takes the
+   textarea's place in the write block's flex column and hands the slack on. */
+.new-task-ask-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* The two-line placeholder: sits exactly where the textarea's own text starts
+   (its 6px top padding, flush left), in the same face, the same muted ink the
+   native one wore. Two lines — the words, then the key in italics. Lets clicks
+   through to the field beneath. */
+.new-task-ask-hint {
+  position: absolute;
+  top: 6px;
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 1.55;
+  pointer-events: none;
+}
+
+.new-task-ask-hint > * {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.new-task-ask-hint > em {
+  font-style: italic;
+  /* Lighter than the line above it: grey + italic at the same weight read as
+     a smudge (Akshil, 2026-09-24). */
+  font-weight: 100;
 }
 
 /* -- The past-time note ------------------------------------------------------

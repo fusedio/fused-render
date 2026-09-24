@@ -6,6 +6,7 @@
 // through the REAL code path (useDirMode's real fetches, stubbed at the
 // network boundary) rather than hand-assigned state.
 import { beforeEach, expect, test } from "bun:test";
+import { installDomShim } from "@platform/lib/testDomShim";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createElement, type ReactElement } from "react";
 import type { AppPageGitColumn } from "@shell/useAppPageGitColumn";
@@ -15,20 +16,15 @@ import type { AppPageGitColumn } from "@shell/useAppPageGitColumn";
 // at import time — the same minimal stand-in appdoctor-lib.test.ts installs
 // for the same reason, put back once the import resolves so a leaked global
 // does not reach another file in this same `bun test` process.
-const before = {
-  location: Reflect.getOwnPropertyDescriptor(globalThis, "location"),
-  history: Reflect.getOwnPropertyDescriptor(globalThis, "history"),
-};
-Object.assign(globalThis, {
-  location: { pathname: "/", search: "", href: "http://localhost/" },
-  history: { state: null, replaceState() {} },
-});
+// The shared DOM stub, installed and LEFT STANDING (see testDomShim.ts).
+// This file used to stash the `location`/`history` descriptors, assign its
+// own, and put the originals back — deleting them when there were none. Every
+// suite runs in ONE bun process, so that delete pulled `location` out from
+// under whichever file ran next and had already installed the shim: 160
+// `ReferenceError: location is not defined` on CI, none locally, purely by
+// file order (2026-09-24).
+installDomShim();
 const { useAppPageGitColumn } = await import("@shell/useAppPageGitColumn");
-for (const key of ["location", "history"] as const) {
-  const desc = before[key];
-  if (desc) Reflect.defineProperty(globalThis, key, desc);
-  else Reflect.deleteProperty(globalThis, key);
-}
 
 // ---- a tiny local hook harness, mirroring AppPage.test.tsx's own -----------
 

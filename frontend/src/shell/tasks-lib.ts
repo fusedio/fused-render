@@ -4452,29 +4452,6 @@ export interface OutcomeTag {
   title: string;
 }
 
-/**
- * The word a settled task's last run needs beside it, or null when the lane
- * already says everything.
- *
- * Read off the ACTIVE message — the newest one that actually started
- * (`activeMessage`) — because that is the run the task's status is about; an
- * older stopped run under a newer completed one is history, and the lane is
- * describing the newer one.
- *
- * `cancelled` is currently the only word: every other outcome is either already
- * in the lane (done, upcoming, in progress) or already on the ring (failed,
- * stopped reporting). The shape is a tag rather than a boolean so the next
- * outcome that needs a word does not need a second mechanism.
- */
-export function outcomeTag(task: Task): OutcomeTag | null {
-  const active = activeMessage(task);
-  if (!active || active.turn !== "cancelled") return null;
-  return {
-    text: "Stopped",
-    title: "You stopped this run before it finished",
-  };
-}
-
 // ---- what is happening RIGHT NOW ---------------------------------------------
 // The List has the In Progress section and the Board has the In Progress lane;
 // the calendar has neither, because a calendar is ordered by time and not by
