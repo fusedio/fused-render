@@ -656,6 +656,29 @@ test("Ctrl+Enter while live with NO send-now seat falls back to the follow-up", 
   expect(c.followups).toEqual(["x"]);
 });
 
+test("the ✓ Done seat reads the send window LIVE, not as it was when installed", () => {
+  // `submit` is handed out once through `submitRef`; the window opens later,
+  // on the parent's re-render. A seat that closed over `sendBusy` at install
+  // time let a wordless round through into the parked road (Bugbot round 2).
+  const seat: Seat = { current: null };
+  const c = mount({ submitRef: seat, hasAttachments: true });
+  const installed = seat.current!;
+  c.rerender({ submitRef: seat, hasAttachments: true, sendBusy: true });
+  let went = true;
+  act(() => {
+    went = installed();
+  });
+  expect(went).toBe(false);
+  expect(c.sent).toEqual([]);
+  // …and the moment the window closes, the same seat sends.
+  c.rerender({ submitRef: seat, hasAttachments: true, sendBusy: false });
+  act(() => {
+    went = installed();
+  });
+  expect(went).toBe(true);
+  expect(c.sent).toHaveLength(1);
+});
+
 test("a WORDLESS send inside the window still refuses — notes cannot be parked", () => {
   // The notes' photograph is taken at send time and the tray belongs to the
   // send in flight, so ✓ Done keeps its round armed and says so (ClaudeChat's

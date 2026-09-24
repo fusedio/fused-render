@@ -1068,20 +1068,53 @@ function ChatBody(props: ChatBodyProps) {
    * pictures such a line carried take the tray road the controller already
    * owns (`onSendReturned` → `attachBack`) — the strand names only words.
    */
-  const strandAll = useCallback(
-    (texts: readonly string[]) => {
+  /**
+   * A PARKED LINE THE CONTROLLER HANDED BACK, waiting for whoever posts its
+   * row (Bugbot round 2, PR #1323). A stop hands an unconfirmed follow-up back
+   * TWICE in one tick — `returnSend` (pictures) then `onStranded` (words) — and
+   * each used to post a "not sent" bubble, so one line came back as two.
+   * `onSendReturned` now only STASHES the parked payload here, keyed by the
+   * dispatch, and `strandAll` claims it for the row it posts for those words;
+   * a stash nothing claimed by the next tick (a `send` that failed outside a
+   * stop) posts its own row then. One dispatch, one row.
+   */
+  const returnedParked = useRef<Map<string, { text: string; payload: OutboxPayload }>>(new Map());
+  const postNotSent = useCallback(
+    (text: string, payload: OutboxPayload): OutboxEntry<OutboxPayload> | null => {
       const c = controllerRef.current;
-      const words = texts.filter(Boolean);
-      if (!c || !words.length) return;
-      const entries: OutboxEntry<OutboxPayload>[] = words.map((text) => ({
+      if (!c) return null;
+      return {
         id: `o${++outboxSeq.current}`,
         text,
-        payload: { opts: {}, bubble: c.postOptimisticUser(text, "notSent"), taken: NO_TAKEN },
+        payload: { ...payload, bubble: c.postOptimisticUser(text, "notSent") },
         notSent: true as const,
-      }));
+      };
+    },
+    [],
+  );
+  const strandAll = useCallback(
+    (texts: readonly string[]) => {
+      const words = texts.filter(Boolean);
+      if (!controllerRef.current || !words.length) return;
+      const entries: OutboxEntry<OutboxPayload>[] = [];
+      for (const text of words) {
+        // THE STASHED PARKED LINE, if this is it: same words, handed back by
+        // the same stop — its pictures ride the row rather than NO_TAKEN, and
+        // the stash is spent so its own flush posts nothing.
+        let payload: OutboxPayload = { opts: {}, bubble: "", taken: NO_TAKEN };
+        for (const [key, stashed] of returnedParked.current) {
+          if (stashed.text === text) {
+            payload = stashed.payload;
+            returnedParked.current.delete(key);
+            break;
+          }
+        }
+        const row = postNotSent(text, payload);
+        if (row) entries.push(row);
+      }
       setOutbox(pushFrontAll(outboxRef.current, entries));
     },
-    [setOutbox],
+    [setOutbox, postNotSent],
   );
 
   // One collapse policy per MOUNT, not per module: six compact mounts on the
@@ -1182,16 +1215,20 @@ function ChatBody(props: ChatBodyProps) {
           // reader to pull (Bugbot, PR #1323). Its `inFlight` entry is spent
           // below like any other; the pictures stay on the row, not the tray.
           const parked = dispatchingParked.current;
-          const c = controllerRef.current;
-          if (parked && !refused && text && c) {
-            setOutbox(
-              pushFront(outboxRef.current, {
-                id: `o${++outboxSeq.current}`,
-                text,
-                payload: { ...parked, bubble: c.postOptimisticUser(text, "notSent") },
-                notSent: true,
-              }),
-            );
+          if (parked && !refused && text) {
+            // STASHED, NOT POSTED (Bugbot round 2): a stop hands these same
+            // words to `onStranded` in this very tick, and `strandAll` posts the
+            // one row — claiming this stash for its pictures. Only a stash still
+            // here on the next tick (no stop: the `send` itself failed) posts.
+            const key = sendId || `p${++outboxSeq.current}`;
+            returnedParked.current.set(key, { text, payload: parked });
+            setTimeout(() => {
+              const left = returnedParked.current.get(key);
+              if (!left) return;
+              returnedParked.current.delete(key);
+              const row = postNotSent(left.text, left.payload);
+              if (row) setOutbox(pushFront(outboxRef.current, row));
+            }, 0);
             if (sendId) returnedSends.current.add(sendId);
             if (attachments) inFlight.current.delete(attachments);
             return;

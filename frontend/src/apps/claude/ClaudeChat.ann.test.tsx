@@ -58,6 +58,8 @@ let appEntry: string | null = "/w/p/index.html";
 let audioSource: Record<string, unknown> = { audio: { available: true, reason: null } };
 /** Set by `heldStart()` — the `start` request, parked until the test says go. */
 let holdStart: Promise<void> | null = null;
+let holdSend: Promise<void> | null = null;
+let pollLive = false;
 
 /** `/api/prefs` — the project queue's switch lives there (`queue.enabled`). */
 let prefsBody: Record<string, unknown> = {};
@@ -133,8 +135,20 @@ function stubFetch(): void {
         return jsonRes({ ok: true, result: startError ? { error: startError } : { run_id: "r1" } });
       }
       if (action === "poll") {
+        // `pollLive` keeps the run OPEN (a long reply streaming), so a line can
+        // drain into it as a follow-up and a stop can land before the host
+        // confirms it.
+        if (pollLive) return jsonRes({ ok: true, result: { done: false, session_id: "s1", text: "" } });
         return jsonRes({ ok: true, result: { done: true, session_id: "s1", text: "ok" } });
       }
+      if (pollLive && action === "live_host") return jsonRes({ ok: true, result: { run_id: "r1" } });
+      if (pollLive && action === "send") {
+        // HOLDABLE like `start`: the window between the inbox taking the bytes
+        // and `{sent: true}` coming back is where an unconfirmed follow-up lives.
+        if (holdSend) return holdSend.then(() => jsonRes({ ok: true, result: { sent: true } }));
+        return jsonRes({ ok: true, result: { sent: true } });
+      }
+      if (action === "cancel") return jsonRes({ ok: true, result: { cancelled: "r1", still_queued: [] } });
       return jsonRes({ ok: true, result: {} });
     }
     return jsonRes({});
@@ -223,6 +237,8 @@ beforeEach(() => {
   overviews = 0;
   revoked = [];
   holdStart = null;
+  holdSend = null;
+  pollLive = false;
   prefsBody = {};
   admits.length = 0;
   admitAnswer = { run: true };
@@ -1338,6 +1354,48 @@ test("a line typed while the run is only STARTING is parked as a queued bubble, 
     "first message",
     "second message",
   ]);
+  expect(boxValue(r)).toBe("");
+});
+
+test("a parked line stopped before the inbox confirmed it comes back as ONE not-sent bubble", async () => {
+  // Bugbot round 2 (PR #1323): a stop hands an unconfirmed follow-up back twice
+  // in one tick — `returnSend` for its pictures, `onStranded` for its words —
+  // and each posted a "not sent" row, so one line came back as two bubbles.
+  pollLive = true;
+  let releaseSend!: () => void;
+  holdSend = new Promise<void>((resolve) => {
+    releaseSend = resolve;
+  });
+  const open = heldStart();
+  const { r } = await mountChat();
+  await typeInBox(r, "first message");
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle();
+  // Parked behind the start window…
+  await typeInBox(r, "second message");
+  await pressEnterInBox(r);
+  await settle();
+  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual(["queued"]);
+  // …the run goes live and stays live (`pollLive`), so the drain sends it as a
+  // follow-up whose `send` is now HELD: taken by the host, not yet confirmed.
+  await act(async () => open());
+  await settle(60);
+  expect(runs.filter((c) => c.action === "send")).toHaveLength(1);
+  // Stop, with the send still out.
+  await act(async () => {
+    sendBtn(r).props.onClick?.({ preventDefault() {} });
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(60);
+  releaseSend();
+  await settle(60);
+  // EXACTLY ONE "not sent" row for the one line, its words once in the log.
+  const tags = byClass(r, "turn-pending").map((n) => String(n.props.children));
+  expect(tags).toEqual(["not sent · click to edit"]);
+  const bubbles = byClass(r, "bubble").map((n) => String(n.props.children));
+  expect(bubbles.filter((b) => b === "second message")).toHaveLength(1);
   expect(boxValue(r)).toBe("");
 });
 
