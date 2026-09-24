@@ -17,6 +17,7 @@
 // unlike that file, this one's tests actually exercise `window`/`history`
 // rather than only needing the module-init pass through.
 import { beforeEach, expect, test } from "bun:test";
+import { installDomShim } from "@platform/lib/testDomShim";
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
 
 // `href`/`origin` ride along for the suites that inherit this `location`
@@ -32,8 +33,16 @@ let currentUrl = urlAt("/apps/repo/myapp", "");
 let replaced: string[] = [];
 const listeners = new Map<string, Set<() => void>>();
 
+// The shared shim FIRST, so `window` carries everything the rest of the app
+// reaches for (`setInterval`, `setTimeout`, `requestAnimationFrame`…) and
+// this file only LAYERS its listener hooks on top. This `window` stays
+// installed for every suite that runs after this one in the same bun
+// process; a bare object with just add/removeEventListener took 11 suites
+// down on `window.setInterval is not a function` (CI, by file order,
+// 2026-09-24).
+installDomShim();
 (globalThis as Record<string, unknown>).location = currentUrl;
-(globalThis as Record<string, unknown>).window = {
+Object.assign(globalThis.window as unknown as Record<string, unknown>, {
   addEventListener: (ev: string, fn: () => void) => {
     if (!listeners.has(ev)) listeners.set(ev, new Set());
     listeners.get(ev)!.add(fn);
@@ -51,7 +60,7 @@ const listeners = new Map<string, Set<() => void>>();
     for (const fn of listeners.get(ev.type) ?? []) fn();
     return true;
   },
-};
+});
 (globalThis as Record<string, unknown>).history = {
   state: null,
   // Same standing-stub rule as `dispatchEvent` above: router.ts's `navigate`
