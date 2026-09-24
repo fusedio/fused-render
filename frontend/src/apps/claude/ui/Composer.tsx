@@ -731,6 +731,13 @@ export function ComposerCard({
   const hasKey = !!draftKey;
   const onHeldGoneRef = useRef(onHeldGone);
   onHeldGoneRef.current = onHeldGone;
+  /** THE SEND WINDOW, AS `submit` READS IT. `submit` is handed out through
+   *  `submitRef` (✓ Done, the walkthrough), and a seat installed before the
+   *  window opened would otherwise read a stale `false` and let a wordless
+   *  round through into the parked road (Bugbot round 2, PR #1323). The same
+   *  render-time ref every other out-of-render read here uses. */
+  const sendBusyRef = useRef(!!sendBusy);
+  sendBusyRef.current = !!sendBusy;
   const heldFormRef = useRef(heldForm);
   heldFormRef.current = heldForm;
   // …and the same fact for the handlers that were built before this render.
@@ -1792,7 +1799,7 @@ export function ComposerCard({
     // round stays armed, the chips stand, and the reader is told
     // (`ClaudeChat`'s "Your notes were not sent: the last message is still
     // going out"). Words always go.
-    if (sendBusy && !message) return false;
+    if (sendBusyRef.current && !message) return false;
     // THE LIVE HALF FIRST-CLASS, not a fallback: a round of notes committed a
     // microtask ago is exactly as real as one the last paint drew a chip for.
     if (!message && !hasAttachments && !hasAttachmentsNow?.()) return false;
