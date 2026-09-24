@@ -12,7 +12,13 @@ const { createMemoryParamsStore } = await import("../params/store");
 const { MARKER_VIEW } = await import("./wire");
 
 import type { runAgent } from "./agent";
-import type { AssistantTurn, ChatController, NoteTurn, UserTurn } from "./controller-api";
+import type {
+  AssistantTurn,
+  ChatController,
+  NoteTurn,
+  StrandedLine,
+  UserTurn,
+} from "./controller-api";
 import type { HistoryResponse, PermissionRow, PollResponse, Segment } from "./types";
 
 // ---- fake agent.py ---------------------------------------------------------
@@ -101,7 +107,10 @@ function makeController(
 ) {
   const agent = fakeAgent(handlers);
   const activity: number[] = [];
+  /** The stranded TEXTS per stop (what the older assertions read)… */
   const stranded: string[][] = [];
+  /** …and the full lines, ids included (Bugbot round 3). */
+  const strandedLines: StrandedLine[][] = [];
   /** Every send that reported itself NOT SENT — the road the composer takes its
    *  words and its pictures back on. */
   const returned: { text: string; attachments?: unknown[]; refused?: boolean }[] = [];
@@ -120,10 +129,13 @@ function makeController(
     effort: () => "high",
     hasPane: () => true,
     onActivity: () => activity.push(1),
-    onStranded: (t) => stranded.push(t),
+    onStranded: (lines) => {
+      stranded.push(lines.map((l) => l.text));
+      strandedLines.push(lines);
+    },
     onSendReturned: (info) => returned.push(info),
   });
-  return { controller, agent, params, activity, stranded, returned };
+  return { controller, agent, params, activity, stranded, strandedLines, returned };
 }
 
 const assistants = (c: ChatController) =>
@@ -374,6 +386,64 @@ describe("start → poll → done", () => {
     expect(agent.of("send")[0].fields).toMatchObject({ run_id: "live-1", message: "again" });
     expect(agent.of("start").length).toBe(0);
     expect(agent.of("poll")[0].fields).toMatchObject({ run_id: "live-1" });
+  });
+
+  test("an optimistic bubble, adopted by the send, still gets its reply drawn on the poll", async () => {
+    // Browser QA 2026-09-24 saw a plain "say PONG" reply arrive on disk and not
+    // on screen. The controller road for it is exactly this — post the row,
+    // adopt it in `sendMessage`, poll text + done — and it has to end with ONE
+    // user bubble and the assistant's text in the log.
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1", session_id: "s-pong" }),
+      poll: () => poll({ done: true, text: "PONG", segments: [text("PONG")] }),
+    });
+    const key = controller.postOptimisticUser("say PONG only, nothing else");
+    await controller.sendMessage("say PONG only, nothing else", { optimisticKey: key });
+    expect(users(controller).map((t) => t.text)).toEqual(["say PONG only, nothing else"]);
+    expect(users(controller)[0]!.pending).toBeUndefined();
+    expect(assistants(controller).map((t) => t.text)).toEqual(["PONG"]);
+    expect(controller.getState().status).toBe("idle");
+  });
+
+  test("a queued tag comes off when the real send adopts the row", async () => {
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    const key = controller.postOptimisticUser("later", "queued");
+    expect(users(controller)[0]!.pending).toBe("queued");
+    controller.setOptimisticPending(key, "notSent");
+    expect(users(controller)[0]!.pending).toBe("notSent");
+    await controller.sendMessage("later", { optimisticKey: key });
+    expect(users(controller).length).toBe(1);
+    expect(users(controller)[0]!.pending).toBeUndefined();
+  });
+
+  test("a follow-up with `orStart` opens a fresh turn when no run is live, same bubble", async () => {
+    // A line the page parked behind a send drains after that run has already
+    // ended. Without the flag this road hands the words back ("no run to attach");
+    // with it, the same bubble becomes the opening message of a new turn.
+    const { controller, agent, stranded, returned } = makeController({
+      start: () => ({ run_id: "r2", session_id: "s2" }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    const key = controller.postOptimisticUser("parked line", "queued");
+    await controller.sendFollowUp("parked line", { optimisticKey: key, orStart: true });
+    expect(agent.of("start")).toHaveLength(1);
+    expect(agent.of("start")[0]!.fields).toMatchObject({ message: "parked line" });
+    expect(users(controller).map((t) => t.text)).toEqual(["parked line"]);
+    expect(users(controller)[0]!.pending).toBeUndefined();
+    expect(controller.getState().queued).toEqual([]);
+    expect(stranded).toEqual([]);
+    expect(returned).toEqual([]);
+    // …and without the flag, the old road: handed back, no start.
+    const plain = makeController({
+      start: () => ({ run_id: "r3" }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    await plain.controller.sendFollowUp("alone", {});
+    expect(plain.agent.of("start")).toHaveLength(0);
+    expect(plain.returned.map((r) => r.text)).toEqual(["alone"]);
   });
 
   test("a dead host, a refusal or a respawn all fall through to `start`", async () => {
@@ -1882,6 +1952,52 @@ describe("stop (T:15901)", () => {
     await controller.sendMessage("go");
     expect(made.stranded).toEqual([["never acknowledged"]]);
     expect(users(controller).map((t) => t.text)).toEqual(["go"]);
+  });
+
+  test("a stranded line names its send id and says whether its pictures already went back", async () => {
+    // Bugbot round 3 (PR #1323): the page posts one "not sent" row per send id,
+    // so the stop's hand-back has to carry the id — and say when `returnSend`
+    // fired for the same entry in this tick — rather than leave the page to
+    // match words. Two identical texts are two ids.
+    let releaseSend!: () => void;
+    const held = new Promise<void>((resolve) => {
+      releaseSend = resolve;
+    });
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      live_host: () => ({ run_id: "r1" }),
+      send: async (_f, n) => {
+        if (n === 0) return { sent: true as const };
+        await held;
+        return { sent: true as const };
+      },
+      cancel: () => ({ cancelled: "r1", still_queued: [] }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [text("working")] });
+        if (n === 1) {
+          // One landed ("again", id sA), one unconfirmed ("again", id sB).
+          await controller.sendFollowUp("again", { sendId: "sA" });
+          void controller.sendFollowUp("again", { sendId: "sB" });
+          await Promise.resolve();
+          await Promise.resolve();
+          await controller.stopRun();
+          releaseSend();
+          return poll({ segments: [text("working")] });
+        }
+        return poll({ done: true, error: "claude exited", segments: [text("working")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(made.strandedLines).toEqual([
+      [
+        { text: "again", sendId: "sA" },
+        { text: "again", sendId: "sB", returned: true },
+      ],
+    ]);
+    // …and only the unconfirmed one came back through `returnSend`.
+    expect(made.returned.map((r) => r.text)).toEqual(["again"]);
   });
 
   // ── feedback #12: the run ENDS across the follow-up boundary ───────────────

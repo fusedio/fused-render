@@ -53,6 +53,7 @@ import type {
   ResumeOptions,
   RunStatus,
   SendOptions,
+  StrandedLine,
   Trouble,
   Turn,
   UserTurn,
@@ -738,14 +739,30 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * controller drops it (`dropOptimisticUser`, and `returnSend` for the roads
    * that refuse inside).
    */
-  const postOptimisticUser = (text: string): string => {
+  const postOptimisticUser = (text: string, pending?: UserTurn["pending"]): string => {
     if (disposed || !text) return "";
-    return addUser(text).key;
+    const key = addUser(text).key;
+    // THE TAG RIDES THE ROW, not a side list: the page outbox's bubble IS this
+    // turn, and `addUser`'s adoption rebuilds the turn without `pending` — which
+    // is exactly when the tag should go, because the run has the words.
+    if (pending) setOptimisticPending(key, pending);
+    return key;
   };
 
   const dropOptimisticUser = (key: string): void => {
     if (!key || !state.turns.some((t) => t.key === key)) return;
     dropTurn(key);
+  };
+
+  const setOptimisticPending = (key: string, pending: UserTurn["pending"] | undefined): void => {
+    if (!key || !state.turns.some((t) => t.key === key && t.role === "user")) return;
+    emit({
+      turns: state.turns.map((t) => {
+        if (t.key !== key || t.role !== "user") return t;
+        const { pending: _was, ...rest } = t;
+        return pending ? { ...rest, pending } : rest;
+      }),
+    });
   };
 
   /** T:13722 `addNote` — the ◍ / ◆ / ⏹ rows. */
@@ -2087,6 +2104,17 @@ export function createChatController(deps: ControllerDeps): ChatController {
       runId = activeRun;
     }
     if (!runId) {
+      // A PARKED LINE OPENS A FRESH TURN INSTEAD (`SendOptions.orStart`): the
+      // run it was parked behind ended before the drain got here, and the
+      // words were typed to be said either way. Same bubble — `sendMessage`
+      // adopts the row this follow-up already adopted — and the queue entry
+      // goes, because the line is no longer waiting behind anything.
+      if (opts.orStart && logGen === gen && !disposed) {
+        drop();
+        const { orStart: _o, ...rest } = opts;
+        await sendMessage(text, { ...rest, optimisticKey: bubble.key });
+        return;
+      }
       // GUARDED LIKE THE RESPAWN ROAD BELOW (`logGen === gen`, :1443). This road
       // has slept up to FOLLOWUP_WAIT_TRIES × FOLLOWUP_WAIT_MS, which is ample
       // room for a Back (or an `openOtherSession`) to land — and an unguarded
@@ -2246,7 +2274,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // out and its bubble dropped, leaving the text nowhere at all. Each
       // match now consumes exactly ONE name.
       const named = still.filter((t): t is string => typeof t === "string" && !!t);
-      const stranded: string[] = [];
+      const stranded: StrandedLine[] = [];
+      /** The unconfirmed sends whose pictures go back through `returnSend` —
+       *  AFTER `onStranded` (Bugbot round 4): the page posts every handed-back
+       *  line in ONE ordered insert from the strand, so the per-send returns
+       *  must find their rows already posted rather than post their own first
+       *  and leave the rest to land behind them out of typed order. */
+      const toReturn: typeof queued = [];
       for (const entry of queued.slice()) {
         // Matched against the WIRE form, which is what `still_queued` carries;
         // what goes BACK to the box is the TYPED form, because that is the text
@@ -2260,7 +2294,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // nothing was ever going to answer it. Claude Code's own Esc does the
         // same thing — the queued messages return to the input, editable.
         // Losing a bubble is recoverable; a bubble with no reply is not.
-        stranded.push(entry.typed || entry.wire);
+        //
+        // NAMED BY ITS SEND, and told whether `returnSend` fires for it below
+        // (Bugbot round 3): the page posts one row per send id, so a line whose
+        // pictures went back in this same tick is not posted twice.
+        const willReturn = !entry.landed && !entry.handedBack;
+        stranded.push({
+          text: entry.typed || entry.wire,
+          ...(entry.opts.sendId ? { sendId: entry.opts.sendId } : {}),
+          ...(willReturn ? { returned: true } : {}),
+        });
         // AND ITS PICTURES, but only for a send the inbox never confirmed. The
         // words go back through `onStranded`; the attachments are parked in
         // `ClaudeChat`'s `inFlight` map under this send's own `Receipt[]` and
@@ -2276,7 +2319,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // (`onSendReturned`'s own note).
         if (!entry.landed && !entry.handedBack) {
           entry.handedBack = true;
-          returnSend(entry.typed, entry.opts);
+          toReturn.push(entry);
         }
         // The optimistic bubble goes with it. A follow-up the interrupt
         // stranded was never answered, so leaving the row posted claims the
@@ -2294,13 +2337,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // Anything the CLI named that this page has no entry for (a follow-up
       // from another viewer of the same session) is handed back verbatim
       // rather than lost — there is no typed form to prefer.
-      for (const t of named) stranded.push(t);
+      for (const t of named) stranded.push({ text: t });
       // The turn is over for every entry, handed back or not — so the hint
       // under the box goes either way, in ONE publish.
       const cleared = queued.length > 0;
       queued.length = 0;
       if (cleared || stranded.length) publishQueued();
       if (stranded.length) deps.onStranded?.(stranded);
+      for (const entry of toReturn) returnSend(entry.typed, entry.opts);
     } catch (err) {
       // The kill never reached the backend, so the run is still going and the
       // loop is still streaming it. Take the claim back: leaving it set would
@@ -3563,6 +3607,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     sendFollowUp,
     postOptimisticUser,
     dropOptimisticUser,
+    setOptimisticPending,
     stopRun,
     decidePermission,
     answerQuestion,
