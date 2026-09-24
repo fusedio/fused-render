@@ -12,7 +12,13 @@ const { createMemoryParamsStore } = await import("../params/store");
 const { MARKER_VIEW } = await import("./wire");
 
 import type { runAgent } from "./agent";
-import type { AssistantTurn, ChatController, NoteTurn, UserTurn } from "./controller-api";
+import type {
+  AssistantTurn,
+  ChatController,
+  NoteTurn,
+  StrandedLine,
+  UserTurn,
+} from "./controller-api";
 import type { HistoryResponse, PermissionRow, PollResponse, Segment } from "./types";
 
 // ---- fake agent.py ---------------------------------------------------------
@@ -101,7 +107,10 @@ function makeController(
 ) {
   const agent = fakeAgent(handlers);
   const activity: number[] = [];
+  /** The stranded TEXTS per stop (what the older assertions read)… */
   const stranded: string[][] = [];
+  /** …and the full lines, ids included (Bugbot round 3). */
+  const strandedLines: StrandedLine[][] = [];
   /** Every send that reported itself NOT SENT — the road the composer takes its
    *  words and its pictures back on. */
   const returned: { text: string; attachments?: unknown[]; refused?: boolean }[] = [];
@@ -120,10 +129,13 @@ function makeController(
     effort: () => "high",
     hasPane: () => true,
     onActivity: () => activity.push(1),
-    onStranded: (t) => stranded.push(t),
+    onStranded: (lines) => {
+      stranded.push(lines.map((l) => l.text));
+      strandedLines.push(lines);
+    },
     onSendReturned: (info) => returned.push(info),
   });
-  return { controller, agent, params, activity, stranded, returned };
+  return { controller, agent, params, activity, stranded, strandedLines, returned };
 }
 
 const assistants = (c: ChatController) =>
@@ -1940,6 +1952,52 @@ describe("stop (T:15901)", () => {
     await controller.sendMessage("go");
     expect(made.stranded).toEqual([["never acknowledged"]]);
     expect(users(controller).map((t) => t.text)).toEqual(["go"]);
+  });
+
+  test("a stranded line names its send id and says whether its pictures already went back", async () => {
+    // Bugbot round 3 (PR #1323): the page posts one "not sent" row per send id,
+    // so the stop's hand-back has to carry the id — and say when `returnSend`
+    // fired for the same entry in this tick — rather than leave the page to
+    // match words. Two identical texts are two ids.
+    let releaseSend!: () => void;
+    const held = new Promise<void>((resolve) => {
+      releaseSend = resolve;
+    });
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      live_host: () => ({ run_id: "r1" }),
+      send: async (_f, n) => {
+        if (n === 0) return { sent: true as const };
+        await held;
+        return { sent: true as const };
+      },
+      cancel: () => ({ cancelled: "r1", still_queued: [] }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [text("working")] });
+        if (n === 1) {
+          // One landed ("again", id sA), one unconfirmed ("again", id sB).
+          await controller.sendFollowUp("again", { sendId: "sA" });
+          void controller.sendFollowUp("again", { sendId: "sB" });
+          await Promise.resolve();
+          await Promise.resolve();
+          await controller.stopRun();
+          releaseSend();
+          return poll({ segments: [text("working")] });
+        }
+        return poll({ done: true, error: "claude exited", segments: [text("working")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(made.strandedLines).toEqual([
+      [
+        { text: "again", sendId: "sA" },
+        { text: "again", sendId: "sB", returned: true },
+      ],
+    ]);
+    // …and only the unconfirmed one came back through `returnSend`.
+    expect(made.returned.map((r) => r.text)).toEqual(["again"]);
   });
 
   // ── feedback #12: the run ENDS across the follow-up boundary ───────────────

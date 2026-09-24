@@ -381,6 +381,18 @@ export interface SendOptions {
   orStart?: boolean;
 }
 
+/** One follow-up a stop handed back (`ChatControllerDeps.onStranded`). */
+export interface StrandedLine {
+  text: string;
+  /** The page's own id for the send (`SendOptions.sendId`), when it gave one. */
+  sendId?: string;
+  /** This send's `returnSend` already fired for THIS stop — its pictures went
+   *  back through `onSendReturned` in the same tick. The words still come
+   *  through here (a page that keys rows by `sendId` may already have posted
+   *  one for it, and skips). */
+  returned?: boolean;
+}
+
 /**
  * ESCAPE IS NOT THE PROTOCOL'S, and there is deliberately no method here for it.
  *
@@ -651,8 +663,12 @@ export interface ControllerDeps {
    */
   hasPane?: () => boolean | null;
   /** ADDED: follow-ups the CLI never delivered, handed back to the composer on
-   *  a stop (`still_queued`, T:15911). */
-  onStranded?: (texts: string[]) => void;
+   *  a stop (`still_queued`, T:15911). Each line names its send when the page
+   *  gave it one (`SendOptions.sendId`), so the page can tell a line it
+   *  already took back through `onSendReturned` from one it has not — by id,
+   *  never by text (Bugbot round 3, PR #1323). A line the CLI named that this
+   *  page has no entry for carries no id. */
+  onStranded?: (lines: StrandedLine[]) => void;
   /** ADDED: every 8th poll (~3.2 s) and once at the run's end — where PR4 hangs
    *  its artifacts read (T:16229, 16330). */
   onArtifactsTick?: () => void;
