@@ -319,9 +319,7 @@
    reads as body text under a heading — which is also what stops two 20px fields
    from shouting at each other in a 460px card.
 
-   14px under a 16px title (Akshil, 2026-09-24). It sat at the 13px body size
-   under a 20px title before; with the title brought down to the card heading's
-   size, one step is enough to keep the two apart.
+   13px — the repo's body size — under a 16px title (Akshil, 2026-09-24).
 
    It GROWS like a note: JS sets height from scrollHeight on every change
    (NewJobModal), and the two clamps here bound it at both ends. The FLOOR is
@@ -332,17 +330,17 @@
    scrolls. Both clamp the inline height JS writes, so the measured value only
    ever picks a size between them. */
 .new-task-write .new-task-ask {
-  /* 14px (Akshil, 2026-09-24): one step under the 16px title. */
-  font-size: 14px;
+  /* 13px (Akshil, 2026-09-24): the body size, one step under the 16px title. */
+  font-size: 13px;
   font-weight: 400;
   line-height: 1.55;
   resize: none;
   overflow-wrap: anywhere;
   /* Three lines of the face plus the shared padding — half the six the
      reference image gave it (Akshil, 2026-09-23). Still the slack-taker. */
-  min-height: calc(14px * 1.55 * 3 + 12px);
+  min-height: calc(13px * 1.55 * 3 + 12px);
   /* Ten, then it scrolls. */
-  max-height: calc(14px * 1.55 * 10 + 12px);
+  max-height: calc(13px * 1.55 * 10 + 12px);
   overflow-y: auto;
   flex: 1 1 auto;
 }
@@ -369,7 +367,7 @@
   display: flex;
   flex-direction: column;
   color: var(--fg-muted);
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.55;
   pointer-events: none;
 }
