@@ -369,6 +369,16 @@ export interface SendOptions {
    * mint one.
    */
   queueClaim?: string;
+  /**
+   * A FOLLOW-UP THAT MAY OPEN A FRESH TURN INSTEAD. `sendFollowUp` waits a
+   * bounded moment for a live run and, finding none, hands the words back with
+   * "no run to attach this message to". A line the page PARKED behind a send
+   * (`ui/outbox.ts`) is different: it was typed to be said whatever the run
+   * does, and the run it was parked behind may well have ended in the seconds
+   * before the drain reached it. With this set, that road falls through to
+   * `sendMessage` — same words, same bubble — rather than giving up.
+   */
+  orStart?: boolean;
 }
 
 /**

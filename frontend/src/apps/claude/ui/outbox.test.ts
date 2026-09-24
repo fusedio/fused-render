@@ -76,9 +76,14 @@ test("a click takes ONE entry by id and keeps the others in order", () => {
   expect(takeById(list, "zz").entry).toBeNull();
 });
 
-test("the hint counts, singular and plural, and says nothing for none", () => {
+test("the hint counts only lines that WILL send; not-sent rows get their own line", () => {
   expect(outboxHint(0)).toBe("");
-  expect(outboxHint(1)).toContain("1 message");
-  expect(outboxHint(3)).toContain("3 messages");
+  expect(outboxHint(1)).toContain("1 message waiting");
+  expect(outboxHint(3)).toContain("3 messages waiting");
   expect(outboxHint(1)).toContain("↑");
+  // Not-sent rows never drain, so they are never "waiting to send".
+  expect(outboxHint(0, 2)).toBe("2 messages not sent · click one to edit");
+  expect(outboxHint(0, 1)).toContain("1 message not sent");
+  // Sendable lines win the one line there is.
+  expect(outboxHint(1, 2)).toContain("waiting");
 });

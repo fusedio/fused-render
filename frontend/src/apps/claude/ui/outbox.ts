@@ -99,9 +99,19 @@ export function takeById<T>(
 
 /** The composer's one-line hint while lines wait — Claude Code's own copy
  *  ("Press up to edit queued messages"), shortened for a 24px line. */
-export function outboxHint(count: number): string {
-  if (count <= 0) return "";
-  return count === 1
-    ? "1 message waiting to send · ↑ to edit it"
-    : `${count} messages waiting to send · ↑ to edit the last one`;
+export function outboxHint(sendable: number, notSent = 0): string {
+  // Only lines that WILL go count as waiting (Bugbot, PR #1323): a "not sent"
+  // row never drains on its own, so it is named for what it is — something to
+  // pull back, not something about to send.
+  if (sendable > 0) {
+    return sendable === 1
+      ? "1 message waiting to send · ↑ to edit it"
+      : `${sendable} messages waiting to send · ↑ to edit the last one`;
+  }
+  if (notSent > 0) {
+    return notSent === 1
+      ? "1 message not sent · click it to edit"
+      : `${notSent} messages not sent · click one to edit`;
+  }
+  return "";
 }

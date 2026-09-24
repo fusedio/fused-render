@@ -501,6 +501,11 @@ interface OutboxPayload {
    *  pictures" are two facts, and reading the second as the first made a
    *  plain-text parked line re-read the LIVE tray at drain time (review). */
   taken: { opts: SendOptions; items: Attachment[] };
+  /** The tray was NOT read when this line was parked, because the send in
+   *  flight had not taken its own pictures yet — they were its, not this
+   *  line's (Bugbot, PR #1323). `beginSend` reads the tray for this line at its
+   *  own dispatch instead, taking only what was added since. */
+  takeLater?: boolean;
 }
 const NO_TAKEN: OutboxPayload["taken"] = { opts: {}, items: [] };
 
@@ -976,20 +981,35 @@ function ChatBody(props: ChatBodyProps) {
    * composer's hint line.
    */
   const outboxRef = useRef<OutboxEntry<OutboxPayload>[]>([]);
+  /** Two counts for the composer's hint: lines that WILL drain, and "not sent"
+   *  rows that wait for the reader (Bugbot, PR #1323). */
   const [outboxCount, setOutboxCount] = useState(0);
+  const [notSentCount, setNotSentCount] = useState(0);
   const outboxSeq = useRef(0);
   const setOutbox = useCallback((next: OutboxEntry<OutboxPayload>[]) => {
     outboxRef.current = next;
-    setOutboxCount(next.length);
+    const notSent = next.filter((e) => e.notSent).length;
+    setOutboxCount(next.length - notSent);
+    setNotSentCount(notSent);
   }, []);
   /** The drain, as a ref: `releaseSend` is declared before `dispatchSend` (a
    *  dep of the drain) and has to call it without a hook cycle. */
   const drainRef = useRef<() => void>(() => {});
+  /** THE SEND IN FLIGHT HAS TAKEN ITS PICTURES: set by `beginSend` the moment
+   *  the tray is read, cleared with the latch. A line parked BEFORE that point
+   *  must leave the tray alone — those pictures belong to the send that is
+   *  still photographing (Bugbot, PR #1323). */
+  const trayTakenRef = useRef(false);
+  /** "SEND NOW" IS IN FLIGHT: the ordinary drain stands down until it has
+   *  dispatched its own line, so nothing goes out as a follow-up into a run
+   *  that is still stopping (Bugbot, PR #1323). */
+  const sendNowInFlight = useRef(false);
   const releaseSend = useCallback((id: string) => {
     if (sendHolder.current !== id) return;
     sendHolder.current = "";
     liveWait.current = "";
     sendBusy.current = false;
+    trayTakenRef.current = false;
     setSendLocked(false);
     // THE DOOR IS OPEN — the next line waiting takes it, in the order typed.
     drainRef.current();
@@ -1156,6 +1176,26 @@ function ChatBody(props: ChatBodyProps) {
           // reach from the composer; ✓ Done and the walkthrough share the seat,
           // and a refusal must never cost the user a sentence.
           if (refused) strand(text);
+          // A DRAINED PARKED LINE THAT DID NOT GO (the host was gone, `send`
+          // answered nothing) is not dropped with its bubble: it comes back as
+          // a "not sent" row that keeps its words AND its pictures, for the
+          // reader to pull (Bugbot, PR #1323). Its `inFlight` entry is spent
+          // below like any other; the pictures stay on the row, not the tray.
+          const parked = dispatchingParked.current;
+          const c = controllerRef.current;
+          if (parked && !refused && text && c) {
+            setOutbox(
+              pushFront(outboxRef.current, {
+                id: `o${++outboxSeq.current}`,
+                text,
+                payload: { ...parked, bubble: c.postOptimisticUser(text, "notSent") },
+                notSent: true,
+              }),
+            );
+            if (sendId) returnedSends.current.add(sendId);
+            if (attachments) inFlight.current.delete(attachments);
+            return;
+          }
           // T:16068 — THE ROLL-BACK SIGNAL, and it NAMES ITS SEND: the agent saw
           // none of THAT message, which is what its notes' `sent = 0` and its
           // overview's revoke hang off. It used to be a counter, and a counter
@@ -2344,16 +2384,22 @@ function ChatBody(props: ChatBodyProps) {
    * give back its own pictures and not another send's — and the merge may have
    * built a new array out of two owners' rows.
    */
+  /** The parked line `dispatchSend` is currently sending, for `beginSend` and
+   *  `refuseQueuedSend` — a ref rather than an argument so both keep the
+   *  call shape the send-window tests pin (`await beginSend(opts)`,
+   *  `refuseQueuedSend(text, err)`). Null for a live send. */
+  const dispatchingParked = useRef<OutboxPayload | null>(null);
   const beginSend = useCallback(
-    async (
-      opts: SendOptions,
-      /** A queued line's pictures, taken out of the tray when it was PARKED
-       *  (`dispatchSend`'s outbox road). The tray now belongs to the line being
-       *  typed, so it is not read — and neither is the notes round, which stays
-       *  pending for the next live send: a note drawn after a line was parked is
-       *  not part of that line. */
-      pretaken?: { opts: SendOptions; items: Attachment[] },
-    ): Promise<{ merged: SendOptions; done: (ok: boolean) => void }> => {
+    async (opts: SendOptions): Promise<{ merged: SendOptions; done: (ok: boolean) => void }> => {
+      // A PARKED LINE'S PICTURES were taken out of the tray when it was parked
+      // (`dispatchSend`'s outbox road), so the tray is not read for it — it
+      // belongs to the line being typed now — and neither is the notes round,
+      // which stays pending for the next live send: a note drawn after a line
+      // was parked is not part of that line. `takeLater` is the one exception:
+      // the tray was left alone at park time because the send then in flight
+      // had not taken its own pictures yet, so this line reads it now.
+      const parked = dispatchingParked.current;
+      const pretaken = parked && !parked.takeLater ? parked.taken : undefined;
       // The notes FIRST, and awaited: their picture rides the same `<pane-shot>`
       // block the tray's own do, first in the list, so it has to be in hand
       // before the tray is emptied (T:16549).
@@ -2361,6 +2407,9 @@ function ChatBody(props: ChatBodyProps) {
         ? { block: null, notes: [] as Annotation[], overview: null }
         : await takeAnnotations();
       const mine = pretaken ?? takeAttachments(notes.overview ? [notes.overview] : []);
+      // From here the tray is the NEXT line's: a line parked after this point
+      // may snapshot it for itself (`dispatchSend`).
+      trayTakenRef.current = true;
       // THE CALLER'S BLOCKS ARE NOT OURS TO DROP. `{ ...opts, blocks: [ours] }`
       // reads as "add the notes" and is a REPLACEMENT: any block the caller
       // brought — PR4's `<live-app-state>`, a walkthrough's own — vanished
@@ -2542,14 +2591,31 @@ function ChatBody(props: ChatBodyProps) {
    * this is the same event: the message did not go.
    */
   const refuseQueuedSend = useCallback(
-    (text: string, err: unknown, items?: readonly Attachment[]) => {
-      strand(text);
-      // A drained parked line's pictures were taken out of the tray when it was
-      // parked; a refusal owes them back with the words (review).
-      if (items?.length) attachBack.current?.(items);
+    (text: string, err: unknown) => {
+      // A DRAINED PARKED LINE KEEPS ITS PICTURES WITH ITS WORDS: the refusal
+      // makes it a "not sent" row that still carries `taken`, and the pictures
+      // return to the tray only when the reader pulls that row (Bugbot, PR
+      // #1323 — handing them to the tray here split them from the text).
+      const parked = dispatchingParked.current;
+      const c = controllerRef.current;
+      if (parked && c && text) {
+        setOutbox(
+          pushFront(outboxRef.current, {
+            id: `o${++outboxSeq.current}`,
+            text,
+            payload: { ...parked, bubble: c.postOptimisticUser(text, "notSent") },
+            notSent: true,
+          }),
+        );
+      } else {
+        if (parked?.taken.items.length) attachBack.current?.(parked.taken.items);
+        strand(text);
+      }
       const t = troubleFromError(err);
       controller.reportTrouble({ ...t, message: "This message was not sent: " + t.message });
     },
+    // `setOutbox` is a `[]`-deps callback (stable for the mount), left out so
+    // the send-window test can slice this function by its dependency list.
     [controller, strand],
   );
 
@@ -2599,12 +2665,18 @@ function ChatBody(props: ChatBodyProps) {
       // messages as one (multi-send QA 2026-09-19).
       if (sendBusy.current) {
         const bubble = text ? controller.postOptimisticUser(text, "queued") : "";
-        const mine = takeAttachments();
+        // THE TRAY IS ONLY THIS LINE'S ONCE THE SEND IN FLIGHT HAS TAKEN ITS
+        // OWN. Before that (`beginSend` still awaiting the notes' photograph),
+        // reading it here would steal the pictures the reader attached to the
+        // line that is going out (Bugbot, PR #1323); the parked line reads the
+        // tray at its own dispatch instead (`takeLater`).
+        const took = trayTakenRef.current;
+        const mine = took ? takeAttachments() : NO_TAKEN;
         setOutbox(
           pushBack(outboxRef.current, {
             id: `o${++outboxSeq.current}`,
             text,
-            payload: { opts, bubble, taken: mine },
+            payload: { opts, bubble, taken: mine, ...(took ? {} : { takeLater: true }) },
           }),
         );
         return;
@@ -2620,6 +2692,7 @@ function ChatBody(props: ChatBodyProps) {
       const optimisticKey = parked ? parked.bubble : text ? controller.postOptimisticUser(text) : "";
       void (async () => {
         let taken = false;
+        dispatchingParked.current = parked ?? null;
         try {
           // ---- ADMISSION, AHEAD OF EVERYTHING ELSE (the project queue) ------
           //
@@ -2751,11 +2824,14 @@ function ChatBody(props: ChatBodyProps) {
             // A PARKED LINE CARRIES ITS OWN PICTURES, taken when it was parked,
             // and never reads the live tray or the notes round: both belong to
             // the line being typed now (review). Its copies come straight from
-            // `parked.taken.items`; a live send reads the tray as before.
-            const notes = parked
+            // `parked.taken.items`; a live send reads the tray as before. A
+            // `takeLater` line (parked before the in-flight send had taken its
+            // own pictures) reads the tray here, as `beginSend` would for it.
+            const parkedOwn = parked && !parked.takeLater;
+            const notes = parkedOwn
               ? { block: null, notes: [] as Annotation[], overview: null }
               : await takeAnnotations();
-            const carried = parked
+            const carried = parkedOwn
               ? parked.taken.items.some((a: Attachment) => !a.pending && !!a.view)
                 ? await copyToTaskShots(parked.taken.items).catch(() => [])
                 : []
@@ -2821,7 +2897,7 @@ function ChatBody(props: ChatBodyProps) {
             } catch (err) {
               putDownQueuedShot();
               if (paneEpoch.current !== epochAtSend) return;
-              refuseQueuedSend(text, err, parked?.taken.items);
+              refuseQueuedSend(text, err);
               return;
             }
             // A shape this build does not understand is not a yes. Read off the
@@ -2831,7 +2907,7 @@ function ChatBody(props: ChatBodyProps) {
             if (run !== true && run !== false) {
               putDownQueuedShot();
               if (paneEpoch.current !== epochAtSend) return;
-              refuseQueuedSend(text, new Error("the queue gave no answer."), parked?.taken.items);
+              refuseQueuedSend(text, new Error("the queue gave no answer."));
               return;
             }
             if (verdict && verdict.run === false) {
@@ -2871,7 +2947,7 @@ function ChatBody(props: ChatBodyProps) {
               // A parked line's pictures left the tray when it was parked; the
               // entry holds their copies now, so they are released here rather
               // than read from a tray that is not theirs (review).
-              if (parked) {
+              if (parkedOwn) {
                 if (parked.taken.items.length) {
                   spentAlive.current = spentAlive.current.concat(parked.taken.items);
                   setSpentTick((n) => n + 1);
@@ -2937,12 +3013,16 @@ function ChatBody(props: ChatBodyProps) {
                 : undefined;
             putDownQueuedShot();
           }
-          const { merged, done } = await beginSend(opts, parked?.taken);
+          const { merged, done } = await beginSend(opts);
           const wire: SendOptions = {
             ...merged,
             sendId,
             ...(optimisticKey ? { optimisticKey } : {}),
             ...(queueClaim ? { queueClaim } : {}),
+            // A drained line was typed to be said whatever the run does: if
+            // the run it waited behind has ended by now, it opens a fresh turn
+            // rather than coming back "no run to attach" (`orStart`).
+            ...(parked ? { orStart: true } : {}),
           };
           let ok = true;
           try {
@@ -2973,6 +3053,7 @@ function ChatBody(props: ChatBodyProps) {
           // live status for the effect above to read. Owned by `sendId`, so a
           // turn ending cannot open the door on a LATER send's window.
           if (!taken && optimisticKey) controller.dropOptimisticUser(optimisticKey);
+          dispatchingParked.current = null;
           releaseSend(sendId);
         }
       })();
@@ -3008,7 +3089,11 @@ function ChatBody(props: ChatBodyProps) {
    * (see `strand`).
    */
   const drainOutbox = useCallback(() => {
-    if (sendBusy.current) return;
+    // Not while "send now" is between its stop and its own dispatch: a line
+    // drained here would go out as a follow-up into a run that is still
+    // stopping and be refused (Bugbot, PR #1323). `onSendNow` drains itself
+    // once its line is out.
+    if (sendBusy.current || sendNowInFlight.current) return;
     const { entry: next, rest } = shiftOldestSendable(outboxRef.current);
     if (!next) return;
     setOutbox(rest);
@@ -3067,28 +3152,62 @@ function ChatBody(props: ChatBodyProps) {
   const onSendNow = useCallback(
     (text: string) => {
       const bubble = text ? controller.postOptimisticUser(text, "queued") : "";
-      const mine = takeAttachments();
-      const entry: OutboxEntry<OutboxPayload> = {
-        id: `o${++outboxSeq.current}`,
-        text,
-        payload: {
-          opts: { model: defaults.model, effort: defaults.effort, permission: defaults.permission },
-          bubble,
-          taken: mine,
-        },
+      // The same tray rule as parking: only once the send in flight has taken
+      // its own pictures is the tray this line's (Bugbot, PR #1323).
+      const took = trayTakenRef.current;
+      const payload: OutboxPayload = {
+        opts: { model: defaults.model, effort: defaults.effort, permission: defaults.permission },
+        bubble,
+        taken: took ? takeAttachments() : NO_TAKEN,
+        ...(took ? {} : { takeLater: true }),
       };
+      // THE ORDINARY DRAIN STANDS DOWN from here until this line is out, or
+      // has given up: `releaseSend` fires when the stopped send's latch opens,
+      // and a drain then would send a parked line into a run still stopping.
+      sendNowInFlight.current = true;
       void (async () => {
-        await controller.stopRun();
-        // AHEAD of anything the stop handed back or the reader parked earlier:
-        // "send now" is about this line.
-        setOutbox(pushFront(outboxRef.current, entry));
-        for (let i = 0; i < 80 && controller.getState().status !== "idle"; i++) {
-          await new Promise((r) => setTimeout(r, 100));
+        try {
+          await controller.stopRun();
+          // BOUNDED: `stopRun` resolves on the cancel's acknowledgement, not on
+          // `pollLoop` exiting, and a send into a `stopping` run is refused.
+          for (let i = 0; i < 80 && controller.getState().status !== "idle"; i++) {
+            await new Promise((r) => setTimeout(r, 100));
+          }
+          if (controller.getState().status !== "idle" || sendBusy.current) {
+            // The run never settled. NOTHING IS DROPPED: this line waits as a
+            // "not sent" bubble the reader can pull, ahead of the rest.
+            if (bubble) controller.setOptimisticPending(bubble, "notSent");
+            setOutbox(
+              pushFront(outboxRef.current, {
+                id: `o${++outboxSeq.current}`,
+                text,
+                payload,
+                notSent: true,
+              }),
+            );
+            return;
+          }
+          // THIS LINE FIRST, straight through the send road — a fresh turn,
+          // since the run is idle — and the outbox drains behind it when this
+          // send's latch opens (`releaseSend` → `drainRef`).
+          dispatchSend(text, payload.opts, false, payload);
+        } finally {
+          sendNowInFlight.current = false;
+          // A timed-out wait left the drain standing down with lines parked;
+          // let it look again (it will refuse if the latch is still shut).
+          if (!sendBusy.current) drainRef.current();
         }
-        drainRef.current();
       })();
     },
-    [controller, takeAttachments, setOutbox, defaults.model, defaults.effort, defaults.permission],
+    [
+      controller,
+      dispatchSend,
+      takeAttachments,
+      setOutbox,
+      defaults.model,
+      defaults.effort,
+      defaults.permission,
+    ],
   );
 
   const onSend = useCallback(
@@ -4143,6 +4262,7 @@ function ChatBody(props: ChatBodyProps) {
       // THE OUTBOX'S SEAT IN THE COMPOSER: the count for the hint line, ↑ to
       // pull the newest parked line back, Ctrl+Enter to stop and send now.
       queuedCount: outboxCount,
+      notSentCount,
       onPullQueued,
       onSendNow,
       onPaste,
@@ -4188,6 +4308,7 @@ function ChatBody(props: ChatBodyProps) {
       entered,
       sendLocked,
       outboxCount,
+      notSentCount,
       onPullQueued,
       onSendNow,
       urlTick,

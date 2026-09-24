@@ -252,6 +252,10 @@ export interface ComposerCardProps {
    * box, and arms ↑.
    */
   queuedCount?: number;
+  /** …and how many "not sent" rows wait for the reader (a stop's hand-back, a
+   *  refused send). Named separately in the hint: they never send on their
+   *  own (Bugbot, PR #1323). ↑ reaches them too. */
+  notSentCount?: number;
   /** ↑ in an EMPTY box pulls the newest parked line back to edit — Claude
    *  Code's "Press up to edit queued messages". Answers the words, or null when
    *  nothing is parked. */
@@ -515,6 +519,7 @@ export function ComposerCard({
   onSendNow,
   onStop,
   queuedCount,
+  notSentCount,
   onPullQueued,
   hasAttachments,
   hasAttachmentsNow,
@@ -1779,6 +1784,15 @@ export function ComposerCard({
     // single newline ran the reader's draft into the walkthrough's intro and
     // changed what the model reads.
     const message = extra ? (typed ? typed.replace(/\s*$/, "") + "\n\n" + extra : extra) : typed;
+    // …EXCEPT A WORDLESS ONE. Notes or pictures alone cannot be parked: the
+    // notes' photograph is taken at the moment of sending (`beginSend`) and a
+    // parked round would photograph a pane that has moved on, and the tray
+    // belongs to the send in flight until it has taken its own pictures. So
+    // ✓ Done (and a bare-picture send) inside the window still refuses — the
+    // round stays armed, the chips stand, and the reader is told
+    // (`ClaudeChat`'s "Your notes were not sent: the last message is still
+    // going out"). Words always go.
+    if (sendBusy && !message) return false;
     // THE LIVE HALF FIRST-CLASS, not a fallback: a round of notes committed a
     // microtask ago is exactly as real as one the last paint drew a chip for.
     if (!message && !hasAttachments && !hasAttachmentsNow?.()) return false;
@@ -1876,7 +1890,7 @@ export function ComposerCard({
       // "Press up to edit queued messages". Only with nothing typed: in a box
       // with words, ↑ is the caret's.
       if (ev.key === "ArrowUp") {
-        if (!onPullQueued || !(queuedCount ?? 0) || text.trim()) return;
+        if (!onPullQueued || !((queuedCount ?? 0) + (notSentCount ?? 0)) || text.trim()) return;
         const back = onPullQueued();
         if (back === null) return;
         ev.preventDefault();
@@ -1890,15 +1904,17 @@ export function ComposerCard({
       if (ev.key !== "Enter") return;
       // Shift+Enter is a newline. Enter never STOPS a run — a user drafting the
       // next message mid-run must not kill the turn with a keystroke meant to
-      // queue text (T:17915). Cmd/Ctrl+Enter while a run is LIVE is Claude
-      // Code's "send now" (`chat:sendNow`): stop it and send this line first.
-      // Idle, it is the same send it always was, for the hands that learned it
-      // in every other composer in this app.
+      // queue text (T:17915). CTRL+Enter while a run is LIVE is Claude Code's
+      // "send now" (`chat:sendNow`, the same chord): stop it and send this line
+      // first. Ctrl ONLY, never Cmd: ⌘↩ is the annotation round's ✓ Done chord
+      // (`pressDoneChord`, ClaudeChat's `autoSubmit`) and must not be shadowed
+      // by a stop. Cmd/Ctrl+Enter idle is the same send it always was, for the
+      // hands that learned it in every other composer in this app.
       if (ev.shiftKey) return;
       ev.preventDefault();
-      submit(undefined, ev.ctrlKey || ev.metaKey);
+      submit(undefined, ev.ctrlKey && !ev.metaKey);
     },
-    [submit, onPullQueued, queuedCount, text, grow],
+    [submit, onPullQueued, queuedCount, notSentCount, text, grow],
   );
 
   const draft = useCallback(() => text, [text]);
@@ -2029,8 +2045,8 @@ export function ComposerCard({
             as against the follow-ups above that the run's host already has.
             Drawn whatever the queue flag says — these are not the project
             queue's, and ↑ is the thing to do about them. */}
-        {(queuedCount ?? 0) > 0 ? (
-          <div className="c-queued c-outbox">{outboxHint(queuedCount ?? 0)}</div>
+        {(queuedCount ?? 0) + (notSentCount ?? 0) > 0 ? (
+          <div className="c-queued c-outbox">{outboxHint(queuedCount ?? 0, notSentCount ?? 0)}</div>
         ) : null}
         {/* THE TOOLS' SHELF: a one-track grid whose row goes 1fr → 0fr while the
             composer is idle (styles/composer.css `.c-composer-tools`). A grid

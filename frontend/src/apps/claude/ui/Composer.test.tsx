@@ -94,7 +94,7 @@ function mount(over: Partial<Parameters<typeof ComposerCard>[0]> = {}) {
     });
   const press = (
     key: string,
-    mods: { shiftKey?: boolean; metaKey?: boolean } = {},
+    mods: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean } = {},
   ) => {
     let prevented = false;
     act(() => {
@@ -608,31 +608,43 @@ test("↑ does nothing when nothing is parked, or when the seat is not wired", (
   expect(empty.press("ArrowUp")).toBe(false);
 });
 
-test("the outbox hint names the parked lines under the box", () => {
+test("the outbox hint names the parked lines under the box, and not-sent rows apart", () => {
   const hint = (c: ReturnType<typeof mount>) =>
     c.root.findAllByProps({ className: "c-queued c-outbox" }).map((n) => n.props.children);
   expect(hint(mount({ queuedCount: 1 }))).toEqual(["1 message waiting to send · ↑ to edit it"]);
   expect(hint(mount({ queuedCount: 2 }))[0]).toContain("2 messages");
+  // A not-sent row is never "waiting to send" (Bugbot, PR #1323).
+  expect(hint(mount({ queuedCount: 0, notSentCount: 1 }))[0]).toContain("1 message not sent");
   expect(hint(mount())).toEqual([]);
+  // …but ↑ reaches it.
+  let pulled = 0;
+  const c = mount({ notSentCount: 1, onPullQueued: () => (pulled++, "back") });
+  expect(c.press("ArrowUp")).toBe(true);
+  expect(pulled).toBe(1);
 });
 
-test("Ctrl/Cmd+Enter while LIVE is send-now; idle it is the plain send", () => {
+test("CTRL+Enter while LIVE is send-now; Cmd+Enter is never (it is ✓ Done's chord)", () => {
   const now: string[] = [];
   const live = mount({ status: "running", onSendNow: (t: string) => now.push(t) });
   live.type("stop and do this");
-  expect(live.press("Enter", { metaKey: true })).toBe(true);
+  expect(live.press("Enter", { ctrlKey: true })).toBe(true);
   expect(now).toEqual(["stop and do this"]);
   expect(live.followups).toEqual([]);
   expect(live.box().props.value).toBe("");
-  // Plain Enter while live is still the follow-up road.
+  // Plain Enter while live is still the follow-up road…
   live.type("and then this");
   live.press("Enter");
   expect(live.followups).toEqual(["and then this"]);
+  // …and so is ⌘↩: the annotation round owns that chord (`pressDoneChord`),
+  // and a stop must never shadow it.
+  live.type("cmd line");
+  live.press("Enter", { metaKey: true });
+  expect(live.followups).toEqual(["and then this", "cmd line"]);
   expect(now).toEqual(["stop and do this"]);
-  // Idle: Cmd+Enter is the ordinary send, `onSendNow` untouched.
+  // Idle: Ctrl+Enter is the ordinary send, `onSendNow` untouched.
   const idle = mount({ onSendNow: (t: string) => now.push(t) });
   idle.type("go");
-  idle.press("Enter", { metaKey: true });
+  idle.press("Enter", { ctrlKey: true });
   expect(idle.sent.map((s) => s.text)).toEqual(["go"]);
   expect(now).toEqual(["stop and do this"]);
 });
@@ -640,8 +652,21 @@ test("Ctrl/Cmd+Enter while LIVE is send-now; idle it is the plain send", () => {
 test("Ctrl+Enter while live with NO send-now seat falls back to the follow-up", () => {
   const c = mount({ status: "running" });
   c.type("x");
-  c.press("Enter", { metaKey: true });
+  c.press("Enter", { ctrlKey: true });
   expect(c.followups).toEqual(["x"]);
+});
+
+test("a WORDLESS send inside the window still refuses — notes cannot be parked", () => {
+  // The notes' photograph is taken at send time and the tray belongs to the
+  // send in flight, so ✓ Done keeps its round armed and says so (ClaudeChat's
+  // "Your notes were not sent: the last message is still going out").
+  const c = mount({ sendBusy: true, hasAttachments: true });
+  c.submitForm();
+  expect(c.sent).toEqual([]);
+  // Words, though, always go — parked by the parent.
+  c.type("with words");
+  c.submitForm();
+  expect(c.sent.map((s) => s.text)).toEqual(["with words"]);
 });
 
 // ---- the caret goes back in the box (T:16687) ------------------------------
