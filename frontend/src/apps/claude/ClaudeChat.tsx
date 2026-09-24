@@ -166,6 +166,15 @@ import { leaderSession, useQueuedLeader } from "./sched/queue-leader";
 import { inboxBubbles } from "./protocol/inbox";
 import { createLiveWatch } from "./live/watch";
 import {
+  type OutboxEntry,
+  popNewest,
+  pushBack,
+  pushFront,
+  pushFrontAll,
+  shiftOldestSendable,
+  takeById,
+} from "./ui/outbox";
+import {
   admitQueueSend,
   cancelScheduledMessage,
   forceStart,
@@ -481,6 +490,19 @@ export function ClaudeChat(props: ClaudeChatProps) {
   }
   return <ChatBody {...props} agentDir={agentDir} params={params} />;
 }
+
+/** What the page outbox keeps beside a parked line's words (ui/outbox.ts):
+ *  the send options it was typed with, its optimistic bubble's key (the real
+ *  send adopts that row), and the tray pictures taken for it when it was parked. */
+interface OutboxPayload {
+  opts: SendOptions;
+  bubble: string;
+  /** ALWAYS present on a parked line, empty included: "parked" and "has
+   *  pictures" are two facts, and reading the second as the first made a
+   *  plain-text parked line re-read the LIVE tray at drain time (review). */
+  taken: { opts: SendOptions; items: Attachment[] };
+}
+const NO_TAKEN: OutboxPayload["taken"] = { opts: {}, items: [] };
 
 interface ChatBodyProps extends ClaudeChatProps {
   agentDir: string;
@@ -933,23 +955,114 @@ function ChatBody(props: ChatBodyProps) {
   // flag owns outright: the waiting rows, and the composer's own follow-up note,
   // which the flag takes away (see the Composer's `queueOn`).
   const queueOn = useProjectQueueEnabled();
+  /**
+   * THE PAGE OUTBOX (ui/outbox.ts) — lines typed while the latch above was
+   * shut.
+   *
+   * Claude Code's terminal never refuses Enter: a line typed while it works goes
+   * into a grey list above the input and drains in order. This page used to
+   * refuse instead — `dispatchSend` returned on `sendBusy` and the composer's
+   * `submit` returned `false` for the whole start round trip / pane capture /
+   * queue admission — with no sign at all. The words stayed in the box, the
+   * reader kept typing, and the next Enter sent two messages glued together
+   * (multi-send QA 2026-09-19: "2nd lost", "3rd swallowed", "saved as a draft").
+   *
+   * So a send that arrives while the latch is shut is PARKED here instead: its
+   * bubble goes up at once with a "queued" tag (`UserTurn.pending`), its
+   * pictures are taken out of the tray for it (`taken`), and `releaseSend`
+   * drains the oldest entry through the ordinary `dispatchSend` road the moment
+   * the door opens. The list lives in a ref — `releaseSend` and `strand` read
+   * it from inside async sends — and its length is mirrored to state for the
+   * composer's hint line.
+   */
+  const outboxRef = useRef<OutboxEntry<OutboxPayload>[]>([]);
+  const [outboxCount, setOutboxCount] = useState(0);
+  const outboxSeq = useRef(0);
+  const setOutbox = useCallback((next: OutboxEntry<OutboxPayload>[]) => {
+    outboxRef.current = next;
+    setOutboxCount(next.length);
+  }, []);
+  /** The drain, as a ref: `releaseSend` is declared before `dispatchSend` (a
+   *  dep of the drain) and has to call it without a hook cycle. */
+  const drainRef = useRef<() => void>(() => {});
   const releaseSend = useCallback((id: string) => {
     if (sendHolder.current !== id) return;
     sendHolder.current = "";
     liveWait.current = "";
     sendBusy.current = false;
     setSendLocked(false);
+    // THE DOOR IS OPEN — the next line waiting takes it, in the order typed.
+    drainRef.current();
   }, []);
   const [stranded, setStranded] = useState<{ text: string; seq: number } | null>(null);
   const strandSeq = useRef(0);
-  /** Words that have nowhere else to be go back in the BOX — the follow-up the
-   *  CLI never delivered (`onStranded`) and a send the controller refused
-   *  before it ever reached `addUser` both land here. */
-  const strand = useCallback((text: string) => {
-    if (!text) return;
-    strandSeq.current += 1;
-    setStranded({ text, seq: strandSeq.current });
-  }, []);
+  /** The controller, reachable from `strand` — which the controller's own
+   *  `onStranded` calls, so it cannot close over the value directly. Assigned
+   *  right after `createChatController` below. */
+  const controllerRef = useRef<ReturnType<typeof createChatController> | null>(null);
+  /**
+   * Words that have nowhere else to be — the follow-up the CLI never delivered
+   * (`onStranded`) and a send the controller refused before it ever reached
+   * `addUser` — go back in the BOX when the box is empty.
+   *
+   * NEVER INTO A BOX THE READER IS TYPING IN. The restore seat appends, and a
+   * failed send landing while the next line was half-typed put two messages
+   * into one box, sent together on the next Enter (multi-send QA 2026-09-19).
+   * With live typing the words become a "not sent" bubble in the outbox
+   * instead — parked, not merged — and a click on it (or ↑ in an empty box)
+   * brings them back when the reader is ready. It never drains on its own: the
+   * run may have READ these words before the stop (Claude Code answers
+   * `still_queued: []` for a consumed line), and re-sending them unasked is a
+   * duplicate the reader did not type.
+   */
+  const strand = useCallback(
+    (text: string) => {
+      if (!text) return;
+      const typing = !!boxRef.current?.value.trim();
+      const c = controllerRef.current;
+      if (typing && c) {
+        const bubble = c.postOptimisticUser(text, "notSent");
+        setOutbox(
+          pushFront(outboxRef.current, {
+            id: `o${++outboxSeq.current}`,
+            text,
+            payload: { opts: {}, bubble, taken: NO_TAKEN },
+            notSent: true,
+          }),
+        );
+        return;
+      }
+      strandSeq.current += 1;
+      setStranded({ text, seq: strandSeq.current });
+    },
+    [boxRef, setOutbox],
+  );
+  /**
+   * A STOP'S HAND-BACK, and it never touches the box (browser QA 2026-09-24:
+   * "C", "D" queued, Stop → both gone from the transcript). Every line Claude
+   * had not read — landed-but-unechoed follow-ups the controller strands
+   * (`still_queued`, `onStranded`) — becomes a "not sent · click to edit"
+   * bubble in place, in the order it was said, ahead of anything parked since.
+   * Whether the box is empty is not consulted: a stop is about the run, and the
+   * reader decides what to resend by pulling a bubble (↑ or a click). The
+   * pictures such a line carried take the tray road the controller already
+   * owns (`onSendReturned` → `attachBack`) — the strand names only words.
+   */
+  const strandAll = useCallback(
+    (texts: readonly string[]) => {
+      const c = controllerRef.current;
+      const words = texts.filter(Boolean);
+      if (!c || !words.length) return;
+      const entries: OutboxEntry<OutboxPayload>[] = words.map((text) => ({
+        id: `o${++outboxSeq.current}`,
+        text,
+        payload: { opts: {}, bubble: c.postOptimisticUser(text, "notSent"), taken: NO_TAKEN },
+        notSent: true as const,
+      }));
+      setOutbox(pushFrontAll(outboxRef.current, entries));
+    },
+    [setOutbox],
+  );
 
   // One collapse policy per MOUNT, not per module: six compact mounts on the
   // cards wall share this module and their chip keys collide by construction
@@ -972,9 +1085,10 @@ function ChatBody(props: ChatBodyProps) {
         // The controller already announces on THIS document
         // (`announceTasksChanged`); the stamp is for every OTHER one (T:16435).
         onActivity: stampChatActivity,
-        // Follow-ups the CLI never delivered come BACK to the box they were
-        // typed in rather than being dropped (`still_queued`, T:15911).
-        onStranded: (texts) => strand(texts.filter(Boolean).join("\n")),
+        // Follow-ups the CLI never delivered come back as "not sent" bubbles
+        // in place, one each, never into the box (`still_queued`, T:15911;
+        // browser QA 2026-09-24).
+        onStranded: strandAll,
         // THE PUSH CHANNEL. Read at SEND time from the watcher, which is the
         // same object the pull channel answers through — `blockForSend` does
         // push → offload → block, in T's order (T:16483, 5177-5218). Gated on
@@ -1057,8 +1171,10 @@ function ChatBody(props: ChatBodyProps) {
           attachBack.current?.(back);
         },
       }),
-    [agentDir, file, params, strand],
+    [agentDir, file, params, strand, strandAll],
   );
+  // For `strand`, which the controller itself calls (see `controllerRef`).
+  controllerRef.current = controller;
   useEffect(() => () => controller.dispose(), [controller]);
 
   const state = useSyncExternalStore(
@@ -2229,12 +2345,22 @@ function ChatBody(props: ChatBodyProps) {
    * built a new array out of two owners' rows.
    */
   const beginSend = useCallback(
-    async (opts: SendOptions): Promise<{ merged: SendOptions; done: (ok: boolean) => void }> => {
+    async (
+      opts: SendOptions,
+      /** A queued line's pictures, taken out of the tray when it was PARKED
+       *  (`dispatchSend`'s outbox road). The tray now belongs to the line being
+       *  typed, so it is not read — and neither is the notes round, which stays
+       *  pending for the next live send: a note drawn after a line was parked is
+       *  not part of that line. */
+      pretaken?: { opts: SendOptions; items: Attachment[] },
+    ): Promise<{ merged: SendOptions; done: (ok: boolean) => void }> => {
       // The notes FIRST, and awaited: their picture rides the same `<pane-shot>`
       // block the tray's own do, first in the list, so it has to be in hand
       // before the tray is emptied (T:16549).
-      const notes = await takeAnnotations();
-      const mine = takeAttachments(notes.overview ? [notes.overview] : []);
+      const notes = pretaken
+        ? { block: null, notes: [] as Annotation[], overview: null }
+        : await takeAnnotations();
+      const mine = pretaken ?? takeAttachments(notes.overview ? [notes.overview] : []);
       // THE CALLER'S BLOCKS ARE NOT OURS TO DROP. `{ ...opts, blocks: [ours] }`
       // reads as "add the notes" and is a REPLACEMENT: any block the caller
       // brought — PR4's `<live-app-state>`, a walkthrough's own — vanished
@@ -2416,8 +2542,11 @@ function ChatBody(props: ChatBodyProps) {
    * this is the same event: the message did not go.
    */
   const refuseQueuedSend = useCallback(
-    (text: string, err: unknown) => {
+    (text: string, err: unknown, items?: readonly Attachment[]) => {
       strand(text);
+      // A drained parked line's pictures were taken out of the tray when it was
+      // parked; a refusal owes them back with the words (review).
+      if (items?.length) attachBack.current?.(items);
       const t = troubleFromError(err);
       controller.reportTrouble({ ...t, message: "This message was not sent: " + t.message });
     },
@@ -2453,18 +2582,42 @@ function ChatBody(props: ChatBodyProps) {
    *     capture used to happen with an empty box and an empty transcript.
    */
   const dispatchSend = useCallback(
-    (text: string, opts: SendOptions, followUp: boolean): void => {
-      // The composer refuses this too, from the same ref — this is the guard
-      // for every OTHER caller of the seat (✓ Done, the walkthrough).
-      if (sendBusy.current) return;
+    (
+      text: string,
+      opts: SendOptions,
+      followUp: boolean,
+      /** Set when this call is the OUTBOX draining a parked line: its bubble is
+       *  already up (adopted below, not posted again) and its pictures were taken
+       *  when it was parked. */
+      parked?: OutboxPayload,
+    ): void => {
+      // THE DOOR IS SHUT — PARK THE LINE, NEVER REFUSE IT (ui/outbox.ts). The
+      // bubble goes up now with a "queued" tag, the tray's pictures go with THIS
+      // line, and `releaseSend` drains it the moment the door opens. This used
+      // to `return`, and the composer read the same ref and kept the words in
+      // the box with no sign: the reader typed on and the next Enter sent two
+      // messages as one (multi-send QA 2026-09-19).
+      if (sendBusy.current) {
+        const bubble = text ? controller.postOptimisticUser(text, "queued") : "";
+        const mine = takeAttachments();
+        setOutbox(
+          pushBack(outboxRef.current, {
+            id: `o${++outboxSeq.current}`,
+            text,
+            payload: { opts, bubble, taken: mine },
+          }),
+        );
+        return;
+      }
       sendBusy.current = true;
       setSendLocked(true);
       const sendId = `s${++sendSeq.current}`;
       sendHolder.current = sendId;
       // A WORDLESS send (notes or pictures alone) posts no optimistic row: its
       // bubble is the markers `stripBlocks` builds out of the composed wire,
-      // and only the controller can write those.
-      const optimisticKey = text ? controller.postOptimisticUser(text) : "";
+      // and only the controller can write those. A PARKED line's bubble is
+      // already up: adopt it rather than post a second.
+      const optimisticKey = parked ? parked.bubble : text ? controller.postOptimisticUser(text) : "";
       void (async () => {
         let taken = false;
         try {
@@ -2510,7 +2663,23 @@ function ChatBody(props: ChatBodyProps) {
           // proof this exact send is the one the queue already counted, so
           // the server gate looks rather than claiming it a second time.
           let queueClaim: string | undefined;
-          if (queueEnabled()) {
+          // NOT FOR A FOLLOW-UP INTO A RUN THIS PAGE ALREADY HAS LIVE. The
+          // folder is held by our own run — admission can only answer "yours" —
+          // and the round trip was the widest part of the window in which a
+          // fast second Enter used to be swallowed (multi-send QA 2026-09-19).
+          //
+          // …AND ONLY WHEN THAT LIVE RUN IS THIS CHAT'S. `openSession` does not
+          // reset `status` when the pane switches conversations, so a stale
+          // "running" from the previous one must not skip admission for a
+          // different folder (review): the controller's own session has to
+          // name the one on this pane's URL.
+          const liveNow = controller.getState();
+          const ownRunLive =
+            followUp &&
+            liveNow.status !== "idle" &&
+            !!liveNow.sessionId &&
+            liveNow.sessionId === (params.get("session_id") || "");
+          if (queueEnabled() && !ownRunLive) {
             // READ ONCE, and read HERE: the session can arrive while the copies
             // below are uploading, and a body whose `session_id` and
             // `follow_of` were asked a round trip apart could carry both — a
@@ -2579,8 +2748,18 @@ function ChatBody(props: ChatBodyProps) {
              * nobody reads — and it is paid for the same reason: the answer
              * arrives too late to take anything after it.
              */
-            const notes = await takeAnnotations();
-            const carried = await carryForQueue(notes.overview ? [notes.overview] : []);
+            // A PARKED LINE CARRIES ITS OWN PICTURES, taken when it was parked,
+            // and never reads the live tray or the notes round: both belong to
+            // the line being typed now (review). Its copies come straight from
+            // `parked.taken.items`; a live send reads the tray as before.
+            const notes = parked
+              ? { block: null, notes: [] as Annotation[], overview: null }
+              : await takeAnnotations();
+            const carried = parked
+              ? parked.taken.items.some((a: Attachment) => !a.pending && !!a.view)
+                ? await copyToTaskShots(parked.taken.items).catch(() => [])
+                : []
+              : await carryForQueue(notes.overview ? [notes.overview] : []);
             /**
              * THE BADGED PICTURE, PUT DOWN — on every road out of here, and it
              * is only ever the picture.
@@ -2642,7 +2821,7 @@ function ChatBody(props: ChatBodyProps) {
             } catch (err) {
               putDownQueuedShot();
               if (paneEpoch.current !== epochAtSend) return;
-              refuseQueuedSend(text, err);
+              refuseQueuedSend(text, err, parked?.taken.items);
               return;
             }
             // A shape this build does not understand is not a yes. Read off the
@@ -2652,7 +2831,7 @@ function ChatBody(props: ChatBodyProps) {
             if (run !== true && run !== false) {
               putDownQueuedShot();
               if (paneEpoch.current !== epochAtSend) return;
-              refuseQueuedSend(text, new Error("the queue gave no answer."));
+              refuseQueuedSend(text, new Error("the queue gave no answer."), parked?.taken.items);
               return;
             }
             if (verdict && verdict.run === false) {
@@ -2689,7 +2868,15 @@ function ChatBody(props: ChatBodyProps) {
                 putDownQueuedShot();
                 return;
               }
-              spendTrayForQueue();
+              // A parked line's pictures left the tray when it was parked; the
+              // entry holds their copies now, so they are released here rather
+              // than read from a tray that is not theirs (review).
+              if (parked) {
+                if (parked.taken.items.length) {
+                  spentAlive.current = spentAlive.current.concat(parked.taken.items);
+                  setSpentTick((n) => n + 1);
+                }
+              } else spendTrayForQueue();
               // THE NOTES ARE SPENT TOO, on the same argument and for a sharper
               // reason: their words are on the entry now, so leaving them
               // pending would hand this round to the NEXT send — the very
@@ -2750,7 +2937,7 @@ function ChatBody(props: ChatBodyProps) {
                 : undefined;
             putDownQueuedShot();
           }
-          const { merged, done } = await beginSend(opts);
+          const { merged, done } = await beginSend(opts, parked?.taken);
           const wire: SendOptions = {
             ...merged,
             sendId,
@@ -2797,11 +2984,111 @@ function ChatBody(props: ChatBodyProps) {
       releaseSend,
       carryForQueue,
       takeAnnotations,
+      takeAttachments,
       refuseQueuedSend,
       spendTrayForQueue,
+      setOutbox,
       leader,
       params,
     ],
+  );
+
+  /**
+   * THE DRAIN: the oldest parked line goes through `dispatchSend` the moment
+   * the latch opens (`releaseSend` calls this). One at a time — `dispatchSend`
+   * shuts the latch again, and its own release brings the next.
+   *
+   * Follow-up or fresh turn is decided NOW, not when the line was typed: a line
+   * parked during a start round trip drains into a run that is live by then
+   * (`sendFollowUp`), and one parked behind a turn that has since ended opens a
+   * new turn (`sendMessage`) — the same routing the composer's own `submit`
+   * does off `running`.
+   *
+   * A "not sent" line is skipped, never drained: it is the reader's to resend
+   * (see `strand`).
+   */
+  const drainOutbox = useCallback(() => {
+    if (sendBusy.current) return;
+    const { entry: next, rest } = shiftOldestSendable(outboxRef.current);
+    if (!next) return;
+    setOutbox(rest);
+    const followUp = controller.getState().status !== "idle";
+    dispatchSend(next.text, next.payload.opts, followUp, next.payload);
+  }, [controller, dispatchSend, setOutbox]);
+  useEffect(() => {
+    drainRef.current = drainOutbox;
+  }, [drainOutbox]);
+
+  /**
+   * ↑ IN AN EMPTY BOX, and a click on a queued bubble: the line comes back to
+   * edit — Claude Code's own ↑ ("Press up to edit queued messages"). The
+   * newest one by default, the named one on a click. Its bubble goes, and its
+   * pictures return to the tray. Answers the words for the composer to set.
+   */
+  const pullOutbox = useCallback(
+    (id?: string): string | null => {
+      const got = id ? takeById(outboxRef.current, id) : popNewest(outboxRef.current);
+      if (!got.entry) return null;
+      setOutbox(got.rest);
+      const { bubble, taken } = got.entry.payload;
+      if (bubble) controller.dropOptimisticUser(bubble);
+      if (taken.items.length) attachBack.current?.(taken.items);
+      return got.entry.text;
+    },
+    [controller, setOutbox],
+  );
+  /** The composer's ↑: newest line back into the box. */
+  const onPullQueued = useCallback((): string | null => pullOutbox(), [pullOutbox]);
+  /** A click on a queued / not-sent bubble (Transcript `onPullPending`): the
+   *  line goes back through the restore seat — into an empty box, or appended
+   *  under live typing on this one deliberate press. */
+  const onPullPending = useCallback(
+    (bubbleKey: string) => {
+      const entry = outboxRef.current.find((e) => e.payload.bubble === bubbleKey);
+      if (!entry) return;
+      const text = pullOutbox(entry.id);
+      if (text === null) return;
+      strandSeq.current += 1;
+      setStranded({ text, seq: strandSeq.current });
+    },
+    [pullOutbox],
+  );
+
+  /**
+   * SEND NOW — Claude Code's Ctrl+Enter (`chat:sendNow`): stop the turn, then
+   * the typed line goes FIRST, ahead of anything parked, and the outbox drains
+   * behind it once the run has settled to idle.
+   *
+   * The wait is a poll on the controller's status: `stopRun` resolves when the
+   * cancel is acknowledged, not when `pollLoop` has exited, and a `sendMessage`
+   * into a `stopping` run is refused. Bounded — a stop that never settles is a
+   * run the reader can still Stop again; the line stays parked with its tag.
+   */
+  const onSendNow = useCallback(
+    (text: string) => {
+      const bubble = text ? controller.postOptimisticUser(text, "queued") : "";
+      const mine = takeAttachments();
+      const entry: OutboxEntry<OutboxPayload> = {
+        id: `o${++outboxSeq.current}`,
+        text,
+        payload: {
+          opts: { model: defaults.model, effort: defaults.effort, permission: defaults.permission },
+          bubble,
+          taken: mine,
+        },
+      };
+      void (async () => {
+        await controller.stopRun();
+        // AHEAD of anything the stop handed back or the reader parked earlier:
+        // "send now" is about this line.
+        setOutbox(pushFront(outboxRef.current, entry));
+        for (let i = 0; i < 80 && controller.getState().status !== "idle"; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        drainRef.current();
+      })();
+    },
+    [controller, takeAttachments, setOutbox, defaults.model, defaults.effort, defaults.permission],
   );
 
   const onSend = useCallback(
@@ -2837,7 +3124,24 @@ function ChatBody(props: ChatBodyProps) {
     },
     [dispatchSend, defaults.model, defaults.effort, defaults.permission],
   );
-  const onStop = useCallback(() => void controller.stopRun(), [controller]);
+  /**
+   * STOP MEANS STOP, THE OUTBOX INCLUDED (Akshil's R2-12 rule, kept over Claude
+   * Code's own Esc, which lets the queue run on). A line parked behind the
+   * stopped send would otherwise drain the instant the latch opened and start
+   * a turn the reader has just asked not to have. It stays on screen as "not
+   * sent" — theirs to pull back (↑ or a click) and resend, never dropped.
+   */
+  const onStop = useCallback(() => {
+    if (outboxRef.current.some((e) => !e.notSent)) {
+      const next = outboxRef.current.map((e) => {
+        if (e.notSent) return e;
+        if (e.payload.bubble) controller.setOptimisticPending(e.payload.bubble, "notSent");
+        return { ...e, notSent: true as const };
+      });
+      setOutbox(next);
+    }
+    void controller.stopRun();
+  }, [controller, setOutbox]);
   /**
    * `sched.reset` — declared HERE, ahead of the hook that fills it, because
    * `onBack` is one of its two callers and is itself declared before the PR4
@@ -2894,6 +3198,9 @@ function ChatBody(props: ChatBodyProps) {
     // (`Composer`'s `delivered`) restarts on the Home/chat remount, so every
     // Back appended them again.
     setStranded(null);
+    // …AND THE OUTBOX. Its bubbles sit in the transcript being emptied, and a
+    // parked line belongs to the conversation it was typed into.
+    setOutbox([]);
     // …AND SO DO THE QUEUED CHIPS AND THE LEADER THEY NAME. Both are memories of
     // the messages that were ON SCREEN: the chips sit under a transcript that is
     // being emptied, and the leader would file the next chat's first line under
@@ -2939,6 +3246,7 @@ function ChatBody(props: ChatBodyProps) {
       // in, and this is a different one — and so do the queued chips, which sit
       // under a transcript that is about to be replaced.
       setStranded(null);
+      setOutbox([]);
       setWaitingSeeds([]);
       setAdmitAhead(null);
       setAdmitTaskId("");
@@ -3829,11 +4137,14 @@ function ChatBody(props: ChatBodyProps) {
       // T:8505 — whichever composer is mounted hands its send in, for the
       // walkthrough's auto-submit and for ✓ Done.
       submitRef: submitBox,
-      // THE SEND WINDOW'S LATCH, in both its forms: the ref is read in the tick
-      // the composer calls `onSend`, the flag dims the button on the next paint
-      // (`dispatchSend`).
-      busyRef: sendBusy,
+      // THE SEND WINDOW, for the button's title only: a line that arrives while
+      // it is shut is PARKED by `dispatchSend`, never refused.
       sendBusy: sendLocked,
+      // THE OUTBOX'S SEAT IN THE COMPOSER: the count for the hint line, ↑ to
+      // pull the newest parked line back, Ctrl+Enter to stop and send now.
+      queuedCount: outboxCount,
+      onPullQueued,
+      onSendNow,
       onPaste,
       // The chip row is ABOVE the control row and changes the composer's height,
       // never the row's width — but T re-measures on exactly this kind of change
@@ -3876,6 +4187,9 @@ function ChatBody(props: ChatBodyProps) {
       stranded,
       entered,
       sendLocked,
+      outboxCount,
+      onPullQueued,
+      onSendNow,
       urlTick,
       attach.items,
       attach.remove,
@@ -4321,6 +4635,7 @@ function ChatBody(props: ChatBodyProps) {
               msgAnchor={msgAnchor}
               onAnchorSpent={onAnchorSpent}
               {...(debugSent ? { onShowSent: setSent } : {})}
+              onPullPending={onPullPending}
               onOpenShot={setViewing}
               paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}

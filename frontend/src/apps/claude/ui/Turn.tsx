@@ -65,6 +65,10 @@ export interface TurnProps {
    *  is never foldable — the run is blocked on something inside it, and folding
    *  the block away is folding away the thing to do (design.md §B). */
   pendingCard?: boolean;
+  /** A click on a bubble this page has NOT handed to the run yet
+   *  (`UserTurn.pending`): the line goes back into the box to edit — Claude
+   *  Code's ↑, as a click. One callback for the log, keyed by the turn. */
+  onPullPending?: (key: string) => void;
 }
 
 /** MEMOIZED. Every 400 ms poll replaces `state.turns`, but a SETTLED turn's own
@@ -84,6 +88,7 @@ export const Turn = memo(function Turn({
   collapsed = false,
   onToggleCollapse,
   pendingCard,
+  onPullPending,
 }: TurnProps) {
   // BEFORE the early returns below: a hook may not sit behind one, and the id
   // is only used on the assistant branch (see `bodyId`).
@@ -110,9 +115,15 @@ export const Turn = memo(function Turn({
     // for a live send. Absent on an old transcript, and then no time is drawn.
     const ts = turn.ts;
     const stamp = formatStamp(ts);
+    // THE OUTBOX TAG (ui/outbox.ts). A line this page is still holding wears
+    // "queued" — grey, the way Claude Code's terminal lists a line typed while it
+    // works — or "not sent" for one handed back. Both are a door: the click
+    // pulls the words back into the box, so a queued line is never a bubble the
+    // reader can only watch.
+    const pending = turn.pending;
     return (
       <div
-        className={cn("turn", "user", anchored && "is-anchored")}
+        className={cn("turn", "user", anchored && "is-anchored", pending && "is-pending")}
         // The uuid a `?msg=` link addresses. On the element itself, because the
         // anchor is looked for right after the append (T:13459-13463).
         {...(turn.uuid ? { "data-msg": turn.uuid } : {})}
@@ -143,6 +154,21 @@ export const Turn = memo(function Turn({
             {isMarkerOnly(turn.text) ? <MarkerText text={turn.text} /> : turn.text}
           </div>
         </div>
+        {pending ? (
+          <button
+            type="button"
+            className={cn("turn-pending", pending === "notSent" && "is-not-sent")}
+            title={
+              pending === "notSent"
+                ? "This was not sent. Click to put it back in the box."
+                : "Waiting to send. Click to put it back in the box."
+            }
+            onClick={onPullPending ? () => onPullPending(turn.key) : undefined}
+            disabled={!onPullPending}
+          >
+            {pending === "notSent" ? "not sent · click to edit" : "queued"}
+          </button>
+        ) : null}
         {/* SIBLINGS of the bubble, not wrappers around it: the re-attach probe
             matches on `.user .bubble`'s text, and folding a receipt inside
             would make every such turn stop matching (T:16584-16588). Legacy's

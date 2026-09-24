@@ -64,6 +64,15 @@ export interface UserTurn {
    * when the session is reopened.
    */
   attachments?: Receipt[];
+  /**
+   * THIS PAGE HAS NOT HANDED THE LINE TO THE RUN YET (the page outbox,
+   * `ui/outbox.ts`). `"queued"` — typed while a send was in flight, waiting
+   * its turn; `"notSent"` — handed back (a failed send, an interrupt) and
+   * waiting for the reader to decide. Drawn as a small grey tag on the bubble,
+   * the way Claude Code's terminal greys a queued line. Comes off when the real
+   * send adopts the row (`addUser` rebuilds the turn without it).
+   */
+  pending?: "queued" | "notSent";
 }
 
 export interface AssistantTurn {
@@ -425,9 +434,12 @@ export interface ChatController {
    * bubble adopt this row instead of adding a second. Empty text posts nothing
    * and answers "".
    */
-  postOptimisticUser(text: string): string;
+  postOptimisticUser(text: string, pending?: UserTurn["pending"]): string;
   /** Drop an optimistic bubble whose send never reached `sendMessage` at all. */
   dropOptimisticUser(key: string): void;
+  /** Re-tag an optimistic bubble (queued → not sent, or clear the tag) without
+   *  moving it. No-op for a key that is not a user row. */
+  setOptimisticPending(key: string, pending: UserTurn["pending"] | undefined): void;
   /** Queue/send a follow-up into the live run (T:16024). `opts` ADDED: notes
    *  and pictures fold into a follow-up exactly as into a fresh turn. */
   sendFollowUp(text: string, opts?: SendOptions): Promise<void>;
