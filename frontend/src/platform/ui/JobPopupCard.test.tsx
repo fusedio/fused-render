@@ -310,6 +310,39 @@ function fakeIframe(): unknown {
   return new (globalThis as unknown as { HTMLIFrameElement: new () => unknown }).HTMLIFrameElement();
 }
 
+/** Poll `toJSON()` until `predicate` matches, or give up after `timeoutMs`.
+ *
+ * `setLeaving(true)` here runs inside a native (non-React) `blur` listener,
+ * outside React's own event system, so the resulting re-render is scheduled
+ * rather than applied inline — CI's ubuntu-latest runner has been observed to
+ * need more than one flushed tick before it lands (a single extra
+ * `act(async () => { await sleep(0); })` was tried and was NOT enough: CI
+ * still read back the pre-update tree). A fixed number of ticks is a guess
+ * about how slow a shared CI runner can get; polling with a real bound is
+ * not — it resolves the instant the update lands, on any machine, and still
+ * fails cleanly (never hangs) if the update genuinely never comes. This is
+ * the only test in the file that needs it: it is the only one whose
+ * assertion depends on a blur-driven update actually taking effect rather
+ * than staying absent (see this file's other blur tests, which assert the
+ * class does NOT appear — a race that drops an update looks identical to a
+ * correct no-op there, so they were never the ones flaking).
+ */
+async function waitForClassName(
+  renderer: ReturnType<typeof create>,
+  predicate: (className: string) => boolean,
+  timeoutMs = 2000,
+): Promise<ReactTestRendererJSON> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const json = renderer!.toJSON() as ReactTestRendererJSON;
+    if (predicate(json.props.className ?? "")) return json;
+    if (Date.now() >= deadline) return json;
+    await act(async () => {
+      await sleep(10);
+    });
+  }
+}
+
 test("an iframe taking focus (a press inside an app page) starts the exit animation", async () => {
   // A press inside an app page's iframe never dispatches anything this
   // document can see — no `click` ever reaches the outside-press listener
@@ -326,19 +359,8 @@ test("an iframe taking focus (a press inside an app page) starts the exit animat
     await act(async () => {
       globalThis.dispatchEvent(new Event("blur"));
     });
-    // `setLeaving(true)` here runs inside a native (non-React) `blur`
-    // listener, not React's own event system, so the resulting re-render is
-    // scheduled rather than applied inline — the same reason the click-driven
-    // tests above give a settling `sleep` its own `act()` before reading
-    // `toJSON()`. Without it this passed under local, lightly loaded runs but
-    // flaked under CI's heavier scheduling (observed: `toJSON()` read back
-    // the pre-update tree, so the assertion saw "toast-slot" with no
-    // "leaving" — a race, not a logic bug in the lifecycle hook itself).
-    await act(async () => {
-      await sleep(0);
-    });
 
-    const json = renderer!.toJSON() as ReactTestRendererJSON;
+    const json = await waitForClassName(renderer!, (c) => c.includes("leaving"));
     expect(json.props.className).toContain("leaving");
   });
 
