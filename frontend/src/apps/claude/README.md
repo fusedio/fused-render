@@ -5,7 +5,7 @@ The app's Claude chat, and the only one. It began as a React port of the
 and the `native_chat_enabled` flag that chose between the two are gone.
 
 `T` / `T:<line>` cites throughout this directory refer to the deleted
-`fused_render/templates/claude/template.html` (removed 2026-09-15, D887); read
+`fused_render/templates/claude/template.html` (removed 2026-09-15, D890); read
 them against git history before that commit.
 
 Plan: `.claude-design/design.md`; behaviour inventories: `.claude-design/inventory/`.

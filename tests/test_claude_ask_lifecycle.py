@@ -87,7 +87,7 @@ def test_both_hosts_install_and_use_the_shared_take_primitive(preview, listing):
         assert '"@apps/explorer/lib/claude-ask"' in src, label
         assert "takeClaudeAsk" in src, label
         # The `window._fusedClaudeAskTake` pull global went with the legacy chat
-        # template (D887); the native chat receives the ask as `initialAsk`.
+        # template (D890); the native chat receives the ask as `initialAsk`.
         assert "_fusedClaudeAskTake" not in src, label
 
 
@@ -153,7 +153,7 @@ def test_preview_keys_the_claude_mount_on_the_delivered_ask(preview, preview_sid
     `activeSide` nor `fsPath` — the ordinary `key={active}` a mode switch uses
     would not remount, and the native chat would never boot with the new
     `initialAsk`. The mount key closes that gap by folding the delivered ask's
-    `seq` into it (D887: it used to be the legacy iframe's `claudeFrameKey`);
+    `seq` into it (D890: it used to be the legacy iframe's `claudeFrameKey`);
     `PreviewSidebar` must actually use it for the mount's key."""
     assert "const claudeSeatKey = (seat: \"side\" | \"content\") =>" in preview
     assert (

@@ -434,7 +434,7 @@ function AppSharingSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pr
 // of is a control nobody finds again when they go looking for the thing it
 // actually does. (The "Native chat" switch that used to sit above this left the
 // page on 2026-09-19 — the React chat is simply on, and the pref behind it is
-// gone with the legacy template, D887. The session-recap toggle that used to
+// gone with the legacy template, D890. The session-recap toggle that used to
 // sit in a Chat section of its own left the page on 2026-09-21 — recap is
 // simply on.)
 function ProjectQueueSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {

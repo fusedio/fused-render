@@ -230,6 +230,16 @@ export function useProjectQueueEnabled(): boolean {
   return current;
 }
 
+/** Test-only: how many components are currently subscribed. `bun test` runs
+ *  every suite in ONE process, so this Set is shared globally for the run — a
+ *  tree a test forgets to unmount leaves its subscription here forever, which
+ *  is exactly the bug this exists to make loud (see `sched-block.test.tsx`'s
+ *  `afterEach`, and DECISIONS.md's "bun test heap leak" entry — ported from
+ *  the `native_chat_enabled` gate's own `feature-flag.ts` accessor, D890). */
+export function listenerCountsForTests() {
+  return { queueListeners: queueListeners.size };
+}
+
 /** Test-only: forget the cached answer so a suite starts from "not asked".
  *  NOTIFIES, like every other write: a component already mounted would
  *  otherwise keep the answer the suite just took away, and the `generation`

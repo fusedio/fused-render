@@ -86,7 +86,7 @@ const fire = (type: string, ev: Record<string, unknown>) => {
 
 const { SchedBlock } = await import("./SchedBlock");
 const { useSchedule } = await import("../sched/useSchedule");
-const { listenerCountsForTests } = await import("../feature-flag");
+const { listenerCountsForTests } = await import("../chat-prefs");
 type ScheduleState = import("../sched/useSchedule").ScheduleState;
 type ChatController = import("../protocol/controller-api").ChatController;
 
