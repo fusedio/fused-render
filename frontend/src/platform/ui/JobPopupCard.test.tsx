@@ -326,6 +326,17 @@ test("an iframe taking focus (a press inside an app page) starts the exit animat
     await act(async () => {
       globalThis.dispatchEvent(new Event("blur"));
     });
+    // `setLeaving(true)` here runs inside a native (non-React) `blur`
+    // listener, not React's own event system, so the resulting re-render is
+    // scheduled rather than applied inline — the same reason the click-driven
+    // tests above give a settling `sleep` its own `act()` before reading
+    // `toJSON()`. Without it this passed under local, lightly loaded runs but
+    // flaked under CI's heavier scheduling (observed: `toJSON()` read back
+    // the pre-update tree, so the assertion saw "toast-slot" with no
+    // "leaving" — a race, not a logic bug in the lifecycle hook itself).
+    await act(async () => {
+      await sleep(0);
+    });
 
     const json = renderer!.toJSON() as ReactTestRendererJSON;
     expect(json.props.className).toContain("leaving");
