@@ -1104,17 +1104,22 @@ function ChatBody(props: ChatBodyProps) {
       const entries: OutboxEntry<OutboxPayload>[] = [];
       for (const line of lines) {
         if (!line.text) continue;
-        // ALREADY POSTED, BY ID: `onSendReturned` took this send back a moment
-        // ago (same tick, or earlier when its `send` failed) and posted its row
-        // with its own pictures. The id is spent here so a later stop naming
-        // the same id (it cannot — the entry is gone — but by construction)
-        // would post nothing either.
+        // ALREADY POSTED, BY ID: `onSendReturned` took this send back earlier
+        // (its `send` failed on its own) and posted its row then.
         if (line.sendId && postedForSend.current.has(line.sendId)) {
           postedForSend.current.delete(line.sendId);
           continue;
         }
-        const row = postNotSent(line.text, { opts: {}, bubble: "", taken: NO_TAKEN });
-        if (row) entries.push(row);
+        // ONE INSERT, IN TYPED ORDER (Bugbot round 4). The controller strands
+        // BEFORE it fires `returnSend`, so a parked line's row is posted HERE,
+        // in its place among the others, with its own payload looked up by id
+        // — and the return that follows finds the id recorded and posts
+        // nothing. A landed line, or one the CLI named, rides NO_TAKEN.
+        const own = line.returned && line.sendId ? parkedBySendId.current.get(line.sendId) : null;
+        const row = postNotSent(line.text, own ?? { opts: {}, bubble: "", taken: NO_TAKEN });
+        if (!row) continue;
+        entries.push(row);
+        if (own && line.sendId) postedForSend.current.add(line.sendId);
       }
       if (entries.length) setOutbox(pushFrontAll(outboxRef.current, entries));
     },
@@ -1223,13 +1228,19 @@ function ChatBody(props: ChatBodyProps) {
           const sid = sendId || "";
           const parked = sid ? (parkedBySendId.current.get(sid) ?? null) : null;
           if (parked && !refused && text) {
-            // POSTED NOW, ONCE, and the id recorded (Bugbot round 3): a stop that
-            // strands these same words in this tick — or ever — finds the id in
-            // `postedForSend` and posts nothing (`strandAll`). No timer, no text.
-            const row = postNotSent(text, parked);
-            if (row) {
-              setOutbox(pushFront(outboxRef.current, row));
-              postedForSend.current.add(sid);
+            // ONE ROW PER SEND ID (Bugbot rounds 3–4). A stop strands BEFORE it
+            // returns, so `strandAll` has already posted this line's row in
+            // typed order and recorded the id: nothing to post, the id is
+            // spent. A `send` that failed on its own strands nothing, so the
+            // row is posted here and the id recorded against a later stop.
+            if (postedForSend.current.has(sid)) {
+              postedForSend.current.delete(sid);
+            } else {
+              const row = postNotSent(text, parked);
+              if (row) {
+                setOutbox(pushFront(outboxRef.current, row));
+                postedForSend.current.add(sid);
+              }
             }
             returnedSends.current.add(sid);
             if (attachments) inFlight.current.delete(attachments);

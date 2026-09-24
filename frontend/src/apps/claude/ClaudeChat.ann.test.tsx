@@ -62,6 +62,9 @@ let holdSend: Promise<void> | null = null;
 let pollLive = false;
 /** `send` answers nothing (the host is gone): the follow-up FAILS on its own. */
 let failSend = false;
+/** Hold only the Nth `send` (1-based); null holds every send while `holdSend` is set. */
+let holdSendNth: number | null = null;
+let sendCount = 0;
 
 /** `/api/prefs` — the project queue's switch lives there (`queue.enabled`). */
 let prefsBody: Record<string, unknown> = {};
@@ -148,7 +151,9 @@ function stubFetch(): void {
         if (failSend) return jsonRes({ ok: true, result: {} });
         // HOLDABLE like `start`: the window between the inbox taking the bytes
         // and `{sent: true}` coming back is where an unconfirmed follow-up lives.
-        if (holdSend) return holdSend.then(() => jsonRes({ ok: true, result: { sent: true } }));
+        sendCount += 1;
+        const hold = holdSend && (holdSendNth === null || holdSendNth === sendCount);
+        if (hold) return holdSend!.then(() => jsonRes({ ok: true, result: { sent: true } }));
         return jsonRes({ ok: true, result: { sent: true } });
       }
       if (action === "cancel") return jsonRes({ ok: true, result: { cancelled: "r1", still_queued: [] } });
@@ -243,6 +248,8 @@ beforeEach(() => {
   holdSend = null;
   pollLive = false;
   failSend = false;
+  holdSendNth = null;
+  sendCount = 0;
   prefsBody = {};
   admits.length = 0;
   admitAnswer = { run: true };
@@ -1435,6 +1442,50 @@ test("a parked line whose `send` FAILS on its own comes back as ONE not-sent bub
   ]);
   expect(byClass(r, "bubble").map((n) => String(n.props.children)).filter((b) => b === "second message"))
     .toHaveLength(1);
+});
+
+test("a stop hands lines back in the order they were typed, whichever road each took", async () => {
+  // Bugbot round 4 (PR #1323): A landed, B parked-and-unconfirmed, C landed.
+  // B's `returnSend` used to post its row first and A/C landed behind it.
+  pollLive = true;
+  holdSendNth = 2;
+  let releaseB!: () => void;
+  holdSend = new Promise<void>((resolve) => {
+    releaseB = resolve;
+  });
+  const open = heldStart();
+  const { r } = await mountChat();
+  await typeInBox(r, "first message");
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle();
+  for (const line of ["A", "B", "C"]) {
+    await typeInBox(r, line);
+    await pressEnterInBox(r);
+  }
+  await settle();
+  await act(async () => open());
+  await settle(60);
+  // Three sends out: A confirmed, B held, C confirmed.
+  expect(runs.filter((c) => c.action === "send")).toHaveLength(3);
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(60);
+  releaseB();
+  await settle(60);
+  const rows = byClass(r, "is-pending");
+  expect(rows.map((n) => String(n.findAllByProps({ className: "bubble" })[0]!.props.children)))
+    .toEqual(["A", "B", "C"]);
+  expect(byClass(r, "turn-pending")).toHaveLength(3);
+  // ↑ pulls the newest — C — first.
+  await act(async () => {
+    r.root
+      .findByType("textarea")
+      .props.onKeyDown({ key: "ArrowUp", shiftKey: false, preventDefault() {} });
+  });
+  expect(boxValue(r)).toBe("C");
 });
 
 test("two identical parked lines, one out and one waiting, each keep their own row on Stop", async () => {
