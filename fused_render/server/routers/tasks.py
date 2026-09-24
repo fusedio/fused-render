@@ -615,6 +615,18 @@ def _one_line(text: str) -> str:
 _SAID_STATES = (schedule.SENT, schedule.SENDING, "error")
 
 
+# A slash command as the reader TYPES it — "/compact", "/clear", "/model haiku",
+# "/making-a-release" — before the CLI has turned it into its envelope. One
+# leading slash, a word, optional arguments; a path ("/Users/…") has a second
+# slash and is not one. Kept in step with what `tasks_store.slash_command`
+# reads back out of the envelope.
+_TYPED_SLASH = re.compile(r"^/[A-Za-z][\w-]*(?::[\w-]+)?(?:\s|$)")
+
+
+def _typed_slash_command(text) -> bool:
+    return bool(_TYPED_SLASH.match(str(text or "").strip()))
+
+
 def _last_message(messages: list[dict], queued: bool = False,
                   now: float = 0.0) -> dict | None:
     """THE NEWEST MESSAGE THE USER SENT IN THIS TASK — `{role, text, at}` with
@@ -655,6 +667,12 @@ def _last_message(messages: list[dict], queued: bool = False,
                 <= now):
             continue
         text = _one_line(message.get("body"))
+        # A typed "/compact" is not what the task is about. On disk the CLI
+        # files it as an envelope and `_prompt` drops it; the LIVE send mark
+        # carries the raw words, and for the seconds the command ran the row
+        # was titled "/compact" (Akshil, 2026-09-24, screenshot).
+        if text and _typed_slash_command(text):
+            continue
         if text:
             # WHEN IT WAS SAID, not when it was asked for: a scheduled message's
             # `at` is its calendar due time and never moves, so a Run-now on a

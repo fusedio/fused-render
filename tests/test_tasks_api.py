@@ -833,6 +833,25 @@ def test_a_send_that_has_not_reached_disk_titles_the_row_at_once(
     assert row["last_message"]["text"] == "and now the follow-up"
 
 
+def test_a_typed_slash_command_does_not_title_the_row_while_it_runs(
+        client, projects_dir):
+    # "/compact" typed into the composer rides the live send mark as raw
+    # words; on disk the CLI files it as an envelope `_prompt` drops. For the
+    # seconds it ran, the row read "/compact" (Akshil, 2026-09-24). A path is
+    # not a command.
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("hello world", T9),
+        _assistant("Ready.", T10),
+    ])
+    tasks_watch.mark_running("sess-a", text="/compact")
+    row = _by_key(client)["sess-a"]
+    assert row["last_message"]["text"] == "hello world"
+    assert row["title"] == "hello world"
+    tasks_watch.mark_running("sess-a", text="/Users/me/notes.md please read")
+    row = _by_key(client)["sess-a"]
+    assert row["last_message"]["text"] == "/Users/me/notes.md please read"
+
+
 def test_a_subagent_brief_is_not_a_prompt(client, projects_dir):
     """`isSidechain` is a prompt written FOR a subagent. Every other reader of
     a transcript's prompts skips it (tasks_store.head, agent.py); the listing's

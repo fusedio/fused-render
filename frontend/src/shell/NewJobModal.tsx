@@ -644,6 +644,19 @@ function ExplorerPanel({
   useEffect(() => {
     if (naming) nameRef.current?.focus();
   }, [naming]);
+  // FOCUS STAYS IN THE PANEL when the listing changes. A folder row is a
+  // button that unmounts the moment it is pressed (the listing re-renders for
+  // the new folder), so focus fell out of the panel and the modal chassis
+  // parked it on the first thing it could — its own ✕ — where the reader's
+  // next Enter closed the whole form (Akshil, 2026-09-24: "I pressed enter
+  // while I was selected a folder and suddenly it closed"). The filter box is
+  // the one control that survives every navigation, and typing is the next
+  // thing a reader does after opening a folder anyway. The naming row keeps
+  // its own focus (above) while it is up.
+  const filterRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!naming) filterRef.current?.focus();
+  }, [path, naming]);
 
   const go = (p: string) => {
     setPath(p);
@@ -724,6 +737,7 @@ function ExplorerPanel({
         )}
       </div>
       <input
+        ref={filterRef}
         type="text"
         className="field-control schedule-picker-filter"
         placeholder="Filter this folder"
