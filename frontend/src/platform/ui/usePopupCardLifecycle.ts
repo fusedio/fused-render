@@ -93,7 +93,7 @@ export function usePopupCardLifecycle({
 
   const initialActiveElementIsIframe = document.activeElement instanceof HTMLIFrameElement;
   // eslint-disable-next-line no-console
-  console.log("DIAG3 mount", {
+  console.log("DIAG3v2 mount", {
     initialActiveElementIsIframe,
     activeElementCtor: (document.activeElement as { constructor?: { name?: string } } | null)
       ?.constructor?.name,
@@ -107,7 +107,7 @@ export function usePopupCardLifecycle({
     const onBlur = () => {
       const isIframeNow = document.activeElement instanceof HTMLIFrameElement;
       // eslint-disable-next-line no-console
-      console.log("DIAG3 blur", {
+      console.log("DIAG3v2 blur", {
         isIframeNow,
         was: wasIframeRef.current,
         activeElementCtor: (document.activeElement as { constructor?: { name?: string } } | null)
