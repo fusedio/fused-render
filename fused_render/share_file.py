@@ -400,6 +400,19 @@ def cancel_upload(upload_id: str) -> dict:
         except (OSError, ValueError):
             pid = None
     if pid is not None:
+        if os.name == "nt":
+            # `_spawn_upload`'s POSIX `sh -c ... start_new_session=True` has no
+            # Windows equivalent, but a live pid from a prior POSIX run (or a
+            # test) can still reach here — os.getpgid/os.killpg do not exist on
+            # Windows at all (not just unsupported: the attribute is absent),
+            # so this must not fall through to the POSIX branch below. Mirror
+            # engine_host._kill_tree's Windows path instead.
+            try:
+                os.kill(pid, signal.CTRL_BREAK_EVENT)
+            except (OSError, AttributeError, ValueError):
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                               capture_output=True)
+            return read_upload_state(upload_id)
         try:
             os.killpg(os.getpgid(pid), signal.SIGTERM)
         except OSError:
