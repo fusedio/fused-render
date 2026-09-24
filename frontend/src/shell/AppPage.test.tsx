@@ -16,25 +16,36 @@
 // listing/hook-harness.ts, inlined here rather than imported across the
 // shell/apps boundary for one small helper).
 //
-// `window`/`location`/`history` are the minimal globals `replaceSearch`
-// (`history.replaceState`) touches — installed once at file load, mirroring
-// RepoUpdatesDock.test.tsx's own router.ts precedent.
+// `location`/`history` are the minimal globals `replaceSearch`
+// (`history.replaceState`) touches. `installDomShim()` (testDomShim.ts) lands
+// the project's own shared, complete stand-ins first — every member any
+// OTHER suite's transitively-imported module reaches for (`history.pushState`
+// included) — idempotently, so it is a no-op if an earlier file in this `bun
+// test` run already installed it. This file then overwrites only
+// `history.replaceState` in place on the shared object, rather than replacing
+// `history` outright: replacing it outright was a real bug here once — this
+// file used to hand-roll a `history` missing `pushState`, which is never
+// called by anything THIS file tests, but which `router.ts`'s `navigate()`
+// calls on every OTHER suite that runs later in the same `bun test` process
+// (`bun test` shares one `globalThis` across every file in the run — see
+// testDomShim.ts's own header), so it broke tests far away from this file
+// that never even import it.
 import { beforeEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createElement, type ReactElement } from "react";
+import { installDomShim } from "@platform/lib/testDomShim";
 
 let currentUrl = { pathname: "/apps/repo/myapp", search: "" };
 let replaced: string[] = [];
 
+installDomShim();
 (globalThis as Record<string, unknown>).location = currentUrl;
-(globalThis as Record<string, unknown>).history = {
-  state: null,
-  replaceState: (_state: unknown, _title: string, url: string) => {
-    replaced.push(url);
-    const [pathname, search] = url.split("?");
-    currentUrl = { pathname, search: search ? "?" + search : "" };
-    (globalThis as Record<string, unknown>).location = currentUrl;
-  },
+const shimHistory = (globalThis as Record<string, unknown>).history as Record<string, unknown>;
+shimHistory.replaceState = (_state: unknown, _title: string, url: string) => {
+  replaced.push(url);
+  const [pathname, search] = url.split("?");
+  currentUrl = { pathname, search: search ? "?" + search : "" };
+  (globalThis as Record<string, unknown>).location = currentUrl;
 };
 
 const { useAppPageSnapshot } = await import("@shell/useAppPageSnapshot");
