@@ -10,12 +10,18 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Task } from "@platform/lib/api";
+import { installDomShim } from "@platform/lib/testDomShim";
 
 const g = globalThis as unknown as Record<string, unknown>;
 g.location = { pathname: "/tasks", search: "", hash: "", href: "http://x/tasks", origin: "http://x" };
 g.history = { replaceState() {}, pushState() {}, state: null };
 g.window = globalThis;
-g.document = { addEventListener() {}, removeEventListener() {}, querySelector: () => null };
+// `installDomShim()`'s idempotent (`??=`) `document` stub, not a competing
+// ad-hoc one: an unconditional `g.document = {...}` here pre-empted whichever
+// OTHER file's shim would have run first, leaving `document` without
+// `activeElement` for the rest of the process — see JobPopupCard.test.tsx's
+// "an iframe taking focus..." test, which narrows on exactly that member.
+installDomShim();
 
 let canRunDraft: typeof import("./draft-run").canRunDraft;
 let draftRunPayload: typeof import("./draft-run").draftRunPayload;
