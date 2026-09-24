@@ -182,6 +182,35 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* THE OUTBOX TAG (ui/outbox.ts, Turn.tsx `pending`). A line this page still
+   holds is greyed the way Claude Code's terminal greys a queued line, and the
+   small tag under it is the door back into the box. Same faint ink as the
+   composer's own `.c-queued` line so the two read as one fact. */
+.chat-root .turn.user.is-pending .bubble {
+  opacity: 0.62;
+}
+.chat-root .turn.user .turn-pending {
+  align-self: flex-end;
+  margin: 2px 4px 0 0;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: var(--c-faint);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.chat-root .turn.user .turn-pending:hover:not(:disabled) {
+  color: var(--c-dim);
+  text-decoration: underline;
+}
+.chat-root .turn.user .turn-pending:disabled {
+  cursor: default;
+}
+.chat-root .turn.user .turn-pending.is-not-sent {
+  color: var(--c-error);
+}
 /* NO "what was sent" HOVER CONTROL (P3R1-7). There was a `.sentbtn` here — an
    11px faint line under the bubble that faded in on hover — and it is gone with
    the button: T has no such control, and the receipt lines under a turn

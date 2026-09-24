@@ -738,14 +738,30 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * controller drops it (`dropOptimisticUser`, and `returnSend` for the roads
    * that refuse inside).
    */
-  const postOptimisticUser = (text: string): string => {
+  const postOptimisticUser = (text: string, pending?: UserTurn["pending"]): string => {
     if (disposed || !text) return "";
-    return addUser(text).key;
+    const key = addUser(text).key;
+    // THE TAG RIDES THE ROW, not a side list: the page outbox's bubble IS this
+    // turn, and `addUser`'s adoption rebuilds the turn without `pending` — which
+    // is exactly when the tag should go, because the run has the words.
+    if (pending) setOptimisticPending(key, pending);
+    return key;
   };
 
   const dropOptimisticUser = (key: string): void => {
     if (!key || !state.turns.some((t) => t.key === key)) return;
     dropTurn(key);
+  };
+
+  const setOptimisticPending = (key: string, pending: UserTurn["pending"] | undefined): void => {
+    if (!key || !state.turns.some((t) => t.key === key && t.role === "user")) return;
+    emit({
+      turns: state.turns.map((t) => {
+        if (t.key !== key || t.role !== "user") return t;
+        const { pending: _was, ...rest } = t;
+        return pending ? { ...rest, pending } : rest;
+      }),
+    });
   };
 
   /** T:13722 `addNote` — the ◍ / ◆ / ⏹ rows. */
@@ -3563,6 +3579,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     sendFollowUp,
     postOptimisticUser,
     dropOptimisticUser,
+    setOptimisticPending,
     stopRun,
     decidePermission,
     answerQuestion,

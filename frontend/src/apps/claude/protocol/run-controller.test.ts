@@ -376,6 +376,37 @@ describe("start → poll → done", () => {
     expect(agent.of("poll")[0].fields).toMatchObject({ run_id: "live-1" });
   });
 
+  test("an optimistic bubble, adopted by the send, still gets its reply drawn on the poll", async () => {
+    // Browser QA 2026-09-24 saw a plain "say PONG" reply arrive on disk and not
+    // on screen. The controller road for it is exactly this — post the row,
+    // adopt it in `sendMessage`, poll text + done — and it has to end with ONE
+    // user bubble and the assistant's text in the log.
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1", session_id: "s-pong" }),
+      poll: () => poll({ done: true, text: "PONG", segments: [text("PONG")] }),
+    });
+    const key = controller.postOptimisticUser("say PONG only, nothing else");
+    await controller.sendMessage("say PONG only, nothing else", { optimisticKey: key });
+    expect(users(controller).map((t) => t.text)).toEqual(["say PONG only, nothing else"]);
+    expect(users(controller)[0]!.pending).toBeUndefined();
+    expect(assistants(controller).map((t) => t.text)).toEqual(["PONG"]);
+    expect(controller.getState().status).toBe("idle");
+  });
+
+  test("a queued tag comes off when the real send adopts the row", async () => {
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    const key = controller.postOptimisticUser("later", "queued");
+    expect(users(controller)[0]!.pending).toBe("queued");
+    controller.setOptimisticPending(key, "notSent");
+    expect(users(controller)[0]!.pending).toBe("notSent");
+    await controller.sendMessage("later", { optimisticKey: key });
+    expect(users(controller).length).toBe(1);
+    expect(users(controller)[0]!.pending).toBeUndefined();
+  });
+
   test("a dead host, a refusal or a respawn all fall through to `start`", async () => {
     for (const answer of [{ error: "no host" }, { respawn: true as const }, null]) {
       const params = createMemoryParamsStore({ session_id: "s1" });
