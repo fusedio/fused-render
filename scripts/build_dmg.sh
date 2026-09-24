@@ -238,12 +238,14 @@ echo "==> reconciling the bundle force-list against the installed [bundled]"
 # --no-deps, and it is load-bearing: this venv IS the payload. py2app runs under
 # it and copies modules out of its site-packages, and its purelib is cp -R'd
 # straight into the .app below. Left to resolve, pip picks pluggy/packaging/
-# iniconfig for PYTEST's constraints — pluggy is in setup_py2app.py's explicit
-# force list and packaging reaches the bundle through the derivation closure — so
-# a version the DMG ships changes on a pip warning nobody reads. `iniconfig` is
-# named because pytest needs it and nothing else here pulls it in; pluggy and
-# packaging arrive with the wheel's own resolution above.
-"$BUILD_VENV/bin/pip" install --quiet --no-deps pytest iniconfig
+# iniconfig/pygments for PYTEST's constraints — pluggy is in setup_py2app.py's
+# explicit force list and packaging reaches the bundle through the derivation
+# closure — so a version the DMG ships changes on a pip warning nobody reads.
+# `iniconfig` and `pygments` are named because pytest needs them and nothing
+# else here pulls them in (pygments used to arrive transitively through the
+# wheel's [bundled] deps; the lean wheel in #1320 dropped that path); pluggy
+# and packaging arrive with the wheel's own resolution above.
+"$BUILD_VENV/bin/pip" install --quiet --no-deps pytest iniconfig pygments
 # Which means a missing pytest dependency now fails as an ImportError instead of
 # being quietly installed over the payload's pin. Said out loud, with the fix, so
 # it cannot read as a broken reconciliation step.

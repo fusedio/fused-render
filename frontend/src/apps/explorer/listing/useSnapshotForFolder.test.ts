@@ -49,6 +49,17 @@ describe("useSnapshotForFolder", () => {
   const originalFetch = globalThis.fetch;
   const originalLocation = (globalThis as Record<string, unknown>).location;
   const originalHistory = (globalThis as Record<string, unknown>).history;
+  // Three tests below stub `document` with a `querySelector`-only object
+  // (no `activeElement`) and used to `delete` it again at the end of their
+  // own test body — safe only as long as that test never throws first. An
+  // assertion failure above the `delete` line left the stub behind for
+  // every OTHER file bun runs afterward in the same process: `bun test`
+  // shares one `globalThis`, and `testDomShim.ts`'s `installDomShim()` is
+  // `??=`-guarded, so a later suite's own shim call becomes a no-op against
+  // this leftover stub — see JobPopupCard.test.tsx's iframe-blur test, which
+  // narrows on exactly the `activeElement` member this stub lacks. Restored
+  // unconditionally here instead, the same way fetch/location/history are.
+  const originalDocument = (globalThis as Record<string, unknown>).document;
   let requested: string[] = [];
 
   beforeEach(() => {
@@ -96,6 +107,7 @@ describe("useSnapshotForFolder", () => {
     globalThis.fetch = originalFetch;
     (globalThis as Record<string, unknown>).location = originalLocation;
     (globalThis as Record<string, unknown>).history = originalHistory;
+    (globalThis as Record<string, unknown>).document = originalDocument;
   });
 
   it("resolves _snapshot off the URL on mount", async () => {
@@ -275,7 +287,6 @@ describe("useSnapshotForFolder", () => {
 
       expect(notified).toBe(true);
       box.unmount();
-      delete (globalThis as Record<string, unknown>).document;
     }
   );
 
@@ -303,7 +314,6 @@ describe("useSnapshotForFolder", () => {
       expect(box.current().resolvedSnapshot).toBe(null);
       expect(notified).toBe(true);
       box.unmount();
-      delete (globalThis as Record<string, unknown>).document;
     }
   );
 
@@ -345,7 +355,6 @@ describe("useSnapshotForFolder", () => {
       expect(getResolvedSnapshot()).toBe(null);
       expect(notified).toBe(true);
       box.unmount();
-      delete (globalThis as Record<string, unknown>).document;
       setSingleton(null);
     }
   );
