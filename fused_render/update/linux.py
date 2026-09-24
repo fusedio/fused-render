@@ -282,10 +282,21 @@ def start() -> UpdateManager | None:
     """Create the singleton and start its background checks. Called once from
     the Linux server's bootstrap; idempotent. No-op (returns None) when not
     running from an AppImage — an unpackaged dev run has nothing to swap, so
-    it gets no badge at all rather than an install that can only fail."""
+    it gets no badge at all rather than an install that can only fail. Also a
+    no-op when `cryptography` is not installed (a lean/wheel-only install,
+    e.g. `pip install fused-render` with no extras): the updater can never
+    verify a manifest without it, and a pip install updates via
+    `pip install -U fused-render` instead — same convention as the "nothing
+    to swap" case just below, see mac.start()'s identical guard."""
     global _manager
     with _manager_lock:
         if _manager is None:
+            if not common.CRYPTO_AVAILABLE:
+                logger.warning(
+                    "cryptography is not installed; the in-app updater is "
+                    "unavailable on this install (use `pip install -U "
+                    "fused-render` to update)")
+                return None
             appimage = startup.appimage_path()
             if appimage is None:
                 # ...unless a dev run asked for a manager that only looks

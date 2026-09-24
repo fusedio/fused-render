@@ -89,6 +89,22 @@ def test_start_noop_when_unpackaged(monkeypatch):
     assert linux.manager() is None
 
 
+def test_start_noop_when_cryptography_is_unavailable(monkeypatch, caplog, tmp_path):
+    # Mirrors test_mac_update.py's identical guard — see there for the
+    # verified repro (a bare `pip install fused-render` crashed at startup
+    # importing cryptography, which is not a core dependency).
+    appimage = tmp_path / "FusedRender.AppImage"
+    appimage.write_bytes(b"x")
+    monkeypatch.setattr(linux, "_manager", None)
+    monkeypatch.setattr(common, "CRYPTO_AVAILABLE", False)
+    monkeypatch.setattr(linux.startup, "appimage_path", lambda: appimage)
+    monkeypatch.setenv(linux.DEV_MANAGER_ENV, "1")
+    with caplog.at_level("WARNING", logger="fused_render.update"):
+        assert linux.start() is None
+    assert linux.manager() is None
+    assert "cryptography" in caplog.text
+
+
 def test_dev_run_gets_a_check_only_manager_when_asked(monkeypatch):
     monkeypatch.setattr(linux, "_manager", None)
     monkeypatch.setattr(linux.startup, "appimage_path", lambda: None)

@@ -196,6 +196,15 @@ _IMPORT_TO_DIST = {
     # ever does import it, the same declare-or-fail rule applies as to any other
     # bundled distribution.
     "mcp": "mcp",
+    # A CONSTRAINT `[bundled]`/`[fused]` add for the same reason as `mcp`
+    # above, not a library any template imports: mcp 1.30.0's metadata pulls
+    # in an unmarked `pyjwt[crypto]>=2.10.1`, which is where cryptography
+    # actually enters a real install, so the x86_64-macOS wheel ceiling
+    # (LEAN_WHEEL_SPEC.md item 1) is declared as a direct, platform-marked
+    # `cryptography` entry there. Mapped so the completeness half stays
+    # honest; if a template ever does import it, the same declare-or-fail
+    # rule applies as to any other bundled distribution.
+    "cryptography": "cryptography",
     # The live filesystem watcher (server/index_watch.py, index-live-watch):
     # core `dependencies` (uvicorn only pulls it in transitively, under an
     # extra we do not use — pyproject.toml says so at the `watchfiles>=1.0`
@@ -348,7 +357,7 @@ def _imported_dists(text: str) -> set[str]:
 
 def _template_files() -> list[str]:
     out = []
-    for dirpath, _dirnames, filenames in os.walk(_TEMPLATES):
+    for dirpath, _, filenames in os.walk(_TEMPLATES):
         if "__pycache__" in dirpath or os.sep + "vendor" in dirpath:
             continue
         out += [
@@ -444,7 +453,7 @@ def _runpython_targets() -> frozenset[str]:
     exactly the relationship that does NOT make the importee an entry point.
     """
     targets = set()
-    for dirpath, _dirnames, filenames in os.walk(_TEMPLATES):
+    for dirpath, _, filenames in os.walk(_TEMPLATES):
         if "__pycache__" in dirpath or os.sep + "vendor" in dirpath:
             continue
         prose = ""

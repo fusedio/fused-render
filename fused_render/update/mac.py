@@ -422,10 +422,22 @@ def start() -> UpdateManager | None:
     """Create the singleton and start its background checks. Called once from
     the mac app's server bootstrap; idempotent. No-op (returns None) when not
     running from a bundle — an unpackaged dev run has nothing to swap, so it
-    gets no badge at all rather than an install that can only fail."""
+    gets no badge at all rather than an install that can only fail. Also a
+    no-op when `cryptography` is not installed (a lean/wheel-only install,
+    e.g. `pip install fused-render` with no extras): the updater can never
+    verify a manifest without it, and a pip install updates via
+    `pip install -U fused-render` instead, so "no updater" is the correct
+    behaviour here, not a crash — same convention as the "nothing to swap"
+    case just below."""
     global _manager
     with _manager_lock:
         if _manager is None:
+            if not common.CRYPTO_AVAILABLE:
+                logger.warning(
+                    "cryptography is not installed; the in-app updater is "
+                    "unavailable on this install (use `pip install -U "
+                    "fused-render` to update)")
+                return None
             if bundle_path() is None:
                 # ...unless a dev run asked for a manager that only looks
                 # (DEV_MANAGER_ENV, above): same loop, same throttle, same

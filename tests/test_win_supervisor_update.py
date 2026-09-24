@@ -71,6 +71,25 @@ def test_is_newer(candidate, current, expected):
     assert update._is_newer(candidate, current) is expected
 
 
+def test_verify_signature_refuses_when_cryptography_is_unavailable(monkeypatch):
+    # update/common.py imports `cryptography` under a guarded
+    # `except ModuleNotFoundError` so the module can still be IMPORTED on a
+    # lean/wheel-only install (verified 2026-09-23: a bare `pip install
+    # fused-render` crashed at server startup without this guard). Signature
+    # verification itself must never silently no-op when that happens — an
+    # update path that skips the check is worse than no updater at all — so
+    # it has to raise instead of quietly returning.
+    # ValueError, not RuntimeError: supervisor/_win32/update.py's callers
+    # (and the manual /api/update/check route) catch exactly
+    # (OSError, ValueError, http.client.HTTPException) to produce the
+    # existing "could not check for updates right now" dialog. A RuntimeError
+    # would escape that handler instead of being reported the normal way.
+    from fused_render.update import common
+    monkeypatch.setattr(common, "CRYPTO_AVAILABLE", False)
+    with pytest.raises(ValueError, match="cryptography"):
+        common.verify_signature("1.0.0", "deadbeef", "c2ln")
+
+
 def test_launch_installer_uses_directory_outside_installed_payload(monkeypatch, tmp_path):
     calls = []
     shell = types.SimpleNamespace(

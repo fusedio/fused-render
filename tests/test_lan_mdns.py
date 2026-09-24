@@ -14,6 +14,7 @@ this repo) so register/unregister failures are fully controllable and the
 "a Zeroconf was constructed" instrumentation lives with the fake, not with
 real sockets.
 """
+import asyncio
 import sys
 import time
 import types
@@ -466,3 +467,49 @@ def test_watch_reannounces_once_backoff_elapses_and_address_still_differs(fake_z
         c._watch_thread.join(timeout=2.0)
 
     assert c._ips == ["10.0.0.9"], "a genuine address change must still be re-advertised"
+
+
+def _http_scope(path: str, method: str = "GET") -> dict:
+    return {
+        "type": "http",
+        "path": path,
+        "method": method,
+        "headers": [(b"host", lan_mod.HOSTNAME.encode("ascii"))],
+    }
+
+
+def test_ca_pem_returns_503_when_cryptography_is_unavailable(monkeypatch):
+    """LEAN_WHEEL_SPEC.md: `cryptography` is not a core dependency (it
+    arrives only via [bundled]/[fused]) — GET /lan/ca.pem must fail clean
+    with a 503, not crash with a bare 500 ModuleNotFoundError, on a lean
+    install. lan_tls.ca_pem() is where the real ModuleNotFoundError would
+    come from (lan_tls.py imports cryptography lazily, inside the function,
+    not at module top), so that's what this fakes."""
+    from fused_render import lan_tls
+
+    def _boom():
+        raise ModuleNotFoundError("No module named 'cryptography'", name="cryptography")
+
+    monkeypatch.setattr(lan_tls, "ca_pem", _boom)
+    app = lan_mod.LanApp(inner=None)
+    response = asyncio.run(app._route(_http_scope("/lan/ca.pem"), None))
+    assert response is not None
+    assert response.status_code == 503
+    assert b"cryptography" in response.body
+
+
+def test_api_lan_tls_returns_503_when_cryptography_is_unavailable(monkeypatch):
+    from fused_render import lan_tls
+
+    def _boom():
+        raise ModuleNotFoundError("No module named 'cryptography'", name="cryptography")
+
+    monkeypatch.setattr(lan_tls, "ca_fingerprint", _boom)
+    # tls_running is a read-only @property; override it on the class, not
+    # the instance, so the descriptor is replaced rather than blocked.
+    monkeypatch.setattr(type(lan_mod._controller), "tls_running", True)
+    app = lan_mod.LanApp(inner=None)
+    response = asyncio.run(app._route(_http_scope("/api/lan/tls"), None))
+    assert response is not None
+    assert response.status_code == 503
+    assert b"cryptography" in response.body

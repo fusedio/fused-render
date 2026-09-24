@@ -32,7 +32,15 @@ dependencies = [
     # mDNS advertising of render.fused.local for local-network app sharing
     # (fused_render/lan.py). Pure Python (+ ifaddr); optional at runtime — the
     # listener still binds without it, the friendly name just does not resolve.
-    "zeroconf>=0.130",
+    #
+    # Platform-conditional ceiling (LEAN_WHEEL_SPEC.md item 1): zeroconf
+    # dropped x86_64 macOS wheels after 0.148.0 (verified against
+    # https://pypi.org/pypi/zeroconf/json on 2026-09-23 — 0.149.0+ ship only
+    # macosx_11_0_arm64). Without a ceiling, `pip install fused-render` on an
+    # Intel Mac falls back to a source build. Every other platform stays
+    # unpinned.
+    "zeroconf>=0.130,<=0.148.0 ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "zeroconf>=0.130 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     # /api/fs/events is a WebSocket (D74); plain uvicorn has no WS protocol
     # implementation, so the ws library is a hard dependency, not an extra.
     "websockets>=12",
@@ -145,7 +153,15 @@ dev = [
     # The Windows updater's tests (tests/test_win_supervisor_update.py) are
     # mock-based and cross-platform, but importorskip("cryptography") skips them
     # in CI unless it's installed here — it's win32-only in windows-desktop.
-    "cryptography",
+    #
+    # Platform-conditional ceiling (LEAN_WHEEL_SPEC.md item 1): cryptography
+    # dropped x86_64 macOS wheels (even the universal2 fat binary) after
+    # 48.0.1 — verified against https://pypi.org/pypi/cryptography/json on
+    # 2026-09-23: 48.0.2/48.0.3 shipped no macOS wheel at all, and 49.0.0+
+    # ship only macosx_11_0_arm64. Without a ceiling, a contributor/CI
+    # install of `[dev]` on an Intel Mac falls back to a source build.
+    "cryptography<=48.0.1 ; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "cryptography ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     # A TEST dependency since D276, not a shipped one. The notebook kernel turns
     # a cell's open figures into inline PNGs (`kernel_body.py`), which is real
     # behaviour with two tests on it — and matplotlib left `[bundled]`, so
@@ -273,7 +289,7 @@ bundled = [
     # The requirement string must stay byte-identical to `[fused]`'s — see the
     # comment there and
     # tests/test_bundle_contents.py::test_the_bundled_and_fused_extras_pin_the_same_wheel.
-    'fused==2.9.3b8 ; python_version >= "3.11"',
+    'fused==2.9.3b9 ; python_version >= "3.11"',
     # The engine's own `mcp[cli]>=1.0.0` floor admits mcp 2.x, where
     # `mcp.server.fastmcp` no longer exists (FastMCP moved to the standalone
     # `fastmcp` distribution) — so a fresh resolve gets a `fused` whose
@@ -286,6 +302,19 @@ bundled = [
     # startable. Marked like the pin above: on 3.10 there is no engine, so there
     # is nothing pulling mcp in either.
     'mcp<2 ; python_version >= "3.11"',
+    # Platform-conditional ceiling (LEAN_WHEEL_SPEC.md item 1): `mcp` is not
+    # the only thing above with a transitive reach into cryptography — mcp
+    # 1.30.0's own metadata carries `pyjwt[crypto]>=2.10.1` with no marker and
+    # no extra, so it reaches every real install of this extra regardless of
+    # what fused-render declares directly. A bare `pip install
+    # "fused-render[bundled]"` on an Intel Mac would otherwise resolve an
+    # unpinned cryptography and fall back to a source build (cryptography
+    # dropped x86_64 macOS wheels after 48.0.1 — see the `[dev]` cryptography
+    # entry above for the verification). This direct, constrained entry is
+    # the mechanism: pip's resolver intersects it with the transitive
+    # `pyjwt[crypto]` requirement, so it constrains the resolve without
+    # duplicating or overriding the version mcp actually needs.
+    'cryptography<=48.0.1 ; python_version >= "3.11" and sys_platform == "darwin" and platform_machine == "x86_64"',
 ]
 # Private-cloud credential chains (optional). botocore buys the AWS provider
 # chain (SSO / credential_process / assume-role / IMDS) for s3sign's resolver
@@ -320,7 +349,7 @@ app = [
 # (README, docs/usage.md) and CI's `fused-engine` job (`.[dev,fused]`), both of
 # which want the engine WITHOUT the ~650 MB scientific stack.
 fused = [
-    'fused==2.9.3b8 ; python_version >= "3.11"',
+    'fused==2.9.3b9 ; python_version >= "3.11"',
     # The engine's own `mcp[cli]>=1.0.0` floor admits mcp 2.x, where
     # `mcp.server.fastmcp` no longer exists (FastMCP moved to the standalone
     # `fastmcp` distribution) — so a fresh resolve gets a `fused` whose
@@ -333,6 +362,13 @@ fused = [
     # startable. Marked like the pin above: on 3.10 there is no engine, so there
     # is nothing pulling mcp in either.
     'mcp<2 ; python_version >= "3.11"',
+    # Platform-conditional ceiling (LEAN_WHEEL_SPEC.md item 1) — same
+    # reasoning as the identical entry in `[bundled]` above: mcp 1.30.0's
+    # metadata carries an unmarked `pyjwt[crypto]>=2.10.1`, which reaches this
+    # extra too since it also pins `mcp<2`. Not covered by the
+    # byte-identical-wheel test above (that test only checks the `fused==`
+    # line), so it is added independently rather than assumed to follow.
+    'cryptography<=48.0.1 ; python_version >= "3.11" and sys_platform == "darwin" and platform_machine == "x86_64"',
 ]
 # Windows desktop supervisor backend (fused_render/supervisor/_win32,
 # docs/DESKTOP_SUPERVISOR.md). Windows-only; not a core dependency so

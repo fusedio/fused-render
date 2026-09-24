@@ -659,17 +659,40 @@ class LanApp:
         if path == "/lan/ca.pem" and method == "GET":
             # The private CA's PUBLIC certificate, for the native shell to pin
             # after checking it against the fingerprint the QR carried.
-            from fused_render import lan_tls
+            #
+            # lan_tls.py has no top-level `cryptography` import — it imports
+            # lazily inside ca_pem()/ca_fingerprint() — so the ModuleNotFoundError
+            # from a bare install surfaces from the CALL, not the `import
+            # lan_tls` line itself. The call has to be inside the try too.
+            try:
+                from fused_render import lan_tls
 
-            return Response(lan_tls.ca_pem(), media_type="application/x-pem-file",
+                pem = lan_tls.ca_pem()
+            except ModuleNotFoundError:
+                return PlainTextResponse(
+                    "LAN TLS needs the optional cryptography dependency "
+                    "([bundled]/[fused]); not available on this install.",
+                    status_code=503)
+
+            return Response(pem, media_type="application/x-pem-file",
                             headers={"Cache-Control": "no-store"})
         if path == "/api/lan/tls" and method == "GET":
             # Where https is and which CA signs it — for a shell that found the
-            # computer over Bonjour rather than a QR (trust on first use).
-            from fused_render import lan_tls
+            # computer over Bonjour rather than a QR (trust on first use). Same
+            # lazy-import caveat as /lan/ca.pem above: the call must be inside
+            # the try, not just the `import lan_tls` line.
+            try:
+                from fused_render import lan_tls
+
+                fingerprint = lan_tls.ca_fingerprint() if _controller.tls_running else None
+            except ModuleNotFoundError:
+                return PlainTextResponse(
+                    "LAN TLS needs the optional cryptography dependency "
+                    "([bundled]/[fused]); not available on this install.",
+                    status_code=503)
 
             return JSONResponse({"https_port": _controller.tls_port,
-                                 "ca_fingerprint": lan_tls.ca_fingerprint() if _controller.tls_running else None})
+                                 "ca_fingerprint": fingerprint})
         if not _paired(scope):
             return _unauthorized(scope)
 

@@ -5234,6 +5234,307 @@ pass, 0 fail across the six files. `bun run typecheck`,
 existing >500kB chunk-size warnings are pre-existing and unrelated to this
 change). No full suite run, per this task's scope.
 
+## Lean wheel / Intel Mac compatibility (2026-09-23)
+
+Building LEAN_WHEEL_SPEC.md's four items. Item 1 (platform-conditional
+version ceilings for zeroconf/cryptography on x86_64 macOS) verified and
+shipped as-specced: 0.148.0 and 48.0.1 are both the correct real boundaries
+(checked against `https://pypi.org/pypi/<name>/json`, including
+universal2 wheels for cryptography, which do cover x86_64 until 48.0.1 —
+48.0.2/48.0.3 shipped no macOS wheel at all, 49.0.0+ ship arm64-only).
+`uv pip compile --python-platform x86_64-apple-darwin` resolves both to
+their ceilings; `aarch64-apple-darwin` resolves both unconstrained to
+latest. Confirms the spec's numbers.
+
+**Item 2 (bump fused pin to 2.9.3b9) is DEFERRED — the spec's claim does
+not hold up.** `https://pypi.org/pypi/fused/2.9.3b9/json` returns a full,
+non-yanked release record (uploaded 2026-09-23T09:13:37Z, correct
+`requires_dist` matching the spec's "23 core dists, no pyarrow/geopandas/
+shapely/boto3/cryptography" claim) — but the version is **not present in
+PyPI's simple index** (`https://pypi.org/simple/fused/`, which is what
+pip/uv actually resolve against). Verified three ways:
+  - `curl https://pypi.org/simple/fused/` lists 2.9.3b8 as the newest;
+    2.9.3b9 does not appear.
+  - `uv pip compile --extra fused` fails: "no version of fused==2.9.3b9".
+  - `python3 -m pip download fused==2.9.3b9` fails: "No matching
+    distribution found", and its own available-versions list tops out at
+    2.9.3b8.
+  - The wheel file itself IS live on files.pythonhosted.org (direct URL
+    200s), so this is not a broken/corrupt upload — just not indexed.
+
+Bumping the pin right now would make `pip install "fused-render[bundled]"`
+/ `[fused]` **unsatisfiable** on every platform, which is the opposite of
+this branch's goal. Left at `fused==2.9.3b8` in both `[bundled]` and
+`[fused]`. Re-check `https://pypi.org/simple/fused/` before bumping — if
+this was an index-propagation lag rather than a permanently withdrawn
+release, 2.9.3b9 should appear there once it catches up, at which point
+the bump is a one-line, well-verified change (dependency reduction already
+confirmed above).
+
+**Item 3 (manifests for undeclared template imports) — also NOT done,**
+because of a genuine conflict with an existing test, not a mistake in either
+side.
+
+Re-derived the "roughly 18" count using `tests/test_engine_requirements.py`'s
+own AST machinery (`_template_graph()`, `_imported_dists()`, `_app_dists()`),
+comparing each template file's app-dist imports against ONLY the core
+dependencies with no PEP 508 marker (a marker-scoped core dep, e.g. `pillow`
+on win32/linux, is not guaranteed present, so an unconditional import of it
+counts as undeclared same as a `[bundled]`-only one). Result: **10 folders**,
+not 18 — `autocad_viewer` (pillow), `claude` (pillow), `excel` (duckdb,
+fpdf2, openpyxl, pyarrow), `las` (numpy), `log_studio` (drain3), `netcdf`
+(numpy — `grid_tile_server.py` is self-managed/DAEMON_VENV and correctly
+excluded), `photos` (pillow), `slides` (fpdf2, pillow, python-pptx), `usd`
+(msgpack, numpy), `xlsx` (openpyxl).
+
+`xlsx/reader.py` is `INPROCESS_HELPERS` (`executor.py:71`) — it always runs
+on the server's own interpreter, never a spawned child or project venv, so a
+manifest cannot help it. Skipped for that reason, per the spec's own
+`structure/reader.py` precedent.
+
+For the other 9, wrote a real manifest for `autocad_viewer` (`dependencies =
+["pillow"]`, matching `model_card/pyproject.toml`'s shape — no `uv.lock`,
+since none is required by any test) and ran
+`tests/test_bundle_contents.py -k autocad_viewer`. It failed:
+
+```
+test_a_declaration_is_needed_for_what_the_MACOS_BUNDLE_lacks[autocad_viewer]
+AssertionError: fused_render/templates/autocad_viewer/pyproject.toml declares
+['pillow'], all of which the macOS bundle already ships — so it only costs a
+venv build and a download. Delete the file (and its lock).
+```
+
+That test (D176) requires `declared - _macos_dists()` to be non-empty — a
+folder's manifest must name at least one distribution the macOS **bundle**
+does not already carry, else it is pure waste: `has_lock()`'s own comment
+confirms a *locked* project always skips the fused engine's `app_satisfies`
+fast path (`engine.py:547`), forcing a real venv build + download even when
+the app interpreter already has everything declared — and the 10
+already-declaring folders (`docs`, `geometry_editor`, `geotiff`,
+`joblib_model`, `latex`, `map`, `model_card`, `pano`, `pdf_studio`, `vector`)
+all ship a `uv.lock`, so that convention is real, not incidental.
+
+Checked all 9 flagged folders against `[bundled]`'s current contents
+(pyproject.toml:206-269): every single flagged import — pillow, openpyxl,
+fpdf2, python-pptx, drain3, msgpack, numpy, duckdb, pyarrow — is already
+there. D276 never removed any of these from `[bundled]` (only the geo stack,
+PDF-viewer stack, polars, scipy and matplotlib left). So **none of the 9
+folders has even one dist that would clear D176's bar** — this is not
+specific to `autocad_viewer`; every one of the 9 would fail the same
+assertion.
+
+Two mechanisms were checked as a way to reconcile "helps lean-wheel users"
+with "costs nothing for DMG/`[bundled]` users", and both are dead ends:
+- The **built-in executor** (`executor.py`, always active) never builds a
+  venv at all — `_run_python` unconditionally spawns
+  `[sys.executable, CHILD]` on the app's own interpreter. A manifest changes
+  nothing about where code runs there; its only effect is unlocking
+  `explain_missing_module`'s better error text. So under the built-in
+  executor alone, adding these 9 manifests is free for DMG users (no venv,
+  no lock consulted for interpreter choice) — but D176's test does not
+  distinguish "built-in executor only" from "fused engine also enabled", and
+  correctly so: once a user turns on `engine = fused` (or installs
+  `fused-render[fused]`), the SAME manifest starts mattering for real, and a
+  locked one then does force the wasted build+download D176 exists to catch.
+- `explain_missing_module` (`executor.py:155`) is deliberately gated on the
+  folder DECLARING the missing module ("blaming the environment for a user's
+  typo is worse than saying nothing", `executor.py:186`) — it will not fire
+  for an import that's merely *known to be `[bundled]`-only* with no
+  manifest at all. Loosening that gate to cover this case would reintroduce
+  the exact false-positive risk it was written to avoid (a real user typo
+  getting told "this is a lean-install problem").
+
+**Left undone**, rather than either breaking D176 silently or unilaterally
+relaxing it. Two real options for whoever picks this up, both requiring a
+product call this branch should not make on its own:
+1. Add the 9 manifests anyway and extend D176's necessity test with a named,
+   reasoned exemption list (same shape as `_OPTIONAL_IMPORTS` in
+   `test_engine_requirements.py`) for folders whose declaration exists only
+   to serve users without `[bundled]` — accepting the venv-build+download
+   cost for DMG/full-bundle users as the tradeoff.
+2. Leave these 9 templates undeclared and accept they stay
+   broken-with-a-bare-traceback on a lean/wheel-only install (same failure
+   mode as today) until `[bundled]` (or an equivalent) is actually
+   obtainable on that install path.
+
+No `pyproject.toml`/`uv.lock` files were left behind for any of the 9 —
+the trial `autocad_viewer/pyproject.toml` was deleted after the test run
+above. Re-run recipe for a future builder: write the manifest per the
+per-folder dependency lists above (full app-dist import set per folder, not
+just what's missing — `test_a_declared_environment_is_complete` requires the
+COMPLETE set once any manifest exists, core deps included, no baseline
+credit, D172), then `.venv/bin/python -m pytest tests/test_bundle_contents.py
+tests/test_engine_requirements.py -k <folder>` to re-confirm the D176
+conflict before deciding which of the two options above to take.
+
+**Item 4 (CI gates) — done.** Ported the three gates from the sibling
+openfused repo's `.github/workflows/ci.yml` (`local-extra`/wheel/d68ddb45's
+import-weight technique), adapted to this repo's job graph:
+
+- `minimal-install` (new job in `.github/workflows/test.yml`, after
+  `fused-engine`): `pip install -e ".[dev]"` (no `[bundled]`/`[fused]`), then
+  an explicit `python -c "import fused_render.cli"` +
+  `create_app(tempfile.mkdtemp())`, then `tests/test_import_weight.py`
+  (new file), then a real boot of `python -m fused_render.cli serve
+  --port 8781 --no-browser` and a `curl -sf http://127.0.0.1:8781/api/config`
+  retry loop, killed after.
+- `wheel` (new job, same location): `uv build --wheel` (this repo's build
+  uses hatchling + a custom hook in `scripts/hatch_build.py` that shells to
+  npm itself for a non-editable build — confirmed by reading the hook, so
+  the job needs Node 22 but does not need the `frontend` job's shell-dist
+  artifact), asserts `fused_render/static/shell-dist/index.html` and
+  `fused_render/skills/` are present in the built wheel via `unzip -l | grep
+  -q`, installs into `/tmp/fr-wheel-venv` via `uv pip install`, `cd /tmp`,
+  boots `fused-render serve --port 8782 --no-browser`, same curl retry loop.
+- `tests/test_import_weight.py` (new file): the d68ddb45 technique —
+  `sys.meta_path.insert(0, _BlockHeavy())` in a subprocess (`sys.meta_path`
+  is process-global and the suite runs under pytest-xdist, so mutating it
+  in-process would leak into whatever else that worker imports next),
+  `find_spec` raises `ModuleNotFoundError` for any HEAVY root, HEAVY =
+  `{numpy, pandas, requests, openpyxl, pptx, msgpack, fpdf, drain3,
+  botocore}` — every one a `[bundled]`-only distribution today (re-checked
+  against `pyproject.toml`'s `bundled` extra). Deliberately excludes
+  `pillow`: it is a CORE dependency on `sys_platform in {"win32", "linux"}`
+  (the capture-backend entries around pyproject.toml:120), so blocking it on
+  the Linux CI runner this test actually runs on would not be testing a lean
+  install — it would just always pass regardless of whether the code path
+  under test needs it. `fused_render.cli` and `fused_render.server` are
+  asserted importable under the block.
+- `test-status`'s aggregator `needs:`/result-check was extended to include
+  both new jobs (they gate on `app` like `fused-engine`, no legitimate
+  "skipped" outcome, same treatment as `test-python`/`fused-engine`/etc.).
+
+Local verification actually run, not just read: `tests/test_import_weight.py`
+passed against the current dev `.venv` (which HAS `[bundled,fused]`
+installed) — confirming the block genuinely makes the import fail rather than
+passing by accident (a `sys.modules`-absence check would have false-passed
+here regardless of whether the code was reachable). The full frontend was
+built locally (`cd frontend && npm install && npm run build` — the
+`setting-up-dev-env` skill's documented one-time step, no dev server
+started), then the `minimal-install` boot step was run for real (`python -m
+fused_render.cli serve --port 18781 --no-browser` in the background, curl
+retry loop, `kill` + `wait` after) and succeeded: `GET /api/config HTTP/1.1"
+200 OK`, clean shutdown. The `wheel` job's steps were also run for real:
+`uv build --wheel` (which shells to npm itself, confirmed by reading
+`scripts/hatch_build.py`'s `ShellBuildHook.initialize`) produced
+`dist/fused_render-0.5.82-py3-none-any.whl`; `unzip -l` confirmed both
+artifact paths present (32 `shell-dist` entries including `index.html`, 18
+`fused_render/skills/` entries); `uv venv --python 3.12
+/tmp/fr-wheel-venv-smoke` + `uv pip install` installed the wheel cleanly.
+
+**That last step surfaced a real, unscoped, high-priority bug — not fixed
+here, flagged for a follow-up.** Booting the installed wheel from `/tmp` (no
+extras) crashed at FastAPI startup:
+
+```
+ModuleNotFoundError: No module named 'cryptography'
+  File ".../fused_render/server/app.py", line 1032, in _startup_update_dev_manager
+    update.start()
+  File ".../fused_render/update/__init__.py", line 50, in start
+    from fused_render.update import mac
+  File ".../fused_render/update/mac.py", line 67, in <module>
+    from fused_render.update import common
+  File ".../fused_render/update/common.py", line 28, in <module>
+    from cryptography.exceptions import InvalidSignature
+ERROR:    Application startup failed. Exiting.
+```
+
+Root cause: `update/__init__.py:start()` unconditionally imports
+`fused_render.update.mac` when `sys.platform == "darwin"` (no try/except),
+and `mac.py` imports `common.py` at module load, which does `from
+cryptography.exceptions import InvalidSignature` / `from
+cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey`
+at the top level (the self-update manifest's ed25519 signature check) — also
+with no guard. `cryptography` is not a core dependency anywhere in
+`pyproject.toml`; it only arrives via `[dev]` (test tooling) or, per item 1's
+finding, transitively through `mcp` in `[bundled]`/`[fused]`. A bare `pip
+install fused-render` on **any macOS** (not just x86_64 — this is unrelated
+to the item 1 version ceiling) has none of those, so the server's own
+startup lifespan (`_startup_update_dev_manager`, `app.py:1032`) crashes the
+whole process before it ever serves a request.
+
+This is the actual remaining blocker for this spec's stated goal — item 1
+fixes dependency *resolution* on x86_64 macOS, but the installed app still
+cannot *run* on any Mac without `[dev]`/`[bundled]`/`[fused]` also being
+installed. It surfaced only because this item's CI gates do a REAL boot,
+which items 1–3 never do. The two new CI jobs run on `ubuntu-latest`
+(matching the sibling repo and every other non-desktop job in this
+workflow), so this darwin-only crash will NOT reproduce there — CI will be
+green on every PR despite the bug being real; catching it in CI would need a
+`macos-latest` leg, which is outside this item's stated scope (port the
+sibling's three gates, adapted — not add new platform coverage) and a real
+runner-cost/scope tradeoff, so it was not added unilaterally.
+
+Not fixed in this branch: it touches a security-critical,
+signature-verification import path (`update/common.py`'s ed25519 manifest
+check) and deserves its own reviewed change, not a rushed patch riding along
+with the CI-gates commit. The likely-safe shape, for whoever picks this up:
+guard the `from fused_render.update import mac` import in
+`update/__init__.py:start()` (or the `cryptography` import inside
+`update/mac.py`/`common.py` itself) with `except (ImportError,
+ModuleNotFoundError)`, treating a missing `cryptography` the same as the
+module's own documented "nothing to swap" no-op convention (`manager()`
+already tolerates `mac.manager()` returning `None`) — log once, disable
+self-update, let the server boot. Repro: build a wheel (`uv build --wheel`),
+`uv venv /tmp/x && uv pip install --python /tmp/x/bin/python dist/*.whl`,
+`cd /tmp && /tmp/x/bin/fused-render serve --no-browser` on a real Mac with
+no other extras installed.
+
+### Follow-up (2026-09-23): the bare-install crash fixed, plus a macOS CI leg
+
+Picked up the flagged fifth finding above. Fixed in `fused_render/update/common.py`:
+the `cryptography` import is now inside `try/except ModuleNotFoundError`,
+checked on `exc.name == "cryptography"` (a genuinely broken install — present
+but corrupt — still raises; only a truly absent package is swallowed).
+`CRYPTO_AVAILABLE` records which branch ran. `verify_signature()` raises
+`RuntimeError` if it is somehow called while `CRYPTO_AVAILABLE` is False,
+rather than silently skipping the check — the security property (no update
+path that ships bytes unverified) is preserved, not traded for boot safety.
+
+`mac.start()`/`linux.start()` each gained the same guard, first thing, before
+the existing "nothing to swap" bundle/AppImage check: if `cryptography` is
+absent, log a WARNING once and return `None`, exactly like the existing
+unpackaged-dev-run no-op. `update/__init__.py` needed no change — with
+`common.py` fixed, importing `mac`/`linux`/the win32 supervisor updater no
+longer raises on any platform, so the platform dispatch already reaches the
+per-module guard correctly.
+
+Verified for real, not just reasoned about: `uv build --wheel`, installed the
+built wheel into a throwaway venv with `uv pip install --python
+<venv>/bin/python dist/*.whl` (no extras), confirmed with `python -c "import
+cryptography"` that the venv genuinely lacks it, then `cd /tmp &&
+<venv>/bin/python -m fused_render.cli serve --port 8971` — booted and served
+`/api/config` as 200. Separately confirmed the log line fires
+(`logging.basicConfig(level=WARNING); fused_render.update.start()` prints the
+"cryptography is not installed..." warning and returns `None`).
+
+Added `.github/workflows/test.yml`'s missing macOS leg for this class of bug:
+`minimal-install` is now a `strategy.matrix` over `[ubuntu-latest, macos-14]`
+rather than a second, hand-duplicated job — same steps run on both, so they
+cannot drift apart. `macos-14` is pinned explicitly (not `macos-latest`),
+with a comment explaining why: this repo's `macos-desktop` job carries its
+own history of a floating-image Python-launch failure (D468, macos-14 vs. a
+bundled framework Python), and while that specific failure mode doesn't apply
+here (this job never bundles its own interpreter, only whatever
+`actions/setup-python` installs), the runner image is pinned on the same
+general principle rather than left to float. A comment in the workflow also
+says explicitly not to delete the macOS leg as "redundant" with
+`ubuntu-latest` — it is the only leg that exercises `update/mac.py`'s import
+chain on a lean install; `sys.platform != "darwin"` means `ubuntu-latest`
+structurally cannot catch this class of bug.
+
+`test_import_weight.py` and its CI wiring into `test-status` were left as the
+previous builder built them — `needs.minimal-install.result` already
+aggregates across the whole matrix (any leg failing fails the aggregate), so
+`test-status` needed no change.
+
+New tests: `test_mac_update.py::test_start_noop_when_cryptography_is_unavailable`,
+`test_linux_update.py::test_start_noop_when_cryptography_is_unavailable`, and
+`test_win_supervisor_update.py::test_verify_signature_refuses_when_cryptography_is_unavailable`.
+All scoped update/*-test files plus the new tests pass locally (119 passed,
+2 skipped — the 2 are pre-existing POSIX-only skips on this run's platform,
+unrelated to this change).
+
 ## D888 — Quiet notifications, round 2: no more start or success popups, only failures
 
 D-C (SPEC-quiet-notifications.md, this same file's earlier "Quiet
@@ -5304,3 +5605,137 @@ standalone at all, only as part of the full suite, because `jobs.ts`
 transitively imports `router.ts` (`api.ts` -> `presence.ts` -> `router.ts`),
 which reads `location` at module scope. A full `bun test` run (339 files,
 7174 tests) stayed green throughout.
+
+### Code-review fix-up (2026-09-23): six review findings on PR #1320
+
+Picked up a code review of this branch's items 1 and 4 and implemented all
+six fixes as directed — no redesign, every mechanism below was the
+reviewer's own decision, not derived here. Six commits, TDD where a test
+was involved.
+
+1. **`minimal-install` was decorative.** It installed `.[dev]`, and `[dev]`
+   declares `cryptography` on every platform, so the macOS leg could never
+   reproduce the boot crash the job exists to catch — reverting
+   `update/common.py`'s fix would have stayed green. Changed to
+   `pip install -e .` + `pip install pytest` (no pytest-xdist: the job's own
+   pytest invocation doesn't use `-n`), and added an explicit assertion step
+   before the import-check step that `python -c "import cryptography"`
+   fails. Confirmed the found-wrong premise is real: a bare `[dev]` install
+   on this checkout does have `cryptography` present.
+
+2. **`test_import_weight.py`'s HEAVY set.** The docstring already claimed
+   google-auth collapsed to `google`, but `google` was never actually in the
+   set — added it, plus `mcp` and `fused` (both `[bundled]`-only, both
+   verified locally to still yield IMPORT_OK when blocked). Left pillow out,
+   per the existing comment (core on win32/linux).
+
+3. **`test_import_weight.py`'s own blind spot.** The child subprocess never
+   imported anything from `fused_render.update`, and `cryptography` was not
+   in HEAVY, so this PR's own regression (an unguarded top-level `import
+   cryptography` in `update/common.py`) could have shipped without any gate
+   in this PR catching it. Added `cryptography` to HEAVY and had the child
+   import `fused_render.update.mac`/`.linux` unconditionally (both pure
+   Python, import cleanly on any host platform — verified locally, no
+   platform-specific skip needed, so the brief's fallback instruction
+   ("report back, don't skip") never had to be exercised).
+
+4. **`verify_signature()`'s `RuntimeError`.** Callers
+   (`supervisor/_win32/update.py:95`/`:119`, and the manual
+   `/api/update/check` route) catch exactly `(OSError, ValueError,
+   http.client.HTTPException)`, so a `RuntimeError` from a missing
+   `cryptography` escaped both the tray "Check for updates" handler and the
+   API route instead of producing the existing "could not check for updates
+   right now" dialog. Changed to `ValueError` per the reviewer's directive —
+   still a raise (never a silent skip of the security check), blast radius
+   kept to `common.py` alone. Updated
+   `test_win_supervisor_update.py::test_verify_signature_refuses_when_cryptography_is_unavailable`
+   (TDD: watched it fail against the RuntimeError-raising code first).
+
+5. **`lan_tls.py`/`lan.py` bare-install 500.** `lan_tls.py`'s docstring
+   claimed cryptography "is already a dependency" — false, that's this
+   whole PR's premise — corrected. `GET /lan/ca.pem` and `GET /api/lan/tls`
+   called into `lan_tls` unguarded. **Found something the brief didn't
+   state:** `lan_tls.py` has NO top-level `cryptography` import — it imports
+   lazily inside `ca_pem()`/`ca_fingerprint()` themselves — so wrapping only
+   the `from fused_render import lan_tls` line in `try/except
+   ModuleNotFoundError` (which is what a literal reading of the brief's
+   phrasing suggested) would not actually have caught anything; the
+   `ModuleNotFoundError` only fires from the CALL. The `try` block has to
+   wrap the call too. Verified this the hard way: wrote the tests first with
+   only the import wrapped, watched them still fail with an uncaught
+   `ModuleNotFoundError` escaping `_route`, then widened the `try` to cover
+   the call and re-ran green. Both routes now return `PlainTextResponse(...,
+   status_code=503)`, matching this file's existing convention (the "phone
+   grid not built" 503 a few lines above `LanApp._route`) rather than an
+   `HTTPException` — this file's routing is a hand-rolled `_route()` method
+   returning `Response` objects directly, not FastAPI route handlers, so
+   `HTTPException` isn't the local idiom. The other three call sites
+   (`lan.py:1017`, `:1197`, `:1457`) are already inside broad `except
+   Exception` and were left untouched, per instruction. New tests in
+   `tests/test_lan_mdns.py` (the only existing lan test file with content
+   that fit — `test_engine_requirements.py`'s one `lan` mention is an
+   unrelated mDNS-dependency-declaration check).
+
+6. **Stale job count.** `test.yml:924`'s comment said "these six always run"
+   under a loop that now iterates eight jobs
+   (`frontend`/`test-python`/`test-python-windows`/`fused-engine`/`minimal-install`/`wheel`/`linux-desktop`/`bundle-contents`).
+   Corrected to "eight".
+
+Scoped tests only, per instruction: `tests/test_import_weight.py`,
+`tests/test_win_supervisor_update.py`, `tests/test_mac_update.py`,
+`tests/test_linux_update.py`, `tests/test_lan_mdns.py` — 139 passed, 2
+skipped (pre-existing platform skips), across all six commits' final state.
+Workflow YAML re-parsed with `yaml.safe_load` after each `test.yml` edit.
+Did not run the full suite — that's the orchestrator's job. Did not touch
+the `fused` version pin, `fused_render/templates/*`,
+`tests/test_bundle_contents.py`, `tests/test_template_locks.py`, or
+`fused_render/index/`, all deliberately out of scope per instruction.
+
+## Item 2 (fused pin) deferral resolved: bumped to 2.9.3b9 (2026-09-23)
+
+The `2.9.3b8`→`2.9.3b9` deferral recorded above no longer holds. At the
+time it was written, `2.9.3b9`'s metadata existed on PyPI but the release
+was absent from the simple index (`https://pypi.org/simple/fused/`), which
+is what pip/uv actually resolve against — so `uv pip compile --extra
+fused` failed with "no version of fused==2.9.3b9" even though the wheel
+itself was live on files.pythonhosted.org. That was an index-propagation
+lag, not a withdrawn release, and it has since caught up.
+
+Verified with a real install, not a metadata fetch (a metadata fetch is
+not a resolve): `uv pip install --no-cache --refresh 'fused==2.9.3b9'` in
+a fresh 3.12 venv succeeds, and `uv pip show fused` reports `2.9.3b9`.
+(`fused.__version__` itself misreports as `2.8.2.dev...` — a known
+upstream quirk, not evidence of anything; `pip show`/`uv pip show` is the
+source of truth for the installed version.)
+
+Bumped `fused==2.9.3b8` → `fused==2.9.3b9` in both `pyproject.toml`'s
+`[bundled]` and `[fused]` extras (the two pins the earlier entry's own
+byte-identical-pin comment requires stay in lockstep). Re-ran the full
+resolve this PR's platform-conditional `cryptography<=48.0.1` ceiling
+(x86_64 macOS, item 1) was meant to guard, since a `fused` dependency
+change is exactly the kind of thing that could collide with it:
+
+- `uv pip compile pyproject.toml --extra bundled` — resolves clean,
+  `fused==2.9.3b9`, `cryptography==50.0.1` (unconstrained, arm64 host).
+- `uv pip compile pyproject.toml --extra bundled --python-platform
+  x86_64-apple-darwin` — resolves clean, `fused==2.9.3b9`,
+  `cryptography==48.0.1` (ceiling still binds correctly).
+- `uv pip compile pyproject.toml --extra fused` — resolves clean,
+  `fused==2.9.3b9`, `cryptography==50.0.1`.
+- `uv pip compile pyproject.toml --extra fused --python-platform
+  x86_64-apple-darwin` — resolves clean, `fused==2.9.3b9`,
+  `cryptography==48.0.1`.
+
+No collision: `fused` 2.9.3b9 does not pull in a `cryptography` floor
+above the x86_64 ceiling. Grepped the whole worktree for `2.9.3b8`
+afterward — the only other hits were prose in `LEAN_WHEEL_SPEC.md` (its
+"Deferred" note, updated separately) and this file's own history above,
+which is append-only and was left untouched. No lockfile, test, or
+template manifest pins the version string.
+
+Scoped tests only, per instruction: `tests/test_engine_requirements.py`,
+`tests/test_bundle_contents.py` — 436 passed, 0 failed, 0 skipped. Did not
+run the full suite — that's the orchestrator's job. Did not touch
+`fused_render/templates/*`, `tests/test_template_locks.py`,
+`fused_render/index/`, or anything else outside the pin bump and its
+directly-affected docs, per instruction.
