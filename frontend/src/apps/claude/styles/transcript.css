@@ -117,6 +117,11 @@
   display: flex;
   flex-direction: column;
   align-items: flex-end;
+  /* Never wider than the log: a flex item's minimum is its content unless
+     told otherwise, and one long comment receipt (`.annsum-row`, nowrap) was
+     enough to push the whole turn past the column (Akshil, 2026-09-23). */
+  min-width: 0;
+  max-width: 100%;
 }
 /* THE BUBBLE'S LINE, and the stamp's containing block: the clock is drawn in
    the LEFT icon lane — the column an assistant turn's ✻ mark occupies — which
@@ -2193,6 +2198,13 @@
      because it is the last thing in a user turn, that 4px was the whole gap
      between a receipt and the reply beneath it. */
   margin: 4px 0 0;
+  /* CAPPED AT THE TURN'S WIDTH. The user turn is a flex column that ends its
+     children at the right, so with no cap this block sized to its longest
+     comment, hung off the right edge and ran out past the LEFT one — first
+     letter clipped, `<div>` flush against the border (Akshil, 2026-09-23,
+     screenshot). The cap is what lets `.annsum-txt`'s ellipsis do its job. */
+  max-width: 100%;
+  min-width: 0;
 }
 .chat-root .annsum .annsum-row {
   display: flex;
@@ -2201,6 +2213,8 @@
   font-size: 11.5px;
   color: var(--c-dim);
   justify-content: flex-end;
+  min-width: 0;
+  max-width: 100%;
 }
 .chat-root .annsum .annsum-lbl {
   color: var(--c-accent);

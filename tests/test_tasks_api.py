@@ -833,6 +833,25 @@ def test_a_send_that_has_not_reached_disk_titles_the_row_at_once(
     assert row["last_message"]["text"] == "and now the follow-up"
 
 
+def test_a_typed_slash_command_does_not_title_the_row_while_it_runs(
+        client, projects_dir):
+    # "/compact" typed into the composer rides the live send mark as raw
+    # words; on disk the CLI files it as an envelope `_prompt` drops. For the
+    # seconds it ran, the row read "/compact" (Akshil, 2026-09-24). A path is
+    # not a command.
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("hello world", T9),
+        _assistant("Ready.", T10),
+    ])
+    tasks_watch.mark_running("sess-a", text="/compact")
+    row = _by_key(client)["sess-a"]
+    assert row["last_message"]["text"] == "hello world"
+    assert row["title"] == "hello world"
+    tasks_watch.mark_running("sess-a", text="/Users/me/notes.md please read")
+    row = _by_key(client)["sess-a"]
+    assert row["last_message"]["text"] == "/Users/me/notes.md please read"
+
+
 def test_a_subagent_brief_is_not_a_prompt(client, projects_dir):
     """`isSidechain` is a prompt written FOR a subagent. Every other reader of
     a transcript's prompts skips it (tasks_store.head, agent.py); the listing's
@@ -885,6 +904,83 @@ def test_the_interrupt_marker_is_not_the_last_message(
     rows = {r["last_message"]["text"] for r in _tasks(client)
             if r.get("last_message")}
     assert "why did [Request interrupted by user] appear?" in rows
+
+
+def test_a_stopped_turn_prints_interrupted_where_the_reply_goes(
+        client, projects_dir):
+    """Hit stop: the row's reply slot says "Interrupted by you" — always, even
+    when Claude got a first line out before the stop (Akshil, 2026-09-23). The
+    next turn's reply takes the slot back; a new send with no reply yet blanks
+    it like any other turn."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("draft an essay", T9),
+        _assistant("Here is a first draft", T10),
+        _user("[Request interrupted by user]", T11, uuid="u2"),
+    ])
+    row = _tasks(client)[0]
+    assert row["last_message"]["text"] == "draft an essay"
+    assert row["last_reply"] == "Interrupted by you"
+
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("draft an essay", T9),
+        _assistant("Here is a first draft", T10),
+        _user("[Request interrupted by user]", T11, uuid="u2"),
+        _user("shorter please", T12),
+    ])
+    row = _tasks(client)[0]
+    assert row["last_reply"] == ""
+
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("draft an essay", T9),
+        _assistant("Here is a first draft", T10),
+        _user("[Request interrupted by user for tool use]", T11, uuid="u2"),
+        _user("shorter please", T12),
+        _assistant("Done: 200 words.", "2026-08-16T13:00:00Z"),
+    ])
+    row = _tasks(client)[0]
+    assert row["last_reply"] == "Done: 200 words."
+
+    # A compaction can replay an OLDER assistant row after the marker
+    # (`_ORDER_SLACK`); the stop still stands.
+    _write_transcript(projects_dir, "sess-b", "/q", [
+        _user("draft an essay", T9),
+        _user("[Request interrupted by user]", T11, uuid="u2"),
+        _assistant("Here is a first draft", T10),
+    ])
+    rows = {r["last_message"]["text"]: r["last_reply"] for r in _tasks(client)
+            if r.get("last_message")}
+    assert rows["draft an essay"] == "Interrupted by you"
+
+    # ...and the other way round (Bugbot, PR #1317): an OLDER stop marker
+    # replayed after a later turn's reply does not take that reply's place.
+    _write_transcript(projects_dir, "sess-c", "/r", [
+        _user("draft an essay", T9),
+        _user("shorter please", T10),
+        _assistant("Done: 200 words.", T12),
+        _user("[Request interrupted by user]", T11, uuid="u2"),
+    ])
+    rows = {r["last_message"]["text"]: r["last_reply"] for r in _tasks(client)
+            if r.get("last_message")}
+    assert rows["shorter please"] == "Done: 200 words."
+
+
+def test_the_compact_summary_is_not_the_last_message(client, projects_dir):
+    # /compact writes its recap as a `user` row (`isCompactSummary`), not
+    # `isMeta`. Not something the reader said: neither the title nor a send
+    # that hides the last reply (Akshil, 2026-09-23).
+    recap = _user("This session is being continued from a previous "
+                  "conversation that ran out of context.", T11, uuid="u3")
+    recap["isCompactSummary"] = True
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("run the migration", T9),
+        _assistant("Ran it.", T10),
+        recap,
+    ])
+    row = _tasks(client)[0]
+    assert row["message_count"] == 1
+    assert row["last_message"]["text"] == "run the migration"
+    assert row["title"] == "run the migration"
+    assert row["last_reply"] == "Ran it."
 
 
 def test_a_task_with_nothing_said_in_it_has_no_last_message(

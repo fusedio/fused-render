@@ -2891,6 +2891,16 @@ def _alive(run_dir: str) -> bool:
         return False
 
 
+#: Rows the CLI writes that are NOT part of any turn: `control_response` is
+#: its answer to a control request of ours (the STOP button's `interrupt`,
+#: which lands AFTER the `result` when the reader presses stop on a turn that
+#: just ended — Akshil, 2026-09-23: "why is it in progress when it already
+#: completed"), and `rate_limit_event` is plan bookkeeping. Neither reopens a
+#: turn; treating them as if they did left a finished run reading live for as
+#: long as the session host kept the process alive.
+_NOT_A_TURN_ROW = frozenset({"control_response", "rate_limit_event"})
+
+
 def _turn_state(run_dir: str) -> tuple:
     """(turn_open, tasks_pending), read off `out.jsonl` alone — no pid touched.
 
@@ -2931,6 +2941,8 @@ def _turn_state(run_dir: str) -> tuple:
         if row.get("parent_tool_use_id"):
             continue  # a subagent's own row, not the main turn's (see _poll)
         t = row.get("type")
+        if t in _NOT_A_TURN_ROW:
+            continue
         idle = t == "result"
         if t == "system" and row.get("subtype") == "background_tasks_changed":
             arr = row.get("tasks")
@@ -4909,8 +4921,10 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
         t = row.get("type")
         # Anything at all after a `result` is the run waking up for another turn
         # (the harness's hooks fire first, then `init`, then the reply), so the
-        # quiet-verb window closes on the first row of any kind — see `idle`.
-        if t != "result":
+        # quiet-verb window closes on the first row of any kind — see `idle` —
+        # except the rows that are not the run speaking at all
+        # (`_NOT_A_TURN_ROW`).
+        if t != "result" and t not in _NOT_A_TURN_ROW:
             idle = False
         # Any of these means the request the retries were for went THROUGH.
         # Rows are in file order, so anything the model produced after an
