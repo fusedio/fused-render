@@ -353,7 +353,7 @@ test("an iframe taking focus (a press inside an app page) starts the exit animat
 
   // TEMPORARY DIAGNOSTICS — remove once CI's real cause is identified.
   const DIAG_HTMLIFrameElement = (
-    globalThis as unknown as { HTMLIFrameElement: { name: string } }
+    globalThis as unknown as { HTMLIFrameElement: new () => object }
   ).HTMLIFrameElement;
   console.log("DIAG globalThis.HTMLIFrameElement.name=", DIAG_HTMLIFrameElement?.name);
   console.log("DIAG globalThis.dispatchEvent is native=", globalThis.dispatchEvent.toString().includes("[native code]"));
