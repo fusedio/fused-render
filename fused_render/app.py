@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import plistlib
+import posixpath
 import secrets
 import shlex
 import socket
@@ -769,7 +770,7 @@ def bundle_executable(bundle: str) -> str:
     wrong is better than one that matches everything.
     """
     try:
-        with open(os.path.join(bundle, "Contents", "Info.plist"), "rb") as f:
+        with open(posixpath.join(bundle, "Contents", "Info.plist"), "rb") as f:
             name = plistlib.load(f).get("CFBundleExecutable")
         if isinstance(name, str) and name:
             return name
@@ -855,7 +856,12 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
         f"pidfile={shlex.quote(pidfile)}; "
         f"log={shlex.quote(log)}; "
         f"opener={shlex.quote(opener)}; "
-        f"exe={shlex.quote(os.path.join(bundle, 'Contents', 'MacOS', bundle_executable(bundle)))}; "
+        # `posixpath.join`, not `os.path.join`: `bundle` is always a macOS bundle
+        # path (forward slashes) regardless of the host OS running this code —
+        # in production that's always macOS, but the test suite also exercises
+        # this string-building on Windows, where `os.path.join` would splice in
+        # backslashes and corrupt the path.
+        f"exe={shlex.quote(posixpath.join(bundle, 'Contents', 'MacOS', bundle_executable(bundle)))}; "
         # THE CLOCK STARTS HERE, not when the pid dies. This shell is spawned by
         # `begin_quit`'s `on_claim`, at the very start of the teardown, so its
         # own start is the press — and the teardown may take up to
