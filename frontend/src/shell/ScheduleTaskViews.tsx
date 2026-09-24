@@ -1644,10 +1644,10 @@ async function performRun(
   }
   const res = await runScheduledNow(intent.entryId);
   // HELD, NOT REFUSED (api.RunNowResult). Under the project queue a folder that
-  // is busy with another task keeps this message pending and gives it priority —
-  // running something now IS a skip — so nothing failed, nothing was lost, and
-  // the honest report is where the work now stands rather than an error. The
-  // caller paints the row from this; the server's own change feed replaces it.
+  // is busy with another task keeps this message pending and promotes it to the
+  // head of its folder's line — so nothing failed, nothing was lost, and the
+  // honest report is where the work now stands rather than an error. The caller
+  // paints the row from this; the server's own change feed replaces it.
   if (res.ok === false && res.reason === "queued") {
     return {
       note: "",
@@ -1672,23 +1672,13 @@ interface RunOutcome {
   queued: Omit<QueueOverride, "key"> | null;
 }
 
-/** Send a queued task to the head of its folder's line. NEVER interrupts the
- *  run in flight — the server's answer is always a position, never "running
- *  now" — and the claim it returns says exactly that, so the card moves to the
- *  top of the lane on the press rather than on the next poll.
- *
- *  Refusals THROW, like performRun: a 400 here means the row was not queued
- *  after all (the folder freed while the pointer was moving), and the server's
- *  sentence is the right thing to show. */
 /** Run a queued task's oldest waiting message NOW, beside whatever owns its
  *  folder — `POST /api/tasks/queue/force`, whose docstring carries the rule.
  *
- *  NOT A PROMOTION AND SO NO OVERRIDE TO RETURN. The old skip verb answered a
- *  claim the row had to paint (position 1) because no listing would say it for
- *  a while. This one starts a RUN: the row's own status is what changes, the
- *  listing is what says so, and a re-read is both cheaper and more honest than
- *  a hand-built `in_progress` this page would then have to defend against the
- *  next lap.
+ *  NOT A PROMOTION AND SO NO OVERRIDE TO RETURN. This starts a RUN: the row's
+ *  own status is what changes, the listing is what says so, and a re-read is
+ *  both cheaper and more honest than a hand-built `in_progress` this page
+ *  would then have to defend against the next lap.
  *
  *  BY TASK KEY, which is the right name here: this press is on a row that IS a
  *  task, and the server resolves that task's oldest due message itself — the
@@ -2483,12 +2473,14 @@ export function TaskRowItem({
    * THE TWO HANDLES A QUEUE VERB NEEDS, and the reason Run next did nothing
    * here (Akshil QA, 2026-09-16).
    *
-   * `TaskNode.skip` is one call and two answers: the CLAIM to paint until the
-   * server speaks (`onQueued`, tasks-lib.skippedOverride) and the re-read that
-   * fetches the truth (`onReload`). Both were unforwarded, so a borrowed row's
-   * skip put a request on the wire and then had no way to show that anything
-   * had happened — the row could only change on whatever full listing came
-   * next, up to a poll later, which reads as a dead button.
+   * `TaskNode.runNow` is one call and two answers: the CLAIM to paint until the
+   * server speaks (`onQueued`) when the folder was busy and the message held
+   * rather than sent, and the re-read that fetches the truth (`onReload`). Both
+   * were unforwarded, so a borrowed row's press put a request on the wire and
+   * then had no way to show that anything had happened — the row could only
+   * change on whatever full listing came next, up to a poll later, which reads
+   * as a dead button. `TaskNode.force` needs no claim of its own — it starts a
+   * run rather than moving a line, so a re-read is the whole answer.
    *
    * OPTIONAL, like `onPress`: a host with no claim store of its own (a static
    * render, a test) is still handed a working row — it just waits for the
@@ -3741,13 +3733,12 @@ function TaskNode({
             round 2). The span is the block-with-inline-content an ellipsis
             needs; the shrink order is the stylesheet's.
 
-            NO ⤒ AND NO SECOND COLOUR ANY MORE (Akshil, 2026-09-19). A skipped
-            row used to lead with the glyph and repaint the whole sentence in the
+            NO ⤒ AND NO SECOND COLOUR ANY MORE (Akshil, 2026-09-19). A promoted
+            row used to lead with a glyph and repaint the whole sentence in the
             queued hue, which made one row in the column look like a different
-            KIND of thing — where all a skip does is change the ORDER, and the
-            new order is what the caption already prints. The glyph is the Run
-            next BUTTON's face (its seat is in the hover strip below) and
-            nothing is decorated with it.
+            KIND of thing — where all a promotion does is change the ORDER, and
+            the new order is what the caption already prints. Nothing draws the
+            glyph any more; the seat in the hover strip below is Force start's.
 
             AND A PRESS HERE IS A PRESS ON THE ROW (Akshil, 2026-09-19: clicking
             the caption of a queued row did not open its chat). This span is
@@ -3850,7 +3841,7 @@ function TaskNode({
         {canForceStart(task) && (
           <button
             type="button"
-            className="tasks-act tasks-act--skip"
+            className="tasks-act tasks-act--force"
             title={FORCE_START_HINT}
             aria-label={`${FORCE_START_LABEL} for ${task.task_id}`}
             disabled={acting}
@@ -4619,14 +4610,14 @@ const RUN_DROP_WORDS = {
     title: "Send the draft in this conversation now",
     hint: "Send the draft now — the task is not re-run",
   },
-  // SKIP IS IN THIS LIST AND IS NOT A RUN (the project queue, 2026-09-12). A
+  // FORCE IS IN THIS LIST AND IS NOT A RUN (the project queue, 2026-09-12). A
   // queued card dropped on In Progress lands on the same lane the Upcoming drag
   // lands on, so without a wording of its own the card would promise "Run now"
-  // for a gesture that starts nothing — and the one thing a queued card must
-  // never claim is that it can interrupt the run holding its folder. Its own
-  // sentence since 2026-09-21: the Run next button that used to share the
-  // wording is out of the UI, and the DRAG is now the only thing that says it.
-  skip: {
+  // for a gesture that does not interrupt the run holding its folder — it starts
+  // a second one beside it instead, which the button's own hint has to say out
+  // loud. The same word the row's own button presses (`FORCE_START_LABEL`), so
+  // the drag and the button never say two different things about one gesture.
+  force: {
     title: FORCE_START_LABEL,
     hint: FORCE_START_HINT,
   },
@@ -4816,12 +4807,10 @@ export function TaskBoard({
     if (!holdDrop(task.key)) return;
     setNote(null);
     try {
-      if (action.kind === "skip") {
+      if (action.kind === "force") {
         // Queued → In Progress IS A FORCE START (Akshil, 2026-09-21): the card
         // runs now, beside whatever holds the folder, and its task leaves the
-        // queue for good — the same verb the row's button presses. Skip the
-        // line is gone from every surface; the drop kind keeps its old name
-        // only because the lane detector files queued cards under it.
+        // queue for good — the same verb the row's button presses.
         await performForceStart(task);
       } else if (action.kind === "run") {
         // Upcoming → In Progress. The message goes out NOW and its `due` is
@@ -5656,12 +5645,11 @@ function TaskCard({
             already makes it taller. A fixed width here would clip the id, which
             is the only part of the sentence a reader can act on.
 
-            NO ⤒ AND NO SECOND COLOUR (Akshil, 2026-09-19). The card that had
-            been skipped used to lead with the glyph and turn the whole sentence
-            yellow — a highlight on a state that is not a state: a skip moves
-            this card's PLACE, and the place is the sentence. One register for
-            every waiting card in the lane, and the order is what tells them
-            apart. */}
+            NO ⤒ AND NO SECOND COLOUR (Akshil, 2026-09-19). A promoted card used
+            to lead with a glyph and turn the whole sentence yellow — a
+            highlight on a state that is not a state: a promotion moves this
+            card's PLACE, and the place is the sentence. One register for every
+            waiting card in the lane, and the order is what tells them apart. */}
         {/* …AND NONE ON A CARD EITHER (Akshil, 2026-09-21) — the row's rule,
             for the row's reason. See the List row. */}
         {/* The plan's pause, on its own line — the List row's rule and the List
@@ -5801,7 +5789,7 @@ function TaskCard({
           {canForceStart(task) && (
             <button
               type="button"
-              className="tasks-act tasks-card-act tasks-act--skip"
+              className="tasks-act tasks-card-act tasks-act--force"
               title={FORCE_START_HINT}
               aria-label={`${FORCE_START_LABEL} ${shortTaskId(task.task_id)}`}
               disabled={busy}

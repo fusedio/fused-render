@@ -900,22 +900,6 @@ function ChatBody(props: ChatBodyProps) {
   /** Force start is in flight: the card's one button is dead for its
    *  duration. */
   const [forcing, setForcing] = useState(false);
-  /**
-   * RUN NEXT WAS ACCEPTED, AND NO ROW HAS ANSWERED SINCE — the row generation as
-   * it stood at the press (`useSchedule.recGen`), or null for "no claim".
-   *
-   * The press changes a fact this pane cannot see: the row in hand was read
-   * BEFORE it, and it goes on saying `behind TASK-038` until the next listing.
-   * Painting the claim through `admitAhead` was not enough, and could not be: the
-   * facts prefer the server's row whenever there is one, so the card sat visibly
-   * unchanged under a button the reader had just pressed and watched succeed
-   * (Bugbot PR #1124).
-   *
-   * A DEADLINE, NOT A STATE. It is spent the moment a fresher row lands —
-   * `schedRefresh` asks for one immediately — and that row then decides, which is
-   * what puts the button back when the server turns out to have refused.
-   */
-  const [nextClaim, setNextClaim] = useState<number | null>(null);
   /** A delete in flight, by entry id: that row's one control is dead for its
    *  duration and the row leaves when it lands. */
   const [deleting, setDeleting] = useState<ReadonlySet<string>>(() => new Set());
@@ -2908,13 +2892,6 @@ function ChatBody(props: ChatBodyProps) {
     // this screen, and the next conversation's waiting messages are its own.
     setDroppedEntries(NO_DROPPED);
     paneEpoch.current += 1;
-    // …AND THE PROMOTION CLAIM (Bugbot, PR #1124). `claimedNext` reads as true
-    // until `recGen` moves, so a claim left standing here would paint
-    // `queue_priority` on the NEXT conversation's waiting card until that row
-    // re-read. Nothing in this pane SETS it since 2026-09-21 (Run next is gone
-    // and Force start claims no spot — it leaves the line), and it is still
-    // cleared here because the row it reads is the server's.
-    setNextClaim(null);
     leader.forget();
     // AND THE DOOR THIS PANE CAME IN BY. `?queued=` names the conversation that
     // is being left; carried into the next one it would re-adopt the leader the
@@ -2943,7 +2920,6 @@ function ChatBody(props: ChatBodyProps) {
       setAdmitAhead(null);
       setAdmitTaskId("");
       setDroppedEntries(NO_DROPPED);
-      setNextClaim(null);
       paneEpoch.current += 1;
       // …and the LEADER, same as Back: `leaderId` reads `leader.peek()` before
       // it reads the session, so a leader left behind here would keep drawing
@@ -3351,9 +3327,7 @@ function ChatBody(props: ChatBodyProps) {
    * the schedule hook already fetches) — the server's, so a reload says the same
    * thing. A chat with no session has one too: it is named after its leader
    * (`pending:<id>`), which is the key the row read falls back to. `admitAhead`
-   * is the fallback for the paint before that row lands, and `claimedNext` the
-   * one thing that outranks both — for one lap, after a Run next the server has
-   * already accepted.
+   * is the fallback for the paint before that row lands.
    */
   /**
    * FOLLOW-UPS THE LIVE RUN IS STILL HOLDING — the bubbles a reload used to lose.
@@ -3381,10 +3355,9 @@ function ChatBody(props: ChatBodyProps) {
       ),
     [state.inbox, state.queued, state.turns],
   );
-  const claimedNext = nextClaim !== null && nextClaim === sched.recGen;
   const waitFacts = useMemo(
-    () => waitingFacts(sched.rec, admitAhead, claimedNext),
-    [sched.rec, admitAhead, claimedNext],
+    () => waitingFacts(sched.rec, admitAhead),
+    [sched.rec, admitAhead],
   );
   /**
    * HOW MANY MESSAGES THE CARD SAYS ARE WAITING — the server's own count.

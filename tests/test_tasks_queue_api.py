@@ -1,7 +1,7 @@
 """One task in progress per folder, over HTTP (server/routers/tasks.py).
 
 The router's half of the project queue: the `queued` status and the four fields
-that say where a row stands, the three verbs the client calls (`admit`, `skip`,
+that say where a row stands, the three verbs the client calls (`admit`, `force`,
 `decide`), run-now's queued answer next door, and the two flag-agnostic wins
 that came with them (a scoped `gone` on the changes long-poll, and a notify ring
 on the read endpoint).
@@ -138,12 +138,19 @@ class FakeManager:
     would be testing the layer this PR deletes, in the file that no longer owns
     it.
 
-    The events are here too, and they do the two things the contract says and
+    The events are here too, and they do the things the contract says and
     nothing else: `enqueue` appends to a folder's line, `skip` moves a task to
-    index 0 and marks it promoted. That is enough for a door to be tested end to
-    end (press, then read the row), and it is deliberately not a second
-    implementation of the manager — every rule about idempotency, blocked lists,
-    reconcile and persistence belongs to its own suite.
+    index 0 and marks it promoted. That is enough for a door to be tested end
+    to end (press, then read the row), and it is deliberately not a second
+    implementation of the manager — every rule about idempotency, blocked
+    lists, reconcile and persistence belongs to its own suite.
+
+    `skip` HAS NO DOOR OF ITS OWN ANY MORE (`/api/tasks/queue/skip` deleted,
+    2026-09-22), but it is not dead: `schedule._run_now_managed`, behind
+    `/api/schedule/run-now` and exercised by this file too, calls
+    `manager.skip` directly when a Run now has to wait on a busy folder — a
+    deferred Run now IS a promotion to the head of the line, just without a
+    button of its own.
     """
 
     def __init__(self):
@@ -354,6 +361,11 @@ class FakeManager:
                 self.answers.pop(task_key, None)
 
     def skip(self, task_key):
+        """STILL LIVE (2026-09-22): `/api/tasks/queue/skip` is gone, but
+        `_run_now_managed` (schedule.py, behind `/api/schedule/run-now`, tested
+        in this file too) calls `manager.skip` directly when a Run now has to
+        wait on a busy folder — promoting the task to the head of its line is
+        still exactly what a deferred Run now does."""
         self.events.append(("skip", task_key))
         folder = self._folder_of(task_key)
         started = False
@@ -1545,146 +1557,12 @@ def test_every_queue_verb_needs_the_fused_header(client, folders):
     alpha, _beta = folders
     for path, body in (("/api/tasks/queue/admit",
                         {"project": alpha, "session_id": "s", "message": "go"}),
-                       ("/api/tasks/queue/skip", {"key": "sess-a"}),
                        ("/api/tasks/queue/force", {"key": "sess-a"}),
                        ("/api/tasks/queue/decide",
                         {"run_id": "r", "request_id": "q", "session_id": "s",
                          "project": alpha, "decision": "allow", "scope": "once"})):
         r = client.post(path, json=body)
         assert r.status_code == 403, path
-
-
-# ===================================================================== skip
-
-
-@pytest.fixture()
-def priorities(monkeypatch):
-    """Record `schedule.set_priority` — package B's write, stubbed here so this
-    suite pins the ARGUMENTS the router sends rather than the store's behaviour
-    (which has its own suite next door)."""
-    calls = []
-
-    def set_priority(entry_ids, value):
-        calls.append((list(entry_ids), value))
-        return {"updated": list(entry_ids), "refused": []}
-
-    monkeypatch.setattr(schedule, "set_priority", set_priority, raising=False)
-    return calls
-
-
-def test_skip_promotes_the_due_work_of_a_queued_task(
-        client, projects_dir, folders, monkeypatch, flag, priorities, rings,
-        manager):
-    """Skip is a statement about the ORDER of what is waiting. The answer is
-    always position 1 and never "running now" — it does not interrupt the run in
-    flight, and nothing in this app takes a folder off a live process."""
-    flag()
-    alpha, beta = folders
-    _transcript(projects_dir, "sess-holder", alpha)
-    schedule._write([
-        _entry("e-due", "the queued one", alpha, session_id="sess-a"),
-        _entry("e-later", "next week", alpha, due=_iso(7 * 86400),
-               session_id="sess-a"),
-        _entry("e-other", "another folder", beta, session_id="sess-a"),
-    ])
-    _holders(monkeypatch, {alpha: "sess-holder"})
-    manager.line(alpha, "sess-a", holder="sess-holder")
-
-    r = _post(client, "/api/tasks/queue/skip", {"key": "sess-a"})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["ok"] is True and body["position"] == 1
-    # …AND WHO IS IN FRONT NOW (🟡 review, 2026-09-12), the same five fields
-    # admit, decide and run-now answer with. The press has just changed this
-    # line, and without them the chat could paint the claim but went on saying
-    # "behind TASK-xxx" about whatever was ahead BEFORE it until the next
-    # listing landed.
-    assert body["ahead_key"] == "sess-holder"
-    assert body["ahead_session"] == "sess-holder"
-    assert body["ahead_target"] == alpha
-    # `ahead` and `ahead_title` ride along too. The number is "" here because no
-    # listing has minted one for the holder yet — exactly what `_queue_place`
-    # answers for admit as well — and the title is the holder's own.
-    assert body["ahead"] == "" and body["ahead_title"] == "go"
-    # Only the DUE work in the folder it is waiting on: promoting next week's
-    # message would be this verb silently rescheduling work nobody asked about.
-    assert priorities == [(["e-due"], True)]
-    assert {"sess-a"} in rings
-
-
-def test_skip_refuses_a_task_that_is_not_queued(
-        client, projects_dir, folders, monkeypatch, flag, priorities):
-    """A client looking at a stale row, and the refusal is what makes it
-    refetch. Nothing is written."""
-    flag()
-    alpha, _beta = folders
-    _transcript(projects_dir, "sess-a", alpha)
-    schedule._write([_entry("e1", "go", alpha, session_id="sess-a")])
-    _holders(monkeypatch, {})
-
-    r = _post(client, "/api/tasks/queue/skip", {"key": "sess-a"})
-    assert r.status_code == 400
-    assert r.json()["error"] == "not queued"
-    assert priorities == []
-
-
-def test_skip_refuses_an_unknown_key_and_a_disabled_queue(
-        client, folders, flag, priorities):
-    flag(False)
-    r = _post(client, "/api/tasks/queue/skip", {"key": "sess-a"})
-    assert r.status_code == 409
-    assert r.json()["error"] == "project queue is off"
-    flag()
-    assert _post(client, "/api/tasks/queue/skip",
-                 {"key": "nobody"}).status_code == 404
-    assert _post(client, "/api/tasks/queue/skip", {"key": ""}).status_code == 400
-    assert priorities == []
-
-
-def test_skipping_a_task_that_already_answered_a_card_is_a_no_op(
-        client, projects_dir, folders, monkeypatch, flag, priorities, manager):
-    """A held answer is at the head of its folder by definition. From the
-    outside that is exactly what Skip asked for, so it is answered rather than
-    refused — and nothing is written, because there is nothing to improve.
-
-    THROUGH THE MANAGER LIKE EVERYTHING ELSE. This used to be a short-circuit in
-    the endpoint (`held_answer` read, answer returned, `skip` never called),
-    which was a second set of rules about the head of a line — and the manager
-    already has them: an answered task moves to index 0 and newest press wins,
-    exactly as it does here."""
-    flag()
-    alpha, _beta = folders
-    _transcript(projects_dir, "sess-holder", alpha)
-    _transcript(projects_dir, "sess-a", alpha)
-    _holders(monkeypatch, {alpha: "sess-holder"})
-    manager.hold("sess-a", run_id="run-1", request_id="req-1")
-    manager.line(alpha, "sess-a", holder="sess-holder", priority=("sess-a",))
-
-    r = _post(client, "/api/tasks/queue/skip", {"key": "sess-a"})
-    assert r.status_code == 200, r.text
-    # The same shape the ordinary road answers with, `ahead_*` and all — one
-    # caller reads one answer.
-    assert r.json()["ok"] is True and r.json()["position"] == 1
-    assert "ahead_key" in r.json()
-    assert _kinds(manager, "skip") == [("skip", "sess-a")]
-    assert priorities == []
-
-
-def test_skip_into_a_free_folder_is_answered_and_not_refused(
-        client, projects_dir, folders, flag, manager, priorities):
-    """`started` is the outcome a position cannot describe: the folder was free,
-    the pump handed the task the tree, and it stands in no line at all now.
-    Position 0 then means RUNNING — and the endpoint used to read that 0 as "not
-    queued" and answer 400 to the best possible outcome of "run this next"."""
-    flag()
-    alpha, _beta = folders
-    _transcript(projects_dir, "sess-a", alpha, "mine")
-    manager.line(alpha, "sess-a")            # in the line, nobody owns the tree
-
-    r = _post(client, "/api/tasks/queue/skip", {"key": "sess-a"})
-    assert r.status_code == 200, r.text
-    assert r.json()["ok"] is True
-    assert (manager.owner(alpha) or {})["task"] == "sess-a"
 
 
 # ==================================================================== force
@@ -1757,9 +1635,9 @@ def test_force_starts_the_waiting_message_beside_the_folders_owner(
 
 def test_force_names_the_entry_when_the_key_has_moved(
         client, projects_dir, folders, monkeypatch, flag, manager, dispatched):
-    """The chip's own road, for the same reason skip has it: a queued chat is
-    `pending:<leader entry>` until its leader's run mints a session, and a
-    button holding that key 404s a second later. The entry id never moves."""
+    """The chip's own road: a queued chat is `pending:<leader entry>` until its
+    leader's run mints a session, and a button holding that key 404s a second
+    later. The entry id never moves."""
     flag()
     calls, _answer = dispatched
     alpha, _beta = folders
@@ -2023,7 +1901,7 @@ def test_a_forced_chat_still_never_overtakes_itself(
 def test_force_refuses_a_task_with_nothing_waiting(
         client, projects_dir, folders, flag, manager, dispatched):
     """A client looking at a stale row, and the refusal is what makes it
-    refetch — the same posture as skip's 400."""
+    refetch."""
     flag()
     calls, _answer = dispatched
     alpha, _beta = folders
@@ -2589,26 +2467,6 @@ def test_a_follower_takes_no_place_of_its_own_in_the_line(
     assert row["queue_position"] == 1
 
 
-def test_skip_promotes_a_leader_and_its_follower_together(
-        client, projects_dir, folders, monkeypatch, flag, manager):
-    """They share a task key, so Skip on the row reaches both — a chat that
-    jumped the line with only its first message would send the second one last."""
-    flag()
-    alpha, _beta = folders
-    _transcript(projects_dir, "sess-holder", alpha)
-    _leader_and_follower(alpha)
-    _holders(monkeypatch, {alpha: "sess-holder"})
-    manager.line(alpha, tasks_store.pending_key("e-lead"), holder="sess-holder")
-
-    r = _post(client, "/api/tasks/queue/skip",
-              {"key": tasks_store.pending_key("e-lead")})
-    assert r.json()["ok"] is True and r.json()["position"] == 1
-
-    stored = {e["id"]: e for e in schedule.list_entries()}
-    assert stored["e-lead"]["priority"] is True
-    assert stored["e-follow"]["priority"] is True
-
-
 # ------------------------------------------------------- admission, in order
 
 
@@ -2797,46 +2655,6 @@ def test_run_now_collects_the_tasks_once(
     assert len(collects) == 1
 
 
-# ---------------------------------------------------------------- skip by entry
-
-
-def test_skip_names_the_entry_when_the_key_has_moved(
-        client, projects_dir, folders, monkeypatch, flag, priorities, manager):
-    """A chip painted while the chat was `pending:<leader>` still holds that key
-    a second after the leader's run mints a session and the whole row rekeys —
-    so Skip by key 404s on the one gesture the user is watching the line for.
-    The entry id never moves."""
-    flag()
-    alpha, _beta = folders
-    _transcript(projects_dir, "sess-holder", alpha)
-    schedule._write([
-        _entry("e-lead", "first thing", alpha, state=schedule.SENT,
-               turn="done", claude_session_id="sess-lead"),
-        _entry("e-follow", "second thing", alpha, follow_of="e-lead"),
-    ])
-    _holders(monkeypatch, {alpha: "sess-holder"})
-    manager.line(alpha, "sess-lead", holder="sess-holder")
-    assert _rows(client)["sess-lead"]["status"] == "queued"
-
-    stale = _post(client, "/api/tasks/queue/skip",
-                  {"key": tasks_store.pending_key("e-lead")})
-    assert stale.status_code == 404
-
-    r = _post(client, "/api/tasks/queue/skip", {"entry_id": "e-follow"})
-    assert r.status_code == 200, r.text
-    assert r.json()["ok"] is True and r.json()["position"] == 1
-    assert priorities == [(["e-follow"], True)]
-
-
-def test_skip_refuses_an_entry_id_that_names_nothing(client, folders, flag,
-                                                     priorities):
-    flag()
-    assert _post(client, "/api/tasks/queue/skip",
-                 {"entry_id": "no-such"}).status_code == 404
-    assert _post(client, "/api/tasks/queue/skip", {}).status_code == 400
-    assert priorities == []
-
-
 # ------------------------------------------------------- decide, hardened
 
 
@@ -2867,10 +2685,11 @@ def test_decide_refuses_an_id_that_would_become_a_path(
 def test_a_card_on_a_run_with_no_session_is_delivered_not_held(
         client, folders, monkeypatch, flag, agent, rings):
     """A held record is keyed by `session_id` — it is how delivery finds the
-    row, how the chip finds its place and how Skip recognises the head of the
-    line — so an empty one parks a decision no view can reach and rings the
-    long-poll about nothing (`notify(None)`). A run with no session cannot be
-    queued behind anything anyway; delivering now is the honest fallback."""
+    row, how the chip finds its place and how a promotion is recognised at the
+    head of the line — so an empty one parks a decision no view can reach and
+    rings the long-poll about nothing (`notify(None)`). A run with no session
+    cannot be queued behind anything anyway; delivering now is the honest
+    fallback."""
     flag()
     alpha, _beta = folders
     _holders(monkeypatch, {alpha: "sess-holder"})
@@ -3494,9 +3313,10 @@ def test_a_follower_joins_the_session_its_leaders_run_named(
 #
 # WHAT EACH ENDPOINT SAYS TO THE MANAGER, as opposed to what it answers the
 # client (which every case above pins). The two are separate promises and the
-# second is worthless without the first: a skip that returned position 1 and
-# moved nothing would satisfy the reply's contract exactly once, and then the
-# line would run in the order it had before the press.
+# second is worthless without the first: a force that answered `started: true`
+# and never told the manager to forget the entry would satisfy the reply's
+# contract exactly once, and then the entry would sit in its folder's line
+# forever, unstarted from the manager's own point of view.
 #
 # `FakeManager.events` is the tape. Nothing here asserts an ORDER inside the
 # manager — that is tests/test_queue_manager.py's whole subject — only that the
@@ -3601,34 +3421,6 @@ def test_a_follow_up_into_a_queued_chat_adds_no_second_slot(
     assert [event[2] for event in _kinds(manager, "enqueue")] == [
         leader["key"], leader["key"]]
     assert manager.lines[alpha] == [leader["key"]]
-
-
-def test_skip_presses_the_manager_and_reads_the_place_back(
-        client, projects_dir, folders, monkeypatch, flag, manager):
-    flag()
-    alpha, _beta = folders
-    _transcript(projects_dir, "sess-a", alpha, "mine")
-    _transcript(projects_dir, "sess-holder", alpha, "holding it")
-    _holders(monkeypatch, {alpha: "sess-holder"})
-    manager.line(alpha, "sess-b", "sess-a", holder="sess-holder")
-
-    body = _post(client, "/api/tasks/queue/skip", {"key": "sess-a"}).json()
-    assert body["ok"] is True and body["position"] == 1
-    assert _kinds(manager, "skip") == [("skip", "sess-a")]
-    assert manager.lines[alpha] == ["sess-a", "sess-b"]
-
-
-def test_skip_on_a_task_in_no_line_is_refused_and_presses_nothing_else(
-        client, projects_dir, folders, flag, manager):
-    """The manager answering position 0 IS "not queued" — one read, and the 400
-    the client needs to refetch on."""
-    flag()
-    alpha, _beta = folders
-    _transcript(projects_dir, "sess-a", alpha, "mine")
-
-    r = _post(client, "/api/tasks/queue/skip", {"key": "sess-a"})
-    assert r.status_code == 400
-    assert r.json()["error"] == "not queued"
 
 
 # --------------------------------------- what the manager asks this process
@@ -3755,7 +3547,7 @@ def test_a_forced_tasks_card_is_never_held(
 def test_with_the_flag_off_no_door_touches_the_manager(
         client, projects_dir, folders, flag, agent, manager):
     """The promise the whole feature is behind. Off, admission is a constant,
-    skip is a 409 before anything is read, and a card goes straight through —
+    force is a 409 before anything is read, and a card goes straight through —
     and the manager hears about none of it."""
     flag(False)
     alpha, _beta = folders
@@ -3764,7 +3556,7 @@ def test_with_the_flag_off_no_door_touches_the_manager(
     assert _post(client, "/api/tasks/queue/admit",
                  {"project": alpha, "session_id": "sess-a", "message": "go"}
                  ).json() == {"run": True}
-    assert _post(client, "/api/tasks/queue/skip",
+    assert _post(client, "/api/tasks/queue/force",
                  {"key": "sess-a"}).status_code == 409
     assert _post(client, "/api/tasks/queue/decide",
                  _decide_body(alpha)).json()["held"] is False

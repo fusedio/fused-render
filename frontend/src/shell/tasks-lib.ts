@@ -1899,10 +1899,11 @@ const LANE_EXITS: Record<BoardColumn, BoardLane[]> = {
   draft: ["in_progress"],
   // Run it early, or call it off.
   upcoming: ["in_progress", "archived"],
-  // Skip the line, and NOTHING ELSE. The drop onto In Progress is not a run —
-  // nothing may interrupt the task already holding this folder — it is `skip`,
-  // which moves this card to the head of its folder's line and leaves the run in
-  // flight completely alone (laneAction).
+  // In Progress, and nothing else. The drop is not a run — nothing may
+  // interrupt the task already holding this folder — it is `force`, which takes
+  // this card's oldest waiting message out of its folder's line and starts it
+  // beside whatever holds the folder, leaving the run in flight completely
+  // alone (laneAction).
   //
   // ARCHIVE IS NOT OFFERED ON A WAITING TASK (Akshil, 2026-09-12). Filing is for
   // work that has happened: a queued task is a message the reader has just sent
@@ -2202,7 +2203,6 @@ export function isQueued(task: { status: string }): boolean {
  */
 export {
   canForceStart,
-  canRunNext,
   chatUrl,
   CHAT_ENTRY_ORIGIN,
   pendingEntryId,
@@ -2221,10 +2221,6 @@ export {
   waitingLabel,
   FORCE_START_HINT,
   FORCE_START_LABEL,
-  QUEUE_PRIORITY_GLYPH,
-  RUN_NEXT_DONE_HINT,
-  RUN_NEXT_HINT,
-  RUN_NEXT_LABEL,
 } from "@platform/lib/queue";
 export type { QueueCaption, QueueFacts } from "@platform/lib/queue";
 
@@ -2480,13 +2476,14 @@ export type DropAction =
    *  travel — a new immediate message into the same session
    *  (`api.scheduleMessage`). */
   | { kind: "resay"; body: string; sessionId: string; target: string; messageId: string }
-  /** Move this task's pending work to the head of its FOLDER's line
-   *  (`api.skipQueue`). Carries the task key the endpoint takes — the task's,
-   *  not the folder's: skipping is something one task does, and the server
-   *  reads the folder off the row. It NEVER interrupts the run in flight, which
-   *  is why it is a different kind from `run` even though the drop lands on the
-   *  same lane. */
-  | { kind: "skip"; key: string }
+  /** Queued → In Progress is a FORCE START (`api.forceStart`), not a run: it
+   *  takes this task's oldest waiting message out of its folder's line and
+   *  starts it beside whatever owns the folder, rather than trying to interrupt
+   *  it. Carries the task key — the server resolves the message itself, the same
+   *  one the row's own button would name. A different kind from `run` even
+   *  though the drop lands on the same lane, because the run holding the folder
+   *  is never touched. */
+  | { kind: "force"; key: string }
   | { kind: "archive" }
   | { kind: "unarchive" };
 
@@ -2523,14 +2520,15 @@ function laneAction(
     return lane === "in_progress" ? sendDraftAction(task) : { kind: "unarchive" };
   }
   if (lane === "archived") return { kind: "archive" };
-  // OUT OF QUEUED, THE DROP IS A SKIP — never a run. The only lane a queued card
-  // may be dropped on (besides Archive) is In Progress, and the reader's gesture
-  // there means "go sooner", which is all skipping is: this task's pending work
-  // jumps to the head of its folder's line and the run already in that folder is
-  // left completely alone. Firing it instead would put two runs in one folder,
-  // which is the one thing the queue exists to prevent — so the gesture that
-  // LOOKS like the Upcoming drag deliberately makes a different call.
-  if (here === "queued") return { kind: "skip", key: task.key };
+  // OUT OF QUEUED, THE DROP IS A FORCE START — never a run. The only lane a
+  // queued card may be dropped on (besides Archive) is In Progress, and the
+  // reader's gesture there means "go sooner": this task's oldest waiting message
+  // leaves its folder's line and starts beside whatever run is already holding
+  // that folder, which is left completely alone. Firing it instead would put two
+  // runs in one folder, which is the one thing the queue exists to prevent — so
+  // the gesture that LOOKS like the Upcoming drag deliberately makes a different
+  // call.
+  if (here === "queued") return { kind: "force", key: task.key };
   // DONE, WITH SOMETHING UNSENT ON IT. `rowExits` opened In Progress for this
   // row and no other lane, so by elimination that is where it was dropped, and
   // what the drop means is "send the draft now" (Akshil, 2026-09-14: "done +
@@ -5328,20 +5326,6 @@ export function applyQueueOverrides(
   });
 }
 
-/** The claim a SKIP makes: head of the line, and nothing about the run in
- *  flight, which skipping never touches. The holder it names is whatever the row
- *  already said — the folder did not change hands because somebody jumped the
- *  queue, so the link the id wears is carried over with it. */
-export function skippedOverride(task: Task): QueueOverride {
-  return {
-    key: task.key,
-    status: "queued",
-    queue_position: 1,
-    ...aheadOfRow(task),
-    queue_priority: true,
-  };
-}
-
 /** The four fields that say WHO IS IN FRONT, copied off a row that already
  *  holds the answer. */
 function aheadOfRow(task: Task): Pick<
@@ -5403,7 +5387,7 @@ function queueFolderOf(task: Task): string {
  *     whose "behind X" changes, because it is the only one whose neighbour
  *     changed: it is now behind the pressed task, id, title and link;
  *   * every other queued row in the folder keeps its number and its sentence,
- *     and only loses `queue_priority` if it was wearing it — the ⤒ glyph is a
+ *     and only loses `queue_priority` if it was wearing it — that flag is a
  *     claim on the one spot at the head, and after this press that spot is the
  *     pressed row's.
  *

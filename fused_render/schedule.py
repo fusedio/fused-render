@@ -4328,16 +4328,16 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
     reason says so. A turn this module has already filed a verdict for is not
     open, however fresh the transcript looks — `_verdict_echo`.
 
-    **A busy FOLDER is a skip, not a refusal** (project queue on). Another task
-    is editing this working tree, so this one cannot go now — but the gesture
-    still means something exact, and it is not "nothing happened": Run now on a
-    queued task is the Skip verb. The entry is marked `priority`, which puts it
-    at the head of its folder's line, and stamped `run_now_at`, which is what
-    puts it in that line at all when its `due` is still ahead; it comes back
-    `ok: false` with
-    `reason: "queued"`, `queued: true` and the position it now holds, so the
-    row can read `#1 in line · behind TASK-041` instead of an error. It really
-    does run next, within a second or two of that folder freeing (`wake`).
+    **A busy FOLDER is a promotion, not a refusal** (project queue on). Another
+    task is editing this working tree, so this one cannot go now — but the
+    gesture still means something exact, and it is not "nothing happened": Run
+    now on a queued task promotes it to the head of its line. The entry is
+    marked `priority`, which puts it at the head of its folder's line, and
+    stamped `run_now_at`, which is what puts it in that line at all when its
+    `due` is still ahead; it comes back `ok: false` with `reason: "queued"`,
+    `queued: true` and the position it now holds, so the row can read `#1 in
+    line · behind TASK-041` instead of an error. It really does run next,
+    within a second or two of that folder freeing (`wake`).
 
     `found` distinguishes "no such id" (a 404) from "cannot run this one"
     (a 409); the router is what turns them into status codes."""

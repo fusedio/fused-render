@@ -1213,10 +1213,10 @@ button.tasks-caret,
 }
 
 /* FORCE START wears this seat since 2026-09-21 (`FORCE_START_LABEL`,
-   ScheduleTaskViews). The CLASS NAME is the seat's history: Run next — "Skip the
-   queue" until 2026-09-12 — held it first, and the PR that deletes that endpoint
-   renames the class with it rather than this one renaming it twice. Same group,
-   same height, same silence at rest.
+   ScheduleTaskViews). Run next — "Skip the queue" until 2026-09-12 — held it
+   first; the class took the button's own name on 2026-09-22, when the skip
+   endpoint it was named for was deleted along with it. Same group, same
+   height, same silence at rest.
 
    THE ONE BUTTON IN THE STRIP THAT IS WORDS. Its siblings are glyphs in a 22px
    square, and this one is not: a bolt sat here for a day and the strip beside it
@@ -1227,8 +1227,8 @@ button.tasks-caret,
    label is two words and half of "Force" is not a control; on a list row it
    still gives way entirely before the title does (the rule below), which is the
    right end for a label that cannot be abbreviated. */
-.tasks-act--skip,
-.prefs-section .tasks-act--skip {
+.tasks-act--force,
+.prefs-section .tasks-act--force {
   width: auto;
   flex-basis: auto;
   padding: 0 7px;
@@ -1260,7 +1260,7 @@ button.tasks-caret,
    THE LIST ROW'S ONLY, which is where the shortfall is: a Board card's act
    strip has one or two glyphs and all the room it needs, and a control that
    shrank there would be answering a question nobody asked. */
-.tasks-row .tasks-act--skip {
+.tasks-row .tasks-act--force {
   flex-shrink: 100;
   min-width: 0;
   overflow: hidden;
@@ -1270,7 +1270,7 @@ button.tasks-caret,
    its width, and a focus ring around nothing is the dead click design-principles
    §0 forbids — so focus takes the box back and the title gives way for exactly
    as long as the control is the thing being used. */
-.tasks-row .tasks-act--skip:focus-visible {
+.tasks-row .tasks-act--force:focus-visible {
   flex-shrink: 0;
 }
 
@@ -1294,7 +1294,7 @@ button.tasks-caret,
    escape above would hide it by making the keyboard the only road that worked.
    The button keeps its 22px box inside the strip, and the legacy in-flow case
    above keeps its shrink. */
-.tasks-row > .tasks-acts > .tasks-acts-inner > .tasks-act--skip {
+.tasks-row > .tasks-acts > .tasks-acts-inner > .tasks-act--force {
   flex-shrink: 0;
   min-width: auto;
 }
@@ -1308,8 +1308,8 @@ button.tasks-caret,
    colours as its happy path is a button the page is recommending. The hint is
    where the cost is said (`FORCE_START_HINT`); the skin's job is not to
    invite. */
-.tasks-act--skip:hover:not(:disabled),
-.prefs-section .tasks-act--skip:hover:not(:disabled) {
+.tasks-act--force:hover:not(:disabled),
+.prefs-section .tasks-act--force:hover:not(:disabled) {
   color: var(--fg);
   background: var(--bg-alt);
   border-color: var(--border);
@@ -2132,13 +2132,13 @@ button.tasks-caret,
 }
 
 /* NO `.is-next` RULE ANY MORE, AND THAT IS THE POINT (Akshil, 2026-09-19).
-   A skipped row's caption used to drop out of the muted register into
+   A promoted row's caption used to drop out of the muted register into
    `--status-queued` and lead with a ⤒, so one row in a lane of waiting rows read
-   as a different KIND of object. A skip does not change what a row IS — it
+   as a different KIND of object. A promotion does not change what a row IS — it
    changes where it stands, and where it stands is the whole of what this caption
-   says. One register for every waiting row; the ORDER tells them apart. The ⤒
-   survives as the Run next BUTTON's face (`.tasks-act--skip`) and decorates
-   nothing. */
+   says. One register for every waiting row; the ORDER tells them apart. Nothing
+   draws the ⤒ any more — its seat (`.tasks-act--force`) is Force start's, in
+   words, not the glyph. */
 
 /* THE ID INSIDE THE CAPTION — "after TASK-038", where TASK-038 is a press into
    the conversation that is in the way (ScheduleTaskViews.QueueCaptionText).

@@ -95,10 +95,12 @@ def _number(value) -> float:
 def _item(raw) -> dict | None:
     """One line/blocked entry, normalised, or None if it names no task.
 
-    A bare string loads as well as the object we write: `promoted` (the ⤒ rule)
-    has to survive a restart so the file holds objects, but an index written by
-    a version that did not — or edited by a human — must cost that item its
-    promotion, never the whole folder's line."""
+    A bare string loads as well as the object we write: `promoted` (what marks
+    an item as having reached the head by a skip or an answer, rather than by
+    ordinary arrival order — `positions()`'s `priority`) has to survive a
+    restart so the file holds objects, but an index written by a version that
+    did not — or edited by a human — must cost that item its promotion, never
+    the whole folder's line."""
     if isinstance(raw, str):
         return ({"task": raw, "entry_id": "", "promoted": False,
                  "run_id": "", "session_id": "", "resumed": False}
@@ -1014,15 +1016,22 @@ class QueueManager:
             return self._place(task_key)
 
     def skip(self, task_key: str) -> dict:
-        """Move to index 0 — right behind the owner — and mark it promoted so the
-        listing shows the ⤒. Newest press wins, so a later skip pushes an earlier
-        one to 2. A blocked task comes back into the line; the owner is already
-        ahead of everybody and is a no-op.
+        """Move to index 0 — right behind the owner — and mark it promoted so
+        `positions()`'s `priority` (and `_row`'s `queue_priority`) reads true.
+        Newest press wins, so a later skip pushes an earlier one to 2. A
+        blocked task comes back into the line; the owner is already ahead of
+        everybody and is a no-op.
+
+        **THE ONLY CALLER IS `schedule._run_now_managed`** (2026-09-22): a Run
+        now that lands on a busy folder defers rather than fails, and this is
+        what puts the deferred message at the head of its line so it goes the
+        moment the folder frees. There is no HTTP door of its own any more
+        (`/api/tasks/queue/skip` deleted with the Run next button it served).
 
         ``{"key", "position", "ahead_key", "started"}``. `started` is the answer
         to the one case a position cannot describe: the folder was FREE, so the
         pump handed it straight to this task and it now stands in no line at all.
-        Position 0 then means "running", not "not queued", and the endpoint has
+        Position 0 then means "running", not "not queued", and the caller has
         to be able to tell those apart."""
         with self._txn() as keys:
             folder, rec = self._locate(task_key)
@@ -1626,10 +1635,13 @@ class QueueManager:
         as (`_queue_row` → `_row`). The task's own key is the dict key.
 
         Blocked tasks hold nothing and stand in no line, so they are not here.
-        `priority` is the ⤒: true only at the head, and only when it got there by
-        a skip or an answer, because that is the only case where the order the
-        user sees is not the order they created. `ahead_key` is "" for an owner
-        with no name a page can draw (`_ahead_label`).
+        `priority` is true only at the head, and only when it got there by a
+        skip or an answer, because that is the only case where the order the
+        user sees is not the order they created — no surface draws a glyph for
+        it any more (the Run next button it lit is gone), but `_row`'s
+        `queue_priority` still carries it, for a card whose wording depends on
+        whether it is genuinely next or merely first for now. `ahead_key` is ""
+        for an owner with no name a page can draw (`_ahead_label`).
 
         `ahead_names` IS THE SAME THING IN FRONT, SPELLED EVERY WAY IT MIGHT BE
         FILED (`_page_names`): its task key, its session id, its

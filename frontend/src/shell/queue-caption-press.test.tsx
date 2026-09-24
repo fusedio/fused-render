@@ -137,23 +137,24 @@ test("a waiting row prints NO place and NO holder", () => {
   ).toHaveLength(0);
 });
 
-test("a skipped row is drawn exactly like every other waiting row", () => {
-  // A skip changes the ORDER and nothing else, and the order is already the
-  // sentence. No ⤒ in the caption, no second colour, no `is-next`.
+test("a promoted row is drawn exactly like every other waiting row", () => {
+  // A promotion changes the ORDER and nothing else, and the order is already
+  // the sentence. No ⤒ in the caption, no second colour, no `is-next`.
   const r = row(queued({ queue_priority: true, queue_position: 1 } as Partial<Task>), []);
   const said = JSON.stringify(r.toJSON());
   expect(byClass(r, "tasks-queue-glyph")).toHaveLength(0);
   expect(said).not.toContain("is-next");
-  // …AND NO ⤒ ANYWHERE ELSE ON THE ROW EITHER (Akshil, 2026-09-21). It was the
-  // Run next button's face, and Run next is out of the UI — so a row promoted
-  // before that deploy, which still carries `queue_priority` in the index, comes
-  // back as an ordinary waiting row wearing nothing.
+  // …AND NO ⤒ ANYWHERE ELSE ON THE ROW EITHER (Akshil, 2026-09-21, glyph gone
+  // for good 2026-09-22). It was the Run next button's face, and Run next is
+  // out of the code entirely — so a row promoted by a Run now that had to wait,
+  // which still carries `queue_priority` in the index, comes back as an
+  // ordinary waiting row wearing nothing.
   expect(said).not.toContain("⤒");
-  // The seat itself is NOT empty any more: Force start wears it (`.tasks-act--skip`
-  // is that seat's class, kept with its skin — see styles/tasks.css). What a
+  // The seat itself is NOT empty: Force start wears it (`.tasks-act--force` is
+  // that seat's class, kept with its skin — see styles/tasks.css). What a
   // promoted row must not grow is a SECOND mark in the caption, which is what
   // the assertions above are about.
-  expect(byClass(r, "tasks-act--skip")).toHaveLength(1);
+  expect(byClass(r, "tasks-act--force")).toHaveLength(1);
 });
 
 test("a QUEUED ROW OFFERS NO RUN NEXT, mounted (Akshil, 2026-09-21)", () => {
