@@ -457,12 +457,24 @@ def test_a_wedged_rank_request_does_not_permanently_hold_its_lane_slot(
     never set (exactly that: an un-killable, permanently parked thread);
     every later call answers immediately. `ABANDON_S` (item 2) is
     monkeypatched small so the test does not have to wait out the real
-    5-second default to see the permit actually get released."""
+    15-second default to see the permit actually get released — but not
+    razor-thin: a loaded CI runner (this whole file's requests share the
+    process with every other xdist worker) has been observed adding ~500ms
+    of scheduling jitter to a nominal 50ms `wait_for`, which was enough to
+    make even the NON-wedged 'z' request time out and get abandoned too —
+    a false failure of the "does not permanently hold its lane slot" claim,
+    not a real one (`_bounded_index_read` returns, rather than raises, on
+    its own timeout path, so the `async with lane:` around it always
+    releases the permit either way — read `_bounded_index_read` and its
+    caller in index.py before doubting that). 1.5s leaves several times
+    that observed jitter as headroom, while the elapsed bounds below (well
+    under 1.5s) still catch a real regression, which would take until
+    `ABANDON_S` elapses, not a few hundred ms."""
     import threading
 
     import httpx
 
-    monkeypatch.setattr(index_router, "ABANDON_S", 0.05)
+    monkeypatch.setattr(index_router, "ABANDON_S", 1.5)
     lock = threading.Lock()
     calls = {"n": 0}
     first_entered = threading.Event()
@@ -531,7 +543,7 @@ def test_a_wedged_rank_request_does_not_permanently_hold_its_lane_slot(
             # "pending" forever, exactly what happened before this loop was
             # moved in here.
             never.set()
-            deadline = time.monotonic() + 2.0
+            deadline = time.monotonic() + 5.0
             while index_router._abandoned_reads and time.monotonic() < deadline:
                 await asyncio.sleep(0.01)
             return second_resp, second_elapsed, more, more_elapsed, first_resp
@@ -539,9 +551,16 @@ def test_a_wedged_rank_request_does_not_permanently_hold_its_lane_slot(
     (second_resp, second_elapsed, more, more_elapsed,
      first_resp) = asyncio.run(run())
     assert second_resp.status_code == 200, second_resp.text
-    assert second_elapsed < 0.3, second_elapsed
+    # Well under `ABANDON_S` (1.5s, above): neither 'y' nor 'z' ever needs to
+    # wait for the wedged request's abandon-timeout to free a permit, since
+    # the lane (width 2) has a free slot the whole time. A regression that
+    # reintroduces the "held for the life of the process" bug would instead
+    # make these wait the full `ABANDON_S`, so 1.0s still catches that while
+    # comfortably clearing the ~500ms of CI scheduling jitter that made the
+    # old 0.3s bound flaky.
+    assert second_elapsed < 1.0, second_elapsed
     assert all(r.status_code == 200 for r in more)
-    assert more_elapsed < 0.3, more_elapsed
+    assert more_elapsed < 1.0, more_elapsed
     # The wedged first request itself eventually gets the abandon-timeout
     # 503, once ABANDON_S elapses — it just never blocks anything ELSE.
     assert first_resp.status_code == 503
