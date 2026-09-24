@@ -350,17 +350,113 @@ test("an iframe taking focus (a press inside an app page) starts the exit animat
   // focus to the iframe itself, which is exactly what this test fakes: no
   // iframe focused yet when the card mounts, then a blur that hands focus
   // to one for the first time.
+
+  // TEMPORARY DIAGNOSTICS — remove once CI's real cause is identified.
+  const DIAG_HTMLIFrameElement = (
+    globalThis as unknown as { HTMLIFrameElement: { name: string } }
+  ).HTMLIFrameElement;
+  console.log("DIAG globalThis.HTMLIFrameElement.name=", DIAG_HTMLIFrameElement?.name);
+  console.log("DIAG globalThis.dispatchEvent is native=", globalThis.dispatchEvent.toString().includes("[native code]"));
+  console.log(
+    "DIAG document identity tag (pre-mount)=",
+    (document as unknown as { __diagTag?: string }).__diagTag,
+  );
+  (document as unknown as { __diagTag?: string }).__diagTag ??= `doc-${Math.random().toString(36).slice(2)}`;
+  console.log(
+    "DIAG document.activeElement (pre-mount)=",
+    document.activeElement,
+    "ctor=",
+    (document.activeElement as { constructor?: { name?: string } } | null)?.constructor?.name,
+  );
+  console.log(
+    "DIAG Object.getOwnPropertyDescriptor(document,'activeElement') (pre-mount)=",
+    JSON.stringify(
+      Object.getOwnPropertyDescriptor(document, "activeElement"),
+      (_k, v) => (typeof v === "function" ? "[function]" : v),
+    ),
+  );
+
+  let diagBlurAdds = 0;
+  let diagBlurRemoves = 0;
+  const diagOrigAdd = globalThis.addEventListener.bind(globalThis);
+  const diagOrigRemove = globalThis.removeEventListener.bind(globalThis);
+  (globalThis as unknown as { addEventListener: typeof globalThis.addEventListener }).addEventListener = (
+    type: string,
+    fn: EventListenerOrEventListenerObject,
+    opts?: boolean | AddEventListenerOptions,
+  ) => {
+    if (type === "blur") diagBlurAdds++;
+    return diagOrigAdd(type, fn, opts);
+  };
+  (globalThis as unknown as { removeEventListener: typeof globalThis.removeEventListener }).removeEventListener = (
+    type: string,
+    fn: EventListenerOrEventListenerObject,
+    opts?: boolean | EventListenerOptions,
+  ) => {
+    if (type === "blur") diagBlurRemoves++;
+    return diagOrigRemove(type, fn, opts);
+  };
+
   let renderer: ReturnType<typeof create>;
   await act(async () => {
     renderer = create(<JobPopupCard job={JOB} onGone={() => {}} />);
   });
 
+  (globalThis as unknown as { addEventListener: typeof globalThis.addEventListener }).addEventListener = diagOrigAdd;
+  (globalThis as unknown as { removeEventListener: typeof globalThis.removeEventListener }).removeEventListener =
+    diagOrigRemove;
+  console.log("DIAG blur listeners added/removed during mount=", diagBlurAdds, diagBlurRemoves);
+  console.log(
+    "DIAG document.activeElement (post-mount, pre-withActiveElement)=",
+    document.activeElement,
+    "ctor=",
+    (document.activeElement as { constructor?: { name?: string } } | null)?.constructor?.name,
+    "instanceof HTMLIFrameElement=",
+    document.activeElement instanceof DIAG_HTMLIFrameElement,
+  );
+
   await withActiveElement(fakeIframe(), async () => {
+    const fake = fakeIframe();
+    console.log(
+      "DIAG fakeIframe() instanceof globalThis.HTMLIFrameElement=",
+      fake instanceof DIAG_HTMLIFrameElement,
+      "fake ctor=",
+      (fake as { constructor?: { name?: string } }).constructor?.name,
+    );
+    console.log(
+      "DIAG document.activeElement (inside withActiveElement, before blur)=",
+      document.activeElement,
+      "ctor=",
+      (document.activeElement as { constructor?: { name?: string } } | null)?.constructor?.name,
+      "instanceof HTMLIFrameElement=",
+      document.activeElement instanceof DIAG_HTMLIFrameElement,
+      "document.__diagTag=",
+      (document as unknown as { __diagTag?: string }).__diagTag,
+    );
+
     await act(async () => {
       globalThis.dispatchEvent(new Event("blur"));
     });
 
+    console.log(
+      "DIAG document.activeElement (right after blur dispatch, before poll)=",
+      document.activeElement,
+      "ctor=",
+      (document.activeElement as { constructor?: { name?: string } } | null)?.constructor?.name,
+      "instanceof HTMLIFrameElement=",
+      document.activeElement instanceof DIAG_HTMLIFrameElement,
+    );
+    const preJson = renderer!.toJSON() as ReactTestRendererJSON;
+    console.log("DIAG className right after blur dispatch=", preJson.props.className);
+
     const json = await waitForClassName(renderer!, (c) => c.includes("leaving"));
+    console.log("DIAG className after full poll window=", json.props.className);
+    console.log(
+      "DIAG document.activeElement (after full poll window)=",
+      document.activeElement,
+      "instanceof HTMLIFrameElement=",
+      document.activeElement instanceof DIAG_HTMLIFrameElement,
+    );
     expect(json.props.className).toContain("leaving");
   });
 
