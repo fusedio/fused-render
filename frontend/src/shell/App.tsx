@@ -52,6 +52,7 @@ import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
+import UpdateNotifier from "@platform/ui/UpdateNotifier";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
 import { ShareFileHost } from "@platform/ui/ShareFileModal";
 import OnboardingWizard from "@shell/onboarding/OnboardingWizard";
@@ -555,11 +556,6 @@ export default function App({ config }: { config: Config }) {
   // for the identical reason: `ActivityDock` is the one place with the full
   // poll snapshot, and `NotificationHost` is the one column that draws it.
   const [popupJob, setPopupJob] = useState<Job | null>(null);
-
-  // THE SELF-UPDATE'S PROGRESS CARD (Akshil, 2026-09-19): the running
-  // `sys:update:<version>` row, bottom right, until the user closes it or the
-  // install stops. Same wiring shape as `popupJob` for the same reason.
-  const [updateJob, setUpdateJob] = useState<Job | null>(null);
 
   // Background mount-health poll → global disconnect/reconnect toasts. Mounted
   // once here for the page's lifetime (no-ops in embed); renders via NotificationHost.
@@ -1065,6 +1061,16 @@ export default function App({ config }: { config: Config }) {
       <div id="app">
         <OnboardingWizard key={epoch} config={config} />
         <NotificationHost />
+        {/* This whole branch already requires `!IS_EMBED` (the `if` above),
+            so this is never reachable under IS_EMBED today — but the guard
+            is spelled out explicitly anyway (finding #1, code review):
+            `UpdateNotifier`'s own header comment claims it runs "behind the
+            same !IS_EMBED guard as its siblings" everywhere it is mounted,
+            and leaving this instance implicit made that claim false at the
+            OTHER mount site below, which had no guard at all. Both sites now
+            say it the same way so the comment stays true regardless of how
+            this branch's own condition might change later. */}
+        {!IS_EMBED && <UpdateNotifier />}
         {/* Mod+K is App-wide (the listener above runs here too), so the sheet
             must be renderable here — or the flag flips with nothing shown and
             the sheet pops open on whatever page the wizard lets go to. */}
@@ -1108,7 +1114,6 @@ export default function App({ config }: { config: Config }) {
               <ActivityDock
                 onTerminalJobs={setTerminalJobs}
                 onJobPopup={setPopupJob}
-                onUpdateJob={setUpdateJob}
               />
             }
             repoUpdates={
@@ -1120,7 +1125,27 @@ export default function App({ config }: { config: Config }) {
           />
         )}
       </div>
-      <NotificationHost jobPopup={popupJob} onJobPopupGone={() => setPopupJob(null)} updateJob={updateJob} />
+      <NotificationHost jobPopup={popupJob} onJobPopupGone={() => setPopupJob(null)} />
+      {/* The two self-update notifications (Download available / Restart
+          ready), plus in-flight restart narration re-notifying the same card
+          — SPEC-update-notifications.md's consolidation of what used to be 5
+          separate surfaces (UpdateBadge, UpdateProgressCard, the restart
+          dialog, ActivityDock's update row, RepoUpdatesDock) into "Activity =
+          progress, Notifications = decisions". Headless — mounted beside
+          `NotificationHost` (both draw through the same notify() store)
+          rather than inside it, so `NotificationHost` stays a pure renderer
+          of whatever's in the store. Behind `!IS_EMBED`, same as the sidebar
+          and `StatusBar` above (finding #1, code review): this mount had NO
+          guard at all before, so an app opened in an embedded pane raised
+          its OWN copy of both decision notifications AND (via `notify()`'s
+          pane->shell forwarding, `platform/lib/notifications.ts`) pushed a
+          SECOND copy into the top shell's own panel — the exact double-popup
+          this file's other `!IS_EMBED`-gated mounts already exist to avoid.
+          `UpdateNotifier` only needs to run once, in the top document; the
+          decision it raises already reaches every pane through the ordinary
+          notify() store, so a pane mounting its own instance can only
+          duplicate work, never add coverage. */}
+      {!IS_EMBED && <UpdateNotifier />}
       {/* One dialog for every "Share" entry (card chip, card menu, app page,
           explorer kebab): the menu entries cannot own a dialog, so they post
           a request to platform/lib/share-app and this host renders it. */}

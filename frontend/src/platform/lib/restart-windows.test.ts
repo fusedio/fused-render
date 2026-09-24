@@ -183,9 +183,11 @@ test("BOTH windows reach reconnecting on their own probes, and NEITHER shows the
   expect(a.stage()).toBe("reconnecting");
   expect(b.stage()).toBe("reconnecting");
   // THE WHOLE POINT: the banner in both windows has reduced to "down" by now,
-  // and neither is allowed to draw that card while the restart is in flight.
-  expect(a.surface("down")).toBe("restart-dialog");
-  expect(b.surface("down")).toBe("restart-dialog");
+  // and neither is allowed to draw that card while the restart is in flight —
+  // `bannerSurface` suppresses it down to "none", not a dialog of its own
+  // (SPEC-update-notifications.md moved the decision to a notification).
+  expect(a.surface("down")).toBe("none");
+  expect(b.surface("down")).toBe("none");
 });
 
 test("a BACKGROUND window that missed the broadcast still joins on wake-up", async () => {
@@ -208,7 +210,7 @@ test("a BACKGROUND window that missed the broadcast still joins on wake-up", asy
   // same story A is telling.
   await b.focus();
   expect(b.stage()).toBe("quitting");
-  expect(b.surface("down")).toBe("restart-dialog");
+  expect(b.surface("down")).toBe("none");
 });
 
 test("a window that RELOADS mid-restart picks the story back up", async () => {

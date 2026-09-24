@@ -41,8 +41,9 @@
 // The active tab lives in the URL (`?tab=indexing`), same pattern as
 // Templates' bindings/library tabs.
 // Template bindings live in the dedicated /view/_templates view.
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  getConfig,
   getPrefs,
   putCallsEnabled,
   putCallsParamsMode,
@@ -63,6 +64,7 @@ import {
   putReaderEnabled,
   startHfLogin,
 } from "@platform/lib/api";
+import type { UpdateStatus } from "@platform/lib/api";
 import qrcode from "qrcode-generator";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
@@ -75,6 +77,15 @@ import { SkeletonLines } from "@platform/ui/Skeleton";
 import { useThemePref } from "@platform/lib/theme";
 import { IndexingPanel } from "@shell/Indexing";
 import { FusedAccountSection } from "@shell/FusedAccountSection";
+import {
+  CHECK_RESULT_HOLD_MS,
+  checkForUpdates,
+  checkNowLabel,
+  updateLabel,
+  updateRelevant,
+  useUpdateStatus,
+  type ManualCheckPhase,
+} from "@platform/lib/update-status";
 
 type PrefsTab = "render" | "ai" | "indexing" | "lan" | "account";
 
@@ -127,6 +138,145 @@ function AppearanceSection() {
           <b>Dark</b> — always dark, whatever your desktop is set to.
         </span>
       </label>
+    </section>
+  );
+}
+
+// SPEC-update-notifications.md: the manual "is there something new?" check
+// used to live on `UpdateBadge` (deleted, sidebar row above Settings) next to
+// the install button. Splitting the UI in two ("Activity = progress,
+// Notifications = decisions") left this check with nowhere to live but here —
+// it is neither progress nor a decision, just a question a person asks once
+// in a while. The DECISION that follows an answer (download it? restart for
+// it?) is `UpdateNotifier`'s job now; this section only ever fires the check
+// and reports what it learned, never a download/restart button of its own.
+function UpdatesSection() {
+  const status = useUpdateStatus();
+  const [version, setVersion] = useState<string | null>(null);
+  // This row's own phase — local, not the shared store: it is about THIS
+  // press ("Checking…", then the answer for a few seconds), same split
+  // `UpdateBadge` used between its own phase and the durable store state.
+  const [phase, setPhase] = useState<ManualCheckPhase>("rest");
+  const holdTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(holdTimer.current), []);
+  // WHEN THE SERVER WAS ALREADY LOOKING (bugbot, PR #1097, carried over
+  // verbatim from the deleted `UpdateBadge.tsx:108-129` per the spec's Files
+  // section — "that is a real bug fix, not decoration"). A non-forced
+  // check() that lands while the auto tick's own fetch is already out
+  // returns at once with "checking" — a promise of an answer, not the answer
+  // — and without this flag the row would misread that arrival as "Up to
+  // date" the instant it landed rather than waiting for the real result.
+  const awaiting = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getConfig().then((c) => {
+      if (!cancelled) setVersion(c.version);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const settle = useCallback((result: UpdateStatus) => {
+    // `updateRelevant` gates "current" the same way the deleted `UpdateBadge`
+    // gated the whole row (finding #2, code review): that component only
+    // ever rendered this button INSIDE `if (!updateRelevant(status))`, so
+    // "Up to date" could never appear over an `available`/`installing`/
+    // `installed`/`error` status. Porting `settle` onto this section's own
+    // local `phase` state dropped that gate — the check's own answer (this
+    // press found nothing NEW beyond what the store already knew, e.g. a
+    // "checking" that resolved back to "idle") does not mean the OVERALL
+    // status is irrelevant, so a check that lands while the store is already
+    // sitting on `available` must not claim "Up to date" over the "Update
+    // available" notification popping at the same instant. `rest` (silently
+    // fall back to the render's own `updateRelevant(status)` gate below,
+    // which then shows the real state) rather than "failed" — nothing here
+    // actually failed.
+    setPhase(result.check_error ? "failed" : updateRelevant(result) ? "rest" : "current");
+    clearTimeout(holdTimer.current);
+    holdTimer.current = setTimeout(() => setPhase("rest"), CHECK_RESULT_HOLD_MS);
+  }, []);
+
+  useEffect(() => {
+    if (!awaiting.current || !status || status.state === "checking") return;
+    awaiting.current = false;
+    settle(status);
+  }, [status, settle]);
+
+  const check = async () => {
+    if (phase === "checking") return;
+    clearTimeout(holdTimer.current);
+    setPhase("checking");
+    try {
+      const result = await checkForUpdates();
+      if (result.state === "checking") {
+        // Not an answer yet — see `awaiting` above.
+        awaiting.current = true;
+        return;
+      }
+      settle(result);
+    } catch {
+      // 404 (no updater), offline, server down — say so briefly; the poll
+      // that drives `UpdateNotifier` owns the durable story.
+      setPhase("failed");
+      holdTimer.current = setTimeout(() => setPhase("rest"), CHECK_RESULT_HOLD_MS);
+    }
+  };
+
+  // `status === null` means one of two different things (finding #6, code
+  // review), and the old code could not tell them apart:
+  //   1. An unpackaged dev run with no mac.DEV_MANAGER_ENV, or a non-mac
+  //      build — genuinely no updater, forever.
+  //   2. `useUpdateStatus()` simply has not heard back from its first
+  //      `/api/config` poll yet — its `getSnapshot` starts at `null` and
+  //      only flips once that request resolves.
+  // The deleted `UpdateBadge.tsx` handled this with its own `if (!status)
+  // return null` — render NOTHING during the unknown window. Porting the
+  // section onto local state lost that: `hasUpdater = status !== null`
+  // read case 2 as case 1, so every packaged build flashed "Updates aren't
+  // managed from inside the app on this build" — a false claim — for the
+  // length of that first request, on every single visit to this tab.
+  // `awaitingFirstStatus` distinguishes "haven't heard yet" (render
+  // nothing) from "heard, and there is nothing" (say so) by reusing
+  // `version`'s own one-shot `getConfig()` fetch above as the "have we
+  // heard back at all" signal, rather than adding a second `useState` for
+  // the same fact.
+  const awaitingFirstStatus = status === null && version === null;
+  const hasUpdater = status !== null;
+
+  return (
+    <section className="prefs-section">
+      <h2>Updates</h2>
+      <p className="deploy-muted">{version ? `Running v${version}.` : " "}</p>
+      {awaitingFirstStatus ? null : hasUpdater ? (
+        // UPDATE_RELEVANT GATE (finding #2, code review): the deleted
+        // `UpdateBadge` only ever rendered this button INSIDE
+        // `if (!updateRelevant(status))` — an update already found,
+        // installing, installed or failed is a DECISION, and
+        // `UpdateNotifier`'s own notification is what is asking it; this
+        // row's job is only the idle "is there something new?" question, so
+        // it must get out of the way rather than contradict that
+        // notification with "Up to date" at the same instant.
+        updateRelevant(status) ? (
+          <p className="deploy-muted">{updateLabel(status)}</p>
+        ) : (
+          <div className="prefs-actions">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={phase === "checking"}
+              onClick={() => void check()}
+            >
+              {checkNowLabel(phase, version)}
+            </button>
+          </div>
+        )
+      ) : (
+        <p className="deploy-muted">
+          Updates aren&rsquo;t managed from inside the app on this build.
+        </p>
+      )}
     </section>
   );
 }
@@ -1080,6 +1230,7 @@ export default function Preferences() {
             {tab === "render" && (
               <>
                 <AppearanceSection />
+                <UpdatesSection />
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
                 <CanvasesSection prefs={prefs} onChange={setPrefs} />

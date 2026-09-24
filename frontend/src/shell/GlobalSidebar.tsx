@@ -13,10 +13,8 @@
 import { useEffect, useRef, useState } from "react";
 import { ListTodo } from "lucide-react";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
-import UpdateBadge from "@platform/ui/UpdateBadge";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { Config } from "@platform/lib/api";
-import { updateLabel, updateRelevant, useUpdateStatus } from "@platform/lib/update-status";
 import { navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { TOURS, startTour } from "@platform/lib/tours";
@@ -434,20 +432,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const aiRuntime = useAiRuntime();
   const residentModels = aiRuntime.loaded.filter((m) => m.state === "ready");
 
-  // The same self-update poll UpdateBadge reads (platform/lib/update-status) —
-  // one store, so the collapsed rail's dot on Preferences agrees with the
-  // expanded badge about what's happening, without a second timer. The
-  // Settings popover itself says NOTHING about updates any more (Akshil,
-  // 2026-09-19: "there should be nothing related to download update version
-  // in setting dropdown") — the badge above Settings is the one door.
-  const updateStatus = useUpdateStatus();
-  const updateIsRelevant = updateRelevant(updateStatus);
-  const updateDot = updateIsRelevant ? (
-    <span
-      className="sidebar-rail-dot is-update"
-      title={updateLabel(updateStatus!)}
-    />
-  ) : undefined;
   // `.sidebar-rail-dot`, the SAME dot the Tasks row wears, since 2026-08-24
   // (Akshil: "the dots in left sidebar are not consistent, make dot on ai models
   // page similar to one we have in tasks page"). It wore
@@ -761,10 +745,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       // Same Settings popover as the expanded row, not a straight nav — the
       // collapsed rail otherwise has no way to reach Templates/Mounts/etc.
       onClick: (e) => togglePrefsMenu(e.currentTarget),
-      // The rail's only signal that an update exists: collapsed, there is no
-      // Settings row for the UpdateBadge to sit above (see design.md §1) — so
-      // the same fact becomes a dot on the one rail icon that leads to it.
-      badge: updateDot,
+      // No update dot any more (SPEC-update-notifications.md): the manual
+      // check moved into Preferences, and the two decision moments the app
+      // actually needs to surface are now the Notifications chip's own two
+      // cards — a second, quieter signal here would just be a rhyme of that
+      // chip's own count.
     },
   ];
 
@@ -829,9 +814,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         <CurrentAppsSection />
         <BookmarksSection />
         <div className="sidebar-section sidebar-settings">
-          {/* `version` for the idle row's "Up to date · vX": the same number the
-              chip on the Settings row shows, from the config this sidebar holds. */}
-          <UpdateBadge version={config.version ?? null} />
           {/* Setup progress, above Settings: "Setup · 60%", back into the wizard. */}
           {setupMeter && <SetupProgressRow meter={setupMeter} />}
           {/* The version rides the Settings row's trailing edge rather than the

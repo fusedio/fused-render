@@ -10,17 +10,15 @@
 // Restart outranks refresh: while the disk is ahead of the server, a refresh
 // still leaves a stale server, so never advertise it (and never auto-reload).
 //
-// BOTH CASES ARE ONE DIALOG NOW (D1, 2026-09-18): `update-restart` used to be a
-// card in the notification stack and is `UpdateDialog`'s "restart" mode — see
-// that component, and `restart-flow.ts` for the stages it shows once the button
-// is pressed. This table is unchanged by that: what a probe MEANS is the same
-// fact either way.
-import {
-  restartInFlight,
-  RESTART_SLOW_MS,
-  RESTART_STAGES,
-  type RestartStage,
-} from "@platform/lib/restart-flow";
+// `update-restart` USED TO be a blocking dialog (`UpdateDialog`'s "restart"
+// mode, D1) and before that a card in the notification stack. Both are gone
+// now (SPEC-update-notifications.md): the decision moment is a status-bar
+// notification (`platform/ui/UpdateNotifier.tsx`), driven off the shared
+// update store and `restart-flow.ts` directly, not off this banner. This
+// table is unchanged by any of that churn — what a probe MEANS is the same
+// fact regardless of which surface narrates it — except that `bannerSurface`
+// below no longer has a dialog to point at, only a card to suppress.
+import { restartInFlight, type RestartStage } from "@platform/lib/restart-flow";
 
 export type ServerBanner =
   | "hidden"
@@ -53,18 +51,14 @@ export const FAIL_THRESHOLD = 2;
  *  `updateDialogMode`). */
 export const UPDATE_DIALOG_PARAM = "update_modal";
 export const UPDATE_DIALOG_KEY = "fused_update_modal";
-/** Which stage the RESTART preview is frozen at — `?update_modal=restart&
- *  stage=reconnecting`. Ignored by the refresh preview, which has no stages. */
-export const UPDATE_STAGE_PARAM = "stage";
-/** Freeze the restart preview PAST the 25s mark, so the "taking a little longer
- *  than usual" sentence can be looked at without sitting through the wait —
- *  `?update_modal=restart&stage=restarting&slow=1`. Dev-only, like the rest of
- *  the preview: it only says how far back to place the pretend press. */
-export const UPDATE_SLOW_PARAM = "slow";
 
-/** The two things the preview flag can ask for. `"1"` is the original refresh
- *  preview and keeps its spelling so a bookmarked dev URL still works. */
-const PREVIEW_VALUES = ["1", "restart"] as const;
+/** The one thing the preview flag can ask for — the refresh dialog. It used to
+ *  also carry `"restart"` (`?update_modal=restart&stage=...`) for
+ *  `UpdateDialog`'s now-deleted restart mode; that value is gone along with
+ *  the mode it previewed (SPEC-update-notifications.md) rather than kept
+ *  alive for a component that no longer exists. `"1"` keeps its spelling so a
+ *  bookmarked dev URL still works. */
+const PREVIEW_VALUES = ["1"] as const;
 type PreviewValue = (typeof PREVIEW_VALUES)[number];
 
 function previewValue(search: string, stored: string | null): PreviewValue | null {
@@ -118,69 +112,21 @@ export function updateDialogMode(
 }
 
 /**
- * WHICH dialog the preview flag is asking for, and — for the restart one —
- * which stage to freeze it at. Null when the flag is not set at all.
- *
- * The restart mode needs this where the refresh mode did not, because it has
- * SIX faces and five of them only exist while the app is actually gone: the
- * only way to look at "Reconnecting…" otherwise is to quit the app you are
- * working in and race the respawn. `?update_modal=restart&stage=reconnecting`
- * paints that face with no restart behind it, exactly as the refresh preview
- * paints a mismatch that is not there.
- *
- * An unknown or missing `stage` is `ready` — the face a real restart starts on,
- * so a typo shows the dialog rather than nothing.
- *
- * `slow` is the SEVENTH face: the in-flight body after `RESTART_SLOW_MS`, which
- * is not a stage (the machine is still in `restarting`) and so cannot be reached
- * by naming one. It is carried as a flag rather than as a stage for exactly that
- * reason — inventing a stage for it here would put a face in the preview that
- * the real machine can never be in.
+ * WHICH dialog the preview flag is asking for. Null when the flag is not set
+ * at all. Only the refresh dialog can be previewed now — `updateDialogPreview`
+ * used to also answer for `UpdateDialog`'s "restart" mode
+ * (`?update_modal=restart&stage=...`), freezing it at one of its six faces
+ * with no real restart behind it. That mode is deleted
+ * (SPEC-update-notifications.md: the restart decision is a notification, not
+ * a dialog), so there is nothing left for a `stage`/`slow` flag to preview —
+ * dropped rather than kept pointed at a component that no longer exists.
  */
 export function updateDialogPreview(
   search: string,
   stored: string | null,
-): { kind: "refresh" } | { kind: "restart"; stage: RestartStage; slow: boolean } | null {
+): { kind: "refresh" } | null {
   const value = previewValue(search, stored);
-  if (value === null) return null;
-  if (value === "1") return { kind: "refresh" };
-  const params = new URLSearchParams(search);
-  const raw = params.get(UPDATE_STAGE_PARAM);
-  const known = (RESTART_STAGES as readonly string[]).includes(raw ?? "");
-  return {
-    kind: "restart",
-    stage: known ? (raw as RestartStage) : "ready",
-    slow: params.get(UPDATE_SLOW_PARAM) === "1",
-  };
-}
-
-/**
- * THE VERSION THE PREVIEW PRETENDS IS WAITING. A dev server is serving the
- * checkout's own version and has nothing newer on disk, so the restart dialog
- * previewed there says "Closing v0.5.53 and starting v0.5.53" — which is not
- * what any reader will ever see, and is the one sentence the whole flow turns
- * on. So the preview invents the DISAGREEMENT, exactly as the refresh preview
- * does and for the same reason: it is the only thing a dev machine cannot
- * supply, and everything else on the dialog stays real.
- *
- * A genuine pending update wins outright — if the disk really is ahead, the
- * preview shows the real number rather than a made-up one.
- */
-export function previewInstalledVersion(version: string, installed: string): string {
-  if (installed && installed !== version) return installed;
-  const parts = version.split(".");
-  const patch = Number(parts[parts.length - 1]);
-  if (parts.length < 2 || !Number.isFinite(patch)) return version;
-  return [...parts.slice(0, -1), String(patch + 1)].join(".");
-}
-
-/** The pretend press instant a preview hands the dialog. `slow` places it far
- *  enough back that the dialog's own clock reads the wait as overlong on the
- *  FIRST paint — the preview shows a face, it does not make you wait 25s for
- *  one — and a plain preview places it now, which freezes the ordinary
- *  sentence for as long as the page is left open. */
-export function previewRequestedAt(slow: boolean, now: number): number {
-  return slow ? now - RESTART_SLOW_MS - 1_000 : now;
+  return value === null ? null : { kind: "refresh" };
 }
 
 export function initialStatus(): StatusState {
@@ -237,12 +183,7 @@ export function reduceProbe(
 // says the app is coming back is the exact contradiction this flow exists to
 // remove. Pure, so the agreement is a test rather than a reading of JSX.
 
-export type BannerSurface =
-  | "none"
-  | "down"
-  | "reconnected"
-  | "refresh-dialog"
-  | "restart-dialog";
+export type BannerSurface = "none" | "down" | "reconnected" | "refresh-dialog";
 
 export interface SurfaceInput {
   banner: ServerBanner;
@@ -256,37 +197,62 @@ export interface SurfaceInput {
 }
 
 export function bannerSurface({ banner, mode, updateState, stage }: SurfaceInput): BannerSurface {
-  // TWO DOORS INTO THE RESTART DIALOG, and it needs both. The banner's own
-  // `update-restart` is the durable fact (the disk is ahead of the running
-  // app), reached on the 5 s probe; the update store saying "installed" is the
-  // same news two ticks earlier, on its 2 s busy cadence, which is what makes
-  // the dialog POP ON ITS OWN the moment the install lands (D2) rather than
-  // whenever the next probe happens to be.
-  const installedReady = banner === "update-restart" || updateState === "installed";
+  // THE SERVER IS STILL ANSWERING, JUST AN OLDER BUILD (2026-09-22 fix,
+  // finding #5, code review). `banner === "update-restart"` is `reduceProbe`
+  // saying the disk is ahead of what the running server just served on a
+  // HEALTHY probe — the app is demonstrably up, just not yet restarted onto
+  // the new build, so the "isn't running" card would be a lie here.
+  //
+  // `updateState === "installed"` used to be OR'd in alongside it (the same
+  // fact two ticks earlier, off the update store's 2s busy poll, per D2 —
+  // `UpdateNotifier` reads the SAME field to raise its own restart
+  // notification without waiting for a 5s probe). That reasoning is sound
+  // for as long as the server is actually still responding. The bug: this
+  // field never goes back to anything else until an ACTUAL restart happens
+  // (installing on disk does not touch the live process), so it stayed true
+  // for the rest of the session regardless of what happened next. If the
+  // running server then genuinely crashed for an unrelated reason — no
+  // restart ever requested, `stage` still sitting at "ready" — two failed
+  // probes flipped `banner` to "down" while `updateState` was still
+  // "installed" from minutes earlier, and this OR suppressed the real outage
+  // forever: a session-long "everything's fine" over an app that had
+  // actually died. Dropping it and keeping only `banner === "update-restart"`
+  // fixes that — that condition is false the instant probes start failing
+  // (`reduceProbe` overwrites `banner` with "down" past `FAIL_THRESHOLD`,
+  // whatever it was before), so it can no longer paper over a real outage,
+  // while a genuine "disk ahead, server still healthy" wait still shows
+  // nothing, exactly as before.
+  const diskAheadOfHealthyServer = banner === "update-restart";
 
   // THE CAP'S FALL-THROUGH (D4), and it is the FIRST thing asked. `gave-up`
   // means the stage machine stopped promising; what the page shows from then on
   // is whatever the SERVER says, with no stage attached. While the server is
   // still not answering that is the ordinary down card — the case the cap
-  // exists for — and it has to outrank both doors below, because both stay open
-  // through an outage: `update-restart` is the last thing the banner knew, and
-  // the update store keeps its last value when its poll fails. Without this the
-  // dialog would outlive the promise it made.
+  // exists for — and it has to outrank the door below, which stays open
+  // through an outage: `update-restart` is the last thing the banner knew
+  // before probes started failing. Without this the down card would stay
+  // suppressed past the promise that suppressed it.
   //
-  // WITH THE SERVER ANSWERING IT IS NOT THE DOWN CARD, and that is deliberate
-  // (bugbot, PR #1214): a restart that did not take leaves the app demonstrably
-  // running with the disk still ahead, so "fused-render isn't running" would be
-  // a lie and the only way back to the button would be a page reload. The
-  // ordinary doors below take it instead, and the dialog draws its button again
-  // for `gave-up` exactly as it does for `ready` — a restart is worth offering
-  // a second time.
+  // WITH THE SERVER ANSWERING THE DOWN CARD STAYS SUPPRESSED TOO, and that is
+  // deliberate (bugbot, PR #1214): a restart that did not take leaves the app
+  // demonstrably running with the disk still ahead, so "fused-render isn't
+  // running" would be a lie. The ordinary door below takes it instead — there
+  // is no dialog left to draw a button on `gave-up`; the restart notification
+  // (`UpdateNotifier`) offers the retry instead, and it is not this function's
+  // concern.
   if (stage === "gave-up" && banner === "down") return "down";
 
-  // A restart in flight holds the dialog on its own: from the first failed
-  // probe onwards there is no /api/config left to ask, so neither door below
-  // can stay open — and this is also what SUPPRESSES THE DOWN CARD (step 5),
-  // because the dialog is returned before it.
-  if (restartInFlight(stage) || installedReady) return "restart-dialog";
+  // A restart in flight (or a disk-ahead wait with the server still
+  // healthy) suppresses the "isn't running" card on its own — this IS step
+  // 5, the whole of what PR #1214 fixed, and the one thing this function
+  // still owes the restart flow now that the dialog itself is gone: the app
+  // being gone from the first failed probe onward, DURING an actual
+  // restart, is the restart working, not an outage to report.
+  // `restartInFlight(stage)` alone already covers every in-flight restart
+  // stage regardless of `banner` (see this file's own test asserting the
+  // down card never wins during one) — `diskAheadOfHealthyServer` only adds
+  // the pre-request "ready to restart, haven't pressed it yet" wait.
+  if (restartInFlight(stage) || diskAheadOfHealthyServer) return "none";
   if (banner === "hidden") return "none";
   if (banner === "reconnected") return "reconnected";
   if (banner === "update-refresh") return mode === "off" ? "none" : "refresh-dialog";
