@@ -10,41 +10,50 @@
 //
 // `window`/`location`/`history` are the minimal globals this component's own
 // hooks touch (`useUrlVersion`'s `window.addEventListener`, `replaceSearch`'s
-// `history.replaceState`) — installed once at file load, mirroring
-// RepoUpdatesDock.test.tsx's own router.ts precedent (a real, unmocked
-// router.ts import needs exactly these), then left in place only for this
-// file's own tests, which reset them per-test instead of tearing them down —
-// unlike that file, this one's tests actually exercise `window`/`history`
-// rather than only needing the module-init pass through.
+// `history.replaceState`). `installDomShim()` (testDomShim.ts) lands the
+// project's own shared, complete stand-ins first — every member any OTHER
+// suite's transitively-imported module reaches for (`window.dispatchEvent`,
+// `setInterval`, `Element`, …) — and is idempotent, so it is a no-op if some
+// earlier file in this `bun test` run already installed it.
+//
+// This file then OVERWRITES only the members it actually exercises
+// (`window.addEventListener`/`removeEventListener`, `history.replaceState`)
+// with versions that track `listeners`/`replaced`/`currentUrl` below, in
+// place on the shared shim objects rather than by replacing `window`/
+// `history` outright. Replacing them outright was the bug here: `bun test`
+// shares one `globalThis` across every file in the run (testDomShim.ts's own
+// header), and a hand-rolled `window` missing `dispatchEvent` — a member this
+// file's own tests never call, but `router.ts`'s `navigate()` calls
+// unconditionally on every OTHER suite that runs after this one in the same
+// process — broke every test elsewhere that calls `navigate()`.
 import { beforeEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
+import { installDomShim } from "@platform/lib/testDomShim";
 
 let currentUrl = { pathname: "/apps/repo/myapp", search: "" };
 let replaced: string[] = [];
 const listeners = new Map<string, Set<() => void>>();
 
+installDomShim();
 (globalThis as Record<string, unknown>).location = currentUrl;
-(globalThis as Record<string, unknown>).window = {
-  addEventListener: (ev: string, fn: () => void) => {
-    if (!listeners.has(ev)) listeners.set(ev, new Set());
-    listeners.get(ev)!.add(fn);
-  },
-  removeEventListener: (ev: string, fn: () => void) => {
-    listeners.get(ev)?.delete(fn);
-  },
+const shimWindow = (globalThis as Record<string, unknown>).window as Record<string, unknown>;
+shimWindow.addEventListener = (ev: string, fn: () => void) => {
+  if (!listeners.has(ev)) listeners.set(ev, new Set());
+  listeners.get(ev)!.add(fn);
 };
-(globalThis as Record<string, unknown>).history = {
-  state: null,
-  replaceState: (_state: unknown, _title: string, url: string) => {
-    replaced.push(url);
-    const [pathname, search] = url.split("?");
-    currentUrl = { pathname, search: search ? "?" + search : "" };
-    (globalThis as Record<string, unknown>).location = currentUrl;
-    // main.tsx wraps the real history.replaceState to also dispatch
-    // "fused:urlchange" (useUrlVersion's own signal) — replicated here, since
-    // this fake stands in for that wrapper, not for the bare browser API.
-    for (const fn of listeners.get("fused:urlchange") ?? []) fn();
-  },
+shimWindow.removeEventListener = (ev: string, fn: () => void) => {
+  listeners.get(ev)?.delete(fn);
+};
+const shimHistory = (globalThis as Record<string, unknown>).history as Record<string, unknown>;
+shimHistory.replaceState = (_state: unknown, _title: string, url: string) => {
+  replaced.push(url);
+  const [pathname, search] = url.split("?");
+  currentUrl = { pathname, search: search ? "?" + search : "" };
+  (globalThis as Record<string, unknown>).location = currentUrl;
+  // main.tsx wraps the real history.replaceState to also dispatch
+  // "fused:urlchange" (useUrlVersion's own signal) — replicated here, since
+  // this fake stands in for that wrapper, not for the bare browser API.
+  for (const fn of listeners.get("fused:urlchange") ?? []) fn();
 };
 
 const { default: AppVersionPicker } = await import("@shell/AppVersionPicker");
