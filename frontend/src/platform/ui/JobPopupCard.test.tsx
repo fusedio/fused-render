@@ -317,61 +317,17 @@ test("an iframe taking focus (a press inside an app page) starts the exit animat
   // focus to the iframe itself, which is exactly what this test fakes: no
   // iframe focused yet when the card mounts, then a blur that hands focus
   // to one for the first time.
-
-  // TEMPORARY DIAGNOSTICS ROUND 2 — remove once CI's real cause is found.
-  console.log(
-    "DIAG2 document.activeElement (pre-mount)=",
-    document.activeElement,
-    "descriptor=",
-    JSON.stringify(
-      Object.getOwnPropertyDescriptor(document, "activeElement"),
-      (_k, v) => (typeof v === "function" ? "[function]" : v),
-    ),
-  );
-  let diagBlurAdds = 0;
-  const diagOrigAdd = globalThis.addEventListener.bind(globalThis);
-  (globalThis as unknown as { addEventListener: typeof globalThis.addEventListener }).addEventListener = (
-    type: string,
-    fn: EventListenerOrEventListenerObject,
-    opts?: boolean | AddEventListenerOptions,
-  ) => {
-    if (type === "blur") diagBlurAdds++;
-    return diagOrigAdd(type, fn, opts);
-  };
-
   let renderer: ReturnType<typeof create>;
   await act(async () => {
     renderer = create(<JobPopupCard job={JOB} onGone={() => {}} />);
   });
 
-  (globalThis as unknown as { addEventListener: typeof globalThis.addEventListener }).addEventListener = diagOrigAdd;
-  console.log("DIAG2 blur listeners added during THIS mount=", diagBlurAdds);
-  console.log("DIAG2 className right after mount=", (renderer!.toJSON() as ReactTestRendererJSON).props.className);
-
   await withActiveElement(fakeIframe(), async () => {
-    console.log(
-      "DIAG2 document.activeElement (before blur)=",
-      document.activeElement,
-      "instanceof HTMLIFrameElement=",
-      document.activeElement instanceof
-        (globalThis as unknown as { HTMLIFrameElement: new () => object }).HTMLIFrameElement,
-    );
-
-    let diagErr: unknown;
-    const diagOnError = (e: ErrorEvent | Event) => {
-      diagErr = (e as ErrorEvent).error ?? e;
-    };
-    globalThis.addEventListener("error", diagOnError as EventListener);
-
     await act(async () => {
       globalThis.dispatchEvent(new Event("blur"));
     });
 
-    globalThis.removeEventListener("error", diagOnError as EventListener);
-    console.log("DIAG2 error captured during blur dispatch=", diagErr);
-
     const json = renderer!.toJSON() as ReactTestRendererJSON;
-    console.log("DIAG2 className right after blur=", json.props.className);
     expect(json.props.className).toContain("leaving");
   });
 
