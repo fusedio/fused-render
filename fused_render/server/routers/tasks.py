@@ -468,6 +468,15 @@ def _absorb(rec: dict, line: str) -> None:
         # answer (Akshil, 2026-09-23: "always Interrupted by you, even though
         # we have first line of the response"). Clears the raw line still
         # waiting on `_condense_reply`, or that reply would win the scan.
+        # Same age rule as that condense (Bugbot, PR #1317): a marker a
+        # compaction replays after a LATER turn's reply is older than what
+        # the record holds and leaves it alone. The reply it must not beat
+        # may still be the raw line waiting for the end-of-scan condense, so
+        # it is condensed here first — one extra parse on a stop, no more.
+        _condense_reply(rec)
+        held_at = float(rec.get("reply_at") or 0.0)
+        if stopped_at and held_at and stopped_at < held_at:
+            return
         rec["reply_line"] = ""
         rec["reply"] = _INTERRUPTED_REPLY
         rec["reply_at"] = stopped_at

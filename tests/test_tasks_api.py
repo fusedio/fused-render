@@ -951,6 +951,18 @@ def test_a_stopped_turn_prints_interrupted_where_the_reply_goes(
             if r.get("last_message")}
     assert rows["draft an essay"] == "Interrupted by you"
 
+    # ...and the other way round (Bugbot, PR #1317): an OLDER stop marker
+    # replayed after a later turn's reply does not take that reply's place.
+    _write_transcript(projects_dir, "sess-c", "/r", [
+        _user("draft an essay", T9),
+        _user("shorter please", T10),
+        _assistant("Done: 200 words.", T12),
+        _user("[Request interrupted by user]", T11, uuid="u2"),
+    ])
+    rows = {r["last_message"]["text"]: r["last_reply"] for r in _tasks(client)
+            if r.get("last_message")}
+    assert rows["shorter please"] == "Done: 200 words."
+
 
 def test_the_compact_summary_is_not_the_last_message(client, projects_dir):
     # /compact writes its recap as a `user` row (`isCompactSummary`), not
