@@ -407,6 +407,33 @@ describe("start → poll → done", () => {
     expect(users(controller)[0]!.pending).toBeUndefined();
   });
 
+  test("a follow-up with `orStart` opens a fresh turn when no run is live, same bubble", async () => {
+    // A line the page parked behind a send drains after that run has already
+    // ended. Without the flag this road hands the words back ("no run to attach");
+    // with it, the same bubble becomes the opening message of a new turn.
+    const { controller, agent, stranded, returned } = makeController({
+      start: () => ({ run_id: "r2", session_id: "s2" }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    const key = controller.postOptimisticUser("parked line", "queued");
+    await controller.sendFollowUp("parked line", { optimisticKey: key, orStart: true });
+    expect(agent.of("start")).toHaveLength(1);
+    expect(agent.of("start")[0]!.fields).toMatchObject({ message: "parked line" });
+    expect(users(controller).map((t) => t.text)).toEqual(["parked line"]);
+    expect(users(controller)[0]!.pending).toBeUndefined();
+    expect(controller.getState().queued).toEqual([]);
+    expect(stranded).toEqual([]);
+    expect(returned).toEqual([]);
+    // …and without the flag, the old road: handed back, no start.
+    const plain = makeController({
+      start: () => ({ run_id: "r3" }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    await plain.controller.sendFollowUp("alone", {});
+    expect(plain.agent.of("start")).toHaveLength(0);
+    expect(plain.returned.map((r) => r.text)).toEqual(["alone"]);
+  });
+
   test("a dead host, a refusal or a respawn all fall through to `start`", async () => {
     for (const answer of [{ error: "no host" }, { respawn: true as const }, null]) {
       const params = createMemoryParamsStore({ session_id: "s1" });

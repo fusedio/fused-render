@@ -1281,14 +1281,14 @@ function heldStart(): () => void {
   return open;
 }
 
-test("a line typed while the run is only STARTING stays in the box, and sends after", async () => {
+test("a line typed while the run is only STARTING is parked as a queued bubble, and sends after", async () => {
   // `sendMessage` sets its own `sending` gate before its first await and holds
   // it for the whole turn, but the STATUS the composer routes on stays `idle`
-  // until `pollLoop` reports — one `start` round-trip away. The door used to
-  // open the moment the controller took the message, so a line typed inside
-  // that window read as "no run yet": the composer sent it as a FRESH message,
-  // the controller refused it out loud, and the refusal took the optimistic
-  // bubble down with it. The words were nowhere (Bugbot, PR #1074).
+  // until `pollLoop` reports — one `start` round-trip away. A line typed inside
+  // that window used to be REFUSED by the composer's latch and left in the box
+  // with no sign (PR #1074's fix for the words being nowhere) — and a fast
+  // second Enter then glued it onto the third line (multi-send QA 2026-09-19).
+  // Claude Code queues such a line; so does this page now (`ui/outbox.ts`).
   const open = heldStart();
   const { r } = await mountChat();
   await typeInBox(r, "first message");
@@ -1301,34 +1301,44 @@ test("a line typed while the run is only STARTING stays in the box, and sends af
   expect(started()).toHaveLength(1);
   expect(boxValue(r)).toBe("");
 
-  // A follow-up typed inside it. THE DOOR IS SHUT — in the submit handler,
-  // which is where T shuts every one of them (T:4187 sets no `disabled` on this
-  // button, ever): the run is not live, so this is not yet a follow-up the
-  // controller could take.
   await typeInBox(r, "second message");
   const sendBtn = () =>
     r.root.findAll((n) => typeof n.type === "string" && n.props["aria-label"] === "Send")[0]!;
   expect(sendBtn().props.disabled).toBeUndefined();
 
   await pressEnterInBox(r);
+  await settle();
 
-  // Refused by the latch — so it costs the user nothing: the words are still in
-  // the box, and no second `start` was spawned for the controller to refuse.
-  expect(boxValue(r)).toBe("second message");
+  // PARKED, not refused: the box is empty, the line is a bubble wearing the
+  // "queued" tag, and no second `start` was spawned for the controller to
+  // refuse.
+  expect(boxValue(r)).toBe("");
   expect(started()).toHaveLength(1);
-  // ONE bubble, the first message's; the second is still a draft.
-  expect(byClass(r, "bubble").map((n) => String(n.props.children))).toEqual(["first message"]);
+  expect(byClass(r, "bubble").map((n) => String(n.props.children))).toEqual([
+    "first message",
+    "second message",
+  ]);
+  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual(["queued"]);
+  expect(JSON.stringify(r.toJSON())).toContain("1 message waiting to send");
 
   await act(async () => open());
-  await settle(30);
+  // The follow-up road waits FOLLOWUP_WAIT_TRIES × FOLLOWUP_WAIT_MS (3 s, real
+  // clock in this harness) for a live run before it falls through.
+  await settle(3400);
 
-  // The turn is over, the door is open, and the words that were held are still
-  // there to send — never lost.
-  expect(boxValue(r)).toBe("second message");
-  await pressEnterInBox(r);
-  await settle(30);
+  // The door is open, and the parked line went out on its own. The run it was
+  // parked behind had already ENDED by the time the drain reached the host
+  // (this harness answers the first poll `done`), so the follow-up road found
+  // no run — and fell through to a fresh turn (`SendOptions.orStart`) rather
+  // than giving up: one bubble, tag gone, never lost and never typed twice.
   expect(started()).toHaveLength(2);
   expect(started()[1]!.params.message).toContain("second message");
+  expect(byClass(r, "turn-pending")).toHaveLength(0);
+  expect(byClass(r, "bubble").map((n) => String(n.props.children))).toEqual([
+    "first message",
+    "second message",
+  ]);
+  expect(boxValue(r)).toBe("");
 });
 
 test("the run going live opens the door without waiting for the turn to end", async () => {

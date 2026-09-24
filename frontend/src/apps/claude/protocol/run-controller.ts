@@ -2103,6 +2103,17 @@ export function createChatController(deps: ControllerDeps): ChatController {
       runId = activeRun;
     }
     if (!runId) {
+      // A PARKED LINE OPENS A FRESH TURN INSTEAD (`SendOptions.orStart`): the
+      // run it was parked behind ended before the drain got here, and the
+      // words were typed to be said either way. Same bubble — `sendMessage`
+      // adopts the row this follow-up already adopted — and the queue entry
+      // goes, because the line is no longer waiting behind anything.
+      if (opts.orStart && logGen === gen && !disposed) {
+        drop();
+        const { orStart: _o, ...rest } = opts;
+        await sendMessage(text, { ...rest, optimisticKey: bubble.key });
+        return;
+      }
       // GUARDED LIKE THE RESPAWN ROAD BELOW (`logGen === gen`, :1443). This road
       // has slept up to FOLLOWUP_WAIT_TRIES × FOLLOWUP_WAIT_MS, which is ample
       // room for a Back (or an `openOtherSession`) to land — and an unguarded
