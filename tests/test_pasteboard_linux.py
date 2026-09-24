@@ -471,7 +471,18 @@ _SILENT_OWNER = (
     "time.sleep(30)\n"
 )
 
+# These tests, unlike the rest of this file, actually spawn a real owner
+# subprocess and drive it through `_wait_for_owner_ready`/`_write_stdin_bounded`
+# — the two functions in `_linux.py` that use `fcntl` for non-blocking pipe
+# I/O (module docstring). `shutil.which`/`subprocess.run` being faked doesn't
+# cover that: the pipe to the owner is a real one, so this is genuinely
+# POSIX-only, not something a Windows-shaped fake could stand in for.
+_needs_owner_pipe = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="drives a real owner subprocess through fcntl-based pipe I/O")
 
+
+@_needs_owner_pipe
 def test_write_files_uses_the_owner_when_a_capable_interpreter_exists(
         env, tmp_path, monkeypatch):
     owner = tmp_path / "owner.py"
@@ -506,6 +517,7 @@ def test_write_files_falls_back_when_the_owner_fails_to_spawn(env, monkeypatch):
     assert run.calls[-1][0][0] == "xclip"
 
 
+@_needs_owner_pipe
 def test_write_files_falls_back_when_the_owner_never_signals_ready(
         env, tmp_path, monkeypatch):
     owner = tmp_path / "owner.py"
@@ -552,6 +564,7 @@ _STRAY_LINE_NEVER_READY_OWNER = (
 )
 
 
+@_needs_owner_pipe
 def test_write_files_falls_back_when_the_owner_prints_the_wrong_token(
         env, tmp_path, monkeypatch):
     owner = tmp_path / "owner.py"
@@ -565,6 +578,7 @@ def test_write_files_falls_back_when_the_owner_prints_the_wrong_token(
     assert run.calls[-1][0][0] == "xclip"
 
 
+@_needs_owner_pipe
 def test_write_files_tolerates_a_stray_line_before_the_ready_token(
         env, tmp_path, monkeypatch):
     # The deliberate design choice: a single stray line before the token is
@@ -581,6 +595,7 @@ def test_write_files_tolerates_a_stray_line_before_the_ready_token(
     assert not any(argv[0] in ("xclip", "wl-copy") for argv, _ in run.calls)
 
 
+@_needs_owner_pipe
 def test_write_files_falls_back_when_the_owner_only_ever_prints_stray_lines(
         env, tmp_path, monkeypatch):
     # Tolerance is bounded on both axes: a child that never stops writing
@@ -600,6 +615,7 @@ def test_write_files_falls_back_when_the_owner_only_ever_prints_stray_lines(
 
 # --------------------------------------- owner: a not-ready owner is killed
 
+@_needs_owner_pipe
 def test_write_files_kills_an_owner_that_never_signals_ready(
         env, tmp_path, monkeypatch):
     owner = tmp_path / "owner.py"
@@ -632,6 +648,7 @@ def test_write_files_kills_an_owner_that_never_signals_ready(
 
 # ---------------------------------- owner: the parent<->child wire contract
 
+@_needs_owner_pipe
 def test_write_files_sends_exactly_the_paths_dict_to_the_owner(
         env, tmp_path, monkeypatch):
     # Pins the one point of coupling between _linux.py and _linux_owner.py:

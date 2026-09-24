@@ -29,11 +29,13 @@ not of this backend as a whole.
 
 Everything here is driven through `shutil.which` and `subprocess.run`, both
 looked up on the module at call time, so the tests fake them and run on any
-platform.
+platform. `fcntl` is the one exception — it's Unix-only, so it's imported
+inside the two functions that need it (non-blocking pipe I/O to the owner
+process) rather than at module scope, keeping this module importable on
+Windows even though those two functions never actually run there.
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import select
@@ -280,6 +282,8 @@ def _wait_for_owner_ready(stream) -> bool:
     `os.read`) into a buffer this function owns outright, and only `select`
     decides whether to wait for the next chunk.
     """
+    import fcntl
+
     fd = stream.fileno()
     flags = fcntl.fcntl(fd, fcntl.F_GETFL)
     fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
@@ -330,6 +334,8 @@ def _write_stdin_bounded(stream, data: bytes) -> bool:
     raises `BlockingIOError`, on running out of that budget — the caller
     treats it exactly like a readiness timeout: kill the child, fall back.
     """
+    import fcntl
+
     fd = stream.fileno()
     flags = fcntl.fcntl(fd, fcntl.F_GETFL)
     fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)

@@ -55,6 +55,9 @@ jobs:
               - 'scripts/setup_py2app.py'
               - 'scripts/app_entry.py'
               - 'scripts/file_associations.*'
+              # Dependency pins live here; a pin change (e.g. missing boto3/pygments) only
+              # breaks the DMG at build/import time, so this must trigger the smoke build.
+              - 'pyproject.toml'
               # The apple tier's Swift helper ships inside the DMG (D700).
               - 'scripts/build_apple_helper.sh'
               - 'fused_render/ai/apple/helper/**'

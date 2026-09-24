@@ -32,7 +32,12 @@ Four invariants, all from the same run of reviews (Akshil, 2026-08-17):
 
 4. **The description reads as body text under a heading.** Two faces, not two
    sizes of the same face: the numbers are read out of the file and compared, so
-   the test says "clearly smaller" rather than "13px".
+   the test says "clearly smaller" rather than "13px". #1317 (Akshil,
+   2026-09-24, screenshot) brought the title down from 20px to 16px — the
+   dialog heading and the Title field now read as the same size — while the
+   description stayed at 13px, the repo's body size, so the gap shrank from
+   7px to 3px. Still two faces, just a shorter drop, so the invariant's
+   threshold moved with it rather than being restated as "13px vs 16px".
 
 `tests/test_theme.py` established reading stylesheet source this way, and
 `tests/test_schedule_css.py` is the sibling suite for the list page.
@@ -223,10 +228,13 @@ def test_the_description_is_clearly_smaller_than_the_title():
     ask = _decl(css, _ASK, "font-size")
     assert title and ask, "both fields declare their own face; one stopped"
     # Read, not restated: retuning either size keeps this passing as long as the
-    # hierarchy survives. A couple of steps down the repo's ladder — the title is
-    # a heading, the description is body copy at the same size as the rest of the
-    # form's controls — which is comfortably more than a single step.
-    assert _px(ask) <= _px(title) - 5, (
+    # hierarchy survives. The description is body copy at the same size as the
+    # rest of the form's controls, and the title is a heading a step above it —
+    # #1317 brought the title down to sit with the dialog heading (20px to
+    # 16px), so the gap over the 13px description is now 3px, not the old 7px.
+    # Still more than the smallest step this repo's type scales use elsewhere
+    # (1px, see mounts.css's "Mounts type scale"), so 3px stays the floor.
+    assert _px(ask) <= _px(title) - 3, (
         f"the description ({ask}) has to read as body text under the title "
         f"({title}), not as a second heading")
 
