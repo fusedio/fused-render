@@ -1072,6 +1072,13 @@ export default function App({ config }: { config: Config }) {
             say it the same way so the comment stays true regardless of how
             this branch's own condition might change later. */}
         {!IS_EMBED && <UpdateNotifier />}
+        {/* A fresh install routes Home to this wizard, and a Render App user's
+            very first fused-render action can be its Edit button: the
+            `?_edit_appfile=` hand-off must not die here unread. The boot
+            handler clones and moves to the copy (the wizard re-offers
+            itself next launch, `shouldAutoShow`); over an existing copy it
+            navigates there first, so its modal never sits on the wizard. */}
+        {!IS_EMBED && <EditAppFileBoot />}
         {/* Mod+K is App-wide (the listener above runs here too), so the sheet
             must be renderable here — or the flag flips with nothing shown and
             the sheet pops open on whatever page the wizard lets go to. */}

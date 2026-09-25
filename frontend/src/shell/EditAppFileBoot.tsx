@@ -78,8 +78,14 @@ export default function EditAppFileBoot() {
       }
       if (!alive) return;
       if (target.cloned) {
-        // The server landed us on the copy already; the view underneath is
-        // the app the user knows, and the question goes over it.
+        // The server landed us on the copy already, so the view underneath
+        // is the app the user knows and the question goes over it. The one
+        // exception is a fresh install, where Home was rerouted to the
+        // setup wizard before the redirect: move to the copy first, so the
+        // modal never sits on the wizard.
+        const view = await copyViewUrl(target.path);
+        if (!alive) return;
+        if (location.pathname !== view.split("?")[0]) navigateUrl(view, { isDir: false });
         setAsk({ file, target });
         return;
       }
@@ -106,7 +112,8 @@ export default function EditAppFileBoot() {
         <>
           Overwrite <code>{target.path}</code> with the files in <code>{basename(file)}</code>?
           Your edits to those files are lost. <code>.venv</code>, <code>.fused</code> and any file
-          the app file does not carry are kept. Close to keep working on your copy as it is.
+          the app file does not carry are kept. Cancel or close to keep working on your copy as
+          it is.
         </>
       }
       confirmLabel={busy ? "Overwriting…" : "Overwrite"}
