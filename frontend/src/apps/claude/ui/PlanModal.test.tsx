@@ -240,6 +240,110 @@ test("the ✕ closes the popup", async () => {
   expect(dialogs(r)).toHaveLength(0);
 });
 
+// ── D890 code review, findings 1-2: interactive descendants and selections ──
+
+/** A click that bubbled up FROM a real interactive descendant — a code
+ *  block's copy button, added imperatively by `enhanceCodeBlocks`, is a plain
+ *  DOM `<button>`, so `e.target` in the real page is that button. Simulated
+ *  here with a plain object carrying a `closest` (the one DOM method the
+ *  guard actually calls), since react-test-renderer never mounts real nodes. */
+function fakeInteriorEvent(tag: "button" | "a" | "div" = "button"): Props {
+  const matches = tag === "button" || tag === "a";
+  const target = { closest: (sel: string) => (matches && sel.includes(tag) ? {} : null) };
+  return fakeEvent({ target, currentTarget: { closest: () => null } });
+}
+
+test("clicking a code block's copy button does not open the plan modal", () => {
+  const r = mount(
+    <PlanCard
+      row={row({ input: { plan: "# p\n\n```js\nconsole.log(1)\n```" } })}
+      onDecide={noop}
+    />,
+  );
+  const target = withClass(r, "plan-open-target")[0];
+  act(() => {
+    (target.props as Props & { onClick: (e: unknown) => void }).onClick(fakeInteriorEvent("button"));
+  });
+  expect(dialogs(r)).toHaveLength(0);
+});
+
+test("clicking a link inside the plan does not open the modal either", () => {
+  const r = mount(<PlanCard row={row()} onDecide={noop} />);
+  const target = withClass(r, "plan-open-target")[0];
+  act(() => {
+    (target.props as Props & { onClick: (e: unknown) => void }).onClick(fakeInteriorEvent("a"));
+  });
+  expect(dialogs(r)).toHaveLength(0);
+});
+
+test("a plain click elsewhere in the plan body still opens the modal (the guard is narrow)", () => {
+  const r = mount(<PlanCard row={row()} onDecide={noop} />);
+  const target = withClass(r, "plan-open-target")[0];
+  act(() => {
+    (target.props as Props & { onClick: (e: unknown) => void }).onClick(fakeInteriorEvent("div"));
+  });
+  expect(dialogs(r)).toHaveLength(1);
+});
+
+test("pressing Enter on a focused copy button does not open the modal, and its own default is left alone", () => {
+  const r = mount(
+    <PlanCard
+      row={row({ input: { plan: "# p\n\n```js\nconsole.log(1)\n```" } })}
+      onDecide={noop}
+    />,
+  );
+  const target = withClass(r, "plan-open-target")[0];
+  let prevented = false;
+  const e = fakeInteriorEvent("button");
+  (e as Props).key = "Enter";
+  (e as Props).preventDefault = () => {
+    prevented = true;
+  };
+  act(() => {
+    (target.props as Props & { onKeyDown: (e: unknown) => void }).onKeyDown(e);
+  });
+  expect(dialogs(r)).toHaveLength(0);
+  // The wrapper never took the event for itself — the button's own native
+  // Enter activation (real DOM, outside this harness) is left to fire.
+  expect(prevented).toBe(false);
+});
+
+test("a non-empty window selection at click time does not open the modal", () => {
+  const prevGetSelection = (globalThis.window as { getSelection?: unknown }).getSelection;
+  (globalThis.window as { getSelection?: unknown }).getSelection = () => ({
+    isCollapsed: false,
+    toString: () => "some selected text",
+  });
+  try {
+    const r = mount(<PlanCard row={row()} onDecide={noop} />);
+    const target = withClass(r, "plan-open-target")[0];
+    act(() => {
+      (target.props as Props & { onClick: (e: unknown) => void }).onClick(fakeEvent());
+    });
+    expect(dialogs(r)).toHaveLength(0);
+  } finally {
+    (globalThis.window as { getSelection?: unknown }).getSelection = prevGetSelection;
+  }
+});
+
+test("a collapsed (empty) selection does not block the click", () => {
+  const prevGetSelection = (globalThis.window as { getSelection?: unknown }).getSelection;
+  (globalThis.window as { getSelection?: unknown }).getSelection = () => ({
+    isCollapsed: true,
+    toString: () => "",
+  });
+  try {
+    const r = mount(<PlanCard row={row()} onDecide={noop} />);
+    const target = withClass(r, "plan-open-target")[0];
+    act(() => {
+      (target.props as Props & { onClick: (e: unknown) => void }).onClick(fakeEvent());
+    });
+    expect(dialogs(r)).toHaveLength(1);
+  } finally {
+    (globalThis.window as { getSelection?: unknown }).getSelection = prevGetSelection;
+  }
+});
+
 test("the historical ToolChip plan opens a read-only popup with no row to decide against", () => {
   const key = "k" + Math.random();
   const policy = createCardPolicy();

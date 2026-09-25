@@ -14,7 +14,7 @@
 // The plan is the ONE payload on any card rendered as markdown, because it is
 // the one that genuinely IS markdown — a tool input is bytes off a disk, a plan
 // is prose the model wrote for the user to read (D248).
-import { useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useState } from "react";
 
 import { Button } from "@platform/shadcn/ui/button";
 import { cn } from "@platform/lib/utils";
@@ -29,20 +29,9 @@ import {
 } from "../protocol/summaries";
 import type { PermissionRow, SwitchableMode } from "../protocol/types";
 import { MarkdownView } from "./MarkdownView";
+import { activateOnKey, guardedOpenOnClick } from "./planAffordance";
 import { PlanModal } from "./PlanModal";
 
-/** Enter/Space activate a non-`<button>` clickable the same way a real button
- *  would — used by both the plan body and the "Open" affordance below. Not a
- *  `<button>` itself: the resolved cases pin `labels(r)` (every `<button>` in
- *  the tree) to `[]`, and this control exists in EVERY state, resolved
- *  included (D890 — a resolved plan still opens read-only). */
-function activateOnKey(fn: () => void) {
-  return (e: ReactKeyboardEvent) => {
-    if (e.key !== "Enter" && e.key !== " ") return;
-    e.preventDefault();
-    fn();
-  };
-}
 /** THE QUEUE'S LATCH, shared with the approval card (see PermCard). `decidePlan`
  *  goes through the controller's one `decide`, so under the flag this answer can
  *  be HELD exactly as an approval's can — and a card that reported "✓ Plan
@@ -141,7 +130,7 @@ export function PlanCard({ row, pickerMode, onDecide }: PlanCardProps) {
           role="button"
           tabIndex={0}
           aria-label="Open plan in full view"
-          onClick={openModal}
+          onClick={guardedOpenOnClick(openModal)}
           onKeyDown={activateOnKey(openModal)}
         >
           Open ⤢
@@ -159,7 +148,7 @@ export function PlanCard({ row, pickerMode, onDecide }: PlanCardProps) {
           role="button"
           tabIndex={0}
           aria-label="Open plan in full view"
-          onClick={openModal}
+          onClick={guardedOpenOnClick(openModal)}
           onKeyDown={activateOnKey(openModal)}
         >
           <MarkdownView className="plan-body" text={plan} />

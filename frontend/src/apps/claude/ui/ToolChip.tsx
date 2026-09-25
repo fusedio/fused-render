@@ -31,6 +31,7 @@ import { COPY_RESET_MS } from "../protocol/markdown";
 import type { ToolSegment } from "../protocol/types";
 import { useCardOpen } from "./cardPolicy";
 import { MarkdownView } from "./MarkdownView";
+import { activateOnKey } from "./planAffordance";
 import { PlanModal } from "./PlanModal";
 
 function asRecord(v: unknown): Record<string, unknown> {
@@ -302,11 +303,7 @@ function PlanChipBody({ plan }: { plan: string }) {
         tabIndex={0}
         aria-label="Open plan in full view"
         onClick={openModal}
-        onKeyDown={(e) => {
-          if (e.key !== "Enter" && e.key !== " ") return;
-          e.preventDefault();
-          openModal();
-        }}
+        onKeyDown={activateOnKey(openModal)}
       >
         Open ⤢
       </div>
