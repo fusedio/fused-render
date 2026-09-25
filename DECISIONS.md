@@ -5792,3 +5792,78 @@ Decided:
 Skew: a FusedRender older than this change lands a `file=` link on the
 clone page's error ("unsupported fused-render link"); Render App's button
 does not version-check, so the page's error text is the message.
+
+## "Send now": no native control_request subtype, interrupt+redeliver instead (2026-09-25)
+
+Probed the installed CLI (`claude --version` → 2.1.282, the real binary at
+`~/.local/share/claude/versions/2.1.282`, found by `_claude_bin()`'s own
+`shutil.which` step — the `claude` on PATH in this sandbox is a cmux shim,
+not the real thing) for whether `--input-format stream-json` exposes
+anything like the interactive TUI's Ctrl+Enter (`chat:sendNow`,
+keybinding confirmed at `strings`-level: `"ctrl+x ctrl+s":"chat:sendNow",
+"ctrl+enter":"chat:sendNow"`).
+
+**No such control_request subtype exists.** The full set the CLI's own
+dispatcher recognizes (`grep -aoE` over the binary, the `Ze = new
+Set([...])` literal that gates which subtypes even reach a handler):
+
+    set_model, set_permission_mode, interrupt, stop_task, background_tasks,
+    cancel_async_message, set_max_thinking_tokens, rename_session,
+    set_color, mcp_authenticate, mcp_oauth_callback_url, mcp_reconnect,
+    apply_flag_settings, side_question, reload_plugins
+
+No `send_now`, `flush`, `sendNow`, `deliver_now`, or similar. `chat:sendNow`
+is purely an interactive-TUI keybinding that reads the CLI's OWN in-process
+input queue directly — it is not a wire-protocol operation at all, so
+headless (`-p --input-format stream-json`) has no equivalent to ask for.
+
+**Live-verified what `interrupt` alone actually does with stdin rows
+already queued**, since that is the mechanism this feature has to build on
+instead. Spawned the real CLI headless from a throwaway script
+(`/tmp/send_now_probe.py`, not committed) with:
+
+    claude -p --input-format stream-json --output-format stream-json \
+      --verbose --dangerously-skip-permissions
+
+Fed it a user turn that ran a (blocked, in this sandbox) `Bash` tool call,
+waited ~6s, then wrote a SECOND user-turn row (`"What is 2+2?"`) followed by
+`{"type":"control_request","request_id":"probe-interrupt-1","request":
+{"subtype":"interrupt"}}`, both to the same stdin pipe, no gap. Observed on
+stdout:
+
+    {"type":"control_response","response":{"subtype":"success",
+      "request_id":"probe-interrupt-1","response":{"still_queued":[]}}}
+    {"type":"user","message":{"role":"user","content":[{"type":"text",
+      "text":"[Request interrupted by user]"}]}, ...}
+    {"type":"system","subtype":"init", ...}          # a fresh turn opens
+    {"type":"assistant","message":{...,"content":[{"type":"text","text":"4"}]}}
+
+So a stdin row written BEFORE the interrupt (i.e. already in the CLI's own
+inbox) is answered `still_queued: []` — the CLI does not consider it
+"dropped" — and the CLI goes on, unprompted, to open a fresh turn and
+answer that very row. Nothing on this side had to redeliver it. This
+matches `agent.py`'s own `_cancel` comment at the `still_queued`
+handling (feedback R2-12/#12): Stop's problem was exactly that the CLI kept
+answering what was still queued after an interrupt, which Stop treats as a
+bug to correct for (ending the session outright the moment anything was
+queued) — and which `_send_now` below treats as the whole point.
+
+A second probe (queuing TWO follow-ups ahead of the interrupt, to see
+whether the CLI batches them into one turn or answers them as separate
+turns) hit this sandbox's own auto-mode classifier (`[Create Unsafe
+Agents]`, spawning a nested `claude` subprocess a second time) before it
+could run, and was not retried — the first probe's result already answers
+the question this task needs answered (queued rows are not lost, and
+redelivering them by hand is unnecessary and would double them), so the
+build below assumes each queued inbox row survives an interrupt as its own
+future turn rather than assuming they get merged.
+
+**Chosen mechanism** (Step 2 of the build): `_send_now(run_id, message)` —
+`interrupt`, wait for the `control_response` the same way `_cancel` does,
+and — the one thing `_cancel`'s interrupt road deliberately does NOT do —
+leave the inbox alone (no `_discard_inbox`) and never kill the tree, on
+any road, queued or not. Once the interrupt lands, the composer's current
+DRAFT (if any) is written as one more inbox entry, landing behind whatever
+the CLI's own queue was already holding — which the probe above shows it
+answers on its own the moment `interrupt` frees it, with no extra control
+request needed to ask for that.

@@ -431,6 +431,11 @@ export interface ChatController {
   /** Queue/send a follow-up into the live run (T:16024). `opts` ADDED: notes
    *  and pictures fold into a follow-up exactly as into a fresh turn. */
   sendFollowUp(text: string, opts?: SendOptions): Promise<void>;
+  /** Ctrl+Enter mid-turn: interrupt the live run and deliver `text` (and
+   *  whatever else is already queued) right away, instead of waiting behind
+   *  the turn in flight (`agent.py`'s `_send_now`, action=send_now). An
+   *  empty `text` still interrupts, as a pure flush. */
+  sendNow(text: string, opts?: SendOptions): Promise<void>;
   /** Stop the live run (T:15870-16023 stopRun). No-op when idle. */
   stopRun(): Promise<void>;
 

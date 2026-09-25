@@ -1367,6 +1367,83 @@ describe("follow-ups (T:16024, D687)", () => {
   });
 });
 
+describe("send now (Ctrl+Enter mid-turn)", () => {
+  test("delivers the draft as its own bubble via action=send_now, not send", async () => {
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send_now: () => ({ sent_now: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendNow("what about now");
+          expect(made.agent.of("send_now").length).toBe(1);
+          expect(made.agent.of("send").length).toBe(0);
+          return poll({ segments: [text("still working")] });
+        }
+        return poll({ done: true, segments: [text("still working")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    const sent = made.agent.of("send_now")[0]!.fields;
+    // No model/effort/permission_mode/read_dirs — send-now never changes
+    // what the session runs with, only when the next message reaches it.
+    expect(Object.keys(sent).sort()).toEqual(["message", "run_id"]);
+    expect(sent.run_id).toBe("r1");
+    expect(sent.message).toBe("what about now");
+    expect(users(controller).map((t) => t.text)).toEqual(["go", "what about now"]);
+  });
+
+  test("an empty draft still interrupts but posts no bubble", async () => {
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send_now: () => ({ sent_now: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendNow("");
+          return poll({ segments: [text("still working")] });
+        }
+        return poll({ done: true, segments: [text("still working")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(made.agent.of("send_now")[0]!.fields.message).toBe("");
+    expect(users(controller).map((t) => t.text)).toEqual(["go"]);
+    expect(controller.getState().queued).toEqual([]);
+  });
+
+  test("a send-now the session refused is rolled back — bubble, queue and all", async () => {
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send_now: () => ({ error: "no live session" }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendNow("late");
+          return poll({ segments: [text("still going")] });
+        }
+        return poll({ done: true, segments: [text("still going")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(users(controller).map((t) => t.text)).toEqual(["go"]);
+    expect(controller.getState().queued).toEqual([]);
+    expect(controller.getState().trouble?.message).toBe("Could not send now: no live session");
+  });
+
+  test("a send-now with no run to attach to reports rather than vanishing", async () => {
+    const { controller } = makeController({ send_now: () => ({ sent_now: true as const }) });
+    await controller.sendNow("nowhere to go");
+    expect(controller.getState().trouble?.message).toBe(
+      "Could not send now: no run to attach this message to.",
+    );
+    expect(controller.getState().turns.map((t) => t.role)).toEqual(["error"]);
+  });
+});
+
 // ---- ownership -------------------------------------------------------------
 
 // ── feedback #30: the app-state PUSH channel ────────────────────────────────

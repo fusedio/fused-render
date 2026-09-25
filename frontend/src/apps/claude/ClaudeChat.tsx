@@ -2453,7 +2453,7 @@ function ChatBody(props: ChatBodyProps) {
    *     capture used to happen with an empty box and an empty transcript.
    */
   const dispatchSend = useCallback(
-    (text: string, opts: SendOptions, followUp: boolean): void => {
+    (text: string, opts: SendOptions, followUp: boolean, sendNow?: boolean): void => {
       // The composer refuses this too, from the same ref — this is the guard
       // for every OTHER caller of the seat (✓ Done, the walkthrough).
       if (sendBusy.current) return;
@@ -2510,7 +2510,12 @@ function ChatBody(props: ChatBodyProps) {
           // proof this exact send is the one the queue already counted, so
           // the server gate looks rather than claiming it a second time.
           let queueClaim: string | undefined;
-          if (queueEnabled()) {
+          // SEND-NOW NEVER ASKS THE QUEUE. Ctrl+Enter mid-turn is an interrupt
+          // into a run this pane already knows is live — there is no "which
+          // folder is busy" question to admit against, and asking one here
+          // would race the very run the flush is about (`_send_now`'s own
+          // agent.py note: an interrupt-then-deliver, never a second spawn).
+          if (!sendNow && queueEnabled()) {
             // READ ONCE, and read HERE: the session can arrive while the copies
             // below are uploading, and a body whose `session_id` and
             // `follow_of` were asked a round trip apart could carry both — a
@@ -2759,9 +2764,11 @@ function ChatBody(props: ChatBodyProps) {
           };
           let ok = true;
           try {
-            const sent = followUp
-              ? controller.sendFollowUp(text, wire)
-              : controller.sendMessage(text, wire);
+            const sent = sendNow
+              ? controller.sendNow(text, wire)
+              : followUp
+                ? controller.sendFollowUp(text, wire)
+                : controller.sendMessage(text, wire);
             // The controller has taken it: its own `sending` gate is set and
             // its bubble is up, both before its first await. But TAKEN IS NOT
             // LIVE — the status the composer routes on stays `idle` until
@@ -2832,6 +2839,30 @@ function ChatBody(props: ChatBodyProps) {
           effort: defaults.effort,
           permission: defaults.permission,
         },
+        true,
+      );
+    },
+    [dispatchSend, defaults.model, defaults.effort, defaults.permission],
+  );
+  /**
+   * Ctrl/Cmd+Enter WHILE A TURN IS RUNNING (`Composer.tsx`'s `onSendNow`):
+   * interrupt it and deliver the draft — which may be empty, a pure flush of
+   * whatever `sendFollowUp` already queued — right away rather than leaving
+   * it to wait behind the turn in flight. `dispatchSend`'s `sendNow` flag is
+   * what skips the queue-admission question below (the run is already known
+   * live, so there is nothing to admit against) and what routes the wire to
+   * `controller.sendNow` instead of `sendFollowUp`.
+   */
+  const onSendNow = useCallback(
+    (text: string) => {
+      dispatchSend(
+        text,
+        {
+          model: defaults.model,
+          effort: defaults.effort,
+          permission: defaults.permission,
+        },
+        true,
         true,
       );
     },
@@ -3722,6 +3753,7 @@ function ChatBody(props: ChatBodyProps) {
       context: state.context,
       onSend,
       onFollowUp,
+      onSendNow,
       onStop,
       // ONLY INSIDE A CHAT (FIX-9). T focuses the box from `enterChat()`
       // (T:13087-13094) — which runs on a send from the landing, on opening a
@@ -3867,6 +3899,7 @@ function ChatBody(props: ChatBodyProps) {
       controls,
       onSend,
       onFollowUp,
+      onSendNow,
       onStop,
       props.autoFocus,
       // The enter transition IS the focus trigger (see `autoFocus` above).
