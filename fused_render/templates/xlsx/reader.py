@@ -6,16 +6,22 @@ requested page is collected; total_rows is the honest data-row count.
 """
 import datetime
 import decimal
-import logging
-import re
+import json
+import os
+import subprocess
+import sys
 
 import openpyxl
-from openpyxl.utils import get_column_letter
 
-# pycel logs a full traceback (via `logging`, not an exception) for every
-# formula it can't evaluate — e.g. a function it doesn't implement. That's
-# noise here: _pycel_values already falls back to the formula text per cell.
-logging.getLogger("pycel").setLevel(logging.CRITICAL)
+# The worker that actually runs pycel, as its own subprocess with a timeout
+# (see _pycel_values below for why this can't just be a function call here).
+_PYCEL_WORKER = os.path.join(os.path.dirname(__file__), "_pycel_worker.py")
+_PYCEL_TIMEOUT = 8.0
+# pycel's cost tracks formula complexity, not file size, but file size is the
+# only thing worth checking before paying a subprocess spawn: past this, an
+# 8s timeout is more likely to fire than not, and it would fire on every page
+# of every sheet. Formula cells just stay on their text fallback instead.
+_PYCEL_MAX_BYTES = 25 * 1024 * 1024
 
 
 def _jsonify(value):
@@ -38,43 +44,51 @@ def _jsonify(value):
     return value
 
 
-_SHEET_SAFE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
-
-def _quote_sheet(name):
-    if _SHEET_SAFE.match(name):
-        return name
-    return "'" + name.replace("'", "''") + "'"
-
-
 def _pycel_values(file, sheet, cells):
-    """Evaluate the given (row, col0) cells with pycel.
+    """Evaluate the given (row, col0) cells with pycel, in a bounded subprocess.
 
-    `cells` are 1-based sheet rows paired with 0-based column indices. Returns
-    a {(row, col0): value} map; a cell pycel can't evaluate (an unsupported
-    function, a malformed formula) is simply absent, and the caller keeps
-    showing that cell's formula text instead of guessing at a result.
+    Building pycel's dependency graph over a workbook is NOT bounded — a
+    large or heavily cross-referenced file can take a long time or a lot of
+    memory — but this reader is only allowed to run IN-PROCESS at all
+    because everything else it does is a fast, bounded local-file read (D72,
+    executor.INPROCESS_HELPERS). So the pycel step runs in its own
+    short-lived subprocess (`_pycel_worker.py`) with a hard timeout, the same
+    shape executor.py itself uses for arbitrary (unbounded) user code.
+
+    `cells` are 1-based sheet rows paired with 0-based column indices.
+    Returns a {(row, col0): value} map; a cell that times out or that pycel
+    can't evaluate (an unsupported function, a malformed formula) is simply
+    absent, and the caller keeps showing that cell's formula text instead of
+    guessing at a result.
     """
     if not cells:
         return {}
     try:
-        from pycel import ExcelCompiler
-    except ImportError:
-        return {}  # `bundled` extra not installed — degrade to formula text
+        if os.path.getsize(file) > _PYCEL_MAX_BYTES:
+            return {}
+    except OSError:
+        return {}
+    request = json.dumps({"file": file, "sheet": sheet, "cells": [list(c) for c in cells]})
     try:
-        xl = ExcelCompiler(filename=file)
-    except Exception:
-        return {}  # a workbook feature pycel's parser trips on
-    qsheet = _quote_sheet(sheet)
-    out = {}
-    for row, col0 in cells:
-        addr = f"{qsheet}!{get_column_letter(col0 + 1)}{row}"
-        try:
-            v = xl.evaluate(addr)
-        except Exception:
-            continue
-        out[(row, col0)] = v
-    return out
+        proc = subprocess.run(
+            [sys.executable, _PYCEL_WORKER],
+            input=request,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_PYCEL_TIMEOUT,
+            close_fds=False,  # see executor.py's own subprocess call: avoids a
+            # fork() + pthread_atfork crash when pyproj/PROJ is resident
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return {}
+    try:
+        pairs = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        return {}  # the worker crashed or produced no output — degrade quietly
+    return {(row, col0): v for row, col0, v in pairs}
 
 
 def main(file: str, sheet: str = "", offset: int = 0, limit: int = 100) -> dict:
