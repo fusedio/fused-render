@@ -35,6 +35,9 @@ export interface PlanModalProps {
   /** JSON dump of any leftover/unrenderable input — same disclosure rule as
    *  the card: nothing the model wrote is invisible. */
   extra?: string | null;
+  /** The CLI's own scratch path, "" when it sent none (D890 code review,
+   *  finding 4) — rendered as a quiet line, never part of `extra`'s dump. */
+  savedTo?: string;
   status: PlanModalStatus;
   /** True once the card has a decision (or a held/queued one) — read-only. */
   resolved: boolean;
@@ -49,6 +52,7 @@ export function PlanModal({
   onClose,
   plan,
   extra,
+  savedTo,
   status,
   resolved,
   posting,
@@ -80,6 +84,7 @@ export function PlanModal({
           <div className="plan-modal-reading">
             {plan ? <MarkdownView className="plan-body" text={plan} /> : null}
             {extra ? <pre>{extra}</pre> : null}
+            {savedTo ? <div className="plan-saved-path">Saved to {savedTo}</div> : null}
             {resolved ? null : (
               <>
                 <textarea

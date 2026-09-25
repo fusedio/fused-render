@@ -21,6 +21,8 @@ import {
   chipOutput,
   formatEditDiff,
   leftoverInput,
+  planFilePath,
+  PLAN_HIDDEN_INPUT_KEYS,
   PLAN_TOOL,
   prettyToolName,
   toolChipSummary,
@@ -163,7 +165,12 @@ function usedKeys(seg: ToolSegment, inp: Record<string, unknown>): string[] {
     case PLAN_TOOL:
       // ...and when `plan` is not a usable string it stays UNUSED, so it falls
       // into the dump: a chip must never imply a plan was read.
-      return typeof inp.plan === "string" && inp.plan ? ["plan"] : [];
+      // `PLAN_HIDDEN_INPUT_KEYS` (`planFilePath`) is covered either way — the
+      // CLI's own scratch path, rendered as its own quiet line instead
+      // (D890 code review, finding 4), never as raw JSON in this dump.
+      return typeof inp.plan === "string" && inp.plan
+        ? ["plan", ...PLAN_HIDDEN_INPUT_KEYS]
+        : [...PLAN_HIDDEN_INPUT_KEYS];
     case ANSWERABLE_TOOL:
       return Array.isArray(inp.questions) ? ["questions"] : [];
     default:
@@ -247,7 +254,7 @@ function renderInput(seg: ToolSegment, inp: Record<string, unknown>) {
       // record that a plan was ever proposed, so a raw JSON dump would be a
       // record of the bytes rather than of the plan (D248).
       const plan = typeof inp.plan === "string" && inp.plan ? inp.plan : "";
-      return plan ? <PlanChipBody plan={plan} /> : null;
+      return plan ? <PlanChipBody plan={plan} savedTo={planFilePath(inp)} /> : null;
     }
     case ANSWERABLE_TOOL: {
       // Structured plain text, never markdown: the labels are what the answer
@@ -292,7 +299,7 @@ function renderInput(seg: ToolSegment, inp: Record<string, unknown>) {
  *  rather than reusing PlanCard's state (D890). The modal it opens is
  *  read-only (`resolved`, no actions) for the same reason: whatever the plan's
  *  outcome was, a restored transcript has no live row to decide against. */
-function PlanChipBody({ plan }: { plan: string }) {
+function PlanChipBody({ plan, savedTo }: { plan: string; savedTo?: string }) {
   const [open, setOpen] = useState(false);
   const openModal = () => setOpen(true);
   return (
@@ -308,10 +315,12 @@ function PlanChipBody({ plan }: { plan: string }) {
         Open ⤢
       </div>
       <MarkdownView className="plan-body chip-plan" text={plan} />
+      {savedTo ? <div className="plan-saved-path">Saved to {savedTo}</div> : null}
       {open ? (
         <PlanModal
           onClose={() => setOpen(false)}
           plan={plan}
+          savedTo={savedTo}
           status={{ cls: "", text: "" }}
           resolved
           posting={false}

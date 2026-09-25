@@ -1446,6 +1446,14 @@
 .chat-root .perm .plan-body > :last-child {
   margin-bottom: 0;
 }
+/* The CLI's own scratch path (D890 code review, finding 4) — quiet and
+   separate from the plan's prose, same muted token as `.plan-open-chip`. */
+.chat-root .plan-saved-path {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--c-dim);
+  word-break: break-all;
+}
 .chat-root .perm .plan-note {
   display: block;
   box-sizing: border-box;

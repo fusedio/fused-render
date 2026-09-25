@@ -401,21 +401,36 @@ export function planBody(input: unknown): string {
 }
 
 /**
- * ExitPlanMode input keys the plan card deliberately does NOT surface, and
- * which must not fall into `leftoverInput`'s dump either.
+ * ExitPlanMode input keys the plan card deliberately does NOT surface through
+ * the raw disclosure dump, and which must not fall into `leftoverInput`'s
+ * `<pre>` either.
  *
  * The disclosure rule behind that dump is "no input key the model chose is
  * invisible" — a payload the user is being asked to approve has to be readable
- * in full. `planFilePath` is not one of those: the CLI writes the plan to a
- * scratch file of its own and names the path back to itself, so what the dump
- * rendered was `{"planFilePath": "/Users/…/plans/make-a-3-step-plan-….md"}`
- * verbatim inside the card — an absolute internal path, on both the first
- * render and every "Keep planning" revision (QA round 3a, defect 3). It says
- * nothing about what is being approved and it is an id in the UI
- * (design-principles §2), so it is covered rather than dumped.
+ * in full. `planFilePath` is not dumped as raw JSON for that rule: the CLI
+ * writes the plan to a scratch file of its own and names the path back to
+ * itself, so a JSON dump rendered `{"planFilePath":
+ * "/Users/…/plans/make-a-3-step-plan-….md"}` verbatim inside the card — an
+ * absolute internal path, on both the first render and every "Keep planning"
+ * revision (QA round 3a, defect 3). It says nothing about what is being
+ * approved and a raw path is an id in the UI (design-principles §2), so it is
+ * covered here rather than dumped as JSON.
+ *
+ * It is NOT invisible, though (D890 code review, finding 4): `planFilePath`
+ * still has something worth telling the reader — the plan was saved
+ * somewhere real — so `planFilePath()` below reads it back out for a quiet
+ * "Saved to <path>" line the card, the popup and the historical chip each
+ * render on their own, instead of the raw key/value pair.
  *
  * `plan` is NOT in here: it is covered only when it is USABLE (`planBody`
  * returns it), because a card that swallowed an unrenderable plan would imply a
  * plan was read when none was.
  */
 export const PLAN_HIDDEN_INPUT_KEYS: readonly string[] = ["planFilePath"];
+
+/** The quiet "Saved to <path>" line's own text, "" when the CLI did not send a
+ *  usable `planFilePath` (see `PLAN_HIDDEN_INPUT_KEYS`'s docblock). */
+export function planFilePath(input: unknown): string {
+  const v = asRecord(input).planFilePath;
+  return typeof v === "string" && v ? v : "";
+}

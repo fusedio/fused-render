@@ -23,6 +23,7 @@ import type { ChatController } from "../protocol/controller-api";
 import {
   leftoverInput,
   planBody,
+  planFilePath,
   PLAN_HIDDEN_INPUT_KEYS,
   PLAN_NOTE_LIMIT,
   SWITCHABLE_MODES,
@@ -62,6 +63,10 @@ export function PlanCard({ row, pickerMode, onDecide }: PlanCardProps) {
   const closeModal = () => setModalOpen(false);
 
   const plan = planBody(row.input);
+  // The CLI's own scratch path (D890 code review, finding 4) — covered by
+  // `PLAN_HIDDEN_INPUT_KEYS` below so it never lands in the raw dump, but
+  // still worth a quiet line of its own rather than vanishing outright.
+  const savedTo = planFilePath(row.input);
   // The same disclosure rule as every other card — no input key the model chose
   // is invisible — minus the CLI's own bookkeeping (`PLAN_HIDDEN_INPUT_KEYS`),
   // which is not a thing being approved. `plan` is covered only when it is
@@ -141,7 +146,12 @@ export function PlanCard({ row, pickerMode, onDecide }: PlanCardProps) {
           in the same clickable affordance — clicking the plan itself opens
           the wide popup (D890) — but the wrapper adds no `className`, so
           `withClass(r, "plan-body")` still finds exactly the `MarkdownView`
-          pinned tests already expect. */}
+          pinned tests already expect.
+          `guardedOpenOnClick`/`activateOnKey` (planAffordance.ts) let a click
+          or Enter/Space on a code block's copy button reach THAT button
+          instead of opening the modal on top of it, and a click that is
+          really the tail end of a text-selection drag not reopen it either
+          (D890 code review, findings 1-2). */}
       {plan ? (
         <div
           className="plan-open-target"
@@ -158,6 +168,10 @@ export function PlanCard({ row, pickerMode, onDecide }: PlanCardProps) {
           when it is usable, and falls into this dump when it is not, so the
           card never implies a plan was read. */}
       {extra ? <pre>{JSON.stringify(extra, null, 2)}</pre> : null}
+      {/* The CLI's own scratch path, quiet and separate from the disclosure
+          dump above (D890 code review, finding 4) — see `PLAN_HIDDEN_INPUT_KEYS`'s
+          docblock for why it is covered rather than dumped as raw JSON. */}
+      {savedTo ? <div className="plan-saved-path">Saved to {savedTo}</div> : null}
       {resolved ? null : (
         <>
           <textarea
@@ -201,6 +215,7 @@ export function PlanCard({ row, pickerMode, onDecide }: PlanCardProps) {
           onClose={closeModal}
           plan={plan}
           extra={extra ? JSON.stringify(extra, null, 2) : null}
+          savedTo={savedTo}
           status={status}
           resolved={resolved}
           posting={posting}

@@ -344,6 +344,21 @@ test("a collapsed (empty) selection does not block the click", () => {
   }
 });
 
+// ── D890 code review, finding 4: planFilePath renders, never dumps ─────────
+
+test("the modal renders the CLI's Saved-to line, not a raw planFilePath dump", () => {
+  const r = mount(
+    <PlanCard
+      row={row({ input: { plan: "# p", planFilePath: "/tmp/plans/x.md" } })}
+      onDecide={noop}
+    />,
+  );
+  clickOpen(r, "plan-open-target");
+  const d = dialogs(r)[0];
+  expect(textOf(withClass(d, "plan-saved-path")[0])).toBe("Saved to /tmp/plans/x.md");
+  expect(all(d, "pre")).toHaveLength(0);
+});
+
 test("the historical ToolChip plan opens a read-only popup with no row to decide against", () => {
   const key = "k" + Math.random();
   const policy = createCardPolicy();
@@ -370,4 +385,30 @@ test("the historical ToolChip plan opens a read-only popup with no row to decide
   // assertion's concern.)
   expect(labels(dialogs(r)[0])).toEqual(["✕"]);
   expect(withClass(r, "plan-note")).toHaveLength(0);
+});
+
+test("the historical chip also shows the Saved-to line, in the chip AND its popup, never as a JSON dump", () => {
+  const key = "k" + Math.random();
+  const policy = createCardPolicy();
+  policy.overrides.set(key, true);
+  const seg = {
+    kind: "tool",
+    id: key,
+    name: "ExitPlanMode",
+    status: "ok",
+    input: { plan: "# Historical plan", planFilePath: "/tmp/plans/hist.md" },
+    output: null,
+    images: [],
+  } as unknown as ToolSegment;
+  const r = mount(
+    <CardPolicyProvider value={policy}>
+      <ToolChip seg={seg} cardKey={key} />
+    </CardPolicyProvider>,
+  );
+  expect(all(r, "pre")).toHaveLength(0);
+  const chipLine = withClass(r, "plan-saved-path")[0];
+  expect(textOf(chipLine)).toBe("Saved to /tmp/plans/hist.md");
+  clickOpen(r, "plan-open-chip");
+  const modalLine = withClass(dialogs(r)[0], "plan-saved-path")[0];
+  expect(textOf(modalLine)).toBe("Saved to /tmp/plans/hist.md");
 });
