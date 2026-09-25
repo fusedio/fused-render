@@ -494,6 +494,17 @@ OPTIONS = {
     # _cffi_backend: cryptography's cffi backend, the same bare-top-level-
     # C-extension shape as _duckdb.
     "includes": ["_duckdb", "_cffi_backend"] + BUNDLED_INCLUDES + STDLIB_INCLUDES,
+    # `ruamel` must never reach modulegraph's graph at all — `google` gets by
+    # with NEVER_FORCE_AS_PACKAGE/STAGED_PACKAGES alone because nothing traces
+    # an eager `import google...` at analysis time, but pycel does `import
+    # ruamel.yaml` at ITS OWN top level, so modulegraph reliably discovers and
+    # classifies it as a package regardless of what WE pass as `packages` —
+    # and py2app's own `detect_dunder_file` recipe then walks every package it
+    # classified (not just OPTIONS["packages"]) and dies on the same
+    # `imp_find_module("ruamel")` namespace-package limitation documented
+    # above. Excluding it removes the node before that recipe ever runs; the
+    # real files still ship, via STAGED_PACKAGES's post-build copy.
+    "excludes": ["ruamel"],
     # Skip py2app's "missing conditional import" report. Not cosmetic: that
     # report `__import__`s every module name modulegraph could not resolve, in
     # order to classify it, and catches only `Exception` — so a name whose import
