@@ -238,6 +238,15 @@ export interface ComposerCardProps {
   onSend(text: string, opts: SendOptions): void;
   /** Into the live run's inbox (T:16024). Falls back to `onSend` when absent. */
   onFollowUp?(text: string): void;
+  /**
+   * Ctrl/Cmd+Enter WHILE A TURN IS RUNNING: interrupt it and deliver the
+   * draft (which may be empty — a pure flush of whatever is already queued)
+   * right away, instead of leaving it to wait behind the turn in flight.
+   * Absent, Ctrl/Cmd+Enter falls back to the ordinary queueing `submit` does
+   * for Enter. Never called while idle — `onSend` is Ctrl/Cmd+Enter's own
+   * fallback there, same as a plain Enter (T:17915's own note on the key).
+   */
+  onSendNow?(text: string): void;
   onStop(): void;
   /** Notes or pictures alone are sendable, with no words at all (T:17903). */
   hasAttachments?: boolean;
@@ -496,6 +505,7 @@ export function ComposerCard({
   context,
   onSend,
   onFollowUp,
+  onSendNow,
   onStop,
   hasAttachments,
   hasAttachmentsNow,
@@ -1731,7 +1741,7 @@ export function ComposerCard({
    */
   const hopFrozen = hopping && !running;
 
-  const submit = useCallback((seed?: string): boolean => {
+  const submit = useCallback((seed?: string, sendNow?: boolean): boolean => {
     // Nothing leaves this composer while a scheduled message is pending — not a
     // typed line, not a follow-up (T:17871).
     if (blocked) return false;
@@ -1760,7 +1770,13 @@ export function ComposerCard({
     const message = extra ? (typed ? typed.replace(/\s*$/, "") + "\n\n" + extra : extra) : typed;
     // THE LIVE HALF FIRST-CLASS, not a fallback: a round of notes committed a
     // microtask ago is exactly as real as one the last paint drew a chip for.
-    if (!message && !hasAttachments && !hasAttachmentsNow?.()) return false;
+    //
+    // `sendNow && running` is the one exception: Ctrl+Enter on an empty box
+    // mid-turn is a legal "flush whatever is already queued" press, not a
+    // no-op — `onSendNow` (see below) still has to fire on nothing at all.
+    if (!message && !hasAttachments && !hasAttachmentsNow?.() && !(sendNow && running)) {
+      return false;
+    }
     // A SEND SPENDS THE BOX THE SAME WAY AN ANSWERED DIALOG DOES, and a render
     // older than this line would otherwise hand a sent sentence to the unmount
     // save as an unfinished task (`spent`).
@@ -1804,8 +1820,10 @@ export function ComposerCard({
       if (!hasSessionRef.current) onHeldGoneRef.current?.();
     }
     // A live run gets this message DIRECTLY instead of parking it in a
-    // page-side array (T:17889-17899).
-    if (running && onFollowUp) onFollowUp(message);
+    // page-side array (T:17889-17899). `sendNow` skips the queue entirely —
+    // Ctrl+Enter mid-turn means "now", not "next".
+    if (running && sendNow && onSendNow) onSendNow(message);
+    else if (running && onFollowUp) onFollowUp(message);
     else {
       onSend(message, {
         model: controls.model,
@@ -1832,6 +1850,7 @@ export function ComposerCard({
     hasAttachmentsNow,
     running,
     onFollowUp,
+    onSendNow,
     onSend,
     controls,
     boxRef,
@@ -1853,11 +1872,15 @@ export function ComposerCard({
       if (ev.key !== "Enter") return;
       // Shift+Enter is a newline. Enter never STOPS a run — a user drafting the
       // next message mid-run must not kill the turn with a keystroke meant to
-      // queue text (T:17915). Cmd/Ctrl+Enter is the same send, for the hands
-      // that learned it in every other composer in this app.
+      // queue text (T:17915).
       if (ev.shiftKey) return;
       ev.preventDefault();
-      submit();
+      // Cmd/Ctrl+Enter is the same send while idle, for the hands that learned
+      // it in every other composer in this app — but WHILE A TURN IS RUNNING it
+      // means "now", not "queue behind the turn in flight": `submit`'s own
+      // `sendNow` branch routes it to `onSendNow` instead of `onFollowUp`
+      // there, and is a no-op the rest of the time (`running` gates it).
+      submit(undefined, ev.ctrlKey || ev.metaKey);
     },
     [submit],
   );
@@ -1980,10 +2003,27 @@ export function ComposerCard({
             (91 → 115 while a follow-up is pending), so it is written down here
             rather than left for a fourth visual pass to find again. */}
         {count > 0 && !queueOn ? (
-          <div className="c-queued">
-            {count === 1
-              ? "1 follow-up is queued for this turn."
-              : `${count} follow-ups are queued for this turn.`}
+          <div className="c-queued-row">
+            <div className="c-queued">
+              {count === 1
+                ? "1 follow-up is queued for this turn."
+                : `${count} follow-ups are queued for this turn.`}
+            </div>
+            {/* Discoverability for Ctrl/Cmd+Enter (`onKeyDown`'s own note): the
+                hint above already says something is waiting, so this is where a
+                reader who has not learned the key finds a way to jump the
+                queue. `running` gates it the same way `submit`'s own `sendNow`
+                branch does — the button cannot outlive the turn it interrupts. */}
+            {running && onSendNow ? (
+              <button
+                type="button"
+                className="c-send-now"
+                title="Send now (Ctrl+Enter)"
+                onClick={() => submit(undefined, true)}
+              >
+                Send now
+              </button>
+            ) : null}
           </div>
         ) : null}
         {/* THE TOOLS' SHELF: a one-track grid whose row goes 1fr → 0fr while the

@@ -63,6 +63,7 @@ interface Sent {
 function mount(over: Partial<Parameters<typeof ComposerCard>[0]> = {}) {
   const sent: Sent[] = [];
   const followups: string[] = [];
+  const sentNow: string[] = [];
   let stops = 0;
   let renderer: ReactTestRenderer | undefined;
   const card = (extra: Partial<Parameters<typeof ComposerCard>[0]> = {}) => (
@@ -75,6 +76,7 @@ function mount(over: Partial<Parameters<typeof ComposerCard>[0]> = {}) {
       back="/explorer/view/p"
       onSend={(text, opts) => sent.push({ text, model: opts.model })}
       onFollowUp={(text) => followups.push(text)}
+      onSendNow={(text) => sentNow.push(text)}
       onStop={() => {
         stops += 1;
       }}
@@ -94,7 +96,7 @@ function mount(over: Partial<Parameters<typeof ComposerCard>[0]> = {}) {
     });
   const press = (
     key: string,
-    mods: { shiftKey?: boolean; metaKey?: boolean } = {},
+    mods: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean } = {},
   ) => {
     let prevented = false;
     act(() => {
@@ -121,6 +123,7 @@ function mount(over: Partial<Parameters<typeof ComposerCard>[0]> = {}) {
     submitForm,
     sent,
     followups,
+    sentNow,
     stops: () => stops,
     /** For the one test that is ABOUT an unmount (a host that takes the pane
      *  away while the question is up). Unmounting twice is a no-op, so the
@@ -429,6 +432,94 @@ test("queued follow-ups are named under the box, singular and plural", () => {
     "2 follow-ups are queued for this turn.",
   ]);
   expect(hint(mount())).toEqual([]);
+});
+
+// ---- send now: Ctrl/Cmd+Enter mid-turn interrupts and delivers -------------
+//
+// `submit`'s own `sendNow` branch (Composer.tsx) routes Ctrl/Cmd+Enter to
+// `onSendNow` instead of `onFollowUp` ONLY while a turn is running, and treats
+// an empty box as a legal "flush the queue" press rather than a no-op. Idle,
+// Ctrl/Cmd+Enter is the ordinary send — unchanged by this feature.
+
+test("Ctrl/Cmd+Enter while running delivers to onSendNow, not onFollowUp", () => {
+  const c = mount({ status: "running" });
+  c.type("what about now");
+  expect(c.press("Enter", { ctrlKey: true })).toBe(true);
+  expect(c.sentNow).toEqual(["what about now"]);
+  expect(c.followups).toEqual([]);
+  expect(c.sent).toEqual([]);
+  expect(c.box().props.value).toBe("");
+});
+
+test("Cmd+Enter while running also delivers to onSendNow (same key, other hand)", () => {
+  const c = mount({ status: "running" });
+  c.type("go now");
+  expect(c.press("Enter", { metaKey: true })).toBe(true);
+  expect(c.sentNow).toEqual(["go now"]);
+  expect(c.followups).toEqual([]);
+});
+
+test("Ctrl+Enter on an EMPTY box while running still flushes — not a no-op", () => {
+  const c = mount({ status: "running" });
+  expect(c.press("Enter", { ctrlKey: true })).toBe(true);
+  expect(c.sentNow).toEqual([""]);
+  expect(c.sent).toEqual([]);
+  expect(c.followups).toEqual([]);
+});
+
+test("plain Enter while running still queues via onFollowUp, unaffected by send-now", () => {
+  const c = mount({ status: "running" });
+  c.type("queue me");
+  expect(c.press("Enter")).toBe(true);
+  expect(c.followups).toEqual(["queue me"]);
+  expect(c.sentNow).toEqual([]);
+});
+
+test("Ctrl/Cmd+Enter while IDLE is an ordinary send, same as plain Enter", () => {
+  const c = mount();
+  c.type("ship it");
+  expect(c.press("Enter", { ctrlKey: true })).toBe(true);
+  expect(c.sent.map((s) => s.text)).toEqual(["ship it"]);
+  expect(c.sentNow).toEqual([]);
+  expect(c.followups).toEqual([]);
+});
+
+test("no onSendNow handed in: Ctrl+Enter while running falls back to onFollowUp", () => {
+  const c = mount({ status: "running", onSendNow: undefined });
+  c.type("no send-now here");
+  c.press("Enter", { ctrlKey: true });
+  expect(c.followups).toEqual(["no send-now here"]);
+  expect(c.sent).toEqual([]);
+});
+
+test("the send-now button appears next to the queued hint only while running, with a queue, and a handler", () => {
+  const button = (c: ReturnType<typeof mount>) =>
+    c.root.findAllByProps({ className: "c-send-now" });
+  // All three conditions: queued, running, onSendNow (mount's default).
+  expect(button(mount({ status: "running", queued: ["a"] })).length).toBe(1);
+  // Idle: no button even with a queue (a stranded one, mid-redraw).
+  expect(button(mount({ status: "idle", queued: ["a"] })).length).toBe(0);
+  // Running but nothing queued: the whole hint row is absent.
+  expect(button(mount({ status: "running", queued: [] })).length).toBe(0);
+  // Running, queued, but no handler: no button to press.
+  expect(
+    button(mount({ status: "running", queued: ["a"], onSendNow: undefined })).length,
+  ).toBe(0);
+  // The project queue is on: the hint row (and so the button) is suppressed.
+  expect(
+    button(mount({ status: "running", queued: ["a"], queueOn: true })).length,
+  ).toBe(0);
+});
+
+test("clicking the send-now button submits the box's current text via onSendNow", () => {
+  const c = mount({ status: "running", queued: ["a"] });
+  c.type("click me instead");
+  const button = c.root.findByProps({ className: "c-send-now" });
+  act(() => {
+    button.props.onClick();
+  });
+  expect(c.sentNow).toEqual(["click me instead"]);
+  expect(c.box().props.value).toBe("");
 });
 
 // ---- the programmatic send, and the latch around the send window ----------
