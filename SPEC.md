@@ -2093,6 +2093,22 @@ when one exists, else the folder itself.
   exists but is not a clone of that repo is refused, never overwritten.
 - **DL-6** Open target: `<dest>/<subpath>/index.html` when present, else the
   subdirectory itself, via the standard `/view/` URL codec.
+- **DL-7** Local app file payload (D889): `fused-render://open?file=<absolute
+  .fused path>`, the path percent-encoded once by the sender (Render App's
+  title-bar Edit button, `quote(path, safe="")`) and decoded once here; the
+  value is taken verbatim to end-of-string like `git=`. Only an absolute
+  `.fused` path is accepted. The OS handlers ferry it to the same `/clone`
+  page (DL-2 unchanged); `GET /api/clone/info` answers `kind: "file"` plus
+  `appfile.clone_target`'s preview (name, destination, already-cloned), and
+  `POST /api/clone` runs `appfile.clone_app_file` — the preview header's own
+  Clone: a copy into `<workspace>/local/<slug>`, a no-op that reports the
+  existing copy when one is there (edits are never overwritten) — then
+  answers the copy's entry page (`app_listing.app_entry`, else the folder)
+  as `view`. **No confirm click** for this payload: the file is already on
+  this machine and was just open in Render App, the same trust posture as a
+  Finder double-click on a `.fused` (which extracts and runs it unasked); the
+  page shows what lands where, POSTs at once and redirects, and stays the
+  error surface for a bad or missing path.
 
 ---
 

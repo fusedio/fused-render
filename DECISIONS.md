@@ -5739,3 +5739,45 @@ run the full suite — that's the orchestrator's job. Did not touch
 `fused_render/templates/*`, `tests/test_template_locks.py`,
 `fused_render/index/`, or anything else outside the pin bump and its
 directly-affected docs, per instruction.
+
+## D889 — `fused-render://open?file=` clones a local `.fused` for editing, without a confirm click
+
+Render App (fused-render-lite) only runs a `.fused`. Its title-bar Edit
+button needs a way to say "open this file in the editor, as a copy I can
+change" — and fused-render already has every half of that except the link:
+the `open` action with query-param payloads (D110 said future kinds become
+new params on it), `appfile.clone_app_file` (D397, the preview header's
+Clone), and the OS handlers on all three platforms that ferry any
+`fused-render:` link to `/clone?src=` untouched.
+
+Decided:
+
+- **Shape**: `fused-render://open?file=<absolute .fused path>`. The path is
+  percent-encoded exactly once by the sender (`quote(path, safe="")`) and
+  `unquote`d exactly once here, taken verbatim to end-of-string like `git=`.
+  Anything that decodes to a relative path or a non-`.fused` name is a 400
+  from the link, not a fall-through to the git parser.
+- **One code path with the git link**: `parse_open_link` dispatches on the
+  payload kind; `/api/clone/info` and `/api/clone` branch on it and answer
+  the same `dest`/`target`/`view` keys, so `clone.html` has one redirect.
+  No change to `app.py`, `winopen.py` or the supervisor.
+- **Clone semantics are `clone_app_file`'s**: copy into
+  `<workspace>/local/<slug>`; when the copy exists, report it and write
+  nothing. A user who edited their copy and hits Edit again lands back on
+  those edits. Overwrite stays the preview header's separate, confirmed verb.
+- **No confirm click** — the deliberate divergence from DL-3. The git link
+  confirms because it pulls arbitrary remote content onto the machine. Here
+  the payload is a file already on disk that the user just had open in
+  Render App; Finder double-clicking that same file extracts and runs it in
+  fused-render with no prompt today, so a confirm on the clone would guard
+  less than the existing path already allows. The browser's own "open
+  fused-render?" prompt on a custom scheme still stands between a web page
+  and this link. The page remains a progress/error surface: it shows the app
+  name, source file and destination, POSTs at once, and a bad path shows its
+  error there instead of a silent 400.
+- **Landing**: the copy's entry page (`app_listing.app_entry`) in the
+  explorer view, else the folder — what `Preview.tsx`'s `land()` does.
+
+Skew: a FusedRender older than this change lands a `file=` link on the
+clone page's error ("unsupported fused-render link"); Render App's button
+does not version-check, so the page's error text is the message.
