@@ -157,6 +157,24 @@ def test_date_formula_renders_as_a_date_not_a_serial(tmp_path):
     }
 
 
+def test_day_count_formula_stays_a_plain_number(tmp_path):
+    """`TODAY()-A2` and `DATE(...)-DATE(...)` both start with a name in the
+    date-function list, but they return a day COUNT (a "days overdue" /
+    duration shape), not a date — the date heuristic must look past the
+    prefix match to whether the WHOLE formula is that one call."""
+    path = tmp_path / "book.xlsx"
+    _write(path, [
+        ["due", "elapsed", "span"],
+        ["=DATE(2024,1,1)", "=DATE(2024,1,11)-A2", "=DATE(2024,3,5)-DATE(2024,1,1)"],
+    ])
+
+    out = _load_reader().main(file=str(path), sheet="Sheet1", offset=0, limit=10)
+
+    assert out["rows"][0]["due"] == "2024-01-01T00:00:00"
+    assert out["rows"][0]["elapsed"] == 10
+    assert out["rows"][0]["span"] == 64
+
+
 def test_plain_number_formula_is_unaffected_by_date_detection(tmp_path):
     path = tmp_path / "book.xlsx"
     _write(path, [["hours", "amount"], [3, "=A2*50"]])
