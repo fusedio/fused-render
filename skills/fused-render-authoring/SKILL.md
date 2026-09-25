@@ -7,6 +7,15 @@ description: Use when writing or debugging fused-render .html view or .py data f
 
 View = sibling pair: `.html` (UI) + `.py` (data). Explorer renders html in iframe, injects `window.fused` (never `<script src>` runtime), page calls local Python via `fused.runPython`. UI state lives in URL params → refresh-proof, bookmarkable. Plain HTML/CSS/JS. No framework, no build step.
 
+## Build order: html first
+
+When free to start on either side, write the `.html` first. User sees layout + controls within minutes; a `.py` is invisible until wired.
+
+- First pass need NOT be complete, but MUST render standalone: controls → params → `draw()` over stub/placeholder data, no `runPython` yet. Calling a `.py` that doesn't exist = traceback overlay or blank view — opposite of feedback.
+- As soon as it renders, tell user the embed URL (`/explorer/embed/<path>`, see Testing) so they can watch it grow.
+- Then write `main()`, then swap stub → `fused.runPython`. Wiring discipline (Canonical wiring) holds from the first pass — stub data only changes WHERE values come from, not the param flow.
+- Stub-first html doubles as the `_preview=1` placeholder — keep it cheap.
+
 ## App markers (entry page `<head>`, first 4 KiB)
 
 ```html
@@ -183,4 +192,5 @@ Read digest. Zero records + visible placeholder = preview-gated, fine. Zero reco
 - Skipped the Cross-browser section — unstyled `<select>`, vanished scrollbar, `user-select` without `-webkit-`, only ever opened in Chrome.
 - Walking fs for counts/sizes → `fused.fileIndex.query` (`fused-render-index`).
 - `fused.ai.text(` in a page meant for HOSTED export → exporter rejects textually, env guard no help. A `.fused` app file allows it (`fused-render-ai`).
+- Wrote `.py` first, or html that calls a not-yet-written `.py` — user stares at empty pane / overlay for the whole build (Build order).
 - Claiming "done" without `fused-render calls` — blank-JS and failing-Python look identical without log.
