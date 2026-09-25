@@ -122,6 +122,17 @@ export interface ModalProps {
   // component lifted verbatim from a page (the /apps composer in the sidebar's
   // New app modal, D489); every FORM modal keeps the default.
   plainBody?: boolean;
+  // WHERE TO PORTAL, when it is not `document.body` (D890, the plan popup).
+  // Read ONCE, at mount (see the lazy `useState` below) — a portal target does
+  // not change out from under an already-open dialog. Returning `null` (not
+  // framed, no `window.top`, a cross-origin throw, a test shim) falls back to
+  // this document's own `document.body`, exactly as every caller that omits
+  // this prop already gets. Every internal `document.*` reference below reads
+  // off the RESOLVED container's owner document instead of the global
+  // `document`, so Esc handling and focus restore still work when the
+  // container is a different (top) document than the one this script's own
+  // `document` global points at.
+  getContainer?: () => Element | null;
 }
 
 export function Modal({
@@ -140,8 +151,12 @@ export function Modal({
   closeTitle,
   plainBody = false,
   headActions,
+  getContainer,
 }: ModalProps) {
   const titleId = useId();
+  // Resolved ONCE, at mount — see `getContainer`'s doc comment above.
+  const [container] = useState<Element>(() => getContainer?.() ?? document.body);
+  const ownerDoc = container.ownerDocument ?? document;
   // Exit animation. Callers render this as `{open && <Modal …/>}`, so the modal
   // cannot keep itself mounted — it defers the onClose that makes the caller
   // unmount it, and paints `.closing` in the meantime (lib/exit-animation).
@@ -162,11 +177,11 @@ export function Modal({
   // prefer the first focusable in the body/footer so focus doesn't land on the
   // header ✕.
   useEffect(() => {
-    restoreRef.current = document.activeElement;
+    restoreRef.current = ownerDoc.activeElement;
     const dialog = dialogRef.current;
     if (initialFocus?.current) {
       initialFocus.current.focus();
-    } else if (!(dialog && dialog.contains(document.activeElement))) {
+    } else if (!(dialog && dialog.contains(ownerDoc.activeElement))) {
       const focusables = Array.from(
         dialog?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [],
       );
@@ -193,7 +208,7 @@ export function Modal({
     if (!focusSignal) return;
     const el = initialFocus?.current;
     if (!el) return;
-    const active = document.activeElement as HTMLElement | null;
+    const active = ownerDoc.activeElement as HTMLElement | null;
     const dialog = dialogRef.current;
     if (active && dialog?.contains(active) && !active.closest(".modal-head")) return;
     el.focus();
@@ -255,8 +270,8 @@ export function Modal({
       if (next && dialog.contains(next)) return;
       requestAnimationFrame(() => {
         if (!dialog.isConnected) return; // modal already unmounted
-        const active = document.activeElement;
-        if (active && active !== document.body) {
+        const active = ownerDoc.activeElement;
+        if (active && active !== ownerDoc.body) {
           if (dialog.contains(active)) return;
           // Focus moved into some other open dialog/popover — leave it alone.
           if ((active as Element).closest?.('[role="dialog"]')) return;
@@ -306,8 +321,9 @@ export function Modal({
       if (!isTopmost(token.current)) return;
       attemptClose();
     };
-    document.addEventListener("keydown", onDocKey);
-    return () => document.removeEventListener("keydown", onDocKey);
+    ownerDoc.addEventListener("keydown", onDocKey);
+    return () => ownerDoc.removeEventListener("keydown", onDocKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attemptClose]);
 
   const onKeyDown = (e: ReactKeyboardEvent) => {
@@ -315,7 +331,7 @@ export function Modal({
     const dialog = dialogRef.current;
     if (!dialog) return;
     const nodes = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
-      (el) => el.offsetParent !== null || el === document.activeElement,
+      (el) => el.offsetParent !== null || el === ownerDoc.activeElement,
     );
     if (nodes.length === 0) {
       e.preventDefault();
@@ -324,7 +340,7 @@ export function Modal({
     }
     const first = nodes[0];
     const last = nodes[nodes.length - 1];
-    const active = document.activeElement;
+    const active = ownerDoc.activeElement;
     if (e.shiftKey) {
       if (active === first || !dialog.contains(active)) {
         e.preventDefault();
@@ -465,7 +481,7 @@ export function Modal({
         )}
       </div>
     </div>,
-    document.body,
+    container,
   );
 }
 
