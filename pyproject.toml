@@ -209,13 +209,6 @@ bundled = [
     "requests",
     "pillow",
     "openpyxl",
-    # xlsx/reader.py's fallback for formula cells openpyxl's data_only mode
-    # returns as blank — a workbook that was never opened in Excel (built by
-    # openpyxl, or edited by the `excel` template) has no cached result, only
-    # the formula text. ~7 MB installed (networkx + ruamel-yaml; numpy and
-    # python-dateutil are already above), not the ~85 MB `formulas` package
-    # would cost by pulling scipy back in (D276 removed scipy for exactly this
-    # reason — no template needs it otherwise).
     "pycel",
     # REMOVED (D276): polars (197 MB — `polars` + the `polars-runtime-32` wheel
     # that carries the actual engine). It was the single largest thing in this
