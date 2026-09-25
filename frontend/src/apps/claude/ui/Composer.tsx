@@ -1774,7 +1774,12 @@ export function ComposerCard({
     // `sendNow && running` is the one exception: Ctrl+Enter on an empty box
     // mid-turn is a legal "flush whatever is already queued" press, not a
     // no-op — `onSendNow` (see below) still has to fire on nothing at all.
-    if (!message && !hasAttachments && !hasAttachmentsNow?.() && !(sendNow && running)) {
+    if (
+      !message &&
+      !hasAttachments &&
+      !hasAttachmentsNow?.() &&
+      !(sendNow && running && onSendNow)
+    ) {
       return false;
     }
     // A SEND SPENDS THE BOX THE SAME WAY AN ANSWERED DIALOG DOES, and a render

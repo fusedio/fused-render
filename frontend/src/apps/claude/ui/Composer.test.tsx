@@ -492,6 +492,21 @@ test("no onSendNow handed in: Ctrl+Enter while running falls back to onFollowUp"
   expect(c.sent).toEqual([]);
 });
 
+test("no onSendNow handed in: Ctrl+Enter on an EMPTY box while running is a no-op, not an empty send", () => {
+  // The empty-box exception in `submit` exists so `onSendNow` can flush an
+  // empty press. Without a handler to flush TO, that exception must not fall
+  // through and hand an empty string to `onFollowUp` (or `onSend`) instead —
+  // that would fire a blank message the user never asked to send.
+  const c = mount({ status: "running", onSendNow: undefined });
+  // `preventDefault` fires unconditionally for any un-shifted Enter (it has to,
+  // to stop a newline landing in the box) — it says nothing about whether
+  // `submit` actually sent anything, so the assertion is on the handlers below.
+  c.press("Enter", { ctrlKey: true });
+  expect(c.followups).toEqual([]);
+  expect(c.sent).toEqual([]);
+  expect(c.sentNow).toEqual([]);
+});
+
 test("the send-now button appears next to the queued hint only while running, with a queue, and a handler", () => {
   const button = (c: ReturnType<typeof mount>) =>
     c.root.findAllByProps({ className: "c-send-now" });
