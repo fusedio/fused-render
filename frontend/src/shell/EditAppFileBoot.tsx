@@ -39,6 +39,13 @@ import { editAppFileFromSearch, withoutEditAppFile } from "./edit-appfile-lib";
 // can be mistaken for a hand-off.
 const BOOT_FILE: string | null =
   typeof location === "undefined" ? null : editAppFileFromSearch(location.search);
+// Consumed by the FIRST instance to mount. The component is mounted on two
+// routes (the main shell and the setup wizard, App.tsx), and a first clone
+// that starts on the wizard navigates to the new copy — which unmounts that
+// instance and mounts the main one. Without this flag the second instance
+// would read the same BOOT_FILE, find the copy it had just made, and ask to
+// overwrite it (bugbot, PR #1332).
+let consumed = false;
 
 /** The copy's entry page when it declares one, else the folder — the rule the
  *  preview header's Clone button lands by (Preview.tsx `land`). */
@@ -64,7 +71,8 @@ export default function EditAppFileBoot() {
 
   useEffect(() => {
     const file = BOOT_FILE;
-    if (!file) return;
+    if (!file || consumed) return;
+    consumed = true;
     // Strip first: whatever happens below, this URL must not replay it.
     replaceSearch(withoutEditAppFile(currentUrl()));
     let alive = true;
