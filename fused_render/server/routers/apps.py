@@ -54,6 +54,7 @@ startup and again here at create time. The user's own later ``claude`` in the
 folder is covered by the published plugin instead (user_plugin.py, D492), which
 is machine-wide and synced only at startup.
 """
+import logging
 import os
 import shutil
 import threading
@@ -67,6 +68,8 @@ from fused_render import app_listing, fused_api_version, schedule
 from fused_render.server.common import _error, _require_fused
 from fused_render.shell.prefs import VALID_DEFAULT_MODELS
 from fused_render.shell.seed import fused_dir
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -1368,11 +1371,23 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
     # BEFORE any session runs — so the scaffolding turn's work diffs against
     # the boilerplate, not nothing. Best-effort (no git on the machine still
     # gets a working app).
-    from fused_render import app_git
+    from fused_render import app_git, app_id as app_identity
+
+    entry_html = os.path.abspath(os.path.join(dest, "index.html"))
+    # Identity from birth too: mint the app's `<meta name="fused-app-id">`
+    # into the fresh copy BEFORE the boilerplate commit, so the tag lands in
+    # history with the rest of the starter instead of appearing later as an
+    # uncommitted server write (export used to mint it, and the stamp then
+    # sat dirty until some unrelated commit swept it in). The starter template
+    # itself still carries no tag — a fixed id there would be copied into
+    # every app; this stamps a fresh one per copy. Best-effort: `ensure`
+    # never raises, and an app that could not take the tag is still an app
+    # (export mints it later, as before).
+    if app_identity.ensure(entry_html, name) is None:
+        logger.warning("create app: could not stamp fused-app-id into %s", entry_html)
 
     app_git.init_repo(dest)
 
-    entry_html = os.path.abspath(os.path.join(dest, "index.html"))
     task, task_error = None, None
     if prompt.strip():
         task, task_error = _create_app_task(entry_html, prompt, model, effort)

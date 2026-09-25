@@ -2289,8 +2289,9 @@ export interface AppFileCloneTarget {
    *  clone), this is THAT folder rather than local/<slug>. */
   path: string;
   cloned: boolean;
-  /** The app's stable identity (`<meta name="fused-app-id">`, minted on
-   *  first export); null for files exported before it existed. */
+  /** The app's stable identity (`<meta name="fused-app-id">`, minted at
+   *  creation, or on first export for older apps); null for files exported
+   *  before it existed. */
   app_id?: string | null;
 }
 

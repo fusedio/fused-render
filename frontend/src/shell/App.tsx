@@ -54,6 +54,7 @@ import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import UpdateNotifier from "@platform/ui/UpdateNotifier";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
+import EditAppFileBoot from "@shell/EditAppFileBoot";
 import { ShareFileHost } from "@platform/ui/ShareFileModal";
 import OnboardingWizard from "@shell/onboarding/OnboardingWizard";
 import { ONBOARDING_PATH, shouldAutoShow } from "@shell/onboarding/state";
@@ -1071,6 +1072,13 @@ export default function App({ config }: { config: Config }) {
             say it the same way so the comment stays true regardless of how
             this branch's own condition might change later. */}
         {!IS_EMBED && <UpdateNotifier />}
+        {/* A fresh install routes Home to this wizard, and a Render App user's
+            very first fused-render action can be its Edit button: the
+            `?_edit_appfile=` hand-off must not die here unread. The boot
+            handler clones and moves to the copy (the wizard re-offers
+            itself next launch, `shouldAutoShow`); over an existing copy it
+            navigates there first, so its modal never sits on the wizard. */}
+        {!IS_EMBED && <EditAppFileBoot />}
         {/* Mod+K is App-wide (the listener above runs here too), so the sheet
             must be renderable here — or the flag flips with nothing shown and
             the sheet pops open on whatever page the wizard lets go to. */}
@@ -1146,6 +1154,10 @@ export default function App({ config }: { config: Config }) {
           notify() store, so a pane mounting its own instance can only
           duplicate work, never add coverage. */}
       {!IS_EMBED && <UpdateNotifier />}
+      {/* Render App's Edit button hand-off (`?_edit_appfile=`, DL-7): clones
+          the .fused into local/ or, over an existing copy, asks whether to
+          overwrite it. Once, top document, same guard as UpdateNotifier. */}
+      {!IS_EMBED && <EditAppFileBoot />}
       {/* One dialog for every "Share" entry (card chip, card menu, app page,
           explorer kebab): the menu entries cannot own a dialog, so they post
           a request to platform/lib/share-app and this host renders it. */}
