@@ -783,8 +783,13 @@ test("a plan with no usable plan string dumps it rather than implying one was re
 // was rendered verbatim inside the card, on the first render and on every "Keep
 // planning" revision. The disclosure dump is for input the model CHOSE and the
 // user is being asked to approve; the CLI's own scratch path is neither, and an
-// absolute internal path in a user-facing card is an id in the UI.
-test("the plan card never dumps the CLI's own planFilePath", () => {
+// absolute internal path dumped as raw JSON is an id in the UI.
+//
+// D890 code review, finding 4: the path is no longer invisible either — it
+// still says something worth telling the reader (the plan was saved
+// somewhere real), so it gets its own quiet "Saved to <path>" line instead of
+// vanishing outright or riding along in the JSON dump.
+test("the plan card never dumps the CLI's own planFilePath, but shows a quiet Saved-to line", () => {
   const r = mount(
     <PlanCard
       row={row({
@@ -799,15 +804,17 @@ test("the plan card never dumps the CLI's own planFilePath", () => {
   );
   expect(all(r, "pre")).toHaveLength(0);
   expect(textOf(r.toJSON() as Json)).not.toContain("planFilePath");
-  expect(textOf(r.toJSON() as Json)).not.toContain(".claude/plans");
+  expect(textOf(withClass(r, "plan-saved-path")[0])).toBe(
+    "Saved to /Users/someone/.claude/plans/make-a-3-step-plan-abc.md",
+  );
   // The plan itself still renders, and the card still offers both verdicts.
   expect(withClass(r, "plan-body")).toHaveLength(1);
   expect(labels(r)).toContain("Approve plan");
 });
 
-test("planFilePath is covered even when the plan itself is unusable", () => {
+test("planFilePath is covered in the dump even when the plan itself is unusable, but still gets its Saved-to line", () => {
   // The plan falls into the dump (the card must not imply one was read); the
-  // path still does not.
+  // path still does not join it — it renders as its own line instead.
   const r = mount(
     <PlanCard
       row={row({ tool: PLAN, input: { plan: 7, planFilePath: "/tmp/p.md" } })}
@@ -816,6 +823,28 @@ test("planFilePath is covered even when the plan itself is unusable", () => {
   );
   expect(withClass(r, "plan-body")).toHaveLength(0);
   expect(textOf(all(r, "pre")[0])).toBe(JSON.stringify({ plan: 7 }, null, 2));
+  expect(textOf(withClass(r, "plan-saved-path")[0])).toBe("Saved to /tmp/p.md");
+});
+
+test("a plan with no planFilePath renders no Saved-to line at all", () => {
+  const r = mount(<PlanCard row={row({ tool: PLAN, input: { plan: "# p" } })} onDecide={noop} />);
+  expect(withClass(r, "plan-saved-path")).toHaveLength(0);
+});
+
+// `planFilePath` is the ONE key this rule covers — an unrelated key the model
+// added is still nobody's business to hide, and still lands in the dump.
+test("an unrelated unknown input key still falls into the dump beside a usable plan", () => {
+  const r = mount(
+    <PlanCard
+      row={row({
+        tool: PLAN,
+        input: { plan: "# p", planFilePath: "/tmp/p.md", someNewFlag: true },
+      })}
+      onDecide={noop}
+    />,
+  );
+  expect(textOf(all(r, "pre")[0])).toBe(JSON.stringify({ someNewFlag: true }, null, 2));
+  expect(textOf(withClass(r, "plan-saved-path")[0])).toBe("Saved to /tmp/p.md");
 });
 
 // QA round 3a, defect 4: `.qopt` is a flex row whose ONE child is `.qbody`

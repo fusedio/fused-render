@@ -1554,3 +1554,50 @@ select.c-pill {
   color: var(--c-dim);
   font-size: 12px;
 }
+
+/* ---- the plan popup (D890) ------------------------------------------------ */
+/* WIDE — the whole point of the popup over the card's own boxed 420px reading
+   window. `min(…, 100%)` is the same idiom `.c-shotview-modal` uses just above:
+   it resolves against `.deploy-overlay`'s own flex slot, which already backs
+   off from the viewport edge (that box's own padding), so a narrow viewport
+   never gets a dialog wider than it has room for — no horizontal page scroll,
+   full-screen-ish once the viewport itself is this narrow. */
+.modal-dialog.c-plan-modal {
+  width: min(1100px, 100%);
+}
+/* ABOVE THE APP'S MODAL, same reasoning as `.c-shotview-modal` just above: a
+   plan popup opened from a card that itself sits inside another dialog (a Tab,
+   a Panel pane) must not paint under it. */
+.modal-overlay:has(> .c-plan-modal) {
+  z-index: 1100;
+}
+/* `.chat-root` carries the chat's OWN layout (flex row, `height: 100%`,
+   `overflow: hidden` — chat.css) for the split-pane host it normally mounts
+   into; none of that fits a dialog body, so this reasserts the layout at one
+   class higher specificity than the bare `.chat-root` rule it is overriding.
+   Everything else `.chat-root` sets — the `--c-*` palette, the reading
+   typography (`--c-fs-read`/`--c-lh-read`) — is exactly what this wants and is
+   left alone. */
+.chat-root.c-plan-modal-root {
+  display: block;
+  width: auto;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: visible;
+  background: transparent;
+}
+/* THE READING COLUMN — centered, generous, and bounded well short of the
+   dialog's own 1100px so a paragraph does not run the full width of a wide
+   monitor. The modal body itself (`.modal-body-plain`, deploy.css) is what
+   scrolls; the plan's own 420px cap (`.chat-root .perm .plan-body`,
+   transcript.css) is neutralized here in favor of that one scroller, so the
+   whole plan is one continuous read rather than a box within a box. */
+.plan-modal-reading {
+  max-width: 720px;
+  margin: 0 auto;
+}
+.chat-root.c-plan-modal-root .perm .plan-body {
+  max-height: none;
+  overflow: visible;
+}
