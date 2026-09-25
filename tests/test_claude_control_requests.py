@@ -302,3 +302,78 @@ def test_await_control_response_seeks_from_the_given_offset(agent, tmp_path):
     result = agent._await_control_response(
         str(run_dir), "req-1", timeout=1.0, start_offset=offset)
     assert result == {"fresh": True}
+
+
+def test_send_now_interrupts_and_delivers_the_draft_right_away(
+        agent, monkeypatch, stub_cli, target):
+    """`_send_now` is the headless stand-in for the interactive CLI's
+    Ctrl+Enter: unlike `_cancel`, it must interrupt the CURRENT turn without
+    ever discarding the inbox or killing the tree, then hand the draft
+    straight to the still-live host so the CLI answers it immediately
+    instead of waiting behind whatever else is queued."""
+    run_id, run_dir = _start(agent, monkeypatch, stub_cli, target)
+    assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
+
+    result = agent._send_now(run_id, "what about now")
+    assert result == {"sent_now": True}
+    assert agent._alive(run_dir), \
+        "send-now must not kill the session — the whole point is that it " \
+        "keeps going"
+    assert os.path.exists(os.path.join(run_dir, "host.json"))
+
+    assert _wait_for(lambda: any(
+        r.get("type") == "echo" and r.get("text") == "what about now"
+        for r in _out_rows(run_dir))), _out_rows(run_dir)
+
+
+def test_send_now_with_no_draft_just_flushes_the_queue(
+        agent, monkeypatch, stub_cli, target):
+    """An empty draft (Ctrl+Enter pressed on an empty composer) still
+    interrupts so whatever is already queued gets answered right away, but
+    must not write a spurious empty user turn into the inbox."""
+    run_id, run_dir = _start(agent, monkeypatch, stub_cli, target)
+    assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
+
+    result = agent._send_now(run_id)
+    assert result == {"sent_now": True}
+    assert agent._alive(run_dir)
+
+    # Only the initial turn's echo — no second, empty one.
+    echoes = [r for r in _out_rows(run_dir) if r.get("type") == "echo"]
+    assert echoes == [{"type": "echo", "text": "m1"}]
+
+
+def test_send_now_with_no_live_host_returns_an_error(agent, tmp_path):
+    target = tmp_path / "orphan.txt"
+    target.write_text("x")
+    run_dir = os.path.join(agent.RUNS, "20260901-140000-ddd")
+    os.makedirs(run_dir)
+    with open(os.path.join(run_dir, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump({"file": str(target), "message": "hi", "mode": "prompt"}, f)
+
+    result = agent._send_now("20260901-140000-ddd", "draft")
+    assert result == {"error": "no live session"}
+
+
+def test_send_now_never_discards_the_inbox_even_with_a_queue(
+        agent, monkeypatch, stub_cli, target):
+    """`_cancel` discards undrained inbox entries before interrupting, on
+    purpose, so a Stop can never turn into a fresh turn. `_send_now` is the
+    opposite: an item already sitting in the inbox ahead of the draft must
+    survive the interrupt and still get answered — nothing here may call
+    `_discard_inbox`."""
+    run_id, run_dir = _start(agent, monkeypatch, stub_cli, target)
+    assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
+
+    # A follow-up queued the normal way, ahead of the send-now draft.
+    agent._write_inbox_entry(run_dir, "already queued")
+
+    result = agent._send_now(run_id, "the send-now draft")
+    assert result == {"sent_now": True}
+
+    assert _wait_for(lambda: any(
+        r.get("type") == "echo" and r.get("text") == "already queued"
+        for r in _out_rows(run_dir))), _out_rows(run_dir)
+    assert _wait_for(lambda: any(
+        r.get("type") == "echo" and r.get("text") == "the send-now draft"
+        for r in _out_rows(run_dir))), _out_rows(run_dir)

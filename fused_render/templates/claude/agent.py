@@ -3441,6 +3441,72 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     return {"sent": True}
 
 
+def _send_now(run_id: str, message: str = "") -> dict:
+    """Send-now: the headless stand-in for the interactive CLI's Ctrl+Enter
+    (`chat:sendNow`, v2.1.275+ — TUI-local only, never a wire subtype; see
+    DECISIONS.md's "Send now" entry for the probe that ruled a native
+    `control_request` out). No such subtype exists, so this is built the
+    same way `_cancel`'s `interrupt` path is — a real `interrupt`
+    `control_request`, answered like any other (`_await_control_response`)
+    — but with the OPPOSITE intent from `_cancel`: a Stop must mean nothing
+    more happens (discard the inbox, kill the tree the moment anything was
+    queued); send-now must mean the session keeps going and answers
+    everything, including the draft, as fast as possible.
+
+    So, unlike `_cancel`: the inbox is left completely alone (no
+    `_discard_inbox` — anything already queued ahead of `message` is meant
+    to survive and get answered, exactly what a live probe showed the real
+    CLI already does on its own with an empty `still_queued: []`), and the
+    tree is never killed, regardless of what the interrupt reports queued.
+    `message` is appended to the SAME inbox afterwards, so the CLI works
+    through whatever was already there and then the draft, all on the one
+    still-open stdin pipe — the ordering-safety comes from doing this as one
+    server-side function, not two racing HTTP calls.
+
+    An empty `message` (Ctrl+Enter on an empty composer, a pure "flush the
+    queue now") still interrupts, but writes no inbox entry — nothing here
+    should hand the CLI an empty user turn."""
+    run_dir = os.path.join(RUNS, run_id)
+    if _bad_id(run_id) or not os.path.isdir(run_dir):
+        return {"error": "no such run"}
+    if not _host_alive(run_dir):
+        return {"error": "no live session"}
+    # Captured BEFORE the request is queued — see `_await_control_response`
+    # for why that ordering is what makes the seek safe.
+    try:
+        out_offset = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+    except OSError:
+        out_offset = 0
+    request_id = _write_control_request(run_dir, "interrupt")
+    response = _await_control_response(
+        run_dir, request_id, start_offset=out_offset)
+    if response is None:
+        return {"error": "the interrupt did not land"}
+    # Same pairing `_cancel`'s landed-interrupt branch writes, and for the
+    # same reason: `_poll` needs this turn's own boundary to tell a
+    # genuinely new turn apart from the interrupted one's own trailing error
+    # `result`, and `pending_echo` (if a prior `_send` left one pending) can
+    # never be satisfied now that its echo will not come.
+    try:
+        with _private_open(os.path.join(run_dir, "interrupted_offset")) as fh:
+            fh.write(str(out_offset))
+    except OSError:
+        pass
+    try:
+        os.remove(os.path.join(run_dir, "pending_echo"))
+    except OSError:
+        pass  # never written, or already retired by a poll that saw it
+    if message:
+        try:
+            pending_offset = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+        except OSError:
+            pending_offset = 0
+        with open(os.path.join(run_dir, "pending_echo"), "w", encoding="utf-8") as f:
+            f.write(str(pending_offset))
+        _write_inbox_entry(run_dir, message)
+    return {"sent_now": True}
+
+
 def _discard_inbox(run_dir: str) -> list:
     """Throw away every USER-TURN entry the session host has not drained yet,
     and return the messages that were in them.
@@ -6882,4 +6948,12 @@ def main(action: str = "start", file: str = "", message: str = "",
         # whether that means a control request or a forced respawn.
         return _send(run_id, message, read_dirs, model, effort,
                     permission_mode)
+    if action == "send_now":
+        # Ctrl+Enter mid-turn: interrupt the current turn and hand `message`
+        # (the composer's draft, possibly empty — a pure flush) to the
+        # still-live host in one atomic call, so it and whatever was already
+        # queued get answered right away instead of waiting for the turn
+        # that is running. See `_send_now`'s own docstring for why this is
+        # not just `_cancel` followed by `_send`.
+        return _send_now(run_id, message)
     return {"error": f"unknown action: {action}"}
