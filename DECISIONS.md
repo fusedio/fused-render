@@ -5860,3 +5860,42 @@ Decided:
   embed — genuine same-origin iframes), focus moving into the dialog and
   back out on close, and native click/drag are likewise a manual, in-browser
   to-verify list, not something this suite claims to have exercised.
+
+**Addendum (code review):** four findings against the above landed as two
+follow-up commits, no new D-number:
+
+- The plan body's click/key wrapper sat around content with its own real
+  interactive children — a code block's copy button, added imperatively by
+  `enhanceCodeBlocks` as a plain DOM `<button>` (not a React one). A click
+  bubbling up from that button opened the modal on top of the copy; a
+  focused button's Enter/Space was worse, since the wrapper's key handler
+  called `preventDefault` unconditionally, which also killed the button's
+  own native activation. Selecting plan text to copy it ends the drag with
+  a `mouseup`, which is a `click` too, and that click must not reopen the
+  modal over the selection either. `planAffordance.ts` now holds a shared
+  `guardedOpenOnClick`/`activateOnKey`, using `closest()`-based interactive-
+  descendant detection (not `target === currentTarget` — that identity
+  check would have broken every pre-existing test built on this suite's own
+  `fakeEvent()` helper, whose `target`/`currentTarget` are deliberately two
+  different objects) plus a `window.getSelection()` check, guarded by
+  try/catch since the test DOM shim has no `getSelection` at all.
+- The historical `ToolChip`'s own Enter/Space handling was a second, inline
+  copy of the same logic; it now imports `activateOnKey` from the same
+  module instead of repeating it.
+- ExitPlanMode's input carries a `planFilePath` (the CLI's own scratch
+  path) alongside `plan`. It was already excluded from the leftover-JSON
+  dump, which made it vanish outright rather than disclosed at all — now
+  rendered as a quiet "Saved to \<path\>" line (`.plan-saved-path`) in the
+  card, the popup, and the historical chip alike; the disclosure rule for
+  every OTHER unknown input key is unchanged. Fixed a latent bug alongside
+  this: the historical chip's own dump-exclusion list never covered
+  `planFilePath`, unlike the live card's.
+- **Still not verified in this harness** (same limitation as above, same
+  cause — `react-test-renderer` mounts no real DOM node, so `ref.current`
+  stays `null` and `enhanceCodeBlocks` never actually runs in these tests):
+  a real click or focused Enter/Space on the ACTUAL imperative copy button,
+  and a real text-selection drag ending in a click, are simulated via a
+  fake `target`/`currentTarget` carrying just a `closest()` method — the
+  guard's logic is exercised, but never against a genuine DOM button or a
+  genuine `Selection` object. Both remain a manual, in-browser to-verify
+  item.
