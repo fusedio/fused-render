@@ -16,7 +16,7 @@ View = sibling pair: `.html` (UI) + `.py` (data). Explorer renders html in ifram
 
 - `fused-app` = ONLY thing making folder an app. No marker → never in /apps, never registered.
 - `fused-api-version`: copy N from `fused_render/app_starter/index.html`. Missing tag = version 0. Migration → `fused-render-api-migration`.
-- `fused-app-id` (optional, `content="<kebab name>-<8 hex>"`): app's stable identity, written by first `.fused` export (`fused_render/app_id.py`), same id across every later export = "update of this app". Never write, edit or copy it by hand; absent until exported.
+- `fused-app-id` (optional, `content="<kebab name>-<8 hex>"`): app's stable identity, written at app creation (older apps: on first `.fused` export) by `fused_render/app_id.py`, same id across every later export = "update of this app". Never write, edit or copy it by hand.
 - Optional `icon.svg` (or `icon.png`, lower priority, clipped to rounded square) beside entry page = sidebar glyph + card mark + favicon → `fused-render-app-icon`.
 
 ## Python side: `main()`
