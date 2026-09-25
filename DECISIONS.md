@@ -5792,3 +5792,71 @@ Decided:
 Skew: a FusedRender older than this change lands a `file=` link on the
 clone page's error ("unsupported fused-render link"); Render App's button
 does not version-check, so the page's error text is the message.
+
+## D890 — Plan popup: a wide, top-document-portaled modal for the ExitPlanMode plan, sharing PlanCard's own decision state
+
+The React Claude chat (`frontend/src/apps/claude/`, native-chat only — the
+legacy `fused_render/templates/claude/template.html` is untouched) renders a
+pending or resolved plan inside `PlanCard.tsx` (the live row) and
+`ToolChip.tsx` (the historical, resolved chip once a turn folds). Both wrap
+the plan text in `.plan-body` at whatever column width the card's own mount
+site happens to have — comfortable in the full-width transcript, cramped in
+a `Panel`/`Tabs` pane or the canvases workspace's embed. Reading a real plan
+in those narrow contexts was the complaint; the fix is a modal, not a wider
+card, because several genuine mount sites are same-origin iframes with no
+spare width of their own to give.
+
+Decided:
+
+- **Portals to the TOP document, not `document.body`.** `Modal.tsx` (the
+  one shared chassis every dialog in the app already uses) gained an
+  optional `getContainer?: () => Element | null` prop; every internal
+  `document.*` reference (activeElement, add/removeEventListener, the focus
+  trap) now goes through that container's `ownerDocument`, falling back to
+  `document.body` when the prop is omitted — existing callers are
+  unaffected. `PlanModal.tsx` passes `getContainer={topDocumentBody}`, a new
+  `ui/topContainer.ts` that replicates `router.ts`'s own `IS_TOP_EMBED`
+  climb (`window.top`, try/catch, safe-default `null` on any cross-origin or
+  framing ambiguity) — read lazily at open time, not at module init, since
+  framing can't be assumed fixed at import time. A modal that failed to
+  reach the top document still opens, just boxed into its own iframe: never
+  worse than today, only sometimes not wider.
+- **`PlanModal` is purely presentational; there is exactly one instance of
+  the decision state per row.** `PlanCard` already owns `note`/`sent`/
+  `threw`-derived `status`/`posting`/`resolved` in its own `useState`s; the
+  modal receives them as props and calls the SAME `onApprove`/
+  `onKeepPlanning` closures the card's own buttons call. This is what makes
+  the card and the modal agree by construction (one boolean disables both
+  surfaces' buttons at once, so a double-click across card+modal can't
+  double-send) rather than by some second copy kept in sync by hand. The
+  historical `ToolChip` plan has no row to share, so its read-only popup
+  keeps its own local `open` state instead — there is nothing to decide
+  there.
+- **The open affordance is a `role="button"` `div`, not a `<button>`.**
+  Several pinned tests (`cards.test.tsx`) assert `labels(r) === []` — every
+  real `<button>` in the tree — once a plan is resolved, on the strength
+  that a resolved row offers no actions. The new "Open"/"expand" control is
+  offered in EVERY state (resolved included, so a settled plan can still be
+  reread), so it has to be invisible to that assertion; `activateOnKey`
+  (Enter/Space) keeps it keyboard-operable without being a `<button>`.
+- **The modal's wrapper reproduces the card's own two-level class nesting**
+  (`.chat-root` outer, `.perm.plan` inner), not one node wearing all four
+  classes — `transcript.css`'s existing `.chat-root .perm .plan-body` (and
+  the sibling `.perm-status`/`.perm-actions`/`.perm-btn`/`.plan-note` rules)
+  are descendant selectors that only match when `.perm` sits on a
+  DIFFERENT node than `.chat-root`, which is how the live card's own DOM is
+  shaped. Reusing that shape means the modal's typography and plan styling
+  come free from the same rules, nothing duplicated; `composer.css` adds
+  only the popup's own layout (a `min(1100px, 100%)` dialog width, a
+  720px-max centered reading column, letting `.plan-body` grow instead of
+  clipping at the card's usual max-height).
+- **Not verified in this harness**: the test suite
+  (`PlanModal.test.tsx`) mounts with `react-test-renderer` + a DOM shim
+  whose `document.addEventListener`/`removeEventListener` are no-ops by
+  the shim's own design — Esc-to-close and backdrop-click cannot be
+  exercised here at all (the chassis' existing Esc/backdrop wiring is
+  unchanged by this feature; only WHICH document it listens on changed).
+  Visual width at each real mount site (Panel pane, Tabs, the canvases
+  embed — genuine same-origin iframes), focus moving into the dialog and
+  back out on close, and native click/drag are likewise a manual, in-browser
+  to-verify list, not something this suite claims to have exercised.
