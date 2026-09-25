@@ -12,11 +12,13 @@ beside the other markers in its entry page:
 
 The value is the app's name in kebab case plus eight random hex digits:
 readable in a listing, unique enough that two apps named alike never
-collide, and safe to compare as an opaque string. It is MINTED ONCE — on the
-first export (`appfile.export_app_file`), when the app first needs an
-identity that outlives its folder — and then only ever read. Renaming or
-moving the folder, editing every other byte, cloning the `.fused` back into
-a workspace: none of them touch it, which is the whole point.
+collide, and safe to compare as an opaque string. It is MINTED ONCE — at app
+creation (`routers/apps` stamps the fresh starter copy before the
+boilerplate commit, so the tag is in history from the first commit), or on
+the first export (`appfile.export_app_file`) for an app created before that
+existed — and then only ever read. Renaming or moving the folder, editing
+every other byte, cloning the `.fused` back into a workspace: none of them
+touch it, which is the whole point.
 
 Why the entry page and not a sidecar: the tag lives in the one file every
 app already must have, it is committed with the app (the `.fused/` state dir
