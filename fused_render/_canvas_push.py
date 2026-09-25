@@ -110,11 +110,14 @@ _BARE_OPTS = ("--id",)
 # with a global option in front of it, and matching `args[:3]` verbatim missed
 # it entirely (fell through to the raw, unguarded push). These are that
 # group's options as of this writing (`fused/agent_core/cli.py`'s `cli()`):
-# `--backend`/`--env` take a value, the rest are bare flags. Anything else
-# ahead of `workbench` is unrecognised, so parsing stops and falls through —
-# same conservative rule as everywhere else in this matcher.
+# `--backend` and `--env`, both value-taking. (The old bare flags
+# `--enable-infra`/`--enable-destructive`/`--disable-reset` went with the root
+# MCP server in fusedio/fused#371; the real CLI now rejects them, so they are
+# deliberately NOT skipped here — a push behind one falls through to the CLI's
+# own usage error.) Anything else ahead of `workbench` is unrecognised, so
+# parsing stops and falls through — same conservative rule as everywhere else
+# in this matcher.
 _GLOBAL_VALUE_OPTS = ("--backend", "--env")
-_GLOBAL_FLAG_OPTS = ("--enable-infra", "--enable-destructive", "--disable-reset")
 
 
 def _skip_global_options(args: list[str]) -> list[str]:
@@ -123,9 +126,6 @@ def _skip_global_options(args: list[str]) -> list[str]:
     i = 0
     while i < len(args):
         token = args[i]
-        if token in _GLOBAL_FLAG_OPTS:
-            i += 1
-            continue
         if token in _GLOBAL_VALUE_OPTS:
             if i + 1 >= len(args):
                 break  # malformed; let the real CLI produce the error
