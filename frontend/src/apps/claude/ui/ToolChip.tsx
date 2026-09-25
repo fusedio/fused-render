@@ -31,6 +31,7 @@ import { COPY_RESET_MS } from "../protocol/markdown";
 import type { ToolSegment } from "../protocol/types";
 import { useCardOpen } from "./cardPolicy";
 import { MarkdownView } from "./MarkdownView";
+import { PlanModal } from "./PlanModal";
 
 function asRecord(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
@@ -245,7 +246,7 @@ function renderInput(seg: ToolSegment, inp: Record<string, unknown>) {
       // record that a plan was ever proposed, so a raw JSON dump would be a
       // record of the bytes rather than of the plan (D248).
       const plan = typeof inp.plan === "string" && inp.plan ? inp.plan : "";
-      return plan ? <MarkdownView className="plan-body chip-plan" text={plan} /> : null;
+      return plan ? <PlanChipBody plan={plan} /> : null;
     }
     case ANSWERABLE_TOOL: {
       // Structured plain text, never markdown: the labels are what the answer
@@ -283,6 +284,45 @@ function renderInput(seg: ToolSegment, inp: Record<string, unknown>) {
         <CopyPre copy={JSON.stringify(inp, null, 2)}>{JSON.stringify(inp, null, 2)}</CopyPre>
       ) : null;
   }
+}
+
+/** The chip's plan is always historical (see PLAN_TOOL's docblock below) —
+ *  there is no pending decision to share, so this owns its own `open` bit
+ *  rather than reusing PlanCard's state (D890). The modal it opens is
+ *  read-only (`resolved`, no actions) for the same reason: whatever the plan's
+ *  outcome was, a restored transcript has no live row to decide against. */
+function PlanChipBody({ plan }: { plan: string }) {
+  const [open, setOpen] = useState(false);
+  const openModal = () => setOpen(true);
+  return (
+    <>
+      <div
+        className="plan-open-chip"
+        role="button"
+        tabIndex={0}
+        aria-label="Open plan in full view"
+        onClick={openModal}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter" && e.key !== " ") return;
+          e.preventDefault();
+          openModal();
+        }}
+      >
+        Open ⤢
+      </div>
+      <MarkdownView className="plan-body chip-plan" text={plan} />
+      {open ? (
+        <PlanModal
+          onClose={() => setOpen(false)}
+          plan={plan}
+          status={{ cls: "", text: "" }}
+          resolved
+          posting={false}
+          note=""
+        />
+      ) : null}
+    </>
+  );
 }
 
 function PathLabel({ value }: { value: unknown }) {
