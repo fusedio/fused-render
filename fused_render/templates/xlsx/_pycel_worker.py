@@ -57,7 +57,28 @@ def _quote_sheet(name):
 
 
 def _looks_like_date_formula(formula):
-    return formula.lstrip("=").lstrip().upper().startswith(_DATE_FUNCS)
+    """True only when the WHOLE formula is one date-function call.
+
+    `TODAY()-A2` and `DATE(...)-DATE(...)` also start with a name in
+    `_DATE_FUNCS`, but they return a day COUNT (a "days overdue" / duration
+    shape), not a date — so a `.startswith()` check alone misreads them.
+    Requiring nothing trail the matching close paren rules those out.
+    """
+    body = formula.lstrip("=").strip()
+    upper = body.upper()
+    for name in _DATE_FUNCS:
+        if not upper.startswith(name):
+            continue
+        depth = 0
+        for i in range(len(name) - 1, len(body)):
+            if body[i] == "(":
+                depth += 1
+            elif body[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    return body[i + 1:].strip() == ""
+        return False  # unbalanced parens — not a date we can trust
+    return False
 
 
 def _cell_is_date(ws, ref):
