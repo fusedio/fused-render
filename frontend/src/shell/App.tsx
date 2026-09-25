@@ -54,6 +54,7 @@ import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import UpdateNotifier from "@platform/ui/UpdateNotifier";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
+import EditAppFileBoot from "@shell/EditAppFileBoot";
 import { ShareFileHost } from "@platform/ui/ShareFileModal";
 import OnboardingWizard from "@shell/onboarding/OnboardingWizard";
 import { ONBOARDING_PATH, shouldAutoShow } from "@shell/onboarding/state";
@@ -1146,6 +1147,10 @@ export default function App({ config }: { config: Config }) {
           notify() store, so a pane mounting its own instance can only
           duplicate work, never add coverage. */}
       {!IS_EMBED && <UpdateNotifier />}
+      {/* Render App's Edit button hand-off (`?_edit_appfile=`, DL-7): clones
+          the .fused into local/ or, over an existing copy, asks whether to
+          overwrite it. Once, top document, same guard as UpdateNotifier. */}
+      {!IS_EMBED && <EditAppFileBoot />}
       {/* One dialog for every "Share" entry (card chip, card menu, app page,
           explorer kebab): the menu entries cannot own a dialog, so they post
           a request to platform/lib/share-app and this host renders it. */}

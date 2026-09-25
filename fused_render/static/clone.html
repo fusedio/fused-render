@@ -5,16 +5,7 @@
      GET /api/clone/info, and clones only on the explicit button click via the
      X-Fused-guarded POST /api/clone. The trust boundary lives HERE: after a
      confirm, content from the repository renders same-origin and can run
-     Python through /api/run — the warning text below must keep saying so.
-
-     A ?file= link (kind "file", D889: Render App's Edit button handing over a
-     local .fused) skips the click: the file is already on this machine and
-     the user just had it open — the same posture as a Finder double-click on
-     a .fused, which extracts and runs it without asking. The page is then a
-     progress/error surface: it shows what is being cloned where, POSTs at
-     once, and redirects to the editable copy. When a local copy ALREADY
-     exists the page asks first — overwrite it with this .fused (Yes: the
-     server's merge overwrite) or open the copy as it is (No). -->
+     Python through /api/run — the warning text below must keep saying so. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -106,7 +97,6 @@
       return fail("Could not reach the fused-render server: " + e);
     }
     if (!resp.ok) return fail(data.error || "Invalid link.");
-    if (data.kind === "file") return openAppFile(data);
     $("d-repo").textContent = data.owner + "/" + data.repo;
     if (data.subpath) {
       $("d-sub").textContent = data.subpath;
@@ -134,70 +124,24 @@
     $("go").onclick = () => run(update);
   }
 
-  // A local .fused handed over for editing (Render App's Edit button): show
-  // what lands where. No copy yet: clone without a click and go to it. A
-  // copy already there: ASK — Yes lays this .fused over it (the server's
-  // merge overwrite; edits to files the payload carries are lost), No opens
-  // the copy as it is. Nothing the user edited is replaced without that Yes.
-  function openAppFile(data) {
-    document.title = "Open for editing — fused-render";
-    $("d-repo").textContent = data.name;
-    $("d-repo").previousElementSibling.textContent = "App";
-    $("d-sub").textContent = data.src_file;
-    $("d-sub-label").textContent = "From";
-    $("d-ref").parentNode.removeChild($("d-ref").previousElementSibling);
-    $("d-ref").parentNode.removeChild($("d-ref"));
-    $("d-dest").textContent = data.path;
-    $("details").classList.remove("hidden");
-    if (!data.cloned) {
-      $("title").textContent = "Cloning app for editing";
-      $("go").classList.add("hidden");
-      $("status").textContent = "Cloning…";
-      run(false);
-      return;
-    }
-    $("title").textContent = "A local copy already exists";
-    $("warn").hidden = false;
-    $("warn").innerHTML =
-      "<strong>" + escapeHtml(data.path) + "</strong> already exists. Overwrite it with " +
-      "this .fused file? Your edits to any file the .fused also contains will be " +
-      "replaced; its environment, data and other files stay.";
-    $("go").textContent = "Yes, overwrite";
-    $("go").disabled = false;
-    $("go").onclick = () => run(false, { overwrite: true });
-    const no = document.createElement("button");
-    no.id = "no";
-    no.textContent = "No, open my copy";
-    no.onclick = () => { $("status").textContent = "Opening…"; location.href = data.view; };
-    $("go").insertAdjacentElement("afterend", no);
-    $("status").textContent = "";
-  }
-
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, (c) => (
-      { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  }
-
-  async function run(update, extra) {
+  async function run(update) {
     $("go").disabled = true;
-    if ($("no")) $("no").disabled = true;
     $("error").classList.add("hidden");
-    $("status").textContent = extra && extra.overwrite ? "Overwriting…"
-      : update ? "Pulling…" : "Cloning… (first clone can take a moment)";
+    $("status").textContent = update ? "Pulling…" : "Cloning… (first clone can take a moment)";
     let resp, data;
     try {
       resp = await fetch("/api/clone", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Fused": "1" },
-        body: JSON.stringify(Object.assign({ src }, extra || {})),
+        body: JSON.stringify({ src }),
       });
       data = await resp.json();
     } catch (e) {
-      $("go").disabled = false; if ($("no")) $("no").disabled = false;
+      $("go").disabled = false;
       return fail("Clone request failed: " + e);
     }
     if (!resp.ok) {
-      $("go").disabled = false; if ($("no")) $("no").disabled = false;
+      $("go").disabled = false;
       $("status").textContent = "";
       $("error").textContent = data.error || "Clone failed.";
       $("error").classList.remove("hidden");

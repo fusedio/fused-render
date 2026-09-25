@@ -2097,24 +2097,26 @@ when one exists, else the folder itself.
   .fused path>`, the path percent-encoded once by the sender (Render App's
   title-bar Edit button, `quote(path, safe="")`) and decoded once here; the
   value is taken verbatim to end-of-string like `git=`. Only an absolute
-  `.fused` path is accepted. The OS handlers ferry it to the same `/clone`
-  page (DL-2 unchanged); `GET /api/clone/info` answers `kind: "file"` plus
-  `appfile.clone_target`'s preview (name, destination, already-cloned), and
-  `POST /api/clone` runs `appfile.clone_app_file` — the preview header's own
-  Clone: a copy into `<workspace>/local/<slug>` — then answers the copy's
-  entry page (`app_listing.app_entry`, else the folder) as `view`. **No
-  confirm click** for a first clone: the file is already on this machine and
+  `.fused` path is accepted. The OS handlers ferry it to `GET /clone` like
+  every link (DL-2 unchanged), but a file link gets **no page of its own**:
+  the route answers a 303 INTO the shell with the path as `?_edit_appfile=`
+  — to the existing local copy's entry page (`app_listing.app_entry`, else
+  the folder) when `appfile.clone_target` says one is there, else to Home; a
+  path it cannot read goes to Home too, carrying the path verbatim, so the
+  shell is the one error surface. Nothing is written on the GET (D3). The
+  shell's `EditAppFileBoot` (top document, `!IS_EMBED`) reads the param once,
+  strips it before any async work (a reload or Back never replays the
+  hand-off), then: **no copy** → `POST /api/appfile/clone` and move to the
+  copy's entry page (**no confirm**: the file is already on this machine and
   was just open in Render App, the same trust posture as a Finder
-  double-click on a `.fused` (which extracts and runs it unasked); the page
-  shows what lands where, POSTs at once and redirects, and stays the error
-  surface for a bad or missing path. **An existing copy asks**: when the
-  info probe says `cloned`, the page shows "a local copy already exists —
-  overwrite it with this .fused?" with *Yes, overwrite* (POST with
-  `overwrite: true` → `appfile.overwrite_app_file`, the preview header's
-  merge overwrite: payload files replace their counterparts, `.venv`,
-  `.fused` data and files the payload does not carry stay) and *No, open my
-  copy* (navigates to `view`, nothing written). A POST without `overwrite`
-  onto an existing copy writes nothing and reports it (`cloned: true`).
+  double-click on a `.fused`); **copy exists** → the copy is already on
+  screen underneath, and a modal over it asks "A local copy of `<name>`
+  already exists — overwrite it with the files in `<file>.fused`?" with
+  *Overwrite* (`POST /api/appfile/overwrite`, the preview header's merge
+  overwrite: payload files replace their counterparts, `.venv`, `.fused` data
+  and files the payload does not carry stay; then a reload of the copy's
+  entry page) and *Cancel* / close (nothing written, keep working on the
+  copy). `/api/clone/info` and `POST /api/clone` stay git-only.
 
 ---
 

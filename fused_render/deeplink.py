@@ -20,16 +20,13 @@ git's own message rather than clobbering local edits (owner call, D110).
 
 `fused-render://open?file=<path>` (D889) is how Render App's title-bar Edit
 button hands over a `.fused` it is showing, for editing: the path is
-percent-encoded once by the sender and unquoted once here, the file is cloned
-into `<workspace>/local/<slug>` through the same `appfile.clone_app_file` the
-preview header's Clone button uses, and the confirm page redirects straight to
-the copy's entry page in the explorer. No confirm click for a FIRST clone: the
-file is one already on this machine that the user just had open, the same
-posture as a Finder double-click on a `.fused` (which extracts and runs it
-without asking). When a local copy already exists the page asks instead — "a
-local copy already exists, overwrite it with this .fused?" — Yes lays the
-payload over the copy (`appfile.overwrite_app_file`, merge semantics), No
-opens the copy as it is. Nothing the user edited is replaced without that Yes.
+percent-encoded once by the sender and unquoted once here. It gets NO page of
+its own — `GET /clone` answers a redirect INTO the shell carrying the path as
+`?_edit_appfile=`: to the existing local copy's entry page when there is one
+(the app is on screen while the shell's modal asks "overwrite it with this
+.fused, or keep it?"), else to Home, where the shell clones through the
+X-Fused `/api/appfile/clone` and moves to the copy. Nothing is written on the
+GET (D3), and nothing the user edited is replaced without the modal's Overwrite.
 
 Ref parsing caveat: a GitHub tree URL does not delimit where the ref ends and
 the subpath begins (`/tree/feature/x/docs` is ambiguous). The first segment
@@ -43,10 +40,10 @@ import re
 import shutil
 import stat
 import subprocess
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from fastapi import APIRouter, Body, Header
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from fused_render._view_url_codec import view_url_path as _view_url_path
 
@@ -196,13 +193,8 @@ def app_file_path_from(src: str) -> str | None:
     decodes to something other than an absolute ``.fused`` path is an error,
     not a fall-through: the link named a kind and got its payload wrong.
     """
-    src = (src or "").strip()
-    low = src.lower()
-    for prefix in _OPEN_FILE_PREFIXES:
-        if low.startswith(prefix):
-            raw = src[len(prefix):]
-            break
-    else:
+    raw = file_payload_from(src)
+    if raw is None:
         return None
     path = unquote(raw)
     if not path or not os.path.isabs(path):
@@ -212,15 +204,16 @@ def app_file_path_from(src: str) -> str | None:
     return os.path.normpath(path)
 
 
-def parse_open_link(src: str) -> dict:
-    """Dispatch a ``fused-render://open`` link on its payload kind:
-    ``{"kind": "file", "path": …}`` for ``?file=``, else the GitHub clone spec
-    from ``parse_github_url`` under ``{"kind": "git", …}``. A bare GitHub URL
-    (no scheme prefix) is a git link, as before."""
-    path = app_file_path_from(src)
-    if path is not None:
-        return {"kind": "file", "path": path}
-    return {"kind": "git", **parse_github_url(src)}
+def file_payload_from(src: str) -> str | None:
+    """The still-encoded ``file=`` value of a file link, or None when ``src``
+    is not one. Shared by the validating parse above and the route that must
+    ferry even a malformed payload to the shell verbatim."""
+    src = (src or "").strip()
+    low = src.lower()
+    for prefix in _OPEN_FILE_PREFIXES:
+        if low.startswith(prefix):
+            return src[len(prefix):]
+    return None
 
 
 def parse_github_url(src: str) -> dict:
@@ -582,45 +575,35 @@ def clone_or_pull(spec: dict) -> dict:
     }
 
 
-def app_file_info(path: str) -> dict:
-    """Read-only preview for a file link: ``appfile.clone_target``'s shape
-    plus ``kind``, the source file, and the ``view`` a clone would land on.
-    ``AppFileError`` (missing file, unreadable manifest) becomes a 400-able
-    ``DeeplinkError``."""
+#: The query param a file link is handed to the shell under (DL-7). Underscore
+#: like `_preview`: shell-internal, stripped by the shell on first read.
+EDIT_APPFILE_PARAM = "_edit_appfile"
+
+
+def edit_appfile_redirect(path: str) -> str:
+    """Where the OS-delivered ``file=`` link sends the browser: INTO the
+    shell, never a page of its own. The shell's ``EditAppFileBoot`` reads
+    ``?_edit_appfile=<path>`` once and does the rest through the X-Fused
+    ``/api/appfile/*`` routes — the D3 posture is why nothing is cloned here
+    on a GET.
+
+    A copy already under ``local/`` → that copy's entry page, so the app the
+    user knows is on screen while the shell's modal asks "overwrite it with
+    this .fused, or keep it?". No copy yet → Home; the shell clones and moves
+    to the copy (a brief Home flash is the price of keeping the write behind
+    the guarded POST). A path ``clone_target`` cannot read (missing file, bad
+    manifest) still goes to Home: the shell's probe fails the same way and
+    reports it in-app, one error surface."""
     from fused_render import appfile
 
+    q = f"?{EDIT_APPFILE_PARAM}=" + quote(path, safe="")
     try:
         target = appfile.clone_target(path)
-    except appfile.AppFileError as exc:
-        raise DeeplinkError(str(exc)) from exc
-    return {"kind": "file", "src_file": path, **target,
-            "view": _local_copy_view(target["path"])}
-
-
-def clone_app_file_link(path: str, overwrite: bool = False) -> dict:
-    """Clone (or find) the local copy of the ``.fused`` at ``path`` and answer
-    where to land — ``clone_target``'s shape plus ``kind``, and the same
-    ``dest``/``target``/``view``/``updated`` keys the git clone answers, so
-    clone.html's redirect is one code path.
-
-    Without ``overwrite`` an existing copy is left exactly as it is
-    (``cloned`` True, nothing written — the user's edits stand). With it, the
-    page's "a local copy already exists — overwrite?" got a Yes, and the
-    payload is laid over the copy through ``appfile.overwrite_app_file``
-    (merge semantics: ``.venv``, ``.fused`` data and files the payload does
-    not carry stay); ``updated``/``overwritten`` report that it happened."""
-    from fused_render import appfile
-
-    try:
-        if overwrite:
-            result = appfile.overwrite_app_file(path)
-        else:
-            result = {**appfile.clone_app_file(path), "overwritten": False}
-    except appfile.AppFileError as exc:
-        raise DeeplinkError(str(exc)) from exc
-    dest = result["path"]
-    return {**result, "kind": "file", "dest": dest, "target": dest,
-            "view": _local_copy_view(dest), "updated": bool(result["overwritten"])}
+    except appfile.AppFileError:
+        return "/" + q
+    if not target["cloned"]:
+        return "/" + q
+    return _local_copy_view(target["path"]) + q
 
 
 def _local_copy_view(dest: str) -> str:
@@ -645,9 +628,22 @@ def _local_copy_view(dest: str) -> str:
 
 @router.get("/clone")
 def clone_page(src: str = ""):
-    # The confirm page (static/clone.html) is self-contained: it reads ?src=
-    # client-side, previews via GET /api/clone/info, and only its explicit
-    # Clone button fires the guarded POST. Serving the page performs no I/O.
+    # Every OS-delivered fused-render: link lands here. A ?file= link (DL-7)
+    # is redirected straight into the shell — no page of its own; the shell
+    # asks in a modal when there is something to ask. A link whose file
+    # payload is malformed goes to Home carrying it verbatim, so the shell
+    # reports the parse error in-app rather than this route serving a page
+    # for a link that was never a git one.
+    raw = file_payload_from(src)
+    if raw is not None:
+        try:
+            target = edit_appfile_redirect(app_file_path_from(src))
+        except DeeplinkError:
+            target = f"/?{EDIT_APPFILE_PARAM}=" + quote(unquote(raw), safe="")
+        return RedirectResponse(target, status_code=303)
+    # The git confirm page (static/clone.html) is self-contained: it reads
+    # ?src= client-side, previews via GET /api/clone/info, and only its
+    # explicit Clone button fires the guarded POST. Serving it performs no I/O.
     return FileResponse(_CLONE_PAGE)
 
 
@@ -656,11 +652,7 @@ def api_clone_info(src: str):
     """Parse-only preview for the confirm page: what would clone, where, and
     whether the destination already exists (clone vs update). Read-only."""
     try:
-        spec = parse_open_link(src)
-        if spec["kind"] == "file":
-            # A local .fused: no confirm click (module docstring), so the page
-            # only needs what to show while it clones and where it will land.
-            return app_file_info(spec["path"])
+        spec = parse_github_url(src)
     except DeeplinkError as exc:
         return _error(str(exc))
     dest = destination(spec)
@@ -692,9 +684,7 @@ def api_clone(body: dict = Body(...), x_fused: str | None = Header(default=None)
     if guard is not None:
         return guard
     try:
-        spec = parse_open_link(str(body.get("src") or ""))
-        if spec["kind"] == "file":
-            return clone_app_file_link(spec["path"], overwrite=bool(body.get("overwrite")))
+        spec = parse_github_url(str(body.get("src") or ""))
         result = clone_or_pull(spec)
     except DeeplinkError as exc:
         return _error(str(exc))
