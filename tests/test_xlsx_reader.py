@@ -26,8 +26,13 @@ import importlib.util
 import os
 import time
 
-import openpyxl
 import pytest
+
+# Not every test environment installs the `bundled` extra (test_excel_readonly.py
+# notes the same gap for its own reader) — skip the whole file rather than fail
+# collection, since there's no meaningful xlsx-formula test without either.
+openpyxl = pytest.importorskip("openpyxl")
+pytest.importorskip("pycel")
 
 
 def _load_reader():

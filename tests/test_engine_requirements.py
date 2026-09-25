@@ -112,6 +112,10 @@ _IMPORT_TO_DIST = {
     "scipy": "scipy",
     "PIL": "pillow",
     "openpyxl": "openpyxl",
+    # xlsx/reader.py's formula fallback (a cell openpyxl's data_only read has
+    # no cached value for). Its own transitive deps (networkx, ruamel-yaml)
+    # aren't in `[bundled]` directly, so they don't need an entry here.
+    "pycel": "pycel",
     "shapely": "shapely",
     "geopandas": "geopandas",
     "pptx": "python-pptx",
