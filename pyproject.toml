@@ -310,7 +310,7 @@ bundled = [
     # 2.9.3b9, but the floor/ceiling that matter here did not) admits mcp 2.x, where
     # `mcp.server.fastmcp` no longer exists (FastMCP moved to the standalone
     # `fastmcp` distribution) — so a fresh resolve gets a `fused` whose
-    # `app serve` / `project serve --mcp` die at import with
+    # `app serve` dies at import with
     # ModuleNotFoundError. That matters here because the MCP panel registers
     # `<this venv's fused> app serve <folder>` as a GLOBAL Claude MCP server
     # (SPEC MC-5), so the server a user registers is only as good as this
@@ -376,7 +376,7 @@ fused = [
     # 2.9.3b9, but the floor/ceiling that matter here did not) admits mcp 2.x, where
     # `mcp.server.fastmcp` no longer exists (FastMCP moved to the standalone
     # `fastmcp` distribution) — so a fresh resolve gets a `fused` whose
-    # `app serve` / `project serve --mcp` die at import with
+    # `app serve` dies at import with
     # ModuleNotFoundError. That matters here because the MCP panel registers
     # `<this venv's fused> app serve <folder>` as a GLOBAL Claude MCP server
     # (SPEC MC-5), so the server a user registers is only as good as this
