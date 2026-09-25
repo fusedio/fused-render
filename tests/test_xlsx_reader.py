@@ -15,9 +15,16 @@ Under test:
 * A genuinely blank cell (no formula at all) stays blank; pycel is never
   invoked for it.
 * Pagination (offset/limit, total_rows) is unaffected by any of the above.
+* A date-returning formula (DATE/TODAY/…, or a plain offset off a date
+  cell) comes back as a date, not pycel's raw day-serial number.
+* pycel runs in its own bounded subprocess (not in-process, since building
+  its dependency graph is not bounded) — a workbook over the size guard, or
+  a worker that hangs past the timeout, degrades to blank instead of
+  stalling the (timeout-free) in-process reader.
 """
 import importlib.util
 import os
+import time
 
 import openpyxl
 import pytest
@@ -130,3 +137,58 @@ def test_sheet_name_with_spaces_is_quoted_for_pycel(tmp_path):
 
     out = _load_reader().main(file=str(path), sheet="Timesheet invoice", offset=0, limit=10)
     assert out["rows"][0] == {"a": 3, "b": 6}
+
+
+def test_date_formula_renders_as_a_date_not_a_serial(tmp_path):
+    path = tmp_path / "book.xlsx"
+    _write(path, [["issued", "due", "back"], ["=DATE(2024,3,5)", "=A2+30", "=$A$2-10"]])
+
+    out = _load_reader().main(file=str(path), sheet="Sheet1", offset=0, limit=10)
+
+    assert out["rows"][0] == {
+        "issued": "2024-03-05T00:00:00",
+        "due": "2024-04-04T00:00:00",   # offset off A2 propagates its dateness
+        "back": "2024-02-24T00:00:00",  # same, through an absolute $A$2 ref
+    }
+
+
+def test_plain_number_formula_is_unaffected_by_date_detection(tmp_path):
+    path = tmp_path / "book.xlsx"
+    _write(path, [["hours", "amount"], [3, "=A2*50"]])
+
+    out = _load_reader().main(file=str(path), sheet="Sheet1", offset=0, limit=10)
+    assert out["rows"][0] == {"hours": 3, "amount": 150}
+
+
+def test_oversized_workbook_skips_pycel_without_spawning(tmp_path, monkeypatch):
+    path = tmp_path / "book.xlsx"
+    _write(path, [["a", "b"], [1, "=A2*10"]])
+
+    mod = _load_reader()
+    monkeypatch.setattr(mod, "_PYCEL_MAX_BYTES", 1)  # this tiny file is "too big"
+    monkeypatch.setattr(
+        mod.subprocess, "run",
+        lambda *a, **k: pytest.fail("should never spawn a worker past the size guard"),
+    )
+
+    out = mod.main(file=str(path), sheet="Sheet1", offset=0, limit=10)
+    assert out["rows"][0] == {"a": 1, "b": None}
+
+
+def test_hung_worker_times_out_and_degrades_to_blank(tmp_path):
+    path = tmp_path / "book.xlsx"
+    _write(path, [["a", "b"], [1, "=A2*10"]])
+
+    slow_worker = tmp_path / "slow_worker.py"
+    slow_worker.write_text("import sys, time\nsys.stdin.read()\ntime.sleep(60)\n")
+
+    mod = _load_reader()
+    mod._PYCEL_WORKER = str(slow_worker)
+    mod._PYCEL_TIMEOUT = 0.5
+
+    started = time.monotonic()
+    out = mod.main(file=str(path), sheet="Sheet1", offset=0, limit=10)
+    elapsed = time.monotonic() - started
+
+    assert out["rows"][0] == {"a": 1, "b": None}
+    assert elapsed < 5  # bounded by _PYCEL_TIMEOUT, not left hanging
