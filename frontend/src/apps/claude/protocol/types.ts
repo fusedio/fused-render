@@ -26,7 +26,8 @@ export type Action =
   | "terminal_command"
   | "cancel"
   | "live_host"
-  | "send";
+  | "send"
+  | "send_now";
 
 /** A permission mode as the CLI spells it (PERMISSION_MODES, agent.py). */
 export type PermissionMode = "plan" | "prompt" | "acceptEdits" | "auto";
@@ -149,6 +150,16 @@ export interface SendRequest {
   queue_claim?: string;
 }
 
+/** action=send_now — `agent.py`'s `_send_now`: interrupt the live turn and
+ *  deliver `message` (possibly "", a pure flush) right away. Unlike
+ *  `SendRequest` there is no `read_dirs`/`model`/`effort`/`permission_mode`:
+ *  send-now never changes what the session was spawned with, only when the
+ *  next message reaches it. */
+export interface SendNowRequest {
+  run_id: string;
+  message: string;
+}
+
 export interface FileRequest {
   file: string;
 }
@@ -216,6 +227,7 @@ export interface AgentRequests {
   cancel: CancelRequest;
   live_host: FileSessionRequest;
   send: SendRequest;
+  send_now: SendNowRequest;
 }
 
 // ---- segments (agent.py:3253 _segments_from_rows; T:15591-15635) -----------
@@ -597,6 +609,13 @@ export type StartResponse = { run_id: string; session_id?: string; error?: undef
 /** agent.py:2971-3038 — exactly one of the three. */
 export type SendResponse = { sent: true } | { respawn: true } | ErrorOnly;
 
+/** agent.py's `_send_now` — action=send_now, the interrupt-then-deliver
+ *  backend for Ctrl+Enter mid-turn. Unlike `SendResponse` there is no
+ *  `respawn` branch: send-now never changes read_dirs/effort, so the only
+ *  two outcomes are "it landed" or an `error` (no live session, or the
+ *  interrupt never came back). */
+export type SendNowResponse = { sent_now: true } | ErrorOnly;
+
 /** agent.py:1601-1607; error branches carry only `error`. */
 export type DecideResponse =
   | {
@@ -925,6 +944,7 @@ export interface AgentResponses {
   cancel: CancelResponse;
   live_host: RunIdResponse | ErrorOnly;
   send: SendResponse;
+  send_now: SendNowResponse;
 }
 
 // ---- sibling scripts ---------------------------------------------------------

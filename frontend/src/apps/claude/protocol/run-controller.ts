@@ -80,6 +80,7 @@ import type {
   Quota,
   RetryInfo,
   RunIdResponse,
+  SendNowResponse,
   SendResponse,
   SkillRow,
   StartResponse,
@@ -2194,6 +2195,105 @@ export function createChatController(deps: ControllerDeps): ChatController {
     }
   }
 
+  // ---- send now (Ctrl+Enter mid-turn) -------------------------------------
+
+  /**
+   * Ctrl+Enter while a turn is running: interrupt it and hand `text` (the
+   * composer's draft — possibly empty, a pure flush of whatever is already
+   * queued) to the CLI right away, instead of waiting behind the turn in
+   * flight. `agent.py`'s `_send_now` does the interrupt-then-deliver as ONE
+   * atomic server call (no native send-now wire subtype exists — see
+   * DECISIONS.md's "Send now" entry), which is why this never fires an
+   * `interrupt` and a `send` as two separate racing requests itself.
+   *
+   * Modeled on `sendFollowUp` (same bubble/`queued`-entry bookkeeping, so a
+   * later Stop can still find and strand this message like any other), with
+   * two differences: the wire action is `send_now`, not `send`, and an empty
+   * draft is a legal, bubble-less call — the point is still to flush the
+   * queue even with nothing new to add.
+   */
+  async function sendNow(text: string, opts: SendOptions = {}): Promise<void> {
+    if (disposed) {
+      if (text) returnSend(text, opts, true);
+      return;
+    }
+    const gen = logGen;
+    const blocks = opts.blocks || [];
+    const hasContent = !!text || !!blocks.length;
+    const live = hasContent ? await appStateBlock() : null;
+    // THE READER MAY HAVE LEFT DURING THAT AWAIT — same guard, same reason
+    // as `sendFollowUp`'s.
+    if (logGen !== gen || disposed) return;
+    const outgoing = hasContent ? composeOutgoing(text, composeBlocks(blocks, live ? [live] : [])) : "";
+    const spoken = text || stripBlocks(outgoing);
+    const bubble = outgoing ? addUser(spoken, outgoing, opts.attachments, !!live, opts.optimisticKey) : null;
+    const entry = bubble
+      ? {
+          seq: ++queuedSeq,
+          wire: outgoing,
+          typed: text,
+          bubble: bubble.key,
+          landed: false,
+          opts,
+          handedBack: false,
+        }
+      : null;
+    if (entry) {
+      queued.push(entry);
+      publishQueued();
+    }
+    const giveBack = () => {
+      if (!entry) return;
+      const i = queued.indexOf(entry);
+      if (i >= 0) queued.splice(i, 1);
+      publishQueued();
+      dropTurn(entry.bubble);
+      if (entry.handedBack) return;
+      entry.handedBack = true;
+      returnSend(text, opts);
+    };
+
+    // Same wait-for-a-run-to-attach-to as `sendFollowUp` — a send-now pressed
+    // the instant the opening `start` round-trip is still in flight.
+    let runId = activeRun;
+    for (let tries = 0; !runId && tries < FOLLOWUP_WAIT_TRIES; tries++) {
+      await sleep(FOLLOWUP_WAIT_MS);
+      runId = activeRun;
+    }
+    if (!runId) {
+      if (logGen === gen) {
+        giveBack();
+        addError("Could not send now: no run to attach this message to.");
+      }
+      return;
+    }
+    try {
+      const res = (await run(
+        dir,
+        "send_now",
+        { run_id: runId, message: outgoing },
+        { key: null },
+      )) as SendNowResponse;
+      if (!res || !("sent_now" in res) || !res.sent_now) {
+        if (logGen === gen) {
+          giveBack();
+          const reason = (res as { error?: string } | null)?.error;
+          addError("Could not send now: " + (reason || "the session ended before this reached it."));
+        }
+        return;
+      }
+      if (entry) {
+        entry.landed = true;
+        followupSeq++;
+      }
+    } catch (err) {
+      if (logGen === gen) {
+        giveBack();
+        addError("Could not send now: " + (err instanceof Error ? err.message : String(err)));
+      }
+    }
+  }
+
   // ---- stop (T:15901-15926) ----------------------------------------------
 
   async function stopRun(): Promise<void> {
@@ -3561,6 +3661,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     },
     sendMessage,
     sendFollowUp,
+    sendNow,
     postOptimisticUser,
     dropOptimisticUser,
     stopRun,
