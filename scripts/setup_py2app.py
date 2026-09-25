@@ -108,8 +108,12 @@ BUNDLED_EXCLUDED = {}
 # mpl_toolkits and PyObjCTools below. `google` (google-auth) is handled by
 # naming its real SUBPACKAGES in `packages` instead; py2app supports dotted
 # entries (build_app.py: `included_subpkg = [pkg for pkg in self.packages if
-# "." in pkg]`). `__pycache__` is an artifact of resolving names from RECORD.
-NEVER_FORCE_AS_PACKAGE = {"mpl_toolkits", "PyObjCTools", "google", "__pycache__"}
+# "." in pkg]`). `ruamel` (ruamel-yaml, a hard import of pycel — xlsx/reader.py's
+# formula fallback) is the same shape: `import ruamel` resolves to a
+# `_NamespacePath`, no `__init__.py`, one more instance of this limitation
+# rather than a new one. `__pycache__` is an artifact of resolving names from
+# RECORD.
+NEVER_FORCE_AS_PACKAGE = {"mpl_toolkits", "PyObjCTools", "google", "ruamel", "__pycache__"}
 
 # Top-level names the derivation must route to `includes` even though they look
 # like packages on disk, or must not duplicate. `_duckdb` is the bare C extension
@@ -139,7 +143,12 @@ ALREADY_IN_INCLUDES = {"_duckdb", "_cffi_backend"}
 # all — the cloud-auth chain was folded into the bundled app precisely because
 # "DMG users cannot pip install". Its dependencies (pyasn1, pyasn1-modules,
 # cryptography) are ordinary packages and stay in the derived list.
-STAGED_PACKAGES = ["google"]
+#
+# `ruamel` (ruamel-yaml) joined for the identical reason: pycel does `import
+# ruamel.yaml` at its own top level, so xlsx/reader.py's formula fallback needs
+# it actually present in the bundle, and it is the same PEP 420 shape as
+# `google` — no `__init__.py` for py2app's bootstrap lookup to find.
+STAGED_PACKAGES = ["google", "ruamel"]
 
 
 def _norm_dist(name):
@@ -485,6 +494,17 @@ OPTIONS = {
     # _cffi_backend: cryptography's cffi backend, the same bare-top-level-
     # C-extension shape as _duckdb.
     "includes": ["_duckdb", "_cffi_backend"] + BUNDLED_INCLUDES + STDLIB_INCLUDES,
+    # `ruamel` must never reach modulegraph's graph at all — `google` gets by
+    # with NEVER_FORCE_AS_PACKAGE/STAGED_PACKAGES alone because nothing traces
+    # an eager `import google...` at analysis time, but pycel does `import
+    # ruamel.yaml` at ITS OWN top level, so modulegraph reliably discovers and
+    # classifies it as a package regardless of what WE pass as `packages` —
+    # and py2app's own `detect_dunder_file` recipe then walks every package it
+    # classified (not just OPTIONS["packages"]) and dies on the same
+    # `imp_find_module("ruamel")` namespace-package limitation documented
+    # above. Excluding it removes the node before that recipe ever runs; the
+    # real files still ship, via STAGED_PACKAGES's post-build copy.
+    "excludes": ["ruamel"],
     # Skip py2app's "missing conditional import" report. Not cosmetic: that
     # report `__import__`s every module name modulegraph could not resolve, in
     # order to classify it, and catches only `Exception` — so a name whose import

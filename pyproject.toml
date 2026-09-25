@@ -209,6 +209,7 @@ bundled = [
     "requests",
     "pillow",
     "openpyxl",
+    "pycel",
     # REMOVED (D276): polars (197 MB — `polars` + the `polars-runtime-32` wheel
     # that carries the actual engine). It was the single largest thing in this
     # extra and NOTHING in the product imports it: no template, no core app, no
