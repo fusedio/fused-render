@@ -5762,10 +5762,20 @@ Decided:
   the same `dest`/`target`/`view` keys, so `clone.html` has one redirect.
   No change to `app.py`, `winopen.py` or the supervisor.
 - **Clone semantics are `clone_app_file`'s**: copy into
-  `<workspace>/local/<slug>`; when the copy exists, report it and write
-  nothing. A user who edited their copy and hits Edit again lands back on
-  those edits. Overwrite stays the preview header's separate, confirmed verb.
-- **No confirm click** — the deliberate divergence from DL-3. The git link
+  `<workspace>/local/<slug>`. A POST without `overwrite` onto an existing
+  copy writes nothing and reports it.
+- **An existing copy asks** (owner's call, same day): the page shows "a
+  local copy already exists — overwrite it with this .fused?" — *Yes*
+  POSTs `overwrite: true` → `appfile.overwrite_app_file` (the preview
+  header's merge overwrite, D397: payload files replace their counterparts;
+  `.venv`, `.fused` data and files the payload does not carry stay); *No*
+  opens the copy as it is. The Edit button's common case is "I re-exported
+  the app and want to keep editing the newest version", so silently landing
+  on the stale copy hid the newest files; silently overwriting would eat
+  edits. The question is the only honest answer, and it fires only when
+  there is something to lose.
+- **No confirm click on a first clone** — the deliberate divergence from
+  DL-3. The git link
   confirms because it pulls arbitrary remote content onto the machine. Here
   the payload is a file already on disk that the user just had open in
   Render App; Finder double-clicking that same file extracts and runs it in

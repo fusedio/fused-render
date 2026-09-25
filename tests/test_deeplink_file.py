@@ -120,18 +120,61 @@ def test_clone_lands_on_the_editable_copys_entry_page(tmp_path):
     assert os.access(os.path.join(dest, "index.html"), os.W_OK)
 
 
-def test_a_second_link_reuses_the_copy_and_keeps_edits(tmp_path):
+def _clone_then_edit(tmp_path):
     fused = export(tmp_path)
     client = _client(tmp_path)
     first = client.post("/api/clone", json={"src": link(fused)}, headers=FUSED).json()
     edited = os.path.join(first["dest"], "data.py")
     with open(edited, "w") as f:
         f.write("def main():\n    return {'edited': True}\n")
+    # Something the payload does not carry — an overwrite must leave it alone.
+    with open(os.path.join(first["dest"], "notes.txt"), "w") as f:
+        f.write("mine")
+    return fused, client, first, edited
+
+
+def test_info_reports_an_existing_copy_so_the_page_can_ask(tmp_path):
+    fused, client, first, _ = _clone_then_edit(tmp_path)
+    data = client.get("/api/clone/info", params={"src": link(fused)}).json()
+    assert data["cloned"] is True
+    assert data["path"] == first["dest"]
+    assert data["view"] == first["view"]
+
+
+def test_a_second_link_without_overwrite_keeps_edits(tmp_path):
+    # The page's "No": open the copy as it is. Also what an old page sends.
+    fused, client, first, edited = _clone_then_edit(tmp_path)
     again = client.post("/api/clone", json={"src": link(fused)}, headers=FUSED).json()
     assert again["cloned"] is True
+    assert again["overwritten"] is False
+    assert again["updated"] is False
     assert again["view"] == first["view"]
     with open(edited) as f:
         assert "edited" in f.read()
+
+
+def test_overwrite_lays_the_payload_over_the_copy(tmp_path):
+    # The page's "Yes": payload files replace their counterparts, the rest stays.
+    fused, client, first, edited = _clone_then_edit(tmp_path)
+    again = client.post("/api/clone", json={"src": link(fused), "overwrite": True},
+                        headers=FUSED).json()
+    assert again["cloned"] is True
+    assert again["overwritten"] is True
+    assert again["updated"] is True
+    assert again["view"] == first["view"]
+    with open(edited) as f:
+        assert "edited" not in f.read()
+    with open(os.path.join(first["dest"], "notes.txt")) as f:
+        assert f.read() == "mine"
+
+
+def test_overwrite_with_no_copy_yet_is_a_plain_clone(tmp_path):
+    fused = export(tmp_path)
+    data = _client(tmp_path).post("/api/clone", json={"src": link(fused), "overwrite": True},
+                                  headers=FUSED).json()
+    assert data["cloned"] is False
+    assert data["overwritten"] is False
+    assert os.path.isfile(os.path.join(data["dest"], "index.html"))
 
 
 def test_openurls_target_routes_a_file_link_to_the_clone_page():
@@ -145,6 +188,7 @@ def test_clone_page_still_serves(tmp_path):
     resp = _client(tmp_path).get("/clone?src=" + quote(link("/tmp/x.fused"), safe=""))
     assert resp.status_code == 200
     assert 'data.kind === "file"' in resp.text
+    assert "Yes, overwrite" in resp.text and "No, open my copy" in resp.text
 
 
 def test_deeplink_module_exports(tmp_path):

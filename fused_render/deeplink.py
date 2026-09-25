@@ -22,12 +22,14 @@ git's own message rather than clobbering local edits (owner call, D110).
 button hands over a `.fused` it is showing, for editing: the path is
 percent-encoded once by the sender and unquoted once here, the file is cloned
 into `<workspace>/local/<slug>` through the same `appfile.clone_app_file` the
-preview header's Clone button uses (a no-op when the copy already exists — the
-user's edits are never overwritten), and the confirm page redirects straight
-to the copy's entry page in the explorer. No confirm click for this payload:
-the file is one already on this machine that the user just had open, the
-same posture as a Finder double-click on a `.fused` (which extracts and runs
-it without asking), so the page is only a progress/error surface here.
+preview header's Clone button uses, and the confirm page redirects straight to
+the copy's entry page in the explorer. No confirm click for a FIRST clone: the
+file is one already on this machine that the user just had open, the same
+posture as a Finder double-click on a `.fused` (which extracts and runs it
+without asking). When a local copy already exists the page asks instead — "a
+local copy already exists, overwrite it with this .fused?" — Yes lays the
+payload over the copy (`appfile.overwrite_app_file`, merge semantics), No
+opens the copy as it is. Nothing the user edited is replaced without that Yes.
 
 Ref parsing caveat: a GitHub tree URL does not delimit where the ref ends and
 the subpath begins (`/tree/feature/x/docs` is ambiguous). The first segment
@@ -595,21 +597,30 @@ def app_file_info(path: str) -> dict:
             "view": _local_copy_view(target["path"])}
 
 
-def clone_app_file_link(path: str) -> dict:
+def clone_app_file_link(path: str, overwrite: bool = False) -> dict:
     """Clone (or find) the local copy of the ``.fused`` at ``path`` and answer
     where to land — ``clone_target``'s shape plus ``kind``, and the same
     ``dest``/``target``/``view``/``updated`` keys the git clone answers, so
-    clone.html's redirect is one code path. ``cloned`` is True when the copy
-    was already there and nothing was written (the user's edits stand)."""
+    clone.html's redirect is one code path.
+
+    Without ``overwrite`` an existing copy is left exactly as it is
+    (``cloned`` True, nothing written — the user's edits stand). With it, the
+    page's "a local copy already exists — overwrite?" got a Yes, and the
+    payload is laid over the copy through ``appfile.overwrite_app_file``
+    (merge semantics: ``.venv``, ``.fused`` data and files the payload does
+    not carry stay); ``updated``/``overwritten`` report that it happened."""
     from fused_render import appfile
 
     try:
-        result = appfile.clone_app_file(path)
+        if overwrite:
+            result = appfile.overwrite_app_file(path)
+        else:
+            result = {**appfile.clone_app_file(path), "overwritten": False}
     except appfile.AppFileError as exc:
         raise DeeplinkError(str(exc)) from exc
     dest = result["path"]
     return {**result, "kind": "file", "dest": dest, "target": dest,
-            "view": _local_copy_view(dest), "updated": False}
+            "view": _local_copy_view(dest), "updated": bool(result["overwritten"])}
 
 
 def _local_copy_view(dest: str) -> str:
@@ -683,7 +694,7 @@ def api_clone(body: dict = Body(...), x_fused: str | None = Header(default=None)
     try:
         spec = parse_open_link(str(body.get("src") or ""))
         if spec["kind"] == "file":
-            return clone_app_file_link(spec["path"])
+            return clone_app_file_link(spec["path"], overwrite=bool(body.get("overwrite")))
         result = clone_or_pull(spec)
     except DeeplinkError as exc:
         return _error(str(exc))

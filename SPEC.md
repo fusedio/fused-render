@@ -2101,14 +2101,20 @@ when one exists, else the folder itself.
   page (DL-2 unchanged); `GET /api/clone/info` answers `kind: "file"` plus
   `appfile.clone_target`'s preview (name, destination, already-cloned), and
   `POST /api/clone` runs `appfile.clone_app_file` — the preview header's own
-  Clone: a copy into `<workspace>/local/<slug>`, a no-op that reports the
-  existing copy when one is there (edits are never overwritten) — then
-  answers the copy's entry page (`app_listing.app_entry`, else the folder)
-  as `view`. **No confirm click** for this payload: the file is already on
-  this machine and was just open in Render App, the same trust posture as a
-  Finder double-click on a `.fused` (which extracts and runs it unasked); the
-  page shows what lands where, POSTs at once and redirects, and stays the
-  error surface for a bad or missing path.
+  Clone: a copy into `<workspace>/local/<slug>` — then answers the copy's
+  entry page (`app_listing.app_entry`, else the folder) as `view`. **No
+  confirm click** for a first clone: the file is already on this machine and
+  was just open in Render App, the same trust posture as a Finder
+  double-click on a `.fused` (which extracts and runs it unasked); the page
+  shows what lands where, POSTs at once and redirects, and stays the error
+  surface for a bad or missing path. **An existing copy asks**: when the
+  info probe says `cloned`, the page shows "a local copy already exists —
+  overwrite it with this .fused?" with *Yes, overwrite* (POST with
+  `overwrite: true` → `appfile.overwrite_app_file`, the preview header's
+  merge overwrite: payload files replace their counterparts, `.venv`,
+  `.fused` data and files the payload does not carry stay) and *No, open my
+  copy* (navigates to `view`, nothing written). A POST without `overwrite`
+  onto an existing copy writes nothing and reports it (`cloned: true`).
 
 ---
 

@@ -12,7 +12,9 @@
      the user just had it open — the same posture as a Finder double-click on
      a .fused, which extracts and runs it without asking. The page is then a
      progress/error surface: it shows what is being cloned where, POSTs at
-     once, and redirects to the editable copy. -->
+     once, and redirects to the editable copy. When a local copy ALREADY
+     exists the page asks first — overwrite it with this .fused (Yes: the
+     server's merge overwrite) or open the copy as it is (No). -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -133,12 +135,12 @@
   }
 
   // A local .fused handed over for editing (Render App's Edit button): show
-  // what lands where, then clone without a click and go to the copy. An
-  // existing copy is reused as is (the server never overwrites it), so the
-  // wording says "opening" rather than "cloning" in that case.
+  // what lands where. No copy yet: clone without a click and go to it. A
+  // copy already there: ASK — Yes lays this .fused over it (the server's
+  // merge overwrite; edits to files the payload carries are lost), No opens
+  // the copy as it is. Nothing the user edited is replaced without that Yes.
   function openAppFile(data) {
     document.title = "Open for editing — fused-render";
-    $("title").textContent = data.cloned ? "Opening your editable copy" : "Cloning app for editing";
     $("d-repo").textContent = data.name;
     $("d-repo").previousElementSibling.textContent = "App";
     $("d-sub").textContent = data.src_file;
@@ -147,29 +149,55 @@
     $("d-ref").parentNode.removeChild($("d-ref"));
     $("d-dest").textContent = data.path;
     $("details").classList.remove("hidden");
-    $("go").classList.add("hidden");
-    $("status").textContent = data.cloned ? "Opening…" : "Cloning…";
-    run(false);
+    if (!data.cloned) {
+      $("title").textContent = "Cloning app for editing";
+      $("go").classList.add("hidden");
+      $("status").textContent = "Cloning…";
+      run(false);
+      return;
+    }
+    $("title").textContent = "A local copy already exists";
+    $("warn").hidden = false;
+    $("warn").innerHTML =
+      "<strong>" + escapeHtml(data.path) + "</strong> already exists. Overwrite it with " +
+      "this .fused file? Your edits to any file the .fused also contains will be " +
+      "replaced; its environment, data and other files stay.";
+    $("go").textContent = "Yes, overwrite";
+    $("go").disabled = false;
+    $("go").onclick = () => run(false, { overwrite: true });
+    const no = document.createElement("button");
+    no.id = "no";
+    no.textContent = "No, open my copy";
+    no.onclick = () => { $("status").textContent = "Opening…"; location.href = data.view; };
+    $("go").insertAdjacentElement("afterend", no);
+    $("status").textContent = "";
   }
 
-  async function run(update) {
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => (
+      { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  async function run(update, extra) {
     $("go").disabled = true;
+    if ($("no")) $("no").disabled = true;
     $("error").classList.add("hidden");
-    $("status").textContent = update ? "Pulling…" : "Cloning… (first clone can take a moment)";
+    $("status").textContent = extra && extra.overwrite ? "Overwriting…"
+      : update ? "Pulling…" : "Cloning… (first clone can take a moment)";
     let resp, data;
     try {
       resp = await fetch("/api/clone", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Fused": "1" },
-        body: JSON.stringify({ src }),
+        body: JSON.stringify(Object.assign({ src }, extra || {})),
       });
       data = await resp.json();
     } catch (e) {
-      $("go").disabled = false;
+      $("go").disabled = false; if ($("no")) $("no").disabled = false;
       return fail("Clone request failed: " + e);
     }
     if (!resp.ok) {
-      $("go").disabled = false;
+      $("go").disabled = false; if ($("no")) $("no").disabled = false;
       $("status").textContent = "";
       $("error").textContent = data.error || "Clone failed.";
       $("error").classList.remove("hidden");
