@@ -108,8 +108,12 @@ BUNDLED_EXCLUDED = {}
 # mpl_toolkits and PyObjCTools below. `google` (google-auth) is handled by
 # naming its real SUBPACKAGES in `packages` instead; py2app supports dotted
 # entries (build_app.py: `included_subpkg = [pkg for pkg in self.packages if
-# "." in pkg]`). `__pycache__` is an artifact of resolving names from RECORD.
-NEVER_FORCE_AS_PACKAGE = {"mpl_toolkits", "PyObjCTools", "google", "__pycache__"}
+# "." in pkg]`). `ruamel` (ruamel-yaml, a hard import of pycel — xlsx/reader.py's
+# formula fallback) is the same shape: `import ruamel` resolves to a
+# `_NamespacePath`, no `__init__.py`, one more instance of this limitation
+# rather than a new one. `__pycache__` is an artifact of resolving names from
+# RECORD.
+NEVER_FORCE_AS_PACKAGE = {"mpl_toolkits", "PyObjCTools", "google", "ruamel", "__pycache__"}
 
 # Top-level names the derivation must route to `includes` even though they look
 # like packages on disk, or must not duplicate. `_duckdb` is the bare C extension
@@ -139,7 +143,12 @@ ALREADY_IN_INCLUDES = {"_duckdb", "_cffi_backend"}
 # all — the cloud-auth chain was folded into the bundled app precisely because
 # "DMG users cannot pip install". Its dependencies (pyasn1, pyasn1-modules,
 # cryptography) are ordinary packages and stay in the derived list.
-STAGED_PACKAGES = ["google"]
+#
+# `ruamel` (ruamel-yaml) joined for the identical reason: pycel does `import
+# ruamel.yaml` at its own top level, so xlsx/reader.py's formula fallback needs
+# it actually present in the bundle, and it is the same PEP 420 shape as
+# `google` — no `__init__.py` for py2app's bootstrap lookup to find.
+STAGED_PACKAGES = ["google", "ruamel"]
 
 
 def _norm_dist(name):
