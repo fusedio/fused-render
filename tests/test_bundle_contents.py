@@ -372,23 +372,68 @@ def test_the_bundled_and_fused_extras_pin_the_same_wheel():
         "`[fused]` is the documented light install path that gets the engine "
         "without the scientific stack."
     )
-    # The `mcp` constraint travels WITH the engine pin, in both extras and
-    # byte-identical for the same reason: it exists only because `fused` pulls
-    # `mcp` in, and the engine's own floor (`mcp[cli]>=1.0.0`) admits mcp 2.x
-    # where `mcp.server.fastmcp` is gone — which breaks `fused app serve`, the
-    # command the MCP panel registers globally (SPEC MC-5). One extra carrying
-    # the constraint and the other not would mean the DMG and the pip path serve
-    # MCP from different libraries.
-    mcp_bundled = [r for r in extras["bundled"] if _norm(r) == "mcp"]
-    mcp_extra = [r for r in extras["fused"] if _norm(r) == "mcp"]
-    assert len(mcp_bundled) == 1 and len(mcp_extra) == 1, (
-        "both `[bundled]` and `[fused]` must constrain `mcp` exactly once; got "
-        f"{mcp_bundled} and {mcp_extra}"
+    # `anthropic` travels WITH the engine pin, in both extras and byte-identical
+    # for the same reason. Since fused 2.9.3b10 it sits only in fused's `verify`
+    # extra, next to `ty`, which this app deliberately does not ship. So it is
+    # declared directly, and one extra carrying it and the other not would mean
+    # the DMG and the pip path ship different engines.
+    ant_bundled = [r for r in extras["bundled"] if _norm(r) == "anthropic"]
+    ant_extra = [r for r in extras["fused"] if _norm(r) == "anthropic"]
+    assert len(ant_bundled) == 1 and len(ant_extra) == 1, (
+        "both `[bundled]` and `[fused]` must declare `anthropic` exactly once; "
+        f"got {ant_bundled} and {ant_extra}"
     )
-    assert mcp_bundled[0] == mcp_extra[0], (
-        "the `mcp` constraint in `[bundled]` and in `[fused]` have drifted:\n"
-        f"  [bundled] {mcp_bundled[0]!r}\n  [fused]   {mcp_extra[0]!r}"
+    assert ant_bundled[0] == ant_extra[0], (
+        "the `anthropic` requirement in `[bundled]` and in `[fused]` have drifted:\n"
+        f"  [bundled] {ant_bundled[0]!r}\n  [fused]   {ant_extra[0]!r}"
     )
+
+
+def test_the_fused_pin_asks_for_the_mcp_extra():
+    """`fused app serve`, the server the MCP panel registers globally (SPEC
+    MC-5), imports mcp. Since fused 2.9.3b10 mcp is not a core dependency of
+    fused, only of its `mcp` extra (which also carries the `<2` ceiling that
+    keeps `mcp.server.fastmcp` importable). Dropping the extra from the pin
+    would leave a registered server that dies at startup, and nothing else in
+    this suite would notice.
+    """
+    from packaging.requirements import Requirement
+
+    pinned = [r for r in _pyproject()["project"]["optional-dependencies"]["fused"]
+              if _norm(r) == "fused"]
+    assert len(pinned) == 1, pinned
+    assert "mcp" in Requirement(pinned[0]).extras, (
+        f"the engine pin {pinned[0]!r} must request fused's `mcp` extra, or "
+        "`fused app serve` cannot import mcp"
+    )
+
+
+def test_the_fused_pin_only_asks_for_extras_fused_provides():
+    """pip only WARNS about an extra the distribution does not define, then
+    installs without it. That is how a renamed upstream extra (b9's `ai`, gone
+    in b10) turns into a silently missing dependency. Checked against the
+    installed `fused`'s own metadata, so it is a no-op where the engine is not
+    installed (the `[dev]` matrix) and real in CI's `fused-engine` and bundle jobs.
+    """
+    import importlib.metadata as md
+
+    from packaging.requirements import Requirement
+
+    try:
+        provided = {_norm(e) for e in (md.metadata("fused").get_all("Provides-Extra") or [])}
+    except md.PackageNotFoundError:
+        pytest.skip("fused is not installed here, so there is no metadata to check against")
+    extras = _pyproject()["project"]["optional-dependencies"]
+    for group in ("bundled", "fused"):
+        for raw in extras[group]:
+            if _norm(raw) != "fused":
+                continue
+            unknown = sorted({_norm(e) for e in Requirement(raw).extras} - provided)
+            assert not unknown, (
+                f"`[{group}]` pins {raw!r}, but the installed fused provides no "
+                f"{unknown} extra (it provides {sorted(provided)}); pip would "
+                "install it without them and only warn"
+            )
 
 
 def test_the_fused_pin_reads_the_app_serve_python_seam():

@@ -5792,3 +5792,31 @@ Decided:
 Skew: a FusedRender older than this change lands a `file=` link on the
 clone page's error ("unsupported fused-render link"); Render App's button
 does not version-check, so the page's error text is the message.
+
+## fused pin bumped to 2.9.3b10: `fused[aws,mcp]` + direct `anthropic` (2026-09-25)
+
+fused 2.9.3b10 (https://github.com/fusedio/fused/releases/tag/fused-py-v2.9.3b10)
+moved mcp, pyarrow/pandas/numpy, boto3 and pyjwt[crypto]/cryptography out of
+its core requirements and behind opt-in extras (`aws`, `mcp`, `verify`, ...).
+It has no `ai` extra (pip only warns on an unknown extra, so `fused[ai,aws]`
+would have silently dropped anthropic).
+
+- `[bundled]` and `[fused]` now pin `fused[aws,mcp]==2.9.3b10` (still
+  byte-identical, `python_version >= "3.11"`), plus `anthropic>=0.40.0`
+  directly. Not `fused[verify]`: that extra also pulls `ty`, which must not
+  ship in the bundle.
+- The direct `mcp<2` pin is dropped: fused's own `mcp` extra carries
+  `mcp>=1.8.0,<2`.
+- The platform-conditional `cryptography<=48.0.1` ceiling (x86_64 macOS) is
+  kept. cryptography now arrives via pyjwt[crypto] from fused[aws] and mcp;
+  `uv pip compile --python-platform x86_64-apple-darwin` for both extras
+  resolves `fused==2.9.3b10`, `cryptography==48.0.1`; the arm64 compile
+  resolves `cryptography==50.0.1`.
+- `scripts/setup_py2app.py`'s derived force-list used to skip every
+  extra-gated requirement, so with `mcp<2` gone it would have stopped reaching
+  mcp's closure (and boto3/pyjwt behind fused[aws]). The closure walk is now
+  extras-aware: it follows `name[extra]` requests and evaluates markers with
+  `extra == <requested>`.
+- New tests: the fused pin must request `mcp`; every requested extra must be
+  in the installed fused's `Provides-Extra`; `anthropic` is byte-identical in
+  both extras.
