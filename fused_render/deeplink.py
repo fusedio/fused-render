@@ -1,4 +1,5 @@
-"""GitHub deep links (SPEC §26, D110): fused-render://open?git=<github URL>.
+"""Deep links (SPEC §26, D110): fused-render://open?git=<github URL> and
+fused-render://open?file=<absolute .fused path>.
 
 A `fused-render://open?git=https://github.com/{owner}/{repo}/tree/{ref}/{subpath}`
 link, caught by the OS protocol registration (macOS CFBundleURLTypes /
@@ -17,6 +18,16 @@ Keeping `.git` makes a re-click an update: an existing destination whose
 `origin` matches is `git pull --ff-only`'d; a dirty/diverged tree fails with
 git's own message rather than clobbering local edits (owner call, D110).
 
+`fused-render://open?file=<path>` (D889) is how Render App's title-bar Edit
+button hands over a `.fused` it is showing, for editing: the path is
+percent-encoded once by the sender and unquoted once here. It gets NO page of
+its own — `GET /clone` answers a redirect INTO the shell carrying the path as
+`?_edit_appfile=`: to the existing local copy's entry page when there is one
+(the app is on screen while the shell's modal asks "overwrite it with this
+.fused, or keep it?"), else to Home, where the shell clones through the
+X-Fused `/api/appfile/clone` and moves to the copy. Nothing is written on the
+GET (D3), and nothing the user edited is replaced without the modal's Overwrite.
+
 Ref parsing caveat: a GitHub tree URL does not delimit where the ref ends and
 the subpath begins (`/tree/feature/x/docs` is ambiguous). The first segment
 after `/tree/` is taken as the ref — single-segment refs only, same assumption
@@ -29,10 +40,10 @@ import re
 import shutil
 import stat
 import subprocess
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from fastapi import APIRouter, Body, Header
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from fused_render._view_url_codec import view_url_path as _view_url_path
 
@@ -63,6 +74,7 @@ router = APIRouter()
 # today; future payload kinds (a hosted page, a single file, …) become new
 # params on the same action instead of new grammar (owner call, D110).
 _OPEN_PREFIXES = ("fused-render://open?git=", "fused-render://open/?git=")
+_OPEN_FILE_PREFIXES = ("fused-render://open?file=", "fused-render://open/?file=")
 
 # The launch action (D128) is payload-free by definition: any query or extra
 # path makes the link NOT a launch link (strictness keeps the grammar clean —
@@ -160,14 +172,48 @@ def github_url_from(src: str) -> str:
     else:
         if low.startswith("fused-render:"):
             raise DeeplinkError(
-                "unsupported fused-render link (expected fused-render://open?git=… "
-                f"or fused-render://launch): {src}"
+                "unsupported fused-render link (expected fused-render://open?git=…, "
+                f"fused-render://open?file=… or fused-render://launch): {src}"
             )
     if not src.lower().startswith(("https://", "http://")) and "%" in src:
         # Some carriers (browser address bars, chat apps) percent-encode the
         # embedded URL; one decode pass recovers it.
         src = unquote(src)
     return src
+
+
+def app_file_path_from(src: str) -> str | None:
+    """The absolute ``.fused`` path a ``fused-render://open?file=`` link
+    carries, or None when ``src`` is not a file link at all.
+
+    The value is taken verbatim to end-of-string (like ``git=``) and
+    percent-decoded exactly once — the sender's side of the contract is one
+    ``quote(path, safe="")`` (Render App's ``editlink.py``), so ``&``, ``#``,
+    spaces and a literal ``%`` in a filename all round-trip. A file link that
+    decodes to something other than an absolute ``.fused`` path is an error,
+    not a fall-through: the link named a kind and got its payload wrong.
+    """
+    raw = file_payload_from(src)
+    if raw is None:
+        return None
+    path = unquote(raw)
+    if not path or not os.path.isabs(path):
+        raise DeeplinkError(f"file link needs an absolute path: {path or '(empty)'}")
+    if not path.lower().endswith(".fused"):
+        raise DeeplinkError(f"file link must name a .fused app file: {path}")
+    return os.path.normpath(path)
+
+
+def file_payload_from(src: str) -> str | None:
+    """The still-encoded ``file=`` value of a file link, or None when ``src``
+    is not one. Shared by the validating parse above and the route that must
+    ferry even a malformed payload to the shell verbatim."""
+    src = (src or "").strip()
+    low = src.lower()
+    for prefix in _OPEN_FILE_PREFIXES:
+        if low.startswith(prefix):
+            return src[len(prefix):]
+    return None
 
 
 def parse_github_url(src: str) -> dict:
@@ -529,14 +575,75 @@ def clone_or_pull(spec: dict) -> dict:
     }
 
 
+#: The query param a file link is handed to the shell under (DL-7). Underscore
+#: like `_preview`: shell-internal, stripped by the shell on first read.
+EDIT_APPFILE_PARAM = "_edit_appfile"
+
+
+def edit_appfile_redirect(path: str) -> str:
+    """Where the OS-delivered ``file=`` link sends the browser: INTO the
+    shell, never a page of its own. The shell's ``EditAppFileBoot`` reads
+    ``?_edit_appfile=<path>`` once and does the rest through the X-Fused
+    ``/api/appfile/*`` routes — the D3 posture is why nothing is cloned here
+    on a GET.
+
+    A copy already under ``local/`` → that copy's entry page, so the app the
+    user knows is on screen while the shell's modal asks "overwrite it with
+    this .fused, or keep it?". No copy yet → Home; the shell clones and moves
+    to the copy (a brief Home flash is the price of keeping the write behind
+    the guarded POST). A path ``clone_target`` cannot read (missing file, bad
+    manifest) still goes to Home: the shell's probe fails the same way and
+    reports it in-app, one error surface."""
+    from fused_render import appfile
+
+    q = f"?{EDIT_APPFILE_PARAM}=" + quote(path, safe="")
+    try:
+        target = appfile.clone_target(path)
+    except appfile.AppFileError:
+        return "/" + q
+    if not target["cloned"]:
+        return "/" + q
+    return _local_copy_view(target["path"]) + q
+
+
+def _local_copy_view(dest: str) -> str:
+    """The explorer URL of a local copy: its entry page when the folder
+    declares one (``app_listing.app_entry``), else the folder — what the
+    preview header's Clone button lands on too (Preview.tsx ``land``)."""
+    from fused_render import app_listing
+
+    open_path = dest
+    if os.path.isdir(dest):
+        try:
+            entry = app_listing.app_entry(dest)
+        except OSError:
+            entry = None
+        if entry:
+            open_path = entry
+    return _view_url_path(os.path.abspath(open_path))
+
+
 # ---- Routes (included by server.create_app) ---------------------------------
 
 
 @router.get("/clone")
 def clone_page(src: str = ""):
-    # The confirm page (static/clone.html) is self-contained: it reads ?src=
-    # client-side, previews via GET /api/clone/info, and only its explicit
-    # Clone button fires the guarded POST. Serving the page performs no I/O.
+    # Every OS-delivered fused-render: link lands here. A ?file= link (DL-7)
+    # is redirected straight into the shell — no page of its own; the shell
+    # asks in a modal when there is something to ask. A link whose file
+    # payload is malformed goes to Home carrying it verbatim, so the shell
+    # reports the parse error in-app rather than this route serving a page
+    # for a link that was never a git one.
+    raw = file_payload_from(src)
+    if raw is not None:
+        try:
+            target = edit_appfile_redirect(app_file_path_from(src))
+        except DeeplinkError:
+            target = f"/?{EDIT_APPFILE_PARAM}=" + quote(unquote(raw), safe="")
+        return RedirectResponse(target, status_code=303)
+    # The git confirm page (static/clone.html) is self-contained: it reads
+    # ?src= client-side, previews via GET /api/clone/info, and only its
+    # explicit Clone button fires the guarded POST. Serving it performs no I/O.
     return FileResponse(_CLONE_PAGE)
 
 

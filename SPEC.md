@@ -2093,6 +2093,30 @@ when one exists, else the folder itself.
   exists but is not a clone of that repo is refused, never overwritten.
 - **DL-6** Open target: `<dest>/<subpath>/index.html` when present, else the
   subdirectory itself, via the standard `/view/` URL codec.
+- **DL-7** Local app file payload (D889): `fused-render://open?file=<absolute
+  .fused path>`, the path percent-encoded once by the sender (Render App's
+  title-bar Edit button, `quote(path, safe="")`) and decoded once here; the
+  value is taken verbatim to end-of-string like `git=`. Only an absolute
+  `.fused` path is accepted. The OS handlers ferry it to `GET /clone` like
+  every link (DL-2 unchanged), but a file link gets **no page of its own**:
+  the route answers a 303 INTO the shell with the path as `?_edit_appfile=`
+  — to the existing local copy's entry page (`app_listing.app_entry`, else
+  the folder) when `appfile.clone_target` says one is there, else to Home; a
+  path it cannot read goes to Home too, carrying the path verbatim, so the
+  shell is the one error surface. Nothing is written on the GET (D3). The
+  shell's `EditAppFileBoot` (top document, `!IS_EMBED`) reads the param once,
+  strips it before any async work (a reload or Back never replays the
+  hand-off), then: **no copy** → `POST /api/appfile/clone` and move to the
+  copy's entry page (**no confirm**: the file is already on this machine and
+  was just open in Render App, the same trust posture as a Finder
+  double-click on a `.fused`); **copy exists** → the copy is already on
+  screen underneath, and a modal over it asks "A local copy of `<name>`
+  already exists — overwrite it with the files in `<file>.fused`?" with
+  *Overwrite* (`POST /api/appfile/overwrite`, the preview header's merge
+  overwrite: payload files replace their counterparts, `.venv`, `.fused` data
+  and files the payload does not carry stay; then a reload of the copy's
+  entry page) and *Cancel* / close (nothing written, keep working on the
+  copy). `/api/clone/info` and `POST /api/clone` stay git-only.
 
 ---
 

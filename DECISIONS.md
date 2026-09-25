@@ -5739,3 +5739,56 @@ run the full suite — that's the orchestrator's job. Did not touch
 `fused_render/templates/*`, `tests/test_template_locks.py`,
 `fused_render/index/`, or anything else outside the pin bump and its
 directly-affected docs, per instruction.
+
+## D889 — `fused-render://open?file=` opens a local `.fused` for editing inside the shell: clone unasked, overwrite only from a modal
+
+Render App (fused-render-lite) only runs a `.fused`. Its title-bar Edit
+button needs a way to say "open this file in the editor, as a copy I can
+change" — and fused-render already has every half of that except the link:
+the `open` action with query-param payloads (D110 said future kinds become
+new params on it), `appfile.clone_app_file` / `overwrite_app_file` (D397,
+the preview header's Clone and Clone & overwrite), and the OS handlers on
+all three platforms that ferry any `fused-render:` link to `/clone?src=`.
+
+Decided:
+
+- **Shape**: `fused-render://open?file=<absolute .fused path>`. The path is
+  percent-encoded exactly once by the sender (`quote(path, safe="")`) and
+  `unquote`d exactly once here, taken verbatim to end-of-string like `git=`.
+  Only an absolute `.fused` path parses.
+- **No gated page** (owner's call — the first cut reused `clone.html` as a
+  confirm/progress page and was rejected: "we do not want a separate gated
+  page"). `GET /clone` answers a 303 INTO the running shell with the path as
+  `?_edit_appfile=` — to the existing copy's entry page when there is one,
+  else Home. The GET writes nothing (D3: every write stays an X-Fused POST
+  from the same-origin shell), which is why a first clone flashes Home for a
+  moment before the shell moves to the copy. A malformed or unreadable path
+  goes to Home carrying the path verbatim: one error surface, in-app.
+- **The shell does the work** (`shell/EditAppFileBoot.tsx`, mounted once
+  beside `UpdateNotifier`): read the param once at module init, strip it
+  BEFORE any async work so a reload or Back never replays the hand-off, then
+  probe `/api/appfile/clone`. No copy → `POST /api/appfile/clone`, land on
+  the copy's entry page (Preview.tsx `land`'s rule). Copy exists → the copy
+  is already on screen; a `ConfirmDialog` over it asks whether to overwrite
+  it with the `.fused` — *Overwrite* → `POST /api/appfile/overwrite` (merge
+  semantics, D397) then a reload of the entry page (a boot-time hand-off has
+  no module-store state to lose, so router.ts's reload caution does not
+  apply); *Cancel*/close → nothing written. The Edit button's common case is
+  "I re-exported the app and want to keep editing the newest version":
+  silently landing on the stale copy hid the newest files, silently
+  overwriting would eat edits, and the question fires only when there is
+  something to lose.
+- **No confirm on a first clone** — the deliberate divergence from DL-3. The
+  git link confirms because it pulls arbitrary remote content onto the
+  machine. Here the payload is a file already on disk that the user just had
+  open in Render App; Finder double-clicking that same file extracts and runs
+  it in fused-render with no prompt today, so a confirm on the clone would
+  guard less than the existing path already allows. The browser's own "open
+  fused-render?" prompt on a custom scheme still stands between a web page
+  and this link.
+- `/api/clone/info` and `POST /api/clone` stay git-only; `clone.html` is
+  untouched. No change to `app.py`, `winopen.py` or the supervisor.
+
+Skew: a FusedRender older than this change lands a `file=` link on the
+clone page's error ("unsupported fused-render link"); Render App's button
+does not version-check, so the page's error text is the message.
