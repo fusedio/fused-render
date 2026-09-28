@@ -49,6 +49,7 @@ import { EffortSelect } from "./EffortSelect";
 import { ModelSelect } from "./ModelSelect";
 import { PermissionSelect } from "./PermissionSelect";
 import { copyToTaskShots, SchedButton } from "./SchedButton";
+import { outboxHint } from "./outbox";
 
 /** T:4227 / T:4156 — the box's own placeholder, verbatim. The chat one names
  *  who is being replied to; the landing one names the errand. */
@@ -238,7 +239,27 @@ export interface ComposerCardProps {
   onSend(text: string, opts: SendOptions): void;
   /** Into the live run's inbox (T:16024). Falls back to `onSend` when absent. */
   onFollowUp?(text: string): void;
+  /**
+   * SEND NOW — Claude Code's Ctrl+Enter (`chat:sendNow`): stop the running
+   * turn and send this line at once, ahead of anything parked. Only asked while
+   * `running`; otherwise Ctrl/Cmd+Enter is the plain send it always was.
+   */
+  onSendNow?(text: string): void;
   onStop(): void;
+  /**
+   * THE PAGE OUTBOX (ui/outbox.ts): how many lines this page is holding because
+   * they were typed while a send was in flight. Draws the hint line under the
+   * box, and arms ↑.
+   */
+  queuedCount?: number;
+  /** …and how many "not sent" rows wait for the reader (a stop's hand-back, a
+   *  refused send). Named separately in the hint: they never send on their
+   *  own (Bugbot, PR #1323). ↑ reaches them too. */
+  notSentCount?: number;
+  /** ↑ in an EMPTY box pulls the newest parked line back to edit — Claude
+   *  Code's "Press up to edit queued messages". Answers the words, or null when
+   *  nothing is parked. */
+  onPullQueued?(): string | null;
   /** Notes or pictures alone are sendable, with no words at all (T:17903). */
   hasAttachments?: boolean;
   /**
@@ -342,15 +363,14 @@ export interface ComposerCardProps {
    */
   submitRef?: React.MutableRefObject<((seed?: string) => boolean) | null>;
   /**
-   * THE SEND WINDOW'S LATCH, in its two forms.
-   *
-   * `busyRef` is read SYNCHRONOUSLY in `submit`: the parent takes the latch
-   * inside `onSend`, in the same tick as the call below, so a second Enter that
-   * arrives before React has re-rendered still sees it — which is exactly the
-   * race that let two submits into one send window (Bugbot, PR #1074).
-   * `sendBusy` is the same fact as a prop, for the button's `disabled`.
+   * THE SEND WINDOW — READ FOR THE BUTTON'S TITLE ONLY. `submit` used to refuse
+   * on it (a `busyRef` the parent set in the same tick), silently, and the
+   * words stayed in the box: the reader typed on and the next Enter sent two
+   * messages as one (multi-send QA 2026-09-19). The parent now PARKS a line
+   * that arrives while the window is open (`ClaudeChat.dispatchSend` →
+   * `ui/outbox.ts`), so Enter always leaves the box and this flag only names
+   * the window for the tooltip.
    */
-  busyRef?: React.MutableRefObject<boolean>;
   sendBusy?: boolean;
   /** The column whose width the ladder measures against. */
   columnRef?: React.RefObject<HTMLElement | null>;
@@ -496,7 +516,11 @@ export function ComposerCard({
   context,
   onSend,
   onFollowUp,
+  onSendNow,
   onStop,
+  queuedCount,
+  notSentCount,
+  onPullQueued,
   hasAttachments,
   hasAttachmentsNow,
   attachPending,
@@ -510,7 +534,6 @@ export function ComposerCard({
   restore,
   boxRef: hostBoxRef,
   submitRef,
-  busyRef,
   sendBusy,
   columnRef,
   chips,
@@ -708,6 +731,13 @@ export function ComposerCard({
   const hasKey = !!draftKey;
   const onHeldGoneRef = useRef(onHeldGone);
   onHeldGoneRef.current = onHeldGone;
+  /** THE SEND WINDOW, AS `submit` READS IT. `submit` is handed out through
+   *  `submitRef` (✓ Done, the walkthrough), and a seat installed before the
+   *  window opened would otherwise read a stale `false` and let a wordless
+   *  round through into the parked road (Bugbot round 2, PR #1323). The same
+   *  render-time ref every other out-of-render read here uses. */
+  const sendBusyRef = useRef(!!sendBusy);
+  sendBusyRef.current = !!sendBusy;
   const heldFormRef = useRef(heldForm);
   heldFormRef.current = heldForm;
   // …and the same fact for the handlers that were built before this render.
@@ -1731,7 +1761,7 @@ export function ComposerCard({
    */
   const hopFrozen = hopping && !running;
 
-  const submit = useCallback((seed?: string): boolean => {
+  const submit = useCallback((seed?: string, now = false): boolean => {
     // Nothing leaves this composer while a scheduled message is pending — not a
     // typed line, not a follow-up (T:17871).
     if (blocked) return false;
@@ -1744,9 +1774,12 @@ export function ComposerCard({
     // way to a card; sending them here spends them twice, and the hop behind it
     // is left writing a message that has been said (Bugbot 4034977395).
     if (hoppingRef.current) return false;
-    // ONE SEND AT A TIME. Checked BEFORE the box is cleared, so a keystroke
-    // this refuses costs the user nothing.
-    if (busyRef?.current || sendBusy) return false;
+    // NO REFUSAL FOR A SEND IN FLIGHT. This door (`sendBusy`, once a ref) used to
+    // return false here — silently, the words left in the box — and a fast
+    // second Enter was eaten, then glued onto the third (multi-send QA
+    // 2026-09-19). The parent parks such a line in its outbox now (Claude
+    // Code's own behaviour: Enter while it works queues), so the box clears
+    // exactly as for any other send.
     // The programmatic send's seed, appended on the `restore` seat's own join
     // rule (a newline, and only when there is something to join to) — the box
     // may hold words the walkthrough's intro is being added to.
@@ -1758,6 +1791,15 @@ export function ComposerCard({
     // single newline ran the reader's draft into the walkthrough's intro and
     // changed what the model reads.
     const message = extra ? (typed ? typed.replace(/\s*$/, "") + "\n\n" + extra : extra) : typed;
+    // …EXCEPT A WORDLESS ONE. Notes or pictures alone cannot be parked: the
+    // notes' photograph is taken at the moment of sending (`beginSend`) and a
+    // parked round would photograph a pane that has moved on, and the tray
+    // belongs to the send in flight until it has taken its own pictures. So
+    // ✓ Done (and a bare-picture send) inside the window still refuses — the
+    // round stays armed, the chips stand, and the reader is told
+    // (`ClaudeChat`'s "Your notes were not sent: the last message is still
+    // going out"). Words always go.
+    if (sendBusyRef.current && !message) return false;
     // THE LIVE HALF FIRST-CLASS, not a fallback: a round of notes committed a
     // microtask ago is exactly as real as one the last paint drew a chip for.
     if (!message && !hasAttachments && !hasAttachmentsNow?.()) return false;
@@ -1803,9 +1845,11 @@ export function ComposerCard({
       // draft's key (review, 2026-09-17).
       if (!hasSessionRef.current) onHeldGoneRef.current?.();
     }
+    // SEND NOW (Ctrl+Enter while live): stop the turn and this line goes first.
+    if (now && running && onSendNow) onSendNow(message);
     // A live run gets this message DIRECTLY instead of parking it in a
     // page-side array (T:17889-17899).
-    if (running && onFollowUp) onFollowUp(message);
+    else if (running && onFollowUp) onFollowUp(message);
     else {
       onSend(message, {
         model: controls.model,
@@ -1825,13 +1869,12 @@ export function ComposerCard({
   }, [
     blocked,
     attaching,
-    busyRef,
-    sendBusy,
     text,
     hasAttachments,
     hasAttachmentsNow,
     running,
     onFollowUp,
+    onSendNow,
     onSend,
     controls,
     boxRef,
@@ -1850,16 +1893,35 @@ export function ComposerCard({
 
   const onKeyDown = useCallback(
     (ev: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      // ↑ IN AN EMPTY BOX PULLS THE NEWEST PARKED LINE BACK — Claude Code's
+      // "Press up to edit queued messages". Only with nothing typed: in a box
+      // with words, ↑ is the caret's.
+      if (ev.key === "ArrowUp") {
+        if (!onPullQueued || !((queuedCount ?? 0) + (notSentCount ?? 0)) || text.trim()) return;
+        const back = onPullQueued();
+        if (back === null) return;
+        ev.preventDefault();
+        // Words going back INTO the box, so the stale-render latch stands down
+        // for them exactly as for a keystroke (`spent`, the restore seat's rule).
+        spent.current = null;
+        setText(back);
+        grow();
+        return;
+      }
       if (ev.key !== "Enter") return;
       // Shift+Enter is a newline. Enter never STOPS a run — a user drafting the
       // next message mid-run must not kill the turn with a keystroke meant to
-      // queue text (T:17915). Cmd/Ctrl+Enter is the same send, for the hands
-      // that learned it in every other composer in this app.
+      // queue text (T:17915). CTRL+Enter while a run is LIVE is Claude Code's
+      // "send now" (`chat:sendNow`, the same chord): stop it and send this line
+      // first. Ctrl ONLY, never Cmd: ⌘↩ is the annotation round's ✓ Done chord
+      // (`pressDoneChord`, ClaudeChat's `autoSubmit`) and must not be shadowed
+      // by a stop. Cmd/Ctrl+Enter idle is the same send it always was, for the
+      // hands that learned it in every other composer in this app.
       if (ev.shiftKey) return;
       ev.preventDefault();
-      submit();
+      submit(undefined, ev.ctrlKey && !ev.metaKey);
     },
-    [submit],
+    [submit, onPullQueued, queuedCount, notSentCount, text, grow],
   );
 
   const draft = useCallback(() => text, [text]);
@@ -1986,6 +2048,13 @@ export function ComposerCard({
               : `${count} follow-ups are queued for this turn.`}
           </div>
         ) : null}
+        {/* THE OUTBOX'S LINE (ui/outbox.ts): lines this PAGE is still holding,
+            as against the follow-ups above that the run's host already has.
+            Drawn whatever the queue flag says — these are not the project
+            queue's, and ↑ is the thing to do about them. */}
+        {(queuedCount ?? 0) + (notSentCount ?? 0) > 0 ? (
+          <div className="c-queued c-outbox">{outboxHint(queuedCount ?? 0, notSentCount ?? 0)}</div>
+        ) : null}
         {/* THE TOOLS' SHELF: a one-track grid whose row goes 1fr → 0fr while the
             composer is idle (styles/composer.css `.c-composer-tools`). A grid
             track is the one height that animates from "whatever the row needs"
@@ -2077,11 +2146,12 @@ export function ComposerCard({
             type="submit"
             aria-label={running ? "Stop" : "Send"}
             // AND THE SHUTTER WINDOW SAYS SO TOO (Bugbot, PR #1074). With the
-      // `disabled` attribute gone (T:4187), the `title` is the only thing left
-      // that can tell the reader why a press does nothing — and `sendBusy` is
-      // the window that can run to SECONDS on a large pane, where `attaching`
-      // is usually a blink. A control that looks ready and silently refuses is
-      // the one outcome dropping the dim must not buy.
+      // `disabled` attribute gone (T:4187), the `title` is the one place to
+      // say what the window IS — `sendBusy` can run to SECONDS on a large
+      // pane, where `attaching` is usually a blink. A press inside it no
+      // longer refuses: the line is PARKED as a queued bubble and sent when
+      // the window closes (ClaudeChat's outbox), so the tooltip names the
+      // wait, not a refusal.
       title={
         running
           ? // T:4187's own string, not the shorter one this shipped with
