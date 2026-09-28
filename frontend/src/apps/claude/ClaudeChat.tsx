@@ -3078,12 +3078,33 @@ function ChatBody(props: ChatBodyProps) {
           // dispatched, and it goes back as "not sent", pictures and all,
           // before anything is sent. The bubble stays (its tag changes).
           if (parked?.entryId && cancelledDispatch.current.delete(parked.entryId)) {
+            // THE PICTURES COME OFF `inFlight` FIRST (Bugbot 4122407443): a
+            // `takeLater` line had `beginSend` read the tray just now, and its
+            // items sit in that map under `merged.attachments`. Lifted out
+            // here they ride the "not sent" row; left in, `done(false)` would
+            // read them as landed — receipts settled, blob URLs revoked — and
+            // the row would carry NO_TAKEN. `done` then only unmarks the notes.
+            const key = merged.attachments;
+            const items = key ? (inFlight.current.get(key) ?? []) : [];
+            if (key) inFlight.current.delete(key);
+            const kept: OutboxPayload = {
+              ...parked,
+              takeLater: false,
+              taken: {
+                opts: {
+                  ...(merged.blocks ? { blocks: merged.blocks } : {}),
+                  ...(merged.readDirs ? { readDirs: merged.readDirs } : {}),
+                  ...(key ? { attachments: key } : {}),
+                },
+                items: [...parked.taken.items, ...items],
+              },
+            };
             controller.setOptimisticPending(parked.bubble, "notSent");
             setOutbox(
               pushFront(outboxRef.current, {
                 id: parked.entryId,
                 text,
-                payload: parked,
+                payload: kept,
                 notSent: true,
               }),
             );
@@ -3294,8 +3315,10 @@ function ChatBody(props: ChatBodyProps) {
           }
           settled = controller.getState().status === "idle" && !sendBusy.current;
           // Pulled back meanwhile (a click, ↑)? Then it is the reader's again.
+          // STOPPED meanwhile (Bugbot 4122407431)? The stop retagged the line
+          // "not sent" in place; a stop wins over a send-now, so it stays.
           const mine = takeById(outboxRef.current, entryId);
-          if (!mine.entry) return;
+          if (!mine.entry || mine.entry.notSent) return;
           if (!settled) {
             // The run never settled. NOTHING IS DROPPED: this line waits as a
             // "not sent" bubble the reader can pull, ahead of the rest.
@@ -3382,6 +3405,10 @@ function ChatBody(props: ChatBodyProps) {
     // on neither list yet, so it is named here and `dispatchSend` puts it back
     // as "not sent" before the controller ever sees it.
     for (const id of dispatching.current) cancelledDispatch.current.add(id);
+    // …AND A SEND-NOW STILL WAITING FOR THE RUN TO SETTLE (Bugbot 4122407431):
+    // its line was just retagged above and `onSendNow` steps back from a
+    // "not sent" entry; the drain may look again as soon as the run settles.
+    sendNowInFlight.current = false;
     void controller.stopRun();
   }, [controller, setOutbox]);
   /**

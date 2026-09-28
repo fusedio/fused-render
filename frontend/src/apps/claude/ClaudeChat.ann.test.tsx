@@ -60,6 +60,10 @@ let audioSource: Record<string, unknown> = { audio: { available: true, reason: n
 let holdStart: Promise<void> | null = null;
 let holdSend: Promise<void> | null = null;
 let pollLive = false;
+/** A `cancel` was posted: a `pollLive` run answers its next poll `done` —
+ *  unless `stickyLive`, a stop that takes a while to land. */
+let cancelled = false;
+let stickyLive = false;
 /** `send` answers nothing (the host is gone): the follow-up FAILS on its own. */
 let failSend = false;
 /** Hold only the Nth `send` (1-based); null holds every send while `holdSend` is set. */
@@ -143,7 +147,9 @@ function stubFetch(): void {
         // `pollLive` keeps the run OPEN (a long reply streaming), so a line can
         // drain into it as a follow-up and a stop can land before the host
         // confirms it.
-        if (pollLive) return jsonRes({ ok: true, result: { done: false, session_id: "s1", text: "" } });
+        if (pollLive && (!cancelled || stickyLive)) {
+          return jsonRes({ ok: true, result: { done: false, session_id: "s1", text: "" } });
+        }
         return jsonRes({ ok: true, result: { done: true, session_id: "s1", text: "ok" } });
       }
       if (pollLive && action === "live_host") return jsonRes({ ok: true, result: { run_id: "r1" } });
@@ -156,7 +162,10 @@ function stubFetch(): void {
         if (hold) return holdSend!.then(() => jsonRes({ ok: true, result: { sent: true } }));
         return jsonRes({ ok: true, result: { sent: true } });
       }
-      if (action === "cancel") return jsonRes({ ok: true, result: { cancelled: "r1", still_queued: [] } });
+      if (action === "cancel") {
+        cancelled = true;
+        return jsonRes({ ok: true, result: { cancelled: "r1", still_queued: [] } });
+      }
       return jsonRes({ ok: true, result: {} });
     }
     return jsonRes({});
@@ -250,6 +259,8 @@ beforeEach(() => {
   failSend = false;
   holdSendNth = null;
   sendCount = 0;
+  cancelled = false;
+  stickyLive = false;
   prefsBody = {};
   admits.length = 0;
   admitAnswer = { run: true };
@@ -1556,6 +1567,56 @@ test("Back with a line still PARKED empties the outbox: no bubble, no hint carri
   await settle(60);
   // Nothing of the parked line reached the run behind the reader's back.
   expect(runs.filter((c) => c.action === "send")).toHaveLength(0);
+});
+
+/** The messages that went out, in order, whichever road each took. */
+function sentOut(): string[] {
+  return runs
+    .filter((c) => c.action === "start" || c.action === "send")
+    .map((c) => String(c.params.message ?? ""));
+}
+
+function pressCtrlEnterInBox(r: Chat): Promise<void> {
+  return act(async () => {
+    r.root
+      .findByType("textarea")
+      .props.onKeyDown({ key: "Enter", ctrlKey: true, shiftKey: false, preventDefault() {} });
+  });
+}
+
+test("Stop during a send-now's wait wins: the line stays not-sent and nothing is sent", async () => {
+  // Bugbot 4122407431: the Ctrl+Enter line sits in the outbox so a Stop can
+  // retag it, but `onSendNow` used to lift it out and dispatch it once the run
+  // settled anyway — a "not sent" bubble that sent. Now a stop wins.
+  pollLive = true;
+  stickyLive = true;
+  const { r } = await mountChat();
+  await typeInBox(r, "first message");
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(60);
+  await typeInBox(r, "Z");
+  await pressCtrlEnterInBox(r);
+  await settle(150);
+  // The chord's interrupt went out; the run is slow to settle.
+  expect(runs.filter((c) => c.action === "cancel")).toHaveLength(1);
+  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual(["queued"]);
+  // Stop while the chord waits.
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(60);
+  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
+    "not sent · click to edit",
+  ]);
+  // Now the run settles: the chord finds its line retagged and steps back.
+  stickyLive = false;
+  await settle(1200);
+  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
+    "not sent · click to edit",
+  ]);
+  expect(sentOut()).toEqual(["first message"]);
 });
 
 test("the run going live opens the door without waiting for the turn to end", async () => {
