@@ -497,6 +497,11 @@ export function ClaudeChat(props: ClaudeChatProps) {
 interface OutboxPayload {
   opts: SendOptions;
   bubble: string;
+  /** The outbox entry this line was parked as, so a Stop landing while the
+   *  drain has already TAKEN it (`dispatchSend` in admission / `beginSend`,
+   *  before the controller's `queued[]` knows it) can still name it
+   *  (Bugbot 4122227255). */
+  entryId?: string;
   /** ALWAYS present on a parked line, empty included: "parked" and "has
    *  pictures" are two facts, and reading the second as the first made a
    *  plain-text parked line re-read the LIVE tray at drain time (review). */
@@ -2722,11 +2727,12 @@ function ChatBody(props: ChatBodyProps) {
         // tray at its own dispatch instead (`takeLater`).
         const took = trayTakenRef.current;
         const mine = took ? takeAttachments() : NO_TAKEN;
+        const entryId = `o${++outboxSeq.current}`;
         setOutbox(
           pushBack(outboxRef.current, {
-            id: `o${++outboxSeq.current}`,
+            id: entryId,
             text,
-            payload: { opts, bubble, taken: mine, ...(took ? {} : { takeLater: true }) },
+            payload: { opts, bubble, entryId, taken: mine, ...(took ? {} : { takeLater: true }) },
           }),
         );
         return;
@@ -3065,6 +3071,26 @@ function ChatBody(props: ChatBodyProps) {
             putDownQueuedShot();
           }
           const { merged, done } = await beginSend(opts);
+          // A STOP LANDED WHILE THIS LINE WAS BEING TAKEN (Bugbot 4122227255):
+          // the drain had lifted it out of the outbox and the controller did
+          // not have it yet, so it sat on neither list the stop could retag —
+          // and went out after the stop. Now the stop names the line being
+          // dispatched, and it goes back as "not sent", pictures and all,
+          // before anything is sent. The bubble stays (its tag changes).
+          if (parked?.entryId && cancelledDispatch.current.delete(parked.entryId)) {
+            controller.setOptimisticPending(parked.bubble, "notSent");
+            setOutbox(
+              pushFront(outboxRef.current, {
+                id: parked.entryId,
+                text,
+                payload: parked,
+                notSent: true,
+              }),
+            );
+            taken = true; // keep the bubble: it is the "not sent" row now
+            done(false);
+            return;
+          }
           const wire: SendOptions = {
             ...merged,
             sendId,
@@ -3104,7 +3130,11 @@ function ChatBody(props: ChatBodyProps) {
           // live status for the effect above to read. Owned by `sendId`, so a
           // turn ending cannot open the door on a LATER send's window.
           if (!taken && optimisticKey) controller.dropOptimisticUser(optimisticKey);
-          dispatchingParked.current = null;
+          // OWNED (Bugbot 4122227276): a later parked send may already hold
+          // the slot while this one's turn runs out, and clearing it here
+          // would leave that send's admission road reading "not parked".
+          if (dispatchingParked.current === parked) dispatchingParked.current = null;
+          if (parked?.entryId) dispatching.current.delete(parked.entryId);
           parkedBySendId.current.delete(sendId);
           releaseSend(sendId);
         }
@@ -3140,21 +3170,50 @@ function ChatBody(props: ChatBodyProps) {
    * A "not sent" line is skipped, never drained: it is the reader's to resend
    * (see `strand`).
    */
+  /** THE LINES THE DRAIN HAS TAKEN BUT NOT YET HANDED TO THE CONTROLLER, by
+   *  entry id — the gap a Stop could not see (Bugbot 4122227255). */
+  const dispatching = useRef<Set<string>>(new Set());
+  /** …and the ones a Stop asked to abort while they were in that gap:
+   *  `dispatchSend` reads this right before the controller call. */
+  const cancelledDispatch = useRef<Set<string>>(new Set());
   const drainOutbox = useCallback(() => {
     // Not while "send now" is between its stop and its own dispatch: a line
     // drained here would go out as a follow-up into a run that is still
     // stopping and be refused (Bugbot, PR #1323). `onSendNow` drains itself
-    // once its line is out.
+    // once its line is out. And NEVER into a run that is `stopping` or still
+    // `starting` (Bugbot 4121249279): a follow-up into a stopping run is
+    // refused; the status effect below drains again once it settles.
+    const status = controller.getState().status;
     if (sendBusy.current || sendNowInFlight.current) return;
+    if (status === "stopping" || status === "starting") return;
     const { entry: next, rest } = shiftOldestSendable(outboxRef.current);
     if (!next) return;
     setOutbox(rest);
-    const followUp = controller.getState().status !== "idle";
-    dispatchSend(next.text, next.payload.opts, followUp, next.payload);
+    dispatching.current.add(next.id);
+    const followUp = status !== "idle";
+    dispatchSend(next.text, next.payload.opts, followUp, { ...next.payload, entryId: next.id });
   }, [controller, dispatchSend, setOutbox]);
   useEffect(() => {
     drainRef.current = drainOutbox;
   }, [drainOutbox]);
+  // A run that settled (idle after a stop, or a fresh turn now live) is one the
+  // drain may send into again.
+  useEffect(() => {
+    if (state.status === "idle" || state.status === "running") drainRef.current();
+  }, [state.status]);
+  /**
+   * PARKED PICTURES GO BACK TO THE TRAY when the outbox is emptied by a
+   * navigation (Bugbot 4121249270): Back and Open session used to drop the
+   * entries with the pictures still on them — never returned, never revoked.
+   * The words follow Back's own rule for the box (stranded, gone); the pictures
+   * are the reader's files and come back as chips, exactly as a refused send's
+   * do.
+   */
+  const emptyOutbox = useCallback(() => {
+    const items = outboxRef.current.flatMap((e) => e.payload.taken.items);
+    if (items.length) attachBack.current?.(items);
+    setOutbox([]);
+  }, [setOutbox]);
 
   /**
    * ↑ IN AN EMPTY BOX, and a click on a queued bubble: the line comes back to
@@ -3207,17 +3266,25 @@ function ChatBody(props: ChatBodyProps) {
       // The same tray rule as parking: only once the send in flight has taken
       // its own pictures is the tray this line's (Bugbot, PR #1323).
       const took = trayTakenRef.current;
+      const entryId = `o${++outboxSeq.current}`;
       const payload: OutboxPayload = {
         opts: { model: defaults.model, effort: defaults.effort, permission: defaults.permission },
         bubble,
+        entryId,
         taken: took ? takeAttachments() : NO_TAKEN,
         ...(took ? {} : { takeLater: true }),
       };
+      // IN THE OUTBOX FROM THE FIRST PAINT (Bugbot 4121249288): its "queued"
+      // tag is a door like any parked line's, and a click during the stop
+      // must find the entry. At the tail for now; it moves to the front once
+      // the stop has settled and it is about to go first.
+      setOutbox(pushBack(outboxRef.current, { id: entryId, text, payload }));
       // THE ORDINARY DRAIN STANDS DOWN from here until this line is out, or
       // has given up: `releaseSend` fires when the stopped send's latch opens,
       // and a drain then would send a parked line into a run still stopping.
       sendNowInFlight.current = true;
       void (async () => {
+        let settled = false;
         try {
           await controller.stopRun();
           // BOUNDED: `stopRun` resolves on the cancel's acknowledgement, not on
@@ -3225,29 +3292,29 @@ function ChatBody(props: ChatBodyProps) {
           for (let i = 0; i < 80 && controller.getState().status !== "idle"; i++) {
             await new Promise((r) => setTimeout(r, 100));
           }
-          if (controller.getState().status !== "idle" || sendBusy.current) {
+          settled = controller.getState().status === "idle" && !sendBusy.current;
+          // Pulled back meanwhile (a click, ↑)? Then it is the reader's again.
+          const mine = takeById(outboxRef.current, entryId);
+          if (!mine.entry) return;
+          if (!settled) {
             // The run never settled. NOTHING IS DROPPED: this line waits as a
             // "not sent" bubble the reader can pull, ahead of the rest.
             if (bubble) controller.setOptimisticPending(bubble, "notSent");
-            setOutbox(
-              pushFront(outboxRef.current, {
-                id: `o${++outboxSeq.current}`,
-                text,
-                payload,
-                notSent: true,
-              }),
-            );
+            setOutbox(pushFront(mine.rest, { ...mine.entry, notSent: true }));
             return;
           }
           // THIS LINE FIRST, straight through the send road — a fresh turn,
           // since the run is idle — and the outbox drains behind it when this
           // send's latch opens (`releaseSend` → `drainRef`).
+          setOutbox(mine.rest);
+          dispatching.current.add(entryId);
           dispatchSend(text, payload.opts, false, payload);
         } finally {
           sendNowInFlight.current = false;
-          // A timed-out wait left the drain standing down with lines parked;
-          // let it look again (it will refuse if the latch is still shut).
-          if (!sendBusy.current) drainRef.current();
+          // Only a SETTLED run takes the rest (Bugbot 4121249279): after a
+          // timed-out wait the lines stay parked as "not sent" and the status
+          // effect drains once the run is idle again.
+          if (settled && !sendBusy.current) drainRef.current();
         }
       })();
     },
@@ -3311,6 +3378,10 @@ function ChatBody(props: ChatBodyProps) {
       });
       setOutbox(next);
     }
+    // …AND THE LINE THE DRAIN IS HOLDING RIGHT NOW (Bugbot 4122227255): it is
+    // on neither list yet, so it is named here and `dispatchSend` puts it back
+    // as "not sent" before the controller ever sees it.
+    for (const id of dispatching.current) cancelledDispatch.current.add(id);
     void controller.stopRun();
   }, [controller, setOutbox]);
   /**
@@ -3370,8 +3441,9 @@ function ChatBody(props: ChatBodyProps) {
     // Back appended them again.
     setStranded(null);
     // …AND THE OUTBOX. Its bubbles sit in the transcript being emptied, and a
-    // parked line belongs to the conversation it was typed into.
-    setOutbox([]);
+    // parked line belongs to the conversation it was typed into. Its pictures
+    // come back to the tray (`emptyOutbox`).
+    emptyOutbox();
     // …AND SO DO THE QUEUED CHIPS AND THE LEADER THEY NAME. Both are memories of
     // the messages that were ON SCREEN: the chips sit under a transcript that is
     // being emptied, and the leader would file the next chat's first line under
@@ -3417,7 +3489,7 @@ function ChatBody(props: ChatBodyProps) {
       // in, and this is a different one — and so do the queued chips, which sit
       // under a transcript that is about to be replaced.
       setStranded(null);
-      setOutbox([]);
+      emptyOutbox();
       setWaitingSeeds([]);
       setAdmitAhead(null);
       setAdmitTaskId("");

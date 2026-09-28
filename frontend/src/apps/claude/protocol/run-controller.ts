@@ -2110,24 +2110,38 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // adopts the row this follow-up already adopted — and the queue entry
       // goes, because the line is no longer waiting behind anything.
       if (opts.orStart && logGen === gen && !disposed) {
-        drop();
-        const { orStart: _o, ...rest } = opts;
-        await sendMessage(text, { ...rest, optimisticKey: bubble.key });
+        // SERIALIZED (Bugbot 4122227219): two parked lines can sit here
+        // together — a follow-up into a live run opens the latch at once — and
+        // if both took this road the second would hit `sendMessage`'s `sending`
+        // gate and be REFUSED, the very "third message swallowed" this queue
+        // exists to end. So only the first opens the turn; a later one waits
+        // for that turn to have a run and follows it in, in order.
+        if (!sending) {
+          drop();
+          const { orStart: _o, ...rest } = opts;
+          await sendMessage(text, { ...rest, optimisticKey: bubble.key });
+          return;
+        }
+        for (let tries = 0; !runId && tries < FOLLOWUP_WAIT_TRIES; tries++) {
+          await sleep(FOLLOWUP_WAIT_MS);
+          runId = activeRun;
+        }
+      }
+      if (!runId) {
+        // GUARDED LIKE THE RESPAWN ROAD BELOW (`logGen === gen`, :1443). This road
+        // has slept up to FOLLOWUP_WAIT_TRIES × FOLLOWUP_WAIT_MS, which is ample
+        // room for a Back (or an `openOtherSession`) to land — and an unguarded
+        // handback posts the red trouble card and re-injects the text into
+        // whatever transcript is now current: the landing, or a different
+        // conversation entirely. A stale failure stays quiet; `newChat` has
+        // already cleared the queue and the bubble it would give back
+        // (QA, PR #1061).
+        if (logGen === gen) {
+          giveBack();
+          addError("Could not send: no run to attach this message to.");
+        }
         return;
       }
-      // GUARDED LIKE THE RESPAWN ROAD BELOW (`logGen === gen`, :1443). This road
-      // has slept up to FOLLOWUP_WAIT_TRIES × FOLLOWUP_WAIT_MS, which is ample
-      // room for a Back (or an `openOtherSession`) to land — and an unguarded
-      // handback posts the red trouble card and re-injects the text into
-      // whatever transcript is now current: the landing, or a different
-      // conversation entirely. A stale failure stays quiet; `newChat` has
-      // already cleared the queue and the bubble it would give back
-      // (QA, PR #1061).
-      if (logGen === gen) {
-        giveBack();
-        addError("Could not send: no run to attach this message to.");
-      }
-      return;
     }
     try {
       const res = (await run(

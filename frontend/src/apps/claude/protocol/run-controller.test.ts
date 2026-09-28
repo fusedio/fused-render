@@ -446,6 +446,38 @@ describe("start → poll → done", () => {
     expect(plain.returned.map((r) => r.text)).toEqual(["alone"]);
   });
 
+  test("two `orStart` follow-ups with no run: the first opens the turn, the second follows it in", async () => {
+    // Bugbot 4122227219: both used to take `sendMessage`; the second hit the
+    // `sending` gate, was refused, and never went out — the "third message
+    // swallowed" this queue exists to end. Now the second waits for the run the
+    // first is opening and goes in as a follow-up, in order, one bubble each.
+    let openStart!: () => void;
+    const held = new Promise<void>((resolve) => {
+      openStart = resolve;
+    });
+    const { controller, agent, returned, stranded } = makeController({
+      start: async () => {
+        await held;
+        return { run_id: "r2", session_id: "s2" };
+      },
+      send: () => ({ sent: true as const }),
+      poll: () => poll({ done: true, text: "ok", segments: [text("ok")] }),
+    });
+    const kA = controller.postOptimisticUser("A", "queued");
+    const kB = controller.postOptimisticUser("B", "queued");
+    const a = controller.sendFollowUp("A", { optimisticKey: kA, orStart: true });
+    const b = controller.sendFollowUp("B", { optimisticKey: kB, orStart: true });
+    // Let A reach the held `start` and B reach its wait.
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    openStart();
+    await Promise.all([a, b]);
+    expect(agent.of("start").map((c) => c.fields.message)).toEqual(["A"]);
+    expect(agent.of("send").map((c) => c.fields.message)).toEqual(["B"]);
+    expect(users(controller).map((t) => t.text)).toEqual(["A", "B"]);
+    expect(returned).toEqual([]);
+    expect(stranded).toEqual([]);
+  });
+
   test("a dead host, a refusal or a respawn all fall through to `start`", async () => {
     for (const answer of [{ error: "no host" }, { respawn: true as const }, null]) {
       const params = createMemoryParamsStore({ session_id: "s1" });

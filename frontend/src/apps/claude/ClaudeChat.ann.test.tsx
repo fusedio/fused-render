@@ -1533,6 +1533,31 @@ test("two identical parked lines, one out and one waiting, each keep their own r
     .toHaveLength(2);
 });
 
+test("Back with a line still PARKED empties the outbox: no bubble, no hint carried into the landing", async () => {
+  // Bugbot 4121249270: the parked line's pictures go back to the tray as the
+  // outbox empties (`emptyOutbox`), the words follow Back's rule for the box.
+  const open = heldStart();
+  const { r } = await mountChat();
+  await typeInBox(r, "first message");
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle();
+  await typeInBox(r, "parked");
+  await pressEnterInBox(r);
+  await settle();
+  expect(byClass(r, "turn-pending")).toHaveLength(1);
+  await act(async () => byClass(r, "c-back")[0]!.props.onClick({ preventDefault() {} }));
+  await settle(60);
+  expect(byClass(r, "bubble")).toHaveLength(0);
+  expect(byClass(r, "turn-pending")).toHaveLength(0);
+  expect(JSON.stringify(r.toJSON())).not.toContain("waiting to send");
+  await act(async () => open());
+  await settle(60);
+  // Nothing of the parked line reached the run behind the reader's back.
+  expect(runs.filter((c) => c.action === "send")).toHaveLength(0);
+});
+
 test("the run going live opens the door without waiting for the turn to end", async () => {
   // The latch cannot simply be held for the whole turn: a follow-up has to be
   // sendable inside one, and the composer routes it to `sendFollowUp` as soon
