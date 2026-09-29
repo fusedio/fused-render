@@ -4306,3 +4306,34 @@ def test_a_guessed_project_still_shows_the_number_it_already_has(
     tasks_store.ensure_ids([("sess-old", "/private/tmp/pqueue/qa/alpha", 1.0)])
     rows = {t["key"]: t for t in _tasks(client)}
     assert rows["sess-old"]["task_id"] == "TASK-001"
+
+
+
+def test_cancel_on_a_pending_key_whose_entry_already_ran_stops_its_run(
+        client, monkeypatch):
+    """`POST /api/tasks/create` answers `pending:<entry>` at once and a page
+    holds that key until the session row shows up — so a cancel on it after
+    the scheduler claimed the entry must stop the run it started, not answer
+    not_running because the MESSAGE is no longer cancellable."""
+    from fused_render import project_queue
+
+    _seed_schedule([_entry("e1", "go", _later(-30), target="/p/index.html",
+                           state=schedule.SENT, fired=_later(-30),
+                           run_id="run-1", claude_session_id="sess-a")])
+    calls = []
+
+    class _Agent:
+        def _live_run(self, file, session_id=""):
+            calls.append(("live", file, session_id))
+            return {"run_id": "run-1"}
+
+        def _cancel(self, run_id):
+            calls.append(("cancel", run_id))
+            return {"cancelled": run_id}
+
+    monkeypatch.setattr(project_queue, "agent_module", lambda: _Agent())
+    r = client.post(f"/api/tasks/{tasks_store.pending_key('e1')}/cancel",
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"cancelled": True}
+    assert calls == [("live", "/p/index.html", "sess-a"), ("cancel", "run-1")]

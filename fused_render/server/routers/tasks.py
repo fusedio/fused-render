@@ -7341,8 +7341,11 @@ def api_tasks_ui(view: str = Query("list"), task: str = Query(""),
             return _error("scope=app needs an X-Fused-Page header naming "
                           "an absolute page path", status=400)
         params.append(("project", app_dir))
-    if view != "list":
-        params.append(("view", view))
+    # ALWAYS written, "list" included: a bare `/tasks` falls back to the
+    # shell's remembered view (`fused-render:scheduled-view`), so leaving the
+    # default out would open whatever board or calendar was used last. The
+    # URL outranks that memory; the page asked for a view, so name it.
+    params.append(("view", view))
     task = (task or "").strip()
     if task:
         params.append(("peek", task))
@@ -7502,15 +7505,57 @@ def api_task_cancel(key: str, x_fused: str | None = Header(default=None)):
         return guard
     entry_id = tasks_store.pending_entry(key)
     if entry_id:
-        if schedule.cancel(entry_id) is None:
+        if schedule.cancel(entry_id) is not None:
+            tasks_watch.notify({key})
+            return {"cancelled": True}
+        # NOT CANCELLABLE AS A MESSAGE ANY MORE — it has been claimed and may
+        # already be running. `create` hands the page this pending key at once
+        # and the handle holds it until the session row appears, so an early
+        # cancel lands here while the run it started is going. Stop that run.
+        target, session = _started_entry_session(entry_id)
+        if not session:
             return _error("not_running", status=404)
-        tasks_watch.notify({key})
-        return {"cancelled": True}
+        return _cancel_live(key, target, session)
     task = _collect().get(key)
     if task is None:
         return _error("not_running", status=404)
     session = str(task.get("session_id") or key)
     target = str(task.get("target") or task.get("project") or "")
+    return _cancel_live(key, target, session)
+
+
+# How long a cancel on a just-claimed entry waits for the scheduler to write the
+# session its run minted. The spawn ordinarily reports inside a second or two;
+# past this the cancel gives up with not_running rather than hang the page.
+_CANCEL_SESSION_WAIT_S = 2.0
+_CANCEL_SESSION_STEP_S = 0.1
+
+
+def _started_entry_session(entry_id: str) -> tuple[str, str]:
+    """`(target, session)` of a claimed entry's run, or `(target|"", "")`.
+
+    `claude_session_id` is the session the scheduler recorded for the run. A
+    `sending` entry with none yet is mid-spawn: poll briefly for it. Any other
+    state with no session (pending again, failed, cancelled) has no run."""
+    deadline = time.monotonic() + _CANCEL_SESSION_WAIT_S
+    while True:
+        entry = next((e for e in schedule.list_entries()
+                      if str(e.get("id") or "") == entry_id), None)
+        if entry is None:
+            return "", ""
+        target = str(entry.get("target") or "")
+        session = str(entry.get("claude_session_id") or "")
+        if session:
+            return target, session
+        if (str(entry.get("state") or "") != schedule.SENDING
+                or time.monotonic() >= deadline):
+            return target, ""
+        time.sleep(_CANCEL_SESSION_STEP_S)
+
+
+def _cancel_live(key: str, target: str, session: str):
+    """Stop the turn open in `session` on `target` — `agent._cancel`, interrupt
+    first — or 404 not_running when none is."""
     agent = project_queue.agent_module()
     if agent is None:
         return _error("the claude agent is not available", status=503)
@@ -7519,5 +7564,5 @@ def api_task_cancel(key: str, x_fused: str | None = Header(default=None)):
     if not run_id:
         return _error("not_running", status=404)
     agent._cancel(run_id)
-    tasks_watch.notify({key})
+    tasks_watch.notify({key, session})
     return {"cancelled": True}

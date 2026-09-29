@@ -19,15 +19,15 @@ Task = ONE Claude Code session. Same rows the Tasks page shows, same `/api/tasks
 
 ```js
 fused.tasks.list(opts?)            // -> Task[]   opts {scope?: "app"|"all", status?: Status[], archived?: boolean}
-fused.tasks.get(key)               // -> Task | null
+fused.tasks.get(key, {scope?})     // -> Task | null; scope "app" (default) → null for a key outside this app
 fused.tasks.create({prompt, target?, title?, model?, effort?, permissionMode?, due?})  // -> TaskHandle
 fused.tasks.send(key, text, opts?) // -> {queued: boolean}
 fused.tasks.cancel(key)            // interrupt, then kill
 fused.tasks.archive(key) / .unarchive(key) / .delete(key)
 fused.tasks.markRead(key, messageId?)
 fused.tasks.messages(key)          // -> TaskMessage[]
-fused.tasks.transcript(key, opts?) // -> HistoryEntry[]
-fused.tasks.settings(key, {model?, effort?})
+fused.tasks.transcript(key, {scope?, ...}) // -> HistoryEntry[]
+fused.tasks.settings(key, {model?, effort?}, {scope?})
 fused.tasks.watch(fn, opts?)       // -> unsubscribe(); fn(rows, change)
 fused.tasks.ui({view?, task?, scope?}) // -> Promise<url> for an <iframe>: the shell's Tasks UI
 
@@ -36,7 +36,8 @@ h.key        // getter: "pending:<entry>" first, then the session id
 h.entryId
 h.get() / h.send(text) / h.cancel() / h.archive()
 h.watch(fn)  // -> unsubscribe()
-h.done       // Promise<Task>, settles when the task reaches done
+h.done       // Promise<Task>, settles when the task reaches done/archived AND it was seen running first
+             // (or a quiet row stays quiet 15 s); a send() re-arms it, so a follow-up never resolves on the stale row
 ```
 
 Every call returns a Promise unless noted. `Status` = server's seven, derived per listing, never stored:

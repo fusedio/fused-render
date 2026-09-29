@@ -390,8 +390,9 @@
  *       `status` is a list of statuses to keep; archived rows are dropped
  *       unless `archived: true` or `status` names "archived". Filters run
  *       client-side, scope runs on the server.
- *     get(key) -> Task|null — also finds a started task by the
- *       `pending:<entry>` key it wore before its session began.
+ *     get(key, {scope}) -> Task|null — also finds a started task by the
+ *       `pending:<entry>` key it wore before its session began. Scoped like
+ *       list(): a task outside this app is null unless `scope: "all"`.
  *     create({prompt, target, title, model, effort, permissionMode, due})
  *       -> TaskHandle (below). `due` is ISO or a Date; omit it to start now.
  *     send(key, text, {model, effort}) -> {queued, key} — a follow-up message;
@@ -401,13 +402,15 @@
  *     archive(key) / unarchive(key) / delete(key) -> void
  *     markRead(key, messageId?) -> void — one message, or the whole task.
  *     messages(key) -> TaskMessage[] — the full thread, newest first.
- *     transcript(key, {native, file}) -> turns[] — the conversation itself.
- *     settings(key, {model, effort}) -> void — only the fields given change.
- *       transcript/settings need a started session and reject 409 before it.
+ *     transcript(key, {native, file, scope}) -> turns[] — the conversation.
+ *     settings(key, {model, effort}, {scope}) -> void — only the fields given
+ *       change. Both find the task as get() does, and need a started session
+ *       (409 before it; 404 for a key not found in scope).
  *     watch(fn, {scope, status, archived}) -> unsubscribe — fn(rows, change):
  *       `rows` is the current filtered listing; `change` is {full, rows,
  *       gone} — `full` for a whole (re-)read, else the rows that moved and
- *       the keys that left. ONE long-poll per document per scope, shared by
+ *       the keys that left (only keys the feed held). ONE long-poll per
+ *       document per scope, shared by
  *       every watcher and handle and refcounted (off with the last one); a
  *       late watcher is replayed what is held. Hidden tabs sit the poll out.
  *     TaskHandle: {key, entryId, get(), send(text, opts), cancel(), archive(),
@@ -416,8 +419,16 @@
  *       row appears. `done` resolves with the row once the status reaches
  *       done or archived (needs_attention and blocked are still live: the
  *       task is waiting on the human, not finished — read `.status`), or
- *       with the last row seen if the task is deleted; it never rejects. The handle rides the shared feed until
- *       `done` settles, then lets go (and its watchers go quiet).
+ *       with the last row seen if the task is deleted or drops out of a full
+ *       re-read; it never rejects. A quiet row only counts once the handle
+ *       has seen the task running (in_progress, needs_attention or blocked)
+ *       since its create or its last send(): the listing can still read the
+ *       OLD "done" for a few seconds before a new turn shows, so without that
+ *       evidence the row is re-read after 15 s and `done` settles only if it
+ *       is still quiet. The handle watches this app's tasks, or the target's
+ *       folder when `target` is given — never every task — and rides that
+ *       shared feed until `done` settles, then lets go (and its watchers go
+ *       quiet).
  *         const t = await fused.tasks.create({prompt: "Summarise notes.md"});
  *         t.watch((row) => row && render(row.status));
  *         const row = await t.done;   // t.key is the session id by now
@@ -5308,26 +5319,50 @@
   // hard way (frontend/src/shell/tasksPulse.ts, whose loop this mirrors: a full
   // listing first, deltas folded in, `full` answered by a re-read, a 20 s floor
   // re-read under it, and hidden tabs sitting the poll out). The scope is the
-  // one thing that cannot be shared — "app" and "all" are different server
-  // questions — so there are at most two loops, one per scope in use.
+  // one thing that cannot be shared — "app", "all" and "under=<dir>" are
+  // different server questions — so there is one loop per scope key in use
+  // (see TASKS_APP_SCOPE), each refcounted the same way.
   const TASKS_CHANGES_WAIT_S = 25;
   const TASKS_BACKOFF_MS = 3000;
   const TASKS_FLOOR_MS = 20000;
   const TASKS_CATCH_UP_MS = 1000;
-  // What a task is while it is still going. `done` resolves the moment a row
-  // says anything else (needs_attention, blocked, done, archived).
+  // What a task is while it is still going. `done` resolves once a row says
+  // anything else (done, archived) — see taskHandle for the confirm rule.
   // A task waiting on the human (a parked permission card, a question) is
   // still live: `done` settling on the first tool call would make a "default"
   // permission-mode task look finished the moment it asked to do anything.
   const TASK_LIVE = { upcoming: 1, queued: 1, in_progress: 1, needs_attention: 1, blocked: 1 };
+  // Statuses that prove a turn really started — the evidence `done` waits for
+  // before it believes a quiet row (taskHandle).
+  const TASK_SEEN_RUNNING = { in_progress: 1, needs_attention: 1, blocked: 1 };
+  // The server's running-mark TTL (tasks_watch.MARK_TTL_SEC): past it, a row
+  // that still reads quiet is quiet.
+  const TASKS_CONFIRM_MS = 15000;
+
+  // A SCOPE KEY is the listing's own query string: "scope=app" (this page's
+  // app, resolved server-side from X-Fused-Page), "under=<abs dir>" (one
+  // folder, for a handle whose task targets elsewhere), or "" (every task,
+  // only when a caller asks for scope "all"). Feeds are keyed by it too, so
+  // a page is never sent rows it did not ask about (D890).
+  const TASKS_APP_SCOPE = "scope=app";
 
   function taskScope(opts) {
-    return opts && opts.scope === "all" ? "all" : "app";
+    return opts && opts.scope === "all" ? "" : TASKS_APP_SCOPE;
   }
 
-  function tasksQuery(scope, extra) {
-    const q = new URLSearchParams(extra || {});
-    if (scope === "app") q.set("scope", "app");
+  // The folder a target names: a last segment with an extension is a file and
+  // its parent is the folder; anything else is taken as the folder itself.
+  function taskUnderScope(target) {
+    let p = String(target).replace(/[\\/]+$/, "");
+    const cut = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+    const base = p.slice(cut + 1);
+    if (cut > 0 && base.lastIndexOf(".") > 0) p = p.slice(0, cut);
+    return new URLSearchParams({ under: p }).toString();
+  }
+
+  function tasksQuery(scopeKey, extra) {
+    const q = new URLSearchParams(scopeKey || "");
+    Object.keys(extra || {}).forEach((k) => q.set(k, extra[k]));
     const s = q.toString();
     return s ? "?" + s : "";
   }
@@ -5401,9 +5436,15 @@
 
   // A key answers for its own row, and a `pending:<entry>` key a task wore
   // before its session started also answers for the row carrying that entry.
-  function tasksGet(key) {
+  // Scoped like list(): a key outside this app answers null unless the
+  // caller asked for {scope: "all"}.
+  function tasksGet(key, opts) {
+    return tasksGetIn(key, taskScope(opts));
+  }
+
+  function tasksGetIn(key, scopeKey) {
     return Promise.resolve().then(() =>
-      tasksListing("all").then((l) => {
+      tasksListing(scopeKey).then((l) => {
         const exact = l.rows.find((r) => r.key === key);
         if (exact) return exact;
         const entry = pendingEntry(key);
@@ -5665,8 +5706,8 @@
   // The row a key names, for the two routes keyed by SESSION id rather than
   // task key. A task that has not started has no session, and says so with a
   // 409 rather than writing a record under a name nothing will read.
-  function taskSessionRow(key) {
-    return tasksGet(key).then((row) => {
+  function taskSessionRow(key, opts) {
+    return tasksGet(key, opts).then((row) => {
       if (!row) throw taskError(404, "no task with key " + JSON.stringify(key));
       if (!row.session_id) throw taskError(409, "task " + key + " has not started a session yet");
       return row;
@@ -5674,9 +5715,10 @@
   }
 
   // opts: {file} to read the transcript against another chat file than the
-  // task's target, {native: true} for the app-state reads as in-stream notices.
+  // task's target, {native: true} for the app-state reads as in-stream notices,
+  // {scope: "all"} to find a task outside this app (as get()).
   function tasksTranscript(key, opts) {
-    return taskSessionRow(key).then((row) => {
+    return taskSessionRow(key, opts).then((row) => {
       const q = new URLSearchParams({
         file: (opts && opts.file) || row.target,
         session_id: row.session_id,
@@ -5689,8 +5731,9 @@
   }
 
   // Only the fields given: an empty field is "not saying", never "clear it".
-  function tasksSettings(key, patch) {
-    return taskSessionRow(key).then((row) => {
+  // opts: {scope: "all"} to find a task outside this app (as get()).
+  function tasksSettings(key, patch, opts) {
+    return taskSessionRow(key, opts).then((row) => {
       const body = { session_id: row.session_id, model: "", effort: "" };
       if (patch && patch.model) body.model = String(patch.model);
       if (patch && patch.effort) body.effort = String(patch.effort);
@@ -5734,8 +5777,56 @@
       settle = resolve;
     });
     const listeners = new Set();
-    // A target outside this app would never appear on the app-scoped feed.
-    const scope = spec && spec.target ? "all" : "app";
+    // A target outside this app would never appear on the app-scoped feed, so
+    // a targeted task watches ITS folder — never the whole machine (D890).
+    const scope = spec && spec.target ? taskUnderScope(spec.target) : TASKS_APP_SCOPE;
+    // WHY `done` DOES NOT TRUST THE FIRST QUIET ROW. The listing derives a
+    // status, and for a few seconds after a create or a send it can still read
+    // "done" — the page's create writes no running mark, unlike the chat
+    // composer — before the turn shows as in_progress. So a non-live row only
+    // settles `done` once this handle has SEEN the task live since the last
+    // create/send; otherwise it is re-read after the server's running-mark TTL
+    // (tasks_watch.MARK_TTL_SEC) and settles only if still not live. A live
+    // row in between calls the confirm off.
+    let sawLive = false;
+    let confirm = null;
+
+    function disarm() {
+      if (confirm) clearTimeout(confirm);
+      confirm = null;
+    }
+
+    function arm() {
+      if (confirm || finished) return;
+      confirm = setTimeout(() => {
+        confirm = null;
+        if (finished) return;
+        tasksGetIn(key, scope).then(
+          (row) => {
+            if (finished) return;
+            if (!row) {
+              if (last) finish(last);
+              return;
+            }
+            key = row.key;
+            last = row;
+            if (TASK_LIVE[row.status]) sawLive = true;
+            else finish(row);
+          },
+          () => arm() // an unreadable listing proves nothing; look again
+        );
+      }, TASKS_CONFIRM_MS);
+    }
+
+    function consider(row) {
+      if (TASK_SEEN_RUNNING[row.status]) sawLive = true;
+      if (TASK_LIVE[row.status]) {
+        disarm();
+        return;
+      }
+      if (sawLive) finish(row);
+      else arm();
+    }
 
     function tell(row, change) {
       listeners.forEach((fn) => {
@@ -5750,6 +5841,7 @@
     function finish(row) {
       if (finished) return;
       finished = true;
+      disarm();
       settle(row);
       stop();
     }
@@ -5770,12 +5862,14 @@
         key = row.key;
         last = row;
         tell(row, change);
-        if (!TASK_LIVE[row.status]) finish(row);
+        consider(row);
         return;
       }
-      if (!change.full && last && change.gone.indexOf(key) !== -1) {
-        // Deleted (or archived into silence) with nothing behind it: over, as
-        // far as this page can know. `done` never rejects.
+      // Deleted (or archived into silence) with nothing behind it: over, as
+      // far as this page can know. `done` never rejects. A FULL read that no
+      // longer lists a row this handle has seen says the same thing (the floor
+      // re-read, a catch-up); with no row seen yet, it is too early to say.
+      if (last && (change.full || change.gone.indexOf(key) !== -1)) {
         tell(null, change);
         finish(last);
       }
@@ -5787,7 +5881,7 @@
       },
       entryId: entryId,
       get: () =>
-        tasksGet(key).then((row) => {
+        tasksGetIn(key, scope).then((row) => {
           if (row) {
             key = row.key;
             last = row;
@@ -5796,16 +5890,28 @@
         }),
       // The send route refuses a `pending:` key (409: no session to talk to
       // yet), so a handle that has not seen its flip asks once before sending.
+      // A send that lands starts a new turn: the "done" row still listed is
+      // the OLD turn's, so the live evidence is reset and any confirm already
+      // running restarts its full window rather than settling on stale news.
       send: (text, opts) =>
         (pendingEntry(key)
-          ? tasksGet(key).then((row) => {
+          ? tasksGetIn(key, scope).then((row) => {
               if (row) {
                 key = row.key;
                 last = row;
               }
             })
           : Promise.resolve()
-        ).then(() => tasksSend(key, text, opts)),
+        )
+          .then(() => tasksSend(key, text, opts))
+          .then((res) => {
+            if (!finished) {
+              sawLive = false;
+              disarm();
+              if (last && !TASK_LIVE[last.status]) arm();
+            }
+            return res;
+          }),
       cancel: () => tasksCancel(key),
       archive: () => tasksPostKey("/api/tasks/archive", key),
       // fn(row, change): row is the task's latest row, or null once it left

@@ -42,8 +42,10 @@ def test_app_scope_resolves_project_from_page_header(client, tmp_path):
     q = _query(r.json()["url"])
     assert q["embed"] == "1"
     assert q["project"] == str(app_dir)
-    # list is the default view and stays out of the URL; no task, no peek
-    assert "view" not in q and "peek" not in q
+    # "list" is written even though it is the page's default: a bare /tasks
+    # falls back to the shell's REMEMBERED view, and the URL must outrank it
+    assert q["view"] == "list"
+    assert "peek" not in q
 
 
 def test_app_scope_without_page_header_is_400(client):
