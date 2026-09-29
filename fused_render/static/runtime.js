@@ -5757,7 +5757,11 @@
       }
       return taskFetch("POST", "/api/tasks/create", body).then((d) => {
         const entryId = (d && d.entry_id) || pendingEntry(d && d.key);
-        return taskHandle((d && d.key) || "pending:" + entryId, entryId, spec);
+        // The server answers the folder its `?under=` accepts for the STORED
+        // target (absolute; `~` and relative paths resolved). Only an older
+        // server leaves it out — then the raw string is the best guess left.
+        const under = d && d.under ? String(d.under) : "";
+        return taskHandle((d && d.key) || "pending:" + entryId, entryId, spec, under);
       });
     });
   }
@@ -5767,7 +5771,7 @@
   // that does not carry it, the one new row that arrives in the same answer
   // that retires the pending key (the server's gone-plus-row swap). The handle
   // rides the shared feed from creation until `done` settles, then lets go.
-  function taskHandle(firstKey, entryId, spec) {
+  function taskHandle(firstKey, entryId, spec, under) {
     let key = firstKey;
     let last = null;
     let finished = false;
@@ -5779,7 +5783,11 @@
     const listeners = new Set();
     // A target outside this app would never appear on the app-scoped feed, so
     // a targeted task watches ITS folder — never the whole machine (D890).
-    const scope = spec && spec.target ? taskUnderScope(spec.target) : TASKS_APP_SCOPE;
+    const scope = under
+      ? new URLSearchParams({ under: under }).toString()
+      : spec && spec.target
+        ? taskUnderScope(spec.target)
+        : TASKS_APP_SCOPE;
     // WHY `done` DOES NOT TRUST THE FIRST QUIET ROW. The listing derives a
     // status, and for a few seconds after a create or a send it can still read
     // "done" — the page's create writes no running mark, unlike the chat

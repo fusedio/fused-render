@@ -4337,3 +4337,28 @@ def test_cancel_on_a_pending_key_whose_entry_already_ran_stops_its_run(
     assert r.status_code == 200, r.text
     assert r.json() == {"cancelled": True}
     assert calls == [("live", "/p/index.html", "sess-a"), ("cancel", "run-1")]
+
+
+def test_create_answers_the_stored_target_and_its_folder(client, tmp_path,
+                                                          monkeypatch):
+    """A handle scopes its feed to the folder the server STORED the target
+    under (`?under=` wants an absolute directory), never to the raw string the
+    page typed — so the create reply names both `target` and `under`."""
+    monkeypatch.setattr(schedule, "run_now", lambda entry_id: {"ok": True})
+    app_dir = tmp_path / "proj"
+    app_dir.mkdir()
+    page = app_dir / "index.html"
+    page.write_text("<meta name=\"fused-app\">", encoding="utf-8")
+
+    r = client.post("/api/tasks/create", json={"prompt": "go", "target": str(page)},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["key"] == tasks_store.pending_key(body["entry_id"])
+    assert body["target"] == str(page)
+    assert body["under"] == str(app_dir)
+
+    r = client.post("/api/tasks/create", json={"prompt": "go", "target": str(app_dir)},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200, r.text
+    assert r.json()["under"] == str(app_dir)

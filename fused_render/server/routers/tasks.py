@@ -7408,7 +7408,13 @@ def api_task_create(body: dict = Body(...),
                          entry_id, exc_info=True)
     key = tasks_store.pending_key(entry_id)
     tasks_watch.notify({key})
-    return {"entry_id": entry_id, "key": key}
+    # `target` is the path the entry was STORED with (`resolve_target` took
+    # `~` and a relative path and made them absolute), and `under` the folder
+    # the listing's `?under=` accepts for it — so a handle watching a targeted
+    # task scopes its feed to what the server stored, never to the raw string
+    # the page typed (a relative one would 400 the scoped listing).
+    under = resolved if os.path.isdir(resolved) else os.path.dirname(resolved)
+    return {"entry_id": entry_id, "key": key, "target": resolved, "under": under}
 
 
 @router.post("/api/tasks/{key}/send")
