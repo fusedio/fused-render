@@ -1,14 +1,15 @@
-"""Bounded formula evaluation for xlsx/reader.py.
+"""Bounded formula evaluation for excel/workbook.py.
 
-Building pycel's dependency graph over a workbook is NOT bounded — a large or
-heavily cross-referenced file can take a long time or a lot of memory — and
-reader.py runs IN-PROCESS in the server (D72, `executor.INPROCESS_HELPERS`).
-So this one unbounded step runs here, as a short-lived subprocess reader.py
-spawns with a hard timeout. Standalone script: stdlib + the `bundled` extra
-(pycel, openpyxl) only, and no `fused_render` import (SPEC PY-15).
+Building pycel's dependency graph over a workbook is not a bounded operation —
+a large or heavily cross-referenced file can take a long time or a lot of
+memory — so it runs here, as a short-lived subprocess workbook.py spawns with
+its own timeout: a workbook pycel chokes on still opens in the editor, with its
+formula cells left uncomputed, instead of taking the whole load down with it.
+Standalone script: stdlib + the `bundled` extra (pycel, openpyxl) only, and no
+`fused_render` import (SPEC PY-15).
 
 Evaluation only. Which results are dates, and everything else about how a
-value is shown, is reader.py's call: it already holds each cell's formula and
+value is shown, is workbook.py's call: it already holds each cell's formula and
 number format from its own read of the workbook.
 
 Protocol — stdin, one JSON object:
@@ -16,7 +17,7 @@ Protocol — stdin, one JSON object:
 stdout, one JSON array:
     [[sheet, row, col, value], ...]
 covering only the cells pycel could evaluate; one it can't (an unsupported
-function, a malformed formula) is omitted, and reader.py reports it as
+function, a malformed formula) is omitted, and workbook.py reports it as
 unevaluated. The output is strict JSON: a non-finite result is Excel's
 `#NUM!`, never a bare `Infinity` token that would fail the whole parse.
 """

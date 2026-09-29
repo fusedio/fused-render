@@ -16,8 +16,18 @@ Two data paths:
 or open a different one. Save writes back to `file`; save_as/export write
 wherever the caller points them.
 
+Formula cells are evaluated in the browser by the template's own small
+engine, which covers the everyday functions but not INDEX/MATCH, cross-sheet
+references, and the like. For those, `load` and `compute` send the value of
+every formula cell alongside it — Excel's cached one, else pycel's (see
+workbook.py) — and the grid falls back to it where its own engine can't.
+
 Actions (dispatched via the `action` param):
-  load        — sheet metadata + inline rows (small) or first row batch (big)
+  load        — sheet metadata + inline rows (small) or first row batch (big),
+                and each small sheet's formula values (`computed`)
+  compute     — formula values for the editor's UNSAVED sheets (`data`)
+  sheets, describe, query, cells
+              — the agent tools (workbook.py), over the file on disk
   rows        — windowed batch: offset/limit + server-side sort/filter
   save        — write back: rich xlsx / streamed xlsx / csv / parquet
   save_as     — write to a user-chosen directory + name, return the new path
@@ -56,6 +66,38 @@ FIRST_BATCH = 500
 XLSX_SAVE_MAX_ROWS = 150_000  # streamed xlsx writes above this exceed the 30 s call budget
 
 SPREADSHEET_EXTS = (".xlsx", ".xlsm", ".csv", ".parquet")
+
+
+def _workbook():
+    """workbook.py beside this file. Loaded by path: neither engine promises
+    this folder is on sys.path, and a template must not import `fused_render`."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_excel_workbook", os.path.join(HERE, "workbook.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _computed_out(values):
+    """{(r, c): value} → the {"r,c": shown value} map the grid falls back to."""
+    return {f"{r},{c}": _cell_out(v) for (r, c), v in values.items()}
+
+
+def _compute(sheets_payload):
+    """Formula values for the editor's unsaved state: the same workbook save
+    would write, built into a scratch file and evaluated there. One map per
+    payload sheet, in order (a sheet's name may be truncated in the file)."""
+    import tempfile
+
+    fd, tmp = tempfile.mkstemp(suffix=".xlsx")
+    os.close(fd)
+    try:
+        _build_workbook(sheets_payload).save(tmp)
+        values = _workbook().evaluate(tmp, cache=False)
+    finally:
+        os.remove(tmp)
+    return {"computed": [_computed_out(v) for v in values.values()]}
 
 
 def _safe_name(name, default):
@@ -586,6 +628,7 @@ def _load_rich(file):
     import openpyxl
 
     wb = openpyxl.load_workbook(file, data_only=False)
+    computed = _workbook().evaluate(file)
     sheets = []
     for name in wb.sheetnames:
         ws = wb[name]
@@ -595,7 +638,8 @@ def _load_rich(file):
             styles.append([_style_out(c) for c in row])
         colw, freeze = _sheet_view_out(ws)
         sheets.append({"name": name, "rows": rows, "styles": styles, "big": False,
-                       "colw": colw, "freeze": freeze})
+                       "colw": colw, "freeze": freeze,
+                       "computed": _computed_out(computed.get(name, {}))})
     return {"sheets": sheets, "mtime": os.path.getmtime(file), "rich": True,
             **_ro_verdict(file)}
 
@@ -608,6 +652,7 @@ def _load(file):
             return _load_rich(file)
     meta = _ensure_cache(file)
     d = _cache_dir(file)
+    computed = _workbook().evaluate(file) if ext in (".xlsx", ".xlsm") else {}
     sheets = []
     for i, sh in enumerate(meta["sheets"]):
         if sh["big"]:
@@ -623,7 +668,8 @@ def _load(file):
             ws = wb[sh["name"]]
             rows = [[_cell_out(v) for v in row] for row in ws.iter_rows(values_only=True)] or [[""]]
             wb.close()
-            sheets.append({"name": sh["name"], "rows": rows, "styles": None, "big": False, "kind": "xlsx"})
+            sheets.append({"name": sh["name"], "rows": rows, "styles": None, "big": False, "kind": "xlsx",
+                           "computed": _computed_out(computed.get(sh["name"], {}))})
         else:
             con = _duck()
             sel = ", ".join(f"c{i2}" for i2 in range(sh["ncols"]))
@@ -1106,11 +1152,24 @@ def main(
     filters: str = "",
     col: int = -1,
     q: str = "",
+    sql: str = "",
+    ref: str = "",
+    columns: str = "",
 ):
     if action == "load":
         if not file:
             raise ValueError("no file given")
         return _load(file)
+    if action == "compute":
+        return _compute(json.loads(data))
+    if action == "sheets":
+        return _workbook().sheets(file)
+    if action == "describe":
+        return _workbook().describe(file, sheet, columns)
+    if action == "query":
+        return _workbook().query(file, sql, limit)
+    if action == "cells":
+        return _workbook().cells(file, ref, sheet)
     if action == "rows":
         meta = _ensure_cache(file)
         _, sh = _sheet_meta(meta, sheet)

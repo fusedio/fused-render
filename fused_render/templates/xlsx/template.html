@@ -186,12 +186,7 @@
       const shown = data.rows.length;
       const from = shown === 0 ? 0 : offset + 1;
       const to = offset + shown;
-      // A formula with no cached value that could not be computed shows blank —
-      // say so, rather than let an empty cell pass for an empty value.
-      const unevaluated = data.unevaluated
-        ? ` · ${data.unevaluated.toLocaleString()} formula${data.unevaluated === 1 ? "" : "s"} not computed`
-        : "";
-      rowcountEl.textContent = `rows ${from.toLocaleString()}–${to.toLocaleString()} of ${total.toLocaleString()}${unevaluated}`;
+      rowcountEl.textContent = `rows ${from.toLocaleString()}–${to.toLocaleString()} of ${total.toLocaleString()}`;
       prevBtn.disabled = offset <= 0;
       nextBtn.disabled = offset + LIMIT >= total;
 
