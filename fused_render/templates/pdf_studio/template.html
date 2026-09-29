@@ -1012,10 +1012,8 @@ async function renderPage(pdf, n, gen) {
     wrap.style.setProperty("--scale-factor", scale);
     wrap.querySelector("canvas").replaceWith(canvas);
     wrap.querySelector(".textLayer").replaceWith(textLayer);
+    wrap.dataset.gen = gen;   // this drawing is the current one — see buildOverlay
   });
-  // The edit overlay belongs to the old drawing (and scale); rebuild it.
-  wrap.dataset.overlayFor = "";
-  wrap.querySelector(".overlay").innerHTML = "";
   if (document.body.classList.contains("mode-edit") && inView(wrap)) buildOverlay(n).catch(() => {});
 }
 
@@ -1078,6 +1076,9 @@ async function renderAll({ fresh = false } = {}) {
   cancelEdit();
   state.spans = {};
   const gen = ++renderGen;
+  // Every overlay was hit-tested against the drawing (and spans) being
+  // replaced; they all go now and come back per page as each one is redrawn.
+  document.querySelectorAll("#pages .overlay").forEach((o) => { o.innerHTML = ""; });
   if (state.pdf) { state.pdf.destroy(); state.pdf = null; }
   if (fresh) showRenderSkeleton();
   let data, pdf;
@@ -1160,13 +1161,18 @@ function primeOverlays() {
 }
 
 // ---------- text edit overlay ----------
+// A page's overlay is built for the drawing it sits on: only once that page
+// has been painted by the current render (its `gen`), once per render, and
+// dropped if a newer render starts while the page's text is being fetched.
 async function buildOverlay(n) {
+  const gen = String(renderGen);
   const wrap = document.getElementById(`__fr_page_${n}`);
-  if (!wrap || wrap.dataset.overlayFor === String(state.mtime)) return;
-  wrap.dataset.overlayFor = state.mtime;
+  if (!wrap || wrap.dataset.gen !== gen || wrap.dataset.overlayFor === gen) return;
+  wrap.dataset.overlayFor = gen;
   let pt = state.spans[n];
   if (!pt || pt.mtime !== state.mtime) {
     pt = await py({ action: "page_text", doc: state.doc, page: n });
+    if (String(renderGen) !== gen) return;
     state.spans[n] = pt;
   }
   const overlay = wrap.querySelector(".overlay");
@@ -1286,9 +1292,10 @@ function lineRanges(value, lines) {
 }
 
 // Where a caret key sends the caret's moving end, for the keys that can find
-// it already there: End at the end of a line, ↓ on the last one, and so on.
-// With nowhere to go, the browser hands such a key to the page, which then
-// scrolls the document to its top or bottom under the editor.
+// it with nowhere to go: End at the end of a line, ↑ on the first one,
+// PageDown anywhere (the box has no pages)… A textarea hands such a key to
+// the page, which then scrolls the document to its top or bottom under the
+// editor. null: the key is the textarea's own (↑ between lines, typing…).
 function caretTarget(ed, e, pos) {
   const r = ed.ranges.findLast(([a, b]) => a <= pos && pos <= b);
   const len = ed.el.value.length, doc = e.ctrlKey || (e.metaKey && e.key.startsWith("Arrow"));
@@ -1305,15 +1312,16 @@ function caretTarget(ed, e, pos) {
   return null;
 }
 
-// Stop a caret key that would not move the caret before it reaches the page;
-// only a key with no room to act is taken — the rest keep the textarea's own
-// behaviour. Without Shift the key still collapses the selection there.
-function holdStuckCaret(ed, e) {
+// The editor moves the caret itself for every key caretTarget models, so none
+// of them reaches the page; Shift extends the selection from its anchor.
+function moveCaret(ed, e) {
   const el = ed.el, back = el.selectionDirection === "backward";
-  const pos = back ? el.selectionStart : el.selectionEnd;
-  if (caretTarget(ed, e, pos) !== pos) return;
+  const anchor = back ? el.selectionEnd : el.selectionStart;
+  const to = caretTarget(ed, e, back ? el.selectionStart : el.selectionEnd);
+  if (to === null) return;
   e.preventDefault();
-  if (!e.shiftKey) el.setSelectionRange(pos, pos);
+  const from = e.shiftKey ? anchor : to;
+  el.setSelectionRange(Math.min(from, to), Math.max(from, to), to < from ? "backward" : "forward");
 }
 
 function cancelEdit() {
@@ -1384,7 +1392,7 @@ function openEditor(wrap, { span = null, at = null }) {
     e.stopPropagation();
     if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
     else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); finishEdit(); }
-    else holdStuckCaret(ed, e);
+    else moveCaret(ed, e);
   });
   // The frame around the text (and its Move tab) drags the box; the text
   // itself stays a normal text field.
