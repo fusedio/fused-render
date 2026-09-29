@@ -35,6 +35,7 @@
 // This is a presentation of the same data, not a second opinion about it: no
 // status is re-derived, no lane membership is re-decided (taskColumn still asks
 // the server), and every key is a time the server itself sent.
+import { EMBED_PREFIX, IS_QUERY_EMBED, VIEW_PREFIX } from "@platform/lib/router";
 import type { Task, TaskMessage, TaskPulseTask } from "@platform/lib/api";
 import { labelForSource } from "@platform/lib/format";
 // Imported as well as re-exported below: `sortLane` reads it, and a bare
@@ -1608,6 +1609,21 @@ export function taskFile(task: Task): string {
  * the shell already runs. Widening the parameter is the alternative to a second
  * copy of this url that would rot separately. */
 export function taskHref(
+  task: Pick<Task, "session_id" | "target" | "project"> & {
+    key?: string;
+    status?: string;
+    entry_origin?: string;
+  },
+): string | null {
+  const href = taskHrefView(task);
+  // FRAMED `/tasks?embed=1` (an app page's Tasks view): a row press must not
+  // pull the frame into the full explorer with its sidebar — stay chrome-free.
+  return href && IS_QUERY_EMBED && href.startsWith(VIEW_PREFIX)
+    ? EMBED_PREFIX + href.slice(VIEW_PREFIX.length)
+    : href;
+}
+
+function taskHrefView(
   task: Pick<Task, "session_id" | "target" | "project"> & {
     key?: string;
     status?: string;

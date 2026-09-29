@@ -23,6 +23,7 @@ import {
   setSidebarState,
   subscribeSidebarState,
 } from "@platform/lib/sidebarstate";
+import { IS_EMBED } from "@platform/lib/router";
 
 /** The query param the peek rides on `/tasks`. */
 export const PEEK_PARAM = "peek";
@@ -1028,7 +1029,7 @@ export function setPeekHost(on: boolean): void {
   // Note this is NOT what an ordinary close does. Closing the panel leaves the
   // sidebar exactly where the last crossing put it, because open and close are
   // not resizes and the new rules give them no say at all.
-  if (state.autoCollapsed && getSidebarState().collapsed) {
+  if (state.autoCollapsed && hostSidebar().collapsed) {
     // …written the way the collapse was: a rail we persisted has to be undone
     // in `localStorage` too, or the reload the reader does next puts it back.
     setSidebar(false, heldPersisted);
@@ -1328,12 +1329,13 @@ export function openPeek(
 
 /** The open-time exception, spent (`openTimeCollapse` carries the rule). */
 function spendOpenTimeCollapse(): void {
-  const sidebar = getSidebarState();
+  if (IS_EMBED) return; // no sidebar here to spend (`hostSidebar`)
+  const sidebar = hostSidebar();
   const collapse = openTimeCollapse({
     viewport: viewportWidth(),
     baseline: peekBaseline(),
     chosenWidth: state.width,
-    sidebarExpanded: sidebar.width,
+    sidebarExpanded: sidebar.expanded,
     sidebarCollapsed: sidebar.collapsed,
   });
   if (!collapse) return;
@@ -1431,11 +1433,11 @@ export function showListBesidePeek(): void {
 }
 
 function showListEnv(): ShowListInput {
-  const sidebar = getSidebarState();
+  const sidebar = hostSidebar();
   return {
     viewport: viewportWidth(),
     baseline: peekBaseline(),
-    sidebarExpanded: sidebar.width,
+    sidebarExpanded: sidebar.expanded,
     sidebarCollapsed: sidebar.collapsed,
   };
 }
@@ -1463,34 +1465,55 @@ function viewportWidth(): number {
   return typeof window === "undefined" ? 0 : window.innerWidth || 0;
 }
 
+/**
+ * THE SIDEBAR AS THIS DOCUMENT HAS IT — the one reader of `sidebarstate` in
+ * this store; every width, room and crossing input goes through here.
+ *
+ * EMBEDDED (`/tasks?embed=1`, an app page's iframe) there is no sidebar in this
+ * document: `sidebarstate` is shared localStorage, so what it holds is the HOST
+ * shell's column, not one beside this frame. Reading it would reserve space that
+ * is not there. So embedded, the sidebar is a column of width 0 that occupies
+ * nothing — EXPANDED at 0 rather than "collapsed", because a collapsed sidebar
+ * still occupies `SIDEBAR_RAIL_WIDTH` in the pure planners (`planShowList`).
+ * The planners never move it either: every writer below is gated on IS_EMBED
+ * too (`setSidebar`, `spendOpenTimeCollapse`, `applyResize`, `watchSidebar`).
+ */
+function hostSidebar(): { expanded: number; collapsed: boolean; occupied: number } {
+  if (IS_EMBED) return { expanded: 0, collapsed: false, occupied: 0 };
+  const sidebar = getSidebarState();
+  return {
+    expanded: sidebar.width,
+    collapsed: sidebar.collapsed,
+    occupied: sidebar.collapsed ? SIDEBAR_RAIL_WIDTH : sidebar.width,
+  };
+}
+
 /** The area the frame and the peek share, right now. */
 function contentWidth(): number {
-  const sidebar = getSidebarState();
-  return Math.max(0, viewportWidth() - (sidebar.collapsed ? SIDEBAR_RAIL_WIDTH : sidebar.width));
+  return Math.max(0, viewportWidth() - hostSidebar().occupied);
 }
 
 function roomEnv(): RoomInput {
-  const sidebar = getSidebarState();
   return {
     open: state.key !== null,
     viewport: viewportWidth(),
     chosenWidth: state.width,
     baseline: peekBaseline(),
-    sidebarWidth: sidebar.collapsed ? SIDEBAR_RAIL_WIDTH : sidebar.width,
+    sidebarWidth: hostSidebar().occupied,
   };
 }
 
 function crossEnv(): CrossInput {
-  const sidebar = getSidebarState();
+  const sidebar = hostSidebar();
   return {
     viewport: viewportWidth(),
     chosenWidth: state.width,
     baseline: peekBaseline(),
-    // THE EXPANDED WIDTH, whichever state the sidebar is in: `sidebar.width` is
+    // THE EXPANDED WIDTH, whichever state the sidebar is in: `sidebar.expanded` (the stored `width`) is
     // the stored/dragged number and does not change when it collapses to its
     // rail (platform/lib/sidebarstate). Both triggers read it — see
     // `planCrossing` on why the expand cannot be measured against the rail.
-    sidebarExpanded: sidebar.width,
+    sidebarExpanded: sidebar.expanded,
     sidebarCollapsed: sidebar.collapsed,
     side: floorSide,
   };
@@ -1509,7 +1532,8 @@ function establishSide(): void {
  * pane's floor.
  */
 export function applyResize(): RoomPlan {
-  if (state.key !== null) {
+  // Embedded, the crossing plan is a no-op: there is no sidebar to move.
+  if (state.key !== null && !IS_EMBED) {
     const plan = planCrossing(crossEnv());
     floorSide = plan.side;
     if (plan.sidebar !== null) {
@@ -1555,6 +1579,10 @@ export function applyResize(): RoomPlan {
  * the sidebar without that counting as the reader changing their mind.
  */
 function setSidebar(collapsed: boolean, persist = false): void {
+  // EMBEDDED, HANDS OFF: `sidebarstate` is shared localStorage, so a write from
+  // a framed Tasks page would collapse the PARENT shell's sidebar — a column
+  // this document does not even draw.
+  if (IS_EMBED) return;
   ours = true;
   try {
     setSidebarState((s) => (s.collapsed === collapsed ? s : { ...s, collapsed }), persist);
@@ -1608,20 +1636,22 @@ let unsubscribeSidebar: (() => void) | null = null;
 let sidebarWasCollapsed = false;
 
 function watchSidebar(): void {
-  if (unsubscribeSidebar) return;
-  sidebarWasCollapsed = getSidebarState().collapsed;
+  // Embedded: a change to `sidebarstate` is the HOST's sidebar moving, not the
+  // reader moving one beside this frame — nothing here to track.
+  if (IS_EMBED || unsubscribeSidebar) return;
+  sidebarWasCollapsed = hostSidebar().collapsed;
   unsubscribeSidebar = subscribeSidebarState(() => {
     // Track ours too, or an auto-collapse followed by their chevron reads as
     // no transition at all.
     if (ours) {
-      sidebarWasCollapsed = getSidebarState().collapsed;
+      sidebarWasCollapsed = hostSidebar().collapsed;
       return;
     }
     // ANY move of theirs, in either direction — a manual collapse counts as
     // much as a manual expand, because the incoherence this guards against is
     // about persistence and not about direction (`userMoved`).
     userMoved = true;
-    const sidebar = getSidebarState();
+    const sidebar = hostSidebar();
     const wasCollapsed = sidebarWasCollapsed;
     sidebarWasCollapsed = sidebar.collapsed;
     if (sidebar.collapsed) return;
@@ -1640,7 +1670,7 @@ function watchSidebar(): void {
         viewport: viewportWidth(),
         baseline: peekBaseline(),
         chosenWidth: state.width,
-        sidebarExpanded: sidebar.width,
+        sidebarExpanded: sidebar.expanded,
       })
     ) {
       resetPeekWidth();

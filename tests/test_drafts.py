@@ -504,12 +504,12 @@ def test_archiving_a_task_keeps_both_its_drafts(client, tmp_path, projects_dir):
     client.put("/api/drafts/chat/sess-a", json={"text": "unsent, and still mine"})
     _bound_draft(client, "draft-0001", "sess-a", elsewhere)
 
-    r = client.post("/api/tasks/archive", json={"key": "sess-a"})
+    r = client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert drafts.get_chat("sess-a")["text"] == "unsent, and still mine"
     assert drafts.get_task("draft-0001") is not None
 
-    r = client.post("/api/tasks/unarchive", json={"key": "sess-a"})
+    r = client.post("/api/tasks/unarchive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     row = _by_key(client)["sess-a"]
     assert row["draft"]["preview"] == "unsent, and still mine"
@@ -524,11 +524,11 @@ def test_deleting_and_erasing_a_task_drop_its_chat_draft(client, projects_dir):
     client.put("/api/drafts/chat/sess-a", json={"text": "unsent a"})
     client.put("/api/drafts/chat/sess-b", json={"text": "unsent b"})
 
-    assert client.post("/api/tasks/delete", json={"key": "sess-a"}).status_code == 200
+    assert client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"}).status_code == 200
     assert drafts.get_chat("sess-a") is None
     assert drafts.get_chat("sess-b") is not None
 
-    assert client.post("/api/tasks/erase", json={"key": "sess-b"}).status_code == 200
+    assert client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-b"}).status_code == 200
     assert drafts.get_chat("sess-b") is None
 
 
@@ -545,11 +545,11 @@ def test_deleting_and_erasing_a_task_drop_the_form_bound_to_it(
     _bound_draft(client, "draft-0001", "sess-a", elsewhere)
     _bound_draft(client, "draft-0002", "sess-b", elsewhere)
 
-    assert client.post("/api/tasks/delete", json={"key": "sess-a"}).status_code == 200
+    assert client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"}).status_code == 200
     assert drafts.get_task("draft-0001") is None
     assert drafts.get_task("draft-0002") is not None, "another session's form"
 
-    assert client.post("/api/tasks/erase", json={"key": "sess-b"}).status_code == 200
+    assert client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-b"}).status_code == 200
     assert drafts.get_task("draft-0002") is None
 
 
@@ -2115,7 +2115,7 @@ def test_erasing_a_session_drops_its_task_draft(client, tmp_path,
     _bound_draft(client, "draft-0001", "sess-a", elsewhere)
 
     before = client.get("/api/tasks").json()["generation"]
-    assert client.post("/api/tasks/erase",
+    assert client.post("/api/tasks/erase", headers={"X-Fused": "1"},
                        json={"key": "sess-a"}).status_code == 200
     assert drafts.get_task("draft-0001") is None
     assert "draft:draft-0001" not in _by_key(client)
