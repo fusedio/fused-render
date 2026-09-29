@@ -638,7 +638,7 @@ const state = {
   editing: null,      // the open in-place text editor, if any (see openEditor)
   tool: "select",     // edit-mode tool: select (edit text) | text (add) | image (add)
   fmt: { family: "sans", size: 12, color: "#1d2025", bold: false, italic: false },  // new text
-  image: null,        // the picked image waiting to be placed {src, url, natW, aspect}
+  image: null,        // the picked image waiting to be placed (see loadImage)
   inspect: null,      // the last inspection report, dropped on every mutation
   insTab: "overview",
   md: null,           // last markdown conversion {spec, markdown, chars, pages}
@@ -1154,11 +1154,12 @@ const FAMILY_PDF = { sans: "Helvetica", serif: "Times-Roman", mono: "Courier" };
 // the fallback faces above. Places a NEW text's first PDF baseline where the
 // editor showed it.
 const BASELINE_EM = { sans: 0.35, serif: 0.34, mono: 0.27 };
-const LINE_EM = 1.25;   // line pitch × font size — pdf.py's _draw_lines default
+const LINE_EM = 1.25;   // line pitch × font size — pdf.py's _draw_text default
 const EDIT_PAD = 4.5;   // .tbox border + padding, each side, px
 const measureCtx = document.createElement("canvas").getContext("2d");
 
-const hex2 = (n) => Math.max(0, Math.min(255, n | 0)).toString(16).padStart(2, "0");
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi));
+const hex2 = (n) => clamp(n | 0, 0, 255).toString(16).padStart(2, "0");
 const rgbToHex = (c) => "#" + (c || [0, 0, 0]).map(hex2).join("");
 const hexToRgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) || 0);
 
@@ -1195,7 +1196,6 @@ function wrapLines(text, maxW) {
   return out;
 }
 
-const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi));
 const pageBounds = (wrap) => ({ left: 0, top: 0, right: wrap.clientWidth, bottom: wrap.clientHeight });
 const UNBOUNDED = { left: -Infinity, top: -Infinity, right: Infinity, bottom: Infinity };
 
@@ -1401,7 +1401,7 @@ function setFmt(patch, refocus = true) {
 let imgDrag = null;
 function localPt(wrap, e) {
   const r = wrap.getBoundingClientRect();
-  return { x: Math.min(Math.max(0, e.clientX - r.left), r.width), y: Math.min(Math.max(0, e.clientY - r.top), r.height) };
+  return { x: clamp(e.clientX - r.left, 0, r.width), y: clamp(e.clientY - r.top, 0, r.height) };
 }
 // The box the image would land in, in page px: dragged out from the press point
 // (aspect kept), or a default size with its top-left at the pointer, nudged
@@ -2691,8 +2691,7 @@ $("ebTools").addEventListener("click", (e) => {
 });
 $("fmtFamily").addEventListener("change", (e) => setFmt({ family: e.target.value }));
 $("fmtSize").addEventListener("change", (e) => {
-  const v = Math.min(144, Math.max(4, +e.target.value || 12));
-  setFmt({ size: v });
+  setFmt({ size: clamp(+e.target.value || 12, 4, 144) });
 });
 // Live preview while the picker is open; focus returns to the text once it closes.
 $("fmtColor").addEventListener("input", (e) => setFmt({ color: e.target.value }, false));

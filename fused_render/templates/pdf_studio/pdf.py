@@ -1005,10 +1005,6 @@ def _pick_font(fontname, flags, text):
     return base[(2 if bold else 0) + (1 if italic else 0)]
 
 
-def _norm_ws(s):
-    return re.sub(r"\s+", " ", s or "").strip()
-
-
 def _page_text(doc, page):
     import fitz
 
@@ -1041,13 +1037,18 @@ def _page_text(doc, page):
     return out
 
 
-def _draw_lines(p, x, y, text, fname, fsize, col, line_height):
-    """Draw `text` with its first baseline at (x, y); every "\n" starts a new
-    line `line_height` pt lower. The UI wraps long lines itself (it sizes the
-    box the reader sees), so each line lands exactly where it was typed."""
+def _draw_text(p, origin, text, font, size, flags, color, line_height):
+    """Draw `text` with its first baseline at `origin` (page points); every
+    "\n" starts a new line `line_height` pt lower. The UI wraps long lines
+    itself (it sizes the box the reader sees), so each line lands exactly
+    where it was typed, at the size it was typed in."""
     import fitz
 
+    x, y = json.loads(origin)
+    fname = _pick_font(font, int(flags or 0), text)
+    fsize = float(size or 12)
     lh = float(line_height or 0) or fsize * 1.25
+    col = [c / 255 for c in json.loads(color or "[0,0,0]")]
     if fname in _BASE14 and any(ord(c) > 255 for c in text):
         # A bare base-14 name only encodes Latin-1, so typographic characters
         # (“ ” — – € •) come out as "·". Embed the face itself — once per page,
@@ -1108,23 +1109,16 @@ def _remove_span(p, span):
 def _edit_text(doc, page, origin, old_text, new_text, font, size, flags,
                color, line_height="", to_origin=""):
     """Replace one text span, optionally moving it: the new text's first
-    baseline goes to `to_origin` (default: where the span was). The new text
-    keeps its size and grows the box — rightwards as it gets longer,
-    downwards per line — rather than shrinking to fit the old span's width."""
+    baseline goes to `to_origin` (default: where the span was). Empty text
+    deletes the span."""
     import fitz
 
     d = fitz.open(doc)
     p = _editable_page(d, page)
     _remove_span(p, _find_span(p, json.loads(origin), old_text))
-    fname = _pick_font(font, int(flags or 0), new_text)
-    fsize = float(size or 11)
-    if new_text.strip():
-        ox, oy = json.loads(to_origin or origin)
-        col = [c / 255 for c in json.loads(color or "[0,0,0]")]
-        _draw_lines(p, ox, oy, new_text, fname, fsize, col, line_height)
+    _draw_text(p, to_origin or origin, new_text, font, size, flags, color, line_height)
     d.save(doc, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
     d.close()
-    return {"used_font": fname, "used_size": round(fsize, 2)}
 
 
 def _add_text(doc, page, origin, text, font, size, flags, color, line_height=""):
@@ -1138,13 +1132,9 @@ def _add_text(doc, page, origin, text, font, size, flags, color, line_height="")
     ox, oy = json.loads(origin)
     if not (0 <= ox <= p.rect.width and 0 <= oy <= p.rect.height):
         raise ValueError("the text box is outside the page")
-    fname = _pick_font(font, int(flags or 0), text)
-    fsize = float(size or 12)
-    col = [c / 255 for c in json.loads(color or "[0,0,0]")]
-    _draw_lines(p, ox, oy, text, fname, fsize, col, line_height)
+    _draw_text(p, origin, text, font, size, flags, color, line_height)
     d.save(doc, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
     d.close()
-    return {"used_font": fname, "used_size": round(fsize, 2)}
 
 
 def _add_image(doc, page, rect, src):
