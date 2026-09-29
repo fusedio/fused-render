@@ -488,7 +488,10 @@ function parseRef(s) {
 function setStatus(msg, cls) { const el = $("status"); el.textContent = msg || ""; el.className = cls || ""; }
 function markDirty(d = true) {
   dirty = d;
-  if (d) scheduleCompute();
+  // A clean book has nothing unsaved to compute: a save or reload cancels the
+  // pending recompute, and whichever made it clean supplies the values
+  // (a save re-reads them from the file it wrote — refreshFormulas).
+  if (d) scheduleCompute(); else clearTimeout(computeTimer);
   $("savedState").textContent = book ? (d ? "● Unsaved changes" : "All changes saved") : "";
   $("savedState").className = d ? "dirty" : "";
 }
@@ -883,12 +886,14 @@ function scheduleCompute() {
   computeTimer = setTimeout(recompute, 600);
 }
 async function recompute() {
-  if (!book) return;
+  if (!book || !dirty) return;
   if (book.sheets.some((sh) => sh.big)) {
     // compute rebuilds the unsaved workbook, and big (Parquet-paged) sheets
     // aren't in the editor to rebuild — yet small sheets may reference them.
     // So an edit makes every server value suspect: drop them, and show this
-    // engine's own answer until a save re-reads them from disk.
+    // engine's own answer until a save re-reads them from disk. Only ever for
+    // an unsaved book (the `dirty` check above): once saved, the values
+    // refreshFormulas brings back are the file's own.
     let dropped = false;
     for (const sh of book.sheets) {
       if (!sh.big && sh.computed && sh.computed.size) { sh.computed = new Map(); dropped = true; }
@@ -920,8 +925,9 @@ async function recompute() {
   if (!editing) paint();
 }
 
-// After a save of a workbook with big sheets: the server values `recompute`
-// had to drop, re-read from the file just written.
+// After a save: the formula values of the file just written. The save may
+// have landed before the last edit's debounced recompute ran (it cancels
+// it), and in a workbook with big sheets that recompute could only drop them.
 async function refreshFormulas(file) {
   const seq = ++computeSeq;
   let res;
@@ -2373,7 +2379,7 @@ async function save(force) {
     markDirty(false);
     paint();
     setStatus(`Saved · ${new Date().toLocaleTimeString()}`, "ok");
-    if (book.sheets.some((sh) => sh.big)) refreshFormulas(file);
+    refreshFormulas(file);
   } catch (err) {
     setStatus(`${err.type || "error"}: ${err.message}`, "err");
     // Mid-session chmod: the reader gate's PermissionError arrives as a

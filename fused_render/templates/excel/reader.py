@@ -26,8 +26,7 @@ Actions (dispatched via the `action` param):
   load        — sheet metadata + inline rows (small) or first row batch (big),
                 and each small sheet's formula values (`computed`)
   compute     — formula values for the editor's UNSAVED sheets (`data`)
-  formulas    — formula values of the workbook on disk (after a save, for a
-                workbook with big sheets, which `compute` can't rebuild)
+  formulas    — formula values of the workbook on disk (after every save)
   sheets, describe, query, cells
               — the agent tools (workbook.py), over the file on disk
   rows        — windowed batch: offset/limit + server-side sort/filter
@@ -110,9 +109,11 @@ def _compute(sheets_payload):
 
 def _formulas(file):
     """Formula values of the workbook ON DISK, one map per sheet in order
-    ({} for a big sheet, which holds values only). The editor asks after a
-    save when it can't `compute` its unsaved state — a workbook with big
-    sheets, whose small sheets may reference them."""
+    ({} for a big sheet, which holds values only). The editor asks after
+    every save: the save cancels a still-pending `compute`, and a workbook
+    with big sheets can't be `compute`d at all."""
+    if os.path.splitext(file)[1].lower() not in (".xlsx", ".xlsm"):
+        return {"computed": []}  # csv / parquet: values only, no formulas to evaluate
     dims = _xlsx_dims(file)
     small = [name for name, nr, nc in dims if not _is_big(nr, nc)]
     values = _workbook().evaluate(file, sheets=small) if small else {}

@@ -426,3 +426,9 @@ def test_a_workbook_of_only_big_sheets_evaluates_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(reader._workbook(), "evaluate",
                         lambda *a, **k: pytest.fail("a big sheet was read into memory"))
     assert reader.main(action="load", file=str(path))["sheets"][0]["big"] is True
+
+
+def test_formulas_after_saving_a_csv_is_empty_not_an_error(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("a,b\n1,2\n")
+    assert _load("reader.py").main(action="formulas", file=str(path)) == {"computed": []}
