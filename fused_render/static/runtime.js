@@ -3352,6 +3352,32 @@
     });
   }
 
+  // List a directory (same shape as /api/fs/list):
+  //   { path, entries: [{ name, is_dir, size|null, mtime, ignored?, git? }],
+  //     truncated, cursor }
+  // Flat beside stat/readFile — no fused.fs.* namespace (a namespace is an
+  // API-wide call, not one helper's). The path goes through the same
+  // rewritePath()/snapshotReady gate as stat, so a pane opened at a snapshot
+  // lists the extracted tree, not the live folder. Rejects with the server's
+  // message (a missing dir and a file path both come back non-ok). `truncated`
+  // is true when the server capped the page (LIST_MAX_ENTRIES); `cursor` is
+  // passed through untouched so a resume argument can be added later without
+  // changing the result shape — no cursor param in v1, a local scandir cannot
+  // resume.
+  function listDir(path) {
+    return snapshotReady.then(() => {
+      const target = rewritePath(path);
+      return fetch("/api/fs/list?path=" + encodeURIComponent(target), { headers: callHeaders() })
+        .then((res) => res.json().then((data) => ({ res, data })))
+        .then(({ res, data }) => {
+          if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
+          // Echo the LIVE path the caller asked about, as stat does.
+          if (target !== path) data.path = path;
+          return data;
+        });
+    });
+  }
+
   // Read a file's text via the raw endpoint.
   // NOTE (call log): readFile is attributed because it fetches, so the server
   // sees the headers. rawUrl() is SYNCHRONOUS and returns a URL string that
@@ -6563,6 +6589,7 @@
     daemon,
     rawUrl,
     stat,
+    listDir,
     readFile,
     writeFile,
     uploadFile,

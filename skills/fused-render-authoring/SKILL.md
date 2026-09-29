@@ -79,6 +79,7 @@ Auto-created at app root. Convention, no helper API — build paths off `os.path
 | `fused.params.get/getAll/set/onChange` | Strings only — `set("n", 5)` THROWS, do `String(n)`. `set` = replaceState then `onChange`. `_`-prefixed keys are shell's: `set` throws, `get` undefined (`_file` readable exception). |
 | `await fused.readFile(path)` | UTF-8 text. |
 | `await fused.stat(path)` | `{path, name, is_dir, size, mtime, writable, remote, templates}` (+ `template_error`). Size-guard big reads; grab `mtime` before edits; check `remote`. |
+| `await fused.listDir(path)` | `{path, entries[{name, is_dir, size, mtime}], truncated}`. Rejects on missing dir or file path. `truncated` = server capped the page (10k) — no cursor in v1. Use `fileIndex` for search, not recursive walks. |
 | `await fused.writeFile(path, text, opts?)` | Atomic. `opts.expectedMtime` → rejects `.type==="conflict"` on stale disk; `opts.create` → rejects `.type==="exists"` (race-free create); readonly → `.type==="readonly"`. Resolves with fresh stat — keep its mtime. |
 | `fused.rawUrl(path)` | Sync URL for raw bytes — img/video/embed/download. Also resolves relative sibling assets (pitfall below). |
 | `fused.ai.*` | → `fused-render-ai`. |
