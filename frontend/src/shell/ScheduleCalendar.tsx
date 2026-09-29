@@ -170,6 +170,7 @@ import {
   popoverPill,
   taskColumn,
   peekOpenable,
+  SHOW_PAGE_DOOR,
   taskHref,
   taskRunIntent,
 } from "./tasks-lib";
@@ -890,7 +891,7 @@ function ChipPopover({
           only the two things a footer is for — going somewhere (Open in
           Explorer) and starting work (Run now / Re-run). */}
       <div className="schedule-card-actions">
-        {threadHref && (
+        {SHOW_PAGE_DOOR && threadHref && (
           <button type="button" className="btn btn-secondary"
                   onClick={() => navigateUrl(threadHref)}>
             {ICON_INBOX} Open in Explorer
