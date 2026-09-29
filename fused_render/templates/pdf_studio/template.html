@@ -934,39 +934,69 @@ function pageWidth() {
 // Bumped per render so stale in-flight page/thumb loops cancel themselves.
 let renderGen = 0;
 
+// Built on use: the icons are declared further down the module.
+const qaPage = () => `<div class="qa">
+    <button title="Rotate left" data-qa="rotL">${icoRotL}</button>
+    <button title="Rotate right" data-qa="rotR">${icoRotR}</button>
+    <button title="Extract this page" data-qa="extract">${icoExtract}</button>
+    <button title="Delete page" data-qa="del" class="danger">${icoTrash}</button>
+  </div>`;
+const qaThumb = () => `<div class="qa">
+    <button title="Rotate left" data-qa="rotL">${icoRotL}</button>
+    <button title="Rotate right" data-qa="rotR">${icoRotR}</button>
+    <button title="Delete page" data-qa="del" class="danger">${icoTrash}</button>
+  </div>`;
+
+// Run `fn` (which may resize pages) without moving what the reader is looking
+// at: the page at the top of the viewport keeps its place on screen, so a
+// repaint of the pages above it, or a zoom, never scrolls the document away.
+function keepInView(fn) {
+  const cw = $("canvasWrap"), viewTop = cw.getBoundingClientRect().top;
+  const el = [...document.querySelectorAll("#pages .pdf-page[data-page]")]
+    .find((p) => p.getBoundingClientRect().bottom > viewTop);
+  const top = el?.getBoundingClientRect().top;
+  fn();
+  if (el?.isConnected) cw.scrollTop += el.getBoundingClientRect().top - top;
+}
+
+// Page n's wrap, created (in page order, replacing the loading placeholder)
+// the first time it is painted and reused by every repaint after that.
+function pageWrap(n) {
+  const have = document.getElementById(`__fr_page_${n}`);
+  if (have) return have;
+  $("pages").querySelector(".skel-shimmer")?.remove();
+  const wrap = document.createElement("div");
+  wrap.className = "pdf-page";
+  wrap.id = `__fr_page_${n}`;
+  wrap.dataset.page = n;
+  wrap.innerHTML = `<canvas></canvas><div class="textLayer"></div><div class="overlay"></div>${qaPage()}`;
+  const next = [...$("pages").children].find((el) => +el.dataset.page > n);
+  $("pages").insertBefore(wrap, next || null);
+  pageWatcher.observe(wrap);
+  return wrap;
+}
+
+const inView = (el) => {
+  const r = el.getBoundingClientRect();
+  return r.bottom > 0 && r.top < innerHeight;
+};
+
+// Draw page n into a new canvas and text layer off screen, then swap both into
+// its wrap at once: a repaint never blanks the page, and the wrap — with the
+// reader's scroll position — survives it.
 async function renderPage(pdf, n, gen) {
   const page = await pdf.getPage(n);
   const base = page.getViewport({ scale: 1 });
   const scale = pageWidth() / base.width;
   const vp = page.getViewport({ scale });
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  if (gen !== renderGen) return;
-  const wrap = document.createElement("div");
-  wrap.className = "pdf-page";
-  wrap.id = `__fr_page_${n}`;
-  wrap.dataset.page = n;
-  wrap.dataset.scale = scale;
   const canvas = document.createElement("canvas");
   canvas.width = Math.floor(vp.width * dpr);
   canvas.height = Math.floor(vp.height * dpr);
   canvas.style.width = vp.width + "px";
   canvas.style.height = vp.height + "px";
-  wrap.appendChild(canvas);
-  wrap.style.setProperty("--scale-factor", scale);
   const textLayer = document.createElement("div");
   textLayer.className = "textLayer";
-  wrap.appendChild(textLayer);
-  const overlay = document.createElement("div");
-  overlay.className = "overlay";
-  wrap.appendChild(overlay);
-  wrap.insertAdjacentHTML("beforeend", `<div class="qa">
-    <button title="Rotate left" data-qa="rotL">${icoRotL}</button>
-    <button title="Rotate right" data-qa="rotR">${icoRotR}</button>
-    <button title="Extract this page" data-qa="extract">${icoExtract}</button>
-    <button title="Delete page" data-qa="del" class="danger">${icoTrash}</button>
-  </div>`);
-  $("pages").appendChild(wrap);
-  pageWatcher.observe(wrap);
   await page.render({
     canvasContext: canvas.getContext("2d"), viewport: vp,
     transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
@@ -974,13 +1004,25 @@ async function renderPage(pdf, n, gen) {
   await new pdfjs.TextLayer({
     textContentSource: page.streamTextContent(), container: textLayer, viewport: vp,
   }).render();
+  if (gen !== renderGen) return;
+  let wrap;
+  keepInView(() => {
+    wrap = pageWrap(n);
+    wrap.dataset.scale = scale;
+    wrap.style.setProperty("--scale-factor", scale);
+    wrap.querySelector("canvas").replaceWith(canvas);
+    wrap.querySelector(".textLayer").replaceWith(textLayer);
+  });
+  // The edit overlay belongs to the old drawing (and scale); rebuild it.
+  wrap.dataset.overlayFor = "";
+  wrap.querySelector(".overlay").innerHTML = "";
+  if (document.body.classList.contains("mode-edit") && inView(wrap)) buildOverlay(n).catch(() => {});
 }
 
 async function renderThumb(pdf, n, gen) {
   const page = await pdf.getPage(n);
   const base = page.getViewport({ scale: 1 });
   const vp = page.getViewport({ scale: 132 / base.width });
-  if (gen !== renderGen) return;
   const div = document.createElement("div");
   div.className = "thumb" + (n === state.curPage ? " on" : "");
   div.dataset.page = n;
@@ -988,13 +1030,14 @@ async function renderThumb(pdf, n, gen) {
   canvas.width = Math.floor(vp.width);
   canvas.height = Math.floor(vp.height);
   div.appendChild(canvas);
-  div.insertAdjacentHTML("beforeend", `<span class="pn">${n}</span><div class="qa">
-    <button title="Rotate left" data-qa="rotL">${icoRotL}</button>
-    <button title="Rotate right" data-qa="rotR">${icoRotR}</button>
-    <button title="Delete page" data-qa="del" class="danger">${icoTrash}</button>
-  </div>`);
-  $("thumbs").appendChild(div);
+  div.insertAdjacentHTML("beforeend", `<span class="pn">${n}</span>${qaThumb()}`);
   await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+  if (gen !== renderGen) return;
+  const rail = $("thumbs");
+  rail.querySelector(".skel-thumb")?.remove();
+  const old = rail.querySelector(`.thumb[data-page="${n}"]`);
+  if (old) old.replaceWith(div);
+  else rail.insertBefore(div, [...rail.children].find((el) => +el.dataset.page > n) || null);
 }
 
 // Shimmering placeholders shown for the gap between "doc/zoom switch requested"
@@ -1026,25 +1069,27 @@ function showRenderSkeleton() {
   showThumbSkeleton();
 }
 
-// Resolves once page 1 is on screen; the remaining pages and the thumbnail
-// rail keep rendering in the background.
-async function renderAll() {
+// Paint the working copy. Opening a document (`fresh`) starts from a loading
+// placeholder; every other repaint — after an edit, undo, page op or zoom —
+// redraws the pages in place, the one being read first, so the view stays
+// where the reader left it. Resolves once that first page is painted; the
+// rest of the pages and the thumbnail rail follow in the background.
+async function renderAll({ fresh = false } = {}) {
   cancelEdit();
   state.spans = {};
   const gen = ++renderGen;
   if (state.pdf) { state.pdf.destroy(); state.pdf = null; }
-  showRenderSkeleton();
+  if (fresh) showRenderSkeleton();
   let data, pdf;
   try {
     data = await loadPdfBytes();
     pdf = await pdfjs.getDocument({ data }).promise;
   } catch (err) {
-    // Only wipe the skeleton if this call is still the current one — a
-    // superseded request's skeleton belongs to whatever newer renderAll()
+    // Only wipe the placeholder if this call is still the current one — a
+    // superseded request's placeholder belongs to whatever newer renderAll()
     // already repainted #pages/#thumbs. Callers already try/catch renderAll()
-    // and toast the error; this just stops the placeholder from shimmering
-    // forever with nothing behind it.
-    if (gen === renderGen) { $("pages").innerHTML = ""; $("thumbs").innerHTML = ""; }
+    // and toast the error; this just stops it shimmering forever.
+    if (fresh && gen === renderGen) { $("pages").innerHTML = ""; $("thumbs").innerHTML = ""; }
     throw err;
   }
   if (gen !== renderGen) { pdf.destroy(); return; }
@@ -1055,30 +1100,35 @@ async function renderAll() {
   if (pdf.numPages > MAX_PAGES)
     note.textContent = `Showing ${shown} of ${pdf.numPages} pages`;
   $("docPages").textContent = `${pdf.numPages} ${pdf.numPages === 1 ? "page" : "pages"}`;
-  $("pages").innerHTML = "";
-  showThumbSkeleton(shown); // keep the thumb rail shimmering (sized to the real count) until thumbs start landing
-  watchPages();
+  // Pages the document no longer has (a delete, an undone insert) go now.
+  keepInView(() => {
+    document.querySelectorAll("#pages .pdf-page, #thumbs .thumb[data-page]")
+      .forEach((el) => { if (+el.dataset.page > shown) el.remove(); });
+  });
+  if (fresh) showThumbSkeleton(shown);   // sized to the real count until thumbs land
+  if (!pageWatcher) watchPages();
+  const first = Math.min(Math.max(1, state.curPage), shown);
+  const order = [first, ...Array.from({ length: shown }, (_, i) => i + 1)
+    .filter((n) => n !== first).sort((a, b) => Math.abs(a - first) - Math.abs(b - first))];
   try {
-    await renderPage(pdf, 1, gen);
+    await renderPage(pdf, first, gen);
   } catch (err) {
-    // Page 1 failing means the background loop below (which is the only
-    // thing that ever clears the thumb skeleton) never starts — clear it
-    // here so it doesn't shimmer forever, then rethrow to the caller's
-    // existing try/catch + toast.
-    if (gen === renderGen) $("thumbs").innerHTML = "";
+    // The first page failing means the background loop below (the only thing
+    // that clears the thumb placeholders) never starts — clear them here, then
+    // rethrow to the caller's try/catch + toast.
+    if (gen === renderGen) $("thumbs").querySelectorAll(".skel-thumb").forEach((el) => el.remove());
     throw err;
   }
-  if (document.body.classList.contains("mode-edit")) primeOverlays();
   (async () => {
-    for (let n = 2; n <= shown; n++) {
+    for (const n of order.slice(1)) {
       if (gen !== renderGen) return;
       await renderPage(pdf, n, gen);
     }
-    $("thumbs").innerHTML = "";
     for (let n = 1; n <= shown; n++) {
       if (gen !== renderGen) return;
       await renderThumb(pdf, n, gen);
     }
+    $("thumbs").querySelectorAll(".skel-thumb").forEach((el) => el.remove());
     applyOcrBadges();
   })().catch((err) => {
     if (err?.name === "RenderingCancelledException") return;
@@ -1088,7 +1138,6 @@ async function renderAll() {
 
 let pageWatcher = null;
 function watchPages() {
-  if (pageWatcher) pageWatcher.disconnect();
   pageWatcher = new IntersectionObserver((entries) => {
     for (const e of entries) {
       if (!e.isIntersecting) continue;
@@ -1096,7 +1145,6 @@ function watchPages() {
       if (document.body.classList.contains("mode-edit")) buildOverlay(+e.target.dataset.page).catch(() => {});
     }
   }, { root: $("canvasWrap"), threshold: 0.25 });
-  document.querySelectorAll(".pdf-page").forEach((p) => pageWatcher.observe(p));
 }
 
 function setCurPage(n, scroll = true) {
@@ -1107,8 +1155,7 @@ function setCurPage(n, scroll = true) {
 
 function primeOverlays() {
   document.querySelectorAll(".pdf-page").forEach((p) => {
-    const r = p.getBoundingClientRect();
-    if (r.bottom > 0 && r.top < innerHeight) buildOverlay(+p.dataset.page).catch(() => {});
+    if (inView(p)) buildOverlay(+p.dataset.page).catch(() => {});
   });
 }
 
@@ -1212,6 +1259,7 @@ function sizeEditor(ed) {
   ed.el.style.color = ed.fmt.color;
   measureCtx.font = ed.el.style.font;
   ed.lines = wrapLines(ed.el.value, ed.wrapW);
+  ed.ranges = lineRanges(ed.el.value, ed.lines);
   const widest = Math.max(0, ...ed.lines.map((l) => measureCtx.measureText(l).width));
   const w = Math.min(ed.wrapW, Math.max(ed.minW, widest + 2, px));   // +2: room for the caret
   const h = ed.lines.length * lh;
@@ -1224,6 +1272,48 @@ function sizeEditor(ed) {
   // The caret can scroll the textarea's content a line up before this resize
   // lands; the box now fits everything, so pin it back.
   ed.el.scrollTop = 0; ed.el.scrollLeft = 0;
+}
+
+// [start, end] offsets of each line as the box lays it out. The lines are
+// the value cut at wraps and at "\n", which belongs to neither side.
+function lineRanges(value, lines) {
+  let at = 0;
+  return lines.map((l) => {
+    const r = [at, at + l.length];
+    at = r[1] + (value[r[1]] === "\n" ? 1 : 0);
+    return r;
+  });
+}
+
+// Where a caret key sends the caret's moving end, for the keys that can find
+// it already there: End at the end of a line, ↓ on the last one, and so on.
+// With nowhere to go, the browser hands such a key to the page, which then
+// scrolls the document to its top or bottom under the editor.
+function caretTarget(ed, e, pos) {
+  const r = ed.ranges.findLast(([a, b]) => a <= pos && pos <= b);
+  const len = ed.el.value.length, doc = e.ctrlKey || (e.metaKey && e.key.startsWith("Arrow"));
+  switch (e.key) {
+    case "Home": return doc ? 0 : r[0];
+    case "End": return doc ? len : r[1];
+    case "PageUp": return 0;
+    case "PageDown": return len;
+    case "ArrowUp": return e.metaKey || r === ed.ranges[0] ? 0 : null;
+    case "ArrowDown": return e.metaKey || r === ed.ranges.at(-1) ? len : null;
+    case "ArrowLeft": return e.metaKey ? r[0] : null;
+    case "ArrowRight": return e.metaKey ? r[1] : null;
+  }
+  return null;
+}
+
+// Stop a caret key that would not move the caret before it reaches the page;
+// only a key with no room to act is taken — the rest keep the textarea's own
+// behaviour. Without Shift the key still collapses the selection there.
+function holdStuckCaret(ed, e) {
+  const el = ed.el, back = el.selectionDirection === "backward";
+  const pos = back ? el.selectionStart : el.selectionEnd;
+  if (caretTarget(ed, e, pos) !== pos) return;
+  e.preventDefault();
+  if (!e.shiftKey) el.setSelectionRange(pos, pos);
 }
 
 function cancelEdit() {
@@ -1294,6 +1384,7 @@ function openEditor(wrap, { span = null, at = null }) {
     e.stopPropagation();
     if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
     else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); finishEdit(); }
+    else holdStuckCaret(ed, e);
   });
   // The frame around the text (and its Move tab) drags the box; the text
   // itself stays a normal text field.
@@ -1582,7 +1673,7 @@ async function loadDoc(path, opts) {
     Object.assign({ default: fused.params.get("_file") || "" }, opts));
   updateUndoUi();
   renderDocList();
-  await renderAll();
+  await renderAll({ fresh: true });
 }
 
 function clearOpenDoc() {
