@@ -133,6 +133,10 @@ export interface TasksScope {
    *  target and nothing else — never the filter, which stays on `project` so
    *  the tab keeps listing every task in the folder. */
   entry?: string | null;
+  /** No host frame around this page (`/tasks?project=…`, the framed Tasks view
+   *  an app page embeds): draw the peek's own frame as unscoped `/tasks` does,
+   *  instead of waiting for a slot nobody provides. AppPage leaves it unset. */
+  ownFrame?: boolean;
 }
 
 // How often the page re-reads the SCHEDULE and the QUEUE. A `pending` message
@@ -1419,7 +1423,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // fragment around it on the next is a root-type change React answers with a
   // remount of the whole tasks tree (Bugbot). The fragment is always there;
   // only the portal inside it comes and goes.
-  if (scope) {
+  if (scope && !scope.ownFrame) {
     return (
       <>
         {page}

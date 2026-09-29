@@ -148,7 +148,8 @@ A page can do a lot through `fused`:
   manager, whether your page is doing it or the server is.
   → [fused-render-jobs](skills/fused-render-jobs/SKILL.md)
 - `fused.tasks` — list, create, follow up, cancel and observe the app's Claude
-  tasks from a page; a handle follows a new task from pending to its session.
+  tasks from a page; a handle follows a new task from pending to its session,
+  and `ui()` hands back the shell's Tasks page as an iframe URL.
   → [fused-render-tasks](skills/fused-render-tasks/SKILL.md)
 
 `fused.env` says whether a page is running here (`"local"`) or exported and

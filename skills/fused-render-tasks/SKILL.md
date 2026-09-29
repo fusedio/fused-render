@@ -29,6 +29,7 @@ fused.tasks.messages(key)          // -> TaskMessage[]
 fused.tasks.transcript(key, opts?) // -> HistoryEntry[]
 fused.tasks.settings(key, {model?, effort?})
 fused.tasks.watch(fn, opts?)       // -> unsubscribe(); fn(rows, change)
+fused.tasks.ui({view?, task?, scope?}) // -> Promise<url> for an <iframe>: the shell's Tasks UI
 
 // TaskHandle
 h.key        // getter: "pending:<entry>" first, then the session id
@@ -53,6 +54,19 @@ Every call returns a Promise unless noted. `Status` = server's seven, derived pe
 ## permissionMode
 
 Default `"default"` — NOT the scheduler's `"auto"`. Claude asks before risky tools; each ask parks the task as `needs_attention`, answered by the human in the Tasks page, not by the page. `"auto"` = no asks; `"plan"` = plan mode, no edits. Pick `"auto"` only when the prompt is safe unattended. A follow-up `send` on a task whose session host has gone idle resumes under the mode the task was created with; a task the page did not create (a chat-born session) resumes under `"default"`, never `"auto"` — a page cannot lift a user's conversation to unattended mode by writing to it.
+
+## Embedding the shell's own Tasks UI
+
+Don't rebuild the task list. `fused.tasks.ui()` returns a same-origin URL of the shell's Tasks page in chrome-less mode (no sidebar, docks or breadcrumb), scoped to this app's tasks by default:
+
+```js
+const frame = document.querySelector("iframe#tasks");
+frame.src = await fused.tasks.ui({ view: "board" });          // list | board | cards | calendar
+frame.src = await fused.tasks.ui({ task: h.key });            // one task's detail + chat beside the list
+frame.src = await fused.tasks.ui({ scope: "all" });           // every task on the machine
+```
+
+Async because the SERVER builds the URL — it resolves your app folder from the page header, so the page never guesses it. `task` takes any listing key (a `pending:<entry>` key works before the session exists). The frame inherits your page's theme through the shell's ancestor climb; no theme param. Needs the `task_peek_enabled` pref (default on) for `task` to open the side panel.
 
 ## Hosted gate
 

@@ -119,7 +119,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from urllib.parse import unquote
+from urllib.parse import unquote, urlencode
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query
 from pydantic import BaseModel
@@ -7307,6 +7307,46 @@ def _opt_str(body: dict, field: str):
     if not isinstance(value, str):
         return "", _error(f"{field}: expected a string", status=400)
     return value.strip(), None
+
+
+_UI_VIEWS = ("list", "board", "cards", "calendar")
+
+
+@router.get("/api/tasks/ui")
+def api_tasks_ui(view: str = Query("list"), task: str = Query(""),
+                 scope: str = Query("app"),
+                 x_fused_page: str | None = Header(default=None)):
+    """The URL of the shell's Tasks UI, shaped for an `<iframe>` in an app page:
+    `?view=list|board|cards|calendar&task=<key>&scope=app|all` ->
+    `{url: "/tasks?embed=1[&project=<dir>][&view=..][&peek=<key>]"}`.
+
+    Built HERE and not in runtime.js so the page never learns or guesses its
+    app folder: `scope=app` resolves it from `X-Fused-Page` exactly as the
+    listing does (`_page_scope`), and the shell's own param names (`embed`,
+    `project`, `view`, `peek`) stay in one place per side. `embed=1` is the
+    shell's chrome-less mode (no sidebar, docks or breadcrumb); `peek` opens
+    one task's detail with its chat beside the list, and takes the same key
+    the listing hands out (`pending:<entry>` before the session exists). GET
+    with no side effect, so no `X-Fused` guard — the answer is a relative URL."""
+    view = (view or "list").strip()
+    if view not in _UI_VIEWS:
+        return _error(f"view: expected one of {', '.join(_UI_VIEWS)}, got {view!r}",
+                      status=400)
+    if scope not in ("app", "all"):
+        return _error(f"scope: expected 'app' or 'all', got {scope!r}", status=400)
+    params: list[tuple[str, str]] = [("embed", "1")]
+    if scope == "app":
+        _page, app_dir, _entry = _page_scope(x_fused_page)
+        if not app_dir:
+            return _error("scope=app needs an X-Fused-Page header naming "
+                          "an absolute page path", status=400)
+        params.append(("project", app_dir))
+    if view != "list":
+        params.append(("view", view))
+    task = (task or "").strip()
+    if task:
+        params.append(("peek", task))
+    return {"url": "/tasks?" + urlencode(params)}
 
 
 @router.post("/api/tasks/create")

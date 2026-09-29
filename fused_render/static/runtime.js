@@ -422,6 +422,15 @@
  *         t.watch((row) => row && render(row.status));
  *         const row = await t.done;   // t.key is the session id by now
  *         if (row.status === "done") t.send("Now shorten it to 3 bullets");
+ *     ui({view, task, scope}) -> Promise<url> — the shell's Tasks UI, shaped
+ *       for an <iframe> in your page: chrome-less (no sidebar or docks),
+ *       scoped to this app's tasks by default (`scope: "all"` for every
+ *       task), `view` one of list (default) | board | cards | calendar, and
+ *       `task: <key>` opens that task's detail with its chat beside the list.
+ *       Same origin, so the frame follows your page's theme by itself.
+ *         const f = document.querySelector("iframe#tasks");
+ *         f.src = await fused.tasks.ui({ view: "board" });
+ *         t.watch((row) => row && fused.tasks.ui({ task: row.key }).then((u) => (f.src = u)));
  *     LOCAL ONLY — a hosted page has no tasks.
  *   fused.params.get(key) / getAll() / onChange(cb) -> unsubscribe
  *   fused.params.set(key, value, opts?)   opts: { history: "replace", default: d }
@@ -5823,10 +5832,28 @@
     };
   }
 
+  // The shell's Tasks UI as an <iframe> src. The SERVER builds the URL: only
+  // it knows this page's app folder (from X-Fused-Page, the same resolution
+  // the scoped listing uses), and the shell's param names (`embed`, `project`,
+  // `view`, `peek`) then live on one side of the wire. Relative URL — the
+  // shell and /render share an origin, and a same-origin frame inherits the
+  // host's theme through the ancestor climb the shell already does.
+  function tasksUi(args) {
+    return Promise.resolve().then(() => {
+      args = args || {};
+      const q = [];
+      if (args.view) q.push("view=" + encodeURIComponent(String(args.view)));
+      if (args.task) q.push("task=" + encodeURIComponent(String(args.task)));
+      q.push("scope=" + encodeURIComponent(args.scope === "all" ? "all" : "app"));
+      return taskFetch("GET", "/api/tasks/ui?" + q.join("&")).then((d) => (d && d.url) || "");
+    });
+  }
+
   const tasks = {
     list: tasksList,
     get: tasksGet,
     create: tasksCreate,
+    ui: tasksUi,
     send: tasksSend,
     cancel: tasksCancel,
     archive: (key) => tasksPostKey("/api/tasks/archive", key),

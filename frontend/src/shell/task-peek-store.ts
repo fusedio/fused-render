@@ -23,6 +23,7 @@ import {
   setSidebarState,
   subscribeSidebarState,
 } from "@platform/lib/sidebarstate";
+import { IS_EMBED } from "@platform/lib/router";
 
 /** The query param the peek rides on `/tasks`. */
 export const PEEK_PARAM = "peek";
@@ -1476,7 +1477,9 @@ function roomEnv(): RoomInput {
     viewport: viewportWidth(),
     chosenWidth: state.width,
     baseline: peekBaseline(),
-    sidebarWidth: sidebar.collapsed ? SIDEBAR_RAIL_WIDTH : sidebar.width,
+    // Embedded (`/tasks?embed=1` in an app page's frame) there is no sidebar in
+    // this document — the stored state is the HOST shell's, not a column here.
+    sidebarWidth: IS_EMBED ? 0 : sidebar.collapsed ? SIDEBAR_RAIL_WIDTH : sidebar.width,
   };
 }
 
@@ -1555,6 +1558,10 @@ export function applyResize(): RoomPlan {
  * the sidebar without that counting as the reader changing their mind.
  */
 function setSidebar(collapsed: boolean, persist = false): void {
+  // EMBEDDED, HANDS OFF: `sidebarstate` is shared localStorage, so a write from
+  // a framed Tasks page would collapse the PARENT shell's sidebar — a column
+  // this document does not even draw.
+  if (IS_EMBED) return;
   ours = true;
   try {
     setSidebarState((s) => (s.collapsed === collapsed ? s : { ...s, collapsed }), persist);

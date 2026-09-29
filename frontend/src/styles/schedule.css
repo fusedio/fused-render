@@ -117,6 +117,17 @@
   --tasks-page-gutter: 44px;
 }
 
+/* FRAMED (`/tasks?embed=1`, an app page's iframe; main.tsx stamps body.embed):
+   the host page owns the outer gutter, so this page's own 22px each side would
+   be a second one inside the frame — same move as `.app-page-tasks
+   .schedule-page` (styles/app-page.css). The var is what the peek's arithmetic
+   (`measureTasksBaseline`) reads as the untight gutter; 16px keeps the column
+   estimate a touch conservative so the peek still fits at phone width. */
+body.embed .schedule-page {
+  padding-inline: 0;
+  --tasks-page-gutter: 16px;
+}
+
 .schedule-page > .schedule-header h1 {
   margin: 0;
 }

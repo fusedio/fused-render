@@ -68,9 +68,22 @@ const boot: { pathname: string; search: string } =
   if (next !== current) history.replaceState(history.state, "", next);
 })();
 
+// The QUERY spelling of embed mode, for shell routes that have no /embed/
+// prefix of their own: a fused app page frames `/tasks?embed=1` as a chrome-free
+// task UI. Same fixed-at-load contract as the prefix — the pages that honour it
+// carry it across their own replaceState writes (Scheduled's `?view=`, the peek
+// store's `?peek=`), so a refresh stays embedded.
+export const EMBED_PARAM = "embed";
+
+// The query spelling alone — a framed shell route (`/tasks?embed=1`), never an
+// explorer pane/tab. Lets such a route keep its outbound explorer links on the
+// embed prefix without changing what the prefix-embed panes already do.
+export const IS_QUERY_EMBED = new URLSearchParams(boot.search).get(EMBED_PARAM) === "1";
+
 export const IS_EMBED =
   boot.pathname.startsWith(EMBED_PREFIX) ||
-  boot.pathname === "/explorer/embed";
+  boot.pathname === "/explorer/embed" ||
+  IS_QUERY_EMBED;
 
 // The param a display-only card peek stamps on its embed URL (BookmarkCards'
 // LivePreview), and the flag GET /render takes to skip open recording (D301).

@@ -65,6 +65,7 @@ import ActivityDock from "@shell/ActivityDock";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
 import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
 import { PEEK_PARAM } from "@shell/task-peek-store";
+import type { TasksScope } from "@shell/Scheduled";
 import { useTaskPeekEnabled } from "@shell/task-peek-flag";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { useTaskStatusNotify } from "@shell/useTaskStatusNotify";
@@ -115,6 +116,21 @@ const PAGE_PARAMS: readonly string[] = [PEEK_PARAM];
  *  pushes a same-path entry today, so the two lists behave identically in
  *  practice — but "in practice" is not the flag's contract. */
 const NO_PAGE_PARAMS: readonly string[] = [];
+/** `/tasks?project=<abs app dir>` — the framed Tasks view an app page builds
+ *  (`/tasks?embed=1&project=…`) narrowed to that folder, exactly as AppPage's
+ *  own Tasks tab scopes it. Read per render: every URL write on the page
+ *  (`?view=`, `?peek=`, the one-shot strips) keeps `project` in place. Cached
+ *  on the value so the scope's identity is stable across App re-renders (it
+ *  feeds Scheduled's memos). `ownFrame`: this route has no host frame to
+ *  portal the peek into, so Scheduled draws its own, as unscoped `/tasks` does. */
+let urlScope: TasksScope | undefined;
+function tasksScopeFromUrl(): TasksScope | undefined {
+  const raw = new URLSearchParams(location.search).get("project");
+  const project = raw ? raw.replace(/\\/g, "/").replace(/(.)\/+$/, "$1") : "";
+  if (!project) return undefined;
+  if (urlScope?.project !== project) urlScope = { project, ownFrame: true };
+  return urlScope;
+}
 const AppPage = lazy(() => import("@shell/AppPage"));
 const Apps = lazy(() => import("@apps/builder/Apps"));
 const ClaudeConfig = lazy(() =>
@@ -926,7 +942,7 @@ export default function App({ config }: { config: Config }) {
     main = (
       <div id="content" key={epoch}>
         <Suspense fallback={<RouteFallback />}>
-          <Scheduled key={epoch} />
+          <Scheduled key={epoch} scope={tasksScopeFromUrl()} />
         </Suspense>
       </div>
     );
