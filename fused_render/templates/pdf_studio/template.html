@@ -226,7 +226,9 @@
   .modal .checklist label:hover { background: var(--hair-2); }
 
   /* file browser */
-  .modal input.fb-path { font-family: var(--mono); font-size: 12px; margin-bottom: 8px; }
+  .modal input.fb-path { font-size: 12.5px; margin-top: 8px; }
+  .fb-places { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+  .fb-places .btn { padding: 4px 10px; font-size: 12.5px; }
   .fb-crumbs { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; font-size: 12px;
     background: var(--hair-2); border-radius: var(--radius); padding: 5px 8px; margin-bottom: 10px; }
   .fb-crumbs button { border: none; background: none; color: var(--blue-ink); padding: 2px 4px; border-radius: 4px; font: inherit; }
@@ -779,36 +781,28 @@ function dialog({ title, message = "", label = "", value = "", okText = "OK", da
 const cleanPath = (s) => (s || "").trim().replace(/^["']+|["']+$/g, "").replace(/\\/g, "/");
 const docDir = () => state.doc.split("/").slice(0, -1).join("/");
 
-function browseModal({ title, okText = "Open", pickDir = false, dirOnly = false, filename = "", start = "", exts = ".pdf" }) {
+// The in-page browser: the fallback for a machine that can't raise its own
+// file dialog (see pickFile/pickFolder). Picks a file of `exts`, or with
+// `dirOnly` a folder; the places row jumps to the usual folders.
+function browseModal({ title, okText = "Open", dirOnly = false, start = "", exts = ".pdf" }) {
   const extRe = new RegExp(`(${exts.split(",").map((e) => e.trim().replace(".", "\\.")).join("|")})$`, "i");
+  const places = [["Home", "~"], ["Desktop", "~/Desktop"], ["Documents", "~/Documents"], ["Downloads", "~/Downloads"],
+    ...(state.doc ? [["This PDF's folder", docDir()]] : [])];
   const m = modal(`
     <h3></h3>
-    <input type="text" id="fbPath" class="fb-path" placeholder="Paste a full path and press Enter" spellcheck="false" autocomplete="off">
+    <div class="fb-places">${places.map(([n, p]) => `<button class="btn ghost" data-place="${p.replace(/"/g, "&quot;")}">${n}</button>`).join("")}</div>
     <div class="fb-crumbs" id="fbCrumbs"></div>
     <div class="fb-list" id="fbList"></div>
-    ${pickDir ? `<label>File name</label><input type="text" id="fbName">` : ""}
+    <input type="text" id="fbPath" class="fb-path" placeholder="…or paste a path and press Enter" spellcheck="false" autocomplete="off">
     <div class="row"><button class="btn" data-x="cancel">Cancel</button>
-    ${pickDir || dirOnly ? `<button class="btn primary" data-x="ok"></button>` : ""}</div>`);
+    ${dirOnly ? `<button class="btn primary" data-x="ok"></button>` : ""}</div>`);
   m.el.classList.add("wide");
   m.el.querySelector("h3").textContent = title;
   m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
+  m.el.querySelectorAll("[data-place]").forEach((b) => { b.onclick = () => show(b.dataset.place); });
   const pathInp = m.el.querySelector("#fbPath");
-  const nameInp = m.el.querySelector("#fbName");
   let cur = "";
-  if (pickDir) {
-    nameInp.value = filename;
-    const finish = () => {
-      const n = cleanPath(nameInp.value);
-      if (!n) return;
-      if (/^([A-Za-z]:)?\//.test(n))
-        m.close({ dir: n.split("/").slice(0, -1).join("/") || "/", name: n.split("/").pop() });
-      else m.close({ dir: cur, name: n });
-    };
-    const ok = m.el.querySelector("[data-x=ok]");
-    ok.textContent = okText;
-    ok.onclick = finish;
-    nameInp.addEventListener("keydown", (e) => { if (e.key === "Enter") finish(); });
-  } else if (dirOnly) {
+  if (dirOnly) {
     const ok = m.el.querySelector("[data-x=ok]");
     ok.textContent = okText;
     ok.onclick = () => m.close(cur);
@@ -839,7 +833,7 @@ function browseModal({ title, okText = "Open", pickDir = false, dirOnly = false,
     if (res.parent && res.parent !== res.path) {
       const up = document.createElement("button");
       up.className = "fb-row dir";
-      up.innerHTML = `<span class="ico">${icoDir}</span><span class="nm">..</span>`;
+      up.innerHTML = `<span class="ico">${icoUp}</span><span class="nm">Up to ${res.parent.split("/").filter(Boolean).pop() || "/"}</span>`;
       up.onclick = () => show(res.parent);
       list.appendChild(up);
     }
@@ -851,18 +845,18 @@ function browseModal({ title, okText = "Open", pickDir = false, dirOnly = false,
       b.onclick = () => show(res.path + "/" + d);
       list.appendChild(b);
     }
-    for (const f of res.files) {
+    // Choosing a folder lists folders only.
+    for (const f of dirOnly ? [] : res.files) {
       const b = document.createElement("button");
       b.className = "fb-row";
       b.innerHTML = `<span class="ico">${icoFile}</span><span class="nm"></span><span class="sz">${fmtSize(f.size)}</span>`;
       b.querySelector(".nm").textContent = f.name;
-      b.onclick = dirOnly ? null
-        : pickDir ? () => { nameInp.value = f.name; }
-        : () => m.close(res.path + "/" + f.name);
+      b.onclick = () => m.close(res.path + "/" + f.name);
       list.appendChild(b);
     }
-    if (!res.dirs.length && !res.files.length)
-      list.innerHTML = `<div class="fb-empty">No folders or ${exts.replace(/\./g, "").toUpperCase()} files here.</div>`;
+    if (!res.dirs.length && (dirOnly || !res.files.length))
+      list.insertAdjacentHTML("beforeend", `<div class="fb-empty">${dirOnly ? "No folders in here."
+        : `No folders or ${exts.replace(/\./g, "").toUpperCase()} files here.`}</div>`);
     return res;
   }
   // A pasted path goes through the same listing as browsing — pdf.py expands
@@ -873,18 +867,91 @@ function browseModal({ title, okText = "Open", pickDir = false, dirOnly = false,
     if (e.key !== "Enter") return;
     const p = cleanPath(pathInp.value);
     if (!p) return;
-    if (!extRe.test(p)) { show(p); return; }
+    if (dirOnly || !extRe.test(p)) { show(p); return; }
     const want = p.split("/").pop();
-    if (nameInp) nameInp.value = want;
     const res = await show(p);
-    if (!res || pickDir || dirOnly) return;
+    if (!res) return;
     const hit = res.files.find((f) => f.name === want)
       || res.files.find((f) => f.name.toLowerCase() === want.toLowerCase());
     if (hit) m.close(res.path + "/" + hit.name);
     else toast(`No file named ${want} in ${res.path}`, true);
   });
-  show(start || (state.doc ? docDir() : "~"))
-    .then(() => { pathInp.focus(); pathInp.select(); });
+  show(start || defaultDir());
+  return m.done;
+}
+
+// ---------- choosing files and folders ----------
+// The machine's own dialogs — Finder's open panel on a Mac — whenever the app
+// can raise one (/api/config's native_dir_picker). The server opens them: a
+// browser never hands a page the real path of a file the reader picks. Where
+// there is no dialog to raise (a hosted deploy, a phone over the LAN) or it
+// fails, the in-page browser stands in; a cancel is an answer either way and
+// is never asked again.
+const defaultDir = () => (state.doc ? docDir() : "~");
+let nativeDialogs = null;
+const hasNativeDialogs = () => (nativeDialogs ||= fetch("/api/config")
+  .then((r) => (r.ok ? r.json() : {})).then((c) => !!c.native_dir_picker, () => false));
+
+// The native dialogs open at an absolute folder: `p` (~, relative, or a
+// file) resolved by the same listing the in-page browser uses.
+const absDir = async (p) => (await py({ action: "listdir", path: p, exts: ".pdf" })).path;
+
+async function nativePick(kind, body) {
+  const res = await fetch(`/api/fs/pick-${kind}`, { method: "POST",
+    headers: { "Content-Type": "application/json", "X-Fused": "1" }, body: JSON.stringify(body) });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error || `the ${kind} chooser failed`);
+  return data.path ?? null;
+}
+
+// Ask for a file of one of `exts` (".png,.jpg"); its absolute path, or null.
+async function pickFile({ title, exts = ".pdf", start = "" }) {
+  if (await hasNativeDialogs()) {
+    const types = exts.split(",").map((e) => e.trim().replace(/^\./, ""));
+    const path = await nativePick("file", { title, types, start: await absDir(start || defaultDir()) })
+      .catch((err) => { console.warn("native file chooser:", err); return undefined; });
+    // The dialog's type filter is a courtesy (some let "All files" through),
+    // so what came back is checked like a pasted path would be.
+    if (path === null || (path && types.includes(path.split(".").pop().toLowerCase()))) return path;
+    if (path) { toast(`${path.split("/").pop()} isn't a ${types.join(" / ").toUpperCase()} file`, true); return null; }
+  }
+  return browseModal({ title, exts, start });
+}
+
+// Ask for a folder; its absolute path, or null.
+async function pickFolder({ title = "Choose a folder", start = "" }) {
+  if (await hasNativeDialogs()) {
+    const path = await nativePick("folder", { title, start: await absDir(start || defaultDir()) })
+      .catch((err) => { console.warn("native folder chooser:", err); return undefined; });
+    if (path !== undefined) return path;
+  }
+  return browseModal({ title, okText: "Select folder", dirOnly: true, start });
+}
+
+// Ask where to save a new file: a name and a folder (Browse… picks the folder
+// with pickFolder). {dir, name}, or null.
+function saveModal({ title, okText = "Save", filename, start = "" }) {
+  const m = modal(`<h3></h3>
+    <label>Name</label><input type="text" id="svName" spellcheck="false">
+    <label>Save to</label>
+    <div class="destrow"><input type="text" id="svDir" spellcheck="false"><button class="btn" id="svDirBtn">Browse…</button></div>
+    <div class="row"><button class="btn" data-x="cancel">Cancel</button>
+    <button class="btn primary" data-x="ok"></button></div>`);
+  m.el.querySelector("h3").textContent = title;
+  const nameInp = m.el.querySelector("#svName"), ok = m.el.querySelector("[data-x=ok]");
+  nameInp.value = filename;
+  const getDir = destRow(m, "svDir", start || defaultDir());
+  const finish = () => {
+    const name = cleanPath(nameInp.value);
+    if (name) m.close({ dir: getDir(), name });
+  };
+  ok.textContent = okText;
+  ok.onclick = finish;
+  nameInp.addEventListener("keydown", (e) => { if (e.key === "Enter") finish(); });
+  m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
+  // Select the stem, so typing replaces the name and keeps the extension.
+  nameInp.focus();
+  nameInp.setSelectionRange(0, filename.replace(/\.[^.]+$/, "").length);
   return m.done;
 }
 
@@ -904,8 +971,7 @@ function destRow(m, id, value, onFile) {
   };
   inp.addEventListener("change", absorb);
   m.el.querySelector("#" + id + "Btn").onclick = async () => {
-    const dir = await browseModal({ title: "Choose a folder", okText: "Select folder",
-      dirOnly: true, start: cleanPath(inp.value) || "~" });
+    const dir = await pickFolder({ start: cleanPath(inp.value) || defaultDir() });
     if (dir) { inp.value = dir; lastDir = dir; }
   };
   return () => { absorb(); return cleanPath(inp.value); };
@@ -1823,7 +1889,7 @@ const acts = {
   openDoc: (path) => openDoc(path),
 
   addPdf: async () => {
-    const src = await browseModal({ title: "Add a PDF" });
+    const src = await pickFile({ title: "Add a PDF" });
     if (!src) return;
     const res = await py({ action: "add_to_library", src });
     await refreshLib();
@@ -1891,8 +1957,7 @@ const acts = {
   },
   saveAs: async () => {
     needDoc();
-    const picked = await browseModal({ title: "Save a copy", okText: "Save",
-      pickDir: true, filename: state.info.name, start: "~" });
+    const picked = await saveModal({ title: "Save a copy", filename: state.info.name });
     if (!picked) return;
     const res = await serial(() => py({ action: "save_as", doc: state.doc, directory: picked.dir, name: picked.name }));
     toast(`Saved to ${res.file}`);
@@ -1909,7 +1974,7 @@ const acts = {
   addImage: async () => {
     needDoc();
     setMode("edit");
-    const src = await browseModal({ title: "Add an image", exts: ".png,.jpg,.jpeg,.webp,.bmp,.gif,.tif,.tiff" });
+    const src = await pickFile({ title: "Add an image", exts: ".png,.jpg,.jpeg,.webp,.bmp,.gif,.tif,.tiff" });
     setTool(src ? "image" : "select", src ? await loadImage(src) : null);
   },
   placeImage: ({ pageNo, rect }) => mutate("add_image", { page: pageNo, rect: JSON.stringify(rect), src: state.image.src }),
@@ -2032,7 +2097,7 @@ const acts = {
       files: [res], dir: res.dir });
   },
   removePassword: async () => {
-    const src = await browseModal({ title: "Choose the password-protected PDF" });
+    const src = await pickFile({ title: "Choose the password-protected PDF" });
     if (!src) return;
     // openDoc prompts for the password and saves the unlocked copy.
     await openDoc(src);
@@ -2063,7 +2128,7 @@ const acts = {
     await resultModal({ title: "Word document created", files: [res], dir: res.dir });
   },
   fromWord: async () => {
-    const src = await browseModal({ title: "Choose a Word document", exts: ".docx" });
+    const src = await pickFile({ title: "Choose a Word document", exts: ".docx" });
     if (!src) return;
     setStatus("converting…", "busy");
     const res = await py({ action: "word_to_pdf", src });
@@ -2073,7 +2138,7 @@ const acts = {
     toast(`Created ${res.name}${res.via === "libreoffice" ? "" : " (text-level conversion — install LibreOffice for full fidelity)"}`);
   },
   fromExcel: async () => {
-    const src = await browseModal({ title: "Choose an Excel workbook", exts: ".xlsx,.xlsm" });
+    const src = await pickFile({ title: "Choose an Excel workbook", exts: ".xlsx,.xlsm" });
     if (!src) return;
     setStatus("converting…", "busy");
     const res = await py({ action: "excel_to_pdf", src });
@@ -2096,8 +2161,7 @@ const acts = {
   scan: async () => {
     const caps = await scanModal();
     if (!caps || !caps.length) return;
-    const picked = await browseModal({ title: "Save the scan", okText: "Save",
-      pickDir: true, filename: "scan.pdf", start: "~" });
+    const picked = await saveModal({ title: "Save the scan", filename: "scan.pdf" });
     if (!picked) return;
     setStatus("saving scan…", "busy");
     const res = await py({ action: "save_scan", images_b64: JSON.stringify(caps),
@@ -2128,8 +2192,8 @@ const acts = {
     toast("Markdown copied");
   },
   mdSave: async () => {
-    const picked = await browseModal({ title: "Save Markdown", okText: "Save", pickDir: true,
-      filename: state.info.name.replace(/\.pdf$/i, "") + ".md", start: docDir(), exts: ".md" });
+    const picked = await saveModal({ title: "Save Markdown",
+      filename: state.info.name.replace(/\.pdf$/i, "") + ".md" });
     if (!picked) return;
     const res = await py({ action: "save_markdown", doc: state.doc, pages: state.md.spec,
       text: state.md.markdown,
@@ -2201,7 +2265,7 @@ async function mergeModal() {
   addRow(state.doc, state.doc.split("/").pop() + " (current)", true);
   for (const d of state.docs) if (d.path !== state.doc && !d.missing) addRow(d.path, d.name, false);
   m.el.querySelector("#mgBrowse").onclick = async () => {
-    const src = await browseModal({ title: "Add a PDF to the merge" });
+    const src = await pickFile({ title: "Add a PDF to the merge" });
     if (src) addRow(src, src.split("/").pop(), true);
   };
   m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
@@ -2343,7 +2407,7 @@ async function imagesModal() {
     });
   }
   m.el.querySelector("#imBrowse").onclick = async () => {
-    const src = await browseModal({ title: "Add an image", exts: ".png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff" });
+    const src = await pickFile({ title: "Add an image", exts: ".png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff" });
     if (src) { sources.push(src); render(); }
   };
   m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
@@ -2753,6 +2817,7 @@ const icoTrash = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 const icoExtract = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M12 18v-6"/><path d="m9 15 3 3 3-3"/></svg>`;
 const icoMove = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18"/><path d="m9 6 3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3"/></svg>`;
 const icoPen = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>`;
+const icoUp = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>`;
 const icoDir = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`;
 const icoFile = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg>`;
 const icoDown = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>`;
