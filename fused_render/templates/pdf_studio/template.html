@@ -806,7 +806,7 @@ function browseModal({ title, okText = "Open", pickDir = false, dirOnly = false,
     // /api/fs/list instead of a kernel scan that could drop the mount.
     const res = await py({ action: "listdir", path, exts,
       src: `${location.origin}/api/fs/raw?path=${encodeURIComponent(path || "")}` });
-    if (res.error) { toast(res.error, true); return; }
+    if (res.error) { toast(res.error, true); return null; }
     cur = res.path;
     pathInp.value = res.path;
     const crumbs = m.el.querySelector("#fbCrumbs");
@@ -850,17 +850,25 @@ function browseModal({ title, okText = "Open", pickDir = false, dirOnly = false,
     }
     if (!res.dirs.length && !res.files.length)
       list.innerHTML = `<div class="fb-empty">No folders or ${exts.replace(/\./g, "").toUpperCase()} files here.</div>`;
+    return res;
   }
-  pathInp.addEventListener("keydown", (e) => {
+  // A pasted path goes through the same listing as browsing — pdf.py expands
+  // `~`, resolves it to an absolute path and, for a file, lists its folder — so
+  // a pasted file is picked exactly as clicking it in that folder would pick it,
+  // and a path that isn't there is caught here, not after the pick.
+  pathInp.addEventListener("keydown", async (e) => {
     if (e.key !== "Enter") return;
-    let p = cleanPath(pathInp.value);
+    const p = cleanPath(pathInp.value);
     if (!p) return;
-    if (extRe.test(p)) {
-      if (!pickDir && !dirOnly) return m.close(p);
-      if (nameInp) nameInp.value = p.split("/").pop();
-      p = p.split("/").slice(0, -1).join("/") || "/";
-    }
-    show(p);
+    if (!extRe.test(p)) { show(p); return; }
+    const want = p.split("/").pop();
+    if (nameInp) nameInp.value = want;
+    const res = await show(p);
+    if (!res || pickDir || dirOnly) return;
+    const hit = res.files.find((f) => f.name === want)
+      || res.files.find((f) => f.name.toLowerCase() === want.toLowerCase());
+    if (hit) m.close(res.path + "/" + hit.name);
+    else toast(`No file named ${want} in ${res.path}`, true);
   });
   show(start || (state.doc ? docDir() : "~"))
     .then(() => { pathInp.focus(); pathInp.select(); });
