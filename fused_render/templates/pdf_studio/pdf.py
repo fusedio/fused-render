@@ -1153,12 +1153,18 @@ def _add_image(doc, page, rect, src):
         raise ValueError("the image box is outside the page")
     p.insert_image(r, filename=src, keep_proportion=True)
     to_page = fitz.Matrix(p.transformation_matrix)
-    d.save(doc, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
+    # Written beside the working copy and read back from there: the new
+    # image's draw (insert_image draws on top, so it is the page's last) is
+    # what the UI selects for moving/resizing, and only once that read has
+    # succeeded does the result replace the working copy — a failure leaves
+    # the document exactly as _mutate's undo snapshot has it.
+    tmp = doc + ".tmp"
+    d.save(tmp, encryption=fitz.PDF_ENCRYPT_KEEP)
     d.close()
-    # insert_image draws on top, so the new image is the page's last draw —
-    # returned so the UI can select it for moving/resizing straight away.
-    boxes = _page_images(doc, page, to_page)
-    return {"image": {"index": len(boxes) - 1, "bbox": boxes[-1]}}
+    boxes = _page_images(tmp, page, to_page)
+    placed = {"index": len(boxes) - 1, "bbox": boxes[-1]}
+    _replace(tmp, doc)
+    return {"image": placed}
 
 
 def _image_draws(pg, to_page):

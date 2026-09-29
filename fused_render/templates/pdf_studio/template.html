@@ -781,6 +781,12 @@ function dialog({ title, message = "", label = "", value = "", okText = "OK", da
 const cleanPath = (s) => (s || "").trim().replace(/^["']+|["']+$/g, "").replace(/\\/g, "/");
 const docDir = () => state.doc.split("/").slice(0, -1).join("/");
 
+// pdf.py's folder listing. `src` (origin only) lets the worker route a
+// mount-backed folder via /api/fs/list instead of a kernel scan that could
+// drop the mount.
+const listDir = (path, exts) => py({ action: "listdir", path, exts,
+  src: `${location.origin}/api/fs/raw?path=${encodeURIComponent(path || "")}` });
+
 // The in-page browser: the fallback for a machine that can't raise its own
 // file dialog (see pickFile/pickFolder). Picks a file of `exts`, or with
 // `dirOnly` a folder; the places row jumps to the usual folders.
@@ -809,10 +815,7 @@ function browseModal({ title, okText = "Open", dirOnly = false, start = "", exts
   }
   async function show(path) {
     if (/^[A-Za-z]:$/.test(path)) path += "/";
-    // src (origin only) lets the worker route a mount-backed dir via
-    // /api/fs/list instead of a kernel scan that could drop the mount.
-    const res = await py({ action: "listdir", path, exts,
-      src: `${location.origin}/api/fs/raw?path=${encodeURIComponent(path || "")}` });
+    const res = await listDir(path, exts);
     if (res.error) { toast(res.error, true); return null; }
     cur = res.path;
     pathInp.value = res.path;
@@ -892,40 +895,41 @@ let nativeDialogs = null;
 const hasNativeDialogs = () => (nativeDialogs ||= fetch("/api/config")
   .then((r) => (r.ok ? r.json() : {})).then((c) => !!c.native_dir_picker, () => false));
 
-// The native dialogs open at an absolute folder: `p` (~, relative, or a
-// file) resolved by the same listing the in-page browser uses.
-const absDir = async (p) => (await py({ action: "listdir", path: p, exts: ".pdf" })).path;
-
-async function nativePick(kind, body) {
-  const res = await fetch(`/api/fs/pick-${kind}`, { method: "POST",
-    headers: { "Content-Type": "application/json", "X-Fused": "1" }, body: JSON.stringify(body) });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error || `the ${kind} chooser failed`);
-  return data.path ?? null;
+// Ask the OS dialog: the chosen path, null when the reader cancelled, or
+// undefined when it could not be asked — no dialog on this machine, or any
+// step failing — which is the caller's cue for the in-page browser. It opens
+// at an absolute folder: `start` (~, relative, or a file) resolved by the
+// same mount-safe listing the in-page browser uses.
+async function nativePick(kind, { start, ...body }) {
+  if (!(await hasNativeDialogs())) return undefined;
+  return listDir(start || defaultDir(), ".pdf")
+    .then(({ path }) => fetch(`/api/fs/pick-${kind}`, { method: "POST",
+      headers: { "Content-Type": "application/json", "X-Fused": "1" },
+      body: JSON.stringify({ ...body, start: path }) }))
+    .then(async (res) => {
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || `the ${kind} chooser failed`);
+      return data.path ?? null;
+    })
+    .catch((err) => { console.warn(`native ${kind} chooser:`, err); return undefined; });
 }
 
 // Ask for a file of one of `exts` (".png,.jpg"); its absolute path, or null.
 async function pickFile({ title, exts = ".pdf", start = "" }) {
-  if (await hasNativeDialogs()) {
-    const types = exts.split(",").map((e) => e.trim().replace(/^\./, ""));
-    const path = await nativePick("file", { title, types, start: await absDir(start || defaultDir()) })
-      .catch((err) => { console.warn("native file chooser:", err); return undefined; });
-    // The dialog's type filter is a courtesy (some let "All files" through),
-    // so what came back is checked like a pasted path would be.
-    if (path === null || (path && types.includes(path.split(".").pop().toLowerCase()))) return path;
-    if (path) { toast(`${path.split("/").pop()} isn't a ${types.join(" / ").toUpperCase()} file`, true); return null; }
-  }
-  return browseModal({ title, exts, start });
+  const types = exts.split(",").map((e) => e.trim().replace(/^\./, ""));
+  const path = await nativePick("file", { title, types, start });
+  if (path === undefined) return browseModal({ title, exts, start });
+  // The dialog's type filter is a courtesy (some let "All files" through),
+  // so what came back is checked like a pasted path would be.
+  if (path === null || types.includes(path.split(".").pop().toLowerCase())) return path;
+  toast(`${path.split("/").pop()} isn't a ${types.join(" / ").toUpperCase()} file`, true);
+  return null;
 }
 
 // Ask for a folder; its absolute path, or null.
 async function pickFolder({ title = "Choose a folder", start = "" }) {
-  if (await hasNativeDialogs()) {
-    const path = await nativePick("folder", { title, start: await absDir(start || defaultDir()) })
-      .catch((err) => { console.warn("native folder chooser:", err); return undefined; });
-    if (path !== undefined) return path;
-  }
-  return browseModal({ title, okText: "Select folder", dirOnly: true, start });
+  const path = await nativePick("folder", { title, start });
+  return path !== undefined ? path : browseModal({ title, okText: "Select folder", dirOnly: true, start });
 }
 
 // Ask where to save a new file: a name and a folder (Browse… picks the folder
@@ -1428,12 +1432,18 @@ function cancelEdit() {
 // `span` edits an existing line; `at` ({x, y} page px, the text's top-left)
 // opens an empty box for new text. Returns the editor, or null when the page
 // can't be edited.
+// Text and images are edited on unrotated pages only (pdf.py's
+// _editable_page); every edit gesture asks here first, before it starts.
+function pageEditable(pageNo) {
+  const ok = (state.spans[pageNo]?.rotation || 0) === 0;
+  if (!ok) toast("Rotate this page to 0° before editing it");
+  return ok;
+}
+
 function openEditor(wrap, { span = null, at = null }) {
   cancelEdit();
   const pageNo = +wrap.dataset.page;
-  if ((state.spans[pageNo]?.rotation || 0) !== 0) {
-    toast("Rotate this page to 0° before editing it"); return null;
-  }
+  if (!pageEditable(pageNo)) return null;
   const s = +wrap.dataset.scale;
   const fmt = span ? {
     family: familyOf(span.font, span.flags), size: span.size, color: rgbToHex(span.color),
@@ -1559,8 +1569,10 @@ function finishEdit() {
 // corner; letting go applies it through edit_image, which rewrites only that
 // image's draw on the page. A repaint drops the selection with the overlays
 // it was picked from, and a move re-selects the image where it landed.
+// Returns the selection, or null when the page can't be edited.
 function pickImage(wrap, index, bbox) {
   unpickImage();
+  if (!pageEditable(+wrap.dataset.page)) return null;
   const s = +wrap.dataset.scale;
   const el = document.createElement("div");
   el.className = "isel";
@@ -2919,7 +2931,8 @@ $("pages").addEventListener("pointerdown", (e) => {
   if (queued) return toast("Still applying the last change…");
   e.preventDefault();
   const wrap = ti.closest(".pdf-page"), i = +ti.dataset.i;
-  dragImage(pickImage(wrap, i, state.spans[+wrap.dataset.page].images[i]), e, "", 3);
+  const pk = pickImage(wrap, i, state.spans[+wrap.dataset.page].images[i]);
+  if (pk) dragImage(pk, e, "", 3);
 });
 
 // Clicking anywhere outside the open editor applies it (the edit bar's format
@@ -2960,7 +2973,7 @@ $("pages").addEventListener("pointerup", (e) => {
   if (!drag || state.tool !== "image" || !state.image) return;
   if (queued) return toast("Still applying the last change…");
   const pageNo = +drag.wrap.dataset.page;
-  if ((state.spans[pageNo]?.rotation || 0) !== 0) return toast("Rotate this page to 0° before editing it");
+  if (!pageEditable(pageNo)) return;
   const { x, y, w, h } = imageBox(drag.wrap, localPt(drag.wrap, e), drag);
   const s = +drag.wrap.dataset.scale;
   const rect = [x / s, y / s, (x + w) / s, (y + h) / s].map((v) => +v.toFixed(2));
@@ -3005,11 +3018,11 @@ $("thumbs").addEventListener("click", (e) => {
 document.addEventListener("keydown", (e) => {
   if (state.editing || e.target.closest(".modal")) return;
   if (e.key === "Escape" && state.tool !== "select") { setTool("select"); return; }
+  if (e.target.closest("#editbar input, #editbar select")) return;
   if (state.picked && e.key === "Escape") { unpickImage(); return; }
   if (state.picked && (e.key === "Delete" || e.key === "Backspace")) {
     e.preventDefault(); applyImage(state.picked, true); return;
   }
-  if (e.target.closest("#editbar input, #editbar select")) return;
   const mod = e.ctrlKey || e.metaKey;
   if (mod && e.key.toLowerCase() === "z" && !e.shiftKey) { e.preventDefault(); act("undo"); }
   else if (mod && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) { e.preventDefault(); act("redo"); }
