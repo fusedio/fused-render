@@ -38,7 +38,7 @@ Actions
   reorder_pages(doc,order,...)                      |  {ok, mtime, doc:docinfo,
   insert_blank(doc,at,width,height,...)             |   dirty, undo_depth, redo_depth}
   compress(doc,level,...)                           |  or {conflict, mtime}
-  edit_text(doc,page,bbox,...,...)                  |
+  edit_text(doc,page,origin,old_text,...)          |
   add_text(doc,page,origin,new_text,...)            |
   add_image(doc,page,rect,src,...)                 /
   extract_pages(doc,pages,name)            -> {name, path, size, dir}
@@ -1017,7 +1017,9 @@ def _page_text(doc, page):
         raise ValueError(f"no page {page}")
     p = d[page - 1]
     spans = []
-    for block in p.get_text("dict")["blocks"]:
+    # Same extraction flags as _find_span, so a span's text here is exactly
+    # the text edit_text looks for.
+    for block in p.get_text("dict", flags=fitz.TEXTFLAGS_DICT)["blocks"]:
         for line in block.get("lines", []):
             for s in line.get("spans", []):
                 txt = s["text"]
@@ -1069,26 +1071,55 @@ def _editable_page(d, page):
     return p
 
 
-def _edit_text(doc, page, bbox, origin, old_text, new_text, font, size, flags,
-               color, line_height=""):
-    """Replace one text span. The new text keeps its size and grows the box —
-    rightwards as it gets longer, downwards per line — rather than shrinking
-    to fit the old span's width."""
+def _find_span(p, origin, old_text):
+    """The span the editor was opened on, found again by its baseline origin
+    and exact text — the glyphs it owns, not whatever overlaps its box."""
+    import fitz
+
+    ox, oy = origin
+    for block in p.get_text("rawdict", flags=fitz.TEXTFLAGS_DICT)["blocks"]:
+        for line in block.get("lines", []):
+            for s in line["spans"]:
+                if (abs(s["origin"][0] - ox) < 0.5 and abs(s["origin"][1] - oy) < 0.5
+                        and "".join(c["c"] for c in s["chars"]) == old_text):
+                    return s
+    raise ValueError("the page text changed on disk — reload and retry")
+
+
+def _remove_span(p, span):
+    """Remove exactly `span`'s characters. Each glyph gets its own redaction
+    rect, a band through the middle of that glyph, and nothing is painted over
+    it: a span's box is font-metric tall and can reach well into the lines
+    around it, and redacting that box (with the default white fill) erased
+    neighbouring text along with it."""
+    import fitz
+
+    sz = span["size"]
+    for ch in span["chars"]:
+        x0, _, x1, _ = ch["bbox"]
+        oy = ch["origin"][1]
+        inset = (x1 - x0) * 0.3
+        p.add_redact_annot(fitz.Rect(x0 + inset, oy - sz * 0.5, x1 - inset, oy - sz * 0.3),
+                           fill=False)
+    p.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
+                       graphics=fitz.PDF_REDACT_LINE_ART_NONE)
+
+
+def _edit_text(doc, page, origin, old_text, new_text, font, size, flags,
+               color, line_height="", to_origin=""):
+    """Replace one text span, optionally moving it: the new text's first
+    baseline goes to `to_origin` (default: where the span was). The new text
+    keeps its size and grows the box — rightwards as it gets longer,
+    downwards per line — rather than shrinking to fit the old span's width."""
     import fitz
 
     d = fitz.open(doc)
     p = _editable_page(d, page)
-    rect = fitz.Rect(*json.loads(bbox))
-    got = _norm_ws(p.get_text("text", clip=rect + (-1, -1, 1, 1)))
-    if _norm_ws(old_text) not in got:
-        raise ValueError("the page text changed on disk — reload and retry")
+    _remove_span(p, _find_span(p, json.loads(origin), old_text))
     fname = _pick_font(font, int(flags or 0), new_text)
     fsize = float(size or 11)
-    p.add_redact_annot(rect)
-    p.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
-                       graphics=fitz.PDF_REDACT_LINE_ART_NONE)
     if new_text.strip():
-        ox, oy = json.loads(origin)
+        ox, oy = json.loads(to_origin or origin)
         col = [c / 255 for c in json.loads(color or "[0,0,0]")]
         _draw_lines(p, ox, oy, new_text, fname, fsize, col, line_height)
     d.save(doc, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
@@ -1523,7 +1554,6 @@ def main(
     level: str = "lossless",
     kind: str = "",
     page: int = 1,
-    bbox: str = "",
     origin: str = "",
     old_text: str = "",
     new_text: str = "",
@@ -1533,6 +1563,7 @@ def main(
     color: str = "",
     line_height: str = "",
     rect: str = "",
+    to_origin: str = "",
     expected_mtime: str = "",
     force: int = 0,
     password: str = "",
@@ -1635,9 +1666,9 @@ def main(
                        lambda p: _compress(p, level))
     if action == "edit_text":
         return _mutate(doc, expected_mtime, "edit-text",
-                       lambda p: _edit_text(p, page, bbox, origin, old_text,
+                       lambda p: _edit_text(p, page, origin, old_text,
                                             new_text, font, size, flags, color,
-                                            line_height))
+                                            line_height, to_origin))
     if action == "add_text":
         return _mutate(doc, expected_mtime, "add-text",
                        lambda p: _add_text(p, page, origin, new_text, font, size,

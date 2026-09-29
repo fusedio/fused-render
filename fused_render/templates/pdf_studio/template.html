@@ -149,11 +149,20 @@
   body.mode-edit:not(.tool-select) .tspan { pointer-events: none; }
   body.mode-edit.tool-text .overlay { cursor: text; }
   body.mode-edit.tool-image .overlay { cursor: crosshair; }
-  /* In-place text editor. Padding + border are the same 3px on every side
-     (EDIT_PAD in the script), and the script sizes the box to its text on
-     every keystroke — it grows right as a line gets longer and down per line. */
-  .tedit { position: absolute; z-index: 10; margin: 0; padding: 1.5px; border: 1.5px solid var(--blue);
-    border-radius: 3px; background: #fff; box-shadow: 0 0 0 3px rgba(45,127,249,.18);
+  /* In-place text editor: a frame (.tbox) around a bare textarea. Border +
+     padding are the same 4.5px on every side (EDIT_PAD in the script); the
+     script sizes the textarea to its text on every keystroke — it grows right
+     as a line gets longer and down per line. The frame and its Move tab drag
+     the box. */
+  .tbox { position: absolute; z-index: 10; padding: 3px; border: 1.5px solid var(--blue); border-radius: 3px;
+    background: #fff; box-shadow: 0 0 0 3px rgba(45,127,249,.18); cursor: move; touch-action: none; }
+  .tveil { position: absolute; z-index: 9; background: rgba(255,255,255,.72); pointer-events: none; }
+  .tbox.moving { box-shadow: var(--shadow-2), 0 0 0 3px rgba(45,127,249,.18); }
+  .tgrip { position: absolute; left: -1.5px; bottom: 100%; margin-bottom: 3px; display: flex; align-items: center;
+    gap: 4px; background: var(--blue); color: #fff; font: 600 10.5px var(--font); padding: 2px 7px 2px 5px;
+    border-radius: 4px; white-space: nowrap; user-select: none; }
+  .tgrip svg { width: 11px; height: 11px; }
+  .tedit { display: block; margin: 0; padding: 0; border: 0; background: transparent; cursor: text;
     resize: none; overflow: hidden; white-space: pre-wrap; overflow-wrap: break-word; }
   .tedit:focus { outline: none; }
   .img-ghost { position: absolute; z-index: 9; pointer-events: none; border: 1.5px dashed var(--blue);
@@ -1146,7 +1155,7 @@ const FAMILY_PDF = { sans: "Helvetica", serif: "Times-Roman", mono: "Courier" };
 // editor showed it.
 const BASELINE_EM = { sans: 0.35, serif: 0.34, mono: 0.27 };
 const LINE_EM = 1.25;   // line pitch × font size — pdf.py's _draw_lines default
-const EDIT_PAD = 3;     // .tedit padding + border, each side, px
+const EDIT_PAD = 4.5;   // .tbox border + padding, each side, px
 const measureCtx = document.createElement("canvas").getContext("2d");
 
 const hex2 = (n) => Math.max(0, Math.min(255, n | 0)).toString(16).padStart(2, "0");
@@ -1186,24 +1195,32 @@ function wrapLines(text, maxW) {
   return out;
 }
 
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi));
+const pageBounds = (wrap) => ({ left: 0, top: 0, right: wrap.clientWidth, bottom: wrap.clientHeight });
+const UNBOUNDED = { left: -Infinity, top: -Infinity, right: Infinity, bottom: Infinity };
+
+// Lay the editor out for its current text: wrap it, size the textarea to fit,
+// and place the frame from ed.anchor (where the text's top-left wants to be,
+// page px) inside ed.bounds. New text is bounded by the page, so a box opened
+// near an edge grows away from it and its first baseline is always on the
+// page; an existing span is unbounded until it is dragged, so it stays exactly
+// on the text it replaces.
 function sizeEditor(ed) {
   const s = ed.scale, px = ed.fmt.size * s, lh = px * LINE_EM;
   ed.el.style.font = cssFont(ed.fmt, px);
   ed.el.style.lineHeight = lh + "px";
   ed.el.style.color = ed.fmt.color;
   measureCtx.font = ed.el.style.font;
-  ed.lines = wrapLines(ed.el.value, ed.maxW);
+  ed.lines = wrapLines(ed.el.value, ed.wrapW);
   const widest = Math.max(0, ...ed.lines.map((l) => measureCtx.measureText(l).width));
-  const w = Math.min(ed.maxW, Math.max(ed.minW, widest + 2, px));   // +2: room for the caret
+  const w = Math.min(ed.wrapW, Math.max(ed.minW, widest + 2, px));   // +2: room for the caret
   const h = ed.lines.length * lh;
-  // Keep the text inside ed.bounds: a new box opened near the bottom of the
-  // page grows upwards instead of running off it, so its first baseline is
-  // always on the page. Edits of an existing span have unbounded bounds and
-  // stay exactly on the span they replace.
-  ed.top = Math.max(ed.bounds.top, Math.min(ed.anchorY, ed.bounds.bottom - h)) - EDIT_PAD;
-  ed.el.style.top = ed.top + "px";
-  ed.el.style.width = w + 2 * EDIT_PAD + "px";
-  ed.el.style.height = h + 2 * EDIT_PAD + "px";
+  ed.pos = { x: clamp(ed.anchor.x, ed.bounds.left, ed.bounds.right - w),
+             y: clamp(ed.anchor.y, ed.bounds.top, ed.bounds.bottom - h) };
+  ed.box.style.left = ed.pos.x - EDIT_PAD + "px";
+  ed.box.style.top = ed.pos.y - EDIT_PAD + "px";
+  ed.el.style.width = w + "px";
+  ed.el.style.height = h + "px";
   // The caret can scroll the textarea's content a line up before this resize
   // lands; the box now fits everything, so pin it back.
   ed.el.scrollTop = 0; ed.el.scrollLeft = 0;
@@ -1211,18 +1228,19 @@ function sizeEditor(ed) {
 
 function cancelEdit() {
   if (!state.editing) return;
-  state.editing.el.remove();
+  state.editing.parts.forEach((el) => el.remove());
   state.editing = null;
   updateEditUi();
 }
 
 // `span` edits an existing line; `at` ({x, y} page px, the text's top-left)
-// opens an empty box for new text.
+// opens an empty box for new text. Returns the editor, or null when the page
+// can't be edited.
 function openEditor(wrap, { span = null, at = null }) {
   cancelEdit();
   const pageNo = +wrap.dataset.page;
   if ((state.spans[pageNo]?.rotation || 0) !== 0) {
-    toast("Rotate this page to 0° before editing it"); return;
+    toast("Rotate this page to 0° before editing it"); return null;
   }
   const s = +wrap.dataset.scale;
   const fmt = span ? {
@@ -1230,47 +1248,87 @@ function openEditor(wrap, { span = null, at = null }) {
     bold: !!(span.flags & 16) || /bold|black|heavy/i.test(span.font),
     italic: !!(span.flags & 2) || /italic|oblique/i.test(span.font),
   } : { ...state.fmt };
+  const box = document.createElement("div");
+  box.className = "tbox";
+  box.innerHTML = `<div class="tgrip">${icoMove} Move</div>`;
   const el = document.createElement("textarea");
   el.className = "tedit";
   el.spellcheck = false;
   el.value = span ? span.text : "";
-  // anchorY is where the first line's top wants to be (page px); sizeEditor
-  // places the box from it on every resize, within `bounds`.
-  let left, anchorY, minW, bounds;
+  box.appendChild(el);
+  const parts = [box];   // everything the editor adds to the page, removed together
+  let anchor, minW, wrapW, bounds;
   if (span) {
     const [x0, y0, x1, y1] = span.bbox;
-    // Centre the first line on the original span so the box sits evenly
+    // Centre the first line on the original span so the frame sits evenly
     // around it, and never narrower than the span, so the old text stays hidden.
     const lh = fmt.size * s * LINE_EM;
-    left = x0 * s - EDIT_PAD;
-    anchorY = ((y0 + y1) / 2) * s - lh / 2;
-    bounds = { top: -Infinity, bottom: Infinity };
+    anchor = { x: x0 * s, y: ((y0 + y1) / 2) * s - lh / 2 };
+    bounds = UNBOUNDED;
     // Trailing spaces in the span are blank on the page — don't pad the box for them.
     measureCtx.font = cssFont(fmt, fmt.size * s);
     const tail = span.text.length - span.text.trimEnd().length;
     minW = (x1 - x0) * s - (tail ? measureCtx.measureText(span.text.slice(-tail)).width : 0);
+    wrapW = Math.max(minW, wrap.clientWidth - anchor.x - 6);   // wraps at the page's right edge
+    // Fade the original line while it's open, so dragging the box away reads
+    // as moving it rather than copying it.
+    const veil = document.createElement("div");
+    veil.className = "tveil";
+    Object.assign(veil.style, { left: x0 * s + "px", top: y0 * s + "px",
+      width: (x1 - x0) * s + "px", height: (y1 - y0) * s + "px" });
+    parts.push(veil);
   } else {
-    left = at.x - EDIT_PAD;
-    anchorY = at.y;
-    bounds = { top: 0, bottom: wrap.clientHeight };
+    anchor = { x: at.x, y: at.y };
+    bounds = pageBounds(wrap);
     minW = 24;
+    wrapW = wrap.clientWidth - 12;                             // grows leftwards before it wraps
   }
-  el.style.left = left + "px";
-  const maxW = Math.max(minW, wrap.clientWidth - (left + EDIT_PAD) - 6);
-  const ed = { el, wrap, pageNo, span, scale: s, left, top: 0, anchorY, bounds, minW, maxW,
-    fmt, orig: { ...fmt }, lines: [] };
+  const ed = { box, el, parts, wrap, pageNo, span, scale: s, anchor, bounds, minW, wrapW,
+    pos: anchor, fmt, orig: { ...fmt }, lines: [] };
   state.editing = ed;
-  wrap.appendChild(el);
+  wrap.append(...parts);
   sizeEditor(ed);
+  ed.start = { ...ed.pos };
   el.addEventListener("input", () => sizeEditor(ed));
   el.addEventListener("keydown", (e) => {
     e.stopPropagation();
     if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
     else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); finishEdit(); }
   });
+  // The frame around the text (and its Move tab) drags the box; the text
+  // itself stays a normal text field.
+  box.addEventListener("pointerdown", (e) => {
+    if (e.target === el || e.button !== 0) return;
+    e.preventDefault();
+    dragEditor(ed, e);
+  });
   el.focus();
   if (span) el.select();
   updateEditUi();
+  return ed;
+}
+
+// Move the editor with the pointer once it has travelled `threshold` px.
+// A moved box is placed like new text: kept inside the page, same wrap width.
+function dragEditor(ed, e, threshold = 0) {
+  const x0 = e.clientX, y0 = e.clientY, from = { ...ed.pos };
+  let moving = false;
+  const onMove = (ev) => {
+    const dx = ev.clientX - x0, dy = ev.clientY - y0;
+    moving ||= Math.hypot(dx, dy) > threshold;
+    if (!moving) return;
+    ed.bounds = pageBounds(ed.wrap);
+    ed.anchor = { x: from.x + dx, y: from.y + dy };
+    ed.box.classList.add("moving");
+    sizeEditor(ed);
+  };
+  const onUp = () => {
+    document.removeEventListener("pointermove", onMove);
+    ed.box.classList.remove("moving");
+    ed.el.focus();
+  };
+  document.addEventListener("pointermove", onMove);
+  document.addEventListener("pointerup", onUp, { once: true });
 }
 
 // Apply the open editor (no-op when nothing changed) and close it.
@@ -1280,23 +1338,25 @@ function finishEdit() {
   sizeEditor(ed);
   const text = ed.lines.map((l) => l.trimEnd()).join("\n").replace(/\n+$/, "");
   cancelEdit();
-  const f = ed.fmt;
+  const f = ed.fmt, s = ed.scale;
   const common = { page: ed.pageNo, new_text: text, size: String(f.size),
     flags: fmtFlags(f), color: JSON.stringify(hexToRgb(f.color)),
     line_height: String(+(f.size * LINE_EM).toFixed(2)) };
+  const pt = (v) => +v.toFixed(2);
   if (ed.span) {
-    if (ed.el.value === ed.span.text && sameFmt(f, ed.orig)) return;
-    act("commitEdit", { ...common, bbox: JSON.stringify(ed.span.bbox),
-      origin: JSON.stringify(ed.span.origin), old_text: ed.span.text,
+    const dx = (ed.pos.x - ed.start.x) / s, dy = (ed.pos.y - ed.start.y) / s;
+    if (ed.el.value === ed.span.text && sameFmt(f, ed.orig) && !dx && !dy) return;
+    act("commitEdit", { ...common, origin: JSON.stringify(ed.span.origin), old_text: ed.span.text,
+      to_origin: JSON.stringify([pt(ed.span.origin[0] + dx), pt(ed.span.origin[1] + dy)]),
       // The span's own font name carries its weight/style — only swap it for
       // a plain base-14 name once the reader changed the formatting.
       font: sameFmt(f, ed.orig) ? ed.span.font : FAMILY_PDF[f.family] });
   } else {
     if (!text.trim()) return;
-    const s = ed.scale, px = f.size * s;
-    const x = (ed.left + EDIT_PAD) / s;
-    const y = (ed.top + EDIT_PAD + (px * LINE_EM) / 2 + BASELINE_EM[f.family] * px) / s;
-    act("insertText", { ...common, origin: JSON.stringify([+x.toFixed(2), +y.toFixed(2)]),
+    const px = f.size * s;
+    const x = ed.pos.x / s;
+    const y = (ed.pos.y + (px * LINE_EM) / 2 + BASELINE_EM[f.family] * px) / s;
+    act("insertText", { ...common, origin: JSON.stringify([pt(x), pt(y)]),
       font: FAMILY_PDF[f.family] });
   }
 }
@@ -1323,8 +1383,8 @@ function updateEditUi() {
   $("fmtBold").classList.toggle("on", f.bold);
   $("fmtItalic").classList.toggle("on", f.italic);
   $("ebHint").textContent = state.editing
-    ? "Enter adds a line · ⌘/Ctrl+Enter or click outside to apply · Esc cancels"
-    : { select: "Click any text on the page to edit it — the box grows as you type",
+    ? "Drag the frame to move · Enter adds a line · ⌘/Ctrl+Enter or click outside to apply · Esc cancels"
+    : { select: "Click text to edit it, or drag it to move it — the box grows as you type",
         text: "Click on the page where the new text should start",
         image: "Click to place the image, or drag to size it · Esc cancels" }[state.tool];
 }
@@ -1417,7 +1477,7 @@ function mutate(action, params = {}) {
     const res = await py({ action, doc: state.doc, expected_mtime: String(state.mtime), ...params });
     if (res.conflict) {
       toast("File changed on disk — reloaded the latest version", true);
-      await openDoc(state.doc);
+      await loadDoc(state.doc);
       setStatus("reloaded", "err");
       return null;
     }
@@ -1475,7 +1535,12 @@ function renderDocList() {
   }
 }
 
-async function openDoc(path, opts) {
+// Switching documents joins the same queue, so every change clicked before
+// the switch lands on the document it was made in, and nothing queued before
+// it can rewrite the new document's viewer state afterwards.
+const openDoc = (path, opts) => serial(() => loadDoc(path, opts));
+
+async function loadDoc(path, opts) {
   cancelEdit();
   const info = await py({ action: "open_doc", doc: path });
   if (info.encrypted) {
@@ -1487,7 +1552,7 @@ async function openDoc(path, opts) {
     const res = await py({ action: "unlock", doc: path, password: pw });
     await refreshLib();
     toast(`Unlocked copy saved as ${res.name}`);
-    return openDoc(res.path, opts);
+    return loadDoc(res.path, opts);
   }
   state.doc = info.path; state.work = info.work; state.info = info; state.mtime = info.mtime;
   state.docs = info.docs; state.dirty = !!info.dirty;
@@ -1585,8 +1650,10 @@ const acts = {
     if (state.doc === d.path) {
       // Clear the removed doc first so a failed open of the next one (missing/
       // encrypted) leaves an empty viewer, not the just-removed file.
-      clearOpenDoc();
-      if (state.docs.length) await openDoc(state.docs[0].path);
+      await serial(async () => {
+        clearOpenDoc();
+        if (state.docs.length) await loadDoc(state.docs[0].path);
+      });
     }
   },
   save: async () => {
@@ -2474,6 +2541,7 @@ const icoRotL = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 const icoRotR = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v5h-5"/><path d="M21 13a9 9 0 1 1-3-7.7L21 8"/></svg>`;
 const icoTrash = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>`;
 const icoExtract = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M12 18v-6"/><path d="m9 15 3 3 3-3"/></svg>`;
+const icoMove = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18"/><path d="m9 6 3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3"/></svg>`;
 const icoPen = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>`;
 const icoDir = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`;
 const icoFile = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg>`;
@@ -2555,10 +2623,18 @@ $("pages").addEventListener("click", (e) => {
     if (!e.target.closest(".overlay")) return;
     openEditor(wrap, { at: localPt(wrap, e) });
     setTool("select");
-    return;
   }
+});
+
+// Edit-text tool: pressing on a line opens it; dragging it moves it.
+$("pages").addEventListener("pointerdown", (e) => {
   const ts = e.target.closest(".tspan");
-  if (ts) openEditor(wrap, { span: state.spans[n].spans[+ts.dataset.i] });
+  if (!ts || e.button !== 0 || state.tool !== "select" || swallowClick) return;
+  if (queued) return toast("Still applying the last change…");
+  e.preventDefault();
+  const wrap = ts.closest(".pdf-page");
+  const ed = openEditor(wrap, { span: state.spans[+wrap.dataset.page].spans[+ts.dataset.i] });
+  if (ed) dragEditor(ed, e, 4);
 });
 
 // Clicking anywhere outside the open editor applies it (the edit bar's format
@@ -2568,7 +2644,7 @@ let swallowClick = false;
 document.addEventListener("pointerdown", (e) => {
   swallowClick = false;
   const ed = state.editing;
-  if (!ed || ed.el.contains(e.target) || e.target.closest("#editbar")) return;
+  if (!ed || ed.box.contains(e.target) || e.target.closest("#editbar")) return;
   finishEdit();
   if (e.target.closest("#pages")) swallowClick = true;
 }, true);
