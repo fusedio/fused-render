@@ -38,7 +38,9 @@ Actions
   reorder_pages(doc,order,...)                      |  {ok, mtime, doc:docinfo,
   insert_blank(doc,at,width,height,...)             |   dirty, undo_depth, redo_depth}
   compress(doc,level,...)                           |  or {conflict, mtime}
-  edit_text(doc,page,bbox,...,...)                 /
+  edit_text(doc,page,bbox,...,...)                  |
+  add_text(doc,page,origin,new_text,...)            |
+  add_image(doc,page,rect,src,...)                 /
   extract_pages(doc,pages,name)            -> {name, path, size, dir}
   merge(sources,name,directory)            -> {name, path, dir}
   split(doc,mode,ranges,prefix,directory)  -> {files:[...], dir}
@@ -983,6 +985,10 @@ _CJK_FONTS = ((0x4E00, 0x9FFF, "china-s"), (0x3040, 0x30FF, "japan"),
               (0xAC00, 0xD7AF, "korea"))
 
 
+_BASE14 = {"helv", "heit", "hebo", "hebi", "cour", "coit", "cobo", "cobi",
+           "tiro", "tiit", "tibo", "tibi"}
+
+
 def _pick_font(fontname, flags, text):
     for lo, hi, fam in _CJK_FONTS:
         if any(lo <= ord(c) <= hi for c in text):
@@ -1033,37 +1039,99 @@ def _page_text(doc, page):
     return out
 
 
-def _edit_text(doc, page, bbox, origin, old_text, new_text, font, size, flags, color):
+def _draw_lines(p, x, y, text, fname, fsize, col, line_height):
+    """Draw `text` with its first baseline at (x, y); every "\n" starts a new
+    line `line_height` pt lower. The UI wraps long lines itself (it sizes the
+    box the reader sees), so each line lands exactly where it was typed."""
     import fitz
 
-    def fn(path):
-        d = fitz.open(path)
-        p = d[page - 1]
-        if p.rotation != 0:
-            raise ValueError("text editing on rotated pages isn't supported — "
-                             "rotate the page to 0° first")
-        rect = fitz.Rect(*json.loads(bbox))
-        got = _norm_ws(p.get_text("text", clip=rect + (-1, -1, 1, 1)))
-        if _norm_ws(old_text) not in got:
-            raise ValueError("the page text changed on disk — reload and retry")
-        fname = _pick_font(font, int(flags or 0), new_text)
-        fsize = float(size or 11)
-        if new_text:
-            while fsize > 6 and fitz.get_text_length(
-                    new_text, fontname=fname, fontsize=fsize) > rect.width + 2:
-                fsize -= 0.25
-        p.add_redact_annot(rect)
-        p.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
-                           graphics=fitz.PDF_REDACT_LINE_ART_NONE)
-        if new_text:
-            ox, oy = json.loads(origin)
-            col = [c / 255 for c in json.loads(color or "[0,0,0]")]
-            p.insert_text((ox, oy), new_text, fontname=fname, fontsize=fsize,
+    lh = float(line_height or 0) or fsize * 1.25
+    if fname in _BASE14 and any(ord(c) > 255 for c in text):
+        # A bare base-14 name only encodes Latin-1, so typographic characters
+        # (“ ” — – € •) come out as "·". Embed the face itself — once per page,
+        # under a fixed alias — only when the text actually needs it.
+        alias = "PS-" + fname
+        p.insert_font(fontname=alias, fontbuffer=fitz.Font(fname).buffer)
+        fname = alias
+    for i, line in enumerate(text.split("\n")):
+        if line.strip():
+            p.insert_text((x, y + i * lh), line, fontname=fname, fontsize=fsize,
                           color=col)
-        d.save(path, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
-        d.close()
-        return {"used_font": fname, "used_size": round(fsize, 2)}
-    return fn(doc)
+
+
+def _editable_page(d, page):
+    if page < 1 or page > d.page_count:
+        raise ValueError(f"no page {page}")
+    p = d[page - 1]
+    if p.rotation != 0:
+        raise ValueError("editing rotated pages isn't supported — "
+                         "rotate the page to 0° first")
+    return p
+
+
+def _edit_text(doc, page, bbox, origin, old_text, new_text, font, size, flags,
+               color, line_height=""):
+    """Replace one text span. The new text keeps its size and grows the box —
+    rightwards as it gets longer, downwards per line — rather than shrinking
+    to fit the old span's width."""
+    import fitz
+
+    d = fitz.open(doc)
+    p = _editable_page(d, page)
+    rect = fitz.Rect(*json.loads(bbox))
+    got = _norm_ws(p.get_text("text", clip=rect + (-1, -1, 1, 1)))
+    if _norm_ws(old_text) not in got:
+        raise ValueError("the page text changed on disk — reload and retry")
+    fname = _pick_font(font, int(flags or 0), new_text)
+    fsize = float(size or 11)
+    p.add_redact_annot(rect)
+    p.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
+                       graphics=fitz.PDF_REDACT_LINE_ART_NONE)
+    if new_text.strip():
+        ox, oy = json.loads(origin)
+        col = [c / 255 for c in json.loads(color or "[0,0,0]")]
+        _draw_lines(p, ox, oy, new_text, fname, fsize, col, line_height)
+    d.save(doc, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
+    d.close()
+    return {"used_font": fname, "used_size": round(fsize, 2)}
+
+
+def _add_text(doc, page, origin, text, font, size, flags, color, line_height=""):
+    """New text whose first baseline sits at `origin` (page points, top-left)."""
+    import fitz
+
+    if not text.strip():
+        raise ValueError("nothing to add — type some text first")
+    d = fitz.open(doc)
+    p = _editable_page(d, page)
+    ox, oy = json.loads(origin)
+    if not (0 <= ox <= p.rect.width and 0 <= oy <= p.rect.height):
+        raise ValueError("the text box is outside the page")
+    fname = _pick_font(font, int(flags or 0), text)
+    fsize = float(size or 12)
+    col = [c / 255 for c in json.loads(color or "[0,0,0]")]
+    _draw_lines(p, ox, oy, text, fname, fsize, col, line_height)
+    d.save(doc, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
+    d.close()
+    return {"used_font": fname, "used_size": round(fsize, 2)}
+
+
+def _add_image(doc, page, rect, src):
+    """Place the image file `src` into `rect` (page points), aspect kept."""
+    import fitz
+
+    src = os.path.abspath(os.path.expanduser(src or ""))
+    if not os.path.isfile(src):
+        raise ValueError(f"no such image: {src}")
+    d = fitz.open(doc)
+    p = _editable_page(d, page)
+    r = fitz.Rect(*json.loads(rect)) & p.rect
+    if r.is_empty or r.width < 2 or r.height < 2:
+        raise ValueError("the image box is outside the page")
+    p.insert_image(r, filename=src, keep_proportion=True)
+    d.save(doc, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
+    d.close()
+    return {"rect": [round(v, 2) for v in r]}
 
 
 # -------------------------------------------------------------------- library
@@ -1463,6 +1531,8 @@ def main(
     size: str = "",
     flags: int = 0,
     color: str = "",
+    line_height: str = "",
+    rect: str = "",
     expected_mtime: str = "",
     force: int = 0,
     password: str = "",
@@ -1566,7 +1636,15 @@ def main(
     if action == "edit_text":
         return _mutate(doc, expected_mtime, "edit-text",
                        lambda p: _edit_text(p, page, bbox, origin, old_text,
-                                            new_text, font, size, flags, color))
+                                            new_text, font, size, flags, color,
+                                            line_height))
+    if action == "add_text":
+        return _mutate(doc, expected_mtime, "add-text",
+                       lambda p: _add_text(p, page, origin, new_text, font, size,
+                                           flags, color, line_height))
+    if action == "add_image":
+        return _mutate(doc, expected_mtime, "add-image",
+                       lambda p: _add_image(p, page, rect, src))
     if action == "extract_pages":
         return _extract_pages(doc, pages, name)
     if action == "merge":

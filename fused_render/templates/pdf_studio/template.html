@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PDF Studio</title>
+<title>PDF</title>
 <link rel="modulepreload" href="/template-assets/pdfjs.bundle.mjs">
 <link rel="modulepreload" href="/template-assets/pdfjs.worker.bundle.mjs">
 <style>
@@ -36,9 +36,8 @@
     display: flex; align-items: center; gap: 10px; padding: 7px 12px; flex: 0 0 auto;
     background: var(--chrome); border-bottom: 1px solid var(--hair); z-index: 30;
   }
-  .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: .2px; }
-  .brand .mark { width: 22px; height: 22px; border-radius: 5px; background: var(--blue);
-    color: #fff; display: grid; place-items: center; font-size: 10px; font-weight: 800; font-family: var(--mono); }
+  .brand { display: flex; align-items: center; flex: 0 0 auto; }
+  .brand .mark { width: 26px; height: 26px; display: block; filter: drop-shadow(0 1px 1.5px rgba(59,61,245,.25)); }
   .btn { display: inline-flex; align-items: center; gap: 6px; background: var(--chrome); color: var(--ink);
     border: 1px solid var(--hair); border-radius: var(--radius); padding: 6px 11px; font-weight: 500; }
   .btn:hover { background: var(--hair-2); }
@@ -146,10 +145,46 @@
   .textLayer ::selection { background: rgba(45,127,249,.28); }
   body.mode-edit .textLayer { display: none; }
   .tspan { position: absolute; cursor: text; border-radius: 2px; }
-  .tspan:hover { outline: 1.5px solid var(--blue-2); background: rgba(45,127,249,.08); }
-  .tedit { position: absolute; z-index: 10; border: 1.5px solid var(--blue); border-radius: 3px; background: #fff;
-    box-shadow: var(--shadow-2); font-family: var(--font); color: var(--ink); padding: 0 2px; min-width: 60px; }
+  body.tool-select .tspan:hover { outline: 1.5px solid var(--blue-2); outline-offset: 1.5px; background: rgba(45,127,249,.08); }
+  body.mode-edit:not(.tool-select) .tspan { pointer-events: none; }
+  body.mode-edit.tool-text .overlay { cursor: text; }
+  body.mode-edit.tool-image .overlay { cursor: crosshair; }
+  /* In-place text editor. Padding + border are the same 3px on every side
+     (EDIT_PAD in the script), and the script sizes the box to its text on
+     every keystroke — it grows right as a line gets longer and down per line. */
+  .tedit { position: absolute; z-index: 10; margin: 0; padding: 1.5px; border: 1.5px solid var(--blue);
+    border-radius: 3px; background: #fff; box-shadow: 0 0 0 3px rgba(45,127,249,.18);
+    resize: none; overflow: hidden; white-space: pre-wrap; overflow-wrap: break-word; }
   .tedit:focus { outline: none; }
+  .img-ghost { position: absolute; z-index: 9; pointer-events: none; border: 1.5px dashed var(--blue);
+    background: rgba(45,127,249,.06); }
+  .img-ghost img { display: block; width: 100%; height: 100%; opacity: .65; }
+
+  /* ---- edit toolbar (edit mode only) ---- */
+  #editbar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; flex: 0 0 auto;
+    background: var(--chrome); border-bottom: 1px solid var(--hair); z-index: 24; }
+  body.mode-view #editbar { display: none; }
+  .eb-group { display: inline-flex; align-items: center; gap: 4px; }
+  .eb-sep { width: 1px; align-self: stretch; background: var(--hair); margin: 2px 2px; }
+  .eb-tool { display: inline-flex; align-items: center; gap: 6px; border: 1px solid transparent; background: none;
+    color: var(--ink-2); border-radius: var(--radius); padding: 5px 10px; font-weight: 600; }
+  .eb-tool:hover { background: var(--hair-2); color: var(--ink); }
+  .eb-tool.on { background: var(--blue-soft); color: var(--blue-ink); border-color: #cfe0fb; }
+  .eb-tool svg { width: 16px; height: 16px; }
+  .eb-fmt select, .eb-fmt input[type=number] { font: inherit; font-size: 12.5px; color: var(--ink);
+    border: 1px solid var(--hair); border-radius: var(--radius); background: #fff; padding: 4px 6px; height: 28px; }
+  .eb-fmt input[type=number] { width: 58px; }
+  .eb-color { display: inline-flex; width: 28px; height: 28px; border: 1px solid var(--hair); border-radius: var(--radius);
+    padding: 3px; cursor: pointer; background: #fff; }
+  .eb-color input { width: 100%; height: 100%; border: none; padding: 0; background: none; cursor: pointer; }
+  .eb-color input::-webkit-color-swatch-wrapper { padding: 0; }
+  .eb-color input::-webkit-color-swatch { border: none; border-radius: 3px; }
+  .eb-color input::-moz-color-swatch { border: none; border-radius: 3px; }
+  .eb-tog { width: 28px; height: 28px; border: 1px solid var(--hair); border-radius: var(--radius); background: #fff;
+    color: var(--ink-2); font-size: 13px; padding: 0; }
+  .eb-tog:hover { background: var(--hair-2); }
+  .eb-tog.on { background: var(--blue-soft); color: var(--blue-ink); border-color: #cfe0fb; }
+  #ebHint { color: var(--ink-3); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   #pagesNote { color: var(--ink-3); text-align: center; font-size: 12px; padding: 6px; }
 
   /* ---- modal ---- */
@@ -362,7 +397,7 @@
 </style>
 <script src="/template-shared/ro-badge.js"></script>
 </head>
-<body class="mode-view">
+<body class="mode-view tool-select">
 <div id="boot">
   <div class="boot-skel" aria-hidden="true">
     <div class="boot-topbar">
@@ -380,11 +415,21 @@
       <div class="boot-canvas"><div class="boot-page skel-shimmer"></div></div>
     </div>
   </div>
-  <div class="boot-msg">Loading PDF Studio…</div>
+  <div class="boot-msg">Loading…</div>
 </div>
 
 <div id="topbar">
-  <div class="brand"><span class="mark">PDF</span><span>PDF Studio</span></div>
+  <div class="brand" title="PDF editor">
+    <svg class="mark" viewBox="0 0 28 28" aria-hidden="true">
+      <defs><linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#3b8bff"/><stop offset="1" stop-color="#5b3df5"/></linearGradient></defs>
+      <rect width="28" height="28" rx="7" fill="url(#brandGrad)"/>
+      <path d="M9.2 6h6.6l4.7 4.7v10.8a1.5 1.5 0 0 1-1.5 1.5H9.2a1.5 1.5 0 0 1-1.5-1.5V7.5A1.5 1.5 0 0 1 9.2 6z" fill="#fff"/>
+      <path d="M15.8 6v3.2a1.5 1.5 0 0 0 1.5 1.5h3.2z" fill="#c9d6ff"/>
+      <path d="M10.6 14.2h6.2M10.6 17.4h3.6" stroke="#5b3df5" stroke-width="1.7" stroke-linecap="round"/>
+      <path d="m16.4 20.3 4.6-4.6 1.5 1.5-4.6 4.6-2 .5z" fill="#3b8bff" stroke="#fff" stroke-width=".9" stroke-linejoin="round"/>
+    </svg>
+  </div>
   <span id="docName"></span>
   <span id="ro" hidden></span>
   <span id="docPages"></span>
@@ -396,7 +441,7 @@
   </button>
   <button class="btn" id="toolsBtn" title="All tools">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
-    Tools
+    All tools
   </button>
   <div class="seg" id="modeSeg">
     <button data-mode="edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg> Edit</button>
@@ -424,6 +469,8 @@
     <div class="mi" data-act="redo" id="miRedo">Redo <span class="kbd">Ctrl+Y</span></div>
     <div class="divider"></div>
     <div class="mi" data-act="editTextHint">Edit text — click any line on a page</div>
+    <div class="mi" data-act="addText">Add text</div>
+    <div class="mi" data-act="addImage">Add image…</div>
   </div></div>
   <div class="menu" data-menu>Page<div class="dropdown">
     <div class="mi" data-act="rotateL">Rotate left</div>
@@ -466,6 +513,32 @@
     <div class="mi" data-act="zoomOut">Zoom out</div>
     <div class="mi" data-act="zoom100">Actual size</div>
   </div></div>
+</div>
+
+<div id="editbar">
+  <div class="eb-group" id="ebTools">
+    <button class="eb-tool on" data-etool="select" title="Edit existing text — click any line on a page">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+      Edit text</button>
+    <button class="eb-tool" data-etool="text" title="Add a new text box — click where it should start">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V5h16v2"/><path d="M12 5v14"/><path d="M9 19h6"/></svg>
+      Add text</button>
+    <button class="eb-tool" data-etool="image" title="Add an image — pick a file, then click or drag on the page">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-4-4-8 8"/></svg>
+      Add image</button>
+  </div>
+  <div class="eb-sep"></div>
+  <div class="eb-group eb-fmt" id="ebFmt">
+    <select id="fmtFamily" title="Font">
+      <option value="sans">Helvetica</option><option value="serif">Times</option><option value="mono">Courier</option>
+    </select>
+    <input id="fmtSize" type="number" min="4" max="144" step="0.5" value="12" title="Font size (pt)">
+    <label class="eb-color" title="Text color"><input id="fmtColor" type="color" value="#1d2025"></label>
+    <button class="eb-tog" id="fmtBold" title="Bold"><b>B</b></button>
+    <button class="eb-tog" id="fmtItalic" title="Italic"><i style="font-family:Georgia,serif">I</i></button>
+  </div>
+  <div class="spacer"></div>
+  <div id="ebHint"></div>
 </div>
 
 <div id="banner" class="hidden"></div>
@@ -553,7 +626,10 @@ const state = {
   undoDepth: 0, redoDepth: 0,
   writable: true,     // fs writability of the ORIGINAL (open_doc verdict)
   spans: {},          // pageNo -> {mtime, spans}
-  editing: null,      // the floating text input, if any
+  editing: null,      // the open in-place text editor, if any (see openEditor)
+  tool: "select",     // edit-mode tool: select (edit text) | text (add) | image (add)
+  fmt: { family: "sans", size: 12, color: "#1d2025", bold: false, italic: false },  // new text
+  image: null,        // the picked image waiting to be placed {src, url, natW, aspect}
   inspect: null,      // the last inspection report, dropped on every mutation
   insTab: "overview",
   md: null,           // last markdown conversion {spec, markdown, chars, pages}
@@ -1052,41 +1128,242 @@ async function buildOverlay(n) {
   });
 }
 
-function cancelEdit() {
-  if (state.editing) { state.editing.remove(); state.editing = null; }
+// ---------- in-place text editor ----------
+// One <textarea> per edit, laid over the page and sized to its own text on
+// every keystroke: a line that outgrows the box widens it (up to the page's
+// right edge, where the line wraps), and every line adds height. Nothing is
+// shrunk — pdf.py draws the text at the size shown, one PDF line per line in
+// the box, so the result lands where it was typed.
+//
+// The editor previews in the same base-14 faces pdf.py writes (Helvetica /
+// Times / Courier, via their metric-compatible system fallbacks), so the box
+// width here is the width the text will take on the page.
+const FAMILY_CSS = { sans: "Helvetica, Arial, sans-serif",
+  serif: '"Times New Roman", Times, serif', mono: '"Courier New", Courier, monospace' };
+const FAMILY_PDF = { sans: "Helvetica", serif: "Times-Roman", mono: "Courier" };
+// Baseline below the middle of a CSS line box, in em: (ascent - descent) / 2 of
+// the fallback faces above. Places a NEW text's first PDF baseline where the
+// editor showed it.
+const BASELINE_EM = { sans: 0.35, serif: 0.34, mono: 0.27 };
+const LINE_EM = 1.25;   // line pitch × font size — pdf.py's _draw_lines default
+const EDIT_PAD = 3;     // .tedit padding + border, each side, px
+const measureCtx = document.createElement("canvas").getContext("2d");
+
+const hex2 = (n) => Math.max(0, Math.min(255, n | 0)).toString(16).padStart(2, "0");
+const rgbToHex = (c) => "#" + (c || [0, 0, 0]).map(hex2).join("");
+const hexToRgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) || 0);
+
+function familyOf(font, flags) {
+  const n = (font || "").toLowerCase();
+  if (flags & 8 || /mono|courier/.test(n)) return "mono";
+  if (!/sans/.test(n) && (flags & 4 || /times|serif|roman|georgia|garamond/.test(n))) return "serif";
+  return "sans";
+}
+const fmtFlags = (f) => (f.bold ? 16 : 0) | (f.italic ? 2 : 0)
+  | (f.family === "serif" ? 4 : 0) | (f.family === "mono" ? 8 : 0);
+const cssFont = (f, px) => `${f.italic ? "italic " : ""}${f.bold ? 700 : 400} ${px}px ${FAMILY_CSS[f.family]}`;
+const sameFmt = (a, b) => a.family === b.family && a.size === b.size && a.color === b.color
+  && a.bold === b.bold && a.italic === b.italic;
+
+// Soft-wrap `text` to `maxW` px the way the textarea does (break after spaces,
+// split a single over-long word), so the lines sent to pdf.py match the box.
+function wrapLines(text, maxW) {
+  const w = (s) => measureCtx.measureText(s).width;
+  const out = [];
+  for (const para of text.split("\n")) {
+    let line = "";
+    for (const tok of para.match(/\S+\s*|\s+/g) || []) {
+      if (line.trim() && w(line + tok.trimEnd()) > maxW) { out.push(line); line = ""; }
+      line += tok;
+      while (line.trimEnd().length > 1 && w(line.trimEnd()) > maxW) {
+        let k = line.length - 1;
+        while (k > 1 && w(line.slice(0, k)) > maxW) k--;
+        out.push(line.slice(0, k)); line = line.slice(k);
+      }
+    }
+    out.push(line);
+  }
+  return out;
 }
 
-function startEdit(wrap, span) {
+function sizeEditor(ed) {
+  const s = ed.scale, px = ed.fmt.size * s, lh = px * LINE_EM;
+  ed.el.style.font = cssFont(ed.fmt, px);
+  ed.el.style.lineHeight = lh + "px";
+  ed.el.style.color = ed.fmt.color;
+  measureCtx.font = ed.el.style.font;
+  ed.lines = wrapLines(ed.el.value, ed.maxW);
+  const widest = Math.max(0, ...ed.lines.map((l) => measureCtx.measureText(l).width));
+  const w = Math.min(ed.maxW, Math.max(ed.minW, widest + 2, px));   // +2: room for the caret
+  ed.el.style.width = w + 2 * EDIT_PAD + "px";
+  ed.el.style.height = ed.lines.length * lh + 2 * EDIT_PAD + "px";
+  // The caret can scroll the textarea's content a line up before this resize
+  // lands; the box now fits everything, so pin it back.
+  ed.el.scrollTop = 0; ed.el.scrollLeft = 0;
+}
+
+function cancelEdit() {
+  if (!state.editing) return;
+  state.editing.el.remove();
+  state.editing = null;
+  updateEditUi();
+}
+
+// `span` edits an existing line; `at` ({x, y} page px, the text's top-left)
+// opens an empty box for new text.
+function openEditor(wrap, { span = null, at = null }) {
   cancelEdit();
-  const s = +wrap.dataset.scale;
   const pageNo = +wrap.dataset.page;
-  const pt = state.spans[pageNo];
-  if (pt.rotation !== 0) { toast("Rotate this page to 0° before editing its text"); return; }
-  const inp = document.createElement("input");
-  inp.type = "text";
-  inp.className = "tedit";
-  inp.value = span.text;
-  inp.style.left = span.bbox[0] * s - 3 + "px";
-  inp.style.top = span.bbox[1] * s - 3 + "px";
-  inp.style.width = Math.max(80, (span.bbox[2] - span.bbox[0]) * s + 30) + "px";
-  inp.style.height = (span.bbox[3] - span.bbox[1]) * s + 6 + "px";
-  inp.style.fontSize = span.size * s + "px";
-  if (span.flags & 16) inp.style.fontWeight = "700";
-  if (span.flags & 2) inp.style.fontStyle = "italic";
-  if (span.flags & 8) inp.style.fontFamily = "var(--mono)";
-  wrap.appendChild(inp);
-  inp.focus(); inp.select();
-  state.editing = inp;
-  inp.addEventListener("keydown", (e) => {
+  if ((state.spans[pageNo]?.rotation || 0) !== 0) {
+    toast("Rotate this page to 0° before editing it"); return;
+  }
+  const s = +wrap.dataset.scale;
+  const fmt = span ? {
+    family: familyOf(span.font, span.flags), size: span.size, color: rgbToHex(span.color),
+    bold: !!(span.flags & 16) || /bold|black|heavy/i.test(span.font),
+    italic: !!(span.flags & 2) || /italic|oblique/i.test(span.font),
+  } : { ...state.fmt };
+  const el = document.createElement("textarea");
+  el.className = "tedit";
+  el.spellcheck = false;
+  el.value = span ? span.text : "";
+  let left, top, minW;
+  if (span) {
+    const [x0, y0, x1, y1] = span.bbox;
+    // Centre the first line on the original span so the box sits evenly
+    // around it, and never narrower than the span, so the old text stays hidden.
+    const lh = fmt.size * s * LINE_EM;
+    left = x0 * s - EDIT_PAD;
+    top = ((y0 + y1) / 2) * s - lh / 2 - EDIT_PAD;
+    // Trailing spaces in the span are blank on the page — don't pad the box for them.
+    measureCtx.font = cssFont(fmt, fmt.size * s);
+    const tail = span.text.length - span.text.trimEnd().length;
+    minW = (x1 - x0) * s - (tail ? measureCtx.measureText(span.text.slice(-tail)).width : 0);
+  } else {
+    left = at.x - EDIT_PAD;
+    top = at.y - EDIT_PAD;
+    minW = 24;
+  }
+  el.style.left = left + "px";
+  el.style.top = top + "px";
+  const maxW = Math.max(minW, wrap.clientWidth - (left + EDIT_PAD) - 6);
+  const ed = { el, wrap, pageNo, span, scale: s, left, top, minW, maxW, fmt, orig: { ...fmt }, lines: [] };
+  state.editing = ed;
+  wrap.appendChild(el);
+  sizeEditor(ed);
+  el.addEventListener("input", () => sizeEditor(ed));
+  el.addEventListener("keydown", (e) => {
     e.stopPropagation();
-    if (e.key === "Escape") cancelEdit();
-    if (e.key === "Enter") {
-      const val = inp.value;
-      cancelEdit();
-      if (val !== span.text) act("commitEdit", { pageNo, span, val });
-    }
+    if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
+    else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); finishEdit(); }
   });
-  inp.addEventListener("blur", () => setTimeout(cancelEdit, 120));
+  el.focus();
+  if (span) el.select();
+  updateEditUi();
+}
+
+// Apply the open editor (no-op when nothing changed) and close it.
+function finishEdit() {
+  const ed = state.editing;
+  if (!ed) return;
+  sizeEditor(ed);
+  const text = ed.lines.map((l) => l.trimEnd()).join("\n").replace(/\n+$/, "");
+  cancelEdit();
+  const f = ed.fmt;
+  const common = { page: ed.pageNo, new_text: text, size: String(f.size),
+    flags: fmtFlags(f), color: JSON.stringify(hexToRgb(f.color)),
+    line_height: String(+(f.size * LINE_EM).toFixed(2)) };
+  if (ed.span) {
+    if (ed.el.value === ed.span.text && sameFmt(f, ed.orig)) return;
+    act("commitEdit", { ...common, bbox: JSON.stringify(ed.span.bbox),
+      origin: JSON.stringify(ed.span.origin), old_text: ed.span.text,
+      // The span's own font name carries its weight/style — only swap it for
+      // a plain base-14 name once the reader changed the formatting.
+      font: sameFmt(f, ed.orig) ? ed.span.font : FAMILY_PDF[f.family] });
+  } else {
+    if (!text.trim()) return;
+    const s = ed.scale, px = f.size * s;
+    const x = (ed.left + EDIT_PAD) / s;
+    const y = (ed.top + EDIT_PAD + (px * LINE_EM) / 2 + BASELINE_EM[f.family] * px) / s;
+    act("addText", { ...common, origin: JSON.stringify([+x.toFixed(2), +y.toFixed(2)]),
+      font: FAMILY_PDF[f.family] });
+  }
+}
+
+// ---------- edit tools: edit text / add text / add image ----------
+function setTool(tool) {
+  state.tool = tool;
+  for (const t of ["select", "text", "image"]) document.body.classList.toggle("tool-" + t, t === tool);
+  document.querySelectorAll("#ebTools [data-etool]").forEach((b) => b.classList.toggle("on", b.dataset.etool === tool));
+  if (tool !== "image") { state.image = null; imgGhost?.remove(); }
+  updateEditUi();
+}
+
+// The format controls show the open editor's formatting, else the defaults
+// the next new text box starts with.
+function updateEditUi() {
+  const f = state.editing?.fmt || state.fmt;
+  $("fmtFamily").value = f.family;
+  $("fmtSize").value = f.size;
+  $("fmtColor").value = f.color;
+  $("fmtBold").classList.toggle("on", f.bold);
+  $("fmtItalic").classList.toggle("on", f.italic);
+  $("ebHint").textContent = state.editing
+    ? "Enter adds a line · ⌘/Ctrl+Enter or click outside to apply · Esc cancels"
+    : { select: "Click any text on the page to edit it — the box grows as you type",
+        text: "Click on the page where the new text should start",
+        image: "Click to place the image, or drag to size it · Esc cancels" }[state.tool];
+}
+
+function setFmt(patch, refocus = true) {
+  const ed = state.editing;
+  if (ed) { Object.assign(ed.fmt, patch); sizeEditor(ed); }
+  // New text boxes inherit whatever was last chosen for new text.
+  if (!ed || !ed.span) Object.assign(state.fmt, patch);
+  updateEditUi();
+  if (refocus) ed?.el.focus();
+}
+
+let imgGhost = null;
+let imgDrag = null;
+function localPt(wrap, e) {
+  const r = wrap.getBoundingClientRect();
+  return { x: Math.min(Math.max(0, e.clientX - r.left), r.width), y: Math.min(Math.max(0, e.clientY - r.top), r.height) };
+}
+// The box the image would land in, in page px: dragged out from the press point
+// (aspect kept), or a default size with its top-left at the pointer, nudged
+// back inside the page.
+function imageBox(wrap, p, drag = imgDrag) {
+  const img = state.image, W = wrap.clientWidth, H = wrap.clientHeight;
+  if (drag?.moved) {
+    const w = Math.max(8, Math.abs(p.x - drag.x0)), h = w * img.aspect;
+    return { x: p.x < drag.x0 ? drag.x0 - w : drag.x0,
+             y: p.y < drag.y0 ? drag.y0 - h : drag.y0, w, h };
+  }
+  const s = +wrap.dataset.scale;
+  let w = Math.min(img.natW * 0.75 * s || W * 0.35, W * 0.4), h = w * img.aspect;
+  if (h > H * 0.6) { h = H * 0.6; w = h / img.aspect; }
+  return { x: Math.min(p.x, W - w), y: Math.min(p.y, H - h), w, h };
+}
+function showGhost(wrap, box) {
+  if (!imgGhost) {
+    imgGhost = document.createElement("div");
+    imgGhost.className = "img-ghost";
+    if (state.image.url) imgGhost.innerHTML = `<img alt="" src="${state.image.url}">`;
+  }
+  if (imgGhost.parentNode !== wrap) wrap.appendChild(imgGhost);
+  Object.assign(imgGhost.style, { left: box.x + "px", top: box.y + "px", width: box.w + "px", height: box.h + "px" });
+}
+
+function loadImageMeta(src) {
+  return new Promise((resolve) => {
+    const url = fused.rawUrl(src);
+    const im = new Image();
+    im.onload = () => resolve({ src, url, natW: im.naturalWidth, aspect: im.naturalHeight / im.naturalWidth || 1 });
+    // Formats the browser can't draw (TIFF…) still place fine — just without a preview.
+    im.onerror = () => resolve({ src, url: "", natW: 0, aspect: 1 });
+    im.src = url;
+  });
 }
 
 // ---------- data flows ----------
@@ -1102,9 +1379,13 @@ async function applyMut(res) {
   refreshLib().catch(() => {});
 }
 
+let mutating = 0;   // in-flight mutations — page clicks wait rather than race the re-render
 async function mutate(action, params = {}) {
   setStatus("working…", "busy");
-  const res = await py({ action, doc: state.doc, expected_mtime: String(state.mtime), ...params });
+  mutating++;
+  let res;
+  try { res = await py({ action, doc: state.doc, expected_mtime: String(state.mtime), ...params }); }
+  finally { mutating--; }
   if (res.conflict) {
     toast("File changed on disk — reloaded the latest version", true);
     await openDoc(state.doc);
@@ -1179,6 +1460,7 @@ async function openDoc(path, opts) {
   dropInspect();
   setStatus(state.dirty ? "unsaved changes" : "", state.dirty ? "warn" : "");
   $("docName").textContent = info.name;
+  document.title = info.name;
   // Read-only original (§13.5): viewing and working-copy edits (rotate, text,
   // undo/redo, revert, export, save-a-copy) stay fully allowed — only writes
   // back to the original (Save, Rename) are blocked.
@@ -1209,6 +1491,7 @@ function clearOpenDoc() {
   state.doc = ""; state.pdf?.destroy(); state.pdf = null;
   $("pages").innerHTML = ""; $("thumbs").innerHTML = "";
   $("docName").textContent = ""; $("docPages").textContent = "";
+  document.title = "PDF";
   // Absent `doc` already means "nothing open" — don't add `doc=` to say it.
   // (`doc` is a path, not a true default: there is no value worth stamping.)
   fused.params.set("doc", "", { default: "" });
@@ -1252,7 +1535,7 @@ const acts = {
     const name = await dialog({ title: "Rename PDF", value: d.name, okText: "Rename" });
     if (!name || name === d.name) return;
     const res = await py({ action: "rename_doc", doc: d.path, name });
-    if (state.doc === d.path) { state.doc = res.path; fused.params.set("doc", res.path); $("docName").textContent = res.name; }
+    if (state.doc === d.path) { state.doc = res.path; fused.params.set("doc", res.path); $("docName").textContent = res.name; document.title = res.name; }
     await refreshLib();
   },
   removeDoc: async (d) => {
@@ -1318,16 +1601,22 @@ const acts = {
     await applyMut(res);
     setStatus("redone — unsaved", "warn");
   },
-  editTextHint: () => toast("Click any line of text on a page to edit it in place"),
-  commitEdit: async ({ pageNo, span, val }) => {
-    setStatus("editing…", "busy");
-    const res = await mutate("edit_text", {
-      page: pageNo, bbox: JSON.stringify(span.bbox), origin: JSON.stringify(span.origin),
-      old_text: span.text, new_text: val, font: span.font, size: String(span.size),
-      flags: span.flags, color: JSON.stringify(span.color),
-    });
-    if (res && res.used_size < span.size) toast(`Text shrunk to ${res.used_size}pt to fit the line`);
+  editTextHint: () => { setMode("edit"); setTool("select"); },
+  commitEdit: (params) => mutate("edit_text", params),
+  addText: (params) => {
+    if (params?.new_text) return mutate("add_text", params);
+    needDoc();
+    setMode("edit"); setTool("text");
   },
+  addImage: async () => {
+    needDoc();
+    setMode("edit");
+    const src = await browseModal({ title: "Add an image", exts: ".png,.jpg,.jpeg,.webp,.bmp,.gif,.tif,.tiff" });
+    if (!src) return setTool("select");
+    setTool("image");
+    state.image = await loadImageMeta(src);
+  },
+  placeImage: ({ pageNo, rect }) => mutate("add_image", { page: pageNo, rect: JSON.stringify(rect), src: state.image.src }),
 
   rotateL: (n) => mutate("rotate_pages", { pages: String(n || state.curPage), degrees: -90 }),
   rotateR: (n) => mutate("rotate_pages", { pages: String(n || state.curPage), degrees: 90 }),
@@ -2195,6 +2484,7 @@ $("modeSeg").addEventListener("click", (e) => {
   setMode(b.dataset.mode);
 });
 function setMode(mode) {
+  if (mode === "view") { finishEdit(); setTool("select"); }
   document.body.classList.toggle("mode-view", mode === "view");
   document.body.classList.toggle("mode-edit", mode !== "view");
   document.querySelectorAll("#modeSeg [data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
@@ -2238,13 +2528,81 @@ $("pages").addEventListener("click", (e) => {
     act({ rotL: "rotateL", rotR: "rotateR", extract: "extractPages", del: "deletePage" }[qa.dataset.qa], n);
     return;
   }
-  if (!document.body.classList.contains("mode-edit")) return;
-  const ts = e.target.closest(".tspan");
-  if (ts) {
-    const pt = state.spans[n];
-    startEdit(wrap, pt.spans[+ts.dataset.i]);
+  if (!document.body.classList.contains("mode-edit") || state.tool === "image") return;
+  if (swallowClick) { swallowClick = false; return; }
+  if (mutating) return toast("Still applying the last change…");
+  if (state.tool === "text") {
+    if (!e.target.closest(".overlay")) return;
+    openEditor(wrap, { at: localPt(wrap, e) });
+    setTool("select");
+    return;
   }
+  const ts = e.target.closest(".tspan");
+  if (ts) openEditor(wrap, { span: state.spans[n].spans[+ts.dataset.i] });
 });
+
+// Clicking anywhere outside the open editor applies it (the edit bar's format
+// controls excepted — they restyle it). The click that did so is swallowed so
+// it doesn't also open another editor underneath.
+let swallowClick = false;
+document.addEventListener("pointerdown", (e) => {
+  swallowClick = false;
+  const ed = state.editing;
+  if (!ed || ed.el.contains(e.target) || e.target.closest("#editbar")) return;
+  finishEdit();
+  if (e.target.closest("#pages")) swallowClick = true;
+}, true);
+
+// Add-image tool: a preview follows the pointer; click drops it at a default
+// size, drag sizes it.
+$("pages").addEventListener("pointermove", (e) => {
+  if (state.tool !== "image" || !state.image) return;
+  const wrap = imgDrag?.wrap || e.target.closest(".pdf-page");
+  if (!wrap || !wrap.dataset.page) return;
+  const p = localPt(wrap, e);
+  if (imgDrag && Math.hypot(p.x - imgDrag.x0, p.y - imgDrag.y0) > 6) imgDrag.moved = true;
+  showGhost(wrap, imageBox(wrap, p));
+});
+$("pages").addEventListener("pointerdown", (e) => {
+  if (state.tool !== "image" || !state.image || e.button !== 0) return;
+  const wrap = e.target.closest(".pdf-page");
+  if (!wrap || !wrap.dataset.page || e.target.closest(".qa")) return;
+  e.preventDefault();
+  const p = localPt(wrap, e);
+  imgDrag = { wrap, x0: p.x, y0: p.y, moved: false };
+  wrap.setPointerCapture(e.pointerId);
+});
+$("pages").addEventListener("pointerup", (e) => {
+  const drag = imgDrag;
+  imgDrag = null;
+  if (!drag || state.tool !== "image" || !state.image) return;
+  if (mutating) return toast("Still applying the last change…");
+  const pageNo = +drag.wrap.dataset.page;
+  if ((state.spans[pageNo]?.rotation || 0) !== 0) return toast("Rotate this page to 0° before editing it");
+  const { x, y, w, h } = imageBox(drag.wrap, localPt(drag.wrap, e), drag);
+  const s = +drag.wrap.dataset.scale;
+  const rect = [x / s, y / s, (x + w) / s, (y + h) / s].map((v) => +v.toFixed(2));
+  act("placeImage", { pageNo, rect }).finally(() => setTool("select"));
+});
+$("pages").addEventListener("pointerleave", () => { if (!imgDrag) imgGhost?.remove(); });
+
+$("ebTools").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-etool]");
+  if (!b) return;
+  finishEdit();
+  if (b.dataset.etool === "image") act("addImage");
+  else setTool(b.dataset.etool);
+});
+$("fmtFamily").addEventListener("change", (e) => setFmt({ family: e.target.value }));
+$("fmtSize").addEventListener("change", (e) => {
+  const v = Math.min(144, Math.max(4, +e.target.value || 12));
+  setFmt({ size: v });
+});
+// Live preview while the picker is open; focus returns to the text once it closes.
+$("fmtColor").addEventListener("input", (e) => setFmt({ color: e.target.value }, false));
+$("fmtColor").addEventListener("change", (e) => setFmt({ color: e.target.value }));
+$("fmtBold").addEventListener("click", () => setFmt({ bold: !(state.editing?.fmt || state.fmt).bold }));
+$("fmtItalic").addEventListener("click", () => setFmt({ italic: !(state.editing?.fmt || state.fmt).italic }));
 
 $("thumbs").addEventListener("click", (e) => {
   const t = e.target.closest(".thumb");
@@ -2261,6 +2619,8 @@ $("thumbs").addEventListener("click", (e) => {
 
 document.addEventListener("keydown", (e) => {
   if (state.editing || e.target.closest(".modal")) return;
+  if (e.key === "Escape" && state.tool !== "select") { setTool("select"); return; }
+  if (e.target.closest("#editbar input, #editbar select")) return;
   const mod = e.ctrlKey || e.metaKey;
   if (mod && e.key.toLowerCase() === "z" && !e.shiftKey) { e.preventDefault(); act("undo"); }
   else if (mod && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) { e.preventDefault(); act("redo"); }
@@ -2290,7 +2650,7 @@ async function boot() {
       libP.catch(() => {});
       $("boot").innerHTML = "";
       const msg = document.createElement("div");
-      msg.innerHTML = `<b>PDF Studio needs its Python engines.</b><br>
+      msg.innerHTML = `<b>The PDF editor needs its Python engines.</b><br>
         pymupdf and pikepdf are declared in this template's
         <code style="font-family:var(--mono)">pyproject.toml</code>, so the app
         normally installs them into this folder's environment the first time you
@@ -2322,7 +2682,7 @@ async function boot() {
     $("boot").remove();
   } catch (err) {
     console.error(err);
-    $("boot").textContent = `PDF Studio failed to start: ${err?.message || err}`;
+    $("boot").textContent = `The PDF editor failed to start: ${err?.message || err}`;
     return;
   }
   // A bookmarked ?inspect=1 reopens the drawer on the document it was taken on.
