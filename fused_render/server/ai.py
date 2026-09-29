@@ -71,8 +71,10 @@ router = APIRouter()
 _AI_EFFORTS = ("low", "medium", "high", "xhigh")
 _AI_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 # The default-model PREFERENCE (shell/prefs.py) speaks short names, because its
-# other consumer — the claude chat template's model chip — does: one preference
-# cannot have two vocabularies. This relay hands its value to the CLI, which is
+# other consumer — the native chat's model chip
+# (frontend/src/apps/claude/ui/ModelSelect.tsx, values in
+# ui/composer-defaults.ts) — does: one preference cannot have two
+# vocabularies. This relay hands its value to the CLI, which is
 # happier with a full id, so the short→id mapping lives here, at the one call
 # site that needs it, rather than in the pref (which would make the store know
 # about a model catalogue it has no other reason to track).
@@ -236,9 +238,9 @@ def _claude_seconds(data: dict) -> float | None:
 # owns the union now, and this name stays as the module-local alias every
 # function and test below already reads.
 #
-# The claude chat template (templates/claude/agent.py) still keeps its own copy.
-# That is deliberate duplication, not a missing import: a template is standalone
-# user-forkable code and may not import the app (D166). It is pinned to this
+# The chat's backend (templates/claude/agent.py) still keeps its own copy.
+# That is deliberate duplication, not a missing import: it runs as a template
+# file — standalone, user-forkable code that may not import the app (D166). It is pinned to this
 # list by tests/test_claude_health.py rather than left to drift.
 #
 # Ordered most-canonical first, `.exe` ahead of any `.cmd` shim: a shim has to

@@ -1,42 +1,32 @@
-"""claude's live-app-state channels: the split view's agent can SEE the
-app in the left pane.
+"""claude's live-app-state channels: the chat's agent can SEE the app in the
+left pane.
 
-Two directions, and neither exists in the `claude` template:
+Two directions, and this file is the PYTHON half of both:
 
-* **push** — `template.html` snapshots the left iframe (console errors, params,
-  a bounded DOM outline) at send time and prepends it to the message inside a
+* **push** — the chat snapshots the left iframe (console errors, params, a
+  bounded DOM outline) at send time and prepends it to the message inside a
   `<live-app-state>` block. The block is for the model, not for the user, so
   everything user-facing (the chat log, the session-list preview, the commit
-  subject, a re-attach match) has to see the message WITHOUT it.
+  subject, a re-attach match) has to see the message WITHOUT it. What is pinned
+  here is the stripping, and that the tag agent.py strips is still the tag
+  `apps/claude/protocol/wire.ts` writes.
 * **pull** — a second MCP tool on the same server (`app_state`) lets the agent
   re-read the page after an edit, over the same file round trip the approval
-  tool uses. Its answer comes from the page's poll loop, so an unanswered
+  tool uses. Its answer comes from the chat's poll loop, so an unanswered
   request must bound itself instead of blocking `claude` forever.
 
 The claude CLI is never invoked: the MCP server is driven over its own stdio
-JSON-RPC (the surface the CLI talks to), and the page's own JS functions are
-extracted and run under node — the same treatment the approval card's
-summariser gets in test_claude_permission_bridge.py.
+JSON-RPC (the surface the CLI talks to).
 
-There is no frame descent to test any more, and that absence is itself asserted
-below. The first build of this feature framed `/embed/<app>` — fused-render's
-React shell, with the app nested one iframe deeper — and had to walk down to
-find the app's window; #372 moved the pane to `/render?path=<entry>`, the raw
-rendered document, so the frame's own `contentDocument` IS the app's. The walker
-is gone, and with it the class of bug where the viewer's chrome got described as
-the user's app.
-
-What node still cannot cover is the live document: real console timing (the
-app's first inline script runs before the frame's `load` and its logging is
-genuinely missed), real iframe navigation, and what a real page outlines. Those
-need a browser.
+The snapshot-taking itself — the DOM outline, the console buffer, the composer's
+Escape claimants, the outline file — is the native chat's, and is tested in
+`frontend/src/apps/claude` under vitest, where the DOM is real.
 """
 import importlib.util
 import json
 import os
-import shutil
+import re
 import stat
-import subprocess
 import sys
 import time
 
@@ -46,7 +36,21 @@ from _mcp_stdio import MCPServer
 
 TEMPLATE_DIR = os.path.join("fused_render", "templates", "claude")
 SERVER = os.path.join(TEMPLATE_DIR, "permission_server.py")
-TEMPLATE = os.path.join(TEMPLATE_DIR, "template.html")
+
+#: The native chat's wire vocabulary — the TypeScript half of every constant
+#: duplicated across the Python/JS seam here (03 §4e).
+_WIRE_TS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "frontend", "src", "apps", "claude", "protocol", "wire.ts")
+
+
+def _ts_const(name: str) -> str:
+    """The string value of an `export const <name> = "…"` in wire.ts."""
+    src = open(_WIRE_TS, encoding="utf-8").read()
+    found = re.findall(
+        r"""(?m)^\s*export\s+const\s+%s\s*(?::[^=]*)?=\s*['"]([^'"]+)['"]""" % name,
+        src)
+    assert len(found) == 1, f"one writer of {name} in wire.ts, or this is stale"
+    return found[0]
 
 
 def _load(name):
@@ -60,11 +64,6 @@ def _load(name):
 @pytest.fixture
 def agent():
     return _load("agent")
-
-
-@pytest.fixture
-def html():
-    return open(TEMPLATE, encoding="utf-8").read()
 
 
 def _server(run_dir, env=None):
@@ -633,818 +632,45 @@ def test_history_hides_the_state_block_from_the_restored_transcript(agent,
                      "fix the header"}]}}) + "\n")
     turns = agent._history(str(project), "sid")["turns"]
     # `uuid` is the transcript record's own id, carried so the chat can scroll
-    # to one turn (`?msg=`, see test_claude_message_anchor.py); "" on a row that
+    # to one turn (`?msg=`, the native chat's Transcript anchor); "" on a row that
     # has none, as this fixture does.
     assert turns == [{"role": "user", "text": "fix the header", "uuid": ""}]
 
 
-def test_the_page_and_the_agent_agree_on_the_block_delimiters(agent, html):
-    """D146: the page writes the block and agent.py strips it, so the marker is
+def test_the_chat_and_the_agent_agree_on_the_block_delimiters(agent):
+    """D146: the chat writes the block and agent.py strips it, so the marker is
     a rule in two places and needs a test rather than a comment. A drift here
-    is invisible — the chat simply starts showing JSON to the user."""
-    # The page composes the tag from one const rather than spelling the literal
-    # twice, so it is that const the two sides have to agree on.
-    assert 'const APP_STATE_TAG = "%s";' % agent.APP_STATE_TAG in html
+    is invisible — the chat simply starts showing JSON to the user.
+
+    The chat composes the tag from one exported const rather than spelling the
+    literal twice, so it is that const the two sides have to agree on. Read as
+    TEXT because a Python test cannot import TypeScript — the same pattern as
+    tests/test_trouble_parity.py."""
+    assert _ts_const("APP_STATE_TAG") == agent.APP_STATE_TAG
     assert agent._strip_app_state(
         "<%s>\n{}\n</%s>\n\nhello" % (agent.APP_STATE_TAG, agent.APP_STATE_TAG)
     ) == "hello"
 
 
-def test_the_page_and_the_agent_agree_on_the_app_state_action(agent, html):
-    """The other half of the same wire: the poll payload key and the action
-    name the page calls back with."""
-    assert 'action: "app_state"' in html
-    assert "data.app_state" in html
+def test_the_block_the_chat_prepends_is_one_the_merge_orders(agent):
+    """The tag is only stripped because it is one of the blocks `mergeOutgoing`
+    prepends — `BLOCK_ORDER` is that list, and a tag that fell out of it would
+    stop being written while agent.py went on stripping a tag nobody sends."""
+    src = open(_WIRE_TS, encoding="utf-8").read()
+    order = re.search(r"export\s+const\s+BLOCK_ORDER[^=]*=\s*\[(.*?)\]", src, re.S)
+    assert order, "BLOCK_ORDER moved out of wire.ts — this test reads nothing"
+    assert "APP_STATE_TAG" in order.group(1)
+
+
+def test_the_app_state_action_refuses_a_call_that_names_no_run(agent):
+    """The other half of the same wire: the action name the chat calls back
+    with (`runAgent("app_state", …)` in `apps/claude/protocol`) has to be one
+    `main()` routes, or the pull settles as a permanent error."""
     assert agent.main(action="app_state", run_id="", request_id="x",
                       state="{}").get("error")
 
-# ------------------------------------------------- the page's own JS, in node
 
-def _node(fn_names, call, html, prelude=""):
-    """Run named top-level functions/consts out of template.html under node.
-
-    Extracted and executed rather than asserted about, like the approval card's
-    summariser: what matters is the object the agent ends up reading, not the
-    shape of the source that built it."""
-    if not shutil.which("node"):
-        pytest.skip("node is needed to run the page's own snapshot helpers")
-    chunks = []
-    for name in fn_names:
-        start = html.index(name)
-        if name.startswith("function") or name.startswith("async function"):
-            end = html.index("\n}\n", start) + 3      # closing brace at column 0
-            chunks.append(html[start:end])
-            continue
-        # A declaration: take whole lines until one whose CODE ends in `;`, so a
-        # wrapped literal comes along and a trailing // comment does not confuse it.
-        taken = []
-        for line in html[start:].split("\n"):
-            taken.append(line)
-            if line.split("//")[0].rstrip().endswith(";"):
-                break
-        chunks.append("\n".join(taken))
-    script = prelude + "\n" + "\n".join(chunks) + "\n" + call
-    # `encoding="utf-8"` is not decorative: `text=True` alone decodes the
-    # child's stdout with locale.getpreferredencoding(False), and node always
-    # writes its UTF-8 source text as UTF-8 bytes regardless of platform. On
-    # Windows that locale default is commonly cp1252, which would silently
-    # mojibake any non-ASCII character the page's own source hands back
-    # (see tests/test_claude_template_segments.py's identical harness, where
-    # this exact gap did exactly that) — this file's probes just haven't hit
-    # one yet, so pinning it here is prevention, not a fix for an observed
-    # failure.
-    out = subprocess.run(["node", "-e", script], capture_output=True,
-                          text=True, encoding="utf-8")
-    assert out.returncode == 0, out.stderr
-    return json.loads(out.stdout)
-
-
-# A DOM small enough to write by hand and complete enough for the two functions
-# that matter here: annPathOf walks up (parentElement / previousElementSibling /
-# tagName) and annResolve walks down (body / children / getElementById). jsdom is
-# not a dependency of this repo, and stubbing exactly the surface under test is
-# what makes the round trip below a real round trip rather than a mock agreeing
-# with itself.
-_DOM = """
-function el(tag, opts, kids) {
-  opts = opts || {};
-  const e = {tagName: tag.toUpperCase(), nodeType: 1, id: opts.id || "",
-             className: opts.cls || "", children: [], childNodes: [],
-             parentElement: null, previousElementSibling: null,
-             textContent: opts.text || ""};
-  if (opts.text) e.childNodes.push({nodeType: 3, nodeValue: opts.text});
-  (kids || []).forEach((k) => {
-    k.parentElement = e;
-    k.previousElementSibling = e.children[e.children.length - 1] || null;
-    e.children.push(k);
-    e.childNodes.push(k);
-  });
-  return e;
-}
-function docOf(body) {
-  return {body: body, title: "", getElementById(id) {
-    let hit = null;
-    (function walk(n) {
-      if (n.id === id && !hit) hit = n;
-      (n.children || []).forEach(walk);
-    })(body);
-    return hit;
-  }};
-}
-// Every element in document order, body excluded (annPathOf is relative to it).
-function flatten(body) {
-  const out = [];
-  (function walk(n) { (n.children || []).forEach((k) => { out.push(k); walk(k); }); })(body);
-  return out;
-}
-// The outline's nodes in the same order, its root excluded.
-function flatOutline(root) {
-  const out = [];
-  (function walk(n) { (n.children || []).forEach((k) => { out.push(k); walk(k); }); })(root);
-  return out;
-}
-const BODY = el("body", {}, [
-  el("header", {id: "top"}, [el("h1", {text: "Ookla speeds"})]),
-  el("main", {cls: "wrap"}, [
-    el("div", {cls: "row"}, [
-      el("button", {text: "Deploy"}),
-      el("button", {id: "reset", text: "Reset"}),
-    ]),
-    el("div", {cls: "row"}, [el("span", {text: "42 Mbps"})]),
-  ]),
-  el("script", {text: "fused.runPython('./data.py')"}),
-]);
-const DOC = docOf(BODY);
-"""
-
-_OUTLINE_FNS = ["const APP_STATE_MAX_TEXT", "const APP_STATE_MAX_NODES",
-                "const APP_STATE_MAX_DEPTH", "const APP_STATE_MAX_NODE_TEXT",
-                "const QUIET_TAGS", "function clipText(", "function annPathOf(",
-                "function annResolve(", "function outlineNode("]
-
-# A window whose document can be swapped, which is what a live-reload looks like
-# from out here. `calls` records what the app's OWN console received, so the
-# call-through can be checked rather than assumed.
-_FRAME = """
-function fakeWin(doc, href) {
-  const w = {calls: [], listeners: [],
-             location: {href: href || "http://x/render?path=/p/index.html",
-                        pathname: "/render", search: "?path=/p/index.html&zoom=3"}};
-  w.document = doc;
-  w.console = {error(...a) { w.calls.push("error:" + a.join(" ")); },
-               warn(...a) { w.calls.push("warn:" + a.join(" ")); }};
-  w.addEventListener = (name) => w.listeners.push(name);
-  return w;
-}
-"""
-
-_STATE_FNS = ["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
-              "const APP_STATE_MAX_NODES", "const APP_STATE_MAX_DEPTH",
-              "const APP_STATE_MAX_NODE_TEXT", "const APP_STATE_TAG",
-              "const APP_STATE_UNREADABLE",
-              "const appLogs", "let appEntry", "let appLoads",
-              "function clipText(", "function pushAppLog(", "function fmtLogArg(",
-              "function appWindow(", "function watchWindow(", "function watchApp(",
-              "function searchParamsOf(", "const CHAT_PARAMS",
-              "function appParamsOf(", "const QUIET_TAGS", "function annPathOf(",
-              "function outlineNode(", "function appStateSnapshot("]
-
-
-# ------------------------------------------------------------ the pushed block
-
-def test_the_state_block_is_omitted_when_there_is_nothing_to_say(html):
-    """An empty snapshot must not push a block: a turn that says nothing about
-    the app should look exactly like a turn from before this feature."""
-    empty = _node(_BLOCK,
-                  "console.log(JSON.stringify(appStateBlock(null)));", html)
-    assert empty == ""
-
-
-def test_the_state_block_labels_itself_and_carries_the_json(html):
-    block = _node(_BLOCK,
-                  "console.log(JSON.stringify(appStateBlock("
-                  '{"title": "Demo", "console": [{"level": "error", "text": "boom"}]}'
-                  ")));", html)
-    assert block.startswith("<live-app-state>")
-    assert block.endswith("</live-app-state>")
-    # One paragraph telling the model what it is, then the payload.
-    assert "looking at" in block.split("\n")[1]
-    assert "boom" in block
-
-
-def test_the_console_buffer_is_capped_and_each_entry_truncated(html):
-    """A live-reloading page logs forever, and one console line can be a whole
-    stack trace. Neither may grow the prompt without bound."""
-    logs = _node(["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
-                  "const appLogs", "function clipText(", "function pushAppLog("],
-                 "for (let i = 0; i < 400; i++) pushAppLog('error', 'x'.repeat(900));"
-                 "console.log(JSON.stringify(appLogs));", html)
-    assert len(logs) == 50
-    assert len(logs[0]["text"]) == 301 and logs[0]["text"].endswith("…")
-
-
-def test_the_buffer_keeps_the_newest_entries(html):
-    """Which end is dropped matters: the errors that appeared AFTER Claude's edit
-    are the ones worth reporting."""
-    logs = _node(["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
-                  "const appLogs", "function clipText(", "function pushAppLog("],
-                 "for (let i = 0; i < 60; i++) pushAppLog('warn', 'line ' + i);"
-                 "console.log(JSON.stringify(appLogs.map((e) => e.text)));", html)
-    assert logs[0] == "line 10" and logs[-1] == "line 59"
-
-
-_PUSH_FNS = ["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
-             "const APP_STATE_WIRE_LOGS", "const appLogs",
-             "function clipText(", "function pushAppLog(",
-             "function appStatePush("]
-
-
-def _pushed(html, n):
-    """`n` console lines in the buffer, then the PUSHED snapshot of them.
-
-    `appStateSnapshot` is stubbed rather than extracted: what this pins is the
-    trim, and building a real snapshot needs the whole frame/document harness for
-    a field it would not touch."""
-    return _node(_PUSH_FNS,
-                 "for (let i = 0; i < %d; i++) pushAppLog('warn', 'line ' + i);"
-                 "function appStateSnapshot() {"
-                 "  return {title: 'Demo', console: appLogs.slice()};"
-                 "}"
-                 "const pushed = appStatePush();"
-                 "console.log(JSON.stringify({pushed, buffer: appLogs.length}));"
-                 % n, html)
-
-
-def test_a_pushed_block_carries_only_the_newest_console_lines(html):
-    """The buffer is 50 deep and each line up to 300 characters, so an untrimmed
-    console is ~22 KB on ONE send — and the CLI keeps every message in its session
-    transcript, so it stays in context for the rest of the conversation. `dom`
-    already had a size story (appStateFile sends a path); this field had none."""
-    out = _pushed(html, 60)
-    lines = [e["text"] for e in out["pushed"]["console"]]
-    assert len(lines) == 12
-    # The TAIL: a console is read newest-first, and the line explaining the screen
-    # the user is annotating is the last one.
-    assert lines[0] == "line 48" and lines[-1] == "line 59"
-    # The buffer itself is untouched — it answers "was that error already there
-    # before my edit", which reaches back further than one turn.
-    assert out["buffer"] == 50
-
-
-def test_a_trimmed_console_says_so(html):
-    """outlineNode's rule, one field over: an elision the agent cannot see is a
-    lie about the page, because it reads a dropped line as a line that never
-    happened. And it names where the rest honestly is."""
-    out = _pushed(html, 60)
-    assert out["pushed"]["consoleTruncated"].startswith("38 older console line")
-    assert "app_state tool" in out["pushed"]["consoleTruncated"]
-
-
-def test_a_short_console_is_pushed_whole_and_unannotated(html):
-    """No caveat when nothing was dropped — a turn with a two-line console must
-    not carry a sentence about truncation that did not happen."""
-    out = _pushed(html, 2)
-    assert [e["text"] for e in out["pushed"]["console"]] == ["line 0", "line 1"]
-    assert "consoleTruncated" not in out["pushed"]
-
-
-def test_the_pull_channel_hands_over_the_whole_buffer(html):
-    """The third thing push and pull disagree about, and for the same reason as
-    the other two: a pushed block is one nobody asked for and is re-read on every
-    later turn, where the pull channel is answering a tool call that asked."""
-    out = _node(_PUSH_FNS + ["function appStatePull(", "const APP_STATE_UNREADABLE"],
-                "for (let i = 0; i < 60; i++) pushAppLog('warn', 'line ' + i);"
-                "function appStateSnapshot() {"
-                "  return {title: 'Demo', console: appLogs.slice()};"
-                "}"
-                "console.log(JSON.stringify({"
-                "  pull: appStatePull().console.length,"
-                "  push: appStatePush().console.length}));", html)
-    assert out == {"pull": 50, "push": 12}
-
-
-def test_the_push_trim_does_not_mutate_the_snapshot_it_was_given(html):
-    """A copy, never in place: the snapshot object is also what appStateFile
-    forwards and what the send path holds, and trimming a shared field would make
-    the pull channel start answering with the push channel's twelve lines."""
-    out = _node(_PUSH_FNS, """
-for (let i = 0; i < 60; i++) pushAppLog('warn', 'line ' + i);
-const shared = {title: 'Demo', console: appLogs.slice()};
-function appStateSnapshot() { return shared; }
-const pushed = appStatePush();
-console.log(JSON.stringify({pushed: pushed.console.length,
-                            shared: shared.console.length,
-                            same: pushed === shared}));
-""", html)
-    assert out == {"pushed": 12, "shared": 50, "same": False}
-
-
-def test_console_log_is_not_captured_only_errors_and_warnings(html):
-    """50 ring slots spent on an app's ordinary chatter would push out the
-    errors they exist for."""
-    out = _node(["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
-                 "const appLogs", "function clipText(", "function pushAppLog(",
-                 "function fmtLogArg(", "function watchWindow("],
-                _DOM + _FRAME + "const W = fakeWin(docOf(BODY));"
-                + "const originalLog = (msg) => W.calls.push('log:' + msg);"
-                + "W.console.log = originalLog;"
-                + "watchWindow(W);"
-                + "W.console.log('just chatter');"
-                + "W.console.error('a real problem');"
-                + "console.log(JSON.stringify({untouched: W.console.log === originalLog,"
-                  " buffered: appLogs.map((e) => e.text)}));", html)
-    assert out["untouched"] is True, "console.log must be left alone"
-    assert out["buffered"] == ["a real problem"]
-
-
-def test_the_dom_outline_is_bounded_in_depth_and_node_count(html):
-    """outerHTML for a real app is tens of KB that would dominate every turn."""
-    out = _node(_OUTLINE_FNS,
-                _DOM
-                + "let deep = el('span', {text: 'bottom'});"
-                + "for (let i = 0; i < 8; i++) deep = el('div', {}, [deep]);"
-                + "const wide = el('ul', {}, Array.from({length: 200},"
-                  " (_, i) => el('li', {text: 'item ' + i})));"
-                + "const body = el('body', {}, [deep, wide]);"
-                + "const doc = docOf(body);"
-                + "const tree = outlineNode(body, 0, null, doc);"
-                + "let depth = 0, count = 0;"
-                + "(function walk(n, d) { depth = Math.max(depth, d); count++;"
-                  " (n.children || []).forEach((k) => walk(k, d + 1)); })(tree, 0);"
-                + "console.log(JSON.stringify({depth, count}));", html)
-    assert out["depth"] <= 4, out
-    # the shared budget caps the WHOLE walk, not each level
-    assert out["count"] <= 61, out
-
-
-def test_the_outline_notes_where_it_truncated(html):
-    """Truncation the agent cannot see is a lie about the page: it would read an
-    elided element as an absent one."""
-    out = _node(_OUTLINE_FNS,
-                _DOM
-                + "const body = el('body', {}, Array.from({length: 200},"
-                  " (_, i) => el('p', {text: 'p' + i})));"
-                + "const tree = outlineNode(body, 0, null, docOf(body));"
-                + "console.log(JSON.stringify(tree.truncated || ''));", html)
-    assert "sibling(s) not shown" in out
-
-
-def test_the_outline_lists_a_script_without_quoting_its_source(html):
-    """A clipped 120 chars of an app's own JS in a structural outline is noise at
-    best; the agent can read the file properly. The element is still listed —
-    "there is a script here" is structure."""
-    out = _node(_OUTLINE_FNS,
-                _DOM + "const tree = outlineNode(BODY, 0, null, DOC);"
-                + "console.log(JSON.stringify(flatOutline(tree)"
-                  ".filter((n) => n.tag === 'script')));", html)
-    assert len(out) == 1 and out[0]["tag"] == "script"
-    assert "text" not in out[0], out
-
-
-# ------------------------------------- ONE identifier space, shared with #372
-
-def test_an_outline_path_resolves_back_to_the_element_it_describes(html):
-    """The property that makes the shared scheme worth anything: every path the
-    outline emits is one `annResolve` hands back the very same element for. If it
-    were a second, subtly different path builder, the agent could read a node in
-    the outline and be unable to act on the pin the user put on it."""
-    out = _node(_OUTLINE_FNS,
-                _DOM + "const tree = outlineNode(BODY, 0, null, DOC);"
-                + "const els = flatten(BODY), nodes = flatOutline(tree);"
-                + "const rows = els.map((e, i) => ({tag: e.tagName.toLowerCase(),"
-                  " path: nodes[i] && nodes[i].path,"
-                  " same: annResolve({anchorPath: nodes[i] && nodes[i].path}, DOC) === e}));"
-                + "console.log(JSON.stringify(rows));", html)
-    assert len(out) >= 8, out
-    assert all(r["path"] for r in out), out
-    assert all(r["same"] for r in out), [r for r in out if not r["same"]]
-    # the shape is annotations' own, not a private one
-    assert out[0]["path"] == "header:nth-of-type(1)", out[0]
-
-
-def test_an_outline_node_carries_the_id_the_annotation_anchor_would_use(html):
-    """anchorId is annResolve's preferred key, so the outline has to surface it
-    too — otherwise the agent sees a path for an element the user's pin names by
-    id, and cannot tell they are the same thing."""
-    out = _node(_OUTLINE_FNS,
-                _DOM + "const tree = outlineNode(BODY, 0, null, DOC);"
-                + "const byId = flatOutline(tree).filter((n) => n.id);"
-                + "console.log(JSON.stringify(byId.map((n) => ({id: n.id,"
-                  " same: annResolve({anchorId: n.id}, DOC) === DOC.getElementById(n.id)}))));",
-                html)
-    assert sorted(r["id"] for r in out) == ["reset", "top"], out
-    assert all(r["same"] for r in out), out
-
-
-def test_the_path_scheme_has_exactly_one_implementation(html):
-    """D146: a rule in two implementations needs a test, and the cheapest way to
-    pass that test is not to have two. The outline calls the annotation layer's
-    builder rather than growing its own."""
-    assert html.count("function annPathOf(") == 1
-    start = html.index("function outlineNode(")
-    body = html[start:html.index("\n}\n", start)]
-    assert "annPathOf(" in body, "the outline builds its own paths"
-
-
-# ------------------------------------- reading the framed app, without descent
-
-def test_no_frame_descent_machinery_remains(html):
-    """#372 reframed the pane as /render?path=<entry> — the RAW rendered
-    document — so `leftframe.contentDocument` is the app's document and there is
-    nothing to walk down through. The walker is deleted, not left dormant:
-    dormant code that once resolved a window is exactly what would get
-    reinstated by the next person who reads the comment above it."""
-    for gone in ["reachableFrames", "hasRuntime", "appFrameOf",
-                 "resolveAppWindow", "APP_FRAME_MAX_DEPTH"]:
-        assert gone not in html, gone
-
-
-def test_the_app_document_is_the_left_frames_own(html):
-    url = _node(_STATE_FNS,
-                _DOM + _FRAME
-                + "let annFrame = {isConnected: true,"
-                  " contentWindow: fakeWin(docOf(BODY))};"
-                + "const s = appStateSnapshot();"
-                + "console.log(JSON.stringify({url: s.url, tag: s.dom.tag,"
-                  " params: s.params}));", html)
-    assert url["tag"] == "body"
-    assert url["url"] == "/render?path=/p/index.html&zoom=3"
-    # /render's own plumbing is not something the app defined; the app's is
-    assert url["params"] == {"zoom": "3"}
-
-
-def test_a_project_with_no_app_entry_degrades_instead_of_describing_this_chat(html):
-    """When there is no entry html the loader REMOVES the iframe, so `annFrame`
-    is a detached element. Reporting this chat's own window as the app's is the
-    defect that framing would invite, so the snapshot has to see "no app" — and
-    a snapshot with nothing in it at all is null, not an empty object."""
-    out = _node(_STATE_FNS,
-                _DOM + _FRAME
-                + "let annFrame = {isConnected: false, contentWindow: null};"
-                + "console.log(JSON.stringify({bare: appStateSnapshot(),"
-                  " withLog: (pushAppLog('error', 'the left pane could not open"
-                  " the app: no app entry'), appStateSnapshot())}));", html)
-    # nothing known and nothing logged: no block at all this turn
-    assert out["bare"] is None
-    # once the console says WHY, the sentence earns its place beside it
-    assert "could not be read" in out["withLog"]["unreadable"]
-    assert out["withLog"]["console"][0]["text"].startswith("the left pane")
-    assert "dom" not in out["withLog"] and "title" not in out["withLog"]
-    assert "url" not in out["withLog"], "an unreadable frame must not report a url"
-
-
-def test_about_blank_is_not_described_as_the_app(html):
-    """The placeholder document every iframe starts on. Describing it would put
-    an empty body in the prompt as though the app rendered nothing."""
-    out = _node(_STATE_FNS,
-                _DOM + _FRAME
-                + "let annFrame = {isConnected: true,"
-                  " contentWindow: fakeWin(docOf(BODY), 'about:blank')};"
-                + "console.log(JSON.stringify(appStateSnapshot()));", html)
-    assert out is None
-
-
-def test_an_unreachable_frame_never_throws_the_send(html):
-    """Cross-origin, or torn down mid-navigation. Nothing here may break the
-    chat: a failure degrades to less state, never to a thrown send."""
-    out = _node(_STATE_FNS,
-                _DOM + _FRAME
-                + "let annFrame = {isConnected: true, get contentWindow() {"
-                  " throw new Error('cross-origin'); }};"
-                + "pushAppLog('error', 'boom');"
-                + "console.log(JSON.stringify(appStateSnapshot()));", html)
-    assert out["unreadable"]
-    assert out["console"][0]["text"] == "boom"
-
-
-def test_the_chats_own_params_are_not_reported_as_the_apps(html):
-    """This page sets no param boundary, so the pane's runtime hands back the
-    app's params merged with this chat's bookkeeping. Telling the model the app
-    is "running with" session_id and split is worse than saying nothing."""
-    out = _node(["function clipText(", "const CHAT_PARAMS", "function appParamsOf(",
-                 "const APP_STATE_MAX_TEXT"],
-                "console.log(JSON.stringify(appParamsOf({session_id: 's', run: 'r',"
-                " split: '70', model: 'sonnet', effort: 'high', permission: 'prompt',"
-                " _file: '/p', _mode: 'claude', path: '/p/index.html',"
-                " annotations: '[]', city: 'Lisbon'})));", html)
-    assert out == {"city": "Lisbon"}
-
-
-# ------------------------------------------- instrumentation, and the reload
-
-def test_the_reload_marker_fires_on_the_frames_own_load(html):
-    """With /render in the pane, a live-reload replaces the LEFT FRAME's document,
-    so its `load` fires again — which is why the 100 ms poller the first build
-    needed (the reload used to navigate a nested frame the outer load never saw)
-    is gone. The marker rides in the buffer rather than clearing it: "these were
-    there before, this one appeared after your edit" is the buffer's whole value."""
-    out = _node(_STATE_FNS,
-                _DOM + _FRAME
-                + "const W = fakeWin(docOf(BODY));"
-                + "let annFrame = {isConnected: true, contentWindow: W};"
-                + "watchApp();"                          # first document
-                + "pushAppLog('error', 'was already broken');"
-                + "watchApp();"                          # same document: a no-op
-                + "W.document = docOf(BODY);"            # a live-reload landed
-                + "watchApp();"
-                + "console.log(JSON.stringify(appLogs.map((e) => [e.level, e.text])));",
-                html)
-    assert [lvl for lvl, _ in out] == ["error", "reload"], out
-    assert "reloaded" in out[1][1]
-
-
-def test_the_watcher_is_wired_to_the_load_event_not_to_a_timer(html):
-    """The interval existed only because the old /embed framing hid the reload
-    from the outer frame. Hooking the same `load` the annotation rewiring uses
-    keeps one place where a fresh document is noticed.
-
-    The hook is a NAMED function rather than an inline listener now, because the
-    chat-only sidebar has a second way into it: its target is the host's content
-    pane, which loaded before this document booted, so a `load` that already
-    fired is not something this page can wait for — annWatchTarget wires the
-    document that is already there and hears the ones that follow. Both entries
-    land in the same function, which is what keeps "a fresh document appeared"
-    in one place."""
-    assert "APP_WATCH_INTERVAL" not in html
-    assert "setInterval(watchApp" not in html
-    assert 'frame.addEventListener("load", annWireTarget);' in html
-    start = html.index("function annWireTarget() {")
-    assert "watchApp()" in html[start:start + 900], "the load hook does not watch"
-
-
-def test_a_document_is_only_wrapped_once_but_a_new_one_is_wrapped_again(html):
-    """The marker lives on the DOCUMENT: a same-origin navigation keeps the
-    window proxy but replaces the global, so a flag on the window would outlive
-    the wrapper it is meant to track and the reloaded page would go unlogged."""
-    out = _node(["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
-                 "const appLogs", "function clipText(", "function pushAppLog(",
-                 "function fmtLogArg(", "function watchWindow("],
-                _DOM + _FRAME + "const W = fakeWin(docOf(BODY));"
-                + "const first = watchWindow(W), again = watchWindow(W);"
-                + "W.document = docOf(BODY);"
-                + "const fresh = watchWindow(W);"
-                + "console.log(JSON.stringify({first, again, fresh}));", html)
-    assert out == {"first": True, "again": False, "fresh": True}
-
-
-def test_the_wrapper_calls_through_so_the_apps_own_logging_still_happens(html):
-    """Instrumentation the user can notice is instrumentation that changed the
-    app: whatever devtools showed before must still show."""
-    out = _node(["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
-                 "const appLogs", "function clipText(", "function pushAppLog(",
-                 "function fmtLogArg(", "function watchWindow("],
-                _DOM + _FRAME + "const W = fakeWin(docOf(BODY));"
-                + "watchWindow(W);"
-                + "W.console.error('boom', {code: 7});"
-                + "W.console.warn(new Error('careful'));"
-                + "console.log(JSON.stringify({buffered: appLogs.map((e) => e.text),"
-                  " passedThrough: W.calls, hooked: W.listeners}));", html)
-    assert out["buffered"] == ['boom {"code":7}', "careful"]
-    assert out["passedThrough"] == ['error:boom [object Object]', "warn:Error: careful"]
-    # uncaught errors and rejections are the ones a console wrapper cannot see
-    assert out["hooked"] == ["error", "unhandledrejection"]
-
-
-# ------------------------- one composition point, one strip (both blocks)
-
-_WIRE_FNS = ["const APP_STATE_TAG", "function appStateBlock(",
-             # formatAnnotations' preamble names the target's KIND (a file's pane
-             # is fused-render's preview OF the file, not an app with an entry
-             # page), and this is the one writer of that noun.
-             "let targetNoun", "let paneNoun", "const ANN_TAG", "const ANN_NO_WORDS",
-             "function annClock(", "function annStanza(", "function formatAnnotations(",
-             "function composeOutgoing(",
-             "function stripAppStateBlock(", "function stripBlocks(",
-             # The pane shot is a third block on the same wire (see
-             # test_claude_shots.py); these two are what stripBlocks needs to
-             # be its exact inverse, whether or not a given message carries one.
-             "const PANE_SHOT_TAG",
-             # stripBlocks names its no-words markers through these (see
-             # test_claude_shots.py) so resumeRun cannot drift from it.
-             "const MARKER_ANN", "const MARKER_VIEW", "const MARKER_JOIN",
-             "function isMarkerOnly(", "function stripPaneBlock(",
-             "function stripAnnBlock("]
-
-_PENDING = ('[{"id": "1", "sent": 0, "createdAt": 5, "anchorId": "reset",'
-            ' "tag": "button", "text": "Reset"}]')
-_STATE = '{"title": "Demo", "dom": {"tag": "body", "path": null}}'
-
-
-def _round_trip(html, typed, annotated, stateful):
-    """Compose a wire message the way the composer does, then strip it the way
-    the transcript readers do."""
-    return _node(_WIRE_FNS,
-                 "const wire = composeOutgoing(%s, %s, %s);"
-                 "console.log(JSON.stringify({wire, back: stripBlocks(wire)}));"
-                 % (json.dumps(typed), _PENDING if annotated else "[]",
-                    _STATE if stateful else "null"), html)
-
-
-@pytest.mark.parametrize("annotated,stateful", [
-    (False, False), (True, False), (False, True), (True, True),
-])
-def test_a_wire_message_strips_back_to_exactly_what_the_user_typed(html, annotated,
-                                                                  stateful):
-    """The bug this pins, in both directions: main's `stripAnnBlock` bails unless
-    the text STARTS with its own preamble, so an app-state block in front of it
-    silently no-ops the strip and leaks the annotation JSON into the transcript —
-    while an app-state block placed after the annotation fence leaks itself
-    instead. Neither order works with one strip that only knows one block, so
-    there is one composer and one strip and this covers all four combinations."""
-    out = _round_trip(html, "why is the map blank?", annotated, stateful)
-    assert out["back"] == "why is the map blank?", out["wire"]
-    assert ("live-app-state" in out["wire"]) is stateful
-    assert ("The user annotated " in out["wire"]) is annotated
-
-
-def test_an_annotation_only_send_still_collapses_to_its_marker(html):
-    """No typed text: the transcript shows a small marker, and the app-state
-    block riding along must not turn into the bubble's contents."""
-    out = _round_trip(html, "", True, True)
-    assert out["back"] == "📌 annotations", out["wire"]
-
-
-def test_the_state_block_is_removed_wherever_it_sits(html):
-    """A position-independent peel, matching agent.py's regex: the composer fixes
-    the order, but a message stored by an older build (or by a future one that
-    reorders) must still strip clean rather than half-strip."""
-    out = _node(_WIRE_FNS,
-                'const tail = "hello\\n\\n<live-app-state>\\n{}\\n</live-app-state>\\n\\n";'
-                'console.log(JSON.stringify(stripBlocks(tail)));', html)
-    assert out == "hello"
-
-
-def test_the_two_readers_of_a_wire_message_use_the_same_strip(html):
-    """The re-attach probe compares against the bubble on screen and the history
-    restore renders the bubble. If they stripped differently, a re-attach would
-    stop matching and trim another turn's rows."""
-    assert html.count("stripAnnBlock(") == 2, "stripAnnBlock is called outside stripBlocks"
-    assert "stripBlocks(probe.message" in html
-    assert "addUser(stripBlocks(t.text), t.uuid)" in html
-
-
-# ------------------------------------------------- the pull channel, on screen
-
-def test_the_pull_answers_with_a_snapshot_taken_now_not_the_pushed_one(html):
-    """The tool exists because the pushed snapshot went stale the moment Claude
-    edited something; answering from a cached one would be the same staleness
-    with an extra round trip."""
-    start = html.index("async function answerAppState(")
-    body = html[start:html.index("\n}\n", start)]
-    assert "appStateSnapshot()" in body
-    # and it says so in the log — the whole transparency story for a read that
-    # deliberately raises no card
-    assert '"read app state' in body or "read app state" in body
-
-
-def test_reading_the_app_state_is_noted_in_the_log_not_carded(html):
-    assert "addNote(" in html
-    assert 'p.tool' in html  # permission cards still exist for everything else
-    start = html.index("async function answerAppState(")
-    assert "buildPermCard" not in html[start:html.index("\n}\n", start)]
-
-
-# ------------------------------ an empty snapshot: null means two things
-
-_PULL_FNS = _STATE_FNS + ["function appStatePull(", "const answeredStates",
-                          "const notedStates",
-                          "const APP_STATE_NULL_POLLS", "const nullStatePolls",
-                          "const APP_STATE_MEMO_MAX", "function appStateTrim(",
-                          "async function answerAppState("]
-
-# `fused.runPython` and the on-screen note, recorded rather than performed. The
-# thing under test is WHICH polls send an answer and what that answer says.
-_PULL_STUBS = """
-var AGENT = "./agent.py";
-var sentStates = [];
-var noted = [];
-function addNote(text, working) { noted.push(text); }
-var fused = {runPython: async (agent, params) => {
-  sentStates.push(params.state); return {};
-}};
-"""
-
-
-def test_a_mid_reload_pull_is_retried_rather_than_settled_as_an_error(html):
-    """The model is TOLD to call app_state after an edit, and an edit live-reloads
-    the left pane — so the snapshot is empty at exactly the moment the tool is
-    most likely to be called. Sending the bare `null` that is right for the push
-    channel makes agent.py write a permanent "could not read the app's state",
-    and the id stays claimed so no later poll retries. The reload has to be
-    waited out instead."""
-    out = _node(_PULL_FNS, _DOM + _FRAME + _PULL_STUBS
-                + "let annFrame = {isConnected: true, contentWindow: null};"
-                + """
-(async () => {
-  const req = [{id: "r1", reason: "checking my edit"}];
-  for (let i = 0; i < 3; i++) await answerAppState(req, "run", null);
-  const duringReload = {sent: sentStates.length, noted: noted.length,
-                        claimed: answeredStates.has("r1")};
-  // the pane finishes loading
-  annFrame = {isConnected: true, contentWindow: fakeWin(docOf(BODY))};
-  await answerAppState(req, "run", null);
-  console.log(JSON.stringify({duringReload: duringReload,
-    answers: sentStates.map((s) => JSON.parse(s)), noted: noted}));
-})();
-""", html)
-    # nothing sent, nothing claimed, and no note on screen for a read that has
-    # not happened yet
-    assert out["duringReload"] == {"sent": 0, "noted": 0, "claimed": False}
-    # once the app is back, the very next poll answers with the real thing
-    assert len(out["answers"]) == 1
-    assert out["answers"][0]["dom"]["tag"] == "body"
-    assert out["noted"] == ["read app state — checking my edit"]
-
-
-def test_a_pull_that_can_never_read_the_app_is_answered_instead_of_spun(html):
-    """The other null: a project with no app entry, where the iframe was REMOVED
-    and no amount of waiting will produce a document. Retrying to the tool's own
-    timeout (minutes) would be a worse answer for the model than the sentence
-    saying so, so the retry is bounded."""
-    out = _node(_PULL_FNS, _DOM + _FRAME + _PULL_STUBS
-                + "let annFrame = {isConnected: false, contentWindow: null};"
-                + """
-(async () => {
-  const req = [{id: "r1"}];
-  const perPoll = [];
-  for (let i = 0; i < APP_STATE_NULL_POLLS + 3; i++) {
-    await answerAppState(req, "run", null);
-    perPoll.push(sentStates.length);
-  }
-  console.log(JSON.stringify({perPoll: perPoll,
-    answers: sentStates.map((s) => JSON.parse(s)), raw: sentStates}));
-})();
-""", html)
-    # exactly one answer, and not before the bound is spent
-    assert out["perPoll"] == [0] * 5 + [1, 1, 1], out["perPoll"]
-    assert len(out["answers"]) == 1
-    answer = out["answers"][0]
-    # a dict, NOT the bare `null` agent.py reads as a permanent failure
-    assert out["raw"][0] != "null"
-    assert isinstance(answer, dict)
-    assert "could not be read" in answer["unreadable"]
-    # the security constraint: we could not read the app's window, so there is no
-    # honest source for any of these — and this chat's own window is not it
-    for leak in ("url", "params", "title", "dom"):
-        assert leak not in answer, leak
-
-
-def test_the_push_and_the_pull_read_one_snapshot_and_disagree_about_null(html):
-    """D146: two callers now interpret the same return value differently, so the
-    difference is asserted rather than described. Push omits the block entirely
-    (a turn with nothing to say must look like a turn from before this feature);
-    pull cannot omit anything, because the model is blocked on a reply."""
-    out = _node(_PULL_FNS, _DOM + _FRAME + _PULL_STUBS
-                + "let annFrame = {isConnected: true, contentWindow: null};"
-                + "appEntry = '/p/index.html';"
-                + "console.log(JSON.stringify({push: appStateSnapshot(),"
-                  " pull: appStatePull(), sentence: APP_STATE_UNREADABLE}));",
-                html)
-    assert out["push"] is None
-    assert out["pull"]["unreadable"] == out["sentence"]
-    # the one thing we DO know without reading the window
-    assert out["pull"]["entry"] == "/p/index.html"
-
-
-def test_a_failed_answer_is_retried_and_a_refused_one_is_not(html):
-    """The page's half of the same gap. It only ever un-claimed on a THROW, so a
-    resolved `{error: ...}` — the shape a write that did not reach disk now
-    returns — left the id claimed forever: no later poll retried it and the tool
-    call blocked for its full timeout. A throw and a retryable error are the same
-    news; a refusal ("no such request") is not, and spinning on it every 400 ms
-    until the run ends would be the wrong answer."""
-    out = _node(_PULL_FNS, _DOM + _FRAME + """
-var AGENT = "./agent.py";
-var sentStates = [];
-var noted = [];
-function addNote(text, working) { noted.push(text); }
-var replies = [null,                                     // a throw
-               {error: "could not record", retry: true}, // transient
-               {error: "unknown app-state request"}];    // permanent
-var fused = {runPython: async (a, p) => {
-  sentStates.push(p.state);
-  const r = replies.shift();
-  if (r === null) throw new Error("bridge down");
-  return r || {};
-}};
-let annFrame = {isConnected: true, contentWindow: fakeWin(docOf(BODY))};
-(async () => {
-  const req = [{id: "r1", reason: "why"}];
-  const claims = [];
-  for (let i = 0; i < 4; i++) {
-    await answerAppState(req, "run", null);
-    claims.push([sentStates.length, answeredStates.has("r1")]);
-  }
-  console.log(JSON.stringify({claims: claims, noted: noted}));
-})();
-""", html)
-    # attempt 1 threw and 2 came back retryable, so each was tried again; 3 was a
-    # refusal, so attempt 4 never left the page.
-    assert out["claims"] == [[1, False], [2, False], [3, True], [3, True]]
-    # ONE line in the log for one request, however many attempts it took: the note
-    # is the transparency story for the read, not a tally of the bridge's health.
-    assert out["noted"] == ["read app state — why"]
-
-
-def test_the_per_request_bookkeeping_is_capped(html):
-    """`answeredStates` and friends hold one entry per app_state call for the
-    page's lifetime. Bounded in practice; capped anyway, oldest first — a request
-    answered hundreds of calls ago can never be polled again, since agent.py only
-    ever lists the unanswered ones."""
-    out = _node(_PULL_FNS, _DOM + _FRAME + _PULL_STUBS + """
-let annFrame = {isConnected: true, contentWindow: fakeWin(docOf(BODY))};
-(async () => {
-  for (let i = 0; i < APP_STATE_MEMO_MAX + 25; i++) {
-    await answerAppState([{id: "r" + i}], "run", null);
-  }
-  console.log(JSON.stringify({answered: answeredStates.size, noted: notedStates.size,
-                              cap: APP_STATE_MEMO_MAX, sent: sentStates.length}));
-})();
-""", html)
-    assert out["sent"] == out["cap"] + 25, "every request still gets answered"
-    assert out["answered"] <= out["cap"]
-    assert out["noted"] <= out["cap"]
-
+# ------------------------------- answering a pull: what reaches disk
 
 def test_an_answer_that_did_not_reach_disk_is_reported_as_retryable(
         agent, run_dir, monkeypatch):
@@ -1488,213 +714,6 @@ def test_a_null_snapshot_on_the_wire_is_the_hard_error_the_page_now_avoids(
     assert res.get("error") and "state" not in res
 
 
-# ------------------------------------------------- Escape has three claimants
-
-def test_escape_prefers_the_smallest_undo_it_can_do(html):
-    """Three features bind Escape in this pane, and the order is
-    least-destructive first. Closing the screenshot viewer undoes nothing at all,
-    dismissing a popover is small and repeatable, leaving annotate mode is
-    reversible with one click — so an Escape pressed with a text box open means
-    the text box, and one pressed while annotating means annotate mode.
-
-    The viewer leads for a stronger reason than cheapness: it is MODAL, so every
-    other claimant is literally behind it."""
-    def act(viewer, open_, annotating):
-        return _node(["function escapeAction("],
-                     "console.log(JSON.stringify(escapeAction(%s, %s, %s)));"
-                     % (json.dumps(viewer), json.dumps(open_),
-                        json.dumps(annotating)),
-                     html)
-
-    assert act(True, True, True) == "close-viewer"
-    assert act(True, False, False) == "close-viewer"
-    assert act(False, True, False) == "close-composer"
-    assert act(False, True, True) == "close-composer"
-    # The banner says "Esc or click to stop", so Escape must leave annotate mode.
-    assert act(False, False, True) == "exit-annotate"
-    # Inert otherwise: this page is in an iframe and must not swallow the shell's
-    # Escape for nothing.
-    assert act(False, False, False) == ""
-
-
-def test_escape_never_stops_a_live_run(html):
-    """It used to, as the last claimant — so a reader who reached for the key out
-    of habit (a popover this page had already closed, backing out of the shell's
-    own UI) lost the whole turn to a keystroke never aimed at the run (Akshil,
-    2026-09-03). Work in progress is not something a bare keypress may throw
-    away. Stopping is now a deliberate press on a control that says so: the stop
-    square the send button becomes, and the tasks queue card's ✕.
-
-    Pinned three ways, because any one of them alone can be reintroduced without
-    the others noticing: the decision has no stop branch, it does not even take
-    the run to branch on, and no keydown handler in the page calls stopRun()."""
-    decision = html[html.index("function escapeAction("):]
-    decision = decision[:decision.index("\n}\n")]
-    assert "stop-run" not in decision
-    assert "runId" not in decision, "the decision still takes a run to kill"
-
-    handler = html[html.index("function onEscape(e) {"):]
-    handler = handler[:handler.index("\n}\n")]
-    assert "stopRun" not in handler
-
-    # ...and nothing else reaches it from a key either. Every keydown binding in
-    # the page is swept; the stop button's own `onsubmit` paths are untouched by
-    # this and are what still call stopRun().
-    at = html.find('addEventListener("keydown"')
-    seen = 0
-    while at >= 0:
-        # The handler only, not the code that happens to follow it: every one of
-        # these bindings closes on a `});` at the start of a line (or is a
-        # one-liner naming a function), and reading past that swept in the send
-        # button's `onsubmit`, which legitimately stops runs.
-        eol = html.find("\n", at)
-        if html[at:eol].rstrip().endswith(");"):
-            end = eol                       # a one-liner naming its handler
-        else:
-            end = min(x for x in (html.find("\n});", at),
-                                  html.find("\n}, true);", at)) if x > 0)
-        seen += 1
-        assert "stopRun" not in html[at:end], html[at:end]
-        at = html.find('addEventListener("keydown"', at + 1)
-    assert seen > 3, "the keydown sweep found almost nothing to sweep"
-
-
-def test_escape_is_bound_inside_the_framed_app_too(html):
-    """Annotate mode is used with the pointer over the iframe, so that is where
-    the keydown lands — and a keydown in the frame's document does not bubble to
-    this one. Binding only the parent document is why Escape looked broken while
-    annotating: the same reason mousedown/mousemove/click are all bound on `doc`."""
-    load = html.index("function annWireTarget() {")
-    body = html[load:html.index("// ── send one message", load)]
-    assert "doc.addEventListener(\"keydown\", onEscape" in body, body[-3000:]
-    # and the parent keeps its own binding, for an Escape pressed in the chat pane
-    assert "document.addEventListener(\"keydown\", onEscape" in html
-
-
-def test_the_composers_escape_does_not_also_reach_the_next_claimant(html):
-    """The textarea's handler runs first and hides the popover, so without a
-    stopPropagation the document binding would look at an already-closed
-    composer, fall through, and leave annotate mode as well. One press, one
-    undo."""
-    start = html.index("annTa.addEventListener(\"keydown\"")
-    head = html[start:start + 400]
-    assert "stopPropagation" in head, head
-
-
-# ------------------------------- the outline travels as a file, not in the message
-
-# The outline used to be stringified straight into the message, which put it in
-# the CLI's own session transcript: N messages meant N full DOM trees re-read on
-# every later turn, all but the newest already stale. It goes to a file now and
-# only the path rides along.
-
-# `paneNoun` is what the block preamble calls the pane — "app" for an app
-# folder, "preview" for a file, one writer (test_claude_kind.py).
-_BLOCK = ["let paneNoun", "const APP_STATE_TAG", "function appStateBlock("]
-_FILE = ["function shotJoin(", "let appStateSeq", "async function appStateFile("]
-
-
-def test_the_block_points_at_the_outline_instead_of_carrying_it(html):
-    block = _node(_BLOCK, 'console.log(JSON.stringify(appStateBlock('
-                  '{"title": "Disk Cleaner", '
-                  '"dom_path": "/tmp/shots/appstate-1-1.json"})));', html)
-    assert "/tmp/shots/appstate-1-1.json" in block
-    # and it TELLS the model the tree is in a file — a path with no instruction
-    # is a path that never gets read
-    assert "dom_path" in block and "read it" in block
-
-
-def test_an_outline_that_could_not_be_written_still_rides_inline(html):
-    """The fallback has to keep working: no directory or a failed write must not
-    leave the agent knowing less about the screen than before this existed."""
-    block = _node(_BLOCK, 'console.log(JSON.stringify(appStateBlock('
-                  '{"dom": {"tag": "body"}})));', html)
-    assert '"tag":"body"' in block.replace(" ", "")
-    assert "dom_path" not in block
-
-
-def test_the_preamble_does_not_promise_a_file_that_is_not_there(html):
-    """Two shapes, one preamble. Describing `dom_path` when the outline came
-    inline would send the model looking for a key that does not exist."""
-    inline = _node(_BLOCK, 'console.log(JSON.stringify(appStateBlock('
-                   '{"dom": {"tag": "body"}})));', html)
-    assert "read it" not in inline
-
-
-def test_the_outline_is_written_into_the_screenshot_directory(html):
-    """That directory, and not a new one: it is already 0700-enforced, already
-    pruned, and already the one path --allowed-tools lets Read touch without
-    raising a card."""
-    prelude = """
-let written = null;
-async function shotDirPath() { return "/tmp/shots"; }
-const fused = { async uploadFile(path) { written = path; } };
-"""
-    out = _node(_FILE, 'appStateFile({"title": "x", "dom": {"tag": "body"}})'
-                '.then((s) => console.log(JSON.stringify({state: s, '
-                'written: written})));', html, prelude)
-    assert out["written"].startswith("/tmp/shots/appstate-")
-    assert out["written"].endswith(".json")
-    assert out["state"]["dom_path"] == out["written"]
-    # the whole point: the bytes are gone from what gets composed
-    assert "dom" not in out["state"]
-    assert out["state"]["title"] == "x"
-
-
-def test_two_sends_in_the_same_millisecond_do_not_share_a_file(html):
-    """Date.now() alone collides, and the second send would overwrite the first
-    send's outline while the first was still being read."""
-    prelude = """
-async function shotDirPath() { return "/tmp/shots"; }
-const fused = { async uploadFile() {} };
-"""
-    out = _node(_FILE, 'Promise.all([appStateFile({"dom": {"tag": "body"}}), '
-                'appStateFile({"dom": {"tag": "body"}})]).then((s) => '
-                'console.log(JSON.stringify(s.map((x) => x.dom_path))));',
-                html, prelude)
-    assert out[0] != out[1], out
-
-
-def test_a_failed_write_keeps_the_outline_inline_rather_than_losing_it(html):
-    """console.warn goes to stderr, so the fallback stays quiet on stdout."""
-    prelude = """
-async function shotDirPath() { throw new Error("no screenshot directory"); }
-const fused = { async uploadFile() {} };
-"""
-    out = _node(_FILE, 'appStateFile({"dom": {"tag": "body"}})'
-                '.then((s) => console.log(JSON.stringify(s)));', html, prelude)
-    assert out["dom"] == {"tag": "body"}
-    assert "dom_path" not in out
-
-
-def test_a_snapshotless_send_is_left_alone(html):
-    prelude = """
-async function shotDirPath() { throw new Error("never called"); }
-const fused = { async uploadFile() {} };
-"""
-    out = _node(_FILE, 'appStateFile(null).then((s) => '
-                'console.log(JSON.stringify({state: s})));', html, prelude)
-    assert out["state"] is None
-
-
-def test_the_send_path_writes_the_outline_before_it_composes(html):
-    """composeOutgoing is sync and pure — the exact inverse of stripBlocks — so
-    the write cannot happen inside it."""
-    assert "const sentState = await appStateFile(state);" in html
-    # The fourth argument is the pane screenshot, which is captured when its button
-    # is pressed and merely READ here — so this call is still the last thing before
-    # the wire text exists, and still sync.
-    assert "composeOutgoing(message, pending, sentState," in html
-
-
-def test_the_outline_path_comes_from_the_shots_directory_the_agent_grants(html):
-    """Pinned as source, because the security of this rests on the file landing
-    under the directory `_read_rule` already covers."""
-    start = html.index("async function appStateFile(")
-    body = html[start:html.index("\n}\n", start)]
-    assert "shotDirPath()" in body
-
-
 def test_a_path_carrying_block_is_still_stripped_from_the_transcript(agent):
     """agent.py's stripper is anchored on the tag, not the contents, and the tag
     did not change — pinned so the user's own words stay the transcript."""
@@ -1709,23 +728,22 @@ def test_a_path_carrying_block_is_still_stripped_from_the_transcript(agent):
 # Three things have to agree about the pane, per turn: the MCP roster (the
 # app-state directory's existence), the pre-allowance on the spawn line, and the
 # appended system prompt. `_start` resolved that answer from DISK on every turn,
-# while the PAGE resolves it exactly once — `paneURL()` runs in the boot IIFE and
-# `enterNoPane()` removes `#left` permanently. So a mid-session kind flip put the
-# two out of step in both directions:
+# while the CHAT resolves it exactly once, at mount. So a mid-session kind flip
+# put the two out of step in both directions:
 #
 #   * scaffold an app into an ordinary folder (turn 1 writes index.html) and turn
 #     2 offers `app_state`, pre-allows it and asserts "The user sees the app
 #     rendered live beside this chat" — with no pane on screen. The model calls
-#     it, `answerAppState` burns its null polls and replies
-#     APP_STATE_UNREADABLE, contradicting the invariant the page states at
-#     template.html's APP_STATE_UNREADABLE ("no pane means no `app_state` tool in
-#     the run's roster… this sentence can never be the answer to it").
+#     it, the pull burns its null polls and replies with the chat's
+#     "unreadable" sentence, contradicting the invariant that sentence states
+#     ("no pane means no `app_state` tool in the run's roster… this sentence can
+#     never be the answer to it").
 #   * delete the entry page and the reverse happens: the tool drops and the
 #     prompt flips to ordinary-folder wording while a live pane is on screen.
 #
-# THE PAGE IS AUTHORITATIVE, because the question is "is there a page beside this
-# chat" and only the page knows what is on screen. Disk is the fallback for the
-# one caller that has no page (the apps API, which always spawns on an app
+# THE CHAT IS AUTHORITATIVE, because the question is "is there a page beside this
+# chat" and only the chat knows what is on screen. Disk is the fallback for the
+# one caller that has no chat (the apps API, which always spawns on an app
 # folder).
 
 def _spawn_with(agent, monkeypatch, target, **kw):
@@ -1798,14 +816,6 @@ def test_disk_still_answers_when_no_page_says_otherwise(agent, tmp_path,
         assert facts["state_dir"] is wanted, target
         assert facts["pre_allowed"] is wanted, target
         assert facts["in_prompt"] is wanted, target
-
-
-def test_the_page_sends_its_own_answer_on_every_start(html):
-    """The page's half. `noPane` is the layout flag `enterNoPane` sets, and the
-    only thing that knows whether `#left` is in the document."""
-    start = html.index('action: "start"')
-    call = html[start:html.index("}, { key: null });", start)]
-    assert "has_pane" in call and "noPane" in call
 
 
 def test_the_prompt_reads_the_pane_value_the_spawn_already_computed(

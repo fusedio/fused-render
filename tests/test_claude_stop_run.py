@@ -1,4 +1,4 @@
-"""Stopping a turn in the chat template.
+"""Stopping a turn in the chat.
 
 `agent.py` has always been able to kill a run (`action="cancel"` → SIGTERM to
 the process group, plus a release of every parked approval), but nothing in the
@@ -17,19 +17,14 @@ approval bridge:
   the stop, that error is the expected outcome, not news — so the page suppresses
   it and says "stopped" instead, while keeping whatever text had streamed.
 
-The end-of-run decision is one pure function in the page (`runEnding`), extracted
-and executed under node rather than asserted about as source: what matters is the
-text the user ends up reading.
-
-This file was parametrised over the two chat templates while a plain chat and a
-split chat both existed. The plain one is deleted — one chat for both kinds of
-target — so it now runs against `claude` alone.
+The end-of-run decision itself (`runEnding`, `stopAllowed`) now lives in the
+native chat's TypeScript and is tested there (`apps/claude/protocol/
+run-controller.test.ts`); what stays here is the BACKEND half those functions
+sit on — what `_poll` and `_history` report about a killed run.
 """
 import importlib.util
 import json
 import os
-import shutil
-import subprocess
 
 import pytest
 
@@ -37,7 +32,7 @@ import pytest
 # the split chat because the stop was duplicated in a fork and D146 wants a rule
 # in two implementations pinned by a test rather than a comment; the plain one is
 # deleted, so there is one implementation and the parametrisation collapses to a
-# single value. Kept as a list, and `template`/`_html` kept parametrised on it,
+# single value. Kept as a list, and the `template` fixture kept parametrised on it,
 # because that is the seam a second chat surface would re-enter through — and
 # because collapsing it to a bare constant would mean rewriting every test
 # signature for no behavioural gain.
@@ -66,35 +61,19 @@ def agent(template):
     return _load(template, "agent")
 
 
-def _html(template="claude"):
-    return open(os.path.join(_dir(template), "template.html"), encoding="utf-8").read()
+# ------------------------------------------------------- the cancel the chat calls
 
-
-# ------------------------------------------------------- page reaches cancel
-
-def test_the_page_sends_the_cancel_action_the_backend_dispatches(agent, template):
-    """D146-shaped: the action name lives in two places (the page's call and
-    `main()`'s dispatch), so a test holds them together rather than a comment."""
-    html = _html(template)
-    assert 'action: "cancel"' in html, "the page never calls the backend's cancel"
-    # ...and the name it sends is one `main()` actually routes, rather than
-    # falling through to "unknown action" — which would fail silently as a
-    # stop button that does nothing.
+def test_the_cancel_action_the_chat_sends_is_one_main_dispatches(agent):
+    """D146-shaped: the action name lives in two places (`decideStop`'s call in
+    `apps/claude/protocol/run-controller.ts` and `main()`'s dispatch here), so a
+    test holds the backend end open rather than a comment. A name `main()` does
+    not route falls through to "unknown action" — which fails silently, as a
+    stop button that does nothing."""
     assert agent.main(action="cancel", run_id="no-such-run") == {"cancelled": "no-such-run"}
     assert "unknown action" in str(agent.main(action="stop"))
 
 
-def test_stopping_is_offered_as_a_button(template):
-    """The click target is discoverable and calls stopRun(). Escape no longer
-    stops a live run (see escapeAction), so the button must not teach a key
-    that does not do anything."""
-    html = _html(template)
-    assert "function stopRun(" in html
-    assert 'id="stopbtn"' in html, "no stop control on the page"
-    assert "stop · esc" not in html, "the button still teaches a key that does not stop the run"
-
-
-# ------------------------------------------- the backend contract runEnding sits on
+# --------------------------------------- the backend contract the chat's ending sits on
 
 def test_a_killed_run_polls_as_done_with_an_error(agent, tmp_path, monkeypatch):
     """The shape the page's stop path has to absorb. A run killed mid-turn is
@@ -258,132 +237,3 @@ def test_a_reopened_chat_is_told_the_last_turn_was_stopped(agent, tmp_path,
     (later / "meta.json").write_text(json.dumps({"file": str(target)}))
     (later / "session").write_text(session)
     assert "stopped" not in agent._history(str(target), session)["turns"][-1]
-
-
-# ------------------------------------------------------------- runEnding, in node
-
-def _run_ending(data, stopped, template="claude"):
-    """Run the page's real `runEnding` over one terminal poll payload.
-
-    The node guard lives HERE, at the shell-out itself, rather than in a fixture
-    keyed on the test's name: the name-prefix version missed
-    `test_the_two_chats_decide_endings_identically` — which is the one test the
-    duplicated-rule decision (D146) rests on — and raised FileNotFoundError
-    instead of skipping wherever node is absent. Sited on the subprocess call, no
-    later test can drift out of the guard's reach. Same siting as
-    test_claude_shots.py's and test_claude_app_state.py's `_node`.
-    """
-    if not shutil.which("node"):
-        pytest.skip("node is needed to run the page's own end-of-run decision")
-    html = _html(template)
-    start = html.index("function runEnding(")
-    # up to the next top-level definition — `runEnding` is deliberately pure, so
-    # nothing below it (which touches `document` and `fused`) may come along.
-    fn = html[start:html.index("\nasync function stopRun(", start)]
-    script = fn + "\nconsole.log(JSON.stringify(runEnding(%s, %s)));" % (
-        json.dumps(data), json.dumps(stopped))
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
-    assert out.returncode == 0, out.stderr
-    return json.loads(out.stdout)
-
-
-def test_the_ending_of_an_unstopped_failure_is_still_an_error(template):
-    end = _run_ending({"done": True, "error": "claude exited with an error", "text": ""},
-                      False, template)
-    assert end["error"] == "claude exited with an error"
-    assert not end["note"]
-    assert end["keepText"] is False
-
-
-def test_the_ending_of_a_stopped_run_is_a_note_not_an_error(template):
-    """The kill IS the error; reporting it would blame the user's own click."""
-    end = _run_ending(
-        {"done": True, "error": "claude exited before completing the reply",
-         "text": "I was hal"}, True, template)
-    assert not end["error"], end
-    assert "stopped" in end["note"].lower()
-    # the partial reply is real work and stays on screen
-    assert end["keepText"] is True
-
-
-def test_a_stop_this_page_did_not_press_is_still_a_stop(template):
-    """The queue card's ✕ (schedule.py -> agent._cancel) kills the run without
-    telling this page, so `stopped` is False here and the kill's error used to
-    be reported as a crash — to the person who asked for the stop. The RUN's own
-    cancel marker rides back on the poll (`cancelled`) and decides it instead."""
-    end = _run_ending(
-        {"done": True, "error": "claude exited before completing the reply",
-         "text": "I was hal", "cancelled": True}, False, template)
-    assert not end["error"], end
-    assert "stopped" in end["note"].lower()
-    assert end["keepText"] is True
-
-
-def test_a_cancelled_flag_on_a_clean_run_still_says_the_stop_missed(template):
-    """The marker is written before the kill, so a reply that completed in
-    between comes back cancelled AND clean — the same race the button already
-    has, and it must read the same way."""
-    end = _run_ending({"done": True, "error": "", "text": "all done",
-                       "cancelled": True}, False, template)
-    assert not end["error"]
-    assert end["note"], "a stop that did not land must not be silent"
-    assert end["keepText"] is True
-
-
-def test_the_ending_of_a_clean_run_says_nothing(template):
-    end = _run_ending({"done": True, "error": "", "text": "all done"}, False, template)
-    assert not end["error"] and not end["note"]
-    assert end["keepText"] is True
-
-
-def test_the_ending_of_a_run_that_beat_the_stop_says_so(template):
-    """Clicking stop a beat after the last poll: the reply is whole, so it is
-    shown whole — but the user is told why nothing was cut off, rather than
-    being left wondering whether the button works."""
-    end = _run_ending({"done": True, "error": "", "text": "all done"}, True, template)
-    assert not end["error"]
-    assert end["note"], "a stop that did not land must not be silent"
-    assert end["keepText"] is True
-
-
-# ---------------------------------------------------------- stopAllowed, in node
-
-def _stop_allowed(run_id, seat, stopped_seat, template="claude"):
-    """Run the page's real `stopAllowed` over one (run_id, seat, stoppedSeat)
-    triple, the same node-extraction pattern `_run_ending` uses above."""
-    if not shutil.which("node"):
-        pytest.skip("node is needed to run the page's own stop-allowed decision")
-    html = _html(template)
-    start = html.index("function stopAllowed(")
-    fn = html[start:html.index("\n\n", start)]
-    script = fn + "\nconsole.log(JSON.stringify(stopAllowed(%s, %s, %s)));" % (
-        json.dumps(run_id), json.dumps(seat), json.dumps(stopped_seat))
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
-    assert out.returncode == 0, out.stderr
-    return json.loads(out.stdout)
-
-
-def test_a_stop_already_asked_for_on_this_turn_is_not_repeated(template):
-    assert _stop_allowed("run-1", 3, 3, template) is False
-
-
-def test_a_new_turns_seat_is_not_blocked_by_an_earlier_turns_stop(template):
-    """B3 regression: `activeRun`'s run_id now spans a whole multi-turn
-    session behind a session host, so a guard keyed on run_id alone (rather
-    than the seat pollLoop hands out fresh each turn) went dead for every
-    turn after the first one Stop was ever pressed on. Pressing Stop again on
-    a LATER turn of the same run must still go through."""
-    assert _stop_allowed("run-1", 4, 3, template) is True
-
-
-def test_stop_is_never_allowed_with_no_run_or_no_seat(template):
-    assert _stop_allowed("", 1, 0, template) is False
-    assert _stop_allowed("run-1", 0, 0, template) is False
-
-
-# `test_the_two_chats_decide_endings_identically` lived here: it ran `runEnding`
-# from both chat templates over the same four terminal payloads and demanded byte
-# equality, which is what made the duplicated implementation safe. There is no
-# second copy to compare against now, so the test is gone rather than reduced to
-# comparing a function with itself. Every case it covered is still covered above,
-# against the one surviving implementation.

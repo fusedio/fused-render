@@ -189,12 +189,12 @@ describe("the peek's Escape rule", () => {
     expect(SRC).toContain("const escapeOrBlur = useCallback((doc: Document) => {");
     // The native chat's hand-up goes through it…
     expect(SRC).toContain("onEscape={() => escapeOrBlur(document)}");
-    // …and so do all three keydown listeners, through `peekKey`, each with the
-    // document the press actually happened in (this page's, the legacy chat
-    // frame's, the app preview's).
+    // …and so do both keydown listeners, through `peekKey`, each with the
+    // document the press actually happened in (this page's, and the app
+    // preview frame's).
     expect(SRC).toContain("        escapeOrBlur(doc);");
     expect(SRC).toContain("peekKey(e, document);");
-    expect(SRC).toContain("peekKey(e, doc ?? document);");
+    expect(SRC).toContain("peekKey(e, (e.target as Node | null)?.ownerDocument ?? document);");
     // Nothing closes on Escape without asking first.
     expect(SRC).not.toContain("onEscape={() => closePeek()}");
   });

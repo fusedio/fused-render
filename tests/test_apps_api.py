@@ -1076,22 +1076,6 @@ def test_claude_is_the_selectable_chat_mode_for_html():
     assert registry["/"].count("claude") == 1
 
 
-def test_claude_template_boots_into_chat_from_a_bare_run_param():
-    """The page must resume a run it did not start itself: its boot reads the
-    `run` param, enters chat, and polls — no session_id needed (the id lands in
-    the run dir seconds later, once claude reports it).
-
-    Retargeted from the deleted plain chat template to the split view (which now
-    carries the `claude` name): the POST always spawned through the chat agent on
-    the FOLDER, so this was already pinning the wrong page's boot."""
-    page = _repo_text("fused_render", "templates", "claude", "template.html")
-    assert 'fused.params.get("run")' in page
-    # The CALL, not its argument list: `resumeRun` grew an options object
-    # (`{ retryUnknown: true }`, #610) and this test is about the boot resuming
-    # the run at all, so it must not break every time an opt is added.
-    assert "await resumeRun(run_id" in page
-
-
 def test_run_param_survives_the_shell_runtime():
     """`run` must be an ordinary view param: the runtime hides every
     `_`-prefixed name from templates (isReserved), so a reserved-looking name

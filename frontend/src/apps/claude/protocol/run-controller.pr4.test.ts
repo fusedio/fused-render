@@ -6,7 +6,7 @@ installDomShim();
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 const { ARTIFACTS_EVERY_TICKS, createChatController } = await import("./run-controller");
-const { publishProjectQueueEnabled } = await import("../feature-flag");
+const { publishProjectQueueEnabled } = await import("../chat-prefs");
 const { createMemoryParamsStore } = await import("../params/store");
 
 import type { runAgent } from "./agent";

@@ -1849,11 +1849,14 @@
   // document's ADDRESS, and an address that is only supposed to be visited
   // once is a contradiction; nothing about "build a URL" can express
   // "and only follow it the first time." So the prompt is handed to the host
-  // as plain in-memory state (see `_fusedClaudeAsk` below) and PULLED by the
-  // claude template itself at its own boot, through `pullClaudeAsk` below —
-  // consumption happens in the one frame that actually uses the text, at the
-  // one moment (its own boot) that can matter, which is a property of WHEN a
-  // pull happens rather than something a cache has to reconstruct.
+  // as plain in-memory state (see `_fusedClaudeAsk` below), and the chat reads
+  // it back at its own boot — consumption happens in the one place that
+  // actually uses the text, at the one moment (that mount's boot) that can
+  // matter, which is a property of WHEN the read happens rather than something
+  // a cache has to reconstruct. The chat is now the shell's own React surface
+  // (frontend/src/apps/claude), so that read is an ordinary in-process call to
+  // `apps/explorer/lib/claude-ask.ts::takeClaudeAsk` — it no longer needs a
+  // runtime-exposed pull across an iframe boundary, and there is none.
   //
   // Deliberately not a param either way: the git view has no chat of its own,
   // only a working tree, so fixing an error it hit means handing the ask to
@@ -1879,32 +1882,6 @@
       /* hit a cross-origin ancestor; the same-origin chain is done */
     }
     return false;
-  }
-
-  // The other half of the hop: the claude template calls this at its OWN
-  // boot to ask the nearest same-origin ancestor "is a prompt waiting for me",
-  // and get back the text — or `null`, plainly, if there is none (no ancestor
-  // installed the hook, or one did but has nothing pending). A QUERY, not a
-  // notify, so it climbs to the first ancestor that answers and returns
-  // WHATEVER that ancestor's `_fusedClaudeAskTake` returns, rather than
-  // broadcasting: the host's `_fusedClaudeAskTake` (Preview.tsx/Listing.tsx)
-  // reads its pending-ask ref and CLEARS it in the same step, so calling this
-  // is itself the consumption — there is no separate "and now mark it used"
-  // step to forget, and calling it twice in a row (which nothing here does,
-  // but a future caller might) safely gets the text once and `null` after.
-  function pullClaudeAsk() {
-    let t = window;
-    try {
-      for (;;) {
-        if (typeof t._fusedClaudeAskTake === "function") return t._fusedClaudeAskTake();
-        if (!t.parent || t.parent === t) break;
-        void t.parent.location.href;
-        t = t.parent;
-      }
-    } catch (e) {
-      /* hit a cross-origin ancestor; the same-origin chain is done */
-    }
-    return null;
   }
 
   // ---- the project-venv install loader (SPEC PY-16, PY-18) ------------------
@@ -5869,13 +5846,6 @@
   // rather than doing nothing quietly: the git template uses that to show a
   // real failure instead of a button that looked like it worked.
   window._fusedAskClaude = noteAskClaude;
-
-  // The claude template's own half: called at ITS boot to collect whatever
-  // prompt is waiting for it (see `pullClaudeAsk` above for why this is a pull
-  // rather than a param on the src). Not present in the hosted runtime, same
-  // as the two above — a window with no `_fusedClaudeAskTake` hook simply has
-  // nothing to pull, and this answers `null`.
-  window._fusedTakeClaudeAsk = pullClaudeAsk;
 
   // Error overlay: shows for unhandled runPython rejections the page didn't
   // catch itself (identified by carrying a `.traceback`).

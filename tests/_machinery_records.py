@@ -20,7 +20,7 @@ import json
 
 # ------------------------------------------------------- STRIP: a real prefix
 # The page's own wire, prepended to the human's words by `composeOutgoing`
-# (templates/claude/template.html). Over 219 real transcripts every single one
+# (frontend/src/apps/claude/protocol/wire.ts). Over 219 real transcripts every single one
 # of the 72 records opening with the app-state block carried prose after it.
 
 APP_STATE = (

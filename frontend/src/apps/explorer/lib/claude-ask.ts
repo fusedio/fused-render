@@ -1,8 +1,7 @@
-// The host side of the "Fix with AI" pull (review #804 round 2). Both
-// Preview.tsx (the file sidebar) and Listing.tsx (the folder pane) install
-// `window._fusedClaudeAskTake` — the claude template's own boot calls it
-// through the runtime's ancestor hop (static/runtime.js `pullClaudeAsk`) to
-// collect whatever prompt is waiting, if any.
+// The host side of the "Fix with AI" hand-over (review #804 round 2). Both
+// Preview.tsx (the file sidebar) and Listing.tsx (the folder pane) hold a
+// prompt the git companion pushed at them (`window._fusedClaudeAsk`) until the
+// chat they are about to mount can be given it.
 //
 // This replaces the round-1 design: a `_fused_ask` query param baked into the
 // claude iframe's `src`, kept "one-shot" by a cache keyed on "has the

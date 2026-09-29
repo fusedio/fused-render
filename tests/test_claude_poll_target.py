@@ -1,4 +1,4 @@
-"""A poll may only attach to a run about its own target (claude template).
+"""A poll may only attach to a run about its own target (the Claude chat).
 
 Run ids are global — RUNS is one flat directory — and the `run` url param
 survives some hops the target does not. The historical reproduction: open a
@@ -21,7 +21,6 @@ url in the first place (a bookmark, a shared link, a bug not yet imagined).
 import importlib.util
 import json
 import os
-import re
 
 import pytest
 
@@ -32,20 +31,6 @@ def _load_agent():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
-
-
-TEMPLATE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "fused_render", "templates", "claude", "template.html")
-
-
-@pytest.fixture(scope="module")
-def html_pane():
-    """The template with `// …` comments stripped, so a source pin cannot be
-    satisfied by prose that merely NAMES the call it is looking for. Same guard
-    as test_claude_kind.py's _pane_code."""
-    with open(TEMPLATE, encoding="utf-8") as f:
-        return re.sub(r"(?m)^\s*//.*$", "", f.read())
 
 
 @pytest.fixture()
@@ -120,25 +105,6 @@ def test_an_unreadable_meta_is_not_refused(agent, target):
     with open(os.path.join(d, "meta.json"), "w", encoding="utf-8") as f:
         f.write("{not json")
     assert agent._poll("20260819-120000-eee", file=target)["error"] != MISMATCH
-
-
-# ---- the page's half ---------------------------------------------------------
-
-def test_every_poll_call_names_the_page_s_target(html_pane):
-    """All of the page's polls carry `file: FILE`, or the agent's check never
-    runs for the very caller it exists for."""
-    calls = re.findall(r'action:\s*"poll"[^}]*', html_pane)
-    assert calls, "no poll calls found — did the action move?"
-    for call in calls:
-        assert "file: FILE" in call, call
-
-
-def test_the_page_recovers_from_a_mismatch_like_a_stale_param(html_pane):
-    """resumeRun's unknown-run branch — clear the `run` param, no error banner —
-    is the recovery for a refused target too."""
-    assert re.search(
-        r'probe\.error === "unknown run_id" \|\| probe\.error === "run is for another target"',
-        html_pane)
 
 
 def test_a_folders_run_polled_by_its_ENTRY_FILE_is_not_another_target(

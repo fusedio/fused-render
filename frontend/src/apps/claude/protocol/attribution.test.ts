@@ -49,9 +49,9 @@ afterEach(() => {
 
 test("runHeaders spells the four exactly as calls.py reads them", () => {
   expect(
-    runHeaders({ page: "/w/p/.claude/template.html", target: "/w/p", callId: "c1", supersedes: "c0" }),
+    runHeaders({ page: "/w/p/.claude/agent.py", target: "/w/p", callId: "c1", supersedes: "c0" }),
   ).toEqual({
-    "X-Fused-Page": encodeURIComponent("/w/p/.claude/template.html"),
+    "X-Fused-Page": encodeURIComponent("/w/p/.claude/agent.py"),
     "X-Fused-Target": encodeURIComponent("/w/p"),
     "X-Fused-Call": "c1",
     "X-Fused-Supersedes": "c0",
@@ -89,9 +89,9 @@ test("a poll carries the page, the target and a call id", async () => {
   expect(sent).toHaveLength(1);
   const h = sent[0]!.headers;
   expect(sent[0]!.url).toBe("/api/run");
-  // The PAGE is the template's own html, derived from the script's dir — what
+  // The PAGE is the chat's own `agent.py`, derived from the script's dir — what
   // `--page` names, and what a reader looking for "the chat's calls" types.
-  expect(h["X-Fused-Page"]).toBe(encodeURIComponent("/w/p/.claude/template.html"));
+  expect(h["X-Fused-Page"]).toBe(encodeURIComponent("/w/p/.claude/agent.py"));
   expect(h["X-Fused-Target"]).toBe(encodeURIComponent("/w/p"));
   expect(h["X-Fused-Call"]).toBeTruthy();
   expect(h["X-Fused-Supersedes"]).toBeUndefined();

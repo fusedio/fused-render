@@ -431,7 +431,7 @@ function capRetained(list: StoredNotification[]): StoredNotification[] {
 // IS_TOP_EMBED) has no Notifications panel of its own (App.tsx's own
 // `!IS_EMBED` guard around RepoUpdatesDock) — its retained rows would
 // otherwise be created and then never seen by anyone. The established idiom
-// for this shell, NOT `postMessage` (see main.tsx, ChatFrame.tsx and
+// for this shell, NOT `postMessage` (see main.tsx and
 // `apps/explorer/lib/snapshot-clear.ts`'s own comment on why): a plain global
 // installed on a same-origin window, called directly, wrapped in try/catch
 // for the cross-origin/sandboxed-frame SecurityError case. Direction here is

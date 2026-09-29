@@ -1,26 +1,60 @@
-/* ---- the chat frame and its one placeholder (platform/ui/ChatFrame.tsx) ----
-   Three surfaces frame the Claude chat template — the Cards wall, that wall's
-   popup, and the explorer's companion sidebar — and all three used to show the
-   iframe's own cold document before the template's first paint. These rules are
-   the cover: a box that fills whatever the consumer gives it, an iframe that is
-   invisible until the framed document says it is painted, and one skeleton laid
-   over it in the meantime, shaped like the skeleton the template itself draws.
+/* ---- the chat skeleton and its box (apps/claude/ui/ChatPlaceholder.tsx) ----
+   Every surface that can show a chat — the Cards wall, that wall's popup, the
+   explorer's companion sidebar and content pane, the folder listing pane, the
+   canvases workspace — draws THIS while there is no transcript on screen yet:
+   the code-split chunk still resolving, a card still resolving which folder it
+   is about, the chat's own boot before its first paint. One skeleton for all of
+   them, so the only visible transition is skeleton → chat rather than a redraw.
 
-   ORDER IS LOAD-BEARING, twice, which is why this file sits exactly here in the
-   barrel (shell.css):
-     * AFTER explorer.css, whose `.skel-bar` and `@keyframes skel-shimmer` the
-       placeholder's bars are;
-     * AFTER preview.css, so `.chat-frame-iframe`'s size wins over
-       `.preview-side-frame`'s `height: auto` — that height was flex-derived
-       and the frame is no longer a flex item, it is a child of this box;
-     * BEFORE task-cards.css, so the card's `.task-card-frame` fit (133% drawn
-       at 0.75) still overrides the plain 100% here. */
+   ORDER IS LOAD-BEARING in one direction: this file must come AFTER
+   explorer.css in the barrel (shell.css), whose `.skel-bar` and
+   `@keyframes skel-shimmer` the placeholder's bars are. (It used to owe
+   task-cards.css a second constraint — sit BEFORE it, so the card's own scaled
+   restatement of the placeholder won. The card no longer scales anything, so
+   that rule is gone and so is the constraint.)
 
-/* The box. Fills its parent whether that parent is a block with a resolved
-   height (the card's body) or a flex line (the popup's body, the sidebar
-   column) — hence both the percentages and the flex shorthand. `overflow:
-   hidden` because the card's frame is deliberately larger than this box and
-   scaled back into it. */
+   AND IT IS EAGER, which is the whole reason `.chat-mount` and
+   `.chat-mount-failed` live down there rather than in `apps/claude/styles/chat.css`
+   with the rest of the chat's look. That file ships inside the `lazy()`
+   `ClaudeChat` chunk, and the two moments those rules have to already be in
+   force are precisely the moments the chunk is NOT there: the Suspense wait
+   (an unstyled `.chat-mount` is an auto-height block, so `.chat-frame`'s
+   `height: 100%` resolves against nothing and a cold cards wall paints a row of
+   empty tiles) and a chunk that 404s after a deploy (`ChatLoadFailed`, which
+   would otherwise be an unstyled card exactly when it is shown). */
+
+/* THE MOUNT BOX (apps/claude/ChatMount). It stands where the chat iframe stood
+   and takes the whole of the host's box, which every one of the six sites gives
+   it as a flex child or a 100%/100% pane. It carries NO host class of its own —
+   hosts hand it one (`mountClassName`) and those are theirs, not this box's. */
+.chat-mount {
+  display: flex;
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* THE CHUNK-FAILURE SCREEN (ChatMount's `ChatLoadFailed`). The card itself is
+   the app's own `.trouble-card` (styles/dialogs.css) — one look for "a thing
+   beside the app is not working", wherever it is said — so all this adds is
+   where it sits: top-centred in the box the chat would have filled, and
+   scrollable, because that box can be a 300px card as easily as a full pane.
+
+   A CHILD of `.chat-mount`, not a second spelling of it: the mount box is
+   rendered whatever becomes of the chunk (ChatMount's boundary sits inside it),
+   so this only has to fill the box it is already in. */
+.chat-mount-failed {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: center;
+  overflow: auto;
+  padding: 16px;
+}
+
 .chat-frame {
   position: relative;
   flex: 1 1 auto;
@@ -32,34 +66,10 @@
   background: var(--bg);
 }
 
-/* Invisible until ready, then a fade of the same length as the placeholder's —
-   the two cross, they do not queue. No `visibility`/`display` games: the
-   document must be laid out and painting the whole time, or revealing it would
-   be its own reflow. */
-.chat-frame-iframe {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border: 0;
-  opacity: 0;
-  /* Invisible AND unreachable: an opacity-0 frame still takes the wheel and
-     the click, so a wall scrolled over a loading card lost the scroll to a
-     document nobody could see, and a pane could be focused before it was
-     shown (Bugbot, #1024). */
-  pointer-events: none;
-  transition: opacity 160ms ease;
-}
-
-.chat-frame-iframe.is-ready {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-/* The cover. On top of the frame, the page's own background under it so the
-   iframe's cold document never shows through. It TAKES pointer input (the
-   default) rather than passing it through: nothing here is clickable, and a
-   wheel over it bubbles to the host — the wall scrolls — instead of being
-   eaten by the hidden frame underneath. */
+/* The skeleton itself, filling the box above. The page's own background under
+   it so nothing shows through, and it TAKES pointer input (the default) rather
+   than passing it through: nothing here is clickable, and a wheel over it
+   bubbles to the host — the wall scrolls. */
 .chat-frame-placeholder {
   position: absolute;
   top: 0;
@@ -69,19 +79,11 @@
   z-index: 1;
   overflow: hidden;
   background: var(--bg);
-  transition: opacity 160ms ease;
 }
 
-/* Fading out over a frame that is now live: step aside so the first click
-   lands in the chat, not on a ghost. */
-.chat-frame-placeholder.is-out {
-  opacity: 0;
-  pointer-events: none;
-}
-
-/* The transcript column, in the template's own measurements (#log: 720px max,
-   centred, 24/20/12 padding) so the two skeletons sit in the same place and the
-   crossfade moves nothing. */
+/* The transcript column, in the chat's own measurements (720px max, centred,
+   24/20/12 padding) so the skeleton and the transcript that replaces it sit in
+   the same place and nothing moves. */
 .chat-frame-skel {
   max-width: 720px;
   margin: 0 auto;
@@ -92,8 +94,7 @@
   margin: 0 0 20px;
 }
 
-/* The user turn: one pill, hard right, at the template's `.skel-turn-user`
-   proportions. */
+/* The user turn: one pill, hard right. */
 .chat-frame-skel-user {
   display: flex;
   justify-content: flex-end;
@@ -128,19 +129,9 @@
   padding-top: 4px;
 }
 
-/* The template's line metrics, not the listing's (`.skel-bar` is 10px/3px for a
-   table row) — these stand in for prose. */
+/* Prose metrics, not the listing's (`.skel-bar` is 10px/3px for a table row) —
+   these stand in for a paragraph. */
 .chat-frame-skel-lines .skel-bar {
   height: 11px;
   border-radius: 4px;
-}
-
-/* Reduced motion: the reveal is a state change, not a movement. reduced-motion.css
-   already collapses every transition to nothing, and this states the intent at
-   the rule that has it — the placeholder still unmounts, it just does not fade. */
-@media (prefers-reduced-motion: reduce) {
-  .chat-frame-iframe,
-  .chat-frame-placeholder {
-    transition: none;
-  }
 }

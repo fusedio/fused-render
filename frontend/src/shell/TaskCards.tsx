@@ -6,38 +6,36 @@
 // It is the one view on this page that does not draw ROWS ABOUT tasks. The List,
 // the Board and the Calendar all answer "what is there and where does it sit";
 // this one answers "what is happening", and the only honest way to show that is
-// to show the thing itself. So each card frames the real chat template over the
-// real session — the same document the explorer's Claude sidebar frames — and
-// the streaming comes for free: that template already polls its own run every
-// 400ms, so this component has no feed, no socket and no cadence of its own. It
-// lays out iframes and gets out of the way.
+// to show the thing itself. So each card mounts the real chat over the real
+// session — the same component the explorer's Claude sidebar mounts — and the
+// streaming comes for free: the chat already polls its own run every 400ms, so
+// this component has no feed, no socket and no cadence of its own. It lays out
+// chats and gets out of the way.
 //
-// Which makes the whole file's job the three things a grid of live documents
-// gets wrong:
+// Which makes the whole file's job the two things a grid of live chats gets
+// wrong:
 //
-//   * PARAM ISOLATION. The chat template reads `session_id` through the runtime,
-//     which climbs to the topmost same-origin ancestor — this page — unless an
-//     ancestor says stop. Twelve cards climbing to `/tasks` would be twelve
-//     chats sharing one session id. The boundary effect below is the stop sign.
 //   * IDENTITY ACROSS POLLS. The page re-renders every 20 seconds with a fresh
-//     array. A card keyed by anything but the task would remount its iframe on
+//     array. A card keyed by anything but the task would remount its chat on
 //     each poll, which is a reload of a live conversation every 20 seconds.
-//   * A BUDGET. Live documents are not free, so the wall is drawn a page of
-//     six at a time (tasks-lib.CARD_PAGE) and grows only when asked.
+//   * A BUDGET. Live chats are not free, so the wall is drawn a page of six at
+//     a time (tasks-lib.CARD_PAGE) and grows only when asked.
+//
+// Each card's `session_id` lives in a MEMORY param store of its own (ChatMount),
+// which is what keeps twelve conversations on one `/tasks` URL apart.
 //
 // Everything about WHICH tasks and in WHAT ORDER is tasks-lib.cardsForTasks —
-// pure, tested, and out of here, because a wall of iframes is the last place
+// pure, tested, and out of here, because a wall of live chats is the last place
 // anybody can test a sort.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { archiveTask, statPath, unarchiveTask } from "@platform/lib/api";
 import type { Task } from "@platform/lib/api";
-import { useParamBoundary } from "@platform/lib/param-boundary";
 import { navigateUrl } from "@platform/lib/router";
 import { notify } from "@platform/lib/notifications";
-import { ChatFramePlaceholder } from "@platform/ui/ChatFrame";
-import { ChatMount, useNativeChatEnabled, useNativeChatFlag } from "@apps/claude";
+import { ChatFramePlaceholder } from "@apps/claude/ui/ChatPlaceholder";
+import { ChatMount } from "@apps/claude";
 import { Modal } from "@platform/ui/modal/Modal";
-import { cardFrameSrc, folderHref, peekFrameSrc } from "./schedule-lib";
+import { folderHref } from "./schedule-lib";
 import {
   discardDraft,
   ICON_ARCHIVE,
@@ -353,36 +351,6 @@ export function TaskCards({
   }, [cards]);
   const templates = useChatTemplates(dirs);
 
-  // THE STOP SIGN. `fused.params` inside each card climbs window.parent until it
-  // runs out of same-origin ancestors OR meets a param boundary, and stops BELOW
-  // the boundary (static/runtime.js `findTarget`, D46/D72). Marking this window
-  // is therefore what makes each card's own frame its own param target: it reads
-  // the `session_id` it was given in its src, and a write from inside it lands on
-  // its own URL instead of rewriting `/tasks` under everyone else.
-  //
-  // Set while THIS VIEW is mounted and removed on the way out, exactly as the two
-  // layout shells do it (apps/explorer/Panel.tsx, Tabs.tsx) — the flag is a fact
-  // about a window that is currently hosting param-owning frames, not a fact
-  // about the app, and leaving it set would change how an unrelated iframe on
-  // some other route resolves its params.
-  //
-  // FLAG ON there are no param-owning frames here at all: every card's chat is
-  // native and reads a MEMORY store of its own (ChatMount), so the flag would be
-  // a claim about this window that is not true.
-  //
-  // TRI-STATE, and only a real `false` sets it. Read as a boolean, `null` ("the
-  // prefs read has not landed") set the flag and deleted it one paint later —
-  // a claim about the window that was never true. Nothing reads it at boot
-  // today, so the cost was only honesty; the fix is to wait for the answer.
-  // The legacy path is byte-identical: a `false` sets it while mounted and
-  // removes it on the way out, exactly as before.
-  //
-  // HELD THROUGH A COUNT (platform/lib/param-boundary), not set and deleted
-  // here: the side peek frames a chat on this same page and used to fight this
-  // effect for the flag — whichever unmounted first took the boundary away from
-  // the other, and the survivor's frame started climbing to `/tasks` again.
-  const nativeChatState = useNativeChatFlag();
-  useParamBoundary(nativeChatState === false);
 
   // The popup outlives the wall it was opened from: a failed poll empties
   // `tasks`, and a filter can drop the last card, while someone is typing into
@@ -424,10 +392,10 @@ export function TaskCards({
         <TaskCard
           // KEYED BY THE TASK'S IDENTITY and nothing else. Not the index (a
           // card that finishes shifts every card after it, and React would
-          // recycle each iframe into a different conversation), not the src (the
-          // template path arrives one render late, and a changed key is a
-          // reload). This is what makes a poll a re-render and not twelve
-          // reloads.
+          // recycle each chat into a different conversation), not anything
+          // derived from the template path (it arrives one render late, and a
+          // changed key remounts). This is what makes a poll a re-render and
+          // not twelve remounts.
           //
           // `cardKey` — the row key, since 2026-09-06 — rather than the task
           // NUMBER it was for three days: two sessions can share a number (the
@@ -534,9 +502,7 @@ function TaskCard({
   // (Bugbot, #1023): the cache is module-level and outlives the page, so a
   // folder deleted between two visits would still have a path here and the
   // card would frame the Explorer's stat error.
-  const src = task.session_id && template && !folderMissing
-    ? cardFrameSrc(template, task.target || task.project, task.session_id)
-    : null;
+  const chattable = !!(task.session_id && template && !folderMissing);
   // THE DOORS ON THE HEAD (Akshil, 2026-09-06): the popup's two, Archive (or
   // Unarchive) and the folder, shown on hover over the title's right end so a
   // reader can file a card or step into its folder without opening the popup
@@ -596,11 +562,12 @@ function TaskCard({
   };
   // THE THIRD STATE, and the reason `template` is not just a path-or-null: the
   // task HAS a session, so there is a conversation to show, and the only thing
-  // missing is which template shows it — a fact this card is a few hundred
-  // milliseconds from having. That is a chat that has not arrived yet, not a
-  // run that has not started, so it wears the frame's own skeleton and says
-  // nothing. "Starting…" here was the wall's popcorn (design.md).
-  const resolving = !src && !folderMissing && !!task.session_id && template === undefined;
+  // missing is which template registers the chat for this folder — a fact this
+  // card is a few hundred milliseconds from having. That is a chat that has not
+  // arrived yet, not a run that has not started, so it wears the chat's own
+  // skeleton and says nothing. "Starting…" here was the wall's popcorn
+  // (design.md).
+  const resolving = !chattable && !folderMissing && !!task.session_id && template === undefined;
 
   return (
     <section
@@ -851,22 +818,13 @@ function TaskCard({
         )}
       </header>
       <div className="task-card-body">
-        {src ? (
-          // The frame and its cover, one component (platform/ui/ChatFrame): the
-          // iframe stays invisible until the chat inside it says its transcript
-          // is painted, with the skeleton over it until then. The card's own
-          // class rides the iframe, so the scaled fit below is untouched.
-          //
-          // FLAG ON, the native chat renders in place of that frame and the
-          // class is deliberately NOT stamped on it: `.task-card-frame` is the
-          // 133.33%/scale(0.75) fit, which is exactly what the native compact
-          // variant replaces with a type scale (apps/claude/styles/chat.css).
-          // `session_id` goes into a MEMORY param store per card, which is what
-          // `_fusedParamBoundary` bought the frame (00 §1e).
+        {chattable ? (
+          // The chat itself, in the card. NO host class is handed to it: the
+          // 133.33%/scale(0.75) fit an iframe'd chat needed is gone with the
+          // iframe, and the compact variant is a type scale
+          // (apps/claude/styles/chat.css). `session_id` goes into a MEMORY
+          // param store per card.
           <ChatMount
-            legacySrc={src}
-            className="task-card-frame"
-            title={`${shortTaskId(task.task_id)} ${title}`}
             file={task.target || task.project}
             sessionId={task.session_id}
             chatOnly
@@ -942,11 +900,9 @@ function TaskPeek({
 }) {
   // The same line the card and every other task header print (TaskPeekWho).
   const title = useTaskHeadline(task);
-  const src = task.session_id && template && !folderMissing
-    ? peekFrameSrc(template, task.target || task.project, task.session_id)
-    : null;
+  const chattable = !!(task.session_id && template && !folderMissing);
   // The card's third and fourth states, for the card's reasons (TaskCard, above).
-  const resolving = !src && !folderMissing && !!task.session_id && template === undefined;
+  const resolving = !chattable && !folderMissing && !!task.session_id && template === undefined;
   const gone = folderMissing;
   // The List row's own fallback: a run with no session yet is still reachable
   // through its folder (schedule-lib, above `folderHref`) — unless the folder
@@ -960,55 +916,21 @@ function TaskPeek({
   const [note, setNote] = useState("");
   const [erasing, setErasing] = useState(false);
 
-  // ESCAPE FROM INSIDE THE FRAME. The chassis closes on Esc with a listener on
-  // THIS document, and the frame is the dialog's first focusable, so the focus
-  // trap puts the caret in the chat — where the reader wants it — and every key
-  // from then on fires in the frame's document, which the chassis cannot hear.
-  // Measured: Esc did nothing while the composer had focus. Same origin, so the
-  // frame's document takes a listener of its own; a key the template already
-  // stops (its own popovers close on Esc and stopPropagation) never reaches
-  // it, which is the right precedence — Esc closes the innermost thing open.
-  // FLAG ON there is no frame and no second document: the chat is in THIS one,
-  // its root hands Escape up through `onEscape`, and the thing worth focusing is
-  // the composer's textarea rather than a box around it. Both refs are declared
-  // either way; exactly one of them is the live one.
-  const native = useNativeChatEnabled();
-  const frameRef = useRef<HTMLIFrameElement | null>(null);
-  const boxRef = useRef<HTMLTextAreaElement | null>(null);
+  // WHERE THE CARET GOES, and what Escape closes. The chassis closes on Esc
+  // with a listener on THIS document, and the chat is in this document too —
+  // so its root hands Escape up through `onEscape` (a key one of the chat's own
+  // popovers already stops never reaches it, which is the right precedence:
+  // Esc closes the innermost thing open), and the thing worth focusing is the
+  // composer's textarea rather than a box around it.
+  //
   // WHEN THE COMPOSER EXISTS. `boxRef` is filled by an effect inside the chat,
   // behind a `lazy` boundary — so at the moment the chassis computes
   // `initialFocus` it is still null and the caret fell to the ✕, which is
   // exactly what this popup exists not to do. The chat's own ready signal is
   // the honest trigger: bumped once the transcript paints, it tells the Modal
-  // to take the focus it could not take at mount. Legacy is unaffected —
-  // `frameRef` is a render-time ref and was live at mount all along, so no
-  // signal is passed on that path (and no `onReady` either, which would
-  // otherwise land on the iframe's `load`).
+  // to take the focus it could not take at mount.
+  const boxRef = useRef<HTMLTextAreaElement | null>(null);
   const [chatReady, setChatReady] = useState(0);
-  useEffect(() => {
-    if (native) return;
-    const frame = frameRef.current;
-    if (!frame) return;
-    let doc: Document | null = null;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    const attach = () => {
-      try {
-        doc = frame.contentDocument;
-        doc?.addEventListener("keydown", onKey);
-      } catch {
-        // A frame that is not ours (it never is — /render is same-origin — but
-        // a listener is not worth a thrown error).
-      }
-    };
-    frame.addEventListener("load", attach);
-    attach();
-    return () => {
-      frame.removeEventListener("load", attach);
-      doc?.removeEventListener("keydown", onKey);
-    };
-  }, [native, src, onClose]);
 
   const refile = async () => {
     if (!filing) return;
@@ -1048,8 +970,8 @@ function TaskPeek({
       // and holds focus — the chassis leaves a nested [role="dialog"] alone),
       // and Escape reaches both document listeners; this one must not also
       // close the popup, or an Esc on the confirm ends the whole thing. The
-      // popup stays MOUNTED, so the chat frame keeps its draft and its Escape
-      // handler (review, PR #1049: unmounting it reloaded the frame).
+      // popup stays MOUNTED, so the chat keeps its draft and its Escape
+      // handler (review, PR #1049: unmounting it reloaded the chat).
       onClose={erasing ? () => {} : onClose}
       width="54vw"
       dialogClassName="task-peek"
@@ -1057,13 +979,12 @@ function TaskPeek({
       // The caret goes to the CHAT, not to the head's first button: the popup
       // exists so a reader can type, and a keyboard Enter after opening it must
       // not follow "Open in Explorer" instead (Bugbot, #1009). Null while the
-      // frame is not there yet ("Starting…"), and the chassis then falls back
+      // chat is not there yet ("Starting…"), and the chassis then falls back
       // to its first focusable as every other dialog does.
-      // The composer natively, the frame in the legacy path (see `native`).
-      initialFocus={native ? boxRef : frameRef}
-      // See `chatReady`: natively the ref fills after the chunk resolves, so the
-      // chassis re-runs its initial focus when the chat says it is up.
-      {...(native ? { focusSignal: chatReady } : {})}
+      initialFocus={boxRef}
+      // See `chatReady`: the ref fills after the chunk resolves, so the chassis
+      // re-runs its initial focus when the chat says it is up.
+      focusSignal={chatReady}
       // THE DOORS, IN THE HEAD beside the ✕ (Akshil, 2026-09-05: "move them on
       // top where we have the close button"), each an icon WITH its word — an
       // icon alone was not clear — in the app's own small secondary button, the
@@ -1140,21 +1061,12 @@ function TaskPeek({
         ) : undefined
       }
     >
-      {src ? (
-        // The card's wrapper, at full size. `legacyFrameRef` still reaches the
-        // iframe itself — the LEGACY Esc listener above and the chassis's
-        // `initialFocus` both want the element, not the box around it.
-        //
-        // FLAG ON there is no frame to listen inside: `onEscape` is the same
-        // close, handed up from the chat's own root, and `focusRef` is the
-        // composer's textarea — which is a better `initialFocus` than the
-        // iframe ever was, since it is where the reader actually wants the
-        // caret (TaskCards' own note above `frameRef`).
+      {chattable ? (
+        // The card's conversation, at full size and with the composer back.
+        // `onEscape` is the popup's own close, handed up from the chat's root,
+        // and `focusRef` is the composer's textarea — where the reader actually
+        // wants the caret (see `chatReady` above).
         <ChatMount
-          legacySrc={src}
-          legacyFrameRef={frameRef}
-          className="task-peek-frame"
-          title={`${shortTaskId(task.task_id)} ${title}`}
           file={task.target || task.project}
           sessionId={task.session_id}
           chatOnly
@@ -1162,7 +1074,7 @@ function TaskPeek({
           paramsSource="memory"
           onEscape={onClose}
           focusRef={boxRef}
-          {...(native ? { onReady: () => setChatReady((n) => n + 1) } : {})}
+          onReady={() => setChatReady((n) => n + 1)}
         />
       ) : resolving ? (
         <ChatFramePlaceholder />

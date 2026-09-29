@@ -22,13 +22,18 @@ is working fine.
 cd frontend && npx vite build      # or: scripts/dev.sh, which watches
 ```
 
-Then **restart the server** — that word is doing real work here. The chat's copy
-of the card lives in `fused_render/templates/claude/template.html`, which is not
-served from the package: it is staged into `~/.fused-render/.core-templates/`
-once, at import. The gate is content-addressed (`.version` holds
-`<app version> <sha256 of the packaged tree>`), so an edited template DOES
-restage by itself — but only when a process starts and re-runs the check. Edit
-the template under a running server and you keep testing the old copy.
+The chat's own copy of the card is frontend code too now
+(`frontend/src/apps/claude/ui/TroubleView.tsx`) — it went native with the rest
+of the chat in 2026-09-15's removal of `templates/claude/template.html`, so the
+`vite build` above is the whole story for it.
+
+**Restarting the server** still matters for anything under
+`fused_render/templates/`, which is not served from the package: it is staged
+into `~/.fused-render/.core-templates/` once, at import. The gate is
+content-addressed (`.version` holds `<app version> <sha256 of the packaged
+tree>`), so an edited template DOES restage by itself — but only when a process
+starts and re-runs the check. Edit a template under a running server and you
+keep testing the old copy.
 
 If you want to see the staging happen, delete the marker or the dir; it is
 rebuilt on the next start and is not a repair step:

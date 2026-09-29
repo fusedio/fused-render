@@ -411,7 +411,7 @@ def test_the_preview_control_also_needs_an_enclosing_app_folder(source):
 def test_the_capability_is_polled_like_the_annotate_target(source):
     # The mark ARRIVES and DEPARTS after this page has mounted — the host's mode
     # switcher moves it, a listing removes it — so it is polled on focus plus a
-    # slow timer, exactly as templates/claude/template.html polls its own mark. A
+    # slow timer, exactly as the native claude chat polls its own mark. A
     # MutationObserver held on someone else's document for the life of the session
     # is not worth the one cheap read it would replace.
     assert "const REV_TARGET_POLL_MS = 750;" in source

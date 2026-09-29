@@ -389,7 +389,7 @@ function rowKey(inst: unknown): string | null {
 
 const setQueueFlag = async (on: boolean) => {
   const { applyQueueFlagBroadcast, QUEUE_FLAG_BROADCAST_KEY } = await import(
-    "../feature-flag"
+    "../chat-prefs"
   );
   applyQueueFlagBroadcast(QUEUE_FLAG_BROADCAST_KEY, JSON.stringify({ on }));
 };

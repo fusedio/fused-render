@@ -17,7 +17,7 @@ import {
 // ~100ms while this pane sat on a 3-15s schedule lap and a 5s row-read floor.
 import { subscribeListing } from "@shell/tasksPulse";
 import type { ChatController } from "../protocol/controller-api";
-import { useProjectQueueEnabled } from "../feature-flag";
+import { useProjectQueueEnabled } from "../chat-prefs";
 import { waitingFor } from "./waiting";
 import {
   BLOCKED_PLACEHOLDER,
@@ -70,7 +70,7 @@ export interface UseScheduleOptions {
    * THE PROJECT QUEUE'S SWITCH (prefs `queue.enabled`), injectable so a suite
    * can drive both sides of it without touching a process-global. Omitted, it
    * is the same subscribed pref every chat embed already pays one `/api/prefs`
-   * GET for (`feature-flag`), so asking here costs nothing.
+   * GET for (`chat-prefs`), so asking here costs nothing.
    */
   queueEnabled?: boolean;
   /**

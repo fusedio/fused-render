@@ -284,13 +284,29 @@ def _folders_with_template(base: str) -> dict:
     contains a template.html (a template folder; SPEC §0 — folder name =
     identity). Dirs without template.html (vendor/, shared/) are naturally
     excluded. hasCondition reports the optional condition.py gate (SPEC CT-12)
-    so the management UI can flag templates that only show for some files."""
+    so the management UI can flag templates that only show for some files.
+
+    A SHELL-RENDERED NAME IS SKIPPED BY RULE, whatever the folder contains
+    (bugbot on #1149). Relying on the template.html predicate to exclude it was
+    only ever true of the dirs WE ship: `~/.fused-render/templates/claude/` is
+    a folder a user can have — left behind by an older release that shipped the
+    chat as a template, or copied there deliberately — and its template.html
+    made `claude` an editable user row in the inventory while `shellRendered`
+    named it too. That is the same mode offered twice in the binding picker,
+    and a Library row whose Edit / Export / Preview all act on bytes the app
+    will never load, since `server.templates` resolves a shell-rendered name to
+    its own React surface before any folder is consulted. A shell-rendered name
+    is never loaded FROM a folder, so its folder is not an editable template,
+    whatever is in it — it reaches the UI only through `_inventory_payload`'s
+    separate `shellRendered` list, which is what the picker names it from."""
     out = {}
     try:
         names = os.listdir(base)
     except OSError:
         return out
     for name in names:
+        if name in _server_templates.SHELL_RENDERED:
+            continue
         folder = os.path.join(base, name)
         if not os.path.isdir(folder):
             continue
@@ -364,7 +380,17 @@ def _inventory_payload() -> dict:
             }
         )
 
-    return {"sources": _sources_payload(), "templates": templates}
+    return {
+        "sources": _sources_payload(),
+        "templates": templates,
+        # The names the SHELL renders itself (server.templates.SHELL_RENDERED).
+        # They are NOT in `templates` — there is no folder here to preview, edit
+        # or export — but they ARE legal registry values, so the binding picker
+        # needs to be able to name one. Without this a `claude` removed from a
+        # key's mode list could never be put back from the UI, since the picker
+        # only ever offered inventory names plus the `_` sentinels.
+        "shellRendered": sorted(_server_templates.SHELL_RENDERED),
+    }
 
 
 # -- routes: registry read + bindings edit ------------------------------------
@@ -833,6 +859,22 @@ async def api_import_templates(
             continue
         if not os.path.isdir(path):
             continue
+        # A SHELL-RENDERED NAME IS REFUSED OUTRIGHT, before anything is looked
+        # at inside it. The `template.html` predicate below does NOT exclude one
+        # (a zip is arbitrary content: nothing stops `claude/template.html`
+        # being in it) — and letting one land would put a user folder in front
+        # of a name whose UI is the shell's own React surface, i.e. shadow the
+        # chat with a page. The whole import fails rather than the one folder
+        # being dropped, so the refusal is something the uploader can read and
+        # act on instead of a silently missing item.
+        if name in _server_templates.SHELL_RENDERED:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            return _error(
+                f"refusing to import the folder {name!r}: that name belongs to a "
+                "built-in view the app renders itself, not to an importable "
+                "template. Rename the folder inside the zip and try again."
+            )
+        # An imported folder is a template iff it carries a template.html.
         has_html = os.path.isfile(os.path.join(path, "template.html"))
         file_count = sum(len(files) for _r, _d, files in os.walk(path))
         item = {
@@ -943,8 +985,17 @@ def api_commit_import(
             staged = os.path.join(staging_dir, name)
             if not os.path.isdir(staged):
                 continue  # top-level files were only ever warnings
+            if name in _server_templates.SHELL_RENDERED:
+                # Belt and braces: the preview refused this zip outright, so a
+                # stage holding one of these names should not exist — but the
+                # commit reads the STAGING DIR, not the preview's verdict, and
+                # this loop is the last thing standing between it and
+                # USER_TEMPLATES_DIR. The predicate below would not stop it.
+                continue
             if not os.path.isfile(os.path.join(staged, "template.html")):
-                continue  # invalid item -> dropped
+                # Invalid item -> dropped, the same predicate the preview marked
+                # it invalid with.
+                continue
             resolution = resolutions.get(name, "skip")
             if resolution not in ("overwrite", "skip", "keep-both"):
                 resolution = "skip"

@@ -236,19 +236,11 @@
   font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace;
 }
 
-/* THE MOUNT BOX (ChatMount's native branch). It stands where the iframe stood
-   and takes the whole of the host's box, which every one of the six sites gives
-   it as a flex child or a 100%/100% pane. It carries NO host class — those are
-   frame geometry (`.task-card-frame` is laid out at 133.33% and drawn at 0.75),
-   and the compact variant replaces that trick rather than stacking on it. */
-.chat-mount {
-  display: flex;
-  flex: 1 1 auto;
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-}
+/* THE MOUNT BOX and THE CHUNK-FAILURE SCREEN (`.chat-mount`, `.chat-mount-failed`)
+   are NOT in this file: they are in `frontend/src/styles/chat-frame.css`, which
+   the shell barrel imports eagerly. This file arrives with `ClaudeChat`, i.e.
+   with the lazy chunk — exactly the two moments those two rules have to be in
+   force already (the Suspense wait, and a chunk that never arrives at all). */
 
 /* THE CHAT COLUMN — T's `#chat`. The transcript, the composer and the footnote
    stack in it.

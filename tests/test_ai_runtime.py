@@ -8834,7 +8834,7 @@ def _run_ai_transcribe(readfile, record, node_required=True, opts='{path: "a.m4a
                        extra=None):
     """Run `aiTranscribe` out of runtime.js under node, against stubs.
 
-    The same extraction the claude suites use (`tests/test_claude_narrow.py`):
+    The same extraction the template suites use (e.g. `tests/test_git_view.py`):
     a named function is lifted out and driven with its closure stubbed, because
     what matters is the decision it reaches rather than the DOM it reached it
     in. This bridge had only source assertions until now, which cannot tell a

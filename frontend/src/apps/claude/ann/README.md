@@ -1,7 +1,8 @@
 # `ann/` — the annotation subsystem (PR3)
 
-Source of truth: `.claude-design/inventory/02-annotations-narrow.md` (`T` =
-`fused_render/templates/claude/template.html`). `useAnnotations()` is the door;
+Source of truth: `.claude-design/inventory/02-annotations-narrow.md`. (`T:<line>`
+cites the chat template this was ported from, which no longer exists — the
+inventory is where those behaviours are written down now.) `useAnnotations()` is the door;
 everything else is a piece it wires. Voice recording (`rec*`, `transcribe*`)
 plugs in through the `AnnRecorder` seam in `types.ts`.
 

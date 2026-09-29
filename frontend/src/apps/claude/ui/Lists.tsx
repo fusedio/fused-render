@@ -21,7 +21,7 @@ import {
 import type { Task } from "@platform/lib/api";
 import { TaskRowItem } from "@shell/ScheduleTaskViews";
 import { isDraftTask, taskHref, taskListKeys, upcomingEditEntry } from "@shell/tasks-lib";
-import { useProjectQueueEnabled } from "../feature-flag";
+import { useProjectQueueEnabled } from "../chat-prefs";
 import type { Artifact } from "../protocol/artifacts";
 import { ArtifactRow } from "./ArtifactRow";
 import {

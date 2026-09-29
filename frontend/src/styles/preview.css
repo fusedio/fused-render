@@ -211,7 +211,21 @@
   background: var(--bg);
 }
 
-.preview-frames iframe.preview-frame {
+/* THE HELD-FRAME STACK, and it is NOT all iframes any more: `_mode=claude` is
+   the app's own chat, a `div.chat-mount` carrying the same `preview-frame` /
+   `is-shown` classes the frames wear (apps/claude/ChatMount's `mountClassName`,
+   handed down by Preview.tsx). Both element types are named here — an
+   `iframe`-scoped selector left the chat pane in normal flow, unpositioned and
+   never faded, so switching into or out of claude skipped the crossfade and the
+   held pane sat BELOW its neighbour instead of behind it.
+
+   `inset: 0` sizes the div exactly as it sizes a frame, which is why
+   `.chat-mount`'s own `width/height: 100%` (styles/chat-frame.css) does not
+   have to agree with anything here: it is overridden by nothing and describes
+   the same box. Its `display: flex` is left alone on purpose — that is what
+   makes the chat fill the pane it has just been positioned into. */
+.preview-frames iframe.preview-frame,
+.preview-frames .chat-mount.preview-frame {
   position: absolute;
   inset: 0;
   opacity: 0;
@@ -219,7 +233,8 @@
   transition: opacity var(--dur-med) var(--ease-out);
 }
 
-.preview-frames iframe.preview-frame.is-shown {
+.preview-frames iframe.preview-frame.is-shown,
+.preview-frames .chat-mount.preview-frame.is-shown {
   opacity: 1;
   z-index: 1;
 }
