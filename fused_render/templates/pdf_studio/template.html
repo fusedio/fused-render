@@ -146,7 +146,19 @@
   body.mode-edit .textLayer { display: none; }
   .tspan { position: absolute; cursor: text; border-radius: 2px; }
   body.tool-select .tspan:hover { outline: 1.5px solid var(--blue-2); outline-offset: 1.5px; background: rgba(45,127,249,.08); }
-  body.mode-edit:not(.tool-select) .tspan { pointer-events: none; }
+  body.mode-edit:not(.tool-select) :is(.tspan, .timg) { pointer-events: none; }
+  /* Placed images: a hit target per image (under the text ones, so text wins
+     where they overlap), and the selected one's frame with corner handles. */
+  .timg { position: absolute; cursor: move; }
+  body.tool-select .timg:hover { outline: 1.5px dashed var(--blue-2); outline-offset: 1px; }
+  .isel { position: absolute; z-index: 8; border: 1.5px solid var(--blue); cursor: move; touch-action: none;
+    box-shadow: 0 0 0 3px rgba(45,127,249,.18); }
+  .isel.moving { background: rgba(45,127,249,.08); }
+  .isel .ih { position: absolute; width: 10px; height: 10px; background: #fff; border: 1.5px solid var(--blue); border-radius: 2px; }
+  .isel .ih[data-h=nw] { left: -6px; top: -6px; cursor: nwse-resize; }
+  .isel .ih[data-h=ne] { right: -6px; top: -6px; cursor: nesw-resize; }
+  .isel .ih[data-h=sw] { left: -6px; bottom: -6px; cursor: nesw-resize; }
+  .isel .ih[data-h=se] { right: -6px; bottom: -6px; cursor: nwse-resize; }
   body.mode-edit.tool-text .overlay { cursor: text; }
   body.mode-edit.tool-image .overlay { cursor: crosshair; }
   /* In-place text editor: a frame (.tbox) around a bare textarea. Border +
@@ -639,6 +651,7 @@ const state = {
   tool: "select",     // edit-mode tool: select (edit text) | text (add) | image (add)
   fmt: { family: "sans", size: 12, color: "#1d2025", bold: false, italic: false },  // new text
   image: null,        // the picked image waiting to be placed (see loadImage)
+  picked: null,       // the placed image selected for moving/resizing (see pickImage)
   inspect: null,      // the last inspection report, dropped on every mutation
   insTab: "overview",
   md: null,           // last markdown conversion {spec, markdown, chars, pages}
@@ -1082,6 +1095,7 @@ function showRenderSkeleton() {
 // rest of the pages and the thumbnail rail follow in the background.
 async function renderAll({ fresh = false } = {}) {
   cancelEdit();
+  unpickImage();
   state.spans = {};
   const gen = ++renderGen;
   // Every overlay was hit-tested against the drawing (and spans) being
@@ -1186,14 +1200,20 @@ async function buildOverlay(n) {
   const overlay = wrap.querySelector(".overlay");
   overlay.innerHTML = "";
   const s = +wrap.dataset.scale;
+  const box = (el, [x0, y0, x1, y1]) => Object.assign(el.style, {
+    left: x0 * s + "px", top: y0 * s + "px", width: (x1 - x0) * s + "px", height: (y1 - y0) * s + "px" });
+  pt.images.forEach((bbox, i) => {
+    const d = document.createElement("div");
+    d.className = "timg";
+    d.dataset.i = i;
+    box(d, bbox);
+    overlay.appendChild(d);
+  });
   pt.spans.forEach((sp, i) => {
     const d = document.createElement("div");
     d.className = "tspan";
     d.dataset.i = i;
-    d.style.left = sp.bbox[0] * s + "px";
-    d.style.top = sp.bbox[1] * s + "px";
-    d.style.width = (sp.bbox[2] - sp.bbox[0]) * s + "px";
-    d.style.height = (sp.bbox[3] - sp.bbox[1]) * s + "px";
+    box(d, sp.bbox);
     overlay.appendChild(d);
   });
 }
@@ -1468,10 +1488,90 @@ function finishEdit() {
   }
 }
 
+// ---------- placed images: select, move, resize, delete ----------
+// The selected image gets a frame (page px) the reader drags or resizes by a
+// corner; letting go applies it through edit_image, which rewrites only that
+// image's draw on the page. A repaint drops the selection with the overlays
+// it was picked from, and a move re-selects the image where it landed.
+function pickImage(wrap, index, bbox) {
+  unpickImage();
+  const s = +wrap.dataset.scale;
+  const el = document.createElement("div");
+  el.className = "isel";
+  el.innerHTML = ["nw", "ne", "sw", "se"].map((h) => `<div class="ih" data-h="${h}"></div>`).join("");
+  wrap.appendChild(el);
+  const pk = { el, wrap, pageNo: +wrap.dataset.page, index, bbox, scale: s,
+    box: { x: bbox[0] * s, y: bbox[1] * s, w: (bbox[2] - bbox[0]) * s, h: (bbox[3] - bbox[1]) * s } };
+  placePicked(pk);
+  el.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    dragImage(pk, e, e.target.dataset.h || "", 0);
+  });
+  state.picked = pk;
+  updateEditUi();
+  return pk;
+}
+
+function unpickImage() {
+  if (!state.picked) return;
+  state.picked.el.remove();
+  state.picked = null;
+  updateEditUi();
+}
+
+function placePicked({ el, box }) {
+  Object.assign(el.style, { left: box.x + "px", top: box.y + "px", width: box.w + "px", height: box.h + "px" });
+}
+
+// The box resized from corner `h` (nw/ne/sw/se) by the pointer's travel: the
+// opposite corner stays put, the aspect is kept, and the axis the pointer
+// moved further along decides the size.
+function resizeBox(b, h, dx, dy) {
+  const west = h.includes("w"), north = h.includes("n"), aspect = b.h / b.w;
+  const wx = b.w + (west ? -dx : dx), wy = (b.h + (north ? -dy : dy)) / aspect;
+  const w = Math.max(12, Math.abs(dx) * aspect >= Math.abs(dy) ? wx : wy), hh = w * aspect;
+  return { x: west ? b.x + b.w - w : b.x, y: north ? b.y + b.h - hh : b.y, w, h: hh };
+}
+
+// Drag the selected image (a corner handle `h` resizes it) once the pointer
+// has travelled `threshold` px; a move is kept inside the page.
+function dragImage(pk, e, h, threshold) {
+  const x0 = e.clientX, y0 = e.clientY, from = { ...pk.box };
+  const W = pk.wrap.clientWidth, H = pk.wrap.clientHeight;
+  let moved = false;
+  const onMove = (ev) => {
+    const dx = ev.clientX - x0, dy = ev.clientY - y0;
+    moved ||= Math.hypot(dx, dy) > threshold;
+    if (!moved) return;
+    pk.el.classList.add("moving");
+    pk.box = h ? resizeBox(from, h, dx, dy)
+      : { ...from, x: clamp(from.x + dx, 0, W - from.w), y: clamp(from.y + dy, 0, H - from.h) };
+    placePicked(pk);
+  };
+  const onUp = () => {
+    document.removeEventListener("pointermove", onMove);
+    pk.el.classList.remove("moving");
+    if (moved) applyImage(pk, false);
+  };
+  document.addEventListener("pointermove", onMove);
+  document.addEventListener("pointerup", onUp, { once: true });
+}
+
+// Write the selected image's new box (or remove it) into the working copy.
+async function applyImage(pk, remove) {
+  const s = pk.scale, b = pk.box;
+  const to = [b.x / s, b.y / s, (b.x + b.w) / s, (b.y + b.h) / s].map((v) => +v.toFixed(2));
+  const res = await act("editImage", { page: pk.pageNo, index: pk.index,
+    rect: JSON.stringify(pk.bbox), to_rect: remove ? "" : JSON.stringify(to) });
+  if (res && !remove) pickImage(pk.wrap, pk.index, to);
+}
+
 // ---------- edit tools: edit text / add text / add image ----------
 // Switching tool replaces the pending image: only the image tool carries one,
 // and its preview element leaves the page with it.
 function setTool(tool, image = null) {
+  unpickImage();
   state.image?.ghost.remove();
   state.image = image;
   state.tool = tool;
@@ -1491,7 +1591,8 @@ function updateEditUi() {
   $("fmtItalic").classList.toggle("on", f.italic);
   $("ebHint").textContent = state.editing
     ? "Drag the frame to move · Enter adds a line · ⌘/Ctrl+Enter or click outside to apply · Esc cancels"
-    : { select: "Click text to edit it, or drag it to move it — the box grows as you type",
+    : state.picked ? "Drag to move · drag a corner to resize · Delete removes it · Esc deselects"
+    : { select: "Click text to edit or drag it to move it · click an image to move, resize or delete it",
         text: "Click on the page where the new text should start",
         image: "Click to place the image, or drag to size it · Esc cancels" }[state.tool];
 }
@@ -1694,6 +1795,7 @@ async function loadDoc(path, opts) {
 
 function clearOpenDoc() {
   cancelEdit();
+  unpickImage();
   dropInspect();
   renderGen++;
   state.doc = ""; state.pdf?.destroy(); state.pdf = null;
@@ -1811,6 +1913,7 @@ const acts = {
     setTool(src ? "image" : "select", src ? await loadImage(src) : null);
   },
   placeImage: ({ pageNo, rect }) => mutate("add_image", { page: pageNo, rect: JSON.stringify(rect), src: state.image.src }),
+  editImage: (params) => mutate("edit_image", params),
 
   rotateL: (n) => mutate("rotate_pages", { pages: String(n || state.curPage), degrees: -90 }),
   rotateR: (n) => mutate("rotate_pages", { pages: String(n || state.curPage), degrees: 90 }),
@@ -2049,7 +2152,7 @@ const acts = {
 
 async function act(name, arg) {
   try {
-    await acts[name]?.(arg);
+    return await acts[name]?.(arg);
   } catch (err) {
     // A superseded pdf.js render (fast rotate/zoom, hidden pane) is not a
     // user-facing failure — the newer render already owns the canvas.
@@ -2744,12 +2847,23 @@ $("pages").addEventListener("pointerdown", (e) => {
   if (ed) dragEditor(ed, e, 4);
 });
 
+// Edit-text tool: pressing on a placed image selects it; dragging moves it.
+$("pages").addEventListener("pointerdown", (e) => {
+  const ti = e.target.closest(".timg");
+  if (!ti || e.button !== 0 || state.tool !== "select" || swallowClick) return;
+  if (queued) return toast("Still applying the last change…");
+  e.preventDefault();
+  const wrap = ti.closest(".pdf-page"), i = +ti.dataset.i;
+  dragImage(pickImage(wrap, i, state.spans[+wrap.dataset.page].images[i]), e, "", 3);
+});
+
 // Clicking anywhere outside the open editor applies it (the edit bar's format
 // controls excepted — they restyle it). The click that did so is swallowed so
 // it doesn't also open another editor underneath.
 let swallowClick = false;
 document.addEventListener("pointerdown", (e) => {
   swallowClick = false;
+  if (state.picked && !state.picked.el.contains(e.target)) unpickImage();
   const ed = state.editing;
   if (!ed || ed.box.contains(e.target) || e.target.closest("#editbar")) return;
   finishEdit();
@@ -2785,7 +2899,11 @@ $("pages").addEventListener("pointerup", (e) => {
   const { x, y, w, h } = imageBox(drag.wrap, localPt(drag.wrap, e), drag);
   const s = +drag.wrap.dataset.scale;
   const rect = [x / s, y / s, (x + w) / s, (y + h) / s].map((v) => +v.toFixed(2));
-  act("placeImage", { pageNo, rect }).finally(() => setTool("select"));
+  // The new image comes in selected, ready to be moved or resized.
+  act("placeImage", { pageNo, rect }).then((res) => {
+    setTool("select");
+    if (res) pickImage(drag.wrap, res.image.index, res.image.bbox);
+  });
 });
 $("pages").addEventListener("pointerleave", () => { if (!imgDrag) state.image?.ghost.remove(); });
 
@@ -2822,6 +2940,10 @@ $("thumbs").addEventListener("click", (e) => {
 document.addEventListener("keydown", (e) => {
   if (state.editing || e.target.closest(".modal")) return;
   if (e.key === "Escape" && state.tool !== "select") { setTool("select"); return; }
+  if (state.picked && e.key === "Escape") { unpickImage(); return; }
+  if (state.picked && (e.key === "Delete" || e.key === "Backspace")) {
+    e.preventDefault(); applyImage(state.picked, true); return;
+  }
   if (e.target.closest("#editbar input, #editbar select")) return;
   const mod = e.ctrlKey || e.metaKey;
   if (mod && e.key.toLowerCase() === "z" && !e.shiftKey) { e.preventDefault(); act("undo"); }

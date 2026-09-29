@@ -40,7 +40,8 @@ Actions
   compress(doc,level,...)                           |  or {conflict, mtime}
   edit_text(doc,page,origin,old_text,...)          |
   add_text(doc,page,origin,new_text,...)            |
-  add_image(doc,page,rect,src,...)                 /
+  add_image(doc,page,rect,src,...)                 |
+  edit_image(doc,page,index,rect,to_rect,...)      /
   extract_pages(doc,pages,name)            -> {name, path, size, dir}
   merge(sources,name,directory)            -> {name, path, dir}
   split(doc,mode,ranges,prefix,directory)  -> {files:[...], dir}
@@ -1030,9 +1031,10 @@ def _page_text(doc, page):
                     "flags": s["flags"],
                     "color": [(c >> 16) & 255, (c >> 8) & 255, c & 255],
                 })
+    images = _page_images(doc, page, fitz.Matrix(p.transformation_matrix))
     out = {"page": page, "width": round(p.rect.width, 2),
            "height": round(p.rect.height, 2), "rotation": p.rotation,
-           "spans": spans, "mtime": os.path.getmtime(doc)}
+           "spans": spans, "images": images, "mtime": os.path.getmtime(doc)}
     d.close()
     return out
 
@@ -1150,9 +1152,95 @@ def _add_image(doc, page, rect, src):
     if r.is_empty or r.width < 2 or r.height < 2:
         raise ValueError("the image box is outside the page")
     p.insert_image(r, filename=src, keep_proportion=True)
+    to_page = fitz.Matrix(p.transformation_matrix)
     d.save(doc, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
     d.close()
-    return {"rect": [round(v, 2) for v in r]}
+    # insert_image draws on top, so the new image is the page's last draw —
+    # returned so the UI can select it for moving/resizing straight away.
+    boxes = _page_images(doc, page, to_page)
+    return {"image": {"index": len(boxes) - 1, "bbox": boxes[-1]}}
+
+
+def _image_draws(pg, to_page):
+    """Each image the page's own content stream draws, in drawing order, as
+    (instruction index, box in page points, CTM at the draw). The CTM is
+    tracked through q/Q/cm here rather than taken from PyMuPDF, which names
+    an image by its content hash — two placements of the same file come
+    back as one xref and could not be told apart. Images inside a form
+    XObject or inline are not listed: they aren't one `Do` in this stream."""
+    import fitz
+    import pikepdf
+
+    images = {str(k) for k, v in pg.resources.get("/XObject", {}).items()
+              if v.get("/Subtype") == "/Image"}
+    ops = pikepdf.parse_content_stream(pg)
+    stack, draws = [fitz.Matrix(1, 0, 0, 1, 0, 0)], []
+    for i, ins in enumerate(ops):
+        op = str(ins.operator)
+        if op == "q":
+            stack.append(fitz.Matrix(stack[-1]))
+        elif op == "Q" and len(stack) > 1:
+            stack.pop()
+        elif op == "cm":
+            stack[-1] = fitz.Matrix(*[float(v) for v in ins.operands]) * stack[-1]
+        elif op == "Do" and str(ins.operands[0]) in images:
+            box = fitz.Rect(0, 0, 1, 1) * (stack[-1] * to_page)
+            draws.append((i, box, stack[-1]))
+    return ops, draws
+
+
+def _page_images(path, page, to_page):
+    """[bbox] of the page's movable images, indexed as edit_image takes them."""
+    import pikepdf
+
+    with pikepdf.open(path) as pdf:
+        _, draws = _image_draws(pdf.pages[page - 1], to_page)
+    return [[round(v, 2) for v in box] for _, box, _ in draws]
+
+
+def _edit_image(doc, page, index, rect, to_rect=""):
+    """Move/resize the page's `index`-th image draw (whose box is `rect`,
+    page points) into `to_rect`, or remove it when `to_rect` is empty. Only
+    that one `Do` changes — it is wrapped in a transform that maps its old
+    box onto the new one — so the image data, its transparency and every
+    other placement on the page are untouched."""
+    import fitz
+    import pikepdf
+
+    d = fitz.open(doc)
+    p = _editable_page(d, page)
+    to_page, page_rect = fitz.Matrix(p.transformation_matrix), fitz.Rect(p.rect)
+    d.close()
+    old = fitz.Rect(json.loads(rect))
+    tmp = doc + ".tmp"
+    with pikepdf.open(doc) as pdf:
+        pg = pdf.pages[page - 1]
+        ops, draws = _image_draws(pg, to_page)
+        if not (0 <= index < len(draws)
+                and all(abs(a - b) < 0.5 for a, b in zip(draws[index][1], old))):
+            raise ValueError("the image changed on disk — reload and retry")
+        i, _, ctm = draws[index]
+        if to_rect:
+            new = fitz.Rect(json.loads(to_rect))
+            if new.is_empty or not new.intersects(page_rect):
+                raise ValueError("the image box is outside the page")
+            sx, sy = new.width / old.width, new.height / old.height
+            move = fitz.Matrix(sx, 0, 0, sy, new.x0 - sx * old.x0, new.y0 - sy * old.y0)
+            # The Do draws in its own space: the page-space move, expressed
+            # there, is placement · move · placement⁻¹.
+            place = ctm * to_page
+            local = place * move * ~place
+            ops[i:i + 1] = [
+                pikepdf.ContentStreamInstruction([], pikepdf.Operator("q")),
+                pikepdf.ContentStreamInstruction(list(local), pikepdf.Operator("cm")),
+                ops[i],
+                pikepdf.ContentStreamInstruction([], pikepdf.Operator("Q")),
+            ]
+        else:
+            del ops[i]
+        pg.Contents = pdf.make_stream(pikepdf.unparse_content_stream(ops))
+        pdf.save(tmp)
+    _replace(tmp, doc)
 
 
 # -------------------------------------------------------------------- library
@@ -1554,6 +1642,8 @@ def main(
     line_height: str = "",
     rect: str = "",
     to_origin: str = "",
+    index: int = 0,
+    to_rect: str = "",
     expected_mtime: str = "",
     force: int = 0,
     password: str = "",
@@ -1666,6 +1756,9 @@ def main(
     if action == "add_image":
         return _mutate(doc, expected_mtime, "add-image",
                        lambda p: _add_image(p, page, rect, src))
+    if action == "edit_image":
+        return _mutate(doc, expected_mtime, "edit-image",
+                       lambda p: _edit_image(p, page, index, rect, to_rect))
     if action == "extract_pages":
         return _extract_pages(doc, pages, name)
     if action == "merge":
