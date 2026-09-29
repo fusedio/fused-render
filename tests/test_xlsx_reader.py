@@ -21,6 +21,11 @@ Under test:
   its dependency graph is not bounded) — a workbook over the size guard, or
   a worker that hangs past the timeout, degrades to blank instead of
   stalling the (timeout-free) in-process reader.
+* The workbook is evaluated ONCE per file version, not per page: later pages,
+  and a fresh process (the disk cache), never spawn the worker again; an
+  edit to the file does.
+* The agent tools — sheets, describe, query, cells — answer from that same
+  snapshot; query's SQL is sandboxed (no files, no network) and time-bounded.
 """
 import importlib.util
 import os
@@ -35,12 +40,28 @@ openpyxl = pytest.importorskip("openpyxl")
 pytest.importorskip("pycel")
 
 
-def _load_reader():
-    path = os.path.join("fused_render", "templates", "xlsx", "reader.py")
-    spec = importlib.util.spec_from_file_location("xlsx_reader", path)
+def _load(name):
+    path = os.path.join("fused_render", "templates", "xlsx", name)
+    spec = importlib.util.spec_from_file_location(name[:-3], path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+@pytest.fixture(autouse=True)
+def _isolated_caches(tmp_path, monkeypatch):
+    # Both caches outlive a module load by design (the in-memory one rides on
+    # the openpyxl module, the disk one under ~) — so every test starts cold.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delitem(openpyxl.__dict__, "_fused_render_xlsx_snapshots", raising=False)
+
+
+def _load_reader():
+    return _load("reader.py")
+
+
+def _forget_snapshots():
+    openpyxl.__dict__.pop("_fused_render_xlsx_snapshots", None)
 
 
 def _write(path, rows, sheet_name="Sheet1"):
@@ -117,7 +138,7 @@ def test_cached_value_path_is_untouched(tmp_path, monkeypatch):
             zout.writestr(n, data)
 
     mod = _load_reader()
-    monkeypatch.setattr(mod, "_pycel_values", lambda file, sheet, cells: (_ for _ in ()).throw(AssertionError("pycel should not run when a cached value exists")))
+    monkeypatch.setattr(mod, "_formula_values", lambda *a: pytest.fail("pycel should not run when a cached value exists"))
 
     out = mod.main(file=str(path), sheet="Sheet1", offset=0, limit=10)
     assert out["rows"][0] == {"a": 1, "b": 10}
@@ -130,10 +151,11 @@ def test_no_pycel_available_degrades_to_blank(tmp_path, monkeypatch):
     _write(path, [["a", "b"], [1, "=A2*10"]])
 
     mod = _load_reader()
-    monkeypatch.setattr(mod, "_pycel_values", lambda file, sheet, cells: {})
+    monkeypatch.setattr(mod, "_formula_values", lambda *a: {})
 
     out = mod.main(file=str(path), sheet="Sheet1", offset=0, limit=10)
     assert out["rows"][0] == {"a": 1, "b": None}
+    assert out["unevaluated"] == 1  # reported, not silently blank
 
 
 def test_sheet_name_with_spaces_is_quoted_for_pycel(tmp_path):
@@ -183,19 +205,22 @@ def test_plain_number_formula_is_unaffected_by_date_detection(tmp_path):
     assert out["rows"][0] == {"hours": 3, "amount": 150}
 
 
-def test_oversized_workbook_skips_pycel_without_spawning(tmp_path, monkeypatch):
+def test_oversized_workbook_is_streamed_not_snapshotted(tmp_path, monkeypatch):
+    """Past the snapshot cap, the grid still pages (cached values only, one
+    streaming pass) — nothing loads the workbook into the server's memory or
+    spawns pycel over it — and the analysis tools refuse it by name."""
     path = tmp_path / "book.xlsx"
-    _write(path, [["a", "b"], [1, "=A2*10"]])
+    _write(path, [["a", "b"], [1, "=A2*10"], [2, "x"], [3, "y"]])
 
     mod = _load_reader()
-    monkeypatch.setattr(mod, "_PYCEL_MAX_BYTES", 1)  # this tiny file is "too big"
-    monkeypatch.setattr(
-        mod.subprocess, "run",
-        lambda *a, **k: pytest.fail("should never spawn a worker past the size guard"),
-    )
+    monkeypatch.setattr(mod, "_SNAPSHOT_MAX_BYTES", 1)  # this tiny file is "too big"
+    monkeypatch.setattr(mod, "_build", lambda *a: pytest.fail("snapshotted past the cap"))
 
-    out = mod.main(file=str(path), sheet="Sheet1", offset=0, limit=10)
-    assert out["rows"][0] == {"a": 1, "b": None}
+    out = mod.main(file=str(path), sheet="Sheet1", offset=1, limit=1)
+    assert out["total_rows"] == 3 and out["columns"] == ["a", "b"]
+    assert out["rows"] == [{"a": 2, "b": "x"}]
+    with pytest.raises(mod.TooLarge, match="excel template"):
+        mod.describe(str(path))
 
 
 def test_hung_worker_times_out_and_degrades_to_blank(tmp_path):
@@ -215,3 +240,175 @@ def test_hung_worker_times_out_and_degrades_to_blank(tmp_path):
 
     assert out["rows"][0] == {"a": 1, "b": None}
     assert elapsed < 5  # bounded by _PYCEL_TIMEOUT, not left hanging
+
+
+def _no_spawn(mod, monkeypatch):
+    monkeypatch.setattr(mod.subprocess, "run",
+                        lambda *a, **k: pytest.fail("the workbook was evaluated again"))
+
+
+def test_workbook_is_evaluated_once_not_per_page(tmp_path, monkeypatch):
+    path = tmp_path / "book.xlsx"
+    rows = [["n", "double"]] + [[i, f"=A{i + 2}*2"] for i in range(300)]
+    rows.append([None, "=SUM(B2:B301)"])  # a total on the LAST page reaches every row
+    _write(path, rows)
+
+    mod = _load_reader()
+    first = mod.main(file=str(path), offset=0, limit=100)
+    _no_spawn(mod, monkeypatch)
+    last = mod.main(file=str(path), offset=300, limit=100)
+
+    assert first["rows"][1] == {"n": 1, "double": 2}
+    assert last["rows"] == [{"n": None, "double": sum(i * 2 for i in range(300))}]
+
+
+def test_a_fresh_process_reuses_the_disk_cache(tmp_path, monkeypatch):
+    path = tmp_path / "book.xlsx"
+    _write(path, [["a", "b"], [2, "=A2*10"]])
+    _load_reader().main(file=str(path))
+
+    _forget_snapshots()  # what a new process (an MCP call) starts with
+    mod = _load_reader()
+    _no_spawn(mod, monkeypatch)
+    assert mod.main(file=str(path))["rows"] == [{"a": 2, "b": 20}]
+
+
+def test_editing_the_file_reevaluates_it(tmp_path):
+    path = tmp_path / "book.xlsx"
+    _write(path, [["a", "b"], [2, "=A2*10"]])
+    mod = _load_reader()
+    assert mod.main(file=str(path))["rows"] == [{"a": 2, "b": 20}]
+
+    _write(path, [["a", "b"], [3, "=A2*10"]])
+    os.utime(path, ns=(time.time_ns(), time.time_ns() + 10**9))  # a distinct mtime, however coarse the fs
+    assert mod.main(file=str(path))["rows"] == [{"a": 3, "b": 30}]
+
+
+def test_non_finite_results_are_excel_num_errors_not_invalid_json():
+    import math
+
+    worker = _load("_pycel_worker.py")
+    assert worker._plain(math.inf) == "#NUM!"
+    assert worker._plain(-math.inf) == "#NUM!"
+    assert worker._plain(math.nan) is None
+    assert _load_reader()._jsonify(math.inf) == "#NUM!"
+
+
+def test_repeated_and_blank_headers_stay_addressable(tmp_path):
+    path = tmp_path / "book.xlsx"
+    _write(path, [["amount", "Amount", None], [1, 2, 3]])
+
+    out = _load_reader().main(file=str(path))
+    assert out["columns"] == ["amount", "Amount_2", "col2"]
+    assert out["rows"] == [{"amount": 1, "Amount_2": 2, "col2": 3}]
+
+
+def _sales(path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Q1 sales"
+    ws.append(["region", "units", "price", "revenue"])
+    for i, (region, units, price) in enumerate(
+            [("N", 3, 10.5), ("S", 5, 2.5), ("N", 1, 4), ("E", 0, 1)], start=2):
+        ws.append([region, units, price, f"=B{i}*C{i}"])
+    ws.append(["total", "=SUM(B2:B5)", None, "=1/0"])
+    other = wb.create_sheet("Notes")
+    other.append(["note"])
+    other.append(["hello"])
+    wb.save(path)
+
+
+def test_sheets_lists_tables_with_types(tmp_path):
+    path = tmp_path / "sales.xlsx"
+    _sales(path)
+
+    out = _load_reader().sheets(str(path))
+    q1, notes = out["sheets"]
+    assert q1["name"] == "Q1 sales" and q1["rows"] == 5 and q1["unevaluated"] == 0
+    assert {c["name"]: c["type"] for c in q1["columns"]} == {
+        "region": "string", "units": "int64", "price": "double", "revenue": "double"}
+    assert notes == {"name": "Notes", "rows": 1, "columns": [{"name": "note", "type": "string"}],
+                     "formulas": 0, "unevaluated": 0}
+
+
+def test_describe_gives_column_statistics(tmp_path):
+    path = tmp_path / "sales.xlsx"
+    _sales(path)
+
+    out = _load_reader().describe(str(path), columns="units,revenue,region")
+    units, revenue, region = out["columns"]
+    assert units == {"column": "units", "type": "int64", "count": 5, "nulls": 0, "distinct": 5,
+                     "min": 0, "max": 9, "mean": 3.6, "median": 3.0,
+                     "std": pytest.approx(3.577708), "sum": 18}
+    # the #DIV/0! total is an error, not a number: NULL in SQL, and counted
+    assert revenue["sum"] == 48.0 and revenue["nulls"] == 1 and revenue["errors"] == 1
+    assert region["top"][0] == {"value": "N", "count": 2}
+
+
+def test_describe_names_a_missing_column(tmp_path):
+    path = tmp_path / "sales.xlsx"
+    _sales(path)
+    with pytest.raises(ValueError, match="nope"):
+        _load_reader().describe(str(path), columns="nope")
+
+
+def test_query_runs_sql_over_every_sheet(tmp_path):
+    path = tmp_path / "sales.xlsx"
+    _sales(path)
+
+    out = _load_reader().main(file=str(path), action="query", sql=(
+        'SELECT region, sum(revenue) AS revenue FROM "Q1 sales" '
+        "WHERE region <> 'total' GROUP BY 1 ORDER BY 2 DESC"))
+    assert out["columns"] == ["region", "revenue"]
+    assert out["rows"] == [["N", 35.5], ["S", 12.5], ["E", 0.0]]
+    assert out["truncated"] is False
+
+    capped = _load_reader().query(str(path), 'SELECT * FROM "Q1 sales"', limit=2)
+    assert len(capped["rows"]) == 2 and capped["truncated"] is True
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT * FROM read_csv('/etc/hosts')",
+    "COPY \"Q1 sales\" TO 'leak.csv'",
+    "ATTACH 'other.db'",
+    "SET enable_external_access = true",
+])
+def test_query_cannot_touch_files_or_reopen_the_sandbox(tmp_path, sql):
+    path = tmp_path / "sales.xlsx"
+    _sales(path)
+    import duckdb
+
+    with pytest.raises(duckdb.Error):
+        _load_reader().query(str(path), sql)
+
+
+def test_query_is_time_bounded(tmp_path):
+    path = tmp_path / "sales.xlsx"
+    _sales(path)
+    mod = _load_reader()
+    mod._QUERY_TIMEOUT = 0.3
+
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        mod.query(str(path), "SELECT count(*) FROM range(100000) a, range(100000) b WHERE a.range + b.range = 7")
+    assert time.monotonic() - started < 5
+
+
+def test_cells_returns_values_and_formulas(tmp_path):
+    path = tmp_path / "sales.xlsx"
+    _sales(path)
+
+    out = _load_reader().main(file=str(path), action="cells", ref="'Q1 sales'!B6:D6")
+    assert out["sheet"] == "Q1 sales"
+    assert out["cells"] == [[
+        {"ref": "B6", "value": 9, "formula": "=SUM(B2:B5)"},
+        {"ref": "C6", "value": None, "formula": None},
+        {"ref": "D6", "value": "#DIV/0!", "formula": "=1/0"},
+    ]]
+
+
+def test_unknown_action_is_refused(tmp_path):
+    path = tmp_path / "sales.xlsx"
+    _sales(path)
+    with pytest.raises(ValueError, match="unknown action"):
+        _load_reader().main(file=str(path), action="drop")
