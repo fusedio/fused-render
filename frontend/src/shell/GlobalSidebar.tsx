@@ -1,6 +1,6 @@
 // THE sidebar — one for the whole app, on every route. Replaces the old pair
 // (ShellSidebar app-switcher on shell routes, ExplorerSidebar on fs routes):
-// primary nav on top (Home / Tasks / AI Models, plus Canvases once the feature
+// primary nav on top (Home / Tasks / Bots / AI Models, plus Canvases once the feature
 // is turned on in Preferences AND this machine is signed in to Fused), the
 // explorer's Bookmarks below it, and a
 // single Settings trigger pinned to the bottom that opens a menu holding
@@ -11,7 +11,7 @@
 // (SidebarFrame) and explorer-owned sections (Bookmarks), which only
 // the shell is allowed to import together (scripts/check-boundaries.mjs).
 import { useEffect, useRef, useState } from "react";
-import { ListTodo } from "lucide-react";
+import { Bot, ListTodo } from "lucide-react";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { Config } from "@platform/lib/api";
@@ -96,6 +96,10 @@ const MOUNTS_ICON = (
 // glyph (shell/AppPage.tsx) so the two read as one thing. Was a clock while the
 // page was "Scheduled".
 const SCHEDULED_ICON = <ListTodo size={16} strokeWidth={2} aria-hidden="true" />;
+
+// Bots (/bots, apps/bots): persona chat assistants that plan apps but never
+// write code themselves. lucide Bot, same size and stroke as ListTodo above.
+const BOTS_ICON = <Bot size={16} strokeWidth={2} aria-hidden="true" />;
 
 // Connected nodes: a canvas is a graph of UDFs.
 const CANVASES_ICON = (
@@ -459,6 +463,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const pathname = location.pathname;
   const homeActive = pathname === "/home";
   const tasksActive = pathname === "/tasks";
+  // Exact: /bots is one page; the selected bot rides in `?bot=`, not the path.
+  const botsActive = pathname === "/bots";
   // Exact, for the reason Home is: /canvases/<name> is a workspace you opened,
   // not the list page, and lighting the row while you are inside a canvas reads
   // as two selections.
@@ -700,6 +706,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       active: tasksActive,
       badge: tasksDot,
     },
+    { key: "bots", label: "Bots", icon: BOTS_ICON, href: "/bots", active: botsActive },
     // Same gate and same order as the expanded row below — a row that exists
     // only until you collapse the sidebar is a destination people lose.
     ...(canvasesInNav
@@ -785,6 +792,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             extra={tasksDot}
             trailing={tasksTrailing}
           />
+          <NavItem href="/bots" id="bots-link" label="Bots" icon={BOTS_ICON} active={botsActive} />
           {canvasesInNav && (
             <NavItem
               href="/canvases"

@@ -1297,22 +1297,34 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    return _scaffold_app(body.get("name"), body.get("prompt", ""),
+                         body.get("model", ""), body.get("effort", ""))
 
-    name = body.get("name")
+
+def _scaffold_app(name, prompt, model, effort):
+    """The body of POST /api/apps/new, minus the X-Fused guard: validate,
+    copy the starter into `<fused_dir>/local/<name>`, stamp identity, commit
+    the boilerplate, and (when `prompt` is non-blank) start the scaffolding
+    task. Returns the response dict, or a `_error` JSONResponse — 409 when the
+    folder already exists, which a caller wanting a free name retries with a
+    `-2`, `-3`… suffix (the Bots router does; so does HomeHero's
+    createAppUnderFreeName on the client).
+
+    Factored out so the Bots sub-app's `create_app` tool (routers/bots.py)
+    scaffolds through the exact same path as the Home composer rather than a
+    second copy of it. Arguments arrive raw (straight from a request body) and
+    are validated here in the order the route always did."""
     name_err = _app_name_error(name)
     if name_err is not None:
         return _error(name_err)
     name = str(name).strip()
 
-    prompt = body.get("prompt", "")
     if not isinstance(prompt, str):
         return _error("'prompt' must be a string")
 
     # The composer's model/effort pickers. Both optional and both
     # defaulting to "" — an older client that sends neither gets exactly the
     # session it got before this existed.
-    model = body.get("model", "")
-    effort = body.get("effort", "")
     for field, value, allowed in (("model", model, VALID_DEFAULT_MODELS),
                                   ("effort", effort, _VALID_SESSION_EFFORTS)):
         err = _session_choice_error(field, value, allowed)

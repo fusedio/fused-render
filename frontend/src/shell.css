@@ -74,6 +74,8 @@
 /* After home.css: the canvases listing is another page-family surface that
    layers its card grid over the .btn / .field-control vocabulary above. */
 @import "./styles/canvases.css";
+/* Bots (/bots): rail + chat page, shadcn dialogs and sheets on top. */
+@import "./styles/bots.css";
 @import "./styles/reduced-motion.css";
 @import "./styles/apps.css";
 @import "./styles/scrollbars.css";
