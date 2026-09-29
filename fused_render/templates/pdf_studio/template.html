@@ -1195,8 +1195,15 @@ function sizeEditor(ed) {
   ed.lines = wrapLines(ed.el.value, ed.maxW);
   const widest = Math.max(0, ...ed.lines.map((l) => measureCtx.measureText(l).width));
   const w = Math.min(ed.maxW, Math.max(ed.minW, widest + 2, px));   // +2: room for the caret
+  const h = ed.lines.length * lh;
+  // Keep the text inside ed.bounds: a new box opened near the bottom of the
+  // page grows upwards instead of running off it, so its first baseline is
+  // always on the page. Edits of an existing span have unbounded bounds and
+  // stay exactly on the span they replace.
+  ed.top = Math.max(ed.bounds.top, Math.min(ed.anchorY, ed.bounds.bottom - h)) - EDIT_PAD;
+  ed.el.style.top = ed.top + "px";
   ed.el.style.width = w + 2 * EDIT_PAD + "px";
-  ed.el.style.height = ed.lines.length * lh + 2 * EDIT_PAD + "px";
+  ed.el.style.height = h + 2 * EDIT_PAD + "px";
   // The caret can scroll the textarea's content a line up before this resize
   // lands; the box now fits everything, so pin it back.
   ed.el.scrollTop = 0; ed.el.scrollLeft = 0;
@@ -1227,27 +1234,31 @@ function openEditor(wrap, { span = null, at = null }) {
   el.className = "tedit";
   el.spellcheck = false;
   el.value = span ? span.text : "";
-  let left, top, minW;
+  // anchorY is where the first line's top wants to be (page px); sizeEditor
+  // places the box from it on every resize, within `bounds`.
+  let left, anchorY, minW, bounds;
   if (span) {
     const [x0, y0, x1, y1] = span.bbox;
     // Centre the first line on the original span so the box sits evenly
     // around it, and never narrower than the span, so the old text stays hidden.
     const lh = fmt.size * s * LINE_EM;
     left = x0 * s - EDIT_PAD;
-    top = ((y0 + y1) / 2) * s - lh / 2 - EDIT_PAD;
+    anchorY = ((y0 + y1) / 2) * s - lh / 2;
+    bounds = { top: -Infinity, bottom: Infinity };
     // Trailing spaces in the span are blank on the page — don't pad the box for them.
     measureCtx.font = cssFont(fmt, fmt.size * s);
     const tail = span.text.length - span.text.trimEnd().length;
     minW = (x1 - x0) * s - (tail ? measureCtx.measureText(span.text.slice(-tail)).width : 0);
   } else {
     left = at.x - EDIT_PAD;
-    top = at.y - EDIT_PAD;
+    anchorY = at.y;
+    bounds = { top: 0, bottom: wrap.clientHeight };
     minW = 24;
   }
   el.style.left = left + "px";
-  el.style.top = top + "px";
   const maxW = Math.max(minW, wrap.clientWidth - (left + EDIT_PAD) - 6);
-  const ed = { el, wrap, pageNo, span, scale: s, left, top, minW, maxW, fmt, orig: { ...fmt }, lines: [] };
+  const ed = { el, wrap, pageNo, span, scale: s, left, top: 0, anchorY, bounds, minW, maxW,
+    fmt, orig: { ...fmt }, lines: [] };
   state.editing = ed;
   wrap.appendChild(el);
   sizeEditor(ed);
@@ -1285,17 +1296,20 @@ function finishEdit() {
     const s = ed.scale, px = f.size * s;
     const x = (ed.left + EDIT_PAD) / s;
     const y = (ed.top + EDIT_PAD + (px * LINE_EM) / 2 + BASELINE_EM[f.family] * px) / s;
-    act("addText", { ...common, origin: JSON.stringify([+x.toFixed(2), +y.toFixed(2)]),
+    act("insertText", { ...common, origin: JSON.stringify([+x.toFixed(2), +y.toFixed(2)]),
       font: FAMILY_PDF[f.family] });
   }
 }
 
 // ---------- edit tools: edit text / add text / add image ----------
-function setTool(tool) {
+// Switching tool replaces the pending image: only the image tool carries one,
+// and its preview element leaves the page with it.
+function setTool(tool, image = null) {
+  state.image?.ghost.remove();
+  state.image = image;
   state.tool = tool;
   for (const t of ["select", "text", "image"]) document.body.classList.toggle("tool-" + t, t === tool);
   document.querySelectorAll("#ebTools [data-etool]").forEach((b) => b.classList.toggle("on", b.dataset.etool === tool));
-  if (tool !== "image") { state.image = null; imgGhost?.remove(); }
   updateEditUi();
 }
 
@@ -1324,7 +1338,6 @@ function setFmt(patch, refocus = true) {
   if (refocus) ed?.el.focus();
 }
 
-let imgGhost = null;
 let imgDrag = null;
 function localPt(wrap, e) {
   const r = wrap.getBoundingClientRect();
@@ -1346,23 +1359,27 @@ function imageBox(wrap, p, drag = imgDrag) {
   return { x: Math.min(p.x, W - w), y: Math.min(p.y, H - h), w, h };
 }
 function showGhost(wrap, box) {
-  if (!imgGhost) {
-    imgGhost = document.createElement("div");
-    imgGhost.className = "img-ghost";
-    if (state.image.url) imgGhost.innerHTML = `<img alt="" src="${state.image.url}">`;
-  }
-  if (imgGhost.parentNode !== wrap) wrap.appendChild(imgGhost);
-  Object.assign(imgGhost.style, { left: box.x + "px", top: box.y + "px", width: box.w + "px", height: box.h + "px" });
+  const g = state.image.ghost;
+  if (g.parentNode !== wrap) wrap.appendChild(g);
+  Object.assign(g.style, { left: box.x + "px", top: box.y + "px", width: box.w + "px", height: box.h + "px" });
 }
 
-function loadImageMeta(src) {
+// The picked image, with the preview element built from that same file — one
+// object, so a later pick can never show an earlier file's preview.
+function loadImage(src) {
   return new Promise((resolve) => {
-    const url = fused.rawUrl(src);
+    const ghost = document.createElement("div");
+    ghost.className = "img-ghost";
     const im = new Image();
-    im.onload = () => resolve({ src, url, natW: im.naturalWidth, aspect: im.naturalHeight / im.naturalWidth || 1 });
-    // Formats the browser can't draw (TIFF…) still place fine — just without a preview.
-    im.onerror = () => resolve({ src, url: "", natW: 0, aspect: 1 });
-    im.src = url;
+    im.alt = "";
+    im.onload = () => {
+      ghost.appendChild(im);
+      resolve({ src, ghost, natW: im.naturalWidth, aspect: im.naturalHeight / im.naturalWidth || 1 });
+    };
+    // Formats the browser can't draw (TIFF…) still place fine — the preview
+    // is just the dashed outline.
+    im.onerror = () => resolve({ src, ghost, natW: 0, aspect: 1 });
+    im.src = fused.rawUrl(src);
   });
 }
 
@@ -1379,22 +1396,41 @@ async function applyMut(res) {
   refreshLib().catch(() => {});
 }
 
-let mutating = 0;   // in-flight mutations — page clicks wait rather than race the re-render
-async function mutate(action, params = {}) {
-  setStatus("working…", "busy");
-  mutating++;
-  let res;
-  try { res = await py({ action, doc: state.doc, expected_mtime: String(state.mtime), ...params }); }
-  finally { mutating--; }
-  if (res.conflict) {
-    toast("File changed on disk — reloaded the latest version", true);
-    await openDoc(state.doc);
-    setStatus("reloaded", "err");
-    return null;
-  }
-  await applyMut(res);
-  setStatus("unsaved changes", "warn");
-  return res;
+// Everything that writes the working copy (or reads it back out as a file)
+// runs through one queue, strictly in order. Each pdf.py call is its own
+// process sharing the working copy and its `.pre` undo snapshot, and applying
+// an edit is fire-and-forget from the click that closes the editor — so a
+// Save, Undo or page action clicked right after must wait for it, and must
+// read state.mtime/undoDepth only once the change before it has landed.
+let queueTail = Promise.resolve();
+let queued = 0;     // changes queued or running — page clicks wait for the re-render
+function serial(fn) {
+  queued++;
+  const run = queueTail.then(fn).finally(() => { queued--; });
+  queueTail = run.catch(() => {});   // a failed change must not stall the ones after it
+  return run;
+}
+
+function mutate(action, params = {}) {
+  return serial(async () => {
+    setStatus("working…", "busy");
+    const res = await py({ action, doc: state.doc, expected_mtime: String(state.mtime), ...params });
+    if (res.conflict) {
+      toast("File changed on disk — reloaded the latest version", true);
+      await openDoc(state.doc);
+      setStatus("reloaded", "err");
+      return null;
+    }
+    await applyMut(res);
+    setStatus("unsaved changes", "warn");
+    return res;
+  });
+}
+
+async function stepHistory(action, depth, status) {
+  if (!depth) return;
+  await applyMut(await py({ action, doc: state.doc }));
+  setStatus(status, "warn");
 }
 
 function updateUndoUi() {
@@ -1534,7 +1570,7 @@ const acts = {
       return toast("The file is read-only — it can't be renamed", true);
     const name = await dialog({ title: "Rename PDF", value: d.name, okText: "Rename" });
     if (!name || name === d.name) return;
-    const res = await py({ action: "rename_doc", doc: d.path, name });
+    const res = await serial(() => py({ action: "rename_doc", doc: d.path, name }));
     if (state.doc === d.path) { state.doc = res.path; fused.params.set("doc", res.path); $("docName").textContent = res.name; document.title = res.name; }
     await refreshLib();
   },
@@ -1557,12 +1593,12 @@ const acts = {
     needDoc();
     if (!state.writable)  // also covers the Ctrl+S path (keydown → act("save"))
       return toast("The file is read-only — edits can't be saved back to it. Use Save a copy.", true);
-    let res = await py({ action: "save", doc: state.doc });
+    let res = await serial(() => py({ action: "save", doc: state.doc }));
     if (res.conflict) {
       const ok = await dialog({ title: "Overwrite changed file?", input: false, danger: true, okText: "Overwrite",
         message: "The file on disk changed after you opened it. Saving replaces those changes with yours." });
       if (!ok) return;
-      res = await py({ action: "save", doc: state.doc, force: 1 });
+      res = await serial(() => py({ action: "save", doc: state.doc, force: 1 }));
     }
     state.dirty = false;
     setStatus("saved", "ok");
@@ -1574,8 +1610,7 @@ const acts = {
     const ok = await dialog({ title: "Revert to saved?", input: false, danger: true, okText: "Revert",
       message: "Unsaved changes to this document are discarded." });
     if (!ok) return;
-    const res = await py({ action: "revert", doc: state.doc });
-    await applyMut(res);
+    await serial(async () => applyMut(await py({ action: "revert", doc: state.doc })));
     setStatus("reverted", "ok");
   },
   saveAs: async () => {
@@ -1583,38 +1618,23 @@ const acts = {
     const picked = await browseModal({ title: "Save a copy", okText: "Save",
       pickDir: true, filename: state.info.name, start: "~" });
     if (!picked) return;
-    const res = await py({ action: "save_as", doc: state.doc, directory: picked.dir, name: picked.name });
+    const res = await serial(() => py({ action: "save_as", doc: state.doc, directory: picked.dir, name: picked.name }));
     toast(`Saved to ${res.file}`);
   },
 
-  undo: async () => {
-    needDoc();
-    if (!state.undoDepth) return;
-    const res = await py({ action: "undo", doc: state.doc });
-    await applyMut(res);
-    setStatus("undone — unsaved", "warn");
-  },
-  redo: async () => {
-    needDoc();
-    if (!state.redoDepth) return;
-    const res = await py({ action: "redo", doc: state.doc });
-    await applyMut(res);
-    setStatus("redone — unsaved", "warn");
-  },
+  // The depth is read inside the queue: an edit still being applied is what
+  // the reader expects Undo to take back.
+  undo: () => { needDoc(); return serial(() => stepHistory("undo", state.undoDepth, "undone — unsaved")); },
+  redo: () => { needDoc(); return serial(() => stepHistory("redo", state.redoDepth, "redone — unsaved")); },
   editTextHint: () => { setMode("edit"); setTool("select"); },
   commitEdit: (params) => mutate("edit_text", params),
-  addText: (params) => {
-    if (params?.new_text) return mutate("add_text", params);
-    needDoc();
-    setMode("edit"); setTool("text");
-  },
+  addText: () => { needDoc(); setMode("edit"); setTool("text"); },
+  insertText: (params) => mutate("add_text", params),
   addImage: async () => {
     needDoc();
     setMode("edit");
     const src = await browseModal({ title: "Add an image", exts: ".png,.jpg,.jpeg,.webp,.bmp,.gif,.tif,.tiff" });
-    if (!src) return setTool("select");
-    setTool("image");
-    state.image = await loadImageMeta(src);
+    setTool(src ? "image" : "select", src ? await loadImage(src) : null);
   },
   placeImage: ({ pageNo, rect }) => mutate("add_image", { page: pageNo, rect: JSON.stringify(rect), src: state.image.src }),
 
@@ -1712,8 +1732,8 @@ const acts = {
     const opt = await exportModal(typeof kind === "string" ? kind : "");
     if (!opt) return;
     setStatus("exporting…", "busy");
-    const res = await py({ action: "export", doc: state.doc, kind: opt.kind,
-      pages: opt.pages, name: opt.name, directory: opt.dir });
+    const res = await serial(() => py({ action: "export", doc: state.doc, kind: opt.kind,
+      pages: opt.pages, name: opt.name, directory: opt.dir }));
     setStatus("exported", "ok");
     await resultModal({ title: "Export complete",
       note: `${res.files.length} file${res.files.length === 1 ? "" : "s"} saved to ${res.dir}.`,
@@ -2530,7 +2550,7 @@ $("pages").addEventListener("click", (e) => {
   }
   if (!document.body.classList.contains("mode-edit") || state.tool === "image") return;
   if (swallowClick) { swallowClick = false; return; }
-  if (mutating) return toast("Still applying the last change…");
+  if (queued) return toast("Still applying the last change…");
   if (state.tool === "text") {
     if (!e.target.closest(".overlay")) return;
     openEditor(wrap, { at: localPt(wrap, e) });
@@ -2576,7 +2596,7 @@ $("pages").addEventListener("pointerup", (e) => {
   const drag = imgDrag;
   imgDrag = null;
   if (!drag || state.tool !== "image" || !state.image) return;
-  if (mutating) return toast("Still applying the last change…");
+  if (queued) return toast("Still applying the last change…");
   const pageNo = +drag.wrap.dataset.page;
   if ((state.spans[pageNo]?.rotation || 0) !== 0) return toast("Rotate this page to 0° before editing it");
   const { x, y, w, h } = imageBox(drag.wrap, localPt(drag.wrap, e), drag);
@@ -2584,7 +2604,7 @@ $("pages").addEventListener("pointerup", (e) => {
   const rect = [x / s, y / s, (x + w) / s, (y + h) / s].map((v) => +v.toFixed(2));
   act("placeImage", { pageNo, rect }).finally(() => setTool("select"));
 });
-$("pages").addEventListener("pointerleave", () => { if (!imgDrag) imgGhost?.remove(); });
+$("pages").addEventListener("pointerleave", () => { if (!imgDrag) state.image?.ghost.remove(); });
 
 $("ebTools").addEventListener("click", (e) => {
   const b = e.target.closest("[data-etool]");
