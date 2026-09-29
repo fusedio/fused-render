@@ -85,6 +85,7 @@ Auto-created at app root. Convention, no helper API — build paths off `os.path
 | `fused.fileIndex.search/query` | Machine-wide file index — use instead of walking fs → `fused-render-index`. |
 | `fused.capture.*` | Native screen/mic/screenshot → `fused-render-capture`. |
 | `fused.trackJob(spec)` | Report long work to download manager; never rejects → `fused-render-jobs`. |
+| `fused.tasks.*` | List/create/follow up/cancel/watch the app's Claude tasks (headless, returns a handle) → `fused-render-tasks`. |
 | `fused.daemon.*` | Folder's warm worker / resident daemon → `fused-render-background-apps`. |
 | `fused.env` | `"local"` vs `"hosted"` (exported). |
 | `fused.autoReload(false)` | Kill reload-on-file-change (in-page editors). |

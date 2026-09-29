@@ -2333,7 +2333,7 @@ def test_a_pill_pick_is_written_for_the_conversation(client, projects_dir):
     """The endpoint the composer posts to on every pick. The param it also sets
     dies with the address bar; this is the half that survives the next open."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
-    r = client.post("/api/tasks/settings",
+    r = client.post("/api/tasks/settings", headers={"X-Fused": "1"},
                     json={"session_id": "sess-a", "model": "haiku",
                           "effort": "low"})
     assert r.status_code == 200, r.text
@@ -2346,9 +2346,9 @@ def test_picking_one_pill_never_erases_the_other(client, projects_dir):
     """Two pills, two requests, one record. An absent field is "not saying",
     never "nothing" — the spawn path writes both and a pick writes one."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
-    client.post("/api/tasks/settings",
+    client.post("/api/tasks/settings", headers={"X-Fused": "1"},
                 json={"session_id": "sess-a", "model": "haiku", "effort": "low"})
-    r = client.post("/api/tasks/settings",
+    r = client.post("/api/tasks/settings", headers={"X-Fused": "1"},
                     json={"session_id": "sess-a", "effort": "max"})
     assert r.json() == {"ok": True, "model": "haiku", "effort": "max"}
 
@@ -2426,7 +2426,7 @@ def test_the_settings_endpoint_refuses_words_it_does_not_know(client, projects_d
            {"session_id": "", "model": "haiku"},
            {"session_id": "sess-a"}]
     for body in bad:
-        assert client.post("/api/tasks/settings", json=body).status_code == 400, body
+        assert client.post("/api/tasks/settings", headers={"X-Fused": "1"}, json=body).status_code == 400, body
 
 
 def test_the_settings_endpoint_refuses_an_id_no_reader_would_look_up(client):
@@ -2434,10 +2434,10 @@ def test_the_settings_endpoint_refuses_an_id_no_reader_would_look_up(client):
     reads anything; a record filed under one would never be read back, only
     carried by every listing. Same shape the running-mark endpoint demands."""
     for sid in ("../../etc/passwd", ".hidden", "a/b", "a\\b", "d:x", ".", ".."):
-        r = client.post("/api/tasks/settings",
+        r = client.post("/api/tasks/settings", headers={"X-Fused": "1"},
                         json={"session_id": sid, "model": "haiku"})
         assert r.status_code == 400, sid
-    assert client.post("/api/tasks/settings",
+    assert client.post("/api/tasks/settings", headers={"X-Fused": "1"},
                        json={"session_id": "sess-ok.1_2", "model": "haiku"}
                        ).status_code == 200
 
@@ -2448,7 +2448,7 @@ def test_a_record_for_a_chat_that_is_not_a_task_bothers_nobody(client, projects_
     Writing one must not mint a row, and must not fail."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("go", T9)])
     before = {t["key"] for t in _tasks(client)}
-    assert client.post("/api/tasks/settings",
+    assert client.post("/api/tasks/settings", headers={"X-Fused": "1"},
                        json={"session_id": "no-such-session",
                              "model": "haiku"}).status_code == 200
     assert {t["key"] for t in _tasks(client)} == before
@@ -3001,7 +3001,7 @@ def test_archiving_cancels_the_work_and_files_the_session(client, projects_dir,
                claude_session_id="sess-a"),
         _entry("e2", "tomorrow", T12, claude_session_id="sess-a"),
     ])
-    r = client.post("/api/tasks/archive", json={"key": "sess-a"})
+    r = client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json()["cancelled"] == 1
     assert r.json()["filed"] is True
@@ -3026,7 +3026,7 @@ def test_archiving_stops_the_rule_behind_the_next_occurrence(client,
         _entry("e2", "every day", T12, template_id="tpl",
                claude_session_id="sess-a"),
     ])
-    r = client.post("/api/tasks/archive", json={"key": "sess-a"})
+    r = client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
 
     states = {e["id"]: e["state"] for e in schedule.list_entries()}
@@ -3042,7 +3042,7 @@ def test_archiving_leaves_a_send_already_away_alone(client, projects_dir):
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "x", T9, state=schedule.SENDING,
                            claude_session_id="sess-a")])
-    r = client.post("/api/tasks/archive", json={"key": "sess-a"})
+    r = client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json()["cancelled"] == 0
     assert schedule.list_entries()[0]["state"] == schedule.SENDING
@@ -3055,7 +3055,7 @@ def test_archiving_a_task_with_no_session_only_cancels(client, tmp_path):
     `_is_task`'s rule and older than this endpoint."""
     _seed_schedule([_entry("e1", "tomorrow", T12, target=str(tmp_path))])
     key = _tasks(client)[0]["key"]
-    r = client.post("/api/tasks/archive", json={"key": key})
+    r = client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": key})
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": True, "key": key, "cancelled": 1, "filed": False}
     assert schedule.list_entries()[0]["state"] == schedule.CANCELLED
@@ -3063,12 +3063,12 @@ def test_archiving_a_task_with_no_session_only_cancels(client, tmp_path):
 
 
 def test_archiving_a_task_that_is_not_there_is_a_404(client):
-    assert client.post("/api/tasks/archive",
+    assert client.post("/api/tasks/archive", headers={"X-Fused": "1"},
                        json={"key": "nope"}).status_code == 404
 
 
 def test_archiving_without_a_key_is_a_400(client):
-    assert client.post("/api/tasks/archive",
+    assert client.post("/api/tasks/archive", headers={"X-Fused": "1"},
                        json={"key": "  "}).status_code == 400
 
 
@@ -3085,10 +3085,10 @@ def test_unarchiving_drops_the_filing_and_the_task_lands_where_it_derives(
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "ran", T9, state=schedule.SENT, fired=T9,
                            turn="ok", claude_session_id="sess-a")])
-    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert _by_key(client)["sess-a"]["status"] == "archived"
 
-    r = client.post("/api/tasks/unarchive", json={"key": "sess-a"})
+    r = client.post("/api/tasks/unarchive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": True, "key": "sess-a", "unfiled": True,
                         "status": "done"}
@@ -3104,9 +3104,9 @@ def test_unarchiving_reports_the_derived_lane_not_the_one_dropped_on(
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "broke", T12, state=schedule.SENT, fired=T12,
                            turn="failed", claude_session_id="sess-a")])
-    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
 
-    r = client.post("/api/tasks/unarchive", json={"key": "sess-a"})
+    r = client.post("/api/tasks/unarchive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "blocked"
     assert _by_key(client)["sess-a"]["status"] == "blocked"
@@ -3118,13 +3118,13 @@ def test_unarchiving_keeps_the_note_the_tag_and_the_read_mark(client,
     """`clear_triage` drops the STATUS and its stamp, nothing else: a note, a
     tag or a read mark on that session is somebody else's data."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     triage_path = state_dir / "triage.json"
     rec = json.loads(triage_path.read_text())
     rec["sess-a"].update({"note": "keep me", "tags": ["blue"], "read": "1"})
     triage_path.write_text(json.dumps(rec))
 
-    assert client.post("/api/tasks/unarchive",
+    assert client.post("/api/tasks/unarchive", headers={"X-Fused": "1"},
                        json={"key": "sess-a"}).status_code == 200
     kept = json.loads(triage_path.read_text())["sess-a"]
     assert kept == {"note": "keep me", "tags": ["blue"], "read": "1"}
@@ -3141,10 +3141,10 @@ def test_unarchiving_starts_no_run_and_revives_no_cancelled_work(client,
                claude_session_id="sess-a"),
         _entry("e2", "tomorrow", T12, claude_session_id="sess-a"),
     ])
-    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     before = {e["id"]: dict(e) for e in schedule.list_entries()}
 
-    r = client.post("/api/tasks/unarchive", json={"key": "sess-a"})
+    r = client.post("/api/tasks/unarchive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert {e["id"]: dict(e) for e in schedule.list_entries()} == before, \
         "the schedule is not touched at all — nothing sent, nothing revived"
@@ -3160,7 +3160,7 @@ def test_unarchiving_a_task_that_was_not_filed_says_so_and_still_answers(
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "x", T9, state=schedule.CANCELLED,
                            claude_session_id="sess-a")])
-    r = client.post("/api/tasks/unarchive", json={"key": "sess-a"})
+    r = client.post("/api/tasks/unarchive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json()["unfiled"] is False
 
@@ -3169,7 +3169,7 @@ def test_unarchiving_a_task_with_no_session_only_answers(client, tmp_path):
     """Nothing to un-file — the row had no session to file in the first place."""
     _seed_schedule([_entry("e1", "tomorrow", T12, target=str(tmp_path))])
     key = _tasks(client)[0]["key"]
-    r = client.post("/api/tasks/unarchive", json={"key": key})
+    r = client.post("/api/tasks/unarchive", headers={"X-Fused": "1"}, json={"key": key})
     assert r.status_code == 200, r.text
     assert r.json()["unfiled"] is False
     assert r.json()["status"] == "upcoming"
@@ -3177,12 +3177,12 @@ def test_unarchiving_a_task_with_no_session_only_answers(client, tmp_path):
 
 
 def test_unarchiving_a_task_that_is_not_there_is_a_404(client):
-    assert client.post("/api/tasks/unarchive",
+    assert client.post("/api/tasks/unarchive", headers={"X-Fused": "1"},
                        json={"key": "nope"}).status_code == 404
 
 
 def test_unarchiving_without_a_key_is_a_400(client):
-    assert client.post("/api/tasks/unarchive",
+    assert client.post("/api/tasks/unarchive", headers={"X-Fused": "1"},
                        json={"key": "  "}).status_code == 400
 
 
@@ -3192,8 +3192,8 @@ def test_unarchiving_takes_no_lane(client, projects_dir):
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "ran", T9, state=schedule.SENT, fired=T9,
                            turn="ok", claude_session_id="sess-a")])
-    client.post("/api/tasks/archive", json={"key": "sess-a"})
-    r = client.post("/api/tasks/unarchive",
+    client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    r = client.post("/api/tasks/unarchive", headers={"X-Fused": "1"},
                     json={"key": "sess-a", "status": "in_progress",
                           "lane": "in_progress"})
     assert r.status_code == 200, r.text
@@ -3211,7 +3211,7 @@ def test_deleting_cancels_the_work_and_hides_the_row_everywhere(
         client, projects_dir, state_dir):
     path = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "tomorrow", T12, claude_session_id="sess-a")])
-    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": True, "key": "sess-a", "cancelled": 1,
                         "erased_transcript": False}
@@ -3240,7 +3240,7 @@ def test_deleting_stops_the_rule_behind_the_next_occurrence(client,
         _entry("e2", "every day", T12, template_id="tpl",
                claude_session_id="sess-a"),
     ])
-    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     states = {e["id"]: e["state"] for e in schedule.list_entries()}
     assert states["tpl"] == schedule.CANCELLED
@@ -3264,7 +3264,7 @@ def test_deleting_kills_a_rule_even_between_its_occurrences(client,
         _entry("e1", "every day", T9, state=schedule.SENT, fired=T9,
                turn="ok", template_id="tpl", claude_session_id="sess-a"),
     ])
-    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json()["cancelled"] == 1, "the rule itself is what gets called off"
 
@@ -3303,9 +3303,9 @@ def test_deleting_one_run_of_a_fresh_session_series_spares_the_series(
         _entry("e2", "every day", T12, template_id="tpl",
                new_task_each_run=True),
     ])
-    assert client.post("/api/tasks/archive",
+    assert client.post("/api/tasks/archive", headers={"X-Fused": "1"},
                        json={"key": "sess-b"}).status_code == 200
-    r = client.post("/api/tasks/delete", json={"key": "sess-b"})
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-b"})
     assert r.status_code == 200, r.text
     assert r.json()["cancelled"] == 0, "nothing of this task's own was pending"
 
@@ -3328,7 +3328,7 @@ def test_deleting_a_running_task_is_refused(client, projects_dir):
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "x", T9, state=schedule.SENDING,
                            claude_session_id="sess-a")])
-    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 409, r.text
     assert schedule.list_entries()[0]["state"] == schedule.SENDING
     assert _by_key(client)["sess-a"]["status"] == "in_progress"
@@ -3339,9 +3339,9 @@ def test_deleting_an_archived_task_takes_the_row_out_of_archive(
     """The Archive lane is where deletable rows accumulate — a filed task is
     settled by construction, so the delete goes through and the lane shrinks."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert _by_key(client)["sess-a"]["status"] == "archived"
-    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert _tasks(client) == []
 
@@ -3352,7 +3352,7 @@ def test_deleting_a_task_with_no_session_leaves_no_shell(client, tmp_path):
     the same answer hold even before the cancel settles."""
     _seed_schedule([_entry("e1", "tomorrow", T12, target=str(tmp_path))])
     key = _tasks(client)[0]["key"]
-    r = client.post("/api/tasks/delete", json={"key": key})
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": key})
     assert r.status_code == 200, r.text
     assert r.json()["cancelled"] == 1
     assert _tasks(client) == []
@@ -3366,7 +3366,7 @@ def test_an_entry_created_after_the_delete_revives_the_task(client,
     stamp that answers, never its due time: a cancelled entry's future due is
     a corpse with a date on it, not news."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    client.post("/api/tasks/delete", json={"key": "sess-a"})
+    client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert _tasks(client) == []
     _seed_schedule([_entry("e9", "again", T12, claude_session_id="sess-a",
                            created="2036-01-01T00:00:00Z")])
@@ -3379,7 +3379,7 @@ def test_a_user_message_after_the_delete_revives_the_task(
     session itself. It is the MESSAGE that answers, not the file — a
     `type: "user"` row stamped after the tombstone."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    client.post("/api/tasks/delete", json={"key": "sess-a"})
+    client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert _tasks(client) == []
     _write_transcript(projects_dir, "sess-a", "/p",
                       [_user("hi", T9), _user("and one more thing", _later())])
@@ -3397,7 +3397,7 @@ def test_the_exit_rows_of_a_closing_session_do_not_revive_the_task(
     row came back blank and done half a minute after it was deleted. No row
     here carries a timestamp, so none of them is news."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi r1", T9)])
-    client.post("/api/tasks/delete", json={"key": "sess-a"})
+    client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert _tasks(client) == []
     path = _write_transcript(projects_dir, "sess-a", "/p", _EXIT_ROWS)
     future = time.time() + 60
@@ -3411,7 +3411,7 @@ def test_a_rewritten_transcript_with_nothing_newer_stays_deleted(
     mtime, bigger, the conversation intact — but the newest thing the USER
     said still predates the tombstone. A moved mtime is not a message."""
     path = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    client.post("/api/tasks/delete", json={"key": "sess-a"})
+    client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert _tasks(client) == []
     _write_transcript(projects_dir, "sess-a", "/p",
                       [_user("hi", T9), _assistant("hello", T10)] + _EXIT_ROWS)
@@ -3421,12 +3421,12 @@ def test_a_rewritten_transcript_with_nothing_newer_stays_deleted(
 
 
 def test_deleting_a_task_that_is_not_there_is_a_404(client):
-    assert client.post("/api/tasks/delete",
+    assert client.post("/api/tasks/delete", headers={"X-Fused": "1"},
                        json={"key": "nope"}).status_code == 404
 
 
 def test_deleting_without_a_key_is_a_400(client):
-    assert client.post("/api/tasks/delete",
+    assert client.post("/api/tasks/delete", headers={"X-Fused": "1"},
                        json={"key": "  "}).status_code == 400
 
 
@@ -3466,7 +3466,7 @@ def test_history_of_an_erased_task_says_so(client, projects_dir, state_dir,
     before = client.get("/api/claude-sessions/history", params=params).json()
     assert before["turns"] and "deleted" not in before
 
-    assert client.post("/api/tasks/erase", json={"key": "sess-a"}).status_code == 200
+    assert client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"}).status_code == 200
     after = client.get("/api/claude-sessions/history", params=params).json()
     assert after["turns"] == []
     assert after["deleted"] is True
@@ -3491,10 +3491,10 @@ def test_erasing_takes_the_session_off_the_disk_and_out_of_state(
     sidecar = path.parent / "sess-a"
     sidecar.mkdir()
     (sidecar / "subagent.jsonl").write_text("{}\n")
-    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert json.loads((state_dir / "triage.json").read_text())["sess-a"]
 
-    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": True, "key": "sess-a", "cancelled": 0,
                         "erased_transcript": True, "removed": 2}
@@ -3519,7 +3519,7 @@ def test_erasing_reaches_every_copy_of_the_transcript(client, projects_dir):
                               encoded="-p")
     second = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)],
                                encoded="-p-copy")
-    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json()["removed"] == 2
     assert not first.exists() and not second.exists()
@@ -3533,7 +3533,7 @@ def test_erasing_forgets_the_read_marks_but_keeps_the_number(
     somebody starts."""
     _already_using(state_dir)
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
-    assert client.post("/api/tasks/read",
+    assert client.post("/api/tasks/read", headers={"X-Fused": "1"},
                        json={"key": "sess-a", "message_id": "MSG-001"}
                        ).status_code == 200
     assert "sess-a" in json.loads((state_dir / "read.json").read_text())
@@ -3541,7 +3541,7 @@ def test_erasing_forgets_the_read_marks_but_keeps_the_number(
     numbers = tasks_store.task_ids()
     assert numbers["sess-a"]["n"] == 1
 
-    assert client.post("/api/tasks/erase",
+    assert client.post("/api/tasks/erase", headers={"X-Fused": "1"},
                        json={"key": "sess-a"}).status_code == 200
     assert "sess-a" not in json.loads((state_dir / "read.json").read_text())
     assert tasks_store.task_ids()["sess-a"] == numbers["sess-a"], \
@@ -3559,7 +3559,7 @@ def test_erasing_a_running_task_is_refused(client, projects_dir):
     path = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "x", T9, state=schedule.SENDING,
                            claude_session_id="sess-a")])
-    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 409, r.text
     assert r.json()["detail"] == \
         "that task is running — stop the run first, then delete"
@@ -3577,7 +3577,7 @@ def test_erasing_cancels_the_rule_behind_the_task(client, projects_dir):
         _entry("e2", "every day", T12, template_id="tpl",
                claude_session_id="sess-a"),
     ])
-    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json()["cancelled"] == 1, \
         "cancelling the rule already withdrew the occurrence it had minted"
@@ -3590,7 +3590,7 @@ def test_erasing_a_task_with_no_session_only_cancels(client, tmp_path):
     erase, so the answer says so instead of pretending."""
     _seed_schedule([_entry("e1", "tomorrow", T12, target=str(tmp_path))])
     key = _tasks(client)[0]["key"]
-    r = client.post("/api/tasks/erase", json={"key": key})
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": key})
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": True, "key": key, "cancelled": 1,
                         "erased_transcript": False, "removed": 0}
@@ -3631,7 +3631,7 @@ def test_a_refused_file_is_not_a_deleted_task(client, projects_dir, state_dir):
     proj.mkdir()
     (proj / "sess-a.jsonl").symlink_to(real)
     assert [t["key"] for t in _tasks(client)] == ["sess-a"]
-    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 500, r.text
     assert real.exists() and (proj / "sess-a.jsonl").exists()
     assert not (state_dir / "deleted.json").exists() or \
@@ -3649,7 +3649,7 @@ def test_a_symlinked_project_dir_is_still_ours(client, projects_dir):
     (real_dir / "sess-a.jsonl").write_text(json.dumps(_user("hi", T9)) + "\n")
     (projects_dir / "-encoded-sess-a").symlink_to(real_dir)
     assert [t["key"] for t in _tasks(client)] == ["sess-a"]
-    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json()["removed"] == 1 and r.json()["erased_transcript"] is True
     assert not (real_dir / "sess-a.jsonl").exists()
@@ -3668,7 +3668,7 @@ def test_a_file_that_will_not_go_is_not_a_deleted_task(
         raise OSError("busy")
 
     monkeypatch.setattr(tasks_mod.os, "remove", refuse)
-    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 500, r.text
     assert "could not remove 1 file" in r.json()["detail"]
     assert path.exists()
@@ -3694,7 +3694,7 @@ def test_a_sidecar_that_will_not_go_leaves_the_transcript_and_the_row(
         raise OSError("busy")
 
     monkeypatch.setattr(tasks_mod.shutil, "rmtree", refuse)
-    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 500, r.text
     assert path.exists() and sidecar.exists()
     assert [t["key"] for t in _tasks(client)] == ["sess-a"]
@@ -3702,18 +3702,18 @@ def test_a_sidecar_that_will_not_go_leaves_the_transcript_and_the_row(
     # rmtree is put back — `monkeypatch.undo()` would also drop the fixtures
     # that point PROJECTS_DIR at the tmp tree.)
     monkeypatch.setattr(tasks_mod.shutil, "rmtree", real_rmtree)
-    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert not path.exists() and not sidecar.exists()
 
 
 def test_erasing_a_task_that_is_not_there_is_a_404(client):
-    assert client.post("/api/tasks/erase",
+    assert client.post("/api/tasks/erase", headers={"X-Fused": "1"},
                        json={"key": "nope"}).status_code == 404
 
 
 def test_erasing_without_a_key_is_a_400(client):
-    assert client.post("/api/tasks/erase",
+    assert client.post("/api/tasks/erase", headers={"X-Fused": "1"},
                        json={"key": "  "}).status_code == 400
 
 
@@ -3734,7 +3734,7 @@ def test_marking_one_message_read_leaves_the_older_one_unread(client,
     ])
     assert _by_key(client)["sess-a"]["unread"] == 3
 
-    r = client.post("/api/tasks/read",
+    r = client.post("/api/tasks/read", headers={"X-Fused": "1"},
                     json={"key": "sess-a", "message_id": "MSG-003"})
     assert r.status_code == 200
     assert r.json() == {"ok": True, "unread": 2}
@@ -3750,7 +3750,7 @@ def test_reading_a_thread_through_clears_it(client, projects_dir, state_dir):
     _write_transcript(projects_dir, "sess-a", "/p", [
         _user("one", T9, uuid="u1"), _user("two", T10, uuid="u2")])
     for message_id in ("MSG-001", "MSG-002"):
-        client.post("/api/tasks/read",
+        client.post("/api/tasks/read", headers={"X-Fused": "1"},
                     json={"key": "sess-a", "message_id": message_id})
     task = _by_key(client)["sess-a"]
     assert task["unread"] == 0
@@ -3763,7 +3763,7 @@ def test_a_future_message_is_not_unread(client, projects_dir, state_dir):
     _write_transcript(projects_dir, "sess-a", "/p", [_user("one", T9,
                                                            uuid="u1")])
     _seed_schedule([_entry("e1", "later", T12, claude_session_id="sess-a")])
-    client.post("/api/tasks/read", json={"key": "sess-a",
+    client.post("/api/tasks/read", headers={"X-Fused": "1"}, json={"key": "sess-a",
                                          "message_id": "MSG-001"})
     task = _by_key(client)["sess-a"]
     assert task["message_count"] == 2
@@ -3840,7 +3840,7 @@ def test_marking_a_whole_task_read_is_one_call(client, projects_dir, state_dir):
                                                            uuid="ub")])
     assert _by_key(client)["sess-a"]["unread"] == 5
 
-    r = client.post("/api/tasks/read", json={"key": "sess-a", "all": True})
+    r = client.post("/api/tasks/read", headers={"X-Fused": "1"}, json={"key": "sess-a", "all": True})
     assert r.status_code == 200
     assert r.json() == {"ok": True, "unread": 0}
 
@@ -3871,7 +3871,7 @@ def test_a_whole_task_mark_leaves_a_pending_message_alone(client, projects_dir,
     _seed_schedule([_entry("e1", "later", T12, claude_session_id="sess-a")])
     assert _by_key(client)["sess-a"]["unread"] == 1
 
-    assert client.post("/api/tasks/read",
+    assert client.post("/api/tasks/read", headers={"X-Fused": "1"},
                        json={"key": "sess-a", "all": True}
                        ).json() == {"ok": True, "unread": 0}
     record = json.loads((state_dir / "read.json").read_text())["sess-a"]
@@ -3887,7 +3887,7 @@ def test_a_whole_task_mark_does_not_reach_a_message_that_arrives_after_it(
     _already_using(state_dir)
     path = _write_transcript(projects_dir, "sess-a", "/p",
                              [_user("one", T9, uuid="u1")])
-    client.post("/api/tasks/read", json={"key": "sess-a", "all": True})
+    client.post("/api/tasks/read", headers={"X-Fused": "1"}, json={"key": "sess-a", "all": True})
 
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(_user("two", T10, uuid="u2")) + "\n")
@@ -3906,7 +3906,7 @@ def test_the_per_message_mark_is_unchanged_by_the_whole_task_one(
         _user("two", T10, uuid="u2"),
         _user("three", T11, uuid="u3"),
     ])
-    assert client.post("/api/tasks/read",
+    assert client.post("/api/tasks/read", headers={"X-Fused": "1"},
                        json={"key": "sess-a", "message_id": "MSG-003"}
                        ).json() == {"ok": True, "unread": 2}
     messages = client.get("/api/tasks/sess-a/messages").json()["messages"]
@@ -3914,7 +3914,7 @@ def test_the_per_message_mark_is_unchanged_by_the_whole_task_one(
         "MSG-003": False, "MSG-002": True, "MSG-001": True}
 
     # And the whole-task ask then clears what is left, in one request.
-    assert client.post("/api/tasks/read",
+    assert client.post("/api/tasks/read", headers={"X-Fused": "1"},
                        json={"key": "sess-a", "all": True}
                        ).json() == {"ok": True, "unread": 0}
 
@@ -3927,7 +3927,7 @@ def test_marking_a_whole_task_read_before_day_one_marks_nothing(client,
     message that genuinely arrives."""
     path = _write_transcript(projects_dir, "sess-a", "/p",
                              [_user("one", T9, uuid="u1")])
-    assert client.post("/api/tasks/read",
+    assert client.post("/api/tasks/read", headers={"X-Fused": "1"},
                        json={"key": "sess-a", "all": True}
                        ).json() == {"ok": True, "unread": 0}
     # Nothing to mark and nothing marked — the store is not even created.
@@ -3941,27 +3941,27 @@ def test_marking_a_whole_task_read_before_day_one_marks_nothing(client,
 
 
 def test_the_read_endpoint_refuses_nonsense(client):
-    bad = client.post("/api/tasks/read", json={"key": "s", "message_id": "12"})
+    bad = client.post("/api/tasks/read", headers={"X-Fused": "1"}, json={"key": "s", "message_id": "12"})
     assert bad.status_code == 400
     assert "MSG-nnn" in bad.json()["detail"]
-    assert client.post("/api/tasks/read",
+    assert client.post("/api/tasks/read", headers={"X-Fused": "1"},
                        json={"key": "  ", "message_id": "MSG-001"}
                        ).status_code == 400
     # Neither field is a client bug, not a licence to clear a whole thread.
-    missing = client.post("/api/tasks/read", json={"key": "s"})
+    missing = client.post("/api/tasks/read", headers={"X-Fused": "1"}, json={"key": "s"})
     assert missing.status_code == 400
     assert "message_id" in missing.json()["detail"]
     # ...and so is asking for both at once.
-    both = client.post("/api/tasks/read",
+    both = client.post("/api/tasks/read", headers={"X-Fused": "1"},
                        json={"key": "s", "message_id": "MSG-001", "all": True})
     assert both.status_code == 400
-    assert client.post("/api/tasks/read",
+    assert client.post("/api/tasks/read", headers={"X-Fused": "1"},
                        json={"key": " ", "all": True}).status_code == 400
 
 
 def test_marking_a_whole_task_that_no_longer_exists_is_not_an_error(client,
                                                                     state_dir):
-    r = client.post("/api/tasks/read", json={"key": "gone", "all": True})
+    r = client.post("/api/tasks/read", headers={"X-Fused": "1"}, json={"key": "gone", "all": True})
     assert r.status_code == 200
     assert r.json() == {"ok": True, "unread": 0}
     # A whole-task mark is DEFINED by a thread, so with no thread there is
@@ -3971,7 +3971,7 @@ def test_marking_a_whole_task_that_no_longer_exists_is_not_an_error(client,
 
 
 def test_marking_a_task_that_no_longer_exists_is_not_an_error(client):
-    r = client.post("/api/tasks/read",
+    r = client.post("/api/tasks/read", headers={"X-Fused": "1"},
                     json={"key": "gone", "message_id": "MSG-001"})
     assert r.status_code == 200
     assert r.json() == {"ok": True, "unread": 0}
@@ -4250,7 +4250,7 @@ def test_a_waiting_task_cannot_be_deleted_out_from_under_its_run(
     parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "", "input": {}}]},
            alive={"r-1"})
 
-    r = client.post("/api/tasks/delete", json={"key": "sess-a"})
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 409, r.text
 
 

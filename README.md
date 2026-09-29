@@ -147,6 +147,9 @@ A page can do a lot through `fused`:
 - `fused.trackJob` / `fused.watchJob` — long-running work in the download
   manager, whether your page is doing it or the server is.
   → [fused-render-jobs](skills/fused-render-jobs/SKILL.md)
+- `fused.tasks` — list, create, follow up, cancel and observe the app's Claude
+  tasks from a page; a handle follows a new task from pending to its session.
+  → [fused-render-tasks](skills/fused-render-tasks/SKILL.md)
 
 `fused.env` says whether a page is running here (`"local"`) or exported and
 hosted (`"hosted"`). The complete list, with every option, is the header of

@@ -352,7 +352,7 @@
  *     Report a long-running operation THIS PAGE is running to the shell's
  *     download manager, so it stays visible after the page that started it is
  *     navigated away from (SPEC §36, D244). Model downloads are the server's
- *     job (SPEC §40); a page observes them with fused.job() instead of
+ *     job (SPEC §40); a page observes them with fused.watchJob() instead of
  *     reporting them. Every
  *     method is fire-and-forget and never rejects — reporting is decoration and
  *     must not be able to break the work it describes. A no-op stub on a
@@ -380,6 +380,49 @@
  *     "outdated", "not-covered" or null. Unlike runPython there is no supersede
  *     channel: a per-keystroke caller must guard its own renders against an
  *     earlier reply landing last. LOCAL ONLY — a hosted page has no index.
+ *   fused.tasks.* -> Claude tasks (a task is a conversation: running, finished,
+ *     or scheduled and not started yet), the same rows the shell's Tasks page
+ *     draws. Every verb returns a Promise and never throws synchronously; a
+ *     failure rejects with an Error whose message is the server's sentence,
+ *     plus `.status` (HTTP) and `.error` (that sentence).
+ *     list({scope, status, archived}) -> Task[] — scope "app" (default: tasks
+ *       under THIS page's app folder, resolved server-side) or "all";
+ *       `status` is a list of statuses to keep; archived rows are dropped
+ *       unless `archived: true` or `status` names "archived". Filters run
+ *       client-side, scope runs on the server.
+ *     get(key) -> Task|null — also finds a started task by the
+ *       `pending:<entry>` key it wore before its session began.
+ *     create({prompt, target, title, model, effort, permissionMode, due})
+ *       -> TaskHandle (below). `due` is ISO or a Date; omit it to start now.
+ *     send(key, text, {model, effort}) -> {queued, key} — a follow-up message;
+ *       `queued` means it waits behind the run in flight. A `pending:` key
+ *       rejects 409 (no session yet); a handle's send() looks the key up first.
+ *     cancel(key) -> void — stop the run in flight (404 when none).
+ *     archive(key) / unarchive(key) / delete(key) -> void
+ *     markRead(key, messageId?) -> void — one message, or the whole task.
+ *     messages(key) -> TaskMessage[] — the full thread, newest first.
+ *     transcript(key, {native, file}) -> turns[] — the conversation itself.
+ *     settings(key, {model, effort}) -> void — only the fields given change.
+ *       transcript/settings need a started session and reject 409 before it.
+ *     watch(fn, {scope, status, archived}) -> unsubscribe — fn(rows, change):
+ *       `rows` is the current filtered listing; `change` is {full, rows,
+ *       gone} — `full` for a whole (re-)read, else the rows that moved and
+ *       the keys that left. ONE long-poll per document per scope, shared by
+ *       every watcher and handle and refcounted (off with the last one); a
+ *       late watcher is replayed what is held. Hidden tabs sit the poll out.
+ *     TaskHandle: {key, entryId, get(), send(text, opts), cancel(), archive(),
+ *       watch(fn(row, change)) -> unsubscribe, done}. `key` starts as
+ *       `pending:<entryId>` and flips to the session id once the session's
+ *       row appears. `done` resolves with the row once the status reaches
+ *       done or archived (needs_attention and blocked are still live: the
+ *       task is waiting on the human, not finished — read `.status`), or
+ *       with the last row seen if the task is deleted; it never rejects. The handle rides the shared feed until
+ *       `done` settles, then lets go (and its watchers go quiet).
+ *         const t = await fused.tasks.create({prompt: "Summarise notes.md"});
+ *         t.watch((row) => row && render(row.status));
+ *         const row = await t.done;   // t.key is the session id by now
+ *         if (row.status === "done") t.send("Now shorten it to 3 bullets");
+ *     LOCAL ONLY — a hosted page has no tasks.
  *   fused.params.get(key) / getAll() / onChange(cb) -> unsubscribe
  *   fused.params.set(key, value, opts?)   opts: { history: "replace", default: d }
  *                                         value === null REMOVES the key
@@ -4069,7 +4112,7 @@
   // what is loaded, put something in memory, and give the memory back.
   //
   // load() and download() return a JOB, not a finished model: a cold load is a
-  // multi-GB download and nothing waits on it. Watch it with fused.job(id).
+  // multi-GB download and nothing waits on it. Watch it with fused.watchJob(id).
   async function aiPost(path, body, signal) {
     const res = await fetch(path, {
       method: "POST",
@@ -5242,6 +5285,560 @@
   const fileIndex = { search: fileIndexSearch, query: fileIndexQuery };
   // fused-file-index:end
 
+  // ------------------------------------------------------------- fused.tasks
+  //
+  // fused.tasks — the Tasks page's own verbs, for an app. A task is a Claude
+  // conversation (running, finished, or scheduled and not started yet); the
+  // server owns every fact about it and this is a thin, typed door onto the
+  // same routes the shell's Tasks page reads (routers/tasks.py).
+  //
+  // ONE LONG-POLL PER DOCUMENT PER SCOPE. `watch` and every TaskHandle ride a
+  // shared loop over `/api/tasks/changes`, refcounted: it starts with the first
+  // subscriber and stops with the last. Twelve watchers must not be twelve
+  // sockets — the browser caps an origin at six, and the shell learned that the
+  // hard way (frontend/src/shell/tasksPulse.ts, whose loop this mirrors: a full
+  // listing first, deltas folded in, `full` answered by a re-read, a 20 s floor
+  // re-read under it, and hidden tabs sitting the poll out). The scope is the
+  // one thing that cannot be shared — "app" and "all" are different server
+  // questions — so there are at most two loops, one per scope in use.
+  const TASKS_CHANGES_WAIT_S = 25;
+  const TASKS_BACKOFF_MS = 3000;
+  const TASKS_FLOOR_MS = 20000;
+  const TASKS_CATCH_UP_MS = 1000;
+  // What a task is while it is still going. `done` resolves the moment a row
+  // says anything else (needs_attention, blocked, done, archived).
+  // A task waiting on the human (a parked permission card, a question) is
+  // still live: `done` settling on the first tool call would make a "default"
+  // permission-mode task look finished the moment it asked to do anything.
+  const TASK_LIVE = { upcoming: 1, queued: 1, in_progress: 1, needs_attention: 1, blocked: 1 };
+
+  function taskScope(opts) {
+    return opts && opts.scope === "all" ? "all" : "app";
+  }
+
+  function tasksQuery(scope, extra) {
+    const q = new URLSearchParams(extra || {});
+    if (scope === "app") q.set("scope", "app");
+    const s = q.toString();
+    return s ? "?" + s : "";
+  }
+
+  // Rejects the way the other bridge calls do — an Error whose message is the
+  // server's own sentence — plus `.status` and `.error` so a caller can branch
+  // on a 404 without parsing words. FastAPI's HTTPException answers `detail`
+  // rather than `error`; both are read.
+  function taskError(status, said) {
+    const err = new Error(said);
+    err.status = status;
+    err.error = said;
+    return err;
+  }
+
+  async function taskFetch(method, url, body, signal) {
+    const init = { method: method, signal: signal || undefined };
+    if (method === "GET") {
+      init.headers = callHeaders();
+    } else {
+      init.headers = callHeaders({ "Content-Type": "application/json", "X-Fused": "1" });
+      init.body = JSON.stringify(body || {});
+    }
+    const res = await fetch(url, init);
+    // A non-JSON body (proxy 502, HTML error page) reads as `{}` so the status
+    // still produces an Error with a status on it.
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const said =
+        (data && typeof data.error === "string" && data.error) ||
+        (data && typeof data.detail === "string" && data.detail) ||
+        "HTTP " + res.status;
+      throw taskError(res.status, said);
+    }
+    return data;
+  }
+
+  function taskPath(key, tail) {
+    return "/api/tasks/" + encodeURIComponent(String(key)) + (tail || "");
+  }
+
+  // Client-side filters. `archived: false` (the default) drops archived rows;
+  // `true` keeps them beside the rest. An explicit `status` list wins over
+  // both — asking for ["archived"] is asking for archived rows.
+  function taskFilter(opts) {
+    opts = opts || {};
+    const statuses = Array.isArray(opts.status) && opts.status.length ? opts.status : null;
+    const archived = opts.archived === true;
+    return (row) => {
+      if (!row || !row.key) return false;
+      if (statuses) return statuses.indexOf(row.status) !== -1;
+      return archived || row.status !== "archived";
+    };
+  }
+
+  function pendingEntry(key) {
+    return typeof key === "string" && key.indexOf("pending:") === 0 ? key.slice(8) : "";
+  }
+
+  async function tasksListing(scope) {
+    const data = await taskFetch("GET", "/api/tasks" + tasksQuery(scope));
+    const rows = Array.isArray(data && data.tasks) ? data.tasks : [];
+    return { rows: rows.filter((r) => r && r.key), generation: data && data.generation };
+  }
+
+  function tasksList(opts) {
+    return Promise.resolve().then(() =>
+      tasksListing(taskScope(opts)).then((l) => l.rows.filter(taskFilter(opts)))
+    );
+  }
+
+  // A key answers for its own row, and a `pending:<entry>` key a task wore
+  // before its session started also answers for the row carrying that entry.
+  function tasksGet(key) {
+    return Promise.resolve().then(() =>
+      tasksListing("all").then((l) => {
+        const exact = l.rows.find((r) => r.key === key);
+        if (exact) return exact;
+        const entry = pendingEntry(key);
+        return (entry && l.rows.find((r) => r.entry_id === entry)) || null;
+      })
+    );
+  }
+
+  // ---- the shared change feed -------------------------------------------------
+  const taskFeeds = {};
+
+  function taskFeed(scope) {
+    if (!taskFeeds[scope]) {
+      taskFeeds[scope] = {
+        scope: scope,
+        subs: new Set(),
+        rows: null, // Map key -> row once the first listing lands, newest first
+        gen: -1,
+        stopped: true,
+        run: 0, // bumped per start/stop so a stale loop can see it was replaced
+        abort: null,
+        floor: null,
+        wake: null,
+        seat: 0,
+        catchingUp: false,
+      };
+    }
+    return taskFeeds[scope];
+  }
+
+  function feedEmit(feed, change) {
+    feed.subs.forEach((sub) => {
+      try {
+        sub(change);
+      } catch (e) {
+        console.error("[fused.tasks] a watch callback threw:", e);
+      }
+    });
+  }
+
+  function feedRows(feed) {
+    return feed.rows ? Array.from(feed.rows.values()) : [];
+  }
+
+  function taskSleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  async function feedLoad(feed) {
+    const mine = ++feed.seat;
+    try {
+      const l = await tasksListing(feed.scope);
+      if (feed.stopped || feed.seat !== mine) return;
+      feed.catchingUp = false;
+      // A listing that left before a delta landed is OLDER than what is held.
+      if (typeof l.generation === "number") {
+        if (feed.rows && l.generation < feed.gen) return;
+        if (feed.gen < 0 || l.generation > feed.gen) feed.gen = l.generation;
+      }
+      const prev = feed.rows;
+      feed.rows = new Map();
+      l.rows.forEach((r) => feed.rows.set(r.key, r));
+      const gone = prev ? Array.from(prev.keys()).filter((k) => !feed.rows.has(k)) : [];
+      feedEmit(feed, { full: true, rows: l.rows, gone: gone });
+    } catch (e) {
+      // A failed read keeps what is held: the next floor read or delta catches
+      // up, and blanking a page's list on one hiccup is worse.
+      if (feed.stopped || feed.seat !== mine) return;
+      feed.catchingUp = false;
+    }
+  }
+
+  function feedFold(feed, rows, gone) {
+    const next = new Map();
+    // Rows that moved had activity: they go to the front, newest first like
+    // the listing itself.
+    rows.forEach((r) => next.set(r.key, r));
+    (feed.rows || new Map()).forEach((r, k) => {
+      if (!next.has(k) && gone.indexOf(k) === -1) next.set(k, r);
+    });
+    feed.rows = next;
+  }
+
+  async function feedWatch(feed, run) {
+    const live = () => !feed.stopped && feed.run === run;
+    while (live()) {
+      if (document.hidden) {
+        await new Promise((resolve) => {
+          const fire = () => {
+            document.removeEventListener("visibilitychange", fire);
+            if (feed.wake === fire) feed.wake = null;
+            resolve();
+          };
+          feed.wake = fire;
+          document.addEventListener("visibilitychange", fire);
+        });
+        continue;
+      }
+      const ctl = new AbortController();
+      feed.abort = ctl;
+      let r;
+      try {
+        // `since` is the listing's own generation when it sent one, so
+        // nothing slips between "listed at N" and "changes since N"; else -1,
+        // a handshake that only learns the generation.
+        r = await taskFetch(
+          "GET",
+          "/api/tasks/changes" +
+            tasksQuery(feed.scope, { since: String(feed.gen), wait: String(TASKS_CHANGES_WAIT_S) }),
+          null,
+          ctl.signal
+        );
+      } catch (e) {
+        if (ctl.signal.aborted || !live()) return;
+        await taskSleep(TASKS_BACKOFF_MS);
+        continue;
+      } finally {
+        if (feed.abort === ctl) feed.abort = null;
+      }
+      if (!live()) return;
+      const handshake = feed.gen < 0;
+      if (typeof r.generation === "number") feed.gen = r.generation;
+      if (handshake) continue;
+      if (r.full) {
+        // A server that restarted counts from zero again: forget the
+        // generation FIRST or the stale guard refuses the catch-up read, and
+        // fold nothing in until that read lands.
+        feed.gen = -1;
+        feed.catchingUp = true;
+        feedLoad(feed);
+        await taskSleep(TASKS_CATCH_UP_MS);
+        continue;
+      }
+      if (feed.catchingUp) continue;
+      const rows = Array.isArray(r.rows) ? r.rows.filter((x) => x && x.key) : [];
+      const gone = Array.isArray(r.gone) ? r.gone : [];
+      if (!rows.length && !gone.length) continue;
+      const before = new Set(feed.rows ? feed.rows.keys() : []);
+      // The server filters `rows` by scope but not `gone`: a key this feed
+      // never held is news about somebody else's task, and is dropped here.
+      const held = gone.filter((k) => before.has(k));
+      if (!rows.length && !held.length) continue;
+      feedFold(feed, rows, held);
+      feedEmit(feed, { full: false, rows: rows, gone: held, before: before });
+    }
+  }
+
+  function feedStart(feed) {
+    feed.stopped = false;
+    const run = ++feed.run;
+    feed.gen = -1;
+    feed.rows = null;
+    feed.catchingUp = false;
+    feedLoad(feed).then(() => {
+      if (!feed.stopped && feed.run === run) feedWatch(feed, run);
+    });
+    // The floor: the watcher is how news arrives, this is the answer to one
+    // that missed something (a scheduled message going out on the server's
+    // own tick writes no transcript).
+    feed.floor = setInterval(() => {
+      if (!document.hidden) feedLoad(feed);
+    }, TASKS_FLOOR_MS);
+  }
+
+  function feedStop(feed) {
+    feed.stopped = true;
+    feed.run++;
+    feed.seat++;
+    if (feed.abort) feed.abort.abort();
+    feed.abort = null;
+    if (feed.floor) clearInterval(feed.floor);
+    feed.floor = null;
+    if (feed.wake) feed.wake();
+    feed.rows = null;
+  }
+
+  // Subscribe `sub(change)` to a scope's feed. A late subscriber is REPLAYED
+  // what is held, on a microtask, so a throwing callback can never throw out
+  // of the call that subscribed it.
+  function feedSubscribe(scope, sub) {
+    const feed = taskFeed(scope);
+    feed.subs.add(sub);
+    if (feed.stopped) feedStart(feed);
+    else if (feed.rows) {
+      Promise.resolve().then(() => {
+        if (!feed.subs.has(sub) || !feed.rows) return;
+        try {
+          sub({ full: true, rows: feedRows(feed), gone: [], replay: true });
+        } catch (e) {
+          console.error("[fused.tasks] a watch callback threw:", e);
+        }
+      });
+    }
+    let subscribed = true;
+    return () => {
+      if (!subscribed) return;
+      subscribed = false;
+      feed.subs.delete(sub);
+      if (!feed.subs.size) feedStop(feed);
+    };
+  }
+
+  // fused.tasks.watch(fn, opts) — fn(rows, change): `rows` is the current
+  // listing through opts' filters, `change` is {full, rows, gone} — `full`
+  // for a whole (re-)read, else exactly the rows that moved and the keys that
+  // left, unfiltered. Never throws; returns the unsubscribe.
+  function tasksWatch(fn, opts) {
+    if (typeof fn !== "function") return () => {};
+    const scope = taskScope(opts);
+    const keep = taskFilter(opts);
+    const feed = taskFeed(scope);
+    return feedSubscribe(scope, (change) => {
+      fn(feedRows(feed).filter(keep), {
+        full: !!change.full,
+        rows: change.rows,
+        gone: change.gone,
+      });
+    });
+  }
+
+  // ---- verbs ------------------------------------------------------------------
+  function tasksSend(key, text, opts) {
+    return Promise.resolve().then(() => {
+      const body = { text: text };
+      if (opts && opts.model) body.model = opts.model;
+      if (opts && opts.effort) body.effort = opts.effort;
+      return taskFetch("POST", taskPath(key, "/send"), body).then((d) => ({
+        queued: !!(d && d.queued),
+        key: (d && d.key) || key,
+      }));
+    });
+  }
+
+  function tasksPostKey(path, key) {
+    return Promise.resolve()
+      .then(() => taskFetch("POST", path, { key: key }))
+      .then(() => undefined);
+  }
+
+  function tasksCancel(key) {
+    return Promise.resolve()
+      .then(() => taskFetch("POST", taskPath(key, "/cancel"), {}))
+      .then(() => undefined);
+  }
+
+  function tasksMarkRead(key, messageId) {
+    const body = messageId ? { key: key, message_id: messageId } : { key: key, all: true };
+    return Promise.resolve()
+      .then(() => taskFetch("POST", "/api/tasks/read", body))
+      .then(() => undefined);
+  }
+
+  function tasksMessages(key) {
+    return Promise.resolve()
+      .then(() => taskFetch("GET", taskPath(key, "/messages")))
+      .then((d) => (Array.isArray(d && d.messages) ? d.messages : []));
+  }
+
+  // The row a key names, for the two routes keyed by SESSION id rather than
+  // task key. A task that has not started has no session, and says so with a
+  // 409 rather than writing a record under a name nothing will read.
+  function taskSessionRow(key) {
+    return tasksGet(key).then((row) => {
+      if (!row) throw taskError(404, "no task with key " + JSON.stringify(key));
+      if (!row.session_id) throw taskError(409, "task " + key + " has not started a session yet");
+      return row;
+    });
+  }
+
+  // opts: {file} to read the transcript against another chat file than the
+  // task's target, {native: true} for the app-state reads as in-stream notices.
+  function tasksTranscript(key, opts) {
+    return taskSessionRow(key).then((row) => {
+      const q = new URLSearchParams({
+        file: (opts && opts.file) || row.target,
+        session_id: row.session_id,
+      });
+      if (opts && opts.native) q.set("native", "1");
+      return taskFetch("GET", "/api/claude-sessions/history?" + q.toString()).then((d) =>
+        Array.isArray(d && d.turns) ? d.turns : []
+      );
+    });
+  }
+
+  // Only the fields given: an empty field is "not saying", never "clear it".
+  function tasksSettings(key, patch) {
+    return taskSessionRow(key).then((row) => {
+      const body = { session_id: row.session_id, model: "", effort: "" };
+      if (patch && patch.model) body.model = String(patch.model);
+      if (patch && patch.effort) body.effort = String(patch.effort);
+      return taskFetch("POST", "/api/tasks/settings", body).then(() => undefined);
+    });
+  }
+
+  // fused.tasks.create(spec) -> TaskHandle. camelCase in, snake_case on the
+  // wire; a Date `due` goes as ISO.
+  function tasksCreate(spec) {
+    return Promise.resolve().then(() => {
+      spec = spec || {};
+      const body = { prompt: spec.prompt };
+      if (spec.target) body.target = spec.target;
+      if (spec.title) body.title = spec.title;
+      if (spec.model) body.model = spec.model;
+      if (spec.effort) body.effort = spec.effort;
+      if (spec.permissionMode) body.permission_mode = spec.permissionMode;
+      if (spec.due !== undefined && spec.due !== null) {
+        body.due = spec.due instanceof Date ? spec.due.toISOString() : spec.due;
+      }
+      return taskFetch("POST", "/api/tasks/create", body).then((d) => {
+        const entryId = (d && d.entry_id) || pendingEntry(d && d.key);
+        return taskHandle((d && d.key) || "pending:" + entryId, entryId, spec);
+      });
+    });
+  }
+
+  // The key starts as `pending:<entry>` and flips to the session id once the
+  // feed shows a row for the same entry — by `entry_id`, or, for a session row
+  // that does not carry it, the one new row that arrives in the same answer
+  // that retires the pending key (the server's gone-plus-row swap). The handle
+  // rides the shared feed from creation until `done` settles, then lets go.
+  function taskHandle(firstKey, entryId, spec) {
+    let key = firstKey;
+    let last = null;
+    let finished = false;
+    let stop = () => {};
+    let settle;
+    const done = new Promise((resolve) => {
+      settle = resolve;
+    });
+    const listeners = new Set();
+    // A target outside this app would never appear on the app-scoped feed.
+    const scope = spec && spec.target ? "all" : "app";
+
+    function tell(row, change) {
+      listeners.forEach((fn) => {
+        try {
+          fn(row, change);
+        } catch (e) {
+          console.error("[fused.tasks] a handle watch callback threw:", e);
+        }
+      });
+    }
+
+    function finish(row) {
+      if (finished) return;
+      finished = true;
+      settle(row);
+      stop();
+    }
+
+    function mine(row) {
+      return row.key === key || (!!entryId && row.entry_id === entryId);
+    }
+
+    stop = feedSubscribe(scope, (change) => {
+      if (finished) return;
+      const rows = change.rows || [];
+      let row = rows.find(mine);
+      if (!row && !change.full && pendingEntry(key) && change.gone.indexOf(key) !== -1) {
+        const fresh = rows.filter((r) => !change.before || !change.before.has(r.key));
+        if (fresh.length === 1) row = fresh[0];
+      }
+      if (row) {
+        key = row.key;
+        last = row;
+        tell(row, change);
+        if (!TASK_LIVE[row.status]) finish(row);
+        return;
+      }
+      if (!change.full && last && change.gone.indexOf(key) !== -1) {
+        // Deleted (or archived into silence) with nothing behind it: over, as
+        // far as this page can know. `done` never rejects.
+        tell(null, change);
+        finish(last);
+      }
+    });
+
+    return {
+      get key() {
+        return key;
+      },
+      entryId: entryId,
+      get: () =>
+        tasksGet(key).then((row) => {
+          if (row) {
+            key = row.key;
+            last = row;
+          }
+          return row;
+        }),
+      // The send route refuses a `pending:` key (409: no session to talk to
+      // yet), so a handle that has not seen its flip asks once before sending.
+      send: (text, opts) =>
+        (pendingEntry(key)
+          ? tasksGet(key).then((row) => {
+              if (row) {
+                key = row.key;
+                last = row;
+              }
+            })
+          : Promise.resolve()
+        ).then(() => tasksSend(key, text, opts)),
+      cancel: () => tasksCancel(key),
+      archive: () => tasksPostKey("/api/tasks/archive", key),
+      // fn(row, change): row is the task's latest row, or null once it left
+      // the listing. Replays the last row held, on a microtask.
+      watch: (fn) => {
+        if (typeof fn !== "function") return () => {};
+        listeners.add(fn);
+        if (last) {
+          const row = last;
+          Promise.resolve().then(() => {
+            if (!listeners.has(fn)) return;
+            try {
+              fn(row, { full: true, rows: [row], gone: [], replay: true });
+            } catch (e) {
+              console.error("[fused.tasks] a handle watch callback threw:", e);
+            }
+          });
+        }
+        return () => {
+          listeners.delete(fn);
+        };
+      },
+      done: done,
+    };
+  }
+
+  const tasks = {
+    list: tasksList,
+    get: tasksGet,
+    create: tasksCreate,
+    send: tasksSend,
+    cancel: tasksCancel,
+    archive: (key) => tasksPostKey("/api/tasks/archive", key),
+    unarchive: (key) => tasksPostKey("/api/tasks/unarchive", key),
+    delete: (key) => tasksPostKey("/api/tasks/delete", key),
+    markRead: tasksMarkRead,
+    messages: tasksMessages,
+    transcript: tasksTranscript,
+    settings: tasksSettings,
+    watch: tasksWatch,
+  };
+
   // ----------------------------------------------------------- fused.capture
   //
   // Native screen / microphone / still capture (SPEC §45). Named `capture` and
@@ -5832,6 +6429,7 @@
     ai,
     capture,
     fileIndex,
+    tasks,
     trackJob,
     watchJob,
     autoReload,
