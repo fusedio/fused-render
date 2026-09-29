@@ -26,7 +26,8 @@ Actions (dispatched via the `action` param):
   load        — sheet metadata + inline rows (small) or first row batch (big),
                 and each small sheet's formula values (`computed`)
   compute     — formula values for the editor's UNSAVED sheets (`data`)
-  formulas    — formula values of the workbook on disk (after every save)
+  formulas    — formula values of the workbook on disk (after saving a workbook
+                with big sheets, which `compute` can't rebuild)
   sheets, describe, query, cells
               — the agent tools (workbook.py), over the file on disk
   rows        — windowed batch: offset/limit + server-side sort/filter
@@ -107,11 +108,18 @@ def _compute(sheets_payload):
     return {"computed": [_computed_out(v) for v in values.values()]}
 
 
+def _attach_computed(sheets):
+    """Give each sheet dict (name, rows) its `computed` map, if any holds a formula."""
+    if any(isinstance(v, str) and v.startswith("=") for sh in sheets for row in sh["rows"] for v in row):
+        for sh, computed in zip(sheets, _compute(sheets)["computed"]):
+            sh["computed"] = computed
+
+
 def _formulas(file):
     """Formula values of the workbook ON DISK, one map per sheet in order
     ({} for a big sheet, which holds values only). The editor asks after
-    every save: the save cancels a still-pending `compute`, and a workbook
-    with big sheets can't be `compute`d at all."""
+    saving a workbook with big sheets: those aren't in the editor, so
+    `compute` can't rebuild it, and the file is the only complete copy."""
     if os.path.splitext(file)[1].lower() not in (".xlsx", ".xlsm"):
         return {"computed": []}  # csv / parquet: values only, no formulas to evaluate
     dims = _xlsx_dims(file)
@@ -705,6 +713,10 @@ def _load(file):
             rows = [["" if v is None else v for v in r] for r in data] or [[""]]
             sheets.append({"name": sh["name"], "rows": rows, "styles": None, "big": False,
                            "kind": sh["kind"], "header": sh["header"]})
+    if ext not in (".xlsx", ".xlsm"):
+        # A csv holds formulas as plain "=..." text and no results at all:
+        # evaluate the small sheets exactly as `compute` would.
+        _attach_computed([sh for sh in sheets if not sh["big"]])
     return {"sheets": sheets, "mtime": os.path.getmtime(file), "rich": False,
             **_ro_verdict(file)}
 

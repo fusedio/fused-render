@@ -490,7 +490,7 @@ function markDirty(d = true) {
   dirty = d;
   // A clean book has nothing unsaved to compute: a save or reload cancels the
   // pending recompute, and whichever made it clean supplies the values
-  // (a save re-reads them from the file it wrote — refreshFormulas).
+  // (a save evaluates what it wrote — fetchComputed).
   if (d) scheduleCompute(); else clearTimeout(computeTimer);
   $("savedState").textContent = book ? (d ? "● Unsaved changes" : "All changes saved") : "";
   $("savedState").className = d ? "dirty" : "";
@@ -893,7 +893,7 @@ async function recompute() {
     // So an edit makes every server value suspect: drop them, and show this
     // engine's own answer until a save re-reads them from disk. Only ever for
     // an unsaved book (the `dirty` check above): once saved, the values
-    // refreshFormulas brings back are the file's own.
+    // fetchComputed brings back are the file's own.
     let dropped = false;
     for (const sh of book.sheets) {
       if (!sh.big && sh.computed && sh.computed.size) { sh.computed = new Map(); dropped = true; }
@@ -905,37 +905,33 @@ async function recompute() {
     }
     return;
   }
-  const payload = serializeSheets();
-  const hasFormula = payload.some((sh) => sh.rows.some((row) =>
+  fetchComputed(currentFile(), serializeSheets(), false);
+}
+
+// Server values for `payload` — exactly the sheets the editor holds, unsaved
+// (recompute) or just saved (after a save) — or, when big sheets keep part of
+// the workbook out of the editor, for the file on disk, the only complete
+// copy there is. The newest request wins (computeSeq); an answer lands only
+// if the book is still in the state it describes (`clean`: saved, nothing
+// edited since — else unsaved), so a save never keeps a pre-edit value and
+// an edit never gets a pre-save one.
+async function fetchComputed(file, payload, clean) {
+  const fromDisk = book.sheets.some((sh) => sh.big);
+  const hasFormula = fromDisk || payload.some((sh) => (sh.rows || []).some((row) =>
     row.some((v) => typeof v === "string" && v.startsWith("="))));
   if (!hasFormula) return;
   const seq = ++computeSeq;
   let res;
   try {
-    res = await pyRun({ action: "compute", file: currentFile(), data: JSON.stringify(payload) });
+    res = await pyRun(fromDisk ? { action: "formulas", file }
+                               : { action: "compute", file, data: JSON.stringify(payload) });
   } catch (err) {
     return;  // no server values this round: the grid keeps its own engine's
   }
-  if (seq !== computeSeq || !book) return;
+  if (seq !== computeSeq || !book || dirty === clean) return;
   res.computed.forEach((computed, i) => {
     const sh = book.sheets[i];
-    if (sh && !sh.big) setComputed(sh, computed, payload[i].rows);
-  });
-  invalidateValues();
-  if (!editing) paint();
-}
-
-// After a save: the formula values of the file just written. The save may
-// have landed before the last edit's debounced recompute ran (it cancels
-// it), and in a workbook with big sheets that recompute could only drop them.
-async function refreshFormulas(file) {
-  const seq = ++computeSeq;
-  let res;
-  try { res = await pyRun({ action: "formulas", file }); } catch (err) { return; }
-  if (seq !== computeSeq || !book || dirty) return;
-  res.computed.forEach((computed, i) => {
-    const sh = book.sheets[i];
-    if (sh && !sh.big) setComputed(sh, computed, sh.rows);
+    if (sh && !sh.big) setComputed(sh, computed, fromDisk ? sh.rows : payload[i].rows);
   });
   invalidateValues();
   if (!editing) paint();
@@ -2349,9 +2345,10 @@ async function save(force) {
   commitEdit();
   setStatus("Saving…");
   try {
+    const saved = serializeSheets();
     const res = await pyRun( {
       action: "save", file,
-      data: JSON.stringify(serializeSheets()),
+      data: JSON.stringify(saved),
       expected_mtime: force ? "" : String(mtime ?? ""),
     });
     if (res.conflict) {
@@ -2379,7 +2376,9 @@ async function save(force) {
     markDirty(false);
     paint();
     setStatus(`Saved · ${new Date().toLocaleTimeString()}`, "ok");
-    refreshFormulas(file);
+    // The save cancelled any pending recompute (markDirty(false)), and a file
+    // saved by this editor has no cached results — so evaluate what was saved.
+    fetchComputed(file, saved, true);
   } catch (err) {
     setStatus(`${err.type || "error"}: ${err.message}`, "err");
     // Mid-session chmod: the reader gate's PermissionError arrives as a

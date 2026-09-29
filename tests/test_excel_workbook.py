@@ -432,3 +432,11 @@ def test_formulas_after_saving_a_csv_is_empty_not_an_error(tmp_path):
     path = tmp_path / "data.csv"
     path.write_text("a,b\n1,2\n")
     assert _load("reader.py").main(action="formulas", file=str(path)) == {"computed": []}
+
+
+def test_a_csv_with_formulas_loads_with_their_values(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text('n,x\n1,"=INDEX(A2:A3,MATCH(2,A2:A3,0))*10"\n2,\n')
+
+    sheet = _load("reader.py").main(action="load", file=str(path))["sheets"][0]
+    assert sheet["computed"] == {"1,1": 20}
