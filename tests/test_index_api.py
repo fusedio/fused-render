@@ -337,10 +337,14 @@ def test_a_slow_query_does_not_block_the_interactive_lane(home, tmp_path, monkey
 
     query_started = threading.Event()
     query_release = threading.Event()
+    query_returned = threading.Event()
 
     def fake_guarded(cfg, sql, limit, token=None):
         query_started.set()
-        query_release.wait(timeout=5)
+        # Parked until the test has its stats answer. The timeout only bounds
+        # how long a BROKEN (serialised) lane hangs the test before failing.
+        query_release.wait(timeout=30)
+        query_returned.set()
         return {"columns": [], "rows": []}
 
     def fake_stats(cfg, root="", breakdown=False, token=None):
@@ -357,26 +361,27 @@ def test_a_slow_query_does_not_block_the_interactive_lane(home, tmp_path, monkey
             query_task = asyncio.create_task(
                 client.post("/api/index/query", json={"sql": "select 1"},
                            headers={"X-Fused": "1"}))
-            for _ in range(50):
-                if query_started.is_set():
-                    break
-                await asyncio.sleep(0.02)
-            assert query_started.is_set()
-            t0 = time.monotonic()
+            started = await asyncio.to_thread(query_started.wait, 30)
+            assert started, "the /api/index/query worker never started"
             stats_resp = await client.get("/api/index/stats")
-            elapsed = time.monotonic() - t0
+            # The property under test, as ORDERING rather than a wall-clock
+            # budget: stats answered while the query was still parked inside
+            # its worker. A lane that serialised stats behind the query could
+            # only answer after `query_release` (set below) or its timeout.
+            query_was_parked = not query_returned.is_set() and not query_task.done()
             query_release.set()
             query_resp = await query_task
-            return stats_resp, elapsed, query_resp
+            return stats_resp, query_was_parked, query_resp
 
-    stats_resp, elapsed, query_resp = asyncio.run(run())
+    stats_resp, query_was_parked, query_resp = asyncio.run(run())
     assert stats_resp.status_code == 200
-    # `fake_stats` is a pure Python stub with no real I/O, so a serialised
-    # lane would show up as (near-)instant, not merely "under 2s" — tightened
-    # from 2.0 (SPEC-index-search-wedge.md's "Also:" note: that bound was
-    # part of the blind spot that let a serialised interactive lane ship
-    # unnoticed).
-    assert elapsed < 0.5, elapsed
+    # Previously `elapsed < 0.5`: flaked on a loaded CI runner (0.90s, py3.12)
+    # while the lane was fine — event-loop/threadpool scheduling, not lane
+    # wait. Ordering catches a serialised lane at ANY speed, which is what
+    # SPEC-index-search-wedge.md's tightened bound was reaching for.
+    assert query_was_parked, (
+        "/api/index/stats only answered after the slow /api/index/query "
+        "finished: the interactive lane is serialised behind the query lane")
     assert query_resp.status_code == 200
 
 

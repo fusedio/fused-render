@@ -1484,7 +1484,14 @@ def test_a_retry_inside_the_poll_window_leaves_one_live_mirror_thread(
     # counts those too, so this snapshots the threads that exist BEFORE this
     # test starts its own and only ever counts the difference — this test's
     # own threads, not whichever unrelated ones happen to still be running.
-    baseline_idents = {t.ident for t in threading.enumerate()}
+    #
+    # The Thread OBJECTS, not their `.ident`s: an ident is only unique among
+    # threads alive at the same moment. A baseline mirror that retires after
+    # this snapshot frees its ident (a pthread_t — glibc and macOS both hand
+    # the same one straight back out), so this test's own new thread could
+    # inherit it and be filtered out as "baseline", reading as 0 alive. Holding
+    # the objects keeps them from being collected, so identity cannot recycle.
+    baseline = set(threading.enumerate())
 
     rec = envinstall.start(proj, allow_build=False)
     key = rec["key"]
@@ -1494,7 +1501,7 @@ def test_a_retry_inside_the_poll_window_leaves_one_live_mirror_thread(
     def alive_mirrors():
         return [t for t in threading.enumerate()
                 if t.name == "env-install-jobs-mirror" and t.is_alive()
-                and t.ident not in baseline_idents]
+                and t not in baseline]
 
     assert len(alive_mirrors()) == 1
 
