@@ -26,6 +26,8 @@ Actions (dispatched via the `action` param):
   load        — sheet metadata + inline rows (small) or first row batch (big),
                 and each small sheet's formula values (`computed`)
   compute     — formula values for the editor's UNSAVED sheets (`data`)
+  formulas    — formula values of the workbook on disk (after a save, for a
+                workbook with big sheets, which `compute` can't rebuild)
   sheets, describe, query, cells
               — the agent tools (workbook.py), over the file on disk
   rows        — windowed batch: offset/limit + server-side sort/filter
@@ -68,15 +70,21 @@ XLSX_SAVE_MAX_ROWS = 150_000  # streamed xlsx writes above this exceed the 30 s 
 SPREADSHEET_EXTS = (".xlsx", ".xlsm", ".csv", ".parquet")
 
 
-def _workbook():
-    """workbook.py beside this file. Loaded by path: neither engine promises
-    this folder is on sys.path, and a template must not import `fused_render`."""
-    import importlib.util
+_WORKBOOK = []
 
-    spec = importlib.util.spec_from_file_location("_excel_workbook", os.path.join(HERE, "workbook.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+
+def _workbook():
+    """workbook.py beside this file, loaded once per run. Loaded by path:
+    neither engine promises this folder is on sys.path, and a template must
+    not import `fused_render`."""
+    if not _WORKBOOK:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("_excel_workbook", os.path.join(HERE, "workbook.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _WORKBOOK.append(mod)
+    return _WORKBOOK[0]
 
 
 def _computed_out(values):
@@ -100,6 +108,17 @@ def _compute(sheets_payload):
     return {"computed": [_computed_out(v) for v in values.values()]}
 
 
+def _formulas(file):
+    """Formula values of the workbook ON DISK, one map per sheet in order
+    ({} for a big sheet, which holds values only). The editor asks after a
+    save when it can't `compute` its unsaved state — a workbook with big
+    sheets, whose small sheets may reference them."""
+    dims = _xlsx_dims(file)
+    small = [name for name, nr, nc in dims if not _is_big(nr, nc)]
+    values = _workbook().evaluate(file, sheets=small) if small else {}
+    return {"computed": [_computed_out(values.get(name, {})) for name, _, _ in dims]}
+
+
 def _safe_name(name, default):
     name = re.sub(r"[^\w.\- ()]+", "_", os.path.basename(str(name or default)).strip())
     return name or default
@@ -112,7 +131,10 @@ def _cell_out(v):
         return ""
     if isinstance(v, (int, float, bool, str)):
         return v
-    return str(v)
+    # An array (CSE) formula or data table arrives as an openpyxl object, not
+    # an "=..." string: hand the grid its formula, not the object's repr.
+    formula = _workbook().formula_text(v)
+    return formula if formula is not None else str(v)
 
 
 def _cell_in(s):
@@ -652,7 +674,10 @@ def _load(file):
             return _load_rich(file)
     meta = _ensure_cache(file)
     d = _cache_dir(file)
-    computed = _workbook().evaluate(file) if ext in (".xlsx", ".xlsm") else {}
+    # Only the small sheets are shown with formulas; the big ones are paged
+    # from Parquet and must not be read into memory here.
+    small = [sh["name"] for sh in meta["sheets"] if not sh["big"] and sh["kind"] == "xlsx"]
+    computed = _workbook().evaluate(file, sheets=small) if small else {}
     sheets = []
     for i, sh in enumerate(meta["sheets"]):
         if sh["big"]:
@@ -1162,6 +1187,8 @@ def main(
         return _load(file)
     if action == "compute":
         return _compute(json.loads(data))
+    if action == "formulas":
+        return _formulas(file)
     if action == "sheets":
         return _workbook().sheets(file)
     if action == "describe":

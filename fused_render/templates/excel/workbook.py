@@ -89,12 +89,13 @@ _VOLATILE_RE = re.compile(r"\b(TODAY|NOW|RAND|RANDBETWEEN)\s*\(", re.IGNORECASE)
 # ---------------------------------------------------------------------------
 
 class _Sheet:
-    __slots__ = ("name", "grid", "formulas", "columns", "unevaluated", "_table")
+    __slots__ = ("name", "grid", "formulas", "date_cells", "columns", "unevaluated", "_table")
 
     def __init__(self, name):
         self.name = name
         self.grid = []        # every row, header included; grid[r][c] = sheet cell (r+1, c+1)
         self.formulas = {}    # (r, c) -> formula text, e.g. "=A2*50"
+        self.date_cells = set()  # formula cells whose own number format is a date
         self.columns = []
         self.unevaluated = 0  # formula cells with no cached value that could not be computed
         self._table = None    # typed pyarrow table of the data rows, built on first SQL use
@@ -147,38 +148,61 @@ def _book(file) -> _Book:
     return _build(file, key)
 
 
-def evaluate(file, cache=True):
+def evaluate(file, cache=True, sheets=None):
     """{sheet: {(r, c): value}} for every formula cell (0-based r, c): Excel's
-    cached value, else pycel's. A cell neither can supply is absent. `cache`
-    False for a scratch file (the editor's unsaved state), whose version is
-    never seen again."""
-    book = _build(file, _version(file), cache)
+    cached value, else pycel's. A cell neither can supply is absent.
+
+    `sheets` limits which sheets are read at all — the editor passes only
+    the small ones of a workbook whose big sheets it pages through Parquet,
+    so those are never loaded into memory here. `cache` False for a scratch
+    file (the editor's unsaved state), whose version is never seen again."""
+    book = _build(file, _version(file), cache, None if sheets is None else frozenset(sheets))
     return {s.name: {rc: s.grid[rc[0]][rc[1]] for rc in s.formulas
                      if s.grid[rc[0]][rc[1]] is not None}
             for s in book.sheets.values()}
 
 
-def _build(file, key, cache=True) -> _Book:
+def formula_text(value):
+    """The formula a cell holds, or None. openpyxl gives a plain formula as its
+    "=..." string, but an array (CSE) formula as an ArrayFormula object and a
+    what-if data table as a DataTableFormula — formulas all the same, whose
+    cached result Excel saved like any other's."""
+    from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
+
+    if isinstance(value, str):
+        return value if value.startswith("=") else None
+    if isinstance(value, ArrayFormula):
+        text = value.text or ""
+        return text if text.startswith("=") else "=" + text
+    if isinstance(value, DataTableFormula):
+        # No formula text of its own: Excel shows it as {=TABLE(row, col)}.
+        return f"=TABLE({value.r1 or ''},{value.r2 or ''})"
+    return None
+
+
+def _build(file, key, cache=True, only=None) -> _Book:
     sheets = OrderedDict()
-    date_formatted = set()  # (sheet, r, c) formula cells whose number format is a date
     # Pass 1, data_only=False: constants, plus every formula's text and number
     # format. A workbook without formulas is complete after this pass.
     wb = openpyxl.load_workbook(file, read_only=True, data_only=False)
     try:
         epoch = wb.epoch
         for ws in wb.worksheets:
+            if only is not None and ws.title not in only:
+                continue
             sheet = sheets[ws.title] = _Sheet(ws.title)
             for r, cells in enumerate(ws.iter_rows()):
                 row = []
                 for c, cell in enumerate(cells):
                     v = cell.value
-                    if isinstance(v, str) and v.startswith("="):
-                        sheet.formulas[(r, c)] = v
+                    formula = formula_text(v)
+                    if formula is not None:
+                        sheet.formulas[(r, c)] = formula
                         if is_date_format(cell.number_format):
-                            date_formatted.add((ws.title, r, c))
+                            sheet.date_cells.add((r, c))
                         v = None
                     elif v is not None and not isinstance(v, str) and not _is_scalar(v):
-                        v = str(v)  # an ArrayFormula / DataTableFormula object, etc.
+                        v = str(v)
                     row.append(v)
                 sheet.grid.append(row)
     finally:
@@ -191,8 +215,8 @@ def _build(file, key, cache=True) -> _Book:
         wb = openpyxl.load_workbook(file, read_only=True, data_only=True)
         try:
             for ws in wb.worksheets:
-                sheet = sheets[ws.title]
-                if not sheet.formulas:
+                sheet = sheets.get(ws.title)
+                if sheet is None or not sheet.formulas:
                     continue
                 for r, row in enumerate(ws.iter_rows(values_only=True)):
                     for c, v in enumerate(row):
@@ -204,7 +228,7 @@ def _build(file, key, cache=True) -> _Book:
                    for (r, c) in s.formulas if s.grid[r][c] is None]
 
     if pending:
-        computed = _formula_values(file, key, pending, volatile, cache)
+        computed = _formula_values(file, key, pending, volatile, cache, only)
         for name, r, c in pending:
             sheet = sheets[name]
             if (name, r, c) not in computed:
@@ -212,7 +236,7 @@ def _build(file, key, cache=True) -> _Book:
                 continue
             v = computed[(name, r, c)]
             if (isinstance(v, (int, float)) and not isinstance(v, bool)
-                    and _shows_as_date(sheet, r, c, (name, r, c) in date_formatted)):
+                    and _shows_as_date(sheet, r, c)):
                 try:
                     v = from_excel(v, epoch)
                 except (ValueError, OverflowError):
@@ -250,19 +274,26 @@ def _column_names(header, width):
 # formula evaluation
 # ---------------------------------------------------------------------------
 
-def _formula_cache_path(key, volatile):
-    realpath, mtime_ns, size = key
-    stem = hashlib.sha1(realpath.encode("utf-8", "surrogatepass")).hexdigest()[:20]
+def _version_prefix(key):
+    return f"{key[1]}-{key[2]}"
+
+
+def _formula_cache_path(key, volatile, only):
+    """One file per (file version, sheet subset, day for volatile books)."""
+    stem = hashlib.sha1(key[0].encode("utf-8", "surrogatepass")).hexdigest()[:20]
     day = f"-{datetime.date.today().isoformat()}" if volatile else ""
-    return os.path.join(os.path.expanduser(_CACHE_DIR), stem, f"{mtime_ns}-{size}{day}.json")
+    subset = "" if only is None else "-" + hashlib.sha1(
+        "\0".join(sorted(only)).encode("utf-8", "surrogatepass")).hexdigest()[:12]
+    return os.path.join(os.path.expanduser(_CACHE_DIR), stem,
+                        f"{_version_prefix(key)}{day}{subset}.json")
 
 
-def _formula_values(file, key, cells, volatile, cache=True):
+def _formula_values(file, key, cells, volatile, cache=True, only=None):
     """{(sheet, r, c): value} for the uncached formula cells, from the disk
     cache or one bounded worker run. A cell the worker could not evaluate is
     absent. A run that timed out or crashed is NOT cached, so a transiently
     slow machine gets another chance next time the workbook is opened."""
-    path = _formula_cache_path(key, volatile) if cache else None
+    path = _formula_cache_path(key, volatile, only) if cache else None
     if path:
         try:
             with open(path, encoding="utf-8") as fh:
@@ -293,16 +324,16 @@ def _formula_values(file, key, cells, volatile, cache=True):
         return {}
     out = {(s, row - 1, col - 1): v for s, row, col, v in results}
     if path:
-        _write_cache(path, [[s, r, c, v] for (s, r, c), v in out.items()])
+        _write_cache(path, _version_prefix(key), [[s, r, c, v] for (s, r, c), v in out.items()])
     return out
 
 
-def _write_cache(path, rows):
+def _write_cache(path, version, rows):
     folder = os.path.dirname(path)
     try:
         os.makedirs(folder, exist_ok=True)
-        for old in os.listdir(folder):  # only the current version is ever read again
-            if old != os.path.basename(path):
+        for old in os.listdir(folder):  # an older version of the file is never read again
+            if not old.startswith(version + "-") and not old.startswith(version + "."):
                 os.remove(os.path.join(folder, old))
         tmp = f"{path}.{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
@@ -312,18 +343,20 @@ def _write_cache(path, rows):
         pass  # a cache that can't be written costs speed, not correctness
 
 
-def _shows_as_date(sheet, r, c, date_formatted, depth=0):
-    """Whether Excel would display the computed number at (r, c) as a date."""
+def _shows_as_date(sheet, r, c, depth=0):
+    """Whether Excel would display the computed number at (r, c) as a date:
+    a date-formatted or whole-date-call formula, a date constant — or an
+    offset off one of those (one level: `due = issued + 30`)."""
     formula = sheet.formulas.get((r, c))
     if formula is None:
         return isinstance(sheet.value(r, c), (datetime.date, datetime.datetime))
-    if date_formatted or _is_date_call(formula):
+    if (r, c) in sheet.date_cells or _is_date_call(formula):
         return True
     m = _OFFSET_RE.match(formula.strip())
     if not m or depth:
         return False
     row, col = coordinate_to_tuple((m.group(1) or m.group(2)).replace("$", "").upper())
-    return _shows_as_date(sheet, row - 1, col - 1, False, depth + 1)
+    return _shows_as_date(sheet, row - 1, col - 1, depth + 1)
 
 
 def _is_date_call(formula):

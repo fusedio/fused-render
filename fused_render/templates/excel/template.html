@@ -883,9 +883,23 @@ function scheduleCompute() {
   computeTimer = setTimeout(recompute, 600);
 }
 async function recompute() {
-  // compute rebuilds the rich workbook, which big (DuckDB-backed) sheets are
-  // not part of — and they hold values, never formulas.
-  if (!book || book.sheets.some((sh) => sh.big)) return;
+  if (!book) return;
+  if (book.sheets.some((sh) => sh.big)) {
+    // compute rebuilds the unsaved workbook, and big (Parquet-paged) sheets
+    // aren't in the editor to rebuild — yet small sheets may reference them.
+    // So an edit makes every server value suspect: drop them, and show this
+    // engine's own answer until a save re-reads them from disk.
+    let dropped = false;
+    for (const sh of book.sheets) {
+      if (!sh.big && sh.computed && sh.computed.size) { sh.computed = new Map(); dropped = true; }
+    }
+    if (dropped) {
+      invalidateValues();
+      if (!editing) paint();
+      setStatus("Formulas this editor can't compute itself update on save (the workbook has large sheets).", "");
+    }
+    return;
+  }
   const payload = serializeSheets();
   const hasFormula = payload.some((sh) => sh.rows.some((row) =>
     row.some((v) => typeof v === "string" && v.startsWith("="))));
@@ -901,6 +915,21 @@ async function recompute() {
   res.computed.forEach((computed, i) => {
     const sh = book.sheets[i];
     if (sh && !sh.big) setComputed(sh, computed, payload[i].rows);
+  });
+  invalidateValues();
+  if (!editing) paint();
+}
+
+// After a save of a workbook with big sheets: the server values `recompute`
+// had to drop, re-read from the file just written.
+async function refreshFormulas(file) {
+  const seq = ++computeSeq;
+  let res;
+  try { res = await pyRun({ action: "formulas", file }); } catch (err) { return; }
+  if (seq !== computeSeq || !book || dirty) return;
+  res.computed.forEach((computed, i) => {
+    const sh = book.sheets[i];
+    if (sh && !sh.big) setComputed(sh, computed, sh.rows);
   });
   invalidateValues();
   if (!editing) paint();
@@ -2344,6 +2373,7 @@ async function save(force) {
     markDirty(false);
     paint();
     setStatus(`Saved · ${new Date().toLocaleTimeString()}`, "ok");
+    if (book.sheets.some((sh) => sh.big)) refreshFormulas(file);
   } catch (err) {
     setStatus(`${err.type || "error"}: ${err.message}`, "err");
     // Mid-session chmod: the reader gate's PermissionError arrives as a

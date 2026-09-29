@@ -332,3 +332,97 @@ def test_the_tools_refuse_an_oversized_workbook_by_name(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "_SNAPSHOT_MAX_BYTES", 1)
     with pytest.raises(mod.TooLarge, match="MB"):
         mod.describe(str(path))
+
+
+# ---------------------------------------------------------------------------
+# review follow-ups
+# ---------------------------------------------------------------------------
+
+def _splice_cached(path, sheet_xml_name, after, cached):
+    import zipfile
+
+    with zipfile.ZipFile(path) as zin:
+        contents = {n: zin.read(n) for n in zin.namelist()}
+    xml = contents[sheet_xml_name].decode()
+    assert after in xml, xml
+    contents[sheet_xml_name] = xml.replace(after, after + f"<v>{cached}</v>", 1).encode()
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zout:
+        for n, data in contents.items():
+            zout.writestr(n, data)
+
+
+def test_an_array_formula_is_a_formula_with_its_cached_value(tmp_path):
+    from openpyxl.worksheet.formula import ArrayFormula
+
+    path = tmp_path / "book.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws.append(["a", "b", "total"])
+    ws.append([1, 2, None])
+    ws.append([3, 4, None])
+    ws["C2"] = ArrayFormula("C2", "=SUM(A2:A3*B2:B3)")
+    wb.save(path)
+    _splice_cached(path, "xl/worksheets/sheet1.xml", "SUM(A2:A3*B2:B3)</f>", 14)
+
+    assert _values(path) == {(1, 2): 14}
+    sheet = _load("reader.py").main(action="load", file=str(path))["sheets"][0]
+    assert sheet["rows"][1][2] == "=SUM(A2:A3*B2:B3)"  # the formula, not the object's repr
+    assert sheet["computed"] == {"1,2": 14}
+
+
+def test_an_offset_off_a_date_formatted_formula_is_a_date(tmp_path):
+    import datetime
+
+    path = tmp_path / "book.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws.append(["issued", "due", "lookup"])
+    ws.append(["=C2", "=A2+30", 45356])  # 45356 = 2024-03-05; A2 is a plain ref, formatted as a date
+    ws["A2"].number_format = "yyyy-mm-dd"
+    wb.save(path)
+
+    values = _values(path)
+    assert values[(1, 0)] == datetime.datetime(2024, 3, 5)
+    assert values[(1, 1)] == datetime.datetime(2024, 4, 4)
+
+
+def test_evaluate_reads_only_the_sheets_asked_for(tmp_path, monkeypatch):
+    path = tmp_path / "book.xlsx"
+    wb = openpyxl.Workbook()
+    small = wb.active
+    small.title = "Small"
+    small.append(["n", "total"])
+    small.append([2, "=SUM(Big!A1:A3)"])
+    big = wb.create_sheet("Big")
+    for i in range(3):
+        big.append([i + 1])
+    wb.save(path)
+
+    mod = _load("workbook.py")
+    assert mod.evaluate(str(path), sheets=["Small"]) == {"Small": {(1, 1): 6}}  # pycel still sees Big
+
+    # The editor's load, with "Big" on the Parquet path, reads only "Small".
+    reader = _load("reader.py")
+    monkeypatch.setattr(reader, "_is_big", lambda nr, nc: nr == 3)
+    asked = []
+    real = reader._workbook().evaluate
+    monkeypatch.setattr(reader._workbook(), "evaluate",
+                        lambda file, **kw: asked.append(kw.get("sheets")) or real(file, **kw))
+    sheets = reader.main(action="load", file=str(path))["sheets"]
+    assert asked == [["Small"]]
+    assert sheets[0]["computed"] == {"1,1": 6} and sheets[1]["big"] is True
+
+    assert reader.main(action="formulas", file=str(path))["computed"] == [{"1,1": 6}, {}]
+
+
+def test_a_workbook_of_only_big_sheets_evaluates_nothing(tmp_path, monkeypatch):
+    path = tmp_path / "book.xlsx"
+    _write(path, [["a", "b"], [1, "=A2*10"]])
+
+    reader = _load("reader.py")
+    monkeypatch.setattr(reader, "_is_big", lambda nr, nc: True)
+    monkeypatch.setattr(reader._workbook(), "evaluate",
+                        lambda *a, **k: pytest.fail("a big sheet was read into memory"))
+    assert reader.main(action="load", file=str(path))["sheets"][0]["big"] is True
