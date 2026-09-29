@@ -83,6 +83,7 @@ import {
   emptyPaneText,
   eraseBlocked,
   filingIntent,
+  SHOW_PAGE_DOOR,
   taskHref,
 } from "./tasks-lib";
 import { getSidebarState, subscribeSidebarState } from "@platform/lib/sidebarstate";
@@ -1028,11 +1029,11 @@ export function TaskPeek({
   const menuItems = (): MenuEntry[] => {
     if (!task) return [];
     const items: MenuEntry[] = [];
-    if (page && headFit >= PEEK_HEAD_DROPS.length) {
+    if (SHOW_PAGE_DOOR && page && headFit >= PEEK_HEAD_DROPS.length) {
       items.push({ label: "Open in Explorer", icon: ICON_OPEN_DOOR, onClick: openAsPage });
       items.push("separator");
     }
-    if (gone) {
+    if (SHOW_PAGE_DOOR && gone) {
       items.push({
         label: "Open in Explorer",
         icon: ICON_OPEN_DOOR,
@@ -1219,7 +1220,7 @@ export function TaskPeek({
 
                   A real link with a real href, so ⌘-click opens a tab, exactly
                   like the row's own door. */}
-              {page && (
+              {SHOW_PAGE_DOOR && page && (
                 <a
                   className="task-side-peek-open"
                   href={page}

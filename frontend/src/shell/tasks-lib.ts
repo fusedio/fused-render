@@ -1608,6 +1608,16 @@ export function taskFile(task: Task): string {
  * too — the Notifications section's needs-attention rows do, off the pulse poll
  * the shell already runs. Widening the parameter is the alternative to a second
  * copy of this url that would rot separately. */
+/** Whether the "Open in Explorer" door is drawn at all — on List rows, Board
+ * cards, the calendar's day card and the side peek's header (and its kebab
+ * fallbacks). OFF inside the framed `/tasks?embed=1` an app page gets from
+ * `fused.tasks.ui()`: that frame is the app's own task UI, and a door out of it
+ * would swap the app's frame for the Explorer — a page the app never asked to
+ * show. The row's own press still opens the peek beside the list; only the way
+ * OUT of the frame is gone. `taskHref` below still answers inside the frame (on
+ * the embed prefix) for the callers that need an address, e.g. a ⌘-click. */
+export const SHOW_PAGE_DOOR = !IS_QUERY_EMBED;
+
 export function taskHref(
   task: Pick<Task, "session_id" | "target" | "project"> & {
     key?: string;
