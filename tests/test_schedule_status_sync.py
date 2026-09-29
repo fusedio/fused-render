@@ -181,8 +181,21 @@ def registry(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def woke(monkeypatch):
+    """Rings `tasks_watch.tick` makes on THIS test's thread.
+
+    `schedule.wake` is a process-wide name, and in a full xdist run the worker
+    still has daemon threads from earlier tests that call it by that name
+    (a real `_watch_turn` ending in `_turn_ended`, a queue pump, ...). Counting
+    their rings made `assert woke == []` flake (`[1] == []`, fused-engine CI).
+    The ring under test is made synchronously inside `tick()`, on the caller's
+    thread, so that is the only thread whose rings count."""
+    import threading
+
     calls = []
-    monkeypatch.setattr(schedule, "wake", lambda: calls.append(1))
+    me = threading.get_ident()
+    monkeypatch.setattr(
+        schedule, "wake",
+        lambda: calls.append(1) if threading.get_ident() == me else None)
     return calls
 
 
@@ -198,9 +211,9 @@ def _row(sessions, status, stamp, name="p.json"):
 def test_a_session_leaving_busy_rings_the_scheduler(registry, woke):
     stamp = 1_800_000_000.0
     _row(registry, "busy", stamp)
-    assert woke == []          # arriving busy frees nothing
+    assert woke == [], "a session ARRIVING busy frees nothing, yet tick() rang"
     _row(registry, "idle", stamp + 1)
-    assert woke
+    assert woke, "busy -> idle did not ring the scheduler"
 
 
 def test_a_departed_row_rings_the_scheduler(registry, woke):

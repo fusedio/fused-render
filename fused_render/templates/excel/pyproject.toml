@@ -1,0 +1,28 @@
+# The excel template's environment (SPEC PY-16). `reader.py` is the runPython
+# entrypoint; `workbook.py` (formula values + the agent tools `mcp.toml`
+# publishes) and `_pycel_worker.py` (its bounded pycel run) share this venv.
+#
+# pycel is the reason this folder declares anything at all: it evaluates the
+# formulas the editor's in-browser engine can't (INDEX/MATCH, cross-sheet
+# references, …) in workbooks no Excel ever computed, and nothing else in the
+# app uses it, so it lives here rather than in `[bundled]`. PY-16 governs the
+# whole folder, so the rest is the COMPLETE list of what these files import
+# (D172) — duckdb/pyarrow for the Parquet paging and the tools' SQL, openpyxl
+# for every xlsx read and write, fpdf2 for PDF export — even though the app
+# interpreter ships them too: an undeclared import is simply absent from the venv.
+[project]
+name = "fused-render-template-excel"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "pycel>=1.0b30",
+    "openpyxl",
+    "duckdb>=1.1",
+    "pyarrow>=14",
+    "fpdf2>=2.8.7",
+]
+
+# Not a distribution — this folder is a set of scripts, not something to build
+# and install. Without this uv would try to build the "project" itself and fail.
+[tool.uv]
+package = false
