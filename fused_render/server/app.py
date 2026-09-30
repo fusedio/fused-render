@@ -604,7 +604,12 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         # before they count listings of their own.
         app.state.tasks_warm = thread
 
-    @on_shutdown
+    # `_AI_SESSION` is constructed at import time and can be started by the
+    # first `/api/ai` request even under `lean` (its prewarm startup hook is
+    # lean-skipped, but the session object itself is not gated on it) — so
+    # this cleanup has to run regardless of `lean` too. `shutdown_ai_session`
+    # is a no-op when nothing was ever spawned.
+    @on_shutdown_always
     async def _startup_shutdown_ai():
         await shutdown_ai_session(app)
 
@@ -1003,9 +1008,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         # `share_file._kick_warm_once` is the same guarded entry point a
         # lean app's first `_cached_rules()` read falls back to — sharing it
         # means the two can never both spawn the shim subprocess for the
-        # same process. `None` back means a lazy read already won the race
-        # (a startup hook running behind the very first request it warms
-        # for); nothing to join in that case.
+        # same process. `None` back means either a lazy read already won
+        # the race (a startup hook running behind the very first request it
+        # warms for) or nobody is signed in yet; nothing to join either way.
         thread = share_file._kick_warm_once()
         # For tests, the same seam `_startup_tasks_warm`/`_startup_queue_manager`
         # leave: join this instead of racing the background fetch.

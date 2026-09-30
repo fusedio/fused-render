@@ -54,10 +54,15 @@ def _sign_in(tmp_path, monkeypatch):
 def _run_warmup(app):
     """Invoke the real registered handler, then join the daemon thread it
     starts (the seam `app.state.share_rules_warm` leaves for tests) so the
-    background fetch has actually finished before we assert anything."""
+    background fetch has actually finished before we assert anything.
+    `None` is a legitimate result now too — nobody signed in, so
+    `_kick_warm_once` never spawned anything — and there is nothing to join
+    in that case."""
     handler = _find_handler(app, "_startup_warm_share_rules")
     asyncio.run(handler())
     thread = app.state.share_rules_warm
+    if thread is None:
+        return
     thread.join(timeout=5)
     assert not thread.is_alive(), "warm_rules_cache did not finish in time"
 
@@ -182,6 +187,67 @@ def test_lean_app_with_no_prior_full_server_run_shares_a_markdown_file(
             time.sleep(0.05)
             after = client.get("/api/share/file/status", params={"path": str(path)}).json()
 
+    assert after["can_share"] is True
+    assert after["refusal"] is None
+    assert after["viewer"] == "Markdown_File"
+
+
+def test_warmup_retries_after_a_signed_out_read_and_then_signing_in(tmp_path, monkeypatch):
+    """Bugbot finding: the lazy kick in `_cached_rules()` must not be a true
+    one-shot across a sign-in. Before the fix, a reader's very first
+    empty-cache read — while signed out — set `_warm_kicked` even though
+    `warm_rules_cache` immediately no-opped on `_logged_in()`, so no read
+    for the rest of the process's life, even long after the user signed in,
+    ever tried to build the real rule table again. Drives this end to end
+    through the real `/api/share/file/status` route, same as the sibling
+    lean/no-prior-server test above, rather than calling `_kick_warm_once`
+    directly."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(share_app_mod, "STATE_DIR", str(tmp_path / "home"))
+    _isolate_state_dir(tmp_path, monkeypatch)
+
+    creds = tmp_path / "credentials"
+    # Signed OUT to start: the credentials file does not exist yet.
+    monkeypatch.setenv("FUSED_RENDER_FUSED_CREDENTIALS", str(creds))
+
+    called = []
+
+    def fake_run_shim(request, timeout):
+        called.append(1)
+        assert request["action"] == "rules"
+        return {"rules": [
+            {"name": "Markdown_File", "token": "UDF_Markdown_File",
+             "extensions": ["md"], "file_name": None, "regex": None, "order": 1},
+        ]}, None
+
+    monkeypatch.setattr(share_app_mod, "_run_shim", fake_run_shim)
+
+    app = create_app(start_dir=str(tmp_path), lean=True)
+    from fastapi.testclient import TestClient
+
+    path = tmp_path / "README.md"
+    path.write_text("# hello\n")
+
+    with TestClient(app) as client:
+        # First read, signed out: the lazy kick sees nobody signed in and
+        # must not spend the guard — no shim call, cache stays empty (only
+        # the built-in rule resolves).
+        before = client.get("/api/share/file/status", params={"path": str(path)}).json()
+        assert before["can_share"] is False
+        assert called == [], "a signed-out read must not touch the shim at all"
+
+        # Sign in, THEN read again — this is the read that must actually
+        # kick a real warm, proving the earlier signed-out read never spent
+        # the one-shot guard.
+        creds.write_text("{}")
+
+        deadline = time.monotonic() + 5.0
+        after = client.get("/api/share/file/status", params={"path": str(path)}).json()
+        while time.monotonic() < deadline and not after["can_share"]:
+            time.sleep(0.05)
+            after = client.get("/api/share/file/status", params={"path": str(path)}).json()
+
+    assert called, "signing in never triggered a retry of the rules warm"
     assert after["can_share"] is True
     assert after["refusal"] is None
     assert after["viewer"] == "Markdown_File"
