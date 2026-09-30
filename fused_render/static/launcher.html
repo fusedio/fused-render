@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Search Apps</title>
+<title>Search</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -107,6 +107,16 @@
   .hint { flex: none; font-size: 13px; color: var(--fg-faint); min-width: 30px; text-align: right; font-variant-numeric: tabular-nums; }
   .row.sel .hint { color: var(--fg-dim); }
 
+  .sect {
+    padding: 10px 14px 4px; font-size: 11px; font-weight: 600; letter-spacing: .4px;
+    text-transform: uppercase; color: var(--fg-faint);
+  }
+  .icon .glyph {
+    width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+    color: var(--fg-dim);
+  }
+  .icon .glyph svg { width: 22px; height: 22px; }
+  .row.file .name { font-size: 14px; }
   #empty { padding: 18px 12px 8px; text-align: center; color: var(--fg-dim); font-size: 13px; }
   #empty:empty { display: none; }
   #empty .tip { display: block; margin-top: 6px; color: var(--fg-faint); font-size: 12.5px; }
@@ -133,7 +143,7 @@
 <body>
 <div id="panel">
   <div id="field">
-    <input id="q" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Search apps…" />
+    <input id="q" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Search apps and files…" />
     <div id="mark" aria-hidden="true">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/>
@@ -164,7 +174,7 @@
   const HDRS = { "X-Fused": "1", "Content-Type": "application/json" };
   const bridge = () => window.webkit?.messageHandlers?.launcher;
 
-  const state = { apps: [], sel: 0, seq: 0, recording: false, settings: null, lastH: 0, rowMods: ["alt"], rowSym: "⌥" };
+  const state = { apps: [], files: [], filesReason: "", rows: [], els: [], sel: 0, seq: 0, recording: false, settings: null, lastH: 0, rowMods: ["alt"], rowSym: "⌥" };
   const SYM = { ctrl: "⌃", alt: "⌥", shift: "⇧", cmd: "⌘" };
 
   // ---------- net ----------
@@ -183,6 +193,12 @@
       const data = await r.json();
       if (seq !== state.seq) return;
       state.apps = Array.isArray(data.apps) ? data.apps : [];
+      state.files = Array.isArray(data.files) ? data.files : [];
+      state.filesReason = String(data.files_reason || "");
+      // One list to select from: apps, then files, then the home row — the
+      // home row stays last so <modifier>+0 and the footer read the same.
+      const home = state.apps.filter(a => a.home);
+      state.rows = state.apps.filter(a => !a.home).concat(state.files, home);
       state.sel = 0;
       render();
     } catch (e) { console.warn("launcher query failed", e); }
@@ -198,7 +214,7 @@
     if (h.row_modifier) {
       state.rowMods = h.row_modifier.split("+");
       state.rowSym = h.row_modifier_display || state.rowMods.map(m => SYM[m] || m).join("");
-      [...list.children].forEach((li, i) => { if (i !== state.sel) li.querySelector(".hint").textContent = rowHint(i); });
+      state.els.forEach((li, i) => { if (i !== state.sel) li.querySelector(".hint").textContent = rowHint(i); });
     }
     if (state.recording) return;
     shortcut.textContent = h.display || h.hotkey || "—";
@@ -217,15 +233,21 @@
     d.textContent = (name.trim()[0] || "?").toUpperCase();
     return d;
   }
+  function tilde(p) { return (p || "").replace(/^\/Users\/[^/]+/, "~"); }
   function subtitle(app) {
     if (app.home) return "Open the shell";
-    const p = app.path || "";
-    return p.replace(/^\/Users\/[^/]+/, "~");
+    // A file row names its folder: the name is already the title.
+    if (app.kind === "file" || app.kind === "folder") return tilde(app.path.replace(/\/[^/]*$/, "") || "/");
+    return tilde(app.path);
   }
   function rowHint(i) {
-    if (state.apps[i]?.home) return state.rowSym + "0";
+    if (state.rows[i]?.home) return state.rowSym + "0";
     return i < 9 ? state.rowSym + (i + 1) : "";
   }
+  const FILE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'
+    + '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>';
+  const FOLDER_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'
+    + '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
   const HOME_SVG = '<svg viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#1b1d21"/>'
     + '<path d="M32 10 C34 24 40 30 54 32 C40 34 34 40 32 54 C30 40 24 34 10 32 C24 30 30 24 32 10 Z" fill="#ebfd66"/>'
     + '<circle cx="32" cy="32" r="5" fill="#1b1d21"/></svg>';
@@ -236,20 +258,35 @@
   function render() {
     list.textContent = "";
     empty.textContent = "";
-    const apps = state.apps;
-    if (!apps.some(a => !a.home)) {
+    state.els = [];
+    const rows = state.rows;
+    if (!rows.some(a => !a.home)) {
       const text = q.value.trim();
-      empty.textContent = text ? `No app matches “${text}”` : "Nothing on your desk yet";
+      empty.textContent = text ? `No app or file matches “${text}”` : "Nothing on your desk yet";
+      const tip = document.createElement("span");
+      tip.className = "tip";
       if (!text) {
-        const tip = document.createElement("span");
-        tip.className = "tip";
-        tip.textContent = "Type to search every app in your workspace. Apps in the sidebar's Projects list appear here.";
-        empty.appendChild(tip);
+        tip.textContent = "Type to search every app in your workspace, and the files and folders in your home.";
+      } else if (state.filesReason === "scanning") {
+        tip.textContent = "The file index is still scanning — files appear once it has covered your home folder.";
+      } else if (state.filesReason) {
+        tip.textContent = "Files are searched from the index; your home folder is not indexed yet (Preferences → Index).";
       }
+      if (tip.textContent) empty.appendChild(tip);
     }
-    apps.forEach((app, i) => {
+    let sect = "";
+    rows.forEach((app, i) => {
+      const kind = app.home ? "" : (app.kind === "file" || app.kind === "folder") ? "files" : "apps";
+      if (kind && kind !== sect && kind === "files") {
+        const h = document.createElement("li");
+        h.className = "sect";
+        h.setAttribute("aria-hidden", "true");
+        h.textContent = "Files";
+        list.appendChild(h);
+      }
+      if (kind) sect = kind;
       const li = document.createElement("li");
-      li.className = "row" + (i === state.sel ? " sel" : "");
+      li.className = "row" + (i === state.sel ? " sel" : "") + (kind === "files" ? " file" : "");
       li.setAttribute("role", "option");
       li.dataset.i = i;
       const icon = document.createElement("div");
@@ -258,6 +295,11 @@
         icon.innerHTML = HOME_SVG;
         icon.firstChild.style.width = icon.firstChild.style.height = "100%";
         icon.firstChild.style.borderRadius = "8px";
+      } else if (kind === "files") {
+        const g = document.createElement("div");
+        g.className = "glyph";
+        g.innerHTML = app.kind === "folder" ? FOLDER_SVG : FILE_SVG;
+        icon.appendChild(g);
       } else if (app.icon) {
         const img = document.createElement("img");
         img.alt = "";
@@ -282,12 +324,13 @@
       li.addEventListener("pointermove", () => select(i));
       li.addEventListener("click", () => open(i));
       list.appendChild(li);
+      state.els.push(li);
     });
     report();
   }
   function select(i) {
-    if (i === state.sel || i < 0 || i >= state.apps.length) return;
-    const rows = list.children;
+    if (i === state.sel || i < 0 || i >= state.rows.length) return;
+    const rows = state.els;
     rows[state.sel]?.classList.remove("sel");
     if (rows[state.sel]) rows[state.sel].querySelector(".hint").textContent = rowHint(state.sel);
     state.sel = i;
@@ -307,7 +350,7 @@
     else location.href = "/";
   }
   function open(i) {
-    const app = state.apps[i];
+    const app = state.rows[i];
     if (!app) return;
     if (app.home) { openHome(); return; }
     if (bridge()) bridge().postMessage({ type: "open", path: app.path });
@@ -324,6 +367,8 @@
     // Drop the last search now: until the desk list arrives, Enter or a
     // click must not launch a stale row from the previous query.
     state.apps = [];
+    state.files = [];
+    state.rows = [];
     state.sel = 0;
     render();
     query("");
@@ -352,7 +397,7 @@
   }
   document.addEventListener("keydown", (e) => {
     if (state.recording) { recordKey(e); return; }
-    const n = state.apps.length;
+    const n = state.rows.length;
     if (e.key === "ArrowDown") { e.preventDefault(); if (n) select(Math.min(state.sel + 1, n - 1)); }
     else if (e.key === "ArrowUp") { e.preventDefault(); if (n) select(Math.max(state.sel - 1, 0)); }
     else if (e.key === "Enter") { e.preventDefault(); open(state.sel); }

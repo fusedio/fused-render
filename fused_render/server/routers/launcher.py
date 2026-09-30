@@ -26,4 +26,10 @@ def _running() -> set[str]:
 
 @router.get("/api/launcher")
 def api_launcher(q: str = Query(default="")):
-    return {"query": q, "apps": launcher.results(q, _running())}
+    """``apps`` as before; ``files`` (and the index's coverage ``reason``
+    when it had none to give) for a non-empty query. Sync on purpose: the
+    index query blocks, and FastAPI runs a plain ``def`` in its threadpool."""
+    apps = launcher.results(q, _running())
+    files = launcher.file_results(q, exclude=[a["path"] for a in apps if a.get("path")])
+    return {"query": q, "apps": apps, "files": files["files"],
+            "files_reason": files["reason"]}

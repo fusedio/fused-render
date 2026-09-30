@@ -7,7 +7,9 @@ and typing searches every app this machine knows — the desk, every app in
 the workspace (``app_listing.workspace_apps``, which covers the ``showcase``
 and ``local`` tags), the linked folders (``registered_apps``) and the
 exported ``.fused`` files the index knows (``exported_apps``). The same set
-the /apps hub shows; nothing else is findable.
+the /apps hub shows. Under the app rows, a non-empty query also lists files
+and folders from the file index (``file_results``): the home search box's
+engine, a handful of rows, opened in the explorer.
 
 Settings live in ``prefs.json`` (shell/prefs.py), two keys::
 
@@ -44,7 +46,8 @@ import time
 import urllib.parse
 
 from fused_render import hotkey
-from fused_render._view_url_codec import app_page_path, canonical_fs_path, embed_url_path
+from fused_render._view_url_codec import (app_page_path, canonical_fs_path, embed_url_path,
+                                          view_url_path)
 
 logger = logging.getLogger(__name__)
 
@@ -337,3 +340,71 @@ def results(query: str, running=frozenset()) -> list[dict]:
     out = list(search(query, registry(running)))
     out.append(dict(HOME_ROW))
     return out
+
+
+# ---- files -----------------------------------------------------------------------------
+
+#: Files and folders shown under the app rows for a non-empty query. Fewer
+#: than the apps: they are the second answer, and the panel grows per row.
+FILE_RESULTS = 6
+
+#: Where a launcher file search looks: the same root as the shell's home
+#: search box. A query may still walk out of it (``~/x``, ``/x``) — that is
+#: `resolve_query`'s business, and the launcher inherits it unchanged.
+FILE_SEARCH_ROOT = "~"
+
+
+def _file_row(path: str, is_dir: bool) -> dict:
+    path = canonical_fs_path(os.path.abspath(path)).rstrip("/") or path
+    return {
+        "path": path,
+        "url": view_url_path(path),
+        "name": os.path.basename(path) or path,
+        "title": os.path.basename(path) or path,
+        "kind": "folder" if is_dir else "file",
+        "pinned": False,
+        "running": False,
+        "icon": None,
+    }
+
+
+def file_results(query: str, limit: int = FILE_RESULTS, exclude=()) -> dict:
+    """Files and folders under ``~`` matching ``query``, from the file index
+    — the ranked engine behind the shell's home search (`_rank_body`, so
+    ``~``/``/`` bases, whitespace wildcards and the mount guard all behave
+    exactly as they do there). Returns ``{"files": [rows], "reason": str}``:
+    ``reason`` is the index's own coverage word (``""`` when it answered,
+    else ``scanning``/``uncovered``/``mount``/``package``), so the page can
+    say WHY there are no files rather than "no matches".
+
+    Never raises and never blocks on anything but the index query: an
+    empty query, a missing index, a closed engine, an import failure on a
+    build without duckdb all read as zero rows. App search must not fail
+    because file search did. ``exclude`` holds paths already shown as app
+    rows, so an app folder is not listed twice."""
+    q = str(query or "").strip()
+    if not q:
+        return {"files": [], "reason": ""}
+    try:
+        from fused_render.index.config import load_config
+        from fused_render.server.routers.index import _rank_body
+
+        cfg = load_config()
+        root = os.path.expanduser(FILE_SEARCH_ROOT)
+        # A few over the cap: the app-row overlap is dropped below.
+        out = _rank_body(cfg, root, q, limit=limit + len(exclude) + 4)
+    except Exception:  # noqa: BLE001 — see docstring
+        logger.debug("launcher file search failed", exc_info=True)
+        return {"files": [], "reason": ""}
+    base = str(out.get("base") or root)
+    skip = {os.path.realpath(p) for p in exclude}
+    rows: list[dict] = []
+    for hit in out.get("hits") or []:
+        rel = hit.get("rel") or ""
+        path = os.path.join(base, rel) if rel else base
+        if os.path.realpath(path) in skip:
+            continue
+        rows.append(_file_row(path, bool(hit.get("is_dir"))))
+        if len(rows) >= limit:
+            break
+    return {"files": rows, "reason": str(out.get("reason") or "")}
