@@ -141,6 +141,9 @@ const ClaudeConfig = lazy(() =>
 const Canvases = lazy(() =>
   import("@apps/canvases").then((m) => ({ default: m.Canvases })),
 );
+// Bots (apps/bots): persona chat assistants on the Claude harness, one page
+// with the selected bot in `?bot=<slug>`.
+const Bots = lazy(() => import("@apps/bots").then((m) => ({ default: m.Bots })));
 const CanvasWorkspace = lazy(() =>
   import("@apps/canvases").then((m) => ({ default: m.CanvasWorkspace })),
 );
@@ -765,6 +768,9 @@ export default function App({ config }: { config: Config }) {
   // The app's front door: search hero + the three recency strips.
   const isHome = pathname === "/home";
   const isClaudeConfig = pathname === "/claude-config";
+  // Bots: one exact route; the selected bot and the chat's own params
+  // (session_id, run, …) all ride in the query.
+  const isBots = pathname === "/bots";
   // Canvases: the listing plus the parameterized workspace route. The name is
   // constrained to the CLI's own canvas-name alphabet, so the match below is
   // also the validation.
@@ -801,6 +807,7 @@ export default function App({ config }: { config: Config }) {
     isExplorerHome ||
     isHome ||
     isClaudeConfig ||
+    isBots ||
     isCanvases ||
     canvasWorkspaceName !== null;
   const fsPath = isSentinel ? null : fsPathFromLocation();
@@ -830,13 +837,15 @@ export default function App({ config }: { config: Config }) {
                           ? "File Explorer"
                           : isClaudeConfig
                             ? "Claude Config"
-                            : isCanvases
-                              ? "Workbench Canvases"
-                              : canvasWorkspaceName
-                                ? `Canvas: ${canvasWorkspaceName}`
-                                : fsPath
-                                  ? undefined
-                                  : null,
+                            : isBots
+                              ? "Bots"
+                              : isCanvases
+                                ? "Workbench Canvases"
+                                : canvasWorkspaceName
+                                  ? `Canvas: ${canvasWorkspaceName}`
+                                  : fsPath
+                                    ? undefined
+                                    : null,
   );
 
   // First-run onboarding tours: the registry picks the tour this route is
@@ -952,6 +961,17 @@ export default function App({ config }: { config: Config }) {
       <div id="content" key={epoch}>
         <Suspense fallback={<RouteFallback />}>
           <Canvases key={epoch} />
+        </Suspense>
+      </div>
+    );
+  } else if (isBots) {
+    // Bots — NOT keyed on `epoch`: the page hosts a live chat whose own param
+    // writes (session_id, run) must not remount it, and picking a bot or a
+    // session is a navigation the page reads itself (apps/bots/Bots.tsx).
+    main = (
+      <div id="content">
+        <Suspense fallback={<RouteFallback />}>
+          <Bots />
         </Suspense>
       </div>
     );

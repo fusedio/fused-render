@@ -64,6 +64,7 @@ from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
 from fused_render.server.routers.engines import router as engines_router
 from fused_render.server.routers.ai_models import router as ai_models_router
+from fused_render.server.routers.bots import router as bots_router
 from fused_render.server.routers.hf_auth import router as hf_auth_router
 from fused_render.server.routers.hub_models import router as hub_models_router
 from fused_render.server.routers.ai_runtime import router as ai_runtime_router
@@ -883,6 +884,11 @@ def create_app(start_dir: str) -> FastAPI:
     # `fused login`, list/clone via the CLI, the folder-watch → `canvas push`
     # sync loop, and the access token the workspace iframe is seeded with.
     app.include_router(canvases_router)
+    # Bots (routers/bots.py over the fused_render/bots.py store): persona
+    # chat bots under ~/Fused-bot — CRUD, memory, and the builder tasks a
+    # bot's `create_app`/`edit_app` MCP tools start. Reads unguarded; every
+    # mutation carries the D3 X-Fused guard.
+    app.include_router(bots_router)
     # Share an app as a public link (share_app.py): the .fused export handed
     # to the user's Fused account as a one-node canvas, through the same
     # `fused login` provider canvases.py owns (credentials-file presence,

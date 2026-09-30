@@ -67,6 +67,9 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 # Canvases (legacy-workbench local development): the listing page and the
 # per-canvas workspace (/canvases/<name>, matched by the wildcard below).
 @router.get("/canvases")
+# Bots: persona chat bots; the selected bot rides in `?bot=<slug>`, so one
+# route (no wildcard) serves every bot.
+@router.get("/bots")
 def shell_page(shell_path: str = Depends(get_shell_path)):
     return FileResponse(shell_path)
 

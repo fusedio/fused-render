@@ -655,6 +655,137 @@ def _workdir(file: str) -> str:
     return file if os.path.isdir(file) else os.path.dirname(file)
 
 
+# ---------------------------------------------------------------------------
+# BOT MODE (the Bots sub-app). A bot is a directory `<bots root>/<slug>/` holding
+# bot.json (persona), memory/MEMORY.md and tasks.json; a chat whose cwd IS that
+# directory is a bot session. Bot mode is keyed off the TARGET alone — no new
+# parameter rides through `_start`/session_host (which passes its request fields
+# positionally), so every caller that already spawns a chat on a bot dir gets
+# the bot shape and every other target's argv is exactly what it was.
+#
+# What changes in bot mode, and why each:
+#   * `--tools <BOT_TOOLS>` — a whitelist of the CLI's BUILT-IN tools. A bot
+#     talks, reads and searches; it never writes code or files itself (no
+#     Edit/Write/Bash/Agent). Anything it wants built goes through the
+#     `fused_bot` MCP server's create_app/edit_app, which start a real task
+#     agent. MCP tools are NOT filtered by --tools (verified 2.1.284: with the
+#     whitelist, `mcp__fused_bot__*` stay callable and Write is "No such tool").
+#   * a second MCP server, `fused_bot` (bot_server.py), and its tools
+#     pre-allowed — a bot's own memory write carding every time would put a
+#     prompt with no decision in it on screen.
+#   * no `--plugin-dir` (the authoring skills teach writing fused apps, which
+#     this session cannot do), no `fused` CLI note (no Bash to run it with).
+#   * a persona system prompt instead of the file/folder prompt.
+#   * never a pane: a bot chat is chat-only, so the app_state channel and tool
+#     are forced off regardless of what the page said (a roster tool nothing
+#     can answer would just time out).
+BOT_SERVER = "fused_bot"
+BOT_MCP_TOOLS = ("remember", "forget", "recall", "create_app", "edit_app",
+                 "list_apps", "task_status")
+BOT_TOOLS = ("Read", "Glob", "Grep", "WebSearch", "WebFetch", "AskUserQuestion",
+             "TodoWrite")
+# MEMORY.md is appended to the prompt; a runaway file must not blow the
+# context window, so only its head rides along (recall reads the rest).
+BOT_MEMORY_CAP = 24000
+# Per-call MCP ceiling for fused_bot, in ms. Above bot_server's own HTTP
+# timeout (150 s) so a slow scaffold surfaces as the server's "Error: ..."
+# text rather than the CLI's MCP-timeout fault.
+BOT_MCP_TIMEOUT = 180 * 1000
+
+
+def _bots_root() -> str:
+    """`$FUSED_BOT_DIR` or `~/Fused-bot` — the same rule the server's bots
+    router uses (spelled again here: this template is outside the package's
+    import graph, SPEC PY-15)."""
+    return os.path.expanduser(os.environ.get("FUSED_BOT_DIR")
+                              or os.path.join("~", "Fused-bot"))
+
+
+def _bot_dir(file: str) -> str | None:
+    """The bot directory this target's chat runs in, or None when it is not a
+    bot chat. EXACTLY the workdir — not an ancestor walk: a folder inside a bot
+    dir is not a bot. Must hold bot.json AND sit directly under the bots root
+    (same realpath/normcase discipline as `_in_canvases_root`: macOS /tmp vs
+    /private/tmp, Windows case). Any failure reads as "not a bot" — the
+    non-bot path is what every target had before bots existed."""
+    if not file:
+        return None
+    try:
+        wd = _workdir(os.path.abspath(file))
+        if not os.path.isfile(os.path.join(wd, "bot.json")):
+            return None
+        norm = lambda p: os.path.normcase(os.path.realpath(os.path.abspath(p)))  # noqa: E731
+        if norm(os.path.dirname(wd.rstrip("/\\"))) != norm(_bots_root()):
+            return None
+        return wd.rstrip("/\\") or wd
+    except (OSError, ValueError):
+        return None
+
+
+def _bot_system_prompt(bot_dir: str) -> str:
+    """Persona, then the house rules, then every tool one line each (D235: an
+    unannounced tool does not get called), then the saved memory. Never raises:
+    an unreadable bot.json or MEMORY.md gives a thinner prompt, and a thin
+    prompt is far better than a chat that will not spawn."""
+    try:
+        with open(os.path.join(bot_dir, "bot.json"), encoding="utf-8") as fh:
+            meta = json.load(fh)
+        meta = meta if isinstance(meta, dict) else {}
+    except Exception:  # noqa: BLE001 — see docstring
+        meta = {}
+    name = str(meta.get("name") or os.path.basename(bot_dir) or "the bot")
+    persona = str(meta.get("persona") or "").strip() \
+        or f"You are {name}, a helpful assistant."
+    try:
+        with open(os.path.join(bot_dir, "memory", "MEMORY.md"),
+                  encoding="utf-8") as fh:
+            memory = fh.read()
+    except Exception:  # noqa: BLE001 — see docstring
+        memory = ""
+    if len(memory) > BOT_MEMORY_CAP:
+        memory = (memory[:BOT_MEMORY_CAP]
+                  + "\n\n[... memory truncated — call recall with a query "
+                    "to search the rest]")
+    memory = memory.strip() or "(nothing saved yet)"
+    tool = lambda t: f"mcp__{BOT_SERVER}__{t}"  # noqa: E731
+    return (
+        f"{persona}\n\n"
+        "## How you work\n"
+        f"You are {name}, a conversational assistant inside fused-render's "
+        "Bots app. You NEVER write code or files yourself — you have no tools "
+        "for that, so do not offer to, and do not paste code for the user to "
+        "save unless they explicitly ask to see some. You can read and search "
+        "files, search and fetch the web, and ask the user structured "
+        "questions (AskUserQuestion).\n"
+        "To build a new app or change an existing one: first find out what the "
+        "user actually wants (ask when it is unclear), then write a DETAILED "
+        "spec — purpose, pages/views, data and where it comes from, "
+        "interactions, look and feel — and call create_app (new) or edit_app "
+        "(existing). That starts a separate builder agent in the background; "
+        "tell the user the task id and that it is running, and that they can "
+        "watch it from the app's Tasks tab. Use task_status when they ask how "
+        "it is going.\n"
+        "Use remember for durable facts about the user, their preferences and "
+        "their projects — things worth knowing in a future conversation — and "
+        "forget when they ask you to drop something or a fact is no longer "
+        "true. Do not save trivia from a single chat. The Memory section below "
+        "is what you saved before.\n\n"
+        "## Your tools\n"
+        f"- `{tool('remember')}` — save one durable fact (optional topic heading).\n"
+        f"- `{tool('forget')}` — delete memory lines containing some text.\n"
+        f"- `{tool('recall')}` — read your memory, or search it.\n"
+        f"- `{tool('create_app')}` — create a new Fused app from a detailed spec "
+        "and start a builder agent on it.\n"
+        f"- `{tool('edit_app')}` — start a builder agent that changes an existing "
+        "app (by name or folder path) to a detailed spec.\n"
+        f"- `{tool('list_apps')}` — list the user's local apps.\n"
+        f"- `{tool('task_status')}` — status of the build tasks you started.\n\n"
+        f"Your own folder is {bot_dir} (bot.json, memory/, tasks.json); you may "
+        "read it but change memory only through the tools above.\n\n"
+        f"## Memory\n{memory}\n"
+    )
+
+
 def _custom_env(origin: str, file: str) -> bool | None:
     """Does *file*'s own reader need a declared project environment, per
     `/api/env/custom-env`? None when the app couldn't be asked — a network
@@ -1375,7 +1506,8 @@ def _image_to_png(path: str) -> dict:
         return {"error": "could not convert: %s" % e}
 
 
-def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
+def _write_mcp_config(run_dir: str, pane: bool = True,
+                      bot_dir: str | None = None) -> str:
     """The one-server MCP config that makes the chat window the permission
     prompt AND — when the target has a left pane — the app's own eyes
     (`app_state`), written into the run dir. Returns its path (for --mcp-config).
@@ -1393,14 +1525,20 @@ def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
     optional fused engine (D69) this module is `exec`'d into a namespace that
     has no `__file__` at all, so reaching for it directly is a NameError for
     anyone with the `fused` extra installed. HERE is resolved once at import,
-    behind the shim at the top of this file that covers both engines."""
+    behind the shim at the top of this file that covers both engines.
+
+    `bot_dir` (bot mode only; None for every other caller, which then writes
+    exactly the one-server config it always did) adds the `fused_bot` server
+    beside the approvals one. Its env names FUSED_RENDER_ORIGIN explicitly for
+    the same reason PYTHONUTF8 is named below: the CLI's MCP client passes an
+    env allowlist plus this dict, so the server's HTTP back to the app would
+    otherwise have no origin to call."""
     path = os.path.join(run_dir, "mcp.json")
     server = os.path.join(HERE, "permission_server.py")
     args = [server, _perm_dir(run_dir)]
     if pane:
         args.append(_state_dir(run_dir))
-    with _private_open(path) as fh:
-        json.dump({"mcpServers": {PERMISSION_SERVER: {
+    servers = {"mcpServers": {PERMISSION_SERVER: {
             # sys.executable, matching how the app spawns every other helper
             # (executor.py): in the packaged .app that is the bundled python.
             "command": sys.executable,
@@ -1424,7 +1562,16 @@ def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
             # above the server's own wait so an unanswered card returns OUR
             # "nobody answered" deny instead of the CLI's MCP-timeout error.
             "timeout": (PERMISSION_WAIT + 60) * 1000,
-        }}}, fh)
+        }}}
+    if bot_dir:
+        servers["mcpServers"][BOT_SERVER] = {
+            "command": sys.executable,
+            "args": [os.path.join(HERE, "bot_server.py"), bot_dir],
+            "env": {"FUSED_RENDER_ORIGIN": _origin() or "", "PYTHONUTF8": "1"},
+            "timeout": BOT_MCP_TIMEOUT,
+        }
+    with _private_open(path) as fh:
+        json.dump(servers, fh)
     return path
 
 
@@ -2313,7 +2460,16 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     session host is the only thing that ever calls this now, and it always
     holds the pipe open for the life of the process — there is no longer an
     argv-embedded-message form to choose between (the retired
-    `message_via_stdin=False` branch)."""
+    `message_via_stdin=False` branch).
+
+    BOT MODE (`_bot_dir(file)` resolves; see the block above `_bots_root`)
+    branches in four places below — the MCP config, the tool whitelist plus
+    pre-allowances, the plugin dirs, and the system prompt — and forces `pane`
+    off. With no bot dir every expression is the one this function always
+    built."""
+    bot = _bot_dir(file)
+    if bot:
+        pane = False
     cmd = [_claude_bin(), "-p", "--input-format", "stream-json",
            "--output-format", "stream-json",
            "--verbose", "--include-partial-messages",
@@ -2322,7 +2478,8 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
            # follow-up sent mid-turn actually reached the CLI's own queue
            # rather than landing on a pipe nobody was reading from anymore.
            "--replay-user-messages",
-           "--mcp-config", _write_mcp_config(run_dir, pane),
+           "--mcp-config", (_write_mcp_config(run_dir, pane, bot_dir=bot) if bot
+                            else _write_mcp_config(run_dir, pane)),
            "--permission-prompt-tool",
            f"mcp__{PERMISSION_SERVER}__{PERMISSION_TOOL}",
            # Naming a permission-prompt tool also un-gates AskUserQuestion and
@@ -2372,8 +2529,24 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
            ",".join(([f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}"] if pane
                      else []) + [_read_rule(SHOTS)]
                     + [_read_rule(d) for d in (extra_read_dirs or [])]
-                    + (["Bash(fused:*)"] if _fused_cli_dir() else []))]
-    cmd += _plugin_argv(file)
+                    + (["Bash(fused:*)"] if _fused_cli_dir() else [])
+                    if not bot else
+                    # Bot mode: its own MCP tools, the SHOTS dir (a picture the
+                    # user pastes into the chat lands there — carding a read of
+                    # their own attachment is a prompt with no decision in it),
+                    # the caller's attachment dirs, and its own folder. No
+                    # app_state (no pane) and no Bash(fused:*) (no Bash at all).
+                    [f"mcp__{BOT_SERVER}__{t}" for t in BOT_MCP_TOOLS]
+                    + [_read_rule(SHOTS)]
+                    + [_read_rule(d) for d in (extra_read_dirs or [])]
+                    + [_read_rule(bot)])]
+    if bot:
+        # The built-in whitelist. `--permission-prompt-tool` above stays: it is
+        # what un-gates AskUserQuestion in headless mode, and WebFetch and
+        # friends still card through it.
+        cmd += ["--tools", ",".join(BOT_TOOLS)]
+    else:
+        cmd += _plugin_argv(file)
     # BOTH targets get an --append-system-prompt here, and they get different
     # ones. A FILE target gets the scoping prompt. A DIRECTORY target that is an
     # APP FOLDER still does NOT get a scoping prompt — the session should be plain
@@ -2391,7 +2564,12 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     # The fused CLI note rides every shape (file, app folder, ordinary
     # folder) because it is a fact about the machine, not the target — and
     # only when the wrapper actually exists (see _fused_cli_note).
+    #
+    # A BOT gets none of the above: its persona prompt (rules, tool list, saved
+    # memory) replaces the target prompt, and there is no fused CLI note
+    # because a bot has no Bash to run it with.
     cmd += ["--append-system-prompt",
+            _bot_system_prompt(bot) if bot else
             (_split_system_prompt(file, pane) if os.path.isdir(file)
              else _system_prompt(file)) + _fused_cli_note() + _origin_note()]
     if cli_mode:
