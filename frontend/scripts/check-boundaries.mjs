@@ -117,16 +117,13 @@ const SHARED_APPS = new Set(["apps/claude"]);
  */
 /*
  * `terminalDockStore` (the one-boolean + one-slot-pending-request store the
- * status-bar terminal drawer and chip share) used to be the fifth hole here,
- * for the same reason `shell/tasksPulse` is one: the explorer's "Open in
- * Terminal" row and the run-in-terminal affordances platform/ui grows for
- * the Claude health strip and the trouble card all call its `openTerminal`
- * without importing `TerminalDrawer.tsx` or any other shell file. But unlike
- * `tasksPulse`, it never depended on anything shell-only — it imports only
- * React's `useSyncExternalStore` — so instead of punching a hole for it, it
- * moved down to `platform/lib/terminalDockStore`, where platform/ui (which
- * may not import shell at all) can reach it directly and shell keeps
- * consuming it as "anything" it's allowed to import.
+ * status-bar terminal drawer and chip share) lives in `platform/lib`, not
+ * shell, even though `TerminalDrawer.tsx` and the explorer's "Open in
+ * Terminal" row are shell/apps files: it imports only React's
+ * `useSyncExternalStore`, nothing shell-only, so `platform/ui` (which may not
+ * import shell at all) can reach its `openTerminal` directly for the Claude
+ * health strip and the trouble card's run affordances, and shell consumes it
+ * as "anything" it's allowed to import — no hole needed for it here.
  */
 const SHELL_OPEN_TO_APPS = new Set([
   "shell/ScheduleTaskViews",
