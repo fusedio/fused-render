@@ -67,12 +67,19 @@ def _build_parser() -> argparse.ArgumentParser:
     open_cmd = sub.add_parser(
         "open",
         help="start a lean server for one app and open it (no background subsystems)",
-        description="Start a minimal local server scoped to one app folder or "
-                    "file and open it in embed mode (chrome-free) — fast startup, "
-                    "nothing running beyond what that app needs to render and run. "
-                    "Runs until Ctrl-C.",
+        description="Start a minimal local server scoped to one app and open it in "
+                    "embed mode (chrome-free) — fast startup, nothing running beyond "
+                    "what that app needs to render and run. PATH is an app folder, a "
+                    "file inside one (e.g. index.html), a .fused file, or a GitHub "
+                    "URL (https://github.com/{owner}/{repo}[/tree/{ref}/{subpath}] or "
+                    "fused-render://open?git=…) — cloned or pulled into ~/Fused before "
+                    "opening. Runs until Ctrl-C.",
     )
-    open_cmd.add_argument("path", help="an app folder, or a file inside one (e.g. index.html)")
+    open_cmd.add_argument(
+        "path",
+        help="an app folder, a file inside one (e.g. index.html), a .fused file, "
+             "or a GitHub repo/tree URL to clone",
+    )
     open_cmd.add_argument(
         "--port",
         type=int,
@@ -243,18 +250,69 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _open_target(path: str) -> str:
-    """Absolute fs path `open` renders: a folder resolves to its app entry
-    page (`app_listing.app_entry` — the same rule the Home grid's "Open app"
-    button and the explorer's app card use), so `fused-render open
-    ~/Fused/local/my-app` lands on the page the app actually opens to. A file,
-    or a folder with no entry, is used exactly as given — an entry-less folder
-    then renders as an embedded directory listing rather than failing."""
-    from fused_render import app_listing
+# The two shapes `open` recognizes as "clone this from GitHub" rather than
+# "open this local path": a plain repo/tree URL, and the deep link the
+# desktop app's own `fused-render://open?git=…` handler accepts (D110).
+# Matched by prefix, case-insensitively, same as deeplink.github_url_from.
+_GITHUB_TARGET_PREFIXES = (
+    "https://github.com/",
+    "http://github.com/",
+    "https://www.github.com/",
+    "http://www.github.com/",
+    "fused-render://open?git=",
+    "fused-render://open/?git=",
+)
 
-    abs_path = os.path.abspath(os.path.expanduser(path))
-    if not os.path.exists(abs_path):
-        raise SystemExit(f"no such file or directory: {path}")
+
+def _is_github_target(path: str) -> bool:
+    return (path or "").strip().lower().startswith(_GITHUB_TARGET_PREFIXES)
+
+
+def _open_target(path: str) -> str:
+    """Absolute fs path `open` renders, from any of the three things `path`
+    can name:
+
+    - A GitHub repo/tree URL (`https://github.com/{owner}/{repo}[/tree/{ref}/
+      {sub}]`) or the `fused-render://open?git=…` deep link form: cloned (or
+      pulled, if already cloned) via `deeplink.parse_github_url` +
+      `deeplink.clone_or_pull`, to the same `deeplink.destination(spec)` the
+      deep link itself clones to — a second `open` of the same URL updates
+      the existing checkout rather than re-cloning. There is no confirm
+      prompt here the way the deep link's browser page has one: running the
+      command IS the user's consent. A dirty/diverged tree or an auth
+      failure surfaces git's own message and exits non-zero. The clone
+      target is then resolved exactly like a folder argument, below.
+    - A `.fused` file: used exactly as given. It is not extracted here —
+      `/explorer/embed/<path>.fused` renders through the `fusedapp` preview
+      template client-side, which extracts (or reuses a prior extract of)
+      the file via the guarded `/api/appfile/open` route and frames the
+      extracted entry page's own embed URL (D390).
+    - An app folder, or a file inside one: a folder resolves to its app
+      entry page (`app_listing.app_entry` — the same rule the Home grid's
+      "Open app" button and the explorer's app card use), so `fused-render
+      open ~/Fused/local/my-app` lands on the page the app actually opens
+      to. A file, or a folder with no entry, is used exactly as given — an
+      entry-less folder then renders as an embedded directory listing
+      rather than failing.
+    """
+    from fused_render import app_listing, deeplink
+
+    if _is_github_target(path):
+        try:
+            spec = deeplink.parse_github_url(path)
+            dest = deeplink.destination(spec)
+            sub = f"/{spec['subpath']}" if spec["subpath"] else ""
+            ref = f" @ {spec['ref']}" if spec["ref"] else ""
+            print(f"open: cloning {spec['owner']}/{spec['repo']}{sub}{ref} -> {dest}")
+            result = deeplink.clone_or_pull(spec)
+        except deeplink.DeeplinkError as exc:
+            raise SystemExit(str(exc))
+        abs_path = os.path.abspath(result["target"])
+    else:
+        abs_path = os.path.abspath(os.path.expanduser(path))
+        if not os.path.exists(abs_path):
+            raise SystemExit(f"no such file or directory: {path}")
+
     if os.path.isdir(abs_path):
         try:
             entry = app_listing.app_entry(abs_path)
@@ -287,7 +345,9 @@ def _wait_ready(port: int, timeout: float = 10.0) -> bool:
 
 def _run_open(args: argparse.Namespace) -> None:
     """`fused-render open <path>`: a lean server for one app, opened straight
-    to its embed URL. No onboarding/migrations, no showcase clone, no Claude
+    to its embed URL. `path` is resolved by `_open_target` — an app folder or
+    a file in one, a `.fused` file, or a GitHub URL/deep link (cloned or
+    pulled first). No onboarding/migrations, no showcase clone, no Claude
     health probe (all `serve`-only, above) — those are about the workspace as
     a whole, and this command scopes to one app. No server.json either
     (`create_app`'s `lean=True` already skips every background subsystem;
