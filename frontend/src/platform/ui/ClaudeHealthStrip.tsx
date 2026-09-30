@@ -31,32 +31,7 @@ import {
   issueHelpUrl,
   type ClaudeIssue,
 } from "@platform/lib/claude-health";
-
-export function CopyCommand({ command }: { command: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <div className="update-badge-command">
-      <code>{command}</code>
-      <button
-        type="button"
-        className="update-badge-copy"
-        onClick={async () => {
-          try {
-            await navigator.clipboard.writeText(command);
-          } catch {
-            // Clipboard denied. The command is on screen either way, and a
-            // button stuck on "Copied" would be a lie about what happened.
-            return;
-          }
-          setCopied(true);
-          window.setTimeout(() => setCopied(false), 2000);
-        }}
-      >
-        {copied ? "Copied" : "Copy"}
-      </button>
-    </div>
-  );
-}
+import { CommandLine } from "./CommandLine";
 
 /** `claude doctor`'s own words, or the installer's. Rendered verbatim and in a
  *  scroll box rather than summarised: the whole reason to surface either is
@@ -178,14 +153,16 @@ export function IssueRow({
               Cancel
             </button>
           )}
-          {/* What will actually run, before it runs. Piping a remote script
-              into a shell on someone's behalf is a thing to disclose, not to
-              do quietly behind a friendly label. */}
-          {issue.command && (
-            <code className="claude-health-action-cmd">{issue.command}</code>
-          )}
         </div>
       )}
+
+      {/* What will actually run, before it runs — always shown, even where a
+          button already offers to do it: a user on a locked-down machine, or
+          one who would simply rather run it themselves, should not have to
+          press our button to find out what it was. Piping a remote script
+          into a shell on someone's behalf is a thing to disclose, not to do
+          quietly behind a friendly label. */}
+      {issue.command && <CommandLine command={issue.command} />}
 
       {running && (
         <p className="claude-health-progress" role="status">
@@ -218,10 +195,6 @@ export function IssueRow({
       )}
       {doctor && <DoctorReport doctor={doctor} />}
 
-      {/* Still a command to copy, even where a button exists: a user on a
-          locked-down machine, or one who would simply rather run it themselves,
-          should not have to press our button to find out what it was. */}
-      {issue.command && !issue.action && <CopyCommand command={issue.command} />}
       <a
         className="version-panel-link"
         href={issueHelpUrl(issue)}

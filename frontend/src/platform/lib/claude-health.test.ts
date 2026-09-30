@@ -478,7 +478,7 @@ test("the strip polls only while an install is running, and re-probes when it en
 });
 
 test("the strip discloses the command beside the button that runs it", () => {
-  expect(STRIP).toContain("claude-health-action-cmd");
+  expect(STRIP).toContain("issue.command && <CommandLine command={issue.command} />");
 });
 
 test("the strip recovers an install already running when it remounts", () => {

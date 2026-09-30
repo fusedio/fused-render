@@ -24,6 +24,7 @@ import {
   troubleReport,
   type TroubleFacts,
 } from "@platform/lib/trouble";
+import { CommandLine } from "./CommandLine";
 
 // Plain-language headings and explanations, following the download page's
 // troubleshooting tabs so the app and the page tell one story. Deliberately
@@ -185,12 +186,9 @@ export function TroubleCard({
       {kind === "notfound" && (
         <div className="trouble-install">
           <div className="trouble-label">Install Claude Code</div>
-          <div className="update-badge-command">
-            <code>{CLAUDE_INSTALL_COMMAND}</code>
-            <CopyLine text={CLAUDE_INSTALL_COMMAND} label="Copy" />
-          </div>
+          <CommandLine command={CLAUDE_INSTALL_COMMAND} />
           <p className="deploy-muted">
-            Run it in a terminal, then quit Fused Render and open it again.
+            Run it, then try again below — no need to restart Fused Render.
           </p>
         </div>
       )}
