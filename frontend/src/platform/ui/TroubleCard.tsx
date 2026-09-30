@@ -187,8 +187,14 @@ export function TroubleCard({
         <div className="trouble-install">
           <div className="trouble-label">Install Claude Code</div>
           <CommandLine command={CLAUDE_INSTALL_COMMAND} />
+          {/* "try again below" points at the retry button, which only some
+              callers offer (the chat's boot failure has none — reloading the
+              page is its own retry) — said only where that button exists, so
+              the sentence never promises a control the card does not have. */}
           <p className="deploy-muted">
-            Run it, then try again below — no need to restart Fused Render.
+            {onRetry
+              ? "Run it, then try again below — no need to restart Fused Render."
+              : "Run it — no need to restart Fused Render."}
           </p>
         </div>
       )}

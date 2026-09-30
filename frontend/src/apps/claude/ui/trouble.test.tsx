@@ -201,6 +201,28 @@ test("a cli-missing card draws the install command ONCE", () => {
   expect(text).toContain("no need to restart Fused Render");
 });
 
+test("the install hint only promises \"try again below\" where a retry button exists", () => {
+  // The chat's boot failure passes no `onRetry` (reloading the page is its own
+  // retry), so the card must not tell the reader to press a button it never
+  // drew.
+  const noRetry = mount(
+    <TroubleView trouble={{ kind: "cli-missing", message: MISSING }} what="using the chat" />,
+  );
+  const noRetryText = textOf(noRetry.toJSON() as Json);
+  expect(noRetryText).toContain("no need to restart Fused Render");
+  expect(noRetryText).not.toContain("try again below");
+
+  const withRetry = mount(
+    <TroubleView
+      trouble={{ kind: "cli-missing", message: MISSING }}
+      what="using the chat"
+      onRetry={() => {}}
+    />,
+  );
+  const withRetryText = textOf(withRetry.toJSON() as Json);
+  expect(withRetryText).toContain("try again below — no need to restart Fused Render");
+});
+
 test("the install box follows the kind WE classified, not a re-read of the slice", () => {
   // `TroubleCard` used to re-derive the classification from the `error` string
   // it was handed — which is the SLICED verbatim part (`lines.raw`) and need not
