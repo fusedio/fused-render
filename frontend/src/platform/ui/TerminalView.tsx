@@ -25,6 +25,21 @@ import "@xterm/xterm/css/xterm.css";
 import { TerminalSession, type TerminalStatus } from "@platform/lib/terminalSession";
 import { useResolvedTheme } from "@platform/lib/theme";
 import { buildTerminalTheme, documentCssVarLookup, terminalFontFamily } from "@platform/ui/terminalTheme";
+import { isMod } from "@platform/lib/platform";
+
+// The drawer's toggle chord (TerminalDrawer.tsx): Cmd/Ctrl+Shift+` or the
+// VS Code alias Ctrl+`. Returning `false` here tells xterm to drop the DOM
+// event entirely — it never turns into a keystroke written into the pty —
+// which is the half TerminalDrawer's capture-phase document listener can't
+// do on its own: that listener runs first and calls `toggleTerminalDock()`,
+// but xterm's own handler still runs afterward on the same event unless
+// this says otherwise.
+function isDrawerToggleChord(e: KeyboardEvent): boolean {
+  if (e.code !== "Backquote" || e.altKey) return false;
+  const primaryChord = e.shiftKey && isMod(e);
+  const vsCodeAlias = e.ctrlKey && !e.metaKey && !e.shiftKey;
+  return primaryChord || vsCodeAlias;
+}
 
 export interface TerminalViewProps {
   /** A live pty session id (fused_render/pty_session.py). */
@@ -69,7 +84,6 @@ export default function TerminalView({ id, onExit, onStatus }: TerminalViewProps
     try {
       const lookup = documentCssVarLookup();
       const term = new Terminal({
-        convertEol: true,
         fontSize: 12,
         cursorBlink: true,
         fontFamily: terminalFontFamily(lookup),
@@ -84,6 +98,7 @@ export default function TerminalView({ id, onExit, onStatus }: TerminalViewProps
       const fit = new FitAddon();
       term.loadAddon(fit);
       term.open(el);
+      term.attachCustomKeyEventHandler((e) => !isDrawerToggleChord(e));
 
       // Repaint watchdog: guards against a pane that stays black after
       // scrollback replay, on both a brand-new session and a reattach.
