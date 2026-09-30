@@ -144,17 +144,25 @@ Same html, opened FOR target file: read-only `_file` param carries path. Reader 
 
 ## Testing
 
-Real browser against running server (`fused-render --port 1777 --no-browser`):
+Real browser against the server that is ALREADY running. Never assume a port — `1777` is only a bare `fused-render` on main; the desktop app picks a free port, a worktree gets a per-branch one, Render App (fused-render-lite) uses `2777`. Find the origin:
+
+1. `$FUSED_RENDER_ORIGIN` — exported by both servers to every process they spawn (a session opened from the app has it).
+2. `~/.fused-render/server.json` (Render App: `~/.fused-render-app/server.json`) — `origin` field, for a terminal session. Probe `<origin>/api/config` before trusting it; a crashed server leaves the file behind.
+3. Neither → nothing is running; start one (`fused-render --no-browser --port <free>`; Render App: `open -a RenderApp`, it writes `server.json`).
+
+URLs under that origin:
 
 - `/explorer/embed/<abs path, leading slash dropped, segments URL-encoded>` — chrome-free. **Default for testing.**
 - `/explorer/view/<path>` — full shell chrome.
 - Templates: open TARGET file's path; or template html directly with `?_file=<abs target>`.
 
+Render App only (no fused-render installed — origin on `2777`, `server.json` under `~/.fused-render-app`): its embed equivalent is `/render?path=<abs html>` — any absolute `.html`, `runtime.js` injected, relative `.py` resolved against it, env picked from the folder's `pyproject.toml`, params after `path` in the URL. `/explorer/*` there is the chat shell, not a view. Same render → interact → refresh loop; verification is the browser console (see below).
+
 Loop: render → interact → URL updates → hard refresh → identical view.
 
 ## Verifying: call log
 
-Cannot run page JS from terminal. After user opens page:
+Cannot run page JS from terminal. Full fused-render only — Render App keeps no call log; there, ask the user for the browser console (uncaught errors and unhandled `runPython` rejections land there) and treat a blank page as JS died. After user opens page:
 
 ```
 fused-render calls --page <abs html> --since 15m   # --failed, --json, --follow
@@ -172,4 +180,4 @@ Read digest. Zero records + visible placeholder = preview-gated, fine. Zero reco
 - Slider + heavy import, no ~150 ms debounce → subprocess per tick.
 - Walking fs for counts/sizes → `fused.fileIndex.query` (`fused-render-index`).
 - `fused.ai.text(` in a page meant for HOSTED export → exporter rejects textually, env guard no help. A `.fused` app file allows it (`fused-render-ai`).
-- Claiming "done" without `fused-render calls` — blank-JS and failing-Python look identical without log.
+- Claiming "done" without `fused-render calls` (Render App: without the console) — blank-JS and failing-Python look identical without log.

@@ -611,6 +611,31 @@ def _fused_cli_note() -> str:
     )
 
 
+def _origin_note() -> str:
+    """The prompt paragraph disclosing the server's origin, or "" when none is
+    published. Same rule as `_fused_cli_note`: a fact about the machine, so it
+    is appended to every target's prompt rather than woven into each shape.
+
+    Why it must be said: the authoring skill's testing loop opens
+    `/explorer/embed/<path>` on the running server, and the only port a model
+    can guess is the documented default — wrong under a `--port` override, the
+    desktop launcher's free-port pick, a per-branch dev server, and Render
+    App's 2777. `FUSED_RENDER_ORIGIN` is exported by every one of those before
+    it serves (server/app.py `set_server_origin_env`), and `_spawn_env` hands
+    it down, so the child could read the env itself — but a skill that says
+    "check the env" competes with a habit that says "127.0.0.1:1777", and the
+    prompt stating the origin outright settles it."""
+    origin = _origin()
+    if not origin:
+        return ""
+    return (
+        f" The fused-render server this chat belongs to is serving at {origin} "
+        "(also in $FUSED_RENDER_ORIGIN). Open pages for checking under that "
+        "origin — never assume a default port such as 1777 or 2777, and never "
+        "start a second server: one is already running."
+    )
+
+
 def _bad_id(value: str) -> bool:
     """Whether an id from the page is unsafe to join into a filesystem path.
 
@@ -2368,7 +2393,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     # only when the wrapper actually exists (see _fused_cli_note).
     cmd += ["--append-system-prompt",
             (_split_system_prompt(file, pane) if os.path.isdir(file)
-             else _system_prompt(file)) + _fused_cli_note()]
+             else _system_prompt(file)) + _fused_cli_note() + _origin_note()]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
     if session_id:
