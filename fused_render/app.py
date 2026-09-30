@@ -1391,9 +1391,34 @@ def main() -> None:
             lambda: NSApplication.sharedApplication()
             .replyToApplicationShouldTerminate_(should_terminate))
 
-    install_terminate_hook(
-        rumps.rumps.NSApp,
-        make_appkit_terminate_hook(state, reply=_reply_to_appkit))
+    def _close_windows() -> None:
+        """Close every native window — only from the main thread (AppKit):
+        every page unloads and every WKWebView deallocs before the teardown
+        drains the server they were talking to. `quit_teardown` itself runs
+        off the main thread (DM-9) and cannot drive AppKit, so this cannot be
+        a rung of it; it is the first step of BOTH quit entrances instead —
+        `_do_quit` (our menu's ⌘Q, the popover's Quit) and the AppKit hook
+        below (the Dock menu's Quit, logout/restart). The bootstrap-thread
+        abort has no windows to close."""
+        manager = state.get("windows")
+        if manager is None:
+            return
+        try:
+            from Foundation import NSThread
+
+            if NSThread.isMainThread():
+                manager.close_all()
+        except Exception:
+            logger.debug("closing windows on quit failed", exc_info=True)
+
+    _appkit_terminate = make_appkit_terminate_hook(state, reply=_reply_to_appkit)
+
+    def _appkit_terminate_with_windows() -> int:
+        # applicationShouldTerminate: arrives on the main thread.
+        _close_windows()
+        return _appkit_terminate()
+
+    install_terminate_hook(rumps.rumps.NSApp, _appkit_terminate_with_windows)
 
     def _bootstrap_server() -> None:
         logger.info("starting server on port %s", port)
@@ -1499,22 +1524,10 @@ def main() -> None:
     _begin_quit_action = make_quit_action(state, terminate=_terminate)
 
     def _do_quit(on_claim=None) -> bool:
-        # The windows first, and only from the main thread (AppKit): every
-        # page unloads and every WKWebView deallocs before the teardown below
-        # drains the server they were talking to. `quit_teardown` itself runs
-        # off the main thread (DM-9) and cannot drive AppKit, so this cannot
-        # be a rung of it. The bootstrap-thread abort has no windows to close.
+        # The windows first (`_close_windows`), then the ordered teardown.
         # Same signature and return as `make_quit_action`'s: `begin_relaunch`
         # passes `on_claim` and reads the claim bool.
-        manager = state.get("windows")
-        if manager is not None:
-            try:
-                from Foundation import NSThread
-
-                if NSThread.isMainThread():
-                    manager.close_all()
-            except Exception:
-                logger.debug("closing windows on quit failed", exc_info=True)
+        _close_windows()
         return _begin_quit_action(on_claim=on_claim)
 
     status_app = FusedRenderStatusApp()
@@ -1523,92 +1536,137 @@ def main() -> None:
         # One-shot, fired right after the run loop starts — the status item
         # (status_app._nsapp.nsstatusitem) exists only from this point on.
         timer.stop()
+        def _show_launcher() -> None:
+            ctl = state["launcher"]
+            if ctl is not None:
+                ctl.show()
+
         # The windows (mac_window.py) need the AppKit run loop — the manager
         # installs the main menu and sets the activation policy — so they
         # are built here, on the first timer tick, and never at import time.
-        # Guarded: without them the app runs the old way, every surface a
-        # browser tab (`_open_target` falls back).
-        try:
-            from fused_render.mac_window import WindowManager
+        # OPT-IN (`native_windows_enabled`, shell/prefs.py, default off): with
+        # the preference off the app runs the way it always did, every
+        # surface a browser tab (`_open_target` and friends fall back on
+        # `state["windows"] is None`). The Preferences checkbox applies live
+        # through `window_policy.native_hooks["apply"]`: on builds the
+        # manager, off closes every window and drops it. Guarded either way:
+        # a manager that fails to build is the browser, never a dead app.
+        from PyObjCTools import AppHelper
 
-            state["windows"] = WindowManager(port, quit=_do_quit)
-        except Exception:
-            logger.exception("windows unavailable; falling back to browser tabs")
+        from fused_render import window_policy
+        from fused_render.shell.prefs import native_windows_enabled
 
-        def _open_window(target: str) -> None:
-            # The popover's `window.open` / target=_blank (menubar_pin): a
-            # window of ours, main thread already.
+        def _build_windows() -> None:
+            if state["windows"] is not None:
+                return
+            try:
+                from fused_render.mac_window import WindowManager
+
+                state["windows"] = WindowManager(port, quit=_do_quit,
+                                                 show_launcher=_show_launcher)
+            except Exception:
+                logger.exception("windows unavailable; falling back to browser tabs")
+
+        def _drop_windows() -> None:
             manager = state["windows"]
             if manager is None:
+                return
+            state["windows"] = None
+            try:
+                manager.close_all()
+            except Exception:
+                logger.debug("closing windows on preference change failed", exc_info=True)
+
+        if native_windows_enabled():
+            _build_windows()
+        window_policy.native_hooks["apply"] = lambda on: AppHelper.callAfter(
+            _build_windows if on else _drop_windows)
+
+        def _open_window(target: str) -> None:
+            # The popover's `window.open` / target=_blank (menubar_pin), main
+            # thread already. Classified FIRST, like a window's own policy:
+            # only this server's pages get a window of ours; an external link
+            # goes to the default browser, which is what the new window's
+            # policy would do anyway — after leaving a blank window behind.
+            manager = state["windows"]
+            if manager is None or window_policy.classify(target, port) != "app":
                 webbrowser.open(target)
             else:
                 manager.open(target)
 
         # The launcher (launcher_panel.py): a Spotlight-like panel on a
-        # global shortcut (⌥Space by default) that opens any known app in a
-        # window. Needs the windows (focus-or-open is its point). Guarded
-        # like them — no launcher is a lesser outcome than no app.
-        if state["windows"] is not None:
-            try:
-                from AppKit import NSApp
+        # global shortcut (⌥Space by default) that opens any known app. NOT
+        # behind the windows preference: with native windows on its pick
+        # focuses-or-opens a window, off it opens a browser tab at the same
+        # address (`window_policy.shell_path_for`). Guarded — no launcher is
+        # a lesser outcome than no app.
+        try:
+            from AppKit import NSApp
 
-                from fused_render import launcher as launcher_mod
-                from fused_render.launcher_panel import LauncherController
+            from fused_render import launcher as launcher_mod
+            from fused_render.launcher_panel import LauncherController
 
+            def _open_from_launcher(fs_path: str) -> None:
                 manager = state["windows"]
+                if manager is None:
+                    webbrowser.open(url.rstrip("/") + window_policy.shell_path_for(fs_path))
+                    return
+                # Dock semantics; the panel is non-activating, so bring
+                # this app forward or the window opens behind the caller.
+                NSApp.activateIgnoringOtherApps_(True)
+                manager.focus_or_open(fs_path)
 
-                def _open_from_launcher(fs_path: str) -> None:
-                    # Dock semantics; the panel is non-activating, so bring
-                    # this app forward or the window opens behind the caller.
-                    NSApp.activateIgnoringOtherApps_(True)
-                    manager.focus_or_open(fs_path)
+            def _home_from_launcher() -> None:
+                manager = state["windows"]
+                if manager is None:
+                    webbrowser.open(url)
+                    return
+                NSApp.activateIgnoringOtherApps_(True)
+                manager.show_home()
 
-                def _home_from_launcher() -> None:
-                    NSApp.activateIgnoringOtherApps_(True)
-                    manager.show_home()
+            def _open_keys() -> set[str]:
+                # Read live: the manager comes and goes with the preference.
+                manager = state["windows"]
+                return manager.open_keys() if manager is not None else set()
 
-                launcher_ctl = LauncherController(port, _open_from_launcher, _home_from_launcher)
-                state["launcher"] = launcher_ctl
-                manager.show_launcher = launcher_ctl.show
+            launcher_ctl = LauncherController(port, _open_from_launcher, _home_from_launcher)
+            state["launcher"] = launcher_ctl
 
-                # What the uvicorn thread may call (PUT /api/prefs, GET
-                # /api/launcher): rebinding hops to the main thread; the
-                # bound flags and the open-window set are plain attribute
-                # reads, safe from any thread.
-                from PyObjCTools import AppHelper
+            # What the uvicorn thread may call (PUT /api/prefs, GET
+            # /api/launcher): rebinding hops to the main thread; the
+            # bound flags and the open-window set are plain attribute
+            # reads, safe from any thread.
+            def _rebind(spec) -> None:
+                if spec:
+                    AppHelper.callAfter(launcher_ctl.bind_hotkey, spec)
+                else:  # the row modifier changed; rebind those, tell the page
+                    AppHelper.callAfter(launcher_ctl.push_settings)
 
-                def _rebind(spec) -> None:
-                    if spec:
-                        AppHelper.callAfter(launcher_ctl.bind_hotkey, spec)
-                    else:  # the row modifier changed; rebind those, tell the page
-                        AppHelper.callAfter(launcher_ctl.push_settings)
+            def _suspend(on: bool) -> None:
+                AppHelper.callAfter(launcher_ctl.suspend_shortcuts, on)
 
-                launcher_mod.native_hooks.update({
-                    "rebind": _rebind,
-                    "hotkey_bound": launcher_ctl.hotkey_bound,
-                    "pinned_bound": launcher_ctl.pinned_bound,
-                    "open_keys": manager.open_keys,
-                })
-                if os.environ.get("FUSED_RENDER_LAUNCHER_SHOW"):
-                    # Dev only: SIGUSR2 toggles the launcher, so a script can
-                    # screenshot it without Accessibility access to press the
-                    # shortcut. Python signal handlers run only between
-                    # bytecodes; an idle AppKit run loop executes none, so a
-                    # no-op tick keeps the interpreter breathing.
-                    import signal
+            launcher_mod.native_hooks.update({
+                "rebind": _rebind,
+                "suspend": _suspend,
+                "hotkey_bound": launcher_ctl.hotkey_bound,
+                "pinned_bound": launcher_ctl.pinned_bound,
+                "open_keys": _open_keys,
+            })
+            if os.environ.get("FUSED_RENDER_LAUNCHER_SHOW"):
+                # Dev only: SIGUSR2 toggles the launcher, so a script can
+                # screenshot it without Accessibility access to press the
+                # shortcut. Python signal handlers run only between
+                # bytecodes; an idle AppKit run loop executes none, so a
+                # no-op tick keeps the interpreter breathing.
+                import signal
 
-                    signal.signal(signal.SIGUSR2, lambda *_: AppHelper.callAfter(
-                        launcher_ctl.toggle))
-                    status_app.launcher_dev_tick = rumps.Timer(lambda _t: None, 0.5)
-                    status_app.launcher_dev_tick.start()
-            except Exception:
-                logger.exception("launcher unavailable")
-                state["launcher"] = None
-
-        def _show_launcher() -> None:
-            ctl = state["launcher"]
-            if ctl is not None:
-                ctl.show()
+                signal.signal(signal.SIGUSR2, lambda *_: AppHelper.callAfter(
+                    launcher_ctl.toggle))
+                status_app.launcher_dev_tick = rumps.Timer(lambda _t: None, 0.5)
+                status_app.launcher_dev_tick.start()
+        except Exception:
+            logger.exception("launcher unavailable")
+            state["launcher"] = None
 
         try:
             # Lazy + guarded: pyobjc-framework-WebKit may be missing in an

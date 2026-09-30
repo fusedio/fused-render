@@ -22,6 +22,31 @@ import os
 import re
 from urllib.parse import unquote, urlsplit
 
+from fused_render._view_url_codec import app_page_path, view_url_path
+
+#: Filled by app.py on macOS once the run loop is up: ``apply(enabled)`` builds
+#: or drops the window manager when the ``native_windows_enabled`` preference
+#: flips (shell/prefs.py). Empty under ``fused-render serve`` and on every
+#: other platform — the preference still stores, nothing changes hands.
+native_hooks: dict = {}
+
+
+def shell_path_for(fs_path: str) -> str:
+    """The shell URL PATH a filesystem path opens at: an app folder (one with
+    a tagged entry page) on its app page, anything else on its explorer view /
+    embed. One rule for a native window and for a browser tab, so the
+    launcher lands on the same address whichever the preference picks."""
+    fs_path = os.path.abspath(fs_path)
+    if os.path.isdir(fs_path):
+        try:
+            from fused_render.app_listing import app_entry
+
+            if app_entry(fs_path):
+                return app_page_path(fs_path)
+        except OSError:
+            pass
+    return view_url_path(fs_path)
+
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
 
 HOME_FRAME_NAME = "FusedRenderWindow"

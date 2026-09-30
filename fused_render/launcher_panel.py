@@ -265,6 +265,19 @@ class LauncherController:
     def hotkey_bound(self) -> bool | None:
         return self._bound
 
+    def suspend_shortcuts(self, on: bool) -> None:
+        """Preferences is recording a new shortcut (``on``): unbind the panel
+        hotkey and the row shortcuts so the combination being pressed reaches
+        the page instead of firing here; ``off`` binds them back (the stored
+        spec — a PUT that landed meanwhile is what gets bound)."""
+        if on:
+            if self._hotkey is not None:
+                self._hotkey.clear()
+            self._suspend_pinned()
+        else:
+            self.bind_hotkey()
+            self._resume_pinned()
+
     def push_settings(self) -> None:
         """Settings changed (the row modifier): re-read it, rebind the row
         shortcuts and tell the panel's page."""

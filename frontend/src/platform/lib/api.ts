@@ -1294,6 +1294,11 @@ export interface Prefs {
   // could register them (null until something tried). OPTIONAL like `chat`:
   // an older server answers without it.
   launcher?: LauncherPrefs;
+  // macOS native windows (fused_render/mac_window.py): the shell in the
+  // app's own windows instead of browser tabs. Opt-in, default off.
+  // `available` is false off macOS and under `fused-render serve`, where the
+  // section is not rendered. OPTIONAL like `launcher`.
+  native_windows?: { enabled: boolean; available: boolean };
 }
 
 export interface LauncherPrefs {
@@ -1482,9 +1487,20 @@ export function putLauncherHotkey(spec: string): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { launcher_hotkey: spec });
 }
 
+/** While Preferences records a new shortcut the app unbinds the live launcher
+ *  and row shortcuts (`on`), so the keys pressed reach the recorder instead of
+ *  opening the panel; `off` binds them back. A no-op where no panel exists. */
+export function postLauncherSuspend(on: boolean): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>("/api/launcher/suspend", { on });
+}
+
 /** The row-shortcut modifier(s), `+`-joined (`"alt"`, `"alt+cmd"`). */
 export function putLauncherRowModifier(modifier: string): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { launcher_row_modifier: modifier });
+}
+
+export function putNativeWindowsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { native_windows_enabled: enabled });
 }
 
 export function putAppSharingEnabled(enabled: boolean): Promise<Prefs> {

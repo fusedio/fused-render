@@ -166,6 +166,19 @@ def canvases_enabled() -> bool:
     return read_prefs().get("canvases_enabled") is True
 
 
+def native_windows_enabled() -> bool:
+    """Whether the macOS app shows the shell in its own native windows
+    (mac_window.py) instead of browser tabs (default off — opt-in).
+
+    Same idiom as `canvases_enabled`: only a stored `true` turns it on, so an
+    existing install keeps the browser it always had. The launcher (⌥Space)
+    is NOT behind this switch — it stays on either way and simply opens its
+    pick in a browser tab while this is off. Read by `app.py` at boot and
+    applied live through `window_policy.native_hooks["apply"]` on a PUT.
+    """
+    return read_prefs().get("native_windows_enabled") is True
+
+
 def app_sharing_enabled() -> bool:
     """Whether the unified Share sheet is offered (default off — opt-in).
 
@@ -578,6 +591,12 @@ def _prefs_response() -> dict:
         # in place of the plain Export / Download action (opt-in, default off).
         # Not a route guard; see `app_sharing_enabled`.
         "app_sharing": {"enabled": app_sharing_enabled()},
+        # Whether the macOS app opens the shell in native windows rather than
+        # browser tabs (opt-in, default off). `available` says whether THIS
+        # process can honour it — the packaged macOS app installs the hook; a
+        # `fused-render serve` or another platform has no windows to offer, so
+        # the Preferences section stays hidden there.
+        "native_windows": _native_windows_state(),
         # Whether chat embeds render the native React chat (beta) instead of the
         # legacy template iframe. The EFFECTIVE value, plus `forced_by` — the
         # same shape `engine_state()` above uses for the same problem: with the
@@ -662,6 +681,15 @@ def _prefs_response() -> dict:
         # Preferences section renders only then.
         "launcher": _launcher_state(),
     }
+
+
+def _native_windows_state() -> dict:
+    import sys
+
+    from fused_render import window_policy
+
+    return {"enabled": native_windows_enabled(),
+            "available": sys.platform == "darwin" and "apply" in window_policy.native_hooks}
 
 
 def _launcher_state() -> dict:
@@ -794,6 +822,19 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'app_sharing_enabled' must be a boolean"}, status_code=400)
         prefs["app_sharing_enabled"] = value
         changed = True
+    if "native_windows_enabled" in body:
+        value = body.get("native_windows_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'native_windows_enabled' must be a boolean"}, status_code=400)
+        prefs["native_windows_enabled"] = value
+        changed = True
+        # Applied live: the app builds (or closes) its windows on the main
+        # thread a tick after this returns. No hook = nothing to apply.
+        from fused_render import window_policy
+
+        apply_windows = window_policy.native_hooks.get("apply")
+        if apply_windows is not None:
+            apply_windows(value)
     if "native_chat_enabled" in body:
         value = body.get("native_chat_enabled")
         if not isinstance(value, bool):
@@ -940,6 +981,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
                       "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'native_chat_enabled', "
+                      "'native_windows_enabled', "
                       "'task_notify_terminal_sessions', "
                       "'project_queue_enabled', "
                       "'lan_enabled', "

@@ -387,16 +387,22 @@ def file_results(query: str, limit: int = FILE_RESULTS, exclude=()) -> dict:
         return {"files": [], "reason": ""}
     try:
         from fused_render.index.config import load_config
-        from fused_render.server.routers.index import _rank_body
+        from fused_render.server.routers.index import _rank_body, _rank_reason
 
         cfg = load_config()
         root = os.path.expanduser(FILE_SEARCH_ROOT)
         # A few over the cap: the app-row overlap is dropped below.
         out = _rank_body(cfg, root, q, limit=limit + len(exclude) + 4)
+        base = str(out.get("base") or root)
+        if not out.get("hits"):
+            # `_rank_body` only ever says `uncovered`/`package`; "a scan is
+            # running" and "that is a mount" are `_rank_reason`'s words, the
+            # same call the home search route makes — without it a home still
+            # being scanned read as permanently unindexed.
+            out["reason"] = _rank_reason(cfg, base, out)
     except Exception:  # noqa: BLE001 — see docstring
         logger.debug("launcher file search failed", exc_info=True)
         return {"files": [], "reason": ""}
-    base = str(out.get("base") or root)
     skip = {os.path.realpath(p) for p in exclude}
     rows: list[dict] = []
     for hit in out.get("hits") or []:

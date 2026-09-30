@@ -53,11 +53,13 @@ import {
   hfLogout,
   putAppSharingEnabled,
   putCanvasesEnabled,
+  putNativeWindowsEnabled,
   putProjectQueueEnabled,
   putTaskNotifyTerminalSessionsEnabled,
   putLanEnabled,
   putLauncherHotkey,
   putLauncherRowModifier,
+  postLauncherSuspend,
   getLanPairToken,
   getLanDevices,
   revokeLanDevice,
@@ -546,6 +548,51 @@ function TaskNotifyTerminalSection({
 // turns on. Same one-checkbox section shape as Canvases above. While the
 // listener is up it shows the QR code a phone scans to pair (the ONLY way in —
 // no PIN, no approval dialog), and the devices that have, with revoke.
+// Native windows (macOS, fused_render/mac_window.py): the shell in the app's
+// own windows instead of browser tabs. Off by default; this is the only place
+// it turns on, and it applies live — on, the next open is a window; off, every
+// window closes and opens go back to the browser. The launcher below is not
+// behind it. Rendered only where the running app can honour it
+// (`prefs.native_windows.available`).
+function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const nw = prefs.native_windows;
+  if (!nw || !nw.available) return null;
+  const enabled = nw.enabled;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await putNativeWindowsEnabled(!enabled));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Native windows</h2>
+      <p className="deploy-muted">
+        Open Fused Render in its own macOS windows instead of browser tabs: a window per app, the
+        Dock icon, ⌘N and the View menu. Off by default — the app opens everything in your default
+        browser. Turning it off closes the open windows.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Use native windows</b> instead of browser tabs.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
 // Shortcuts: the macOS launcher (fused_render/launcher_panel.py) — the
 // global hotkey that drops the Search Apps panel, and the modifier that with
 // a digit opens the Nth desk app from anywhere. Rendered only when the server
@@ -582,6 +629,11 @@ function ShortcutsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pre
 
   useEffect(() => {
     if (!recording) return;
+    // The live bindings are Carbon's, not the page's: with them up, the
+    // combination being recorded would open the panel or a desk app instead
+    // of arriving here. Suspended for the recording, restored on its end —
+    // whichever way it ends (a key, Esc, unmount).
+    postLauncherSuspend(true).catch(() => undefined);
     const onKey = (e: KeyboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
@@ -613,7 +665,10 @@ function ShortcutsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pre
         .finally(() => setBusy(false));
     };
     document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      postLauncherSuspend(false).catch(() => undefined);
+    };
   }, [recording, onChange, reread]);
 
   if (!launcher || !launcher.available) return null;
@@ -1381,6 +1436,7 @@ export default function Preferences() {
             {tab === "render" && (
               <>
                 <AppearanceSection />
+                <NativeWindowsSection prefs={prefs} onChange={setPrefs} />
                 <ShortcutsSection prefs={prefs} onChange={setPrefs} />
                 <UpdatesSection />
                 <CallLogSection prefs={prefs} onChange={setPrefs} />

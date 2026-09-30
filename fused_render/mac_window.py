@@ -832,19 +832,10 @@ class WindowManager:
         return win
 
     def url_for_path(self, fs_path: str) -> str:
-        """The shell URL a filesystem path opens at: an app folder (one with
-        a tagged entry page) on its app page, anything else on its explorer
-        view / embed."""
-        fs_path = os.path.abspath(fs_path)
-        if os.path.isdir(fs_path):
-            try:
-                from fused_render.app_listing import app_entry
+        """The shell URL a filesystem path opens at (`window_policy.shell_path_for`)."""
+        from fused_render.window_policy import shell_path_for
 
-                if app_entry(fs_path):
-                    return f"http://127.0.0.1:{self.port}" + app_page_path(fs_path)
-            except OSError:
-                pass
-        return f"http://127.0.0.1:{self.port}" + view_url_path(fs_path)
+        return f"http://127.0.0.1:{self.port}" + shell_path_for(fs_path)
 
     def open_path(self, fs_path: str) -> _Window:
         return self.open(self.url_for_path(fs_path))
@@ -871,10 +862,11 @@ class WindowManager:
         self.open(url)
 
     def _is_home(self, w: _Window) -> bool:
-        # The shell's home is `/` (which redirects to `/apps`); a window on
-        # /tasks or /preferences has no key either but is not Home.
+        # The shell's home is `/`, which the SPA rewrites in place to `/home`
+        # (shell/App.tsx); `/apps` is the Apps hub, and a window on /tasks or
+        # /preferences has no key either — none of those is Home.
         path = urllib.parse.urlsplit(w.current_url() or "").path.rstrip("/")
-        return path in ("", "/apps")
+        return path in ("", "/home")
 
     def show_home(self) -> None:
         """A window already showing the shell home comes to the front — the
