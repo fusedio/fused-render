@@ -2,16 +2,16 @@
 
 There is no timer that can answer "did anything change?" (SPEC-index-live-watch.md
 §1 — three time-based designs shipped green unit tests and failed the real
-test). This module observes the change stream directly instead: `watchfiles`
+test). This module observes the change stream directly instead: a watcher process
 feeds a `WatchLoop` per configured root, which filters at arrival, reduces
 batches to folders, and forwards to the existing `RescanQueue` policy
 (`index_touch.note_index_folders`) no more often than a flush floor.
 
 What is testable here, and what these tests pin, is the POLICY: filtering,
 batching, the flush floor, the outermost-folder collapse, error/backoff
-behaviour, the periodic safety net, and the indexing gate. The real
-`watchfiles.watch` integration gets one end-to-end test against the real
-filesystem (the last test in this file).
+behaviour, the periodic safety net, and the indexing gate. The watcher
+process itself, and a real end-to-end watch, are tested in
+tests/test_index_watcher_process.py.
 """
 import os
 import re
@@ -665,47 +665,3 @@ def test_the_real_sleep_is_interruptible_by_stop_event():
     assert elapsed < 5.0, (
         f"sleep(30.0) took {elapsed:.2f}s after stop_event was set almost "
         "immediately — it is not interruptible")
-
-
-# --------------------------------------------------------- real filesystem
-
-def test_a_real_change_arrives_through_the_real_filter(tmp_path):
-    """One end-to-end check against the real `watchfiles.watch`, generously
-    timed: the Windows CI lane is starved and flaky on main already."""
-    import watchfiles
-
-    rules = IgnoreRules(default_ignore())
-    dropped = make_dropped(rules, str(tmp_path / "not-a-real-mounts-dir"))
-    seen = []
-    stop = threading.Event()
-
-    def source(root):
-        def _filter(change, path):
-            return not dropped(path)
-
-        yield from watchfiles.watch(root, watch_filter=_filter, stop_event=stop,
-                                    rust_timeout=1000, yield_on_timeout=True)
-
-    def forward(folders):
-        seen.append(set(folders))
-        stop.set()
-
-    loop = WatchLoop(str(tmp_path), open_source=source, dropped=lambda p: False,
-                     forward=forward, now=time.time, last_scan=lambda r: time.time(),
-                     live_run_covers=lambda r: False, gate_open=lambda: True,
-                     sleep=lambda s: None, stop_event=stop, flush_floor_s=0.0)
-
-    def write_soon():
-        time.sleep(0.3)
-        (tmp_path / "new-file.txt").write_text("hi", encoding="utf-8")
-
-    writer = threading.Thread(target=write_soon, daemon=True)
-    writer.start()
-    loop._run_one_watch()
-    writer.join(timeout=5)
-
-    assert seen, "the real watch never saw the created file within the timeout"
-    # `str(tmp_path)` is native-separator (backslashed on Windows); what
-    # actually reaches `forward()` went through `_folder_of`'s
-    # `norm(os.path.abspath(...))` canonicalization first.
-    assert seen[0] == {_canon(str(tmp_path))}

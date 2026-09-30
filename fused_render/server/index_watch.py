@@ -9,8 +9,11 @@ SPEC-index-live-watch.md §1 for the three designs that failed on exactly
 that question).
 
 This module OBSERVES instead: `watchfiles` (the `notify` Rust crate —
-FSEvents on macOS, inotify on Linux, ReadDirectoryChangesW on Windows) feeds
-a `WatchLoop` per configured root. The loop filters at arrival (an ignored
+FSEvents on macOS, inotify on Linux, ReadDirectoryChangesW on Windows),
+running in a watcher process per configured root (`fused_render.index.
+watcher`, which explains why it cannot run in this process and how it
+prunes what it watches), feeds a `WatchLoop` per root over a pipe. The loop
+filters at arrival (an ignored
 tree, the app's own state folder, a mount — none of them may ever reach a
 flush, or the index store writing itself would trigger the scan that
 triggers the watcher), reduces the survivors to their parent folders,
@@ -25,17 +28,15 @@ forwarding call, the gate) is injected, so `tests/test_index_watch.py` can
 drive it with a fake event source and no real watcher, thread, or timer —
 the same shape `index_touch.RescanQueue`'s tests use.
 """
+import json
 import logging
-import os
+import queue
+import subprocess
+import sys
 import threading
 import time
 
-from fused_render.index.ignore import (
-    MountGuard,
-    ignored_for_index,
-    is_inside_leaf_dir,
-    norm,
-)
+from fused_render.index.watcher import make_dropped
 from fused_render.server.index_touch import (
     MAX_FOLDERS,
     _canon_folder,
@@ -74,68 +75,13 @@ GATE_POLL_S = 30.0
 BACKOFF_SCHEDULE_S = (5.0, 30.0, 120.0)
 
 
-def make_dropped(rules, mounts_dir: str, index_dir: str | None = None):
-    """A `path -> bool` filter: True when the watcher must never act on
-    `path`. Four structural refusals — the real analogue is not
-    `index_touch._real_blocked` (that one filters a scan ROOT, chosen by
-    something that already decided to scan) but the FSEvents journal gate at
-    `scan.py`'s `_run_fsevents`: `ignored_for_index(...) or guard.blocks(d)
-    or is_inside_leaf_dir(d)`, which filters raw watched paths the same way
-    this does:
-
-      * `ignored_for_index(rules, path, tree=True)` — the ignore list,
-        checked tree-wise because a watched path arrives with no vetted
-        ancestors (same reason the FSEvents journal gate uses `tree=True`).
-        Every branch's mounts folder is already in `default_ignore()`.
-      * `MountGuard(mounts_dir=...).blocks(path)` — the structural refusal
-        that survives a user emptying the ignore list; it blocks the WHOLE
-        fused-render home tree, not only the mounts subdirectory — which is
-        what covers the index store's own directory (`cfg.dir`) WHEN it
-        sits at its default location, but `cfg.dir` is a settable config
-        key, not a fixed one.
-      * `index_dir` (pass `cfg.dir`) — the explicit check for the case the
-        guard misses: an index dir configured OUTSIDE the fused-render home
-        but under a watched root. Without this, that configuration reopens
-        the self-trigger loop this filter exists to prevent (a scan writes
-        parquet into `cfg.dir`, the watcher observes its own write,
-        triggers the scan that triggered it). Optional only so the many
-        tests that don't care about this case don't have to pass it; real
-        wiring always does.
-      * `is_inside_leaf_dir(path)` — whether an ANCESTOR of `path` is a leaf
-        directory (`.git`, an `.app` bundle, ...). `.git` is deliberately
-        NOT in the ignore names (it is a LEAF_DIR_NAME instead), so without
-        this check a write to `~/repo/.git/objects/ab/cdef` would survive
-        the filter and forward a folder the index deliberately never
-        indexes — and an active git repo writes under `.git/objects`
-        constantly, making this the hottest of the four in practice.
-
-    Returning True for any means: this path or a change under it must never
-    cause a flush. That is load-bearing, not an optimization."""
-    guard = MountGuard(mounts_dir=mounts_dir)
-    idx = norm(str(index_dir or ""))
-
-    def dropped(path: str) -> bool:
-        p = norm(str(path or ""))
-        if not p:
-            return True
-        if guard.blocks(p):
-            return True
-        if idx and (p == idx or p.startswith(idx + "/")):
-            return True
-        if is_inside_leaf_dir(p):
-            return True
-        return ignored_for_index(rules, p, tree=True)
-
-    return dropped
-
-
 class WatchLoop:
     """The per-root policy: filter+batch a raw event stream, forward no more
     often than the flush floor, collapse an oversized burst to the root, run
     the periodic safety net on idle ticks, and back off on error.
 
     Every dependency is injected. The real wiring (`start`/`_real_open_source`
-    below) is the only place that touches `watchfiles`, threads, or the
+    below) is the only place that touches the watcher process, threads, or the
     server's config — this class knows about none of it, which is what lets
     `tests/test_index_watch.py` drive it with an in-memory event source."""
 
@@ -189,7 +135,7 @@ class WatchLoop:
 
     def _run_one_watch(self) -> None:
         """One open-watch-until-it-ends attempt. A clean end (the generator
-        stops with no exception — what `watchfiles.watch` does when
+        stops with no exception — what the process source does when
         `stop_event` is set) forwards nothing and backs off nothing: that is
         the expected shutdown path, not a failure."""
         pending: set = set()
@@ -200,8 +146,8 @@ class WatchLoop:
                     return
                 if batch:
                     # A REAL change was delivered, not just an empty
-                    # `yield_on_timeout=True` tick (the real source ticks
-                    # every `rust_timeout=5000` ms regardless of activity).
+                    # tick (the process source ticks every `TICK_S`
+                    # seconds while nothing arrives).
                     # Resetting on every tick would mean a watch that opens,
                     # gets one empty timeout tick, then raises (a vanished
                     # mount, a permissions change) restarts at the first
@@ -311,77 +257,112 @@ class WatchLoop:
 
 # ----------------------------------------------------------------- wiring
 #
-# Everything below touches `watchfiles`, threads, or the server's real
-# config, and is exercised by exactly one test (the real-filesystem check in
-# tests/test_index_watch.py) plus the live measurement in DECISIONS.md —
-# `WatchLoop` above carries the policy tests.
+# Everything below touches the watcher process, threads, or the server's
+# real config. `WatchLoop` above carries the policy tests; the process
+# plumbing has its own tests in tests/test_index_watch.py, including one
+# against a real watch.
+
+WATCHER_MODULE = "fused_render.index.watcher"
+
+# How often the process source yields an empty tick while nothing changes,
+# which is what drives `WatchLoop`'s flush floor and periodic backstop.
+TICK_S = 5.0
+
+# How often a source blocked on the pipe re-checks `stop_event`.
+STOP_POLL_S = 0.5
 
 
-def _is_watch_limit_error(exc: BaseException) -> bool:
-    """Whether `exc` is Linux's inotify watch-limit failure (ENOSPC from the
-    kernel when `fs.inotify.max_user_watches` is exhausted), as opposed to
-    some other OSError a recursive open can raise."""
-    import errno
-
-    return isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.ENOSPC
-
-
-def _shallow_watch_paths(root: str, rules, mounts_dir: str,
-                          index_dir: str | None = None) -> list:
-    """§3.2: the root plus its immediate non-ignored subdirectories, for a
-    non-recursive fallback watch. `watchfiles` has no depth limit —
-    `recursive` is all-or-nothing — so this is the closest a non-recursive
-    open gets to the real thing: it still catches `~/Downloads/foo.dmg` and
-    `~/a.txt`; anything deeper falls to the periodic rescan."""
-    dropped = make_dropped(rules, mounts_dir, index_dir=index_dir)
-    paths = [root]
-    try:
-        with os.scandir(root) as it:
-            for entry in it:
-                try:
-                    if not entry.is_dir(follow_symlinks=False):
-                        continue
-                except OSError:
-                    continue
-                p = norm(entry.path)
-                if not dropped(p):
-                    paths.append(p)
-    except OSError:
-        pass
-    return paths
-
-
-def _real_open_source(root: str, stop_event):
-    """The real `watchfiles.watch`-backed source for one root, with the
-    Linux shallow fallback on the inotify watch-limit error (§3.2)."""
-    import watchfiles
-
+def _watcher_argv(root: str) -> list:
+    """The command for one root's watcher process, carrying the config the
+    process needs to prune the watch and filter its events the same way
+    `WatchLoop.dropped` does."""
     from fused_render.index.config import load_config
     from fused_render.index.runner import _mounts_dir
 
     cfg = load_config()
-    dropped = make_dropped(cfg.rules, _mounts_dir(), index_dir=cfg.dir)
+    spec = {"root": root, "ignore": list(cfg.rules.patterns),
+            "mounts_dir": _mounts_dir(), "index_dir": cfg.dir}
+    return [sys.executable, "-m", WATCHER_MODULE, json.dumps(spec)]
 
-    def _filter(_change, path) -> bool:
-        return not dropped(path)
 
+def _end_process(proc: subprocess.Popen) -> None:
+    """Close the watcher's stdin (it exits on EOF), then escalate. The
+    escalation matters while the watcher is still setting up its watches:
+    that runs with the child's GIL held, so it cannot read the EOF yet."""
     try:
-        yield from watchfiles.watch(root, watch_filter=_filter,
-                                    stop_event=stop_event, rust_timeout=5000,
-                                    yield_on_timeout=True,
-                                    ignore_permission_denied=True)
-    except OSError as e:
-        if not _is_watch_limit_error(e):
-            raise
-        logger.warning("index watch: hit the platform watch limit opening "
-                       "%s (raise fs.inotify.max_user_watches); falling "
-                       "back to a shallow, non-recursive watch", root)
-        paths = _shallow_watch_paths(root, cfg.rules, _mounts_dir(),
-                                      index_dir=cfg.dir)
-        yield from watchfiles.watch(*paths, watch_filter=_filter,
-                                    stop_event=stop_event, rust_timeout=5000,
-                                    yield_on_timeout=True, recursive=False,
-                                    ignore_permission_denied=True)
+        proc.stdin.close()
+    except OSError:
+        pass
+    for step in (proc.terminate, proc.kill):
+        try:
+            proc.wait(timeout=1.0)
+            return
+        except subprocess.TimeoutExpired:
+            step()
+    try:
+        proc.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        logger.warning("index watch: watcher process %s did not exit", proc.pid)
+
+
+def _process_source(argv: list, stop_event, *, tick_s: float = TICK_S,
+                    poll_s: float = STOP_POLL_S):
+    """Run `argv` (a watcher process speaking `fused_render.index.watcher`'s
+    JSON-lines protocol) and yield its changes in `watchfiles.watch`'s
+    shape: a set of `(Change, path)` per batch, and an empty set every
+    `tick_s` while nothing arrives. Raises when the process reports an error
+    or exits on its own, which `WatchLoop` answers with a recrawl and a
+    backoff. The process is ended whenever the generator is."""
+    from watchfiles import Change
+
+    proc = subprocess.Popen(
+        argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+    lines: queue.Queue = queue.Queue()
+
+    def pump() -> None:
+        try:
+            for line in proc.stdout:
+                lines.put(line)
+        finally:
+            lines.put(None)
+
+    threading.Thread(target=pump, name="index-watch-pipe", daemon=True).start()
+    try:
+        last = time.monotonic()
+        while not stop_event.is_set():
+            try:
+                line = lines.get(timeout=poll_s)
+            except queue.Empty:
+                if time.monotonic() - last >= tick_s:
+                    last = time.monotonic()
+                    yield set()
+                continue
+            if line is None:
+                if stop_event.is_set():
+                    return
+                raise RuntimeError(
+                    f"watcher process exited with code {proc.wait()}")
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                logger.warning("index watch: unreadable watcher line %r", line)
+                continue
+            if "changes" in msg:
+                last = time.monotonic()
+                yield {(Change(c), p) for c, p in msg["changes"]}
+            elif "log" in msg:
+                logger.info("index watch: %s", msg["log"])
+            elif "error" in msg:
+                raise OSError(msg["error"])
+    finally:
+        _end_process(proc)
+
+
+def _real_open_source(root: str, stop_event):
+    """The real source for one root: a watcher process, re-spawned (with a
+    freshly loaded config) every time `WatchLoop` reopens the watch."""
+    return _process_source(_watcher_argv(root), stop_event)
 
 
 _stop_event: threading.Event | None = None
