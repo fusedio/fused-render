@@ -6141,16 +6141,23 @@ send on session-ready, and `fused.terminal.open`/`.run` on `window.fused`.
   the shell itself, not some child it's running, currently owns the
   terminal. Without this, "open in terminal / run a command" could type
   `cd ... && cmd\r` into whatever foreground program the shell is already
-  running (e.g. `sleep 30`) instead of refusing. The route's own
-  `test_terminal_routes.py` coverage for a PLAIN input POST right after
-  create polls `shell_is_foreground()` before asserting 200: the child's own
-  `setsid()` (inside `_pty_exec_helper.py`) is a real race against the
-  create POST's response landing, and `tcgetpgrp` reads back `0` (no
-  exception) until it lands. Real HTTP round-trip latency makes this
-  vanishingly unlikely to bite a real client firing the input POST right
-  after create, but it is a genuine narrow window, not just a test
-  artifact — `TerminalDrawer`'s existing `createError` surfacing (see above)
-  is the user-visible fallback if it ever does.
+  running (e.g. `sleep 30`) instead of refusing. But the check goes stale
+  the instant a session is created: the child's own `setsid()` (inside
+  `_pty_exec_helper.py`) races the create POST's response landing, so
+  `tcgetpgrp` reads back `0` (no exception) until it lands, and an
+  interactive login shell's rc files (nvm, a git-aware prompt) can briefly
+  run a foreground job of their own right after that — so
+  `fused.terminal.run(cmd)` into a brand-new shell, the headline use case,
+  could spuriously 409. The route gives it a grace period instead of
+  checking once: `PtySession.wait_shell_foreground(timeout)` polls
+  `shell_is_foreground()` every 50ms for up to 1.5s (a plain `time.sleep`
+  loop — the route is a sync `def`) before the route gives up and 409s. A
+  dead session still 404s immediately (`session.alive` short-circuits both
+  `shell_is_foreground()` and the poll loop). `test_terminal_routes.py`'s
+  plain-input-right-after-create coverage needs no pre-poll of its own
+  anymore; its still-busy coverage (`sleep 30` holding the foreground) waits
+  for the child to actually take it, so the route's own 1.5s grace window
+  correctly times out and still 409s.
 - **The WS receive loop ignores a non-dict control frame** (`5`, `[1, 2]`
   parsed as valid JSON but with no `.get`) instead of letting an
   `AttributeError` propagate past `except WebSocketDisconnect` and kill the

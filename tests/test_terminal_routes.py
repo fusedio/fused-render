@@ -159,14 +159,8 @@ def test_create_requires_x_fused_header(client, scratch_registry):
 
 def test_input_route_writes_into_the_pty_without_a_stream_socket(client, scratch_registry):
     sid = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
-    session = scratch_registry.get(sid)
-    # The child's `setsid()` (its own process group leader) races the create
-    # POST's response — give it a beat to land so `shell_is_foreground()`
-    # sees the shell rather than a stale/empty foreground group.
-    deadline = time.time() + 5
-    while time.time() < deadline and not session.shell_is_foreground():
-        time.sleep(0.02)
-
+    # No pre-poll here: the route itself waits out the child's `setsid()`
+    # race (see terminal.py's api_terminal_input) before it would 409.
     resp = client.post(f"/api/terminal/{sid}/input", json={"data": "echo inputted\n"},
                         headers=_HEADERS)
     assert resp.status_code == 200

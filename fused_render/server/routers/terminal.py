@@ -106,9 +106,12 @@ def api_terminal_input(sid: str, body: dict = Body(default={}),
     # currently running there, and `cd ... && cmd\r` going to vim, a REPL, or
     # a dev server instead of the shell is silent data loss / a bogus
     # command. `shell_is_foreground()` (pty_session.py) is the actual check;
-    # this just turns "no" into a 409 the client shows a line for instead of
-    # blindly writing the bytes.
-    if not session.shell_is_foreground():
+    # `wait_shell_foreground()` gives it a grace period first — a freshly
+    # created session's `tcgetpgrp` reads back stale/empty until the child's
+    # own `setsid()` lands, and an interactive shell's rc files can briefly
+    # run a foreground job of their own — before this turns a real "no" into
+    # a 409 the client shows a line for instead of blindly writing the bytes.
+    if not session.wait_shell_foreground(timeout=1.5):
         return _error("terminal is busy", status=409)
     session.write(data.encode())
     return {"ok": True}

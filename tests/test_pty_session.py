@@ -270,6 +270,35 @@ def test_shell_is_foreground_false_once_the_session_is_dead(registry, tmp_path, 
     assert session.shell_is_foreground() is False
 
 
+def test_wait_shell_foreground_polls_until_the_shell_lands(registry, tmp_path, monkeypatch):
+    """A brand-new session's `tcgetpgrp` can briefly read back 0 while the
+    child's own `setsid()` (`_pty_exec_helper.py`) is still landing —
+    `wait_shell_foreground` polls instead of forcing every caller to poll."""
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh"]))
+    session = registry.create()
+    assert session.wait_shell_foreground(timeout=1.5) is True
+
+
+def test_wait_shell_foreground_times_out_while_a_child_holds_it(registry, tmp_path, monkeypatch):
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh"]))
+    session = registry.create()
+    assert _wait_until(lambda: len(session.scrollback()) > 0)
+    session.write(b"sleep 30\n")
+    assert _wait_until(lambda: not session.shell_is_foreground())
+    assert session.wait_shell_foreground(timeout=0.2) is False
+
+
+def test_wait_shell_foreground_false_once_the_session_is_dead(registry, tmp_path, monkeypatch):
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh"]))
+    session = registry.create()
+    session.write(b"exit\n")
+    assert _wait_until(lambda: not session.alive)
+    assert session.wait_shell_foreground(timeout=0.2) is False
+
+
 def test_popen_kwargs_are_fork_safe(registry, tmp_path, monkeypatch):
     """The regression guard for the SIGSEGV: a Popen with cwd=,
     start_new_session=True, or close_fds=True (the default) takes the fork

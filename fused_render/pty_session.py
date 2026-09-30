@@ -169,6 +169,27 @@ class PtySession:
             return False
         return fg_pgid == shell_pgid
 
+    def wait_shell_foreground(self, timeout: float) -> bool:
+        """Poll `shell_is_foreground()` for up to `timeout` seconds, returning
+        as soon as it's true.
+
+        A brand-new session's `tcgetpgrp` reads back `0` (no exception) until
+        the child's own `setsid()` (`_pty_exec_helper.py`) lands — a real
+        race against this method's own caller, not just a test artifact — and
+        an interactive login shell's rc files (nvm, a git-aware prompt) can
+        briefly run a foreground job of their own right after that. Used by
+        `POST /api/terminal/{sid}/input` (routers/terminal.py) as a grace
+        period before it 409s, so `fused.terminal.run(cmd)` into a
+        freshly created session doesn't spuriously lose the race.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            if self.shell_is_foreground():
+                return True
+            if not self.alive or time.monotonic() >= deadline:
+                return self.shell_is_foreground()
+            time.sleep(0.05)
+
     def resize(self, rows: int, cols: int) -> None:
         if not self.alive:
             return
