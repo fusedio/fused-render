@@ -343,13 +343,19 @@ def _lifespan(startup_handlers: list, shutdown_handlers: list):
 
 
 def create_app(start_dir: str, lean: bool = False) -> FastAPI:
-    """Build the FastAPI app. ``lean=True`` (``fused-render open``, D...) wires
-    every router so requests still work, but registers none of the
-    background/startup side effects below and skips the two started
-    directly in this body (mount automount + health monitor) — nothing here
-    runs beyond what a single render/runPython request needs. See
-    `on_startup`/`on_shutdown` just below for the one switch that gates all
-    of it.
+    """Build the FastAPI app. ``lean=True`` (``fused-render open``) wires every
+    router so requests still work, but registers none of the background/
+    startup side effects below and skips the two started directly in this
+    body (mount automount + health monitor) — nothing here runs beyond what
+    a single render/runPython/AI request needs. See `on_startup` just below
+    for the switch that gates all of it.
+
+    Shutdown cleanup is NOT gated the same way: an engine, a local AI
+    worker, a terminal session, a capture and the pooled fs/raw client can
+    all still start ON DEMAND from an ordinary request in a lean app, even
+    though their eager `@on_startup` warm-up is skipped — so their
+    `@on_shutdown_always` cleanup always runs, lean or not, and is a no-op
+    when nothing was started. See `on_shutdown_always` just below.
     """
     # Engine (D69/D70 + SPEC §20): validate any FUSED_RENDER_ENGINE override
     # ONCE at startup — this raises on a bad value and fails loudly for
@@ -392,6 +398,23 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
             shutdown_handlers.append(func)
         return func
 
+    # `lean` only ever skips STARTUP work. A handful of things below start on
+    # demand from an ordinary request — regardless of `lean` — rather than
+    # from an `@on_startup` hook: an engine (runPython/render spawn a
+    # template daemon or a background-app child), a local AI worker
+    # (`/api/ai_runtime`'s load route), a status-bar terminal session, a
+    # screen/mic capture, and the pooled fs/raw HTTP client. `lean` skipping
+    # their STARTUP hooks only ever skips an eager warm-up — none of them are
+    # the only way to start the thing they clean up. Their `@on_shutdown`
+    # cleanup has to run in every app, lean included, or a lean server that
+    # ever ran Python/AI leaves child processes (an engine, a local model
+    # worker, a shell, a capture's recorder) behind when it exits. Each of
+    # these cleanup functions is already a safe no-op when nothing was
+    # started (`tests/test_app_lifespan.py` covers this for lean).
+    def on_shutdown_always(func):
+        shutdown_handlers.append(func)
+        return func
+
     app = FastAPI(title="fused-render",
                   lifespan=_lifespan(startup_handlers, shutdown_handlers))
     # Exposed so the registry is inspectable — `on_event` kept its own on
@@ -412,7 +435,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     async def _startup_pooled_client():
         await open_pooled_client(app)
 
-    @on_shutdown
+    @on_shutdown_always
     async def _shutdown_pooled_client():
         await close_pooled_client(app)
 
@@ -622,17 +645,24 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # event at all — a stale file there is exactly the case `resolve_origin()`
     # is required to connect-probe before trusting, so it is a correctness gap
     # this side does not need to close.
+    #
+    # Kept behind `on_shutdown` (skipped in `lean`), not `on_shutdown_always`:
+    # a lean `open` server never calls `write_server_json` in the first
+    # place, so it has nothing of its own to undo — and `remove_server_json`
+    # is pid-checked (see its docstring) so even calling it here unconditionally
+    # could only ever remove a file THIS process wrote, never the desktop
+    # server's.
     @on_shutdown
     async def _shutdown_server_json():
         remove_server_json()
 
-    @on_shutdown
+    @on_shutdown_always
     async def _shutdown_captures():
         from fused_render import capture
 
         capture.stop_all()
 
-    @on_shutdown
+    @on_shutdown_always
     async def _shutdown_ai_workers():
         from fused_render.ai import supervisor
 
@@ -640,7 +670,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
     # Every managed engine dies with the app: template daemons and
     # background/daemon children alike (stop_all clears both).
-    @on_shutdown
+    @on_shutdown_always
     async def _shutdown_engines():
         from fused_render.server import engine_host
 
@@ -775,7 +805,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # shell running.
     app.include_router(terminal_router)
 
-    @on_shutdown
+    @on_shutdown_always
     async def _shutdown_terminal_sessions():
         from fused_render import pty_session as _pty_session
 

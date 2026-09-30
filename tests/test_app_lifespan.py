@@ -12,11 +12,17 @@ every test run then has to load.
 """
 
 import asyncio
+import os
+import time
 
 import pytest
 
 from fused_render.server import create_app
 from fused_render.server.app import _lifespan
+
+#: Same real, spawnable fixture daemon test_background_apps.py uses — stdlib
+#: only, binds :0, publishes {port, token, pid} (see its own docstring).
+FIXTURE_APP = os.path.join(os.path.dirname(__file__), "fixtures", "background_app")
 
 
 def _drive(startup, shutdown, body=None):
@@ -182,14 +188,36 @@ def test_create_app_registers_nothing_on_the_deprecated_path():
     assert app.router.on_shutdown == []
 
 
-def test_lean_registers_no_startup_or_shutdown_handlers():
+#: The shutdown handlers registered even in `lean` — anything that can start
+#: from an ordinary request (an engine, a local AI worker, a terminal
+#: session, a capture, the pooled fs/raw client) rather than only from the
+#: `@on_startup` warm-up `lean` skips. Order matches their position in
+#: EXPECTED_SHUTDOWN above.
+EXPECTED_SHUTDOWN_LEAN = [
+    "_shutdown_pooled_client",
+    "_shutdown_captures",
+    "_shutdown_ai_workers",
+    "_shutdown_engines",
+    "_shutdown_terminal_sessions",
+]
+
+
+def test_lean_registers_no_startup_handlers_but_always_runs_cleanup():
     """`fused-render open`'s server (`create_app(..., lean=True)`): every one
-    of the 19 handlers above is still DEFINED (so a lean build stays
+    of the 19 startup handlers is still DEFINED (so a lean build stays
     otherwise identical code), just never collected — `_lifespan` then
-    iterates two empty lists and starts nothing in the background."""
+    iterates an empty startup list and starts nothing in the background.
+
+    Shutdown is NOT symmetric: `lean` only ever skips STARTUP (eager warm-up)
+    work. An engine, a local AI worker, a terminal session, a capture and the
+    pooled fs/raw client can all still start ON DEMAND from an ordinary
+    request in a lean app even though their `@on_startup` warm-up never ran
+    — so their cleanup (`on_shutdown_always`) is registered regardless of
+    `lean`, and everything else (paired only with a startup hook that lean
+    skips, so nothing of theirs can have started) stays skipped."""
     app = create_app(start_dir=".", lean=True)
     assert app.state.startup_handlers == []
-    assert app.state.shutdown_handlers == []
+    assert [f.__name__ for f in app.state.shutdown_handlers] == EXPECTED_SHUTDOWN_LEAN
 
 
 def test_lean_still_serves_ordinary_routes():
@@ -202,3 +230,50 @@ def test_lean_still_serves_ordinary_routes():
     with TestClient(app) as client:
         resp = client.get("/api/config")
     assert resp.status_code == 200
+
+
+def test_lean_app_leaves_no_engine_process_after_a_request_starts_one(tmp_path, monkeypatch):
+    """The proof for the shutdown-leak fix: `_startup_resurrect_background_apps`
+    (`@on_startup`) never runs in a lean server — nothing is brought back at
+    boot — but `/api/apps/background/start` is an ORDINARY request, wired
+    whether or not `lean`, and it spawns a real child process the same way a
+    template daemon or a `runPython`/`fused.run` call against a `main =` app
+    would. That child must not survive lifespan shutdown just because `lean`
+    skipped the warm-up that would have started it a different way — this is
+    exactly the leak `_shutdown_engines` moving to `on_shutdown_always` fixes.
+
+    Drives the real ASGI lifespan (TestClient's context manager), not a fake
+    handler list, so a regression in the real registration — not just in the
+    unit-level handler-list assertions above — would be caught here too."""
+    from starlette.testclient import TestClient
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    app = create_app(start_dir=str(tmp_path), lean=True)
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/apps/background/start",
+            json={"html": os.path.join(FIXTURE_APP, "index.html")},
+            headers={"X-Fused": "1"},
+        )
+        assert resp.status_code == 200, resp.text
+        pid = resp.json()["pid"]
+
+        def _alive(p: int) -> bool:
+            try:
+                os.kill(p, 0)
+            except (ProcessLookupError, PermissionError):
+                return False
+            return True
+
+        assert _alive(pid), "the fixture daemon never actually started"
+
+    # TestClient's `with` block has now run ASGI shutdown for real. Reaping a
+    # just-killed child can lag a beat behind SIGTERM, so poll briefly rather
+    # than asserting instantly and risking a flaky false failure.
+    deadline = time.monotonic() + 5.0
+    while _alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert not _alive(pid), (
+        f"pid {pid} (the fixture background-app daemon) outlived lifespan "
+        "shutdown in a lean app")
