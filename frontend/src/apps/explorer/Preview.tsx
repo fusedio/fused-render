@@ -737,7 +737,7 @@ function usePreviewFileMenu(
             {
               label: "Open in Terminal",
               icon: MenuIcons.terminal,
-              onClick: () => openTerminal({ cwd: dirname(fsPath) }),
+              onClick: () => openTerminal({ cwd: stat.is_dir ? fsPath : dirname(fsPath) }),
             },
           ]),
     ],
@@ -2179,7 +2179,10 @@ function TemplatePreview({
     return fileMenu({
       app: [...appRows.app, ...own.setPreview, ...appRows.doctor],
       file: own.file,
-      open: [...own.open, ...appRows.terminal, ...own.splits],
+      // Not `...appRows.terminal` too: `own.open` (fileGroups' own "open"
+      // group, above) already carries an "Open in Terminal" row for this
+      // file, so appending the app-rows one here would show it twice.
+      open: [...own.open, ...own.splits],
       share: own.share,
       copy: own.copy,
       embed: appRows.embed,
