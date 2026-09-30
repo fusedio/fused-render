@@ -140,6 +140,15 @@ function shellQuote(s: string): string {
   return "'" + s.replace(/'/g, `'\\''`) + "'";
 }
 
+// A dir cd's into itself; a file cd's into its parent — the folder a new
+// Claude Code session on this listing entry starts in. Shared by the copyable
+// command below and by the "Open in Claude" row that runs it in the
+// status-bar drawer directly (openTerminal({cwd, command: "claude"})) rather
+// than composing this same string a second way.
+export function claudeTerminalCwd(path: string, isDir: boolean, parentDir: string): string {
+  return isDir ? path : normDir(parentDir);
+}
+
 // The terminal command that starts a NEW Claude Code session on a listing
 // entry, for the CLIPBOARD — not a launch. It used to be a `claude-cli://`
 // deep link (the scheme Claude Code registers OS-wide, still how
@@ -148,11 +157,11 @@ function shellQuote(s: string): string {
 // plugin/marketplace install commands make: the user pastes it into the
 // terminal they already have open, in the session they want.
 //
-// A dir cd's into itself; a file cd's into its parent. No starter prompt: a
-// prompt passed on the command line (`claude "…"`) is SENT immediately, and the
-// deep link's `q` was deliberately a prefilled, unsent line.
+// No starter prompt: a prompt passed on the command line (`claude "…"`) is
+// SENT immediately, and the deep link's `q` was deliberately a prefilled,
+// unsent line.
 export function claudeTerminalCommand(path: string, isDir: boolean, parentDir: string): string {
-  return "cd " + shellQuote(isDir ? path : normDir(parentDir)) + " && claude";
+  return "cd " + shellQuote(claudeTerminalCwd(path, isDir, parentDir)) + " && claude";
 }
 
 // Wraps @platform/lib/clipboard's copyToClipboard (the app-card context menu

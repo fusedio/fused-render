@@ -40,6 +40,7 @@ import {
   buildOpenWithItems,
   friendlyFsError,
   claudeTerminalCommand,
+  claudeTerminalCwd,
 } from "@apps/explorer/lib/fs-actions";
 import { crumbMenu, fileMenu, splitItems } from "@apps/explorer/lib/bar-menus";
 import { getShareFileStatus, openShareFile } from "@platform/lib/share-file";
@@ -91,7 +92,7 @@ import { usePreviewSnapshot } from "@apps/explorer/lib/usePreviewSnapshot";
 import { ModeMenu, OverflowMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
 import { useAppActionRows } from "@apps/explorer/EntryActionsMenu";
-import { openTerminal } from "@platform/lib/terminalDockStore";
+import { canRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
 import { McpDialog } from "@apps/explorer/McpDialog";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
 import { ChatMount, sideFrameSrc, useNativeChatFlag } from "@apps/claude";
@@ -580,9 +581,23 @@ function usePreviewFileMenu(
     setMenu({ x: e.clientX, y: e.clientY, items: buildMenu() });
   };
 
-  // Copy the command that starts Claude Code on this file's folder — the same
-  // clipboard hand-off the listing's row menu makes, not a launch.
+  // Where the status-bar drawer exists, run a new Claude Code session on this
+  // file's folder there directly; everywhere else, the same clipboard
+  // hand-off the listing's row menu makes.
   const doOpenInClaude = () => {
+    if (canRunInTerminal()) {
+      openTerminal({ cwd: claudeTerminalCwd(fsPath, stat.is_dir, parent), command: "claude" });
+      return;
+    }
+    copyToClipboard(claudeTerminalCommand(fsPath, stat.is_dir, parent)).then((ok) => {
+      if (ok) notify({ title: "Command copied — paste it in your terminal", tone: "info" });
+    });
+  };
+
+  // THE SECONDARY DOOR, only where the primary one no longer copies: a reader
+  // with their own terminal should not have to fight the drawer for the
+  // string.
+  const doCopyClaudeCommand = () => {
     copyToClipboard(claudeTerminalCommand(fsPath, stat.is_dir, parent)).then((ok) => {
       if (ok) notify({ title: "Command copied — paste it in your terminal", tone: "info" });
     });
@@ -729,17 +744,17 @@ function usePreviewFileMenu(
         icon: MenuIcons.newTab,
         onClick: () => window.open(urlForFsPath(fsPath), "_blank", "noopener"),
       },
-      // Absent under IS_EMBED, same as `splits` below: an embedded pane
-      // mounts no TerminalDrawer (App.tsx) for the row to open.
-      ...(IS_EMBED
-        ? []
-        : [
+      // Absent where no TerminalDrawer is mounted to open (an embedded pane,
+      // App.tsx) or on Windows, where the drawer's shell isn't offered.
+      ...(canRunInTerminal()
+        ? [
             {
               label: "Open in Terminal",
               icon: MenuIcons.terminal,
               onClick: () => openTerminal({ cwd: stat.is_dir ? fsPath : dirname(fsPath) }),
             },
-          ]),
+          ]
+        : []),
     ],
     share: shareRow({
       sharingEnabled: sharingFilesEnabled,
@@ -751,7 +766,20 @@ function usePreviewFileMenu(
     }),
     copy: [
       { label: "Copy Path", icon: MenuIcons.copyPath, onClick: doCopyPath },
-      { label: "Copy Claude session command", icon: MenuIcons.openWith, onClick: doOpenInClaude },
+      {
+        label: canRunInTerminal() ? "Open in Claude" : "Copy Claude session command",
+        icon: MenuIcons.openWith,
+        onClick: doOpenInClaude,
+      },
+      ...(canRunInTerminal()
+        ? [
+            {
+              label: "Copy Claude session command",
+              icon: MenuIcons.copyPath,
+              onClick: doCopyClaudeCommand,
+            },
+          ]
+        : []),
     ],
     setPreview: isAppEntry
       ? [{ label: "Set Current View as Preview", icon: MenuIcons.camera, onClick: doSetPreview }]

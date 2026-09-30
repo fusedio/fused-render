@@ -36,6 +36,7 @@ import {
 import { EraseTaskModal } from "@platform/ui/EraseTaskModal";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { PENDING_KEY_PREFIX } from "@platform/lib/queue";
+import { canRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
 import { runAgent } from "../protocol/agent";
 import type { TerminalCommandResponse } from "../protocol/types";
 import { forgetSessionSeed } from "./useRecentTasks";
@@ -302,6 +303,7 @@ export function Kebab({
   /** Bumped whenever a cache write should repaint the items. */
   const [rev, setRev] = useState(0);
   const [terminalLabel, setTerminalLabel] = useState("");
+  const [copyLabel, setCopyLabel] = useState("");
   const [archiveLabel, setArchiveLabel] = useState("");
   /** A press in flight, or its confirmation still on screen, OWNS its item:
    *  a listing read landing in that window must not overwrite the words
@@ -414,6 +416,7 @@ export function Kebab({
       setTerminalLabel(
         sessionId ? "Continue in terminal" : "New session in terminal",
       );
+      setCopyLabel("Copy command");
       setArchiveLabel("");
       void refresh();
     },
@@ -422,29 +425,53 @@ export function Kebab({
 
   const restingArchive = filed ? "Unarchive this task" : "Archive this task";
 
+  /** agent.py's `terminal_command` already returns a full `cd '<dir>' &&
+   *  claude ...` line — this is the one fetch both menu items share, so
+   *  neither re-derives it and there is exactly one `cd` in the string
+   *  either ends up sending. */
+  const fetchTerminalCommand = useCallback(async (): Promise<string> => {
+    const out = (await runAgent(
+      agentDir!,
+      "terminal_command",
+      { file: file ?? "", session_id: sessionId },
+      { key: null },
+    )) as TerminalCommandResponse;
+    if ("error" in out && out.error) throw new Error(out.error);
+    if (!("command" in out)) throw new Error("agent.py returned no command");
+    return out.command;
+  }, [agentDir, file, sessionId]);
+
+  /** THE PRIMARY ITEM. Where the status-bar drawer exists (canRunInTerminal()),
+   *  this runs the command there instead of putting it on the clipboard — the
+   *  point of a managed terminal is that "continue in terminal" can mean
+   *  ACTUALLY continuing, not "go find a terminal and paste". Falls back to the
+   *  old copy behaviour everywhere the drawer does not exist (an embed, or
+   *  Windows), which is also the fallback path if the fetch fails after the
+   *  drawer already opened for a different item elsewhere — the row still has
+   *  to tell the reader something happened. */
   const onTerminal = useCallback(async () => {
     if (!agentDir) return;
     busy.current = true;
     try {
-      const out = (await runAgent(
-        agentDir,
-        "terminal_command",
-        { file: file ?? "", session_id: sessionId },
-        { key: null },
-      )) as TerminalCommandResponse;
-      if ("error" in out && out.error) throw new Error(out.error);
-      if (!("command" in out)) throw new Error("agent.py returned no command");
-      await navigator.clipboard.writeText(out.command);
-      // The copied state shows INSIDE the item, then the menu goes away on its
-      // own: the click's whole job was the clipboard (T:13454).
-      setTerminalLabel("Copied — paste in your terminal");
+      const command = await fetchTerminalCommand();
+      if (canRunInTerminal()) {
+        openTerminal({ command });
+        setTerminalLabel("Opened in terminal");
+      } else {
+        await navigator.clipboard.writeText(command);
+        setTerminalLabel("Copied — paste in your terminal");
+      }
+      // The result shows INSIDE the item, then the menu goes away on its own:
+      // the click's whole job was handing the command off (T:13454).
       later(() => {
         busy.current = false;
         setOpen(false);
       }, 900);
     } catch (err) {
       setTerminalLabel(
-        `Copy failed — ${err instanceof Error ? err.message : String(err)}`,
+        `${canRunInTerminal() ? "Couldn't open a terminal" : "Copy failed"} — ${
+          err instanceof Error ? err.message : String(err)
+        }`,
       );
       later(() => {
         busy.current = false;
@@ -453,7 +480,33 @@ export function Kebab({
         );
       }, 2500);
     }
-  }, [agentDir, file, sessionId, later]);
+  }, [agentDir, fetchTerminalCommand, sessionId, later]);
+
+  /** THE SECONDARY ITEM, only offered where the primary one no longer copies —
+   *  a reader with their own terminal should not have to fight the drawer for
+   *  the string. Hidden (not shown at all) where canRunInTerminal() is false,
+   *  because there the primary item already does exactly this. */
+  const onCopyTerminalCommand = useCallback(async () => {
+    if (!agentDir) return;
+    busy.current = true;
+    try {
+      const command = await fetchTerminalCommand();
+      await navigator.clipboard.writeText(command);
+      setCopyLabel("Copied — paste in your terminal");
+      later(() => {
+        busy.current = false;
+        setOpen(false);
+      }, 900);
+    } catch (err) {
+      setCopyLabel(
+        `Copy failed — ${err instanceof Error ? err.message : String(err)}`,
+      );
+      later(() => {
+        busy.current = false;
+        setCopyLabel("Copy command");
+      }, 2500);
+    }
+  }, [agentDir, fetchTerminalCommand, later]);
 
   /**
    * THE MENU GOES FIRST (R2-8). This used to hold the dropdown open through the
@@ -546,6 +599,18 @@ export function Kebab({
             >
               {terminalLabel ||
                 (sessionId ? "Continue in terminal" : "New session in terminal")}
+            </DropdownMenuItem>
+          ) : null}
+          {/* The primary item above now RUNS the command where it can — this is
+              the clipboard fallback for a reader who would rather paste it into
+              a terminal of their own. */}
+          {!queued && canRunInTerminal() ? (
+            <DropdownMenuItem
+              className="c-kebab-opt"
+              closeOnClick={false}
+              onClick={() => void onCopyTerminalCommand()}
+            >
+              {copyLabel || "Copy command"}
             </DropdownMenuItem>
           ) : null}
           {/* HIDDEN, not disabled, when there is no task behind the chat: a

@@ -39,7 +39,9 @@ import {
   buildCompressItems,
   friendlyFsError,
   claudeTerminalCommand,
+  claudeTerminalCwd,
 } from "@apps/explorer/lib/fs-actions";
+import { canRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
 import { moveEntriesInto } from "@apps/explorer/lib/fs-move";
 import {
   canRenameBase,
@@ -544,11 +546,25 @@ export function useFileOps({
     });
   };
 
-  // Hand the user the command instead of launching anything: a dir cd's into
-  // itself, a file into its parent, and the paste happens in the terminal (and
-  // the session) they already chose. Same shape as the config app's install
-  // commands — copy, then say so.
+  // Where the status-bar drawer exists, run a new Claude Code session on the
+  // row's folder there directly. Elsewhere, hand the user the command
+  // instead: a dir cd's into itself, a file into its parent, and the paste
+  // happens in the terminal (and the session) they already chose. Same shape
+  // as the config app's install commands — copy, then say so.
   const doOpenInClaude = (path: string, isDir: boolean, parentDir: string) => {
+    if (canRunInTerminal()) {
+      openTerminal({ cwd: claudeTerminalCwd(path, isDir, parentDir), command: "claude" });
+      return;
+    }
+    copyToClipboard(claudeTerminalCommand(path, isDir, parentDir)).then((ok) => {
+      if (ok) notify({ title: "Command copied — paste it in your terminal", tone: "info" });
+    });
+  };
+
+  // THE SECONDARY DOOR, only where the primary one no longer copies: a user
+  // with their own terminal should not have to fight the drawer for the
+  // string.
+  const doCopyClaudeCommand = (path: string, isDir: boolean, parentDir: string) => {
     copyToClipboard(claudeTerminalCommand(path, isDir, parentDir)).then((ok) => {
       if (ok) notify({ title: "Command copied — paste it in your terminal", tone: "info" });
     });
@@ -871,10 +887,19 @@ export function useFileOps({
       { label: "Copy Path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(row.path) },
       { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(row.path) },
       {
-        label: "Copy Claude session command",
+        label: canRunInTerminal() ? "Open in Claude" : "Copy Claude session command",
         icon: MenuIcons.openWith,
         onClick: () => doOpenInClaude(row.path, row.isDir, row.parentDir),
       },
+      ...(canRunInTerminal()
+        ? [
+            {
+              label: "Copy Claude session command",
+              icon: MenuIcons.copyPath,
+              onClick: () => doCopyClaudeCommand(row.path, row.isDir, row.parentDir),
+            },
+          ]
+        : []),
     ];
   };
 
@@ -914,10 +939,19 @@ export function useFileOps({
       copy: [
         { label: "Copy path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(dir) },
         {
-          label: "Copy Claude session command",
+          label: canRunInTerminal() ? "Open in Claude" : "Copy Claude session command",
           icon: MenuIcons.openWith,
           onClick: () => doOpenInClaude(dir, true, dir),
         },
+        ...(canRunInTerminal()
+          ? [
+              {
+                label: "Copy Claude session command",
+                icon: MenuIcons.copyPath,
+                onClick: () => doCopyClaudeCommand(dir, true, dir),
+              },
+            ]
+          : []),
       ],
     };
   };
