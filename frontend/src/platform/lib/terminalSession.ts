@@ -124,7 +124,15 @@ export function buildTerminalCommand({ cwd, command, execute }: BuildTerminalCom
   const quotedCwd = cwd ? `'${cwd.replace(/'/g, "'\\''")}'` : undefined;
   const line = quotedCwd && command ? `cd ${quotedCwd} && ${command}` : quotedCwd ? `cd ${quotedCwd}` : command || "";
   if (!line) return "";
-  return execute === false ? line : `${line}\r`;
+  if (execute === false) {
+    // A multi-line block typed with execute:false must not let its embedded
+    // newlines act as Enter at the prompt for the inner lines. Bracketed
+    // paste mode (bash >=5.1, zsh, fish) makes the shell treat the whole
+    // span — cd prefix included — as one pasted unit sitting at the prompt
+    // instead of running each line as it arrives.
+    return line.includes("\n") ? `\x1b[200~${line}\x1b[201~` : line;
+  }
+  return `${line}\r`;
 }
 
 /** One attached terminal: owns the WebSocket for a pty session id, decodes

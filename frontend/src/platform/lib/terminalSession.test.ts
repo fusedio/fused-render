@@ -344,4 +344,16 @@ describe("buildTerminalCommand", () => {
   test("execute defaulting to true is the same as omitting it", () => {
     expect(buildTerminalCommand({ command: "ls -la", execute: true })).toBe("ls -la\r");
   });
+
+  test("execute: false with a multi-line command wraps it in bracketed paste", () => {
+    expect(buildTerminalCommand({ command: "cd foo\n./build.sh", execute: false })).toBe(
+      "\x1b[200~cd foo\n./build.sh\x1b[201~",
+    );
+  });
+
+  test("execute: false with cwd and a multi-line command wraps the whole composed line", () => {
+    expect(
+      buildTerminalCommand({ cwd: "/tmp/foo", command: "echo a\necho b", execute: false }),
+    ).toBe("\x1b[200~cd '/tmp/foo' && echo a\necho b\x1b[201~");
+  });
 });
