@@ -155,3 +155,37 @@ def test_unknown_id_gets_an_exit_frame_instead_of_a_bare_reject(client, scratch_
 def test_create_requires_x_fused_header(client, scratch_registry):
     resp = client.post("/api/terminal", json={})
     assert resp.status_code == 403
+
+
+def test_input_route_writes_into_the_pty_without_a_stream_socket(client, scratch_registry):
+    sid = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
+
+    resp = client.post(f"/api/terminal/{sid}/input", json={"data": "echo inputted\n"},
+                        headers=_HEADERS)
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
+
+    with client.websocket_connect(f"/api/terminal/{sid}/stream") as ws:
+        replay = ws.receive_bytes()
+        # Either the echoed command already landed in scrollback before this
+        # attach, or it lands on the stream shortly after.
+        if b"inputted" not in replay:
+            _read_until(ws, b"inputted")
+
+
+def test_input_route_requires_x_fused_header(client, scratch_registry):
+    sid = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
+    resp = client.post(f"/api/terminal/{sid}/input", json={"data": "x"})
+    assert resp.status_code == 403
+
+
+def test_input_route_rejects_non_string_data(client, scratch_registry):
+    sid = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
+    resp = client.post(f"/api/terminal/{sid}/input", json={"data": 42}, headers=_HEADERS)
+    assert resp.status_code == 400
+
+
+def test_input_route_404s_for_unknown_session(client, scratch_registry):
+    resp = client.post("/api/terminal/does-not-exist/input", json={"data": "x"},
+                        headers=_HEADERS)
+    assert resp.status_code == 404

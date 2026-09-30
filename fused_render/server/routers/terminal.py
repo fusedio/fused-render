@@ -1,10 +1,12 @@
 """`/api/terminal` — the status-bar terminal's session routes and byte stream.
 
 `POST /api/terminal` creates a pty session (fused_render/pty_session.py) and
-returns its id; `GET /api/terminal` lists live sessions; `DELETE
-/api/terminal/{sid}` kills one; `WS /api/terminal/{sid}/stream` attaches to
-one, replaying its scrollback before streaming live bytes both ways — a page
-reload rejoins the same shell rather than losing it.
+returns its id; `GET /api/terminal` lists live sessions; `POST
+/api/terminal/{sid}/input` writes a string straight into the pty without an
+attached stream socket; `DELETE /api/terminal/{sid}` kills one; `WS
+/api/terminal/{sid}/stream` attaches to one, replaying its scrollback before
+streaming live bytes both ways — a page reload rejoins the same shell rather
+than losing it.
 
 Shaped after `fs_read.py`'s `/api/fs/events` for the accept/pump/drain shape,
 but the framing differs: fs/events is JSON-only (a change feed), this socket
@@ -77,6 +79,29 @@ def api_terminal_list():
         {"id": s.id, "alive": s.alive, "exitCode": s.exit_code}
         for s in pty_session.REGISTRY.list()
     ]}
+
+
+@router.post("/api/terminal/{sid}/input")
+def api_terminal_input(sid: str, body: dict = Body(default={}),
+                       x_fused: str | None = Header(default=None)):
+    # A way to type into a session with no attached stream socket — the
+    # "open in terminal / run a command" flow (EntryActionsMenu, fused.terminal.run)
+    # sends this right after creating a session, before the drawer's
+    # WebSocket has necessarily attached, so it cannot depend on a live
+    # `stream` connection the way keystrokes typed into an open drawer do.
+    if _windows():
+        return _error(_UNSUPPORTED, status=501)
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    data = (body or {}).get("data")
+    if not isinstance(data, str):
+        return _error("'data' must be a string", status=400)
+    session = pty_session.REGISTRY.get(sid)
+    if session is None or not session.alive:
+        return _error("no such terminal session", status=404)
+    session.write(data.encode())
+    return {"ok": True}
 
 
 @router.delete("/api/terminal/{sid}")
