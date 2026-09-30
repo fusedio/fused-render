@@ -72,7 +72,7 @@ import { useTaskPeekEnabled } from "@shell/task-peek-flag";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { useTaskStatusNotify } from "@shell/useTaskStatusNotify";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
-import { isMod } from "@platform/lib/platform";
+import { isMod, isWindows } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { reconcileOsClipboard } from "@apps/explorer/lib/os-clipboard";
 import { BreadcrumbBar, StaticBreadcrumb } from "@apps/explorer/Breadcrumb";
@@ -1137,10 +1137,15 @@ export default function App({ config }: { config: Config }) {
             `fsPathFromLocation()`) is the terminal's cwd — the folder
             currently shown in the explorer, per PLAN's "How we'll know it
             works". */}
-        {!IS_EMBED && <TerminalDrawer cwd={fsPath} />}
+        {/* Both gated on `!isWindows` too (platform/lib/platform.ts): the
+            terminal's server routes 501 there regardless
+            (fused_render/server/routers/terminal.py), so the chip/drawer/
+            shortcut (bound inside TerminalDrawer, only while it is mounted)
+            are hidden rather than shown as a control that can only fail. */}
+        {!IS_EMBED && !isWindows && <TerminalDrawer cwd={fsPath} />}
         {!IS_EMBED && (
           <StatusBar
-            terminalDock={<TerminalDock />}
+            terminalDock={!isWindows && <TerminalDock />}
             models={<ModelsDock />}
             /* D586/D662: every terminal job is re-routed from Activity to
                Notifications, and this is the one place both sections are in

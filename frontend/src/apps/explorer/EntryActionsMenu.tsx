@@ -60,6 +60,7 @@ import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { navigateUrl, encodeFsPathSegments, IS_EMBED } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
 import { openTerminal } from "@shell/terminalDockStore";
+import { isWindows } from "@platform/lib/platform";
 import { useAppVersionLabel } from "@platform/lib/appVersionLabel";
 import type { ResolvedSnapshot } from "@platform/lib/snapshot-param";
 import { MenuIcons } from "@platform/ui/MenuIcons";
@@ -328,7 +329,10 @@ export function useAppActionRows({
   // whose parent IS the folder; the file preview hands it the previewed
   // file, whose parent is the file's own directory — exactly "a folder →
   // that folder, a file → its parent" the row is meant to open.
-  const terminal: MenuEntry[] = IS_EMBED
+  // Also hidden on Windows: the server routes 501 there regardless (see
+  // fused_render/server/routers/terminal.py), so this row would only ever
+  // fail (platform/lib/platform.ts's `isWindows`).
+  const terminal: MenuEntry[] = IS_EMBED || isWindows
     ? []
     : [
         {

@@ -2020,10 +2020,26 @@
   function terminalUnsupportedReason() {
     const nav = typeof navigator === "object" && navigator ? navigator : {};
     const platform = (nav.userAgentData && nav.userAgentData.platform) || nav.platform || nav.userAgent || "";
-    if (/win/i.test(platform)) {
+    // Anchored so it matches only a platform string that NAMES Windows
+    // ("Win32", "Win64", "Windows") as a whole, not one that merely
+    // contains the substring "win" — an unanchored /win/i also matches
+    // "Darwin", macOS's own `uname` string.
+    if (/^win/i.test(platform)) {
       return "terminal is not supported on this platform (Windows is out of scope)";
     }
     return null;
+  }
+
+  // Shared by terminalOpen/terminalRun: reject if unsupported, reject if
+  // there's no drawer to hand the request to, otherwise note it and resolve.
+  function noteTerminalRequestOrReject(req) {
+    const reason = terminalUnsupportedReason();
+    if (reason) return Promise.reject(Object.assign(new Error(reason), { type: "unavailable" }));
+    if (!noteOpenTerminal(req)) {
+      return Promise.reject(new Error(
+        "no terminal drawer to open here (standalone page, hosted export, or an embedded pane)"));
+    }
+    return Promise.resolve();
   }
 
   // fused.terminal.open({cwd}?) / fused.terminal.run(command, {cwd}?)
@@ -2040,15 +2056,9 @@
   // on it — there is no round trip that would let it mean more than that.
   function terminalOpen(opts) {
     opts = opts || {};
-    const reason = terminalUnsupportedReason();
-    if (reason) return Promise.reject(Object.assign(new Error(reason), { type: "unavailable" }));
     const req = {};
     if (typeof opts.cwd === "string" && opts.cwd) req.cwd = opts.cwd;
-    if (!noteOpenTerminal(req)) {
-      return Promise.reject(new Error(
-        "no terminal drawer to open here (standalone page, hosted export, or an embedded pane)"));
-    }
-    return Promise.resolve();
+    return noteTerminalRequestOrReject(req);
   }
 
   function terminalRun(command, opts) {
@@ -2056,15 +2066,9 @@
       return Promise.reject(new Error("fused.terminal.run(command, ...): command must be a non-empty string"));
     }
     opts = opts || {};
-    const reason = terminalUnsupportedReason();
-    if (reason) return Promise.reject(Object.assign(new Error(reason), { type: "unavailable" }));
     const req = { command };
     if (typeof opts.cwd === "string" && opts.cwd) req.cwd = opts.cwd;
-    if (!noteOpenTerminal(req)) {
-      return Promise.reject(new Error(
-        "no terminal drawer to open here (standalone page, hosted export, or an embedded pane)"));
-    }
-    return Promise.resolve();
+    return noteTerminalRequestOrReject(req);
   }
 
   const terminal = { open: terminalOpen, run: terminalRun };

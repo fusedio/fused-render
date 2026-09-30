@@ -28,6 +28,28 @@ function detectMac(): boolean {
 
 export const isMac: boolean = detectMac();
 
+// Same signal, same fallback chain as `detectMac()` — anchored so it matches
+// only a platform string that NAMES Windows ("Win32", "Win64", "Windows") as
+// a whole, not one that merely contains the substring "win" (an unanchored
+// /win/i also matches "Darwin", macOS's own `uname` string, a bug the
+// server's runtime.js equivalent check had — fused_render/static/runtime.js's
+// `terminalUnsupportedReason()`).
+function detectWindows(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+  const source = nav.userAgentData?.platform ?? nav.platform ?? nav.userAgent ?? "";
+  return /^win/i.test(source);
+}
+
+// Best-effort, client-side-only — the status-bar terminal's server routes
+// (fused_render/server/routers/terminal.py) 501 on Windows regardless; this
+// only hides the chip/drawer/shortcut/menu row so a Windows user isn't shown
+// a control that can only ever fail (App.tsx, TerminalDock.tsx,
+// TerminalDrawer.tsx, EntryActionsMenu.tsx). If this is ever wrong for some
+// UA, the server 501 still stands as the real guard — surfaced through
+// TerminalDrawer's existing `createError` banner.
+export const isWindows: boolean = detectWindows();
+
 export function isMod(e: ModifierEvent): boolean {
   return isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
 }
