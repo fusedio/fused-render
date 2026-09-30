@@ -184,6 +184,13 @@
     if (!r.ok) throw new Error(data.error || ("PUT /api/prefs " + r.status));
     return data.launcher || {};
   }
+  // While the footer recorder is armed the app unbinds its live shortcuts
+  // (the Carbon hotkey and the row digits), else pressing the current
+  // combination toggles this panel closed instead of being recorded.
+  function suspend(on) {
+    fetch("/api/launcher/suspend", { method: "POST", headers: HDRS, body: JSON.stringify({ on }) })
+      .catch(() => undefined);
+  }
   // Newest query wins: a slow reply for an older query is dropped.
   async function query(text) {
     const seq = ++state.seq;
@@ -361,6 +368,8 @@
   }
   function reset() {
     q.value = "";
+    // The panel was closed (click-away) mid-recording: give the shortcuts back.
+    if (state.recording) suspend(false);
     state.recording = false;
     shortcut.classList.remove("rec");
     if (state.settings) setSettings(state.settings);
@@ -379,7 +388,7 @@
   const MODS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock", "Fn"]);
   function recordKey(e) {
     e.preventDefault();
-    if (e.key === "Escape") { state.recording = false; shortcut.classList.remove("rec"); setSettings(state.settings || {}); q.focus(); return; }
+    if (e.key === "Escape") { state.recording = false; suspend(false); shortcut.classList.remove("rec"); setSettings(state.settings || {}); q.focus(); return; }
     if (MODS.has(e.key)) return;  // wait for the key itself
     const mods = [];
     if (e.ctrlKey) mods.push("ctrl");
@@ -393,7 +402,9 @@
     put({ launcher_hotkey: spec })
       .then(h => { setSettings(h); setTimeout(loadSettings, 300); })
       .catch(err => { shortcut.textContent = String(err.message || err); shortcut.classList.add("bad"); setTimeout(loadSettings, 1500); })
-      .finally(() => q.focus());
+      // Resume AFTER the PUT: the rebind it triggers and this resume both
+      // bind the stored spec, in that order, on the app's main thread.
+      .finally(() => { suspend(false); q.focus(); });
   }
   document.addEventListener("keydown", (e) => {
     if (state.recording) { recordKey(e); return; }
@@ -416,6 +427,7 @@
 
   shortcut.addEventListener("click", () => {
     state.recording = true;
+    suspend(true);
     shortcut.classList.add("rec");
     shortcut.classList.remove("bad");
     shortcut.textContent = "Press the new shortcut…";

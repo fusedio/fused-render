@@ -782,6 +782,14 @@ class WindowManager:
         # until then.
         self.show_launcher = show_launcher
         self._windows: list[_Window] = []
+        # The `native_windows_enabled` preference, applied live by app.py
+        # (`set_enabled`). The manager itself is never torn down once built:
+        # the main menu and the activation policy it installed stay, and
+        # their items keep targeting it — so OFF is a mode of this object,
+        # not its absence. Off, `open` (which every menu item, the Dock
+        # reopen, the launcher and the popover funnel through) sends the URL
+        # to the default browser instead of making a window.
+        self.enabled = True
 
         # One data store and one process pool for every window: the shell's
         # localStorage is a single set, and `storage` events reach the other
@@ -816,12 +824,24 @@ class WindowManager:
 
     # ---- what app.py calls --------------------------------------------------
 
-    def open(self, url: str) -> _Window:
-        """Open ``url`` in a NEW window and bring it to the front."""
+    def open(self, url: str) -> _Window | None:
+        """Open ``url`` in a NEW window and bring it to the front — or, with
+        native windows switched off, in the default browser (None)."""
+        if not self.enabled:
+            _open_external(url)
+            return None
         win = _Window(self, url, self._configuration)
         self._windows.append(win)
         win.show()
         return win
+
+    def set_enabled(self, on: bool) -> None:
+        """The preference flipped. Off closes every open window first, so
+        nothing of ours stays on screen for a menu item to act on. Main
+        thread only (`close_all` drives AppKit)."""
+        self.enabled = bool(on)
+        if not on:
+            self.close_all()
 
     def open_popup(self, url: str, configuration) -> _Window:
         """A window for a page's `window.open`: WebKit supplies the

@@ -1556,31 +1556,35 @@ def main() -> None:
         from fused_render import window_policy
         from fused_render.shell.prefs import native_windows_enabled
 
-        def _build_windows() -> None:
-            if state["windows"] is not None:
-                return
-            try:
-                from fused_render.mac_window import WindowManager
-
-                state["windows"] = WindowManager(port, quit=_do_quit,
-                                                 show_launcher=_show_launcher)
-            except Exception:
-                logger.exception("windows unavailable; falling back to browser tabs")
-
-        def _drop_windows() -> None:
+        def _apply_windows(on: bool) -> None:
+            # Main thread. The manager is built on the first ON and kept for
+            # the life of the process: the main menu it installs targets it,
+            # so dropping the object would leave ⌘N and File → Open making
+            # windows through a manager nobody closes on quit. OFF is the
+            # manager's own mode (`WindowManager.enabled`): it closes its
+            # windows and every later open it is asked for goes to the
+            # browser. With no manager at all (never turned on, or it failed
+            # to build) every seam falls back to `webbrowser.open` on
+            # `state["windows"] is None`.
             manager = state["windows"]
             if manager is None:
-                return
-            state["windows"] = None
-            try:
-                manager.close_all()
-            except Exception:
-                logger.debug("closing windows on preference change failed", exc_info=True)
+                if not on:
+                    return
+                try:
+                    from fused_render.mac_window import WindowManager
 
-        if native_windows_enabled():
-            _build_windows()
-        window_policy.native_hooks["apply"] = lambda on: AppHelper.callAfter(
-            _build_windows if on else _drop_windows)
+                    manager = state["windows"] = WindowManager(
+                        port, quit=_do_quit, show_launcher=_show_launcher)
+                except Exception:
+                    logger.exception("windows unavailable; falling back to browser tabs")
+                    return
+            try:
+                manager.set_enabled(on)
+            except Exception:
+                logger.debug("applying the windows preference failed", exc_info=True)
+
+        _apply_windows(native_windows_enabled())
+        window_policy.native_hooks["apply"] = lambda on: AppHelper.callAfter(_apply_windows, on)
 
         def _open_window(target: str) -> None:
             # The popover's `window.open` / target=_blank (menubar_pin), main
