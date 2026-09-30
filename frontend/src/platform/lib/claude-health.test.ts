@@ -478,7 +478,10 @@ test("the strip polls only while an install is running, and re-probes when it en
 });
 
 test("the strip discloses the command beside the button that runs it", () => {
-  expect(STRIP).toContain("issue.command && <CommandLine command={issue.command} />");
+  expect(STRIP).toContain("issue.command && (");
+  expect(STRIP).toContain(
+    "<CommandLine command={issue.command} disabled={busy || running || signingIn} />",
+  );
 });
 
 test("the strip recovers an install already running when it remounts", () => {
