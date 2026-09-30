@@ -1803,7 +1803,8 @@
    block's own first token. Hidden until the `pre` is hovered (or the button
    itself focused — a keyboard-only user gets no hover): a permanently visible
    button on every code block is noise the eye filters on every message. */
-.chat-root .copybtn {
+.chat-root .copybtn,
+.chat-root .runbtn {
   position: absolute;
   top: 6px;
   right: 6px;
@@ -1824,11 +1825,23 @@
   opacity: 0;
   transition: opacity 0.12s ease-out;
 }
+/* Left of copy, its own fixed offset rather than a shared flex row: the
+   sticky (chip-body) and no-padding (pre.diff) `.copywrap` rules above are
+   about the ANCHOR span, not about how many pills sit inside it, so a second
+   absolute-positioned pill leaves them untouched. Only where a shell fence or
+   the Bash tool chip's command puts one there — canRunInTerminal() gates it
+   in the DOM walker and in ToolChip, so most `pre`s never grow this class. */
+.chat-root .runbtn {
+  right: 60px;
+}
 .chat-root pre:hover .copybtn,
-.chat-root .copybtn:focus-visible {
+.chat-root .copybtn:focus-visible,
+.chat-root pre:hover .runbtn,
+.chat-root .runbtn:focus-visible {
   opacity: 1;
 }
-.chat-root .copybtn:hover {
+.chat-root .copybtn:hover,
+.chat-root .runbtn:hover {
   color: var(--c-fg);
   border-color: var(--c-faint);
 }

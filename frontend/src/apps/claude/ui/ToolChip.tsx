@@ -28,6 +28,7 @@ import {
   toolStatusGlyph,
 } from "../protocol/summaries";
 import { COPY_RESET_MS } from "../protocol/markdown";
+import { canRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
 import type { ToolSegment } from "../protocol/types";
 import { useCardOpen } from "./cardPolicy";
 import { MarkdownView } from "./MarkdownView";
@@ -76,10 +77,17 @@ function CopyPre({
   className,
   copy,
   children,
+  runnable,
 }: {
   className?: string;
   copy: string;
   children?: React.ReactNode;
+  /** The Bash chip only: this `copy` IS the command the tool ran, so where the
+   *  drawer exists it can be typed there too — `execute: false`, the same
+   *  review-before-Enter as the markdown fence's own "run" button, since a
+   *  transcript's copy of a past command is not a request to run it again
+   *  unchanged. */
+  runnable?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   // ONE TIMER, REPLACED RATHER THAN STACKED, AND CANCELLED ON THE WAY OUT
@@ -110,6 +118,15 @@ function CopyPre({
   return (
     <pre {...(className ? { className } : {})}>
       <span className="copywrap">
+        {runnable && canRunInTerminal() && copy ? (
+          <button
+            className="runbtn"
+            type="button"
+            onClick={() => openTerminal({ command: copy, execute: false })}
+          >
+            run
+          </button>
+        ) : null}
         <button className="copybtn" type="button" onClick={onCopy}>
           {copied ? "copied" : "copy"}
         </button>
@@ -221,7 +238,7 @@ function renderInput(seg: ToolSegment, inp: Record<string, unknown>) {
       return (
         <>
           {inp.description ? <div className="chip-label">{String(inp.description)}</div> : null}
-          <CopyPre copy={typeof inp.command === "string" ? inp.command : ""}>
+          <CopyPre copy={typeof inp.command === "string" ? inp.command : ""} runnable>
             {typeof inp.command === "string" ? inp.command : ""}
           </CopyPre>
         </>
