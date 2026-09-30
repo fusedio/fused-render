@@ -6191,3 +6191,113 @@ send on session-ready, and `fused.terminal.open`/`.run` on `window.fused`.
   document-level listener itself is registered with `{ capture: true }` so
   it fires before xterm's own (bubble-phase) handler regardless of DOM
   order.
+
+## "Run in terminal" everywhere the UI used to say "copy this command" (2026-09-30)
+
+Every place the app told a user to paste a command into a terminal now offers
+to run it in the status-bar drawer directly, where one exists.
+
+- **`terminalDockStore` moved from `shell/` to `platform/lib/`**, superseding
+  this file's earlier note that it sat in `check-boundaries.mjs`'s
+  `SHELL_OPEN_TO_APPS` allowlist. The new shared `CommandLine` component
+  (`platform/ui/CommandLine.tsx`) needs `openTerminal`/`canRunInTerminal`
+  from `platform/ui`, and `platform` may never import `shell` — widening the
+  allowlist further was the wrong fix for a store that already had no
+  shell-only dependency (only React's `useSyncExternalStore`), so it moved
+  down instead. `check-boundaries.mjs`'s allowlist entry is gone with it;
+  every importer (`main.tsx`, `TerminalDock.tsx`, `TerminalDrawer.tsx`, the
+  explorer's `EntryActionsMenu.tsx`/`Preview.tsx`/`useFileOps.ts`, the chat's
+  `Kebab.tsx`, `ToolChip.tsx`, `markdown.ts`, `TaskPeek.tsx`) now reaches it
+  through the ordinary platform import path.
+- **`canRunInTerminal()`** (`!IS_EMBED && !isWindows`) lives on the store
+  itself, next to `openTerminal`, as the one gate every Run affordance in the
+  app calls rather than re-deriving — an embed has no status bar to host the
+  drawer, and there is no managed shell on Windows yet (`App.tsx` mounts
+  neither `TerminalDrawer` nor its chip there). Where it is false, only Copy
+  shows.
+- **`TerminalRequest` grew `execute?: boolean` (default true).**
+  `buildTerminalCommand` appends the trailing `\r` unless `execute === false`,
+  and `TerminalDrawer`'s `sendPendingRequestIfAny` thread it straight
+  through. `runtime.js`'s `fused.terminal.run` forwards it too (`opts.execute`
+  copied onto the request only when it's actually a boolean) — trivial to
+  add and the same shape as the in-app call, so there was no reason to leave
+  page authors without it.
+- **One shared `CommandLine` (`platform/ui/CommandLine.tsx`)**: the command in
+  code styling, a Copy button always, a Run button only where
+  `canRunInTerminal()`. Replaces `ClaudeHealthStrip`'s old `CopyCommand`
+  function (deleted outright — the strip previously drew `issue.command` in
+  two different shapes depending on whether an `action` button was also
+  present; both are now `CommandLine`, always) and `TroubleCard`'s manual
+  install-command box. `TroubleCard`'s copy for the not-found case is
+  reworded from "quit Fused Render and open it again" to "no need to restart
+  Fused Render" — `fused_render/claude_health.py`'s binary lookup
+  (`augmented_path()`) re-derives PATH fresh on every call plus a login-shell
+  fallback, so a retry after installing Claude Code finds a freshly-installed
+  binary without restarting the app; the button now makes that retry a click
+  away instead of a copy-paste-restart loop.
+- **Chat kebab / TaskPeek / explorer "Open in Claude" now RUN, with a
+  secondary "Copy …" item kept.** Each fetches (or builds) the same command
+  it always did, then calls `openTerminal({ cwd, command })` where the
+  drawer exists — falling back to the old clipboard-copy behavior standalone
+  where it doesn't. `fs-actions.ts` splits `claudeTerminalCwd()` out of
+  `claudeTerminalCommand()` so the drawer path can pass `cwd` and `command`
+  separately without double-`cd`'ing (the pre-combined string already starts
+  with `cd '<dir>' &&`).
+  - **No test harness exists for `Kebab.tsx` or `TaskPeek.tsx`** (no
+    `Kebab.test.tsx`/`TaskPeek.test.tsx` predate this change). Rather than
+    stand up a new component-test harness from scratch for a change this
+    shaped, coverage here is: the full typecheck, the already-unit-tested
+    primitives underneath (`canRunInTerminal`, `openTerminal`,
+    `buildTerminalCommand`), and careful review of the diff. `Preview.tsx`
+    and `useFileOps.ts`'s equivalent change is covered indirectly through
+    `fs-actions.test.ts`'s existing `claudeTerminalCommand` tests (which
+    exercise `claudeTerminalCwd` as its cd-half) and `EntryActionsMenu.test.tsx`.
+- **A Claude-suggested shell command gets a type-only "run" button, not an
+  execute-immediately one.** The chat markdown fence (`markdown.ts`'s
+  `enhanceCodeBlocks`, for `bash`/`sh`/`shell`/`zsh`/`console` fences) and the
+  Bash tool chip (`ToolChip.tsx`'s `CopyPre`, `runnable` prop, set only on
+  the Bash case — an Edit diff or a Write's file content is not a command)
+  both call `openTerminal({ command, execute: false })`: it types the
+  command at the prompt and leaves Enter to the reader, the same
+  review-before-running step copy-then-paste always gave them. `console`
+  fences keep only the `$ `-prefixed lines (a transcript's bare output lines
+  are not part of the command); the other four languages run the fence text
+  unchanged, multi-line included — each embedded newline still lands as its
+  own Enter even with `execute: false`, so a multi-line block runs
+  line-by-line as the reader watches rather than silently in one shot the
+  way `execute: true` would. The pure language/prompt decision is
+  `shellRunText(lang, text)`, split out of the DOM-walking half specifically
+  so it has direct unit tests without a real DOM (`bun test`'s environment
+  has no `document.createElement`/`querySelector` beyond the module-scope
+  shim `testDomShim.ts` provides, which is not a real DOM). CSS: the run
+  pill (`.runbtn`) sits at `right: 60px`, copy stays at `right: 6px` — a
+  fixed offset rather than a flex row, so the existing sticky
+  (chip-body) and no-padding (`pre.diff`) `.copywrap` rules, which are about
+  that anchor span and not about how many pills sit inside it, stay
+  untouched.
+- **Health refresh after an install/update run in the drawer.** The existing
+  mechanism (`claude-setup.ts`'s `useClaudeSetup`) already re-checks on
+  window focus/visibilitychange — but that fires because a *separate*
+  terminal app took focus away from the browser tab and gave it back. The
+  status-bar drawer is a docked panel in the SAME window/tab: running
+  `claude update` there and closing the drawer never blurs the page, so the
+  focus listener never fires for the exact flow this task added (Run
+  buttons that open the drawer). Investigated whether `PtySession
+  .wait_shell_foreground()` (already used by `POST
+  /api/terminal/{id}/input`'s 409-avoidance grace period, see the terminal-hook
+  section above) could be exposed as a "wait for the shell to return to
+  foreground, then refresh" endpoint — this would need a new route, a
+  client-side long-poll or callback wired specifically to health rather than
+  input, and handling for a drawer that's closed without the shell ever
+  becoming foreground again (a `^C`'d install, a crashed shell) — real
+  scope for a feature whose actual ask is "don't make the user click Recheck
+  after installing." Implemented the minimal version instead, matching this
+  task's stated fallback: `useClaudeSetup` also refreshes on the drawer's
+  open→closed transition (`useTerminalDockOpen()`, comparing against the
+  previous render's value), gated the same way and throttled by the same
+  `FOCUS_RECHECK_MS` window as the existing focus listener — closing the
+  drawer is the in-app analogue of "came back to the tab." No new test
+  harness exists for `useClaudeSetup` (same gap as `Kebab.tsx`/`TaskPeek.tsx`
+  above — no pre-existing `claude-setup.test.tsx`); the new effect mirrors
+  the already-shipped focus-listener effect immediately above it almost
+  line for line, reviewed by hand alongside it.
