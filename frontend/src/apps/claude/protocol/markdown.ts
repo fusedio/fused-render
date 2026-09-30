@@ -129,9 +129,10 @@ const SHELL_LANGS = new Set(["bash", "sh", "shell", "zsh", "console"]);
 /** The pure half of `shellRunCommand`, exported so the language/prompt logic
  *  above is tested directly rather than through a constructed DOM tree. */
 export function shellRunText(lang: string | undefined, text: string): string | null {
-  if (!lang || !SHELL_LANGS.has(lang)) return null;
+  const normLang = lang?.toLowerCase();
+  if (!normLang || !SHELL_LANGS.has(normLang)) return null;
   if (!text.trim()) return null;
-  if (lang !== "console") return text;
+  if (normLang !== "console") return text.replace(/\s+$/, "");
   const lines = text
     .split("\n")
     .filter((line) => line.startsWith("$ "))
@@ -139,10 +140,10 @@ export function shellRunText(lang: string | undefined, text: string): string | n
   return lines.length ? lines.join("\n") : null;
 }
 
-function shellRunCommand(pre: HTMLElement): string | null {
+function shellRunCommand(pre: HTMLElement, text: string): string | null {
   const code = pre.querySelector("code");
   const lang = (code?.className.match(/language-(\S+)/) || [])[1];
-  return shellRunText(lang, copyText(pre));
+  return shellRunText(lang, text);
 }
 
 /** T:14998-15055 `attachCodeCopy`: highlight `pre code.language-x` for
@@ -173,7 +174,7 @@ export function enhanceCodeBlocks(root: ParentNode): void {
     // The model's own suggestion, typed rather than run outright: `execute:
     // false` leaves it sitting at the prompt for the reader to look over and
     // press Enter on, the same review step Copy-then-paste always gave them.
-    const runCommand = canRunInTerminal() ? shellRunCommand(pre) : null;
+    const runCommand = canRunInTerminal() ? shellRunCommand(pre, text) : null;
     if (runCommand !== null) {
       const r = document.createElement("button");
       r.className = "runbtn";

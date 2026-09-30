@@ -99,10 +99,15 @@ test("an unclosed fence mid-stream is closed rather than swallowing the tail", (
 
 // ── shellRunText: the fence "run" button's language/prompt logic ───────────
 
-test("a shell fence's run text is the block, unchanged, for bash/sh/shell/zsh", () => {
+test("a shell fence's run text is the block with trailing whitespace stripped, for bash/sh/shell/zsh", () => {
   for (const lang of ["bash", "sh", "shell", "zsh"]) {
-    expect(shellRunText(lang, "cd foo\n./build.sh\n")).toBe("cd foo\n./build.sh\n");
+    expect(shellRunText(lang, "cd foo\n./build.sh\n")).toBe("cd foo\n./build.sh");
   }
+});
+
+test("a shell fence's run text matches its language case-insensitively", () => {
+  expect(shellRunText("Bash", "ls\n")).toBe("ls");
+  expect(shellRunText("Console", "$ ls\n")).toBe("ls");
 });
 
 test("a console fence keeps only the prompted lines, `$ ` stripped", () => {
