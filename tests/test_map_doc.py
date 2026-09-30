@@ -63,6 +63,18 @@ def test_add_layer_names_and_ids_follow_the_source():
         "kind": "auto", "visible": True, "opacity": 1.0, "style": {}, "options": {}}
 
 
+def test_a_signed_urls_token_never_reaches_the_name_or_id():
+    doc, results = run([
+        {"op": "add_layer", "source": "https://acct.blob.core.windows.net/c/scene.tif?sv=2024&sig=SECRET"},
+        {"op": "add_layer", "source": "https://host/data/roads.parquet#part"},
+        {"op": "add_layer", "source": "/data/odd?name.tif"},  # a local name keeps its '?'
+    ])
+    assert [r["id"] for r in results] == ["scene", "roads", "odd-name"]
+    assert doc["layers"][0]["name"] == "scene.tif"
+    assert "SECRET" not in json.dumps([l["name"] + l["id"] for l in doc["layers"]])
+    assert doc["layers"][0]["source"].endswith("sig=SECRET"), "the source itself is kept whole"
+
+
 def test_apply_never_mutates_its_input_and_refusals_leave_the_doc_alone():
     doc = md.new_doc()
     before = json.dumps(doc)
@@ -186,6 +198,9 @@ PARITY_CASES = [
      {"op": "update_layer", "id": "a", "options": {"selector": None}, "style": {"clim": [250, 310]}},
      {"op": "set_view", "bounds": [-10, -5, 10, 5]},
      {"op": "clear_layers"}],
+    [{"op": "add_layer", "source": "https://acct.blob.core.windows.net/c/scene.tif?sv=2024&sig=SECRET"},
+     {"op": "add_layer", "source": "https://host/roads.parquet#frag"},
+     {"op": "add_layer", "source": "/data/odd?name.tif"}],
     # refusals must refuse on both sides
     [{"op": "add_layer", "source": "/a", "style": {"line_color": "red"}}],
     [{"op": "add_layer", "source": "/a", "kind": "raster", "style": {"bands": [0]}}],

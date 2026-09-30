@@ -270,13 +270,30 @@ def _to_geojson(path: str, layer: str = "") -> dict:
     final = _cache_path(_cache_key(path, "geojson", layer), ".geojson")
     if not final.exists():
         tmp = final.with_name(final.name + f".{os.getpid()}.tmp")
-        frame = pyogrio.read_dataframe(path, layer=layer or None)
-        if frame.crs is not None and frame.crs.to_epsg() != 4326:
-            frame = frame.to_crs(4326)
+        frame = _to_wgs84(pyogrio.read_dataframe(path, layer=layer or None))
         pyogrio.write_dataframe(frame, str(tmp), driver="GeoJSON")
         _publish(tmp, final)
     return {"load": "vector", "path": str(final), "format": "geojson",
             "converted": True}
+
+
+def _to_wgs84(frame):
+    """`frame` in EPSG:4326, which is what the page draws. A frame with no CRS
+    is taken as longitude/latitude only when its coordinates could be; anything
+    else is refused rather than drawn somewhere wrong."""
+    import math
+
+    if frame.crs is not None:
+        return frame if frame.crs.to_epsg() == 4326 else frame.to_crs(4326)
+    west, south, east, north = frame.total_bounds
+    if not all(map(math.isfinite, (west, south, east, north))):  # empty or all-null geometry
+        return frame.set_crs(4326)
+    if -180 <= west <= east <= 180 and -90 <= south <= north <= 90:
+        return frame.set_crs(4326)
+    raise Refusal(
+        "This data has no coordinate reference system and its coordinates are "
+        f"not longitude/latitude (bounds {west:g}, {south:g}, {east:g}, {north:g}), "
+        "so it cannot be placed on a map. Set its CRS first.")
 
 
 # ---- a user's .py -------------------------------------------------------------------
@@ -316,9 +333,7 @@ def _write_result(value: Any, key: str) -> dict:
     if module == "rasterio" and hasattr(value, "name"):
         return plan(value.name)
     if module == "geopandas":
-        frame = value if hasattr(value, "to_parquet") else value.to_frame("geometry")
-        if frame.crs is not None and frame.crs.to_epsg() != 4326:
-            frame = frame.to_crs(4326)
+        frame = _to_wgs84(value if hasattr(value, "to_parquet") else value.to_frame("geometry"))
         final = _cache_path(key, ".parquet")
         frame.to_parquet(final)
         return {"load": "vector", "path": str(final), "format": "geoparquet"}
@@ -349,11 +364,15 @@ def _points_from_table(frame):
     import geopandas as gpd
 
     lowered = {str(c).lower(): c for c in frame.columns}
-    for lon, lat in (("longitude", "latitude"), ("lon", "lat"), ("lng", "lat"), ("x", "y")):
-        if lon in lowered and lat in lowered:
-            return gpd.GeoDataFrame(
-                frame, geometry=gpd.points_from_xy(frame[lowered[lon]], frame[lowered[lat]]),
-                crs=4326)
+    # Any longitude name with any latitude name (longitude/lat, lon/latitude,
+    # long/lat...); x/y only as a pair, and only when no geographic names exist.
+    lon = next((lowered[n] for n in ("longitude", "lon", "lng", "long") if n in lowered), None)
+    lat = next((lowered[n] for n in ("latitude", "lat") if n in lowered), None)
+    if (lon is None or lat is None) and "x" in lowered and "y" in lowered:
+        lon, lat = lowered["x"], lowered["y"]
+    if lon is not None and lat is not None:
+        return _to_wgs84(gpd.GeoDataFrame(
+            frame, geometry=gpd.points_from_xy(frame[lon], frame[lat])))
     raise Refusal("The table has no longitude/latitude columns to place on a map.")
 
 

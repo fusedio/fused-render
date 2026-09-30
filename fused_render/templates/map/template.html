@@ -631,7 +631,13 @@
     return Object.assign({}, ...Object.values(STYLE_KEYS));
   }
 
-  const basename = text => String(text).replace(/[\\/]+$/, "").split(/[\\/]/).pop() || String(text);
+  // A URL's query and fragment are dropped first, so a signed URL's token
+  // never becomes part of a layer's name or id (map_doc._basename agrees).
+  const basename = text => {
+    let s = String(text);
+    if (s.includes("://")) s = s.split(/[?#]/)[0];
+    return s.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || s;
+  };
   function slug(text) {
     const base = basename(text).replace(/\.[A-Za-z0-9]+$/, "");
     const s = base.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")

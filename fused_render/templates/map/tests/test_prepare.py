@@ -228,3 +228,36 @@ def test_inspect_describes_rasters_vectors_and_cubes(prepare, tmp_path):
     assert vector["kind"] == "vector" and vector["features"] == 2 and set(vector["fields"]) == {"height", "use"}
     cube = prepare.main(_netcdf(tmp_path / "c.nc"), action="inspect")
     assert cube["kind"] == "zarr" and cube["variables"]["temp"]["dims"] == {"time": 3, "lat": 20, "lon": 40}
+
+
+# ---- review follow-ups ----------------------------------------------------------------
+
+@pytest.mark.parametrize("lon, lat", [("longitude", "lat"), ("lon", "latitude"), ("Long", "Lat"), ("x", "y")])
+def test_any_longitude_name_pairs_with_any_latitude_name(prepare, tmp_path, lon, lat):
+    script = tmp_path / "layer.py"
+    script.write_text("import pandas as pd\n"
+                      f"result = pd.DataFrame({{{lon!r}: [3.0, 4.0], {lat!r}: [1.0, 2.0]}})\n")
+    result = prepare.main(str(script))
+    assert result["status"] == "ok" and result["load"] == "vector", result
+    frame = gpd.read_parquet(result["path"])
+    assert frame.crs.to_epsg() == 4326 and list(frame.geometry.x) == [3.0, 4.0]
+
+
+def test_projected_numbers_without_a_crs_are_refused_not_misplaced(prepare, tmp_path):
+    script = tmp_path / "layer.py"
+    script.write_text("import pandas as pd\nresult = pd.DataFrame({'x': [500000.0], 'y': [4649776.0]})\n")
+    result = prepare.main(str(script))
+    assert result["status"] == "error" and "no coordinate reference system" in result["message"]
+    gpkg = tmp_path / "nocrs.gpkg"
+    _frame(crs=None).to_file(gpkg, driver="GPKG")  # metre-sized boxes, no CRS
+    refused = prepare.main(str(gpkg), action="geojson")
+    assert refused["status"] == "error" and "no coordinate reference system" in refused["message"]
+
+
+def test_degrees_without_a_crs_are_taken_as_wgs84(prepare, tmp_path):
+    gpkg = tmp_path / "deg.gpkg"
+    gpd.GeoDataFrame({"a": [1]}, geometry=[box(10, 45, 11, 46)]).to_file(gpkg, driver="GPKG")
+    result = prepare.main(str(gpkg), action="geojson")
+    assert result["status"] == "ok"
+    x, y = json.loads(Path(result["path"]).read_text())["features"][0]["geometry"]["coordinates"][0][0]
+    assert 10 <= x <= 11 and 45 <= y <= 46

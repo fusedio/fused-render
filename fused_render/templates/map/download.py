@@ -247,8 +247,15 @@ def _free_name(dest_dir: Path, name: str, source: str = "") -> tuple[Path, bool]
     if name.lower().endswith(".zarr"):
         stem, suffix = name[:-5], name[-5:]
     candidate = dest_dir / name
+
+    def taken(path: Path) -> bool:
+        # A shapefile name is taken if any piece of the set already exists.
+        if path.suffix.lower() == ".shp":
+            return any(path.with_suffix(s).exists() for s in (".shp",) + SHAPEFILE_SIDECARS)
+        return path.exists()
+
     for n in itertools.count(1):
-        if not candidate.exists():
+        if not taken(candidate):
             if not Path(str(candidate) + ".part").exists():
                 return candidate, False
             if source and _resumable(candidate, source):
@@ -304,10 +311,11 @@ def plan(source: str, dest_dir: str = "") -> dict:
     return out
 
 
-def _fetch(session, url: str, dest: Path, on_bytes, stop: Path) -> bool:
+def _fetch(session, url: str, dest: Path, on_bytes, stop: Path, finalize: bool = True) -> bool:
     """Stream `url` to `dest` via `dest.part`; False when the server has no such
     object (an unwritten Zarr chunk, a shapefile without a .cpg). Raises
-    Cancelled as soon as the `stop` marker appears."""
+    Cancelled as soon as the `stop` marker appears. `finalize=False` leaves the
+    finished bytes at `dest.part`, for a set of files renamed together."""
     if stop.exists():
         raise Cancelled()
     part = Path(str(dest) + ".part")
@@ -317,7 +325,8 @@ def _fetch(session, url: str, dest: Path, on_bytes, stop: Path) -> bool:
         if response.status_code in (403, 404):
             return False
         if have and response.status_code == 416:  # the part already holds it all
-            os.replace(part, dest)
+            if finalize:
+                os.replace(part, dest)
             on_bytes(have)
             return True
         response.raise_for_status()
@@ -333,8 +342,12 @@ def _fetch(session, url: str, dest: Path, on_bytes, stop: Path) -> bool:
                     raise Cancelled()
                 handle.write(block)
                 on_bytes(len(block))
-    os.replace(part, dest)
+    if finalize:
+        os.replace(part, dest)
     return True
+
+
+ZARR_METADATA = {".zmetadata", ".zgroup", ".zattrs", ".zarray", "zarr.json"}
 
 
 def _discard_parts(target: Path) -> list[str]:
@@ -403,8 +416,12 @@ def run(source: str, dest_dir: str, target: str = "") -> dict:
                 done = staging / key
                 if done.is_file():  # finished by an earlier, interrupted run
                     on_bytes(done.stat().st_size)
-                else:
-                    _fetch(session, _join(base, key), done, on_bytes, stop)
+                elif not _fetch(session, _join(base, key), done, on_bytes, stop):
+                    # An absent chunk is one the store never wrote (it reads as
+                    # fill value); absent metadata is a broken or refused copy.
+                    if key.rsplit("/", 1)[-1] in ZARR_METADATA:
+                        raise Refusal(f"The server did not return {key}, which the "
+                                      "store's metadata lists; nothing was kept.")
                 with lock:
                     state["done_files"] += 1
                     report()
@@ -415,16 +432,22 @@ def run(source: str, dest_dir: str, target: str = "") -> dict:
             os.replace(staging, target)
             written = [str(target)]
         else:
-            written = []
+            # A shapefile's pieces all stay as .part until every one has
+            # arrived, then are renamed together: a cancel or failure never
+            # leaves a .shp without its sidecars.
+            fetched = []
             for index, key in enumerate(keys):
                 # Sidecars follow the main file's (possibly de-duplicated) name.
                 dest = target if index == 0 else target.with_name(target.stem + os.path.splitext(key)[1])
-                if _fetch(session, _join(base, key), dest, on_bytes, stop):
-                    written.append(str(dest))
+                if _fetch(session, _join(base, key), dest, on_bytes, stop, finalize=False):
+                    fetched.append(dest)
                 elif index == 0:
                     raise Refusal(f"The server has no file at {source}")
                 state["done_files"] += 1
                 report()
+            for dest in fetched:
+                os.replace(str(dest) + ".part", dest)
+            written = [str(dest) for dest in fetched]
     except Cancelled:
         _discard_parts(target)
         state["finished"] = True

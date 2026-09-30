@@ -177,8 +177,13 @@ def _style_rules(kind: str) -> dict[str, str]:
 
 def _basename(text: str) -> str:
     """The last path segment, splitting on both separators (a Windows path
-    must name the same layer on every OS, and the page splits the same way)."""
-    return re.split(r"[\\/]", str(text).rstrip("/\\"))[-1] or str(text)
+    must name the same layer on every OS, and the page splits the same way).
+    A URL's query and fragment are dropped first: a signed URL's token must
+    never become part of a layer's name or id."""
+    text = str(text)
+    if "://" in text:
+        text = re.split(r"[?#]", text, maxsplit=1)[0]
+    return re.split(r"[\\/]", text.rstrip("/\\"))[-1] or text
 
 
 def _slug(text: str) -> str:

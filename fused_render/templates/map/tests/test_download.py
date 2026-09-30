@@ -275,3 +275,54 @@ def test_a_part_another_run_is_writing_is_never_taken_over(download, served, des
     # A different source's leftovers are not resumed either.
     _interrupted(download, dest / "scene.tif", f"{base}/other.tif")
     assert download.main(source, str(dest), "plan")["target"] == str(dest / "scene-1.tif")
+
+
+def test_a_cancelled_shapefile_leaves_no_piece_of_the_set(download, served, dest):
+    root, base = served
+    for suffix in (".shp", ".shx", ".dbf", ".prj"):
+        (root / f"roads{suffix}").write_bytes(suffix.encode() * 1000)
+    download.PROGRESS_EVERY = 0
+    real_write = download._write_progress
+
+    def cancel_once_the_shp_is_in(path, **state):
+        real_write(path, **state)
+        if state["done_files"] >= 1 and not state["finished"]:  # .shp done, sidecars pending
+            download.main(action="cancel", progress=str(path))
+
+    download._write_progress = cancel_once_the_shp_is_in
+    result = download.main(f"{base}/roads.shp", str(dest), "run")
+    download._write_progress = real_write
+    assert result["status"] == "ok" and result["cancelled"], result
+    assert list(dest.iterdir()) == [], "no .shp without its sidecars, no .part left"
+    again = download.main(f"{base}/roads.shp", str(dest), "run")
+    assert again["path"] == str(dest / "roads.shp"), "the name is free again, no -1"
+
+
+def test_a_stray_sidecar_makes_the_shapefile_name_taken(download, served, dest):
+    root, base = served
+    for suffix in (".shp", ".dbf"):
+        (root / f"roads{suffix}").write_bytes(b"x")
+    (dest / "roads.dbf").write_bytes(b"mine")
+    result = download.main(f"{base}/roads.shp", str(dest), "run")
+    assert result["path"] == str(dest / "roads-1.shp")
+    assert (dest / "roads.dbf").read_bytes() == b"mine", "never overwritten"
+
+
+def test_a_store_missing_listed_metadata_fails_and_keeps_nothing(download, served, dest):
+    pytest.importorskip("zarr")
+    root, base = served
+    _cube().to_zarr(root / "cube.zarr", zarr_format=2, consolidated=True)
+    (root / "cube.zarr" / "temp" / ".zarray").unlink()  # listed in .zmetadata, gone on the server
+    result = download.main(f"{base}/cube.zarr", str(dest), "run")
+    assert result["status"] == "error" and "temp/.zarray" in result["message"], result
+    assert list(dest.iterdir()) == []
+
+
+def test_a_store_with_unwritten_chunks_still_copies(download, served, dest):
+    pytest.importorskip("zarr")
+    root, base = served
+    _cube().to_zarr(root / "cube.zarr", zarr_format=2, consolidated=True,
+                    encoding={"temp": {"chunks": (1, 10, 20)}})
+    (root / "cube.zarr" / "temp" / "2.1.1").unlink()  # as if never written (fill value)
+    result = download.main(f"{base}/cube.zarr", str(dest), "run")
+    assert result["status"] == "ok" and not (Path(result["path"]) / "temp" / "2.1.1").exists()
