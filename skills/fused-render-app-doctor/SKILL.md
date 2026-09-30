@@ -131,7 +131,7 @@ No row above judges whether a real `fused.*` call is correct. Read what the app 
 | `fused.ai` (text/image/video/transcribe/embed), model or provider choice | `fused-render-ai` |
 | `fused.runPython`, `fused.params`, general `.html`/`.py` view authoring | `fused-render-authoring` |
 | `fused.trackJob`/`fused.watchJob`, or a `runPython` risking the 60s timeout | `fused-render-jobs` |
-| `fused.fileIndex` | `fused-render-index` |
+| `fused.fileIndex` | `fused-render-index` (full fused-render only — on Render App the call is itself the finding: it throws `is not supported on Render App`; `fused-render-authoring`, Render App paragraph) |
 | `fused.capture` | `fused-render-capture` |
 | `fused.daemon`, `[tool.fused-render.app]` (Python alive after the page closes) | `fused-render-background-apps` |
 | stale or missing `fused-api-version` | `fused-render-api-migration` |

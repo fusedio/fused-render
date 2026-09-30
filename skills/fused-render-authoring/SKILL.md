@@ -82,13 +82,15 @@ Auto-created at app root. Convention, no helper API — build paths off `os.path
 | `await fused.writeFile(path, text, opts?)` | Atomic. `opts.expectedMtime` → rejects `.type==="conflict"` on stale disk; `opts.create` → rejects `.type==="exists"` (race-free create); readonly → `.type==="readonly"`. Resolves with fresh stat — keep its mtime. |
 | `fused.rawUrl(path)` | Sync URL for raw bytes — img/video/embed/download. Also resolves relative sibling assets (pitfall below). |
 | `fused.ai.*` | → `fused-render-ai`. |
-| `fused.fileIndex.search/query` | Machine-wide file index — use instead of walking fs → `fused-render-index`. |
+| `fused.fileIndex.search/query` | Machine-wide file index — use instead of walking fs → `fused-render-index`. Full fused-render only (Render App below). |
 | `fused.capture.*` | Native screen/mic/screenshot → `fused-render-capture`. |
 | `fused.trackJob(spec)` | Report long work to download manager; never rejects → `fused-render-jobs`. |
 | `fused.tasks.*` | List/create/follow up/cancel/watch the app's Claude tasks (headless, returns a handle); `ui()` gives an iframe URL of the shell's Tasks page → `fused-render-tasks`. |
 | `fused.daemon.*` | Folder's warm worker / resident daemon → `fused-render-background-apps`. |
 | `fused.env` | `"local"` vs `"hosted"` (exported). |
-| `fused.autoReload(false)` | Kill reload-on-file-change (in-page editors). |
+| `fused.autoReload(false)` | Kill reload-on-file-change (in-page editors). Render App: `autoReload(true)` THROWS (no live reload there). |
+
+**Render App** (standalone `fused-render-app`: same bridge, subset runtime). Session is on it when the system prompt says so, the app is a `.fused` bundle or a folder under `~/Fused/local/`, or a call throws `<name> is not supported on Render App`. There: `fused.fileIndex` and `fused.snapshot` do not exist (no stubs — reading them throws that sentence); `fused.autoReload(true)` throws; `fused.capture` is macOS-only, no browser `client` recorder; `runPython` cap is 600 s, not 60; no `fused-render calls` CLI (Verifying below) — read the browser console. Everything else in the table is identical. App that needs the missing members belongs in full fused-render; don't polyfill.
 
 - Uncaught `runPython` rejection → red traceback overlay (good default). Catch for custom UI.
 - Filesystem ONLY via these helpers — never fetch `/api/fs/*` yourself (writes rejected, unstable contract).
@@ -178,6 +180,6 @@ Read digest. Zero records + visible placeholder = preview-gated, fine. Zero reco
 - Plain `open(...,"w")` cache write; unversioned cache key; irreplaceable bytes in `cache/`.
 - Import outside bundled set, no `pyproject.toml`.
 - Slider + heavy import, no ~150 ms debounce → subprocess per tick.
-- Walking fs for counts/sizes → `fused.fileIndex.query` (`fused-render-index`).
+- Walking fs for counts/sizes → `fused.fileIndex.query` (`fused-render-index`). Render App has no index: walk in the `.py`, cache the result.
 - `fused.ai.text(` in a page meant for HOSTED export → exporter rejects textually, env guard no help. A `.fused` app file allows it (`fused-render-ai`).
 - Claiming "done" without `fused-render calls` (Render App: without the console) — blank-JS and failing-Python look identical without log.
