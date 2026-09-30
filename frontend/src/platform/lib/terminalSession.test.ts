@@ -22,7 +22,9 @@ import type {
 // is a dynamic import rather than a static one.
 installDomShim();
 
-const { TerminalSession, terminalStreamUrl } = await import("@platform/lib/terminalSession");
+const { TerminalSession, terminalStreamUrl, buildTerminalCommand } = await import(
+  "@platform/lib/terminalSession"
+);
 
 const OPEN = 1;
 const CLOSED = 3;
@@ -277,5 +279,51 @@ describe("TerminalSession", () => {
     expect(fake.socket.onopen).toBeNull();
     expect(fake.socket.onmessage).toBeNull();
     expect(fake.socket.onclose).toBeNull();
+  });
+});
+
+describe("buildTerminalCommand", () => {
+  test("cwd and command: cd into cwd, then run command", () => {
+    expect(buildTerminalCommand({ cwd: "/tmp/foo", command: "ls -la" })).toBe(
+      "cd '/tmp/foo' && ls -la\r",
+    );
+  });
+
+  test("cwd only: just cd", () => {
+    expect(buildTerminalCommand({ cwd: "/tmp/foo" })).toBe("cd '/tmp/foo'\r");
+  });
+
+  test("command only: just the command, no cd", () => {
+    expect(buildTerminalCommand({ command: "ls -la" })).toBe("ls -la\r");
+  });
+
+  test("neither: empty string, nothing to send", () => {
+    expect(buildTerminalCommand({})).toBe("");
+  });
+
+  test("quotes a cwd containing a single quote", () => {
+    expect(buildTerminalCommand({ cwd: "/tmp/it's/here" })).toBe(
+      "cd '/tmp/it'\\''s/here'\r",
+    );
+  });
+
+  test("quotes a cwd containing spaces", () => {
+    expect(buildTerminalCommand({ cwd: "/tmp/my folder" })).toBe(
+      "cd '/tmp/my folder'\r",
+    );
+  });
+
+  test("quotes a cwd containing a $ so the shell does not expand it", () => {
+    expect(buildTerminalCommand({ cwd: "/tmp/$HOME" })).toBe("cd '/tmp/$HOME'\r");
+  });
+
+  test("empty-string cwd is treated as absent", () => {
+    expect(buildTerminalCommand({ cwd: "", command: "ls" })).toBe("ls\r");
+  });
+
+  test("empty-string command is treated as absent", () => {
+    expect(buildTerminalCommand({ cwd: "/tmp/foo", command: "" })).toBe(
+      "cd '/tmp/foo'\r",
+    );
   });
 });

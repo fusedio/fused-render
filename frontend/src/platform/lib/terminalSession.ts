@@ -91,6 +91,38 @@ export function killTerminalSession(id: string): Promise<{ ok: boolean }> {
   return deleteJson<{ ok: boolean }>(`/api/terminal/${encodeURIComponent(id)}`);
 }
 
+/** POST /api/terminal/{id}/input — write a string straight into the pty
+ * without an attached `stream` socket. Used by the "open in terminal / run a
+ * command" flow (EntryActionsMenu, `fused.terminal.run`), which sends this
+ * right after `createTerminalSession` — before `TerminalDrawer`'s
+ * WebSocket has necessarily attached — rather than routing through a live
+ * `TerminalSession.write()`. */
+export function sendTerminalInput(id: string, data: string): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>(`/api/terminal/${encodeURIComponent(id)}/input`, { data });
+}
+
+export interface BuildTerminalCommandArgs {
+  cwd?: string;
+  command?: string;
+}
+
+/** Build the string to type into a freshly-opened (or already-open) terminal
+ * for a "cd here" / "run this" request — POSIX-shell only, matching the pty
+ * this session always runs (see pty_session.py: never constructed on
+ * Windows). Single-quotes `cwd` the POSIX way (`'` -> `'\''`, ie. close the
+ * quote, an escaped literal quote, reopen the quote) so a path with spaces,
+ * `$`, or embedded quotes still lands as one argument to `cd`. With both
+ * `cwd` and `command`: `cd '<cwd>' && <command>\r`. With only `cwd`: `cd
+ * '<cwd>'\r`. With only `command`: `<command>\r`. With neither: `""` (no-op
+ * — nothing to send). */
+export function buildTerminalCommand({ cwd, command }: BuildTerminalCommandArgs): string {
+  const quotedCwd = cwd ? `'${cwd.replace(/'/g, "'\\''")}'` : undefined;
+  if (quotedCwd && command) return `cd ${quotedCwd} && ${command}\r`;
+  if (quotedCwd) return `cd ${quotedCwd}\r`;
+  if (command) return `${command}\r`;
+  return "";
+}
+
 /** One attached terminal: owns the WebSocket for a pty session id, decodes
  * its frames, and reconnects with backoff on an unexpected close. Callers
  * MUST call `dispose()` exactly once (unmount, drawer close) — it is the
