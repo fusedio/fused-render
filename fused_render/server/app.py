@@ -75,6 +75,7 @@ from fused_render.server.routers.schedule import router as schedule_router
 from fused_render.server.routers.search import router as search_router
 from fused_render.server.routers.shell import router as shell_router
 from fused_render.server.routers.current_apps import router as current_apps_router
+from fused_render.server.routers.launcher import router as launcher_router
 from fused_render.server.routers.drafts import router as drafts_router
 from fused_render.server.routers.queue_events import router as queue_events_router
 from fused_render.server.routers.tasks import router as tasks_router
@@ -809,6 +810,9 @@ def create_app(start_dir: str) -> FastAPI:
     # The Current apps desk (fused_render/current_apps.py): GET the table,
     # DELETE one app (archiving its tasks). Fed by the tasks listing above.
     app.include_router(current_apps_router)
+    # The macOS launcher panel's search (fused_render/launcher.py): the desk,
+    # the workspace, linked and exported apps, ranked by a query.
+    app.include_router(launcher_router)
     # Community marketplace backend for the /apps hub's Showcase tab and the
     # explorer preview's Clone button (routers/community.py).
     app.include_router(community_router)

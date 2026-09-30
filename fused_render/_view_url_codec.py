@@ -62,6 +62,15 @@ def embed_url_path(fs_path: str) -> str:
     return "/explorer/embed/" + "/".join(segments)
 
 
+def app_page_path(folder: str) -> str:
+    """The shell's app page for an app folder — `/apps/<segments>`, encoded
+    exactly as the frontend's `appPageUrl` (shell/current-apps-lib.ts) does,
+    so a window opened here and a sidebar row point at one address."""
+    norm = canonical_fs_path(folder)
+    segments = [quote(seg, safe="!*'()") for seg in norm.lstrip("/").split("/") if seg]
+    return "/apps/" + "/".join(segments)
+
+
 def view_url(port: int, fs_path: str | None) -> str:
     """Full local URL for an absolute fs path; home page when fs_path is None."""
     if not fs_path:
