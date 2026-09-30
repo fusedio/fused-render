@@ -180,3 +180,25 @@ def test_create_app_registers_nothing_on_the_deprecated_path():
     app = create_app(start_dir=".")
     assert app.router.on_startup == []
     assert app.router.on_shutdown == []
+
+
+def test_lean_registers_no_startup_or_shutdown_handlers():
+    """`fused-render open`'s server (`create_app(..., lean=True)`): every one
+    of the 19 handlers above is still DEFINED (so a lean build stays
+    otherwise identical code), just never collected — `_lifespan` then
+    iterates two empty lists and starts nothing in the background."""
+    app = create_app(start_dir=".", lean=True)
+    assert app.state.startup_handlers == []
+    assert app.state.shutdown_handlers == []
+
+
+def test_lean_still_serves_ordinary_routes():
+    """The routers are wired regardless of `lean` — only the background
+    side effects are skipped — so a request against a lean app still gets a
+    real response rather than a 404."""
+    from starlette.testclient import TestClient
+
+    app = create_app(start_dir=".", lean=True)
+    with TestClient(app) as client:
+        resp = client.get("/api/config")
+    assert resp.status_code == 200

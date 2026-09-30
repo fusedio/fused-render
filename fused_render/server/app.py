@@ -342,7 +342,15 @@ def _lifespan(startup_handlers: list, shutdown_handlers: list):
     return lifespan
 
 
-def create_app(start_dir: str) -> FastAPI:
+def create_app(start_dir: str, lean: bool = False) -> FastAPI:
+    """Build the FastAPI app. ``lean=True`` (``fused-render open``, D...) wires
+    every router so requests still work, but registers none of the
+    background/startup side effects below and skips the two started
+    directly in this body (mount automount + health monitor) — nothing here
+    runs beyond what a single render/runPython request needs. See
+    `on_startup`/`on_shutdown` just below for the one switch that gates all
+    of it.
+    """
     # Engine (D69/D70 + SPEC §20): validate any FUSED_RENDER_ENGINE override
     # ONCE at startup — this raises on a bad value and fails loudly for
     # `=fused` when the package is missing, and logs the choice. Dispatch
@@ -369,12 +377,19 @@ def create_app(start_dir: str) -> FastAPI:
     startup_handlers: list = []
     shutdown_handlers: list = []
 
+    # The one switch `lean` acts through: every `@on_startup`/`@on_shutdown`
+    # below is still DEFINED (so the decorated function stays a normal name
+    # in this scope, readable and testable), just never collected — so
+    # `_lifespan` iterates an empty list and runs nothing. Registration
+    # points, not sprinkled `if lean` checks inside 19 handler bodies.
     def on_startup(func):
-        startup_handlers.append(func)
+        if not lean:
+            startup_handlers.append(func)
         return func
 
     def on_shutdown(func):
-        shutdown_handlers.append(func)
+        if not lean:
+            shutdown_handlers.append(func)
         return func
 
     app = FastAPI(title="fused-render",
@@ -731,13 +746,20 @@ def create_app(start_dir: str) -> FastAPI:
     from fused_render.shell import onboarding as shell_onboarding
 
     app.include_router(shell_onboarding.router)
-    shell_mounts.startup()
-    # Background mount-health monitor (shell/mounts.py): polls every mount on a
-    # timer, auto-reconnects a wedged/disconnected NFS mount ONCE per disconnect
-    # episode, and records an event log the Mounts panel polls. Started AFTER
-    # startup() so the automount thread owns the initial attach — the monitor
-    # only acts on a later healthy->disconnected transition.
-    shell_mounts.start_health_monitor()
+    # Automount + its health monitor are the two side effects this body starts
+    # directly rather than through `@on_startup` above, so `lean` has to gate
+    # them here too — a lean server serves the mounts router (requests still
+    # work against whatever a mount already has attached) but reconnects none
+    # and polls none.
+    if not lean:
+        shell_mounts.startup()
+        # Background mount-health monitor (shell/mounts.py): polls every mount
+        # on a timer, auto-reconnects a wedged/disconnected NFS mount ONCE per
+        # disconnect episode, and records an event log the Mounts panel polls.
+        # Started AFTER startup() so the automount thread owns the initial
+        # attach — the monitor only acts on a later healthy->disconnected
+        # transition.
+        shell_mounts.start_health_monitor()
 
     # Mount-health telemetry (api_mounts_health), /api/config, and
     # /api/desktop/shutdown — a generic app-info/control grab-bag that doesn't
