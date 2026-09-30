@@ -4901,6 +4901,7 @@ function ChatBody(props: ChatBodyProps) {
               state={state}
               comebackPending={sched.blocked}
               actions={actions}
+              cwd={agentDir}
               liveMode={state.permissionMode}
               tail={tail}
               pickerMode={defaults.permission}

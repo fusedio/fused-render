@@ -36,9 +36,8 @@ import {
 import { EraseTaskModal } from "@platform/ui/EraseTaskModal";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { PENDING_KEY_PREFIX } from "@platform/lib/queue";
-import { canRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
-import { runAgent } from "../protocol/agent";
-import type { TerminalCommandResponse } from "../protocol/types";
+import { canRunInTerminal, useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
+import { fetchTerminalCommand as fetchAgentTerminalCommand } from "../protocol/agent";
 import { forgetSessionSeed } from "./useRecentTasks";
 
 /** Live by the listing's own clock (T:13166-13169). */
@@ -310,6 +309,7 @@ export function Kebab({
    *  (T:13143-13150). */
   const busy = useRef(false);
   const timers = useRef<number[]>([]);
+  const canRun = useCanRunInTerminal();
 
   useEffect(
     () => () => {
@@ -425,21 +425,10 @@ export function Kebab({
 
   const restingArchive = filed ? "Unarchive this task" : "Archive this task";
 
-  /** agent.py's `terminal_command` already returns a full `cd '<dir>' &&
-   *  claude ...` line — this is the one fetch both menu items share, so
-   *  neither re-derives it and there is exactly one `cd` in the string
-   *  either ends up sending. */
-  const fetchTerminalCommand = useCallback(async (): Promise<string> => {
-    const out = (await runAgent(
-      agentDir!,
-      "terminal_command",
-      { file: file ?? "", session_id: sessionId },
-      { key: null },
-    )) as TerminalCommandResponse;
-    if ("error" in out && out.error) throw new Error(out.error);
-    if (!("command" in out)) throw new Error("agent.py returned no command");
-    return out.command;
-  }, [agentDir, file, sessionId]);
+  const fetchTerminalCommand = useCallback(
+    (): Promise<string> => fetchAgentTerminalCommand(agentDir!, file ?? "", sessionId),
+    [agentDir, file, sessionId],
+  );
 
   /** THE PRIMARY ITEM. Where the status-bar drawer exists (canRunInTerminal()),
    *  this runs the command there instead of putting it on the clipboard — the
@@ -604,7 +593,7 @@ export function Kebab({
           {/* The primary item above now RUNS the command where it can — this is
               the clipboard fallback for a reader who would rather paste it into
               a terminal of their own. */}
-          {!queued && canRunInTerminal() ? (
+          {!queued && canRun ? (
             <DropdownMenuItem
               className="c-kebab-opt"
               closeOnClick={false}

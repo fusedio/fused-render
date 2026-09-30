@@ -41,7 +41,8 @@ import {
   claudeTerminalCommand,
   claudeTerminalCwd,
 } from "@apps/explorer/lib/fs-actions";
-import { canRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
+import { useCanRunInTerminal } from "@platform/lib/terminalDockStore";
+import { runOrCopyInTerminal } from "@platform/lib/runOrCopyInTerminal";
 import { moveEntriesInto } from "@apps/explorer/lib/fs-move";
 import {
   canRenameBase,
@@ -108,6 +109,9 @@ export function useFileOps({
   // "Export App File" — see share-app-flag.ts; default off. Read here, at the
   // hook's top, not inside the menu closure (which is not a render).
   const sharing = useAppSharingFeature();
+  // Same reasoning: read once here, not inside fileGroups/folderGroups (plain
+  // closures rebuilt per call, not renders of their own).
+  const canRun = useCanRunInTerminal();
   // The open context menu (position + items) and the open modal, both local to
   // this folder view.
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
@@ -552,12 +556,9 @@ export function useFileOps({
   // happens in the terminal (and the session) they already chose. Same shape
   // as the config app's install commands — copy, then say so.
   const doOpenInClaude = (path: string, isDir: boolean, parentDir: string) => {
-    if (canRunInTerminal()) {
-      openTerminal({ cwd: claudeTerminalCwd(path, isDir, parentDir), command: "claude" });
-      return;
-    }
-    copyToClipboard(claudeTerminalCommand(path, isDir, parentDir)).then((ok) => {
-      if (ok) notify({ title: "Command copied — paste it in your terminal", tone: "info" });
+    void runOrCopyInTerminal("claude", {
+      cwd: claudeTerminalCwd(path, isDir, parentDir),
+      copyCommand: claudeTerminalCommand(path, isDir, parentDir),
     });
   };
 
@@ -887,11 +888,11 @@ export function useFileOps({
       { label: "Copy Path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(row.path) },
       { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(row.path) },
       {
-        label: canRunInTerminal() ? "Open in Claude" : "Copy Claude session command",
+        label: canRun ? "Open in Claude" : "Copy Claude session command",
         icon: MenuIcons.openWith,
         onClick: () => doOpenInClaude(row.path, row.isDir, row.parentDir),
       },
-      ...(canRunInTerminal()
+      ...(canRun
         ? [
             {
               label: "Copy Claude session command",
@@ -939,11 +940,11 @@ export function useFileOps({
       copy: [
         { label: "Copy path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(dir) },
         {
-          label: canRunInTerminal() ? "Open in Claude" : "Copy Claude session command",
+          label: canRun ? "Open in Claude" : "Copy Claude session command",
           icon: MenuIcons.openWith,
           onClick: () => doOpenInClaude(dir, true, dir),
         },
-        ...(canRunInTerminal()
+        ...(canRun
           ? [
               {
                 label: "Copy Claude session command",

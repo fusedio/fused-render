@@ -92,7 +92,8 @@ import { usePreviewSnapshot } from "@apps/explorer/lib/usePreviewSnapshot";
 import { ModeMenu, OverflowMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
 import { useAppActionRows } from "@apps/explorer/EntryActionsMenu";
-import { canRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
+import { useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
+import { runOrCopyInTerminal } from "@platform/lib/runOrCopyInTerminal";
 import { McpDialog } from "@apps/explorer/McpDialog";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
 import { ChatMount, sideFrameSrc, useNativeChatFlag } from "@apps/claude";
@@ -427,6 +428,7 @@ function usePreviewFileMenu(
 ) {
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
   const [dialog, setDialog] = useState<PreviewDialog | null>(null);
+  const canRun = useCanRunInTerminal();
   // Publish this header menu's overlay state to the shared registry (lib/
   // ui-overlay). A directory opened in Preview embeds a Listing whose own
   // document-level keyboard handlers would otherwise fire (Cmd+Backspace,
@@ -585,12 +587,9 @@ function usePreviewFileMenu(
   // file's folder there directly; everywhere else, the same clipboard
   // hand-off the listing's row menu makes.
   const doOpenInClaude = () => {
-    if (canRunInTerminal()) {
-      openTerminal({ cwd: claudeTerminalCwd(fsPath, stat.is_dir, parent), command: "claude" });
-      return;
-    }
-    copyToClipboard(claudeTerminalCommand(fsPath, stat.is_dir, parent)).then((ok) => {
-      if (ok) notify({ title: "Command copied — paste it in your terminal", tone: "info" });
+    void runOrCopyInTerminal("claude", {
+      cwd: claudeTerminalCwd(fsPath, stat.is_dir, parent),
+      copyCommand: claudeTerminalCommand(fsPath, stat.is_dir, parent),
     });
   };
 
@@ -746,7 +745,7 @@ function usePreviewFileMenu(
       },
       // Absent where no TerminalDrawer is mounted to open (an embedded pane,
       // App.tsx) or on Windows, where the drawer's shell isn't offered.
-      ...(canRunInTerminal()
+      ...(canRun
         ? [
             {
               label: "Open in Terminal",
@@ -767,11 +766,11 @@ function usePreviewFileMenu(
     copy: [
       { label: "Copy Path", icon: MenuIcons.copyPath, onClick: doCopyPath },
       {
-        label: canRunInTerminal() ? "Open in Claude" : "Copy Claude session command",
+        label: canRun ? "Open in Claude" : "Copy Claude session command",
         icon: MenuIcons.openWith,
         onClick: doOpenInClaude,
       },
-      ...(canRunInTerminal()
+      ...(canRun
         ? [
             {
               label: "Copy Claude session command",

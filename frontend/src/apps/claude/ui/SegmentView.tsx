@@ -60,6 +60,9 @@ export interface SegmentViewProps {
    *  no trigger — or the fold flickers once per tool for the length of a live
    *  multi-tool turn. */
   live?: boolean;
+  /** The chat's working directory, threaded down to `MarkdownView`/`ToolChip`
+   *  so a shell fence's or a Bash chip's "run" button `cd`'s there first. */
+  cwd?: string | null;
 }
 
 /** MEMOIZED for the same reason `Turn` is, and this is where it pays: a settled
@@ -72,6 +75,7 @@ export const SegmentView = memo(function SegmentView({
   children,
   cardsAfter,
   live = false,
+  cwd,
 }: SegmentViewProps) {
   const seqRef = useRef<number | null>(null);
   if (seqRef.current === null) seqRef.current = ++segSeq;
@@ -152,7 +156,7 @@ export const SegmentView = memo(function SegmentView({
         // the collapse map, and a chip that changed key on being folded into
         // a run would close itself every time the run was opened.
         const mk = cardKey(seq, seg, row.start + j);
-        if (seg.kind === "tool") nodes.push(<ToolChip key={mk} seg={seg} cardKey={mk} />);
+        if (seg.kind === "tool") nodes.push(<ToolChip key={mk} seg={seg} cardKey={mk} cwd={cwd} />);
         else if (seg.kind === "thinking")
           nodes.push(<ThinkingView key={mk} cardKey={mk} text={seg.text} />);
         else nodes.push(<NoticeView key={mk} text={segText(seg)} />);
@@ -175,7 +179,7 @@ export const SegmentView = memo(function SegmentView({
         node
       );
     if (seg.kind === "tool") {
-      nodes.push(withFiled(<ToolChip key={key} seg={seg} cardKey={key} />));
+      nodes.push(withFiled(<ToolChip key={key} seg={seg} cardKey={key} cwd={cwd} />));
       return;
     }
     if (seg.kind === "thinking") {
@@ -248,7 +252,7 @@ export const SegmentView = memo(function SegmentView({
     if (split) {
       const rest = segBlock(
         key + ":rest",
-        <MarkdownView className="seg-text" text={split.rest} enhance />,
+        <MarkdownView className="seg-text" text={split.rest} enhance cwd={cwd} />,
         null,
         null,
         "is-rest",
@@ -256,7 +260,7 @@ export const SegmentView = memo(function SegmentView({
       nodes.push(
         segBlock(
           key,
-          <MarkdownView className="seg-text" text={split.lead} enhance />,
+          <MarkdownView className="seg-text" text={split.lead} enhance cwd={cwd} />,
           trigger,
           null,
           "is-lead",
@@ -267,7 +271,7 @@ export const SegmentView = memo(function SegmentView({
     }
     const block = segBlock(
       key,
-      <MarkdownView className="seg-text" text={segText(seg)} enhance />,
+      <MarkdownView className="seg-text" text={segText(seg)} enhance cwd={cwd} />,
       trigger,
       null,
     );

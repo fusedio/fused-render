@@ -152,7 +152,7 @@ function shellRunCommand(pre: HTMLElement, text: string): string | null {
  *  ahead of it where the drawer exists (`canRunInTerminal()`) and the fence is
  *  a shell language. Run once per FINAL render — never on the per-frame
  *  stream path. */
-export function enhanceCodeBlocks(root: ParentNode): void {
+export function enhanceCodeBlocks(root: ParentNode, opts: { cwd?: string | null } = {}): void {
   wrapTables(root);
   root.querySelectorAll<HTMLElement>("pre code").forEach((el) => {
     if (el.classList.contains("hljs")) return;
@@ -180,7 +180,7 @@ export function enhanceCodeBlocks(root: ParentNode): void {
       r.className = "runbtn";
       r.textContent = "run";
       r.type = "button";
-      r.onclick = () => openTerminal({ command: runCommand, execute: false });
+      r.onclick = () => openTerminal({ cwd: opts.cwd ?? undefined, command: runCommand, execute: false });
       wrap.appendChild(r);
     }
     const b = document.createElement("button");

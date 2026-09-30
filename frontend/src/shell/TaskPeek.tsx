@@ -34,7 +34,8 @@ import { shortTaskId } from "@platform/lib/task-id";
 import { archiveTask, unarchiveTask } from "@platform/lib/api";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { notify } from "@platform/lib/notifications";
-import { canRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
+import { useCanRunInTerminal } from "@platform/lib/terminalDockStore";
+import { runOrCopyInTerminal } from "@platform/lib/runOrCopyInTerminal";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { useParamBoundary } from "@platform/lib/param-boundary";
 import { navigateUrl } from "@platform/lib/router";
@@ -42,7 +43,7 @@ import { anyModalOpen } from "@platform/ui/modal/esc-stack";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { ChatMount, useNativeChatFlag } from "@apps/claude";
-import { runAgent } from "@apps/claude/protocol/agent";
+import { fetchTerminalCommand as fetchAgentTerminalCommand } from "@apps/claude/protocol/agent";
 
 // THE HEADER IS THE PEEK'S OWN NOW, not the chat's (design.md, Header + list
 // state v2). It wore `@apps/claude/ui/Topbar` between 2026-09-13 and -09-14,
@@ -418,6 +419,7 @@ export function TaskPeek({
   const layout = useTaskPeekLayout();
   const key = usePeekedKey();
   const anchor = usePeekAnchor();
+  const canRun = useCanRunInTerminal();
   // THE URL MEETS THE DATA (task-peek-store.settlePeek): a deep link naming a
   // task that is not here closes the panel and drops the param instead of
   // standing open and empty; one naming a task NUMBER is rewritten to that
@@ -991,31 +993,13 @@ export function TaskPeek({
    * chat it is framing (`template`), so no second stat.
    */
   const agentDir = template ? template.slice(0, template.lastIndexOf("/")) : null;
-  const fetchTerminalCommand = async (): Promise<string> => {
-    const out = await runAgent(
-      agentDir!,
-      "terminal_command",
-      { file: task!.target || task!.project, session_id: task!.session_id ?? "" },
-      { key: null },
-    );
-    if ("error" in out && out.error) throw new Error(out.error);
-    if (!("command" in out)) throw new Error("agent.py returned no command");
-    return out.command;
-  };
+  const fetchTerminalCommand = (): Promise<string> =>
+    fetchAgentTerminalCommand(agentDir!, task!.target || task!.project, task!.session_id ?? "");
   const toTerminal = async () => {
     if (!task || !agentDir) return;
     try {
       const command = await fetchTerminalCommand();
-      if (canRunInTerminal()) {
-        openTerminal({ command });
-        notify({ title: "Opened in terminal", tone: "info" });
-      } else {
-        const ok = await copyToClipboard(command);
-        notify({
-          title: ok ? "Command copied — paste it in your terminal" : "Could not copy the command",
-          tone: ok ? "info" : "error",
-        });
-      }
+      await runOrCopyInTerminal(command, { ranMessage: "Opened in terminal" });
     } catch (e) {
       notify({ title: (e as Error).message, tone: "error" });
     }
@@ -1080,7 +1064,7 @@ export function TaskPeek({
     // The row above now RUNS the command where it can — this is the clipboard
     // fallback for a reader who would rather paste it into a terminal of
     // their own.
-    if (canRunInTerminal()) {
+    if (canRun) {
       items.push({
         label: "Copy terminal command",
         icon: ICON_TERMINAL,
