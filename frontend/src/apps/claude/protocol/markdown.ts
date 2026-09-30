@@ -5,6 +5,8 @@ import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/common";
 import { marked } from "marked";
 
+import { canRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
+
 let md: ((t: string) => string) | null = null;
 
 /**
@@ -107,11 +109,50 @@ function copyText(pre: HTMLElement): string {
 /** T:15040-15042. */
 export const COPY_RESET_MS = 1200;
 
+/** Fence languages a reader would paste at a shell prompt, not read as code. */
+const SHELL_LANGS = new Set(["bash", "sh", "shell", "zsh", "console"]);
+
+/**
+ * The text a shell fence's "run" button types into the terminal drawer, or
+ * `null` when the block isn't one the drawer should offer to run at all.
+ *
+ * `console` is a transcript, not a script — each line already carries its own
+ * `$ ` prompt (and sometimes bare output lines with none), so only the
+ * prompted lines are runnable and the `$ ` itself is not part of the command.
+ * The other shell languages are typed as written, multi-line included: a
+ * block that reads as an ordinary script (`cd foo`, then `./build.sh` on the
+ * next line) should run as one, and `execute: false` means each embedded
+ * newline still lands as an Enter at the prompt — so a multi-line block runs
+ * line-by-line as the reader watches, rather than silently in one shot the
+ * way `execute: true` would.
+ */
+/** The pure half of `shellRunCommand`, exported so the language/prompt logic
+ *  above is tested directly rather than through a constructed DOM tree. */
+export function shellRunText(lang: string | undefined, text: string): string | null {
+  const normLang = lang?.toLowerCase();
+  if (!normLang || !SHELL_LANGS.has(normLang)) return null;
+  if (!text.trim()) return null;
+  if (normLang !== "console") return text.replace(/\s+$/, "");
+  const lines = text
+    .split("\n")
+    .filter((line) => line.startsWith("$ "))
+    .map((line) => line.slice(2));
+  return lines.length ? lines.join("\n") : null;
+}
+
+function shellRunCommand(pre: HTMLElement, text: string): string | null {
+  const code = pre.querySelector("code");
+  const lang = (code?.className.match(/language-(\S+)/) || [])[1];
+  return shellRunText(lang, text);
+}
+
 /** T:14998-15055 `attachCodeCopy`: highlight `pre code.language-x` for
  *  registered languages only (idempotent on `.hljs`), then give every `<pre>`
- *  a zero-footprint `span.copywrap > button.copybtn`. Run once per FINAL
- *  render — never on the per-frame stream path. */
-export function enhanceCodeBlocks(root: ParentNode): void {
+ *  a zero-footprint `span.copywrap > button.copybtn`, plus a `button.runbtn`
+ *  ahead of it where the drawer exists (`canRunInTerminal()`) and the fence is
+ *  a shell language. Run once per FINAL render — never on the per-frame
+ *  stream path. */
+export function enhanceCodeBlocks(root: ParentNode, opts: { cwd?: string | null } = {}): void {
   wrapTables(root);
   root.querySelectorAll<HTMLElement>("pre code").forEach((el) => {
     if (el.classList.contains("hljs")) return;
@@ -125,9 +166,23 @@ export function enhanceCodeBlocks(root: ParentNode): void {
     }
   });
   root.querySelectorAll<HTMLElement>("pre").forEach((pre) => {
-    if (pre.querySelector(".copybtn")) return;
-    // Read BEFORE the button joins the tree, or the label rides along.
+    if (pre.querySelector(".copywrap")) return;
+    // Read BEFORE the buttons join the tree, or the label rides along.
     const text = copyText(pre);
+    const wrap = document.createElement("span");
+    wrap.className = "copywrap";
+    // The model's own suggestion, typed rather than run outright: `execute:
+    // false` leaves it sitting at the prompt for the reader to look over and
+    // press Enter on, the same review step Copy-then-paste always gave them.
+    const runCommand = canRunInTerminal() ? shellRunCommand(pre, text) : null;
+    if (runCommand !== null) {
+      const r = document.createElement("button");
+      r.className = "runbtn";
+      r.textContent = "run";
+      r.type = "button";
+      r.onclick = () => openTerminal({ cwd: opts.cwd ?? undefined, command: runCommand, execute: false });
+      wrap.appendChild(r);
+    }
     const b = document.createElement("button");
     b.className = "copybtn";
     b.textContent = "copy";
@@ -145,8 +200,6 @@ export function enhanceCodeBlocks(root: ParentNode): void {
         if (b.isConnected) b.textContent = "copy";
       }, COPY_RESET_MS);
     };
-    const wrap = document.createElement("span");
-    wrap.className = "copywrap";
     wrap.appendChild(b);
     if (pre.firstChild) pre.insertBefore(wrap, pre.firstChild);
     else pre.appendChild(wrap);

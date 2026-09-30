@@ -8,7 +8,7 @@ import { notifyFsChanged } from "@apps/explorer/listing/fsChangeBus";
 import { hydrateBookmarks, refreshBookmarks } from "@platform/lib/bookmarks";
 import { hydrateRecents } from "@apps/explorer/lib/recents";
 import { notifyBookmarksChanged } from "@platform/lib/hooks";
-import { openTerminal, type TerminalRequest } from "@shell/terminalDockStore";
+import { openTerminal, type TerminalRequest } from "@platform/lib/terminalDockStore";
 import App from "@shell/App";
 import "./shell.css";
 

@@ -11,13 +11,18 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 import {
+  canRunInTerminal,
   closeTerminalDock,
   openTerminal,
   peekPendingTerminalRequest,
+  registerTerminalDrawerMounted,
   resetTerminalDockForTests,
   takePendingTerminalRequest,
+  useCanRunInTerminal,
   usePendingTerminalRequestVersion,
-} from "@shell/terminalDockStore";
+} from "./terminalDockStore";
+import { IS_EMBED } from "./router";
+import { isWindows } from "./platform";
 
 let renderers: ReactTestRenderer[] = [];
 function renderTracked(node: Parameters<typeof create>[0]): ReactTestRenderer {
@@ -106,5 +111,47 @@ describe("usePendingTerminalRequestVersion", () => {
       await Promise.resolve();
     });
     expect(seen).toEqual([0]);
+  });
+});
+
+describe("canRunInTerminal", () => {
+  test("is false before any TerminalDrawer registers as mounted", () => {
+    // No drawer mounted (the onboarding route, or a test that renders
+    // nothing) means no Run affordance, whatever !IS_EMBED && !isWindows says.
+    expect(canRunInTerminal()).toBe(false);
+  });
+
+  test("matches the drawer's own !IS_EMBED && !isWindows gate once mounted", () => {
+    // App.tsx gates both `TerminalDrawer` and the `TerminalDock` chip on this
+    // exact pair, so every Run affordance elsewhere in the app must agree
+    // with it rather than re-derive its own version of the check.
+    const unregister = registerTerminalDrawerMounted();
+    expect(canRunInTerminal()).toBe(!IS_EMBED && !isWindows);
+    unregister();
+  });
+});
+
+describe("useCanRunInTerminal", () => {
+  test("re-renders as the drawer mounts and unmounts", async () => {
+    const seen: boolean[] = [];
+    function Probe() {
+      seen.push(useCanRunInTerminal());
+      return null;
+    }
+    renderTracked(<Probe />);
+    expect(seen).toEqual([false]);
+
+    let unregister!: () => void;
+    await act(async () => {
+      unregister = registerTerminalDrawerMounted();
+      await Promise.resolve();
+    });
+    expect(seen).toEqual([false, !IS_EMBED && !isWindows]);
+
+    await act(async () => {
+      unregister();
+      await Promise.resolve();
+    });
+    expect(seen).toEqual([false, !IS_EMBED && !isWindows, false]);
   });
 });

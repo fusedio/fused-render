@@ -69,6 +69,10 @@ export interface TurnProps {
    *  (`UserTurn.pending`): the line goes back into the box to edit — Claude
    *  Code's ↑, as a click. One callback for the log, keyed by the turn. */
   onPullPending?: (key: string) => void;
+  /** The chat's working directory, threaded down to `SegmentView`/`ToolChip`/
+   *  `MarkdownView` so a shell fence's or a Bash chip's "run" button `cd`'s
+   *  there first. */
+  cwd?: string | null;
 }
 
 /** MEMOIZED. Every 400 ms poll replaces `state.turns`, but a SETTLED turn's own
@@ -89,6 +93,7 @@ export const Turn = memo(function Turn({
   onToggleCollapse,
   pendingCard,
   onPullPending,
+  cwd,
 }: TurnProps) {
   // BEFORE the early returns below: a hook may not sit behind one, and the id
   // is only used on the assistant branch (see `bodyId`).
@@ -346,6 +351,7 @@ export const Turn = memo(function Turn({
               tail={tail}
               cardsAfter={cardsAfter ?? null}
               live={!!turn.streaming}
+              cwd={cwd}
             >
               {children}
             </SegmentView>
@@ -357,6 +363,7 @@ export const Turn = memo(function Turn({
                 className="seg-text"
                 text={tail ? tail.text : turn.text}
                 enhance={!tail}
+                cwd={cwd}
               />
               {tail && tail.cursor ? <Caret /> : null}
               {children}

@@ -16,6 +16,61 @@
 // setter, subscribed to with `useSyncExternalStore` so a re-render only
 // happens when the value actually changes.
 import { useSyncExternalStore } from "react";
+import { IS_EMBED } from "./router";
+import { isWindows } from "./platform";
+
+/** Whether `TerminalDrawer` is actually mounted right now. `!IS_EMBED &&
+ * !isWindows` is necessary but not sufficient: App.tsx only mounts the
+ * drawer on its main route, not on the onboarding route (the setup wizard is
+ * a pre-app surface with no sidebar, status bar or docks) — a Run affordance
+ * rendered there would hand a command to a drawer that does not exist.
+ * `TerminalDrawer` registers itself here for exactly as long as it is
+ * mounted (see `registerTerminalDrawerMounted`). */
+let mounted = false;
+const mountListeners = new Set<() => void>();
+
+/** Called by `TerminalDrawer` in a mount effect; returns the cleanup to run
+ * on unmount. Also used directly by tests that need `canRunInTerminal()`/
+ * `useCanRunInTerminal()` to read true without rendering a real drawer. */
+export function registerTerminalDrawerMounted(): () => void {
+  mounted = true;
+  for (const listener of mountListeners) listener();
+  return () => {
+    mounted = false;
+    for (const listener of mountListeners) listener();
+  };
+}
+
+function subscribeMounted(listener: () => void): () => void {
+  mountListeners.add(listener);
+  return () => mountListeners.delete(listener);
+}
+
+function canRunSnapshot(): boolean {
+  return !IS_EMBED && !isWindows && mounted;
+}
+
+/** Whether a "run in terminal" affordance may show at all, read once and not
+ * kept in sync with later mount/unmount — for an event handler or a
+ * non-React module (markdown.ts) deciding what to do right now, not for
+ * deciding what to render. A component or hook that decides whether to SHOW
+ * a Run button must use `useCanRunInTerminal()` instead, so it re-renders
+ * when the drawer mounts or unmounts (e.g. navigating to/from onboarding).
+ * Every Run affordance in the app — the health strip, the trouble card, the
+ * chat kebab, task/explorer "open in terminal", and the markdown/tool-chip
+ * run buttons — goes through one of these two instead of re-deriving the
+ * gate, so the day either constraint changes there is exactly one place to
+ * edit. */
+export function canRunInTerminal(): boolean {
+  return canRunSnapshot();
+}
+
+/** The reactive form of `canRunInTerminal()` — subscribes to drawer
+ * mount/unmount so a component re-renders the moment a Run affordance
+ * should appear or disappear. */
+export function useCanRunInTerminal(): boolean {
+  return useSyncExternalStore(subscribeMounted, canRunSnapshot);
+}
 
 let open = false;
 const listeners = new Set<() => void>();
@@ -49,12 +104,17 @@ export function useTerminalDockOpen(): boolean {
 
 /** A "open the drawer in this folder / run this command in it" request from
  * outside the drawer/chip (the explorer's "Open in Terminal" menu item,
- * `fused.terminal.open`/`.run` via the page-API bridge). Both fields are
+ * `fused.terminal.open`/`.run` via the page-API bridge). `cwd`/`command` are
  * optional so a bare "just open the drawer" request can share the same
- * shape as a folder-scoped or command-scoped one. */
+ * shape as a folder-scoped or command-scoped one. `execute` defaults to
+ * true, so a request with no `execute` field runs immediately; pass
+ * `execute: false` to have `command` typed at the prompt WITHOUT the
+ * trailing Enter, for a model-suggested shell command a person should read
+ * before it runs. */
 export interface TerminalRequest {
   cwd?: string;
   command?: string;
+  execute?: boolean;
 }
 
 // One slot, not a queue: a newer request replacing an unconsumed older one
@@ -121,4 +181,6 @@ export function resetTerminalDockForTests(): void {
   pendingRequest = null;
   pendingVersion = 0;
   pendingListeners.clear();
+  mounted = false;
+  mountListeners.clear();
 }
