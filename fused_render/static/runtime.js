@@ -342,6 +342,18 @@
  *     and its row says so. `device` works on audio() there, and does not on
  *     macOS. Ask sources() and read the `reason`s rather than sniffing the
  *     platform: there is deliberately no field naming which one served you.
+ *   fused.terminal.open({cwd}?) -> Promise<void> and
+ *   fused.terminal.run(command, {cwd}?) -> Promise<void>
+ *     Open the status-bar terminal drawer — `open` bare, in a folder, or with
+ *     a command already typed in (`run`, which also cds first when `cwd` is
+ *     given). Resolves once the request has been handed to the shell that
+ *     owns the drawer, not once a shell has actually opened it or run the
+ *     command — there is no round trip that would let it mean more. `command`
+ *     must be a non-empty string. Rejects .type "unavailable" on Windows
+ *     (terminal is POSIX-pty only) or with a plain Error when there is no
+ *     shell to hand the request to (a standalone /render page, the
+ *     hosted/exported runtime, or an embedded pane — the drawer itself
+ *     doesn't exist there).
  *   fused.watchJob(id) -> {get, watch, stop, cancel}
  *     Observe a job this page did NOT create — the server-owned work that
  *     fused.ai.models.load() and image generation start. The read side of the
@@ -1969,6 +1981,97 @@
     }
     return null;
   }
+
+  // Tell the NEAREST same-origin ancestor that owns the status-bar terminal
+  // drawer to open it, optionally in a given `cwd` and/or typing a `command`
+  // into it — `fused.terminal.open`/`.run`'s delivery half. Climbing/try-catch
+  // discipline and underscore-prefixed-plumbing-not-`fused`-contract reasoning
+  // are noteAskClaude's (D3/D4); the DELIVERY shape is noteAskClaude's too, not
+  // noteSnapshotSelected's broadcast-to-everyone one — opening a terminal
+  // starts (or types into) a real shell, so exactly one ancestor should act on
+  // it, not every shell in a nested-layout chain. Returns whether an ancestor
+  // with the hook was found — a page needs that to reject cleanly rather than
+  // resolving as if a drawer opened somewhere nobody can see (standalone
+  // /render, the hosted stub, or an embedded pane, none of which install the
+  // hook — `App.tsx` only mounts `TerminalDrawer` outside `IS_EMBED`).
+  function noteOpenTerminal(req) {
+    let t = window;
+    try {
+      for (;;) {
+        if (typeof t._fusedOpenTerminal === "function") { t._fusedOpenTerminal(req); return true; }
+        if (!t.parent || t.parent === t) break;
+        void t.parent.location.href; // throws when cross-origin — chain ends
+        t = t.parent;
+      }
+    } catch (e) {
+      /* hit a cross-origin ancestor; the same-origin chain is done */
+    }
+    return false;
+  }
+
+  // A best-effort, client-side-only Windows check (SPEC's terminal work is
+  // POSIX-pty-backed — see fused_render/pty_session.py — and every server
+  // route 501s on Windows). This is NOT authoritative: the server route is
+  // the real gate, and its 501 still surfaces (through TerminalDrawer's
+  // `createError` banner) if this check is ever wrong for some UA. It exists
+  // so `fused.terminal.open`/`.run` can reject synchronously with a clear
+  // reason on Windows rather than silently opening a drawer that is about to
+  // show a "Couldn't start a terminal" banner.
+  function terminalUnsupportedReason() {
+    const nav = typeof navigator === "object" && navigator ? navigator : {};
+    const platform = (nav.userAgentData && nav.userAgentData.platform) || nav.platform || nav.userAgent || "";
+    // Anchored so it matches only a platform string that NAMES Windows
+    // ("Win32", "Win64", "Windows") as a whole, not one that merely
+    // contains the substring "win" — an unanchored /win/i also matches
+    // "Darwin", macOS's own `uname` string.
+    if (/^win/i.test(platform)) {
+      return "terminal is not supported on this platform (Windows is out of scope)";
+    }
+    return null;
+  }
+
+  // Shared by terminalOpen/terminalRun: reject if unsupported, reject if
+  // there's no drawer to hand the request to, otherwise note it and resolve.
+  function noteTerminalRequestOrReject(req) {
+    const reason = terminalUnsupportedReason();
+    if (reason) return Promise.reject(Object.assign(new Error(reason), { type: "unavailable" }));
+    if (!noteOpenTerminal(req)) {
+      return Promise.reject(new Error(
+        "no terminal drawer to open here (standalone page, hosted export, or an embedded pane)"));
+    }
+    return Promise.resolve();
+  }
+
+  // fused.terminal.open({cwd}?) / fused.terminal.run(command, {cwd}?)
+  //
+  // Open the status-bar terminal drawer, in a given folder and/or with a
+  // command already typed in — the explorer's "Open in Terminal" menu item
+  // and any page that wants the same are both built on this. Neither call
+  // waits for a session to actually exist: `openTerminal()` on the shell side
+  // (terminalDockStore.ts) just records the request and opens the drawer;
+  // TerminalDrawer's own create-or-reattach effect (already running, or about
+  // to) is what turns it into a real pty and types the request in, once a
+  // session id exists. So the promise here resolves once the request has been
+  // HANDED to a shell that can act on it, not once a shell has actually acted
+  // on it — there is no round trip that would let it mean more than that.
+  function terminalOpen(opts) {
+    opts = opts || {};
+    const req = {};
+    if (typeof opts.cwd === "string" && opts.cwd) req.cwd = opts.cwd;
+    return noteTerminalRequestOrReject(req);
+  }
+
+  function terminalRun(command, opts) {
+    if (typeof command !== "string" || !command) {
+      return Promise.reject(new Error("fused.terminal.run(command, ...): command must be a non-empty string"));
+    }
+    opts = opts || {};
+    const req = { command };
+    if (typeof opts.cwd === "string" && opts.cwd) req.cwd = opts.cwd;
+    return noteTerminalRequestOrReject(req);
+  }
+
+  const terminal = { open: terminalOpen, run: terminalRun };
 
   // ---- the project-venv install loader (SPEC PY-16, PY-18) ------------------
   //
@@ -6569,6 +6672,7 @@
     mkdir,
     ai,
     capture,
+    terminal,
     fileIndex,
     tasks,
     trackJob,

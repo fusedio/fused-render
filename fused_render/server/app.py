@@ -52,6 +52,7 @@ from fused_render.server.routers.community import router as community_router
 from fused_render.server.routers.github import router as github_router
 from fused_render.server.routers.clipboard import router as clipboard_router
 from fused_render.server.routers.capture import router as capture_router
+from fused_render.server.routers.terminal import router as terminal_router
 from fused_render.server.routers.config import router as config_router
 from fused_render.server.routers.env import router as env_router
 from fused_render.server.routers.export import router as export_router
@@ -746,6 +747,18 @@ def create_app(start_dir: str) -> FastAPI:
     # `fused.capture.*`. macOS-only today, and it says so in `sources()` rather
     # than by the routes being absent — a page must be able to ask.
     app.include_router(capture_router)
+    # Status-bar terminal (routers/terminal.py): pty session create/list/kill
+    # plus the byte-stream WebSocket (pty_session.py owns the registry).
+    # Reaped on shutdown below so a server restart never leaves an orphaned
+    # shell running.
+    app.include_router(terminal_router)
+
+    @on_shutdown
+    async def _shutdown_terminal_sessions():
+        from fused_render import pty_session as _pty_session
+
+        await asyncio.to_thread(_pty_session.REGISTRY.shutdown_all)
+
     # Self-update triggers (routers/update.py) — POSTs that kick a manifest
     # check / an install; both carry the D3 X-Fused guard and 404 unless the
     # mac app started the update manager.

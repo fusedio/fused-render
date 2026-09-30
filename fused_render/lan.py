@@ -630,6 +630,12 @@ class LanApp:
         if kind == "websocket":
             # /api/fs/events (the runtime's change feed) is the one socket a
             # page needs; forwarded when every watched `path` is in the roots.
+            # /api/terminal/{sid}/stream is deliberately NOT allowlisted here —
+            # a paired LAN peer gets a 1008 close instead of a shell. This is a
+            # UX/scope call, not a security barrier (/api/run already executes
+            # arbitrary Python for any client that reaches the loopback
+            # server), so the omission is intentional, not an oversight the
+            # next socket added here should "fix".
             query = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"),
                              keep_blank_values=True)
             if (_host_ok(scope) and _paired(scope) and scope["path"] == "/api/fs/events"

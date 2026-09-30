@@ -57,8 +57,10 @@ import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
 import { AppDoctorStatusDot } from "@platform/ui/AppDoctorStatusDot";
 import { useAppDoctorChecks } from "@platform/ui/useAppDoctorChecks";
 import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
-import { navigateUrl, encodeFsPathSegments } from "@platform/lib/router";
+import { navigateUrl, encodeFsPathSegments, IS_EMBED } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
+import { openTerminal } from "@shell/terminalDockStore";
+import { isWindows } from "@platform/lib/platform";
 import { useAppVersionLabel } from "@platform/lib/appVersionLabel";
 import type { ResolvedSnapshot } from "@platform/lib/snapshot-param";
 import { MenuIcons } from "@platform/ui/MenuIcons";
@@ -134,6 +136,13 @@ export interface AppActionRows {
   app: MenuEntry[];
   doctor: MenuEntry[];
   embed: MenuEntry[];
+  // Open in Terminal — its own group, like `embed`, since it belongs in the
+  // "same folder/file elsewhere" `open` group each caller already builds
+  // (Reveal in Finder, Open in New Tab, the splits), not folded into `app`:
+  // it acts on this folder/file, not on whether it happens to be an app, so
+  // it shows on a plain folder too. Empty under `IS_EMBED` — an embedded pane
+  // mounts no TerminalDrawer (App.tsx), so a row here would open nothing.
+  terminal: MenuEntry[];
   isEntry: boolean;
   badge: ReactNode;
   modal: ReactNode;
@@ -315,6 +324,25 @@ export function useAppActionRows({
     });
   }
 
+  // `dir` is already the right cwd for both callers: the folder listing hands
+  // this hook its entry page (or `<folder>/index.html` standing in for one),
+  // whose parent IS the folder; the file preview hands it the previewed
+  // file, whose parent is the file's own directory — exactly "a folder →
+  // that folder, a file → its parent" the row is meant to open.
+  // Also hidden on Windows: the server routes 501 there regardless (see
+  // fused_render/server/routers/terminal.py), so this row would only ever
+  // fail (platform/lib/platform.ts's `isWindows`).
+  const terminal: MenuEntry[] = IS_EMBED || isWindows
+    ? []
+    : [
+        {
+          label: "Open in Terminal",
+          icon: MenuIcons.terminal,
+          title: "Open a terminal in " + name,
+          onClick: () => openTerminal({ cwd: dir }),
+        },
+      ];
+
   const embed: MenuEntry[] = onOpenEmbed
     ? [
         // The fullscreen glyph the row replaced, not `newTab`: the row once
@@ -333,6 +361,7 @@ export function useAppActionRows({
     app,
     doctor,
     embed,
+    terminal,
     isEntry,
     badge: isEntry ? <AppDoctorStatusDot checks={doctorChecks} /> : undefined,
     modal: doctorOpen ? (

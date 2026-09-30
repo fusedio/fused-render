@@ -63,6 +63,8 @@ import StatusBar from "@platform/ui/StatusBar";
 import ModelsDock from "@shell/ModelsDock";
 import ActivityDock from "@shell/ActivityDock";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
+import TerminalDock from "@shell/TerminalDock";
+import TerminalDrawer from "@shell/TerminalDrawer";
 import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
 import { PEEK_PARAM } from "@shell/task-peek-store";
 import type { TasksScope } from "@shell/Scheduled";
@@ -70,7 +72,7 @@ import { useTaskPeekEnabled } from "@shell/task-peek-flag";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { useTaskStatusNotify } from "@shell/useTaskStatusNotify";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
-import { isMod } from "@platform/lib/platform";
+import { isMod, isWindows } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { reconcileOsClipboard } from "@apps/explorer/lib/os-clipboard";
 import { BreadcrumbBar, StaticBreadcrumb } from "@apps/explorer/Breadcrumb";
@@ -1126,8 +1128,24 @@ export default function App({ config }: { config: Config }) {
             Inside `#main` (D563, not NotificationHost's fixed column) and
             behind the same `!IS_EMBED` guard as the sidebar, so a pane in
             panel/tab mode does not grow its own bar. */}
+        {/* TerminalDrawer stays outside `!IS_EMBED` guardless of the chip
+            below it for one reason only — it is the sibling of `.status-bar`
+            (not `.dl-panel`) that reserves height above it, so it has to sit
+            here, before the bar, whenever the bar itself is present; the
+            `!IS_EMBED` check the bar sits behind already keeps the whole
+            group out of an embedded pane. `fsPath` (already computed above,
+            `fsPathFromLocation()`) is the terminal's cwd — the folder
+            currently shown in the explorer, per PLAN's "How we'll know it
+            works". */}
+        {/* Both gated on `!isWindows` too (platform/lib/platform.ts): the
+            terminal's server routes 501 there regardless
+            (fused_render/server/routers/terminal.py), so the chip/drawer/
+            shortcut (bound inside TerminalDrawer, only while it is mounted)
+            are hidden rather than shown as a control that can only fail. */}
+        {!IS_EMBED && !isWindows && <TerminalDrawer cwd={fsPath} />}
         {!IS_EMBED && (
           <StatusBar
+            terminalDock={!isWindows && <TerminalDock />}
             models={<ModelsDock />}
             /* D586/D662: every terminal job is re-routed from Activity to
                Notifications, and this is the one place both sections are in

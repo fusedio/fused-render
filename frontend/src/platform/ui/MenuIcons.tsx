@@ -179,6 +179,15 @@ export const MenuIcons: Record<string, ReactNode> = {
       <path d="M12 11v5M9.5 13.5h5" />
     </svg>
   ),
+  // Open in Terminal — rounded screen with a ">" prompt and a cursor bar,
+  // distinct from `openWith`'s app grid: this switches to a shell, not a tool.
+  terminal: (
+    <svg {...svgProps}>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M7 9l3 3-3 3" />
+      <path d="M13 15h4" />
+    </svg>
+  ),
 
   // ---- Choosing rather than doing -----------------------------------------
   // The five below are for menus that are a set of ALTERNATIVES (the AI models

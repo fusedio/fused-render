@@ -115,11 +115,22 @@ const SHARED_APPS = new Set(["apps/claude"]);
  * opening its own long-poll, twelve cards on the Tasks wall exhausting the
  * browser's six-socket budget, and the page's boot reads queueing behind them.
  */
+/*
+ * `shell/terminalDockStore` is the fifth, and it is the one-boolean +
+ * one-slot-pending-request store the status-bar terminal drawer and chip
+ * share (see the module's own header comment). The explorer's "Open in
+ * Terminal" row (`apps/explorer/EntryActionsMenu.tsx`, `Preview.tsx`) calls
+ * its `openTerminal` to hand the drawer a folder/command without importing
+ * `TerminalDrawer.tsx` or any other shell file — it imports only React's
+ * `useSyncExternalStore`, so, like `shell/tasks-lib`, it is a pure module
+ * with no shell component riding along.
+ */
 const SHELL_OPEN_TO_APPS = new Set([
   "shell/ScheduleTaskViews",
   "shell/tasks-lib",
   "shell/tasksPulse",
   "shell/TaskPeekWho",
+  "shell/terminalDockStore",
 ]);
 
 const violations = [];
