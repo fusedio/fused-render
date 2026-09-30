@@ -5,7 +5,7 @@ description: Use when page or .py needs file search, disk-usage/file-type breakd
 
 # The file index
 
-**Full fused-render only.** The standalone Render App (`fused-render-app`) has no index: `fused.fileIndex` throws `fileIndex is not supported on Render App` and the HTTP routes below 404. On Render App (system prompt says so, `.fused` bundle, folder under `~/Fused/local/`, or that throw) stop here — walk in the `.py` with caching, or move the app to full fused-render (`fused-render-authoring`, Render App paragraph).
+**Full fused-render only.** The standalone Render App (`fused-render-app`) has no index: `fused.fileIndex` throws `fileIndex is not supported on Render App` and the HTTP routes below 404. On Render App (system prompt says so, app under `~/.fused-render-app/` or `~/Fused/local/`, or that throw) stop here — walk in the `.py` with caching, or move the app to full fused-render (`fused-render-authoring`, Render App paragraph).
 
 fused-render keeps parquet index of filesystem (one row per file, one per dir). Read it, don't `os.walk`/`find`/per-row stat. Three ways in:
 
