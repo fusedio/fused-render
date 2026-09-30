@@ -68,7 +68,7 @@ Why: Safari buttons/inputs don't inherit font or colour; Firefox dims placeholde
 
 ## Verify before "done"
 
-Same `/explorer/embed/<path>` URL in at least two engines, under the running server's origin (`$FUSED_RENDER_ORIGIN`, else `server.json` — see `fused-render-authoring` › Testing; never hardcode a port). On macOS both are one command away:
+Same `/explorer/embed/<path>` URL (Render App: `/render?path=<abs html>`) in at least two engines, under the running server's origin (`$FUSED_RENDER_ORIGIN`, else `server.json` — see `fused-render-authoring` › Testing; never hardcode a port). On macOS both are one command away:
 
 ```
 open -a Safari  "$FUSED_RENDER_ORIGIN/explorer/embed/…"
