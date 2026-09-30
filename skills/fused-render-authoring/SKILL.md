@@ -144,11 +144,19 @@ Same html, opened FOR target file: read-only `_file` param carries path. Reader 
 
 ## Testing
 
-Real browser against running server (`fused-render --port 1777 --no-browser`):
+Real browser against the server that is ALREADY running. Never assume a port — `1777` is only a bare `fused-render` on main; the desktop app picks a free port, a worktree gets a per-branch one, Render App (fused-render-lite) uses `2777`. Find the origin:
+
+1. `$FUSED_RENDER_ORIGIN` — exported by both servers to every process they spawn (a session opened from the app has it).
+2. `~/.fused-render/server.json` (Render App: `~/.fused-render-app/server.json`) — `origin` field, for a terminal session. Probe `<origin>/api/config` before trusting it; a crashed server leaves the file behind.
+3. Neither → nothing is running; start one yourself (`fused-render --no-browser --port <free>`).
+
+URLs under that origin:
 
 - `/explorer/embed/<abs path, leading slash dropped, segments URL-encoded>` — chrome-free. **Default for testing.**
 - `/explorer/view/<path>` — full shell chrome.
 - Templates: open TARGET file's path; or template html directly with `?_file=<abs target>`.
+
+Render App (origin on `2777`, `~/.fused-render-app`): no `/explorer/embed/`, no `fused-render calls`. Entry page serves at `/render?path=<abs entry>`; verify by eye there, or open the app folder in full fused-render for the loop below.
 
 Loop: render → interact → URL updates → hard refresh → identical view.
 
