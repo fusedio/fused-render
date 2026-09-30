@@ -91,6 +91,7 @@ import { usePreviewSnapshot } from "@apps/explorer/lib/usePreviewSnapshot";
 import { ModeMenu, OverflowMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
 import { useAppActionRows } from "@apps/explorer/EntryActionsMenu";
+import { openTerminal } from "@shell/terminalDockStore";
 import { McpDialog } from "@apps/explorer/McpDialog";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
 import { ChatMount, sideFrameSrc, useNativeChatFlag } from "@apps/claude";
@@ -728,6 +729,17 @@ function usePreviewFileMenu(
         icon: MenuIcons.newTab,
         onClick: () => window.open(urlForFsPath(fsPath), "_blank", "noopener"),
       },
+      // Absent under IS_EMBED, same as `splits` below: an embedded pane
+      // mounts no TerminalDrawer (App.tsx) for the row to open.
+      ...(IS_EMBED
+        ? []
+        : [
+            {
+              label: "Open in Terminal",
+              icon: MenuIcons.terminal,
+              onClick: () => openTerminal({ cwd: dirname(fsPath) }),
+            },
+          ]),
     ],
     share: shareRow({
       sharingEnabled: sharingFilesEnabled,
@@ -2167,7 +2179,7 @@ function TemplatePreview({
     return fileMenu({
       app: [...appRows.app, ...own.setPreview, ...appRows.doctor],
       file: own.file,
-      open: [...own.open, ...own.splits],
+      open: [...own.open, ...appRows.terminal, ...own.splits],
       share: own.share,
       copy: own.copy,
       embed: appRows.embed,
