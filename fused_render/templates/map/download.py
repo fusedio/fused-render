@@ -250,9 +250,16 @@ def _free_name(dest_dir: Path, name: str, source: str = "") -> tuple[Path, bool]
 
     def taken(path: Path) -> bool:
         # A shapefile name is taken if any piece of the set already exists.
+        # The path as spelled is always checked; each piece also in lower and
+        # upper case, since a case-sensitive disk treats ROADS.SHP and
+        # ROADS.shp as different files.
+        if path.exists():
+            return True
         if path.suffix.lower() == ".shp":
-            return any(path.with_suffix(s).exists() for s in (".shp",) + SHAPEFILE_SIDECARS)
-        return path.exists()
+            return any(path.with_suffix(spelled).exists()
+                       for s in (".shp",) + SHAPEFILE_SIDECARS
+                       for spelled in (s, s.upper()))
+        return False
 
     for n in itertools.count(1):
         if not taken(candidate):

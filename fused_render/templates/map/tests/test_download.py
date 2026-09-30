@@ -326,3 +326,18 @@ def test_a_store_with_unwritten_chunks_still_copies(download, served, dest):
     (root / "cube.zarr" / "temp" / "2.1.1").unlink()  # as if never written (fill value)
     result = download.main(f"{base}/cube.zarr", str(dest), "run")
     assert result["status"] == "ok" and not (Path(result["path"]) / "temp" / "2.1.1").exists()
+
+
+def test_an_upper_case_shapefile_already_there_is_never_overwritten(download, served, dest):
+    root, base = served
+    (root / "ROADS.SHP").write_bytes(b"new")
+    (dest / "ROADS.SHP").write_bytes(b"mine")
+    (dest / "other.DBF").write_bytes(b"x")
+    result = download.main(f"{base}/ROADS.SHP", str(dest), "run")
+    assert result["path"] == str(dest / "ROADS-1.SHP"), result
+    assert (dest / "ROADS.SHP").read_bytes() == b"mine"
+    # An upper-case sidecar of a lower-case name also makes it taken.
+    (root / "rivers.shp").write_bytes(b"new")
+    (dest / "rivers.DBF").write_bytes(b"mine")
+    assert download.main(f"{base}/rivers.shp", str(dest), "run")["path"] == str(dest / "rivers-1.shp")
+    assert (dest / "rivers.DBF").read_bytes() == b"mine"
