@@ -130,6 +130,22 @@ def test_what_makes_a_plan_stale(tmp_path):
     assert not stale(Change.modified, "newdir")
 
 
+def test_the_shallow_plan_is_stale_only_for_a_new_folder_under_the_root(tmp_path):
+    """The shallow plan watches the root and its children, never deeper, so
+    only a new kept child of the root changes it."""
+    root = tmp_path
+    _tree(root, "Downloads/new", "Downloads/node_modules", "Music")
+    pruner = _pruner(root)
+    recursive, flat = plan_watch(norm(str(root)), pruner, shallow=True)
+    session = _Session(recursive, flat, pruner, out=None,
+                       grows_under=[norm(str(root))])
+
+    assert session.stale_by(Change.added, str(root / "Music"))
+    assert not session.stale_by(Change.added, str(root / "Downloads" / "new"))
+    assert not session.stale_by(Change.added,
+                                str(root / "Downloads" / "node_modules"))
+
+
 # --------------------------------------------------------------- the plumbing
 
 
@@ -199,6 +215,47 @@ def test_a_process_that_exits_on_its_own_raises(spawned):
     next(source)
     with pytest.raises(RuntimeError, match="code 3"):
         next(source)
+
+
+@pytest.mark.skipif(not getattr(subprocess, "_USE_POSIX_SPAWN", False),
+                    reason="this platform's CPython never uses posix_spawn")
+def test_the_watcher_is_posix_spawned_and_inherits_no_listening_socket(monkeypatch):
+    """A fork() of a server with PROJ loaded dies with SIGSEGV before exec, so
+    the spawn must take CPython's posix_spawn path; and leaving fds open for
+    that must not hand the child the server's listening socket."""
+    import socket
+    spawns = []
+    real = subprocess.Popen._posix_spawn
+
+    def record(self, *a, **kw):
+        spawns.append(a[0])
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(subprocess.Popen, "_posix_spawn", record)
+    procs = []
+    real_popen = subprocess.Popen
+
+    def popen(*a, **kw):
+        procs.append(real_popen(*a, **kw))
+        return procs[-1]
+
+    monkeypatch.setattr(index_watch.subprocess, "Popen", popen)
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        source = _process_source(_fake("wait"), threading.Event(), poll_s=0.05)
+        try:
+            next(source)
+            assert spawns == [_fake("wait")], "the watcher was forked"
+            fd_dir = f"/proc/{procs[0].pid}/fd"
+            if os.path.isdir(fd_dir):
+                inode = f"socket:[{os.fstat(listener.fileno()).st_ino}]"
+                held = {os.readlink(os.path.join(fd_dir, fd))
+                        for fd in os.listdir(fd_dir)}
+                assert inode not in held, "the watcher holds the listening socket"
+        finally:
+            source.close()
+    assert procs[0].poll() is not None
 
 
 # ------------------------------------------------------ the real watcher process

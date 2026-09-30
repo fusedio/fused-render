@@ -305,6 +305,20 @@ def _end_process(proc: subprocess.Popen) -> None:
         logger.warning("index watch: watcher process %s did not exit", proc.pid)
 
 
+def _spawn_kwargs() -> dict:
+    """Popen kwargs for the watcher. On POSIX, `close_fds=False` (with an
+    absolute `sys.executable`, no `cwd` and no `start_new_session`) keeps
+    CPython on `posix_spawn`: a fork() of a server that has loaded PROJ runs
+    its `pthread_atfork` handler and the child dies with SIGSEGV before exec.
+    Leaving fds open costs nothing, because every fd Python opens is
+    non-inheritable (PEP 446): the child gets its two pipes and not the
+    server's listening socket, and no other child holds the watcher's stdin
+    open past the server's exit. Same rule as `index.runner._detach_kwargs`."""
+    if sys.platform == "win32":
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {"close_fds": False}
+
+
 def _process_source(argv: list, stop_event, *, tick_s: float = TICK_S,
                     poll_s: float = STOP_POLL_S):
     """Run `argv` (a watcher process speaking `fused_render.index.watcher`'s
@@ -315,9 +329,8 @@ def _process_source(argv: list, stop_event, *, tick_s: float = TICK_S,
     backoff. The process is ended whenever the generator is."""
     from watchfiles import Change
 
-    proc = subprocess.Popen(
-        argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            **_spawn_kwargs())
     lines: queue.Queue = queue.Queue()
 
     def pump() -> None:

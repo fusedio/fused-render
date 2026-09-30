@@ -137,7 +137,10 @@ writes JSON lines (`changes`, `log`, `error`) to stdout;
 `index_watch._process_source` turns them back into `watchfiles.watch`-shaped
 batches plus a 5 s empty tick, so `WatchLoop` is unchanged. The child exits
 on stdin EOF, which ties it to the server's lifetime; the server also closes
-its stdin, then terminates it, whenever the source ends.
+its stdin, then terminates it, whenever the source ends. It is spawned with
+`close_fds=False` so CPython uses `posix_spawn`: a fork of a server with
+PROJ loaded dies with SIGSEGV before exec. Python's fds are non-inheritable,
+so the child still gets only its two pipes, not the listening socket.
 
 The child watches the indexed tree, not the whole root. `plan_watch` walks
 the root with the scan's own descent rule (`scan.keep_subdirs`, the root's
@@ -155,7 +158,9 @@ When the watch fails with the watch-limit error (inotify's `ENOSPC`, which
 the child falls back to **non-recursive** watches on the root and each of
 its kept children. That still catches `~/Downloads/foo.dmg` and `~/a.txt`;
 deeper changes fall to the periodic rescan. The degraded mode is logged
-once, naming `fs.inotify.max_user_watches`.
+once, naming `fs.inotify.max_user_watches`. Only a new kept folder directly
+under the root makes the shallow plan stale; one deeper would re-plan into
+the same watches.
 
 ### 3.3 Ignore rules
 

@@ -247,11 +247,19 @@ class _Out:
 class _Session:
     """One plan's watchers: a thread per watch mode, each forwarding its
     batches, and a `done` event set when the plan is stale or a watcher
-    failed."""
+    failed.
 
-    def __init__(self, recursive, flat, pruner: Pruner, out: _Out):
+    `grows_under` is the set of directories a new kept folder directly
+    inside of changes the plan. Normally that is every flat watch, since the
+    next plan watches the new folder. The shallow plan only ever adds the
+    root's children, so it passes just the root: a folder appearing deeper
+    would re-plan into the same watches, and each re-plan is a gap."""
+
+    def __init__(self, recursive, flat, pruner: Pruner, out: _Out, *,
+                 grows_under=None):
         self.recursive, self.flat = recursive, flat
         self.flat_set = set(flat)
+        self.grows_under = self.flat_set if grows_under is None else set(grows_under)
         self.pruner = pruner
         self.out = out
         self.stop = threading.Event()
@@ -270,7 +278,8 @@ class _Session:
         p = norm(path)
         parent = p.rpartition("/")[0] or "/"
         if parent in self.flat_set:
-            return (self.pruner.rule_kept(p) and os.path.isdir(p)
+            return (parent in self.grows_under
+                    and self.pruner.rule_kept(p) and os.path.isdir(p)
                     and not os.path.islink(p))
         # Inside a recursive watch, which follows symlinks.
         if os.path.islink(p):
@@ -324,7 +333,8 @@ def serve(root: str, pruner: Pruner, out: _Out) -> int:
                       f"{len(flat)} non-recursive "
                       f"(planned in {time.monotonic() - t0:.1f}s"
                       f"{', shallow' if shallow else ''})"))
-        session = _Session(recursive, flat, pruner, out)
+        session = _Session(recursive, flat, pruner, out,
+                           grows_under=[norm(root)] if shallow else None)
         session.start()
         session.done.wait()
         err = session.error
