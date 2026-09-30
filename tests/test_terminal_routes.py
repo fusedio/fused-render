@@ -18,7 +18,6 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
 
 from fused_render import pty_session
 from fused_render.server import create_app
@@ -140,11 +139,16 @@ def test_second_attach_shares_the_same_shell(client, scratch_registry):
         assert b"shared999" in replay
 
 
-def test_unknown_id_closes_with_1008(client, scratch_registry):
-    with pytest.raises(WebSocketDisconnect) as excinfo:
-        with client.websocket_connect("/api/terminal/does-not-exist/stream"):
-            pass
-    assert excinfo.value.code == 1008
+def test_unknown_id_gets_an_exit_frame_instead_of_a_bare_reject(client, scratch_registry):
+    """An id the registry doesn't know (never created, or reaped by a
+    server restart's `shutdown_all`) accepts the handshake, sends the same
+    `{"exit": null}` frame a normally-dying session sends, then closes — so
+    the client's existing exit path (drop the cached id, mint a fresh shell
+    on next open) fires instead of a reconnect loop that treats every close
+    as a blip and retries forever."""
+    with client.websocket_connect("/api/terminal/does-not-exist/stream") as ws:
+        msg = json.loads(ws.receive_text())
+        assert msg == {"exit": None}
 
 
 def test_create_requires_x_fused_header(client, scratch_registry):

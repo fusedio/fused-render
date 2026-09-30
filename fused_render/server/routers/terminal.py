@@ -15,7 +15,8 @@ inside one shape:
     the pty; a TEXT frame is a JSON control message, today only
     `{"resize": [rows, cols]}`.
   * server -> client: a BINARY frame is the shell's output; a TEXT frame is
-    JSON, today only `{"exit": code}` sent once, when the child dies.
+    JSON, today only `{"exit": code}` sent once, when the child dies (or
+    `{"exit": null}` immediately, for an id the registry no longer knows).
 
 Windows: every route returns 501 with a plain reason, and the chip that would
 reach them is hidden client-side (see PLAN-status-bar-terminal.md's
@@ -97,8 +98,16 @@ async def api_terminal_stream(ws: WebSocket, sid: str):
         return
     session = pty_session.REGISTRY.get(sid)
     if session is None:
-        # Reject the handshake outright — no accept() — so a stale id closes
-        # immediately rather than opening a socket with nothing behind it.
+        # An id the registry doesn't know — never created, or reaped by a
+        # server restart's `shutdown_all` — gets the same `{"exit": null}`
+        # frame a session that dies normally sends, not a bare reject: the
+        # client's `TerminalSession` treats every close it didn't ask for as
+        # a transient blip and reconnects with backoff, which would retry
+        # this same dead id forever. Accepting first and sending the exit
+        # frame routes it through the client's ordinary exit handling
+        # instead (drop the cached id, mint a fresh shell next open).
+        await ws.accept()
+        await ws.send_text(json.dumps({"exit": None}))
         await ws.close(code=1008)
         return
 
