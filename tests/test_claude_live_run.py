@@ -98,6 +98,40 @@ def test_a_finished_run_is_not_offered(agent, target):
     assert agent._live_run(target, "sess-A") == {"run_id": ""}
 
 
+def _out(run_dir, rows):
+    with open(os.path.join(run_dir, "out.jsonl"), "w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+
+def test_a_stop_pressed_after_the_result_does_not_reopen_the_turn(agent, target):
+    """The STOP button's `interrupt` is answered with a `control_response` row
+    — after the `result` when the turn had just ended. The process stays alive
+    under the session host, so that row was the only thing saying "still
+    going", and the chat sat on "Claude is replying…" with a live stop button
+    (Akshil, 2026-09-23). Not a turn; neither is a `rate_limit_event`."""
+    d = _run_dir(agent, "20260923-124427-aaa", file=target, session="sess-A")
+    _out(d, [
+        {"type": "system", "subtype": "init", "session_id": "sess-A"},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "1"}]}},
+        {"type": "result", "subtype": "success", "result": "1"},
+        {"type": "control_response",
+         "response": {"subtype": "success", "request_id": "x-1",
+                      "response": {"still_queued": []}}},
+        {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed"}},
+    ])
+    assert agent._turn_state(d) == (False, False)
+    assert agent._live_run(target, "sess-A") == {"run_id": ""}
+    # ...while a real wake-up after the result — hooks, then init — still is.
+    _out(d, [
+        {"type": "result", "subtype": "success", "result": "1"},
+        {"type": "control_response", "response": {"subtype": "success"}},
+        {"type": "system", "subtype": "hook_started"},
+    ])
+    assert agent._turn_state(d)[0] is True
+    assert agent._live_run(target, "sess-A") == {"run_id": "20260923-124427-aaa"}
+
+
 def test_another_chat_s_run_is_not_adopted(agent, target, tmp_path):
     """Matching is on the target first: two chats can be live at once, and
     picking the wrong one would stream someone else's reply into this log."""

@@ -24,7 +24,7 @@ export interface StarterPrompt {
   capability: string | null;
 }
 
-// The five capabilities a Playground annotation can carry — the same strings
+// The six capabilities a Playground annotation can carry — the same strings
 // `buildAppAnnotation` puts in the chip. Spelled out here rather than imported
 // from `@apps/ai_models` because an app may only import platform + itself; the
 // test asserts the pool uses exactly these, so a typo cannot quietly create a
@@ -35,6 +35,7 @@ export const STARTER_CAPABILITIES = [
   "text-to-video",
   "automatic-speech-recognition",
   "embeddings",
+  "text-classification",
 ] as const;
 
 // One wrapper for every chip glyph: 13px at 2px stroke, the composer's own
@@ -717,6 +718,93 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       "with the same model and shows the top 24 matches as a thumbnail grid (fused.rawUrl " +
       "for the images) with score badges; clicking a thumbnail opens a lightbox with the " +
       "full image, its path, and a Reveal in folder button. " +
+      LOCAL,
+  },
+
+  // Decisions (`text-classification`, the Laya runner). Not a generator: one
+  // fused.ai.decide({state, questions}) call answers typed questions about a
+  // text with calibrated probabilities — `choice` picks a label, `score`
+  // places the text on an ordered rubric, `noul` says how likely a statement
+  // is true. Milliseconds a call, so these briefs run it on every row and on
+  // every edit rather than behind a button.
+  {
+    label: "Inbox triage",
+    capability: "text-classification",
+    glyph: S(
+      <>
+        <path d="M3 13h5l2 3h4l2-3h5" />
+        <path d="M5 6h14l2 7v6H3v-6z" />
+      </>,
+    ),
+    prompt:
+      "An inbox triage board. A textarea accepts pasted emails separated by blank lines; " +
+      "each becomes a card. For every card call fused.ai.decide with the email as state " +
+      "and three questions: department as a choice over {billing, technical, sales, other} " +
+      "with one-line descriptions, urgency as a score over [whenever, this week, today], " +
+      "and needs_reply as a noul asking whether the sender expects an answer. Sort cards " +
+      "by urgency then confidence, show the department as a coloured tag, the urgency as " +
+      "a three-step meter with the expected level marked, and a Reply dot when " +
+      "needs_reply is above 0.5. Clicking a tag reveals the full probabilities. " +
+      LOCAL,
+  },
+  {
+    label: "Review scorer",
+    capability: "text-classification",
+    glyph: S(
+      <>
+        <path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8L3.5 9.7l5.9-.9z" />
+      </>,
+    ),
+    prompt:
+      "A review reader. Left: a textarea for one customer review, re-run on every pause in " +
+      "typing (debounce 300 ms). Right: the answers from fused.ai.decide — stars as a " +
+      "score over [one, two, three, four, five] drawn as five stars with the expected " +
+      "level filled proportionally, sentiment as a choice over {negative, mixed, positive} " +
+      "shown as a horizontal probability strip, and would_return as a noul shown as a " +
+      "yes/no verdict with its probability. Below, a table of every review pasted this " +
+      "session with its three answers, exportable as CSV. " +
+      LOCAL,
+  },
+  {
+    label: "Comment guard",
+    capability: "text-classification",
+    glyph: S(
+      <>
+        <path d="M12 3l8 3v6c0 4.5-3.4 7.7-8 9-4.6-1.3-8-4.5-8-9V6z" />
+        <path d="M9 12l2 2 4-4" />
+      </>,
+    ),
+    prompt:
+      "A comment moderation queue. Load comments.json from the app folder (an array of " +
+      "{id, author, text}) or paste JSON. For each comment call fused.ai.decide with " +
+      "action as a choice over {publish, review, remove} with descriptions, tone as a " +
+      "score over [hostile, neutral, helpful], and spam as a noul. Group the queue into " +
+      "three columns by the chosen action; each card shows the tone meter, a spam badge " +
+      "when spam is above 0.5, and the action's probability. Low-confidence cards (below " +
+      "0.6) get a dashed border and sort to the top of their column for a human look. " +
+      "Approve and Remove buttons write decisions.json beside the source. " +
+      LOCAL,
+  },
+  {
+    label: "Question lab",
+    capability: "text-classification",
+    glyph: S(
+      <>
+        <path d="M4 12h6" />
+        <path d="M10 12c3 0 3-5 6-5h4M10 12c3 0 3 5 6 5h4" />
+        <circle cx="20" cy="7" r="1.5" fill="currentColor" stroke="none" />
+      </>,
+    ),
+    prompt:
+      "A workbench for writing typed questions. A textarea holds the state; a list of " +
+      "question rows each has a key, a type picker (choice, score, noul), an instructions " +
+      "field, and a comma-separated options field shown for choice and score. A Run " +
+      "button calls fused.ai.decide once with all questions and draws each answer under " +
+      "its row as probability bars, the picked option highlighted, the score's expected " +
+      "level marked on its rubric. A Copy JSON button copies the exact {state, questions} " +
+      "request and a Save button writes questions.json beside the app so a page author " +
+      "can reuse the set. Show usage.inputTokens and warn when a warnings[] entry says " +
+      "the state was cut to the model's window. " +
       LOCAL,
   },
 ];

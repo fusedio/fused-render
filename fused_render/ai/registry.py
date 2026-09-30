@@ -122,6 +122,28 @@ EMBEDDINGS = "embeddings"
 #: off Apple Silicon this capability has zero runners able to serve it, and
 #: `catalog()` reports `default: null` for it there.
 VIDEO_GENERATION = "text-to-video"
+#: Typed decisions, not generated text: a state plus typed questions
+#: (`choice` / `score` / `noul`) in, calibrated probabilities out, zero output
+#: tokens. The sixth verb (`fused.ai.decide`, D887) and the sixth capability.
+#:
+#: The Hub's own tag, like `SPEECH_TO_TEXT` — every Laya checkpoint's card says
+#: `text-classification`, so the constant, the `pipeline_tag` and the
+#: capability a card asks to load stay one string. **But the tag is not
+#: decisive on its own**, unlike a Whisper repo's: every sentiment BERT on the
+#: Hub wears it too, and none of them is a Laya. So the tag is GATED at both
+#: places a repo can enter (`tasks.Task.format_gated`):
+#:
+#: * a CACHED snapshot has files, and the FORMAT settles it — one carrying
+#:   `rl_agent_config.json` (Laya's decision-head config, which no other
+#:   layout ships) is claimed by `laya-mlx` in `formats.loaders()`, and
+#:   `laya-mlx` sits in `formats.DECISIVE` for it; any other
+#:   text-classification snapshot reads as "capability known, no engine here
+#:   reads this format", which is true;
+#: * a SEARCH hit has only metadata, so `hub_models._passes_format_gate` admits
+#:   it only when the curation names the id or the repo's own `tags` carry the
+#:   runner's family tag (`laya`) — never on the pipeline tag alone, which is
+#:   how HS-0 ("everything on this tab is runnable here") keeps holding.
+DECISIONS = "text-classification"
 
 # --------------------------------------------------------------- SPEC AI-28
 #: Orthogonal TAGS, not capabilities — `tool-use` and `vision` describe a
@@ -1813,6 +1835,26 @@ _RUNNERS: tuple[Runner, ...] = (
         family_label="LTX-2.3",
         note="Generates text-to-video with audio, distilled to 8 steps. "
              "Needs 16 GB+ of RAM.",
+        _available=_apple_silicon,
+    ),
+    # **Laya — typed decisions on MLX (D887).** The one row for `DECISIONS`,
+    # and like `ltx-video` a capability with no "everywhere" fallback: the
+    # `laya-mlx` package (an independent MLX port of Convai's Laya encoder +
+    # decision heads) is Apple-Silicon only, and no other engine here reads
+    # its `rl_agent_config.json` layout. Not generative — one encoder pass
+    # per question, ~13 ms, so the route is synchronous like embed's rather
+    # than streamed like text's or job-backed like image's.
+    Runner(
+        code="laya-mlx",
+        capability=DECISIONS,
+        folder=os.path.join(RUNNERS_DIR, "laya_mlx"),
+        # Hardware qualifier on the long name only, per the naming note
+        # above the table.
+        label="Laya (Apple Silicon)",
+        short_label="Laya",
+        family_label="Laya",
+        note="Answers typed questions about a state with calibrated "
+             "probabilities. Under 1 GB of RAM.",
         _available=_apple_silicon,
     ),
 )

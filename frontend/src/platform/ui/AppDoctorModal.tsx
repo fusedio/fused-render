@@ -225,12 +225,12 @@ function CheckRow({
    *  staying on the page the user was already looking at. Owned by the
    *  caller because only the caller (Listing.tsx, Preview.tsx) knows which
    *  `_side`-writer is its own — this component has no sidebar of its own to
-   *  open. `undefined` where the surface HAS no such sidebar (AppPage.tsx's
-   *  `AppDoctorPanel`: read-only about git, no Git tab exists there — see its
-   *  own header — and a snapshot/panel pane, which owns no address bar to
-   *  write `_side` on), in which case the row falls back to the old
-   *  navigate-to-the-git-mode behaviour so the action still does something
-   *  rather than silently no-op. */
+   *  open. `undefined` where the surface HAS no such sidebar (a snapshot or
+   *  panel pane, which owns no address bar to write `_side` on), in which
+   *  case the row falls back to the old navigate-to-the-git-mode behaviour so
+   *  the action still does something rather than silently no-op. AppPage.tsx's
+   *  `AppDoctorPanel` used to be on that list and no longer is: the app page
+   *  grew a git column of its own and hands one down. */
   onOpenGit?: () => void;
 }) {
   const { shown, hidden } = splitFindings(check.findings);
@@ -400,9 +400,8 @@ function CheckRow({
                   about; the sidebar it opens is scoped to the folder/file the
                   user is already on, which is that same repo (Doctor never
                   renders for a path outside it). Where no such sidebar exists
-                  (`onOpenGit` undefined — AppPage.tsx's read-only-about-git
-                  tab, or a snapshot/panel pane with no address bar of its
-                  own), falls back to the old cross-page navigation so the
+                  (`onOpenGit` undefined — a snapshot or panel pane with
+                  no address bar of its own), falls back to the old cross-page navigation so the
                   action still does something instead of silently no-op'ing. */}
               {openInGit && check.gitRoot && (
                 <Button
@@ -931,13 +930,21 @@ function AppDoctorFixAllButton({ report, busy, liveTask, checkLive, fixAll, foll
 // sit. It always checks the LIVE folder: the version picker's snapshot is an
 // extracted read-only tree, and there is nothing a fix task could do to it,
 // so this panel ignores `_snapshot` rather than reporting on a copy.
-export function AppDoctorPanel({ dir }: { dir: string }) {
+export function AppDoctorPanel({
+  dir,
+  onOpenGit,
+}: {
+  dir: string;
+  /** Opens the app page's OWN right-hand git column (AppPage.tsx), the way
+   *  the explorer's surfaces open theirs. It used not to exist: this page was
+   *  read-only about git and carried no git surface at all, so the row fell
+   *  through to CheckRow's cross-page navigate. The page hosts the `git`
+   *  template in a sidebar now, so the row stays on the page like everywhere
+   *  else. Still optional — a caller that mounts this panel without a column
+   *  of its own gets the navigating fallback, unchanged. */
+  onOpenGit?: () => void;
+}) {
   const r = useAppDoctorReport(dir);
-  // G1: no `onOpenGit` here on purpose. This page (AppPage.tsx) is
-  // deliberately read-only about git — no Git tab exists on it at all (see
-  // that file's own header) — so there is no sidebar for "Open in git" to
-  // open. CheckRow's fallback (the old cross-page navigate) is the correct,
-  // sensible degrade for this surface, not a gap to fill in.
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-x-hidden overflow-y-auto">
@@ -946,7 +953,7 @@ export function AppDoctorPanel({ dir }: { dir: string }) {
             <SummaryText report={r.report} />
           </p>
         )}
-        <AppDoctorChecklist {...r} />
+        <AppDoctorChecklist {...r} onOpenGit={onOpenGit} />
       </div>
       <div className="mt-4 flex flex-none items-center justify-between gap-3 border-t border-t-[var(--border)] pt-4">
         <span className="appdoc-foot-note">

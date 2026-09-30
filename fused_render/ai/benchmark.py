@@ -179,7 +179,12 @@ _EMBED_TEXTS = (
 #: for a capability missing from both `WORKLOADS` and `_MEASURE` already
 #: degrades this to a clean 4xx rather than a crash or a silently-broken Run
 #: button (see that function's docstring) — the gap is safe, just incomplete.
-NO_WORKLOAD_YET = frozenset({registry.VIDEO_GENERATION})
+#:
+#: `DECISIONS` (D887) joins it for a smaller reason: a Laya call is ~13 ms per
+#: question, so a meaningful workload is a fixed batch of typed questions over a
+#: fixed state, and which questions — and whether the tab measures q/s or
+#: per-question latency — is the same product decision as above.
+NO_WORKLOAD_YET = frozenset({registry.VIDEO_GENERATION, registry.DECISIONS})
 
 #: One entry per capability constant in `registry`, `NO_WORKLOAD_YET` excepted.
 #: A capability with neither an entry here nor an exemption above would render

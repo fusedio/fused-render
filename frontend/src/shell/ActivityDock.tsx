@@ -46,7 +46,6 @@ import {
   groupPopupTick,
   isRunning,
   popupTick,
-  updateJobInFlight,
   terminalNotifications,
   type Job,
 } from "@platform/lib/jobs";
@@ -180,14 +179,8 @@ function useRunningEngines(): {
 export default function ActivityDock({
   onTerminalJobs,
   onJobPopup,
-  onUpdateJob,
 }: {
   onTerminalJobs?: (jobs: Job[]) => void;
-  /** The self-update's row while it runs, or `null` once it stops — drawn
-   *  bottom right by `NotificationHost` (platform/ui/UpdateProgressCard).
-   *  Fires every poll during an install (the bytes move), once with `null`
-   *  after. */
-  onUpdateJob?: (job: Job | null) => void;
   /** A job just crossed into terminal and should pop its card (SPEC
    *  actionable-notifications) — "latest wins" is already enforced by
    *  `popupTick` below, so this fires at most once per poll. */
@@ -228,20 +221,13 @@ export default function ActivityDock({
   const popupJobsSeenRef = useRef<Set<string>>(new Set());
   const popupFirstTickRef = useRef(true);
   // D-C's own state (SPEC-quiet-notifications.md §3) — a MULTI-member
-  // group's start/failure pop-rule tracking, entirely separate from
+  // group's failure pop-rule tracking, entirely separate from
   // `popupJobsSeenRef` above (which now excludes multi-member group members
   // outright; see `popupJobs`'s own doc). Carried the same way, in a ref,
   // for the same "this callback is memoized with `[]` deps" reason.
   const groupPopupStateRef = useRef(EMPTY_GROUP_POPUP_STATE);
   const onJobPopupRef = useRef(onJobPopup);
   onJobPopupRef.current = onJobPopup;
-  // The self-update's running row, forwarded to `NotificationHost`'s
-  // bottom-right progress card (platform/ui/UpdateProgressCard). Called only
-  // when the answer moves — a new object each poll while the install runs
-  // (its bytes are the point), `null` once, when it leaves the running set.
-  const onUpdateJobRef = useRef(onUpdateJob);
-  onUpdateJobRef.current = onUpdateJob;
-  const updateJobWasRef = useRef(false);
   // The setup meter (onboarding/progress.ts) reads stage statuses the server
   // observes on each read — and a model download starting or finishing is
   // exactly when the Models stage moves. This poll is the shell's one view of
@@ -276,6 +262,10 @@ export default function ActivityDock({
     // it, not the panel's already-tier-filtered subset (see `popupJobs`'s
     // own doc for why: a `transient` job here has to pop even though
     // `terminalNotifications` never counts it terminal-for-the-panel).
+    // No presence check here any more (2026-09-23, D888): `popupJobs`
+    // already excludes every successful `done` job outright, so the only
+    // candidates reaching this are `error`/`cancelled`, which are never
+    // suppressed regardless of where the user is.
     // Finding 8: pass the PRIOR tick's group-failure keys so a group that
     // just shrank to one member (a sibling dismissed/swept) doesn't have its
     // already-popped failure treated as a brand-new candidate the instant it
@@ -285,18 +275,16 @@ export default function ActivityDock({
       next,
       popupJobsSeenRef.current,
       popupFirstTickRef.current,
-      isOpenAnywhere,
       groupPopupStateRef.current.failedSeen,
     );
     popupJobsSeenRef.current = seen;
-    // D-C (§3): a MULTI-member group's own start/failure pop, computed off
-    // the same full `next` snapshot and the same `isFirstTick` flag (so a
+    // D-C (§3): a MULTI-member group's own failure pop, computed off the
+    // same full `next` snapshot and the same `isFirstTick` flag (so a
     // page-load backlog seeds silently here too, not just in `popupTick`).
     // "Latest wins, no stacking" is enforced ACROSS both sources by
     // comparing whichever moment each candidate actually represents (a
-    // single job's own `finished_at`, a group start's `started_at`, a group
-    // failure's `finished_at`) — see each function's own doc for why that
-    // pairing is the right one.
+    // single job's own `finished_at`, a group failure's `finished_at`) —
+    // see each function's own doc for why that pairing is the right one.
     const groupResult = groupPopupTick(next, groupPopupStateRef.current, popupFirstTickRef.current);
     groupPopupStateRef.current = groupResult.state;
     popupFirstTickRef.current = false;
@@ -308,9 +296,6 @@ export default function ActivityDock({
           : popped
         : popped ?? groupResult.popped;
     if (winner) onJobPopupRef.current?.(winner);
-    const updateJob = updateJobInFlight(next);
-    if (updateJob || updateJobWasRef.current) onUpdateJobRef.current?.(updateJob);
-    updateJobWasRef.current = updateJob !== null;
     if (moved) noteProgressMayHaveMoved();
   }, []);
 

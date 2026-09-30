@@ -11,7 +11,11 @@ Files live in ``<state dir>/lan_tls/``: ``ca.pem``/``ca.key`` (10 years) and
 ``server.pem``/``server.key`` (1 year), the leaf reissued whenever the set of
 names it must carry — the two mDNS names plus the current LAN address — changes.
 Keys are P-256; the CA key never leaves this folder and signs nothing but the
-leaf. ``cryptography`` is already a dependency.
+leaf. ``cryptography`` is NOT a core dependency of fused-render — it arrives
+only via the ``[bundled]``/``[fused]`` extras (LEAN_WHEEL_SPEC.md). This
+module is therefore unavailable on a bare/lean install; callers must guard
+their import of it and fail cleanly (see lan.py's ``/lan/ca.pem`` and
+``/api/lan/tls`` routes for the pattern).
 """
 from __future__ import annotations
 

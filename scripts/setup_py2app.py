@@ -178,29 +178,51 @@ def _bundled_distributions():
     declared = list(pyproject["project"]["optional-dependencies"]["bundled"])
     declared += list(pyproject["project"]["dependencies"])
     excluded = {_norm_dist(n) for n in BUNDLED_EXCLUDED}
-    return [_req_name(d) for d in declared if _req_name(d) not in excluded]
+    return [(_req_name(d), _req_extras(d)) for d in declared
+            if _req_name(d) not in excluded]
 
 
-def _runtime_requires(dist):
-    """Runtime deps of `dist`, skipping extras and unsatisfied markers."""
+def _req_extras(requirement):
+    """The extras a requirement asks for: `fused[aws,mcp]==X` -> {"aws", "mcp"}."""
+    from packaging.requirements import InvalidRequirement, Requirement
+
+    try:
+        return frozenset(_norm_dist(e) for e in Requirement(requirement).extras)
+    except InvalidRequirement:
+        return frozenset()
+
+
+def _runtime_requires(dist, extras=frozenset()):
+    """Runtime deps of `dist` as (name, extras) pairs.
+
+    A requirement gated on an extra is followed only when that extra was ASKED
+    FOR (`extras`, i.e. the requester wrote `dist[extra]`). An extra nobody
+    asked for is not installed and so has nothing to copy. This matters because
+    `[bundled]` pins `fused[aws,mcp]`: since fused 2.9.3b10 boto3, mcp and
+    `pyjwt[crypto]` are reachable ONLY through those extras, and skipping every
+    `extra ==` marker would drop their whole closure from the force-list.
+    Markers that do not hold on this interpreter are skipped too.
+    """
+    from packaging.markers import InvalidMarker, UndefinedComparison, UndefinedEnvironmentName
+    from packaging.requirements import InvalidRequirement, Requirement
+
+    envs = [{"extra": ""}] + [{"extra": e} for e in sorted(extras)]
     out = []
     for raw in dist.requires or []:
-        spec = raw
-        if ";" in raw:
-            head, marker = raw.split(";", 1)
-            if "extra" in marker:
-                continue  # optional extra: not installed, not needed
+        try:
+            req = Requirement(raw)
+        except InvalidRequirement:
+            name = _req_name(raw)
+            if name and ";" not in raw:
+                out.append((name, frozenset()))
+            continue
+        if req.marker is not None:
             try:
-                from packaging.markers import Marker
-
-                if not Marker(marker.strip()).evaluate():
+                if not any(req.marker.evaluate(env) for env in envs):
                     continue
-            except Exception:
-                pass
-            spec = head
-        name = _req_name(spec)
-        if name:
-            out.append(name)
+            except (InvalidMarker, UndefinedComparison, UndefinedEnvironmentName):
+                continue
+        out.append((_norm_dist(req.name), frozenset(_norm_dist(e) for e in req.extras)))
     return out
 
 
@@ -233,20 +255,28 @@ def bundled_force_lists():
         if name:
             installed[_norm_dist(name)] = dist
 
-    # Transitive closure over the non-excluded [bundled] distributions.
+    # Transitive closure over the non-excluded [bundled] distributions, following
+    # the extras each requirement names (`fused[aws,mcp]`, `pyjwt[crypto]`).
+    # `walked` is keyed per (distribution, extra), "" meaning its base deps, so a
+    # distribution reached first bare and later as `dist[extra]` still has that
+    # extra's deps followed.
     excluded = {_norm_dist(n) for n in BUNDLED_EXCLUDED}
-    seen, stack = set(), list(_bundled_distributions())
+    seen, walked, stack = set(), set(), list(_bundled_distributions())
     while stack:
-        name = stack.pop()
-        if name in seen or name in excluded:
+        name, extras = stack.pop()
+        if name in excluded:
+            continue
+        todo = frozenset(e for e in {""} | set(extras) if (name, e) not in walked)
+        if not todo:
             continue
         seen.add(name)
+        walked.update((name, e) for e in todo)
         dist = installed.get(name)
         if dist is None:
             # Not installed in the build venv: a marker-gated or extra-only dep.
             # Nothing to copy, so nothing to force.
             continue
-        stack.extend(_runtime_requires(dist))
+        stack.extend(_runtime_requires(dist, todo - {""}))
 
     # distribution -> top-level import names, from metadata rather than guesswork
     # (python-pptx -> pptx, pillow -> PIL, google-auth -> google).
@@ -452,7 +482,10 @@ OPTIONS = {
         # a traced-module copy would drop — botocore's JSON service models
         # (boto3), anthropic's tokenizer data, keyring's entry-point backends,
         # cryptography's cffi bindings, pluggy's registry. The derivation now
-        # reaches most of them through `fused`'s requirements too, and the
+        # reaches most of them too: through `fused`'s core requirements, through
+        # the extras `[bundled]` asks of it (`fused[aws,mcp]` carries boto3,
+        # `pyjwt[crypto]` -> cryptography, and mcp, since fused 2.9.3b10), and
+        # through `anthropic`, which `[bundled]` declares directly. The
         # duplication is harmless (py2app de-dupes); they are kept named because
         # the REASON they must be whole-copied is not derivable from metadata.
         # The rest of fused's dep tree is pure-python with ordinary imports —

@@ -91,6 +91,29 @@ def _q(s: str) -> str:
     return s.replace("'", "''")
 
 
+def _prefix_predicate_sql(col: str, prefix: str) -> str:
+    """`col LIKE 'prefix%'`, dropping ESCAPE when the literal allows it.
+
+    DuckDB's `LikeOptimizationRule` only rewrites a `LIKE` into a sargable
+    range (which lets parquet row groups be skipped by their path min/max)
+    when the syntax carries no `ESCAPE` clause — an `ESCAPE '\\'` predicate is
+    always evaluated as the opaque `like_escape()` function instead, with no
+    range and no pruning (measured: ~1.6x on a 450k-row parquet). When
+    `prefix` contains no LIKE metacharacter (`%`, `_`, `\\`), the escaped and
+    unescaped forms are byte-identical in what they match, so we emit the
+    prunable one; otherwise `%`/`_` would act as wildcards — `/x/proj_a/`
+    wrongly matching `/x/proj-a/f.py` — and we keep today's escaped form.
+
+    The gate is exactly `like_literal(prefix) == prefix`: `like_literal` is a
+    no-op precisely when `prefix` has no metacharacter to escape (its quote
+    doubling is a no-op too whenever `prefix` has no `'`, so this also covers
+    that case correctly either way)."""
+    lit = like_literal(prefix)
+    if lit == prefix:
+        return f"{col} LIKE '{lit}%'"
+    return f"{col} LIKE '{lit}%' ESCAPE '\\'"
+
+
 def dirs_src(cfg: IndexConfig) -> str:
     """dirs.parquet as an explicit one-file list, never a glob string — the
     store path is the user's, and DuckDB's glob has no escape for a `[` in
@@ -338,9 +361,8 @@ def stats(cfg: IndexConfig, root: str = "", breakdown: bool = False,
         # unconditionally, as a plain `root != "/"` check used to, would double
         # it on the drive-root case and match nothing.
         prefix = root if root.endswith("/") else root + "/"
-        pfx = like_literal(prefix)
         inside = (f"(dir = '{_q(root)}' "
-                  f"OR dir LIKE '{pfx}%' ESCAPE '\\')")
+                  f"OR {_prefix_predicate_sql('dir', prefix)})")
         hit = prune(m["partitions"], prefix)
         n_rows, total_size, n_dirs = 0, 0, 0
         types = []
@@ -519,7 +541,6 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
         # See stats()'s identical fix above: root already ends in "/" for
         # any bare root (POSIX or a Windows drive), not only "/" itself.
         prefix = root if root.endswith("/") else root + "/"
-        prefix_like = like_literal(prefix)
         limit = max(0, min(int(limit), MAX_CORPUS))
         hit = prune(m["partitions"], prefix)
         q_trimmed = q.strip() if q else ""
@@ -542,7 +563,14 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
             # `**/` prefix an unadorned `resolve_query` glob with no "/"
             # gets.
             wildcard_regex = _q(_glob_to_regex(("**/" + expanded).lower()))
-        qlit = like_literal(q_trimmed) if q_trimmed and wildcard_regex is None else ""
+        # `contains()` needs no LIKE-metachar escaping at all (it has no
+        # wildcard semantics — see `_prefix_predicate_sql`'s docstring for the
+        # ESCAPE-rewrite finding this is the substring half of), so this is
+        # now just the "is there a plain substring filter to apply" gate that
+        # `like_literal(q_trimmed)`'s truthiness used to double as; the
+        # literal text itself is quoted fresh (`_q(q_trimmed)`) at each use
+        # below.
+        has_substring_filter = bool(q_trimmed) and wildcard_regex is None
         # Code review finding 3: `q` truthy but `expanded` empty means `q`
         # was WHITESPACE-ONLY — `expand_whitespace_query`'s own contract
         # (test_index_query.py, A2) already resolves that to `""` because
@@ -552,8 +580,9 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
         # NOT the same as `q` never having been passed at all (this
         # function's own documented "no filter, whole corpus" contract,
         # `q=""`/`q=None`) — conflating the two let a whitespace-only query
-        # fall through every filter guard below (`q_trimmed` and `qlit` are
-        # ALSO empty for whitespace) and answer with the unfiltered corpus.
+        # fall through every filter guard below (`q_trimmed` and
+        # `has_substring_filter` are ALSO empty/false for whitespace) and
+        # answer with the unfiltered corpus.
         no_match = bool(q) and not expanded
         # Files and directories compete in ONE depth-ordered query, not two.
         #
@@ -579,23 +608,25 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
                 like = (f" AND regexp_matches(lower(substr(path, {prefix_chars + 1})), "
                         f"'{wildcard_regex}')")
             else:
-                like = f" AND path ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
+                like = (f" AND contains(lower(path), lower('{_q(q_trimmed)}'))"
+                        if has_substring_filter else "")
             branches.append(
                 f"SELECT path, size, mtime, false AS is_dir, "
                 f"{_depth_col(_cached_src_cols(con, fsrc, (cfg.dir, m.get('generation'), 'files')), 'path')} AS depth FROM {fsrc} "
-                f"WHERE path LIKE '{prefix_like}%' ESCAPE '\\'{like}")
+                f"WHERE {_prefix_predicate_sql('path', prefix)}{like}")
         if include_dirs:
             dsrc = dirs_src(cfg)
             if wildcard_regex is not None:
                 dlike = (f" AND regexp_matches(lower(substr(dir, {prefix_chars + 1})), "
                          f"'{wildcard_regex}')")
             else:
-                dlike = f" AND dir ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
+                dlike = (f" AND contains(lower(dir), lower('{_q(q_trimmed)}'))"
+                         if has_substring_filter else "")
             branches.append(
                 f"SELECT dir AS path, CAST(NULL AS BIGINT) AS size, "
                 f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
                 f"{_depth_col(_cached_src_cols(con, dsrc, (cfg.dir, m.get('generation'), 'dirs')), 'dir')} AS depth FROM {dsrc} "
-                f"WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'{dlike}")
+                f"WHERE {_prefix_predicate_sql('dir', prefix)}{dlike}")
         entries, truncated = [], False
         if branches and not no_match:
             if token is not None:
@@ -1367,6 +1398,17 @@ def _name_predicate_sql(nm_col: str, literals: list) -> dict:
                 "boundary": "false", "edge": "false"}
     first_like = like_literal(literals[0])
     last_like = like_literal(literals[-1])
+    # A single literal run's `contains` predicate is exactly `contains(nm,
+    # lit)` — no `%`-chain, no `LIKE`/`ESCAPE` at all — since `contains()` is
+    # proven equivalent to `LIKE '%'||like_literal(lit)||'%' ESCAPE '\\'` for
+    # any literal, with none of the ESCAPE clause's optimizer cost
+    # (`_prefix_predicate_sql`'s docstring has the fuller ESCAPE-rewrite
+    # finding). Multiple literals (a multi-run glob) still need the escaped
+    # `%`-separated chain below: `contains()` takes one needle, not an
+    # in-order sequence of them.
+    single_literal_contains = (
+        f"contains({nm_col}, lower('{_q(literals[0])}'))"
+        if len(literals) == 1 else None)
     chain_like = "%".join(like_literal(lit) for lit in literals)
     # `boundary`'s literal is the first run with its own leading
     # non-alphanumeric characters stripped (code review finding 6): a literal
@@ -1406,8 +1448,8 @@ def _name_predicate_sql(nm_col: str, literals: list) -> dict:
     return {
         "prefix": f"{nm_col} LIKE lower('{first_like}') || '%' ESCAPE '\\'",
         "suffix": f"{nm_col} LIKE '%' || lower('{last_like}') ESCAPE '\\'",
-        "contains": (f"{nm_col} LIKE '%' || lower('{chain_like}') || '%' "
-                     f"ESCAPE '\\'"),
+        "contains": single_literal_contains or (
+            f"{nm_col} LIKE '%' || lower('{chain_like}') || '%' ESCAPE '\\'"),
         "boundary": (f"regexp_matches({nm_col}, "
                      f"'(^|[^a-z0-9])' || lower('{first_re}'))"),
         "edge": f"(({prefix_edge}) OR ({suffix_edge}))",
@@ -1521,14 +1563,73 @@ def _basename_candidate_pool(limit: int) -> int:
     return max(limit, min(limit * _BASENAME_POOL_FACTOR, _BASENAME_POOL_MAX))
 
 
+def _pool_n_column(bounded: bool, pool: int | None = None) -> str:
+    """The extra SELECT-list fragment (a leading `, ` or `""`) that reports
+    whether the bounded candidate pool actually filled — see DECISIONS.md and
+    `search_ranked`'s own starvation-fallback comment for why this replaces
+    "the page came back short" as the fallback's trigger.
+
+    `bounded=False` has no pool stage to measure (`_bounded_or_full_candidates`
+    returns `base_select` unmodified), so this is `""` — not merely unused,
+    never computed at all. `pool` is then ignored (and every caller passes
+    `None` for it in that case — see `_bounded_or_full_candidates`, the only
+    source of a real `pool` value).
+
+    `bounded=True`: `pool` MUST be the exact same pool size
+    `_bounded_or_full_candidates` sized THIS statement's own candidate pool
+    with — the value it returns alongside the SQL string, never re-derived
+    here or by any other caller (a second, independent derivation is exactly
+    the silent-divergence risk DECISIONS.md warns against: if it ever
+    disagreed with the pool the SQL actually built, the comparison below
+    would compare against the wrong number with no exception anywhere). The
+    emitted column is `count(*) OVER () >= {pool}`, with no `PARTITION BY`,
+    spliced into the OUTER SELECT that reads FROM the candidate-pool
+    subquery (i.e. from `_bounded_or_full_candidates`'s own `(base_select
+    ORDER BY ... LIMIT pool)`), NOT into `base_select` itself and NOT into a
+    window ABOVE the final `QUALIFY`/`ORDER BY`/`LIMIT`. Placement matters
+    for two reasons:
+
+    1. DuckDB evaluates every window function in a SELECT (including this
+       one and `_qualify_basename_cap`'s `QUALIFY` row_number) over the same
+       FROM-clause input, before QUALIFY filters rows out — so `count(*)
+       OVER ()` here is the row count of the candidate-pool subquery itself,
+       i.e. `min(pool, actual WHERE-matched count)`, independent of how many
+       rows QUALIFY's per-basename cap then keeps. That count being `< pool`
+       (the emitted column is false) therefore means the inner `LIMIT <pool>`
+       never bound: the pool subquery returned every WHERE-matched row, so
+       `QUALIFY` here saw the SAME input the unbounded (`bounded=False`)
+       query's `QUALIFY` would have seen, and the two queries are provably
+       equivalent — the fallback is redundant and must not fire.
+    2. It must sit ABOVE the pool's own `ORDER BY ... LIMIT <pool>`, never
+       inside `base_select` or as a window over the full WHERE-matched set —
+       a `count(*) OVER ()` there would force DuckDB to materialise every
+       matching row just to answer it, defeating the heap-based Top-N scan
+       `_bounded_or_full_candidates`'s inner `LIMIT` exists to enable (see
+       its own docstring) and reintroducing, for a broad query, exactly the
+       full-corpus-scan cost this fix's whole point is to avoid.
+
+    Every row this query returns carries the SAME boolean (there is no
+    `PARTITION BY`), so a caller only needs to read it off any one returned
+    row (`rows[0][-1]`, `search_ranked` does not care which)."""
+    if not bounded:
+        return ""
+    return f", count(*) OVER () >= {pool} AS pool_filled"
+
+
 def _bounded_or_full_candidates(base_select: str, order_by: str, limit: int,
-                                bounded: bool) -> str:
+                                bounded: bool) -> tuple:
     """The subquery that feeds `_qualify_basename_cap`'s `QUALIFY`: either the
     bounded candidate pool (`bounded=True`, the `13ff8332a` fast path — an
     `ORDER BY <order_by> LIMIT <pool>` stage ahead of the cap, sized by
     `_basename_candidate_pool`) or the entire `base_select` unmodified
     (`bounded=False` — the pre-`13ff8332a` shape, `QUALIFY` over the full
     WHERE-matched set, no candidate limit at all).
+
+    Returns `(sql, pool)`: `pool` is the pool size actually used
+    (`_basename_candidate_pool(limit)`) when `bounded=True`, else `None`.
+    This is the ONLY place `pool` is derived — callers pass it straight to
+    `_pool_n_column` rather than recomputing it, so the SQL's own `LIMIT
+    <pool>` and the comparison `_pool_n_column` emits can never disagree.
 
     `base_select` is the filtered-but-unordered inner SELECT (already ending
     in a trailing space after its own `WHERE ...` clause, matching every
@@ -1540,19 +1641,24 @@ def _bounded_or_full_candidates(base_select: str, order_by: str, limit: int,
     the unbounded shape here is exactly what an infinitely large pool would
     have produced, not merely a similar query.
 
-    A caller that gets fewer than `limit + 1` rows back from the bounded
-    query (the same one-extra-row `limit` the caller itself passes in here —
+    A short page (fewer than `limit + 1` rows back from the bounded query —
+    the same one-extra-row `limit` the caller itself passes in here —
     `search_ranked` always calls with its own `limit + 1`, for the identical
-    truncation-detection trick `truncated` is computed from) reruns with
-    `bounded=False` (`search_ranked`) — a short page is the only case where
-    the pool could have starved a fillable page, and it is also the case
-    where the corpus is small enough (or the pool starved it, either way)
-    that the extra scan is affordable; see DECISIONS.md and
-    `specs/query.md` §3 for the reasoning and the measured cost."""
+    truncation-detection trick `truncated` is computed from) is NOT by
+    itself grounds to rerun with `bounded=False`: a genuinely sparse or
+    zero-match query produces a short page too, and reruns of those would
+    just pay for a second full-corpus scan to reconfirm the same few (or
+    zero) rows (DECISIONS.md, "Rank starvation fallback: a short page is not
+    starvation evidence"). `search_ranked` instead reruns only when the
+    short page is COMBINED with `_pool_n_column`'s proof, computed in SQL,
+    that the bounded pool's own `LIMIT <pool>` actually bound — that
+    combination is the only case where the pool could have starved a
+    fillable page; see DECISIONS.md and `specs/query.md` §3 for the
+    reasoning and the measured cost."""
     if not bounded:
-        return f"({base_select})"
+        return f"({base_select})", None
     pool = _basename_candidate_pool(limit)
-    return f"({base_select}ORDER BY {order_by} LIMIT {pool})"
+    return f"({base_select}ORDER BY {order_by} LIMIT {pool})", pool
 
 
 def _lex_order_and_score(nm_exact: str, preds: dict,
@@ -1679,14 +1785,14 @@ def _lex_order_and_score(nm_exact: str, preds: dict,
     return order_by, score, tier
 
 
-def _rank_sql(inner: str, hidden: str, ql: str, qq: str, qs: str, limit: int,
+def _rank_sql(inner: str, hidden: str, qq: str, qs: str, limit: int,
               ranked: bool = True, bounded: bool = True) -> str:
     """The whole rank query: substring filter, scoring, and ORDER BY ... LIMIT,
     all in SQL — no candidate cap, no Python-side pass.
 
     `ranked=False` (the owner's unranked-results preference, D720) keeps the
-    exact same `WHERE lrel LIKE ...` substring filter and hidden-file handling
-    below, but drops the entire scoring apparatus — no predicate columns, no
+    exact same `WHERE contains(lrel, ...)` substring filter and hidden-file
+    handling below, but drops the entire scoring apparatus — no predicate columns, no
     `score`, no `tier` — computed nowhere, not computed-then-discarded. It
     orders `depth ASC, rel ASC` instead: `depth` here is `rel_depth`, the
     same ROOT-RELATIVE depth the ranked branch computes in `inner` (see
@@ -1712,15 +1818,16 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, qs: str, limit: int,
     `inner` is the UNION ALL of the files/dirs branches (each already carries
     `rel`, `size`, `mtime`, `is_dir`, `depth` — RELATIVE to the search root,
     `search_ranked`'s `rel_depth` — and `nm`, the lowercased basename,
-    `_name_col`'s doing) plus `lrel` (`lower(rel)`). `ql` is the ORIGINAL-case
-    `qs` as a LIKE literal (metachars escaped, use with ESCAPE '\\'); `qq` is
-    the same original-case string as a plain SQL string literal (quotes
-    doubled only) for the `nm = lower(qq)` exact-match test, which is not
-    LIKE and must not see LIKE's escapes. Every comparison against `ql`/`qq`
-    below wraps them in SQL's own `lower(...)` rather than lowering in Python
-    first — see the paragraph below for why. `qs` is the original-case query
-    string itself, passed through to `_name_predicate_sql` as the single
-    literal run a substring query is.
+    `_name_col`'s doing) plus `lrel` (`lower(rel)`). `qq` is the ORIGINAL-case
+    `qs` as a plain SQL string literal (quotes doubled only) — used both for
+    the `nm = lower(qq)` exact-match test AND (since 13ff8332a's ESCAPE
+    finding) for the `contains(lrel, lower(qq))` substring filter itself:
+    `contains()` has no wildcard semantics, so it needs no LIKE-metachar
+    escaping at all, only the ordinary quote-doubling `qq` already carries.
+    Every comparison against `qq` below wraps it in SQL's own `lower(...)`
+    rather than lowering in Python first — see the paragraph below for why.
+    `qs` is the original-case query string itself, passed through to
+    `_name_predicate_sql` as the single literal run a substring query is.
 
     Ported (then substantially rewritten — see the position-free redesign
     note above this function) from the deleted index/rank.py's `fuzzy_match`
@@ -1787,11 +1894,12 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, qs: str, limit: int,
         unranked_order = "depth ASC, rel ASC"
         base_select = (
             f"SELECT rel, size, mtime, is_dir, depth, nm FROM ({inner}) "
-            f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden} ")
-        candidates = _bounded_or_full_candidates(
+            f"WHERE contains(lrel, lower('{qq}')){hidden} ")
+        candidates, pool = _bounded_or_full_candidates(
             base_select, unranked_order, limit, bounded)
         return (
-            f"SELECT rel, size, mtime, is_dir, depth FROM {candidates} "
+            f"SELECT rel, size, mtime, is_dir, depth"
+            f"{_pool_n_column(bounded, pool)} FROM {candidates} "
             f"{_qualify_basename_cap(unranked_order)}"
             f"ORDER BY {unranked_order} "
             f"LIMIT {limit}")
@@ -1800,10 +1908,11 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, qs: str, limit: int,
     base_select = (
         f"SELECT rel, size, mtime, is_dir, depth, nm, ({score}) AS score, "
         f"({tier}) AS tier FROM ({inner}) "
-        f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden} ")
-    candidates = _bounded_or_full_candidates(base_select, order_by, limit, bounded)
+        f"WHERE contains(lrel, lower('{qq}')){hidden} ")
+    candidates, pool = _bounded_or_full_candidates(base_select, order_by, limit, bounded)
     return (
-        f"SELECT rel, size, mtime, is_dir, depth, score, tier FROM {candidates} "
+        f"SELECT rel, size, mtime, is_dir, depth, score, tier"
+        f"{_pool_n_column(bounded, pool)} FROM {candidates} "
         f"{_qualify_basename_cap(order_by)}"
         f"ORDER BY {order_by} "
         f"LIMIT {limit}")
@@ -2157,10 +2266,11 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
         base_select = (
             f"SELECT rel, size, mtime, is_dir, depth, nm FROM ({inner}) "
             f"WHERE {like_guard}regexp_matches(lrel, '{regex}'){hidden} ")
-        candidates = _bounded_or_full_candidates(
+        candidates, pool = _bounded_or_full_candidates(
             base_select, unscored_order, limit, bounded)
         return (
-            f"SELECT rel, size, mtime, is_dir, depth FROM {candidates} "
+            f"SELECT rel, size, mtime, is_dir, depth"
+            f"{_pool_n_column(bounded, pool)} FROM {candidates} "
             f"{_qualify_basename_cap(unscored_order)}"
             f"ORDER BY {unscored_order} "
             f"LIMIT {limit}")
@@ -2226,9 +2336,10 @@ def _glob_sql(inner: str, regex: str, hidden: str, limit: int,
         f"SELECT rel, size, mtime, is_dir, depth, nm, ({score_expr}) AS score, "
         f"({tier}) AS tier FROM ({inner}) "
         f"WHERE {like_guard}regexp_matches(lrel, '{regex}'){hidden} ")
-    candidates = _bounded_or_full_candidates(base_select, order_by, limit, bounded)
+    candidates, pool = _bounded_or_full_candidates(base_select, order_by, limit, bounded)
     return (
-        f"SELECT rel, size, mtime, is_dir, depth, score, tier FROM {candidates} "
+        f"SELECT rel, size, mtime, is_dir, depth, score, tier"
+        f"{_pool_n_column(bounded, pool)} FROM {candidates} "
         f"{_qualify_basename_cap(order_by)}"
         f"ORDER BY {order_by} "
         f"LIMIT {limit}")
@@ -2408,7 +2519,6 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         # See stats()'s identical fix above: root already ends in "/" for
         # any bare root (POSIX or a Windows drive), not only "/" itself.
         prefix = root if root.endswith("/") else root + "/"
-        prefix_like = like_literal(prefix)
         limit = max(0, min(int(limit), MAX_GLOB_RANK_LIMIT if glob else MAX_RANK_LIMIT))
         hit = prune(m["partitions"], prefix)
         base = {"covered": True, "reason": "", "scanned_partitions": len(hit),
@@ -2450,7 +2560,7 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
                 f"SELECT {frel} AS rel, size, mtime, "
                 f"false AS is_dir, {_name_col(fcols)} AS nm, "
                 f"{_rel_depth_sql(fcols, frel, prefix_slashes)} AS depth "
-                f"FROM {fsrc} WHERE path LIKE '{prefix_like}%' ESCAPE '\\'")
+                f"FROM {fsrc} WHERE {_prefix_predicate_sql('path', prefix)}")
         if include_dirs:
             dsrc = dirs_src(cfg)
             dcols = _cached_src_cols(con, dsrc, (cfg.dir, m.get("generation"), "dirs"))
@@ -2464,7 +2574,7 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
                 f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
                 f"regexp_extract(lower({drel}), '[^/]*$') AS nm, "
                 f"{_rel_depth_sql(dcols, drel, prefix_slashes)} AS depth "
-                f"FROM {dsrc} WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'")
+                f"FROM {dsrc} WHERE {_prefix_predicate_sql('dir', prefix)}")
         if not branches:
             return {**base, "hits": [], "truncated": False, "total": 0}
 
@@ -2531,48 +2641,87 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
                                  score=score, like_guard=like_guard,
                                  bounded=bounded)
         else:
-            # NOT `.lower()`'d here — `_rank_sql` lowers `ql`/`qq` itself,
-            # with the same `lower()` call that produces `lrel`, so the query
-            # and the rel it's compared against always fold through one
-            # implementation (see `_rank_sql`'s docstring on why lowering both
-            # sides separately can disagree).
-            ql = like_literal(qs)
+            # NOT `.lower()`'d here — `_rank_sql` lowers `qq` itself, with the
+            # same `lower()` call that produces `lrel`, so the query and the
+            # rel it's compared against always fold through one implementation
+            # (see `_rank_sql`'s docstring on why lowering both sides
+            # separately can disagree).
             qq = _q(qs)
 
             def _build_sql(bounded: bool) -> str:
-                return _rank_sql(inner, hidden, ql, qq, qs, limit + 1,
+                return _rank_sql(inner, hidden, qq, qs, limit + 1,
                                  ranked=ranked, bounded=bounded)
         # One row past `limit` so "there was more" is known without a count —
         # same trick `search_under` uses for its own LIMIT.
-        rows = con.execute(_build_sql(bounded=True)).fetchall()
+        pool_rows = con.execute(_build_sql(bounded=True)).fetchall()
         if token is not None:
             token.check()
         # Starvation fallback (`13ff8332a`'s bounded candidate pool ahead of
-        # the basename cap, DECISIONS.md/specs/query.md §3): a bounded run
-        # that comes back with a FULL page — `limit + 1` rows, the same
-        # one-extra-row `truncated` is computed from everywhere else in this
-        # function, NOT merely `limit` rows — is provably not starved: a
-        # basename large enough to fill the whole pool and outrank every
-        # other matching name would still have left every OTHER basename
-        # capped at `_MAX_PER_BASENAME`, so a full `limit + 1`-row page can
-        # only mean the pool held enough distinct names to fill it AND leave
-        # one more over. **Code-review correction**: an earlier version of
-        # this fallback compared against `limit` rather than `limit + 1` — a
-        # bounded run landing at EXACTLY `limit` rows (one short of the
-        # query's own `limit + 1`) read as "full" and skipped the rerun, even
-        # though the pool boundary could still be hiding a better-ranked,
-        # distinct basename that the unbounded query's `(limit + 1)`th row
-        # would have surfaced — silently under-reporting both the page and
-        # `truncated`. Fewer than `limit + 1` is the ONLY signal available
-        # without a second query, and it is also exactly the case where the
-        # extra query is cheap either way: either the corpus genuinely has
-        # few matches (the unbounded rerun re-scans a small WHERE-matched
-        # set) or the pool actually starved a fillable page (and correctness
-        # is worth the extra query). Rerunning replaces `rows` wholesale —
-        # `truncated`/`total` below are computed from whichever query
-        # actually ran, so a fallback's row count is never mixed with the
-        # bounded query's.
-        if len(rows) < limit + 1:
+        # the basename cap, DECISIONS.md/specs/query.md §3) — REWORKED this
+        # round: a short bounded page used to be treated as evidence the pool
+        # might have starved a fillable page, but a short page is exactly
+        # what a genuinely sparse or zero-match query produces too — neither
+        # tells you which happened, and `LIKE '%q%'` has no anchor, so
+        # BOTH passes scan the entire corpus regardless (measured: a
+        # zero-match query on a 440k-row index cost 2.6x, paying for two full
+        # scans to answer "still nothing"). The fix replaces "was the page
+        # short" with two provable equivalences instead, each of which
+        # proves the unbounded rerun can only reproduce `pool_rows` — see
+        # DECISIONS.md for the full writeup:
+        #
+        # Tier 1 (`not pool_rows`): the bounded pool subquery's `QUALIFY row_
+        # number() OVER (PARTITION BY nm ...) <= _MAX_PER_BASENAME` keeps at
+        # least the `row_number() = 1` row for every distinct `nm` the pool
+        # holds, so a non-empty pool can never produce zero output rows.
+        # Zero rows back therefore proves the pool itself was empty, which
+        # proves the WHERE clause matched nothing at all — the unbounded
+        # query, filtering the identical WHERE-matched set, must also return
+        # zero rows. No rerun needed; the fallback would just re-answer "no
+        # matches" at the cost of a second full-corpus scan.
+        #
+        # Tier 2 (`not pool_filled`): `pool_filled` (`_pool_n_column`'s
+        # `count(*) OVER () >= pool` boolean, computed over the candidate-
+        # pool subquery — i.e. strictly AFTER its own `ORDER BY ... LIMIT
+        # <pool>`, never over the raw WHERE-matched set, which would defeat
+        # DuckDB's top-N scan on a broad query) is SQL's own answer to
+        # "did the pool's inner LIMIT actually bind". `pool` itself is never
+        # re-derived here in Python — `_bounded_or_full_candidates` is the
+        # one place that sizes it, and it hands that exact value to
+        # `_pool_n_column` so the comparison is always against the pool the
+        # SQL actually built, never a second, independently-computed number
+        # that could silently drift from it. `pool_filled is False` means
+        # that inner `LIMIT <pool>` never truncated anything — the pool held
+        # EVERY WHERE-matched row, so this bounded query's `QUALIFY` ran
+        # over the exact same input the unbounded query's `QUALIFY` would
+        # run over. The two are equivalent by construction; the fallback
+        # cannot produce a different result and must not fire.
+        #
+        # Only when the pool actually filled (`pool_filled`) AND the page
+        # still came up short of `limit + 1` (the same one-extra-row
+        # `truncated` trick used everywhere else in this function — see the
+        # code-review correction preserved below) is a real basename-cap
+        # starvation still possible, and the unbounded rerun fires exactly
+        # as before. Rerunning replaces `rows` wholesale — `truncated`/
+        # `total` below are computed from whichever query actually ran, so a
+        # fallback's row count is never mixed with the bounded query's.
+        #
+        # **Code-review correction** (unchanged from the prior round): an
+        # earlier version of this fallback compared against `limit` rather
+        # than `limit + 1` — a bounded run landing at EXACTLY `limit` rows
+        # (one short of the query's own `limit + 1`) read as "full" and
+        # skipped the rerun, even though the pool boundary could still be
+        # hiding a better-ranked, distinct basename that the unbounded
+        # query's `(limit + 1)`th row would have surfaced — silently
+        # under-reporting both the page and `truncated`. Fewer than
+        # `limit + 1` remains the page-shortness signal; it is now combined
+        # with (not replacing) the two equivalence checks above.
+        if pool_rows:
+            pool_filled = bool(pool_rows[0][-1])
+            rows = [r[:-1] for r in pool_rows]
+        else:
+            pool_filled = False
+            rows = []
+        if pool_rows and pool_filled and len(rows) < limit + 1:
             rows = con.execute(_build_sql(bounded=False)).fetchall()
             if token is not None:
                 token.check()

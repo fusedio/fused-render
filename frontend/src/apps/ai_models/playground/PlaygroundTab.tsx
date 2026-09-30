@@ -31,6 +31,7 @@ import { ImageStage } from "./ImageStage";
 import { VideoStage } from "./VideoStage";
 import { TranscribeStage } from "./TranscribeStage";
 import { EmbedStage } from "./EmbedStage";
+import { DecideStage } from "./DecideStage";
 import { modelSizeHint, modelSizeLabel } from "@apps/ai_models/shared/modelSize";
 import { fitNote } from "@apps/ai_models/shared/fitNote";
 import { formatSize } from "@platform/lib/format";
@@ -1010,6 +1011,12 @@ export default function PlaygroundTab() {
                 model={selected.model.id}
                 downloaded={selected.model.downloaded}
                 entry={selected.model}
+              />
+            ) : selected.row.capability === "text-classification" ? (
+              <DecideStage
+                key={selected.model.id}
+                model={selected.model.id}
+                downloaded={selected.model.downloaded}
               />
             ) : (
               // A capability a future runner adds before this tab learns it:

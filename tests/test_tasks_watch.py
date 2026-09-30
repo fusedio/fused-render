@@ -324,7 +324,7 @@ def test_changes_endpoint_reports_a_deleted_task_as_gone(claude_home):
     _transcript(claude_home, SID)
     with TestClient(create_app(str(claude_home))) as client:
         gen = client.get("/api/tasks").json()["generation"]
-        assert client.post("/api/tasks/delete", json={"key": SID}).json()["ok"]
+        assert client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": SID}).json()["ok"]
         r = client.get(f"/api/tasks/changes?since={gen}&wait=0").json()
         assert r["rows"] == []
         assert r["gone"] == [SID]
@@ -401,7 +401,7 @@ def test_running_endpoint_marks_the_session_and_wakes_the_long_poll(claude_home)
     _transcript(claude_home, SID)
     with TestClient(create_app(str(claude_home))) as client:
         gen = client.get("/api/tasks").json()["generation"]
-        assert client.post("/api/tasks/running", json={"session_id": SID}).json() == {
+        assert client.post("/api/tasks/running", headers={"X-Fused": "1"}, json={"session_id": SID}).json() == {
             "ok": True, "session_id": SID}
         r = client.get(f"/api/tasks/changes?since={gen}&wait=0").json()
         assert [t["key"] for t in r["rows"]] == [SID]
@@ -409,7 +409,7 @@ def test_running_endpoint_marks_the_session_and_wakes_the_long_poll(claude_home)
         # not just the flag under it.
         assert r["rows"][0]["live"] is True
         assert r["rows"][0]["status"] == "in_progress"
-        assert client.post("/api/tasks/running", json={"session_id": "  "}).status_code == 400
+        assert client.post("/api/tasks/running", headers={"X-Fused": "1"}, json={"session_id": "  "}).status_code == 400
 
 
 # ------------------------------------------------ the turn ENDING, said aloud

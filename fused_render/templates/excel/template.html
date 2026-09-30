@@ -11,7 +11,7 @@
     --text: #e8eaed; --text2: #cdd0d4; --muted: #9aa0a6; --faint: #6b7178;
     --accent: #2b5fd9; --accent-h: #3a6ee8; --on-accent: #fff;
     --btn: #24262b; --hover: #2d3036; --input: #14161a; --code: #101215;
-    --sel: #1c2b4a; --anchor: #4d82f0; --edit-bg: #0f1a30; --edit-text: #fff;
+    --sel: rgba(77,130,240,.24); --anchor: #4d82f0; --edit-bg: #0f1a30; --edit-text: #fff;
     --err: #ff7b72; --ok: #7ee787; --warn: #ffcf70;
     --th-hl: #2a3550; --th-hl-text: #cfe0ff; --tb-on: #1a3a75; --tb-on-text: #8ab4ff;
     --shadow: rgba(0,0,0,.5); --scrim: rgba(0,0,0,.55);
@@ -23,7 +23,7 @@
     --text: #1f2328; --text2: #3c4043; --muted: #5f6b76; --faint: #949aa2;
     --accent: #1a73e8; --accent-h: #3b82ee; --on-accent: #fff;
     --btn: #eef0f3; --hover: #e3e7eb; --input: #ffffff; --code: #f6f8fa;
-    --sel: #e0ebfd; --anchor: #1a73e8; --edit-bg: #ffffff; --edit-text: #1f2328;
+    --sel: rgba(26,115,232,.14); --anchor: #1a73e8; --edit-bg: #ffffff; --edit-text: #1f2328;
     --err: #c5221f; --ok: #188038; --warn: #b06000;
     --th-hl: #d3e3fd; --th-hl-text: #174ea6; --tb-on: #d3e3fd; --tb-on-text: #174ea6;
     --shadow: rgba(60,64,67,.35); --scrim: rgba(32,33,36,.4);
@@ -177,9 +177,14 @@
   td.cell.num { text-align: right; }
   td.cell.err { color: var(--err); }
   td.cell.edited { box-shadow: inset 0 0 0 1px var(--warn); }
-  td.cell.sel { background: var(--sel); }
-  td.cell.anchor { outline: 2px solid var(--anchor); outline-offset: -2px; background: var(--panel2); }
-  td.cell.sel.anchor { background: var(--sel); }
+  /* The selection is a translucent tint painted OVER the cell's background
+     (an inset shadow sits above it), not a background of its own: a cell's
+     fill from the workbook is an inline style and would win over any class
+     background — the range would be selected but invisible — and the tint
+     keeps that fill readable underneath, the way Excel and Sheets show it. */
+  td.cell.sel { box-shadow: inset 0 0 0 100vmax var(--sel); }
+  td.cell.sel.edited { box-shadow: inset 0 0 0 1px var(--warn), inset 0 0 0 100vmax var(--sel); }
+  td.cell.anchor { outline: 2px solid var(--anchor); outline-offset: -2px; }
   td.cell input {
     position: absolute; inset: 0; border: 2px solid var(--anchor); background: var(--edit-bg); color: var(--edit-text);
     font: 12px ui-monospace, Menlo, Consolas, monospace; padding: 1px 4px; outline: none; z-index: 4;
@@ -483,6 +488,10 @@ function parseRef(s) {
 function setStatus(msg, cls) { const el = $("status"); el.textContent = msg || ""; el.className = cls || ""; }
 function markDirty(d = true) {
   dirty = d;
+  // A clean book has nothing unsaved to compute: a save or reload cancels the
+  // pending recompute, and whichever made it clean supplies the values
+  // (a save evaluates what it wrote — fetchComputed).
+  if (d) scheduleCompute(); else clearTimeout(computeTimer);
   $("savedState").textContent = book ? (d ? "● Unsaved changes" : "All changes saved") : "";
   $("savedState").className = d ? "dirty" : "";
 }
@@ -619,11 +628,12 @@ const FN_DOCS = {
   TRIM: ["text", "Strip surrounding spaces"], LEFT: ["text, [n]", "First n characters"],
   RIGHT: ["text, [n]", "Last n characters"], MID: ["text, start, n", "Substring (1-based)"],
   VALUE: ["text", "Text → number"], TEXT: ["value", "Value → text"],
+  HYPERLINK: ["link, [label]", "Show label (or the link) for a link"],
   TODAY: ["", "Current date"], NOW: ["", "Current date & time"],
 };
 const FN_LIST = (() => {
   const names = new Set([...Object.keys(AGG), ...Object.keys(SCALAR),
-    "IF", "AND", "OR", "IFERROR", "COUNTIF", "SUMIF", "CONCAT", "CONCATENATE"]);
+    "IF", "AND", "OR", "IFERROR", "COUNTIF", "SUMIF", "CONCAT", "CONCATENATE", "HYPERLINK"]);
   return [...names].sort().map((name) => {
     const d = FN_DOCS[name];
     return { name, sig: d ? d[0] : "x", doc: d ? d[1] : "JavaScript Math." + name.toLowerCase() };
@@ -782,6 +792,7 @@ function compile(src) {
         return s;
       }
       if (name === "CONCAT" || name === "CONCATENATE") return flat(ctx, args).map((v) => v ?? "").join("");
+      if (name === "HYPERLINK") return scalar(E(args[1] || args[0]));   // the cell shows the link's label
       if (name in AGG) return AGG[name](flat(ctx, args));
       if (name in SCALAR) return SCALAR[name](...args.map((a) => scalar(E(a))));
       throw FErr("#NAME?");
@@ -847,6 +858,85 @@ function compile(src) {
   return root;
 }
 
+// ---- formula values from the server (reader.py: load / compute) ----
+// This engine covers the everyday functions; INDEX/MATCH, cross-sheet
+// references and the rest of Excel it does not. For every formula cell the
+// server also sends the value Excel (or pycel) computed, and the grid falls
+// back to it wherever this engine can't compute the cell itself. Each value
+// remembers the formula it was computed FOR, so an edited cell never shows a
+// value that belongs to its old formula; edits schedule a recompute.
+const EXCEL_ERR = /^#(DIV\/0!|N\/A|NAME\?|NULL!|NUM!|REF!|VALUE!|SPILL!|CALC!)$/;
+function setComputed(sheet, computed, rows) {
+  const m = new Map();
+  for (const [key, v] of Object.entries(computed || {})) {
+    const [r, c] = key.split(",").map(Number);
+    const f = rows[r] && rows[r][c];
+    if (typeof f === "string" && f.startsWith("=")) m.set(key, { f, v });
+  }
+  sheet.computed = m;
+}
+function serverValue(sheet, r, c, formula) {
+  const e = sheet.computed && sheet.computed.get(r + "," + c);
+  if (!e || e.f !== formula) return null;
+  return typeof e.v === "string" && EXCEL_ERR.test(e.v) ? { err: e.v } : { v: e.v };
+}
+let computeTimer = null, computeSeq = 0;
+function scheduleCompute() {
+  clearTimeout(computeTimer);
+  computeTimer = setTimeout(recompute, 600);
+}
+async function recompute() {
+  if (!book || !dirty) return;
+  if (book.sheets.some((sh) => sh.big)) {
+    // compute rebuilds the unsaved workbook, and big (Parquet-paged) sheets
+    // aren't in the editor to rebuild — yet small sheets may reference them.
+    // So an edit makes every server value suspect: drop them, and show this
+    // engine's own answer until a save re-reads them from disk. Only ever for
+    // an unsaved book (the `dirty` check above): once saved, the values
+    // fetchComputed brings back are the file's own.
+    let dropped = false;
+    for (const sh of book.sheets) {
+      if (!sh.big && sh.computed && sh.computed.size) { sh.computed = new Map(); dropped = true; }
+    }
+    if (dropped) {
+      invalidateValues();
+      if (!editing) paint();
+      setStatus("Formulas this editor can't compute itself update on save (the workbook has large sheets).", "");
+    }
+    return;
+  }
+  fetchComputed(currentFile(), serializeSheets(), false);
+}
+
+// Server values for `payload` — exactly the sheets the editor holds, unsaved
+// (recompute) or just saved (after a save) — or, when big sheets keep part of
+// the workbook out of the editor, for the file on disk, the only complete
+// copy there is. The newest request wins (computeSeq); an answer lands only
+// if the book is still in the state it describes (`clean`: saved, nothing
+// edited since — else unsaved), so a save never keeps a pre-edit value and
+// an edit never gets a pre-save one.
+async function fetchComputed(file, payload, clean) {
+  const fromDisk = book.sheets.some((sh) => sh.big);
+  const hasFormula = fromDisk || payload.some((sh) => (sh.rows || []).some((row) =>
+    row.some((v) => typeof v === "string" && v.startsWith("="))));
+  if (!hasFormula) return;
+  const seq = ++computeSeq;
+  let res;
+  try {
+    res = await pyRun(fromDisk ? { action: "formulas", file }
+                               : { action: "compute", file, data: JSON.stringify(payload) });
+  } catch (err) {
+    return;  // no server values this round: the grid keeps its own engine's
+  }
+  if (seq !== computeSeq || !book || dirty === clean) return;
+  res.computed.forEach((computed, i) => {
+    const sh = book.sheets[i];
+    if (sh && !sh.big) setComputed(sh, computed, fromDisk ? sh.rows : payload[i].rows);
+  });
+  invalidateValues();
+  if (!editing) paint();
+}
+
 const EMPTY_CELL = { v: "" };
 function computeAll(sheet) {
   const rows = sheet.rows, cache = new Map(), busy = new Set();
@@ -861,7 +951,7 @@ function computeAll(sheet) {
       busy.add(key);
       let entry;
       try { entry = { v: compile(s.slice(1))(ctx) }; }
-      catch (e) { entry = { err: e.isFErr ? e.code : "#ERROR!" }; }
+      catch (e) { entry = serverValue(sheet, r, c, s) || { err: e.isFErr ? e.code : "#ERROR!" }; }
       busy.delete(key);
       cache.set(key, entry);
       if (entry.err) throw FErr(entry.err);
@@ -2178,6 +2268,7 @@ function normalizeLoaded(res) {
                   rows: sh.rows, styles: sh.styles || [], filterOn: false, filterQ: [], filterVal: [],
                   colw: sh.colw || {}, freeze: sh.freeze || 0 };
     ensureRect(out);
+    setComputed(out, sh.computed, out.rows);
     return out;
   }) };
 }
@@ -2254,9 +2345,10 @@ async function save(force) {
   commitEdit();
   setStatus("Saving…");
   try {
+    const saved = serializeSheets();
     const res = await pyRun( {
       action: "save", file,
-      data: JSON.stringify(serializeSheets()),
+      data: JSON.stringify(saved),
       expected_mtime: force ? "" : String(mtime ?? ""),
     });
     if (res.conflict) {
@@ -2284,6 +2376,9 @@ async function save(force) {
     markDirty(false);
     paint();
     setStatus(`Saved · ${new Date().toLocaleTimeString()}`, "ok");
+    // The save cancelled any pending recompute (markDirty(false)), and a file
+    // saved by this editor has no cached results — so evaluate what was saved.
+    fetchComputed(file, saved, true);
   } catch (err) {
     setStatus(`${err.type || "error"}: ${err.message}`, "err");
     // Mid-session chmod: the reader gate's PermissionError arrives as a

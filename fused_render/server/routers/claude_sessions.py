@@ -363,7 +363,8 @@ def _parse_head(path: str) -> tuple[str | None, str | None, str, bool]:
                 # tasks_store skipped one of them — the divergence this file's
                 # half of the fix exists to end.
                 if (not prompt and obj.get("type") == "user"
-                        and not obj.get("isMeta") and not obj.get("isSidechain")):
+                        and not obj.get("isMeta") and not obj.get("isSidechain")
+                        and not obj.get("isCompactSummary")):
                     msg = obj.get("message")
                     if isinstance(msg, dict) and msg.get("role") == "user":
                         # Stripped, and an empty remainder keeps the scan going

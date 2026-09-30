@@ -1490,7 +1490,8 @@ def _parse_head(path: str,
                 # always skipped both, and this one having only half the pair
                 # was how a subagent's brief came to name a task.
                 if (not prompt and obj.get("type") == "user"
-                        and not obj.get("isMeta") and not obj.get("isSidechain")):
+                        and not obj.get("isMeta") and not obj.get("isSidechain")
+                        and not obj.get("isCompactSummary")):
                     msg = obj.get("message")
                     if isinstance(msg, dict) and msg.get("role") == "user":
                         raw = first_text(msg.get("content"))

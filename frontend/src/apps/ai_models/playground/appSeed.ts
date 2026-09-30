@@ -155,6 +155,26 @@ function buildAppSeedDetail(model: AiCatalogModel, capability: string): string {
           "pass — sending one is a 400. Embed queries and documents the same way.",
       );
     }
+  } else if (capability === "text-classification") {
+    // A DECISION model, not a classifier in the Hub-tag sense: the seed has to
+    // say what the three question types are, because a session that reads
+    // "text-classification" will otherwise write a sentiment call and get a
+    // 400 for a missing `questions` object.
+    lines.push(
+      "It is a typed-decision model: give it a STATE (a piece of text, a JSON " +
+        "object or a conversation) and typed QUESTIONS, and it returns calibrated " +
+        "probabilities in milliseconds — no generated text. Call it from the page with " +
+        `await fused.ai.decide({ state, questions, model: ${JSON.stringify(model.id)} }) — ` +
+        "it resolves with { answers, usage } where answers is keyed by your question ids.",
+      "Three question types, each { type, instructions, criteria? }: " +
+        '"choice" (criteria = labels or label → description; answer has choice + probabilities), ' +
+        '"score" (criteria = ordered rubric levels, worst first; answer has score = expected ' +
+        "zero-based level + legend + probabilities), " +
+        '"noul" (no criteria; answer has noul = P(true)). Every answer carries confidence.',
+      "The context is small (512 or 1024 tokens depending on the model) and is shared by " +
+        "instructions, criteria and state — keep questions short and state focused. " +
+        "Do not use it for arithmetic, counting, date comparison or multi-hop lookups.",
+    );
   }
   // Addressed to the CLAUDE SESSION the composer spawns, not to the user: the
   // `fused-render-ai` skill is the authoritative contract for these calls

@@ -598,6 +598,59 @@ def test_search_under_ignores_a_lookalike_underscore_sibling(tmp_path):
     assert "fake.txt" not in rels
 
 
+def test_search_under_scoping_ignores_proj_a_lookalike_and_a_percent_literal(
+        tmp_path):
+    """The ESCAPE-rewrite regression this repo cares about, end to end
+    through the public entry point: scoping to /r/proj_a/ must return ONLY
+    the proj_a files and never proj-a's (the gate `_prefix_predicate_sql`
+    exists for), and a `q` containing a literal `%` must match only that
+    literal, not act as `contains`'s own wildcard (`contains` has none, but
+    this pins the boundary anyway now that the filter is a plain
+    `contains()` call rather than an escaped LIKE)."""
+    cfg = _index(tmp_path, "/r",
+                 ["/r/proj_a/keep.py", "/r/proj-a/skip.py", "/r/100%done.txt"],
+                 dirs=["/r/proj_a", "/r/proj-a"])
+    rels = [e["rel"] for e in search_under(cfg, "/r/proj_a")["entries"]]
+    assert rels == ["keep.py"]
+    hits = [e["rel"] for e in search_under(cfg, "/r", q="100%done")["entries"]]
+    assert hits == ["100%done.txt"]
+
+
+def test_search_under_substring_filter_compiles_to_contains_not_like_escape(
+        tmp_path, monkeypatch):
+    """`search_under`'s server-side `q` filter (Change 1) must compile to
+    `contains(...)`, never an `ILIKE ... ESCAPE` DuckDB can only run as the
+    opaque `like_escape()` function. Captures the real SQL by wrapping
+    `duckdb.connect` — `search_under`'s local `import duckdb` resolves to the
+    same module object, so patching its `connect` attribute here is visible
+    there too."""
+    import duckdb as real_duckdb
+
+    cfg = _index(tmp_path, "/r", ["/r/proj_a/keep.py"], dirs=["/r/proj_a"])
+    seen_sql = []
+    real_connect = real_duckdb.connect
+
+    class _RecordingConnection:
+        def __init__(self, con):
+            self._con = con
+
+        def execute(self, sql, *a, **kw):
+            seen_sql.append(sql)
+            return self._con.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._con, name)
+
+    monkeypatch.setattr(
+        real_duckdb, "connect",
+        lambda *a, **kw: _RecordingConnection(real_connect(*a, **kw)))
+    search_under(cfg, "/r", q="proj_a")
+    joined = "\n".join(seen_sql)
+    assert "contains(" in joined
+    assert "like_escape" not in joined.lower()
+    assert " ILIKE " not in joined
+
+
 def test_dirs_are_not_silently_dropped_when_files_fill_the_cap(tmp_path):
     """Directories used to get only the budget the FILES branch left over, so
     on any truncated corpus (`room == 0`) folder search was dead, not degraded.
@@ -1191,13 +1244,18 @@ def test_search_ranked_honours_the_limit_in_sql_not_just_in_python(tmp_path):
     # more" is known without a separate count. Only "alpha.txt" itself
     # actually contains the substring "alpha" (the noise files are
     # "a{i}-l-p-h-a.txt", hyphen-separated, never a contiguous "alpha"), so
-    # the bounded candidate pool comes back with exactly 1 row — fewer than
-    # `limit` (3) — which is the starvation-fallback's trigger
-    # (search_ranked's docstring, worktree-search-trailing-space): a second,
-    # unbounded query reruns and its result is what the response is built
-    # from. Both queries carry the same outer `LIMIT 4` (limit + 1), so
-    # `seen_limits` now has two entries, not one.
-    assert seen_limits == [4, 4]
+    # the bounded candidate pool comes back with exactly 1 row. That single
+    # row is BELOW the starvation fallback's Tier 2 threshold (DECISIONS.md,
+    # "Rank starvation fallback: a short page is not starvation evidence"):
+    # `pool_n < pool` (1 row seen against a pool sized for `limit + 1 == 4`,
+    # `_basename_candidate_pool(4)` is 20) proves the pool's own inner
+    # `LIMIT` never bound — the bounded pass already saw every row an
+    # unbounded pass would have, so the two queries are equivalent by
+    # construction and the unbounded rerun is correctly skipped. Only one
+    # statement runs (`LIMIT 4` once), so `seen_limits` has exactly one
+    # entry, not two — `[4]`, not the old `[4, 4]` that used to pin the
+    # wasteful double scan this fix removes.
+    assert seen_limits == [4]
 
 
 def test_search_ranked_logs_one_debug_line_per_request(tmp_path, caplog):

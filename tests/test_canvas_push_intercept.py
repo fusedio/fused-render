@@ -49,14 +49,11 @@ def test_the_canonical_push_is_recognised():
 @pytest.mark.parametrize("global_prefix", [
     ["--env", "unstable"],
     ["--backend", "local"],
-    ["--enable-infra"],
-    ["--enable-destructive"],
-    ["--disable-reset"],
     ["--env=unstable"],
     ["--backend=local"],
     # Several stacked, in whatever order a session might type them.
-    ["--enable-infra", "--env", "unstable"],
-    ["--backend", "local", "--enable-infra", "--disable-reset"],
+    ["--backend", "local", "--env", "unstable"],
+    ["--env=unstable", "--backend=local"],
 ])
 def test_a_global_option_before_the_subcommand_is_still_recognised(global_prefix):
     """`fused` mounts `workbench` under a TOP-LEVEL group with its own options
@@ -79,6 +76,18 @@ def test_an_unrecognised_option_before_the_subcommand_falls_through():
     # A malformed value-taking global option (nothing after it) is also left
     # to the real CLI to complain about, not guessed at.
     assert _canvas_push.parse_push(["--env"]) is None
+
+
+@pytest.mark.parametrize("removed_flag", [
+    "--enable-infra", "--enable-destructive", "--disable-reset",
+])
+def test_a_removed_root_flag_before_the_subcommand_falls_through(removed_flag):
+    """fusedio/fused#371 dropped these root-group flags with the MCP server.
+    The real CLI now rejects them, so the matcher must not skip them as if
+    they were still valid — the CLI's own usage error is the right outcome."""
+    assert _canvas_push.parse_push(
+        [removed_flag, "workbench", "canvas", "push", "."]
+    ) is None
 
 
 @pytest.mark.parametrize("args", [

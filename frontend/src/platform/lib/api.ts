@@ -2306,8 +2306,9 @@ export interface AppFileCloneTarget {
    *  clone), this is THAT folder rather than local/<slug>. */
   path: string;
   cloned: boolean;
-  /** The app's stable identity (`<meta name="fused-app-id">`, minted on
-   *  first export); null for files exported before it existed. */
+  /** The app's stable identity (`<meta name="fused-app-id">`, minted at
+   *  creation, or on first export for older apps); null for files exported
+   *  before it existed. */
   app_id?: string | null;
 }
 
@@ -3477,7 +3478,10 @@ export interface Task {
   // not be listed as one (`sched/waiting-chats`: every future scheduled job
   // would otherwise appear in Recent chats).
   //
-  // Both "" on a task that has run, and on an older server.
+  // `entry_origin` is "" on a task that has run. `entry_id` survives the run
+  // when a scheduled or page-created message opened the session (it is the
+  // same id the task's `pending:<entry>` key carried, so `fused.tasks`'s
+  // handle can follow the rekey); "" for chat-born sessions and older servers.
   entry_id?: string;
   entry_origin?: string;
   // Skipped: this task's pending work jumped to the head of its folder's line

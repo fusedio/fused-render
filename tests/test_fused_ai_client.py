@@ -545,6 +545,27 @@ def test_the_clients_embed_wire_keys_match_the_servers_constant():
     assert fused_ai._EMBED_WIRE_KEYS == ai_runtime._EMBED_OPTIONS
 
 
+def test_the_clients_decide_wire_keys_match_the_servers_constant():
+    """The fourth pin: `/api/ai/decide` (Laya typed decisions) has two required
+    fields and the two shared ones, and a key one side forwards and the other
+    drops is a verb that works in half the app."""
+    from fused_render.server.routers import ai_runtime
+    assert fused_ai._DECIDE_WIRE_KEYS == ai_runtime._DECIDE_OPTIONS
+
+
+def test_the_bridge_and_the_client_forward_the_same_decide_options():
+    """`runtime.js`'s `decideKeys` is the bridge's copy of the same surface;
+    read as text, like the embed pin below."""
+    import pathlib
+
+    runtime = (pathlib.Path(fused_ai.__file__).parents[2]
+               / "static" / "runtime.js").read_text(encoding="utf-8")
+    decide = runtime[runtime.index("function aiDecide(opts)"):]
+    decide = decide[:decide.index("/api/ai/decide")]
+    for option in sorted(fused_ai._DECIDE_WIRE_KEYS):
+        assert f"opts.{option}" in decide or f"body.{option}" in decide, option
+
+
 def test_embed_forwards_kind_only_when_it_is_given_one():
     """An absent key is "I did not say" and the server applies its own default;
     an explicit one on a model with no retrieval convention is a 400. So sending
@@ -593,6 +614,7 @@ def test_the_ai_object_mirrors_the_js_surface():
     assert callable(fused_ai.ai.transcribe)
     assert callable(fused_ai.ai.image)
     assert callable(fused_ai.ai.embed)
+    assert callable(fused_ai.ai.decide)
     assert callable(fused_ai.ai.cancel)
     assert callable(fused_ai.ai.models.list)
     assert callable(fused_ai.ai.models.catalog)

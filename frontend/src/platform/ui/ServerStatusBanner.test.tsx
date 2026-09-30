@@ -4,12 +4,15 @@
 // shared update store polls `/api/update/status` every 2 s while an install is
 // running and reports `state: "installed"` the moment the swap ends, while
 // this component's own `/api/config` probe — the one that reads
-// `installed_version`, the version the restart dialog's title is made of —
-// runs every `POLL_MS` (5 s). `bannerSurface` already opens the dialog on
-// either door, so what is pinned here is the SECOND fact: the moment the store
-// says `installed`, the banner asks `/api/config` straight away instead of
-// waiting out its own tick, so the dialog on screen names the version that is
-// actually waiting rather than a fallback.
+// `installed_version` — runs every `POLL_MS` (5 s). `bannerSurface` already
+// suppresses the down card on either door, so what is pinned here is the
+// SECOND fact: the moment the store says `installed`, the banner asks
+// `/api/config` straight away instead of waiting out its own tick, so the
+// restart NOTIFICATION (`UpdateNotifier`, driven off `installed_version`
+// elsewhere) can name the version that is actually waiting rather than a
+// fallback. This component itself draws nothing for the restart case any
+// more (SPEC-update-notifications.md) — these tests assert the probe fires
+// on the right cadence and that the banner stays silent throughout.
 //
 // No fake timers: the whole point is that nothing has to advance. The
 // assertions run inside a few milliseconds of the transition, and `POLL_MS` is
@@ -106,12 +109,10 @@ test("the store turning 'installed' probes /api/config at once, without waiting 
   });
 
   expect(probes).toBe(1);
-  // And the dialog is up, naming the version the PROBE just reported — not
-  // `latest_version` (deliberately null above, so the fallback would show
-  // nothing) and not the running version.
-  const dialog = text(r.root);
-  expect(dialog).toContain("0.5.97");
-  expect(dialog).toContain("Restart");
+  // And the banner itself draws nothing — `installed` suppresses the down
+  // card (step 5) but raises no dialog of its own any more; the restart
+  // notification that names "0.5.97" lives in `UpdateNotifier`, not here.
+  expect(text(r.root)).toBe("");
 });
 
 test("a re-render while the dialog sits there does not re-probe, and a later install does", async () => {

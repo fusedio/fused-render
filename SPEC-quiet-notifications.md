@@ -31,6 +31,12 @@ These three were decided by the user during scoping. They are not open.
 - **D-C — a multi-member group pops on start and on failure only.** No pop as
   members complete, and no pop when the group finishes. A *single*-member
   group keeps today's pop-on-terminal behaviour unchanged (see §3).
+  **Reversed 2026-09-23 (D888, see DECISIONS.md):** the START edge is gone,
+  and "today's pop-on-terminal behaviour" for a single-member group now
+  excludes a *successful* terminal too. Only a FAILURE (`error`/`cancelled`)
+  pops a card any more, for a group of any size — the Activity chip's own
+  progress indicator already tells the user something is running or just
+  finished, so a start or a success card was redundant chatter on top of it.
 
 ## What's Changing
 
@@ -176,6 +182,9 @@ jobs.
 - **Pop rule (D-C), multi-member groups only**: pop when the group goes from
   no members to some, and pop when any member enters `error`/`cancelled`. No
   pop as members complete; no pop when the group finishes.
+  **Reversed 2026-09-23 (D888):** the start-edge pop is gone. The only pop
+  left is a member entering `error`/`cancelled` — this now matches the
+  single-job rule, which likewise stopped popping on a successful `done`.
 - A group row is suppressed under §2b when *every* member satisfies the
   suppression condition. One failing member keeps the whole group visible.
 
@@ -302,9 +311,10 @@ there, so it was dropped". Pin this with a test.
   - `localStorage` throwing degrades to "notify", not to blanket suppression;
   - a suppressed success raises nothing, while an error with the same source
     still raises;
-  - a **single**-member group still pops on terminal exactly as today;
-  - a multi-member group pops on start and on a member failure, and not on
-    ordinary member completion;
+  - a **single** job still pops on a FAILURE terminal, and no longer pops on
+    a successful one (reversed 2026-09-23, D888 — see the D-C notes above);
+  - a multi-member group pops on a member failure only (the start-edge pop
+    was removed the same round), and not on ordinary member completion;
   - Recent is excluded from `total` and from the attention count;
   - an unattended scheduled run's notification survives to the next window;
   - `needs_attention` always notifies and is always retained.

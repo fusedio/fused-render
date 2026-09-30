@@ -163,6 +163,16 @@ export interface NotificationInput {
    *  — documented precisely here so the next caller doesn't assume the
    *  stronger, incorrect guarantee. */
   quiet?: boolean;
+  /** DROP THE ✕ (SPEC-update-notifications.md, the restart notification "in
+   *  flight"). Default true — every existing caller keeps its ✕. Set to
+   *  `false` only for a message narrating something already irreversible:
+   *  once the app is quitting for a restart, "close this and forget it
+   *  happened" is not an offer anything can honor, and a ✕ that looks
+   *  pressable but does nothing about the actual event is worse than none.
+   *  `MessagePopupCard` reads this straight off the popup; the retained row
+   *  (should this ever be retained) is unaffected — a row already sitting in
+   *  the panel is not "in flight" the way the live popup is. */
+  dismissible?: boolean;
 }
 
 export interface StoredNotification {
@@ -206,6 +216,10 @@ export interface StoredNotification {
   // TOAST_EXIT_MS). Only ever true on the POPUP — a retained row is simply
   // removed outright, it has no exit animation of its own to play.
   leaving: boolean;
+  /** See `NotificationInput.dismissible`'s own doc comment. Stored so a
+   *  `replaceId` update (the restart card re-notifying every tick) can flip
+   *  it back on for `gave-up` without the card's own identity changing. */
+  dismissible: boolean;
 }
 
 // How long a dismissed popup stays around so it can fade + collapse. Must
@@ -404,6 +418,7 @@ function toStored(input: NotificationInput, id: number): StoredNotification {
     // caller's caption unchanged.
     origin: input.origin || (labelForSource(input.source) || undefined),
     leaving: false,
+    dismissible: input.dismissible !== false,
   };
 }
 

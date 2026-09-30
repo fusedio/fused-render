@@ -2529,29 +2529,33 @@ def generate_text(model: str, body: dict):
                 yield event
 
 
-def generate_embed(model: str, body: dict) -> dict:
-    """One `{vectors, dim, model}` reply from the resident embedding model.
+def _generate_sync(capability: str, model: str, body: dict,
+                   failed: str) -> dict:
+    """One reply, inside the request, from the resident `capability` worker.
 
     The same fail-fast shape as `generate_text`, not the wait-inside-a-job shape
-    `generate_image` and `_wait_ready` use: an embed call answers in
-    milliseconds once the model is resident, so there is no job for a cold load
-    to hide inside the way a multi-minute render has one already. A cold model
-    therefore raises `ModelNotReady` — the load STARTS, its job id comes back on
-    the exception, and the caller is meant to watch it and ask again, exactly as
-    `/api/ai` already does for text.
+    `generate_image` and `_wait_ready` use: a call on one of these capabilities
+    answers in milliseconds once the model is resident, so there is no job for
+    a cold load to hide inside the way a multi-minute render has one already. A
+    cold model therefore raises `ModelNotReady` — the load STARTS, its job id
+    comes back on the exception, and the caller is meant to watch it and ask
+    again, exactly as `/api/ai` already does for text.
 
-    Blocking, and cheap to block on: unlike an image or a transcription this is
-    one forward pass through a small tower, so holding the request open for it
-    costs nothing the caller was not already waiting on.
+    Blocking, and cheap to block on: one forward pass through a small tower, so
+    holding the request open for it costs nothing the caller was not already
+    waiting on.
+
+    `failed` is the sentence for a worker reply that carries no error text —
+    the one word that differs between the two callers.
     """
-    worker = ready_worker(registry.EMBEDDINGS, model)
+    worker = ready_worker(capability, model)
     if worker is None:
         with _lock:
-            current = _workers.get(registry.EMBEDDINGS)
+            current = _workers.get(capability)
         if current is not None and current.model == model:
             raise ModelNotReady(
                 f"{model} is still loading ({current.state})", job_id_for(model))
-        started = load(model, registry.EMBEDDINGS)
+        started = load(model, capability)
         raise ModelNotReady(f"{model} is loading now", started["jobId"])
 
     try:
@@ -2565,8 +2569,23 @@ def generate_embed(model: str, body: dict) -> dict:
         except ValueError as e:
             raise SupervisorError("the model process sent a malformed reply") from e
     if not payload.get("ok"):
-        raise SupervisorError(str(payload.get("error") or "the embedding failed"))
+        raise SupervisorError(str(payload.get("error") or failed))
     return payload.get("result") or {}
+
+
+def generate_embed(model: str, body: dict) -> dict:
+    """One `{vectors, dim}` reply from the resident embedding model — see
+    `_generate_sync` for the shape and why it is synchronous."""
+    return _generate_sync(registry.EMBEDDINGS, model, body, "the embedding failed")
+
+
+def generate_decide(model: str, body: dict) -> dict:
+    """One `{answers, usage}` reply from the resident Laya agent (D887) —
+    `{state, questions}` in, calibrated probabilities per question out. Same
+    shape as `generate_embed`, for the same reason: one encoder pass per
+    question, ~13 ms each, zero output tokens; nothing to stream and nothing
+    to hide a cold load inside."""
+    return _generate_sync(registry.DECISIONS, model, body, "the decision failed")
 
 
 def _wait_ready(model: str, capability: str, job: str,

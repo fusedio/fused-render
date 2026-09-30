@@ -225,8 +225,8 @@ async def api_appfile_export_to_disk(
         appfile.export_app_file(path, out_path, preview_bytes=preview_bytes)
     except appfile.AppFileError as exc:
         return _error(str(exc))
-    note_index_mutation(out_path)
     real_path = canonical_fs_path(out_path)
+    note_index_mutation(real_path)
     jobs.upsert(
         {
             "id": f"{jobs.SERVER_ID_PREFIX}appfile-export:{secrets.token_hex(4)}",

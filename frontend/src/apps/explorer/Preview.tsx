@@ -357,6 +357,14 @@ export interface ShareRowEligibility {
  * means the feature does not exist on this machine yet, the same as every
  * other surface `share-app-flag.ts` gates.
  *
+ * ABSENT TOO ON AN APP'S ENTRY FILE (`isAppEntry`, owner 2026-09-22: "ensure
+ * we don't have the file share option when having app share"). The app rows
+ * this menu opens with already carry a Share… of their own (useAppActionRows,
+ * behind the same `share-app-flag.ts` flag), and it is the one the reader
+ * wants there: sharing an app's index.html as a lone file publishes the page
+ * without the folder it runs out of. Two identically-labelled rows in one
+ * menu is the visible fault; the wrong one winning is the real one.
+ *
  * PRESENT BUT DISABLED, never silently missing, for an extension the catalog
  * has no viewer for — the reason rides the row's tooltip (`title`) rather
  * than requiring a click to discover it.
@@ -364,11 +372,12 @@ export interface ShareRowEligibility {
 export function shareRow(args: {
   sharingEnabled: boolean;
   isDir: boolean;
+  isAppEntry: boolean;
   name: string;
   eligibility: ShareRowEligibility;
   onClick: () => void;
 }): MenuEntry[] {
-  if (!args.sharingEnabled || args.isDir) return [];
+  if (!args.sharingEnabled || args.isDir || args.isAppEntry) return [];
   return [
     {
       label: "Share…",
@@ -582,6 +591,8 @@ function usePreviewFileMenu(
   // (/api/apps/entry) exactly as useAppActionRows asks it — under the marker
   // rule a filename says nothing. Only an entry gets "Set Current View as
   // Preview": a preview.png beside a plain html file has no card to show it.
+  // The same answer suppresses the file Share… row, which an entry gets from
+  // the app rows instead (shareRow's doc comment).
   const [isAppEntry, setIsAppEntry] = useState(false);
   useEffect(() => {
     let alive = true;
@@ -702,10 +713,11 @@ function usePreviewFileMenu(
   //   own split affordances: a single file, not inside a pane that already
   //   is a split (the view's Open in embed is its own last group).
   //   `share` is its own group ahead of `copy` (share-any-file-plan.md task
-  //   7): a plain file, never a directory (that is the app sheet's row,
-  //   EntryActionsMenu.tsx — a different concept), behind the same flag the
-  //   app sheet uses. Present but disabled — never silently missing — for an
-  //   extension the Fused catalog has no viewer for, naming the reason.
+  //   7): a plain file, never a directory and never an app's entry file (both
+  //   of those are the app sheet's row, EntryActionsMenu.tsx — a different
+  //   concept), behind the same flag the app sheet uses. Present but disabled
+  //   — never silently missing — for an extension the Fused catalog has no
+  //   viewer for, naming the reason.
   // Rebuilt per call: `isAppEntry`/`shareEligibility` land after first paint.
   const fileGroups = (): Record<"file" | "open" | "share" | "copy" | "setPreview" | "splits", MenuEntry[]> => ({
     file: [{ label: "Rename…", icon: MenuIcons.rename, onClick: startRename }],
@@ -720,6 +732,7 @@ function usePreviewFileMenu(
     share: shareRow({
       sharingEnabled: sharingFilesEnabled,
       isDir: stat.is_dir,
+      isAppEntry,
       name: stat.name,
       eligibility: shareEligibility,
       onClick: doShareFile,

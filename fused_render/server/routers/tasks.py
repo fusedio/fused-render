@@ -118,11 +118,14 @@ import shutil
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
+from urllib.parse import unquote, urlencode
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query
 from pydantic import BaseModel
 
 from fused_render import (
+    app_listing,
     current_apps,
     drafts,
     project_queue,
@@ -281,7 +284,10 @@ def _prompt(obj) -> dict | None:
     # by every other reader of a transcript's prompts (tasks_store.head,
     # claude_sessions, agent.py) and, until 2026-09-15, not by this one.
     if (obj.get("type") != "user" or obj.get("isMeta")
-            or obj.get("isSidechain")):
+            or obj.get("isSidechain") or obj.get("isCompactSummary")):
+        # `isCompactSummary` is /compact's own recap ("This session is being
+        # continued from a previous conversation…"), written as a user row
+        # the user never typed; it titled the row (Akshil, 2026-09-23).
         return None
     message = obj.get("message")
     if not isinstance(message, dict) or message.get("role") != "user":
@@ -458,6 +464,26 @@ def _absorb(rec: dict, line: str) -> None:
         # tracks the conversation. See claude_sessions.ai_title.
         rec["title"] = title
         return
+    stopped_at = _interrupt_at(obj)
+    if stopped_at is not None:
+        # The reader hit stop: the row says so where the reply would go, and
+        # says ONLY so — whatever Claude got out before the stop is not the
+        # answer (Akshil, 2026-09-23: "always Interrupted by you, even though
+        # we have first line of the response"). Clears the raw line still
+        # waiting on `_condense_reply`, or that reply would win the scan.
+        # Same age rule as that condense (Bugbot, PR #1317): a marker a
+        # compaction replays after a LATER turn's reply is older than what
+        # the record holds and leaves it alone. The reply it must not beat
+        # may still be the raw line waiting for the end-of-scan condense, so
+        # it is condensed here first — one extra parse on a stop, no more.
+        _condense_reply(rec)
+        held_at = float(rec.get("reply_at") or 0.0)
+        if stopped_at and held_at and stopped_at < held_at:
+            return
+        rec["reply_line"] = ""
+        rec["reply"] = _INTERRUPTED_REPLY
+        rec["reply_at"] = stopped_at
+        return
     prompt = _prompt(obj)
     if prompt is None:
         # Not a message — but a slash-command envelope is still worth ONE fact,
@@ -471,6 +497,25 @@ def _absorb(rec: dict, line: str) -> None:
     rec["tail"].append(prompt)
     if len(rec["tail"]) > _LISTING_MESSAGES:
         rec["tail"].pop(0)
+
+
+#: What a stopped turn prints where a reply would go. Same words as the chat's
+#: own status line for the marker (Turn.tsx `is-interrupt`).
+_INTERRUPTED_REPLY = "Interrupted by you"
+
+
+def _interrupt_at(obj: dict) -> float | None:
+    """When the reader hit stop, if this user record is the CLI's marker for
+    it (`tasks_store.is_interrupt_mark`), else None. A sidechain's marker is a
+    subagent's, not this conversation's."""
+    if obj.get("type") != "user" or obj.get("isSidechain"):
+        return None
+    message = obj.get("message")
+    if not isinstance(message, dict):
+        return None
+    if not tasks_store.is_interrupt_mark(tasks_store.first_text(message.get("content"))):
+        return None
+    return tasks_store.epoch(obj.get("timestamp")) or 0.0
 
 
 def _new_scan() -> dict:
@@ -501,14 +546,22 @@ def _condense_reply(rec: dict) -> None:
         return
     # Own cap, wider than `_LAST_MESSAGE_MAX`: this line fills the row's whole
     # free width on a wide screen, so 200 characters would ellipsise early.
+    # WHEN it was said, so the row can tell a reply to THIS turn from one left
+    # over from the last (`_last_reply`). 0.0 for a record without a stamp,
+    # which the row reads as "cannot tell — show it".
+    said_at = tasks_store.epoch(obj.get("timestamp")) or 0.0
+    # An OLDER row never beats the reply already held: a compaction replays
+    # earlier rows after later ones (`_ORDER_SLACK`), and the one this guards
+    # is the stop marker — a replayed pre-stop reply must not put Claude's
+    # words back where "Interrupted by you" stands.
+    held_at = float(rec.get("reply_at") or 0.0)
+    if said_at and held_at and said_at < held_at:
+        return
     for raw in str(tasks_store.first_text(message.get("content")) or "").splitlines():
         text = raw.strip()
         if text:
             rec["reply"] = text[:600]
-            # WHEN it was said, so the row can tell a reply to THIS turn from
-            # one left over from the last (`_last_reply`). 0.0 for a record
-            # without a stamp, which the row reads as "cannot tell — show it".
-            rec["reply_at"] = tasks_store.epoch(obj.get("timestamp")) or 0.0
+            rec["reply_at"] = said_at
             return
 
 
@@ -574,6 +627,18 @@ def _one_line(text: str) -> str:
 _SAID_STATES = (schedule.SENT, schedule.SENDING, "error")
 
 
+# A slash command as the reader TYPES it — "/compact", "/clear", "/model haiku",
+# "/making-a-release" — before the CLI has turned it into its envelope. One
+# leading slash, a word, optional arguments; a path ("/Users/…") has a second
+# slash and is not one. Kept in step with what `tasks_store.slash_command`
+# reads back out of the envelope.
+_TYPED_SLASH = re.compile(r"^/[A-Za-z][\w-]*(?::[\w-]+)?(?:\s|$)")
+
+
+def _typed_slash_command(text) -> bool:
+    return bool(_TYPED_SLASH.match(str(text or "").strip()))
+
+
 def _last_message(messages: list[dict], queued: bool = False,
                   now: float = 0.0) -> dict | None:
     """THE NEWEST MESSAGE THE USER SENT IN THIS TASK — `{role, text, at}` with
@@ -614,6 +679,12 @@ def _last_message(messages: list[dict], queued: bool = False,
                 <= now):
             continue
         text = _one_line(message.get("body"))
+        # A typed "/compact" is not what the task is about. On disk the CLI
+        # files it as an envelope and `_prompt` drops it; the LIVE send mark
+        # carries the raw words, and for the seconds the command ran the row
+        # was titled "/compact" (Akshil, 2026-09-24, screenshot).
+        if text and _typed_slash_command(text):
+            continue
         if text:
             # WHEN IT WAS SAID, not when it was asked for: a scheduled message's
             # `at` is its calendar due time and never moves, so a Run-now on a
@@ -3135,8 +3206,15 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # it. Both read once here, off this task's own entries, and both "" for a
     # task with a session — that row is a chat already, and has a transcript to
     # be found by. See the two fields below.
-    entry_id = tasks_store.pending_entry(task["key"])
-    entry_origin = _leader_origin(task, entry_id) if entry_id else ''
+    #
+    # …EXCEPT `entry_id` ON A SESSION ROW THAT A SCHEDULED MESSAGE STARTED
+    # (`_minting_entry`): the page-side `fused.tasks` API holds a task by the
+    # `pending:<entry>` key `create` answered, and when the row rekeys onto its
+    # session the entry id is the one name both keys share. `entry_origin`
+    # stays pending-only, so the shell's chat/scheduled split is unchanged.
+    pending_id = tasks_store.pending_entry(task["key"])
+    entry_id = pending_id or _minting_entry(task)
+    entry_origin = _leader_origin(task, pending_id) if pending_id else ''
     status = _status(merged, filed, task["session_id"], live, busy,
                      parked=waiting is not None, queued=bool(queued))
     # THE NEWEST MESSAGE THE USER SENT — one line of it — or None for a task
@@ -3168,6 +3246,11 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # slice, because the key REKEYS onto the session the moment the leader
         # runs (§5) and a reader that parsed it would be parsing a shape that
         # had moved.
+        #
+        # ALSO SET on a session row whose conversation a scheduled message
+        # started (`_minting_entry`) — the id its `pending:` key carried, kept
+        # across the rekey so a page holding that key can find the row again.
+        # "" for a chat-born session.
         "entry_id": entry_id,
         # WHO ASKED FOR THE WORK BEHIND A ROW THAT HAS NOT RUN — `"chat"` for a
         # message a composer queued through admission (`api_queue_admit` stamps
@@ -3370,6 +3453,26 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # `said` above for where it is decided.
         row["last_message"] = said
     return row
+
+
+def _minting_entry(task: dict) -> str:
+    """The entry whose run STARTED this task's session, or "".
+
+    A session row's `entry_id`: the one message that was `pending:<id>` before
+    this conversation existed — it opened a fresh session (no `session_id` of
+    its own, no `follow_of` leader) and its run landed in this one
+    (`claude_session_id`). Earliest by id (ids sort by due time) if a store
+    somehow holds two. "" for a chat-born session, which never had a pending
+    key to carry over."""
+    session = str(task.get("session_id") or "")
+    if not session:
+        return ""
+    ids = sorted(
+        str(e.get("id") or "") for e in task["entries"]
+        if not str(e.get("session_id") or "")
+        and not str(e.get("follow_of") or "")
+        and str(e.get("claude_session_id") or "") == session)
+    return ids[0] if ids else ""
 
 
 def _leader_origin(task: dict, entry_id: str) -> str:
@@ -4467,16 +4570,96 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     return rows
 
 
+def _page_scope(x_fused_page: str | None) -> tuple[str, str, str]:
+    """`(page, app_dir, entry_html)` for the page named by `X-Fused-Page`, or
+    three "" when the header is missing or not an absolute path.
+
+    The page-side `fused.tasks` API's one idea of "this app": the app folder the
+    calling page belongs to (`current_apps.app_dir_for` — the registry first,
+    then the nearest ancestor with a declared entry page), else the page's own
+    folder. `entry_html` is that folder's declared entry page, else the page
+    itself — the default target of a task a page creates, for the same reason
+    `_create_app_task` targets the file: "open this task" lands on the page."""
+    page = unquote(x_fused_page) if x_fused_page else ""
+    if not page or not os.path.isabs(page):
+        return "", "", ""
+    page = os.path.abspath(page)
+    folder = os.path.dirname(page)
+    app_dir = current_apps.app_dir_for(folder) or folder
+    entry = ""
+    try:
+        entry = app_listing.app_entry(app_dir) or ""
+    except OSError:
+        entry = ""
+    return page, app_dir, entry or page
+
+
+def _scope_dir(under: str, scope: str, x_fused_page: str | None):
+    """`(dir, None)` for a listing's `?under=` / `?scope=app`, `("", None)` for
+    no scope at all (the unfiltered listing, unchanged), or `("", error)`."""
+    if scope and scope != "app":
+        return "", _error(f"scope: expected 'app', got {scope!r}", status=400)
+    if scope == "app":
+        _page, app_dir, _entry = _page_scope(x_fused_page)
+        if not app_dir:
+            return "", _error("scope=app needs an X-Fused-Page header naming "
+                              "an absolute page path", status=400)
+        return app_dir, None
+    under = (under or "").strip()
+    if not under:
+        return "", None
+    if not os.path.isabs(os.path.expanduser(under)):
+        return "", _error("under: expected an absolute directory", status=400)
+    return os.path.abspath(os.path.expanduser(under)), None
+
+
+def _path_within(path: str, root_real: str) -> bool:
+    """Is `path` `root_real` or under it — by path components, never by string
+    prefix (`/A/app-old` is not under `/A/app`). `root_real` is realpath'd."""
+    if not path:
+        return False
+    expanded = os.path.expanduser(path)
+    # A mount-backed target is never under a local app folder, and realpath
+    # on one is a kernel stat over FUSE — the access pattern D548 keeps off
+    # every hot path. String test first (imported late, like the peer gates).
+    from fused_render.shell.mounts.access import is_mount_backed
+    if is_mount_backed(expanded):
+        return False
+    try:
+        real = os.path.realpath(expanded)
+        return os.path.commonpath([real, root_real]) == root_real
+    except ValueError:  # different drives on Windows, or a relative mix
+        return False
+
+
+def _scoped(rows: list[dict], scope_dir: str) -> list[dict]:
+    """The rows whose `target` (else `project`) is `scope_dir` or under it."""
+    if not scope_dir:
+        return rows
+    root_real = os.path.realpath(scope_dir)
+    return [row for row in rows
+            if _path_within(str(row.get("target") or ""), root_real)
+            or _path_within(str(row.get("project") or ""), root_real)]
+
+
 @router.get("/api/tasks")
-def api_tasks():
+def api_tasks(under: str = Query(""), scope: str = Query(""),
+              x_fused_page: str | None = Header(default=None)):
     """Every task, newest activity first, each with its three newest messages.
 
     Includes tasks that have never been scheduled (a chat session is a task) and
     tasks that have never run (a message scheduled for tomorrow is a task, §5).
     Excludes the ones that stopped being tasks: no session, and nothing left to
     run — see `_is_task`. That is an absence of a task, not a filter hiding one.
+
+    `?under=<abs dir>` or `?scope=app` (the app of the `X-Fused-Page` caller)
+    keeps only tasks whose target or project is that folder or inside it — the
+    page-side `fused.tasks.list`. No param is the whole listing, unchanged.
     """
-    rows = _task_rows()
+    scope_dir, refusal = _scope_dir(under, scope, x_fused_page)
+    if refusal is not None:
+        return refusal
+    rows = _scoped(_task_rows(), scope_dir)
     return {"tasks": rows, "generation": tasks_watch.generation()}
 
 
@@ -4517,7 +4700,9 @@ def _draft_changes(keys) -> dict:
 
 
 @router.get("/api/tasks/changes")
-def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MAX_WAIT_SEC)):
+def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MAX_WAIT_SEC),
+                      under: str = Query(""), scope: str = Query(""),
+                      x_fused_page: str | None = Header(default=None)):
     """What moved since generation `since` — the Tasks page's fast lane.
 
     Long-poll: answers the moment the watcher (tasks_watch) sees a session
@@ -4529,7 +4714,15 @@ def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MA
     than the watcher remembers gets `full: true` and reloads the listing.
 
     The 20-second full listing stays the truth; this only makes the page hear
-    about a change without waiting for it."""
+    about a change without waiting for it.
+
+    `?under=` / `?scope=app` scope `rows` exactly as they scope the listing.
+    `gone` is left whole: it is noisy by construction (a key the client never
+    held is dropped client-side), and a gone key has no row left to read a
+    target off, so there is nothing to filter it by."""
+    scope_dir, refusal = _scope_dir(under, scope, x_fused_page)
+    if refusal is not None:
+        return refusal
     gen, keys = tasks_watch.wait(since, wait)
     if keys is None:
         return {"generation": gen, "full": True}
@@ -4575,8 +4768,8 @@ def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MA
     # it (`_draft_changes`, design-drafts-one-record.md §3). The announced keys
     # and not `listed`: a draft that has just been discarded is exactly the news
     # an editor needs and is by then no row at all.
-    return {"generation": gen, "rows": rows, "gone": sorted(gone),
-            "drafts": _draft_changes(keys)}
+    return {"generation": gen, "rows": _scoped(rows, scope_dir),
+            "gone": sorted(gone), "drafts": _draft_changes(keys)}
 
 
 # `project` rides along for the sidebar's Current apps section (D487): the
@@ -4684,7 +4877,8 @@ class RunningPatch(BaseModel):
 
 
 @router.post("/api/tasks/running")
-def api_task_running(patch: RunningPatch):
+def api_task_running(patch: RunningPatch,
+        x_fused: str | None = Header(default=None)):
     """A turn just started on this session — said by the page that sent it.
 
     THE ONE FACT NO FILE CARRIES IN TIME. A chat sent from this app runs
@@ -4719,6 +4913,9 @@ def api_task_running(patch: RunningPatch):
     with the mark, and the worst a wrong call does is show one wrong line for
     fifteen seconds in a row that then disappears.
     """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
     session_id = patch.session_id.strip()
     if not session_id:
         raise HTTPException(status_code=400, detail="missing session_id")
@@ -4734,7 +4931,8 @@ class IdlePatch(BaseModel):
 
 
 @router.post("/api/tasks/idle")
-def api_task_idle(patch: IdlePatch):
+def api_task_idle(patch: IdlePatch,
+        x_fused: str | None = Header(default=None)):
     """A turn just ENDED on this session — said by the page that sent it.
 
     The other half of `/api/tasks/running`, and for the same reason: the CLI
@@ -4756,6 +4954,9 @@ def api_task_idle(patch: IdlePatch):
     `turn` is kept as the floor a later, out-of-order `mark_running` for this
     same turn is measured against (`tasks_watch.mark_running`).
     """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
     session_id = patch.session_id.strip()
     if not session_id:
         raise HTTPException(status_code=400, detail="missing session_id")
@@ -4909,7 +5110,8 @@ class ReadPatch(BaseModel):
 
 
 @router.post("/api/tasks/read")
-def api_task_read(patch: ReadPatch):
+def api_task_read(patch: ReadPatch,
+        x_fused: str | None = Header(default=None)):
     """Mark ONE message read — or the WHOLE task — and report what is left.
 
     One message is the default and still means only that message: the user
@@ -4929,6 +5131,9 @@ def api_task_read(patch: ReadPatch):
     (it has not happened, so there is nothing to have missed) and cannot come
     back already-read when it fires.
     """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
     key = patch.key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="missing task key")
@@ -5088,7 +5293,8 @@ def api_task_settings_read(session_id: str = ""):
 
 
 @router.post("/api/tasks/settings")
-def api_task_settings(patch: SettingsPatch):
+def api_task_settings(patch: SettingsPatch,
+        x_fused: str | None = Header(default=None)):
     """Record which model this conversation runs with, and how hard it thinks.
 
     ONLY THE FIELDS GIVEN. An empty `model` means "I am not saying anything
@@ -5100,6 +5306,9 @@ def api_task_settings(patch: SettingsPatch):
     Answers with the record as stored, so a client that wants to know what it
     now says does not have to guess or re-read the listing.
     """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
     # The shape the readers accept: a record filed under an id no reader will
     # ever look up is dead weight in a file that is read on every listing.
     session_id = _settings_session_id(patch.session_id)
@@ -5165,7 +5374,8 @@ class ArchivePatch(BaseModel):
 
 
 @router.post("/api/tasks/archive")
-def api_task_archive(patch: ArchivePatch):
+def api_task_archive(patch: ArchivePatch,
+        x_fused: str | None = Header(default=None)):
     """File one task away: cancel its pending work, archive its session.
 
     Answers what it actually did — how many messages were called off, and
@@ -5174,6 +5384,9 @@ def api_task_archive(patch: ArchivePatch):
     first, a pure-chat task has only the second) and the client's note line is
     the place a person finds out which.
     """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
     key = patch.key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="missing task key")
@@ -5227,7 +5440,8 @@ class UnarchivePatch(BaseModel):
 
 
 @router.post("/api/tasks/unarchive")
-def api_task_unarchive(patch: UnarchivePatch):
+def api_task_unarchive(patch: UnarchivePatch,
+        x_fused: str | None = Header(default=None)):
     """Take the filing back: drop the archive record, nothing else.
 
     THE MOVE HAS ONE MEANING AND NO DESTINATION. Dragging a card out of the
@@ -5258,6 +5472,9 @@ def api_task_unarchive(patch: UnarchivePatch):
     on it. Same function the revival rule calls (`_revived`), so the gesture and
     the automatic way out of Archive drop the filing identically.
     """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
     key = patch.key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="missing task key")
@@ -5355,7 +5572,8 @@ class DeletePatch(BaseModel):
 
 
 @router.post("/api/tasks/delete")
-def api_task_delete(patch: DeletePatch):
+def api_task_delete(patch: DeletePatch,
+        x_fused: str | None = Header(default=None)):
     """Take the row away for good: cancel its pending work, tombstone its key.
 
     Archive's first half — the rules first, then every pending entry, for the
@@ -5408,6 +5626,9 @@ def api_task_delete(patch: DeletePatch):
     likewise never reallocated (task_ids.json's "max seen plus one" rule), so
     a deleted TASK-007 does not quietly become somebody else's name.
     """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
     key = patch.key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="missing task key")
@@ -5483,7 +5704,8 @@ class ErasePatch(BaseModel):
 
 
 @router.post("/api/tasks/erase")
-def api_task_erase(patch: ErasePatch):
+def api_task_erase(patch: ErasePatch,
+        x_fused: str | None = Header(default=None)):
     """Delete the task AND the Claude session behind it — through and through.
 
     THIS DELIBERATELY GOES FURTHER THAN `/api/tasks/delete`, whose whole promise
@@ -5533,6 +5755,9 @@ def api_task_erase(patch: ErasePatch):
     be able to put the row back for a poll. The tombstone costs a few bytes and
     closes that window; the same reasoning delete's docstring gives for it.
     """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
     key = patch.key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="missing task key")
@@ -7034,3 +7259,316 @@ def api_queue_decide(body: dict = Body(...),
             "ahead": place["ahead"],
             "ahead_title": place["ahead_title"],
             "ahead_key": place["ahead_key"]}
+
+
+
+# ---- the page-side `fused.tasks` API ------------------------------------------
+#
+# A page (not the shell) creating, following up and stopping Claude tasks. Every
+# one of these is the shell's own path reached from a new door, never a second
+# spawn path: create is the New task form's `schedule.create` + `run_now`, send
+# is the chat's inbox hand-off to a live host (`agent._send`) or, with no host, a
+# stored follow-up the scheduler sends like any other (`run_now`, which owns the
+# project queue's claim and release), and cancel is the Stop button's `_cancel`.
+# `origin="page"` on everything a page stores, stated by the endpoint rather
+# than taken from the body — the same rule `api_queue_admit` applies to "chat".
+
+# The page API's three words -> the scheduler's spelling. "default" is the
+# template's strict mode, which the scheduler calls "prompt".
+_PAGE_PERMISSION_MODES = {"default": "prompt", "auto": "auto", "plan": "plan"}
+
+
+def _page_due(value):
+    """`(when, immediate, None)` for a create body's `due`, or `(.., .., error)`.
+    Absent is now (and `immediate`, so the calendar draws no chip for it); an
+    ISO string is `schedule.parse_due`'s; a number is epoch MILLISECONDS."""
+    if value is None or value == "":
+        return schedule._now(), True, None
+    if isinstance(value, bool):
+        return None, None, _error("due: expected an ISO timestamp or epoch ms",
+                                  status=400)
+    if isinstance(value, (int, float)):
+        try:
+            return (datetime.fromtimestamp(value / 1000.0, tz=timezone.utc),
+                    None, None)
+        except (OverflowError, OSError, ValueError):
+            return None, None, _error("due: epoch ms out of range", status=400)
+    try:
+        return schedule.parse_due(value), None, None
+    except ValueError as exc:
+        return None, None, _error(str(exc), status=400)
+
+
+def _opt_str(body: dict, field: str):
+    """`(value, None)` for an optional string field, "" when absent."""
+    value = body.get(field)
+    if value is None:
+        return "", None
+    if not isinstance(value, str):
+        return "", _error(f"{field}: expected a string", status=400)
+    return value.strip(), None
+
+
+_UI_VIEWS = ("list", "board", "cards", "calendar")
+
+
+@router.get("/api/tasks/ui")
+def api_tasks_ui(view: str = Query("list"), task: str = Query(""),
+                 scope: str = Query("app"),
+                 x_fused_page: str | None = Header(default=None)):
+    """The URL of the shell's Tasks UI, shaped for an `<iframe>` in an app page:
+    `?view=list|board|cards|calendar&task=<key>&scope=app|all` ->
+    `{url: "/tasks?embed=1[&project=<dir>][&view=..][&peek=<key>]"}`.
+
+    Built HERE and not in runtime.js so the page never learns or guesses its
+    app folder: `scope=app` resolves it from `X-Fused-Page` exactly as the
+    listing does (`_page_scope`), and the shell's own param names (`embed`,
+    `project`, `view`, `peek`) stay in one place per side. `embed=1` is the
+    shell's chrome-less mode (no sidebar, docks or breadcrumb); `peek` opens
+    one task's detail with its chat beside the list, and takes the same key
+    the listing hands out (`pending:<entry>` before the session exists). GET
+    with no side effect, so no `X-Fused` guard — the answer is a relative URL."""
+    view = (view or "list").strip()
+    if view not in _UI_VIEWS:
+        return _error(f"view: expected one of {', '.join(_UI_VIEWS)}, got {view!r}",
+                      status=400)
+    if scope not in ("app", "all"):
+        return _error(f"scope: expected 'app' or 'all', got {scope!r}", status=400)
+    params: list[tuple[str, str]] = [("embed", "1")]
+    if scope == "app":
+        _page, app_dir, _entry = _page_scope(x_fused_page)
+        if not app_dir:
+            return _error("scope=app needs an X-Fused-Page header naming "
+                          "an absolute page path", status=400)
+        params.append(("project", app_dir))
+    # ALWAYS written, "list" included: a bare `/tasks` falls back to the
+    # shell's remembered view (`fused-render:scheduled-view`), so leaving the
+    # default out would open whatever board or calendar was used last. The
+    # URL outranks that memory; the page asked for a view, so name it.
+    params.append(("view", view))
+    task = (task or "").strip()
+    if task:
+        params.append(("peek", task))
+    return {"url": "/tasks?" + urlencode(params)}
+
+
+@router.post("/api/tasks/create")
+def api_task_create(body: dict = Body(...),
+                    x_fused: str | None = Header(default=None),
+                    x_fused_page: str | None = Header(default=None)):
+    """Start a task from a page: `{prompt, target?, title?, model?, effort?,
+    permission_mode?, due?}` -> `{entry_id, key}`.
+
+    `target` defaults to the calling page's app entry html (`_page_scope`).
+    Stored with `origin: "page"` and, with no `due`, sent at once
+    (`schedule.run_now`, the Board's drag path). `key` is the listing's key for
+    the entry until its run mints a session — `pending:<entry_id>` — after which
+    the row rekeys onto the session and `/api/tasks/changes` carries the swap.
+    Does NOT wait for the spawn: the page follows the row, not the process."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    prompt = body.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return _error("prompt: required", status=400)
+    mode_in = body.get("permission_mode") or "default"
+    mode = _PAGE_PERMISSION_MODES.get(mode_in) if isinstance(mode_in, str) else None
+    if mode is None:
+        return _error("permission_mode: expected one of "
+                      + ", ".join(repr(m) for m in _PAGE_PERMISSION_MODES),
+                      status=400)
+    fields = {}
+    for field in ("target", "title", "model", "effort"):
+        fields[field], refusal = _opt_str(body, field)
+        if refusal is not None:
+            return refusal
+    target = fields["target"] or _page_scope(x_fused_page)[2]
+    if not target:
+        return _error("target: required — no target given and no X-Fused-Page "
+                      "to default it from", status=400)
+    resolved, refusal = schedule_api.resolve_target(target, "target")
+    if refusal is not None:
+        return refusal
+    when, immediate, refusal = _page_due(body.get("due"))
+    if refusal is not None:
+        return refusal
+    try:
+        entry = schedule.create(
+            resolved, prompt, when, immediate=immediate,
+            title=fields["title"] or None, model=fields["model"],
+            effort=fields["effort"], permission_mode=mode, origin="page")
+    except ValueError as exc:
+        return _error(str(exc), status=400)
+    entry_id = str(entry.get("id") or "")
+    if immediate:
+        try:
+            schedule.run_now(entry_id)
+        except Exception:  # noqa: BLE001 — the loop still has the entry
+            logger.debug("page task %s: run_now failed; the tick sends it",
+                         entry_id, exc_info=True)
+    key = tasks_store.pending_key(entry_id)
+    tasks_watch.notify({key})
+    # `target` is the path the entry was STORED with (`resolve_target` took
+    # `~` and a relative path and made them absolute), and `under` the folder
+    # the listing's `?under=` accepts for it — so a handle watching a targeted
+    # task scopes its feed to what the server stored, never to the raw string
+    # the page typed (a relative one would 400 the scoped listing).
+    under = resolved if os.path.isdir(resolved) else os.path.dirname(resolved)
+    return {"entry_id": entry_id, "key": key, "target": resolved, "under": under}
+
+
+@router.post("/api/tasks/{key}/send")
+def api_task_send(key: str, body: dict = Body(...),
+                  x_fused: str | None = Header(default=None)):
+    """A follow-up into a task's conversation: `{text, model?, effort?}` ->
+    `{queued, key}`.
+
+    A LIVE HOST TAKES IT, with nothing of the request's own settings — the
+    chat composer's inbox path (`agent._send`), with the four empty strings
+    `schedule._host_send` passes for the reasons its docstring gives (no
+    respawn, no mid-session model switch). `model`/`effort` only apply when no
+    host is up. With no host the message is stored (`origin: "page"`, resuming
+    this session) and sent now through `schedule.run_now` — the scheduler's
+    ordinary send, which owns the project queue: a busy folder, or a turn still
+    open in this conversation, leaves it pending and `queued: true`.
+
+    `pending:<entry>` is 409: there is no conversation to follow up yet."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    text = body.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return _error("text: required", status=400)
+    model, refusal = _opt_str(body, "model")
+    if refusal is not None:
+        return refusal
+    effort, refusal = _opt_str(body, "effort")
+    if refusal is not None:
+        return refusal
+    if tasks_store.pending_entry(key):
+        return _error("not started yet — this task has no conversation to "
+                      "send into until its first message runs", status=409)
+    task = _collect().get(key)
+    if task is None:
+        return _error(f"no task with key {key!r}", status=404)
+    session = str(task.get("session_id") or key)
+    target = str(task.get("target") or task.get("project") or "")
+    if not target:
+        return _error("this task has no target to resume in", status=409)
+
+    agent = project_queue.agent_module()
+    if agent is not None:
+        try:
+            run_id = str((agent._live_host(target, session) or {}).get("run_id") or "")
+            if run_id:
+                res = agent._send(run_id, text, "", "", "", "")
+                if isinstance(res, dict) and res.get("sent"):
+                    tasks_watch.notify({key})
+                    return {"queued": False, "key": key}
+        except Exception:  # noqa: BLE001 — a host we cannot reach is a send
+            logger.debug("page send %s: live host unreachable", key,
+                         exc_info=True)
+
+    # THE MODE THIS CONVERSATION WAS STARTED IN, where a stored entry started
+    # it (`_minting_entry`): a page task created under "prompt" must not come
+    # back under schedule's "auto" on its first follow-up. With no stored
+    # entry (a chat-born session whose host has reaped) the fallback is
+    # "prompt", NOT schedule's "auto" default: a page must never lift a
+    # conversation the user ran under the strict mode to auto by writing to it.
+    minted = _minting_entry(task)
+    mode = next((str(e.get("permission_mode") or "") for e in task["entries"]
+                 if str(e.get("id") or "") == minted), "") if minted else ""
+    mode = mode or "prompt"
+    try:
+        entry = schedule.create(target, text, schedule._now(),
+                                session_id=session, immediate=True,
+                                model=model, effort=effort,
+                                permission_mode=mode, origin="page")
+    except ValueError as exc:
+        return _error(str(exc), status=400)
+    entry_id = str(entry.get("id") or "")
+    try:
+        schedule.run_now(entry_id)
+    except Exception:  # noqa: BLE001 — the loop still has the entry
+        logger.debug("page send %s: run_now failed", entry_id, exc_info=True)
+    # Queued is a fact about the store after the attempt, not about run_now's
+    # `ok`: "already claimed" (the loop got there first) is `ok: false` and sent.
+    state = next((str(e.get("state") or "") for e in schedule.list_entries()
+                  if str(e.get("id") or "") == entry_id), "")
+    tasks_watch.notify({key})
+    return {"queued": state == schedule.PENDING, "key": key}
+
+
+@router.post("/api/tasks/{key}/cancel")
+def api_task_cancel(key: str, x_fused: str | None = Header(default=None)):
+    """Stop the turn running in this task — the Stop button's `agent._cancel`
+    (interrupt first, then the process tree) -> `{cancelled: true}`.
+
+    A `pending:<entry>` key cancels that scheduled message instead (it has no
+    run to stop). Nothing live -> 404 `{"error": "not_running"}`."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    entry_id = tasks_store.pending_entry(key)
+    if entry_id:
+        if schedule.cancel(entry_id) is not None:
+            tasks_watch.notify({key})
+            return {"cancelled": True}
+        # NOT CANCELLABLE AS A MESSAGE ANY MORE — it has been claimed and may
+        # already be running. `create` hands the page this pending key at once
+        # and the handle holds it until the session row appears, so an early
+        # cancel lands here while the run it started is going. Stop that run.
+        target, session = _started_entry_session(entry_id)
+        if not session:
+            return _error("not_running", status=404)
+        return _cancel_live(key, target, session)
+    task = _collect().get(key)
+    if task is None:
+        return _error("not_running", status=404)
+    session = str(task.get("session_id") or key)
+    target = str(task.get("target") or task.get("project") or "")
+    return _cancel_live(key, target, session)
+
+
+# How long a cancel on a just-claimed entry waits for the scheduler to write the
+# session its run minted. The spawn ordinarily reports inside a second or two;
+# past this the cancel gives up with not_running rather than hang the page.
+_CANCEL_SESSION_WAIT_S = 2.0
+_CANCEL_SESSION_STEP_S = 0.1
+
+
+def _started_entry_session(entry_id: str) -> tuple[str, str]:
+    """`(target, session)` of a claimed entry's run, or `(target|"", "")`.
+
+    `claude_session_id` is the session the scheduler recorded for the run. A
+    `sending` entry with none yet is mid-spawn: poll briefly for it. Any other
+    state with no session (pending again, failed, cancelled) has no run."""
+    deadline = time.monotonic() + _CANCEL_SESSION_WAIT_S
+    while True:
+        entry = next((e for e in schedule.list_entries()
+                      if str(e.get("id") or "") == entry_id), None)
+        if entry is None:
+            return "", ""
+        target = str(entry.get("target") or "")
+        session = str(entry.get("claude_session_id") or "")
+        if session:
+            return target, session
+        if (str(entry.get("state") or "") != schedule.SENDING
+                or time.monotonic() >= deadline):
+            return target, ""
+        time.sleep(_CANCEL_SESSION_STEP_S)
+
+
+def _cancel_live(key: str, target: str, session: str):
+    """Stop the turn open in `session` on `target` — `agent._cancel`, interrupt
+    first — or 404 not_running when none is."""
+    agent = project_queue.agent_module()
+    if agent is None:
+        return _error("the claude agent is not available", status=503)
+    run_id = (str((agent._live_run(target, session) or {}).get("run_id") or "")
+              if target else "")
+    if not run_id:
+        return _error("not_running", status=404)
+    agent._cancel(run_id)
+    tasks_watch.notify({key, session})
+    return {"cancelled": True}

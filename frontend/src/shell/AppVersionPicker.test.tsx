@@ -17,14 +17,32 @@
 // unlike that file, this one's tests actually exercise `window`/`history`
 // rather than only needing the module-init pass through.
 import { beforeEach, expect, test } from "bun:test";
+import { installDomShim } from "@platform/lib/testDomShim";
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
 
-let currentUrl = { pathname: "/apps/repo/myapp", search: "" };
+// `href`/`origin` ride along for the suites that inherit this `location`
+// (see the note on `dispatchEvent` below): `new URL(x, location.href)` is
+// how appEntry and friends build links.
+const urlAt = (pathname: string, search: string) => ({
+  pathname,
+  search,
+  href: "http://localhost" + pathname + search,
+  origin: "http://localhost",
+});
+let currentUrl = urlAt("/apps/repo/myapp", "");
 let replaced: string[] = [];
 const listeners = new Map<string, Set<() => void>>();
 
+// The shared shim FIRST, so `window` carries everything the rest of the app
+// reaches for (`setInterval`, `setTimeout`, `requestAnimationFrame`…) and
+// this file only LAYERS its listener hooks on top. This `window` stays
+// installed for every suite that runs after this one in the same bun
+// process; a bare object with just add/removeEventListener took 11 suites
+// down on `window.setInterval is not a function` (CI, by file order,
+// 2026-09-24).
+installDomShim();
 (globalThis as Record<string, unknown>).location = currentUrl;
-(globalThis as Record<string, unknown>).window = {
+Object.assign(globalThis.window as unknown as Record<string, unknown>, {
   addEventListener: (ev: string, fn: () => void) => {
     if (!listeners.has(ev)) listeners.set(ev, new Set());
     listeners.get(ev)!.add(fn);
@@ -32,13 +50,26 @@ const listeners = new Map<string, Set<() => void>>();
   removeEventListener: (ev: string, fn: () => void) => {
     listeners.get(ev)?.delete(fn);
   },
-};
+  // This `window` STAYS INSTALLED for every suite that runs after this one in
+  // the same bun process, and router.ts's `navigate()` ends with
+  // `window.dispatchEvent(new Event("fused:navigate"))`. Without it, 45
+  // suites' worth of navigations died on "dispatchEvent is not a function"
+  // — on CI only, by file order (2026-09-24). Fans out to the listeners the
+  // stub already keeps, which is what the real one does.
+  dispatchEvent: (ev: { type: string }) => {
+    for (const fn of listeners.get(ev.type) ?? []) fn();
+    return true;
+  },
+});
 (globalThis as Record<string, unknown>).history = {
   state: null,
+  // Same standing-stub rule as `dispatchEvent` above: router.ts's `navigate`
+  // is `history.pushState`, and later suites call it through this object.
+  pushState: () => {},
   replaceState: (_state: unknown, _title: string, url: string) => {
     replaced.push(url);
     const [pathname, search] = url.split("?");
-    currentUrl = { pathname, search: search ? "?" + search : "" };
+    currentUrl = urlAt(pathname, search ? "?" + search : "");
     (globalThis as Record<string, unknown>).location = currentUrl;
     // main.tsx wraps the real history.replaceState to also dispatch
     // "fused:urlchange" (useUrlVersion's own signal) — replicated here, since
@@ -174,7 +205,7 @@ function textOf(node: ReactTestRendererJSON): string {
 let renderer: ReactTestRenderer | null = null;
 
 beforeEach(() => {
-  currentUrl = { pathname: "/apps/repo/myapp", search: "" };
+  currentUrl = urlAt("/apps/repo/myapp", "");
   (globalThis as Record<string, unknown>).location = currentUrl;
   replaced = [];
   listeners.clear();
@@ -325,7 +356,7 @@ test("the URL identity stays a sha even though the row reads v<n> — never a ve
 
 test('picking "Live" after a selection clears _snapshot from the URL', async () => {
   installFetch({ appFolder: "ok", commits: "ok" });
-  currentUrl = { pathname: "/apps/repo/myapp", search: "?_snapshot=" + COMMITS[0].sha };
+  currentUrl = urlAt("/apps/repo/myapp", "?_snapshot=" + COMMITS[0].sha);
   (globalThis as Record<string, unknown>).location = currentUrl;
   await act(async () => {
     renderer = create(<AppVersionPicker dir={APP_DIR} />);
@@ -386,7 +417,7 @@ test("the closed face shows only the version number, never the subject", async (
 test("a deep-linked sha outside the loaded list shows the short sha on the closed face too", async () => {
   installFetch({ appFolder: "ok", commits: "ok" });
   const deepSha = "c".repeat(40);
-  currentUrl = { pathname: "/apps/repo/myapp", search: "?_snapshot=" + deepSha };
+  currentUrl = urlAt("/apps/repo/myapp", "?_snapshot=" + deepSha);
   (globalThis as Record<string, unknown>).location = currentUrl;
   await act(async () => {
     renderer = create(<AppVersionPicker dir={APP_DIR} />);
@@ -424,7 +455,7 @@ test("the accessible name is unchanged: aria-label stays on the real select, and
 test("a sha already on the URL that is not among the loaded commits still gets its own option, not a silent snap back to Live", async () => {
   installFetch({ appFolder: "ok", commits: "ok" });
   const deepSha = "c".repeat(40);
-  currentUrl = { pathname: "/apps/repo/myapp", search: "?_snapshot=" + deepSha };
+  currentUrl = urlAt("/apps/repo/myapp", "?_snapshot=" + deepSha);
   (globalThis as Record<string, unknown>).location = currentUrl;
   await act(async () => {
     renderer = create(<AppVersionPicker dir={APP_DIR} />);

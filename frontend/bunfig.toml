@@ -20,3 +20,20 @@
 # working around it.
 [loader]
 ".png" = "file"
+
+# `bun test` runs every suite in ONE shared process, in an order bun itself
+# does not guarantee (CI's ubuntu-latest run enumerates the tree differently
+# than a local macOS run, and `--randomize` exists precisely because order is
+# unspecified). A handful of suites transitively import a module that reads
+# `window`/`location`/`history` at MODULE SCOPE (router.ts's `IS_EMBED`), so
+# whichever suite's import happens to run FIRST in a given order decides
+# whether that read finds anything on `globalThis` at all — each test file's
+# own `installDomShim()` call (testDomShim.ts) only protects suites whose own
+# file runs before the first such transitive import, which is exactly what
+# left this order-dependent: some orders threw `ReferenceError: location is
+# not defined` from router.ts's own module-init code, before a single test in
+# the affected files ran, as an "Unhandled error between tests" bun attributes
+# to whichever suite happened to be running. `preload` runs once, before bun
+# opens the FIRST test file, closing the race for every order bun can pick.
+[test]
+preload = ["./src/platform/lib/testPreload.ts"]

@@ -82,6 +82,12 @@ const CAPABILITY_META: Record<string, CapabilityMeta> = {
     searchNoun: "embedding models",
     icon: capabilityIcon("embeddings"),
   },
+  "text-classification": {
+    plain: capabilityLabel("text-classification"),
+    blurb: "Ask typed questions about a piece of text — pick a category, score on a rubric, or answer yes/no — and get calibrated probabilities back in milliseconds.",
+    searchNoun: "decision models",
+    icon: capabilityIcon("text-classification"),
+  },
   "text-to-video": {
     plain: capabilityLabel("text-to-video"),
     blurb: "Describe a shot and get a few seconds of video with sound. Large download, slow to render.",

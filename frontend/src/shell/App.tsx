@@ -52,7 +52,9 @@ import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
+import UpdateNotifier from "@platform/ui/UpdateNotifier";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
+import EditAppFileBoot from "@shell/EditAppFileBoot";
 import { ShareFileHost } from "@platform/ui/ShareFileModal";
 import OnboardingWizard from "@shell/onboarding/OnboardingWizard";
 import { ONBOARDING_PATH, shouldAutoShow } from "@shell/onboarding/state";
@@ -65,6 +67,7 @@ import TerminalDock from "@shell/TerminalDock";
 import TerminalDrawer from "@shell/TerminalDrawer";
 import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
 import { PEEK_PARAM } from "@shell/task-peek-store";
+import type { TasksScope } from "@shell/Scheduled";
 import { useTaskPeekEnabled } from "@shell/task-peek-flag";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { useTaskStatusNotify } from "@shell/useTaskStatusNotify";
@@ -115,6 +118,21 @@ const PAGE_PARAMS: readonly string[] = [PEEK_PARAM];
  *  pushes a same-path entry today, so the two lists behave identically in
  *  practice — but "in practice" is not the flag's contract. */
 const NO_PAGE_PARAMS: readonly string[] = [];
+/** `/tasks?project=<abs app dir>` — the framed Tasks view an app page builds
+ *  (`/tasks?embed=1&project=…`) narrowed to that folder, exactly as AppPage's
+ *  own Tasks tab scopes it. Read per render: every URL write on the page
+ *  (`?view=`, `?peek=`, the one-shot strips) keeps `project` in place. Cached
+ *  on the value so the scope's identity is stable across App re-renders (it
+ *  feeds Scheduled's memos). `ownFrame`: this route has no host frame to
+ *  portal the peek into, so Scheduled draws its own, as unscoped `/tasks` does. */
+let urlScope: TasksScope | undefined;
+function tasksScopeFromUrl(): TasksScope | undefined {
+  const raw = new URLSearchParams(location.search).get("project");
+  const project = raw ? raw.replace(/\\/g, "/").replace(/(.)\/+$/, "$1") : "";
+  if (!project) return undefined;
+  if (urlScope?.project !== project) urlScope = { project, ownFrame: true };
+  return urlScope;
+}
 const AppPage = lazy(() => import("@shell/AppPage"));
 const Apps = lazy(() => import("@apps/builder/Apps"));
 const ClaudeConfig = lazy(() =>
@@ -558,11 +576,6 @@ export default function App({ config }: { config: Config }) {
   // poll snapshot, and `NotificationHost` is the one column that draws it.
   const [popupJob, setPopupJob] = useState<Job | null>(null);
 
-  // THE SELF-UPDATE'S PROGRESS CARD (Akshil, 2026-09-19): the running
-  // `sys:update:<version>` row, bottom right, until the user closes it or the
-  // install stops. Same wiring shape as `popupJob` for the same reason.
-  const [updateJob, setUpdateJob] = useState<Job | null>(null);
-
   // Background mount-health poll → global disconnect/reconnect toasts. Mounted
   // once here for the page's lifetime (no-ops in embed); renders via NotificationHost.
   useMountHealth();
@@ -931,7 +944,7 @@ export default function App({ config }: { config: Config }) {
     main = (
       <div id="content" key={epoch}>
         <Suspense fallback={<RouteFallback />}>
-          <Scheduled key={epoch} />
+          <Scheduled key={epoch} scope={tasksScopeFromUrl()} />
         </Suspense>
       </div>
     );
@@ -1067,6 +1080,23 @@ export default function App({ config }: { config: Config }) {
       <div id="app">
         <OnboardingWizard key={epoch} config={config} />
         <NotificationHost />
+        {/* This whole branch already requires `!IS_EMBED` (the `if` above),
+            so this is never reachable under IS_EMBED today — but the guard
+            is spelled out explicitly anyway (finding #1, code review):
+            `UpdateNotifier`'s own header comment claims it runs "behind the
+            same !IS_EMBED guard as its siblings" everywhere it is mounted,
+            and leaving this instance implicit made that claim false at the
+            OTHER mount site below, which had no guard at all. Both sites now
+            say it the same way so the comment stays true regardless of how
+            this branch's own condition might change later. */}
+        {!IS_EMBED && <UpdateNotifier />}
+        {/* A fresh install routes Home to this wizard, and a Render App user's
+            very first fused-render action can be its Edit button: the
+            `?_edit_appfile=` hand-off must not die here unread. The boot
+            handler clones and moves to the copy (the wizard re-offers
+            itself next launch, `shouldAutoShow`); over an existing copy it
+            navigates there first, so its modal never sits on the wizard. */}
+        {!IS_EMBED && <EditAppFileBoot />}
         {/* Mod+K is App-wide (the listener above runs here too), so the sheet
             must be renderable here — or the flag flips with nothing shown and
             the sheet pops open on whatever page the wizard lets go to. */}
@@ -1121,7 +1151,6 @@ export default function App({ config }: { config: Config }) {
               <ActivityDock
                 onTerminalJobs={setTerminalJobs}
                 onJobPopup={setPopupJob}
-                onUpdateJob={setUpdateJob}
               />
             }
             repoUpdates={
@@ -1133,7 +1162,31 @@ export default function App({ config }: { config: Config }) {
           />
         )}
       </div>
-      <NotificationHost jobPopup={popupJob} onJobPopupGone={() => setPopupJob(null)} updateJob={updateJob} />
+      <NotificationHost jobPopup={popupJob} onJobPopupGone={() => setPopupJob(null)} />
+      {/* The two self-update notifications (Download available / Restart
+          ready), plus in-flight restart narration re-notifying the same card
+          — SPEC-update-notifications.md's consolidation of what used to be 5
+          separate surfaces (UpdateBadge, UpdateProgressCard, the restart
+          dialog, ActivityDock's update row, RepoUpdatesDock) into "Activity =
+          progress, Notifications = decisions". Headless — mounted beside
+          `NotificationHost` (both draw through the same notify() store)
+          rather than inside it, so `NotificationHost` stays a pure renderer
+          of whatever's in the store. Behind `!IS_EMBED`, same as the sidebar
+          and `StatusBar` above (finding #1, code review): this mount had NO
+          guard at all before, so an app opened in an embedded pane raised
+          its OWN copy of both decision notifications AND (via `notify()`'s
+          pane->shell forwarding, `platform/lib/notifications.ts`) pushed a
+          SECOND copy into the top shell's own panel — the exact double-popup
+          this file's other `!IS_EMBED`-gated mounts already exist to avoid.
+          `UpdateNotifier` only needs to run once, in the top document; the
+          decision it raises already reaches every pane through the ordinary
+          notify() store, so a pane mounting its own instance can only
+          duplicate work, never add coverage. */}
+      {!IS_EMBED && <UpdateNotifier />}
+      {/* Render App's Edit button hand-off (`?_edit_appfile=`, DL-7): clones
+          the .fused into local/ or, over an existing copy, asks whether to
+          overwrite it. Once, top document, same guard as UpdateNotifier. */}
+      {!IS_EMBED && <EditAppFileBoot />}
       {/* One dialog for every "Share" entry (card chip, card menu, app page,
           explorer kebab): the menu entries cannot own a dialog, so they post
           a request to platform/lib/share-app and this host renders it. */}

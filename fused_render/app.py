@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import plistlib
+import posixpath
 import secrets
 import shlex
 import socket
@@ -220,6 +221,25 @@ def _close_duckdb_stash() -> None:
 
 
 def _is_process_alive(pid: int) -> bool:
+    # os.kill(pid, 0) is the POSIX no-op liveness check, but on Windows signal 0
+    # aliases CTRL_C_EVENT: it broadcasts a real Ctrl+C via
+    # GenerateConsoleCtrlEvent to the whole console process group rather than
+    # probing `pid` alone. Use the Win32 exit-code API instead.
+    if os.name == "nt":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        handle = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == STILL_ACTIVE
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except OSError:
@@ -769,7 +789,7 @@ def bundle_executable(bundle: str) -> str:
     wrong is better than one that matches everything.
     """
     try:
-        with open(os.path.join(bundle, "Contents", "Info.plist"), "rb") as f:
+        with open(posixpath.join(bundle, "Contents", "Info.plist"), "rb") as f:
             name = plistlib.load(f).get("CFBundleExecutable")
         if isinstance(name, str) and name:
             return name
@@ -855,7 +875,12 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
         f"pidfile={shlex.quote(pidfile)}; "
         f"log={shlex.quote(log)}; "
         f"opener={shlex.quote(opener)}; "
-        f"exe={shlex.quote(os.path.join(bundle, 'Contents', 'MacOS', bundle_executable(bundle)))}; "
+        # `posixpath.join`, not `os.path.join`: `bundle` is always a macOS bundle
+        # path (forward slashes) regardless of the host OS running this code —
+        # in production that's always macOS, but the test suite also exercises
+        # this string-building on Windows, where `os.path.join` would splice in
+        # backslashes and corrupt the path.
+        f"exe={shlex.quote(posixpath.join(bundle, 'Contents', 'MacOS', bundle_executable(bundle)))}; "
         # THE CLOCK STARTS HERE, not when the pid dies. This shell is spawned by
         # `begin_quit`'s `on_claim`, at the very start of the teardown, so its
         # own start is the press — and the teardown may take up to

@@ -3,7 +3,7 @@
 Mirrors `fused.ai` from `fused_render/static/runtime.js` — same names, same
 option names, same closed-envelope rejection (D413) — for Python code that
 wants local inference without re-implementing the model layer. See
-`fused.ai.text/stream/transcribe/image/embed/models/cancel` there for the
+`fused.ai.text/stream/transcribe/image/embed/decide/models/cancel` there for the
 JS-side contract this restates.
 
 **Travels with `appenv.py`.** This module is stdlib only (`json`, `os`,
@@ -40,8 +40,8 @@ becomes `return`.
 it.** An option the server does not recognise comes back as a 400 from the
 server itself — keeping a third copy of the whitelist here (beside
 `runtime.js`'s and the server's own `_IMAGE_OPTIONS`/`_TRANSCRIBE_OPTIONS`/
-`_EMBED_OPTIONS`) is exactly how the three would drift. The
-`_IMAGE_WIRE_KEYS`/`_TRANSCRIBE_WIRE_KEYS`/`_EMBED_WIRE_KEYS` sets below
+`_EMBED_OPTIONS`/`_DECIDE_OPTIONS`) is exactly how the three would drift. The
+`_IMAGE_WIRE_KEYS`/`_TRANSCRIBE_WIRE_KEYS`/`_EMBED_WIRE_KEYS`/`_DECIDE_WIRE_KEYS` sets below
 exist ONLY so a test can pin them against the server's own constants — they
 name what this module forwards, not a gate it enforces.
 """
@@ -119,6 +119,10 @@ _TRANSCRIBE_WIRE_KEYS = frozenset(
 #: queries as documents — unit-length vectors of the right dimension, and
 #: worse, with nothing a caller could measure to say so.
 _EMBED_WIRE_KEYS = frozenset({"texts", "paths", "model", "kind", "provider"})
+#: …and `/api/ai/decide`'s, pinned against `_DECIDE_OPTIONS`. Two required
+#: fields and the two shared ones; the verb has no tunables (zero output
+#: tokens — every answer is a calibrated probability, nothing to sample).
+_DECIDE_WIRE_KEYS = frozenset({"state", "questions", "model", "provider"})
 
 
 class ServerNotRunning(Exception):
@@ -738,6 +742,46 @@ def embed(texts: list | None = None, paths: list | None = None,
     return payload.get("result") or {}
 
 
+# ------------------------------------------------------------------ decide
+
+
+def decide(state, questions: dict, *, model: str | None = None,
+           provider: str | None = None,
+           timeout: float = _DEFAULT_TIMEOUT_S) -> dict:
+    """`POST /api/ai/decide`. Typed decisions from Laya, a small local
+    bidirectional encoder with decision heads — not a chat model.
+
+    `state` is what the questions are about: a string, a dict (serialised as
+    JSON), or a list of `{role, content}` conversation turns. `questions` is
+    `{id: {"type", "instructions", "criteria"}}` with three types:
+
+    * `"choice"` — `criteria` is a list of labels or a `{label: description}`
+      dict; the answer carries `choice` and `probabilities`.
+    * `"score"` — `criteria` is an ordered list of rubric levels; the answer
+      carries `score` (the expected zero-based level), `legend` and
+      `probabilities`.
+    * `"noul"` — no criteria; the answer carries `noul`, P(true).
+
+    Every answer also carries `type`, `confidence` and `action.actProbability`.
+    Not job-backed, like `embed`: one forward pass per question, over in
+    milliseconds, so the reply IS the result — the D632 frame with `answers`
+    as the payload and `usage.outputTokens` always 0. The per-question rules
+    are the server's to state (`_validate_questions`); this forwards, and a
+    `bad_request` names the offending question id. Context is small (512
+    tokens English, 1024 multilingual) and shared by instructions, criteria
+    and state.
+    """
+    body: dict = {"state": state, "questions": dict(questions)}
+    if model is not None:
+        body["model"] = model
+    if provider is not None:
+        body["provider"] = provider
+    payload = _post_json("/api/ai/decide", body, timeout=timeout)
+    if not payload.get("ok"):
+        raise _error_from_payload(200, payload)
+    return payload.get("result") or {}
+
+
 # ------------------------------------------------------------------- models
 
 
@@ -831,6 +875,7 @@ class _Ai:
     transcribe = staticmethod(transcribe)
     image = staticmethod(image)
     embed = staticmethod(embed)
+    decide = staticmethod(decide)
     models = models
     cancel = staticmethod(cancel)
 

@@ -357,7 +357,7 @@ Security layer (token, Origin/Host validation, sandboxed bridge — see threat n
 |---|---|---|---|
 | D111 | In-app Fused account surface (SPEC §27, M18): `/view/_account` + `/api/account/*` do `fused cloud login`, `cloud setup`, `env default/delete`, and `cloud logout` from the app; scope = the **managed `fused` backend only**, AWS provisioning stays terminal; the §1 "no authentication/user accounts" non-goal is **clarified, not reversed** | Login: spawn `fused cloud login --no-browser`, capture the authorize URL from child output (PYTHONUNBUFFERED=1), client opens it, `OPENFUSED_LOGIN_RETURN_URL` (loopback-validated) 302s the browser back into the app; completion polled via the DP-2b presence signal, deeper truth via `fused cloud orgs` (`?probe=1`). Setup: `fused cloud setup` as the one tracked background job (202 + job_id, polled `{state, detail}` with the CLI's own lines, 409 when signed out or busy, env-name defaults `fused`/`fused-<env>`). Logout kills-and-waits-out any in-flight login before the CLI deletes credentials. Deploy modal's DP-2b warning and no-envs guidance become working buttons (sign in in place / route to the setup panel); DP-16's bundled terminal wrapper demoted to a power-user escape hatch. Full contract: SPEC §27 (AC-1…AC-11) | Owner ask 2026-07-15 ("login and setup directly in fused-render, no copying CLI commands out of the app"). Mechanics ported from the flow app's proven connect-fused surface rather than reinvented — same CLI, same failure modes already shaken out (stdout buffering, return-URL hook, job polling, logout/login race). Managed-backend-only scope mirrors flow's line: AWS `env create`/`infra serve` provisioning is a long, credential-heavy, terminal-native flow with poor modal ergonomics — not worth blocking the 90% path for. Non-goal clarified because the surface manages the *fused CLI's* credentials for deploy targets; fused-render itself still has no accounts/tokens/users (D3 stands, X-Fused guard unchanged) |
 | D112 | The account surface **shells the fused CLI** (subprocess through the DP-3 seam, extracted to `fusedcli.py`) — never the fused Python API in-process, and fused-render never reads or writes a credential itself | All auth/env state lives where the CLI puts it (JWT file, OS-keyring secrets store, envs.json); the app reads presence/status only. The seam module is shared by deploy.py and account.py, both routers mutually acyclic and neither importing server.py | In-process `fused.agent_core` calls were rejected: they'd bind fused-render to fused's internal APIs and version (the app must also drive an EXTERNAL `FUSED_RENDER_FUSED_BIN` CLI it can't import), couple the server's process to the CLI's credential/keyring behavior, and put token bytes in this process's memory for no gain. Subprocess keeps the CLI the single authority (DP-2b's posture), matches deploy.py and flow, and costs only stdout parsing + status polling — both proven. Cost accepted: `login`/`setup` have no `--json`, so the login URL is regex-captured from output and completion is polled |
-| D113 | **Stale-request cancellation for `runPython` (SPEC RH-9).** A third `opts` arg: `opts.key` (a string) names a **latest-wins channel** — a newer call on a key aborts the prior in-flight call on that same key; `opts.signal` (a standard `AbortSignal`) composes with it. A superseded/aborted call rejects with a plain `AbortError`, which the runtime's `unhandledrejection` handler treats as benign (no traceback overlay, no console noise). Implemented identically in the local runtime (`static/runtime.js`, fetch to `/api/run`) and the hosted/exported runtime (`fused` repo `widgets/static/fused_render_runtime.js`); the sine example passes `{ key: "sine" }` to demonstrate | The slider loop (`onChange` → `runPython`) fires one request per intermediate value while scrubbing; without cancellation every stale value is still computed server-side and its response can land out of order over the value the slider stopped on. Aborting the fetch frees the browser connection and lets the server drop the now-irrelevant subprocess when it notices the closed socket. AbortError is swallowed (not surfaced) so the existing fire-and-forget pattern (`onChange(draw)`, no `.catch`) keeps working — the losing re-render simply stops at its `await` without an overlay | Owner ask 2026-07-16 ("moving a slider through values should cancel the requests that are no longer relevant"). **Opt-in by key, not automatic by pyPath:** RH-4 allows concurrent calls, and shipped templates fire concurrent same-file calls that must all complete — `claude/agent.py` poll loops, `tar`/`sqlite` readers keyed by action, the netcdf/zarr tile browsers — so auto-cancelling by path would break them. Keying is a deliberate author choice; the default (no key) leaves RH-4 untouched. `AbortSignal` is the web-standard escape hatch for authors who want raw control; the `key` convenience is the one-liner that covers the slider case. Rejected "never-resolve superseded promise" (would strand suspended async frames and hide the reason) in favour of a real AbortError that authors *can* inspect but need not catch |
+| D113 | **Stale-request cancellation for `runPython` (SPEC RH-9).** A third `opts` arg: `opts.key` (a string) names a **latest-wins channel** — a newer call on a key aborts the prior in-flight call on that same key; `opts.signal` (a standard `AbortSignal`) composes with it. A superseded/aborted call rejects with a plain `AbortError`, which the runtime's `unhandledrejection` handler treats as benign (no traceback overlay, no console noise). Implemented identically in the local runtime (`static/runtime.js`, fetch to `/api/run`) and the hosted/exported runtime (`fused` repo `src/fused/agent_core/static/fused_render_runtime.js`; `widgets/static/` before fusedio/fused#371); the sine example passes `{ key: "sine" }` to demonstrate | The slider loop (`onChange` → `runPython`) fires one request per intermediate value while scrubbing; without cancellation every stale value is still computed server-side and its response can land out of order over the value the slider stopped on. Aborting the fetch frees the browser connection and lets the server drop the now-irrelevant subprocess when it notices the closed socket. AbortError is swallowed (not surfaced) so the existing fire-and-forget pattern (`onChange(draw)`, no `.catch`) keeps working — the losing re-render simply stops at its `await` without an overlay | Owner ask 2026-07-16 ("moving a slider through values should cancel the requests that are no longer relevant"). **Opt-in by key, not automatic by pyPath:** RH-4 allows concurrent calls, and shipped templates fire concurrent same-file calls that must all complete — `claude/agent.py` poll loops, `tar`/`sqlite` readers keyed by action, the netcdf/zarr tile browsers — so auto-cancelling by path would break them. Keying is a deliberate author choice; the default (no key) leaves RH-4 untouched. `AbortSignal` is the web-standard escape hatch for authors who want raw control; the `key` convenience is the one-liner that covers the slider case. Rejected "never-resolve superseded promise" (would strand suspended async frames and hide the reason) in favour of a real AbortError that authors *can* inspect but need not catch |
 | D114 | **Make `runPython` stale-request cancellation the DEFAULT (SPEC RH-9, supersedes D113's opt-in).** The channel key now **defaults to the `.py` path** instead of being absent: a new call for a file aborts the prior in-flight call for that same file with no author effort, so an ordinary `runPython("./x.py", params)` slider loop cancels its own stale scrubs. `opts.key` regroups the channel; **`opts.key: null` opts out** (fully concurrent, D113's old default); `opts.signal` composes unchanged. A **superseded** call now **never settles** (instead of rejecting with `AbortError`); an abort from the caller's own `signal` still rejects with `AbortError`. Shipped templates that fire concurrent same-file calls were audited and given `opts.key: null` at the call sites that must all complete (writes, poll loops, detached-worker kickoffs). Local + hosted runtimes stay in lockstep; the sine example now demonstrates the zero-config default | Owner ask 2026-07-16 ("create new PRs for it being default"). The dominant `runPython` use is "recompute this view from current params", where the last value is the only one that matters — making that the default means every slider/scrub page gets smooth behaviour for free instead of each author remembering a `key`. The `.py` path is the natural channel: a page almost always calls one file per logical view. **Never-settle (reversing D113's "rejected never-resolve"):** with cancellation opt-in, only authors who keyed in saw the rejection and could filter `AbortError`; as a *default* it must be invisible to pages that already wrap `runPython` in `try/catch` (the canonical authoring pattern) — a rejected `AbortError` would flash a stale error through their own catch while the latest value is still computing. Never-settling makes the stale continuation simply stop; the "stranded async frame" worry from D113 is bounded (an unreferenced suspended awaiter + its pending promise form a GC-collectible cycle). The safety cost — auto-cancel would abort in-flight writes/polls — is paid once via the `opts.key: null` template audit, and is documented so page authors hitting the same pattern know the escape hatch. `opts.signal` keeps the standard `AbortError` reject because there the caller explicitly asked to abort and expects to observe it |
 
 ### Canvas layout viewer — the first conditional template (2026-07-13, SPEC §28)
@@ -1918,9 +1918,13 @@ re-run (nothing in it could have changed).
 
 | # | Decision | Why | Verification |
 |---|---|---|---|
-| D884 | **An app's stable identity is a `<meta name="fused-app-id" content="<kebab name>-<8 hex>" />` tag in its ENTRY PAGE (`fused_render/app_id.py`), minted ONCE on the app's first `.fused` export and never rewritten; `export_app_file` copies it into the container index as `app_id`, and `open_app_file`/`clone_target` answer it** | Owner asked for one identifier that tells "an update of the same app" from "a different app that happens to share a name" — D397's slug (the folder basename) is neither: two people's `dashboard/` collide, a rename loses lineage. Where the id lives was the decision. **Rejected: `.fused/appfile.json`** (PR #1136's stamp) — the owner's call: `.fused/` is gitignored and rebuilt at will, so nothing tracking identity may live there. **Rejected: a new `fused.json`/`app.json` manifest at the app root** — a whole new file convention (explorer noise, docs, "what is this file") to carry one field, worth it only if a manifest is wanted for other reasons. **Rejected: git root-commit sha** — no repo for clones (D397) and one shared root for every app in the `local` monorepo (D626). **Chosen: the entry page**, because it is the one file every app must have, it is committed with the app, it ships in every `.fused`, and it already carries two markers read through the same 4 KiB head budget (`fused-app`, `fused-api-version`) — same parser shape, same migration path, zero new files. **Id shape by owner**: readable name part plus 8 random hex, not a bare uuid; validated by `ID_RE` on every read (untrusted file) and NEVER joined into a path — `_slug` stays the only path-maker. **Minted at export, not at app creation**: an identity exists to outlive the folder, and a folder that never left the machine needs none; the starter template therefore carries NO tag (a fixed id there would be copied into every new app). **Invariant**: `app_id` in a manifest ⇔ the tag is in the shipped entry — when the page cannot take the tag (read-only extract of an older `.fused`, no `<head>` anchor, or a folder that HEADS its own repo with a REMOTE — `app_git._repo_scope` resolves only an app's own `.git` or the shared `local` repo, so this is `meta_migration._has_remote`'s hands-off rule for showcase/deeplink clones, and an app nested deeper inside a user's bigger checkout IS stamped and left for them to commit) the export goes out with no `app_id` rather than a manifest-only id the next export would mint differently. **The unguarded GET `/api/appfile/export` now performs this one write** — deliberate: `downloadAppFile` (api.ts) still takes the GET whenever there is no preview capture, so gating the stamp behind the X-Fused POST would leave most real exports without an id; the write is a server-minted random tag into a folder the caller already named, never caller-chosen bytes. **Sniffable without extraction** (owner's ask): the id rides in the deflated index, one bounded `read_manifest` away; a raw-bytes `strings` grep would need a plaintext container header field (a v3 format, two hardened readers) and was not done. `clone_target` now prefers identity to slug: a `local/` folder whose entry declares the file's id is "already cloned" whatever it is named. **Known cost**: copying an app folder to start a new app copies the id; a "Duplicate app" action that re-mints is the follow-up. PR #1136 (unmerged) keys prior-version matching on the slug and should rekey on `app_id` when it rebases. | Scratch round-trip against a tmp app: first export mints `my-app-test-<8hex>` and inserts the tag right after `fused-api-version`; `has_fused_meta`/`app_entry` still hold on the stamped page; second export and an export after renaming the folder answer the SAME `app_id`; `read_manifest(...)["app_id"]` reads it with nothing extracted; a 0o444 entry exports with no `app_id`; `open_app_file` returns it. `tsc --noEmit` over `frontend/`: only pre-existing missing-module errors in `apps/claude/protocol/markdown.ts`, none in touched files. |
+| D884 | **An app's stable identity is a `<meta name="fused-app-id" content="<kebab name>-<8 hex>" />` tag in its ENTRY PAGE (`fused_render/app_id.py`), minted ONCE on the app's first `.fused` export and never rewritten; `export_app_file` copies it into the container index as `app_id`, and `open_app_file`/`clone_target` answer it** | Owner asked for one identifier that tells "an update of the same app" from "a different app that happens to share a name" — D397's slug (the folder basename) is neither: two people's `dashboard/` collide, a rename loses lineage. Where the id lives was the decision. **Rejected: `.fused/appfile.json`** (PR #1136's stamp) — the owner's call: `.fused/` is gitignored and rebuilt at will, so nothing tracking identity may live there. **Rejected: a new `fused.json`/`app.json` manifest at the app root** — a whole new file convention (explorer noise, docs, "what is this file") to carry one field, worth it only if a manifest is wanted for other reasons. **Rejected: git root-commit sha** — no repo for clones (D397) and one shared root for every app in the `local` monorepo (D626). **Chosen: the entry page**, because it is the one file every app must have, it is committed with the app, it ships in every `.fused`, and it already carries two markers read through the same 4 KiB head budget (`fused-app`, `fused-api-version`) — same parser shape, same migration path, zero new files. **Id shape by owner**: readable name part plus 8 random hex, not a bare uuid; validated by `ID_RE` on every read (untrusted file) and NEVER joined into a path — `_slug` stays the only path-maker. **Minted at export, not at app creation**: an identity exists to outlive the folder, and a folder that never left the machine needs none; the starter template therefore carries NO tag (a fixed id there would be copied into every new app). *Amended 2026-09-25 (owner): minted at CREATION after all — `routers/apps` stamps the fresh copy BEFORE `init_repo`'s boilerplate commit, so the tag is in history from commit one; the template still carries no tag, a fresh id is minted per copy. Observed cost of export-time minting: the stamp was a server write nothing committed, and in `~/Fused/local` every id line sat dirty until an unrelated later commit swept it in (one such sweep was a 27-file, 95 MB unscoped `add -A`). Export-time minting stays as the fallback for apps created before this; its commit gap is still open.* **Invariant**: `app_id` in a manifest ⇔ the tag is in the shipped entry — when the page cannot take the tag (read-only extract of an older `.fused`, no `<head>` anchor, or a folder that HEADS its own repo with a REMOTE — `app_git._repo_scope` resolves only an app's own `.git` or the shared `local` repo, so this is `meta_migration._has_remote`'s hands-off rule for showcase/deeplink clones, and an app nested deeper inside a user's bigger checkout IS stamped and left for them to commit) the export goes out with no `app_id` rather than a manifest-only id the next export would mint differently. **The unguarded GET `/api/appfile/export` now performs this one write** — deliberate: `downloadAppFile` (api.ts) still takes the GET whenever there is no preview capture, so gating the stamp behind the X-Fused POST would leave most real exports without an id; the write is a server-minted random tag into a folder the caller already named, never caller-chosen bytes. **Sniffable without extraction** (owner's ask): the id rides in the deflated index, one bounded `read_manifest` away; a raw-bytes `strings` grep would need a plaintext container header field (a v3 format, two hardened readers) and was not done. `clone_target` now prefers identity to slug: a `local/` folder whose entry declares the file's id is "already cloned" whatever it is named. **Known cost**: copying an app folder to start a new app copies the id; a "Duplicate app" action that re-mints is the follow-up. PR #1136 (unmerged) keys prior-version matching on the slug and should rekey on `app_id` when it rebases. | Scratch round-trip against a tmp app: first export mints `my-app-test-<8hex>` and inserts the tag right after `fused-api-version`; `has_fused_meta`/`app_entry` still hold on the stamped page; second export and an export after renaming the folder answer the SAME `app_id`; `read_manifest(...)["app_id"]` reads it with nothing extracted; a 0o444 entry exports with no `app_id`; `open_app_file` returns it. `tsc --noEmit` over `frontend/`: only pre-existing missing-module errors in `apps/claude/protocol/markdown.ts`, none in touched files. |
 | D885 | **A self-update that installs cleanly now REMOVES its Activity row from the registry (`jobs.forget`, new) instead of finishing it; there is no success row, no `DONE_MESSAGE`, and no `done` upsert at any tier. Error and cancelled rows are untouched.** The row used to end on "Installed — restart to finish" — moved to `jobs.SILENT` by #1214 so it at least stopped popping a card, but still a row in Notifications with a click. That click was the bug (Akshil, 2026-09-19): its destination was `_job_report`'s `/preferences` fallback, a LAZY CHUNK, and by the time the row existed the installer had already swapped the `.app` on disk — so the old window's fetch of that chunk 404'd and the page went blank. No tier fixes a row whose only affordance is a trap, and the row had nothing to say either: reaching "installed" is exactly what raises the blocking restart dialog (D2), which carries the same sentence AND the button. `jobs.forget(job_id)` is a third verb beside `dismiss` (a user's ✕, which refuses live work) and `_sweep`'s age-out (a clock): the PRODUCER saying its row has nothing left to say, so it may take a row that is still `RUNNING`. It funnels through the same `_forget`, so the id is remembered and a straggling tick cannot re-create the row, while a genuinely fresh attempt (an opening report stating `state: "running"`) reopens it. There is no HTTP route into it — a page reports, it never deletes. **The running row is unchanged** (bytes, phase, ✕, heartbeat) and so are the `error`/`cancelled` rows: those carry information nothing else on screen does, and neither path has swapped the app, so their `/preferences` destination still loads. **`page="/preferences"` is therefore KEPT**, not dropped with the success row: a terminal notification with neither `action` nor `page` resolves to `transient` (`notifications.ts::isTransient`), so dropping it would quietly stop a cancelled update from being KEPT in the list. **Second half, the modal:** `ServerStatusBanner` now probes `/api/config` the instant the shared update store transitions to `installed`, instead of waiting out its own 5 s `POLL_MS`. `bannerSurface` already opened the dialog on either door (D2), but only the probe carries `installed_version` — the version the dialog's title is made of — so the seconds between the two clocks were spent on a title falling back to `latest_version`. One probe per transition INTO `installed` (a ref re-arms only when the state leaves it), and it only ASKS: no restart is started and `restart-store`'s wake semantics are untouched. | `fused_render/jobs.py::forget`, `update/_manager.py::_install`/`_job_forget` (shared by mac and linux — neither platform writes its own terminal row), `frontend/src/platform/ui/ServerStatusBanner.tsx`. Tests: `tests/test_mac_update.py::test_a_successful_install_leaves_no_row_behind` / `test_a_removed_row_cannot_be_resurrected_by_a_late_tick` / `test_the_running_download_row_is_untouched_by_the_removal`, `tests/test_linux_update.py::test_a_successful_install_swaps_the_appimage_and_writes_the_stamp`, `tests/test_jobs_api.py::test_forget_takes_a_running_row_a_dismiss_would_refuse` / `test_a_forgotten_row_refuses_late_ticks_but_not_a_fresh_start`, and the new `frontend/src/platform/ui/ServerStatusBanner.test.tsx` (the probe fires on the transition, once, with no timer advanced). |
 | D886 | **A per-request `thinking` boolean, threaded client -> wire -> worker -> chat template, unifies the two local text runners under ONE default: thinking ON when unset. This reverses AI-11d's "off by default".** | `mlx-community/S1-mini-MLX-4bit` (a Qwen3-0.6B transcript normalizer used by the OpenWhisper app) was unusable through `mlx_text/worker.py`: its model card requires `enable_thinking=False`, and that runner's text path passed no such kwarg at all, so the template's own default (ON for Qwen3-family models) always won — there was no way for a caller to ask for anything else. Investigating turned up that the two local runners already silently disagreed: `mlx_text/worker.py` defaulted thinking ON (by omission), `runners/llama_text.py` passed `enable_thinking=False` unconditionally (AI-11d's choice). The GGUF build of S1-mini therefore worked BY ACCIDENT while the MLX build was broken. Owner decision (2026-09-21): unify on ON by default in BOTH runners, accepting the two costs AI-11d originally weighed against this — S1-mini's GGUF build (which worked by accident) now needs `thinking: false` passed explicitly, same as its MLX build always will; and a slow CPU machine gets think tokens (invisible latency) by default unless a caller opts out. Wire/client name is `thinking` (boolean); the worker's own vocabulary stays `enable_thinking` — `server/ai.py`'s `_local_relay` is the one place camelCase meets snake_case (D633), same as `maxTokens`/`topP`. Tri-state throughout: unset/`true`/`false`, with unset kept distinguishable from `false` end-to-end (the `{k: v for k, v in d.items() if v is not None}` filter in `_local_relay` already gives this for free; `mlx_text/worker.py::_messages_to_prompt` passes NO `enable_thinking` kwarg at all when unset, so the templated prompt stays byte-identical to before this flag existed). `_TEXT_OPTIONS`/`_OPTION_NAMES` (`server/ai.py`) validate the type (400 on non-bool) and treat it as a D631 *tunable*, not a *semantic* flag: Apple and Claude tiers warn (`{type: "unsupported-setting", ...}`) rather than 400. `mlx_text/worker.py`'s retry-on-`TypeError` (a tokenizer whose `apply_chat_template` rejects an unexpected keyword) is carried over from the removed transformers runner (AI-11d); `runners/llama_text.py` needs no such retry since Jinja silently ignores a context variable a template never reads. Client surfaces kept 1:1 (D470): `runtime.js`'s `textKeys`/body-population and `fused_ai.py`'s `text()`/`stream()` both gained `thinking`, and a new drift-guard test (`test_the_bridges_accepted_text_keys_match_the_servers_constant`) now pins `textKeys` against `_TEXT_OPTIONS` — the guard the other three AI capabilities (`imageKeys`, `transcribeKeys`, `videoKeys`) already had but text never did. **Rejected: keep the per-runner status quo** (MLX thinking ON, GGUF thinking OFF) — the bug this fixes IS that disagreement; a caller cannot reason about one setting that means opposite things depending on which runner happened to load the model. **Rejected: unify OFF, matching AI-11d's original reasoning** — the owner's call: the invisible-CPU-latency cost is real but is now something a caller can opt out of per-request, where OFF-by-default would have left `mlx_text/worker.py` with the SAME structural gap this bug report is about (never mind that it currently defaults on by omission — a hardcoded OFF would remove the freedom to turn it back on for a model that benefits from it). **Rejected: per-model catalog metadata that sets the flag automatically** — a real alternative design, not chosen; out of scope for this build, and left as a candidate follow-up (S1-mini's catalog entry could carry `thinking: false` as a default the page needn't specify itself). | `tests/test_ai_runtime.py` (wire validation, drift guard, tri-state reaching the worker as `enable_thinking`, Apple/Claude-tier warnings) — 577 passed; `tests/test_fused_ai_client.py` (client mirror) — 50 passed; `tests/test_ai_mlx_worker.py` (unset passes no kwarg, explicit true/false, `TypeError` retry, image-path default+override) — 34 passed; `tests/test_ai_llamacpp_worker.py` (default flip to `True`, explicit override, threaded from `generate`) — 64 passed. |
+| D887 | **A sixth `fused.ai` verb, `fused.ai.decide({state, questions})`, backed by Laya through `laya-mlx` as a LOCAL-tier `Runner` (`laya-mlx`) — not a fourth provider — under a new capability constant `DECISIONS = "text-classification"` that IS the Hub tag.** | Laya is a typed-decision model, not an LLM: a bidirectional encoder with decision heads reads a `state` (string, JSON record or conversation) plus typed questions and answers with CALIBRATED PROBABILITIES — `choice` over labels, `score` as the expected zero-based level of an ordered rubric, `noul` as P(true) — with ZERO output tokens. None of the five verbs fit (owner, 2026-09-22: "we can add a new verb"), and forcing it under `text` would have meant parsing prose back into numbers the model already holds. **Local tier, not a provider**: a tier is an engine family (D700's correction of D631), and this is MLX weights in the Hub cache loaded by a Python worker — exactly what `local` means — so the runner inherits the supervisor's resident slot (AI-4), download jobs (AI-5), disk-measured progress, mirror (AI-5l) and the Local-tab card unchanged; `AI_PROVIDERS` is untouched and `claude`/`apple` answer 409 `unavailable` through `_provider_rejection`, as image/video/embed already do. **Constant equals tag** (the `SPEECH_TO_TEXT` precedent): the repos' `pipeline_tag` is `text-classification`, so `tasks.py`'s existing row flips from unserved to `DECISIONS` and a cached Laya snapshot classifies off its own card with no invented vocabulary. Every sentiment BERT shares the tag, so `formats.DECISIVE` gains `laya-mlx` claiming ONLY a snapshot holding `rl_agent_config.json` PLUS an `encoder/` folder (`formats.is_laya_snapshot`) — Laya's own manifest and layout, present in no other family — and a plain text-classification repo keeps reading as "capability known, no engine here reads this format". **Route is the embed shape**: `POST /api/ai/decide` with a closed envelope (`state`, `questions`, `model`, `provider`; D633), `catalog.default_for(DECISIONS)` when unnamed, cold model = `ModelNotReady` → load STARTS and the 409 `model_loading` carries its job id; one forward pass per question answers in milliseconds once resident, so there is no job to hide a fetch in and nothing to stream. `supervisor.generate_embed`'s body becomes `_generate_sync(capability, model, body)` and both verbs call it. **The worker hands `laya_mlx.load()` the snapshot DIRECTORY**, never the repo id — the library's `resolve_model` calls `snapshot_download` on a bare id and would fetch behind the app's back (no progress row, no mirror, no ✕); `download` goes through `worker_base.download_snapshot` and `load` only ever reaches the local branch. Reply = `common.ai_result` (D632) with `answers` as payload; Laya's per-answer keys pass through except `action.act_probability` → `actProbability` (the one snake key on a camelCase wire, D633); Laya's `"model": "laya-rl-agent"` is dropped for `response.modelId`; `usage.outputTokens` is always 0. **Catalog**: the two pre-converted standalone FP16 repos — `aac6fef/laya-multilingual-mlx` (322M, 0.68 GB, 1024-token context) at position 0 by AI-7d's smallest-first rule and therefore the bare default, `aac6fef/laya-mlx` (421M, 0.85 GB, 512 tokens, English) `recommended` (AI-11i) so the Playground pick and English-first pages land on it (owner: accept the size rule, mark English recommended). Onboarding's Models step EXCLUDES the capability like video (owner: exclude) — a 0.85 GB offer to every fresh install with no visible use. Playground gets a Decide stage in the same PR (owner: "do it now"). **Rejected: `provider: "laya"`** — a tier per model skips everything the local tier already gives and contradicts D700's definition. **Rejected: verb names `classify`** (score and noul are not classes) **and `judge`** (LLM-as-judge connotation; nothing here generates). **Rejected: an invented tag `"typed-decisions"`** — breaks constant-equals-tag and a cached Laya repo would classify off its card as unknown, dropping it from the Local tab. **Rejected: the bundle repo `convaiinnovations/laya`** — three checkpoints in one download, `transformers`-tagged, needs a `subfolder=` no other row has; and the `typed-decisions` variant, useful only with upstream's preset workflows. **Rejected: job-backed or streaming shape** — nothing to show progress on for a ~13 ms call, no tokens to stream. | `tsc --noEmit` over `frontend/` and `py_compile` over the touched modules; owner runs the UI (owner skips test runs, D-row-per-feature default waived for this one by owner's ask). SPEC §40 AI-31; `skills/fused-render-ai/SKILL.md` decide section. |
+| D888 | **App Doctor's `pyproject` row is now required (`fail` when `pyproject.toml` is absent, at unchanged `warning` severity), and `ci/app_check.py`'s floor engine gained a matching `structure:missing-pyproject` fact at `suggested` — a step below `readme`'s/`preview`'s tier only in that it never blocks `main`'s exit code, so no repo passing CI today starts failing.** A folder's dependencies used to be declared, or not, with no signal either way (D230 says they belong in `pyproject.toml`; App Doctor never checked). Two gaps accepted deliberately rather than overlooked. First: for an app OUTSIDE `fused_dir()`, `projectenv.project_root_for` resolves the environment to the TOPMOST ancestor `pyproject.toml`, so a correctly-declared monorepo app still fails this folder-local check, and adding a folder-level file makes the row green without changing which environment the app actually runs on — accepted as in scope for "always required, folder-local" (owner's confirmed decision, not reopened here); revisit if adopted-into-a-monorepo apps become common. Second: `ci/app-check.yml` runs `pip install -e "$app"` once a folder carries a `pyproject.toml` at all, and an install failure only skips that app's tests with a `::warning::` rather than failing the run — pre-existing behavior, but this change makes it more reachable since more folders now carry the file. | Rejected: promoting the modal row past `warning` — sits with `readme`/`icon`/`preview`, not `critical`. Rejected: making the floor engine's rule anything but `suggested` — `critical`/`warning` fact findings are the only ones that exit `main` 1, and a required-by-default file across every existing app would otherwise turn on CI failures with no fix in hand. | `fused_render/app_doctor.py`, `skills/fused-render-app-doctor/ci/app_check.py`, `tests/test_app_doctor_report.py`, `tests/test_app_doctor_housekeeping.py`, `tests/test_app_doctor_cli.py`. |
+| D889 | **`tests/test_apps_api.py`'s `workspace` fixture now isolates `FUSED_RENDER_HOME` per test (`monkeypatch.setenv` + `exported_apps._clear_cache()`), matching `test_appfile.py`/`test_appfile_clone.py`/`test_exported_apps.py`, which already did this for the same documented reason.** Windows CI on the pyproject-required branch (D888) showed 10 NEW failures, all in `test_apps_api.py`, all showing a `demo`/`Fused-App`-tagged entry leaking into `/api/apps` listings that never created one. Root cause: `GET /api/apps` unconditionally unions in `exported_apps.exported_apps()`, which is keyed off `storage.home_dir()` (`FUSED_RENDER_HOME`); `tests/conftest.py` only allocates that env var ONCE, at import time, for the whole pytest-worker session — so any test that records an exported `.fused` open (`exported_apps.record_open`, the same call `POST /api/appfile/open` makes) into that shared, un-isolated home leaks a `Fused-App` row into every LATER `/api/apps` assertion made in the same worker. `test_apps_api.py`'s own `workspace`/`client` fixtures isolated only `FUSED_RENDER_DIR`, never `FUSED_RENDER_HOME` — the one file touching `/api/apps` that didn't defend against a hazard three sibling files already isolate against by name (`test_appfile.py` even carries a comment naming this exact leak). The PR itself (D888) touches none of these files; it is an ordering/scheduling side effect (new tests shift which files land in which Windows CI worker, or in what order), not a direct code coupling — which is why it could not be reproduced by serial execution on macOS, and why the exact upstream writer was never pinned down with certainty. Given that, the fix applied is the same isolation already proven correct elsewhere in this codebase, not a guess: it removes the ONLY structural gap found across every `/api/apps`/`exported_apps`-touching test file, regardless of which specific test is the actual writer on Windows CI. A companion regression test, `test_an_export_recorded_by_a_prior_test_does_not_leak_into_apps`, reproduces the leak directly on macOS (confirmed to fail without the fix and pass with it) by recording an export against a stand-in "prior shared home" outside this file's fixtures, then asserting a client built the normal way never sees it. | Rejected: renaming the test fixture's `demo`/leaking app instead of isolating the home dir — would hide the fixture-isolation gap rather than close it, and the same class of leak would resurface under any other app name. Not attempted: reproducing the exact Windows CI failure locally (macOS, no Windows runner available) — the fix instead targets the proven structural gap (missing isolation) rather than a guessed exact trigger. | `tests/test_apps_api.py` (`workspace` fixture + new regression test). Targeted run: `tests/test_apps_api.py`, `tests/test_app_doctor_report.py`, `tests/test_exported_apps.py`, `tests/test_appfile.py`, `tests/test_appfile_clone.py`, `tests/test_registered_apps.py` — 231 passed, `-n0` (no xdist). Not run: full suite (out of scope; orchestrator's job) or actual Windows CI (unavailable in this environment). |
+| D890 | **Page-side task management joins `window.fused` as a public `fused.tasks` namespace (list/get/create/send/cancel/archive/unarchive/delete/markRead/messages/transcript/settings/watch + a `TaskHandle` that follows the `pending:<entry>` → session-id rekey), built over the existing `/api/tasks` routes plus three thin new ones — `POST /api/tasks/create` (schedule.create + run_now, origin `"page"`), `POST /api/tasks/{key}/send` (live host inbox or spawn_helper resume; project-queue flag → `queued:true`), `POST /api/tasks/{key}/cancel` (agent._cancel: interrupt then kill) — and `GET /api/tasks` + `/changes` gain `?scope=app` / `?under=<dir>`. Present-and-throws on hosted pages; the `/api/tasks` write routes' missing X-Fused guard is closed.** | Owner decisions 2026-09-29. (1) PUBLIC, not a `_fused*` internal: the D205 precedent for going internal was a clobber footgun; there is none here, so hiding it would only hide it from authors. (2) App scope by DEFAULT, filtered SERVER-side: a page's board is about its own folder, and filtering client-side would ship every task title on the machine to every page. `scope:"all"` stays opt-in. (3) `permissionMode` defaults to `"default"`, NOT the scheduler's `"auto"`: a page can start work nobody is watching, so asks park as `needs_attention` for the human in the Tasks page; `"auto"` is an explicit author choice. (4) `markRead` + `archive`/`unarchive`/`delete` allowed; `erase` (deletes the transcript) is NOT — irreversible, Tasks-page only. Also withheld: queue doors admit/skip/force/decide and the running/idle marks (those are the scheduler's and the shell's bookkeeping, not an app's). (5) Exporter NOT taught to block it: dotted `fused.tasks.list(` slips the `fused.<name>(` check exactly like `fused.ai.image(`, and it stays a `fused.env === "local"` gating obligation for the same reason (a board behind that branch is legitimately exportable); hosted runtime throws like `writeFile` rather than stubbing, since an empty board would lie. (6) Coexists with `_fusedAskClaude`: that opens the sidebar for the human; `tasks.create` is headless and returns a handle. Rejected: a stub on hosted (silent empty board); client-side scope filter (leaks); reusing scheduler's `"auto"` default (unattended tool use from any page). Guard gap: read/archive/unarchive/delete/erase/settings/running/idle lacked the X-Fused check every other write router had ; now required, matching the rest. Also adds the missing EXPORT.md row for `fused.daemon.*` (❌, needs a local server). No fused-api-version bump: additive namespace. Cost: one shared long-poll of `/changes` per document; status is derived per listing so a board can flicker for ~15 s after a send. Docs: docs/EXPORT.md portable-subset rows, skills/fused-render-tasks/SKILL.md, authoring-skill `window.fused` row. *(Follow-up, same day: `fused.tasks.ui({view, task, scope}) -> Promise<url>` hands a page the shell's own Tasks page for an `<iframe>` — `GET /api/tasks/ui` builds `/tasks?embed=1[&project=<dir>][&view=..][&peek=<key>]` server-side, so the page never guesses its app folder and the shell's param names live on one side of the wire. NEW SHELL RULE: `?embed=1` on ANY route is embed mode, beside the `/explorer/embed/` path prefix (`router.ts` `IS_QUERY_EMBED`; `IS_EMBED` is the OR), because the Tasks page has no embed path and one flag beats a second sentinel route; `IS_TOP_EMBED` stays false when framed, so no EmbedStrip; the flag is read once at load, so in-app navigation that drops it keeps the chrome hidden until a reload. `?project=<dir>` scopes `/tasks` like the app page's Tasks tab but draws its own peek frame (`TasksScope.ownFrame`), the peek never writes the host's shared `sidebarstate` under embed, and `body.embed .schedule-page` drops the page gutter so the host frame's is the only one. Not done: lifting the 760/1050px column cap inside the frame — owner's call.)* | `py_compile` + `node --check`; the six task-API test files plus `test_tasks_queue_api.py` pass with the `X-Fused` header added (692), and the seven other files that touch the task API pass (192); the runtime namespace is not under test — owner verifies live |
 
 ## Search grammar follow-up: trailing space + icon*copy agreement (2026-09-17, worktree-search-trailing-space)
 
@@ -4715,3 +4719,1330 @@ drawer actually closing on a real process exit were not exercised end to
 end; only the unit-level behavior above was. The user should confirm the
 chord doesn't collide with anything OS/browser-level in their actual
 environment before relying on it.
+
+## Rank starvation fallback: a short page is not starvation evidence
+
+`13ff8332a`'s bounded-candidate-pool fast path (`fused_render/index/query.py`,
+`_rank_sql`/`_glob_sql`, `_bounded_or_full_candidates`) added a starvation
+fallback in `search_ranked`: if the bounded pass returns fewer than
+`limit + 1` rows, rerun the same query unbounded (`bounded=False`, `QUALIFY`
+over the entire WHERE-matched set) in case the pool's own `LIMIT <pool>`
+squeezed out a distinct basename that would have filled the page. Correct as
+far as it went, but the trigger condition — "the page came back short" — is
+not evidence the pool actually did anything: a query with genuinely few
+matches returns a short page too, and a zero-match query returns a short page
+*unconditionally* (`0 < limit + 1` is always true). Because the substring
+filter is `lrel LIKE '%q%'`, an unanchored pattern DuckDB cannot index, both
+the bounded and unbounded passes scan the entire WHERE-matched set regardless
+of how few rows survive — so a sparse or zero-match query paid for two full
+corpus scans to answer "still nothing" or "still not much." Measured on a
+440k-row index: a zero-match query went from 71.4ms to 186.6ms (2.6x), a
+sparse query (`openbot`) from 100.1ms to 222.8ms (2.2x); a page-filling query
+stayed at 1.0x (only ever one pass).
+
+The fix replaces "was the page short" with two provable equivalences, each of
+which proves the unbounded rerun can only reproduce the bounded result, so
+skipping it changes nothing:
+
+1. **Zero rows.** `_qualify_basename_cap`'s `QUALIFY row_number() OVER
+   (PARTITION BY nm ORDER BY <order_by>) <= _MAX_PER_BASENAME` keeps at least
+   the `row_number() = 1` row for every distinct `nm` the candidate pool
+   holds — a non-empty pool can never produce zero output rows. Zero rows
+   back therefore proves the pool itself was empty, which proves the WHERE
+   clause matched nothing at all: the unbounded query, filtering the
+   identical WHERE-matched set, must also return zero rows. No rerun.
+
+2. **The pool did not fill.** `_pool_n_column` adds `count(*) OVER ()` (no
+   `PARTITION BY`) to the SELECT that reads FROM the candidate-pool subquery
+   — i.e. strictly AFTER that subquery's own `ORDER BY <order_by> LIMIT
+   <pool>` stage, in the same window-function evaluation phase as
+   `_qualify_basename_cap`'s `QUALIFY row_number()`, both computed over the
+   same FROM-clause input before QUALIFY filters anything out. The resulting
+   `pool_n` is therefore the pool subquery's actual row count: `min(pool,
+   actual WHERE-matched count)`. `pool_n < pool` means the inner `LIMIT
+   <pool>` never bound — the pool subquery returned every WHERE-matched row,
+   so this bounded query's `QUALIFY` ran over the exact same input the
+   unbounded query's `QUALIFY` would run over. The two are equivalent by
+   construction; the fallback cannot produce a different result and must not
+   fire.
+
+Only when the pool genuinely truncates (`pool_n >= pool`) AND the page still
+comes up short of `limit + 1` is real basename-cap starvation still possible
+(one basename's duplicate count exceeds the pool and outranks every other
+matching name, `13ff8332a`'s own reported defect) — the unbounded rerun still
+fires in exactly that case, unchanged from before.
+
+Deliberately NOT placed: `count(*) OVER ()` inside the un-`LIMIT`ed WHERE-
+matched subquery, or above the whole statement's own `QUALIFY`/`ORDER
+BY`/`LIMIT`. Either placement would force DuckDB to materialise every
+matching row just to answer it, defeating the heap-based Top-N scan the
+pool's own `LIMIT <pool>` exists to enable — reintroducing, on a broad query,
+the exact full-corpus-scan cost this fix removes for a narrow one. It has to
+sit strictly between the pool's `LIMIT` and the cap's `QUALIFY`.
+
+Verified: `tests/test_index_rank.py`'s
+`test_zero_match_query_issues_exactly_one_rank_statement` and
+`test_sparse_query_whose_pool_does_not_fill_issues_exactly_one_rank_statement`
+fail on the pre-fix trigger (2 statements each) and pass after (1);
+`test_starvation_fallback_still_fires_when_the_pool_genuinely_truncates`
+guards against over-fixing (the real starvation case still reruns, 2
+statements, result matches the unbounded ground truth);
+`test_starvation_fallback_fix_does_not_change_any_result` pins byte-identical
+`hits`/`truncated` across a query spread (zero-match, sparse, starved broad,
+starved glob, ordinary broad) against a ground truth computed by forcing the
+candidate pool arbitrarily large.
+
+## Rank starvation fallback follow-ups: a stale test, a stale docstring, a duplicated derivation
+
+Code review on the previous entry's fix (PR #1308) surfaced four loose ends,
+all addressed in the same round:
+
+1. **A test pinned the old, buggy behavior as correct.**
+   `tests/test_index_search.py::test_search_ranked_honours_the_limit_in_sql_not_just_in_python`
+   builds 50 noise files plus one real match, so the bounded candidate pool
+   comes back with exactly 1 row — Tier 2 (`1 < pool`, `_basename_candidate_pool(4)`
+   is 20) proves the unbounded rerun would be identical, so it is correctly
+   skipped. The test asserted `seen_limits == [4, 4]` (two SQL statements),
+   which was true only under the pre-fix behavior this PR removes. Updated
+   the assertion to `[4]` and rewrote the trailing comment, which had stated
+   the old rule ("fewer than `limit` is the starvation-fallback's trigger")
+   as fact; it now explains why exactly one statement is correct here.
+
+2. **`_bounded_or_full_candidates`'s docstring asserted the inverse of the
+   shipped contract** — it still said a short page alone (fewer than
+   `limit + 1` rows) triggers the `bounded=False` rerun. Rewritten to state
+   the two-tier gate: a short page is necessary but not sufficient: it must
+   be combined with the pool actually having filled.
+
+3. **The pool size was derived in three independent places**: twice inside
+   the `_build_sql` closures (via `_bounded_or_full_candidates`, called from
+   `_rank_sql`/`_glob_sql`), and a third time in `search_ranked` itself
+   (`pool = _basename_candidate_pool(limit + 1)`, used only to compare
+   against `pool_n`). All three agreed today, but nothing enforced that —
+   if the Python-side value ever exceeded the SQL's, `pool_n >= pool` could
+   never be true and the starvation fallback would silently stop firing,
+   with no exception anywhere, for exactly the failure mode this whole PR
+   exists to close off.
+
+   Fixed by making `_bounded_or_full_candidates` the single source: it now
+   returns `(sql, pool)` instead of just `sql`, and callers pass that `pool`
+   straight into `_pool_n_column`, which emits the comparison AS SQL —
+   `count(*) OVER () >= {pool} AS pool_filled` — instead of the raw
+   `pool_n` count. `search_ranked` reads the boolean straight off
+   `pool_rows[0][-1]` and no longer computes `pool` at all. Chose "compare
+   in SQL" over "hand the pool size back to Python and compare there"
+   because it removes the second comparison site entirely rather than just
+   removing the second derivation site — there is now exactly one place
+   `pool` is computed (`_bounded_or_full_candidates`) and exactly one place
+   it is compared against `count(*) OVER ()` (the SQL text `_pool_n_column`
+   emits). Observable behavior (`hits`, `truncated`, statement count) is
+   unchanged — no test pins the generated SQL's column name or expression
+   text, so nothing else needed updating for this rename.
+
+4. **Over-broad `monkeypatch.undo()`** in `tests/test_index_rank.py`'s
+   `_unbounded_ground_truth`: it called `monkeypatch.undo()` in a `finally`,
+   which reverts EVERY patch registered on the fixture the caller passed in,
+   not just the `_basename_candidate_pool` patch this helper itself sets.
+   Scoped it with `monkeypatch.context()` instead, so only this helper's own
+   patch is undone when it returns.
+
+Verified: `tests/test_index_search.py tests/test_index_rank.py
+tests/test_index_query.py tests/test_index_rank_concurrency.py` — 342
+passed. The updated test
+(`test_search_ranked_honours_the_limit_in_sql_not_just_in_python`) run 3x in
+isolation to confirm it is not flaky post-fix: 3/3 passed.
+
+## LIKE ... ESCAPE blocks DuckDB's optimizer; contains()/bare LIKE where safe
+
+Every predicate in `fused_render/index/query.py` was written as
+`col LIKE '...' ESCAPE '\'` (via `like_literal()`), including unanchored
+substring scans (`%needle%`) and simple prefix scans (`prefix%`). DuckDB's
+`LikeOptimizationRule` only rewrites `LIKE` into `contains()` or a sargable
+range when the statement has NO `ESCAPE` clause; with one present, it falls
+back to the opaque `like_escape()` function — no fast path, no parquet
+row-group pruning. Measured directly: substring `LIKE ... ESCAPE` 9.74ms vs.
+`contains()` 5.00ms (~1.95x); prefix `LIKE ... ESCAPE` 2.39ms vs. plain
+`LIKE 'prefix%'` 1.48ms (~1.6x — the unescaped form compiles to a real
+`>= / <` range, enabling row-group pruning that the escaped form cannot get).
+`starts_with()` was also measured (2.11ms) and rejected: essentially no win
+over the escaped form, so it isn't worth trading away for.
+
+Two changes, split by whether dropping `ESCAPE` is always safe:
+
+1. **Unconditional**: every unanchored substring predicate (`_rank_sql`'s
+   `lrel` filter, `search_under`'s path/dir substring filter, and the
+   single-literal leg of `_name_predicate_sql`'s `contains` key) now emits
+   `contains(col, lower('lit'))` instead of
+   `col LIKE '%'||like_literal(lit)||'%' ESCAPE '\'`. `contains()` has no
+   wildcard semantics at all, so it is exactly equivalent for any literal —
+   including literals containing `%`, `_`, or `\` — with no escaping
+   needed. (`_name_predicate_sql`'s multi-literal `%`-chain leg keeps the
+   escaped form: `contains()` only takes one needle, so a chain of several
+   literals still needs a real LIKE pattern.)
+
+2. **Conditional**, via a new `_prefix_predicate_sql(col, prefix)` helper
+   used by `stats`, `search_under`, and `search_ranked`'s prefix scans: it
+   drops `ESCAPE` only when `like_literal(prefix) == prefix`, i.e. the
+   prefix contains no LIKE metacharacter. Metacharacter-free prefixes (the
+   overwhelming common case — ordinary path segments) get the fast
+   unescaped `LIKE 'prefix%'`. A prefix containing `_` or `%` keeps the
+   escaped form, because those are the two characters `LIKE` treats as
+   wildcards: an unescaped `dir LIKE '/x/proj_a/%'` would also match
+   `/x/proj-a/...` (`_` matches any single character), silently returning a
+   sibling directory's files as if they were under `proj_a`. This is
+   exactly the scoping bug the gate exists to prevent — proven by a
+   red/green cycle: temporarily forcing `_prefix_predicate_sql` to always
+   drop `ESCAPE` turned 5 tests red (the proj_a/proj-a scoping tests in all
+   three of `test_index_query.py`, `test_index_search.py`, and
+   `test_index_rank.py`, plus the two pre-existing lookalike-sibling tests
+   for `stats`/`search_under`), then restoring the gate brought all 330
+   back to green. `starts_with()` was not used here either, for the same
+   reason it was rejected above — it has no gated/ungated split of its own
+   and measured no meaningful improvement over the escaped `LIKE`.
+
+New/updated tests (all in the targeted 3-file suite,
+`tests/test_index_query.py tests/test_index_rank.py
+tests/test_index_search.py`): `test_prefix_predicate_drops_escape_for_a_metachar_free_prefix`,
+`test_prefix_predicate_keeps_escape_when_the_prefix_has_an_underscore`,
+`test_prefix_predicate_keeps_escape_when_the_prefix_has_a_percent`,
+`test_search_under_scoping_ignores_proj_a_lookalike_and_a_percent_literal`,
+`test_search_under_substring_filter_compiles_to_contains_not_like_escape`,
+`test_name_predicate_sql_contains_leg_uses_contains_for_a_single_literal`,
+`test_search_ranked_scoping_ignores_a_proj_a_lookalike_sibling`,
+`test_rank_sql_substring_filter_compiles_to_contains_not_like_escape`. Two
+pre-existing tests already covered the `stats`/`search_under` lookalike
+case (`test_stats_does_not_count_a_lookalike_underscore_sibling`,
+`test_search_under_ignores_a_lookalike_underscore_sibling`) and needed no
+changes. 330 passed in the targeted suite.
+
+**Correction (same session):** the first end-to-end benchmark run here was
+invalid and its "no measurable improvement" conclusion is retracted. Its
+index was never "covered" — every `search_ranked` call returned
+`{'covered': False, 'hits': [], 'total': 0, 'scanned_partitions': 0,
+'reason': 'uncovered'}`, so both arms were timing an early return that
+never touched the parquet at all; the ~3.1ms vs. ~3.0ms medians were
+measuring the no-op path, not the query. Lesson for any future benchmark
+of this kind: an uncovered root turns `search_ranked` into a no-op, so the
+harness must assert `covered is True` and `scanned_partitions >= 1` (and
+non-zero hits, for a query expected to match) before timing anything —
+otherwise it silently benchmarks the wrong code path.
+
+End-to-end honesty check (re-measured): built a fresh, premise-asserted
+450,100-row index across 10 partitions and timed `search_ranked` through
+the public API, alternating this branch (HEAD) against the pre-change code
+(`45fa6c8d8`), fresh subprocess per arm, 6 rounds with round 0 discarded as
+warmup, 5 timed reps per arm per round, reporting medians with
+[min, max] across rounds:
+
+| query | scope | pre-change (45fa6c8d8) | HEAD | ratio |
+|---|---|---|---|---|
+| broad substring `file_` | root `/r`, ~442k matches | 75.10 ms [72.86, 80.75] | 71.02 ms [69.19, 74.39] | 1.06x |
+| sparse substring `special_marker` | root `/r`, 100 matches | 19.17 ms [18.73, 22.51] | 14.05 ms [13.82, 14.86] | 1.37x |
+| zero match | root `/r` | 17.50 ms [16.60, 18.97] | 12.63 ms [11.90, 13.64] | 1.39x |
+| subfolder-scoped `file_` | root `/r/A5`, 2/10 partitions scanned | 23.73 ms [23.59, 23.91] | 19.60 ms [19.45, 19.83] | 1.21x |
+
+Interpretation, stated at exactly this strength and no stronger: the raw-SQL
+predicate win (~1.95x substring, ~1.6x prefix) does NOT survive intact
+end-to-end. The end-to-end win is 1.06x on the broadest query and ~1.4x on
+sparse/zero-match queries — real and consistently in the right direction,
+but modest. The dilution is scoring and ordering work downstream of the
+WHERE clause, which this change does not touch and which dominates when
+many rows survive the filter; connection setup was measured at only ~7% of
+the call (3.8ms of 54ms) and is not the diluent. Sparse and zero-match
+queries keep more of the win because there is little or no scoring work to
+dilute it.
+## bun test heap leak investigation (fix/bun-test-heap-leak, 2026-09-21)
+
+Task: find/fix the memory leak that makes `bun test` (frontend) OOM the machine.
+Working copy: this clone's `frontend/`. No PR opened per instructions; findings only.
+
+### Tooling built
+- `guarded-test.sh` (kept in scratchpad, NOT this repo, since it is a throwaway
+  investigation harness, not project code): runs `bun test <args>` with a hard
+  wall-clock timeout and a 1s-polling `footprint <pid>` watchdog that SIGKILLs
+  the process the instant phys_footprint crosses a caller-given ceiling.
+  Verified to actually fire (OOM_KILLED case) before being trusted for real runs.
+  Caveat: the poll interval is 1s and JSC growth here has been observed to add
+  ~4-5GB in a single second once the blow-up starts, so the measured "peak" can
+  overshoot the configured ceiling by a few GB — treat the ceiling as a rough
+  trip wire, not an exact cap. Set ceilings with several GB of headroom below
+  whatever the machine can actually absorb.
+
+### Reproduced safely
+Full `bun test src` under the guarded runner: stable ~150-340MB footprint for
+the first ~64s, then explodes to 9.1GB within the next ~8s (watchdog fired at
+peak_kb=9147392, elapsed_s=72, cap was 6291456 KB). This matches the original
+bug report exactly (sudden late blow-up, not a slow climb).
+
+### Bisection (file-set, from `src/apps/claude`)
+Isolated combination that was suspected to reproduce it stand-alone —
+feature-flag.test.tsx, ClaudeChat.{ann,boot,attach}.test.tsx,
+ui/useArtifacts.test.tsx, ui/useSnapshots.test.tsx, ui/home-lists.test.tsx,
+ui/placement.test.tsx, ui/cards.test.tsx, pane/appState.test.ts,
+ann/useAnnotations.test.tsx, protocol/run-controller.pr4.test.ts (12 files,
+same order as they run inside the full suite) — does NOT reproduce the leak
+when run alone: 331 pass, 0 fail, peak 210MB, 9.85s. This RULES OUT "these 12
+files alone" as sufficient; whatever leaks needs the preceding ~64s/hundreds
+of files of the full suite to have already run first. Ruling stands: the leak
+requires accumulated state from the broader suite, not just this file set.
+
+### Listener-count instrumentation (temporary, uncommitted)
+Added a temporary diagnostic to `src/apps/claude/feature-flag.ts`: a
+`console.error` in `set()`/`setQueue()` gated behind `process.env.LEAK_DIAG`
+that prints `listeners.size` / `queueListeners.size` on every call, plus a
+`__debugListenerCounts()` export (both still uncommitted in the working tree —
+see `git status` before doing anything else with this branch).
+
+Ran the full suite again with `LEAK_DIAG=1`: `queueListeners.size` peaks at 16
+(not the "thousands" a runaway-listener theory would predict) right as
+`run-controller.pr4.test.ts` starts (its `beforeEach`/`afterEach` call
+`publishProjectQueueEnabled(true/false)` on every one of its ~70 tests). This
+RULES OUT "unbounded listener-Set growth in feature-flag.ts fans out to a
+catastrophic number of re-renders" as the direct memory driver — 13-16
+listeners firing ~70 times is a few hundred calls, not an 8GB event.
+
+What the 13-16 residual listeners DO confirm: they are stale — pr4.test.ts
+itself never calls `useProjectQueueEnabled`/`useNativeChatFlag` and mounts no
+React tree, so every listener firing at that point was registered by an
+EARLIER test file (a `ClaudeChat.*.test.tsx` or `feature-flag.test.tsx` mounted
+component) that was never unmounted/cleaned up. This is real evidence of a
+leaked-mount bug (something in ClaudeChat.tsx's mount path, or one of its
+consumers, is not being unmounted by its owning test), but it is NOT itself
+big enough to explain the observed blow-up.
+
+Read of the last ~150 lines before the OOM in the LEAK_DIAG run: a bounded
+number of `Warning: An update to Harness inside a test was not wrapped in
+act(...)` warnings (66 total in the whole run, not runaway/infinite) fire
+right as pr4.test.ts starts — consistent with the ~70 afterEach-triggered
+setQueue() fanout calls hitting a small number of stale "Harness"/"Probe"
+components left mounted from earlier files. `run-controller.pr4.test.ts`
+itself contains no `render(`/React usage at all (grepped; it's pure
+protocol-logic tests) — the "Harness"/"Probe" names in the warnings belong to
+OTHER files' test harnesses, still alive.
+
+### Current best hypothesis (NOT YET CONFIRMED)
+The 8-9GB blow-up is not driven by listener-Set size. It's more likely that
+one or more of the ~13-16 stale, still-mounted "Harness"/"Probe" component
+trees (leaked from an earlier `ClaudeChat.*.test.tsx` or
+`feature-flag.test.tsx` run, never unmounted) is itself large or contains an
+effect/render path that allocates unboundedly per re-render (e.g. an
+unbounded array/string build in a render or effect body triggered by the
+`queueEnabled`/`nativeChatFlag` state change), and `run-controller.pr4.test.ts`
+repeatedly re-triggering that stale tree's setState (via the shared
+`publishProjectQueueEnabled` broadcast) is the detonator, not the cause. NOT
+CONFIRMED — the specific component and its unbounded allocation have not been
+identified yet.
+
+### Not yet done / exact resume point
+1. Find which test file(s) leave a `ClaudeChat`/`Harness`/`Probe` tree mounted
+   past their own test (grep each of ClaudeChat.ann/boot/attach.test.tsx and
+   feature-flag.test.tsx for a `render()`/`create()` without a matching
+   `.unmount()` in every test, including error paths / early returns).
+2. Once found, inspect what that mounted tree's re-render path does on a
+   `queueEnabled`/`nativeChatFlag` change — look for unbounded state growth
+   (array push, string concat, snapshot/log ring buffer without a cap) that
+   would explain multi-GB growth from ~70 repeated fanout calls hitting a
+   handful of stale trees.
+3. Confirm by instrumenting that specific allocation site (or by taking a heap
+   snapshot / using `bun test --smol` or `BUN_JSC_*` env knobs — not yet tried)
+   during a guarded run of just `<offending file>.test.tsx` +
+   `run-controller.pr4.test.ts` (2 files) with a tight (~1GB) cap, to isolate
+   the minimal repro before touching source.
+4. `--isolate`/`--parallel` (bun 1.3.14 flags, not yet tried) are a viable
+   fallback IF the root cause turns out to be systemic/hard to fix per-file,
+   but source-level bisection ruled out a generic bun/JSC-level cause (an
+   unrelated 11-file set from src/platform/lib did not reproduce it earlier),
+   so a real leaked-mount bug in app test code is still the most likely
+   explanation and should be fixed at the source first.
+5. `git status` in this clone currently shows ONLY the uncommitted temporary
+   diagnostic in `frontend/src/apps/claude/feature-flag.ts` (gated behind
+   `LEAK_DIAG` env var, inert unless set) — no real fix, no commit yet.
+
+No PR opened, per instructions. No commit made yet — still investigating.
+
+## bun test heap leak: root cause found and fixed (fix/bun-test-heap-leak, 2026-09-21, part 2)
+
+Continuing from the resume point above. Root cause found; fix committed.
+
+**Root cause.** `frontend/src/apps/claude/ui/sched-block.test.tsx` has a local
+`mount()` helper that `create()`s a `Harness` (which calls `useSchedule`, which
+calls `useProjectQueueEnabled()`) for each of its 13 tests, but the file has
+**no `afterEach`, no `mounted` array, and not one call to `.unmount()`**
+anywhere (`grep -n unmount sched-block.test.tsx` → zero matches). Every other
+file in `src/apps/claude` that mounts a `react-test-renderer` tree follows the
+same convention (a module-level `mounted` array pushed to by the mount helper,
+drained by a shared `afterEach` that calls `act(() => r.unmount())`) — this
+file was the one exception. Confirmed via a throwaway preload script (outside
+the repo, dynamic-imported `feature-flag.ts`'s internals to log
+`listeners.size`/`queueListeners.size` after every test): `queueListeners`
+climbed 1-by-1, exactly 13 times, strictly inside this file's own run, and
+never came back down (this superseded and corrects the earlier 12-file
+bisection above, which never included this file and so never reproduced the
+leak).
+
+**What rooted the retained memory.** `bun test` runs the whole `src` tree in
+ONE process with no per-file isolation, so `feature-flag.ts`'s
+`listeners`/`queueListeners` module-level `Set`s are one shared global for the
+entire run. The 13 un-unmounted `Harness` trees stay mounted — and subscribed
+— for the rest of the process. `useSchedule`'s internal `watcher` and its
+`setInterval`-driven poll, plus every later file's `publishProjectQueueEnabled`
+broadcast (e.g. `protocol/run-controller.pr4.test.ts`'s ~70 calls across its
+`beforeEach`/`afterEach`), then re-render those 13 permanently-live trees over
+and over for the remaining ~250+ files/6900+ tests of the run. Isolating just
+this file alone (13 tests, guarded, 1GB cap) stayed flat at ~71MB — no
+blowup. Isolating this file plus `run-controller.pr4.test.ts` together (the
+originally-hypothesized minimal repro) ALSO stayed flat and fast (~12MB,
+<1s) — so the hypothesized second "production unbounded-allocation" defect
+(DEFECT #2) does **not exist as a separate bug**: the growth to multi-GB only
+shows up when the 13 stale trees are left alive and re-rendering across the
+*entire* remaining suite (hundreds of files), not from any one or two files'
+broadcasts. 13 leaked subscriptions, compounded over the full run's re-render
+traffic, was sufficient by itself. There is one defect, not two.
+
+**Minimal repro.**
+```
+GUARDED_OUTLOG=/tmp/x.log GUARDED_STATUSFILE=/tmp/y.log \
+  ./guarded-test.sh 1048576 60 src/apps/claude/ui/sched-block.test.tsx \
+  --preload <scratchpad>/leak-preload.ts
+```
+run alone: no leak signal (flat ~71MB). The leak only manifests as a
+full-suite blowup — `bun test src` — because it needs the rest of the suite's
+re-render/broadcast traffic to compound. Before the fix, a full guarded
+`bun test src` run (6GB cap) got OOM_KILLED at ~69s elapsed after climbing
+past 6GB; the earlier full-suite run recorded in this file's part-1 entry
+above hit 9.1GB.
+
+**Peak memory, full `bun test src`, guarded, 3GB cap, no diagnostic preload:**
+- Before fix: OOM_KILLED (uncapped runs observed up to 9.1GB; this session's
+  6GB-capped run also tripped the cap).
+- After fix: `RESULT status=EXITED_0 peak_kb=330752 peak_gb_x100=31
+  elapsed_s=73` — **~323MB peak**, 7098 pass, 0 fail, 26185 expect() calls
+  across 331 files, well inside the previously-established healthy baseline
+  (150-340MB).
+
+**The fix (one commit, `frontend/src/apps/claude/ui/sched-block.test.tsx`).**
+Added the same `mounted: ReactTestRenderer[]` + shared `afterEach(() => { for
+(const tree of mounted.splice(0)) act(() => tree.unmount()); ... })` pattern
+already used by every other file in this directory; `mount()` now pushes its
+tree onto `mounted` instead of only returning it.
+
+**Regression guard (same commit).** Rather than a global cross-suite
+assertion (higher blast radius, and other files have their own valid
+per-file-not-per-test cleanup timing), the guard is local and targeted: the
+new `afterEach` also asserts
+`listenerCountsForTests().queueListeners` returns to the value captured
+before this file's first test ran. `listenerCountsForTests()` is a small,
+permanent, side-effect-free accessor added to `feature-flag.ts` for exactly
+this purpose — it exports `{ listeners, queueListeners }` sizes and does
+nothing else. If this file's cleanup ever regresses (or a future test in this
+file adds a `mount()` call without going through the helper), the assertion
+fails loudly in this file's own output instead of silently inflating memory
+hundreds of files later.
+
+**Temporary diagnostic disposition.** The previous agent's `LEAK_DIAG`
+`console.error` lines inside `set()`/`setQueue()` in `feature-flag.ts` were
+reverted entirely (not shipped). The `__debugListenerCounts()` export was
+renamed to `listenerCountsForTests()`, kept as a permanent, minimal, side-effect-free
+test-only accessor (matches this file's existing `resetNativeChatFlagForTests()`
+naming/doc-comment convention), and is now load-bearing for the regression
+guard described above rather than being a leftover diagnostic.
+`grep -rn "__debugListenerCounts\|LEAK_DIAG" frontend/src` → no matches.
+
+**Exact command to run the full suite safely, and its duration:**
+```
+GUARDED_OUTLOG=/tmp/out.log GUARDED_STATUSFILE=/tmp/status.log \
+  ./guarded-test.sh 3145728 240 src
+```
+(from `<scratchpad>/guarded-test.sh`, 3GB cap, 240s timeout — actual run
+finishes in ~73s at ~323MB peak, comfortably under the cap). Plain `bun test
+src` with no cap is still NOT safe to run outside this guard until/unless the
+guarded run has been repeated a few more times on a clean checkout to build
+confidence; this session's evidence is one clean full-suite pass post-fix.
+
+**Not done / explicitly out of scope for this pass:** no PR opened; no
+broader `--isolate`/`--parallel` bun flag adoption (rendered unnecessary once
+the actual leaking file was fixed); no changes to any file other than
+`sched-block.test.tsx`, `feature-flag.ts`, and this log.
+
+## App page git column (branch `app-page-git-sidebar`) — draft review, a real race bug, and its fix
+
+A prior pass on this branch had already landed a draft (commit `2e3560a7e`)
+giving the app page (`shell/AppPage.tsx`) a right-hand git column: the same
+`git` template, the same `PreviewSidebar` companion the explorer's file
+preview already hosts, opened only from App Doctor's existing "Open in git"
+row (no header button, no new URL param — closing is the column's own close
+button or dragging it through its floor). That draft's architecture held up
+under review — `PreviewSidebar`'s widened `SPLIT_SEL`, the `useDirMode(open ?
+dir : null, "git")` gate, the `gitSrc` URL shape, the CSS split/drag rules,
+and `onOpenGit` threaded through `AppDoctorModal.tsx` all matched every
+relevant precedent (`Preview.tsx`'s `sideSrcFor`, `.stat-split`'s CSS,
+`dir-mode.ts`'s contract). Two non-behavioral fixes were made directly on it:
+a stale header comment still claiming the page was "read-only about git" (a
+prior, unrelated change — the version picker — had already made that false),
+and a JSX indentation slip where the new `.app-page-split` wrapper's children
+were left at the wrapper's own indentation level instead of one deeper.
+
+**No existing test was found asserting the old contract.** Grepped
+frontend `*.test.{ts,tsx}` and Python `tests/*.py` for `onOpenGit`, `Open in
+git`, `read-only about git`, `app-page`, `stat-split`, `SPLIT_SEL`,
+`app_doctor` — nothing pins "AppDoctorPanel has no onOpenGit" or "the app
+page is read-only about git" as a passing assertion anywhere. The risk
+flagged in the handoff did not materialize as a blocking test.
+
+**A real bug, found by TDD, not by review.** The draft's inline auto-close
+effect —
+
+```ts
+useEffect(() => {
+  if (gitOpen && !gitMode.pending && gitMode.entry === null) setGitOpen(false);
+}, [gitOpen, gitMode.pending, gitMode.entry]);
+```
+
+— closes the column the instant it opens, before the probe is ever
+dispatched. `useDirMode`'s own state does not move in the same render that
+flips its `dir` argument from `null` to real; it only updates once ITS OWN
+effect runs, one commit later. On the transitional render, `gitMode` still
+reads the old `{ entry: null, pending: false }` — indistinguishable, at that
+instant, from "asked, and the folder has no git" — and the draft's effect
+(which runs immediately after `useDirMode`'s own effect in the same commit,
+per hook declaration order) reads that stale value and calls `setGitOpen(false)`
+before `useDirMode`'s placeholder (`pending: true`) has had a chance to land.
+Nothing in `bun run typecheck`/`check:boundaries`/`build` could have caught
+this — it is a runtime effect-ordering race, not a type or lint issue, and
+the draft shipped with no tests at all covering this path.
+
+Extracted the whole git-column state (`open`/`openGit`/`closeGit`/`gitMode`/
+`gitSrc`) out of `AppPage.tsx` into `shell/useAppPageGitColumn.ts`, mirroring
+`useAppPageSnapshot.ts`'s precedent (`AppPage.tsx` itself has no render-test
+path — mounting it pulls in base-ui's Tabs, a document-dependent keyboard-nav
+effect, `useFavicon`, and the Tasks subtree — so behavior worth pinning gets
+its own hook and its own test, driven through `useDirMode`'s real code path
+with only the network boundary stubbed). The fix adds a `probed` ref that
+only trusts a "not offered" verdict once the probe has actually been seen
+`pending` at least once:
+
+```ts
+const probed = useRef(false);
+useEffect(() => {
+  if (!open) { probed.current = false; return; }
+  if (gitMode.pending) { probed.current = true; return; }
+  if (probed.current && gitMode.entry === null) setOpen(false);
+}, [open, gitMode.pending, gitMode.entry]);
+```
+
+`shell/useAppPageGitColumn.test.ts` covers, against the real `useDirMode`
+fetch path (stubbed `fetch`, one directory string per test — `dir-mode.ts`
+caches per-directory answers for 30s with no reset hook, so sharing a
+directory across tests would let one test's resolution silently answer
+another): no probe at all until `openGit()` is called; `openGit` probes the
+FOLDER (not some file inside it) and frames the git template's `src` against
+it; `closeGit` shuts the column; the column auto-closes once the folder
+genuinely settles as not offering git. All four passed only after the
+`probed` fix — before it, the "opens" / "closes" / "auto-closes" tests all
+failed with `open` snapping back to `false` immediately, which is what
+surfaced the race in the first place. `AppPage.tsx` was then refactored to
+call the hook instead of carrying its own (buggy) copy of the same logic —
+same bug, same fix, now covered.
+
+`bun run typecheck`, `bun run check:boundaries`, and `bun run build` all
+pass post-integration. Scoped tests run: `AppPage.test.tsx`,
+`useAppPageGitColumn.test.ts`, `appdoctor-lib.test.ts`, `panel-seams.test.ts`
+— 55 pass, 0 fail. No full suite run (left to the orchestrator, per this
+branch's build instructions).
+
+**CI fix: the split wrapper's indentation, not its structure, broke a pinned
+test.** `TaskPeekFrame.test.tsx`'s "the app page frames the WHOLE page..."
+test asserted a literal source substring —
+`<TaskPeekFrame peekable={peekable}>\n    <div className="app-page">` —
+against `AppPage.tsx`. Wrapping the page in the new `.app-page-split` flex
+container nested `TaskPeekFrame` one level deeper, shifting `<div
+className="app-page">`'s indentation from 4 to 8 spaces; the substring no
+longer matched and CI went red (1 of 7176). The real invariant the test
+exists to protect — `.app-page` is `TaskPeekFrame`'s immediate child, so the
+frame still encloses the whole page (header, tab strip, panels) and not just
+some inner section — still holds; only the whitespace pinned alongside it
+went stale. Updated the assertion's expected indentation to match rather
+than touching `AppPage.tsx` or `TaskPeekFrame.tsx`: the split wrapper is
+exactly where the design calls for it (mirrors `.stat-split`, `PreviewSidebar`
+finds its container by `closest` on either class name), and reverting the
+nesting to dodge the test would be fixing the code to fit a test that was
+checking the wrong thing. The updated assertion still fails if `.app-page`
+stops being `TaskPeekFrame`'s direct child (moved out, or another element
+inserted between them) — it only stopped caring about the wrapper's absolute
+depth. Scoped tests (`TaskPeekFrame.test.tsx`, `useAppPageGitColumn.test.ts`)
+— 13 pass, 0 fail — plus `bun run typecheck` and `bun run check:boundaries`,
+both clean. No full suite run, per this task's scope.
+
+**Git column redesign: the template alone, framed like the Tasks tab's own
+side peek, not the explorer's borrowed-companion sidebar.** The owner's own
+words: "I just want the git template. not the full right sidebar. I want the
+UI to be similar more like the tasks tab sidebar." The draft above shipped
+with `PreviewSidebar` — a mode rail, a "Git" tab header, a panel-toggle icon,
+a close button — because it was the nearest existing component that already
+framed a borrowed template beside a page. All of that chrome is now gone.
+The FULL template (staging, committing, branches, push/pull — nothing
+trimmed) is unchanged; only the frame around it changed, to a new
+`AppPageGitPeek.tsx` + `useAppPageGitPeekWidth.ts` pair that mirrors
+`TaskPeek.tsx`'s own side peek: a slim aside sliding in over the row's right
+edge via `translateX`, width and slide animated in lockstep over the same
+200ms `ease` (`--peek-dur`/`--peek-ease`, reused from `styles/task-peek.css`
+— declared globally on `:root` for exactly this kind of reuse), its own
+44px header with a title and a close button, a 12px resize seam on its left
+edge, and a body that shows the template's iframe, a loading state, or an
+error state. `useAppPageGitColumn.ts`'s existing probe/open/auto-close logic
+and its tests are unchanged in substance (extended, not replaced — see the
+failed-probe fix below). App Doctor's "Open in git" row stays the only entry
+point; still no header toggle, no new URL param.
+
+**Interaction with the Tasks tab's own side peek: nested outside it, one
+level up — decided, not discovered.** `AppPage.tsx`'s `.app-page-split` is
+now the row both peeks ultimately live in. Its two children are
+`.app-page-frame-slot` (width `calc(100% - <git-peek-width>px)`, holding
+`TaskPeekFrame` and everything inside it unchanged) and `.app-git-peek`
+(the new peek, absolutely positioned over the split's own right edge). The
+Tasks tab's own `.tasks-peek-host` row is entirely inside the slot, so it
+only ever measures against the width the git peek has already taken; the two
+peeks can never fight over one right edge because they are not siblings at
+the same DOM level — the git peek's edge is the split's edge, the Tasks
+peek's edge is the slot's edge, and the slot's own width already accounts
+for the git peek. Width state for the new peek is deliberately NOT routed
+through `apps/explorer/lib/side-store.ts` (the module-level width the
+explorer's companion column and the listing's preview pane already share) —
+reusing it would make dragging the git peek silently resize the next file
+preview the reader opens in the explorer, and vice versa. `side-width.ts`'s
+pure clamp/default arithmetic is reused directly; only the storage is not.
+No persistence, no drag-to-close (`panel-drag.ts`'s overdrag/resistance
+arithmetic is not used) — the peek only has an explicit close button, so a
+plain floor clamp is enough. A `dragging` flag drives `.app-page-split
+.is-dragging iframe { pointer-events: none }` (app-page.css), mirroring the
+explorer's own "both sides of the seam go inert mid-drag" rule, so neither
+the Overview's iframe nor the git template's own iframe swallows the
+captured pointer stream while resizing.
+
+`TaskPeekFrame.test.tsx`'s pinned literal (`<TaskPeekFrame
+peekable={peekable}>\n<div className="app-page">`) shifted its indentation
+again, from 8/8 to 8/10 spaces, because `TaskPeekFrame` now nests one level
+deeper inside the new `.app-page-frame-slot`. Same call as the prior CI fix
+above: the DIRECT-CHILD relationship the test protects is untouched, so the
+expectation's whitespace was updated to match rather than reindenting
+`AppPage.tsx`'s whole inner JSX tree to "fix" it (the inner JSX — header,
+icon picker, tab strip, tab panels — was deliberately left at its old
+indentation depth: cosmetic only, and a bulk re-indent via string-matching
+edits over ~230 lines was judged higher-risk than the alternative of a
+locally 2-space-shallow block).
+
+`PreviewSidebar.tsx`'s `SPLIT_SEL` reverted from `".stat-split,
+.app-page-split"` back to `".stat-split"`: nothing renders `PreviewSidebar`
+on the app page any more (confirmed by grep — its only remaining renderer is
+`apps/explorer/Preview.tsx`, inside `.stat-split`), so the selector list that
+existed only to let one component serve two different containers is no
+longer doing anything.
+
+**Bugfix carried over from code review: a REJECTED probe could not be told
+apart from a settled "no git here", so the column auto-closed on a transient
+fetch failure with nothing for the reader to act on.** `useDirMode`
+(`dir-mode.ts`) resolved both a genuine "this folder has no git template"
+settle and a rejected `/api/fs/stat` fetch to the identical shape — `{
+entry: null, pending: false }` — and `useAppPageGitColumn.ts`'s auto-close
+guard (`if (probed.current && gitMode.entry === null) setOpen(false)`) fired
+on either. Fixed by giving `DirMode` a `failed: boolean` discriminant and a
+new `FAILED` singleton distinct from the existing `ABSENT` one; the
+rejection handler in `useDirMode`'s effect now sets `FAILED` instead of
+`ABSENT`. The auto-close guard gained `&& !gitMode.failed`, so a rejected
+probe leaves the panel open and `AppPageGitPeek.tsx` shows an explicit error
+state ("Could not check this folder for git. Close this panel and open it
+again to retry.") instead of silently vanishing. No new retry API was
+needed: `loadDirModes` already evicts a rejected directory's cache entry on
+the spot, so the existing close → reopen cycle (a real `dir` transition,
+string → null → string, across two user-triggered handlers) is already a
+working retry once the auto-close bug stops preventing it from being
+reached. New test: "does not auto-close on a probe that failed" in
+`useAppPageGitColumn.test.ts`, verified RED (temporarily reverting the
+`!gitMode.failed` guard reproduced the auto-close and the test failed for
+the right reason — `gitMode.failed` read `false` instead of `true` because
+the stale logic closed the panel and reset `dir` to `null`, falling back to
+`ABSENT`) then GREEN.
+
+Tests run: `TaskPeekFrame.test.tsx` + `useAppPageGitColumn.test.ts` (14
+pass), `AppPage.test.tsx` (11 pass) — 25 pass, 0 fail across the three files
+touched by this rework. `bun run typecheck`, `bun run check:boundaries`, and
+`bun run build` all clean. No full suite run, per this task's scope.
+
+Deviations from the brief, and why: (1) no dedicated unit test file for
+`useAppPageGitPeekWidth.ts` — it is pure `ResizeObserver` + pointer-event
+plumbing with no branching logic beyond what `side-width.ts` (already
+tested) already covers, and `AppPage.test.tsx`/`AppPageGitPeek`'s own
+rendering exercises it indirectly; a from-scratch DOM-pointer-event harness
+was judged lower value than the time it would cost given the rest of the
+scope. (2) `AppPage.tsx`'s inner JSX (header, icon picker, tab strip, tab
+panels) was not reindented to reflect its new nesting depth — noted above.
+
+## App page git peek: code-review follow-up, seven findings
+
+A code review of the git-peek redesign (previous entry) flagged seven
+issues; all seven are fixed here, no disagreements.
+
+1. HIGH — `.app-page-split` had no `overflow: hidden`, so the always-
+   rendered, `translateX(100%)`-when-shut peek grew a horizontal page
+   scrollbar on every app page even with git closed (measured:
+   `scrollWidth` 1807 vs `clientWidth` 1390). Fixed by adding
+   `overflow: hidden` to `.app-page-split`, the same rule
+   `.tasks-peek-host` already carries for the identical reason.
+2. MEDIUM — `.app-git-peek-close` rendered with native `<button>` UA chrome
+   (measured `border: 2px outset`, translucent background, `cursor:
+   default`, off font-size/padding) because this project runs Tailwind
+   without preflight. Fixed by adding explicit `padding: 0; border: 0;
+   background: transparent; font: inherit; cursor: pointer;`, matching
+   `.task-side-peek-btn`'s own reset.
+3. MEDIUM — `useAppPageGitPeekWidth.ts`'s `onSeamPointerDown` attached three
+   `window` listeners (`pointermove`/`pointerup`/`pointercancel`) whose
+   only removal path was `onSeamPointerUp` — a component that unmounts
+   mid-drag left all three attached for the life of the document, each
+   still firing `setChosen`/`setDragging` on a dead hook. Fixed with a
+   `useEffect` cleanup that removes the same three listeners on unmount.
+4. MEDIUM — the seam's `pointerdown` did neither `preventDefault()` nor
+   `setPointerCapture()`, so dragging it swept a native text selection
+   across the page. Fixed by adding both, mirroring
+   `PreviewSidebar.tsx`'s own divider handler; pointer events still bubble
+   to `window` from a captured element, so the existing move/up listeners
+   keep working unchanged.
+5. LOW/MEDIUM — `.app-page-frame-slot` had no width transition while
+   `.app-git-peek` slides on a 0.2s ease, so the page's own content
+   snapped to its new width instead of animating with the peek. Fixed by
+   adding `transition: width var(--peek-dur) var(--peek-ease);` to the
+   slot, reusing the same global timing variables the peek already does.
+6. LOW — `useDirMode` resets to `ABSENT` one commit AFTER `open` flips
+   false, so `src` went to `null` while the panel was still visible for
+   its whole 200ms slide-out, and every close blinked "Loading…" right
+   before sliding away. Fixed in `AppPageGitPeek.tsx`: a `lastSrc` ref
+   captures the most recent non-null `src`; while shut, the panel renders
+   `src ?? lastSrc.current` instead of `src` directly. Reopening still
+   shows "Loading…" correctly, because the fallback is only consulted
+   when `!open`.
+7. LOW/MEDIUM — `clampSideWidth` (apps/explorer/lib/side-width.ts)
+   deliberately leaves the width unchanged once a narrow container can't
+   hold both floors (below ~700px), assuming CSS min-widths on both sides
+   would hold instead — they didn't, so below ~380px the app content
+   behind the peek could be squeezed to 0px wide. Fixed with actual CSS
+   floors: `.app-page-frame-slot` gained `min-width: 320px`, and
+   `.app-git-peek` gained `max-width: calc(100% - 320px);` so the two
+   floors can never both lose to the same pixel.
+
+New tests: `AppPageGitPeek.test.tsx` (2 tests, pins finding 6's close/
+reopen sequence against the panel's actual props, not just a comment),
+`useAppPageGitPeekWidth.test.ts` (2 tests, pins findings 3 and 4 against
+the hook directly — a `window`-listener net-count spy for the unmount
+case, a captured `preventDefault` call for the capture case), and
+`app-page-git-peek-layout.test.ts` (4 tests, a stylesheet-parse test in
+the same style as `notifications-width.test.ts`, pinning findings 1, 5,
+and 7's exact CSS declarations since a DOM-less `react-test-renderer` run
+has no `getComputedStyle` to check them against). Findings 2 and 4's
+button/CSS-only halves needed no dedicated test per this repo's "CSS-only
+rounds skip tests" convention; finding 2 has no behavioral test at all
+(there is no behavior to assert, only an appearance fix) and is verified
+by code review of the rule against `.task-side-peek-btn`'s reset.
+
+One test-harness wrinkle worth recording: `useAppPageGitPeekWidth.test.ts`
+originally created the pointer-event watch (a spy patching
+`window.addEventListener`/`removeEventListener`) BEFORE mounting the probe
+component in the "unmount removes all three listeners" test. React can
+flush an EARLIER test's still-pending passive-effect cleanup as a side
+effect of committing a brand new tree, and that flush landed inside the
+watch's own counting window, corrupting it. Fix: mount the probe first,
+install the watch only after, so any such leftover flush from a prior test
+happens before the watch exists to see it.
+
+Tests run: `useAppPageGitColumn.test.ts`, `TaskPeekFrame.test.tsx`,
+`AppPage.test.tsx`, `AppPageGitPeek.test.tsx`,
+`useAppPageGitPeekWidth.test.ts`, `app-page-git-peek-layout.test.ts` — 33
+pass, 0 fail across the six files. `bun run typecheck`,
+`bun run check:boundaries`, and `bun run build` all clean (the build's
+existing >500kB chunk-size warnings are pre-existing and unrelated to this
+change). No full suite run, per this task's scope.
+
+## Lean wheel / Intel Mac compatibility (2026-09-23)
+
+Building LEAN_WHEEL_SPEC.md's four items. Item 1 (platform-conditional
+version ceilings for zeroconf/cryptography on x86_64 macOS) verified and
+shipped as-specced: 0.148.0 and 48.0.1 are both the correct real boundaries
+(checked against `https://pypi.org/pypi/<name>/json`, including
+universal2 wheels for cryptography, which do cover x86_64 until 48.0.1 —
+48.0.2/48.0.3 shipped no macOS wheel at all, 49.0.0+ ship arm64-only).
+`uv pip compile --python-platform x86_64-apple-darwin` resolves both to
+their ceilings; `aarch64-apple-darwin` resolves both unconstrained to
+latest. Confirms the spec's numbers.
+
+**Item 2 (bump fused pin to 2.9.3b9) is DEFERRED — the spec's claim does
+not hold up.** `https://pypi.org/pypi/fused/2.9.3b9/json` returns a full,
+non-yanked release record (uploaded 2026-09-23T09:13:37Z, correct
+`requires_dist` matching the spec's "23 core dists, no pyarrow/geopandas/
+shapely/boto3/cryptography" claim) — but the version is **not present in
+PyPI's simple index** (`https://pypi.org/simple/fused/`, which is what
+pip/uv actually resolve against). Verified three ways:
+  - `curl https://pypi.org/simple/fused/` lists 2.9.3b8 as the newest;
+    2.9.3b9 does not appear.
+  - `uv pip compile --extra fused` fails: "no version of fused==2.9.3b9".
+  - `python3 -m pip download fused==2.9.3b9` fails: "No matching
+    distribution found", and its own available-versions list tops out at
+    2.9.3b8.
+  - The wheel file itself IS live on files.pythonhosted.org (direct URL
+    200s), so this is not a broken/corrupt upload — just not indexed.
+
+Bumping the pin right now would make `pip install "fused-render[bundled]"`
+/ `[fused]` **unsatisfiable** on every platform, which is the opposite of
+this branch's goal. Left at `fused==2.9.3b8` in both `[bundled]` and
+`[fused]`. Re-check `https://pypi.org/simple/fused/` before bumping — if
+this was an index-propagation lag rather than a permanently withdrawn
+release, 2.9.3b9 should appear there once it catches up, at which point
+the bump is a one-line, well-verified change (dependency reduction already
+confirmed above).
+
+**Item 3 (manifests for undeclared template imports) — also NOT done,**
+because of a genuine conflict with an existing test, not a mistake in either
+side.
+
+Re-derived the "roughly 18" count using `tests/test_engine_requirements.py`'s
+own AST machinery (`_template_graph()`, `_imported_dists()`, `_app_dists()`),
+comparing each template file's app-dist imports against ONLY the core
+dependencies with no PEP 508 marker (a marker-scoped core dep, e.g. `pillow`
+on win32/linux, is not guaranteed present, so an unconditional import of it
+counts as undeclared same as a `[bundled]`-only one). Result: **10 folders**,
+not 18 — `autocad_viewer` (pillow), `claude` (pillow), `excel` (duckdb,
+fpdf2, openpyxl, pyarrow), `las` (numpy), `log_studio` (drain3), `netcdf`
+(numpy — `grid_tile_server.py` is self-managed/DAEMON_VENV and correctly
+excluded), `photos` (pillow), `slides` (fpdf2, pillow, python-pptx), `usd`
+(msgpack, numpy), `xlsx` (openpyxl).
+
+`xlsx/reader.py` is `INPROCESS_HELPERS` (`executor.py:71`) — it always runs
+on the server's own interpreter, never a spawned child or project venv, so a
+manifest cannot help it. Skipped for that reason, per the spec's own
+`structure/reader.py` precedent.
+
+For the other 9, wrote a real manifest for `autocad_viewer` (`dependencies =
+["pillow"]`, matching `model_card/pyproject.toml`'s shape — no `uv.lock`,
+since none is required by any test) and ran
+`tests/test_bundle_contents.py -k autocad_viewer`. It failed:
+
+```
+test_a_declaration_is_needed_for_what_the_MACOS_BUNDLE_lacks[autocad_viewer]
+AssertionError: fused_render/templates/autocad_viewer/pyproject.toml declares
+['pillow'], all of which the macOS bundle already ships — so it only costs a
+venv build and a download. Delete the file (and its lock).
+```
+
+That test (D176) requires `declared - _macos_dists()` to be non-empty — a
+folder's manifest must name at least one distribution the macOS **bundle**
+does not already carry, else it is pure waste: `has_lock()`'s own comment
+confirms a *locked* project always skips the fused engine's `app_satisfies`
+fast path (`engine.py:547`), forcing a real venv build + download even when
+the app interpreter already has everything declared — and the 10
+already-declaring folders (`docs`, `geometry_editor`, `geotiff`,
+`joblib_model`, `latex`, `map`, `model_card`, `pano`, `pdf_studio`, `vector`)
+all ship a `uv.lock`, so that convention is real, not incidental.
+
+Checked all 9 flagged folders against `[bundled]`'s current contents
+(pyproject.toml:206-269): every single flagged import — pillow, openpyxl,
+fpdf2, python-pptx, drain3, msgpack, numpy, duckdb, pyarrow — is already
+there. D276 never removed any of these from `[bundled]` (only the geo stack,
+PDF-viewer stack, polars, scipy and matplotlib left). So **none of the 9
+folders has even one dist that would clear D176's bar** — this is not
+specific to `autocad_viewer`; every one of the 9 would fail the same
+assertion.
+
+Two mechanisms were checked as a way to reconcile "helps lean-wheel users"
+with "costs nothing for DMG/`[bundled]` users", and both are dead ends:
+- The **built-in executor** (`executor.py`, always active) never builds a
+  venv at all — `_run_python` unconditionally spawns
+  `[sys.executable, CHILD]` on the app's own interpreter. A manifest changes
+  nothing about where code runs there; its only effect is unlocking
+  `explain_missing_module`'s better error text. So under the built-in
+  executor alone, adding these 9 manifests is free for DMG users (no venv,
+  no lock consulted for interpreter choice) — but D176's test does not
+  distinguish "built-in executor only" from "fused engine also enabled", and
+  correctly so: once a user turns on `engine = fused` (or installs
+  `fused-render[fused]`), the SAME manifest starts mattering for real, and a
+  locked one then does force the wasted build+download D176 exists to catch.
+- `explain_missing_module` (`executor.py:155`) is deliberately gated on the
+  folder DECLARING the missing module ("blaming the environment for a user's
+  typo is worse than saying nothing", `executor.py:186`) — it will not fire
+  for an import that's merely *known to be `[bundled]`-only* with no
+  manifest at all. Loosening that gate to cover this case would reintroduce
+  the exact false-positive risk it was written to avoid (a real user typo
+  getting told "this is a lean-install problem").
+
+**Left undone**, rather than either breaking D176 silently or unilaterally
+relaxing it. Two real options for whoever picks this up, both requiring a
+product call this branch should not make on its own:
+1. Add the 9 manifests anyway and extend D176's necessity test with a named,
+   reasoned exemption list (same shape as `_OPTIONAL_IMPORTS` in
+   `test_engine_requirements.py`) for folders whose declaration exists only
+   to serve users without `[bundled]` — accepting the venv-build+download
+   cost for DMG/full-bundle users as the tradeoff.
+2. Leave these 9 templates undeclared and accept they stay
+   broken-with-a-bare-traceback on a lean/wheel-only install (same failure
+   mode as today) until `[bundled]` (or an equivalent) is actually
+   obtainable on that install path.
+
+No `pyproject.toml`/`uv.lock` files were left behind for any of the 9 —
+the trial `autocad_viewer/pyproject.toml` was deleted after the test run
+above. Re-run recipe for a future builder: write the manifest per the
+per-folder dependency lists above (full app-dist import set per folder, not
+just what's missing — `test_a_declared_environment_is_complete` requires the
+COMPLETE set once any manifest exists, core deps included, no baseline
+credit, D172), then `.venv/bin/python -m pytest tests/test_bundle_contents.py
+tests/test_engine_requirements.py -k <folder>` to re-confirm the D176
+conflict before deciding which of the two options above to take.
+
+**Item 4 (CI gates) — done.** Ported the three gates from the sibling
+openfused repo's `.github/workflows/ci.yml` (`local-extra`/wheel/d68ddb45's
+import-weight technique), adapted to this repo's job graph:
+
+- `minimal-install` (new job in `.github/workflows/test.yml`, after
+  `fused-engine`): `pip install -e ".[dev]"` (no `[bundled]`/`[fused]`), then
+  an explicit `python -c "import fused_render.cli"` +
+  `create_app(tempfile.mkdtemp())`, then `tests/test_import_weight.py`
+  (new file), then a real boot of `python -m fused_render.cli serve
+  --port 8781 --no-browser` and a `curl -sf http://127.0.0.1:8781/api/config`
+  retry loop, killed after.
+- `wheel` (new job, same location): `uv build --wheel` (this repo's build
+  uses hatchling + a custom hook in `scripts/hatch_build.py` that shells to
+  npm itself for a non-editable build — confirmed by reading the hook, so
+  the job needs Node 22 but does not need the `frontend` job's shell-dist
+  artifact), asserts `fused_render/static/shell-dist/index.html` and
+  `fused_render/skills/` are present in the built wheel via `unzip -l | grep
+  -q`, installs into `/tmp/fr-wheel-venv` via `uv pip install`, `cd /tmp`,
+  boots `fused-render serve --port 8782 --no-browser`, same curl retry loop.
+- `tests/test_import_weight.py` (new file): the d68ddb45 technique —
+  `sys.meta_path.insert(0, _BlockHeavy())` in a subprocess (`sys.meta_path`
+  is process-global and the suite runs under pytest-xdist, so mutating it
+  in-process would leak into whatever else that worker imports next),
+  `find_spec` raises `ModuleNotFoundError` for any HEAVY root, HEAVY =
+  `{numpy, pandas, requests, openpyxl, pptx, msgpack, fpdf, drain3,
+  botocore}` — every one a `[bundled]`-only distribution today (re-checked
+  against `pyproject.toml`'s `bundled` extra). Deliberately excludes
+  `pillow`: it is a CORE dependency on `sys_platform in {"win32", "linux"}`
+  (the capture-backend entries around pyproject.toml:120), so blocking it on
+  the Linux CI runner this test actually runs on would not be testing a lean
+  install — it would just always pass regardless of whether the code path
+  under test needs it. `fused_render.cli` and `fused_render.server` are
+  asserted importable under the block.
+- `test-status`'s aggregator `needs:`/result-check was extended to include
+  both new jobs (they gate on `app` like `fused-engine`, no legitimate
+  "skipped" outcome, same treatment as `test-python`/`fused-engine`/etc.).
+
+Local verification actually run, not just read: `tests/test_import_weight.py`
+passed against the current dev `.venv` (which HAS `[bundled,fused]`
+installed) — confirming the block genuinely makes the import fail rather than
+passing by accident (a `sys.modules`-absence check would have false-passed
+here regardless of whether the code was reachable). The full frontend was
+built locally (`cd frontend && npm install && npm run build` — the
+`setting-up-dev-env` skill's documented one-time step, no dev server
+started), then the `minimal-install` boot step was run for real (`python -m
+fused_render.cli serve --port 18781 --no-browser` in the background, curl
+retry loop, `kill` + `wait` after) and succeeded: `GET /api/config HTTP/1.1"
+200 OK`, clean shutdown. The `wheel` job's steps were also run for real:
+`uv build --wheel` (which shells to npm itself, confirmed by reading
+`scripts/hatch_build.py`'s `ShellBuildHook.initialize`) produced
+`dist/fused_render-0.5.82-py3-none-any.whl`; `unzip -l` confirmed both
+artifact paths present (32 `shell-dist` entries including `index.html`, 18
+`fused_render/skills/` entries); `uv venv --python 3.12
+/tmp/fr-wheel-venv-smoke` + `uv pip install` installed the wheel cleanly.
+
+**That last step surfaced a real, unscoped, high-priority bug — not fixed
+here, flagged for a follow-up.** Booting the installed wheel from `/tmp` (no
+extras) crashed at FastAPI startup:
+
+```
+ModuleNotFoundError: No module named 'cryptography'
+  File ".../fused_render/server/app.py", line 1032, in _startup_update_dev_manager
+    update.start()
+  File ".../fused_render/update/__init__.py", line 50, in start
+    from fused_render.update import mac
+  File ".../fused_render/update/mac.py", line 67, in <module>
+    from fused_render.update import common
+  File ".../fused_render/update/common.py", line 28, in <module>
+    from cryptography.exceptions import InvalidSignature
+ERROR:    Application startup failed. Exiting.
+```
+
+Root cause: `update/__init__.py:start()` unconditionally imports
+`fused_render.update.mac` when `sys.platform == "darwin"` (no try/except),
+and `mac.py` imports `common.py` at module load, which does `from
+cryptography.exceptions import InvalidSignature` / `from
+cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey`
+at the top level (the self-update manifest's ed25519 signature check) — also
+with no guard. `cryptography` is not a core dependency anywhere in
+`pyproject.toml`; it only arrives via `[dev]` (test tooling) or, per item 1's
+finding, transitively through `mcp` in `[bundled]`/`[fused]`. A bare `pip
+install fused-render` on **any macOS** (not just x86_64 — this is unrelated
+to the item 1 version ceiling) has none of those, so the server's own
+startup lifespan (`_startup_update_dev_manager`, `app.py:1032`) crashes the
+whole process before it ever serves a request.
+
+This is the actual remaining blocker for this spec's stated goal — item 1
+fixes dependency *resolution* on x86_64 macOS, but the installed app still
+cannot *run* on any Mac without `[dev]`/`[bundled]`/`[fused]` also being
+installed. It surfaced only because this item's CI gates do a REAL boot,
+which items 1–3 never do. The two new CI jobs run on `ubuntu-latest`
+(matching the sibling repo and every other non-desktop job in this
+workflow), so this darwin-only crash will NOT reproduce there — CI will be
+green on every PR despite the bug being real; catching it in CI would need a
+`macos-latest` leg, which is outside this item's stated scope (port the
+sibling's three gates, adapted — not add new platform coverage) and a real
+runner-cost/scope tradeoff, so it was not added unilaterally.
+
+Not fixed in this branch: it touches a security-critical,
+signature-verification import path (`update/common.py`'s ed25519 manifest
+check) and deserves its own reviewed change, not a rushed patch riding along
+with the CI-gates commit. The likely-safe shape, for whoever picks this up:
+guard the `from fused_render.update import mac` import in
+`update/__init__.py:start()` (or the `cryptography` import inside
+`update/mac.py`/`common.py` itself) with `except (ImportError,
+ModuleNotFoundError)`, treating a missing `cryptography` the same as the
+module's own documented "nothing to swap" no-op convention (`manager()`
+already tolerates `mac.manager()` returning `None`) — log once, disable
+self-update, let the server boot. Repro: build a wheel (`uv build --wheel`),
+`uv venv /tmp/x && uv pip install --python /tmp/x/bin/python dist/*.whl`,
+`cd /tmp && /tmp/x/bin/fused-render serve --no-browser` on a real Mac with
+no other extras installed.
+
+### Follow-up (2026-09-23): the bare-install crash fixed, plus a macOS CI leg
+
+Picked up the flagged fifth finding above. Fixed in `fused_render/update/common.py`:
+the `cryptography` import is now inside `try/except ModuleNotFoundError`,
+checked on `exc.name == "cryptography"` (a genuinely broken install — present
+but corrupt — still raises; only a truly absent package is swallowed).
+`CRYPTO_AVAILABLE` records which branch ran. `verify_signature()` raises
+`RuntimeError` if it is somehow called while `CRYPTO_AVAILABLE` is False,
+rather than silently skipping the check — the security property (no update
+path that ships bytes unverified) is preserved, not traded for boot safety.
+
+`mac.start()`/`linux.start()` each gained the same guard, first thing, before
+the existing "nothing to swap" bundle/AppImage check: if `cryptography` is
+absent, log a WARNING once and return `None`, exactly like the existing
+unpackaged-dev-run no-op. `update/__init__.py` needed no change — with
+`common.py` fixed, importing `mac`/`linux`/the win32 supervisor updater no
+longer raises on any platform, so the platform dispatch already reaches the
+per-module guard correctly.
+
+Verified for real, not just reasoned about: `uv build --wheel`, installed the
+built wheel into a throwaway venv with `uv pip install --python
+<venv>/bin/python dist/*.whl` (no extras), confirmed with `python -c "import
+cryptography"` that the venv genuinely lacks it, then `cd /tmp &&
+<venv>/bin/python -m fused_render.cli serve --port 8971` — booted and served
+`/api/config` as 200. Separately confirmed the log line fires
+(`logging.basicConfig(level=WARNING); fused_render.update.start()` prints the
+"cryptography is not installed..." warning and returns `None`).
+
+Added `.github/workflows/test.yml`'s missing macOS leg for this class of bug:
+`minimal-install` is now a `strategy.matrix` over `[ubuntu-latest, macos-14]`
+rather than a second, hand-duplicated job — same steps run on both, so they
+cannot drift apart. `macos-14` is pinned explicitly (not `macos-latest`),
+with a comment explaining why: this repo's `macos-desktop` job carries its
+own history of a floating-image Python-launch failure (D468, macos-14 vs. a
+bundled framework Python), and while that specific failure mode doesn't apply
+here (this job never bundles its own interpreter, only whatever
+`actions/setup-python` installs), the runner image is pinned on the same
+general principle rather than left to float. A comment in the workflow also
+says explicitly not to delete the macOS leg as "redundant" with
+`ubuntu-latest` — it is the only leg that exercises `update/mac.py`'s import
+chain on a lean install; `sys.platform != "darwin"` means `ubuntu-latest`
+structurally cannot catch this class of bug.
+
+`test_import_weight.py` and its CI wiring into `test-status` were left as the
+previous builder built them — `needs.minimal-install.result` already
+aggregates across the whole matrix (any leg failing fails the aggregate), so
+`test-status` needed no change.
+
+New tests: `test_mac_update.py::test_start_noop_when_cryptography_is_unavailable`,
+`test_linux_update.py::test_start_noop_when_cryptography_is_unavailable`, and
+`test_win_supervisor_update.py::test_verify_signature_refuses_when_cryptography_is_unavailable`.
+All scoped update/*-test files plus the new tests pass locally (119 passed,
+2 skipped — the 2 are pre-existing POSIX-only skips on this run's platform,
+unrelated to this change).
+
+## D888 — Quiet notifications, round 2: no more start or success popups, only failures
+
+D-C (SPEC-quiet-notifications.md, this same file's earlier "Quiet
+Notifications" work) already earned the panel its quiet floor: a folded
+"Recent" section for successes (D-B, later reversed 2026-09-17 — see the
+`isPopupSuppressed` code comments in `jobs.ts`), presence suppression, and a
+multi-member group's own pop-on-start/pop-on-failure rule. Two sources of
+noise survived that round: a job crossing into a *successful* `done` still
+popped a floating card (every model download, AI render, index scan,
+self-update, etc.), and a multi-member group's first running member still
+popped a "started" card (two clustered `sys:index:*` scans, a parallel AI
+image/video batch). Both were reported as chatter the Activity chip's own
+progress line already made redundant — the chip counts up and shows a
+running total the instant anything starts, and its row stays in the panel
+until dismissed, so a floating card announcing the same fact added nothing
+a user needed to see arrive as a toast.
+
+Changed, in `frontend/src/platform/lib/jobs.ts`:
+
+- `popupJobs` now excludes every `state === "done"` job outright, for every
+  job kind, regardless of `tier` — a `done` job never pops any more. This
+  subsumes the old `tier === "silent" && state === "done"` gate (silent was
+  a special case of an already-more-general rule) and makes the
+  presence-suppression check (`isPopupSuppressed`/`isOpenAnywhere`) dead for
+  this call path: `isPopupSuppressed` only ever returns non-`false` for a
+  `done` job, and no `done` job reaches it any more. `popupJobs`/`popupTick`
+  both dropped their `isOpenAnywhere` parameter as a result.
+- `groupPopupTick`'s START edge (a group going from no running members to
+  some) is removed entirely, along with the `GroupPopupState` fields it
+  needed (`runningMemberIds`, `lastStartPopAt`) and the key-churn-immunity
+  machinery built around them. Only the FAILURE edge remains: any member
+  entering `error`/`cancelled` (`effectiveTier === "attention"`) still pops,
+  same as before, and the Finding-8 shrink-to-one carry-forward (a group's
+  already-popped failure survives its sibling being dismissed/swept) is
+  unchanged.
+
+Kept unchanged, on purpose: `UpdateProgressCard` (the self-update's own
+progress card is not a notification, it is the install's own UI); the
+Activity chip's label/count/progress line and its hover-preview/click-pin
+behavior (`platform/lib/statusChip.ts`); the Notifications chip and
+`RepoUpdatesDock`'s terminal-jobs feed (`ActivityDock`'s `onTerminalRef`
+plumbing is untouched — a successful job still gets a row there, it simply
+no longer also pops a floating card); schedule toasts
+(`platform/lib/schedule-toast.ts`); the "engine retired (idle)" toast in
+`ActivityDock.tsx`; and app-level `notify()` toasts. `isPopupSuppressed` is
+kept as an exported, independently-tested pure function (other doc comments
+in `presence.ts`/`RepoUpdatesDock.tsx`/`task-status-notify.ts` still
+reference it) even though nothing in the popup pipeline calls it any more.
+
+`SPEC-quiet-notifications.md`'s D-C bullet and its two restatements (§3's
+"Pop rule (D-C)", and the verification checklist) are annotated in place
+with a "Reversed 2026-09-23 (D888)" note each, rather than rewritten, so the
+original scoping decision stays legible next to what changed and why.
+
+Tests: `frontend/src/platform/lib/jobs.test.ts` (117 pass) and
+`frontend/src/shell/ActivityDock.test.tsx` (9 pass), run individually per
+this repo's `mock.module`-is-process-wide convention. Every generic
+popup-mechanics test that used to exercise a `done` job as its terminal
+state (seeding, dedup, latest-wins, id-reuse) was rewritten against
+`error` instead, since `done` can no longer demonstrate those mechanics at
+all. Every `groupPopupTick` START/key-churn test was removed outright (the
+edge they covered no longer exists); the FAILURE and
+ordinary-completion/whole-group-completion tests were kept unchanged.
+`jobs.test.ts` additionally gained an `installDomShim()` call (converting
+its static `@platform/lib/jobs` import to a dynamic one, matching
+`restart-store.test.ts`'s own pattern) — the file could not previously run
+standalone at all, only as part of the full suite, because `jobs.ts`
+transitively imports `router.ts` (`api.ts` -> `presence.ts` -> `router.ts`),
+which reads `location` at module scope. A full `bun test` run (339 files,
+7174 tests) stayed green throughout.
+
+### Code-review fix-up (2026-09-23): six review findings on PR #1320
+
+Picked up a code review of this branch's items 1 and 4 and implemented all
+six fixes as directed — no redesign, every mechanism below was the
+reviewer's own decision, not derived here. Six commits, TDD where a test
+was involved.
+
+1. **`minimal-install` was decorative.** It installed `.[dev]`, and `[dev]`
+   declares `cryptography` on every platform, so the macOS leg could never
+   reproduce the boot crash the job exists to catch — reverting
+   `update/common.py`'s fix would have stayed green. Changed to
+   `pip install -e .` + `pip install pytest` (no pytest-xdist: the job's own
+   pytest invocation doesn't use `-n`), and added an explicit assertion step
+   before the import-check step that `python -c "import cryptography"`
+   fails. Confirmed the found-wrong premise is real: a bare `[dev]` install
+   on this checkout does have `cryptography` present.
+
+2. **`test_import_weight.py`'s HEAVY set.** The docstring already claimed
+   google-auth collapsed to `google`, but `google` was never actually in the
+   set — added it, plus `mcp` and `fused` (both `[bundled]`-only, both
+   verified locally to still yield IMPORT_OK when blocked). Left pillow out,
+   per the existing comment (core on win32/linux).
+
+3. **`test_import_weight.py`'s own blind spot.** The child subprocess never
+   imported anything from `fused_render.update`, and `cryptography` was not
+   in HEAVY, so this PR's own regression (an unguarded top-level `import
+   cryptography` in `update/common.py`) could have shipped without any gate
+   in this PR catching it. Added `cryptography` to HEAVY and had the child
+   import `fused_render.update.mac`/`.linux` unconditionally (both pure
+   Python, import cleanly on any host platform — verified locally, no
+   platform-specific skip needed, so the brief's fallback instruction
+   ("report back, don't skip") never had to be exercised).
+
+4. **`verify_signature()`'s `RuntimeError`.** Callers
+   (`supervisor/_win32/update.py:95`/`:119`, and the manual
+   `/api/update/check` route) catch exactly `(OSError, ValueError,
+   http.client.HTTPException)`, so a `RuntimeError` from a missing
+   `cryptography` escaped both the tray "Check for updates" handler and the
+   API route instead of producing the existing "could not check for updates
+   right now" dialog. Changed to `ValueError` per the reviewer's directive —
+   still a raise (never a silent skip of the security check), blast radius
+   kept to `common.py` alone. Updated
+   `test_win_supervisor_update.py::test_verify_signature_refuses_when_cryptography_is_unavailable`
+   (TDD: watched it fail against the RuntimeError-raising code first).
+
+5. **`lan_tls.py`/`lan.py` bare-install 500.** `lan_tls.py`'s docstring
+   claimed cryptography "is already a dependency" — false, that's this
+   whole PR's premise — corrected. `GET /lan/ca.pem` and `GET /api/lan/tls`
+   called into `lan_tls` unguarded. **Found something the brief didn't
+   state:** `lan_tls.py` has NO top-level `cryptography` import — it imports
+   lazily inside `ca_pem()`/`ca_fingerprint()` themselves — so wrapping only
+   the `from fused_render import lan_tls` line in `try/except
+   ModuleNotFoundError` (which is what a literal reading of the brief's
+   phrasing suggested) would not actually have caught anything; the
+   `ModuleNotFoundError` only fires from the CALL. The `try` block has to
+   wrap the call too. Verified this the hard way: wrote the tests first with
+   only the import wrapped, watched them still fail with an uncaught
+   `ModuleNotFoundError` escaping `_route`, then widened the `try` to cover
+   the call and re-ran green. Both routes now return `PlainTextResponse(...,
+   status_code=503)`, matching this file's existing convention (the "phone
+   grid not built" 503 a few lines above `LanApp._route`) rather than an
+   `HTTPException` — this file's routing is a hand-rolled `_route()` method
+   returning `Response` objects directly, not FastAPI route handlers, so
+   `HTTPException` isn't the local idiom. The other three call sites
+   (`lan.py:1017`, `:1197`, `:1457`) are already inside broad `except
+   Exception` and were left untouched, per instruction. New tests in
+   `tests/test_lan_mdns.py` (the only existing lan test file with content
+   that fit — `test_engine_requirements.py`'s one `lan` mention is an
+   unrelated mDNS-dependency-declaration check).
+
+6. **Stale job count.** `test.yml:924`'s comment said "these six always run"
+   under a loop that now iterates eight jobs
+   (`frontend`/`test-python`/`test-python-windows`/`fused-engine`/`minimal-install`/`wheel`/`linux-desktop`/`bundle-contents`).
+   Corrected to "eight".
+
+Scoped tests only, per instruction: `tests/test_import_weight.py`,
+`tests/test_win_supervisor_update.py`, `tests/test_mac_update.py`,
+`tests/test_linux_update.py`, `tests/test_lan_mdns.py` — 139 passed, 2
+skipped (pre-existing platform skips), across all six commits' final state.
+Workflow YAML re-parsed with `yaml.safe_load` after each `test.yml` edit.
+Did not run the full suite — that's the orchestrator's job. Did not touch
+the `fused` version pin, `fused_render/templates/*`,
+`tests/test_bundle_contents.py`, `tests/test_template_locks.py`, or
+`fused_render/index/`, all deliberately out of scope per instruction.
+
+## Item 2 (fused pin) deferral resolved: bumped to 2.9.3b9 (2026-09-23)
+
+The `2.9.3b8`→`2.9.3b9` deferral recorded above no longer holds. At the
+time it was written, `2.9.3b9`'s metadata existed on PyPI but the release
+was absent from the simple index (`https://pypi.org/simple/fused/`), which
+is what pip/uv actually resolve against — so `uv pip compile --extra
+fused` failed with "no version of fused==2.9.3b9" even though the wheel
+itself was live on files.pythonhosted.org. That was an index-propagation
+lag, not a withdrawn release, and it has since caught up.
+
+Verified with a real install, not a metadata fetch (a metadata fetch is
+not a resolve): `uv pip install --no-cache --refresh 'fused==2.9.3b9'` in
+a fresh 3.12 venv succeeds, and `uv pip show fused` reports `2.9.3b9`.
+(`fused.__version__` itself misreports as `2.8.2.dev...` — a known
+upstream quirk, not evidence of anything; `pip show`/`uv pip show` is the
+source of truth for the installed version.)
+
+Bumped `fused==2.9.3b8` → `fused==2.9.3b9` in both `pyproject.toml`'s
+`[bundled]` and `[fused]` extras (the two pins the earlier entry's own
+byte-identical-pin comment requires stay in lockstep). Re-ran the full
+resolve this PR's platform-conditional `cryptography<=48.0.1` ceiling
+(x86_64 macOS, item 1) was meant to guard, since a `fused` dependency
+change is exactly the kind of thing that could collide with it:
+
+- `uv pip compile pyproject.toml --extra bundled` — resolves clean,
+  `fused==2.9.3b9`, `cryptography==50.0.1` (unconstrained, arm64 host).
+- `uv pip compile pyproject.toml --extra bundled --python-platform
+  x86_64-apple-darwin` — resolves clean, `fused==2.9.3b9`,
+  `cryptography==48.0.1` (ceiling still binds correctly).
+- `uv pip compile pyproject.toml --extra fused` — resolves clean,
+  `fused==2.9.3b9`, `cryptography==50.0.1`.
+- `uv pip compile pyproject.toml --extra fused --python-platform
+  x86_64-apple-darwin` — resolves clean, `fused==2.9.3b9`,
+  `cryptography==48.0.1`.
+
+No collision: `fused` 2.9.3b9 does not pull in a `cryptography` floor
+above the x86_64 ceiling. Grepped the whole worktree for `2.9.3b8`
+afterward — the only other hits were prose in `LEAN_WHEEL_SPEC.md` (its
+"Deferred" note, updated separately) and this file's own history above,
+which is append-only and was left untouched. No lockfile, test, or
+template manifest pins the version string.
+
+Scoped tests only, per instruction: `tests/test_engine_requirements.py`,
+`tests/test_bundle_contents.py` — 436 passed, 0 failed, 0 skipped. Did not
+run the full suite — that's the orchestrator's job. Did not touch
+`fused_render/templates/*`, `tests/test_template_locks.py`,
+`fused_render/index/`, or anything else outside the pin bump and its
+directly-affected docs, per instruction.
+
+## D889 — `fused-render://open?file=` opens a local `.fused` for editing inside the shell: clone unasked, overwrite only from a modal
+
+Render App (fused-render-lite) only runs a `.fused`. Its title-bar Edit
+button needs a way to say "open this file in the editor, as a copy I can
+change" — and fused-render already has every half of that except the link:
+the `open` action with query-param payloads (D110 said future kinds become
+new params on it), `appfile.clone_app_file` / `overwrite_app_file` (D397,
+the preview header's Clone and Clone & overwrite), and the OS handlers on
+all three platforms that ferry any `fused-render:` link to `/clone?src=`.
+
+Decided:
+
+- **Shape**: `fused-render://open?file=<absolute .fused path>`. The path is
+  percent-encoded exactly once by the sender (`quote(path, safe="")`) and
+  `unquote`d exactly once here, taken verbatim to end-of-string like `git=`.
+  Only an absolute `.fused` path parses.
+- **No gated page** (owner's call — the first cut reused `clone.html` as a
+  confirm/progress page and was rejected: "we do not want a separate gated
+  page"). `GET /clone` answers a 303 INTO the running shell with the path as
+  `?_edit_appfile=` — to the existing copy's entry page when there is one,
+  else Home. The GET writes nothing (D3: every write stays an X-Fused POST
+  from the same-origin shell), which is why a first clone flashes Home for a
+  moment before the shell moves to the copy. A malformed or unreadable path
+  goes to Home carrying the path verbatim: one error surface, in-app.
+- **The shell does the work** (`shell/EditAppFileBoot.tsx`, mounted once
+  beside `UpdateNotifier`): read the param once at module init, strip it
+  BEFORE any async work so a reload or Back never replays the hand-off, then
+  probe `/api/appfile/clone`. No copy → `POST /api/appfile/clone`, land on
+  the copy's entry page (Preview.tsx `land`'s rule). Copy exists → the copy
+  is already on screen; a `ConfirmDialog` over it asks whether to overwrite
+  it with the `.fused` — *Overwrite* → `POST /api/appfile/overwrite` (merge
+  semantics, D397) then a reload of the entry page (a boot-time hand-off has
+  no module-store state to lose, so router.ts's reload caution does not
+  apply); *Cancel*/close → nothing written. The Edit button's common case is
+  "I re-exported the app and want to keep editing the newest version":
+  silently landing on the stale copy hid the newest files, silently
+  overwriting would eat edits, and the question fires only when there is
+  something to lose.
+- **No confirm on a first clone** — the deliberate divergence from DL-3. The
+  git link confirms because it pulls arbitrary remote content onto the
+  machine. Here the payload is a file already on disk that the user just had
+  open in Render App; Finder double-clicking that same file extracts and runs
+  it in fused-render with no prompt today, so a confirm on the clone would
+  guard less than the existing path already allows. The browser's own "open
+  fused-render?" prompt on a custom scheme still stands between a web page
+  and this link.
+- `/api/clone/info` and `POST /api/clone` stay git-only; `clone.html` is
+  untouched. No change to `app.py`, `winopen.py` or the supervisor.
+
+Skew: a FusedRender older than this change lands a `file=` link on the
+clone page's error ("unsupported fused-render link"); Render App's button
+does not version-check, so the page's error text is the message.
+
+## fused pin bumped to 2.9.3b10: `fused[aws,mcp]` + direct `anthropic` (2026-09-25)
+
+fused 2.9.3b10 (https://github.com/fusedio/fused/releases/tag/fused-py-v2.9.3b10)
+moved mcp, pyarrow/pandas/numpy, boto3 and pyjwt[crypto]/cryptography out of
+its core requirements and behind opt-in extras (`aws`, `mcp`, `verify`, ...).
+It has no `ai` extra (pip only warns on an unknown extra, so `fused[ai,aws]`
+would have silently dropped anthropic).
+
+- `[bundled]` and `[fused]` now pin `fused[aws,mcp]==2.9.3b10` (still
+  byte-identical, `python_version >= "3.11"`), plus `anthropic>=0.40.0`
+  directly. Not `fused[verify]`: that extra also pulls `ty`, which must not
+  ship in the bundle.
+- The direct `mcp<2` pin is dropped: fused's own `mcp` extra carries
+  `mcp>=1.8.0,<2`.
+- The platform-conditional `cryptography<=48.0.1` ceiling (x86_64 macOS) is
+  kept. cryptography now arrives via pyjwt[crypto] from fused[aws] and mcp;
+  `uv pip compile --python-platform x86_64-apple-darwin` for both extras
+  resolves `fused==2.9.3b10`, `cryptography==48.0.1`; the arm64 compile
+  resolves `cryptography==50.0.1`.
+- `scripts/setup_py2app.py`'s derived force-list used to skip every
+  extra-gated requirement, so with `mcp<2` gone it would have stopped reaching
+  mcp's closure (and boto3/pyjwt behind fused[aws]). The closure walk is now
+  extras-aware: it follows `name[extra]` requests and evaluates markers with
+  `extra == <requested>`.
+- New tests: the fused pin must request `mcp`; every requested extra must be
+  in the installed fused's `Provides-Extra`; `anthropic` is byte-identical in
+  both extras.

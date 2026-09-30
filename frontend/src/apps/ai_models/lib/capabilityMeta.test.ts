@@ -23,6 +23,8 @@ describe("capabilityMeta", () => {
     expect(capabilityMeta("embeddings").searchNoun).toBe("embedding models");
     expect(capabilityMeta("text-to-video").plain).toBe("Video generation");
     expect(capabilityMeta("text-to-video").searchNoun).toBe("video models");
+    expect(capabilityMeta("text-classification").plain).toBe("Decisions");
+    expect(capabilityMeta("text-classification").searchNoun).toBe("decision models");
   });
 
   it("gives every known capability a non-empty blurb and an icon", () => {
@@ -31,6 +33,7 @@ describe("capabilityMeta", () => {
       "text-to-image",
       "automatic-speech-recognition",
       "embeddings",
+      "text-classification",
       "text-to-video",
     ]) {
       const meta = capabilityMeta(key);

@@ -321,8 +321,10 @@ def export_app_file(app_dir: str, out_path: str,
         raise AppFileError(f"refusing to overwrite existing file: {out_path}")
 
     entry_rel = os.path.relpath(entry, app_dir).replace(os.sep, "/")
-    # The app's stable identity (app_id.py) is minted on its FIRST export and
-    # written into the entry page itself — before the members are walked and
+    # The app's stable identity (app_id.py) is minted at creation (routers/
+    # apps, inside the boilerplate commit); an app from before that — or one
+    # whose creation could not stamp it — gets it minted on its FIRST export
+    # and written into the entry page itself — before the members are walked and
     # sized, since stamping changes the entry's bytes. The manifest copies
     # whatever the page carries, so `app_id` in a `.fused` means the tag is
     # in its entry too; when the page cannot take the tag (a read-only extract

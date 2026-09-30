@@ -35,6 +35,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fused_render import schedule, tasks_store, tasks_watch
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server import create_app
 from fused_render.server.routers import claude_sessions as sessions_mod
 from fused_render.server.routers import tasks as tasks_mod
@@ -176,14 +177,20 @@ def test_the_row_lands_in_the_project_the_send_named(client, tmp_path):
     target.write_text("x = 1\n")
     tasks_watch.mark_running(SID, text="go", file=str(target))
     row = _by_key(client)[SID]
-    assert row["project"] == str(proj)
-    assert row["target"] == str(target)
+    # `project`/`target` come back in the shell's canonical form (forward
+    # slashes on a drive-letter path — router.ts `rootedFsPath` / D-number
+    # in canonical_fs_path's docstring), not os.path's native separator, so
+    # `str(proj)`/`str(target)` on Windows must be canonicalized before the
+    # comparison rather than compared as-is.
+    assert row["project"] == canonical_fs_path(str(proj))
+    assert row["target"] == canonical_fs_path(str(target))
 
     tasks_mod.reset_cache()
     tasks_watch.mark_running(SID, text="go", file=str(proj))
     row = _by_key(client)[SID]
-    assert row["project"] == str(proj)
-    assert row["target"] == str(proj), "a folder target is its own target"
+    assert row["project"] == canonical_fs_path(str(proj))
+    assert row["target"] == canonical_fs_path(str(proj)), \
+        "a folder target is its own target"
 
 
 def test_a_marked_send_lights_up_a_task_that_already_exists(client,
@@ -333,7 +340,7 @@ def test_the_running_endpoint_takes_the_words_and_the_target(client, tmp_path):
     call it already made. Both fields are optional and both are stripped."""
     target = tmp_path / "app.py"
     target.write_text("x = 1\n")
-    r = client.post("/api/tasks/running",
+    r = client.post("/api/tasks/running", headers={"X-Fused": "1"},
                     json={"session_id": SID, "text": "  pull the news  ",
                           "file": "  %s  " % target})
     assert r.status_code == 200, r.text
@@ -345,7 +352,7 @@ def test_the_running_endpoint_takes_the_words_and_the_target(client, tmp_path):
 def test_the_running_endpoint_still_takes_a_bare_session_id(client):
     """An older client, or any caller that only wants the liveness floor, sends
     neither field and gets exactly the mark this endpoint has always made."""
-    r = client.post("/api/tasks/running", json={"session_id": SID})
+    r = client.post("/api/tasks/running", headers={"X-Fused": "1"}, json={"session_id": SID})
     assert r.status_code == 200, r.text
     assert tasks_watch.sent_marks()[SID] == {
         "at": pytest.approx(time.time(), abs=5), "text": "", "file": ""}
@@ -354,7 +361,7 @@ def test_the_running_endpoint_still_takes_a_bare_session_id(client):
 def test_the_running_endpoint_refuses_the_wrong_shape(client):
     """Typed, so a client bug is a 422 and not a mark carrying a dict where a
     sentence should be."""
-    r = client.post("/api/tasks/running",
+    r = client.post("/api/tasks/running", headers={"X-Fused": "1"},
                     json={"session_id": SID, "text": {"oops": 1}})
     assert r.status_code == 422
     assert not tasks_watch.sent_marks()
@@ -363,10 +370,10 @@ def test_the_running_endpoint_refuses_the_wrong_shape(client):
 def test_the_idle_call_takes_the_words_away_with_the_mark(client):
     """`mark_idle` retires the whole record. The reply landed, so the row is
     whatever disk says — and with nothing on disk that is no row."""
-    client.post("/api/tasks/running",
+    client.post("/api/tasks/running", headers={"X-Fused": "1"},
                 json={"session_id": SID, "text": "go", "file": "/tmp"})
     assert tasks_watch.sent_marks()
-    client.post("/api/tasks/idle", json={"session_id": SID})
+    client.post("/api/tasks/idle", headers={"X-Fused": "1"}, json={"session_id": SID})
     assert tasks_watch.sent_marks() == {}
     assert SID not in _by_key(client)
 
@@ -401,7 +408,7 @@ def test_marking_a_message_read_rings_the_long_poll(client, projects_dir):
                       [_user("one", _near_now(-600), uuid="u1")])
     _by_key(client)  # day-one baseline
     before = tasks_watch.generation()
-    r = client.post("/api/tasks/read", json={"key": SID, "message_id": "MSG-001"})
+    r = client.post("/api/tasks/read", headers={"X-Fused": "1"}, json={"key": SID, "message_id": "MSG-001"})
     assert r.status_code == 200, r.text
     assert tasks_watch.generation() > before
 
@@ -414,12 +421,12 @@ def test_marking_a_whole_task_read_rings_once_and_only_if_it_moved(
     _write_transcript(projects_dir, SID, "/home/me/proj",
                       [_user("one", _near_now(-600), uuid="u1")])
     before = tasks_watch.generation()
-    assert client.post("/api/tasks/read",
+    assert client.post("/api/tasks/read", headers={"X-Fused": "1"},
                        json={"key": SID, "all": True}).status_code == 200
     rang = tasks_watch.generation()
     assert rang > before
 
-    assert client.post("/api/tasks/read",
+    assert client.post("/api/tasks/read", headers={"X-Fused": "1"},
                        json={"key": SID, "all": True}).status_code == 200
     assert tasks_watch.generation() == rang, "nothing moved, nothing announced"
 
@@ -584,7 +591,7 @@ def test_the_in_flight_send_takes_the_next_message_id_in_the_thread(
               for m in client.get(f"/api/tasks/{SID}/messages").json()["messages"]}
     assert listed["second thing"] == thread["second thing"] == "MSG-002"
     assert thread["first thing"] == "MSG-001"
-    r = client.post("/api/tasks/read", json={"key": SID, "message_id": "MSG-002"})
+    r = client.post("/api/tasks/read", headers={"X-Fused": "1"}, json={"key": SID, "message_id": "MSG-002"})
     assert r.status_code == 200, r.text
 
 

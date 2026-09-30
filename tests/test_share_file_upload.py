@@ -35,6 +35,39 @@ def job_dir(upload_id):
     return share_file_mod._upload_paths(upload_id)["dir"]
 
 
+def _record_cancel_signal(monkeypatch):
+    """Record the pid `cancel_upload` signals, on whichever road THIS platform
+    takes.
+
+    `cancel_upload` is the same platform split `engine_host._kill_tree` uses:
+    POSIX signals the process group (`os.killpg`/`os.getpgid`, since
+    `_spawn_upload`'s `start_new_session=True` makes the pid the pgid), while
+    Windows has neither `os.killpg` nor `os.getpgid` at all — not just
+    unsupported, the attributes are absent from the frozen `os` module — and
+    falls to `os.kill(pid, CTRL_BREAK_EVENT)`, then `taskkill /T /F` when that
+    raises (a synthetic pid like the ones these tests seed always makes
+    CTRL_BREAK_EVENT raise, so the fallback is what actually fires here).
+
+    A test that patches `os.killpg` alone therefore raises `AttributeError`
+    on Windows instead of recording anything (`monkeypatch.setattr` refuses
+    to patch an attribute that does not exist). Patching the road the
+    platform actually takes keeps the assertion honest on both.
+    """
+    killed = []
+    if os.name == "nt":
+        def _run(cmd, **kwargs):
+            assert cmd[:2] == ["taskkill", "/PID"], cmd
+            assert "/T" in cmd, "must walk the tree, not just the named pid"
+            assert "/F" in cmd, "the CLI does not answer a polite close"
+            killed.append(int(cmd[2]))
+            return subprocess.CompletedProcess(cmd, 0)
+        monkeypatch.setattr(share_file_mod.subprocess, "run", _run)
+    else:
+        monkeypatch.setattr(os, "killpg", lambda pgid, sig: killed.append(pgid))
+        monkeypatch.setattr(os, "getpgid", lambda pid: pid)
+    return killed
+
+
 def seed(upload_id, *, size=1234, started_at=None, pid=None, done=None, log=None, result=None):
     paths = share_file_mod._upload_paths(upload_id)
     os.makedirs(paths["dir"], exist_ok=True)
@@ -173,12 +206,10 @@ def test_cancel_upload_with_no_pid_is_a_harmless_noop():
 
 
 def test_cancel_upload_signals_a_real_process_group(monkeypatch):
-    calls = []
-    monkeypatch.setattr(os, "killpg", lambda pgid, sig: calls.append((pgid, sig)))
-    monkeypatch.setattr(os, "getpgid", lambda pid: 4242)
+    killed = _record_cancel_signal(monkeypatch)
     seed("job-to-cancel", pid=99999)
     share_file_mod.cancel_upload("job-to-cancel")
-    assert calls == [(4242, share_file_mod.signal.SIGTERM)]
+    assert killed == [99999]
 
 
 # -- publish route: the large-file / upload_id branch -----------------------------
@@ -269,13 +300,11 @@ def test_upload_cancel_without_guard_header_is_refused(client, tmp_path):
 
 
 def test_upload_cancel_signals_a_running_job(client, tmp_path, monkeypatch):
-    calls = []
-    monkeypatch.setattr(os, "killpg", lambda pgid, sig: calls.append((pgid, sig)))
-    monkeypatch.setattr(os, "getpgid", lambda pid: 777)
+    killed = _record_cancel_signal(monkeypatch)
     seed("job-x", pid=12345)
     resp = client.post("/api/share/file/upload/cancel", json={"id": "job-x"}, headers=GUARD)
     assert resp.status_code == 200
-    assert calls == [(777, share_file_mod.signal.SIGTERM)]
+    assert killed == [12345]
 
 
 # -- finding 3: upload id path traversal --------------------------------------
@@ -311,13 +340,11 @@ def test_upload_cancel_rejects_a_path_traversal_id(client):
 
 
 def test_upload_cancel_still_signals_a_real_minted_id(client, monkeypatch):
-    calls = []
-    monkeypatch.setattr(os, "killpg", lambda pgid, sig: calls.append((pgid, sig)))
-    monkeypatch.setattr(os, "getpgid", lambda pid: 777)
+    killed = _record_cancel_signal(monkeypatch)
     seed("job-x", pid=12345)
     resp = client.post("/api/share/file/upload/cancel", json={"id": "job-x"}, headers=GUARD)
     assert resp.status_code == 200
-    assert calls == [(777, share_file_mod.signal.SIGTERM)]
+    assert killed == [12345]
 
 
 # -- finding 4: publish must not trust a mismatched upload_id ------------------

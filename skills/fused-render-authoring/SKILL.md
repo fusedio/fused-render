@@ -7,6 +7,15 @@ description: Use when writing or debugging fused-render .html view or .py data f
 
 View = sibling pair: `.html` (UI) + `.py` (data). Explorer renders html in iframe, injects `window.fused` (never `<script src>` runtime), page calls local Python via `fused.runPython`. UI state lives in URL params → refresh-proof, bookmarkable. Plain HTML/CSS/JS. No framework, no build step.
 
+## Build order: html first
+
+When free to start on either side, write the `.html` first. User sees layout + controls within minutes; a `.py` is invisible until wired.
+
+- First pass need NOT be complete, but MUST render standalone: controls → params → `draw()` over stub/placeholder data, no `runPython` yet. Calling a `.py` that doesn't exist = traceback overlay or blank view — opposite of feedback.
+- As soon as it renders, tell user the embed URL (`/explorer/embed/<path>`, see Testing) so they can watch it grow.
+- Then write `main()`, then swap stub → `fused.runPython`. Wiring discipline (Canonical wiring) holds from the first pass — stub data only changes WHERE values come from, not the param flow.
+- Stub-first html doubles as the `_preview=1` placeholder — keep it cheap.
+
 ## App markers (entry page `<head>`, first 4 KiB)
 
 ```html
@@ -16,7 +25,7 @@ View = sibling pair: `.html` (UI) + `.py` (data). Explorer renders html in ifram
 
 - `fused-app` = ONLY thing making folder an app. No marker → never in /apps, never registered.
 - `fused-api-version`: copy N from `fused_render/app_starter/index.html`. Missing tag = version 0. Migration → `fused-render-api-migration`.
-- `fused-app-id` (optional, `content="<kebab name>-<8 hex>"`): app's stable identity, written by first `.fused` export (`fused_render/app_id.py`), same id across every later export = "update of this app". Never write, edit or copy it by hand; absent until exported.
+- `fused-app-id` (optional, `content="<kebab name>-<8 hex>"`): app's stable identity, written at app creation (older apps: on first `.fused` export) by `fused_render/app_id.py`, same id across every later export = "update of this app". Never write, edit or copy it by hand.
 - Optional `icon.svg` (or `icon.png`, lower priority, clipped to rounded square) beside entry page = sidebar glyph + card mark + favicon → `fused-render-app-icon`.
 
 ## Python side: `main()`
@@ -32,7 +41,7 @@ One plain fn `main(**params)`. Rules:
 
 ### Available Python libraries
 
-No `pyproject.toml` in folder → app interpreter: stdlib plus exactly this bundled set (repo `pyproject.toml` `[bundled]` extra minus `botocore`/`google-auth`, plus `pyarrow`/`duckdb`/`httpx` from core `[project]` deps). Prefer it — zero install.
+A `pyproject.toml` is always expected — App Doctor's `pyproject` row fails a folder that lacks one. Without one, the app interpreter falls back to stdlib plus exactly this bundled set (repo `pyproject.toml` `[bundled]` extra minus `botocore`/`google-auth`, plus `pyarrow`/`duckdb`/`httpx` from core `[project]` deps). `dependencies` should list the app's own third-party imports — NOT this bundled set; an app that only imports from it declares an empty `dependencies` list, which keeps it on that zero-install interpreter.
 
 - **Data:** `numpy` `pandas` `pyarrow` `duckdb` `openpyxl` `msgpack`
 - **Images:** `pillow`
@@ -73,12 +82,15 @@ Auto-created at app root. Convention, no helper API — build paths off `os.path
 | `await fused.writeFile(path, text, opts?)` | Atomic. `opts.expectedMtime` → rejects `.type==="conflict"` on stale disk; `opts.create` → rejects `.type==="exists"` (race-free create); readonly → `.type==="readonly"`. Resolves with fresh stat — keep its mtime. |
 | `fused.rawUrl(path)` | Sync URL for raw bytes — img/video/embed/download. Also resolves relative sibling assets (pitfall below). |
 | `fused.ai.*` | → `fused-render-ai`. |
-| `fused.fileIndex.search/query` | Machine-wide file index — use instead of walking fs → `fused-render-index`. |
+| `fused.fileIndex.search/query` | Machine-wide file index — use instead of walking fs → `fused-render-index`. Full fused-render only (Render App below). |
 | `fused.capture.*` | Native screen/mic/screenshot → `fused-render-capture`. |
 | `fused.trackJob(spec)` | Report long work to download manager; never rejects → `fused-render-jobs`. |
+| `fused.tasks.*` | List/create/follow up/cancel/watch the app's Claude tasks (headless, returns a handle); `ui()` gives an iframe URL of the shell's Tasks page → `fused-render-tasks`. |
 | `fused.daemon.*` | Folder's warm worker / resident daemon → `fused-render-background-apps`. |
 | `fused.env` | `"local"` vs `"hosted"` (exported). |
-| `fused.autoReload(false)` | Kill reload-on-file-change (in-page editors). |
+| `fused.autoReload(false)` | Kill reload-on-file-change (in-page editors). Render App: `autoReload(true)` THROWS (no live reload there). |
+
+**Render App** (standalone `fused-render-app`: same bridge, subset runtime). Session is on it when the system prompt says so, the app is a `.fused` bundle or a folder under `~/Fused/local/`, or a call throws `<name> is not supported on Render App`. There: `fused.fileIndex` and `fused.snapshot` do not exist (no stubs — reading them throws that sentence); `fused.autoReload(true)` throws; `fused.capture` is macOS-only, no browser `client` recorder; `runPython` cap is 600 s, not 60; no `fused-render calls` CLI (Verifying below) — read the browser console. Everything else in the table is identical. App that needs the missing members belongs in full fused-render; don't polyfill.
 
 - Uncaught `runPython` rejection → red traceback overlay (good default). Catch for custom UI.
 - Filesystem ONLY via these helpers — never fetch `/api/fs/*` yourself (writes rejected, unstable contract).
@@ -121,29 +133,12 @@ Iframe = blank canvas; shell follows OS/pref light-dark. Quick answer: `data-fus
 
 ## Cross-browser (MANDATORY for every view)
 
-Views open in the user's default desktop browser — Chrome/Edge, Firefox, Safari — and in the macOS WKWebView popover. Desktop only: phones and tablets are out of scope. Chrome-tested ≠ done. Every view you write follows these rules by default, no ask needed:
+Views open in the user's default desktop browser — Chrome/Edge, Firefox, Safari — and the macOS WKWebView popover. Desktop only. Chrome-tested ≠ done.
 
-- **Features:** only MDN **Baseline: Widely available**. Newly-available → `@supports` + working fallback, or skip. Chrome-only → never. Unsure → check MDN compat, don't assume from Chrome.
-- **No build step, no autoprefixer** — prefixes are hand-written. Still prefixed in Safari: `-webkit-user-select`, `-webkit-backdrop-filter` (Safari < 18), `-webkit-line-clamp` trio (`display: -webkit-box; -webkit-box-orient: vertical`), `-webkit-appearance` alongside `appearance`.
-- **Paste this reset** under the theme tokens in every `<style>`:
-
-```css
-*, *::before, *::after { box-sizing: border-box; }
-body { margin: 0; }
-button, input, select, textarea { font: inherit; color: inherit; margin: 0; }
-::placeholder { color: var(--muted); opacity: 1; }
-input, select, textarea, progress { accent-color: var(--accent, currentColor); }
-img, svg, video, canvas { display: block; max-width: 100%; }
-```
-
-- **Scrollbars:** write both pairs on same element — `scrollbar-width`/`scrollbar-color` AND `::-webkit-scrollbar*`, same colours. Firefox/Chrome/new Safari take the first, older WebKit the second.
-- **Form controls:** `<select>` → `appearance: none` + own arrow; `<option>` unstyleable in Safari. Range → both `::-webkit-slider-thumb` and `::-moz-range-thumb`. `<summary>` → `list-style: none` + `::-webkit-details-marker { display: none }`. Date/number/color/file pickers look native — style the box only. `appearance: none` drops `color-scheme` dark-mode chrome for that control → restyle fully or leave native.
-- **Layout:** `min-width: 0` on flex children holding text; no `transform` on ancestor of `position: fixed`; `overflow: clip` (not `hidden`) between `sticky` and its scroller.
-- **Fonts:** `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif`; mono `ui-monospace, Menlo, Consolas, monospace`; weights 400/600/700 only.
-- **JS:** ISO dates with `T` (Safari `Date.parse` rejects space); no `showOpenFilePicker`/`scrollIntoViewIfNeeded`/`requestIdleCallback` without fallback; ES2022 syntax ceiling; `wheel` `deltaMode === 1` → multiply by 16.
-- **Before "done":** same `/explorer/embed/…` URL in a second engine (`open -a Safari <url>` / `open -a Firefox <url>`).
-
-Full trap table with per-row fixes + verified support dates → `fused-render-cross-browser` (invoke when something renders wrong in one browser).
+- **Load `fused-render-cross-browser` BEFORE writing the first `<style>`** — it holds the reset to paste, the Safari prefixes, form-control/scrollbar/font/JS traps with fixes. Not optional, not only-when-broken.
+- Features: only MDN **Baseline: Widely available**. Newly-available → `@supports` + fallback. Chrome-only → never.
+- No build step, no autoprefixer — prefixes hand-written.
+- Before "done": same `/explorer/embed/…` URL in a second engine (`open -a Safari <url>` / `open -a Firefox <url>`).
 
 ## Preview templates
 
@@ -151,17 +146,25 @@ Same html, opened FOR target file: read-only `_file` param carries path. Reader 
 
 ## Testing
 
-Real browser against running server (`fused-render --port 1777 --no-browser`):
+Real browser against the server that is ALREADY running. Never assume a port — `1777` is only a bare `fused-render` on main; the desktop app picks a free port, a worktree gets a per-branch one, Render App (fused-render-lite) uses `2777`. Find the origin:
+
+1. `$FUSED_RENDER_ORIGIN` — exported by both servers to every process they spawn (a session opened from the app has it).
+2. `~/.fused-render/server.json` (Render App: `~/.fused-render-app/server.json`) — `origin` field, for a terminal session. Probe `<origin>/api/config` before trusting it; a crashed server leaves the file behind.
+3. Neither → nothing is running; start one (`fused-render --no-browser --port <free>`; Render App: `open -a RenderApp`, it writes `server.json`).
+
+URLs under that origin:
 
 - `/explorer/embed/<abs path, leading slash dropped, segments URL-encoded>` — chrome-free. **Default for testing.**
 - `/explorer/view/<path>` — full shell chrome.
 - Templates: open TARGET file's path; or template html directly with `?_file=<abs target>`.
 
+Render App only (no fused-render installed — origin on `2777`, `server.json` under `~/.fused-render-app`): its embed equivalent is `/render?path=<abs html>` — any absolute `.html`, `runtime.js` injected, relative `.py` resolved against it, env picked from the folder's `pyproject.toml`, params after `path` in the URL. `/explorer/*` there is the chat shell, not a view. Same render → interact → refresh loop; verification is the browser console (see below).
+
 Loop: render → interact → URL updates → hard refresh → identical view.
 
 ## Verifying: call log
 
-Cannot run page JS from terminal. After user opens page:
+Cannot run page JS from terminal. Full fused-render only — Render App keeps no call log; there, ask the user for the browser console (uncaught errors and unhandled `runPython` rejections land there) and treat a blank page as JS died. After user opens page:
 
 ```
 fused-render calls --page <abs html> --since 15m   # --failed, --json, --follow
@@ -173,14 +176,10 @@ Read digest. Zero records + visible placeholder = preview-gated, fine. Zero reco
 
 - `params.set` non-string → throws. `_`-prefixed page param → throws/collides.
 - Own `history.replaceState` → drops shell `_` keys, breaks pane.
-- Ungated boot under `_preview` / not climbing ancestors / not forwarding to own iframes.
 - Non-JSON return, unannotated numeric param, expecting state across calls.
 - Plain `open(...,"w")` cache write; unversioned cache key; irreplaceable bytes in `cache/`.
 - Import outside bundled set, no `pyproject.toml`.
 - Slider + heavy import, no ~150 ms debounce → subprocess per tick.
-- `writeFile` on existing file without `expectedMtime` = silent clobber; create-if-absent = `{create: true}`, not stat-then-write.
-- `readFile` for media → use `rawUrl`.
-- Skipped the Cross-browser section — unstyled `<select>`, vanished scrollbar, `user-select` without `-webkit-`, only ever opened in Chrome.
-- Walking fs for counts/sizes → `fused.fileIndex.query` (`fused-render-index`).
+- Walking fs for counts/sizes → `fused.fileIndex.query` (`fused-render-index`). Render App has no index: walk in the `.py`, cache the result.
 - `fused.ai.text(` in a page meant for HOSTED export → exporter rejects textually, env guard no help. A `.fused` app file allows it (`fused-render-ai`).
-- Claiming "done" without `fused-render calls` — blank-JS and failing-Python look identical without log.
+- Claiming "done" without `fused-render calls` (Render App: without the console) — blank-JS and failing-Python look identical without log.

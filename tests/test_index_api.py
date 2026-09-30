@@ -337,10 +337,14 @@ def test_a_slow_query_does_not_block_the_interactive_lane(home, tmp_path, monkey
 
     query_started = threading.Event()
     query_release = threading.Event()
+    query_returned = threading.Event()
 
     def fake_guarded(cfg, sql, limit, token=None):
         query_started.set()
-        query_release.wait(timeout=5)
+        # Parked until the test has its stats answer. The timeout only bounds
+        # how long a BROKEN (serialised) lane hangs the test before failing.
+        query_release.wait(timeout=30)
+        query_returned.set()
         return {"columns": [], "rows": []}
 
     def fake_stats(cfg, root="", breakdown=False, token=None):
@@ -357,26 +361,27 @@ def test_a_slow_query_does_not_block_the_interactive_lane(home, tmp_path, monkey
             query_task = asyncio.create_task(
                 client.post("/api/index/query", json={"sql": "select 1"},
                            headers={"X-Fused": "1"}))
-            for _ in range(50):
-                if query_started.is_set():
-                    break
-                await asyncio.sleep(0.02)
-            assert query_started.is_set()
-            t0 = time.monotonic()
+            started = await asyncio.to_thread(query_started.wait, 30)
+            assert started, "the /api/index/query worker never started"
             stats_resp = await client.get("/api/index/stats")
-            elapsed = time.monotonic() - t0
+            # The property under test, as ORDERING rather than a wall-clock
+            # budget: stats answered while the query was still parked inside
+            # its worker. A lane that serialised stats behind the query could
+            # only answer after `query_release` (set below) or its timeout.
+            query_was_parked = not query_returned.is_set() and not query_task.done()
             query_release.set()
             query_resp = await query_task
-            return stats_resp, elapsed, query_resp
+            return stats_resp, query_was_parked, query_resp
 
-    stats_resp, elapsed, query_resp = asyncio.run(run())
+    stats_resp, query_was_parked, query_resp = asyncio.run(run())
     assert stats_resp.status_code == 200
-    # `fake_stats` is a pure Python stub with no real I/O, so a serialised
-    # lane would show up as (near-)instant, not merely "under 2s" — tightened
-    # from 2.0 (SPEC-index-search-wedge.md's "Also:" note: that bound was
-    # part of the blind spot that let a serialised interactive lane ship
-    # unnoticed).
-    assert elapsed < 0.5, elapsed
+    # Previously `elapsed < 0.5`: flaked on a loaded CI runner (0.90s, py3.12)
+    # while the lane was fine — event-loop/threadpool scheduling, not lane
+    # wait. Ordering catches a serialised lane at ANY speed, which is what
+    # SPEC-index-search-wedge.md's tightened bound was reaching for.
+    assert query_was_parked, (
+        "/api/index/stats only answered after the slow /api/index/query "
+        "finished: the interactive lane is serialised behind the query lane")
     assert query_resp.status_code == 200
 
 
@@ -457,12 +462,24 @@ def test_a_wedged_rank_request_does_not_permanently_hold_its_lane_slot(
     never set (exactly that: an un-killable, permanently parked thread);
     every later call answers immediately. `ABANDON_S` (item 2) is
     monkeypatched small so the test does not have to wait out the real
-    5-second default to see the permit actually get released."""
+    15-second default to see the permit actually get released — but not
+    razor-thin: a loaded CI runner (this whole file's requests share the
+    process with every other xdist worker) has been observed adding ~500ms
+    of scheduling jitter to a nominal 50ms `wait_for`, which was enough to
+    make even the NON-wedged 'z' request time out and get abandoned too —
+    a false failure of the "does not permanently hold its lane slot" claim,
+    not a real one (`_bounded_index_read` returns, rather than raises, on
+    its own timeout path, so the `async with lane:` around it always
+    releases the permit either way — read `_bounded_index_read` and its
+    caller in index.py before doubting that). 1.5s leaves several times
+    that observed jitter as headroom, while the elapsed bounds below (well
+    under 1.5s) still catch a real regression, which would take until
+    `ABANDON_S` elapses, not a few hundred ms."""
     import threading
 
     import httpx
 
-    monkeypatch.setattr(index_router, "ABANDON_S", 0.05)
+    monkeypatch.setattr(index_router, "ABANDON_S", 1.5)
     lock = threading.Lock()
     calls = {"n": 0}
     first_entered = threading.Event()
@@ -531,7 +548,7 @@ def test_a_wedged_rank_request_does_not_permanently_hold_its_lane_slot(
             # "pending" forever, exactly what happened before this loop was
             # moved in here.
             never.set()
-            deadline = time.monotonic() + 2.0
+            deadline = time.monotonic() + 5.0
             while index_router._abandoned_reads and time.monotonic() < deadline:
                 await asyncio.sleep(0.01)
             return second_resp, second_elapsed, more, more_elapsed, first_resp
@@ -539,9 +556,16 @@ def test_a_wedged_rank_request_does_not_permanently_hold_its_lane_slot(
     (second_resp, second_elapsed, more, more_elapsed,
      first_resp) = asyncio.run(run())
     assert second_resp.status_code == 200, second_resp.text
-    assert second_elapsed < 0.3, second_elapsed
+    # Well under `ABANDON_S` (1.5s, above): neither 'y' nor 'z' ever needs to
+    # wait for the wedged request's abandon-timeout to free a permit, since
+    # the lane (width 2) has a free slot the whole time. A regression that
+    # reintroduces the "held for the life of the process" bug would instead
+    # make these wait the full `ABANDON_S`, so 1.0s still catches that while
+    # comfortably clearing the ~500ms of CI scheduling jitter that made the
+    # old 0.3s bound flaky.
+    assert second_elapsed < 1.0, second_elapsed
     assert all(r.status_code == 200 for r in more)
-    assert more_elapsed < 0.3, more_elapsed
+    assert more_elapsed < 1.0, more_elapsed
     # The wedged first request itself eventually gets the abandon-timeout
     # 503, once ABANDON_S elapses — it just never blocks anything ELSE.
     assert first_resp.status_code == 503

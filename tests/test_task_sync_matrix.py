@@ -700,7 +700,7 @@ def test_deleting_a_task_mid_run_is_refused(client, target, spawned):
     _tick()
     key = tasks_store.pending_key(entry["id"])
     tasks_mod.reset_cache()
-    r = client.post("/api/tasks/delete", json={"key": key})
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": key})
     assert r.status_code == 409
     assert "running" in r.json()["detail"]
 

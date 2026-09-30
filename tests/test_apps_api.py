@@ -25,7 +25,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from fused_render import app_listing
+from fused_render import app_listing, exported_apps
 from fused_render.server import create_app
 from fused_render import claude_spawn, schedule
 from fused_render.server.routers import apps as apps_mod
@@ -38,6 +38,17 @@ def workspace(tmp_path, monkeypatch):
     fdir = tmp_path / "Fused"
     fdir.mkdir()
     monkeypatch.setenv("FUSED_RENDER_DIR", str(fdir))
+    # Isolated home: tests/conftest.py only allocates FUSED_RENDER_HOME once,
+    # at import time, for the whole worker session — every test in this file
+    # otherwise shares one appfile_recents.json / index store. Any other test
+    # (in this file or a sibling one collected into the same worker) that
+    # records an exported ".fused" open would leak a "Fused-App" row into
+    # every GET /api/apps assertion here. tests/test_appfile.py,
+    # tests/test_appfile_clone.py and tests/test_exported_apps.py already
+    # isolate for exactly this reason; this file was the one place that
+    # touches /api/apps without doing so.
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    exported_apps._clear_cache()
     return fdir
 
 
@@ -89,6 +100,58 @@ def test_lists_only_top_level_dirs_with_entry_resolution(client, workspace):
     assert apps["many"]["entry"] == apps["many"]["entry_html"]
     assert apps["one"]["path"] == str(workspace / "local" / "one")
     assert apps["one"]["tag"] == "local"
+
+
+def test_an_export_recorded_by_a_prior_test_does_not_leak_into_apps(tmp_path):
+    """Regression for a real Windows CI failure: /api/apps unions in
+    exported_apps.exported_apps(), which is keyed off storage.home_dir()
+    (FUSED_RENDER_HOME). tests/conftest.py only allocates that env var once,
+    for the whole worker session, so any test that records an exported
+    ".fused" open — via exported_apps.record_open, the same call POST
+    /api/appfile/open makes — into a SHARED, un-isolated home leaks a
+    "Fused-App" row into every later GET /api/apps assertion in whatever test
+    runs next in that worker.
+
+    This simulates exactly that: record an open the way a prior test would,
+    directly against fused_render.shell.storage.home_dir() (i.e. whatever
+    FUSED_RENDER_HOME is *without* going through this file's own workspace/
+    client fixtures — the leaking write is never made by this file's
+    fixtures), then build a client through the ordinary fixtures and confirm
+    the export from "the prior test" is invisible. Before the workspace
+    fixture isolated FUSED_RENDER_HOME (it only isolated FUSED_RENDER_DIR),
+    this exact sequence reproduced ``demo`` (or here, ``stray``) leaking into
+    the listing with tag "Fused-App".
+    """
+    from fused_render import exported_apps
+    from fused_render.shell import storage
+
+    # Simulate "a prior test in this worker already exported a file" by
+    # recording an open directly, bypassing this file's fixtures entirely —
+    # the only way this can be visible to a later test is via a shared home.
+    prior_home = tmp_path / "prior-shared-home"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("FUSED_RENDER_HOME", str(prior_home))
+        stray = tmp_path / "stray.fused"
+        stray.write_bytes(b"zipbytes")
+        assert exported_apps.record_open(str(stray))
+    exported_apps._clear_cache()
+
+    # Now exercise this file's own fixtures exactly as every other test here
+    # does. If they isolated FUSED_RENDER_HOME (the fix), storage.home_dir()
+    # can never resolve back to `prior_home`, so the stray export cannot
+    # surface — regardless of what env var happened to be set beforehand.
+    fdir = tmp_path / "Fused"
+    fdir.mkdir()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("FUSED_RENDER_DIR", str(fdir))
+        mp.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))  # the fix: this file's own home
+        exported_apps._clear_cache()
+        client = TestClient(create_app(start_dir=str(tmp_path)))
+        apps = client.get("/api/apps").json()["apps"]
+
+    assert "stray" not in {a["name"] for a in apps}
+    assert "Fused-App" not in {a["tag"] for a in apps}
+    assert storage.home_dir() != str(prior_home)
 
 
 def test_listing_surfaces_a_root_preview_png_per_app(client, workspace):

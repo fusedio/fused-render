@@ -70,11 +70,32 @@ async function poll(): Promise<void> {
   try {
     const config = await getConfig();
     next = config.update ?? null;
-    set(next);
   } catch {
     // Server down — ServerStatusBanner owns that story; keep last state.
   }
+  // STALE-POLL GUARD, checked BEFORE `set()` runs — not just before the
+  // re-arm below (2026-09-22 fix, found chasing a CI-only test flake in
+  // UpdateNotifier.test.tsx). `getConfig()` is a real `await`: a poll that
+  // was in flight when `pokeUpdateStatus`/`setUpdateStatus`/a test's
+  // `resetUpdateStatusForTests()` bumped `generation` can still land
+  // afterwards. The OLD code let that stale response through to `set()`
+  // unconditionally and only used `generation` to decide whether to
+  // re-arm the NEXT tick — so a poll started by one bun test file (any
+  // mount of a component that reads `useUpdateStatus()`, which calls
+  // `ensureStarted()`) could resolve during a LATER test file's test (bun
+  // shares one module registry and one event loop across a whole `bun
+  // test` invocation) and silently overwrite `current` out from under it,
+  // firing every subscriber — including a freshly-mounted `UpdateNotifier`
+  // — with content that test never asked for. `resetUpdateStatusForTests()`
+  // clears the pending TIMER but cannot cancel a `fetch` already in
+  // flight, so bumping `generation` only closes this hole if the check
+  // happens before the mutation, not after. Fast locally (the round trip
+  // usually finishes before the next file's `beforeEach` even runs) but a
+  // slower/differently-scheduled CI runner lands it mid-test far more
+  // often — exactly the "passes locally, flakes on CI, order/timing
+  // dependent" signature this was caught as.
   if (mine !== generation) return;
+  set(next);
   timer = setTimeout(poll, pollDelay(next));
 }
 

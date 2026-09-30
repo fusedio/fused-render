@@ -94,7 +94,7 @@ function mount(over: Partial<Parameters<typeof ComposerCard>[0]> = {}) {
     });
   const press = (
     key: string,
-    mods: { shiftKey?: boolean; metaKey?: boolean } = {},
+    mods: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean } = {},
   ) => {
     let prevented = false;
     act(() => {
@@ -275,18 +275,24 @@ test("send is disabled ONLY by the schedule block — never for empty, attaching
   expect(shut.props.title).toBe("TASK-3 runs at 09:00");
   // No reason handed in is still not a dead control with nothing to say.
   expect(send(mount({ blocked: true })).props.title).toBe(BLOCKED_SEND_TITLE);
-  // …and every one of those refusals is still MADE, in `submit`: an empty box
-  // with nothing typed, and a worded send through either door that is shut.
+  // …and the refusals that remain are still MADE, in `submit`: an empty box
+  // with nothing typed, and a worded send through a door that is shut. The
+  // send window (`sendBusy`) is NOT one of those any more — the parent parks
+  // the line (ClaudeChat's outbox), so the composer hands it over.
   const empty = mount();
   empty.submitForm();
   expect(empty.sent).toEqual([]);
-  for (const props of [{ blocked: true }, { sendBusy: true }, { hasAttachments: true, attachPending: true }]) {
+  for (const props of [{ blocked: true }, { hasAttachments: true, attachPending: true }]) {
     const c = mount(props);
     c.type("try it");
     c.submitForm();
     expect(c.sent).toEqual([]);
     expect(c.followups).toEqual([]);
   }
+  const busy = mount({ sendBusy: true });
+  busy.type("try it");
+  busy.submitForm();
+  expect(busy.sent.map((s) => s.text)).toEqual(["try it"]);
 });
 
 test("the hop freeze shuts Send — but NEVER the Stop (Bugbot 4035295068)", () => {
@@ -347,24 +353,20 @@ test("send is NEVER disabled for having nothing to send (T:2956-2981)", () => {
   expect(empty.sent).toEqual([]);
 });
 
-test("but a capture in flight DOES hold the door — in the handler", () => {
-  // `sendBusy` is not "nothing to send": it is the shutter window, which can
-  // run to seconds on a large pane, and T had no equivalent of it because it
-  // had no such window. A transient refusal with a cause — and, like every
-  // other refusal here, one the SUBMIT makes rather than the attribute.
+test("a capture in flight names itself on the button — and the line still goes", () => {
+  // `sendBusy` is the shutter window, which can run to seconds on a large pane.
+  // The `title` says so (Bugbot, PR #1074). It used to REFUSE the send too, in
+  // the handler, and the words sat in the box with no other sign — the exact
+  // window in which a fast second line was lost (multi-send QA 2026-09-19).
+  // The parent parks the line now, so the composer hands it over and clears.
   const c = mount({ sendBusy: true, hasAttachments: true });
   const send = c.root.findAllByType("button").find((b) => b.props.className === "c-send")!;
   expect(send.props.disabled).toBeUndefined();
-  // …and the `title` is what says why, since the attribute no longer can
-  // (Bugbot, PR #1074): this window can run to seconds on a large pane.
   expect(send.props.title).toBe("Taking the picture…");
   c.type("with this shot");
   c.press("Enter");
-  expect(c.sent).toEqual([]);
-  c.submitForm();
-  expect(c.sent).toEqual([]);
-  // The words are kept for the send that follows the shutter.
-  expect(c.box().props.value).toBe("with this shot");
+  expect(c.sent.map((s) => s.text)).toEqual(["with this shot"]);
+  expect(c.box().props.value).toBe("");
 });
 
 test("a blocked composer takes no input by any path (T:17871)", () => {
@@ -547,43 +549,147 @@ test("the live round does not override the doors that refuse for a REASON", () =
   expect(c.sent).toHaveLength(0);
 });
 
-test("the send window's latch refuses the second submit and KEEPS its words", () => {
+test("a second Enter inside the send window is NEVER refused: the words leave the box", () => {
   // The parent takes the latch inside `onSend`, in the very tick this call is
-  // made — which is the race: a second Enter arriving before React has
-  // re-rendered used to start a second send window.
-  const busyRef = { current: false };
+  // made. `submit` used to read it and return false with the words still in
+  // the box — silently — so the reader typed on and the next Enter sent two
+  // messages as one (multi-send QA 2026-09-19). The parent PARKS the second
+  // line now (ClaudeChat's outbox), so the composer hands every line over.
   const sent: string[] = [];
-  const c = mount({
-    busyRef,
-    onSend: (text: string) => {
-      busyRef.current = true;
-      sent.push(text);
-    },
-  });
+  const c = mount({ onSend: (text: string) => sent.push(text) });
   c.type("ship it");
   c.press("Enter");
+  // The parent's window is open now (`sendBusy`); the composer does not care.
+  c.rerender({ sendBusy: true, onSend: (text: string) => sent.push(text) });
   c.type("and again");
   c.press("Enter");
-  expect(sent).toEqual(["ship it"]);
-  // Refused BEFORE the box was cleared: the keystroke cost the user nothing.
-  expect(c.box().props.value).toBe("and again");
+  expect(sent).toEqual(["ship it", "and again"]);
+  expect(c.box().props.value).toBe("");
 });
 
-test("a latched composer REFUSES the send — but never disarms Stop", () => {
+test("a latched composer still SENDS — and never disarms Stop", () => {
   const send = (c: ReturnType<typeof mount>) =>
     c.root.findAllByType("button").find((b) => b.props.className === "c-send")!;
   const latched = mount({ sendBusy: true });
   latched.type("hi");
-  // No attribute (T:4187) — the latch is `submit`'s, and the words are kept.
+  // No attribute (T:4187): the latch is the parent's to park behind, not a
+  // reason to grey the button.
   expect(send(latched).props.disabled).toBeUndefined();
   latched.submitForm();
-  expect(latched.sent).toEqual([]);
-  expect(latched.box().props.value).toBe("hi");
+  expect(latched.sent.map((s) => s.text)).toEqual(["hi"]);
+  expect(latched.box().props.value).toBe("");
   // A live run's button is the only way to stop it (T:17909-17914): a latch on
   // the way in must not take that away.
   const live = mount({ sendBusy: true, status: "running" });
   expect(send(live).props["aria-label"]).toBe("Stop");
   expect(send(live).props.disabled).toBeUndefined();
+});
+
+// ---- the page outbox's seat: ↑ pulls back, Ctrl+Enter sends now -----------
+
+test("↑ in an EMPTY box pulls the newest parked line back to edit", () => {
+  let parked = ["first", "second"];
+  const c = mount({
+    queuedCount: parked.length,
+    onPullQueued: () => parked.pop() ?? null,
+  });
+  expect(c.press("ArrowUp")).toBe(true);
+  expect(c.box().props.value).toBe("second");
+  // With words in the box, ↑ is the caret's: nothing is pulled.
+  expect(c.press("ArrowUp")).toBe(false);
+  expect(c.box().props.value).toBe("second");
+  expect(parked).toEqual(["first"]);
+});
+
+test("↑ does nothing when nothing is parked, or when the seat is not wired", () => {
+  const bare = mount();
+  expect(bare.press("ArrowUp")).toBe(false);
+  const empty = mount({ queuedCount: 0, onPullQueued: () => null });
+  expect(empty.press("ArrowUp")).toBe(false);
+});
+
+test("the outbox hint names the parked lines under the box, and not-sent rows apart", () => {
+  const hint = (c: ReturnType<typeof mount>) =>
+    c.root.findAllByProps({ className: "c-queued c-outbox" }).map((n) => n.props.children);
+  expect(hint(mount({ queuedCount: 1 }))).toEqual(["1 message waiting to send · ↑ to edit it"]);
+  expect(hint(mount({ queuedCount: 2 }))[0]).toContain("2 messages");
+  // A not-sent row is never "waiting to send" (Bugbot, PR #1323).
+  expect(hint(mount({ queuedCount: 0, notSentCount: 1 }))[0]).toContain("1 message not sent");
+  expect(hint(mount())).toEqual([]);
+  // …but ↑ reaches it.
+  let pulled = 0;
+  const c = mount({ notSentCount: 1, onPullQueued: () => (pulled++, "back") });
+  expect(c.press("ArrowUp")).toBe(true);
+  expect(pulled).toBe(1);
+});
+
+test("CTRL+Enter while LIVE is send-now; Cmd+Enter is never (it is ✓ Done's chord)", () => {
+  const now: string[] = [];
+  const live = mount({ status: "running", onSendNow: (t: string) => now.push(t) });
+  live.type("stop and do this");
+  expect(live.press("Enter", { ctrlKey: true })).toBe(true);
+  expect(now).toEqual(["stop and do this"]);
+  expect(live.followups).toEqual([]);
+  expect(live.box().props.value).toBe("");
+  // Plain Enter while live is still the follow-up road…
+  live.type("and then this");
+  live.press("Enter");
+  expect(live.followups).toEqual(["and then this"]);
+  // …and so is ⌘↩: the annotation round owns that chord (`pressDoneChord`),
+  // and a stop must never shadow it.
+  live.type("cmd line");
+  live.press("Enter", { metaKey: true });
+  expect(live.followups).toEqual(["and then this", "cmd line"]);
+  expect(now).toEqual(["stop and do this"]);
+  // Idle: Ctrl+Enter is the ordinary send, `onSendNow` untouched.
+  const idle = mount({ onSendNow: (t: string) => now.push(t) });
+  idle.type("go");
+  idle.press("Enter", { ctrlKey: true });
+  expect(idle.sent.map((s) => s.text)).toEqual(["go"]);
+  expect(now).toEqual(["stop and do this"]);
+});
+
+test("Ctrl+Enter while live with NO send-now seat falls back to the follow-up", () => {
+  const c = mount({ status: "running" });
+  c.type("x");
+  c.press("Enter", { ctrlKey: true });
+  expect(c.followups).toEqual(["x"]);
+});
+
+test("the ✓ Done seat reads the send window LIVE, not as it was when installed", () => {
+  // `submit` is handed out once through `submitRef`; the window opens later,
+  // on the parent's re-render. A seat that closed over `sendBusy` at install
+  // time let a wordless round through into the parked road (Bugbot round 2).
+  const seat: Seat = { current: null };
+  const c = mount({ submitRef: seat, hasAttachments: true });
+  const installed = seat.current!;
+  c.rerender({ submitRef: seat, hasAttachments: true, sendBusy: true });
+  let went = true;
+  act(() => {
+    went = installed();
+  });
+  expect(went).toBe(false);
+  expect(c.sent).toEqual([]);
+  // …and the moment the window closes, the same seat sends.
+  c.rerender({ submitRef: seat, hasAttachments: true, sendBusy: false });
+  act(() => {
+    went = installed();
+  });
+  expect(went).toBe(true);
+  expect(c.sent).toHaveLength(1);
+});
+
+test("a WORDLESS send inside the window still refuses — notes cannot be parked", () => {
+  // The notes' photograph is taken at send time and the tray belongs to the
+  // send in flight, so ✓ Done keeps its round armed and says so (ClaudeChat's
+  // "Your notes were not sent: the last message is still going out").
+  const c = mount({ sendBusy: true, hasAttachments: true });
+  c.submitForm();
+  expect(c.sent).toEqual([]);
+  // Words, though, always go — parked by the parent.
+  c.type("with words");
+  c.submitForm();
+  expect(c.sent.map((s) => s.text)).toEqual(["with words"]);
 });
 
 // ---- the caret goes back in the box (T:16687) ------------------------------

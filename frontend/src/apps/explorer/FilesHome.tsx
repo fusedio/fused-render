@@ -689,6 +689,19 @@ export function FilesSearch({
       setPending(false);
       return;
     }
+    // This effect is about to schedule a request for a query (or home/
+    // lifecycle/mutations/ranked) that differs from whatever produced the
+    // request currently in flight -- every dep in this effect's array is a
+    // real change (there is no poll-tick-style dep here that re-runs this
+    // effect for an unchanged query), so any in-flight request is for a
+    // now-superseded state. Abort it HERE, at scheduling time, not inside
+    // `run`: under a debounce-resetting typing burst (gaps under
+    // INSTANT_DEBOUNCE_MS) `run` itself never fires mid-burst, so the abort
+    // that used to live only inside it never ran either -- the superseded
+    // request kept running for the whole burst, holding an interactive-lane
+    // permit and DuckDB threads the request the user is waiting on competes
+    // for.
+    inflight.current?.abort();
     const run = () => {
       // Abort, never queue: the answer to a query the user has already edited
       // is worth nothing, and letting it land would repaint the list backwards.

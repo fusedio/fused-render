@@ -627,18 +627,6 @@ a.sidebar-rail-btn {
   background: var(--success-bright);
 }
 
-/* AND THE PREFERENCES ROW'S: a self-update waiting/installing/ready-to-restart
-   (platform/lib/update-status, shared with UpdateBadge above the Settings row
-   and the popover's own row). It is the collapsed rail's only signal that one
-   of those states is true — there is no Settings row for the badge to sit
-   above while collapsed. `--accent` rather than one of the status hues above:
-   this isn't a completion or a running-work fact, it's the app's own "there is
-   a new version of me" affordance, the same colour the sidebar already uses
-   for its own chrome (active row highlight). */
-.sidebar-rail-dot.is-update {
-  background: var(--accent);
-}
-
 /* Bottom Preferences trigger (GlobalSidebar): a <button> wearing the
    .sidebar-item look — resets the UA button chrome so it sits in the list
    like the <a> rows above it. */
@@ -1162,126 +1150,10 @@ a.bookmark-name::after {
   padding: 2px 6px;
 }
 
-/* -- Self-update badge (platform/ui/UpdateBadge, packaged mac app only) ----- */
-
-/* ONE FLAT ROW (2026-09-19, no accordion any more): the frame draws the
-   border and the radius, the row inside is either the install button or a
-   status line. `overflow: hidden` lets the row's own tinted fill stop at the
-   rounded corners — the row has no radius of its own, this container owns it. */
-.update-badge {
-  margin: 2px 8px;
-  font-size: 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.update-badge-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 6px 8px;
-  border: none;
-  background: rgba(var(--tint), 0.07);
-  color: var(--fg);
-  font-size: 12px;
-  cursor: pointer;
-  text-align: left;
-}
-
-.update-badge-row:hover {
-  background: rgba(var(--tint), 0.12);
-}
-
-/* `.update-badge` clips to its radius (`overflow: hidden` above), so an
-   outside focus ring on the row would be cut away — inset it instead. */
-.update-badge-row:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-/* Installed state: the row is a status line, not a toggle — nothing to click. */
-.update-badge-row-static,
-.update-badge-row-static:hover {
-  background: rgba(var(--tint), 0.07);
-  cursor: default;
-}
-
-/* THE IDLE FACE — "Check for updates" (2026-09-10). Same frame, same place, but
-   quiet: no tinted fill at rest (the fill says "there is news" on the install
-   row, and this row is the absence of news), muted text, and the hover is the
-   one the nav rows above use. It is the same slot the accordion takes over.
-   Same padding and type as the accordion row, so the two are one line tall
-   alike — but the accordion's label ("Update available — v0.5.23") wraps to two
-   lines in a 232px sidebar and that row is 15px taller (cmux-ux-tester,
-   2026-09-10). What holds is what matters: the Settings section is anchored to
-   the sidebar's bottom, so Settings and the version chip do not move when the
-   face flips; the growth is taken from the scrolling tree above. */
-.update-badge-row-check {
-  background: transparent;
-  color: var(--fg-muted);
-}
-
-.update-badge-row-check:hover {
-  background: rgba(var(--tint), 0.07);
-  color: var(--fg);
-}
-
-/* In flight: the button is disabled so a second press cannot queue a second
-   POST, but it must not read as greyed-out chrome — "Checking…" is progress,
-   not unavailability. */
-.update-badge-row-check:disabled {
-  cursor: progress;
-  color: var(--fg-muted);
-}
-
-/* Trailing, where the install row keeps its download arrow, same colour. */
-.update-badge-refresh {
-  display: flex;
-  margin-left: auto;
-  flex: none;
-  color: var(--fg-muted);
-}
-
-/* The one motion in the sidebar, and it is this row's own progress: the glyph
-   turns while the manifest fetch is out. styles/reduced-motion.css blankets
-   `animation` along with every transition, so it holds still there. */
-.update-badge-row-check.is-checking .update-badge-refresh {
-  animation: update-badge-refresh-turn 0.9s linear infinite;
-}
-
-@keyframes update-badge-refresh-turn {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.update-badge-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-  flex: none;
-}
-
-/* Trailing on the install row: the download arrow (or the spinner while the
-   install runs), at the refresh glyph's colour and in its slot. */
-.update-badge-trail {
-  display: flex;
-  margin-left: auto;
-  flex: none;
-  color: var(--fg-muted);
-}
-
-/* The install row is the action itself, so the pointer says so; the fill is
-   the accordion row's old "there is news" tint. */
-.update-badge-row-install:hover .update-badge-trail {
-  color: var(--fg);
-}
-
-/* Still in use, but no longer by the badge: TroubleCard and ClaudeHealthStrip
-   render a copyable command plate off these two classes. */
+/* -- Copyable command plate --------------------------------------------------
+   Formerly shared with the sidebar's self-update badge (deleted,
+   SPEC-update-notifications.md); still rendered by TroubleCard and
+   ClaudeHealthStrip for their own copyable command plates. */
 .update-badge-command {
   display: flex;
   align-items: center;
@@ -1464,21 +1336,3 @@ a.bookmark-name::after {
   }
 }
 
-/* The popover's update row while an install runs: a turning ring in the icon
-   slot, sized to the icon box so the row does not move. Colour split matches
-   the LAN spinner (preferences.css) so every ring in the app is one ring. */
-.update-spinner {
-  display: inline-block;
-  width: 14px;
-  height: 14px;
-  border: 1.5px solid var(--border);
-  border-top-color: var(--fg-muted);
-  border-radius: 50%;
-  animation: update-spin 0.7s linear infinite;
-}
-
-@keyframes update-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}

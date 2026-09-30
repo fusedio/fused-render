@@ -25,6 +25,11 @@
 // (`transient`/`silent`) loses nothing either way; an `attention`/`trail`
 // message stays in the panel for the user to act on later.
 //
+// `notification.dismissible === false` DROPS THE ✕ ENTIRELY (SPEC-update-
+// notifications.md: the restart card, once the app is actually quitting, has
+// nothing left for a "later" to mean) — see `NotificationInput.dismissible`'s
+// own doc comment on `notifications.ts`.
+//
 // `IS_TOP_EMBED` NEVER AUTO-EXPIRES AN ATTENTION CARD (SPEC §4): a tab or
 // bookmark opened standalone is its own top window, with no shell underneath
 // it to retain the message for — the Notifications panel is behind
@@ -75,7 +80,7 @@ export default function MessagePopupCard() {
         role={notification.tone === "error" ? "alert" : "status"}
         navAction={notification.action}
         extraAction={notification.extraAction}
-        onDismiss={{ onClick: () => dismissPopup() }}
+        onDismiss={notification.dismissible ? { onClick: () => dismissPopup() } : undefined}
       />
     </div>
   );

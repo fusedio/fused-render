@@ -247,6 +247,28 @@ def _upload_paths(upload_id: str) -> dict:
 
 
 def _pid_alive(pid: int) -> bool:
+    # os.kill(pid, 0) is the POSIX no-op liveness check, but on Windows signal 0
+    # aliases CTRL_C_EVENT: it does NOT probe the target, it broadcasts a real
+    # Ctrl+C via GenerateConsoleCtrlEvent to the whole console process group —
+    # including, when `pid` is our own (as it legitimately can be: the test
+    # suite's own worker pid, or a recycled pid from a finished upload), this
+    # very process and any sibling it shares a console with. Probe the exit
+    # code via the Win32 API instead of signalling anything.
+    if os.name == "nt":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        handle = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == STILL_ACTIVE
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except OSError:
@@ -378,6 +400,19 @@ def cancel_upload(upload_id: str) -> dict:
         except (OSError, ValueError):
             pid = None
     if pid is not None:
+        if os.name == "nt":
+            # `_spawn_upload`'s POSIX `sh -c ... start_new_session=True` has no
+            # Windows equivalent, but a live pid from a prior POSIX run (or a
+            # test) can still reach here — os.getpgid/os.killpg do not exist on
+            # Windows at all (not just unsupported: the attribute is absent),
+            # so this must not fall through to the POSIX branch below. Mirror
+            # engine_host._kill_tree's Windows path instead.
+            try:
+                os.kill(pid, signal.CTRL_BREAK_EVENT)
+            except (OSError, AttributeError, ValueError):
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                               capture_output=True)
+            return read_upload_state(upload_id)
         try:
             os.killpg(os.getpgid(pid), signal.SIGTERM)
         except OSError:

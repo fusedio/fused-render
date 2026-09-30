@@ -36,6 +36,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from fused_render.ai.registry import (
+    DECISIONS,
     EMBEDDINGS,
     IMAGE_GENERATION,
     SPEECH_TO_TEXT,
@@ -82,10 +83,24 @@ class Task:
     #: Empty for a supported task, and defaulted for an unsupported one whose
     #: reason is simply that nobody has written the runner (see `reason()`).
     note: str = ""
+    #: **The tag alone does not make a repo runnable** (D887). For every other
+    #: supported row the Hub tag IS the promise: a `text-generation` repo is a
+    #: chat model and the text runner opens it. `text-classification` is the
+    #: exception — `laya-mlx` serves it, but the tag is shared with every
+    #: sentiment BERT, cross-encoder and NLI head on the Hub, and none of
+    #: those has the `rl_agent_config.json` layout the runner reads. So a
+    #: search hit on a gated tag is admitted only when something BESIDES the
+    #: tag says it is the runner's format (`hub_models._passes_format_gate`:
+    #: a curated id, or the runner's own family tag); a CACHED card needs no
+    #: gate because `formats.loaders()` has the files in front of it. The
+    #: capability stays on the row so the cached path, the filter menu and
+    #: `capability_for_tag` all still agree.
+    format_gated: bool = False
 
 
-def _t(tag, label, modality, capability=None, help="", note="") -> Task:
-    return Task(tag, label, modality, capability, help, note)
+def _t(tag, label, modality, capability=None, help="", note="",
+       format_gated=False) -> Task:
+    return Task(tag, label, modality, capability, help, note, format_gated)
 
 
 #: Every `pipeline_tag` the Hub serves today, in MENU order: text first, then
@@ -167,8 +182,13 @@ _TASKS: tuple[Task, ...] = (
        "A chat model does this from a prompt — no separate runner ships for it."),
     _t("fill-mask", "fill mask", "nlp", None,
        "Fills in blanked-out words in a sentence. Mostly a building block for other models."),
-    _t("text-classification", "text classification", "nlp", None,
-       "Sorts a piece of text into categories — sentiment, topic, spam."),
+    # `laya-mlx` serves this one (D887) — as TYPED DECISIONS over a state
+    # (choice / score / yes-no probabilities), which is what the Hub files a
+    # Laya checkpoint under. `format_gated` because a sentiment BERT wears
+    # the same tag and nothing here opens one: see `Task.format_gated`.
+    _t("text-classification", "text classification", "nlp", DECISIONS,
+       "Sorts a piece of text into categories — sentiment, topic, spam.",
+       format_gated=True),
     _t("token-classification", "token classification", "nlp", None,
        "Labels each word in a sentence — named entities, parts of speech."),
     _t("question-answering", "question answering", "nlp", None,
@@ -424,6 +444,13 @@ def capability_for_tag(tag: str | None) -> str | None:
     is three different facts.
     """
     return classify(tag).capability
+
+
+def is_format_gated(tag: str | None) -> bool:
+    """Does a SEARCH hit on this tag need format evidence beyond the tag before
+    it may be offered? See `Task.format_gated`. False for an unknown tag: the
+    gate narrows a supported row, it never widens an unsupported one."""
+    return any(task.tag == tag and task.format_gated for task in _TASKS)
 
 
 #: Hub `tags` entries that name a task in this table under a different

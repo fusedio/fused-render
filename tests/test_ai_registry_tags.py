@@ -78,10 +78,12 @@ def test_capability_tags_is_empty_when_neither_applies():
     assert registry.capability_tags("org/plain-model", has_vision=False) == ()
 
 
-def test_the_five_capability_constants_are_unchanged():
-    """The load-bearing dispatch vocabulary item 18 must not touch."""
+def test_the_capability_constants_are_unchanged():
+    """The load-bearing dispatch vocabulary item 18 must not touch — six
+    since D887 added typed decisions."""
     assert registry.TEXT_GENERATION == "text-generation"
     assert registry.IMAGE_GENERATION == "text-to-image"
     assert registry.SPEECH_TO_TEXT == "automatic-speech-recognition"
     assert registry.EMBEDDINGS == "embeddings"
     assert registry.VIDEO_GENERATION == "text-to-video"
+    assert registry.DECISIONS == "text-classification"

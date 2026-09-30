@@ -94,7 +94,8 @@ def client(tmp_path, workspace):
     return TestClient(create_app(start_dir=str(tmp_path)))
 
 
-def _app(workspace, name="demo", *, version=None, readme=True, preview=True):
+def _app(workspace, name="demo", *, version=None, readme=True, preview=True,
+        pyproject=True):
     """An app folder that passes every check by default, so each test can break
     exactly one thing and read the row it broke."""
     d = workspace / "local" / name
@@ -106,6 +107,12 @@ def _app(workspace, name="demo", *, version=None, readme=True, preview=True):
         (d / "README.md").write_text("what this is\n")
     if preview:
         (d / "preview.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 8)
+    if pyproject:
+        (d / "pyproject.toml").write_text(
+            '[project]\nname = "x"\nversion = "0.1.0"\n'
+            'requires-python = ">=3.12"\ndependencies = []\n\n'
+            '[tool.uv]\npackage = false\n'
+        )
     return d
 
 
@@ -200,9 +207,27 @@ def test_a_clean_app_passes_every_check_it_can_answer(workspace):
     # cross-browser row before anyone asked for it), and none of them failed.
     assert {c["state"] for c in report["checks"]} <= {"pass", "fail", "skip", "unrun"}
     assert [c["id"] for c in report["checks"] if c["state"] == "fail"] == []
-    # The two optional files are absent, which is not a finding.
-    assert rows["pyproject"]["state"] == "skip"
+    # pyproject.toml is present (the fixture writes one) and parses.
+    assert rows["pyproject"]["state"] == "pass"
+    # icon is still absent, which is not a finding — it stays optional.
     assert rows["icon"]["state"] == "skip"
+
+
+def test_a_missing_pyproject_fails_its_row_and_the_report(workspace):
+    """pyproject.toml is now required — absent, not just unparseable, is a
+    FAIL, unlike icon (see the contrast test below)."""
+    d = _app(workspace, pyproject=False)
+    report = app_doctor.report(str(d))
+    assert _state(report, "pyproject") == "fail"
+    assert report["ok"] is False
+
+
+def test_a_missing_icon_still_skips_its_row(workspace):
+    """icon still uses `_optional_file_check`; pyproject no longer does (it
+    now fails when absent). Pin that the two rows have deliberately
+    diverged: icon's absence is still SKIP, never FAIL."""
+    d = _app(workspace)
+    assert _state(app_doctor.report(str(d)), "icon") == "skip"
 
 
 def test_no_tagged_page_fails_the_entry_row(workspace):
@@ -664,9 +689,15 @@ def test_pull_is_not_offered_off_the_default_branch_and_the_row_says_why(workspa
     d = _app(workspace)
     repo = workspace / "local"
     remote = workspace.parent / "remote.git"
-    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True,
+    # Both inits pin `-b main` rather than leaving it to the runner's
+    # `init.defaultBranch` — the assertion below names "main" explicitly, and
+    # the remote's resolved default branch comes from ITS OWN initial HEAD
+    # symref, not from whatever branch name happens to get pushed to it. A
+    # runner defaulting to "master" would otherwise mismatch the local repo's
+    # "main" and desync the two, which reads as "no repo" rather than "fail".
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True,
                    capture_output=True, close_fds=False)
-    _git(repo, "init", "-q")
+    _git(repo, "init", "-q", "-b", "main")
     _git(repo, "add", "-A")
     _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "in")
     _git(repo, "remote", "add", "origin", str(remote))
@@ -1290,6 +1321,24 @@ def test_fix_all_makes_one_trailing_commit_not_one_per_row(workspace):
         assert "commit" not in row_block.lower()
     assert "push the branch" not in prompt.lower()
     assert "push it" not in prompt.lower()
+
+
+def test_a_missing_pyproject_produces_a_fix_prompt(workspace):
+    """Unlike `skip` rows, a `fail` row reaches `doctor_prompt` and shows up
+    in `doctor_prompt_all`'s blocks — mirrors how `readme`/`preview` are
+    covered."""
+    d = _app(workspace, pyproject=False)
+    row = _rows(app_doctor.report(str(d)))["pyproject"]
+    assert row["state"] == "fail"
+    prompt = app_doctor.doctor_prompt(str(d / "index.html"), "pyproject",
+                                     row["findings"], row["detail"])
+    assert app_doctor.is_doctor_prompt(prompt)
+    assert app_doctor.doctor_task_check_id(prompt) == "pyproject"
+    assert "pyproject" in prompt
+
+    checks = app_doctor.report(str(d))["checks"]
+    prompt_all = app_doctor.doctor_prompt_all(str(d / "index.html"), checks)
+    assert "`pyproject`" in prompt_all
 
 
 def test_fix_all_with_nothing_failing_asks_for_no_commit(workspace):

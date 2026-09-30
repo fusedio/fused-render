@@ -193,7 +193,7 @@ describe("the two hosts", () => {
     expect(PAGE).toContain("{slot ? createPortal(panel, slot) : null}");
     // …and NEVER a frame of its own while scoped: the slot arrives one commit
     // late, and a frame drawn in that gap would nest inside the app page's.
-    expect(PAGE).toContain("if (scope) {\n    return (\n      <>\n        {page}\n        {slot ? createPortal(panel, slot) : null}");
+    expect(PAGE).toContain("if (scope && !scope.ownFrame) {\n    return (\n      <>\n        {page}\n        {slot ? createPortal(panel, slot) : null}");
     // …and ONE root shape whether or not the slot has arrived: a bare `page`
     // one commit and a fragment the next remounted the tasks tree (Bugbot).
     expect(PAGE).not.toContain("if (!slot) return page;");
@@ -204,7 +204,14 @@ describe("the two hosts", () => {
   it("the app page frames the WHOLE page, only on the Tasks tab, only with the flag", () => {
     expect(APP).toContain('const peekable = peekOn === true && tab === "tasks";');
     // The wrap encloses `.app-page` — header, tab strip and panels alike.
-    expect(APP).toContain('<TaskPeekFrame peekable={peekable}>\n    <div className="app-page">');
+    // Indented deeper again since the git peek rework (2026-09-22):
+    // TaskPeekFrame now nests inside `.app-page-frame-slot`, itself inside
+    // `.app-page-split` — the split that lets the git peek slide in beside
+    // it (AppPageGitPeek.tsx). What this pins is the DIRECT-CHILD
+    // relationship — `.app-page` is TaskPeekFrame's immediate child, not
+    // wrapped in some intermediate element — not the wrapper's absolute
+    // indentation depth, which is free to move as the page nests deeper.
+    expect(APP).toContain('<TaskPeekFrame peekable={peekable}>\n          <div className="app-page">');
   });
 
   it("the app page's tab links never carry `?peek=`: a switch away is a close", () => {

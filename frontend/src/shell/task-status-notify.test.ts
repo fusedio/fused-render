@@ -82,9 +82,9 @@ describe("notificationForTransition", () => {
   // SECOND REVERSAL, 2026-09-17: this branch used to also carry `source`,
   // which let a finished task's POPUP be presence-suppressed. A finished
   // Claude task is never presence-suppressed any more — dropping `source`
-  // means `isPopupSuppressed`/`jobRows` (jobs.ts) has nothing to key off, so
-  // the popup always pops. The `recent: true` flag from the now-removed
-  // "Recent" section is gone too — the row just lands as an ordinary row.
+  // means `jobRows` (jobs.ts) has nothing to key off, so the popup always
+  // pops. The `recent: true` flag from the now-removed "Recent" section is
+  // gone too — the row just lands as an ordinary row.
   test("in_progress -> done is retained, clickable, and never presence-suppressed", () => {
     const t = task({ status: "done", target: "/somewhere" });
     const n = notificationForTransition("in_progress", t, 0);

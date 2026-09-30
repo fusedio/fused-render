@@ -117,6 +117,17 @@
   --tasks-page-gutter: 44px;
 }
 
+/* FRAMED (`/tasks?embed=1`, an app page's iframe; main.tsx stamps body.embed):
+   the host page owns the outer gutter, so this page's own 22px each side would
+   be a second one inside the frame — same move as `.app-page-tasks
+   .schedule-page` (styles/app-page.css). The var is what the peek's arithmetic
+   (`measureTasksBaseline`) reads as the untight gutter; 16px keeps the column
+   estimate a touch conservative so the peek still fits at phone width. */
+body.embed .schedule-page {
+  padding-inline: 0;
+  --tasks-page-gutter: 16px;
+}
+
 .schedule-page > .schedule-header h1 {
   margin: 0;
 }
@@ -2611,36 +2622,6 @@ input.schedule-when-field {
 .deploy-body .schedule-picker-foot .btn-primary {
   border-radius: 999px;
   padding: 0 22px;
-}
-
-/* The ⌘↩ pill inside Save. Drawn in the button's own ink at a lower alpha so
-   it reads as a caption on the verb, not a second control; the right padding
-   is pulled in because the pill already ends the pill. */
-.schedule-save {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding-right: 14px;
-}
-.schedule-save-key {
-  display: inline-flex;
-  align-items: center;
-  /* Glyph, plus, glyph — with air between them (Akshil, screenshot,
-     2026-08-27: "a little bit of space between these two icons and a plus
-     icon"). Set glyph-to-glyph the two read as one unfamiliar ligature. */
-  gap: 3px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  line-height: 1;
-  padding: 3px 6px;
-  border-radius: 5px;
-  background: color-mix(in srgb, currentColor 14%, transparent);
-  color: inherit;
-  opacity: 0.85;
-}
-.schedule-save-key-plus {
-  font-size: 9px;
-  opacity: 0.7;
 }
 
 /* The description hangs from a top-aligned icon (multi-line row), and grows

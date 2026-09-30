@@ -3,7 +3,13 @@
 // the total was zero, a pair of byte counts scaled to two different units, a
 // header counting finished work as running.
 import { expect, test } from "bun:test";
-import {
+// jobs.ts -> api.ts -> presence.ts -> router.ts, and router.ts reads
+// `location` at module scope — bun has no DOM, so the shim has to land
+// before jobs.ts's own module body runs, via a dynamic import exactly like
+// restart-store.test.ts's own (see testDomShim.ts's header).
+import { installDomShim } from "@platform/lib/testDomShim";
+installDomShim();
+const {
   aggregateProgress,
   jobTypeLabel,
   SCHEDULE_JOB_PREFIX,
@@ -19,7 +25,6 @@ import {
   jobAmount,
   jobDetail,
   jobFraction,
-  isPopupSuppressed,
   jobRows,
   jobsAfterClear,
   jobStatusLine,
@@ -31,15 +36,15 @@ import {
   popupTick,
   terminalNotifications,
   trackSeenIds,
-  type Job,
-} from "@platform/lib/jobs";
+} = await import("@platform/lib/jobs");
+type Job = import("@platform/lib/jobs").Job;
 
 function job(over: Partial<Job> = {}): Job {
   // `source` defaults to whatever `page` resolved to (ordinary-producer
   // parity, same as the server's own default) unless a test explicitly
   // overrides it — this is what lets every pre-existing fixture in this file
-  // keep passing unchanged once `isPopupSuppressed`/`familyKey` read `source`
-  // instead of `page`.
+  // keep passing unchanged once `familyKey` reads `source` instead of
+  // `page`.
   const page = over.page ?? "/tmp/index.html";
   return {
     id: "j1",
@@ -613,22 +618,22 @@ test("a job parked on a question says Waiting whatever its title", () => {
 // ------------------------------------------------------------------ popups
 //
 // The floating pop-up card (SPEC actionable-notifications, "the latest
-// notification always pops up"): `tier` governs RETENTION for
-// `attention`/`trail`/`transient` only (whether a row survives in the
-// panel), never whether a terminal job is shown at all, so `popupJobs`
-// reads none of that for those three — a `transient` job pops exactly like
-// an `attention`/`trail` one. `silent` is the one tier that also suppresses
-// the pop itself on a clean finish (a resident model load/unload: the
-// running row already said as much, so "done" is not news) — see the
-// dedicated tests below for the gate on stored `tier` + `state === "done"`.
+// notification always pops up"). As of 2026-09-23 (D888), a successful
+// `done` job never pops at all, regardless of `tier` — the Activity chip's
+// own progress indicator already told the user work was happening, so a
+// success card is redundant chatter. Only `error`/`cancelled` (promoted to
+// `effectiveTier === "attention"`) pop, and `tier` plays no role in that
+// decision either — an `error`/`cancelled` job pops even when its stored
+// tier is `silent` (see the dedicated test below).
 
-test("popupJobs pops every terminal job regardless of tier, transient included", () => {
+test("popupJobs excludes every successful done job regardless of tier, transient included", () => {
   const jobs = [
     job({ id: "a", state: "done", tier: "transient" }),
     job({ id: "b", state: "done", tier: "trail" }),
-    job({ id: "c", state: "running", tier: "attention" }),
+    job({ id: "c", state: "error", tier: "attention" }),
+    job({ id: "d", state: "running", tier: "attention" }),
   ];
-  expect(popupJobs(jobs).map((j) => j.id)).toEqual(["a", "b"]);
+  expect(popupJobs(jobs).map((j) => j.id)).toEqual(["c"]);
 });
 
 test("popupJobs pops nothing for a silent job that finishes done", () => {
@@ -666,9 +671,12 @@ test("popupJobs hides the underlying job a running waiter merges over it (merged
 // very first read after a page load or refresh sees every already-terminal
 // job at once. `popupTick` must seed its `seen` set from that first read
 // without popping any of it — the frontend twin of `_seen_running`
-// (fused_render/server/routers/index.py).
+// (fused_render/server/routers/index.py). Uses `error` rather than `done`
+// as its terminal state throughout, since a successful `done` job never
+// pops at all any more (D888) — these tests exercise the dedup/seeding
+// mechanics, which apply identically to error/cancelled jobs.
 test("popupTick seeds the first tick's already-terminal jobs with no popup", () => {
-  const jobs = [job({ id: "a", state: "done", finished_at: 100 })];
+  const jobs = [job({ id: "a", state: "error", finished_at: 100 })];
   const { seen, popped } = popupTick(jobs, new Set(), true);
   expect(popped).toBe(null);
   // A second call with the exact same snapshot must still not pop — proof
@@ -678,14 +686,14 @@ test("popupTick seeds the first tick's already-terminal jobs with no popup", () 
 
 test("popupTick pops a job that crosses into terminal on a later tick", () => {
   const first = popupTick([job({ id: "a", state: "running" })], new Set(), true);
-  const second = popupTick([job({ id: "a", state: "done" })], first.seen, false);
+  const second = popupTick([job({ id: "a", state: "error" })], first.seen, false);
   expect(second.popped?.id).toBe("a");
 });
 
 test("popupTick does not re-pop an id it has already popped", () => {
-  const first = popupTick([job({ id: "a", state: "done" })], new Set(), false);
+  const first = popupTick([job({ id: "a", state: "error" })], new Set(), false);
   expect(first.popped?.id).toBe("a");
-  const second = popupTick([job({ id: "a", state: "done" })], first.seen, false);
+  const second = popupTick([job({ id: "a", state: "error" })], first.seen, false);
   expect(second.popped).toBe(null);
 });
 
@@ -698,8 +706,8 @@ test("popupTick pops only the latest of several jobs turning terminal in the sam
   );
   const { popped } = popupTick(
     [
-      job({ id: "a", state: "done", finished_at: 100 }),
-      job({ id: "b", state: "done", finished_at: 200 }),
+      job({ id: "a", state: "error", finished_at: 100 }),
+      job({ id: "b", state: "error", finished_at: 200 }),
     ],
     running.seen,
     false,
@@ -721,8 +729,8 @@ test("popupTick picks the job with the newest finished_at, not the array's tail"
   );
   const { popped } = popupTick(
     [
-      job({ id: "render", state: "done", finished_at: 200 }),
-      job({ id: "load", state: "done", finished_at: 100 }),
+      job({ id: "render", state: "error", finished_at: 200 }),
+      job({ id: "load", state: "error", finished_at: 100 }),
     ],
     running.seen,
     false,
@@ -732,14 +740,14 @@ test("popupTick picks the job with the newest finished_at, not the array's tail"
 
 // `job_id_for(model)` (fused_render/ai/supervisor.py) mints one id shared by
 // a resident model's load, its weights-only download and its unload — so
-// the SAME id can go terminal twice in a card's lifetime (a completed load,
-// later followed by an unload finishing on that identical id). Each of
-// those is its own notification and must pop on its own, so "have I popped
-// this?" cannot be keyed on the bare id alone.
+// the SAME id can go terminal twice in a card's lifetime (an errored load,
+// later followed by an errored unload finishing on that identical id). Each
+// of those is its own notification and must pop on its own, so "have I
+// popped this?" cannot be keyed on the bare id alone.
 test("popupTick pops a second terminal event that lands on an id already popped once", () => {
   const loading = popupTick([job({ id: "m", state: "running" })], new Set(), true);
   const loaded = popupTick(
-    [job({ id: "m", state: "done", finished_at: 100 })],
+    [job({ id: "m", state: "error", finished_at: 100 })],
     loading.seen,
     false,
   );
@@ -749,7 +757,7 @@ test("popupTick pops a second terminal event that lands on an id already popped 
   // leaving the candidate set null in between (a resident model's row stays
   // present, just no longer terminal, while it's loaded).
   const unloaded = popupTick(
-    [job({ id: "m", state: "done", finished_at: 200 })],
+    [job({ id: "m", state: "error", finished_at: 200 })],
     loaded.seen,
     false,
   );
@@ -773,71 +781,16 @@ test("aggregate progress: nothing running draws no line, no totals sweep, else t
 // SPEC-quiet-notifications.md §2b / D-A, reversed 2026-09-17 for the ROW (the
 // "Recent" section is gone — see DECISIONS-quiet-notifications.md): a
 // successful terminal job whose own page the user is already looking at no
-// longer loses its seat in Notifications. What survives is only the POPUP
-// suppression `isPopupSuppressed` was originally built for.
+// longer loses its seat in Notifications. Presence-based popup suppression
+// (formerly `isPopupSuppressed`) was itself removed 2026-09-23 (D888): a
+// clean finish never pops a card any more, regardless of presence, so
+// `jobRows` below is exercised only for its ROW behavior (still unaffected
+// by presence) and its now-inert `isOpenAnywhere` parameter.
 
 const openHere = (page: string) => (source: string) => source === page;
 const openNowhere = () => false;
 
-test("isPopupSuppressed: a done, non-attention job whose page is open anywhere is popup-suppressed", () => {
-  const j = job({ state: "done", tier: "trail", page: "/ai-models/local" });
-  expect(isPopupSuppressed(j, openHere("/ai-models/local"))).toBe(true);
-});
-
-test("isPopupSuppressed: false when nothing has that page open", () => {
-  const j = job({ state: "done", tier: "trail", page: "/ai-models/local" });
-  expect(isPopupSuppressed(j, openNowhere)).toBe(false);
-});
-
-test("isPopupSuppressed: an error is never popup-suppressed even if its page is open (effectiveTier promotes to attention)", () => {
-  const j = job({ state: "error", tier: "trail", page: "/ai-models/local" });
-  expect(isPopupSuppressed(j, openHere("/ai-models/local"))).toBe(false);
-});
-
-test("isPopupSuppressed: a cancelled job is never popup-suppressed for the same reason", () => {
-  const j = job({ state: "cancelled", tier: "trail", page: "/ai-models/local" });
-  expect(isPopupSuppressed(j, openHere("/ai-models/local"))).toBe(false);
-});
-
-test("isPopupSuppressed: an explicit tier: attention job is never popup-suppressed", () => {
-  const j = job({ state: "done", tier: "attention", page: "/ai-models/local" });
-  expect(isPopupSuppressed(j, openHere("/ai-models/local"))).toBe(false);
-});
-
-test("isPopupSuppressed: a running job is never popup-suppressed regardless of presence", () => {
-  const j = job({ state: "running", tier: "trail", page: "/ai-models/local" });
-  expect(isPopupSuppressed(j, openHere("/ai-models/local"))).toBe(false);
-});
-
-// Bug 1 (SPEC-quiet-notifications.md): a server-backed render's `page` is
-// overloaded to the OUTPUT IMAGE PATH once no caller page survives — a
-// pre-existing, deliberate fallback in `_start_render` that must keep
-// working so a click still opens the file. `source` is the separate field
-// that carries the RAISING route instead, and `isPopupSuppressed` must read
-// it, not `page`, or a server-backed render's popup can never be suppressed
-// at all.
-test("isPopupSuppressed: a render whose page is an output path IS suppressed via its distinct source", () => {
-  const j = job({
-    state: "done",
-    tier: "trail",
-    page: "/tmp/outputs/render.png",
-    source: "/ai-models/playground",
-  });
-  expect(isPopupSuppressed(j, openHere("/ai-models/playground"))).toBe(true);
-});
-
-test("isPopupSuppressed: the same render job is NOT suppressed when source is empty (unknown source degrades to notify)", () => {
-  const j = job({
-    state: "done",
-    tier: "trail",
-    page: "/tmp/outputs/render.png",
-    source: "",
-  });
-  expect(isPopupSuppressed(j, openHere("/ai-models/playground"))).toBe(false);
-  expect(isPopupSuppressed(j, openNowhere)).toBe(false);
-});
-
-test("jobRows: a popup-suppressed success still shows as an ordinary row (no more Recent section to drop into)", () => {
+test("jobRows: a done job still shows as an ordinary row (no more Recent section to drop into)", () => {
   const jobs = [job({ state: "done", tier: "trail", page: "/ai-models/local" })];
   expect(jobRows(jobs, openHere("/ai-models/local")).map((j) => j.id)).toEqual(jobs.map((j) => j.id));
 });
@@ -857,51 +810,11 @@ test("jobRows: omitting isOpenAnywhere entirely preserves today's behavior (no s
   expect(jobRows(jobs)).toEqual(jobs);
 });
 
-test("popupJobs: a suppressed success does not pop when its page is open", () => {
-  const jobs = [job({ state: "done", tier: "trail", page: "/ai-models/local", finished_at: 5000 })];
-  expect(popupJobs(jobs, openHere("/ai-models/local"))).toEqual([]);
-});
-
-test("popupJobs: the same job still pops when nothing has its page open", () => {
-  const jobs = [job({ state: "done", tier: "trail", page: "/ai-models/local", finished_at: 5000 })];
-  expect(popupJobs(jobs, openNowhere).map((j) => j.id)).toEqual(["j1"]);
-});
-
-test("popupTick: a suppressed success raises no popup even on its first genuinely-new tick", () => {
-  const jobs = [job({ state: "done", tier: "trail", page: "/ai-models/local", finished_at: 5000 })];
-  const { popped } = popupTick(jobs, new Set(), false, openHere("/ai-models/local"));
-  expect(popped).toBeNull();
-});
-
-test("popupTick (finding 2): a suppressed success's key is recorded even though it never pops", () => {
-  // Before the fix, popupTick built its candidate list from
-  // `popupJobs(jobs, isOpenAnywhere)` directly -- a suppressed job never
-  // appeared in that filtered list, so its key never made it into `seen`.
-  const jobs = [job({ state: "done", tier: "trail", page: "/ai-models/local", finished_at: 5000 })];
-  const { seen, popped } = popupTick(jobs, new Set(), false, openHere("/ai-models/local"));
-  expect(popped).toBeNull();
-  expect(seen.size).toBe(1);
-});
-
-test("popupTick (finding 2): navigating away after a suppressed success does not pop it stale", () => {
-  // The regression this finding describes: a job pops nothing while its page
-  // is open (suppressed). The user then navigates away, so `isOpenAnywhere`
-  // now returns false for that page. Without the fix, the job's key was
-  // never in `seen` from the first tick, so this second tick treated it as
-  // brand new and popped a stale card for a job the user never watched
-  // finish live.
-  const jobs = [job({ state: "done", tier: "trail", page: "/ai-models/local", finished_at: 5000 })];
-  const tick1 = popupTick(jobs, new Set(), false, openHere("/ai-models/local"));
-  expect(tick1.popped).toBeNull();
-  const tick2 = popupTick(jobs, tick1.seen, false, openNowhere);
-  expect(tick2.popped).toBeNull();
-});
-
-test("popupTick: an error on the same open page still pops — an error is never suppressed", () => {
-  const jobs = [job({ state: "error", tier: "trail", page: "/ai-models/local", finished_at: 5000 })];
-  const { popped } = popupTick(jobs, new Set(), false, openHere("/ai-models/local"));
-  expect(popped?.id).toBe("j1");
-});
+// `popupJobs`/`popupTick` no longer take an `isOpenAnywhere` predicate at all
+// (2026-09-23, D888): a successful `done` job never pops regardless of
+// presence, and an `error`/`cancelled` job was never presence-suppressed to
+// begin with — so there is no presence-gated popup behavior left for these
+// two functions to exercise.
 
 // --------------------------------------------------------------- §3 grouping
 // SPEC-quiet-notifications.md §3: rows are keyed by `(page, group)`, not by
@@ -1125,7 +1038,7 @@ test("jobRows: two UNRELATED single-member jobs are never folded into each other
 
 test("popupJobs excludes a multi-member group's own members entirely — their popping is groupPopupTick's job now", () => {
   const jobs = [
-    job({ id: "sys:g:a", state: "done", group: "sys:g", finished_at: 1000 }),
+    job({ id: "sys:g:a", state: "error", group: "sys:g", finished_at: 1000 }),
     job({ id: "sys:g:b", state: "running", group: "sys:g" }),
   ];
   expect(popupJobs(jobs).map((j) => j.id)).toEqual([]);
@@ -1133,153 +1046,11 @@ test("popupJobs excludes a multi-member group's own members entirely — their p
 
 test("popupJobs still pops a SINGLE-member job's own terminal event unchanged, even sharing a page with an unrelated group", () => {
   const jobs = [
-    job({ id: "lone", state: "done", finished_at: 1000, page: "/p" }),
-    job({ id: "sys:g:a", state: "done", group: "sys:g", page: "/p", finished_at: 2000 }),
+    job({ id: "lone", state: "error", finished_at: 1000, page: "/p" }),
+    job({ id: "sys:g:a", state: "error", group: "sys:g", page: "/p", finished_at: 2000 }),
     job({ id: "sys:g:b", state: "running", group: "sys:g", page: "/p" }),
   ];
   expect(popupJobs(jobs).map((j) => j.id)).toEqual(["lone"]);
-});
-
-test("groupPopupTick: a group's first running member pops a START, once — not on the seeding first tick", () => {
-  const jobs = [
-    job({ id: "sys:g:a", state: "running", group: "sys:g", started_at: 500 }),
-    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 400 }),
-  ];
-  const first = groupPopupTick(jobs, EMPTY_GROUP_POPUP_STATE, true);
-  expect(first.popped).toBeNull();
-  const second = groupPopupTick(jobs, first.state, false);
-  expect(second.popped).toBeNull(); // already running last tick too — no NEW start
-});
-
-test("groupPopupTick: a group crossing from 0 running to some pops a START on that tick", () => {
-  const idle: Job[] = [job({ id: "sys:g:a", state: "done", group: "sys:g", finished_at: 100 })];
-  const started: Job[] = [
-    job({ id: "sys:g:a", state: "done", group: "sys:g", finished_at: 100 }),
-    job({ id: "sys:g:b", state: "running", group: "sys:g", started_at: 700 }),
-  ];
-  const t0 = groupPopupTick(idle, EMPTY_GROUP_POPUP_STATE, true);
-  const t1 = groupPopupTick(started, t0.state, false);
-  expect(t1.popped?.id).toBe("sys:g:b");
-});
-
-test("groupPopupTick: a serialized handoff (members running one at a time within GROUP_GAP_MS) pops START exactly once", () => {
-  // Regression for the predicate that asked "were the CURRENTLY running
-  // members unseen" instead of "was ANY member of the group running last
-  // tick" — a serialized burst has a different, newly-running member on
-  // every tick, so the wrong predicate popped a duplicate START on every
-  // handoff instead of once for the whole group.
-  //
-  // "waiting" here stands in for "queued, not yet started" — a1/a2 are both
-  // already known members of the group before either one runs, the same
-  // shape a real batch of queued downloads would have.
-  const seed: Job[] = [
-    job({ id: "sys:g:a1", state: "waiting", group: "sys:g" }),
-    job({ id: "sys:g:a2", state: "waiting", group: "sys:g" }),
-  ];
-  // Tick 1: a1 starts running — the group's first running member.
-  const tick1: Job[] = [
-    job({ id: "sys:g:a1", state: "running", group: "sys:g", started_at: 100 }),
-    job({ id: "sys:g:a2", state: "waiting", group: "sys:g" }),
-  ];
-  // Tick 2: a1 finishes, a2 takes over — a handoff, not a new group.
-  const tick2: Job[] = [
-    job({ id: "sys:g:a1", state: "done", group: "sys:g", started_at: 100, finished_at: 200 }),
-    job({ id: "sys:g:a2", state: "running", group: "sys:g", started_at: 300 }),
-  ];
-  // Tick 3: a2 finishes, a3 (a brand-new member) takes over — still just a
-  // handoff within the same running group.
-  const tick3: Job[] = [
-    job({ id: "sys:g:a1", state: "done", group: "sys:g", started_at: 100, finished_at: 200 }),
-    job({ id: "sys:g:a2", state: "done", group: "sys:g", started_at: 300, finished_at: 400 }),
-    job({ id: "sys:g:a3", state: "running", group: "sys:g", started_at: 500 }),
-  ];
-
-  const t0 = groupPopupTick(seed, EMPTY_GROUP_POPUP_STATE, true);
-  expect(t0.popped).toBeNull(); // seeded on the first tick, same as popupTick's own backlog rule
-
-  const t1 = groupPopupTick(tick1, t0.state, false);
-  expect(t1.popped?.id).toBe("sys:g:a1"); // 0 running -> some running: a genuine START
-
-  const t2 = groupPopupTick(tick2, t1.state, false);
-  expect(t2.popped).toBeNull(); // a2 taking over from a1 is a handoff, not a new START
-
-  const t3 = groupPopupTick(tick3, t2.state, false);
-  expect(t3.popped).toBeNull(); // a3 taking over from a2 is likewise not a new START
-});
-
-test("groupPopupTick: a member finishing before the next one starts does not re-pop START (bug 2, live report: 2 popups for 2 image gens)", () => {
-  // The gap `wasRunning` alone cannot see: a1 runs and finishes while a2 is
-  // merely queued ("waiting", not yet running) — an intermediate tick
-  // observes the group with ZERO running members while it is still a
-  // multi-member group. Because `GroupPopupState.runningMemberIds` is
-  // rebuilt each tick from ONLY the members running THAT tick (see its own
-  // doc), an all-idle-but-still-multi tick forgets a1 was ever running —
-  // `wasRunning` reads false the instant a2 actually starts, even though
-  // this is the SAME burst. `lastStartPopAt` is the backstop: it is
-  // explicitly carried forward through an idle tick (unlike
-  // `runningMemberIds`), so the gate still recognizes "this family already
-  // popped a START recently" and suppresses the spurious second pop.
-  const t1: Job[] = [
-    job({ id: "sys:g:a1", state: "running", group: "sys:g", started_at: 100 }),
-    job({ id: "sys:g:a2", state: "waiting", group: "sys:g" }),
-  ];
-  // Idle tick: a1 just finished, a2 hasn't started yet — 0 running members,
-  // still a 2-member group.
-  const t2: Job[] = [
-    job({ id: "sys:g:a1", state: "done", group: "sys:g", started_at: 100, finished_at: 200 }),
-    job({ id: "sys:g:a2", state: "waiting", group: "sys:g" }),
-  ];
-  // a2 finally starts, 67s (well inside GROUP_GAP_MS) after a1's own start.
-  const t3: Job[] = [
-    job({ id: "sys:g:a1", state: "done", group: "sys:g", started_at: 100, finished_at: 200 }),
-    job({ id: "sys:g:a2", state: "running", group: "sys:g", started_at: 67_100 }),
-  ];
-
-  const r1 = groupPopupTick(t1, EMPTY_GROUP_POPUP_STATE, false);
-  expect(r1.popped?.id).toBe("sys:g:a1"); // genuine first START for this family
-
-  const r2 = groupPopupTick(t2, r1.state, false);
-  expect(r2.popped).toBeNull(); // ordinary completion of one member, nothing to pop
-
-  const r3 = groupPopupTick(t3, r2.state, false);
-  expect(r3.popped).toBeNull(); // same burst — must NOT re-pop START
-});
-
-test("groupPopupTick: a genuinely new burst, more than GROUP_GAP_MS after the family's last START pop, still pops", () => {
-  const t1: Job[] = [
-    job({ id: "sys:g:a1", state: "running", group: "sys:g", started_at: 100 }),
-    job({ id: "sys:g:a2", state: "waiting", group: "sys:g", started_at: 1_000 }),
-  ];
-  const t2: Job[] = [
-    job({ id: "sys:g:a1", state: "done", group: "sys:g", started_at: 100, finished_at: 200 }),
-    job({ id: "sys:g:a2", state: "waiting", group: "sys:g", started_at: 1_000 }),
-  ];
-  // A brand-new pair, far enough past a1/a2's own activity that
-  // `clusterFamily` itself puts them in a NEW cluster (this is the
-  // "genuinely new burst is, by construction, more than GROUP_GAP_MS past
-  // the old one" guarantee the fix's doc comment relies on) — so this must
-  // pop regardless of the gate.
-  const t3: Job[] = [
-    job({
-      id: "sys:g:b1",
-      state: "running",
-      group: "sys:g",
-      started_at: 1_000 + GROUP_GAP_MS + 10_000,
-    }),
-    job({
-      id: "sys:g:b2",
-      state: "waiting",
-      group: "sys:g",
-      started_at: 1_000 + GROUP_GAP_MS + 10_000,
-    }),
-  ];
-
-  const r1 = groupPopupTick(t1, EMPTY_GROUP_POPUP_STATE, false);
-  expect(r1.popped?.id).toBe("sys:g:a1");
-  const r2 = groupPopupTick(t2, r1.state, false);
-  expect(r2.popped).toBeNull();
-  const r3 = groupPopupTick(t3, r2.state, false);
-  expect(r3.popped?.id).toBe("sys:g:b1");
 });
 
 test("groupPopupTick: ordinary member completion pops nothing (no start, no failure)", () => {
@@ -1349,97 +1120,12 @@ test("groupPopupTick: a failure already popped is not popped again while it stay
   expect(t1.popped).toBeNull();
 });
 
-test("groupPopupTick: latest wins when a start and a failure both land in the same tick, across different groups", () => {
-  const before: Job[] = [
-    job({ id: "sys:g1:a", state: "done", group: "sys:g1", finished_at: 100 }),
-    job({ id: "sys:g2:a", state: "running", group: "sys:g2", started_at: 100 }),
-  ];
-  const after: Job[] = [
-    job({ id: "sys:g1:a", state: "done", group: "sys:g1", finished_at: 100 }),
-    job({ id: "sys:g1:b", state: "running", group: "sys:g1", started_at: 5000 }), // START at 5000
-    job({ id: "sys:g2:a", state: "error", group: "sys:g2", started_at: 100, finished_at: 2000 }), // FAILURE at 2000
-  ];
-  const t0 = groupPopupTick(before, EMPTY_GROUP_POPUP_STATE, true);
-  const t1 = groupPopupTick(after, t0.state, false);
-  expect(t1.popped?.id).toBe("sys:g1:b"); // 5000 > 2000
-});
-
 test("groupPopupTick: single-member groups are ignored entirely — never a candidate here", () => {
   const jobs = [job({ id: "lone", state: "running", started_at: 100 })];
   const t0 = groupPopupTick(jobs, EMPTY_GROUP_POPUP_STATE, true);
   const t1 = groupPopupTick(jobs, t0.state, false);
   expect(t0.popped).toBeNull();
   expect(t1.popped).toBeNull();
-});
-
-// ------------------------- key-churn must never re-trigger a START ---------
-// Finding (code review 2026-09-16): `clusterFamily` numbers clusters 0,1,2...
-// purely by position in the CURRENT snapshot, and the old `runningGroups`
-// tracked cluster-scoped KEYS (which bake that ordinal in). Losing an older
-// cluster from the snapshot (Clear all, dismissal) or a late report landing
-// out of `started_at` order can renumber a still-running cluster's ordinal
-// out from under it, so a key-keyed `runningGroups` would forget it was
-// already running and pop a duplicate START. Tracking RUNNING MEMBER IDS
-// instead of group keys makes both cases inert.
-
-test("groupPopupTick: removing an older, fully-terminal cluster from the snapshot does not re-pop the surviving running cluster", () => {
-  const oldCluster = job({
-    id: "sys:g:old",
-    group: "sys:g",
-    state: "done",
-    started_at: 100,
-    finished_at: 200,
-  });
-  // The surviving cluster needs 2+ members itself to be a tracked
-  // multi-member group at all (a single-member cluster never reaches
-  // `groupPopupTick`'s START logic).
-  const b1 = job({
-    id: "sys:g:b1",
-    group: "sys:g",
-    state: "running",
-    // Comfortably more than GROUP_GAP_MS past the old cluster's activity —
-    // its own cluster, per `clusterFamily`.
-    started_at: 200 + GROUP_GAP_MS + 10_000,
-  });
-  const b2 = job({
-    id: "sys:g:b2",
-    group: "sys:g",
-    state: "running",
-    started_at: 200 + GROUP_GAP_MS + 10_100,
-  });
-
-  const t0 = groupPopupTick([oldCluster, b1, b2], EMPTY_GROUP_POPUP_STATE, true);
-  const t1 = groupPopupTick([oldCluster, b1, b2], t0.state, false);
-  expect(t1.popped).toBeNull(); // already running last tick — no NEW start
-
-  // "Clear all" (or a sweep) drops the old, fully-terminal cluster from the
-  // snapshot entirely. `clusterFamily` now renumbers the surviving cluster
-  // from index 1 to index 0 — a key-keyed tracker would read this as a
-  // brand-new group and pop a duplicate START for work already announced.
-  const t2 = groupPopupTick([b1, b2], t1.state, false);
-  expect(t2.popped).toBeNull();
-});
-
-test("groupPopupTick: a late-arriving report that splits an earlier cluster does not re-pop the already-seen running members", () => {
-  const c1 = job({ id: "sys:g:c1", group: "sys:g", state: "running", started_at: 200_000 });
-  const c2 = job({ id: "sys:g:c2", group: "sys:g", state: "running", started_at: 200_100 });
-
-  const t0 = groupPopupTick([c1, c2], EMPTY_GROUP_POPUP_STATE, true);
-  const t1 = groupPopupTick([c1, c2], t0.state, false);
-  expect(t1.popped).toBeNull(); // already running last tick — no NEW start
-
-  // A late report arrives whose `started_at` predates everything seen so
-  // far by more than GROUP_GAP_MS — it splits what was cluster 0 ({c1, c2})
-  // into two clusters, shifting {c1, c2} from ordinal 0 to ordinal 1.
-  const lateReport = job({
-    id: "sys:g:late",
-    group: "sys:g",
-    state: "done",
-    started_at: 1_000,
-    finished_at: 50_000,
-  });
-  const t2 = groupPopupTick([c1, c2, lateReport], t1.state, false);
-  expect(t2.popped).toBeNull();
 });
 
 // -------------------------------------------------- finding 8: shrink-to-1
@@ -1481,7 +1167,7 @@ test("popupTick: a group failure already popped by groupPopupTick does not re-po
   expect(g1.popped?.id).toBe("sys:g:a");
   // While the group still has two members, popupJobs excludes "a" entirely
   // — popupTick has never seen its key.
-  const p0 = popupTick(oneFailed, new Set(), false, undefined, g1.state.failedSeen);
+  const p0 = popupTick(oneFailed, new Set(), false, g1.state.failedSeen);
   expect(p0.popped).toBeNull();
   expect(p0.seen.has("sys:g:a:900")).toBe(false);
 
@@ -1491,7 +1177,7 @@ test("popupTick: a group failure already popped by groupPopupTick does not re-po
   // key is absent from `seen`) and pop it again.
   const shrunk: Job[] = [job({ id: "sys:g:a", state: "error", group: "sys:g", started_at: 100, finished_at: 900 })];
   const g2 = groupPopupTick(shrunk, g1.state, false);
-  const p1 = popupTick(shrunk, p0.seen, false, undefined, g2.state.failedSeen);
+  const p1 = popupTick(shrunk, p0.seen, false, g2.state.failedSeen);
   expect(p1.popped).toBeNull();
   // It is now recorded, so any later tick behaves normally too.
   expect(p1.seen.has("sys:g:a:900")).toBe(true);

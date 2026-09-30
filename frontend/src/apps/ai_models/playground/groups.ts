@@ -31,9 +31,10 @@ export type PlaygroundGroup = {
 // with the room, so the leading entries are edited together — text generation
 // leads (D807), matching the AI Models two-pane mockup's reading order.
 //
-// The TAIL deliberately does not match: this array's last two are swapped
-// against that one's, because only here does the order decide what gets
-// DROPPED (see the two notes below).
+// The TAIL deliberately does not match `CAPABILITY_ORDER`: only here does the
+// order decide what a narrow window DROPS (Home renders `slice(0, shown)`), so
+// the last three are arranged by how much a first visit loses without them,
+// not by that list's grouping (see the three notes below).
 export const PLAYGROUND_GROUPS: PlaygroundGroup[] = [
   {
     capability: "text-generation",
@@ -50,7 +51,7 @@ export const PLAYGROUND_GROUPS: PlaygroundGroup[] = [
     label: capabilityLabel("automatic-speech-recognition"),
     blurb: "Turn speech into written words.",
   },
-  // Second to last: Apple Silicon only, with no fallback anywhere else — the
+  // Third from last: Apple Silicon only, with no fallback anywhere else — the
   // one card here that can be genuinely unusable on the machine looking at
   // it, which is a reason to let a narrow window drop it before the three
   // above, not a reason to hide it outright (the tab itself explains why).
@@ -59,11 +60,18 @@ export const PLAYGROUND_GROUPS: PlaygroundGroup[] = [
     label: capabilityLabel("text-to-video"),
     blurb: "Turn a description into a short video with sound.",
   },
-  // Last on purpose: Home renders `slice(0, shown)`, so the array's tail is
-  // what a narrow window drops — and this is the card chosen to go first.
+  // Second to last: a building block more than a destination.
   {
     capability: "embeddings",
     label: capabilityLabel("embeddings"),
     blurb: "Find text that matches by meaning, not wording.",
+  },
+  // Last on purpose — the first card a narrow window drops. Decisions is the
+  // least familiar task here (the onboarding Models step skips it for the
+  // same reason, `modelPicks.ts`), and it is Apple Silicon only like video.
+  {
+    capability: "text-classification",
+    label: capabilityLabel("text-classification"),
+    blurb: "Ask typed questions about a text and get probabilities back.",
   },
 ];

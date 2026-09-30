@@ -64,6 +64,15 @@ export interface UserTurn {
    * when the session is reopened.
    */
   attachments?: Receipt[];
+  /**
+   * THIS PAGE HAS NOT HANDED THE LINE TO THE RUN YET (the page outbox,
+   * `ui/outbox.ts`). `"queued"` — typed while a send was in flight, waiting
+   * its turn; `"notSent"` — handed back (a failed send, an interrupt) and
+   * waiting for the reader to decide. Drawn as a small grey tag on the bubble,
+   * the way Claude Code's terminal greys a queued line. Comes off when the real
+   * send adopts the row (`addUser` rebuilds the turn without it).
+   */
+  pending?: "queued" | "notSent";
 }
 
 export interface AssistantTurn {
@@ -360,6 +369,28 @@ export interface SendOptions {
    * mint one.
    */
   queueClaim?: string;
+  /**
+   * A FOLLOW-UP THAT MAY OPEN A FRESH TURN INSTEAD. `sendFollowUp` waits a
+   * bounded moment for a live run and, finding none, hands the words back with
+   * "no run to attach this message to". A line the page PARKED behind a send
+   * (`ui/outbox.ts`) is different: it was typed to be said whatever the run
+   * does, and the run it was parked behind may well have ended in the seconds
+   * before the drain reached it. With this set, that road falls through to
+   * `sendMessage` — same words, same bubble — rather than giving up.
+   */
+  orStart?: boolean;
+}
+
+/** One follow-up a stop handed back (`ChatControllerDeps.onStranded`). */
+export interface StrandedLine {
+  text: string;
+  /** The page's own id for the send (`SendOptions.sendId`), when it gave one. */
+  sendId?: string;
+  /** This send's `returnSend` already fired for THIS stop — its pictures went
+   *  back through `onSendReturned` in the same tick. The words still come
+   *  through here (a page that keys rows by `sendId` may already have posted
+   *  one for it, and skips). */
+  returned?: boolean;
 }
 
 /**
@@ -425,9 +456,12 @@ export interface ChatController {
    * bubble adopt this row instead of adding a second. Empty text posts nothing
    * and answers "".
    */
-  postOptimisticUser(text: string): string;
+  postOptimisticUser(text: string, pending?: UserTurn["pending"]): string;
   /** Drop an optimistic bubble whose send never reached `sendMessage` at all. */
   dropOptimisticUser(key: string): void;
+  /** Re-tag an optimistic bubble (queued → not sent, or clear the tag) without
+   *  moving it. No-op for a key that is not a user row. */
+  setOptimisticPending(key: string, pending: UserTurn["pending"] | undefined): void;
   /** Queue/send a follow-up into the live run (T:16024). `opts` ADDED: notes
    *  and pictures fold into a follow-up exactly as into a fresh turn. */
   sendFollowUp(text: string, opts?: SendOptions): Promise<void>;
@@ -629,8 +663,12 @@ export interface ControllerDeps {
    */
   hasPane?: () => boolean | null;
   /** ADDED: follow-ups the CLI never delivered, handed back to the composer on
-   *  a stop (`still_queued`, T:15911). */
-  onStranded?: (texts: string[]) => void;
+   *  a stop (`still_queued`, T:15911). Each line names its send when the page
+   *  gave it one (`SendOptions.sendId`), so the page can tell a line it
+   *  already took back through `onSendReturned` from one it has not — by id,
+   *  never by text (Bugbot round 3, PR #1323). A line the CLI named that this
+   *  page has no entry for carries no id. */
+  onStranded?: (lines: StrandedLine[]) => void;
   /** ADDED: every 8th poll (~3.2 s) and once at the run's end — where PR4 hangs
    *  its artifacts read (T:16229, 16330). */
   onArtifactsTick?: () => void;

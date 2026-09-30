@@ -2187,12 +2187,10 @@ button.tasks-caret,
   color: var(--status-queued);
 }
 
-/* ---- "and that one was stopped" --------------------------------------------
-   A run the user stopped settles in Done — the stop was asked for, so it is an
-   outcome and not a fault — and the lane's ring is then the same green ring a
-   completed run wears. This is the word that closes that gap
-   (tasks-lib.outcomeTag), beside the task id on both the List row and the Board
-   card.
+/* ---- the page's one pill --------------------------------------------------
+   Born as the "Stopped" mark beside the task id (retired 2026-09-24 — the
+   row's own "Interrupted by you" reply line says it now); today worn by the
+   Draft chip (ScheduleTaskViews.DraftChip). The shape and its reasons stay.
 
    THE ONLY PILL ON THIS PAGE, and the reason is the failure that produced it.
    It shipped as bare 11px muted text in the card's foot, in the same register as

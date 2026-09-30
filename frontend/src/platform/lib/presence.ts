@@ -348,8 +348,8 @@ export function snapshotIsOpenAnywhere(env: PresenceEnv = {}): (source: string) 
  * F9 (code review of F8's "already open" popup gate, `task-status-notify.ts`).
  * `matchesSource`'s bidirectional prefix rule ("an ancestor folder counts as
  * open, and so does a descendant") is right for `isOpenAnywhere`'s existing
- * callers (`jobs.ts`'s `isPopupSuppressed`: a job running somewhere under an
- * open folder tab IS "already being watched"), but far too wide for "is this
+ * callers (`jobs.ts`'s `terminalNotifications`: a job running somewhere under
+ * an open folder tab IS "already being watched"), but far too wide for "is this
  * task's own destination open": a browser tab merely sitting on an ANCESTOR
  * of a task's folder (e.g. `/Fused/sandbox`) would suppress the popup for
  * EVERY task nested anywhere beneath it, which has nothing to do with that
