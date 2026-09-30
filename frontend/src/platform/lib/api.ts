@@ -1287,6 +1287,23 @@ export interface Prefs {
   // off means `/api/index/rank?ranked=false`'s shallowest-then-alphabetical
   // order instead (`ranked_search_enabled` server-side).
   indexing: { enabled: boolean; ranked: boolean };
+  // The macOS launcher's shortcuts (fused_render/launcher.py): the ⌥Space
+  // panel hotkey and the row modifier (`<modifier>+1…9` opens the Nth desk
+  // app, `+0` the shell). `available` is false off macOS, where the section
+  // is not rendered; `bound` / `pinned_bound` say whether the running app
+  // could register them (null until something tried). OPTIONAL like `chat`:
+  // an older server answers without it.
+  launcher?: LauncherPrefs;
+}
+
+export interface LauncherPrefs {
+  available: boolean;
+  hotkey: string;
+  display: string;
+  row_modifier: string;
+  row_modifier_display: string;
+  bound: boolean | null;
+  pinned_bound: boolean | null;
 }
 
 export interface AiIdlePrefs {
@@ -1456,6 +1473,18 @@ export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
+}
+
+/** The launcher's panel shortcut, as a `hotkey.py` spec (`"alt+space"`,
+ *  `"cmd+shift+KeyK"` — modifiers then a `KeyboardEvent.code`). The server
+ *  canonicalises it and rebinds; a spec with no modifier is a 400. */
+export function putLauncherHotkey(spec: string): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { launcher_hotkey: spec });
+}
+
+/** The row-shortcut modifier(s), `+`-joined (`"alt"`, `"alt+cmd"`). */
+export function putLauncherRowModifier(modifier: string): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { launcher_row_modifier: modifier });
 }
 
 export function putAppSharingEnabled(enabled: boolean): Promise<Prefs> {

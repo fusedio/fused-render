@@ -56,6 +56,8 @@ import {
   putProjectQueueEnabled,
   putTaskNotifyTerminalSessionsEnabled,
   putLanEnabled,
+  putLauncherHotkey,
+  putLauncherRowModifier,
   getLanPairToken,
   getLanDevices,
   revokeLanDevice,
@@ -544,6 +546,155 @@ function TaskNotifyTerminalSection({
 // turns on. Same one-checkbox section shape as Canvases above. While the
 // listener is up it shows the QR code a phone scans to pair (the ONLY way in —
 // no PIN, no approval dialog), and the devices that have, with revoke.
+// Shortcuts: the macOS launcher (fused_render/launcher_panel.py) — the
+// global hotkey that drops the Search Apps panel, and the modifier that with
+// a digit opens the Nth desk app from anywhere. Rendered only when the server
+// says the launcher exists on this platform (`prefs.launcher.available`).
+// The hotkey is RECORDED, not typed: click the keycap, press the combination,
+// and the browser's `KeyboardEvent.code` becomes the spec — what maps to a
+// Carbon keycode without caring about the keyboard layout. The bind happens
+// on the app's main thread a tick after the PUT, so the response's `bound`
+// is the previous state; the section re-reads shortly after.
+const ROW_MODIFIERS: { spec: string; label: string; title: string }[] = [
+  { spec: "alt", label: "⌥", title: "Option" },
+  { spec: "cmd", label: "⌘", title: "Command" },
+  { spec: "ctrl", label: "⌃", title: "Control" },
+  { spec: "alt+cmd", label: "⌥⌘", title: "Option-Command" },
+  { spec: "ctrl+alt", label: "⌃⌥", title: "Control-Option" },
+];
+const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock", "Fn"]);
+const REBIND_REREAD_MS = 400;
+
+function ShortcutsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const launcher = prefs.launcher;
+  const [recording, setRecording] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [hint, setHint] = useState<string | null>(null);
+
+  const reread = useCallback(() => {
+    // The app rebinds on its main thread after the PUT returned; pick up the
+    // real `bound` state once it has.
+    window.setTimeout(() => {
+      getPrefs().then(onChange).catch(() => undefined);
+    }, REBIND_REREAD_MS);
+  }, [onChange]);
+
+  useEffect(() => {
+    if (!recording) return;
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        setRecording(false);
+        setHint(null);
+        return;
+      }
+      if (MODIFIER_KEYS.has(e.key)) return; // wait for the key itself
+      const mods: string[] = [];
+      if (e.ctrlKey) mods.push("ctrl");
+      if (e.altKey) mods.push("alt");
+      if (e.shiftKey) mods.push("shift");
+      if (e.metaKey) mods.push("cmd");
+      if (!mods.length) {
+        setHint("Add ⌥ ⌘ ⌃ or ⇧…");
+        return;
+      }
+      setRecording(false);
+      setHint(null);
+      setBusy(true);
+      setError(null);
+      putLauncherHotkey(mods.concat([e.code]).join("+"))
+        .then((next) => {
+          onChange(next);
+          reread();
+        })
+        .catch((err) => setError((err as Error).message))
+        .finally(() => setBusy(false));
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [recording, onChange, reread]);
+
+  if (!launcher || !launcher.available) return null;
+
+  const setModifier = async (spec: string) => {
+    if (busy || spec === launcher.row_modifier) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await putLauncherRowModifier(spec));
+      reread();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const unbound = launcher.bound === false;
+  const rowsUnbound = launcher.pinned_bound === false;
+  return (
+    <section className="prefs-section">
+      <h2>Shortcuts</h2>
+      <p className="deploy-muted">
+        The launcher is a search panel over every app on this machine, on a global shortcut. It
+        opens over any app; ↑↓ select, ↩ opens, esc closes. The same panel is in the View menu and
+        the menu-bar item as Search Apps.
+      </p>
+      <div className="prefs-shortcuts">
+        <div className="prefs-shortcut-row">
+          <div className="prefs-shortcut-label">
+            <b>Open the search</b>
+            <span className={unbound ? "prefs-shortcut-warn" : undefined}>
+              {unbound
+                ? `Could not bind ${launcher.display} — another app may own it. Pick a different shortcut.`
+                : "Click the key, then press the new shortcut. Esc cancels."}
+            </span>
+          </div>
+          <button
+            type="button"
+            className={"prefs-keycap" + (recording ? " rec" : "")}
+            disabled={busy}
+            onClick={() => {
+              setRecording(true);
+              setHint("Press keys…");
+            }}
+            title="Click, then press the new shortcut"
+          >
+            {recording ? hint ?? "Press keys…" : launcher.display || launcher.hotkey}
+          </button>
+        </div>
+        <div className="prefs-shortcut-row">
+          <div className="prefs-shortcut-label">
+            <b>Open the Nth app</b>
+            <span className={rowsUnbound ? "prefs-shortcut-warn" : undefined}>
+              {rowsUnbound
+                ? `Some of ${launcher.row_modifier_display}1–9 could not be bound system-wide — another app may own them.`
+                : "Hold this and press 1–9: anywhere, the Nth app in the sidebar's Projects list (newest first); in the search, the Nth result. 0 opens the home window. ⌥ takes ¡™£… away from typing."}
+            </span>
+          </div>
+          <div className="prefs-seg" role="radiogroup" aria-label="Row shortcut modifier">
+            {ROW_MODIFIERS.map((m) => (
+              <button
+                key={m.spec}
+                type="button"
+                title={m.title}
+                className={m.spec === launcher.row_modifier ? "on" : undefined}
+                disabled={busy}
+                onClick={() => void setModifier(m.spec)}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
 function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
   // What the click asked for, held until the PUT answers. Turning sharing on
   // binds the listener, issues a certificate and announces two mDNS names
@@ -1230,6 +1381,7 @@ export default function Preferences() {
             {tab === "render" && (
               <>
                 <AppearanceSection />
+                <ShortcutsSection prefs={prefs} onChange={setPrefs} />
                 <UpdatesSection />
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />

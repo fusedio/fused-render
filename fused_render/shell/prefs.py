@@ -654,7 +654,20 @@ def _prefs_response() -> dict:
         # `calls` above, minus a separate `_store()` helper — there is no
         # directory fact to report alongside this one.
         "ai_idle": _ai_idle_state(),
+        # The macOS launcher's shortcuts (fused_render/launcher.py): the panel
+        # hotkey and the row modifier, with display forms, plus whether the
+        # running app could bind them (`bound` / `pinned_bound`: None until
+        # something tried — a `fused-render serve` never does). `available`
+        # says whether the panel exists on this platform at all; the
+        # Preferences section renders only then.
+        "launcher": _launcher_state(),
     }
+
+
+def _launcher_state() -> dict:
+    from fused_render import launcher
+
+    return launcher.settings()
 
 
 def _inference_engines_state() -> dict:
@@ -899,6 +912,30 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             )
         prefs["ai_idle_unload_minutes"] = value
         changed = True
+    launcher_rebind: str | None = None
+    launcher_changed = False
+    if "launcher_hotkey" in body:
+        # Canonicalised before storing (`alt+space`, modifiers in display
+        # order) and refused whole when malformed — a spec with no modifier
+        # would be a key taken from every app on the system.
+        from fused_render import hotkey, launcher
+
+        try:
+            value = launcher.canonical_hotkey(body.get("launcher_hotkey"))
+        except hotkey.SpecError as exc:
+            return JSONResponse({"error": f"'launcher_hotkey': {exc}"}, status_code=400)
+        prefs["launcher_hotkey"] = value
+        launcher_rebind = value
+        changed = launcher_changed = True
+    if "launcher_row_modifier" in body:
+        from fused_render import hotkey, launcher
+
+        try:
+            value = launcher.canonical_modifiers(body.get("launcher_row_modifier"))
+        except hotkey.SpecError as exc:
+            return JSONResponse({"error": f"'launcher_row_modifier': {exc}"}, status_code=400)
+        prefs["launcher_row_modifier"] = value
+        changed = launcher_changed = True
     if not changed:
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
@@ -908,11 +945,20 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                       "'lan_enabled', "
                       "'default_model', 'indexing_enabled', 'ranked_search_enabled', "
                       "'calls_enabled', "
-                      "'calls_params', 'calls_retention_days' and/or "
-                      "'ai_idle_unload_minutes')"},
+                      "'calls_params', 'calls_retention_days', "
+                      "'ai_idle_unload_minutes', 'launcher_hotkey' and/or "
+                      "'launcher_row_modifier')"},
             status_code=400,
         )
     storage.write_json(_path(), prefs)
+    if launcher_changed:
+        # AFTER the write, like `lan_enabled`: the app rebinds from the
+        # stored preference on its main thread a tick later, so the
+        # `launcher.bound` in THIS response is the previous state; the page
+        # re-reads shortly after.
+        from fused_render import launcher
+
+        launcher.notify_settings_changed(launcher_rebind)
     if "lan_enabled" in body:
         # AFTER the write, like `engines` below: the listener follows the stored
         # preference, and a failure to bind is reported in the response's

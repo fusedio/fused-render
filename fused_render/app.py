@@ -1238,6 +1238,7 @@ def main() -> None:
         "quit_ready": threading.Event(),  # teardown done/deadline hit: die now
         "pin": None,         # menubar_pin.PinController, built after run loop start
         "windows": None,     # mac_window.WindowManager, built after run loop start
+        "launcher": None,    # launcher_panel.LauncherController, after the windows
     }
 
     def _open_target(target: str) -> None:
@@ -1426,6 +1427,15 @@ def main() -> None:
             from PyObjCTools import AppHelper
 
             AppHelper.callAfter(state["pin"].server_ready)
+        if state["launcher"] is not None:
+            # The panel loads its page off the live server, and the global
+            # shortcuts bind now — Carbon and the page live on the main thread.
+            from PyObjCTools import AppHelper
+
+            launcher_ctl = state["launcher"]
+            AppHelper.callAfter(launcher_ctl.server_ready)
+            AppHelper.callAfter(launcher_ctl.bind_hotkey)
+            AppHelper.callAfter(launcher_ctl.bind_pinned)
         pending, state["pending"] = state["pending"], []
         for target in pending:
             _open_target(target)
@@ -1534,6 +1544,72 @@ def main() -> None:
             else:
                 manager.open(target)
 
+        # The launcher (launcher_panel.py): a Spotlight-like panel on a
+        # global shortcut (⌥Space by default) that opens any known app in a
+        # window. Needs the windows (focus-or-open is its point). Guarded
+        # like them — no launcher is a lesser outcome than no app.
+        if state["windows"] is not None:
+            try:
+                from AppKit import NSApp
+
+                from fused_render import launcher as launcher_mod
+                from fused_render.launcher_panel import LauncherController
+
+                manager = state["windows"]
+
+                def _open_from_launcher(fs_path: str) -> None:
+                    # Dock semantics; the panel is non-activating, so bring
+                    # this app forward or the window opens behind the caller.
+                    NSApp.activateIgnoringOtherApps_(True)
+                    manager.focus_or_open(fs_path)
+
+                def _home_from_launcher() -> None:
+                    NSApp.activateIgnoringOtherApps_(True)
+                    manager.show_home()
+
+                launcher_ctl = LauncherController(port, _open_from_launcher, _home_from_launcher)
+                state["launcher"] = launcher_ctl
+                manager.show_launcher = launcher_ctl.show
+
+                # What the uvicorn thread may call (PUT /api/prefs, GET
+                # /api/launcher): rebinding hops to the main thread; the
+                # bound flags and the open-window set are plain attribute
+                # reads, safe from any thread.
+                from PyObjCTools import AppHelper
+
+                def _rebind(spec) -> None:
+                    if spec:
+                        AppHelper.callAfter(launcher_ctl.bind_hotkey, spec)
+                    else:  # the row modifier changed; rebind those, tell the page
+                        AppHelper.callAfter(launcher_ctl.push_settings)
+
+                launcher_mod.native_hooks.update({
+                    "rebind": _rebind,
+                    "hotkey_bound": launcher_ctl.hotkey_bound,
+                    "pinned_bound": launcher_ctl.pinned_bound,
+                    "open_keys": manager.open_keys,
+                })
+                if os.environ.get("FUSED_RENDER_LAUNCHER_SHOW"):
+                    # Dev only: SIGUSR2 toggles the launcher, so a script can
+                    # screenshot it without Accessibility access to press the
+                    # shortcut. Python signal handlers run only between
+                    # bytecodes; an idle AppKit run loop executes none, so a
+                    # no-op tick keeps the interpreter breathing.
+                    import signal
+
+                    signal.signal(signal.SIGUSR2, lambda *_: AppHelper.callAfter(
+                        launcher_ctl.toggle))
+                    status_app.launcher_dev_tick = rumps.Timer(lambda _t: None, 0.5)
+                    status_app.launcher_dev_tick.start()
+            except Exception:
+                logger.exception("launcher unavailable")
+                state["launcher"] = None
+
+        def _show_launcher() -> None:
+            ctl = state["launcher"]
+            if ctl is not None:
+                ctl.show()
+
         try:
             # Lazy + guarded: pyobjc-framework-WebKit may be missing in an
             # older [app] env; on failure the rumps menu stays attached and
@@ -1550,6 +1626,9 @@ def main() -> None:
                     "open_logs": _open_logs,
                     "quit": _do_quit,
                     "open_window": _open_window,
+                    # Present only when the launcher was built: the popover
+                    # shows "Search Apps…" off this key.
+                    **({"show_launcher": _show_launcher} if state["launcher"] is not None else {}),
                 },
             )
         except Exception:

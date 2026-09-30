@@ -141,6 +141,15 @@ class _ActionsTarget(NSObject):
     def showMore_(self, sender):
         self._controller._show_overflow_menu(sender)
 
+    def showLauncher_(self, _sender):
+        # The ⌥Space launcher panel (launcher_panel.py), for a user without
+        # the shortcut; resolved at click time — the launcher is built after
+        # the popover.
+        show = self._controller._actions.get("show_launcher")
+        if show is not None:
+            self._controller._popover.close()
+            show()
+
 
 class _PopoverUIDelegate(NSObject):
     """The popover web view's `window.open` / `target=_blank`: a WINDOW of
@@ -500,6 +509,8 @@ class PinController:
         if self._pinned_path is not None:
             add("Change Pinned File…", b"pinFile:")
         menu.addItem_(NSMenuItem.separatorItem())
+        if self._actions.get("show_launcher") is not None:
+            add("Search Apps…", b"showLauncher:")
         add("Open app logs", b"openLogs:")
         add("Quit fused-render", b"quitApp:")
         menu.popUpMenuPositioningItem_atLocation_inView_(
