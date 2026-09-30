@@ -11,13 +11,16 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 import {
+  canRunInTerminal,
   closeTerminalDock,
   openTerminal,
   peekPendingTerminalRequest,
   resetTerminalDockForTests,
   takePendingTerminalRequest,
   usePendingTerminalRequestVersion,
-} from "@shell/terminalDockStore";
+} from "./terminalDockStore";
+import { IS_EMBED } from "./router";
+import { isWindows } from "./platform";
 
 let renderers: ReactTestRenderer[] = [];
 function renderTracked(node: Parameters<typeof create>[0]): ReactTestRenderer {
@@ -106,5 +109,14 @@ describe("usePendingTerminalRequestVersion", () => {
       await Promise.resolve();
     });
     expect(seen).toEqual([0]);
+  });
+});
+
+describe("canRunInTerminal", () => {
+  test("matches the drawer's own !IS_EMBED && !isWindows gate", () => {
+    // App.tsx gates both `TerminalDrawer` and the `TerminalDock` chip on this
+    // exact pair, so every Run affordance elsewhere in the app must agree
+    // with it rather than re-derive its own version of the check.
+    expect(canRunInTerminal()).toBe(!IS_EMBED && !isWindows);
   });
 });

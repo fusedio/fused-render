@@ -30,7 +30,7 @@ import {
   resetTerminalDockForTests,
   toggleTerminalDock,
   useTerminalDockOpen,
-} from "@shell/terminalDockStore";
+} from "@platform/lib/terminalDockStore";
 
 installDomShim();
 // terminalSession.ts (imported by TerminalDrawer.tsx) pulls in api.ts ->

@@ -91,7 +91,7 @@ import { usePreviewSnapshot } from "@apps/explorer/lib/usePreviewSnapshot";
 import { ModeMenu, OverflowMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
 import { useAppActionRows } from "@apps/explorer/EntryActionsMenu";
-import { openTerminal } from "@shell/terminalDockStore";
+import { openTerminal } from "@platform/lib/terminalDockStore";
 import { McpDialog } from "@apps/explorer/McpDialog";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
 import { ChatMount, sideFrameSrc, useNativeChatFlag } from "@apps/claude";

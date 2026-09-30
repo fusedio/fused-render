@@ -64,7 +64,7 @@ import {
   usePendingTerminalRequestVersion,
   useTerminalDockOpen,
   type TerminalRequest,
-} from "@shell/terminalDockStore";
+} from "@platform/lib/terminalDockStore";
 
 const STORAGE_KEY = "fused-render:terminal-drawer";
 const MIN_HEIGHT = 120;
@@ -178,7 +178,7 @@ export async function sendPendingRequestIfAny(
   const req = take();
   if (req === null) return;
   const skipCd = opts.createdCwd !== undefined && req.cwd === opts.createdCwd;
-  const toSend = skipCd ? { command: req.command } : req;
+  const toSend = skipCd ? { command: req.command, execute: req.execute } : req;
   const data = buildTerminalCommand(toSend);
   if (!data) return;
   await send(sessionId, data);

@@ -13,7 +13,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
 
 import { useAppActionRows, type AppActionRows } from "@apps/explorer/EntryActionsMenu";
-import { resetTerminalDockForTests, peekPendingTerminalRequest } from "@shell/terminalDockStore";
+import { resetTerminalDockForTests, peekPendingTerminalRequest } from "@platform/lib/terminalDockStore";
 
 let renderers: ReactTestRenderer[] = [];
 afterEach(() => {

@@ -59,7 +59,7 @@ import { useAppDoctorChecks } from "@platform/ui/useAppDoctorChecks";
 import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { navigateUrl, encodeFsPathSegments, IS_EMBED } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
-import { openTerminal } from "@shell/terminalDockStore";
+import { openTerminal } from "@platform/lib/terminalDockStore";
 import { isWindows } from "@platform/lib/platform";
 import { useAppVersionLabel } from "@platform/lib/appVersionLabel";
 import type { ResolvedSnapshot } from "@platform/lib/snapshot-param";

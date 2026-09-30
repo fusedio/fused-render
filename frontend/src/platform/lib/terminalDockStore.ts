@@ -16,6 +16,20 @@
 // setter, subscribed to with `useSyncExternalStore` so a re-render only
 // happens when the value actually changes.
 import { useSyncExternalStore } from "react";
+import { IS_EMBED } from "./router";
+import { isWindows } from "./platform";
+
+/** Whether a "run in terminal" affordance may show at all. The drawer itself
+ * is gated the same way in App.tsx (`!IS_EMBED && !isWindows`, both for
+ * `TerminalDrawer` and the `TerminalDock` chip): an embed has no status bar
+ * to host the drawer, and there is no managed shell on Windows yet. Every
+ * Run button in the app — the health strip, the trouble card, the chat
+ * kebab, task/explorer "open in terminal", and the markdown/tool-chip run
+ * buttons — calls this instead of re-deriving the gate, so the day either
+ * constraint changes there is exactly one place to edit. */
+export function canRunInTerminal(): boolean {
+  return !IS_EMBED && !isWindows;
+}
 
 let open = false;
 const listeners = new Set<() => void>();
@@ -49,12 +63,17 @@ export function useTerminalDockOpen(): boolean {
 
 /** A "open the drawer in this folder / run this command in it" request from
  * outside the drawer/chip (the explorer's "Open in Terminal" menu item,
- * `fused.terminal.open`/`.run` via the page-API bridge). Both fields are
+ * `fused.terminal.open`/`.run` via the page-API bridge). `cwd`/`command` are
  * optional so a bare "just open the drawer" request can share the same
- * shape as a folder-scoped or command-scoped one. */
+ * shape as a folder-scoped or command-scoped one. `execute` defaults to
+ * true (a command with no `execute` field runs immediately, matching every
+ * request made before this field existed); pass `execute: false` to have
+ * `command` typed at the prompt WITHOUT the trailing Enter, for a
+ * model-suggested shell command a person should read before it runs. */
 export interface TerminalRequest {
   cwd?: string;
   command?: string;
+  execute?: boolean;
 }
 
 // One slot, not a queue: a newer request replacing an unconsumed older one

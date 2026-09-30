@@ -19,7 +19,7 @@
 // still visibly tracks the drawer. Revisit once multi-session support
 // exists.
 import StatusChip from "@platform/ui/StatusChip";
-import { toggleTerminalDock, useTerminalDockOpen } from "@shell/terminalDockStore";
+import { toggleTerminalDock, useTerminalDockOpen } from "@platform/lib/terminalDockStore";
 
 // The tooltip advertises VS Code's own Ctrl+` binding, not the user's
 // Cmd/Ctrl+Shift+` chord (TerminalDrawer.tsx's own header) — that one is a

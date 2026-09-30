@@ -2042,11 +2042,15 @@
     return Promise.resolve();
   }
 
-  // fused.terminal.open({cwd}?) / fused.terminal.run(command, {cwd}?)
+  // fused.terminal.open({cwd}?) / fused.terminal.run(command, {cwd, execute}?)
   //
   // Open the status-bar terminal drawer, in a given folder and/or with a
   // command already typed in — the explorer's "Open in Terminal" menu item
-  // and any page that wants the same are both built on this. Neither call
+  // and any page that wants the same are both built on this. `run`'s
+  // `execute` defaults to true (the command runs immediately); pass
+  // `execute: false` to have it typed at the prompt without the trailing
+  // Enter, for a command the page wants the person to read before it runs.
+  // Neither call
   // waits for a session to actually exist: `openTerminal()` on the shell side
   // (terminalDockStore.ts) just records the request and opens the drawer;
   // TerminalDrawer's own create-or-reattach effect (already running, or about
@@ -2068,6 +2072,7 @@
     opts = opts || {};
     const req = { command };
     if (typeof opts.cwd === "string" && opts.cwd) req.cwd = opts.cwd;
+    if (typeof opts.execute === "boolean") req.execute = opts.execute;
     return noteTerminalRequestOrReject(req);
   }
 

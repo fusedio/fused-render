@@ -116,21 +116,23 @@ const SHARED_APPS = new Set(["apps/claude"]);
  * browser's six-socket budget, and the page's boot reads queueing behind them.
  */
 /*
- * `shell/terminalDockStore` is the fifth, and it is the one-boolean +
- * one-slot-pending-request store the status-bar terminal drawer and chip
- * share (see the module's own header comment). The explorer's "Open in
- * Terminal" row (`apps/explorer/EntryActionsMenu.tsx`, `Preview.tsx`) calls
- * its `openTerminal` to hand the drawer a folder/command without importing
- * `TerminalDrawer.tsx` or any other shell file — it imports only React's
- * `useSyncExternalStore`, so, like `shell/tasks-lib`, it is a pure module
- * with no shell component riding along.
+ * `terminalDockStore` (the one-boolean + one-slot-pending-request store the
+ * status-bar terminal drawer and chip share) used to be the fifth hole here,
+ * for the same reason `shell/tasksPulse` is one: the explorer's "Open in
+ * Terminal" row and the run-in-terminal affordances platform/ui grows for
+ * the Claude health strip and the trouble card all call its `openTerminal`
+ * without importing `TerminalDrawer.tsx` or any other shell file. But unlike
+ * `tasksPulse`, it never depended on anything shell-only — it imports only
+ * React's `useSyncExternalStore` — so instead of punching a hole for it, it
+ * moved down to `platform/lib/terminalDockStore`, where platform/ui (which
+ * may not import shell at all) can reach it directly and shell keeps
+ * consuming it as "anything" it's allowed to import.
  */
 const SHELL_OPEN_TO_APPS = new Set([
   "shell/ScheduleTaskViews",
   "shell/tasks-lib",
   "shell/tasksPulse",
   "shell/TaskPeekWho",
-  "shell/terminalDockStore",
 ]);
 
 const violations = [];
