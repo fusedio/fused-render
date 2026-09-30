@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 
 import fused_render.share_app as share_app_mod
 import fused_render.share_file as share_file_mod
+import fused_render.share_file_rules as share_file_rules_mod
 from fused_render.server import create_app
 
 GUARD = {"X-Fused": "1"}
@@ -30,6 +31,15 @@ GUARD = {"X-Fused": "1"}
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(share_app_mod, "STATE_DIR", str(tmp_path / "home"))
+    # `share_file_rules.STATE_DIR` is read from `FUSED_RENDER_HOME` once at
+    # import time, not re-read per call, so the env var above alone leaves
+    # it pointed at the real `~/.fused-render` — and `resolve_viewer`
+    # (`_cached_rules`) now kicks a lazy background rules-warm the first
+    # time it sees that cache empty/unreadable (the lean-mode fix), which
+    # would otherwise race every OTHER unisolated test hitting the same
+    # real file across pytest-xdist workers and spuriously call this test's
+    # own stubbed `_run_shim` a second time.
+    monkeypatch.setattr(share_file_rules_mod, "STATE_DIR", str(tmp_path / "home"))
     creds = tmp_path / "credentials"
     creds.write_text("{}")
     monkeypatch.setenv("FUSED_RENDER_FUSED_CREDENTIALS", str(creds))
@@ -45,9 +55,20 @@ def make_file(tmp_path, name="demo.fused"):
 def fake_shim_for(mode_seen: list):
     """A stand-in for _fused_share_app.publish: records the mode it was
     asked for and returns a response shaped the way the real shim would for
-    that mode (session fields only when temporary)."""
+    that mode (session fields only when temporary).
+
+    `share_app_mod._run_shim` is the one seam every shim action goes
+    through — including `{"action": "rules"}`, which `resolve_viewer`
+    (`_cached_rules`) now fires off lazily the first time it sees an empty
+    cache (the lean-mode fix), ahead of the publish call itself in these
+    unisolated-`client`, freshly-empty-cache tests. Answering only
+    `"publish"` here, and handing `"rules"` back an empty table instead of
+    recording it as a mode, keeps `mode_seen` a record of publish calls
+    only — matching what the tests below actually assert on."""
 
     def fake_run_shim(request, timeout):
+        if request.get("action") != "publish":
+            return {"rules": []}, None
         mode = request.get("mode", "public")
         mode_seen.append(mode)
         out = {"url": f"https://udf.fused.ai/tok-{mode}/demo.html", "canvas_id": "c1",

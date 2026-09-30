@@ -344,18 +344,23 @@ def _lifespan(startup_handlers: list, shutdown_handlers: list):
 
 def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     """Build the FastAPI app. ``lean=True`` (``fused-render open``) wires every
-    router so requests still work, but registers none of the background/
-    startup side effects below and skips the two started directly in this
-    body (mount automount + health monitor) — nothing here runs beyond what
-    a single render/runPython/AI request needs. See `on_startup` just below
-    for the switch that gates all of it.
+    router so requests still work, but skips every BACKGROUND and WARM-UP
+    side effect below (and the two started directly in this body: mount
+    automount + health monitor) — nothing here runs beyond what a single
+    render/runPython/AI request needs. The rule `lean` follows throughout:
+    anything a request needs in order to be CORRECT is always set up;
+    anything that only makes a later request faster, or keeps something
+    running/current in the background with no request asking for it, is
+    skipped. See `on_startup`/`on_startup_always` just below for the two
+    registration points that split it.
 
-    Shutdown cleanup is NOT gated the same way: an engine, a local AI
-    worker, a terminal session, a capture and the pooled fs/raw client can
-    all still start ON DEMAND from an ordinary request in a lean app, even
-    though their eager `@on_startup` warm-up is skipped — so their
-    `@on_shutdown_always` cleanup always runs, lean or not, and is a no-op
-    when nothing was started. See `on_shutdown_always` just below.
+    Shutdown cleanup is gated the same way, not by `lean`: an engine, a
+    local AI worker, a terminal session, a capture and the pooled fs/raw
+    client can all still start ON DEMAND from an ordinary request in a lean
+    app — the pooled client always does, since it is `on_startup_always` —
+    even when their eager `@on_startup` warm-up was skipped, so their
+    `@on_shutdown_always` cleanup always runs too, lean or not, and is a
+    no-op when nothing was started. See `on_shutdown_always` just below.
     """
     # Engine (D69/D70 + SPEC §20): validate any FUSED_RENDER_ENGINE override
     # ONCE at startup — this raises on a bad value and fails loudly for
@@ -415,6 +420,20 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         shutdown_handlers.append(func)
         return func
 
+    # The other half of that same rule: `lean` skips WARM-UP, never anything a
+    # request needs to be CORRECT rather than merely fast. `open_pooled_client`
+    # just builds an `httpx.AsyncClient` — no network I/O, no meaningful cost —
+    # and without it a lean app's bearer-mount/`?pooled=1` reads raise
+    # `AttributeError` on `app.state.pooled_client` instead of serving the
+    # file (`tests/test_app_lifespan.py` covers this). So it is not optional
+    # warm-up the way `_startup_warm_engine`/`_startup_prewarm_ai` are —
+    # skipping it would make a request behave differently, not just slower —
+    # and it is registered unconditionally, pairing with the already-always
+    # `_shutdown_pooled_client`.
+    def on_startup_always(func):
+        startup_handlers.append(func)
+        return func
+
     app = FastAPI(title="fused-render",
                   lifespan=_lifespan(startup_handlers, shutdown_handlers))
     # Exposed so the registry is inspectable — `on_event` kept its own on
@@ -431,7 +450,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # unhandled-exception/access-log middleware — bodies live in
     # _server_common.py / _server_ai.py; only the app-bound registration
     # stays here (an on_event hook needs the actual `app` it's attached to).
-    @on_startup
+    @on_startup_always
     async def _startup_pooled_client():
         await open_pooled_client(app)
 
@@ -976,9 +995,13 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     async def _startup_warm_share_rules():
         from fused_render import share_file
 
-        thread = threading.Thread(target=share_file.warm_rules_cache, daemon=True,
-                                  name="fused-share-file-rules-warm")
-        thread.start()
+        # `share_file._kick_warm_once` is the same guarded entry point a
+        # lean app's first `_cached_rules()` read falls back to — sharing it
+        # means the two can never both spawn the shim subprocess for the
+        # same process. `None` back means a lazy read already won the race
+        # (a startup hook running behind the very first request it warms
+        # for); nothing to join in that case.
+        thread = share_file._kick_warm_once()
         # For tests, the same seam `_startup_tasks_warm`/`_startup_queue_manager`
         # leave: join this instead of racing the background fetch.
         app.state.share_rules_warm = thread

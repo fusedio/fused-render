@@ -112,12 +112,64 @@ def _record_for(file_id: str) -> dict | None:
 # -- viewer resolution -------------------------------------------------------
 
 
+#: Set once this process has kicked off a background rebuild (successful or
+#: not) — so a lean server's first few reads don't each spawn their own shim
+#: subprocess while the first one is still running. `_startup_warm_share_
+#: rules` sets it too (through `_kick_warm` below), so the two never race:
+#: whichever gets there first wins, and the other becomes a plain disk read.
+_warm_kicked = False
+_warm_kicked_lock = threading.Lock()
+
+
+def _kick_warm_once(*, name: str = "fused-share-file-rules-warm") -> threading.Thread | None:
+    """Fire `warm_rules_cache` on a background thread, at most once per
+    process — the thread, or `None` if something already kicked it (the
+    server's own startup hook, or an earlier lazy read racing this one).
+    Non-blocking: a caller that read an empty/missing cache still gets the
+    built-in rules for THIS read, and a later read (this request's retry,
+    or the next open of the share sheet) sees the real table once the
+    thread finishes. `warm_rules_cache` is itself best-effort and silent
+    (not logged in, offline, a stale token: cache stays as it was), so
+    firing it speculatively here costs nothing when there is nothing to
+    build."""
+    global _warm_kicked
+    with _warm_kicked_lock:
+        if _warm_kicked:
+            return None
+        _warm_kicked = True
+    thread = threading.Thread(target=warm_rules_cache, daemon=True, name=name)
+    thread.start()
+    return thread
+
+
+def reset_for_tests() -> None:
+    """Clear the process-wide "already kicked" guard. `_warm_kicked` is
+    process state, not per-`create_app()` state (`_cached_rules()` has no
+    `app` to key it off) — left standing, the second test in an xdist worker
+    to read an empty cache would see `_kick_warm_once` silently return
+    `None` for a warm-up the first test's OWN tmp-path cache already
+    satisfied, same shape as `queue_manager.reset_for_tests` in
+    tests/conftest.py."""
+    global _warm_kicked
+    with _warm_kicked_lock:
+        _warm_kicked = False
+
+
 def _cached_rules() -> list[dict]:
-    """Disk-only: read whatever rule table the cache already holds (however
-    stale) and never triggers the SDK subprocess a rebuild needs. A missing
-    cache degrades to the built-in rules alone (so `.fused` still resolves)
-    rather than blocking `status` on a shim spawn."""
+    """Disk-only read of whatever rule table the cache already holds
+    (however stale) — never itself blocks on the SDK subprocess a rebuild
+    needs. A missing cache degrades to the built-in rules alone for this
+    call (so `.fused` still resolves) rather than blocking `status` on a
+    shim spawn, but ALSO kicks a background rebuild the first time this
+    process sees an empty cache — the case a lean server (`fused-render
+    open`), which never runs `_startup_warm_share_rules`, hits on its very
+    first read on a machine that has never run a full server before. A full
+    server's own startup thread normally wins that race, so this is a no-op
+    there in the common case; it only matters when nothing warmed the cache
+    first."""
     rules, _built_at = share_file_rules._read_cache()
+    if rules is None:
+        _kick_warm_once(name="fused-share-file-rules-warm-lazy")
     return share_file_rules._with_builtin(rules or [])
 
 

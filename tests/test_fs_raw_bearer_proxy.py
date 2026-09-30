@@ -261,3 +261,46 @@ def test_bearer_404_passes_through(cold_bearer):
                    follow_redirects=False)
     assert r.status_code == 404
     assert len(store.auth_seen) == 1
+
+
+# ------------------------------------------------ lean (`fused-render open`)
+
+
+@pytest.fixture()
+def cold_bearer_lean(home, monkeypatch):
+    """Same wiring as `cold_bearer`, but `create_app(..., lean=True)` — the
+    server `fused-render open` builds. `_startup_pooled_client` is registered
+    `on_startup_always`, not `on_startup`, precisely so this path — which
+    needs `app.state.pooled_client` to exist to answer at all, not merely to
+    answer faster — still works in a lean app. Before that fix this route
+    raised `AttributeError: 'State' object has no attribute 'pooled_client'`
+    instead of serving the file."""
+    import fused_render.shell.prefetch as prefetch
+    monkeypatch.setattr(prefetch, "schedule", lambda *a, **k: None)
+    monkeypatch.setattr(prefetch, "is_done", lambda *a, **k: False)
+
+    store = _FakeStore(b"LEAN-GCS-PRIVATE-BYTES-" + bytes(range(64)) * 4)
+
+    mp = _mount("gcp", read_only=False)
+    from fused_render.shell import storage
+    storage.write_json(mounts_mod.serves_path(), {mp: "http://127.0.0.1:1"})
+    monkeypatch.setattr(mounts_mod, "upstream_url_for", lambda p: None)
+    monkeypatch.setattr(
+        mounts_mod, "bearer_upstream_for",
+        lambda p: (store.url, {"Authorization": f"Bearer {_TOKEN}"}))
+
+    file_path = os.path.join(mp, "data.parquet")
+    try:
+        with TestClient(create_app(start_dir=str(home), lean=True)) as client:
+            yield client, file_path, store
+    finally:
+        store.close()
+
+
+def test_lean_app_proxies_a_bearer_read_with_no_attributeerror(cold_bearer_lean):
+    client, file_path, store = cold_bearer_lean
+    r = client.get("/api/fs/raw", params={"path": file_path},
+                   follow_redirects=False)
+    assert r.status_code == 200
+    assert r.content == store.blob
+    assert store.auth_seen == [f"Bearer {_TOKEN}"]

@@ -188,6 +188,15 @@ def test_create_app_registers_nothing_on_the_deprecated_path():
     assert app.router.on_shutdown == []
 
 
+#: The one startup handler registered even in `lean` — building the pooled
+#: httpx client is not warm-up, it's what makes a bearer-mount/`?pooled=1`
+#: read CORRECT rather than merely fast: without `app.state.pooled_client`
+#: that route raises `AttributeError` instead of serving the file. See
+#: `on_startup_always` in app.py.
+EXPECTED_STARTUP_LEAN = [
+    "_startup_pooled_client",
+]
+
 #: The shutdown handlers registered even in `lean` — anything that can start
 #: from an ordinary request (an engine, a local AI worker, a terminal
 #: session, a capture, the pooled fs/raw client) rather than only from the
@@ -205,8 +214,11 @@ EXPECTED_SHUTDOWN_LEAN = [
 def test_lean_registers_no_startup_handlers_but_always_runs_cleanup():
     """`fused-render open`'s server (`create_app(..., lean=True)`): every one
     of the 19 startup handlers is still DEFINED (so a lean build stays
-    otherwise identical code), just never collected — `_lifespan` then
-    iterates an empty startup list and starts nothing in the background.
+    otherwise identical code), and all but one are never collected —
+    `_lifespan` then iterates a near-empty startup list and starts nothing in
+    the background. The one exception, `_startup_pooled_client`, is not
+    warm-up: without it a bearer-mount/`?pooled=1` read in a lean app can't
+    be served AT ALL (see EXPECTED_STARTUP_LEAN's docstring).
 
     Shutdown is NOT symmetric: `lean` only ever skips STARTUP (eager warm-up)
     work. An engine, a local AI worker, a terminal session, a capture and the
@@ -216,7 +228,7 @@ def test_lean_registers_no_startup_handlers_but_always_runs_cleanup():
     `lean`, and everything else (paired only with a startup hook that lean
     skips, so nothing of theirs can have started) stays skipped."""
     app = create_app(start_dir=".", lean=True)
-    assert app.state.startup_handlers == []
+    assert [f.__name__ for f in app.state.startup_handlers] == EXPECTED_STARTUP_LEAN
     assert [f.__name__ for f in app.state.shutdown_handlers] == EXPECTED_SHUTDOWN_LEAN
 
 
