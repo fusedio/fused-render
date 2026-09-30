@@ -8,6 +8,7 @@ import { notifyFsChanged } from "@apps/explorer/listing/fsChangeBus";
 import { hydrateBookmarks, refreshBookmarks } from "@platform/lib/bookmarks";
 import { hydrateRecents } from "@apps/explorer/lib/recents";
 import { notifyBookmarksChanged } from "@platform/lib/hooks";
+import { openTerminal, type TerminalRequest } from "@shell/terminalDockStore";
 import App from "@shell/App";
 import "./shell.css";
 
@@ -35,6 +36,7 @@ history.pushState = function (...args: Parameters<History["pushState"]>) {
 declare global {
   interface Window {
     _fusedFsChanged?: () => void;
+    _fusedOpenTerminal?: (req: TerminalRequest) => void;
   }
 }
 
@@ -68,6 +70,17 @@ window._fusedFsChanged = () => {
   clearListPrefetch();
   notifyFsChanged();
 };
+
+// `fused.terminal.open`/`.run`'s delivery half (runtime.js's `noteOpenTerminal`
+// climbs the same-origin ancestor chain looking for this exact hook). Not
+// installed under `IS_EMBED`: `App.tsx` only mounts `TerminalDrawer` outside
+// embed, so a hook here with nothing to open would silently "succeed" a
+// request no drawer will ever show — an embedded pane's page is meant to see
+// the same "no shell host" rejection a standalone /render page gets, not a
+// resolved promise for a drawer that never appears.
+if (!IS_EMBED) {
+  window._fusedOpenTerminal = (req) => openTerminal(req);
+}
 
 if (IS_EMBED) document.body.classList.add("embed");
 // Frozen-tree framing (router.ts IS_SNAPSHOT): a body class rather than props
