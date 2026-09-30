@@ -39,7 +39,7 @@ installDomShim();
 // dynamic import exactly like terminalSession.test.ts's own.
 const TerminalDrawerModule = await import("@shell/TerminalDrawer");
 const TerminalDrawer = TerminalDrawerModule.default;
-const { clearExitedSession, createSessionOrAbandon } = TerminalDrawerModule;
+const { clearExitedSession, createSessionOrAbandon, sendPendingRequestIfAny } = TerminalDrawerModule;
 
 // A minimal in-memory `localStorage` — bun's test runtime has no real one
 // (viewstate.test.ts's own header) — scoped to this file only and restored
@@ -299,6 +299,67 @@ test("a kill that itself rejects is swallowed, not thrown back at the caller", a
     },
   });
   expect(result).toBeNull();
+});
+
+// ---- sendPendingRequestIfAny (consume-once "open here / run this") -------
+
+test("no pending request: does not call send", async () => {
+  const sent: unknown[] = [];
+  await sendPendingRequestIfAny(
+    "sid-1",
+    {},
+    { take: () => null, send: async (...args) => { sent.push(args); return { ok: true }; } },
+  );
+  expect(sent).toEqual([]);
+});
+
+test("cwd+command: sends the full cd-and-run string", async () => {
+  const sent: unknown[] = [];
+  await sendPendingRequestIfAny(
+    "sid-1",
+    {},
+    {
+      take: () => ({ cwd: "/tmp/foo", command: "ls" }),
+      send: async (id, data) => { sent.push([id, data]); return { ok: true }; },
+    },
+  );
+  expect(sent).toEqual([["sid-1", "cd '/tmp/foo' && ls\r"]]);
+});
+
+test("skipCd: sends only the command, since the session was created in that cwd already", async () => {
+  const sent: unknown[] = [];
+  await sendPendingRequestIfAny(
+    "sid-1",
+    { skipCd: true },
+    {
+      take: () => ({ cwd: "/tmp/foo", command: "ls" }),
+      send: async (id, data) => { sent.push([id, data]); return { ok: true }; },
+    },
+  );
+  expect(sent).toEqual([["sid-1", "ls\r"]]);
+});
+
+test("skipCd with no command left: nothing to send", async () => {
+  const sent: unknown[] = [];
+  await sendPendingRequestIfAny(
+    "sid-1",
+    { skipCd: true },
+    { take: () => ({ cwd: "/tmp/foo" }), send: async (...args) => { sent.push(args); return { ok: true }; } },
+  );
+  expect(sent).toEqual([]);
+});
+
+test("take() is called exactly once per invocation (consume-once is the caller's job via the store, not re-checked here)", async () => {
+  let calls = 0;
+  await sendPendingRequestIfAny(
+    "sid-1",
+    {},
+    {
+      take: () => { calls += 1; return { command: "ls" }; },
+      send: async () => ({ ok: true }),
+    },
+  );
+  expect(calls).toBe(1);
 });
 
 test("closeTerminalDock stays idempotent when called on an already-closed drawer", () => {

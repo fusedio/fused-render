@@ -48,10 +48,23 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 
 import TerminalView from "@platform/ui/TerminalView";
-import { createTerminalSession, killTerminalSession } from "@platform/lib/terminalSession";
+import {
+  buildTerminalCommand,
+  createTerminalSession,
+  killTerminalSession,
+  sendTerminalInput,
+} from "@platform/lib/terminalSession";
 import { getJson } from "@platform/lib/api";
 import { isMod } from "@platform/lib/platform";
-import { closeTerminalDock, toggleTerminalDock, useTerminalDockOpen } from "@shell/terminalDockStore";
+import {
+  closeTerminalDock,
+  peekPendingTerminalRequest,
+  takePendingTerminalRequest,
+  toggleTerminalDock,
+  usePendingTerminalRequestVersion,
+  useTerminalDockOpen,
+  type TerminalRequest,
+} from "@shell/terminalDockStore";
 
 const STORAGE_KEY = "fused-render:terminal-drawer";
 const MIN_HEIGHT = 120;
@@ -133,6 +146,35 @@ export async function createSessionOrAbandon(
   return id;
 }
 
+/** Consumes the pending "open the drawer in a folder / run a command in it"
+ * request (`terminalDockStore.ts`) and types the resulting string into
+ * `sessionId`'s pty via `sendTerminalInput` — exactly once per request,
+ * since `takePendingTerminalRequest()` clears the slot on its way out. A
+ * no-op if there is no pending request, or the request (after `skipCd`) has
+ * nothing left to send. `skipCd` is set for a session that was just CREATED
+ * with the request's own `cwd` (see the effect below) — it already starts
+ * in the right directory, so re-sending `cd '<cwd>' && ...` would be a
+ * redundant, visible extra line. Exported and dependency-injectable so a
+ * test can drive it without a real store slot or a real POST, the same
+ * shape `createSessionOrAbandon` uses. */
+export async function sendPendingRequestIfAny(
+  sessionId: string,
+  opts: { skipCd?: boolean } = {},
+  deps: {
+    take?: () => TerminalRequest | null;
+    send?: (id: string, data: string) => Promise<{ ok: boolean }>;
+  } = {},
+): Promise<void> {
+  const take = deps.take ?? takePendingTerminalRequest;
+  const send = deps.send ?? sendTerminalInput;
+  const req = take();
+  if (req === null) return;
+  const toSend = opts.skipCd ? { command: req.command } : req;
+  const data = buildTerminalCommand(toSend);
+  if (!data) return;
+  await send(sessionId, data);
+}
+
 export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   const open = useTerminalDockOpen();
   const [height, setHeight] = useState(() => loadState().height);
@@ -154,6 +196,12 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   // Bumped by the retry affordance to re-run the effect below even though
   // `sessionId` and `open` haven't changed.
   const [retryTick, setRetryTick] = useState(0);
+  // Bumps on every `openTerminal({ cwd/command })` call, including a repeat
+  // one while the drawer (and this session) is already open — the effect
+  // below depends on it so a second "Open in Terminal" click on an already-
+  // running drawer still gets typed in, not just the very first one that
+  // happened to also mint the session.
+  const pendingVersion = usePendingTerminalRequestVersion();
   const heightRef = useRef(height);
   heightRef.current = height;
   const drag = useRef<{ startY: number; startHeight: number } | null>(null);
@@ -194,6 +242,10 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
           // session that is about to vanish.
           if (sessions.some((s) => s.id === cached && s.alive)) {
             setSessionId(cached);
+            // Reattaching to an already-running shell — it did not just
+            // start in the request's `cwd`, so a `cd` (not just the
+            // command) is still needed.
+            sendPendingRequestIfAny(cached).catch(() => {});
             return;
           }
         } catch {
@@ -202,14 +254,28 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
         }
       }
       try {
+        // A brand-new session: peek (not consume) the pending request so a
+        // `cwd` it carries becomes the session's OWN starting directory —
+        // created there, no `cd` needed afterward — rather than the
+        // page's own `cwd` prop. Peeking, not taking, because the create
+        // POST can still fail or be abandoned below, in which case the
+        // request must still be there for the next attempt (retry, or the
+        // reattach branch above) to see.
+        const pending = peekPendingTerminalRequest();
+        const createCwd = pending?.cwd ?? cwd ?? undefined;
         // `createSessionOrAbandon` itself kills the new id server-side (and
         // returns null here) if `cancelled` has already flipped true by the
         // time the create POST resolves — closing the drawer before it
         // returns must not leak a live shell nothing will ever attach to.
-        const id = await createSessionOrAbandon(cwd ?? undefined, () => cancelled);
+        const id = await createSessionOrAbandon(createCwd, () => cancelled);
         if (id !== null) {
           setSessionId(id);
           saveState({ height: heightRef.current, sessionId: id });
+          // Only skip the `cd` when THIS session was actually created with
+          // the pending request's own cwd — a cached `cwd` prop (no
+          // pending request) means the request (if any arrives later) still
+          // needs its own `cd`.
+          sendPendingRequestIfAny(id, { skipCd: pending?.cwd !== undefined }).catch(() => {});
         }
       } catch (err) {
         if (!cancelled) {
@@ -225,6 +291,16 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
     // (the whole point is that the shell keeps running when you navigate).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, sessionId, retryTick]);
+
+  // A pending request that arrives while a session is ALREADY resolved
+  // (drawer already open, another "Open in Terminal" click on a different
+  // folder) — the effect above only ever runs when `sessionId` transitions
+  // away from null, so it never sees this case. This session was not just
+  // created in the request's cwd, so a full `cd` is always needed here.
+  useEffect(() => {
+    if (sessionId === null) return;
+    sendPendingRequestIfAny(sessionId).catch(() => {});
+  }, [sessionId, pendingVersion]);
 
   // `TerminalView`'s exit callback: clears the cached session id (React
   // state + localStorage, via `clearExitedSession`) and closes the drawer,
