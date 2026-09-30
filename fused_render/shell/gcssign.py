@@ -20,7 +20,7 @@ two:
     URL signing, which ONLY a service-account key can do locally — user oauth
     and ADC tokens can't sign, so they take the bearer path instead.
 
-Both resolvers are lazily backed by google-auth (the optional [cloud-auth]
+Both resolvers are lazily backed by google-auth (the optional [cloud]
 extra); absent, they return None and the caller keeps today's behavior.
 
 This module is PURE: no caching, no rc calls, no logging of tokens or URLs.

@@ -117,11 +117,11 @@ def probe() -> dict:
     bus = _dbus()
     image = _pillow()
     if bus is None:
-        shot_reason = ("screenshots need dbus-fast — pip install dbus-fast "
-                       "(the packaged app ships it)")
+        shot_reason = ("screenshots need dbus-fast — pip install "
+                       "'fused-render[desktop]' (the packaged app ships it)")
     elif image is None:
-        shot_reason = ("screenshots need Pillow — pip install pillow (the "
-                       "packaged app ships it)")
+        shot_reason = ("screenshots need Pillow — pip install "
+                       "'fused-render[desktop]' (the packaged app ships it)")
     elif not _portal_installed():
         shot_reason = (
             "no xdg-desktop-portal on this session — install "
@@ -182,7 +182,7 @@ def screenshot(out: str, spec: dict) -> dict:
 
     bus = _dbus()
     if bus is None:
-        raise Unsupported("screenshots need dbus-fast — pip install dbus-fast")
+        raise Unsupported("screenshots need dbus-fast — pip install 'fused-render[desktop]'")
     if not _portal_installed():
         raise Unsupported(
             "no xdg-desktop-portal on this session — install "
@@ -201,7 +201,7 @@ def screenshot(out: str, spec: dict) -> dict:
     image_mod = _pillow()
     if image_mod is None:
         raise Unsupported(
-            "cropping or writing a JPEG needs Pillow — pip install pillow")
+            "cropping or writing a JPEG needs Pillow — pip install 'fused-render[desktop]'")
     with image_mod.open(source) as picture:
         if rect:
             x, y, width, height = (int(n) for n in rect)

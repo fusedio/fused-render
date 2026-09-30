@@ -153,7 +153,30 @@ def _check_port_free(port: int) -> None:
         )
 
 
+def _require_serve_extras() -> None:
+    """Exit with the install line when this install lacks what `serve` needs.
+
+    `serve` is the whole desktop file explorer, and nearly every panel of it
+    stands on some extra (search and Repos on `[index]`, Preferences' Hugging
+    Face login on `[hf]`, private buckets on `[cloud]`, deploy/share/MCP on
+    `[fused]`). Booting it on the base install would open a shell that errors
+    in half its tabs, so it refuses up front and says what to install.
+    `fused-render open` is the command the base install is for.
+    """
+    from fused_render import extras
+
+    missing = extras.missing_for_serve()
+    if missing:
+        raise SystemExit(
+            "fused-render serve needs the full install; this one is missing "
+            f"{', '.join(f'[{m}]' for m in missing)}.\n"
+            f"  {extras.install_hint('all')}\n"
+            "The base install runs one app: fused-render open <github-url or path>"
+        )
+
+
 def _run_serve(args: argparse.Namespace) -> None:
+    _require_serve_extras()
     import uvicorn
 
     from fused_render.server import create_app
@@ -378,7 +401,9 @@ def _run_open(args: argparse.Namespace) -> None:
     export_app_env()
 
     url = embed_url(port, target)
-    print(f"fused-render open at {url}")
+    # Flushed: a caller reading this line through a pipe or a file (a script,
+    # CI) would otherwise wait on block buffering while the server runs.
+    print(f"fused-render open at {url}", flush=True)
 
     if not args.no_browser:
         def _open_when_ready():

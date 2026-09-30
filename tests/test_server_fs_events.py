@@ -288,7 +288,7 @@ def test_mount_dir_signal_unchanged_on_failure(home, monkeypatch):
 def test_mount_dir_signal_credentialed_direct_error_falls_back_to_rc(home, monkeypatch):
     # (finding 12 regression) direct_list_capable is now a PURE config-shape
     # check, so a credentialed-SHAPED S3/GCS remote is "capable" without its
-    # creds having been resolved. When they don't resolve (cloud-auth libs
+    # creds having been resolved. When they don't resolve ([cloud] libs
     # absent, ambient creds expired) direct_list_page raises DirectListError.
     # A non-root dir must fall back to rc_list_dir — the same recovery the
     # fs/list handler and the s3/gcs_direct_capable docstrings promise — rather

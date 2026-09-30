@@ -151,6 +151,10 @@ _IMPORT_TO_DIST = {
     # interpreter already meets a script's header (and so whether a venv is needed
     # at all). Import name and distribution name coincide.
     "packaging": "packaging",
+    # The venv builder behind project apps (core `dependencies`). Its Python
+    # package only locates the binary; a template has no reason to import it,
+    # but it ships, so the map names it.
+    "uv": "uv",
     # The Hub client, for the Preferences sign-in (routers/hf_auth.py, D402): hf
     # owns the token store, so the app imports hf rather than keeping a
     # credential of its own. Underscore in the import name, hyphen in the
@@ -159,8 +163,8 @@ _IMPORT_TO_DIST = {
     # a template that has to declare it, the same as `requests`.
     "huggingface_hub": "huggingface-hub",
     # mDNS for the LAN listener (lan.py advertises render.fused.local). A
-    # template has no business importing it, but it ships in core
-    # `dependencies`, so the map must name it like any other.
+    # template has no business importing it, but the bundle ships it through
+    # `[desktop]`, so the map must name it like any other.
     "zeroconf": "zeroconf",
     # AppKit, for the macOS clipboard bridge (shell/pasteboard/_darwin.py).
     # Only installed on darwin, so on Linux and Windows these map names nothing
@@ -183,8 +187,8 @@ _IMPORT_TO_DIST = {
     # Screenshot interface over D-Bus. linux-only, so the same harmless
     # maps-to-nothing shape as the pyobjc rows above on the other two platforms.
     "dbus_fast": "dbus-fast",
-    # The engine itself (a `[bundled]` requirement so the macOS force-list
-    # derives it — see pyproject and setup_py2app.py). Mapped, so
+    # The engine itself (core `dependencies`, with `[fused]` adding its extras;
+    # setup_py2app.py derives the macOS force-list from both). Mapped, so
     # `test_the_import_map_covers_everything_the_app_ships` stays satisfied, but
     # exempt from the COMPLETENESS half below — see _COMPLETENESS_EXEMPT.
     "fused": "fused",
@@ -208,11 +212,9 @@ _IMPORT_TO_DIST = {
     # completeness half stays honest; if a template ever does import it, the
     # same declare-or-fail rule applies as to any other bundled distribution.
     "cryptography": "cryptography",
-    # The live filesystem watcher (server/index_watch.py, index-live-watch):
-    # core `dependencies` (uvicorn only pulls it in transitively, under an
-    # extra we do not use — pyproject.toml says so at the `watchfiles>=1.0`
-    # line). A template has no business importing it, but it ships in core
-    # `dependencies`, so the map must name it like any other.
+    # The live filesystem watcher (server/index_watch.py, index-live-watch),
+    # from `[index]`. A template has no business importing it, but the bundle
+    # ships it, so the map must name it like any other.
     "watchfiles": "watchfiles",
 }
 
@@ -476,16 +478,25 @@ def _runpython_targets() -> frozenset[str]:
 
 @functools.lru_cache(maxsize=1)
 def _app_dists() -> frozenset[str]:
-    """What the app's own interpreter provides: `[bundled]` + core `dependencies`.
+    """What a packaged app's own interpreter provides: everything
+    `fused-render[bundled]` installs (the base, `[bundled]` and, through its
+    `[all]`, every feature extra).
 
-    Read from pyproject.toml, never restated: a second copy of the list is the
-    exact failure the predecessor of this file existed to prevent.
+    Read from pyproject.toml through setup_py2app's `declared_requirements`,
+    never restated: a second copy of the list is the exact failure the
+    predecessor of this file existed to prevent.
     """
-    pp = _pyproject()
-    return frozenset(
-        {_norm(d) for d in pp["project"]["optional-dependencies"]["bundled"]}
-        | {_norm(d) for d in pp["project"]["dependencies"]}
-    )
+    return frozenset(_norm(d) for d in _setup_py2app().declared_requirements("bundled"))
+
+
+@functools.lru_cache(maxsize=1)
+def _setup_py2app():
+    path = os.path.join(_REPO, "scripts", "setup_py2app.py")
+    spec = importlib.util.spec_from_file_location("_setup_py2app_for_reqs", path)
+    assert spec is not None and spec.loader is not None, f"cannot load {path}"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @functools.lru_cache(maxsize=1)
@@ -498,12 +509,7 @@ def _bundle_dists() -> frozenset[str]:
     today, and a second copy of an empty list is exactly the thing that is wrong
     the day it stops being empty.
     """
-    path = os.path.join(_REPO, "scripts", "setup_py2app.py")
-    spec = importlib.util.spec_from_file_location("_setup_py2app_for_reqs", path)
-    assert spec is not None and spec.loader is not None, f"cannot load {path}"
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return _app_dists() - {_norm(n) for n in module.BUNDLED_EXCLUDED}
+    return _app_dists() - {_norm(n) for n in _setup_py2app().BUNDLED_EXCLUDED}
 
 
 def test_the_import_map_covers_everything_the_app_ships():

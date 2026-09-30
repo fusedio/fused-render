@@ -328,7 +328,7 @@ def bearer_upstream_for(path: str) -> tuple[str, dict] | None:
         if not on_bearer_path and _gcs_signable(name, cfg):
             return None  # 307-signable and not on the bearer path -> not ours
         tok = _gcs_bearer_token(name, cfg)
-        if tok is None:  # not credentialed / no [cloud-auth] -> fall to serve
+        if tok is None:  # not credentialed / no [cloud] -> fall to serve
             return None
         url = _gcs_object_url(fs, rel)
         if url is None:
@@ -515,7 +515,7 @@ def _gcs_sign_mode_url(fs: str, rel: str,
     """GCS gsign mode via the shared single-flight machine. Only called for a
     SIGNABLE-SHAPED remote (an SA key is configured); the signer resolution is
     hoisted BEFORE the machine. When the signer momentarily fails to resolve (SA
-    file transiently unreadable, [cloud-auth] absent this window) we return
+    file transiently unreadable, [cloud] absent this window) we return
     "retry", NOT "bearer": a signable-shaped remote must serve bearer for THIS
     request WITHOUT permanently pinning bearer, so gsign is retried after the
     cache TTL (finding 2). Only a genuine validation reject pins bearer.

@@ -137,7 +137,7 @@ class _WatchEntry:
 
         direct_list_capable is a PURE config-shape check (finding 12): it's true
         for a credentialed-SHAPED S3/GCS remote whose creds haven't been resolved.
-        When they don't resolve (cloud-auth libs absent, ambient creds expired)
+        When they don't resolve ([cloud] libs absent, ambient creds expired)
         direct_list_page raises DirectListError. On a non-root dir we fall back to
         rc_list_dir — the recovery the fs/list handler and the
         s3/gcs_direct_capable docstrings promise — flowing into the shared error

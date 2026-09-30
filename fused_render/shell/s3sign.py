@@ -18,7 +18,7 @@ Two concerns, kept separate:
     keys, environment, shared credentials file), then — for a remote that opted
     into ambient auth (env_auth / profile) — an optional last rung that consults
     botocore's full provider chain (SSO / IMDS / credential_process /
-    assume-role) when [cloud-auth] is installed. With botocore absent, or when
+    assume-role) when [cloud] is installed. With botocore absent, or when
     it resolves nothing, the caller keeps its existing publiclink path.
 
 This module is PURE: no caching, no rc calls, no logging of URLs. Caching and

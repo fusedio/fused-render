@@ -35,11 +35,21 @@ older version or a checksum.
 
 **Python package** — for running fused-render inside a Python environment you
 already have, rather than as a desktop app. Each release attaches a wheel (see
-the release notes for its URL): `pip install <wheel-url>`. From a source
-checkout:
+the release notes for its URL). The base install runs one app:
 
 ```
-pip install -e .
+pip install <wheel-url>
+fused-render open https://github.com/<owner>/<repo>/tree/main/<app>
+```
+
+The full desktop explorer (`fused-render serve`) needs every feature extra,
+`pip install '<wheel-url>[all]'`; the extras on their own are `[index]` (file
+search), `[data]` (pyarrow for scripts), `[desktop]` (LAN sharing, capture,
+clipboard), `[hf]` (Hugging Face login), `[cloud]` (private buckets) and
+`[fused]` (deploy, share, MCP). From a source checkout:
+
+```
+pip install -e '.[all]'
 ```
 
 Requires Python 3.11+. Building from source and the local dev loop live in
@@ -62,8 +72,8 @@ Home opens on a file search, with everything on this machine below it:
 
 ## Run
 
-The downloaded app opens Home in a browser tab. From a pip install it's a
-command:
+The downloaded app opens Home in a browser tab. From a pip install with `[all]`
+it's a command:
 
 ```
 fused-render

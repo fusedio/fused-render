@@ -236,7 +236,7 @@ def test_resolver_expands_tilde_in_shared_credentials_file(tmp_path, monkeypatch
 # credential_process / assume-role) only when the static ladder found nothing
 # AND the remote opted into ambient auth (env_auth or a profile). botocore is
 # faked via sys.modules so the tests pin the DEGRADE contract regardless of
-# whether the [cloud-auth] extra is installed.
+# whether the [cloud] extra is installed.
 
 
 def _install_fake_botocore(monkeypatch, *, frozen=None, raises=False):
@@ -311,7 +311,7 @@ def test_botocore_exception_yields_none(monkeypatch):
 
 
 def test_botocore_absent_yields_none(monkeypatch):
-    # [cloud-auth] not installed: the lazy import raises ImportError -> None,
+    # [cloud] not installed: the lazy import raises ImportError -> None,
     # and the caller keeps today's publiclink path.
     monkeypatch.setitem(sys.modules, "botocore", None)
     monkeypatch.setitem(sys.modules, "botocore.session", None)
