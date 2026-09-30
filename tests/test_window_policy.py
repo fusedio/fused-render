@@ -3,9 +3,16 @@
 `mac_window.py` is AppKit and never imports in CI; every decision it acts on
 lives in `window_policy.py` so it can be pinned here on any platform.
 """
+import sys
+
 import pytest
 
 from fused_render import window_policy as wp
+
+# A macOS-only feature: the expectations below are POSIX paths (the module
+# joins with os.path, and a Windows run would spell `/dl\a.parquet`).
+pytestmark = pytest.mark.skipif(sys.platform == "win32",
+                                reason="macOS-only windows; POSIX path expectations")
 
 PORT = 1777
 APP = f"http://127.0.0.1:{PORT}"

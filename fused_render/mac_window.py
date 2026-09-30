@@ -870,11 +870,17 @@ class WindowManager:
                 return
         self.open(url)
 
+    def _is_home(self, w: _Window) -> bool:
+        # The shell's home is `/` (which redirects to `/apps`); a window on
+        # /tasks or /preferences has no key either but is not Home.
+        path = urllib.parse.urlsplit(w.current_url() or "").path.rstrip("/")
+        return path in ("", "/apps")
+
     def show_home(self) -> None:
-        """A window already showing the shell home (no app, no file) comes
-        to the front — the key/front one if several — otherwise a fresh Home
-        window opens, even if app windows are open."""
-        homes = [w for w in self._windows if not w.key]
+        """A window already showing the shell home comes to the front — the
+        key/front one if several — otherwise a fresh Home window opens, even
+        if app windows are open."""
+        homes = [w for w in self._windows if w.ns is not None and self._is_home(w)]
         if homes:
             win = homes[-1]
             for w in reversed(homes):  # prefer the key/front one
