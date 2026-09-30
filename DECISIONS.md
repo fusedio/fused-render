@@ -6046,3 +6046,52 @@ would have silently dropped anthropic).
 - New tests: the fused pin must request `mcp`; every requested extra must be
   in the installed fused's `Provides-Extra`; `anthropic` is byte-identical in
   both extras.
+
+## Terminal hook: open the drawer in a folder / run a command in it (2026-09-30)
+
+Four pieces wired end to end: `POST /api/terminal/{sid}/input` (writes raw
+bytes into the pty), `terminalDockStore`'s one-slot pending-request queue
+(`openTerminal`/`takePendingTerminalRequest`), `TerminalDrawer`'s consume-once
+send on session-ready, and `fused.terminal.open`/`.run` on `window.fused`.
+
+- **Delivery pattern: stop-at-first-match, not broadcast.** `runtime.js`'s
+  `noteOpenTerminal` climbs the same-origin ancestor chain and calls the
+  first `_fusedOpenTerminal` it finds, then stops — the same choice
+  `noteAskClaude`/`_fusedClaudeAsk` made over `noteSnapshotSelected`'s
+  broadcast-to-every-ancestor pattern, for the same reason: opening a
+  terminal (or running a command in one) is a real, non-idempotent shell
+  action, not state every ancestor should independently observe.
+- **`skipCd` in `sendPendingRequestIfAny`.** A brand-new session is created
+  directly in the pending request's own `cwd` (no separate `cd` needed), so
+  the create path calls `sendPendingRequestIfAny(id, { skipCd: true })` to
+  send only the bare `command`; a reattach to an existing/cached session
+  (which was not created in that directory) always sends the full
+  `cd '<cwd>' && <command>`.
+- **No client-side Windows gating exists for the terminal chip/drawer** —
+  `TerminalDock.tsx`/`TerminalDrawer.tsx`/`App.tsx` carry none; Windows is
+  refused purely server-side (the routes 501). `runtime.js`'s
+  `terminalUnsupportedReason()` adds a best-effort, non-authoritative
+  `navigator`-based Windows check ONLY for `fused.terminal.open`/`.run` (a
+  page author's own affordance, not the shell's), so a page can hide its own
+  "run in terminal" button without waiting on a round trip; the server 501
+  still stands as the real guard if this check is ever wrong for some UA.
+- **`window._fusedOpenTerminal` is not installed under `IS_EMBED`.**
+  `App.tsx` mounts `TerminalDrawer` only outside embed, so an embedded page's
+  `fused.terminal.open()` gets the same "no shell host" rejection a
+  standalone page gets, not a promise that resolves into a drawer that never
+  appears.
+- **Explorer's "Open in Terminal" lives in `EntryActionsMenu.tsx`'s
+  `useAppActionRows`, in its own returned `terminal` array** (mirroring
+  `embed`), not folded into `app`: it acts on the folder/file itself, not on
+  whether it happens to be an app, so it must show on a plain folder too.
+  Each caller (`Listing.tsx`, `Preview.tsx`) slots it into the `open`
+  bar-menu group (Reveal in Finder, Open in New Tab, the splits) — "the same
+  place, elsewhere" is exactly what the row does. `dir` (the hook's existing
+  folder-vs-parent-of-file derivation) is already the right cwd for both
+  callers, so no new path logic was needed. Empty under `IS_EMBED`, for the
+  same reason `_fusedOpenTerminal` is not installed there.
+- **`fused.terminal.*` in `docs/EXPORT.md`'s portable-subset table**: ❌, not
+  a blocking export error (dotted call, like `fused.capture.*`) — the local
+  runtime already rejects with a plain Error when there is no shell host, so
+  the hosted stub does the same unconditionally; gate any UI on
+  `fused.env === "local"`.
