@@ -39,7 +39,8 @@ installDomShim();
 // dynamic import exactly like terminalSession.test.ts's own.
 const TerminalDrawerModule = await import("@shell/TerminalDrawer");
 const TerminalDrawer = TerminalDrawerModule.default;
-const { clearExitedSession, createSessionOrAbandon, sendPendingRequestIfAny } = TerminalDrawerModule;
+const { clearExitedSession, createSessionOrAbandon, sendPendingRequestIfAny, TerminalBusyError } =
+  TerminalDrawerModule;
 
 // A minimal in-memory `localStorage` — bun's test runtime has no real one
 // (viewstate.test.ts's own header) — scoped to this file only and restored
@@ -373,6 +374,71 @@ test("take() is called exactly once per invocation (consume-once is the caller's
     },
   );
   expect(calls).toBe(1);
+});
+
+// ---- sendPendingRequestIfAny: the pty-busy (409) fallback -----------------
+
+test("409 on send: copies the plain command to the clipboard and throws TerminalBusyError instead of the raw error", async () => {
+  const copied: string[] = [];
+  const attempt = sendPendingRequestIfAny(
+    "sid-1",
+    {},
+    {
+      take: () => ({ cwd: "/tmp/foo", command: "ls" }),
+      send: async () => {
+        throw Object.assign(new Error("terminal is busy"), { status: 409 });
+      },
+      copy: async (text: string) => {
+        copied.push(text);
+        return true;
+      },
+    },
+  );
+  await expect(attempt).rejects.toThrow(TerminalBusyError);
+  // Bracketed-paste/`\r` framing stripped: the clipboard gets plain text a
+  // person would actually want to paste, not the raw control bytes.
+  expect(copied).toEqual(["cd '/tmp/foo' && ls"]);
+});
+
+test("409 with no cwd (command only): still copies the plain command, `\\r` stripped", async () => {
+  const copied: string[] = [];
+  const attempt = sendPendingRequestIfAny(
+    "sid-1",
+    {},
+    {
+      take: () => ({ command: "claude" }),
+      send: async () => {
+        throw Object.assign(new Error("busy"), { status: 409 });
+      },
+      copy: async (text: string) => {
+        copied.push(text);
+        return true;
+      },
+    },
+  );
+  await expect(attempt).rejects.toThrow(TerminalBusyError);
+  expect(copied).toEqual(["claude"]);
+});
+
+test("a non-409 send failure propagates as-is, with no clipboard fallback", async () => {
+  const copied: string[] = [];
+  const boom = Object.assign(new Error("connection dropped"), { status: 500 });
+  const attempt = sendPendingRequestIfAny(
+    "sid-1",
+    {},
+    {
+      take: () => ({ command: "ls" }),
+      send: async () => {
+        throw boom;
+      },
+      copy: async (text: string) => {
+        copied.push(text);
+        return true;
+      },
+    },
+  );
+  await expect(attempt).rejects.toBe(boom);
+  expect(copied).toEqual([]);
 });
 
 test("closeTerminalDock stays idempotent when called on an already-closed drawer", () => {
