@@ -207,13 +207,17 @@ export async function getJson<T>(
   return data as T;
 }
 
-// One mutating-request helper for both PUT and POST — they differ only in the
-// method. X-Fused forces a CORS preflight so a foreign page can't write blind
-// (the D3 guard the reveal/write/clone endpoints require).
-async function mutateJson<T>(
-  method: "PUT" | "POST",
+// One mutating-request helper for PUT, POST and DELETE — they differ only in
+// the method and (DELETE) in having no request body. X-Fused forces a CORS
+// preflight so a foreign page can't write blind (the D3 guard the
+// reveal/write/clone endpoints require). `body` is optional so a bodyless
+// DELETE shares this instead of duplicating the fetch/header/HttpError
+// plumbing in its own function — `Content-Type` is only sent when there
+// actually is a JSON body.
+export async function mutateJson<T>(
+  method: "PUT" | "POST" | "DELETE",
   url: string,
-  body: unknown,
+  body?: unknown,
   opts?: { signal?: AbortSignal; headers?: Record<string, string> },
 ): Promise<T> {
   const res = await fetch(url, {
@@ -226,10 +230,10 @@ async function mutateJson<T>(
     headers: {
       ...ambientSourceHeaders(),
       ...(opts?.headers ?? {}),
-      "Content-Type": "application/json",
+      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
       "X-Fused": "1",
     },
-    body: JSON.stringify(body),
+    body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: opts?.signal,
   });
   const data = await res.json();
@@ -243,23 +247,6 @@ export const postJson = <T>(
   body: unknown,
   opts?: { signal?: AbortSignal; headers?: Record<string, string> },
 ) => mutateJson<T>("POST", url, body, opts);
-
-// A DELETE has no request body, so it can't share `mutateJson`'s signature —
-// same ambient headers, same `X-Fused` write guard, same thrown-`HttpError`
-// contract as `getJson`/`postJson` above, just no `body`/`Content-Type`.
-export async function deleteJson<T>(
-  url: string,
-  opts?: { signal?: AbortSignal; headers?: Record<string, string> },
-): Promise<T> {
-  const res = await fetch(url, {
-    method: "DELETE",
-    headers: { ...ambientSourceHeaders(), ...(opts?.headers ?? {}), "X-Fused": "1" },
-    signal: opts?.signal,
-  });
-  const data = await res.json();
-  if (!res.ok) throw httpError(data, res.status);
-  return data as T;
-}
 
 export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");

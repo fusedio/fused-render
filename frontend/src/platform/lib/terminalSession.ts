@@ -21,7 +21,7 @@
 // PLAN-status-bar-terminal.md) — everything here is testable against a fake
 // WebSocket with no renderer involved. `platform/ui/TerminalView.tsx` is the
 // thin xterm.js wrapper that owns one of these.
-import { deleteJson, postJson } from "@platform/lib/api";
+import { mutateJson, postJson } from "@platform/lib/api";
 
 export type TerminalStatus = "connecting" | "open" | "closed";
 
@@ -88,7 +88,7 @@ export function createTerminalSession(cwd?: string): Promise<string> {
  * the server's registry with nothing left to kill it, unless this is called
  * on it explicitly. */
 export function killTerminalSession(id: string): Promise<{ ok: boolean }> {
-  return deleteJson<{ ok: boolean }>(`/api/terminal/${encodeURIComponent(id)}`);
+  return mutateJson<{ ok: boolean }>("DELETE", `/api/terminal/${encodeURIComponent(id)}`);
 }
 
 /** POST /api/terminal/{id}/input — write a string straight into the pty
