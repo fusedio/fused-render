@@ -37,6 +37,6 @@ def test_runtime_listdir_rejects_with_server_error():
 
 
 def test_authoring_skill_documents_listdir():
-    skill = (Path(fused_render.__file__).parent.parent
+    skill = (Path(__file__).resolve().parents[1]
              / "skills" / "fused-render-authoring" / "SKILL.md")
     assert "`await fused.listDir(path)`" in skill.read_text(encoding="utf-8")
