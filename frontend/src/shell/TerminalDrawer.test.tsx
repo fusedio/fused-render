@@ -39,7 +39,7 @@ installDomShim();
 // dynamic import exactly like terminalSession.test.ts's own.
 const TerminalDrawerModule = await import("@shell/TerminalDrawer");
 const TerminalDrawer = TerminalDrawerModule.default;
-const { clearExitedSession } = TerminalDrawerModule;
+const { clearExitedSession, createSessionOrAbandon } = TerminalDrawerModule;
 
 // A minimal in-memory `localStorage` — bun's test runtime has no real one
 // (viewstate.test.ts's own header) — scoped to this file only and restored
@@ -261,6 +261,44 @@ test("clearExitedSession while the drawer is already closed still clears the cac
   expect(open).toBe(false);
   const stored = JSON.parse(localStorage.getItem("fused-render:terminal-drawer") as string);
   expect(stored).toEqual({ height: 260, sessionId: null });
+});
+
+// ---- createSessionOrAbandon (cancelled-create leaks no live shell) --------
+
+test("create resolving after cancel kills that id and returns null instead of setting state", async () => {
+  const killed: string[] = [];
+  const result = await createSessionOrAbandon(undefined, () => true, {
+    create: async () => "new-id",
+    kill: async (id: string) => {
+      killed.push(id);
+      return { ok: true };
+    },
+  });
+  expect(result).toBeNull();
+  expect(killed).toEqual(["new-id"]);
+});
+
+test("create resolving before cancel returns the id and never kills it", async () => {
+  const killed: string[] = [];
+  const result = await createSessionOrAbandon(undefined, () => false, {
+    create: async () => "new-id",
+    kill: async (id: string) => {
+      killed.push(id);
+      return { ok: true };
+    },
+  });
+  expect(result).toBe("new-id");
+  expect(killed).toEqual([]);
+});
+
+test("a kill that itself rejects is swallowed, not thrown back at the caller", async () => {
+  const result = await createSessionOrAbandon(undefined, () => true, {
+    create: async () => "new-id",
+    kill: async () => {
+      throw new Error("server unreachable");
+    },
+  });
+  expect(result).toBeNull();
 });
 
 test("closeTerminalDock stays idempotent when called on an already-closed drawer", () => {

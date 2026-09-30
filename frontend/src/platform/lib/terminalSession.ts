@@ -21,7 +21,7 @@
 // PLAN-status-bar-terminal.md) — everything here is testable against a fake
 // WebSocket with no renderer involved. `platform/ui/TerminalView.tsx` is the
 // thin xterm.js wrapper that owns one of these.
-import { postJson } from "@platform/lib/api";
+import { deleteJson, postJson } from "@platform/lib/api";
 
 export type TerminalStatus = "connecting" | "open" | "closed";
 
@@ -79,6 +79,16 @@ export function terminalStreamUrl(id: string): string {
  * to it with `new TerminalSession({ id, ... })`. */
 export function createTerminalSession(cwd?: string): Promise<string> {
   return postJson<{ id: string }>("/api/terminal", cwd ? { cwd } : {}).then((r) => r.id);
+}
+
+/** DELETE /api/terminal/{id} — kill a pty session server-side. Used for a
+ * session nobody ever attaches to: a create that resolves after its caller
+ * has already moved on (the drawer closed, or a React StrictMode
+ * double-mount tore down the effect that started it) leaves an id alive in
+ * the server's registry with nothing left to kill it, unless this is called
+ * on it explicitly. */
+export function killTerminalSession(id: string): Promise<{ ok: boolean }> {
+  return deleteJson<{ ok: boolean }>(`/api/terminal/${encodeURIComponent(id)}`);
 }
 
 /** One attached terminal: owns the WebSocket for a pty session id, decodes
@@ -150,8 +160,10 @@ export class TerminalSession {
     }
     if (msg && typeof msg === "object" && "exit" in msg) {
       // A dead server-side session is gone for good — reconnecting after
-      // this would just get another 1008 close from the route (see
-      // routers/terminal.py: unknown/dead ids reject the handshake).
+      // this would just get another `{"exit": null}`-then-close from the
+      // route for the same id (see routers/terminal.py: an id the registry
+      // no longer knows, reaped or never created, gets that same exit frame
+      // rather than a bare reject).
       this.exited = true;
       if (this.retryTimer !== null) {
         clearTimeout(this.retryTimer);

@@ -244,6 +244,23 @@ export const postJson = <T>(
   opts?: { signal?: AbortSignal; headers?: Record<string, string> },
 ) => mutateJson<T>("POST", url, body, opts);
 
+// A DELETE has no request body, so it can't share `mutateJson`'s signature —
+// same ambient headers, same `X-Fused` write guard, same thrown-`HttpError`
+// contract as `getJson`/`postJson` above, just no `body`/`Content-Type`.
+export async function deleteJson<T>(
+  url: string,
+  opts?: { signal?: AbortSignal; headers?: Record<string, string> },
+): Promise<T> {
+  const res = await fetch(url, {
+    method: "DELETE",
+    headers: { ...ambientSourceHeaders(), ...(opts?.headers ?? {}), "X-Fused": "1" },
+    signal: opts?.signal,
+  });
+  const data = await res.json();
+  if (!res.ok) throw httpError(data, res.status);
+  return data as T;
+}
+
 export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");
 }

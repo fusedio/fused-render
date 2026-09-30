@@ -13,9 +13,11 @@
 // know it works": "Reload the page: the same shell is still there with its
 // history"). A cached id is verified against `GET /api/terminal`'s live list
 // before reuse — a dev-server restart invalidates the server's registry but
-// not this page's localStorage, and a stale id would otherwise attach to
-// nothing (the WS route closes 1008 without ever accepting, before
-// `TerminalSession` could see a real `{"exit":...}` frame to explain why).
+// not this page's localStorage, and this check just avoids a needless
+// open-then-exit flash: the WS route now accepts even an unknown/reaped id,
+// sends it the same `{"exit": null}` frame a normally-dying session sends,
+// and closes, so `TerminalSession`'s ordinary exit handling would recover
+// on its own either way.
 //
 // STAYS MOUNTED WHILE CLOSED (App.tsx renders it unconditionally, guarded
 // only by `!IS_EMBED`): closing the drawer must not kill the pty session
@@ -47,7 +49,7 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 
 import TerminalView from "@platform/ui/TerminalView";
-import { createTerminalSession } from "@platform/lib/terminalSession";
+import { createTerminalSession, killTerminalSession } from "@platform/lib/terminalSession";
 import { getJson } from "@platform/lib/api";
 import { isMod } from "@platform/lib/platform";
 import { closeTerminalDock, toggleTerminalDock, useTerminalDockOpen } from "@shell/terminalDockStore";
@@ -102,17 +104,48 @@ export function clearExitedSession(height: number): void {
   closeTerminalDock();
 }
 
+/** The verify-or-create effect's create step, factored out so it is directly
+ * testable without mounting the drawer: `createTerminalSession` is a POST
+ * that can resolve well after the caller has stopped caring (the drawer
+ * closed, or a React StrictMode double-mount tore down the effect that
+ * started it). If `isCancelled()` is true by the time it resolves, the new
+ * id is killed server-side instead of being dropped on the floor — an
+ * unkilled one sits alive in the registry, counting against its 8-session
+ * cap, with no reference left anywhere to ever kill it. `deps` lets a test
+ * substitute both calls; real callers get the real ones. */
+export async function createSessionOrAbandon(
+  cwd: string | undefined,
+  isCancelled: () => boolean,
+  deps: {
+    create?: (cwd?: string) => Promise<string>;
+    kill?: (id: string) => Promise<{ ok: boolean }>;
+  } = {},
+): Promise<string | null> {
+  const create = deps.create ?? createTerminalSession;
+  const kill = deps.kill ?? killTerminalSession;
+  const id = await create(cwd);
+  if (isCancelled()) {
+    kill(id).catch(() => {
+      // Best-effort: the drawer that would have surfaced this is already
+      // gone, so there is no UI left to report it to.
+    });
+    return null;
+  }
+  return id;
+}
+
 export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
   const open = useTerminalDockOpen();
   const [height, setHeight] = useState(() => loadState().height);
-  // Deliberately NOT seeded from `loadState().sessionId` (finding 2): doing
-  // that made this state non-null on first render whenever a cached id
-  // existed, which made the effect below bail out on its OWN guard
-  // (`sessionId !== null`) before the cached id was ever checked against the
-  // live registry — a stale id from a dev-server restart would then be
-  // handed straight to `TerminalView`, which can only find out it is dead by
-  // opening a socket the server immediately closes 1008 with no `{"exit":}`
-  // frame to explain why. Starting at `null` guarantees the verify-or-create
+  // Deliberately NOT seeded from `loadState().sessionId`: doing that made
+  // this state non-null on first render whenever a cached id existed, which
+  // made the effect below bail out on its OWN guard (`sessionId !== null`)
+  // before the cached id was ever checked against the live registry — a
+  // stale id from a dev-server restart would then be handed straight to
+  // `TerminalView`, which would only find out it is dead after opening a
+  // socket (the server does accept it and send an exit frame, but only
+  // after that round trip — a needless flash this file's own verify step
+  // above avoids). Starting at `null` guarantees the verify-or-create
   // effect always runs once per drawer open.
   const [sessionId, setSessionId] = useState<string | null>(null);
   // Finding 7: `createTerminalSession` can reject (server down, 501 on
@@ -170,8 +203,12 @@ export default function TerminalDrawer({ cwd }: { cwd?: string | null }) {
         }
       }
       try {
-        const id = await createTerminalSession(cwd ?? undefined);
-        if (!cancelled) {
+        // `createSessionOrAbandon` itself kills the new id server-side (and
+        // returns null here) if `cancelled` has already flipped true by the
+        // time the create POST resolves — closing the drawer before it
+        // returns must not leak a live shell nothing will ever attach to.
+        const id = await createSessionOrAbandon(cwd ?? undefined, () => cancelled);
+        if (id !== null) {
           setSessionId(id);
           saveState({ height: heightRef.current, sessionId: id });
         }
