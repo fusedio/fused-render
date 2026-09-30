@@ -176,12 +176,24 @@ def _run_warm_and_untrack() -> None:
     it actually wrote a fresh rule table — clears `_warm_kicked` so a LATER
     empty-cache read gets its own attempt (subject to the backoff above)
     instead of finding the guard permanently spent by one that didn't pan
-    out (offline mid-attempt, the shim erroring, a stale token)."""
+    out (offline mid-attempt, the shim erroring, a stale token). `wrote`
+    starts `False` and the clear happens in `finally`, so an exception out
+    of `warm_rules_cache` — `_write_cache` can raise `OSError` (a full
+    disk, a state dir that became unwritable) — still releases the guard
+    instead of leaving it stuck `True` for the rest of the process, same as
+    any other failed attempt. This is a background daemon thread with
+    nothing watching it, so the exception is swallowed (logged) rather than
+    left to crash silently AND leave the guard stuck."""
     global _warm_kicked
-    wrote = warm_rules_cache()
-    if not wrote:
-        with _warm_kicked_lock:
-            _warm_kicked = False
+    wrote = False
+    try:
+        wrote = warm_rules_cache()
+    except Exception:
+        logger.exception("share-rules warm-up failed")
+    finally:
+        if not wrote:
+            with _warm_kicked_lock:
+                _warm_kicked = False
 
 
 def reset_for_tests() -> None:

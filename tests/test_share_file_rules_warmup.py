@@ -251,3 +251,43 @@ def test_warmup_retries_after_a_signed_out_read_and_then_signing_in(tmp_path, mo
     assert after["can_share"] is True
     assert after["refusal"] is None
     assert after["viewer"] == "Markdown_File"
+
+
+def test_warmup_retries_after_the_warm_itself_raises(tmp_path, monkeypatch):
+    """Bugbot finding: `_run_warm_and_untrack` only cleared `_warm_kicked`
+    when `warm_rules_cache` returned `False` — an exception out of it (e.g.
+    `share_file_rules._write_cache` raising `OSError` on a full disk or an
+    unwritable state dir) skipped that `if not wrote` line entirely, so the
+    guard stuck `True` for the rest of the process and no later empty-cache
+    read ever retried. Drives `_kick_warm_once` directly (rather than
+    through a route) so the background thread's exception is deterministic
+    and this test doesn't depend on hitting the real filesystem to trigger
+    an `OSError`."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(share_app_mod, "STATE_DIR", str(tmp_path / "home"))
+    _isolate_state_dir(tmp_path, monkeypatch)
+    _sign_in(tmp_path, monkeypatch)
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(share_file_mod, "warm_rules_cache", boom)
+
+    thread = share_file_mod._kick_warm_once(name="test-boom")
+    assert thread is not None, "signed in with an empty guard should have kicked a thread"
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+    assert share_file_mod._warm_kicked is False, (
+        "an exception out of warm_rules_cache must still release the guard")
+
+    # And the release actually enables a retry, not just the internal flag:
+    # a second kick (past the backoff, forced open here since the test
+    # doesn't want to sleep 5s) must be allowed to fire again.
+    monkeypatch.setattr(share_file_mod, "_warm_last_attempt", 0.0)
+    called = []
+    monkeypatch.setattr(share_file_mod, "warm_rules_cache", lambda: called.append(1) or True)
+    thread2 = share_file_mod._kick_warm_once(name="test-retry")
+    assert thread2 is not None
+    thread2.join(timeout=5)
+    assert called == [1]
