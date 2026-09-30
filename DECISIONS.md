@@ -6061,20 +6061,31 @@ send on session-ready, and `fused.terminal.open`/`.run` on `window.fused`.
   broadcast-to-every-ancestor pattern, for the same reason: opening a
   terminal (or running a command in one) is a real, non-idempotent shell
   action, not state every ancestor should independently observe.
-- **`skipCd` in `sendPendingRequestIfAny`.** A brand-new session is created
-  directly in the pending request's own `cwd` (no separate `cd` needed), so
-  the create path calls `sendPendingRequestIfAny(id, { skipCd: true })` to
-  send only the bare `command`; a reattach to an existing/cached session
-  (which was not created in that directory) always sends the full
-  `cd '<cwd>' && <command>`.
-- **No client-side Windows gating exists for the terminal chip/drawer** —
-  `TerminalDock.tsx`/`TerminalDrawer.tsx`/`App.tsx` carry none; Windows is
-  refused purely server-side (the routes 501). `runtime.js`'s
-  `terminalUnsupportedReason()` adds a best-effort, non-authoritative
-  `navigator`-based Windows check ONLY for `fused.terminal.open`/`.run` (a
-  page author's own affordance, not the shell's), so a page can hide its own
-  "run in terminal" button without waiting on a round trip; the server 501
-  still stands as the real guard if this check is ever wrong for some UA.
+- **`sendPendingRequestIfAny`'s `createdCwd` opt.** A brand-new session is
+  created directly in the pending request's own `cwd` (no separate `cd`
+  needed), so the create path calls `sendPendingRequestIfAny(id, {
+  createdCwd: createCwd })`; the `cd` is skipped only if the request
+  `take()` actually returns still carries that same `cwd` — compared against
+  the taken request, never the one peeked before the create POST, because a
+  newer request can replace the one-slot pending request during that
+  `await`. A reattach to an existing/cached session (which was not created
+  in that directory) always sends the full `cd '<cwd>' && <command>`.
+- **Client-side Windows gating exists for the terminal chip/drawer/shortcut
+  and the explorer's "Open in Terminal" row** — `platform/lib/platform.ts`'s
+  `isWindows` (same `userAgentData`/`userAgent` detection as `isMac`,
+  anchored `/^win/i` so it cannot match "Darwin"). `App.tsx` mounts neither
+  `TerminalDrawer` (and, with it, its `Ctrl+`` toggle listener) nor
+  `TerminalDock`'s chip when `isWindows`; `EntryActionsMenu.tsx`'s `terminal`
+  row is empty under the same check. This is best-effort and client-side
+  only — the server 501s on Windows regardless (`terminal_profiles.py`,
+  `os.name == "nt"`) and remains the real guard, surfaced through
+  `TerminalDrawer`'s `createError` banner if the UA check is ever wrong.
+  `runtime.js`'s `terminalUnsupportedReason()` is the separate,
+  page-author-facing check for `fused.terminal.open`/`.run`, using the same
+  anchored regex (it previously used an unanchored `/win/i`, which matched
+  "Darwin", macOS's own `uname` string) and now shares one
+  `noteTerminalRequestOrReject` helper with both calls instead of repeating
+  the reject/note/resolve sequence twice.
 - **`window._fusedOpenTerminal` is not installed under `IS_EMBED`.**
   `App.tsx` mounts `TerminalDrawer` only outside embed, so an embedded page's
   `fused.terminal.open()` gets the same "no shell host" rejection a
@@ -6095,3 +6106,81 @@ send on session-ready, and `fused.terminal.open`/`.run` on `window.fused`.
   runtime already rejects with a plain Error when there is no shell host, so
   the hosted stub does the same unconditionally; gate any UI on
   `fused.env === "local"`.
+- **`shell/terminalDockStore` is in `check-boundaries.mjs`'s
+  `SHELL_OPEN_TO_APPS` allowlist**, alongside `tasksPulse`/`tasks-lib`: the
+  explorer's "Open in Terminal" row calls its `openTerminal` directly rather
+  than importing `TerminalDrawer.tsx` or any other shell component, and the
+  store itself imports only React's `useSyncExternalStore` — a pure module
+  with no shell component riding along, the same shape that earns the other
+  allowlisted modules their entry.
+- **Directory rows' "Open in Terminal" opens the directory itself, not its
+  parent.** `Preview.tsx`'s `fileGroups()` cwd is `stat.is_dir ? fsPath :
+  dirname(fsPath)` — a bare `dirname(fsPath)` (right for a file) opened a
+  directory's own PARENT when reached through `FallbackPreview`'s
+  unconditional `onContextMenu`. The duplicate "Open in Terminal" row
+  `buildFileMenu` assembled from `appRows.terminal` on top of `fileGroups()`'s
+  own `own.open` (which already carries one) is removed from `open`.
+- **`TerminalDrawer` re-verifies its held session id on every closed→open
+  transition**, not just once per page load (`wasOpenRef`/`useEffect`
+  resetting `sessionId` to `null` on a `true`→`false`→open transition): the
+  shell can die, or a dev-server restart can reap the whole registry, while
+  the drawer is closed and no mounted `TerminalView` is around to observe an
+  exit frame and clear the cached id. Resetting costs nothing —
+  `loadState().sessionId` still holds the cached id — so the verify-or-create
+  effect re-reads and reattaches (or re-creates) on the next open instead of
+  handing `TerminalView` a dead id.
+- **Failed `sendPendingRequestIfAny` calls surface in the drawer's error
+  banner** (`reportPendingSendFailure`) instead of the previous
+  `.catch(() => {})`: a 409 (the pty's foreground process isn't the shell
+  itself — see below) gets its own actionable line, anything else falls back
+  to the generic "Couldn't send the pending terminal request" line, rather
+  than a request silently vanishing with nothing typed and no explanation.
+- **`POST /api/terminal/{id}/input` 409s while the shell isn't the pty's
+  foreground process group.** `PtySession.shell_is_foreground()` compares
+  `os.tcgetpgrp(master_fd)` against `os.getpgid(proc.pid)` — true only when
+  the shell itself, not some child it's running, currently owns the
+  terminal. Without this, "open in terminal / run a command" could type
+  `cd ... && cmd\r` into whatever foreground program the shell is already
+  running (e.g. `sleep 30`) instead of refusing. The route's own
+  `test_terminal_routes.py` coverage for a PLAIN input POST right after
+  create polls `shell_is_foreground()` before asserting 200: the child's own
+  `setsid()` (inside `_pty_exec_helper.py`) is a real race against the
+  create POST's response landing, and `tcgetpgrp` reads back `0` (no
+  exception) until it lands. Real HTTP round-trip latency makes this
+  vanishingly unlikely to bite a real client firing the input POST right
+  after create, but it is a genuine narrow window, not just a test
+  artifact — `TerminalDrawer`'s existing `createError` surfacing (see above)
+  is the user-visible fallback if it ever does.
+- **The WS receive loop ignores a non-dict control frame** (`5`, `[1, 2]`
+  parsed as valid JSON but with no `.get`) instead of letting an
+  `AttributeError` propagate past `except WebSocketDisconnect` and kill the
+  whole socket over one stray frame; a resize whose `rows`/`cols` fall
+  outside `1..65535` is similarly ignored rather than reaching
+  `struct.pack`'s `"HHHH"` format, which raises `struct.error` outside that
+  range. `PtySession.resize()` carries its own `try/except struct.error`
+  guard as a second line of defense for any other caller.
+- **`terminal_profiles.resolve_profile()` falls through `$SHELL` → `/bin/bash`
+  → `/bin/sh`**, each checked with `executable()`, instead of trusting a SET
+  `$SHELL` unconditionally. A stale `$SHELL` (uninstalled, a path that never
+  existed on this machine) is not "the user asked for no terminal" — it
+  falls through to the next candidate, and only reports unsupported once
+  none of the three resolve.
+- **`platform/lib/api.ts`'s `deleteJson` is gone; `mutateJson` is exported
+  and takes `"PUT" | "POST" | "DELETE"` with an optional `body`.** It had
+  exactly one caller (`terminalSession.ts`'s `killTerminalSession`), so
+  there was no reason to keep a thin single-purpose wrapper duplicating
+  `mutateJson`'s header/body logic — `mutateJson` now only attaches
+  `Content-Type`/a JSON body when `body !== undefined`, which a bodyless
+  DELETE relies on.
+- **`TerminalView`'s xterm instance does not set `convertEol`.** The pty
+  already sends `\r\n` line endings (a real terminal, not raw `\n` text), so
+  forcing every `\n` to render as `\r\n` doubled blank lines that were
+  already CRLF.
+- **`TerminalView` swallows the drawer's own toggle chord before xterm sees
+  it** (`attachCustomKeyEventHandler`, `isDrawerToggleChord`): without this,
+  focus inside the terminal meant Ctrl+`` / Cmd+Shift+`` typed a backtick
+  into the shell instead of closing the drawer, since xterm's own keydown
+  handler ran before the drawer's document-level listener could. The
+  document-level listener itself is registered with `{ capture: true }` so
+  it fires before xterm's own (bubble-phase) handler regardless of DOM
+  order.
