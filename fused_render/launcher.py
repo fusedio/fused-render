@@ -119,13 +119,15 @@ def modifier_display(spec: str) -> str:
 
 def settings() -> dict:
     """What the pages read: both shortcuts with display forms, whether the
-    panel exists on this platform at all, and — when the app is running —
-    whether the system accepted the bindings (None = nothing has tried)."""
+    panel exists in THIS process (the packaged macOS app installs the
+    hooks; a `fused-render serve` on a Mac has no panel, so the Preferences
+    section stays hidden there), and whether the system accepted the
+    bindings (None = nothing has tried)."""
     spec, row = get_hotkey(), get_row_modifier()
     bound = native_hooks.get("hotkey_bound")
     pinned = native_hooks.get("pinned_bound")
     return {
-        "available": sys.platform == "darwin",
+        "available": sys.platform == "darwin" and "rebind" in native_hooks,
         "hotkey": spec,
         "display": hotkey.display(spec),
         "row_modifier": row,

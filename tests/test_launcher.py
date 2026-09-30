@@ -6,12 +6,19 @@ imports in CI; everything it acts on is pinned here.
 """
 import json
 import os
+import sys
 
 import pytest
 from fastapi.testclient import TestClient
 
 from fused_render import hotkey, launcher
 from fused_render.server import create_app
+
+# A macOS-only feature: the registry answers canonical (forward-slash) paths
+# and the expectations below compare them with `str(tmp_path)` — backslashed
+# on Windows, where the panel never exists anyway.
+pytestmark = pytest.mark.skipif(sys.platform == "win32",
+                                reason="macOS-only launcher; POSIX path expectations")
 
 FUSED = {"X-Fused": "1"}
 
