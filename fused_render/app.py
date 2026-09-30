@@ -1237,13 +1237,26 @@ def main() -> None:
         "quitting": False,   # a teardown is in flight; later Quits join it
         "quit_ready": threading.Event(),  # teardown done/deadline hit: die now
         "pin": None,         # menubar_pin.PinController, built after run loop start
+        "windows": None,     # mac_window.WindowManager, built after run loop start
     }
+
+    def _open_target(target: str) -> None:
+        """Show ``target`` in a NEW window of this app (mac_window.py).
+        Callable from any thread. A browser tab only if the window manager
+        failed to build — the app is never left without a surface."""
+        manager = state["windows"]
+        if manager is None:
+            webbrowser.open(target)
+            return
+        from PyObjCTools import AppHelper
+
+        AppHelper.callAfter(manager.open, target)
 
     def open_file_view(fs_path: str) -> None:
         target = f"http://127.0.0.1:{port}" + view_url_path(fs_path)
         if state["ready"]:
             logger.info("opening file view: %s", target)
-            webbrowser.open(target)
+            _open_target(target)
         else:
             logger.info("queuing file view until server is ready: %s", target)
             state["pending"].append(target)
@@ -1325,7 +1338,7 @@ def main() -> None:
                 continue
             if state["ready"]:
                 logger.info("opening open-URLs target: %s", target)
-                webbrowser.open(target)
+                _open_target(target)
             else:
                 logger.info("queuing open-URLs target until server is ready: %s", target)
                 state["pending"].append(target)
@@ -1336,14 +1349,22 @@ def main() -> None:
     # AppKit sends applicationShouldHandleReopen:hasVisibleWindows: when the
     # user clicks the Dock icon (or double-clicks the app in Finder) while the
     # app is already running. rumps's delegate doesn't implement it, so without
-    # this patch a Dock click does nothing. Open the home tab; if the server is
-    # still booting, queue it on the same pending list the bootstrap flushes.
+    # this patch a Dock click does nothing. Bring the front window forward, or
+    # open a Home window if every window was closed (a browser tab only when
+    # the window manager failed to build); if the server is still booting,
+    # queue the home URL on the same pending list the bootstrap flushes.
     # Must return a BOOL — returning None here breaks the pyobjc bridge.
     def applicationShouldHandleReopen_hasVisibleWindows_(self, _app, _flag):
         logger.info("dock reopen event (server ready=%s)", state["ready"])
         if state["ready"]:
-            webbrowser.open(url)
-        else:
+            manager = state["windows"]
+            if manager is None:
+                webbrowser.open(url)
+            else:
+                from PyObjCTools import AppHelper
+
+                AppHelper.callAfter(manager.reopen)
+        elif url not in state["pending"]:
             state["pending"].append(url)
         return True
 
@@ -1407,10 +1428,10 @@ def main() -> None:
             AppHelper.callAfter(state["pin"].server_ready)
         pending, state["pending"] = state["pending"], []
         for target in pending:
-            webbrowser.open(target)
-        # Home tab only when this launch wasn't a document double-click.
+            _open_target(target)
+        # Home window only when this launch wasn't a document double-click.
         if not state["docs"] and not os.environ.get("FUSED_RENDER_NO_BROWSER"):
-            webbrowser.open(url)
+            _open_target(url)
 
     class FusedRenderStatusApp(rumps.App):
         def __init__(self):
@@ -1465,7 +1486,26 @@ def main() -> None:
 
     # Returns immediately — the AppKit run loop must not block here — and lets
     # quit_teardown do the blocking work off-thread under a hard deadline.
-    _do_quit = make_quit_action(state, terminate=_terminate)
+    _begin_quit_action = make_quit_action(state, terminate=_terminate)
+
+    def _do_quit(on_claim=None) -> bool:
+        # The windows first, and only from the main thread (AppKit): every
+        # page unloads and every WKWebView deallocs before the teardown below
+        # drains the server they were talking to. `quit_teardown` itself runs
+        # off the main thread (DM-9) and cannot drive AppKit, so this cannot
+        # be a rung of it. The bootstrap-thread abort has no windows to close.
+        # Same signature and return as `make_quit_action`'s: `begin_relaunch`
+        # passes `on_claim` and reads the claim bool.
+        manager = state.get("windows")
+        if manager is not None:
+            try:
+                from Foundation import NSThread
+
+                if NSThread.isMainThread():
+                    manager.close_all()
+            except Exception:
+                logger.debug("closing windows on quit failed", exc_info=True)
+        return _begin_quit_action(on_claim=on_claim)
 
     status_app = FusedRenderStatusApp()
 
@@ -1473,6 +1513,27 @@ def main() -> None:
         # One-shot, fired right after the run loop starts — the status item
         # (status_app._nsapp.nsstatusitem) exists only from this point on.
         timer.stop()
+        # The windows (mac_window.py) need the AppKit run loop — the manager
+        # installs the main menu and sets the activation policy — so they
+        # are built here, on the first timer tick, and never at import time.
+        # Guarded: without them the app runs the old way, every surface a
+        # browser tab (`_open_target` falls back).
+        try:
+            from fused_render.mac_window import WindowManager
+
+            state["windows"] = WindowManager(port, quit=_do_quit)
+        except Exception:
+            logger.exception("windows unavailable; falling back to browser tabs")
+
+        def _open_window(target: str) -> None:
+            # The popover's `window.open` / target=_blank (menubar_pin): a
+            # window of ours, main thread already.
+            manager = state["windows"]
+            if manager is None:
+                webbrowser.open(target)
+            else:
+                manager.open(target)
+
         try:
             # Lazy + guarded: pyobjc-framework-WebKit may be missing in an
             # older [app] env; on failure the rumps menu stays attached and
@@ -1488,6 +1549,7 @@ def main() -> None:
                     "copy_url": _copy_url,
                     "open_logs": _open_logs,
                     "quit": _do_quit,
+                    "open_window": _open_window,
                 },
             )
         except Exception:
