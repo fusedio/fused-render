@@ -16,7 +16,7 @@
 // wrapper over Base UI's forward-ref Panel, and React 18 drops a `ref` passed
 // to a plain function component. Silently. The count stayed 0 while a source-
 // reading test happily confirmed the wiring was "there".
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 
 import { createCardPolicy, CardPolicyProvider } from "./cardPolicy";
@@ -25,8 +25,19 @@ import type { ToolSegment } from "../protocol/types";
 import {
   canRunInTerminal,
   peekPendingTerminalRequest,
+  registerTerminalDrawerMounted,
   resetTerminalDockForTests,
 } from "@platform/lib/terminalDockStore";
+
+// `canRunInTerminal()`/`useCanRunInTerminal()` also require a mounted
+// TerminalDrawer, which nothing in this file renders — registered once here
+// (so the `test.if(canRunInTerminal())` gates below read the same
+// !IS_EMBED && !isWindows value they always have) and re-registered before
+// every test, since `resetTerminalDockForTests()` below clears it again.
+registerTerminalDrawerMounted();
+beforeEach(() => {
+  registerTerminalDrawerMounted();
+});
 
 const mounted: Array<ReturnType<typeof create>> = [];
 function mount(el: React.ReactElement): ReturnType<typeof create> {

@@ -162,7 +162,9 @@ export function IssueRow({
           press our button to find out what it was. Piping a remote script
           into a shell on someone's behalf is a thing to disclose, not to do
           quietly behind a friendly label. */}
-      {issue.command && <CommandLine command={issue.command} />}
+      {issue.command && (
+        <CommandLine command={issue.command} disabled={busy || running || signingIn} />
+      )}
 
       {running && (
         <p className="claude-health-progress" role="status">

@@ -28,7 +28,7 @@ import {
   toolStatusGlyph,
 } from "../protocol/summaries";
 import { COPY_RESET_MS } from "../protocol/markdown";
-import { canRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
+import { useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
 import type { ToolSegment } from "../protocol/types";
 import { useCardOpen } from "./cardPolicy";
 import { MarkdownView } from "./MarkdownView";
@@ -78,6 +78,7 @@ function CopyPre({
   copy,
   children,
   runnable,
+  cwd,
 }: {
   className?: string;
   copy: string;
@@ -88,6 +89,9 @@ function CopyPre({
    *  transcript's copy of a past command is not a request to run it again
    *  unchanged. */
   runnable?: boolean;
+  /** The chat's working directory (ToolChipProps.cwd) — the run button `cd`'s
+   *  here first. */
+  cwd?: string | null;
 }) {
   const [copied, setCopied] = useState(false);
   // ONE TIMER, REPLACED RATHER THAN STACKED, AND CANCELLED ON THE WAY OUT
@@ -115,14 +119,15 @@ function CopyPre({
       setCopied(false);
     }, COPY_RESET_MS);
   }, [copy]);
+  const canRun = useCanRunInTerminal();
   return (
     <pre {...(className ? { className } : {})}>
       <span className="copywrap">
-        {runnable && canRunInTerminal() && copy ? (
+        {runnable && canRun && copy ? (
           <button
             className="runbtn"
             type="button"
-            onClick={() => openTerminal({ command: copy, execute: false })}
+            onClick={() => openTerminal({ cwd: cwd ?? undefined, command: copy, execute: false })}
           >
             run
           </button>
@@ -186,13 +191,13 @@ function usedKeys(seg: ToolSegment, inp: Record<string, unknown>): string[] {
   }
 }
 
-function ChipBody({ seg }: { seg: ToolSegment }) {
+function ChipBody({ seg, cwd }: { seg: ToolSegment; cwd?: string | null }) {
   const inp = asRecord(seg.input);
   const extra = leftoverInput(inp, usedKeys(seg, inp));
   const out = chipOutput(seg.output);
   return (
     <>
-      {renderInput(seg, inp)}
+      {renderInput(seg, inp, cwd)}
       {extra ? <CopyPre copy={JSON.stringify(extra, null, 2)}>{JSON.stringify(extra, null, 2)}</CopyPre> : null}
       {out === null ? null : (
         <CopyPre className="chip-out" copy={out}>
@@ -211,7 +216,7 @@ function ChipBody({ seg }: { seg: ToolSegment }) {
   );
 }
 
-function renderInput(seg: ToolSegment, inp: Record<string, unknown>) {
+function renderInput(seg: ToolSegment, inp: Record<string, unknown>, cwd?: string | null) {
   switch (seg.name) {
     case "Edit":
       return (
@@ -238,7 +243,7 @@ function renderInput(seg: ToolSegment, inp: Record<string, unknown>) {
       return (
         <>
           {inp.description ? <div className="chip-label">{String(inp.description)}</div> : null}
-          <CopyPre copy={typeof inp.command === "string" ? inp.command : ""} runnable>
+          <CopyPre copy={typeof inp.command === "string" ? inp.command : ""} runnable cwd={cwd}>
             {typeof inp.command === "string" ? inp.command : ""}
           </CopyPre>
         </>
@@ -311,11 +316,15 @@ export interface ToolChipProps {
   seg: ToolSegment;
   /** Collapse-policy key (cardPolicy.cardKey). */
   cardKey: string;
+  /** The chat's working directory — the Bash chip's "run" button `cd`'s here
+   *  first, so re-running a past command lands where the chat is actually
+   *  working rather than wherever the drawer happens to be. */
+  cwd?: string | null;
 }
 
 /** MEMOIZED: a replayed tool call is the same segment object poll after poll,
  *  and a chip's body is the most expensive thing in a long turn. */
-export const ToolChip = memo(function ToolChip({ seg, cardKey }: ToolChipProps) {
+export const ToolChip = memo(function ToolChip({ seg, cardKey, cwd }: ToolChipProps) {
   const [open, toggle] = useCardOpen(cardKey);
   const raw = String(seg.name || "tool");
   const pretty = prettyToolName(raw);
@@ -353,7 +362,7 @@ export const ToolChip = memo(function ToolChip({ seg, cardKey }: ToolChipProps) 
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent className="chip-body">
-        <ChipBody seg={seg} />
+        <ChipBody seg={seg} cwd={cwd} />
       </CollapsibleContent>
     </Collapsible>
   );

@@ -1,14 +1,14 @@
 // CommandLine.tsx's own rendering/behaviour contract: the Copy button always
-// shows, the Run button only where `canRunInTerminal()` says there is a
-// drawer to hand the command to, and Run opens the drawer with exactly the
-// command/cwd/execute it was given.
+// shows, the Run button only where `useCanRunInTerminal()` says there is a
+// drawer to hand the command to, Run opens the drawer with the command, and
+// `disabled` keeps Run from being pressed while the row's own action is busy.
 import { afterEach, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
 
 import { CommandLine } from "@platform/ui/CommandLine";
 import {
-  canRunInTerminal,
   peekPendingTerminalRequest,
+  registerTerminalDrawerMounted,
   resetTerminalDockForTests,
   useTerminalDockOpen,
 } from "@platform/lib/terminalDockStore";
@@ -51,54 +51,36 @@ test("always renders the command and a Copy button", () => {
   expect(buttons.map(text)).toContain("Copy");
 });
 
-describe("when canRunInTerminal() is true", () => {
-  test.if(canRunInTerminal())(
-    "shows a Run button that opens the drawer with the command",
-    () => {
-      const renderer = renderTracked(<CommandLine command="claude update" cwd="/tmp/x" />);
-      const tree = renderer.toJSON() as ReactTestRendererJSON;
-      const run = findAll(tree, (n) => n.type === "button" && text(n) === "Run")[0];
-      expect(run).toBeDefined();
+test("no Run button when no drawer is mounted", () => {
+  const renderer = renderTracked(<CommandLine command="claude update" />);
+  const tree = renderer.toJSON() as ReactTestRendererJSON;
+  const buttons = findAll(tree, (n) => n.type === "button");
+  expect(buttons.map(text)).not.toContain("Run");
+});
 
-      act(() => {
-        (run.props as { onClick: () => void }).onClick();
-      });
-      expect(peekPendingTerminalRequest()).toEqual({
-        cwd: "/tmp/x",
-        command: "claude update",
-        execute: true,
-      });
-    },
-  );
-
-  test.if(canRunInTerminal())("Run with execute={false} types without running", () => {
-    const renderer = renderTracked(<CommandLine command="claude update" execute={false} />);
+describe("with a terminal drawer mounted", () => {
+  test("shows a Run button that opens the drawer with the command", () => {
+    let unregister!: () => void;
+    act(() => {
+      unregister = registerTerminalDrawerMounted();
+    });
+    const renderer = renderTracked(<CommandLine command="claude update" />);
     const tree = renderer.toJSON() as ReactTestRendererJSON;
     const run = findAll(tree, (n) => n.type === "button" && text(n) === "Run")[0];
+    expect(run).toBeDefined();
+
     act(() => {
       (run.props as { onClick: () => void }).onClick();
     });
-    expect(peekPendingTerminalRequest()).toEqual({
-      cwd: undefined,
-      command: "claude update",
-      execute: false,
-    });
+    expect(peekPendingTerminalRequest()).toEqual({ command: "claude update" });
+    act(() => unregister());
   });
 
-  test.if(canRunInTerminal())("Run calls onRun once the request is handed to the drawer", () => {
-    let ran = 0;
-    const renderer = renderTracked(
-      <CommandLine command="claude update" onRun={() => (ran += 1)} />,
-    );
-    const tree = renderer.toJSON() as ReactTestRendererJSON;
-    const run = findAll(tree, (n) => n.type === "button" && text(n) === "Run")[0];
+  test("Run also opens the drawer itself", () => {
+    let unregister!: () => void;
     act(() => {
-      (run.props as { onClick: () => void }).onClick();
+      unregister = registerTerminalDrawerMounted();
     });
-    expect(ran).toBe(1);
-  });
-
-  test.if(canRunInTerminal())("Run also opens the drawer itself", () => {
     let open = false;
     function Probe() {
       open = useTerminalDockOpen();
@@ -113,12 +95,19 @@ describe("when canRunInTerminal() is true", () => {
     });
     expect(open).toBe(true);
     void probeRenderer;
+    act(() => unregister());
   });
-});
 
-test.if(!canRunInTerminal())("no Run button when canRunInTerminal() is false", () => {
-  const renderer = renderTracked(<CommandLine command="claude update" />);
-  const tree = renderer.toJSON() as ReactTestRendererJSON;
-  const buttons = findAll(tree, (n) => n.type === "button");
-  expect(buttons.map(text)).not.toContain("Run");
+  test("Run is disabled while the row's own action is busy", () => {
+    let unregister!: () => void;
+    act(() => {
+      unregister = registerTerminalDrawerMounted();
+    });
+    const renderer = renderTracked(<CommandLine command="claude update" disabled />);
+    const tree = renderer.toJSON() as ReactTestRendererJSON;
+    const run = findAll(tree, (n) => n.type === "button" && text(n) === "Run")[0];
+    expect(run).toBeDefined();
+    expect((run.props as { disabled?: boolean }).disabled).toBe(true);
+    act(() => unregister());
+  });
 });

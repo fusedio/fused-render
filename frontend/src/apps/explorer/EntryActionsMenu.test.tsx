@@ -13,16 +13,23 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
 
 import { useAppActionRows, type AppActionRows } from "@apps/explorer/EntryActionsMenu";
-import { resetTerminalDockForTests, peekPendingTerminalRequest } from "@platform/lib/terminalDockStore";
+import {
+  registerTerminalDrawerMounted,
+  resetTerminalDockForTests,
+  peekPendingTerminalRequest,
+} from "@platform/lib/terminalDockStore";
 
 let renderers: ReactTestRenderer[] = [];
+let unregisterDrawer: () => void = () => {};
 afterEach(() => {
   for (const renderer of renderers) renderer.unmount();
   renderers = [];
+  unregisterDrawer();
   resetTerminalDockForTests();
 });
 
 function renderRows(fsPath: string): AppActionRows {
+  unregisterDrawer = registerTerminalDrawerMounted();
   let rows!: AppActionRows;
   function Probe() {
     rows = useAppActionRows({ fsPath, isEntry: false, onOpenMcp: () => {} });
